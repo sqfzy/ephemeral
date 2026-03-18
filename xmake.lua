@@ -20,7 +20,7 @@ option("use_numa")
     add_defines("USE_NUMA")
 
 -- ===========================================================================
--- eph-base: 基础类型、概念约束、缓存行常量
+-- eph-base: base types, concept constraints, cache line constants
 -- ===========================================================================
 target("eph-base")
     set_kind("headeronly")
@@ -30,7 +30,7 @@ target("eph-base")
     add_rules("utils.install.pkgconfig_importfiles")
 
 -- ===========================================================================
--- eph-utils: CPU 拓扑、TSC 计时、对齐工具、大页内存、性能记录
+-- eph-utils: CPU topology, TSC timing, alignment, hugepage, perf recording
 -- ===========================================================================
 target("eph-utils")
     set_kind("headeronly")
@@ -41,7 +41,7 @@ target("eph-utils")
     add_rules("utils.install.pkgconfig_importfiles")
 
 -- ===========================================================================
--- eph-containers: BoundedQueue, EvictingQueue 及其 Bytes 变体
+-- eph-containers: BoundedQueue, EvictingQueue and their Bytes variants
 -- ===========================================================================
 target("eph-containers")
     set_kind("headeronly")
@@ -52,18 +52,18 @@ target("eph-containers")
     add_rules("utils.install.pkgconfig_importfiles")
 
 -- ===========================================================================
--- eph-dpdk: DPDK Platform + TX Engine (header-only)
+-- eph-dpdk: EAL wrapper + Platform + TX Engine (header-only)
+--   depends on eph-base for CACHE_LINE_SIZE (used by SpscLogRing padding)
 -- ===========================================================================
 local dpdk_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
 
 target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
-    add_headerfiles("eph-dpdk/include/(eph_dpdk/**.hpp)")
+    add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
+    add_deps("eph-base", { public = true })
     add_packages("dpdk", "spdlog", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. dpdk_log_level, { public = true })
-    -- -march=corei7 required by rte_memcpy.h (SSSE3 intrinsics); propagated
-    -- publicly so all dependents compile with the same ISA DPDK was built for.
     add_cxflags("-march=corei7", { public = true, force = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
@@ -95,7 +95,7 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         set_group("tests")
         set_default(false)
         add_files(file)
-        if name:find("test_platform") or name:find("test_tx_engine") then
+        if name:find("test_platform") or name:find("test_tx_engine") or name:find("test_dpdk") then
             add_deps("eph-dpdk")
             add_packages("gtest")
             add_defines("SPDLOG_NO_EXCEPTIONS")
