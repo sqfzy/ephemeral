@@ -95,20 +95,12 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         set_group("tests")
         set_default(false)
         add_files(file)
-        if name:find("test_platform") or name:find("test_tx_engine") or name:find("test_dpdk") then
-            add_deps("eph-dpdk")
-            add_packages("gtest")
-            add_defines("SPDLOG_NO_EXCEPTIONS")
-        elseif name:find("bounded_queue") or name:find("evicting_queue") then
-            add_deps("eph-containers")
-            add_packages("gtest")
-        elseif name:find("cpu") or name:find("time") or name:find("record") or name:find("hugepage") then
-            add_deps("eph-utils")
-            add_packages("gtest")
-        else
-            add_deps("eph-base")
-            add_packages("gtest")
-        end
+        add_deps("eph-dpdk")
+        add_deps("eph-containers")
+        add_deps("eph-utils")
+        add_deps("eph-base")
+        add_packages("gtest")
+        add_defines("SPDLOG_NO_EXCEPTIONS")
 end
 
 -- ===========================================================================
