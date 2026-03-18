@@ -1,0 +1,29 @@
+# Xmake cache
+.xmake/
+build/
+
+# MacOS Cache
+.DS_Store
+
+.cache/
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+*.csv
+*.log
+*.json
+*.html
+/temp/
+notes/
+outputs/
+perf.data
+perf.data.old

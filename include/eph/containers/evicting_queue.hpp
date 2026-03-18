@@ -1,0 +1,448 @@
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <bit>
+#include <concepts>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <type_traits>
+#include <utility>
+
+#include "eph/base/cache.hpp"
+#include "eph/base/concepts.hpp"
+#include "eph/utils/alignment.hpp"
+#include "eph/utils/cpu.hpp"
+
+using eph::base::CACHE_LINE_SIZE;
+using eph::base::TrivialData;
+using eph::utils::Align;
+using eph::utils::cpu_relax;
+
+namespace eph::containers {
+
+/**
+ * @brief 多缓冲顺序锁可丢弃 SPSC 队列
+ *
+ * 特性：
+ * - Writer Wait-free: 写入者永远不会阻塞，队列满时直接覆盖旧数据。
+ * - Reader Lock-free: 读取者通过乐观读取，获取最新数据。
+ *
+ * 内存布局：
+ * ```
+ * ┌─────────────────────────────────────────────────┐
+ * │ Global Zone (读写共享 Cache Line)               │
+ * │  - global_index_  (全局索引)                    │
+ * ├─────────────────────────────────────────────────┤
+ * │ Writer Hot Zone (独占 Cache Line)               │
+ * │  - writer_.index_  (本地影子索引)               │
+ * ├─────────────────────────────────────────────────┤
+ * │ Reader Hot Zone (独占 Cache Line)               │
+ * │  - reader_.index_  (本地缓存索引)               │
+ * ├─────────────────────────────────────────────────┤
+ * │ Slots Zone (数据存储区)                         │
+ * │  - slots_[0..N-1]                               │
+ * └─────────────────────────────────────────────────┘
+ * ```
+ *
+ * @tparam T 数据类型 (必须满足 TriviallyCopyable 概念)
+ * @tparam Capacity 缓冲槽位数量，必须是 2 的幂。
+ */
+template <typename T, size_t Capacity = 8>
+    requires TrivialData<T>
+class alignas(Align<T>) EvictingQueue {
+    static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
+    static_assert(Capacity > 1, "Primary template requires Capacity > 1");
+
+   private:
+    // 全局索引/全局序列号。每生产一个数据就+1。
+    alignas(Align<T>) std::atomic<uint64_t> global_index_{0};
+
+    // ---------------------------------------------------------------------------
+    // Writer 独占区
+    // ---------------------------------------------------------------------------
+    struct alignas(Align<T>) WriterLine {
+        // global_index_ 影子索引，省去一次原子读取。
+        uint64_t shadow_global_index_{0};
+    } writer_;
+
+    // ---------------------------------------------------------------------------
+    // Reader 独占区
+    // ---------------------------------------------------------------------------
+    struct alignas(Align<T>) ReaderLine {
+        // global_index_ 本地缓存，用于检查是否有新数据。
+        uint64_t last_global_index_{0};
+    } reader_;
+
+    // ---------------------------------------------------------------------------
+    // 核心存储区
+    // ---------------------------------------------------------------------------
+    struct alignas(Align<T>) Slot {
+        // 内存布局 (64 bits):
+        // [ 63 ............................ 1 |   0   ]
+        // [      Global Index (高 63 位)      | flag ]
+        //
+        // Global Index：最近一次写该槽位时的
+        // global_index_，用于验证数据的新旧。 flag = 1 表示 Writer
+        // 正在写入（锁定）；0 表示空闲。
+        std::atomic<uint64_t> seq_{0};
+        T data_{};
+    };
+    alignas(Align<T>) std::array<Slot, Capacity> slots_{};
+
+   public:
+    EvictingQueue() = default;
+    ~EvictingQueue() = default;
+
+    // ===========================================================================
+    // Writer 操作
+    // ===========================================================================
+
+    /**
+     * @brief 零拷贝写入 (Visitor 模式)
+     *
+     * @tparam F 回调类型，签名应为 void(T& data)
+     * @param writer_func 用于在 Slot 原位初始化或修改数据的回调函数
+     */
+    template <typename F>
+        requires std::invocable<F, T&>
+    void produce(F&& writer_func) noexcept {
+        // 1. 获取下一个写入位置 (使用本地 Shadow Index)
+        const uint64_t current_idx = writer_.shadow_global_index_;
+        const uint64_t next_idx = current_idx + 1;  // PERF: 6.70%
+
+        Slot& s = slots_[next_idx & (Capacity - 1)];
+
+        // 2. 锁定槽位 (将实际索引左移，最低位置 1 表示奇数/写入中)
+        s.seq_.store((next_idx << 1) | 1, std::memory_order_relaxed);
+
+        // 3. Store-Store Barrier
+        // 确保 seq 变为奇数的操作对其他核可见后，才开始写真正的数据
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // 4. 执行数据写入/修改
+        // PERF: ~39.19% 拷贝 { uint64_t id; double data[3]; };
+        std::invoke(std::forward<F>(writer_func), s.data_);
+
+        // 5. Store-Store Barrier
+        // 确保数据写完后，才更新 seq 为偶数
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // 6. 解锁槽位 (最低位置 0 表示偶数/空闲)
+        // PERF: 17.68%
+        s.seq_.store(next_idx << 1, std::memory_order_relaxed);
+
+        // 7. 发布全局索引 (Release)
+        // PERF: 17.68
+        global_index_.store(next_idx, std::memory_order_release);
+
+        // 8. 更新本地影子索引
+        // PERF: 15.68%
+        writer_.shadow_global_index_ = next_idx;
+    }
+
+    /**
+     * @brief 写入新数据 (Copy/Move)
+     */
+    template <typename U>
+        requires std::is_assignable_v<T&, U>
+    void push(U&& val) noexcept {
+        produce([&](T& slot) { slot = std::forward<U>(val); });
+    }
+
+    /**
+     * @brief 原地构造写入 (Emplace)
+     */
+    template <typename... Args>
+        requires std::is_constructible_v<T, Args...>
+    void emplace(Args&&... args) noexcept {
+        produce([&](T& slot) {
+            if constexpr (std::is_trivially_destructible_v<T>) {
+                std::construct_at(&slot, std::forward<Args>(args)...);
+            } else {
+                std::destroy_at(&slot);
+                std::construct_at(&slot, std::forward<Args>(args)...);
+            }
+        });
+    }
+
+    // ===========================================================================
+    // Reader 操作
+    // ===========================================================================
+
+    /**
+     * @brief 核心：尝试零拷贝读取 (Visitor Pattern)
+     *
+     * @return true 读取成功; false 数据脏 (发生竞争)
+     */
+    template <typename F>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_consume_latest(F&& visitor) noexcept {
+        // 1. 获取当前最新的全局索引 (Acquire)
+        uint64_t idx =
+            global_index_.load(std::memory_order_acquire);  // PERF: 48.83%
+
+        if (idx <= reader_.last_global_index_) {
+            return false;
+        }
+
+        const Slot& s = slots_[idx & (Capacity - 1)];
+
+        // 2. 读取开始前的版本号 (Acquire)
+        // PERF: 45.41%
+        uint64_t seq1 = s.seq_.load(std::memory_order_acquire);
+
+        // 如果版本号为奇数，说明 Writer 正在写入
+        if (seq1 & 1) [[unlikely]]
+            return false;
+
+        // 解析出槽位当前实际存储的数据 index
+        uint64_t actual_idx = seq1 >> 1;
+
+        // 如果实际数据的 index 小于等于上次读取的 index，说明这是已经读过的数据
+        if (actual_idx <= reader_.last_global_index_) {
+            return false;
+        }
+
+        // 3. 执行读取
+        std::invoke(std::forward<F>(visitor), s.data_);
+
+        // 4. Load-Load Barrier
+        // 强制 CPU 保证先完成上述数据的读取，再读取下方的 seq2
+        std::atomic_thread_fence(std::memory_order_acquire);
+
+        // 5. 再次读取版本号 (Relaxed)
+        uint64_t seq2 = s.seq_.load(std::memory_order_relaxed);
+
+        if (seq1 == seq2) {
+            reader_.last_global_index_ = actual_idx;
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @brief 尝试读取最新数据 (值拷贝)
+     */
+    [[nodiscard]] bool try_pop_latest(T& out) noexcept {
+        return try_consume_latest([&out](const T& data) { out = data; });
+    }
+
+    /**
+     * @brief 尝试读取并返回可选值
+     */
+    [[nodiscard]] std::optional<T> try_pop_latest() noexcept {
+        std::optional<T> res;
+        if (try_consume_latest([&res](const T& data) { res.emplace(data); })) {
+            return res;
+        }
+        return std::nullopt;
+    }
+
+    /**
+     * @brief 阻塞式零拷贝读取 (自旋直到成功)
+     */
+    template <typename F>
+        requires std::invocable<F, const T&>
+    void consume_latest(F&& visitor) noexcept {
+        while (!try_consume_latest(std::forward<F>(visitor))) {
+            cpu_relax();
+        }
+    }
+
+    /**
+     * @brief 阻塞式值拷贝读取 (自旋直到成功)
+     */
+    void pop_latest(T& out) noexcept {
+        consume_latest([&out](const T& data) { out = data; });
+    }
+
+    /**
+     * @brief 阻塞式读取并返回值 (自旋直到成功)
+     */
+    [[nodiscard]] T pop_latest() noexcept {
+        T out;
+        pop_latest(out);
+        return out;
+    }
+
+    // ===========================================================================
+    // 状态查询
+    // ===========================================================================
+
+    /**
+     * @brief 获取缓冲区容量
+     */
+    [[nodiscard]] static constexpr size_t capacity() noexcept {
+        return Capacity;
+    }
+
+    /**
+     * @brief 检查 Writer 是否正在忙碌 (写入中)
+     */
+    [[nodiscard]] bool busy() const noexcept {
+        // 获取当前最新发布的索引
+        uint64_t idx = global_index_.load(std::memory_order_relaxed);
+        // 预测 Writer 正在操作的下一个 Slot
+        const Slot& s = slots_[(idx + 1) & (Capacity - 1)];
+        // 检查该 Slot 的 seq 是否为奇数
+        return s.seq_.load(std::memory_order_relaxed) & 1;
+    }
+};
+
+/**
+ * @brief SPSC 顺序锁 (SeqLock) - 单槽位特化 (N=1)
+ *
+ * 特性：
+ * - Writer Wait-free: 写入者永远不会阻塞。
+ * - Reader Lock-free: 读取者通过乐观读取，获取最新数据。
+ *
+ * 内存布局：
+ * ```
+ * ┌─────────────────────────────────────────────────┐
+ * │ SeqLock Zone (全局共享 Cache Line)              │
+ * │ - seq_  (版本号/锁)                             │
+ * ├─────────────────────────────────────────────────┤
+ * │ Reader Local Zone (独占 Cache Line)             │
+ * │ - last_seq_ (本地缓存版本号)                    │
+ * ├─────────────────────────────────────────────────┤
+ * │ │ Data Zone (独占 Cache Line)                   │
+ * │ - data_  (实际数据)                             │
+ * └─────────────────────────────────────────────────┘
+ * ```
+ *
+ * @tparam T 数据类型 (必须满足 TriviallyCopyable 概念)
+ */
+template <typename T>
+    requires TrivialData<T>
+class alignas(Align<T>) EvictingQueue<T, 1> {
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,
+                  "SeqLock requires lock-free std::atomic<uint64_t>");
+
+   private:
+    // 偶数=空闲，奇数=正在写入
+    alignas(Align<T>) std::atomic<uint64_t> seq_{0};
+    alignas(Align<T>) uint64_t last_seq_{0};
+    alignas(Align<T>) T data_{};
+
+   public:
+    EvictingQueue() noexcept = default;
+
+    // ===========================================================================
+    // Writer
+    // ===========================================================================
+
+    /**
+     * @brief 零拷贝写入 (Visitor 模式)
+     *
+     * @tparam F 回调类型，签名应为 void(T& data)
+     * @param writer_func 用于初始化或修改数据的回调函数
+     */
+    template <typename F>
+        requires std::invocable<F, T&>
+    void produce(F&& writer_func) noexcept {
+        // PERF: 39.91%
+        uint64_t seq = seq_.load(std::memory_order_relaxed);
+
+        // 1. Lock (Seq=Odd)
+        seq_.store(seq + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+
+        // 2. Write
+        // PERF: 35.19%
+        std::invoke(std::forward<F>(writer_func), data_);
+
+        // 3. Unlock (Seq=Even)
+        std::atomic_thread_fence(std::memory_order_release);
+        seq_.store(seq + 2, std::memory_order_relaxed);
+    }
+
+    template <typename U>
+        requires std::is_assignable_v<T&, U>
+    void push(U&& val) noexcept {
+        produce([&](T& slot) { slot = std::forward<U>(val); });
+    }
+
+    template <typename... Args>
+        requires std::is_constructible_v<T, Args...>
+    void emplace(Args&&... args) noexcept {
+        produce([&](T& slot) {
+            if constexpr (std::is_trivially_destructible_v<T>) {
+                std::construct_at(&slot, std::forward<Args>(args)...);
+            }
+        });
+    }
+
+    // ===========================================================================
+    // Reader
+    // ===========================================================================
+
+    template <typename F>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_consume_latest(F&& visitor) noexcept {
+        // 1. 读取开始版本号 (Acquire)
+        // PERF: 45.42%
+        uint64_t seq0 = seq_.load(std::memory_order_acquire);
+        if (seq0 <= last_seq_ || (seq0 & 1)) return false;
+
+        // 2. 读取数据
+        std::invoke(std::forward<F>(visitor), data_);
+
+        // 3. Load-Load Barrier
+        std::atomic_thread_fence(std::memory_order_acquire);
+
+        // 4. 验证结束版本号
+        uint64_t seq1 = seq_.load(std::memory_order_relaxed);
+        if (seq0 == seq1) {
+            last_seq_ = seq1;
+            return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool try_pop_latest(T& out) noexcept {
+        return try_consume_latest([&out](const T& slot) { out = slot; });
+    }
+
+    [[nodiscard]] std::optional<T> try_pop_latest() noexcept {
+        std::optional<T> res;
+        if (try_consume_latest([&res](const T& slot) { res.emplace(slot); })) {
+            return res;
+        }
+        return std::nullopt;
+    }
+
+    template <typename F>
+        requires std::invocable<F, const T&>
+    void consume_latest(F&& visitor) noexcept {
+        while (!try_consume_latest(std::forward<F>(visitor))) {
+            cpu_relax();
+        }
+    }
+
+    void pop_latest(T& out) noexcept {
+        consume_latest([&out](const T& slot) { out = slot; });
+    }
+
+    [[nodiscard]] T pop_latest() noexcept {
+        T out;
+        pop_latest(out);
+        return out;
+    }
+
+    // ===========================================================================
+    // 状态查询
+    // ===========================================================================
+
+    [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
+
+    /// 检查当前是否被写锁占用
+    [[nodiscard]] bool busy() const noexcept {
+        return seq_.load(std::memory_order_relaxed) & 1;
+    }
+};
+
+}  // namespace eph::containers
