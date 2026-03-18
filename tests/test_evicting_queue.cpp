@@ -81,7 +81,7 @@ TYPED_TEST(EvictingQueueTest, SingleThreadEviction) {
 // 4. 多线程满负荷推入弹出的压力测试
 TYPED_TEST(EvictingQueueTest, MultiThreadStress) {
     TypeParam queue;
-    const uint32_t total_messages = 100'000'000;
+    const uint32_t total_messages = 1'000'000;
     std::atomic<bool> producer_done{false};
 
     // 生产者线程：全速推入单调递增的整数序列

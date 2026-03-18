@@ -19,9 +19,6 @@ option("use_numa")
     set_description("Enable NUMA support")
     add_defines("USE_NUMA")
 
--- ===========================================================================
--- eph-base: base types, concept constraints, cache line constants
--- ===========================================================================
 target("eph-base")
     set_kind("headeronly")
     add_includedirs("eph-base/include", { public = true })
@@ -29,9 +26,6 @@ target("eph-base")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
--- ===========================================================================
--- eph-utils: CPU topology, TSC timing, alignment, hugepage, perf recording
--- ===========================================================================
 target("eph-utils")
     set_kind("headeronly")
     add_includedirs("eph-utils/include", { public = true })
@@ -40,9 +34,6 @@ target("eph-utils")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
--- ===========================================================================
--- eph-containers: BoundedQueue, EvictingQueue and their Bytes variants
--- ===========================================================================
 target("eph-containers")
     set_kind("headeronly")
     add_includedirs("eph-containers/include", { public = true })
@@ -51,10 +42,6 @@ target("eph-containers")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
--- ===========================================================================
--- eph-dpdk: EAL wrapper + Platform + TX Engine (header-only)
---   depends on eph-base for CACHE_LINE_SIZE (used by SpscLogRing padding)
--- ===========================================================================
 local dpdk_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
 
 target("eph-dpdk")

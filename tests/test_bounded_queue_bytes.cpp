@@ -46,7 +46,7 @@ TYPED_TEST(BoundedQueueBytesTest, OverflowProtection) {
 // 3. 多线程生产者-消费者压力测试 (字节流模式)
 TYPED_TEST(BoundedQueueBytesTest, MultiThreadByteStress) {
     TypeParam queue;
-    const uint32_t total_messages = 500'000;
+    const uint32_t total_messages = 1'000'000;
 
     std::thread producer([&]() {
         for (uint32_t i = 1; i <= total_messages; ++i) {
