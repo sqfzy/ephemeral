@@ -25,5 +25,9 @@ wheels/
 /temp/
 notes/
 outputs/
+perf/
 perf.data
 perf.data.old
+
+# eph-dpdk nested repo (integrated into monorepo)
+eph-dpdk/.git/
