@@ -242,22 +242,20 @@ public:
     // Send API (application thread)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Send data as a WebSocket frame (non-blocking).
+    /// Send data as a WebSocket binary frame (non-blocking).
     ///
     /// @param data     Payload data
     /// @param len      Payload length (must be <= MaxPayload)
-    /// @param opcode   WebSocket opcode (kBinary or kText, default kBinary)
     /// @return 0 on success, -EMSGSIZE if too large, -ENOTCONN if not
     ///         connected, -EAGAIN if queue is full
-    int send(const void* data, size_t len,
-             uint8_t opcode = ws::opcode::kBinary) noexcept {
+    int send(const void* data, size_t len) noexcept {
         if (len > MaxPayload) return -EMSGSIZE;
         if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
             std::memcpy(msg.data, data, len);
             msg.len = static_cast<uint16_t>(len);
-            msg.opcode = opcode;
+            msg.opcode = ws::opcode::kBinary;
         });
 
         if (!ok) {
@@ -268,9 +266,8 @@ public:
     }
 
     /// Send data from a span (convenience overload).
-    int send(std::span<const uint8_t> data,
-             uint8_t opcode = ws::opcode::kBinary) noexcept {
-        return send(data.data(), data.size(), opcode);
+    int send(std::span<const uint8_t> data) noexcept {
+        return send(data.data(), data.size());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -423,25 +420,20 @@ private:
                 "TLS handshake failed: {}", hs_result.error()));
         }
 
-        // Phase 3: WebSocket upgrade (via SSL_write/SSL_read)
-        // Track the number of TLS records sent/received during upgrade
-        // so TlsRecordCrypto starts with the correct sequence numbers.
+        // Phase 3: WebSocket upgrade
         auto ws_result = do_ws_upgrade();
         if (!ws_result) {
             return std::unexpected(std::format(
                 "WebSocket upgrade failed: {}", ws_result.error()));
         }
 
-        // Phase 4: Extract traffic keys for AEAD hot path.
-        // Uses SSL_get_{read,write}_traffic_secret + SSL_get_{read,write}_sequence
-        // so seq numbers stay in sync after WS upgrade via SSL_write/SSL_read.
+        // Phase 4: Extract keys for AEAD hot path
         auto hot_state = tls_->extract_hot_state();
         if (!hot_state) {
             return std::unexpected(std::format(
                 "TLS key export failed: {}", hot_state.error()));
         }
 
-        // Pass negotiated cipher key length (16 or 32) for AES-128/256
         size_t key_len = tls_->cipher_key_len();
         auto crypto = TlsRecordCrypto::create(*hot_state, key_len);
         if (!crypto) {
@@ -507,13 +499,7 @@ private:
     // WebSocket upgrade (Phase 3 of handshake)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Result of WS upgrade: record counts for seq offset tracking.
-    struct WsUpgradeResult {
-        uint64_t write_records = 0;  // TLS records sent during upgrade
-        uint64_t read_records  = 0;  // TLS records received during upgrade
-    };
-
-    std::expected<WsUpgradeResult, std::string> do_ws_upgrade() {
+    std::expected<void, std::string> do_ws_upgrade() {
         auto log = detail::transport_logger();
 
         // Generate WebSocket key
@@ -530,16 +516,12 @@ private:
 
         SPDLOG_LOGGER_DEBUG(log, "Sending WebSocket upgrade request");
 
-        WsUpgradeResult upgrade_result{};
-
         // Send upgrade request through TLS (handshake-phase I/O)
         auto write_result = tls_->handshake_write(request.data(),
                                                     static_cast<int>(request.size()));
         if (!write_result || *write_result <= 0) {
             return std::unexpected("Failed to send WebSocket upgrade request");
         }
-        // SSL_write typically produces 1 TLS record for the HTTP request
-        upgrade_result.write_records = 1;
 
         // Read upgrade response (with timeout)
         std::vector<uint8_t> response_buf;
@@ -559,8 +541,6 @@ private:
             if (*read_result > 0) {
                 response_buf.insert(response_buf.end(),
                                     buf, buf + *read_result);
-                // Each successful SSL_read consumes at least 1 TLS record
-                upgrade_result.read_records++;
             }
 
             // Check if we have a complete HTTP response
@@ -604,7 +584,7 @@ private:
                 }
 
                 SPDLOG_LOGGER_INFO(log, "WebSocket upgrade successful");
-                return upgrade_result;
+                return {};
             }
         }
 
@@ -635,26 +615,12 @@ private:
         uint8_t tls_bufs[kMaxBatch][kTlsBufSize];
         uint16_t tls_lens[kMaxBatch];
 
-        // Single WS encode buffer reused per message
+        // Single WS encode buffer reused per message (no intermediate ws_buf copy)
         uint8_t ws_buf[kWsBufSize];
 
-        // Data frame templates (text and binary)
-        ws::FrameTemplate binary_tmpl = ws::FrameTemplate::for_binary();
-        ws::FrameTemplate text_tmpl   = ws::FrameTemplate::for_text();
-
-        // Periodic ping timer (moved from RX thread to avoid tcp_->send data race)
-        auto last_ping = std::chrono::steady_clock::now();
+        ws::FrameTemplate ws_tmpl = ws::FrameTemplate::for_binary();
 
         while (running_.load(std::memory_order_acquire)) {
-            // ── Periodic ping (keepalive) — only TX thread calls tcp_->send ──
-            if (config_.ping_interval.count() > 0) {
-                auto now = std::chrono::steady_clock::now();
-                if (now - last_ping >= config_.ping_interval) {
-                    send_ws_ping();
-                    last_ping = now;
-                }
-            }
-
             // [P4] Drain: consume as many messages as available, up to kMaxBatch
             int n = 0;
             while (n < kMaxBatch) {
@@ -669,22 +635,8 @@ private:
 
             // WS encode → TLS encrypt for each message in batch
             for (int i = 0; i < n; ++i) {
-                size_t ws_len;
-
-                // Dispatch by opcode: data frames vs control frames
-                if (batch[i].opcode == ws::opcode::kPong) {
-                    ws_len = ws::build_pong_frame(
-                        ws_buf, batch[i].data, batch[i].len);
-                } else if (batch[i].opcode == ws::opcode::kPing) {
-                    ws_len = ws::build_ping_frame(
-                        ws_buf, batch[i].data, batch[i].len);
-                } else {
-                    // Data frame: use opcode-specific template
-                    auto& tmpl = (batch[i].opcode == ws::opcode::kText)
-                                     ? text_tmpl : binary_tmpl;
-                    ws_len = tmpl.encode(
-                        ws_buf, batch[i].data, batch[i].len);
-                }
+                size_t ws_len = ws_tmpl.encode(
+                    ws_buf, batch[i].data, batch[i].len);
 
                 tls_lens[i] = crypto_->encrypt(
                     ws_buf, static_cast<uint16_t>(ws_len),
@@ -696,30 +648,15 @@ private:
             }
 
             // Send all encrypted packets through TCP
-            // Split into MSS-sized TCP segments if needed (large TLS records)
             for (int i = 0; i < n; ++i) {
                 if (tls_lens[i] == 0) continue;
 
-                const uint8_t* ptr = tls_bufs[i];
-                size_t remaining = tls_lens[i];
-                bool send_ok = true;
-
-                while (remaining > 0 && send_ok) {
-                    size_t chunk = std::min(remaining,
-                                            static_cast<size_t>(tcp_->mss()));
-                    auto result = tcp_->send(ptr, chunk);
-                    if (!result) {
-                        tx_stats_.dropped++;
-                        SPDLOG_LOGGER_TRACE(log,
-                            "TCP send failed (dropped): {}", result.error());
-                        send_ok = false;
-                    } else {
-                        ptr += chunk;
-                        remaining -= chunk;
-                    }
-                }
-
-                if (send_ok) {
+                auto result = tcp_->send(tls_bufs[i], tls_lens[i]);
+                if (!result) {
+                    tx_stats_.dropped++;
+                    SPDLOG_LOGGER_TRACE(log,
+                        "TCP send failed (dropped): {}", result.error());
+                } else {
                     tx_stats_.packets++;
                     tx_stats_.bytes += batch[i].len;
                 }
@@ -747,7 +684,18 @@ private:
         auto reassembly_storage = std::make_unique<uint8_t[]>(kReassemblyBufSize);
         size_t reassembly_len = 0;
 
+        auto last_ping = std::chrono::steady_clock::now();
+
         while (running_.load(std::memory_order_acquire)) {
+            // ── WebSocket ping (periodic keepalive) ──
+            if (config_.ping_interval.count() > 0) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - last_ping >= config_.ping_interval) {
+                    send_ws_ping();
+                    last_ping = now;
+                }
+            }
+
             // ── Receive packets ──
             rte_mbuf* pkts[32];
             uint16_t nb_rx = rte_eth_rx_burst(
@@ -756,6 +704,7 @@ private:
             if (nb_rx == 0) continue;
 
             // Process through TCP layer — append to fixed reassembly buffer
+            bool reconnect_needed = false;
             auto tcp_result = tcp_->process_rx(pkts, nb_rx,
                 [&](const uint8_t* data, uint16_t len) {
                     if (reassembly_len + len <= kReassemblyBufSize) {
@@ -763,10 +712,23 @@ private:
                                     data, len);
                         reassembly_len += len;
                     } else {
-                        SPDLOG_LOGGER_WARN(log,
-                            "RX reassembly buffer full, dropping {} bytes", len);
+                        SPDLOG_LOGGER_ERROR(log,
+                            "RX reassembly buffer overflow ({} + {} > {}), "
+                            "triggering reconnect",
+                            reassembly_len, len, kReassemblyBufSize);
+                        reassembly_len = 0;
+                        reconnect_needed = true;
                     }
                 });
+
+            // Reassembly buffer overflow → reconnect
+            if (reconnect_needed) {
+                if (!do_reconnect()) {
+                    running_.store(false, std::memory_order_release);
+                    goto rx_exit;
+                }
+                continue;
+            }
 
             if (!tcp_result) {
                 SPDLOG_LOGGER_WARN(log, "TCP rx error: {}",
@@ -775,6 +737,7 @@ private:
                 // ── Auto-reconnect (fixed interval, discard old messages) ──
                 reassembly_len = 0;
                 if (do_reconnect()) {
+                    last_ping = std::chrono::steady_clock::now();
                     continue; // Resume RX loop with new connection
                 }
 
@@ -815,6 +778,7 @@ private:
                         running_.store(false, std::memory_order_release);
                         goto rx_exit;
                     }
+                    last_ping = std::chrono::steady_clock::now();
                     break; // Resume with fresh connection
                 }
 
@@ -879,9 +843,7 @@ private:
 
             if (frame->is_ping()) {
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
-                // Route pong response through TX queue to avoid data race
-                // on tcp_->send() (snd_nxt_ is not thread-safe).
-                enqueue_pong(*frame);
+                handle_ping(*frame);
                 continue;
             }
 
@@ -919,29 +881,32 @@ private:
         }
     }
 
-    /// Enqueue pong response into TX queue. The TX thread will encode, encrypt,
-    /// and send it — avoiding data race on tcp_->send() (snd_nxt_).
-    void enqueue_pong(const ws::DecodedFrame& ping_frame) {
-        // Pong echoes the ping payload (max 125 bytes for control frames)
-        size_t pong_payload_len = std::min(
-            ping_frame.payload_len, uint64_t{MaxPayload});
+    /// Send pong response via AEAD + TCP (no SSL object needed).
+    void handle_ping(const ws::DecodedFrame& ping_frame) {
+        uint8_t pong_buf[256];
+        size_t pong_len;
 
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
-            if (pong_payload_len > 0 && ping_frame.payload) {
-                std::memcpy(msg.data, ping_frame.payload, pong_payload_len);
-                // Unmask if needed (server frames may be unmasked)
-                if (ping_frame.masked) {
-                    ws::apply_mask(msg.data, pong_payload_len,
-                                   ping_frame.mask_key);
-                }
-            }
-            msg.len = static_cast<uint16_t>(pong_payload_len);
-            msg.opcode = ws::opcode::kPong;
-        });
-
-        if (ok) {
-            ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
+        if (ping_frame.masked && ping_frame.payload_len > 0) {
+            uint8_t unmasked[125];
+            std::memcpy(unmasked, ping_frame.payload, ping_frame.payload_len);
+            ws::apply_mask(unmasked, ping_frame.payload_len,
+                           ping_frame.mask_key);
+            pong_len = ws::build_pong_frame(
+                pong_buf, unmasked, ping_frame.payload_len);
+        } else {
+            pong_len = ws::build_pong_frame(
+                pong_buf, ping_frame.payload, ping_frame.payload_len);
         }
+
+        // Encrypt and send via TCP (same AEAD path as data frames)
+        uint8_t tls_buf[512];
+        uint16_t tls_len = crypto_->encrypt(
+            pong_buf, static_cast<uint16_t>(pong_len), tls_buf);
+        if (tls_len > 0) {
+            tcp_->send(tls_buf, tls_len);
+        }
+
+        ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
     }
 };
 

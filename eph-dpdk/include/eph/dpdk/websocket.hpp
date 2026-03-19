@@ -156,7 +156,19 @@ public:
 
 private:
     void refill() noexcept {
-        RAND_bytes(pool_, sizeof(pool_));
+        if (RAND_bytes(pool_, sizeof(pool_)) != 1) {
+            SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+                "RAND_bytes failed for mask key cache, using fallback");
+            // Fallback: XOR with TSC for minimal entropy (not crypto-secure,
+            // but masking is only an anti-cache-poisoning measure per RFC 6455)
+            uint64_t tsc = __builtin_ia32_rdtsc();
+            for (size_t i = 0; i < sizeof(pool_); i += 8) {
+                uint64_t val = tsc ^ (tsc << (i & 0x3F));
+                size_t n = std::min(sizeof(pool_) - i, size_t{8});
+                std::memcpy(pool_ + i, &val, n);
+                tsc = val * 6364136223846793005ULL + 1;
+            }
+        }
         pos_ = 0;
     }
 
@@ -368,14 +380,15 @@ decode_frame(const uint8_t* data, size_t len) {
 /// @return Total frame bytes written
 inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
                                  std::string_view reason = {}) noexcept {
-    // Close payload: 2-byte status code + optional reason
-    size_t close_payload_len = 2 + reason.size();
-    uint8_t close_payload[125]; // Max control frame payload
+    // Close payload: 2-byte status code + optional reason (max 123 chars)
+    // Control frames MUST have payload <= 125 bytes (RFC 6455 §5.5)
+    size_t reason_len = std::min(reason.size(), size_t{123});
+    size_t close_payload_len = 2 + reason_len;
+    uint8_t close_payload[125];
     close_payload[0] = static_cast<uint8_t>(status_code >> 8);
     close_payload[1] = static_cast<uint8_t>(status_code & 0xFF);
-    if (!reason.empty()) {
-        std::memcpy(close_payload + 2, reason.data(),
-                    std::min(reason.size(), size_t{123}));
+    if (reason_len > 0) {
+        std::memcpy(close_payload + 2, reason.data(), reason_len);
     }
 
     return encode_frame(out, opcode::kClose,

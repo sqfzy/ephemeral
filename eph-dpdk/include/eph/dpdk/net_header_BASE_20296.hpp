@@ -437,10 +437,6 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     uint16_t tcp_start = ihl;                          // offset from IP header to TCP
     uint16_t data_start = tcp_start + tcp_doff;        // offset from IP header to payload
 
-    // Reject if IP advertises more data than the mbuf actually contains.
-    // A corrupted IP header could point payload past the end of the buffer.
-    if (kEtherHeaderLen + ip_total > pkt_len) return {};
-
     if (ip_total > data_start) {
         uint16_t payload_offset = kEtherHeaderLen + data_start;
         result.payload     = data + payload_offset;

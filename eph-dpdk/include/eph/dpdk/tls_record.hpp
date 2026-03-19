@@ -110,7 +110,7 @@ public:
             aead = EVP_aead_aes_256_gcm();
         } else {
             return std::unexpected(std::format(
-                "Unsupported key length: {}", key_len));
+                "Unsupported AES key length: {}", key_len));
         }
 
         // Encryption context (write direction)
