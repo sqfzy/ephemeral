@@ -15,8 +15,8 @@ template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class BoundedQueueBytes {
    public:
     struct DataWrap {
-        uint32_t len;
         uint64_t ts;
+        uint32_t len;
         std::array<uint8_t, MaxDataSize> data;
     };
 
@@ -30,14 +30,14 @@ class BoundedQueueBytes {
     /**
      * @brief 尝试推入带时间戳的字节流
      */
-    bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
+    [[nodiscard]] bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;
         }
 
         return queue_.try_produce([&](DataWrap& slot) {
-            slot.len = static_cast<uint32_t>(payload.size());
             slot.ts = ts;
+            slot.len = static_cast<uint32_t>(payload.size());
             std::memcpy(slot.data.data(), payload.data(), payload.size());
         });
     }
@@ -45,7 +45,7 @@ class BoundedQueueBytes {
     /**
      * @brief 尝试推入字节流
      */
-    bool try_push(std::span<const uint8_t> payload) noexcept {
+    [[nodiscard]] bool try_push(std::span<const uint8_t> payload) noexcept {
         return try_push_wts(payload, 0);
     }
 
@@ -57,14 +57,14 @@ class BoundedQueueBytes {
      * @brief 阻塞式推入带时间戳的字节流
      * @return 若 payload 过大无法存入则返回 false，否则自旋直到成功存入并返回 true
      */
-    bool push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
+    [[nodiscard]] bool push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;
         }
 
         queue_.produce([&](DataWrap& slot) {
-            slot.len = static_cast<uint32_t>(payload.size());
             slot.ts = ts;
+            slot.len = static_cast<uint32_t>(payload.size());
             std::memcpy(slot.data.data(), payload.data(), payload.size());
         });
         
@@ -74,7 +74,7 @@ class BoundedQueueBytes {
     /**
      * @brief 阻塞式推入字节流
      */
-    bool push(std::span<const uint8_t> payload) noexcept {
+    [[nodiscard]] bool push(std::span<const uint8_t> payload) noexcept {
         return push_wts(payload, 0);
     }
 
@@ -85,7 +85,7 @@ class BoundedQueueBytes {
     /**
      * @brief 消费端：尝试拷贝数据到外部 buffer
      */
-    std::optional<uint32_t> try_pop(std::span<uint8_t> out_buf) noexcept {
+    [[nodiscard]] std::optional<uint32_t> try_pop(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         bool success = try_consume([&](std::span<const uint8_t> data) {
             copy_len =
@@ -99,7 +99,7 @@ class BoundedQueueBytes {
     /**
      * @brief 消费端：尝试拷贝带时间戳的数据到外部 buffer
      */
-    std::optional<uint32_t> try_pop_wts(std::span<uint8_t> out_buf,
+    [[nodiscard]] std::optional<uint32_t> try_pop_wts(std::span<uint8_t> out_buf,
                                         uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
         bool success =
@@ -118,7 +118,7 @@ class BoundedQueueBytes {
      */
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
-    bool try_consume(F&& visitor) noexcept {
+    [[nodiscard]] bool try_consume(F&& visitor) noexcept {
         return queue_.try_consume([&](const DataWrap& msg) {
             uint32_t safe_len =
                 std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
@@ -133,7 +133,7 @@ class BoundedQueueBytes {
      */
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
-    bool try_consume_wts(F&& visitor) noexcept {
+    [[nodiscard]] bool try_consume_wts(F&& visitor) noexcept {
         return queue_.try_consume([&](const DataWrap& msg) {
             uint32_t safe_len =
                 std::min(msg.len, static_cast<uint32_t>(MaxDataSize));

@@ -16,8 +16,8 @@ class EvictingQueueBytes {
    public:
     struct DataWrap {
         uint64_t id;
-        uint32_t len;
         uint64_t ts;
+        uint32_t len;
         std::array<uint8_t, MaxDataSize> data;
     };
 
@@ -28,33 +28,23 @@ class EvictingQueueBytes {
     // Writer (Wait-free)
     // ===========================================================================
 
-    bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
+    [[nodiscard]] bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;
         }
 
         queue_.produce([&](DataWrap& slot) {
             slot.id = ++push_count_;
-            slot.len = static_cast<uint32_t>(payload.size());
             slot.ts = ts;
+            slot.len = static_cast<uint32_t>(payload.size());
             std::memcpy(slot.data.data(), payload.data(), payload.size());
         });
 
         return true;
     }
 
-    bool try_push(std::span<const uint8_t> payload) noexcept {
-        if (payload.size() > MaxDataSize) [[unlikely]] {
-            return false;
-        }
-
-        queue_.produce([&](DataWrap& slot) {
-            slot.id = ++push_count_;
-            slot.len = static_cast<uint32_t>(payload.size());
-            std::memcpy(slot.data.data(), payload.data(), payload.size());
-        });
-
-        return true;
+    [[nodiscard]] bool try_push(std::span<const uint8_t> payload) noexcept {
+        return try_push_wts(payload, 0);
     }
 
     // ===========================================================================
@@ -64,7 +54,7 @@ class EvictingQueueBytes {
     /**
      * @brief 消费端（非阻塞）：调用者预分配 buffer，返回实际拷贝字节数或 std::nullopt
      */
-    std::optional<uint32_t> try_pop_latest(
+    [[nodiscard]] std::optional<uint32_t> try_pop_latest(
         std::span<uint8_t> out_buf) noexcept {
         uint64_t read_id = 0;
         uint32_t copy_len = 0;
@@ -91,7 +81,7 @@ class EvictingQueueBytes {
     /**
      * @brief 消费端（非阻塞）：调用者预分配 buffer，返回实际拷贝字节数、时间戳和丢包数
      */
-    std::optional<uint32_t> try_pop_latest_wts(std::span<uint8_t> out_buf, 
+    [[nodiscard]] std::optional<uint32_t> try_pop_latest_wts(std::span<uint8_t> out_buf,
                                                uint64_t& out_ts, 
                                                uint32_t& out_discarded) noexcept {
         uint32_t copy_len = 0;
@@ -113,7 +103,7 @@ class EvictingQueueBytes {
      */
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
-    bool try_consume_latest(F&& visitor) noexcept {
+    [[nodiscard]] bool try_consume_latest(F&& visitor) noexcept {
         uint64_t read_id = 0;
 
         bool success = queue_.try_consume_latest([&](const auto& msg) {
@@ -141,7 +131,7 @@ class EvictingQueueBytes {
      */
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t, uint32_t>
-    bool try_consume_latest_wts(F&& visitor) noexcept {
+    [[nodiscard]] bool try_consume_latest_wts(F&& visitor) noexcept {
         uint64_t read_id = 0;
         uint32_t discarded = 0;
 

@@ -91,7 +91,7 @@ TYPED_TEST(EvictingQueueBytesTest, MultiThreadStress) {
             for (size_t j = sizeof(uint32_t); j < 256; ++j) {
                 payload[j] = static_cast<uint8_t>((i + j) & 0xFF);
             }
-            queue.try_push(payload);
+            [[maybe_unused]] bool ok = queue.try_push(payload);
         }
         producer_done.store(true, std::memory_order_release);
     });

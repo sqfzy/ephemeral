@@ -55,8 +55,8 @@ TYPED_TEST(BoundedQueueBytesTest, MultiThreadByteStress) {
             std::memcpy(buf, &i, sizeof(i));
             std::memset(buf + sizeof(i), static_cast<uint8_t>(i & 0xFF), 60);
 
-            // 阻塞推入
-            queue.push_wts(std::span{buf, 64}, static_cast<uint64_t>(i));
+            // 阻塞推入（返回值仅表示 payload 是否过大，此处已知不会）
+            [[maybe_unused]] bool ok = queue.push_wts(std::span{buf, 64}, static_cast<uint64_t>(i));
         }
     });
 

@@ -28,7 +28,27 @@ using QueueTypes = ::testing::Types<
 
 TYPED_TEST_SUITE(EvictingQueueTest, QueueTypes);
 
-// 2. 单线程基本 push, pop_latest 测试
+// 2. emplace 测试
+TYPED_TEST(EvictingQueueTest, EmplaceBasic) {
+    TypeParam queue;
+
+    // emplace 默认构造
+    queue.emplace();
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 0u);
+
+    // emplace 后 pop 再 emplace 验证覆盖
+    TestData expected;
+    expected.seq = 99;
+    expected.payload.fill(99);
+    queue.emplace(expected);
+    auto res2 = queue.try_pop_latest();
+    ASSERT_TRUE(res2.has_value());
+    EXPECT_EQ(res2.value(), expected);
+}
+
+// 3. 单线程基本 push, pop_latest 测试
 TYPED_TEST(EvictingQueueTest, SingleThreadBasicPushPop) {
     TypeParam queue;
     

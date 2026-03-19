@@ -252,7 +252,7 @@ class BoundedQueue {
      * @return true 成功; false 队列为空
      */
     [[nodiscard]] bool try_pop(T& out) noexcept {
-        return try_consume([&out](T& data) { out = std::move(data); });
+        return try_consume([&out](T& data) { out = data; });
     }
 
     /**
@@ -261,19 +261,19 @@ class BoundedQueue {
      */
     [[nodiscard]] std::optional<T> try_pop() noexcept {
         std::optional<T> res;
-        if (try_consume([&](T& data) { res.emplace(std::move(data)); })) {
+        if (try_consume([&](T& data) { res.emplace(data); })) {
             return res;
         }
         return std::nullopt;
     }
 
     /**
-     * @brief 批量尝试读取 (全部或全不语义)
+     * @brief 批量尝试读取 (尽力而为语义)
      *
-     * 一次消费最多 out.size() 个元素，仅需单次 atomic store 发布索引。
+     * 一次消费最多 min(available, out.size()) 个元素，仅需单次 atomic store 发布索引。
      *
      * @param out 输出缓冲区
-     * @return 实际读取的元素数量
+     * @return 实际读取的元素数量（0 表示队列为空）
      */
     [[nodiscard]] size_t try_pop_n(std::span<T> out) noexcept {
         const size_t max_n = out.size();
@@ -319,7 +319,7 @@ class BoundedQueue {
      * 自旋直到有数据可用
      */
     void pop(T& out) noexcept {
-        consume([&out](T& data) { out = std::move(data); });
+        consume([&out](T& data) { out = data; });
     }
 
     /**
@@ -327,7 +327,7 @@ class BoundedQueue {
      */
     [[nodiscard]] T pop() noexcept {
         T res;
-        consume([&res](T& data) { res = std::move(data); });
+        consume([&res](T& data) { res = data; });
         return res;
     }
 

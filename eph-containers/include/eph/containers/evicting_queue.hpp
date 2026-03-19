@@ -108,6 +108,11 @@ class alignas(Align<T>) EvictingQueue {
     EvictingQueue() = default;
     ~EvictingQueue() = default;
 
+    EvictingQueue(const EvictingQueue&) = delete;
+    EvictingQueue& operator=(const EvictingQueue&) = delete;
+    EvictingQueue(EvictingQueue&&) = delete;
+    EvictingQueue& operator=(EvictingQueue&&) = delete;
+
     // ===========================================================================
     // Writer 操作
     // ===========================================================================
@@ -170,16 +175,12 @@ class alignas(Align<T>) EvictingQueue {
     /**
      * @brief 原地构造写入 (Emplace)
      */
+    /// @note TrivialData 蕴含 trivially_destructible，无需 destroy_at
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     void emplace(Args&&... args) noexcept {
         produce([&](T& slot) {
-            if constexpr (std::is_trivially_destructible_v<T>) {
-                std::construct_at(&slot, std::forward<Args>(args)...);
-            } else {
-                std::destroy_at(&slot);
-                std::construct_at(&slot, std::forward<Args>(args)...);
-            }
+            std::construct_at(&slot, std::forward<Args>(args)...);
         });
     }
 
@@ -334,6 +335,12 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
 
    public:
     EvictingQueue() noexcept = default;
+    ~EvictingQueue() noexcept = default;
+
+    EvictingQueue(const EvictingQueue&) = delete;
+    EvictingQueue& operator=(const EvictingQueue&) = delete;
+    EvictingQueue(EvictingQueue&&) = delete;
+    EvictingQueue& operator=(EvictingQueue&&) = delete;
 
     // ===========================================================================
     // Writer
@@ -370,16 +377,12 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         produce([&](T& slot) { slot = std::forward<U>(val); });
     }
 
+    /// @note TrivialData 蕴含 trivially_destructible，无需 destroy_at
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     void emplace(Args&&... args) noexcept {
         produce([&](T& slot) {
-            if constexpr (std::is_trivially_destructible_v<T>) {
-                std::construct_at(&slot, std::forward<Args>(args)...);
-            } else {
-                std::destroy_at(&slot);
-                std::construct_at(&slot, std::forward<Args>(args)...);
-            }
+            std::construct_at(&slot, std::forward<Args>(args)...);
         });
     }
 
