@@ -60,14 +60,14 @@ target("eph-dpdk")
 -- benchmarks
 -- ===========================================================================
 
--- WS pipeline benchmark — needs eph-dpdk (DPDK + OpenSSL headers)
+-- WS pipeline benchmark — needs eph-dpdk (DPDK + aws-lc headers) + Google Benchmark
 target("bench_ws_pipeline")
     set_kind("binary")
     set_group("benchmarks")
     set_default(false)
     add_files("benchmarks/bench_ws_pipeline.cpp")
     add_deps("eph-dpdk", "eph-containers", "eph-utils", "eph-base")
-    add_defines("EPH_PROJECT_ROOT=\"" .. os.projectdir() .. "\"")
+    add_packages("benchmark")
 
 for _, file in ipairs(os.files("benchmarks/**.cpp")) do
     local name = path.basename(file)
