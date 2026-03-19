@@ -1,8 +1,8 @@
 # Project: eph-dpdk
 
-> Ultra-low-latency DPDK WebSocket/TLS transport library for HFT market data reception.
+> Header-only C++23 library providing a low-latency WebSocket-over-TLS-over-TCP transport built entirely on DPDK user-space networking — bypassing the kernel for sub-millisecond market data connectivity.
 
-**Language**: C++23 (header-only) | **Build**: xmake | **Crypto**: aws-lc (BoringSSL fork)
+**Language**: C++23 | **Build**: Header-only (part of `ephemeral` monorepo) | **License**: —
 
 ---
 
@@ -15,147 +15,147 @@
 6. [Entry Points & APIs](#entry-points--apis)
 7. [Dependencies](#dependencies)
 8. [Testing](#testing)
-9. [Performance](#performance)
 
 ---
 
 ## Overview
 
-**eph-dpdk** is a header-only C++23 library that implements a complete WebSocket-over-TLS communication stack on top of DPDK, bypassing the kernel network stack entirely. It targets HFT (High-Frequency Trading) systems that connect to exchange WebSocket feeds where every nanosecond of latency matters.
+eph-dpdk is a high-performance networking library that implements a complete WSS (WebSocket Secure) client stack on top of DPDK. Instead of relying on the kernel's TCP/IP stack, it constructs Ethernet/IPv4/TCP packets directly in user space, performs TLS 1.3 encryption via aws-lc's AEAD API, and frames application data as WebSocket binary messages — all with zero system calls on the data path.
 
-The library provides a user-space TCP state machine, TLS 1.3 encryption via aws-lc's AEAD API, RFC 6455 WebSocket framing with optimized client masking, and a thread-safe Transport API that ties everything together with SPSC lock-free queues.
+The library is designed for latency-sensitive applications (e.g. HFT market data feeds) where every microsecond matters. It uses a split architecture: a **control plane** (single-threaded handshake: TCP 3-way → TLS 1.3 → WebSocket Upgrade) and a **data plane** (dedicated TX/RX threads communicating through lock-free SPSC queues). After handshake, the TLS session keys are extracted and handed to a lightweight `TlsRecordCrypto` engine that uses single-call `EVP_AEAD_CTX_seal/open` — avoiding the overhead of the full OpenSSL `SSL_write/SSL_read` path.
 
-Key performance characteristics (256B payload, measured on 2.69 GHz Xeon):
-- **E2E TX**: ~500ns (application call to wire-ready packet)
-- **E2E RX**: ~170ns (wire to application callback)
-- **TLS encrypt**: ~142ns (AES-256-GCM via AES-NI)
-- **WS encode**: ~57ns (batch-cached masking keys + fused memcpy/XOR)
+Key design choices include: no TCP retransmission (packet loss triggers immediate reconnect at ~2ms), constexpr configuration validation, cache-line-aligned TLS key material to prevent false sharing between TX/RX cores, and batch-pregenerated WebSocket mask keys to amortize CSPRNG cost.
 
-The library builds on three companion modules: **eph-base** (cache-line constants, concepts), **eph-utils** (TSC timer, HdrHistogram recorder), and **eph-containers** (SPSC lock-free queues).
+All modules are header-only under `include/eph/dpdk/` and live in the `eph::dpdk` namespace.
 
 ---
 
 ## Architecture
 
-The library follows a **three-layer architecture** with strict separation between platform initialization, protocol stack, and public API. Each layer is header-only and independently testable.
+The architecture follows a **layered pipeline** model. Each layer handles one protocol concern, and the layers compose vertically: Platform → TCP → TLS → WebSocket → Transport.
+
+The **Transport** class orchestrates the full stack and exposes a simple `send()`/`recv()` API to application code. Internally it separates connection setup (blocking, single-threaded) from data transfer (non-blocking, multi-threaded with SPSC queues).
+
+### Component Diagram
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                  Layer 3: Transport                  │
-│  transport.hpp — public API, thread management,      │
-│  SPSC queues, auto-reconnect, WS ping keepalive      │
-├──────────────────────────────────────────────────────┤
-│               Layer 2: Protocol Stack                │
-│  ┌──────────┐ ┌────────────┐ ┌───────────────┐      │
-│  │ tcp.hpp  │ │tls_session │ │ tls_record.hpp│      │
-│  │ TCP FSM  │ │  .hpp      │ │ AEAD enc/dec  │      │
-│  │ seq/ack  │ │ handshake  │ │ EVP_AEAD_seal │      │
-│  └────┬─────┘ │ key export │ └───────────────┘      │
-│       │       └────────────┘                         │
-│  ┌────┴──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │net_header.hpp │ │http.hpp  │ │websocket │        │
-│  │Eth/IP/TCP hdr │ │WS Upgrade│ │  .hpp    │        │
-│  │checksum, parse│ │request   │ │RFC 6455  │        │
-│  └───────────────┘ └──────────┘ └──────────┘        │
-├──────────────────────────────────────────────────────┤
-│              Layer 1: DPDK Platform                  │
-│  eal.hpp — EAL lifecycle (once per process)          │
-│  platform.hpp — port/queue/mempool management        │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│              Application Thread               │
+│         send(data, len) / recv(cb)           │
+└──────────┬──────────────────────┬────────────┘
+           │ SPSC TxQueue        │ SPSC RxQueue
+┌──────────▼──────────┐ ┌───────▼─────────────┐
+│     TX Thread        │ │     RX Thread        │
+│  WS encode → TLS    │ │  TLS decrypt → WS    │
+│  encrypt → TCP send  │ │  decode → push queue │
+└──────────┬──────────┘ └───────┬─────────────┘
+           │                    │
+┌──────────▼────────────────────▼──────────────┐
+│              TcpSession                       │
+│   seq/ack tracking, ACK gen, FIN/RST, ISN    │
+│   (no retransmission — loss = reconnect)     │
+└──────────┬────────────────────┬──────────────┘
+           │ tx_burst           │ rx_burst
+┌──────────▼────────────────────▼──────────────┐
+│              Platform (DPDK)                  │
+│   EAL init → mempool → port config →         │
+│   queue setup → NIC start → link poll        │
+└──────────────────────────────────────────────┘
 ```
 
-### Thread Model
+### Handshake Sequence (Control Plane)
 
 ```
-  Application Thread          TX Worker Thread         RX Worker Thread
-  ───────────────────         ─────────────────        ─────────────────
-  send(data, len)             drain SPSC TX queue      rx_burst()
-       │                           │                        │
-       ▼                           ▼                        ▼
-  SPSC TX Queue ──────►  WS encode + mask         TCP process_rx()
-                          TLS AEAD seal                    │
-                          TCP send()                       ▼
-                               │                   TLS AEAD open
-                               ▼                   WS decode
-                          tx_burst()                      │
-                                                          ▼
-                                                  SPSC RX Queue ──► recv(cb)
+  TCP 3-Way Handshake        TLS 1.3 Handshake
+  ──────────────────         ──────────────────
+  SYN ──────────►            ClientHello ────►
+  ◄────── SYN+ACK            ◄──── ServerHello
+  ACK ──────────►                  ...
+                              ◄──── Finished
+                              Finished ──────►
+
+  WS Upgrade                  Key Export
+  ──────────                  ──────────
+  GET /path HTTP/1.1 ────►    extract_hot_state()
+  ◄──── 101 Switching         → TlsRecordCrypto
+  validate Sec-WS-Accept      (AEAD seal/open)
 ```
 
 ---
 
 ## Module Map
 
-| Module | Lines | Responsibility | Key Types | Depends On |
-|--------|-------|----------------|-----------|------------|
-| `eal.hpp` | 45 | DPDK EAL lifecycle | `eal_init()`, `eal_cleanup()` | DPDK |
-| `platform.hpp` | 497 | NIC port/queue/mempool | `Platform`, `PlatformConfig`, `Stats` | DPDK, spdlog |
-| `net_header.hpp` | 459 | Ethernet/IP/TCP headers | `PacketTemplate`, `ParsedPacket`, `ConnectionTuple` | DPDK |
-| `tcp.hpp` | 575 | User-space TCP FSM | `TcpSession`, `TcpConfig`, `TcpState` | net_header, DPDK, aws-lc |
-| `tls_session.hpp` | 586 | TLS 1.3 handshake + key export | `TlsSession`, `TlsHotState`, `TlsKeyMaterial` | tcp, aws-lc |
-| `tls_record.hpp` | 315 | AEAD record encrypt/decrypt | `TlsRecordCrypto` | tls_session, aws-lc |
-| `http.hpp` | 234 | HTTP Upgrade (WS only) | `UpgradeResponse`, `build_upgrade_request()` | aws-lc |
-| `websocket.hpp` | 434 | RFC 6455 framing | `MaskKeyCache`, `FrameTemplate`, `DecodedFrame` | aws-lc |
-| `transport.hpp` | 911 | Public API + threads | `Transport<N,Q>`, `TransportConfig`, `TransportStats` | all above + bounded_queue |
+| Module / File | Responsibility | Key Types | Depends On |
+|---|---|---|---|
+| `include/eph/dpdk/eal.hpp` | EAL lifecycle (init/cleanup) | `eal_init()`, `eal_cleanup()` | DPDK `rte_eal` |
+| `include/eph/dpdk/platform.hpp` | NIC port setup, mempool, queue config | `Platform`, `PlatformConfig`, `Stats` | DPDK `rte_ethdev`, `rte_mbuf` |
+| `include/eph/dpdk/net_header.hpp` | Ethernet/IPv4/TCP headers, checksums, packet build/parse | `PacketTemplate`, `ParsedPacket`, `ConnectionTuple` | DPDK `rte_ether`, `rte_ip`, `rte_tcp` |
+| `include/eph/dpdk/tcp.hpp` | User-space TCP state machine (handshake, data, close) | `TcpSession`, `TcpState`, `TcpConfig` | `net_header.hpp`, OpenSSL `RAND_bytes` |
+| `include/eph/dpdk/tls_session.hpp` | TLS 1.3 handshake via custom BIO, key extraction | `TlsSession`, `TlsHotState`, `TlsKeyMaterial`, `BioContext` | `tcp.hpp`, aws-lc/OpenSSL |
+| `include/eph/dpdk/tls_record.hpp` | AEAD record encrypt/decrypt (hot path) | `TlsRecordCrypto` | `tls_session.hpp`, aws-lc `EVP_AEAD` |
+| `include/eph/dpdk/http.hpp` | Minimal HTTP/1.1 for WebSocket Upgrade | `UpgradeResponse`, `build_upgrade_request()`, `validate_ws_accept()` | OpenSSL `EVP_sha1` |
+| `include/eph/dpdk/websocket.hpp` | WebSocket frame encode/decode (RFC 6455) | `DecodedFrame`, `FrameTemplate`, `MaskKeyCache` | OpenSSL `RAND_bytes` |
+| `include/eph/dpdk/transport.hpp` | Full-stack WSS transport (public API) | `Transport<>`, `TransportConfig`, `TransportStats` | All above + `eph::containers::BoundedQueue`, `eph::base::cache` |
 
 ---
 
 ## Data Flow
 
-### TX Path (send → wire)
+### Send Path (Application → Network)
+
+Application data enters through `Transport::send()`, which copies the payload into a fixed-size `TxMessage` and pushes it into a lock-free SPSC queue. The TX thread drains up to 32 messages per batch, encodes each as a masked WebSocket binary frame (`FrameTemplate::encode`), encrypts the frame into a TLS 1.3 application data record (`TlsRecordCrypto::encrypt` via `EVP_AEAD_CTX_seal`), then sends the encrypted bytes through `TcpSession::send` which builds Ethernet/IPv4/TCP packets on mbufs and calls `rte_eth_tx_burst`.
+
+### Receive Path (Network → Application)
+
+The RX thread calls `rte_eth_rx_burst` to poll for incoming packets, passes them through `TcpSession::process_rx` which validates TCP sequence numbers, extracts payloads, and sends ACKs. TCP payloads accumulate in a reassembly buffer. Complete TLS records are decrypted via `TlsRecordCrypto::decrypt` (`EVP_AEAD_CTX_open`), then decoded as WebSocket frames. Data frames are pushed into the RX SPSC queue; control frames (ping/close) are handled inline. The application calls `Transport::recv()` with a callback to consume messages.
+
+### Flow Diagram
 
 ```
-  Application payload (uint8_t*, len)
+ Application send(data, len)
+          │
+          ▼
+   ┌─ SPSC TxQueue ─┐
+   │  TxMessage[N]   │
+   └───────┬─────────┘
+           ▼
+   WS Frame Encode (masked_copy + XOR)
            │
            ▼
-  ┌─── SPSC TX Queue (lock-free) ───┐
-  │  TxMessage{data[], len, opcode} │
-  └──────────────┬──────────────────┘
-                 │  TX worker thread drains batch
-                 ▼
-  ┌─── WS Frame Encode ────────────┐
-  │  header(6-14B) + masked_copy() │  ◄── MaskKeyCache (batch CSPRNG)
-  └──────────────┬─────────────────┘
-                 ▼
-  ┌─── TLS Record Seal ────────────┐
-  │  EVP_AEAD_CTX_seal (AES-NI)   │  nonce = IV ⊕ seq (uint64 XOR)
-  │  [hdr(5)][ciphertext][tag(16)] │
-  └──────────────┬─────────────────┘
-                 ▼
-  ┌─── TCP Send ───────────────────┐
-  │  PacketTemplate.build_packet() │  Eth+IP+TCP headers + checksum
-  │  rte_eth_tx_burst()            │  (or HW offload if supported)
-  └────────────────────────────────┘
-```
+   TLS Encrypt (EVP_AEAD_CTX_seal)
+           │
+           ▼
+   TCP Segment (PacketTemplate::build_packet)
+           │
+           ▼
+   rte_eth_tx_burst ──────► NIC
 
-### RX Path (wire → recv)
 
-```
-  rte_eth_rx_burst()
-           │
+   NIC ──────► rte_eth_rx_burst
+                     │
+                     ▼
+           TcpSession::process_rx
+           (seq check, ACK gen)
+                     │
+                     ▼
+           Reassembly Buffer
+                     │
+                     ▼
+           TLS Decrypt (EVP_AEAD_CTX_open)
+                     │
+                     ▼
+           WS Frame Decode
+                     │
+              ┌──────┴──────┐
+              │             │
+         Data frame    Control frame
+              │         (ping → pong,
+              ▼          close → stop)
+   ┌─ SPSC RxQueue ─┐
+   │  RxMessage[N]   │
+   └───────┬─────────┘
            ▼
-  ┌─── TCP process_rx() ──────────┐
-  │  seq/ack validate, ACK gen    │  Out-of-order → reconnect
-  │  append payload to reassembly │
-  └──────────────┬────────────────┘
-                 ▼
-  ┌─── TLS Record Open ───────────┐
-  │  EVP_AEAD_CTX_open (AES-NI)   │  Tampered → reconnect
-  └──────────────┬─────────────────┘
-                 ▼
-  ┌─── WS Frame Decode ───────────┐
-  │  parse opcode, payload_len    │
-  │  ping → auto pong response    │
-  │  close → stop transport       │
-  │  data → push to RX queue      │
-  └──────────────┬─────────────────┘
-                 ▼
-  ┌─── SPSC RX Queue ─────────────┐
-  │  RxMessage{data[], len}       │
-  └────────────────────────────────┘
-           │
-           ▼
-  Application recv(callback)
+   Application recv(callback)
 ```
 
 ---
@@ -164,97 +164,91 @@ The library follows a **three-layer architecture** with strict separation betwee
 
 ### `Transport<MaxPayload, QueueDepth>`
 
-**File**: `transport.hpp`
-**Purpose**: High-level API tying all layers together. Manages worker threads, SPSC queues, auto-reconnect, and WS ping keepalive.
-
+**File**: `include/eph/dpdk/transport.hpp`
+**Purpose**: Top-level public API. Orchestrates the full WSS connection lifecycle and provides non-blocking send/recv to application code.
+**Interface**:
 ```cpp
-// Create (blocking — performs TCP+TLS+WS handshake)
-auto result = Transport<512, 1024>::create(pool, config);
-auto& transport = *result;  // unique_ptr<Transport>
+static std::expected<std::unique_ptr<Transport>, std::string>
+create(rte_mempool* pool, const TransportConfig& config);
 
-// Send (non-blocking, returns errno)
-int err = transport->send(data, len);  // 0, -EAGAIN, -EMSGSIZE, -ENOTCONN
+int send(const void* data, size_t len) noexcept;  // -EAGAIN, -EMSGSIZE, -ENOTCONN
 
-// Receive (non-blocking, callback pattern)
-transport->recv([](const uint8_t* data, uint16_t len) {
-    // data valid only during this callback
-});
+template <typename F>
+bool recv(F&& callback) noexcept;  // callback(const uint8_t*, uint16_t)
 
-// Stop (graceful: Close frame → join threads → TCP FIN)
-transport->stop();
+void stop() noexcept;
+TransportStats stats() const noexcept;
 ```
-
-**Design decisions**:
-- Non-movable (owns threads) — returned via `unique_ptr`
-- Per-thread stats (no atomic contention on hot path)
-- Fixed-interval reconnect with configurable max attempts
-- TX queue drain on reconnect (market data = stale messages discarded)
-
----
-
-### `TlsRecordCrypto`
-
-**File**: `tls_record.hpp`
-**Purpose**: AES-256-GCM record encryption/decryption via aws-lc's single-call AEAD API.
-
-```cpp
-auto crypto = TlsRecordCrypto::create(hot_state);
-// Encrypt: plaintext → [record_header][ciphertext][tag]
-uint16_t n = crypto->encrypt(plaintext, len, out);
-// Decrypt: [record_header][ciphertext][tag] → plaintext
-bool ok = crypto->decrypt(record, record_len, out, out_len);
-```
-
-**Design decisions**:
-- `EVP_AEAD_CTX_seal/open` (single call) vs Init/Update/Final (eliminates ~150ns overhead)
-- Separate enc/dec contexts → TX and RX threads can operate concurrently
-- Nonce construction: `uint64_t` XOR optimization (4-byte memcpy + 8-byte XOR vs 12-byte loop)
-- Zero-copy encrypt: temporarily appends content type byte past plaintext, then restores
-
----
+**Notes**: Non-movable (owns threads). Uses `unique_ptr` factory pattern. Template params control SPSC queue sizing — `QueueDepth` must be power of 2. Auto-reconnect on disconnect with configurable interval and max attempts. Discards stale TX queue data during reconnect.
 
 ### `TcpSession`
 
-**File**: `tcp.hpp`
-**Purpose**: Minimal user-space TCP state machine — seq/ack tracking, window management, FIN/RST. No retransmission.
-
+**File**: `include/eph/dpdk/tcp.hpp`
+**Purpose**: Minimal user-space TCP state machine. Handles 3-way handshake, seq/ack tracking, window management, FIN/RST.
+**Interface**:
 ```cpp
-TcpSession tcp(config, pool);
-tcp.connect(timeout);                    // Three-way handshake via DPDK
-tcp.send(data, len);                     // Build and tx_burst
-tcp.process_rx(pkts, nb_pkts, callback); // Parse, ACK, deliver payload
-tcp.close();                             // FIN handshake
+std::expected<void, std::string> connect(std::chrono::milliseconds timeout);
+std::expected<size_t, std::string> send(const void* data, size_t len);
+template <typename F>
+std::expected<uint16_t, std::string> process_rx(rte_mbuf** pkts, uint16_t nb, F&& cb);
+std::expected<void, std::string> close();
 ```
+**Notes**: Intentionally omits retransmission, Nagle, delayed ACK, congestion control. Out-of-order packets trigger an error (caller reconnects). ISN generated via CSPRNG (`RAND_bytes`). Sequence wraparound handled by signed comparison.
 
-**Design decisions**:
-- ISN generated via `RAND_bytes` (CSPRNG, RFC 6528 compliant)
-- Out-of-order detection → error (triggers reconnect at Transport level)
-- HW checksum offload support (`PacketTemplate::hw_cksum` flag)
+### `TlsRecordCrypto`
 
----
-
-### `MaskKeyCache`
-
-**File**: `websocket.hpp`
-**Purpose**: Eliminates per-frame `RAND_bytes()` (~1500ns) by batch-generating 1024 mask keys upfront.
-
+**File**: `include/eph/dpdk/tls_record.hpp`
+**Purpose**: Hot-path TLS 1.3 record encryption/decryption using aws-lc AEAD API.
+**Interface**:
 ```cpp
-// Thread-local, refills automatically
-MaskKeyCache& cache = mask_key_cache();
-cache.next_key(mask);  // ~2ns (index increment + memcpy)
+static std::expected<TlsRecordCrypto, std::string>
+create(const TlsHotState& state, size_t key_len);
+
+uint16_t encrypt(uint8_t* plaintext, uint16_t len, uint8_t* out) noexcept;
+bool decrypt(const uint8_t* record, uint16_t len, uint8_t* out, uint16_t& out_len) noexcept;
 ```
+**Notes**: Thread-safe for split TX/RX usage (separate AEAD contexts). Encrypt requires 1 byte of writable space past the plaintext for the TLS 1.3 inner content type — avoids a full memcpy. Nonce construction uses `uint64_t` XOR optimization instead of byte loop.
 
----
+### `TlsSession`
 
-### `PacketTemplate`
-
-**File**: `net_header.hpp`
-**Purpose**: Pre-filled Ethernet/IP/TCP header template. Hot path only updates dynamic fields (seq, ack, length, checksum).
-
+**File**: `include/eph/dpdk/tls_session.hpp`
+**Purpose**: TLS 1.3 handshake over DPDK TCP via custom BIO, plus session key extraction for hot-path AEAD takeover.
+**Interface**:
 ```cpp
-PacketTemplate tmpl{.src_mac=..., .dst_mac=..., .tuple=..., .hw_cksum=true};
-rte_mbuf* pkt = tmpl.build_packet(pool, seq, ack, flags, window, payload, len);
+static std::expected<TlsSession, std::string>
+create(TcpSession& tcp, rte_mempool* pool, const TlsConfig& config);
+
+std::expected<void, std::string> handshake();
+std::expected<TlsHotState, std::string> extract_hot_state() const;
 ```
+**Notes**: Custom `BIO_METHOD` bridges OpenSSL I/O to `TcpSession` send/recv. After handshake + key extraction, the `SSL*` object is only used for shutdown — data plane bypasses it entirely. `TlsKeyMaterial` is cache-line-aligned (64 bytes) to prevent false sharing between TX/RX threads.
+
+### `PacketTemplate` / `ParsedPacket`
+
+**File**: `include/eph/dpdk/net_header.hpp`
+**Purpose**: Zero-copy Ethernet/IPv4/TCP packet construction and parsing directly on DPDK mbufs.
+**Interface**:
+```cpp
+// Build
+rte_mbuf* build_packet(rte_mempool* pool, uint32_t seq, uint32_t ack,
+                        uint8_t flags, uint16_t window,
+                        const void* payload, uint16_t payload_len) noexcept;
+// Parse
+ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept;
+```
+**Notes**: Supports both software checksums and NIC TX offload (`hw_cksum` flag). `fill_packet` variant reuses pre-allocated mbufs for the hot path. Parser uses `ip->total_length` instead of `pkt_len` to avoid NIC padding corruption.
+
+### `Platform`
+
+**File**: `include/eph/dpdk/platform.hpp`
+**Purpose**: DPDK NIC initialization: port enumerate → mempool create → port configure → queue setup → start → link poll.
+**Interface**:
+```cpp
+static std::expected<Platform, std::string> create(const PlatformConfig& config);
+rte_mempool* mempool() const noexcept;
+Stats collect_stats() const;
+```
+**Notes**: `PlatformConfig` is constexpr-validatable — `static_assert(config_ok(cfg))` works at compile time. Descriptor counts are clamped to NIC hardware limits. Offload flags are intersected with device capabilities to prevent portability bugs.
 
 ---
 
@@ -262,81 +256,52 @@ rte_mbuf* pkt = tmpl.build_packet(pool, seq, ack, flags, window, payload, len);
 
 | Entrypoint | Type | Description |
 |---|---|---|
-| `Transport::create()` | Factory | Full connection establishment (blocking) |
-| `Transport::send()` | Hot path | Non-blocking enqueue, returns errno |
-| `Transport::recv()` | Hot path | Non-blocking dequeue with callback |
-| `Transport::stop()` | Lifecycle | Graceful shutdown |
-| `Transport::stats()` | Query | Merged TX/RX statistics |
-| `eal_init()` | Global init | DPDK EAL (once per process) |
-| `Platform::create()` | Factory | NIC port initialization |
+| `eph::dpdk::eal_init()` | Init | Initialize DPDK EAL (once per process) |
+| `Platform::create()` | Init | Configure NIC port and mempool |
+| `Transport<>::create()` | Factory | Full WSS connection (TCP+TLS+WS handshake) |
+| `Transport<>::send()` | Data | Non-blocking send (app thread → SPSC → TX) |
+| `Transport<>::recv()` | Data | Non-blocking recv (RX → SPSC → app thread) |
+| `Transport<>::stop()` | Lifecycle | Graceful shutdown (WS Close + TCP FIN) |
+
+Type aliases for common configurations:
+- `DefaultTransport` = `Transport<512, 1024>`
+- `SmallTransport` = `Transport<64, 256>` (control messages)
+- `LargeTransport` = `Transport<4096, 512>` (bulk data)
 
 ---
 
 ## Dependencies
 
-### Internal Module Graph
+### Internal (module graph)
 
 ```
-transport ──► tcp ──► net_header
-    │         │
-    │         └──► (DPDK rte_*)
+transport ──► tcp ──────────► net_header
+    │         ▲
+    ├──► tls_record ──► tls_session ──► tcp
     │
-    ├──► tls_session ──► tcp
-    │         │
-    │         └──► (aws-lc SSL/BIO)
+    ├──► websocket
     │
-    ├──► tls_record ──► tls_session
-    │         │
-    │         └──► (aws-lc EVP_AEAD)
+    ├──► http
     │
-    ├──► websocket ──► (aws-lc RAND)
+    ├──► eph::containers::BoundedQueue (SPSC queue)
     │
-    ├──► http ──► (aws-lc EVP SHA-1)
-    │
-    ├──► eph-base/cache.hpp (CACHE_LINE_SIZE = 64)
-    │
-    └──► eph-containers/bounded_queue.hpp (SPSC)
+    └──► eph::base::cache (CACHE_LINE_SIZE)
 ```
 
-### External Packages
+### External
 
-| Package | Purpose |
+| Library | Purpose |
 |---|---|
-| `dpdk` | NIC PMD, mbuf, EAL, ethdev |
-| `aws-lc` | TLS 1.3 (SSL), AES-256-GCM (EVP_AEAD), SHA-1 (EVP), CSPRNG (RAND) |
-| `spdlog` | Structured logging with compile-time level filtering |
-| `gtest` | Unit testing framework |
-| `benchmark` | Google Benchmark for latency measurement |
+| DPDK (`rte_eal`, `rte_ethdev`, `rte_mbuf`, `rte_mempool`) | User-space NIC access, packet I/O, memory management |
+| aws-lc / BoringSSL (`openssl/ssl.h`, `openssl/aead.h`, `openssl/hkdf.h`) | TLS 1.3 handshake, AEAD encryption, HKDF key derivation, CSPRNG |
+| spdlog | Structured logging with compile-time level filtering |
 
 ---
 
 ## Testing
 
-| Test Suite | File | Tests | Coverage Focus |
-|---|---|---|---|
-| WebSocket | `test_websocket.cpp` | 29 | encode/decode roundtrip (15 payload sizes), masking symmetry, integer overflow, control frames, FrameTemplate, MaskKeyCache |
-| TLS Record | `test_tls_record.cpp` | 23 | AEAD seal/open roundtrip (11 sizes), sequence tracking, tampered record rejection, nonce monotonicity, content type validation |
-| HTTP | `test_http.cpp` | 15 | Upgrade request format, 101 response parsing, case-insensitive headers, RFC 6455 Sec-WebSocket-Accept (reference vector), base64 |
-| Net Header | `test_net_header.cpp` | 14 | hton/ntoh constexpr roundtrip, RFC 1071 checksum, TCP checksum self-verification, IPv4 parse/format, ConnectionTuple equality |
-| **Total** | | **81** | All pass |
+| Test Suite | Location | Coverage Focus |
+|---|---|---|
+| — | — | No test files found in eph-dpdk |
 
-Tests do NOT require DPDK EAL — they exercise pure logic functions only.
-
----
-
-## Performance
-
-Benchmark: `bench_ws_pipeline.cpp` (Google Benchmark, AES-NI enabled)
-
-| Stage | 64B | 256B | 1024B | Scaling |
-|-------|-----|------|-------|---------|
-| Checksum | 47ns | 210ns | 882ns | O(n) |
-| WS Masking | 36ns | 75ns | 262ns | O(n) |
-| WS Encode | 29ns | 57ns | 151ns | O(n) |
-| WS Decode | 11ns | 12ns | 12ns | O(1) |
-| TLS Encrypt | 115ns | 142ns | 296ns | ~O(n) |
-| TLS Decrypt | 149ns | 177ns | 342ns | ~O(n) |
-| TCP Hdr Build | 119ns | 280ns | 1033ns | O(n) checksum |
-| TCP Hdr Parse | 10ns | 10ns | 10ns | O(1) |
-| **E2E TX** | **289ns** | **504ns** | **1452ns** | |
-| **E2E RX** | **154ns** | **187ns** | **370ns** | |
+**Note**: The project currently has no dedicated test directory. Testing likely requires DPDK-enabled hardware (or vdev) and a remote WSS endpoint, making it inherently integration-test-oriented. The constexpr validation utilities (`validate_config`, `clamp_desc`, `is_power_of_two_minus_one`) are good candidates for compile-time static assertions and unit tests.
