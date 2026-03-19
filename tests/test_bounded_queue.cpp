@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include <array>
 #include <print>
+#include <span>
 #include <thread>
+#include <vector>
 
 #include "eph/containers/bounded_queue.hpp"
 
@@ -26,7 +28,33 @@ using BoundedQueueTypes = ::testing::Types<
 
 TYPED_TEST_SUITE(BoundedQueueTest, BoundedQueueTypes);
 
-// 1. 单线程基本操作
+// 1. emplace 测试
+TYPED_TEST(BoundedQueueTest, EmplaceBasic) {
+    TypeParam queue;
+
+    // emplace 默认构造
+    EXPECT_TRUE(queue.try_emplace());
+    auto res = queue.try_pop();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 0u);
+
+    // emplace 拷贝构造
+    BoundedTestData expected;
+    expected.seq = 77;
+    expected.payload.fill(77);
+    EXPECT_TRUE(queue.try_emplace(expected));
+    auto res2 = queue.try_pop();
+    ASSERT_TRUE(res2.has_value());
+    EXPECT_EQ(res2.value(), expected);
+
+    // 阻塞式 emplace
+    queue.emplace(expected);
+    auto res3 = queue.try_pop();
+    ASSERT_TRUE(res3.has_value());
+    EXPECT_EQ(res3.value(), expected);
+}
+
+// 2. 单线程基本操作
 TYPED_TEST(BoundedQueueTest, SingleThreadBasic) {
     TypeParam queue;
     BoundedTestData data;
@@ -65,7 +93,118 @@ TYPED_TEST(BoundedQueueTest, FullEmptyStatus) {
     EXPECT_FALSE(queue.try_pop().has_value());
 }
 
-// 3. 多线程压力测试：验证不可丢弃性和顺序
+// 3. 批量操作 try_push_n / try_pop_n
+TYPED_TEST(BoundedQueueTest, BatchPushPopBasic) {
+    TypeParam queue;
+    const size_t cap = TypeParam::capacity();
+
+    // 构造批量数据
+    std::vector<BoundedTestData> batch(cap);
+    for (size_t i = 0; i < cap; ++i) {
+        batch[i].seq = static_cast<uint32_t>(i + 1);
+        batch[i].payload.fill(static_cast<uint32_t>(i));
+    }
+
+    // 批量推入
+    EXPECT_TRUE(queue.try_push_n(std::span<const BoundedTestData>{batch}));
+    EXPECT_TRUE(queue.full());
+
+    // 队列满时再推入应失败
+    EXPECT_FALSE(queue.try_push_n(std::span<const BoundedTestData>{batch.data(), 1}));
+
+    // 批量弹出
+    std::vector<BoundedTestData> out(cap);
+    size_t popped = queue.try_pop_n(std::span<BoundedTestData>{out});
+    EXPECT_EQ(popped, cap);
+    EXPECT_TRUE(queue.empty());
+
+    // 验证数据
+    for (size_t i = 0; i < cap; ++i) {
+        EXPECT_EQ(out[i].seq, i + 1);
+        EXPECT_EQ(out[i].payload[0], static_cast<uint32_t>(i));
+    }
+}
+
+// 4. 批量操作边界条件：空队列 pop_n、零长度 push_n
+TYPED_TEST(BoundedQueueTest, BatchEdgeCases) {
+    TypeParam queue;
+
+    // 空队列 pop_n 应返回 0
+    std::vector<BoundedTestData> out(4);
+    EXPECT_EQ(queue.try_pop_n(std::span<BoundedTestData>{out}), 0u);
+
+    // 零长度 push_n 应成功
+    EXPECT_TRUE(queue.try_push_n(std::span<const BoundedTestData>{}));
+
+    // 零长度 pop_n 应返回 0
+    EXPECT_EQ(queue.try_pop_n(std::span<BoundedTestData>{}), 0u);
+
+    // 推入超过容量的批量数据应失败
+    std::vector<BoundedTestData> too_big(TypeParam::capacity() + 1);
+    EXPECT_FALSE(queue.try_push_n(std::span<const BoundedTestData>{too_big}));
+    EXPECT_TRUE(queue.empty());
+}
+
+// 5. 批量操作 try_pop_n 的尽力而为语义
+TYPED_TEST(BoundedQueueTest, BatchPopPartial) {
+    TypeParam queue;
+
+    // 推入少于请求量的数据
+    BoundedTestData d;
+    d.seq = 42;
+    EXPECT_TRUE(queue.try_push(d));
+
+    // 请求多个但只能读到 1 个
+    std::vector<BoundedTestData> out(4);
+    size_t popped = queue.try_pop_n(std::span<BoundedTestData>{out});
+    EXPECT_EQ(popped, 1u);
+    EXPECT_EQ(out[0].seq, 42u);
+    EXPECT_TRUE(queue.empty());
+}
+
+// 6. 多线程批量操作压力测试
+TYPED_TEST(BoundedQueueTest, BatchMultiThreadStress) {
+    TypeParam queue;
+    const uint32_t total_batches = 100'000;
+    constexpr size_t batch_size = 2;  // 使用最小容量兼容的批量大小
+
+    std::thread producer([&]() {
+        std::array<BoundedTestData, batch_size> batch{};
+        for (uint32_t i = 0; i < total_batches; ++i) {
+            for (size_t j = 0; j < batch_size; ++j) {
+                batch[j].seq = i * batch_size + static_cast<uint32_t>(j) + 1;
+                batch[j].payload.fill(batch[j].seq);
+            }
+            while (!queue.try_push_n(std::span<const BoundedTestData>{batch})) {
+                eph::utils::cpu_relax();
+            }
+        }
+    });
+
+    uint32_t next_expected = 1;
+    std::thread consumer([&]() {
+        std::array<BoundedTestData, batch_size> out{};
+        uint32_t remaining = total_batches * batch_size;
+        while (remaining > 0) {
+            size_t got = queue.try_pop_n(std::span<BoundedTestData>{out});
+            for (size_t i = 0; i < got; ++i) {
+                EXPECT_EQ(out[i].seq, next_expected);
+                EXPECT_EQ(out[i].payload[0], next_expected);
+                next_expected++;
+            }
+            remaining -= static_cast<uint32_t>(got);
+            if (got == 0) eph::utils::cpu_relax();
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    EXPECT_EQ(next_expected - 1, total_batches * batch_size);
+    std::println("BoundedQueue batch stress test done. Processed {} messages.", total_batches * batch_size);
+}
+
+// 7. 多线程压力测试：验证不可丢弃性和顺序
 TYPED_TEST(BoundedQueueTest, MultiThreadStress) {
     TypeParam queue;
     const uint32_t total_messages = 1'000'000; // 不可丢弃队列，量级视内存而定
