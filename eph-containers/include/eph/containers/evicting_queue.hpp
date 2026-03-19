@@ -4,7 +4,6 @@
 #include <atomic>
 #include <bit>
 #include <concepts>
-#include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -16,12 +15,12 @@
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/cpu.hpp"
 
+namespace eph::containers {
+
 using eph::base::CACHE_LINE_SIZE;
 using eph::base::TrivialData;
 using eph::utils::Align;
 using eph::utils::cpu_relax;
-
-namespace eph::containers {
 
 /**
  * @brief 多缓冲顺序锁可丢弃 SPSC 队列
@@ -47,6 +46,9 @@ namespace eph::containers {
  * └─────────────────────────────────────────────────┘
  * ```
  *
+ * PERF 注释测量条件：payload = { uint64_t id; double data[3]; } (32B),
+ * buffer size = 8 slots, x86-64 (Intel i7), 两核 pinned.
+ *
  * @tparam T 数据类型 (必须满足 TriviallyCopyable 概念)
  * @tparam Capacity 缓冲槽位数量，必须是 2 的幂。
  */
@@ -57,6 +59,14 @@ class alignas(Align<T>) EvictingQueue {
     static_assert(Capacity > 1, "Primary template requires Capacity > 1");
 
    private:
+    // ---- seq 编码/解码辅助 ----
+    // seq 低 1 位为 lock flag，高 63 位为 global index
+    static constexpr uint64_t encode_seq(uint64_t idx, bool locked) noexcept {
+        return (idx << 1) | static_cast<uint64_t>(locked);
+    }
+    static constexpr uint64_t decode_idx(uint64_t seq) noexcept { return seq >> 1; }
+    static constexpr bool is_locked(uint64_t seq) noexcept { return seq & 1; }
+
     // 全局索引/全局序列号。每生产一个数据就+1。
     alignas(Align<T>) std::atomic<uint64_t> global_index_{0};
 
@@ -90,6 +100,8 @@ class alignas(Align<T>) EvictingQueue {
         std::atomic<uint64_t> seq_{0};
         T data_{};
     };
+    static_assert(sizeof(Slot) <= Align<T> || sizeof(Slot) % CACHE_LINE_SIZE == 0,
+                  "Slot size may cause false sharing");
     alignas(Align<T>) std::array<Slot, Capacity> slots_{};
 
    public:
@@ -115,27 +127,30 @@ class alignas(Align<T>) EvictingQueue {
 
         Slot& s = slots_[next_idx & (Capacity - 1)];
 
-        // 2. 锁定槽位 (将实际索引左移，最低位置 1 表示奇数/写入中)
-        s.seq_.store((next_idx << 1) | 1, std::memory_order_relaxed);
+        // 2. 锁定槽位 (seq = odd, 表示写入中)
+        // Happens-before 链起点：seq(odd) 告知 reader 此 slot 不可读
+        s.seq_.store(encode_seq(next_idx, true), std::memory_order_relaxed);
 
-        // 3. Store-Store Barrier
-        // 确保 seq 变为奇数的操作对其他核可见后，才开始写真正的数据
+        // 3. Store-Store Fence: seq(odd) ─hb→ data writes
+        // 保证 reader 看到 seq 变奇后，后续读到的 data 要么是旧的要么是新的，
+        // 不会读到 data 的中间态而 seq 仍为偶数
         std::atomic_thread_fence(std::memory_order_release);
 
         // 4. 执行数据写入/修改
-        // PERF: ~39.19% 拷贝 { uint64_t id; double data[3]; };
+        // PERF: ~39.19%
         std::invoke(std::forward<F>(writer_func), s.data_);
 
-        // 5. Store-Store Barrier
-        // 确保数据写完后，才更新 seq 为偶数
+        // 5. Store-Store Fence: data writes ─hb→ seq(even)
+        // 保证 data 完全写入后才发布 seq(even)，reader 读到偶数 seq 时 data 已一致
         std::atomic_thread_fence(std::memory_order_release);
 
-        // 6. 解锁槽位 (最低位置 0 表示偶数/空闲)
+        // 6. 解锁槽位 (seq = even, 表示空闲)
         // PERF: 17.68%
-        s.seq_.store(next_idx << 1, std::memory_order_relaxed);
+        s.seq_.store(encode_seq(next_idx, false), std::memory_order_relaxed);
 
-        // 7. 发布全局索引 (Release)
-        // PERF: 17.68
+        // 7. 发布全局索引: seq(even) ─hb→ global_index
+        // Reader acquire global_index 后，能看到对应 slot 的 seq(even) 和完整 data
+        // PERF: 17.68%
         global_index_.store(next_idx, std::memory_order_release);
 
         // 8. 更新本地影子索引
@@ -195,11 +210,11 @@ class alignas(Align<T>) EvictingQueue {
         uint64_t seq1 = s.seq_.load(std::memory_order_acquire);
 
         // 如果版本号为奇数，说明 Writer 正在写入
-        if (seq1 & 1) [[unlikely]]
+        if (is_locked(seq1)) [[unlikely]]
             return false;
 
         // 解析出槽位当前实际存储的数据 index
-        uint64_t actual_idx = seq1 >> 1;
+        uint64_t actual_idx = decode_idx(seq1);
 
         // 如果实际数据的 index 小于等于上次读取的 index，说明这是已经读过的数据
         if (actual_idx <= reader_.last_global_index_) {
@@ -280,17 +295,6 @@ class alignas(Align<T>) EvictingQueue {
         return Capacity;
     }
 
-    /**
-     * @brief 检查 Writer 是否正在忙碌 (写入中)
-     */
-    [[nodiscard]] bool busy() const noexcept {
-        // 获取当前最新发布的索引
-        uint64_t idx = global_index_.load(std::memory_order_relaxed);
-        // 预测 Writer 正在操作的下一个 Slot
-        const Slot& s = slots_[(idx + 1) & (Capacity - 1)];
-        // 检查该 Slot 的 seq 是否为奇数
-        return s.seq_.load(std::memory_order_relaxed) & 1;
-    }
 };
 
 /**
@@ -372,6 +376,9 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         produce([&](T& slot) {
             if constexpr (std::is_trivially_destructible_v<T>) {
                 std::construct_at(&slot, std::forward<Args>(args)...);
+            } else {
+                std::destroy_at(&slot);
+                std::construct_at(&slot, std::forward<Args>(args)...);
             }
         });
     }
@@ -438,11 +445,6 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     // ===========================================================================
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
-
-    /// 检查当前是否被写锁占用
-    [[nodiscard]] bool busy() const noexcept {
-        return seq_.load(std::memory_order_relaxed) & 1;
-    }
 };
 
 }  // namespace eph::containers

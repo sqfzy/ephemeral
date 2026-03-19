@@ -229,8 +229,6 @@ class EvictingQueueBytes {
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
 
-    [[nodiscard]] bool busy() const noexcept { return queue_.busy(); }
-
    private:
     EvictingQueue<DataWrap, Capacity> queue_;
 
