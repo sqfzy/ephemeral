@@ -280,3 +280,165 @@ TEST(WsFrameTemplate, TextTemplate) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->opcode, opcode::kText);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary tests — payload length transitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsBoundary, PayloadLen125_SmallHeader) {
+    std::vector<uint8_t> payload(125, 0xAA);
+    uint8_t buf[256];
+    size_t len = encode_frame(buf, opcode::kBinary, payload.data(), 125);
+
+    EXPECT_EQ(frame_header_size(125), 6u); // 2 + 4 mask
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 125u);
+}
+
+TEST(WsBoundary, PayloadLen126_ExtendedHeader) {
+    std::vector<uint8_t> payload(126, 0xBB);
+    uint8_t buf[256];
+    size_t len = encode_frame(buf, opcode::kBinary, payload.data(), 126);
+
+    EXPECT_EQ(frame_header_size(126), 8u); // 2 + 2 + 4 mask
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 126u);
+}
+
+TEST(WsBoundary, PayloadLen65535_MaxMediumHeader) {
+    EXPECT_EQ(frame_header_size(65535), 8u);
+    EXPECT_EQ(frame_header_size(65536), 14u); // Transitions to 8-byte length
+}
+
+TEST(WsBoundary, DecodeIncomplete_OnlyFirstByte) {
+    uint8_t buf[1] = {0x82}; // FIN + Binary
+    auto result = decode_frame(buf, 1);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "incomplete");
+}
+
+TEST(WsBoundary, DecodeIncomplete_ExtLen126_MissingBytes) {
+    // Header: FIN+Binary, masked, len=126, but only 1 of 2 ext-len bytes
+    uint8_t buf[4] = {0x82, 0xFE, 0x00}; // 0xFE = mask|126
+    auto result = decode_frame(buf, 3);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "incomplete");
+}
+
+TEST(WsBoundary, DecodeIncomplete_MaskKeyMissing) {
+    // Header: FIN+Binary, masked, len=5, but no mask key follows
+    uint8_t buf[2] = {0x82, 0x85}; // 0x85 = mask|5
+    auto result = decode_frame(buf, 2);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "incomplete");
+}
+
+TEST(WsBoundary, DecodeIncomplete_PayloadTruncated) {
+    // Full header but payload truncated
+    uint8_t buf[64];
+    size_t len = encode_frame(buf, opcode::kBinary,
+                               (const uint8_t*)"hello", 5);
+    // Truncate: provide only header, no payload
+    auto result = decode_frame(buf, 6);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "incomplete");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Masking edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsMasking, MaskedCopy_ExactMultipleOf8) {
+    uint8_t src[16], dst[16];
+    std::memset(src, 0xFF, 16);
+    uint8_t mask[4] = {0x12, 0x34, 0x56, 0x78};
+
+    masked_copy(dst, src, 16, mask);
+
+    // Verify: each byte = 0xFF ^ mask[i%4]
+    for (int i = 0; i < 16; ++i) {
+        EXPECT_EQ(dst[i], static_cast<uint8_t>(0xFF ^ mask[i % 4])) << "i=" << i;
+    }
+}
+
+TEST(WsMasking, MaskedCopy_OddTailBytes) {
+    for (size_t len : {1, 2, 3, 5, 6, 7, 9, 13}) {
+        std::vector<uint8_t> src(len, 0xAA), dst(len);
+        uint8_t mask[4] = {0x11, 0x22, 0x33, 0x44};
+
+        masked_copy(dst.data(), src.data(), len, mask);
+        for (size_t i = 0; i < len; ++i) {
+            EXPECT_EQ(dst[i], static_cast<uint8_t>(0xAA ^ mask[i % 4]))
+                << "len=" << len << " i=" << i;
+        }
+    }
+}
+
+TEST(WsMasking, MaskKeyCacheRefill) {
+    MaskKeyCache cache;
+    std::set<uint32_t> keys;
+
+    // Exhaust cache + force refill
+    for (size_t i = 0; i < MaskKeyCache::kPoolSize + 10; ++i) {
+        uint8_t key[4];
+        cache.next_key(key);
+        uint32_t k;
+        std::memcpy(&k, key, 4);
+        keys.insert(k);
+    }
+
+    // Should have many unique keys (CSPRNG)
+    EXPECT_GT(keys.size(), 500u)
+        << "Mask keys should be mostly unique (CSPRNG)";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Close frame
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsCloseFrame, MaxReasonLength) {
+    uint8_t buf[256];
+    std::string reason(123, 'R');
+    size_t len = build_close_frame(buf, close_code::kNormal, reason);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kClose);
+    EXPECT_TRUE(result->is_control());
+
+    // Client frames are masked — unmask before reading status code
+    ASSERT_TRUE(result->masked);
+    uint8_t unmasked[125];
+    std::memcpy(unmasked, result->payload, result->payload_len);
+    apply_mask(unmasked, result->payload_len, result->mask_key);
+    uint16_t code = (static_cast<uint16_t>(unmasked[0]) << 8) | unmasked[1];
+    EXPECT_EQ(code, close_code::kNormal);
+}
+
+TEST(WsCloseFrame, LongReasonTruncated) {
+    uint8_t buf[256];
+    std::string long_reason(200, 'X');
+    size_t len = build_close_frame(buf, close_code::kGoingAway, long_reason);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    // Payload should be 2 (status) + min(200, 123) = 125
+    EXPECT_LE(result->payload_len, 125u)
+        << "Control frame payload must not exceed 125 bytes";
+}
+
+TEST(WsFrame, ContinuationOpcode) {
+    uint8_t buf[64];
+    uint8_t payload[] = {0x01, 0x02};
+    // Manually build continuation frame (no FIN, opcode=0)
+    size_t len = encode_frame(buf, opcode::kContinuation, payload, 2, false);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kContinuation);
+    EXPECT_TRUE(result->is_data());
+    EXPECT_FALSE(result->is_control());
+    EXPECT_FALSE(result->fin);
+}

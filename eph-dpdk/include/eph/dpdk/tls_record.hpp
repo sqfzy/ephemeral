@@ -96,15 +96,26 @@ inline bool parse_record_header(const uint8_t* src,
 class TlsRecordCrypto {
 public:
     /// Initialize with extracted TLS session keys.
+    /// @param key_len  AES key length: 16 (AES-128) or 32 (AES-256).
+    ///                 Determined by the negotiated cipher suite.
     static std::expected<TlsRecordCrypto, std::string>
-    create(const TlsHotState& state) {
+    create(const TlsHotState& state, size_t key_len = tls_const::kAes256KeyLen) {
         TlsRecordCrypto crypto;
 
-        const EVP_AEAD* aead = EVP_aead_aes_256_gcm();
+        // Select AEAD algorithm based on negotiated key length
+        const EVP_AEAD* aead;
+        if (key_len == 16) {
+            aead = EVP_aead_aes_128_gcm();
+        } else if (key_len == 32) {
+            aead = EVP_aead_aes_256_gcm();
+        } else {
+            return std::unexpected(std::format(
+                "Unsupported AES key length: {}", key_len));
+        }
 
         // Encryption context (write direction)
         if (!EVP_AEAD_CTX_init(&crypto.enc_ctx_, aead,
-                               state.write.key, tls_const::kAes256KeyLen,
+                               state.write.key, key_len,
                                tls_record::kAuthTagLen, nullptr)) {
             return std::unexpected("EVP_AEAD_CTX_init failed for encryption");
         }
@@ -112,7 +123,7 @@ public:
 
         // Decryption context (read direction)
         if (!EVP_AEAD_CTX_init(&crypto.dec_ctx_, aead,
-                               state.read.key, tls_const::kAes256KeyLen,
+                               state.read.key, key_len,
                                tls_record::kAuthTagLen, nullptr)) {
             EVP_AEAD_CTX_cleanup(&crypto.enc_ctx_);
             crypto.enc_init_ = false;

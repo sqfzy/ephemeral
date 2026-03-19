@@ -324,11 +324,154 @@ TEST(TlsRecord, RecordHeaderRejectsOversized) {
 
 TEST(TlsRecord, RecordHeaderRejectsWrongContentType) {
     uint8_t buf[5];
-    // content_type = 0x14 (ChangeCipherSpec) — not application_data
     tls_record::write_record_header(buf, 0x14, 100);
 
     uint8_t ct;
     uint16_t len;
     bool ok = tls_record::parse_record_header(buf, ct, len);
     EXPECT_FALSE(ok) << "Non-application_data content type should be rejected";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TlsRecord, RecordHeaderBoundaryLength) {
+    uint8_t buf[5];
+    // Exactly at max allowed: kMaxRecordPayload + kAuthTagLen + 1
+    uint16_t max_ok = tls_const::kMaxRecordPayload + tls_record::kAuthTagLen + 1;
+    tls_record::write_record_header(buf, 0x17, max_ok);
+
+    uint8_t ct;
+    uint16_t len;
+    EXPECT_TRUE(tls_record::parse_record_header(buf, ct, len));
+    EXPECT_EQ(len, max_ok);
+
+    // One byte over max
+    tls_record::write_record_header(buf, 0x17, max_ok + 1);
+    EXPECT_FALSE(tls_record::parse_record_header(buf, ct, len));
+}
+
+TEST(TlsRecord, EncryptedSizeFormula) {
+    // encrypted_size(n) = 5 + n + 1 + 16
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size(0),     22);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size(1),     23);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size(100),  122);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size(16384), 16406);
+}
+
+TEST(TlsRecord, EncryptPreservesPlaintextBuffer) {
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    // Fill plaintext with known pattern + sentinel byte at end
+    std::vector<uint8_t> plaintext(65, 0);
+    for (int i = 0; i < 64; ++i) plaintext[i] = static_cast<uint8_t>(i);
+    plaintext[64] = 0xFE; // sentinel (the +1 byte that encrypt temporarily modifies)
+
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(64));
+    uint16_t written = crypto->encrypt(plaintext.data(), 64, record.data());
+    ASSERT_GT(written, 0u);
+
+    // Verify sentinel byte was restored
+    EXPECT_EQ(plaintext[64], 0xFE)
+        << "encrypt() must restore the byte it temporarily overwrites";
+    // Verify plaintext wasn't corrupted
+    for (int i = 0; i < 64; ++i) {
+        EXPECT_EQ(plaintext[i], static_cast<uint8_t>(i)) << "at index " << i;
+    }
+}
+
+TEST(TlsRecord, DecryptWithWrongKeyFails) {
+    auto state1 = make_roundtrip_state(42);
+    auto enc = TlsRecordCrypto::create(state1);
+    ASSERT_TRUE(enc.has_value());
+
+    std::vector<uint8_t> plaintext(65, 0x42);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(64);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = enc->encrypt(plaintext.data(), 64, record.data());
+    ASSERT_GT(written, 0u);
+
+    // Create decryptor with DIFFERENT keys
+    auto state2 = make_test_state(999);
+    auto dec = TlsRecordCrypto::create(state2);
+    ASSERT_TRUE(dec.has_value());
+
+    std::vector<uint8_t> out(80);
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
+    EXPECT_FALSE(ok) << "Decrypting with wrong key should fail authentication";
+}
+
+TEST(TlsRecord, CreateWithAes128KeyLength) {
+    // AES-128 uses 16-byte key
+    TlsHotState state{};
+    fill_random(state.write.key, 16, 42);
+    fill_random(state.write.iv, tls_const::kTls13NonceLen, 43);
+    fill_random(state.read.key, 16, 44);
+    fill_random(state.read.iv, tls_const::kTls13NonceLen, 45);
+
+    auto crypto = TlsRecordCrypto::create(state, 16);
+    ASSERT_TRUE(crypto.has_value()) << crypto.error();
+
+    // Encrypt + decrypt roundtrip
+    std::vector<uint8_t> plaintext(33, 0xAA);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = crypto->encrypt(plaintext.data(), 32, record.data());
+    ASSERT_GT(written, 0u);
+
+    // Decrypt with same key (AES-128)
+    TlsHotState dec_state{};
+    std::memcpy(dec_state.read.key, state.write.key, 16);
+    std::memcpy(dec_state.read.iv, state.write.iv, tls_const::kTls13NonceLen);
+    auto dec = TlsRecordCrypto::create(dec_state, 16);
+    ASSERT_TRUE(dec.has_value());
+
+    std::vector<uint8_t> out(48);
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(dec_len, 32);
+}
+
+TEST(TlsRecord, CreateWithInvalidKeyLengthFails) {
+    TlsHotState state{};
+    auto result = TlsRecordCrypto::create(state, 24); // Not 16 or 32
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(TlsRecord, NonZeroInitialSequence) {
+    auto state = make_roundtrip_state();
+    state.write.seq = 100;
+    state.read.seq  = 200;
+
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    EXPECT_EQ(enc->write_seq(), 100u);
+    EXPECT_EQ(enc->read_seq(), 200u);
+
+    // Encrypt one record — seq should advance
+    std::vector<uint8_t> pt(17, 0);
+    std::vector<uint8_t> rec(TlsRecordCrypto::encrypted_size(16));
+    enc->encrypt(pt.data(), 16, rec.data());
+    EXPECT_EQ(enc->write_seq(), 101u);
+
+    // Decryptor with matching seq can decrypt
+    TlsHotState dec_state{};
+    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.iv, state.write.iv, tls_const::kTls13NonceLen);
+    dec_state.read.seq = 100; // Must match encrypt's initial seq
+    auto dec = TlsRecordCrypto::create(dec_state);
+    ASSERT_TRUE(dec.has_value());
+
+    uint16_t dec_len;
+    uint8_t out[32];
+    bool ok = dec->decrypt(rec.data(), TlsRecordCrypto::encrypted_size(16),
+                            out, dec_len);
+    EXPECT_TRUE(ok) << "Decryption with matching non-zero initial seq should work";
+    EXPECT_EQ(dec_len, 16);
 }

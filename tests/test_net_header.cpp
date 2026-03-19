@@ -197,3 +197,178 @@ TEST(NetHeader, PacketTemplateDefaults) {
     EXPECT_EQ(tmpl.ip_id, 0);
     EXPECT_FALSE(tmpl.hw_cksum);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_packet boundary tests (simulated mbuf via raw buffer)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Build a minimal valid Eth+IP+TCP packet into a buffer.
+/// Returns total bytes written. Payload is zero-filled.
+size_t build_raw_packet(uint8_t* buf, uint16_t payload_len,
+                         uint8_t ihl_words = 5, uint8_t tcp_doff_words = 5) {
+    size_t eth_len = kEtherHeaderLen;
+    size_t ip_len  = ihl_words * 4u;
+    size_t tcp_len = tcp_doff_words * 4u;
+    size_t total   = eth_len + ip_len + tcp_len + payload_len;
+
+    std::memset(buf, 0, total);
+
+    // Ethernet
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    // IP
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+    ip->version_ihl  = static_cast<uint8_t>((4 << 4) | ihl_words);
+    ip->total_length  = hton16(static_cast<uint16_t>(ip_len + tcp_len + payload_len));
+    ip->next_proto_id = kIpProtoTcp;
+    ip->src_addr      = hton32(0x0A000001);
+    ip->dst_addr      = hton32(0x0A000002);
+
+    // TCP
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + eth_len + ip_len);
+    tcp->data_off  = static_cast<uint8_t>(tcp_doff_words << 4);
+    tcp->src_port  = hton16(12345);
+    tcp->dst_port  = hton16(443);
+    tcp->tcp_flags = kTcpAck;
+
+    return total;
+}
+
+} // anonymous namespace
+
+TEST(ParsePacket, ZeroPayload) {
+    uint8_t buf[128];
+    size_t pkt_len = build_raw_packet(buf, 0);
+    // Simulate rte_mbuf via simple struct
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(pkt_len);
+    mbuf.pkt_len  = static_cast<uint32_t>(pkt_len);
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.payload_len, 0);
+    EXPECT_EQ(parsed.payload, nullptr);
+}
+
+TEST(ParsePacket, ExactOneBytePayload) {
+    uint8_t buf[128];
+    size_t pkt_len = build_raw_packet(buf, 1);
+    buf[kAllHeadersLen] = 0xAB; // payload byte
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(pkt_len);
+    mbuf.pkt_len  = static_cast<uint32_t>(pkt_len);
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.payload_len, 1);
+    ASSERT_NE(parsed.payload, nullptr);
+    EXPECT_EQ(parsed.payload[0], 0xAB);
+}
+
+TEST(ParsePacket, EthernetPaddingIgnored) {
+    // Build a packet with 6 bytes payload, but pad to 64-byte Ethernet minimum
+    uint8_t buf[128];
+    size_t real_len = build_raw_packet(buf, 6);
+    // Pad to 64 bytes (Ethernet minimum)
+    std::memset(buf + real_len, 0xCC, 64 - real_len);
+    uint16_t padded_len = 64;
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = padded_len;
+    mbuf.pkt_len  = padded_len;
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    // Must use IP total_length (6), NOT pkt_len - headers (10)
+    EXPECT_EQ(parsed.payload_len, 6)
+        << "Ethernet padding bytes should not be included in TCP payload";
+}
+
+TEST(ParsePacket, IpTotalExceedsPktLen_Rejected) {
+    uint8_t buf[128];
+    size_t pkt_len = build_raw_packet(buf, 10);
+
+    // Corrupt: set ip_total_length to something > pkt_len
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->total_length = hton16(2000);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(pkt_len);
+    mbuf.pkt_len  = static_cast<uint32_t>(pkt_len);
+
+    auto parsed = parse_packet(&mbuf);
+    // Should reject: ip_total > pkt_len guard
+    EXPECT_EQ(parsed.tcp, nullptr)
+        << "Packet with ip_total > pkt_len should be rejected";
+}
+
+TEST(ParsePacket, TruncatedPacket_TooShort) {
+    uint8_t buf[32] = {};
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = 30; // Less than kAllHeadersLen=54
+    mbuf.pkt_len  = 30;
+
+    auto parsed = parse_packet(&mbuf);
+    EXPECT_EQ(parsed.tcp, nullptr);
+}
+
+TEST(ParsePacket, NonIpv4Rejected) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 0);
+    // Change ether_type to IPv6
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(0x86DD);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = 54;
+    mbuf.pkt_len  = 54;
+
+    auto parsed = parse_packet(&mbuf);
+    EXPECT_EQ(parsed.tcp, nullptr);
+}
+
+TEST(ParsePacket, MatchesSwapsAddresses) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 0);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = 54;
+    mbuf.pkt_len  = 54;
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+
+    // Packet src=10.0.0.1:12345, dst=10.0.0.2:443
+    // Our tuple: src=10.0.0.2:443, dst=10.0.0.1:12345 (swapped)
+    ConnectionTuple our_tuple{
+        .src_ip = 0x0A000002, .dst_ip = 0x0A000001,
+        .src_port = 443, .dst_port = 12345};
+    EXPECT_TRUE(parsed.matches(our_tuple));
+
+    // Non-matching tuple
+    ConnectionTuple wrong{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 443};
+    EXPECT_FALSE(parsed.matches(wrong));
+}

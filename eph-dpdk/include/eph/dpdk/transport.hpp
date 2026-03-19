@@ -703,6 +703,7 @@ private:
             if (nb_rx == 0) continue;
 
             // Process through TCP layer — append to fixed reassembly buffer
+            bool reconnect_needed = false;
             auto tcp_result = tcp_->process_rx(pkts, nb_rx,
                 [&](const uint8_t* data, uint16_t len) {
                     if (reassembly_len + len <= kReassemblyBufSize) {
@@ -710,10 +711,23 @@ private:
                                     data, len);
                         reassembly_len += len;
                     } else {
-                        SPDLOG_LOGGER_WARN(log,
-                            "RX reassembly buffer full, dropping {} bytes", len);
+                        SPDLOG_LOGGER_ERROR(log,
+                            "RX reassembly buffer overflow ({} + {} > {}), "
+                            "triggering reconnect",
+                            reassembly_len, len, kReassemblyBufSize);
+                        reassembly_len = 0;
+                        reconnect_needed = true;
                     }
                 });
+
+            // Reassembly buffer overflow → reconnect
+            if (reconnect_needed) {
+                if (!do_reconnect()) {
+                    running_.store(false, std::memory_order_release);
+                    goto rx_exit;
+                }
+                continue;
+            }
 
             if (!tcp_result) {
                 SPDLOG_LOGGER_WARN(log, "TCP rx error: {}",
