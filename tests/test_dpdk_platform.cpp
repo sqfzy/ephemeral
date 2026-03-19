@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "dpdk_test_env.hpp"
+#include "dpdk_test_env.hpp" // IWYU pragma: keep
 #include "eph/dpdk/platform.hpp"
 
 using namespace eph::dpdk;
@@ -39,9 +39,7 @@ TEST(PlatformCreate, PortIdOutOfRangeReturnsError) {
     cfg.port_id = 99;
     auto result = Platform::create(cfg);
     EXPECT_FALSE(result.has_value());
-    // With net_null only port 0 exists.  The error may say "out of range"
-    // (if count > 0 but port_id >= count) or "No DPDK ports" (if no ports
-    // at all).  Both are valid rejections for port_id=99.
+    EXPECT_NE(result.error().find("out of range"), std::string::npos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
