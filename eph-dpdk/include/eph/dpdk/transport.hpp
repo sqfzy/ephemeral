@@ -166,9 +166,11 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 ///   QueueDepth — SPSC queue capacity (must be power of 2)
 ///
 /// Usage:
-///   auto transport = Transport<512, 1024>::create(pool, config);
-///   transport->send(data, len);  // Non-blocking
-///   transport->recv([](auto* data, auto len) { ... });  // Non-blocking
+///   auto result = Transport<512, 1024>::create(pool, config);
+///   if (!result) { /* handle error */ }
+///   auto& transport = *result;     // unique_ptr<Transport>
+///   transport->send(data, len);    // Non-blocking
+///   transport->recv([](auto* data, auto len) { ... });
 template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 class Transport {
     static_assert(MaxPayload > 0, "MaxPayload must be > 0");
@@ -188,7 +190,8 @@ public:
 
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
     /// This is a blocking call — performs the full handshake sequence.
-    static std::expected<Transport, std::string>
+    /// Returns unique_ptr because Transport owns threads and is non-movable.
+    static std::expected<std::unique_ptr<Transport>, std::string>
     create(rte_mempool* pool, const TransportConfig& config) {
         auto log = detail::transport_logger();
 
@@ -203,24 +206,23 @@ public:
             "Creating transport: {}:{}{}", config.remote_host,
             config.remote_port, config.ws_path);
 
-        Transport t;
-        t.config_ = config;
-        t.pool_   = pool;
+        auto t = std::unique_ptr<Transport>(new Transport());
+        t->config_ = config;
+        t->pool_   = pool;
 
-        auto conn_result = t.do_connect();
+        auto conn_result = t->do_connect();
         if (!conn_result) {
             SPDLOG_LOGGER_ERROR(log, "Initial connect failed: {}",
                                 conn_result.error());
             return std::unexpected(conn_result.error());
         }
 
-        t.running_.store(true, std::memory_order_release);
+        t->running_.store(true, std::memory_order_release);
 
-        // Start TX worker thread
-        t.tx_thread_ = std::thread([&t] { t.tx_loop(); });
-
-        // Start RX worker thread
-        t.rx_thread_ = std::thread([&t] { t.rx_loop(); });
+        // Start worker threads (capture raw pointer — Transport outlives threads)
+        auto* tp = t.get();
+        t->tx_thread_ = std::thread([tp] { tp->tx_loop(); });
+        t->rx_thread_ = std::thread([tp] { tp->rx_loop(); });
 
         SPDLOG_LOGGER_INFO(log, "Transport ready: {}", config.remote_host);
 
@@ -231,28 +233,10 @@ public:
         stop();
     }
 
-    Transport(const Transport&) = delete;
+    Transport(const Transport&)            = delete;
     Transport& operator=(const Transport&) = delete;
-
-    Transport(Transport&& other) noexcept
-        : config_(std::move(other.config_))
-        , pool_(other.pool_)
-        , tcp_(std::move(other.tcp_))
-        , tls_(std::move(other.tls_))
-        , crypto_(std::move(other.crypto_))
-        , tx_thread_(std::move(other.tx_thread_))
-        , rx_thread_(std::move(other.rx_thread_))
-        , tx_stats_(other.tx_stats_)
-        , rx_stats_(other.rx_stats_) {
-        running_.store(other.running_.load(std::memory_order_relaxed),
-                       std::memory_order_relaxed);
-        queue_full_count_.store(other.queue_full_count_.load(std::memory_order_relaxed),
-                                std::memory_order_relaxed);
-        other.running_.store(false, std::memory_order_relaxed);
-        other.pool_ = nullptr;
-    }
-
-    Transport& operator=(Transport&&) = delete;
+    Transport(Transport&&)                 = delete;
+    Transport& operator=(Transport&&)      = delete;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Send API (application thread)
@@ -614,14 +598,15 @@ private:
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "TX loop started");
 
-        // WS encode directly into TLS encrypt input buffer.
-        // +1 byte: TLS encrypt() temporarily appends content type byte past the
-        // WS frame data, avoiding a full-payload memcpy inside seal().
+        // WS encode buffer: header + payload + 1 byte for TLS content type append
         constexpr size_t kWsBufSize =
             ws::kMaxFrameHeaderLen + MaxPayload + 1;
+        // TLS output buffer: sized for the actual max WS frame (without the +1 temp byte)
+        constexpr size_t kMaxWsFrame =
+            ws::kMaxFrameHeaderLen + MaxPayload;
         constexpr size_t kTlsBufSize =
             TlsRecordCrypto::encrypted_size(
-                static_cast<uint16_t>(kWsBufSize));
+                static_cast<uint16_t>(kMaxWsFrame));
 
         // [P4] Batch buffers for drain loop
         static constexpr int kMaxBatch = 32;
@@ -688,9 +673,15 @@ private:
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 
-        std::vector<uint8_t> decrypt_buf(tls_const::kMaxRecordPayload + 256);
-        std::vector<uint8_t> reassembly_buf;
-        reassembly_buf.reserve(tls_const::kMaxRecordPayload);
+        // Fixed-size RX buffers — no heap allocation on hot path.
+        // reassembly_buf is 2x max TLS record to handle partial records at boundary.
+        static constexpr size_t kReassemblyBufSize =
+            2 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
+                 tls_record::kAuthTagLen + 1);
+        auto decrypt_buf = std::make_unique<uint8_t[]>(
+            tls_const::kMaxRecordPayload + 256);
+        auto reassembly_storage = std::make_unique<uint8_t[]>(kReassemblyBufSize);
+        size_t reassembly_len = 0;
 
         auto last_ping = std::chrono::steady_clock::now();
 
@@ -711,11 +702,17 @@ private:
 
             if (nb_rx == 0) continue;
 
-            // Process through TCP layer
+            // Process through TCP layer — append to fixed reassembly buffer
             auto tcp_result = tcp_->process_rx(pkts, nb_rx,
                 [&](const uint8_t* data, uint16_t len) {
-                    reassembly_buf.insert(reassembly_buf.end(),
-                                          data, data + len);
+                    if (reassembly_len + len <= kReassemblyBufSize) {
+                        std::memcpy(reassembly_storage.get() + reassembly_len,
+                                    data, len);
+                        reassembly_len += len;
+                    } else {
+                        SPDLOG_LOGGER_WARN(log,
+                            "RX reassembly buffer full, dropping {} bytes", len);
+                    }
                 });
 
             if (!tcp_result) {
@@ -723,7 +720,7 @@ private:
                                    tcp_result.error());
 
                 // ── Auto-reconnect (fixed interval, discard old messages) ──
-                reassembly_buf.clear();
+                reassembly_len = 0;
                 if (do_reconnect()) {
                     last_ping = std::chrono::steady_clock::now();
                     continue; // Resume RX loop with new connection
@@ -735,53 +732,78 @@ private:
             }
 
             // Decrypt complete TLS records from reassembly buffer
-            while (reassembly_buf.size() >=
+            size_t consumed = 0;
+            while (reassembly_len - consumed >=
                    tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
+                const uint8_t* rec_ptr = reassembly_storage.get() + consumed;
+
                 uint8_t content_type;
                 uint16_t payload_len;
                 if (!tls_record::parse_record_header(
-                        reassembly_buf.data(), content_type, payload_len)) {
+                        rec_ptr, content_type, payload_len)) {
                     break;
                 }
 
                 size_t record_total = tls_record::kRecordHeaderLen + payload_len;
-                if (reassembly_buf.size() < record_total) break;
+                if (reassembly_len - consumed < record_total) break;
 
                 uint16_t decrypted_len;
                 bool ok = crypto_->decrypt(
-                    reassembly_buf.data(),
+                    rec_ptr,
                     static_cast<uint16_t>(record_total),
-                    decrypt_buf.data(), decrypted_len);
+                    decrypt_buf.get(), decrypted_len);
 
                 if (!ok) {
                     rx_stats_.crypto_errors++;
-                    SPDLOG_LOGGER_WARN(log, "TLS decrypt failed");
-                    break;
+                    SPDLOG_LOGGER_WARN(log,
+                        "TLS decrypt failed — triggering reconnect");
+                    // Corrupted record → link unreliable, reconnect
+                    reassembly_len = 0;
+                    if (!do_reconnect()) {
+                        running_.store(false, std::memory_order_release);
+                        goto rx_exit;
+                    }
+                    last_ping = std::chrono::steady_clock::now();
+                    break; // Resume with fresh connection
                 }
 
-                process_ws_data(decrypt_buf.data(), decrypted_len);
+                process_ws_data(decrypt_buf.get(), decrypted_len);
+                consumed += record_total;
+            }
 
-                reassembly_buf.erase(
-                    reassembly_buf.begin(),
-                    reassembly_buf.begin() +
-                        static_cast<ptrdiff_t>(record_total));
+            // Compact: move unconsumed data to front (memmove, not erase)
+            if (consumed > 0) {
+                reassembly_len -= consumed;
+                if (reassembly_len > 0) {
+                    std::memmove(reassembly_storage.get(),
+                                 reassembly_storage.get() + consumed,
+                                 reassembly_len);
+                }
             }
         }
 
+    rx_exit:
         SPDLOG_LOGGER_DEBUG(log, "RX loop exited");
     }
 
     /// Send a WebSocket ping frame (encrypted via AEAD + TCP).
-    void send_ws_ping() noexcept {
+    /// Returns true if ping was sent successfully.
+    bool send_ws_ping() noexcept {
         uint8_t ping_buf[64];
         size_t ping_len = ws::build_ping_frame(ping_buf);
 
         uint8_t tls_buf[128];
         uint16_t tls_len = crypto_->encrypt(
             ping_buf, static_cast<uint16_t>(ping_len), tls_buf);
-        if (tls_len > 0) {
-            tcp_->send(tls_buf, tls_len);
+        if (tls_len == 0) return false;
+
+        auto result = tcp_->send(tls_buf, tls_len);
+        if (!result) {
+            SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
+                "WS ping send failed: {}", result.error());
+            return false;
         }
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

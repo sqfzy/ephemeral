@@ -75,7 +75,9 @@ inline bool parse_record_header(const uint8_t* src,
                                  uint16_t& payload_len) noexcept {
     content_type = src[0];
     payload_len = static_cast<uint16_t>((src[3] << 8) | src[4]);
-    return payload_len <= tls_const::kMaxRecordPayload + kAuthTagLen + 1;
+    // TLS 1.3: only application_data records pass through AEAD decryption
+    return content_type == kContentTypeAppData &&
+           payload_len <= tls_const::kMaxRecordPayload + kAuthTagLen + 1;
 }
 
 } // namespace tls_record
@@ -199,8 +201,16 @@ public:
 
         // Temporarily append TLS 1.3 inner content type byte after payload.
         // Caller guarantees 1 byte of writable space past plaintext_len.
-        uint8_t saved = plaintext[plaintext_len];
-        plaintext[plaintext_len] = tls_record::kContentTypeAppData;
+        // Guard: plaintext may be nullptr when plaintext_len == 0 (valid TLS padding).
+        uint8_t saved = 0;
+        if (plaintext) {
+            saved = plaintext[plaintext_len];
+            plaintext[plaintext_len] = tls_record::kContentTypeAppData;
+        }
+
+        // For plaintext_len == 0 with nullptr, use a local buffer for the content type byte
+        uint8_t fallback_inner = tls_record::kContentTypeAppData;
+        const uint8_t* seal_input = plaintext ? plaintext : &fallback_inner;
 
         uint8_t* ciphertext = out + tls_record::kRecordHeaderLen;
         size_t ciphertext_len = 0;
@@ -208,11 +218,11 @@ public:
         bool ok = EVP_AEAD_CTX_seal(&enc_ctx_, ciphertext, &ciphertext_len,
                                      inner_len + tls_record::kAuthTagLen,
                                      nonce, tls_const::kTls13NonceLen,
-                                     plaintext, inner_len,
+                                     seal_input, inner_len,
                                      out, tls_record::kRecordHeaderLen);
 
         // Restore the byte we temporarily overwrote
-        plaintext[plaintext_len] = saved;
+        if (plaintext) plaintext[plaintext_len] = saved;
 
         if (!ok) return 0;
 

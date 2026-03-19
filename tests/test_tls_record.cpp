@@ -313,7 +313,6 @@ TEST(TlsRecord, RecordHeaderRoundtrip) {
 
 TEST(TlsRecord, RecordHeaderRejectsOversized) {
     uint8_t buf[5];
-    // Write a length > max
     uint16_t huge = tls_const::kMaxRecordPayload + tls_record::kAuthTagLen + 2;
     tls_record::write_record_header(buf, 0x17, huge);
 
@@ -321,4 +320,15 @@ TEST(TlsRecord, RecordHeaderRejectsOversized) {
     uint16_t len;
     bool ok = tls_record::parse_record_header(buf, ct, len);
     EXPECT_FALSE(ok);
+}
+
+TEST(TlsRecord, RecordHeaderRejectsWrongContentType) {
+    uint8_t buf[5];
+    // content_type = 0x14 (ChangeCipherSpec) — not application_data
+    tls_record::write_record_header(buf, 0x14, 100);
+
+    uint8_t ct;
+    uint16_t len;
+    bool ok = tls_record::parse_record_header(buf, ct, len);
+    EXPECT_FALSE(ok) << "Non-application_data content type should be rejected";
 }
