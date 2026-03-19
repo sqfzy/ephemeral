@@ -20,11 +20,12 @@
 #include <expected>
 #include <format>
 #include <functional>
-#include <random>
 #include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
+
+#include <openssl/rand.h>
 
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
@@ -529,10 +530,11 @@ private:
 
     Stats stats_{};
 
-    /// Generate initial sequence number (RFC 6528 recommends random).
+    /// Generate initial sequence number using CSPRNG (RFC 6528).
     static uint32_t generate_isn() noexcept {
-        std::random_device rd;
-        return rd();
+        uint32_t isn;
+        RAND_bytes(reinterpret_cast<uint8_t*>(&isn), sizeof(isn));
+        return isn;
     }
 
     /// Sequence number comparison: is a after b? (handles wrap-around)

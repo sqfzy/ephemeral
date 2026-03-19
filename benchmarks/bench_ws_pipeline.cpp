@@ -156,12 +156,12 @@ void bench_tls_encrypt(uint16_t payload_size) {
 
     // Create a TlsHotState with random keys
     eph::dpdk::TlsHotState hot{};
-    fill_random(hot.write_key, eph::dpdk::tls_const::kAes256KeyLen, 1);
-    fill_random(hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
-    fill_random(hot.read_key, eph::dpdk::tls_const::kAes256KeyLen, 3);
-    fill_random(hot.read_iv, eph::dpdk::tls_const::kTls13NonceLen, 4);
-    hot.write_seq = 0;
-    hot.read_seq = 0;
+    fill_random(hot.write.key, eph::dpdk::tls_const::kAes256KeyLen, 1);
+    fill_random(hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
+    fill_random(hot.read.key, eph::dpdk::tls_const::kAes256KeyLen, 3);
+    fill_random(hot.read.iv, eph::dpdk::tls_const::kTls13NonceLen, 4);
+    hot.write.seq = 0;
+    hot.read.seq = 0;
 
     auto crypto_result = eph::dpdk::TlsRecordCrypto::create(hot);
     if (!crypto_result) {
@@ -171,7 +171,8 @@ void bench_tls_encrypt(uint16_t payload_size) {
     }
     auto& crypto = *crypto_result;
 
-    std::vector<uint8_t> plaintext(payload_size);
+    // +1 byte: encrypt() temporarily appends content type past payload_size
+    std::vector<uint8_t> plaintext(payload_size + 1);
     fill_random(plaintext.data(), payload_size, 10);
 
     uint16_t out_size = eph::dpdk::TlsRecordCrypto::encrypted_size(payload_size);
@@ -208,14 +209,14 @@ void bench_tls_decrypt(uint16_t payload_size) {
 
     // Create crypto context
     eph::dpdk::TlsHotState hot{};
-    fill_random(hot.write_key, eph::dpdk::tls_const::kAes256KeyLen, 1);
-    fill_random(hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
+    fill_random(hot.write.key, eph::dpdk::tls_const::kAes256KeyLen, 1);
+    fill_random(hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
     // For decrypt test: read key/iv must match write key/iv
     // (simulating decrypting what we just encrypted)
-    std::memcpy(hot.read_key, hot.write_key, eph::dpdk::tls_const::kAes256KeyLen);
-    std::memcpy(hot.read_iv, hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen);
-    hot.write_seq = 0;
-    hot.read_seq = 0;
+    std::memcpy(hot.read.key, hot.write.key, eph::dpdk::tls_const::kAes256KeyLen);
+    std::memcpy(hot.read.iv, hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen);
+    hot.write.seq = 0;
+    hot.read.seq = 0;
 
     auto enc_result = eph::dpdk::TlsRecordCrypto::create(hot);
     if (!enc_result) {
@@ -226,8 +227,8 @@ void bench_tls_decrypt(uint16_t payload_size) {
     // We need a separate decryptor to keep sequence numbers in sync
     // Reset sequences: enc uses write_seq, dec uses read_seq
     eph::dpdk::TlsHotState dec_hot{};
-    std::memcpy(dec_hot.read_key, hot.write_key, eph::dpdk::tls_const::kAes256KeyLen);
-    std::memcpy(dec_hot.read_iv, hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen);
+    std::memcpy(dec_hot.read.key, hot.write.key, eph::dpdk::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.iv, hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen);
 
     // Pre-encrypt all records so decrypt benchmark is pure
     std::vector<uint8_t> plaintext(payload_size);
@@ -540,9 +541,9 @@ void bench_e2e_tx(uint16_t payload_size) {
 
     // Setup TLS crypto
     eph::dpdk::TlsHotState hot{};
-    fill_random(hot.write_key, eph::dpdk::tls_const::kAes256KeyLen, 1);
-    fill_random(hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
-    hot.write_seq = 0;
+    fill_random(hot.write.key, eph::dpdk::tls_const::kAes256KeyLen, 1);
+    fill_random(hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
+    hot.write.seq = 0;
 
     auto crypto_result = eph::dpdk::TlsRecordCrypto::create(hot);
     if (!crypto_result) {
@@ -685,9 +686,9 @@ void bench_e2e_rx(uint16_t payload_size) {
 
     // Setup: build encrypted WS frames for decrypting
     eph::dpdk::TlsHotState enc_hot{};
-    fill_random(enc_hot.write_key, eph::dpdk::tls_const::kAes256KeyLen, 1);
-    fill_random(enc_hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
-    enc_hot.write_seq = 0;
+    fill_random(enc_hot.write.key, eph::dpdk::tls_const::kAes256KeyLen, 1);
+    fill_random(enc_hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen, 2);
+    enc_hot.write.seq = 0;
 
     auto enc_result = eph::dpdk::TlsRecordCrypto::create(enc_hot);
     if (!enc_result) {
@@ -698,9 +699,9 @@ void bench_e2e_rx(uint16_t payload_size) {
 
     // Create matching decryptor
     eph::dpdk::TlsHotState dec_hot{};
-    std::memcpy(dec_hot.read_key, enc_hot.write_key, eph::dpdk::tls_const::kAes256KeyLen);
-    std::memcpy(dec_hot.read_iv, enc_hot.write_iv, eph::dpdk::tls_const::kTls13NonceLen);
-    dec_hot.read_seq = 0;
+    std::memcpy(dec_hot.read.key, enc_hot.write.key, eph::dpdk::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.iv, enc_hot.write.iv, eph::dpdk::tls_const::kTls13NonceLen);
+    dec_hot.read.seq = 0;
 
     // Prepare payload
     std::vector<uint8_t> payload(payload_size);

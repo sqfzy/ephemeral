@@ -84,7 +84,6 @@ inline std::shared_ptr<spdlog::logger> ws_logger() {
 /// Apply XOR masking to payload (in-place). Client frames MUST be masked.
 inline void apply_mask(uint8_t* data, size_t len,
                        const uint8_t mask[4]) noexcept {
-    // Process 4 bytes at a time for performance
     size_t i = 0;
     uint32_t mask32;
     std::memcpy(&mask32, mask, 4);
@@ -95,15 +94,85 @@ inline void apply_mask(uint8_t* data, size_t len,
         block ^= mask32;
         std::memcpy(data + i, &block, 4);
     }
-    // Handle remaining bytes
     for (; i < len; ++i) {
         data[i] ^= mask[i & 3];
     }
 }
 
-/// Generate a random 4-byte masking key.
+/// Fused memcpy + XOR masking in a single pass.
+/// Copies src to dst while applying the 4-byte mask. Uses 64-bit blocks
+/// for the main loop to halve the iteration count vs 32-bit.
+inline void masked_copy(uint8_t* dst, const uint8_t* src,
+                         size_t len, const uint8_t mask[4]) noexcept {
+    uint32_t mask32;
+    std::memcpy(&mask32, mask, 4);
+
+    // 64-bit main loop: process 8 bytes per iteration
+    uint64_t mask64 = (static_cast<uint64_t>(mask32) << 32) | mask32;
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+        uint64_t block;
+        std::memcpy(&block, src + i, 8);
+        block ^= mask64;
+        std::memcpy(dst + i, &block, 8);
+    }
+
+    // 32-bit tail
+    if (i + 4 <= len) {
+        uint32_t block;
+        std::memcpy(&block, src + i, 4);
+        block ^= mask32;
+        std::memcpy(dst + i, &block, 4);
+        i += 4;
+    }
+
+    // Byte tail (0-3 bytes)
+    for (; i < len; ++i) {
+        dst[i] = src[i] ^ mask[i & 3];
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [P0] Batch-pregenerated mask key cache
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// CSPRNG-backed mask key pool. Batch-generates 1024 keys via RAND_bytes
+/// and serves them sequentially on the hot path (~2ns per key vs ~1500ns
+/// for per-frame RAND_bytes). Refills automatically when exhausted.
+class MaskKeyCache {
+public:
+    static constexpr size_t kPoolSize = 1024;
+
+    MaskKeyCache() noexcept { refill(); }
+
+    /// Get the next 4-byte mask key (hot path: single index increment).
+    void next_key(uint8_t out[4]) noexcept {
+        if (pos_ >= kPoolSize) [[unlikely]] {
+            refill();
+        }
+        std::memcpy(out, &pool_[pos_ * 4], 4);
+        pos_++;
+    }
+
+private:
+    void refill() noexcept {
+        RAND_bytes(pool_, sizeof(pool_));
+        pos_ = 0;
+    }
+
+    uint8_t pool_[kPoolSize * 4]{};
+    size_t  pos_ = 0;
+};
+
+/// Thread-local mask key cache (hot path allocation-free).
+inline MaskKeyCache& mask_key_cache() noexcept {
+    thread_local MaskKeyCache cache;
+    return cache;
+}
+
+/// Generate a random 4-byte masking key (uses batch cache on hot path).
 inline void generate_mask_key(uint8_t mask[4]) noexcept {
-    RAND_bytes(mask, 4);
+    mask_key_cache().next_key(mask);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,10 +245,9 @@ inline size_t encode_frame(uint8_t* out, uint8_t opcode_val,
     size_t header_len = encode_frame_header(out, opcode_val, payload_len,
                                              fin, mask_key);
 
-    // Copy payload and apply mask
+    // [P1] Single-pass copy + mask (fused memcpy + XOR)
     if (payload && payload_len > 0) {
-        std::memcpy(out + header_len, payload, payload_len);
-        apply_mask(out + header_len, payload_len, mask_key);
+        masked_copy(out + header_len, payload, payload_len, mask_key);
     }
 
     return header_len + payload_len;
@@ -278,13 +346,13 @@ decode_frame(const uint8_t* data, size_t len) {
         pos += 4;
     }
 
-    // Payload
-    if (len < pos + frame.payload_len) {
+    // Payload — use subtraction to prevent integer overflow on huge payload_len
+    if (frame.payload_len > len || pos > len - frame.payload_len) {
         return std::unexpected("incomplete");
     }
 
     frame.payload = data + pos;
-    frame.total_len = pos + frame.payload_len;
+    frame.total_len = pos + static_cast<size_t>(frame.payload_len);
 
     return frame;
 }

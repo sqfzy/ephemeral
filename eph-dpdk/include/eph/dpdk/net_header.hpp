@@ -179,6 +179,11 @@ struct PacketTemplate {
     ConnectionTuple tuple{};
     uint16_t ip_id = 0; // Incremented per packet
 
+    /// [P2] Enable NIC TX checksum offload (IP + TCP).
+    /// When true, sets ol_flags and computes pseudo-header checksum only.
+    /// When false, falls back to software checksum (default).
+    bool hw_cksum = false;
+
     /// Build a complete TCP packet in an mbuf.
     /// @param pool     Mempool to allocate from
     /// @param seq      TCP sequence number (host order)
@@ -222,7 +227,8 @@ struct PacketTemplate {
         ip->hdr_checksum     = 0;
         ip->src_addr         = hton32(tuple.src_ip);
         ip->dst_addr         = hton32(tuple.dst_ip);
-        ip->hdr_checksum     = internet_checksum(ip, kIpv4HeaderLen);
+        // IP checksum: computed here for software path, overridden for hw offload below
+        ip->hdr_checksum     = hw_cksum ? 0 : internet_checksum(ip, kIpv4HeaderLen);
 
         // ── TCP header ──
         auto* tcp = reinterpret_cast<rte_tcp_hdr*>(pkt + kEtherHeaderLen + kIpv4HeaderLen);
@@ -241,9 +247,21 @@ struct PacketTemplate {
             std::memcpy(pkt + kAllHeadersLen, payload, payload_len);
         }
 
-        // TCP checksum over pseudo-header + TCP header + payload
-        uint16_t tcp_total = kTcpHeaderLen + payload_len;
-        tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
+        // [P2] Checksum: hardware offload or software fallback
+        if (hw_cksum) {
+            // Let NIC compute checksums — set offload metadata
+            mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
+            mbuf->l2_len = kEtherHeaderLen;
+            mbuf->l3_len = kIpv4HeaderLen;
+            mbuf->l4_len = kTcpHeaderLen;
+            // IP checksum field must be 0 for HW offload
+            ip->hdr_checksum = 0;
+            // TCP checksum field must contain pseudo-header checksum
+            tcp->cksum = rte_ipv4_phdr_cksum(ip, mbuf->ol_flags);
+        } else {
+            uint16_t tcp_total = kTcpHeaderLen + payload_len;
+            tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
+        }
 
         return mbuf;
     }
@@ -282,7 +300,7 @@ struct PacketTemplate {
         ip->hdr_checksum     = 0;
         ip->src_addr         = hton32(tuple.src_ip);
         ip->dst_addr         = hton32(tuple.dst_ip);
-        ip->hdr_checksum     = internet_checksum(ip, kIpv4HeaderLen);
+        ip->hdr_checksum     = hw_cksum ? 0 : internet_checksum(ip, kIpv4HeaderLen);
 
         // TCP
         auto* tcp = reinterpret_cast<rte_tcp_hdr*>(pkt + kEtherHeaderLen + kIpv4HeaderLen);
@@ -300,8 +318,17 @@ struct PacketTemplate {
             std::memcpy(pkt + kAllHeadersLen, payload, payload_len);
         }
 
-        uint16_t tcp_total = kTcpHeaderLen + payload_len;
-        tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
+        // [P2] Checksum: hardware offload or software fallback
+        if (hw_cksum) {
+            mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
+            mbuf->l2_len = kEtherHeaderLen;
+            mbuf->l3_len = kIpv4HeaderLen;
+            mbuf->l4_len = kTcpHeaderLen;
+            tcp->cksum = rte_ipv4_phdr_cksum(ip, mbuf->ol_flags);
+        } else {
+            uint16_t tcp_total = kTcpHeaderLen + payload_len;
+            tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
+        }
 
         return total_len;
     }
@@ -376,46 +403,35 @@ struct ParsedPacket {
 /// Returns empty ParsedPacket (all nullptrs) if the packet is not a valid
 /// IPv4/TCP packet or is too short.
 inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
-    ParsedPacket result{};
-
     const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
-    if (pkt_len < kAllHeadersLen) return result;
+    if (pkt_len < kAllHeadersLen) return {};
 
     const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
 
-    // Ethernet
-    result.eth = reinterpret_cast<const rte_ether_hdr*>(data);
-    if (ntoh16(result.eth->ether_type) != kEtherTypeIpv4) {
-        result.eth = nullptr;
-        return result;
-    }
+    // Validate all headers before populating result (fewer branch deps)
+    auto* eth = reinterpret_cast<const rte_ether_hdr*>(data);
+    if (ntoh16(eth->ether_type) != kEtherTypeIpv4) return {};
 
-    // IPv4
-    result.ip = reinterpret_cast<const rte_ipv4_hdr*>(data + kEtherHeaderLen);
-    uint8_t ihl = (result.ip->version_ihl & 0x0F) * 4;
-    if (ihl < kIpv4HeaderLen || result.ip->next_proto_id != kIpProtoTcp) {
-        result.ip = nullptr;
-        return result;
-    }
+    auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    uint8_t ihl = (ip->version_ihl & 0x0F) << 2; // * 4 via shift
+    if (ihl < kIpv4HeaderLen || ip->next_proto_id != kIpProtoTcp) return {};
 
-    // TCP
     uint16_t tcp_offset = kEtherHeaderLen + ihl;
-    if (pkt_len < tcp_offset + kTcpHeaderLen) {
-        result.ip = nullptr;
-        return result;
-    }
-    result.tcp = reinterpret_cast<const rte_tcp_hdr*>(data + tcp_offset);
+    if (pkt_len < tcp_offset + kTcpHeaderLen) return {};
 
-    uint8_t tcp_doff = (result.tcp->data_off >> 4) * 4;
-    if (tcp_doff < kTcpHeaderLen) {
-        result.tcp = nullptr;
-        return result;
-    }
+    auto* tcp = reinterpret_cast<const rte_tcp_hdr*>(data + tcp_offset);
+    uint8_t tcp_doff = (tcp->data_off >> 4) << 2; // * 4 via shift
+    if (tcp_doff < kTcpHeaderLen) return {};
 
-    // Payload
+    // All valid — populate result in one shot
+    ParsedPacket result;
+    result.eth = eth;
+    result.ip  = ip;
+    result.tcp = tcp;
+
     uint16_t payload_offset = tcp_offset + tcp_doff;
     if (pkt_len > payload_offset) {
-        result.payload = data + payload_offset;
+        result.payload     = data + payload_offset;
         result.payload_len = pkt_len - payload_offset;
     }
 

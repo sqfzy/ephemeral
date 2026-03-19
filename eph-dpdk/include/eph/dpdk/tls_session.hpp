@@ -9,8 +9,8 @@
 ///   - Session key extraction for hot-path AEAD encryption
 ///   - Custom BIO backed by TcpSession send/recv
 ///
-/// Phase 1: Standard SSL_* API for correctness
-/// Phase 2: Drop to EVP_AEAD_CTX_seal for zero-copy record encryption
+/// Responsibility: handshake + session key extraction only.
+/// Data-plane I/O uses TlsRecordCrypto (EVP_AEAD) — no SSL_write/SSL_read.
 
 #include <cstdint>
 #include <cstring>
@@ -50,18 +50,32 @@ inline constexpr uint16_t kAes256KeyLen      = 32;   // AES-256 key length
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Extracted TLS session material for hot-path AEAD operations.
-/// Designed to fit in a single cache line (64 bytes).
-struct alignas(64) TlsHotState {
-    uint8_t  write_key[tls_const::kAes256KeyLen]{}; // 32 bytes
-    uint8_t  write_iv[tls_const::kTls13NonceLen]{};  // 12 bytes
-    uint64_t write_seq = 0;                           // 8 bytes
-    uint8_t  read_key[tls_const::kAes256KeyLen]{};   // 32 bytes — for decryption
-    uint8_t  read_iv[tls_const::kTls13NonceLen]{};    // 12 bytes
-    uint64_t read_seq = 0;                            // 8 bytes
-    // Total: 104 bytes — exceeds single cache line, uses 2 cache lines
+/// Split into write/read halves on separate cache lines so TX and RX
+/// lcores never cause false sharing — each touches only its own 64B line.
+struct alignas(64) TlsKeyMaterial {
+    uint8_t  key[tls_const::kAes256KeyLen]{};  // 32 bytes
+    uint8_t  iv[tls_const::kTls13NonceLen]{};   // 12 bytes
+    uint64_t seq = 0;                            // 8 bytes
+    // 12 bytes padding to 64
+};
+static_assert(sizeof(TlsKeyMaterial) == 64, "TlsKeyMaterial must be exactly 1 cache line");
+
+struct TlsHotState {
+    TlsKeyMaterial write{};
+    TlsKeyMaterial read{};
+
+    // Compatibility accessors for existing code
+    uint8_t*       write_key()       noexcept { return write.key; }
+    const uint8_t* write_key() const noexcept { return write.key; }
+    uint8_t*       write_iv()        noexcept { return write.iv; }
+    const uint8_t* write_iv()  const noexcept { return write.iv; }
+    uint8_t*       read_key()        noexcept { return read.key; }
+    const uint8_t* read_key()  const noexcept { return read.key; }
+    uint8_t*       read_iv()         noexcept { return read.iv; }
+    const uint8_t* read_iv()   const noexcept { return read.iv; }
 };
 
-static_assert(sizeof(TlsHotState) <= 128, "TlsHotState should fit in 2 cache lines");
+static_assert(sizeof(TlsHotState) == 128, "TlsHotState must be exactly 2 cache lines");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS session config
@@ -430,22 +444,20 @@ public:
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Data I/O (standard SSL API — Phase 1)
+    // Handshake-phase I/O (for WebSocket Upgrade after TLS handshake)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Write data through TLS (encrypts and sends via TCP).
-    /// For Phase 1 — uses SSL_write. Phase 2 will use direct AEAD.
-    std::expected<int, std::string> write(const void* data, int len) {
+    /// Write data through TLS during handshake/upgrade phase only.
+    /// NOT for hot-path use — hot path uses TlsRecordCrypto directly.
+    /// Must be called from the control thread (single-threaded).
+    std::expected<int, std::string> handshake_write(const void* data, int len) {
         if (!handshake_done_) {
             return std::unexpected("TLS handshake not completed");
         }
-
         int ret = SSL_write(ssl_, data, len);
         if (ret <= 0) {
             int err = SSL_get_error(ssl_, ret);
-            if (err == SSL_ERROR_WANT_WRITE) {
-                return 0; // Would block
-            }
+            if (err == SSL_ERROR_WANT_WRITE) return 0;
             return std::unexpected(std::format(
                 "SSL_write failed (err={}): {}",
                 err, detail::ssl_error_string()));
@@ -453,24 +465,17 @@ public:
         return ret;
     }
 
-    /// Read data through TLS (receives via TCP and decrypts).
-    /// Returns number of bytes read, 0 for would-block, or error.
-    std::expected<int, std::string> read(void* buf, int len) {
+    /// Read data through TLS during handshake/upgrade phase only.
+    /// Returns 0 if no data available (would block).
+    std::expected<int, std::string> handshake_read(void* buf, int len) {
         if (!handshake_done_) {
             return std::unexpected("TLS handshake not completed");
         }
-
-        // Poll for new data before reading
-        if (bio_ctx_) {
-            bio_ctx_->poll_rx();
-        }
-
+        if (bio_ctx_) bio_ctx_->poll_rx();
         int ret = SSL_read(ssl_, buf, len);
         if (ret <= 0) {
             int err = SSL_get_error(ssl_, ret);
-            if (err == SSL_ERROR_WANT_READ) {
-                return 0; // No data available
-            }
+            if (err == SSL_ERROR_WANT_READ) return 0;
             return std::unexpected(std::format(
                 "SSL_read failed (err={}): {}",
                 err, detail::ssl_error_string()));
@@ -479,7 +484,7 @@ public:
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Session key extraction (for Phase 2 hot-path AEAD)
+    // Session key extraction (for hot-path AEAD via TlsRecordCrypto)
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Extract TLS 1.3 session keys for direct AEAD encryption.
@@ -504,7 +509,7 @@ public:
         static constexpr const char* kReadIvLabel = "EXPORTER-read-iv";
 
         if (SSL_export_keying_material(ssl_,
-                state.write_key, tls_const::kAes256KeyLen,
+                state.write.key, tls_const::kAes256KeyLen,
                 kWriteLabel, strlen(kWriteLabel),
                 nullptr, 0, 0) != 1) {
             auto err = detail::ssl_error_string();
@@ -514,7 +519,7 @@ public:
         }
 
         if (SSL_export_keying_material(ssl_,
-                state.write_iv, tls_const::kTls13NonceLen,
+                state.write.iv, tls_const::kTls13NonceLen,
                 kWriteIvLabel, strlen(kWriteIvLabel),
                 nullptr, 0, 0) != 1) {
             auto err = detail::ssl_error_string();
@@ -524,7 +529,7 @@ public:
         }
 
         if (SSL_export_keying_material(ssl_,
-                state.read_key, tls_const::kAes256KeyLen,
+                state.read.key, tls_const::kAes256KeyLen,
                 kReadLabel, strlen(kReadLabel),
                 nullptr, 0, 0) != 1) {
             auto err = detail::ssl_error_string();
@@ -534,7 +539,7 @@ public:
         }
 
         if (SSL_export_keying_material(ssl_,
-                state.read_iv, tls_const::kTls13NonceLen,
+                state.read.iv, tls_const::kTls13NonceLen,
                 kReadIvLabel, strlen(kReadIvLabel),
                 nullptr, 0, 0) != 1) {
             auto err = detail::ssl_error_string();
@@ -543,8 +548,8 @@ public:
                 "Failed to export read IV: {}", err));
         }
 
-        state.write_seq = 0;
-        state.read_seq = 0;
+        state.write.seq = 0;
+        state.read.seq = 0;
 
         SPDLOG_LOGGER_INFO(log, "TLS session keys extracted for hot path");
         return state;

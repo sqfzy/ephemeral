@@ -154,9 +154,11 @@ parse_upgrade_response(const char* data, size_t len) {
 
     SPDLOG_LOGGER_DEBUG(log, "HTTP response status: {}", result.status_code);
 
-    // Parse headers (case-insensitive)
+    // Parse headers (case-insensitive).
+    // Include the trailing \r\n before \r\n\r\n so the last header line
+    // is terminated and found by the line-by-line parser.
     auto headers = response.substr(first_line_end + 2,
-                                    header_end - first_line_end - 2);
+                                    header_end - first_line_end);
 
     // Simple header parser — line by line
     size_t pos = 0;
