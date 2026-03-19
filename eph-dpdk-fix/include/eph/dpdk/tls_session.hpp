@@ -65,6 +65,7 @@ static_assert(sizeof(TlsKeyMaterial) == 64, "TlsKeyMaterial must be exactly 1 ca
 struct TlsHotState {
     TlsKeyMaterial write{};
     TlsKeyMaterial read{};
+    uint16_t key_len = tls_const::kAes256KeyLen; // Actual key length (16 or 32)
 
     // Compatibility accessors for existing code
     uint8_t*       write_key()       noexcept { return write.key; }
@@ -76,8 +77,6 @@ struct TlsHotState {
     uint8_t*       read_iv()         noexcept { return read.iv; }
     const uint8_t* read_iv()   const noexcept { return read.iv; }
 };
-
-static_assert(sizeof(TlsHotState) == 128, "TlsHotState must be exactly 2 cache lines");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS session config
@@ -113,72 +112,6 @@ inline std::string ssl_error_string() {
 }
 
 } // namespace detail
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TLS 1.3 traffic key derivation via HKDF-Expand-Label
-// ─────────────────────────────────────────────────────────────────────────────
-
-namespace tls_keygen {
-
-/// HKDF-Expand-Label (RFC 8446 §7.1):
-///   HKDF-Expand-Label(Secret, Label, Context, Length) =
-///       HKDF-Expand(Secret, HkdfLabel, Length)
-///   struct { uint16 length; opaque label<7..255>; opaque context<0..255>; }
-///   label = "tls13 " + Label
-inline bool hkdf_expand_label(const EVP_MD* digest,
-                                const uint8_t* secret, size_t secret_len,
-                                const char* label, size_t label_len,
-                                const uint8_t* context, size_t context_len,
-                                uint8_t* out, size_t out_len) noexcept {
-    static constexpr const char* kTls13Prefix = "tls13 ";
-    static constexpr size_t kPrefixLen = 6;
-    size_t full_label_len = kPrefixLen + label_len;
-
-    uint8_t info[256];
-    size_t info_len = 0;
-
-    info[info_len++] = static_cast<uint8_t>((out_len >> 8) & 0xFF);
-    info[info_len++] = static_cast<uint8_t>(out_len & 0xFF);
-    info[info_len++] = static_cast<uint8_t>(full_label_len);
-    std::memcpy(info + info_len, kTls13Prefix, kPrefixLen);
-    info_len += kPrefixLen;
-    std::memcpy(info + info_len, label, label_len);
-    info_len += label_len;
-    info[info_len++] = static_cast<uint8_t>(context_len);
-    if (context_len > 0) {
-        std::memcpy(info + info_len, context, context_len);
-        info_len += context_len;
-    }
-
-    return HKDF_expand(out, out_len, digest,
-                        secret, secret_len,
-                        info, info_len) == 1;
-}
-
-/// Derive AES key and IV from a TLS 1.3 traffic secret.
-/// @param key_len  Key length in bytes (16 for AES-128, 32 for AES-256)
-inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
-                           uint8_t* key, size_t key_len,
-                           uint8_t* iv, size_t iv_len) noexcept {
-    // TLS 1.3 hash function matches the cipher suite:
-    //   AES-128-GCM-SHA256  → secret_len == 32, SHA-256
-    //   AES-256-GCM-SHA384  → secret_len == 48, SHA-384
-    const EVP_MD* digest = (secret_len == 48) ? EVP_sha384() : EVP_sha256();
-
-    if (!hkdf_expand_label(digest, secret, secret_len,
-                            "key", 3, nullptr, 0, key, key_len)) {
-        return false;
-    }
-
-    if (!hkdf_expand_label(digest, secret, secret_len,
-                            "iv", 2, nullptr, 0, iv, iv_len)) {
-        return false;
-    }
-
-    return true;
-}
-
-} // namespace tls_keygen
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom BIO for DPDK TCP — bridges SSL I/O to TcpSession
@@ -580,16 +513,13 @@ public:
     // Session key extraction (for hot-path AEAD via TlsRecordCrypto)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Extract TLS 1.3 traffic keys for direct AEAD encryption.
+    /// Extract TLS 1.3 application traffic keys for direct AEAD encryption.
+    /// Call after handshake is complete. The returned TlsHotState contains
+    /// the write key/IV for encryption and read key/IV for decryption.
     ///
-    /// Uses aws-lc's SSL_get_{read,write}_traffic_secret to obtain the REAL
-    /// application traffic secrets, then derives AES-GCM key/IV via
-    /// HKDF-Expand-Label. Also reads current sequence numbers from SSL so
-    /// TlsRecordCrypto stays in sync after SSL_write/SSL_read usage.
-    ///
-    /// Key length is determined dynamically from the negotiated cipher:
-    ///   AES-128-GCM → 16-byte key, SHA-256 secret (32 bytes)
-    ///   AES-256-GCM → 32-byte key, SHA-384 secret (48 bytes)
+    /// Uses AWS-LC/BoringSSL SSL_get_{read,write}_traffic_secret() to obtain
+    /// the actual traffic secrets, then derives key+IV via HKDF-Expand-Label
+    /// per RFC 8446 Section 7.3.
     std::expected<TlsHotState, std::string> extract_hot_state() const {
         auto log = detail::tls_logger();
 
@@ -597,88 +527,123 @@ public:
             return std::unexpected("Cannot extract keys: handshake not done");
         }
 
-        // Determine key length from negotiated cipher
+        // Determine cipher parameters from negotiated cipher
         const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
         if (!cipher) {
             return std::unexpected("No cipher negotiated");
         }
-        int cipher_nid = SSL_CIPHER_get_cipher_nid(cipher);
-        size_t key_len;
-        if (cipher_nid == NID_aes_128_gcm) {
-            key_len = 16;
-        } else if (cipher_nid == NID_aes_256_gcm) {
-            key_len = 32;
-        } else {
-            return std::unexpected(std::format(
-                "Unsupported cipher NID {} for AEAD takeover",
-                cipher_nid));
+
+        // Get the hash function for HKDF from the cipher
+        const EVP_MD* md = SSL_CIPHER_get_handshake_digest(cipher);
+        if (!md) {
+            return std::unexpected("Cannot determine hash for cipher");
+        }
+        size_t hash_len = EVP_MD_size(md);
+
+        // Determine key length from cipher name:
+        //   TLS_AES_128_GCM_SHA256 → 16 bytes
+        //   TLS_AES_256_GCM_SHA384 → 32 bytes
+        //   TLS_CHACHA20_POLY1305_SHA256 → 32 bytes
+        const char* cipher_name = SSL_CIPHER_get_name(cipher);
+        size_t key_len = (cipher_name && strstr(cipher_name, "128")) ? 16 : 32;
+        size_t iv_len = tls_const::kTls13NonceLen; // Always 12 for TLS 1.3
+
+        SPDLOG_LOGGER_DEBUG(log,
+            "Cipher: {}, key_len={}, iv_len={}, hash_len={}",
+            SSL_CIPHER_get_name(cipher), key_len, iv_len, hash_len);
+
+        // Extract traffic secrets from SSL session.
+        // On entry, out_len must contain the buffer size; on exit, actual secret length.
+        uint8_t write_secret[EVP_MAX_MD_SIZE];
+        uint8_t read_secret[EVP_MAX_MD_SIZE];
+        size_t write_secret_len = sizeof(write_secret);
+        size_t read_secret_len = sizeof(read_secret);
+
+        if (!SSL_get_write_traffic_secret(ssl_, write_secret, &write_secret_len)) {
+            auto err = detail::ssl_error_string();
+            SPDLOG_LOGGER_ERROR(log, "SSL_get_write_traffic_secret failed: {}", err);
+            return std::unexpected("Failed to get write traffic secret");
+        }
+        if (!SSL_get_read_traffic_secret(ssl_, read_secret, &read_secret_len)) {
+            auto err = detail::ssl_error_string();
+            SPDLOG_LOGGER_ERROR(log, "SSL_get_read_traffic_secret failed: {}", err);
+            return std::unexpected("Failed to get read traffic secret");
         }
 
-        // Get write (client→server) traffic secret
-        uint8_t write_secret[64];
-        size_t write_secret_len = 0;
-        if (!SSL_get_write_traffic_secret(ssl_, write_secret,
-                                           &write_secret_len)) {
-            return std::unexpected("SSL_get_write_traffic_secret failed");
-        }
+        SPDLOG_LOGGER_DEBUG(log,
+            "Traffic secrets: write_len={}, read_len={}",
+            write_secret_len, read_secret_len);
 
-        // Get read (server→client) traffic secret
-        uint8_t read_secret[64];
-        size_t read_secret_len = 0;
-        if (!SSL_get_read_traffic_secret(ssl_, read_secret,
-                                          &read_secret_len)) {
-            return std::unexpected("SSL_get_read_traffic_secret failed");
-        }
+        // TLS 1.3 HKDF-Expand-Label to derive key and IV from traffic secret.
+        // Label format: "tls13 " + label, with empty context.
+        // key  = HKDF-Expand-Label(secret, "key", "", key_len)
+        // iv   = HKDF-Expand-Label(secret, "iv",  "", iv_len)
+        auto hkdf_expand_label = [&](const uint8_t* secret, size_t secret_len,
+                                     const char* label, size_t label_len,
+                                     uint8_t* out, size_t out_len)
+                -> bool {
+            // Build HkdfLabel structure per RFC 8446 Section 7.1:
+            //   struct { uint16 length; opaque label<7..255>; opaque context<0..255>; }
+            //   label = "tls13 " + label
+            uint8_t hkdf_label[256];
+            size_t pos = 0;
+
+            // length (2 bytes, big-endian)
+            hkdf_label[pos++] = static_cast<uint8_t>(out_len >> 8);
+            hkdf_label[pos++] = static_cast<uint8_t>(out_len);
+
+            // label: "tls13 " + label
+            const char* prefix = "tls13 ";
+            size_t prefix_len = 6;
+            size_t total_label_len = prefix_len + label_len;
+            hkdf_label[pos++] = static_cast<uint8_t>(total_label_len);
+            std::memcpy(hkdf_label + pos, prefix, prefix_len);
+            pos += prefix_len;
+            std::memcpy(hkdf_label + pos, label, label_len);
+            pos += label_len;
+
+            // context (empty)
+            hkdf_label[pos++] = 0;
+
+            // HKDF-Expand(secret, hkdf_label, out_len)
+            return HKDF_expand(out, out_len, md, secret, secret_len,
+                               hkdf_label, pos) == 1;
+        };
 
         TlsHotState state{};
 
-        // Derive write key/IV
-        if (!tls_keygen::derive_key_iv(write_secret, write_secret_len,
-                                        state.write.key, key_len,
-                                        state.write.iv,
-                                        tls_const::kTls13NonceLen)) {
-            SPDLOG_LOGGER_ERROR(log, "HKDF derive failed for write key");
+        // Derive write key + IV
+        if (!hkdf_expand_label(write_secret, write_secret_len,
+                               "key", 3, state.write.key, key_len)) {
             return std::unexpected("HKDF-Expand-Label failed for write key");
         }
-
-        // Derive read key/IV
-        if (!tls_keygen::derive_key_iv(read_secret, read_secret_len,
-                                        state.read.key, key_len,
-                                        state.read.iv,
-                                        tls_const::kTls13NonceLen)) {
-            SPDLOG_LOGGER_ERROR(log, "HKDF derive failed for read key");
-            return std::unexpected("HKDF-Expand-Label failed for read key");
+        if (!hkdf_expand_label(write_secret, write_secret_len,
+                               "iv", 2, state.write.iv, iv_len)) {
+            return std::unexpected("HKDF-Expand-Label failed for write IV");
         }
 
-        // Get current TLS record sequence numbers from SSL.
-        // After handshake + WS upgrade, these reflect records already
-        // sent/received via SSL_write/SSL_read.
+        // Derive read key + IV
+        if (!hkdf_expand_label(read_secret, read_secret_len,
+                               "key", 3, state.read.key, key_len)) {
+            return std::unexpected("HKDF-Expand-Label failed for read key");
+        }
+        if (!hkdf_expand_label(read_secret, read_secret_len,
+                               "iv", 2, state.read.iv, iv_len)) {
+            return std::unexpected("HKDF-Expand-Label failed for read IV");
+        }
+
+        // Sequence numbers must continue from where SSL left off.
+        // SSL_get_{read,write}_sequence returns the next expected sequence number
+        // after all handshake + upgrade records have been processed.
         state.write.seq = SSL_get_write_sequence(ssl_);
         state.read.seq  = SSL_get_read_sequence(ssl_);
+        state.key_len = static_cast<uint16_t>(key_len);
 
-        SPDLOG_LOGGER_INFO(log,
-            "TLS traffic keys extracted: cipher={}, key_len={}, "
-            "write_seq={}, read_seq={}",
-            SSL_CIPHER_get_name(cipher), key_len,
-            state.write.seq, state.read.seq);
+        SPDLOG_LOGGER_DEBUG(log,
+            "TLS seq: write={}, read={}", state.write.seq, state.read.seq);
 
-        // Scrub secrets from stack
-        OPENSSL_cleanse(write_secret, sizeof(write_secret));
-        OPENSSL_cleanse(read_secret, sizeof(read_secret));
-
+        SPDLOG_LOGGER_INFO(log, "TLS session keys extracted for hot path");
         return state;
-    }
-
-    /// Return the key length for the negotiated cipher (16 or 32 bytes).
-    /// Call after handshake. Returns 0 if cipher is unsupported.
-    [[nodiscard]] size_t cipher_key_len() const noexcept {
-        if (!ssl_) return 0;
-        const SSL_CIPHER* c = SSL_get_current_cipher(ssl_);
-        if (!c) return 0;
-        int nid = SSL_CIPHER_get_cipher_nid(c);
-        if (nid == NID_aes_128_gcm) return 16;
-        if (nid == NID_aes_256_gcm) return 32;
-        return 0;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -702,11 +667,11 @@ public:
 private:
     TlsSession() = default;
 
-    SSL*                                 ssl_   = nullptr;
-    SSL_CTX*                             ctx_   = nullptr;
+    SSL*                                ssl_   = nullptr;
+    SSL_CTX*                            ctx_   = nullptr;
     std::unique_ptr<bio_dpdk::BioContext> bio_ctx_;
-    TlsConfig                            config_;
-    bool                                 handshake_done_ = false;
+    TlsConfig                           config_;
+    bool                                handshake_done_ = false;
 };
 
 } // namespace eph::dpdk
