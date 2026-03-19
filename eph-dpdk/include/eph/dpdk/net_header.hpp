@@ -429,10 +429,18 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     result.ip  = ip;
     result.tcp = tcp;
 
-    uint16_t payload_offset = tcp_offset + tcp_doff;
-    if (pkt_len > payload_offset) {
+    // Use IP total_length (not pkt_len) to compute payload size.
+    // Ethernet frames have a 64-byte minimum — NICs pad short frames.
+    // Using pkt_len would include those padding bytes as TCP payload,
+    // corrupting upper-layer protocols (TLS record reassembly).
+    uint16_t ip_total  = ntoh16(ip->total_length);    // IP header + TCP header + payload
+    uint16_t tcp_start = ihl;                          // offset from IP header to TCP
+    uint16_t data_start = tcp_start + tcp_doff;        // offset from IP header to payload
+
+    if (ip_total > data_start) {
+        uint16_t payload_offset = kEtherHeaderLen + data_start;
         result.payload     = data + payload_offset;
-        result.payload_len = pkt_len - payload_offset;
+        result.payload_len = ip_total - data_start;
     }
 
     return result;

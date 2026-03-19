@@ -12,6 +12,7 @@
 /// Responsibility: handshake + session key extraction only.
 /// Data-plane I/O uses TlsRecordCrypto (EVP_AEAD) — no SSL_write/SSL_read.
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -125,8 +126,12 @@ struct BioContext {
     std::vector<uint8_t> read_buf;   // Buffered data from TCP rx
     size_t               read_pos = 0;
 
-    /// Poll DPDK rx and append to read buffer.
-    /// Returns number of new bytes available.
+    /// Timeout for busy-wait polling (used by bio_read).
+    /// Set before handshake to match TlsConfig::handshake_timeout.
+    std::chrono::milliseconds poll_timeout{5000};
+
+    /// Poll DPDK rx once and append to read buffer.
+    /// Returns number of new bytes available, or -1 on TCP error.
     int poll_rx() {
         rte_mbuf* pkts[32];
         uint16_t nb_rx = rte_eth_rx_burst(
@@ -139,15 +144,26 @@ struct BioContext {
         };
 
         if (nb_rx > 0) {
-            // Process through TCP session to handle ACKs and state
             auto result = tcp->process_rx(pkts, nb_rx, append_data);
             if (!result) {
                 SPDLOG_LOGGER_WARN(detail::tls_logger(),
                     "TCP rx error during BIO poll: {}", result.error());
+                return -1;
             }
         }
 
         return total_new;
+    }
+
+    /// Busy-wait poll until at least some data is available or timeout.
+    /// Returns number of new bytes, 0 on timeout, -1 on TCP error.
+    int poll_rx_blocking() {
+        auto deadline = std::chrono::steady_clock::now() + poll_timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            int n = poll_rx();
+            if (n != 0) return n;  // Got data (>0) or error (-1)
+        }
+        return 0; // Timeout
     }
 };
 
@@ -181,22 +197,29 @@ inline int bio_write(BIO* bio, const char* data, int len) {
 }
 
 /// Custom BIO read: reads data from TCP session rx buffer.
+/// Busy-waits for data to avoid SSL treating WANT_READ as fatal during
+/// multi-record TLS handshake processing.
 inline int bio_read(BIO* bio, char* buf, int len) {
     auto* ctx = static_cast<BioContext*>(BIO_get_data(bio));
     if (!ctx || !ctx->tcp || len <= 0) return -1;
 
     BIO_clear_retry_flags(bio);
 
-    // If buffer is exhausted, poll for more data
+    // If buffer is exhausted, busy-wait poll for more data
     size_t available = ctx->read_buf.size() - ctx->read_pos;
     if (available == 0) {
         // Compact buffer
         ctx->read_buf.clear();
         ctx->read_pos = 0;
 
-        // Poll DPDK rx for new data
-        int new_bytes = ctx->poll_rx();
-        if (new_bytes <= 0) {
+        // Busy-wait poll DPDK rx until data arrives or timeout
+        int new_bytes = ctx->poll_rx_blocking();
+        if (new_bytes < 0) {
+            // TCP error (RST, out-of-order)
+            return -1;
+        }
+        if (new_bytes == 0) {
+            // Timeout — let SSL know it should retry
             BIO_set_retry_read(bio);
             return -1;
         }
@@ -318,6 +341,9 @@ public:
             SSL_set_tlsext_host_name(ssl, config.hostname.c_str());
         }
 
+        // Mark as client-side (required by aws-lc before SSL_do_handshake)
+        SSL_set_connect_state(ssl);
+
         // Create and attach custom BIO
         BIO* bio = BIO_new(bio_dpdk::bio_method());
         if (!bio) {
@@ -330,6 +356,7 @@ public:
         auto bio_ctx = std::make_unique<bio_dpdk::BioContext>();
         bio_ctx->tcp = &tcp;
         bio_ctx->pool = pool;
+        bio_ctx->poll_timeout = config.handshake_timeout;
         BIO_set_data(bio, bio_ctx.get());
         BIO_set_init(bio, 1);
 
@@ -406,6 +433,8 @@ public:
                         config_.handshake_timeout;
 
         while (true) {
+            // Clear stale errors from previous WANT_READ iterations
+            ERR_clear_error();
             int ret = SSL_do_handshake(ssl_);
             if (ret == 1) {
                 // Handshake completed
@@ -419,16 +448,13 @@ public:
 
             int err = SSL_get_error(ssl_, ret);
             if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-                // Need more I/O — poll DPDK and retry
+                // bio_read already busy-waits internally, so if we get
+                // WANT_READ here it means poll_rx_blocking timed out.
                 if (std::chrono::steady_clock::now() >= deadline) {
                     SPDLOG_LOGGER_ERROR(log,
                         "TLS handshake timeout ({}ms)",
                         config_.handshake_timeout.count());
                     return std::unexpected("TLS handshake timeout");
-                }
-                // Small busy-wait for BIO data
-                if (err == SSL_ERROR_WANT_READ && bio_ctx_) {
-                    bio_ctx_->poll_rx();
                 }
                 continue;
             }

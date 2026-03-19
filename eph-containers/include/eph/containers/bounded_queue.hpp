@@ -5,16 +5,17 @@
 #include <bit>
 #include <functional>
 #include <optional>
+#include <span>
 
 #include "eph/base/concepts.hpp"
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/cpu.hpp"
 
+namespace eph::containers {
+
 using eph::base::TrivialData;
 using eph::utils::Align;
 using eph::utils::cpu_relax;
-
-namespace eph::containers {
 
 /**
  * @brief SPSC 无锁不可丢弃队列
@@ -22,18 +23,22 @@ namespace eph::containers {
  * 内存布局：
  * ```
  * ┌─────────────────────────────────────────────────┐
- * │ Reader Hot Zone (独占 Cache Line)               │
- * │  - reader_.head_         (全局读取索引, 原子)   │
- * │  - reader_.shadow_tail_  (本地影子写入索引)     │
- * ├─────────────────────────────────────────────────┤
  * │ Writer Hot Zone (独占 Cache Line)               │
  * │  - writer_.tail_         (全局写入索引, 原子)   │
  * │  - writer_.shadow_head_  (本地影子读取索引)     │
+ * ├─────────────────────────────────────────────────┤
+ * │ Reader Hot Zone (独占 Cache Line)               │
+ * │  - reader_.head_         (全局读取索引, 原子)   │
+ * │  - reader_.shadow_tail_  (本地影子写入索引)     │
  * ├─────────────────────────────────────────────────┤
  * │ Slots Zone (数据存储区)                         │
  * │  - buffer_[0..Capacity-1]                       │
  * └─────────────────────────────────────────────────┘
  * ```
+ *
+ * @note 阻塞接口 (push/pop/produce/consume) 使用纯 cpu_relax() 自旋，
+ *       适用于 CPU-pinned 线程间短暂拥塞场景。若队列可能长期满/空，
+ *       应使用 try_ 系列接口配合自定义退避策略。
  *
  * @tparam T 数据类型，必须满足 TriviallyCopyable 概念。
  * @tparam Capacity 缓冲区容量，必须是 2 的幂。
@@ -67,12 +72,22 @@ class BoundedQueue {
         size_t shadow_tail_{0};
     } reader_;
 
+    static_assert(sizeof(WriterLine) <= Align<T>,
+                  "WriterLine exceeds cache line size");
+    static_assert(sizeof(ReaderLine) <= Align<T>,
+                  "ReaderLine exceeds cache line size");
+
     /// 核心数据存储区
     alignas(Align<T>) std::array<T, Capacity> buffer_{};
 
    public:
     BoundedQueue() noexcept = default;
     ~BoundedQueue() noexcept = default;
+
+    BoundedQueue(const BoundedQueue&) = delete;
+    BoundedQueue& operator=(const BoundedQueue&) = delete;
+    BoundedQueue(BoundedQueue&&) = delete;
+    BoundedQueue& operator=(BoundedQueue&&) = delete;
 
     // ===========================================================================
     // Writer 操作
@@ -88,29 +103,19 @@ class BoundedQueue {
     template <typename F>
         requires std::invocable<F, T&>
     [[nodiscard]] bool try_produce(F&& writer_func) noexcept {
-        // 1. 获取本地写入索引 (Relaxed)
-        // 只有生产者修改 tail，所以 Relaxed 读取即可
         const size_t tail = writer_.tail_.load(std::memory_order_relaxed);
 
-        // 2. 快速路径：检查影子索引空间
         if (tail - writer_.shadow_head_ >= Capacity) {
-            // 3. 慢速路径：影子索引认为已满，必须从内存加载最新的全局 head_
-            // (Acquire) Acquire 保证读取到消费者最新的修改
             const size_t head = reader_.head_.load(std::memory_order_acquire);
-            writer_.shadow_head_ = head;  // 更新本地缓存
+            writer_.shadow_head_ = head;
 
-            // 4. 再次检查真实容量状态
             if (tail - head >= Capacity) {
-                return false;  // Full
+                return false;
             }
         }
 
-        // 5. 执行数据写入
-        // 将 Slot 的引用传递给用户，允许原地构造或赋值
         std::invoke(std::forward<F>(writer_func), buffer_[tail & mask_]);
 
-        // 6. 发布新的写入索引 (Release)
-        // Release 保证之前的写入操作对消费者可见
         writer_.tail_.store(tail + 1, std::memory_order_release);
         return true;
     }
@@ -139,6 +144,42 @@ class BoundedQueue {
         requires std::is_assignable_v<T&, U>
     [[nodiscard]] bool try_push(U&& data) noexcept {
         return try_produce([&](T& slot) { slot = std::forward<U>(data); });
+    }
+
+    /**
+     * @brief 批量尝试写入 (全部或全不语义)
+     *
+     * 一次提交 N 个元素，仅需单次 atomic store 发布索引，
+     * 摊销了逐个 try_push 的原子操作开销。
+     *
+     * @param data 待写入的元素序列
+     * @return true 全部写入成功; false 剩余空间不足，无任何写入
+     */
+    [[nodiscard]] bool try_push_n(std::span<const T> data) noexcept {
+        const size_t n = data.size();
+        if (n == 0) return true;
+
+        const size_t tail = writer_.tail_.load(std::memory_order_relaxed);
+
+        // 检查是否有足够的连续空间
+        size_t available = Capacity - (tail - writer_.shadow_head_);
+        if (available < n) {
+            const size_t head = reader_.head_.load(std::memory_order_acquire);
+            writer_.shadow_head_ = head;
+            available = Capacity - (tail - head);
+            if (available < n) {
+                return false;
+            }
+        }
+
+        // 批量写入数据
+        for (size_t i = 0; i < n; ++i) {
+            buffer_[(tail + i) & mask_] = data[i];
+        }
+
+        // 单次 release store 发布所有元素
+        writer_.tail_.store(tail + n, std::memory_order_release);
+        return true;
     }
 
     /**
@@ -188,26 +229,19 @@ class BoundedQueue {
     template <typename F>
         requires std::invocable<F, T&>
     [[nodiscard]] bool try_consume(F&& visitor) noexcept {
-        // 1. 获取本地读取索引 (Relaxed)
         const size_t head = reader_.head_.load(std::memory_order_relaxed);
 
-        // 2. 快速路径：使用影子索引检查是否有数据
         if (reader_.shadow_tail_ == head) {
-            // 3. 慢速路径：影子索引认为已空，重新加载最新的全局 tail_ (Acquire)
             const size_t tail = writer_.tail_.load(std::memory_order_acquire);
-            reader_.shadow_tail_ = tail;  // 更新本地缓存
+            reader_.shadow_tail_ = tail;
 
-            // 4. 再次检查真实状态
             if (head == tail) {
                 return false;
             }
         }
 
-        // 5. 访问缓冲区数据
         std::invoke(std::forward<F>(visitor), buffer_[head & mask_]);
 
-        // 6. 发布新的读取索引 (Release)
-        // 告知生产者该 Slot 已被消费，可以重用
         reader_.head_.store(head + 1, std::memory_order_release);
         return true;
     }
@@ -231,6 +265,43 @@ class BoundedQueue {
             return res;
         }
         return std::nullopt;
+    }
+
+    /**
+     * @brief 批量尝试读取 (全部或全不语义)
+     *
+     * 一次消费最多 out.size() 个元素，仅需单次 atomic store 发布索引。
+     *
+     * @param out 输出缓冲区
+     * @return 实际读取的元素数量
+     */
+    [[nodiscard]] size_t try_pop_n(std::span<T> out) noexcept {
+        const size_t max_n = out.size();
+        if (max_n == 0) return 0;
+
+        const size_t head = reader_.head_.load(std::memory_order_relaxed);
+
+        // 计算可用元素数量
+        size_t available = reader_.shadow_tail_ - head;
+        if (available == 0) {
+            const size_t tail = writer_.tail_.load(std::memory_order_acquire);
+            reader_.shadow_tail_ = tail;
+            available = tail - head;
+            if (available == 0) {
+                return 0;
+            }
+        }
+
+        const size_t n = (available < max_n) ? available : max_n;
+
+        // 批量读取数据
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = buffer_[(head + i) & mask_];
+        }
+
+        // 单次 release store 发布所有消费
+        reader_.head_.store(head + n, std::memory_order_release);
+        return n;
     }
 
     /**
@@ -264,17 +335,17 @@ class BoundedQueue {
     // 状态查询
     // ===========================================================================
 
-    /// 获取当前队列中的元素数量 (估计值)
+    /// 获取当前队列中的元素数量（估计值，仅供监控/调试，不保证跨线程一致性）
     [[nodiscard]] size_t size() const noexcept {
         auto tail = writer_.tail_.load(std::memory_order_relaxed);
         auto head = reader_.head_.load(std::memory_order_relaxed);
         return tail - head;
     }
 
-    /// 检查队列是否为空
+    /// 检查队列是否为空（估计值）
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-    /// 检查队列是否已满
+    /// 检查队列是否已满（估计值）
     [[nodiscard]] bool full() const noexcept { return size() >= Capacity; }
 
     /// 获取队列固定容量
