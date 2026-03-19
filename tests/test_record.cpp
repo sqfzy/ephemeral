@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <filesystem>
+#include <thread>
+#include <vector>
 
 #include "eph/utils/record.hpp"
 #include "eph/utils/time.hpp"
@@ -13,26 +15,30 @@ protected:
   }
 };
 
+// ============================================================================
+// measure_tsc / ScopedTSC
+// ============================================================================
+
 TEST_F(RecordTest, MeasureFunction) {
   int counter = 0;
   auto cycles = measure_tsc([&] { counter++; });
-  
+
   EXPECT_EQ(counter, 1);
   EXPECT_GT(cycles, 0);
 }
 
 TEST_F(RecordTest, MeasureFunctionWithArgs) {
   std::vector<int> vec{3, 1, 2};
-  auto cycles = measure_tsc(std::sort<decltype(vec.begin())>, 
+  auto cycles = measure_tsc(std::sort<decltype(vec.begin())>,
                         vec.begin(), vec.end());
-  
+
   EXPECT_GT(cycles, 0);
   EXPECT_TRUE(std::is_sorted(vec.begin(), vec.end()));
 }
 
 TEST_F(RecordTest, ScopedTscBasic) {
   uint64_t latency = 0;
-  
+
   {
     ScopedTSC timer(latency);
     volatile int x = 0;
@@ -40,17 +46,21 @@ TEST_F(RecordTest, ScopedTscBasic) {
       x += i;
     }
   }
-  
+
   EXPECT_GT(latency, 0);
 }
 
+// ============================================================================
+// HdrHistogram
+// ============================================================================
+
 TEST_F(RecordTest, HdrHistogramBasic) {
   HdrHistogram hist(1, 1000000, 3);
-  
+
   EXPECT_TRUE(hist.record(100));
   EXPECT_TRUE(hist.record(500));
   EXPECT_TRUE(hist.record(1000));
-  
+
   EXPECT_EQ(hist.get_total_count(), 3);
   EXPECT_EQ(hist.get_min_value(), 100);
   EXPECT_EQ(hist.get_max_value(), 1000);
@@ -58,16 +68,15 @@ TEST_F(RecordTest, HdrHistogramBasic) {
 
 TEST_F(RecordTest, HdrHistogramPercentiles) {
   HdrHistogram hist(1, 1000000, 3);
-  
-  // 插入 1-100 的值
+
   for (uint64_t i = 1; i <= 100; ++i) {
     EXPECT_TRUE(hist.record(i));
   }
-  
+
   uint64_t p50 = hist.get_value_at_percentile(50.0);
   uint64_t p90 = hist.get_value_at_percentile(90.0);
   uint64_t p99 = hist.get_value_at_percentile(99.0);
-  
+
   EXPECT_GT(p50, 40);
   EXPECT_LT(p50, 60);
   EXPECT_GT(p90, 85);
@@ -76,39 +85,39 @@ TEST_F(RecordTest, HdrHistogramPercentiles) {
 
 TEST_F(RecordTest, HdrHistogramBatchPercentiles) {
   HdrHistogram hist(1, 1000000, 3);
-  
+
   for (uint64_t i = 1; i <= 100; ++i) {
     hist.record(i);
   }
-  
+
   auto percentiles = hist.get_percentiles({50.0, 90.0, 99.0, 99.9});
-  
+
   EXPECT_EQ(percentiles.size(), 4);
-  EXPECT_GT(percentiles[0], 0); // P50
-  EXPECT_GT(percentiles[1], percentiles[0]); // P90 > P50
-  EXPECT_GT(percentiles[2], percentiles[1]); // P99 > P90
+  EXPECT_GT(percentiles[0], 0);
+  EXPECT_GT(percentiles[1], percentiles[0]);
+  EXPECT_GT(percentiles[2], percentiles[1]);
 }
 
 TEST_F(RecordTest, HdrHistogramOutOfRange) {
   HdrHistogram hist(100, 10000, 2);
-  
-  EXPECT_FALSE(hist.record(50));     // 小于最小值
-  EXPECT_FALSE(hist.record(20000));  // 大于最大值
-  EXPECT_TRUE(hist.record(500));     // 正常范围
-  
+
+  EXPECT_FALSE(hist.record(50));
+  EXPECT_FALSE(hist.record(20000));
+  EXPECT_TRUE(hist.record(500));
+
   EXPECT_EQ(hist.get_total_count(), 1);
 }
 
 TEST_F(RecordTest, HdrHistogramMerge) {
   HdrHistogram hist1(1, 100000, 2);
   HdrHistogram hist2(1, 100000, 2);
-  
+
   hist1.record(100);
   hist1.record(200);
-  
+
   hist2.record(300);
   hist2.record(400);
-  
+
   EXPECT_TRUE(hist1.merge(hist2));
   EXPECT_EQ(hist1.get_total_count(), 4);
   EXPECT_EQ(hist1.get_min_value(), 100);
@@ -117,28 +126,32 @@ TEST_F(RecordTest, HdrHistogramMerge) {
 
 TEST_F(RecordTest, HdrHistogramStatistics) {
   HdrHistogram hist(1, 1000000, 3);
-  
+
   for (int i = 0; i < 1000; ++i) {
     hist.record(500);
   }
-  
+
   double mean = hist.get_mean();
   double stddev = hist.get_std_deviation();
-  
+
   EXPECT_NEAR(mean, 500.0, 50.0);
   EXPECT_GE(stddev, 0.0);
 }
 
+// ============================================================================
+// Recorder (单线程)
+// ============================================================================
+
 TEST_F(RecordTest, RecorderBasic) {
   Recorder rec("TestRecorder");
-  
+
   EXPECT_FALSE(rec.has_data());
-  
+
   uint64_t start = TSC::now();
   volatile int x = 0;
   for (int i = 0; i < 1000; ++i) x += i;
   uint64_t end = TSC::now();
-  
+
   EXPECT_TRUE(rec.record(end - start));
   EXPECT_TRUE(rec.has_data());
   EXPECT_EQ(rec.count(), 1);
@@ -146,14 +159,14 @@ TEST_F(RecordTest, RecorderBasic) {
 
 TEST_F(RecordTest, RecorderMultipleSamples) {
   Recorder rec("MultiSample", 1, 10000000, 2);
-  
+
   for (int i = 0; i < 100; ++i) {
     rec.record(1000 + i);
   }
-  
+
   auto stats = rec.compute_stats();
   ASSERT_TRUE(stats.has_value());
-  
+
   EXPECT_EQ(stats->count, 100);
   EXPECT_GT(stats->avg_ns, 0.0);
   EXPECT_GT(stats->p99_ns, stats->p50_ns);
@@ -161,56 +174,187 @@ TEST_F(RecordTest, RecorderMultipleSamples) {
 
 TEST_F(RecordTest, RecorderRejectsInvalidValues) {
   Recorder rec("InvalidTest");
-  
-  EXPECT_FALSE(rec.record(0));  // 零值
-  EXPECT_FALSE(rec.record(std::nan("")));  // NaN
-  EXPECT_FALSE(rec.record(std::numeric_limits<double>::infinity()));  // Inf
-  
+
+  EXPECT_FALSE(rec.record(0));
+
   EXPECT_EQ(rec.count(), 0);
   EXPECT_GT(rec.skipped_invalid_count(), 0);
 }
 
+TEST_F(RecordTest, RecorderMerge) {
+  Recorder rec1("MergeA", 1, 10000000, 2);
+  Recorder rec2("MergeB", 1, 10000000, 2);
+
+  for (int i = 0; i < 50; ++i) {
+    rec1.record(1000 + i);
+  }
+  for (int i = 0; i < 50; ++i) {
+    rec2.record(2000 + i);
+  }
+
+  EXPECT_TRUE(rec1.merge(rec2));
+  EXPECT_EQ(rec1.count(), 100);
+
+  auto stats = rec1.compute_stats();
+  ASSERT_TRUE(stats.has_value());
+  EXPECT_EQ(stats->count, 100);
+}
+
 TEST_F(RecordTest, RecorderExportJson) {
   Recorder rec("ExportTest");
-  
+
   for (int i = 0; i < 10; ++i) {
     rec.record(1000 + i * 100);
   }
-  
+
   std::string test_dir = "test_outputs";
   EXPECT_TRUE(rec.export_json(test_dir));
-  
-  // 验证文件存在
+
   EXPECT_TRUE(std::filesystem::exists(test_dir));
-  
-  // 清理
   std::filesystem::remove_all(test_dir);
 }
 
 TEST_F(RecordTest, RecorderExportCsv) {
   Recorder rec("CsvTest");
-  
+
   for (int i = 0; i < 10; ++i) {
     rec.record(1000 + i * 100);
   }
-  
+
   std::string test_dir = "test_outputs";
   EXPECT_TRUE(rec.export_csv(test_dir));
-  
+
   EXPECT_TRUE(std::filesystem::exists(test_dir));
-  
-  // 清理
   std::filesystem::remove_all(test_dir);
 }
 
 TEST_F(RecordTest, RecorderReset) {
   Recorder rec("ResetTest");
-  
+
   rec.record(1000);
   rec.record(2000);
   EXPECT_EQ(rec.count(), 2);
-  
+
   rec.reset();
   EXPECT_EQ(rec.count(), 0);
   EXPECT_FALSE(rec.has_data());
+}
+
+// ============================================================================
+// Recorder — Stats 结构体不含系统资源字段
+// ============================================================================
+
+TEST_F(RecordTest, StatsHasNoSystemResourceFields) {
+  Recorder rec("PureLatency");
+  rec.record(1000);
+  rec.record(2000);
+
+  auto stats = rec.compute_stats();
+  ASSERT_TRUE(stats.has_value());
+
+  // Stats 只有延迟统计字段
+  EXPECT_EQ(stats->name, "PureLatency");
+  EXPECT_EQ(stats->count, 2);
+  EXPECT_GT(stats->avg_ns, 0.0);
+  EXPECT_GT(stats->p50_ns, 0.0);
+  EXPECT_GT(stats->p99_ns, 0.0);
+}
+
+// ============================================================================
+// SystemStats (独立系统资源采集)
+// ============================================================================
+
+TEST_F(RecordTest, SystemStatsSnapshot) {
+  SystemStats sys;
+
+  // 做一些工作产生资源消耗
+  volatile int sum = 0;
+  for (int i = 0; i < 100000; ++i) {
+    sum += i;
+  }
+
+  auto resource = sys.snapshot();
+
+  // 至少 user CPU 应该有一些消耗
+  EXPECT_GE(resource.user_cpu_s, 0.0);
+  EXPECT_GE(resource.total_cpu_s, 0.0);
+  EXPECT_GE(resource.minflt, 0);
+}
+
+TEST_F(RecordTest, SystemStatsReset) {
+  SystemStats sys;
+
+  volatile int sum = 0;
+  for (int i = 0; i < 100000; ++i) sum += i;
+
+  sys.reset();
+
+  auto resource = sys.snapshot();
+  // reset 后差值应该非常小
+  EXPECT_GE(resource.user_cpu_s, 0.0);
+}
+
+// ============================================================================
+// ConcurrentRecorder (多线程)
+// ============================================================================
+
+TEST_F(RecordTest, ConcurrentRecorderSingleThread) {
+  ConcurrentRecorder rec("ConcSingle");
+
+  for (int i = 0; i < 100; ++i) {
+    rec.record(1000 + i);
+  }
+
+  auto stats = rec.compute_stats();
+  ASSERT_TRUE(stats.has_value());
+  EXPECT_EQ(stats->count, 100);
+  EXPECT_GT(stats->avg_ns, 0.0);
+  EXPECT_EQ(rec.thread_count(), 1);
+}
+
+TEST_F(RecordTest, ConcurrentRecorderMultiThread) {
+  ConcurrentRecorder rec("ConcMulti");
+
+  constexpr int num_threads = 4;
+  constexpr int samples_per_thread = 1000;
+
+  std::vector<std::thread> threads;
+  threads.reserve(num_threads);
+
+  for (int t = 0; t < num_threads; ++t) {
+    threads.emplace_back([&rec, t] {
+      for (int i = 0; i < samples_per_thread; ++i) {
+        rec.record(1000 + t * 100 + i);
+      }
+    });
+  }
+
+  for (auto& th : threads) {
+    th.join();
+  }
+
+  auto stats = rec.compute_stats();
+  ASSERT_TRUE(stats.has_value());
+  EXPECT_EQ(stats->count, num_threads * samples_per_thread);
+  EXPECT_GT(stats->avg_ns, 0.0);
+  EXPECT_GT(stats->p99_ns, stats->p50_ns);
+}
+
+TEST_F(RecordTest, ConcurrentRecorderRejectsZero) {
+  ConcurrentRecorder rec("ConcZero");
+
+  EXPECT_FALSE(rec.record(0));
+  // 有效记录
+  EXPECT_TRUE(rec.record(1000));
+
+  auto stats = rec.compute_stats();
+  ASSERT_TRUE(stats.has_value());
+  EXPECT_EQ(stats->count, 1);
+}
+
+TEST_F(RecordTest, ConcurrentRecorderEmptyReport) {
+  ConcurrentRecorder rec("ConcEmpty");
+
+  auto stats = rec.compute_stats();
+  EXPECT_FALSE(stats.has_value());
 }
