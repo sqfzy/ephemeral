@@ -1,0 +1,573 @@
+#pragma once
+
+/// @file tcp.hpp
+/// Minimal user-space TCP state machine for DPDK data plane.
+///
+/// Design constraints (from architecture discussion):
+///   - Implements: seq/ack tracking, ACK generation, window management,
+///     FIN/RST handling, keepalive
+///   - Does NOT implement: retransmission, Nagle, delayed ACK, congestion
+///     control, SACK, TCP timestamps
+///   - Loss strategy: detect packet loss → immediate reconnect (~2ms)
+///
+/// The state machine handles TCP three-way handshake, data transfer, and
+/// graceful close. All operations go through DPDK tx_burst/rx_burst — no
+/// kernel sockets are used on the data path.
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <expected>
+#include <format>
+#include <functional>
+#include <random>
+#include <string>
+
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
+#include <rte_ethdev.h>
+#include <rte_mbuf.h>
+
+#include "eph/dpdk/net_header.hpp"
+
+namespace eph::dpdk {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TCP state
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum class TcpState : uint8_t {
+    Closed,
+    SynSent,
+    Established,
+    FinWait1,
+    FinWait2,
+    TimeWait,
+    CloseWait,
+    LastAck,
+};
+
+constexpr const char* tcp_state_name(TcpState s) noexcept {
+    switch (s) {
+        case TcpState::Closed:      return "CLOSED";
+        case TcpState::SynSent:     return "SYN_SENT";
+        case TcpState::Established: return "ESTABLISHED";
+        case TcpState::FinWait1:    return "FIN_WAIT_1";
+        case TcpState::FinWait2:    return "FIN_WAIT_2";
+        case TcpState::TimeWait:    return "TIME_WAIT";
+        case TcpState::CloseWait:   return "CLOSE_WAIT";
+        case TcpState::LastAck:     return "LAST_ACK";
+    }
+    return "UNKNOWN";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct TcpConfig {
+    net::ConnectionTuple tuple{};
+    rte_ether_addr       src_mac{};
+    rte_ether_addr       dst_mac{};
+    uint16_t             mss          = net::kDefaultMss;
+    uint32_t             recv_window  = 65535;
+    uint16_t             port_id      = 0;
+    uint16_t             tx_queue_id  = 0;
+    uint16_t             rx_queue_id  = 0;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logger
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+inline std::shared_ptr<spdlog::logger> tcp_logger() {
+    static auto l = [] {
+        auto lg = spdlog::stdout_color_mt("dpdk.tcp");
+        lg->set_level(spdlog::level::trace);
+        return lg;
+    }();
+    return l;
+}
+
+} // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TCP Session
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Minimal TCP session for DPDK data plane.
+///
+/// Supports three-way handshake, data send/recv, ACK generation,
+/// and graceful close. No retransmission — packet loss triggers reconnect.
+class TcpSession {
+public:
+    struct Stats {
+        uint64_t tx_packets      = 0;
+        uint64_t rx_packets      = 0;
+        uint64_t tx_bytes        = 0;
+        uint64_t rx_bytes        = 0;
+        uint64_t acks_sent       = 0;
+        uint64_t out_of_order    = 0;
+        uint64_t resets_received = 0;
+    };
+
+    /// Create a TCP session (does NOT connect yet).
+    explicit TcpSession(const TcpConfig& config, rte_mempool* pool) noexcept
+        : config_(config)
+        , pool_(pool)
+        , state_(TcpState::Closed)
+        , snd_nxt_(generate_isn())
+        , snd_una_(snd_nxt_)
+        , rcv_nxt_(0)
+        , rcv_wnd_(config.recv_window)
+        , snd_wnd_(0) {
+
+        pkt_template_.src_mac = config.src_mac;
+        pkt_template_.dst_mac = config.dst_mac;
+        pkt_template_.tuple   = config.tuple;
+
+        SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            "TcpSession created: {}:{} -> {}:{}",
+            net::format_ipv4(config.tuple.src_ip).data(),
+            config.tuple.src_port,
+            net::format_ipv4(config.tuple.dst_ip).data(),
+            config.tuple.dst_port);
+    }
+
+    ~TcpSession() {
+        if (state_ != TcpState::Closed) {
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "TcpSession destroyed in state {}", tcp_state_name(state_));
+        }
+    }
+
+    TcpSession(const TcpSession&)            = delete;
+    TcpSession& operator=(const TcpSession&) = delete;
+    TcpSession(TcpSession&&) noexcept        = default;
+    TcpSession& operator=(TcpSession&&) noexcept = default;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Connection establishment
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Perform TCP three-way handshake (blocking, polls DPDK rx).
+    /// @param timeout  Maximum time to wait for SYN-ACK
+    /// @return Error string on failure
+    std::expected<void, std::string>
+    connect(std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
+        auto log = detail::tcp_logger();
+
+        if (state_ != TcpState::Closed) {
+            return std::unexpected(std::format(
+                "Cannot connect: session in state {}", tcp_state_name(state_)));
+        }
+
+        // Send SYN
+        SPDLOG_LOGGER_DEBUG(log, "Sending SYN, isn={}", snd_nxt_);
+        auto* syn = pkt_template_.build_packet(
+            pool_, snd_nxt_, 0, net::kTcpSyn, rcv_wnd_);
+        if (!syn) {
+            SPDLOG_LOGGER_ERROR(log, "Failed to allocate mbuf for SYN");
+            return std::unexpected("mbuf allocation failed for SYN");
+        }
+
+        uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &syn, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(syn);
+            SPDLOG_LOGGER_ERROR(log, "tx_burst failed for SYN");
+            return std::unexpected("tx_burst failed for SYN");
+        }
+        stats_.tx_packets++;
+
+        state_ = TcpState::SynSent;
+        snd_nxt_++; // SYN consumes one sequence number
+
+        // Wait for SYN-ACK
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            rte_mbuf* pkts[32];
+            uint16_t nb_rx = rte_eth_rx_burst(
+                config_.port_id, config_.rx_queue_id, pkts, 32);
+
+            for (uint16_t i = 0; i < nb_rx; ++i) {
+                auto parsed = net::parse_packet(pkts[i]);
+                if (!parsed.tcp || !parsed.matches(config_.tuple)) {
+                    rte_pktmbuf_free(pkts[i]);
+                    continue;
+                }
+
+                stats_.rx_packets++;
+
+                if (parsed.has_flag(net::kTcpRst)) {
+                    SPDLOG_LOGGER_ERROR(log, "Received RST during handshake");
+                    state_ = TcpState::Closed;
+                    stats_.resets_received++;
+                    free_remaining(pkts, i + 1, nb_rx);
+                    return std::unexpected("Connection refused (RST)");
+                }
+
+                // Expecting SYN+ACK
+                if (parsed.has_flag(net::kTcpSyn) && parsed.has_flag(net::kTcpAck)) {
+                    if (parsed.ack() != snd_nxt_) {
+                        SPDLOG_LOGGER_WARN(log,
+                            "SYN-ACK with wrong ack: expected={}, got={}",
+                            snd_nxt_, parsed.ack());
+                        rte_pktmbuf_free(pkts[i]);
+                        continue;
+                    }
+
+                    rcv_nxt_ = parsed.seq() + 1; // SYN-ACK consumes one seq
+                    snd_una_ = parsed.ack();
+                    snd_wnd_ = parsed.window();
+
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "Received SYN-ACK: peer_isn={}, window={}",
+                        parsed.seq(), snd_wnd_);
+
+                    // Send ACK to complete handshake
+                    rte_pktmbuf_free(pkts[i]);
+                    free_remaining(pkts, i + 1, nb_rx);
+
+                    auto ack_result = send_ack();
+                    if (!ack_result) return ack_result;
+
+                    state_ = TcpState::Established;
+                    SPDLOG_LOGGER_INFO(log,
+                        "TCP connection established: {}:{} -> {}:{}",
+                        net::format_ipv4(config_.tuple.src_ip).data(),
+                        config_.tuple.src_port,
+                        net::format_ipv4(config_.tuple.dst_ip).data(),
+                        config_.tuple.dst_port);
+                    return {};
+                }
+
+                rte_pktmbuf_free(pkts[i]);
+            }
+        }
+
+        state_ = TcpState::Closed;
+        SPDLOG_LOGGER_ERROR(log, "TCP handshake timeout ({}ms)", timeout.count());
+        return std::unexpected(std::format(
+            "TCP handshake timeout after {}ms", timeout.count()));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Data transfer
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Send data over the established TCP connection.
+    /// @param data     Payload data
+    /// @param len      Payload length (must be <= MSS)
+    /// @return Number of bytes sent, or error
+    std::expected<size_t, std::string>
+    send(const void* data, size_t len) {
+        if (state_ != TcpState::Established) {
+            return std::unexpected(std::format(
+                "Cannot send: state={}", tcp_state_name(state_)));
+        }
+
+        if (len > config_.mss) {
+            return std::unexpected(std::format(
+                "Payload too large: {} > MSS {}", len, config_.mss));
+        }
+
+        auto* mbuf = pkt_template_.build_packet(
+            pool_, snd_nxt_, rcv_nxt_,
+            net::kTcpAck | net::kTcpPsh,
+            rcv_wnd_, data, static_cast<uint16_t>(len));
+        if (!mbuf) {
+            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+                "mbuf alloc failed in send (len={})", len);
+            return std::unexpected("mbuf allocation failed");
+        }
+
+        uint16_t sent = rte_eth_tx_burst(
+            config_.port_id, config_.tx_queue_id, &mbuf, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(mbuf);
+            return std::unexpected("tx_burst failed");
+        }
+
+        snd_nxt_ += static_cast<uint32_t>(len);
+        stats_.tx_packets++;
+        stats_.tx_bytes += len;
+        return len;
+    }
+
+    /// Build a data packet into a pre-allocated mbuf (hot path, no alloc).
+    /// Returns the mbuf ready for tx_burst, or nullptr on error.
+    /// Caller is responsible for tx_burst and updating stats.
+    rte_mbuf* build_data_packet(rte_mbuf* mbuf,
+                                const void* data, uint16_t len) noexcept {
+        if (state_ != TcpState::Established || len > config_.mss) return nullptr;
+
+        uint16_t written = pkt_template_.fill_packet(
+            mbuf, snd_nxt_, rcv_nxt_,
+            net::kTcpAck | net::kTcpPsh,
+            rcv_wnd_, data, len);
+        if (written == 0) return nullptr;
+
+        snd_nxt_ += len;
+        return mbuf;
+    }
+
+    /// Process received packets. Calls data_callback for each payload.
+    /// Automatically sends ACKs and handles control packets (FIN, RST).
+    /// @param pkts     Array of received mbufs (will be freed)
+    /// @param nb_pkts  Number of packets
+    /// @param data_callback  Called with (payload_ptr, payload_len) for each data packet
+    /// @return Number of data packets processed, or error
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    std::expected<uint16_t, std::string>
+    process_rx(rte_mbuf** pkts, uint16_t nb_pkts, F&& data_callback) {
+        auto log = detail::tcp_logger();
+        uint16_t data_count = 0;
+        bool need_ack = false;
+
+        for (uint16_t i = 0; i < nb_pkts; ++i) {
+            auto parsed = net::parse_packet(pkts[i]);
+
+            // Skip non-matching packets
+            if (!parsed.tcp || !parsed.matches(config_.tuple)) {
+                rte_pktmbuf_free(pkts[i]);
+                continue;
+            }
+
+            stats_.rx_packets++;
+
+            // RST — immediate close
+            if (parsed.has_flag(net::kTcpRst)) {
+                SPDLOG_LOGGER_WARN(log, "Received RST, closing connection");
+                state_ = TcpState::Closed;
+                stats_.resets_received++;
+                rte_pktmbuf_free(pkts[i]);
+                free_remaining(pkts, i + 1, nb_pkts);
+                return std::unexpected("Connection reset by peer");
+            }
+
+            // Update send window from peer's advertisements
+            if (parsed.has_flag(net::kTcpAck)) {
+                uint32_t peer_ack = parsed.ack();
+                // Advance SND.UNA if the ACK is valid
+                if (seq_after(peer_ack, snd_una_) &&
+                    !seq_after(peer_ack, snd_nxt_)) {
+                    snd_una_ = peer_ack;
+                }
+                snd_wnd_ = parsed.window();
+            }
+
+            // Check sequence number ordering
+            if (state_ == TcpState::Established ||
+                state_ == TcpState::FinWait1 ||
+                state_ == TcpState::FinWait2) {
+
+                uint32_t seg_seq = parsed.seq();
+
+                // Out-of-order detection (simplified: no reassembly)
+                if (seg_seq != rcv_nxt_ && parsed.payload_len > 0) {
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "Out-of-order: expected={}, got={}", rcv_nxt_, seg_seq);
+                    stats_.out_of_order++;
+                    rte_pktmbuf_free(pkts[i]);
+                    // Out-of-order = potential packet loss → signal error
+                    free_remaining(pkts, i + 1, nb_pkts);
+                    return std::unexpected(std::format(
+                        "Packet loss detected: expected seq {}, got {}",
+                        rcv_nxt_, seg_seq));
+                }
+
+                // Process data payload
+                if (parsed.payload_len > 0) {
+                    std::invoke(std::forward<F>(data_callback),
+                                parsed.payload, parsed.payload_len);
+                    rcv_nxt_ += parsed.payload_len;
+                    stats_.rx_bytes += parsed.payload_len;
+                    data_count++;
+                    need_ack = true;
+                }
+            }
+
+            // FIN handling
+            if (parsed.has_flag(net::kTcpFin)) {
+                rcv_nxt_++; // FIN consumes one sequence number
+                need_ack = true;
+
+                switch (state_) {
+                    case TcpState::Established:
+                        SPDLOG_LOGGER_DEBUG(log, "Received FIN in ESTABLISHED");
+                        state_ = TcpState::CloseWait;
+                        break;
+                    case TcpState::FinWait1:
+                        if (parsed.has_flag(net::kTcpAck)) {
+                            SPDLOG_LOGGER_DEBUG(log, "Received FIN+ACK in FIN_WAIT_1");
+                            state_ = TcpState::TimeWait;
+                        } else {
+                            SPDLOG_LOGGER_DEBUG(log, "Simultaneous close");
+                            state_ = TcpState::TimeWait;
+                        }
+                        break;
+                    case TcpState::FinWait2:
+                        SPDLOG_LOGGER_DEBUG(log, "Received FIN in FIN_WAIT_2");
+                        state_ = TcpState::TimeWait;
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            rte_pktmbuf_free(pkts[i]);
+        }
+
+        // Send ACK for all received data/FINs
+        if (need_ack) {
+            auto r = send_ack();
+            if (!r) {
+                SPDLOG_LOGGER_WARN(log, "Failed to send ACK: {}", r.error());
+            }
+        }
+
+        return data_count;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Connection close
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Initiate graceful TCP close (send FIN).
+    std::expected<void, std::string> close() {
+        auto log = detail::tcp_logger();
+
+        if (state_ != TcpState::Established &&
+            state_ != TcpState::CloseWait) {
+            return std::unexpected(std::format(
+                "Cannot close: state={}", tcp_state_name(state_)));
+        }
+
+        SPDLOG_LOGGER_DEBUG(log, "Sending FIN");
+        auto* fin = pkt_template_.build_packet(
+            pool_, snd_nxt_, rcv_nxt_,
+            net::kTcpFin | net::kTcpAck, rcv_wnd_);
+        if (!fin) {
+            return std::unexpected("mbuf allocation failed for FIN");
+        }
+
+        uint16_t sent = rte_eth_tx_burst(
+            config_.port_id, config_.tx_queue_id, &fin, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(fin);
+            return std::unexpected("tx_burst failed for FIN");
+        }
+
+        snd_nxt_++; // FIN consumes one sequence number
+        stats_.tx_packets++;
+
+        if (state_ == TcpState::Established) {
+            state_ = TcpState::FinWait1;
+        } else { // CloseWait
+            state_ = TcpState::LastAck;
+        }
+
+        SPDLOG_LOGGER_DEBUG(log, "FIN sent, state -> {}",
+                            tcp_state_name(state_));
+        return {};
+    }
+
+    /// Force-close the connection (send RST).
+    void reset() noexcept {
+        auto log = detail::tcp_logger();
+        SPDLOG_LOGGER_DEBUG(log, "Sending RST");
+
+        auto* rst = pkt_template_.build_packet(
+            pool_, snd_nxt_, rcv_nxt_, net::kTcpRst | net::kTcpAck, 0);
+        if (rst) {
+            rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &rst, 1);
+            // If tx_burst fails, mbuf will be freed by DPDK on port close
+        }
+
+        state_ = TcpState::Closed;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // State queries
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [[nodiscard]] TcpState state()       const noexcept { return state_; }
+    [[nodiscard]] uint32_t snd_nxt()     const noexcept { return snd_nxt_; }
+    [[nodiscard]] uint32_t snd_una()     const noexcept { return snd_una_; }
+    [[nodiscard]] uint32_t rcv_nxt()     const noexcept { return rcv_nxt_; }
+    [[nodiscard]] uint16_t rcv_wnd()     const noexcept { return rcv_wnd_; }
+    [[nodiscard]] uint16_t snd_wnd()     const noexcept { return snd_wnd_; }
+    [[nodiscard]] uint16_t mss()         const noexcept { return config_.mss; }
+    [[nodiscard]] const TcpConfig& config() const noexcept { return config_; }
+    [[nodiscard]] Stats    stats()       const noexcept { return stats_; }
+
+    [[nodiscard]] bool is_established() const noexcept {
+        return state_ == TcpState::Established;
+    }
+
+    /// Get the packet template (for hot path direct mbuf construction).
+    [[nodiscard]] net::PacketTemplate& packet_template() noexcept {
+        return pkt_template_;
+    }
+
+private:
+    TcpConfig           config_;
+    rte_mempool*        pool_;
+    TcpState            state_;
+    net::PacketTemplate pkt_template_;
+
+    // TCP sequence tracking
+    uint32_t snd_nxt_;    // SND.NXT: next sequence number to send
+    uint32_t snd_una_;    // SND.UNA: oldest unacknowledged sequence number
+    uint32_t rcv_nxt_;    // RCV.NXT: next expected sequence number from peer
+    uint16_t rcv_wnd_;    // RCV.WND: our receive window advertisement
+    uint16_t snd_wnd_;    // SND.WND: peer's receive window
+
+    Stats stats_{};
+
+    /// Generate initial sequence number (RFC 6528 recommends random).
+    static uint32_t generate_isn() noexcept {
+        std::random_device rd;
+        return rd();
+    }
+
+    /// Sequence number comparison: is a after b? (handles wrap-around)
+    static bool seq_after(uint32_t a, uint32_t b) noexcept {
+        return static_cast<int32_t>(a - b) > 0;
+    }
+
+    /// Send a bare ACK packet.
+    std::expected<void, std::string> send_ack() {
+        auto* ack_pkt = pkt_template_.build_packet(
+            pool_, snd_nxt_, rcv_nxt_, net::kTcpAck, rcv_wnd_);
+        if (!ack_pkt) {
+            return std::unexpected("mbuf allocation failed for ACK");
+        }
+
+        uint16_t sent = rte_eth_tx_burst(
+            config_.port_id, config_.tx_queue_id, &ack_pkt, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(ack_pkt);
+            return std::unexpected("tx_burst failed for ACK");
+        }
+
+        stats_.acks_sent++;
+        stats_.tx_packets++;
+        SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
+            "ACK sent: seq={}, ack={}", snd_nxt_, rcv_nxt_);
+        return {};
+    }
+
+    /// Free remaining mbufs in an array starting from index `from`.
+    static void free_remaining(rte_mbuf** pkts, uint16_t from, uint16_t total) noexcept {
+        for (uint16_t j = from; j < total; ++j) {
+            rte_pktmbuf_free(pkts[j]);
+        }
+    }
+};
+
+} // namespace eph::dpdk

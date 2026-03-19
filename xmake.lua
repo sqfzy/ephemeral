@@ -11,6 +11,7 @@ if is_mode("release") then
 end
 
 add_requires("numactl", "tabulate", "benchmark", "spdlog", "dpdk", { optional = true })
+add_requires("openssl", { optional = true })
 add_requires("gtest", { system = false, configs = { main = true } })
 
 option("use_numa")
@@ -48,8 +49,8 @@ target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
-    add_deps("eph-base", { public = true })
-    add_packages("dpdk", "spdlog", { public = true })
+    add_deps("eph-base", "eph-utils", "eph-containers", { public = true })
+    add_packages("dpdk", "spdlog", "openssl", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. dpdk_log_level, { public = true })
     add_cxflags("-march=corei7", { public = true, force = true })
     add_rules("utils.install.cmake_importfiles")
