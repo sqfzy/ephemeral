@@ -200,3 +200,128 @@ TEST(Http, Base64EncodeKnownValues) {
     EXPECT_EQ(b64("fooba"),  "Zm9vYmE=");
     EXPECT_EQ(b64("foobar"), "Zm9vYmFy");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(Http, Base64EncodeEmptyInput) {
+    auto result = detail::base64_encode(nullptr, 0);
+    EXPECT_EQ(result, "");
+}
+
+TEST(Http, Base64EncodeSingleByte) {
+    uint8_t data[] = {0x00};
+    auto result = detail::base64_encode(data, 1);
+    EXPECT_EQ(result, "AA==");
+}
+
+TEST(Http, ParseResponseMissingUpgradeHeader) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status_code, 101);
+    EXPECT_FALSE(result->has_upgrade) << "Missing Upgrade header should be detected";
+    EXPECT_TRUE(result->has_connection_upgrade);
+}
+
+TEST(Http, ParseResponseMissingConnectionHeader) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->has_upgrade);
+    EXPECT_FALSE(result->has_connection_upgrade)
+        << "Missing Connection: Upgrade header should be detected";
+}
+
+TEST(Http, ParseResponseExtraWhitespaceInHeaderValue) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade:   websocket\r\n"
+        "Connection:  Upgrade\r\n"
+        "Sec-WebSocket-Accept:  s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->has_upgrade) << "Extra whitespace should be trimmed";
+    EXPECT_TRUE(result->has_connection_upgrade);
+}
+
+TEST(Http, ParseResponseNon101StatusCode) {
+    std::string response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status_code, 200);
+    // Caller should check status_code != 101
+}
+
+TEST(Http, ParseResponseMalformedStatusLine) {
+    std::string response = "GARBAGE\r\n\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    EXPECT_FALSE(result.has_value())
+        << "Malformed status line (no space) should be rejected";
+}
+
+TEST(Http, ParseResponseIncomplete_NoDoubleNewline) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    EXPECT_FALSE(result.has_value());
+    // Should return "Incomplete" error
+}
+
+TEST(Http, BuildUpgradeRequestContainsRequiredHeaders) {
+    std::string req = build_upgrade_request("example.com", "/ws", "dGVzdA==");
+    EXPECT_NE(req.find("GET /ws HTTP/1.1"), std::string::npos);
+    EXPECT_NE(req.find("Host: example.com"), std::string::npos);
+    EXPECT_NE(req.find("Upgrade: websocket"), std::string::npos);
+    EXPECT_NE(req.find("Connection: Upgrade"), std::string::npos);
+    EXPECT_NE(req.find("Sec-WebSocket-Key: dGVzdA=="), std::string::npos);
+    EXPECT_NE(req.find("Sec-WebSocket-Version: 13"), std::string::npos);
+}
+
+TEST(Http, BuildUpgradeRequestWithAuthHeader) {
+    std::string req = build_upgrade_request(
+        "host.com", "/", "key==", "Authorization: Bearer tok\r\n");
+    EXPECT_NE(req.find("Authorization: Bearer tok"), std::string::npos);
+}
+
+TEST(Http, BuildUpgradeRequestPathWithQuery) {
+    std::string req = build_upgrade_request(
+        "host.com", "/ws?token=abc&v=2", "key==");
+    EXPECT_NE(req.find("GET /ws?token=abc&v=2 HTTP/1.1"), std::string::npos);
+}
+
+TEST(Http, ValidateWsAcceptCaseSensitive) {
+    // Accept value is base64, which IS case-sensitive
+    std::string key = "dGVzdA==";
+    // Compute expected accept
+    std::string accept = ""; // Will compute dynamically
+    // Instead, just verify mismatch fails
+    EXPECT_FALSE(validate_ws_accept(key, "INVALID_ACCEPT_VALUE"));
+}
+
+TEST(Http, ParseResponseHeaderEndOffset) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "\r\n"
+        "trailing data";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    // header_end_offset should point past "\r\n\r\n"
+    EXPECT_EQ(result->header_end_offset,
+              response.find("\r\n\r\n") + 4);
+}

@@ -26,6 +26,7 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/hkdf.h>
 #include <openssl/ssl.h>
 
 #include "eph/dpdk/tcp.hpp"
@@ -112,6 +113,43 @@ inline std::string ssl_error_string() {
 }
 
 } // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TLS 1.3 HKDF-Expand-Label for traffic key derivation
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace tls_keygen {
+
+/// HKDF-Expand-Label (RFC 8446 §7.1)
+inline bool hkdf_expand_label(const EVP_MD* digest,
+                                const uint8_t* secret, size_t secret_len,
+                                const char* label, size_t label_len,
+                                uint8_t* out, size_t out_len) noexcept {
+    static constexpr const char* kPrefix = "tls13 ";
+    static constexpr size_t kPrefixLen = 6;
+
+    uint8_t info[256];
+    size_t pos = 0;
+    info[pos++] = static_cast<uint8_t>((out_len >> 8) & 0xFF);
+    info[pos++] = static_cast<uint8_t>(out_len & 0xFF);
+    info[pos++] = static_cast<uint8_t>(kPrefixLen + label_len);
+    std::memcpy(info + pos, kPrefix, kPrefixLen); pos += kPrefixLen;
+    std::memcpy(info + pos, label, label_len);    pos += label_len;
+    info[pos++] = 0; // empty context
+
+    return HKDF_expand(out, out_len, digest, secret, secret_len, info, pos) == 1;
+}
+
+/// Derive AES key + IV from a TLS 1.3 traffic secret.
+inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
+                           uint8_t* key, size_t key_len,
+                           uint8_t* iv, size_t iv_len) noexcept {
+    const EVP_MD* md = (secret_len == 48) ? EVP_sha384() : EVP_sha256();
+    return hkdf_expand_label(md, secret, secret_len, "key", 3, key, key_len) &&
+           hkdf_expand_label(md, secret, secret_len, "iv",  2, iv,  iv_len);
+}
+
+} // namespace tls_keygen
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom BIO for DPDK TCP — bridges SSL I/O to TcpSession
@@ -513,11 +551,15 @@ public:
     // Session key extraction (for hot-path AEAD via TlsRecordCrypto)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Extract TLS 1.3 session keys for direct AEAD encryption.
-    /// Call after handshake is complete. The returned TlsHotState contains
-    /// the write key/IV for encryption and read key/IV for decryption.
+    /// Extract TLS 1.3 traffic keys for direct AEAD encryption.
     ///
-    /// Uses TLS 1.3 key exporter (RFC 8446 Section 7.5).
+    /// Uses aws-lc SSL_get_{read,write}_traffic_secret (NOT exporter keys)
+    /// to obtain the REAL application traffic secrets, then derives key/IV
+    /// via HKDF-Expand-Label. Reads current seq numbers from SSL so
+    /// TlsRecordCrypto stays in sync after any SSL_write/SSL_read usage.
+    ///
+    /// Key length is determined dynamically from the negotiated cipher:
+    ///   AES_128_GCM → 16-byte key    AES_256_GCM → 32-byte key
     std::expected<TlsHotState, std::string> extract_hot_state() const {
         auto log = detail::tls_logger();
 
@@ -525,60 +567,67 @@ public:
             return std::unexpected("Cannot extract keys: handshake not done");
         }
 
+        // Determine key length from negotiated cipher
+        const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
+        if (!cipher) return std::unexpected("No cipher negotiated");
+
+        int cipher_nid = SSL_CIPHER_get_cipher_nid(cipher);
+        size_t key_len;
+        if (cipher_nid == NID_aes_128_gcm)      key_len = 16;
+        else if (cipher_nid == NID_aes_256_gcm)  key_len = 32;
+        else return std::unexpected(std::format(
+            "Unsupported cipher NID {} for AEAD takeover", cipher_nid));
+
+        // Get write (client→server) traffic secret
+        uint8_t write_secret[64]; size_t ws_len = 0;
+        if (!SSL_get_write_traffic_secret(ssl_, write_secret, &ws_len)) {
+            return std::unexpected("SSL_get_write_traffic_secret failed");
+        }
+
+        // Get read (server→client) traffic secret
+        uint8_t read_secret[64]; size_t rs_len = 0;
+        if (!SSL_get_read_traffic_secret(ssl_, read_secret, &rs_len)) {
+            return std::unexpected("SSL_get_read_traffic_secret failed");
+        }
+
         TlsHotState state{};
 
-        // Export keying material for write (client -> server)
-        // TLS 1.3 uses HKDF-based key derivation
-        static constexpr const char* kWriteLabel = "EXPORTER-write-key";
-        static constexpr const char* kReadLabel = "EXPORTER-read-key";
-        static constexpr const char* kWriteIvLabel = "EXPORTER-write-iv";
-        static constexpr const char* kReadIvLabel = "EXPORTER-read-iv";
-
-        if (SSL_export_keying_material(ssl_,
-                state.write.key, tls_const::kAes256KeyLen,
-                kWriteLabel, strlen(kWriteLabel),
-                nullptr, 0, 0) != 1) {
-            auto err = detail::ssl_error_string();
-            SPDLOG_LOGGER_ERROR(log, "Failed to export write key: {}", err);
-            return std::unexpected(std::format(
-                "Failed to export write key: {}", err));
+        if (!tls_keygen::derive_key_iv(write_secret, ws_len,
+                state.write.key, key_len,
+                state.write.iv, tls_const::kTls13NonceLen)) {
+            return std::unexpected("HKDF derive failed for write key");
         }
 
-        if (SSL_export_keying_material(ssl_,
-                state.write.iv, tls_const::kTls13NonceLen,
-                kWriteIvLabel, strlen(kWriteIvLabel),
-                nullptr, 0, 0) != 1) {
-            auto err = detail::ssl_error_string();
-            SPDLOG_LOGGER_ERROR(log, "Failed to export write IV: {}", err);
-            return std::unexpected(std::format(
-                "Failed to export write IV: {}", err));
+        if (!tls_keygen::derive_key_iv(read_secret, rs_len,
+                state.read.key, key_len,
+                state.read.iv, tls_const::kTls13NonceLen)) {
+            return std::unexpected("HKDF derive failed for read key");
         }
 
-        if (SSL_export_keying_material(ssl_,
-                state.read.key, tls_const::kAes256KeyLen,
-                kReadLabel, strlen(kReadLabel),
-                nullptr, 0, 0) != 1) {
-            auto err = detail::ssl_error_string();
-            SPDLOG_LOGGER_ERROR(log, "Failed to export read key: {}", err);
-            return std::unexpected(std::format(
-                "Failed to export read key: {}", err));
-        }
+        // Current TLS record sequence numbers from SSL
+        state.write.seq = SSL_get_write_sequence(ssl_);
+        state.read.seq  = SSL_get_read_sequence(ssl_);
 
-        if (SSL_export_keying_material(ssl_,
-                state.read.iv, tls_const::kTls13NonceLen,
-                kReadIvLabel, strlen(kReadIvLabel),
-                nullptr, 0, 0) != 1) {
-            auto err = detail::ssl_error_string();
-            SPDLOG_LOGGER_ERROR(log, "Failed to export read IV: {}", err);
-            return std::unexpected(std::format(
-                "Failed to export read IV: {}", err));
-        }
+        SPDLOG_LOGGER_INFO(log,
+            "TLS traffic keys extracted: cipher={}, key_len={}, "
+            "write_seq={}, read_seq={}",
+            SSL_CIPHER_get_name(cipher), key_len,
+            state.write.seq, state.read.seq);
 
-        state.write.seq = 0;
-        state.read.seq = 0;
-
-        SPDLOG_LOGGER_INFO(log, "TLS session keys extracted for hot path");
+        OPENSSL_cleanse(write_secret, sizeof(write_secret));
+        OPENSSL_cleanse(read_secret, sizeof(read_secret));
         return state;
+    }
+
+    /// Return the key length for the negotiated cipher (16 or 32).
+    [[nodiscard]] size_t cipher_key_len() const noexcept {
+        if (!ssl_) return 0;
+        const SSL_CIPHER* c = SSL_get_current_cipher(ssl_);
+        if (!c) return 0;
+        int nid = SSL_CIPHER_get_cipher_nid(c);
+        if (nid == NID_aes_128_gcm) return 16;
+        if (nid == NID_aes_256_gcm) return 32;
+        return 0;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

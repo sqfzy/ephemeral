@@ -346,6 +346,75 @@ TEST(ParsePacket, NonIpv4Rejected) {
     EXPECT_EQ(parsed.tcp, nullptr);
 }
 
+TEST(ParsePacket, IpWithOptions_IHL7) {
+    // IPv4 with options: IHL=7 → 28-byte IP header
+    uint8_t buf[128];
+    size_t pkt_len = build_raw_packet(buf, 4, /*ihl_words=*/7);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(pkt_len);
+    mbuf.pkt_len  = static_cast<uint32_t>(pkt_len);
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.payload_len, 4);
+    // TCP header starts at Eth(14) + IP(28) = 42, not 34
+    auto* expected_tcp = reinterpret_cast<const rte_tcp_hdr*>(buf + 14 + 28);
+    EXPECT_EQ(parsed.tcp, expected_tcp);
+}
+
+TEST(ParsePacket, TcpWithOptions_DataOff8) {
+    // TCP with options: data_off=8 → 32-byte TCP header
+    uint8_t buf[128];
+    size_t pkt_len = build_raw_packet(buf, 2, /*ihl_words=*/5, /*tcp_doff=*/8);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(pkt_len);
+    mbuf.pkt_len  = static_cast<uint32_t>(pkt_len);
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.payload_len, 2);
+    // Payload starts at Eth(14) + IP(20) + TCP(32) = 66
+    EXPECT_EQ(parsed.payload, buf + 66);
+}
+
+TEST(ParsePacket, NonTcpProtocol_Rejected) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 0);
+    // Change protocol to UDP
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->next_proto_id = 17; // UDP
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = 54;
+    mbuf.pkt_len  = 54;
+
+    auto parsed = parse_packet(&mbuf);
+    EXPECT_EQ(parsed.tcp, nullptr);
+}
+
+TEST(ParsePacket, MaxPayload_FullMSS) {
+    uint8_t buf[2048];
+    size_t pkt_len = build_raw_packet(buf, 1460); // Full MSS
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(pkt_len);
+    mbuf.pkt_len  = static_cast<uint32_t>(pkt_len);
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.payload_len, 1460);
+}
+
 TEST(ParsePacket, MatchesSwapsAddresses) {
     uint8_t buf[128];
     build_raw_packet(buf, 0);

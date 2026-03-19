@@ -434,7 +434,8 @@ private:
                 "TLS key export failed: {}", hot_state.error()));
         }
 
-        auto crypto = TlsRecordCrypto::create(*hot_state);
+        size_t key_len = tls_->cipher_key_len();
+        auto crypto = TlsRecordCrypto::create(*hot_state, key_len);
         if (!crypto) {
             return std::unexpected(std::format(
                 "TLS AEAD init failed: {}", crypto.error()));

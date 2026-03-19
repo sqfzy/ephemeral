@@ -443,6 +443,32 @@ TEST(TlsRecord, CreateWithInvalidKeyLengthFails) {
     EXPECT_FALSE(result.has_value());
 }
 
+TEST(TlsRecord, DecryptWithWrongSeqFails) {
+    auto state = make_roundtrip_state();
+
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    std::vector<uint8_t> pt(33, 0x55);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = enc->encrypt(pt.data(), 32, record.data());
+    ASSERT_GT(written, 0u);
+
+    // Decryptor with WRONG initial seq (1 instead of 0)
+    TlsHotState dec_state{};
+    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    dec_state.read.seq = 1; // Mismatch: enc used seq=0
+
+    auto dec = TlsRecordCrypto::create(dec_state);
+    ASSERT_TRUE(dec.has_value());
+
+    uint8_t out[48]; uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out, dec_len);
+    EXPECT_FALSE(ok) << "Decrypt with wrong sequence number should fail (nonce mismatch)";
+}
+
 TEST(TlsRecord, NonZeroInitialSequence) {
     auto state = make_roundtrip_state();
     state.write.seq = 100;
