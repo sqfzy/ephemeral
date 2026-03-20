@@ -29,6 +29,9 @@
 #include <string>
 #include <thread>
 
+#include <cerrno>
+#include <sched.h>
+
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -84,8 +87,12 @@ struct TransportConfig {
     std::chrono::milliseconds reconnect_interval{100}; // Interval between retries
     int max_reconnect_attempts = 10;                    // 0 = disable auto-reconnect
 
-    // WebSocket ping (sent by RX thread at configured interval)
+    // WebSocket ping (sent by TX thread at configured interval)
     std::chrono::seconds ping_interval{30};  // 0 = disable ping
+
+    // CPU affinity for worker threads (-1 = no pinning)
+    int tx_cpu = -1;
+    int rx_cpu = -1;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,8 +273,14 @@ public:
     }
 
     /// Send data from a span (convenience overload).
-    int send(std::span<const uint8_t> data) noexcept {
-        return send(data.data(), data.size());
+    int send(std::span<const uint8_t> data,
+             uint8_t opcode = ws::opcode::kBinary) noexcept {
+        return send(data.data(), data.size(), opcode);
+    }
+
+    /// Send data as a WebSocket text frame (convenience for JSON APIs).
+    int send_text(const void* data, size_t len) noexcept {
+        return send(data, len, ws::opcode::kText);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -295,13 +308,13 @@ public:
 
     /// Stop the transport gracefully. Sends WebSocket Close frame.
     void stop() noexcept {
-        if (!running_.exchange(false, std::memory_order_acq_rel)) return;
+        bool was_running = running_.exchange(false, std::memory_order_acq_rel);
 
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping transport");
 
-        // Send WebSocket Close frame via AEAD hot path
-        if (crypto_ && tcp_ && tcp_->is_established()) {
+        // Send WebSocket Close frame via AEAD hot path (only if we initiated stop)
+        if (was_running && crypto_ && tcp_ && tcp_->is_established()) {
             uint8_t close_buf[128];
             size_t close_len = ws::build_close_frame(
                 close_buf, ws::close_code::kNormal, "client shutdown");
@@ -369,6 +382,26 @@ private:
     std::atomic<uint64_t>             ws_pings_received_{0};
     std::atomic<uint64_t>             ws_pongs_sent_{0};
     std::atomic<uint64_t>             reconnect_count_{0};
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CPU affinity
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Pin the calling thread to a specific CPU core.
+    static void pin_this_thread(int cpu, const char* name) {
+        if (cpu < 0) return;
+        cpu_set_t cs;
+        CPU_ZERO(&cs);
+        CPU_SET(cpu, &cs);
+        if (sched_setaffinity(0, sizeof(cs), &cs) == 0) {
+            SPDLOG_LOGGER_INFO(detail::transport_logger(),
+                "{} thread pinned to CPU {}", name, cpu);
+        } else {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "Failed to pin {} thread to CPU {}: {}",
+                name, cpu, strerror(errno));
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Connection establishment (reused by create() and reconnect)
@@ -596,6 +629,7 @@ private:
     // ─────────────────────────────────────────────────────────────────────────
 
     void tx_loop() {
+        pin_this_thread(config_.tx_cpu, "TX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "TX loop started");
 
@@ -671,6 +705,7 @@ private:
     // ─────────────────────────────────────────────────────────────────────────
 
     void rx_loop() {
+        pin_this_thread(config_.rx_cpu, "RX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 

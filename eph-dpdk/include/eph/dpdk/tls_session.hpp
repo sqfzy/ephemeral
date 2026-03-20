@@ -579,13 +579,14 @@ public:
             "Unsupported cipher NID {} for AEAD takeover", cipher_nid));
 
         // Get write (client→server) traffic secret
-        uint8_t write_secret[64]; size_t ws_len = 0;
+        // NOTE: out_len must be initialized to buffer capacity before calling
+        uint8_t write_secret[64]; size_t ws_len = sizeof(write_secret);
         if (!SSL_get_write_traffic_secret(ssl_, write_secret, &ws_len)) {
             return std::unexpected("SSL_get_write_traffic_secret failed");
         }
 
         // Get read (server→client) traffic secret
-        uint8_t read_secret[64]; size_t rs_len = 0;
+        uint8_t read_secret[64]; size_t rs_len = sizeof(read_secret);
         if (!SSL_get_read_traffic_secret(ssl_, read_secret, &rs_len)) {
             return std::unexpected("SSL_get_read_traffic_secret failed");
         }

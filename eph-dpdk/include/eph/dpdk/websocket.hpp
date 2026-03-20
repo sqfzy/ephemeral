@@ -161,7 +161,13 @@ private:
                 "RAND_bytes failed for mask key cache, using fallback");
             // Fallback: XOR with TSC for minimal entropy (not crypto-secure,
             // but masking is only an anti-cache-poisoning measure per RFC 6455)
+#if defined(__x86_64__) || defined(_M_X64)
             uint64_t tsc = __builtin_ia32_rdtsc();
+#elif defined(__aarch64__)
+            uint64_t tsc; asm volatile("mrs %0, cntvct_el0" : "=r"(tsc));
+#else
+            uint64_t tsc = static_cast<uint64_t>(time(nullptr));
+#endif
             for (size_t i = 0; i < sizeof(pool_); i += 8) {
                 uint64_t val = tsc ^ (tsc << (i & 0x3F));
                 size_t n = std::min(sizeof(pool_) - i, size_t{8});
