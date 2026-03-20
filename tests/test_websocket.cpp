@@ -9,9 +9,9 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/dpdk/websocket.hpp"
+#include "eph/net/websocket.hpp"
 
-using namespace eph::dpdk::ws;
+using namespace eph::net::ws;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compile-time validation
@@ -441,4 +441,54 @@ TEST(WsFrame, ContinuationOpcode) {
     EXPECT_TRUE(result->is_data());
     EXPECT_FALSE(result->is_control());
     EXPECT_FALSE(result->fin);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Close frame edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsCloseFrame, EmptyReason) {
+    uint8_t buf[64];
+    size_t len = build_close_frame(buf, close_code::kNormal);
+    ASSERT_GT(len, 0u);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->is_close());
+    // payload_len in decoded frame doesn't include mask bytes
+    // For masked frame with no reason, payload_len = 2 (status code only)
+    EXPECT_EQ(result->payload_len, 2u);
+}
+
+TEST(WsCloseFrame, ExactMaxReason123Bytes) {
+    uint8_t buf[256];
+    std::string reason(123, 'X');
+    size_t len = build_close_frame(buf, close_code::kGoingAway, reason);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    // 2 (status) + 123 (reason) = 125 bytes payload = control frame max
+    EXPECT_EQ(result->payload_len, 125u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Large payload frame encoding
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsBoundary, PayloadLen65536_LargeHeader) {
+    // This tests the 8-byte extended length path
+    EXPECT_EQ(frame_header_size(65536), 14u);
+    EXPECT_EQ(total_frame_size(65536), 65536u + 14u);
+}
+
+TEST(WsFrame, ZeroPayloadBinaryFrame) {
+    uint8_t buf[64];
+    size_t len = encode_frame(buf, opcode::kBinary, nullptr, 0);
+    ASSERT_GT(len, 0u);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kBinary);
+    EXPECT_EQ(result->payload_len, 0u);
+    EXPECT_TRUE(result->fin);
 }

@@ -1,13 +1,13 @@
 #pragma once
 
 /// @file tls_session.hpp
-/// TLS 1.3 session management with custom BIO for DPDK transport.
+/// TLS 1.3 session management with custom BIO for generic TCP transport.
 ///
 /// Uses aws-lc (BoringSSL-compatible) API via custom BIO that reads/writes
-/// through the user-space TCP session. Supports:
-///   - TLS 1.3 handshake over DPDK TCP
+/// through a user-space TCP session. Supports:
+///   - TLS 1.3 handshake over any TcpTransport backend
 ///   - Session key extraction for hot-path AEAD encryption
-///   - Custom BIO backed by TcpSession send/recv
+///   - Custom BIO backed by TcpTransport send/poll_rx
 ///
 /// Responsibility: handshake + session key extraction only.
 /// Data-plane I/O uses TlsRecordCrypto (EVP_AEAD) — no SSL_write/SSL_read.
@@ -29,9 +29,9 @@
 #include <openssl/hkdf.h>
 #include <openssl/ssl.h>
 
-#include "eph/dpdk/tcp.hpp"
+#include "eph/net/tcp_concept.hpp"
 
-namespace eph::dpdk {
+namespace eph::net {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS constants
@@ -98,7 +98,7 @@ namespace detail {
 
 inline std::shared_ptr<spdlog::logger> tls_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("dpdk.tls");
+        auto lg = spdlog::stdout_color_mt("net.tls");
         lg->set_level(spdlog::level::trace);
         return lg;
     }();
@@ -152,173 +152,168 @@ inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
 } // namespace tls_keygen
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Custom BIO for DPDK TCP — bridges SSL I/O to TcpSession
+// TLS Session — templated on TcpTransport backend
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace bio_dpdk {
+/// TLS session wrapping a TcpTransport with aws-lc/BoringSSL.
+///
+/// After handshake, session keys can be extracted for hot-path AEAD
+/// operations, bypassing the SSL_* API on the data plane.
+///
+/// The BIO callbacks, BioContext, and BIO method are nested inside
+/// TlsSession to avoid namespace-level template complications with
+/// C function pointers used by OpenSSL's BIO interface.
+template <TcpTransport TcpImpl>
+class TlsSession {
+    static_assert(TcpTransport<TcpImpl>,
+                  "TcpImpl must satisfy TcpTransport concept");
 
-/// BIO context: holds pointer to TcpSession and intermediate buffers.
-struct BioContext {
-    TcpSession*          tcp = nullptr;
-    rte_mempool*         pool = nullptr;
-    std::vector<uint8_t> read_buf;   // Buffered data from TCP rx
-    size_t               read_pos = 0;
+    // ─────────────────────────────────────────────────────────────────────────
+    // Nested BIO context and callbacks
+    // ─────────────────────────────────────────────────────────────────────────
 
-    /// Timeout for busy-wait polling (used by bio_read).
-    /// Set before handshake to match TlsConfig::handshake_timeout.
-    std::chrono::milliseconds poll_timeout{5000};
+    /// BIO context: holds pointer to TcpImpl and intermediate buffers.
+    struct BioContext {
+        TcpImpl*             tcp = nullptr;
+        std::vector<uint8_t> read_buf;   // Buffered data from TCP rx
+        size_t               read_pos = 0;
 
-    /// Poll DPDK rx once and append to read buffer.
-    /// Returns number of new bytes available, or -1 on TCP error.
-    int poll_rx() {
-        rte_mbuf* pkts[32];
-        uint16_t nb_rx = rte_eth_rx_burst(
-            tcp->config().port_id, tcp->config().rx_queue_id, pkts, 32);
+        /// Timeout for busy-wait polling (used by bio_read).
+        /// Set before handshake to match TlsConfig::handshake_timeout.
+        std::chrono::milliseconds poll_timeout{5000};
 
-        int total_new = 0;
-        auto append_data = [this, &total_new](const uint8_t* data, uint16_t len) {
-            read_buf.insert(read_buf.end(), data, data + len);
-            total_new += len;
-        };
-
-        if (nb_rx > 0) {
-            auto result = tcp->process_rx(pkts, nb_rx, append_data);
+        /// Poll TCP rx once and append to read buffer.
+        /// Returns number of new bytes available, or -1 on TCP error.
+        int poll_rx() {
+            int total_new = 0;
+            auto append_data = [this, &total_new](const uint8_t* data, uint16_t len) {
+                read_buf.insert(read_buf.end(), data, data + len);
+                total_new += len;
+            };
+            auto result = tcp->poll_rx(append_data);
             if (!result) {
                 SPDLOG_LOGGER_WARN(detail::tls_logger(),
                     "TCP rx error during BIO poll: {}", result.error());
                 return -1;
             }
+            return total_new;
         }
 
-        return total_new;
-    }
-
-    /// Busy-wait poll until at least some data is available or timeout.
-    /// Returns number of new bytes, 0 on timeout, -1 on TCP error.
-    int poll_rx_blocking() {
-        auto deadline = std::chrono::steady_clock::now() + poll_timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-            int n = poll_rx();
-            if (n != 0) return n;  // Got data (>0) or error (-1)
+        /// Busy-wait poll until at least some data is available or timeout.
+        /// Returns number of new bytes, 0 on timeout, -1 on TCP error.
+        int poll_rx_blocking() {
+            auto deadline = std::chrono::steady_clock::now() + poll_timeout;
+            while (std::chrono::steady_clock::now() < deadline) {
+                int n = poll_rx();
+                if (n != 0) return n;  // Got data (>0) or error (-1)
+            }
+            return 0; // Timeout
         }
-        return 0; // Timeout
-    }
-};
+    };
 
-/// Custom BIO write: sends data through TCP session.
-inline int bio_write(BIO* bio, const char* data, int len) {
-    auto* ctx = static_cast<BioContext*>(BIO_get_data(bio));
-    if (!ctx || !ctx->tcp || len <= 0) return -1;
+    /// Custom BIO write: sends data through TCP session.
+    static int bio_write_cb(BIO* bio, const char* data, int len) {
+        auto* ctx = static_cast<BioContext*>(BIO_get_data(bio));
+        if (!ctx || !ctx->tcp || len <= 0) return -1;
 
-    BIO_clear_retry_flags(bio);
+        BIO_clear_retry_flags(bio);
 
-    // Send data through TCP (may need to split into MSS-sized segments)
-    size_t total_sent = 0;
-    const auto* ptr = reinterpret_cast<const uint8_t*>(data);
-    size_t remaining = static_cast<size_t>(len);
+        // Send data through TCP (may need to split into MSS-sized segments)
+        size_t total_sent = 0;
+        const auto* ptr = reinterpret_cast<const uint8_t*>(data);
+        size_t remaining = static_cast<size_t>(len);
 
-    while (remaining > 0) {
-        size_t chunk = std::min(remaining, static_cast<size_t>(ctx->tcp->mss()));
-        auto result = ctx->tcp->send(ptr, chunk);
-        if (!result) {
-            SPDLOG_LOGGER_ERROR(detail::tls_logger(),
-                "BIO write failed: {}", result.error());
-            if (total_sent > 0) break;
-            return -1;
+        while (remaining > 0) {
+            size_t chunk = std::min(remaining, static_cast<size_t>(ctx->tcp->mss()));
+            auto result = ctx->tcp->send(ptr, chunk);
+            if (!result) {
+                SPDLOG_LOGGER_ERROR(detail::tls_logger(),
+                    "BIO write failed: {}", result.error());
+                if (total_sent > 0) break;
+                return -1;
+            }
+            total_sent += *result;
+            ptr += *result;
+            remaining -= *result;
         }
-        total_sent += *result;
-        ptr += *result;
-        remaining -= *result;
+
+        return static_cast<int>(total_sent);
     }
 
-    return static_cast<int>(total_sent);
-}
+    /// Custom BIO read: reads data from TCP session rx buffer.
+    /// Busy-waits for data to avoid SSL treating WANT_READ as fatal during
+    /// multi-record TLS handshake processing.
+    static int bio_read_cb(BIO* bio, char* buf, int len) {
+        auto* ctx = static_cast<BioContext*>(BIO_get_data(bio));
+        if (!ctx || !ctx->tcp || len <= 0) return -1;
 
-/// Custom BIO read: reads data from TCP session rx buffer.
-/// Busy-waits for data to avoid SSL treating WANT_READ as fatal during
-/// multi-record TLS handshake processing.
-inline int bio_read(BIO* bio, char* buf, int len) {
-    auto* ctx = static_cast<BioContext*>(BIO_get_data(bio));
-    if (!ctx || !ctx->tcp || len <= 0) return -1;
+        BIO_clear_retry_flags(bio);
 
-    BIO_clear_retry_flags(bio);
+        // If buffer is exhausted, busy-wait poll for more data
+        size_t available = ctx->read_buf.size() - ctx->read_pos;
+        if (available == 0) {
+            // Compact buffer
+            ctx->read_buf.clear();
+            ctx->read_pos = 0;
 
-    // If buffer is exhausted, busy-wait poll for more data
-    size_t available = ctx->read_buf.size() - ctx->read_pos;
-    if (available == 0) {
-        // Compact buffer
-        ctx->read_buf.clear();
-        ctx->read_pos = 0;
-
-        // Busy-wait poll DPDK rx until data arrives or timeout
-        int new_bytes = ctx->poll_rx_blocking();
-        if (new_bytes < 0) {
-            // TCP error (RST, out-of-order)
-            return -1;
+            // Busy-wait poll TCP rx until data arrives or timeout
+            int new_bytes = ctx->poll_rx_blocking();
+            if (new_bytes < 0) {
+                // TCP error (RST, out-of-order)
+                return -1;
+            }
+            if (new_bytes == 0) {
+                // Timeout — let SSL know it should retry
+                BIO_set_retry_read(bio);
+                return -1;
+            }
+            available = ctx->read_buf.size();
         }
-        if (new_bytes == 0) {
-            // Timeout — let SSL know it should retry
-            BIO_set_retry_read(bio);
-            return -1;
+
+        // Copy available data to caller
+        size_t to_copy = std::min(static_cast<size_t>(len), available);
+        std::memcpy(buf, ctx->read_buf.data() + ctx->read_pos, to_copy);
+        ctx->read_pos += to_copy;
+
+        // Compact if fully consumed
+        if (ctx->read_pos == ctx->read_buf.size()) {
+            ctx->read_buf.clear();
+            ctx->read_pos = 0;
         }
-        available = ctx->read_buf.size();
+
+        return static_cast<int>(to_copy);
     }
 
-    // Copy available data to caller
-    size_t to_copy = std::min(static_cast<size_t>(len), available);
-    std::memcpy(buf, ctx->read_buf.data() + ctx->read_pos, to_copy);
-    ctx->read_pos += to_copy;
-
-    // Compact if fully consumed
-    if (ctx->read_pos == ctx->read_buf.size()) {
-        ctx->read_buf.clear();
-        ctx->read_pos = 0;
+    /// Custom BIO ctrl: handles flush and other control operations.
+    static long bio_ctrl_cb(BIO* /*bio*/, int cmd, long /*num*/, void* /*ptr*/) {
+        switch (cmd) {
+            case BIO_CTRL_FLUSH:
+                return 1; // Success — TCP sends immediately
+            case BIO_CTRL_PUSH:
+            case BIO_CTRL_POP:
+                return 0;
+            default:
+                return 0;
+        }
     }
 
-    return static_cast<int>(to_copy);
-}
-
-/// Custom BIO ctrl: handles flush and other control operations.
-inline long bio_ctrl(BIO* /*bio*/, int cmd, long /*num*/, void* /*ptr*/) {
-    switch (cmd) {
-        case BIO_CTRL_FLUSH:
-            return 1; // Success — TCP sends immediately
-        case BIO_CTRL_PUSH:
-        case BIO_CTRL_POP:
-            return 0;
-        default:
-            return 0;
+    /// Create the custom BIO method (singleton per TcpImpl instantiation).
+    static const BIO_METHOD* bio_method() {
+        static BIO_METHOD* method = [] {
+            auto* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK,
+                                   "net_tcp_bio");
+            BIO_meth_set_write(m, bio_write_cb);
+            BIO_meth_set_read(m, bio_read_cb);
+            BIO_meth_set_ctrl(m, bio_ctrl_cb);
+            return m;
+        }();
+        return method;
     }
-}
 
-/// Create the custom BIO method (singleton).
-inline const BIO_METHOD* bio_method() {
-    static BIO_METHOD* method = [] {
-        auto* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK,
-                               "dpdk_tcp_bio");
-        BIO_meth_set_write(m, bio_write);
-        BIO_meth_set_read(m, bio_read);
-        BIO_meth_set_ctrl(m, bio_ctrl);
-        return m;
-    }();
-    return method;
-}
-
-} // namespace bio_dpdk
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TLS Session
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// TLS session wrapping a TcpSession with aws-lc/BoringSSL.
-///
-/// After handshake, session keys can be extracted for hot-path AEAD
-/// operations, bypassing the SSL_* API on the data plane.
-class TlsSession {
 public:
     /// Create a TLS session over an established TCP connection.
     static std::expected<TlsSession, std::string>
-    create(TcpSession& tcp, rte_mempool* pool, const TlsConfig& config) {
+    create(TcpImpl& tcp, const TlsConfig& config) {
         auto log = detail::tls_logger();
 
         if (!tcp.is_established()) {
@@ -383,7 +378,7 @@ public:
         SSL_set_connect_state(ssl);
 
         // Create and attach custom BIO
-        BIO* bio = BIO_new(bio_dpdk::bio_method());
+        BIO* bio = BIO_new(bio_method());
         if (!bio) {
             SSL_free(ssl);
             SSL_CTX_free(ctx);
@@ -391,9 +386,8 @@ public:
         }
 
         // Set up BIO context
-        auto bio_ctx = std::make_unique<bio_dpdk::BioContext>();
+        auto bio_ctx = std::make_unique<BioContext>();
         bio_ctx->tcp = &tcp;
-        bio_ctx->pool = pool;
         bio_ctx->poll_timeout = config.handshake_timeout;
         BIO_set_data(bio, bio_ctx.get());
         BIO_set_init(bio, 1);
@@ -455,7 +449,7 @@ public:
     // Handshake
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Perform TLS 1.3 handshake (blocking, polls DPDK rx through BIO).
+    /// Perform TLS 1.3 handshake (blocking, polls TCP rx through BIO).
     /// Must be called from the control thread, NOT the hot-path lcore.
     std::expected<void, std::string> handshake() {
         auto log = detail::tls_logger();
@@ -559,7 +553,7 @@ public:
     /// TlsRecordCrypto stays in sync after any SSL_write/SSL_read usage.
     ///
     /// Key length is determined dynamically from the negotiated cipher:
-    ///   AES_128_GCM → 16-byte key    AES_256_GCM → 32-byte key
+    ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key
     std::expected<TlsHotState, std::string> extract_hot_state() const {
         auto log = detail::tls_logger();
 
@@ -578,14 +572,14 @@ public:
         else return std::unexpected(std::format(
             "Unsupported cipher NID {} for AEAD takeover", cipher_nid));
 
-        // Get write (client→server) traffic secret
+        // Get write (client->server) traffic secret
         // NOTE: out_len must be initialized to buffer capacity before calling
         uint8_t write_secret[64]; size_t ws_len = sizeof(write_secret);
         if (!SSL_get_write_traffic_secret(ssl_, write_secret, &ws_len)) {
             return std::unexpected("SSL_get_write_traffic_secret failed");
         }
 
-        // Get read (server→client) traffic secret
+        // Get read (server->client) traffic secret
         uint8_t read_secret[64]; size_t rs_len = sizeof(read_secret);
         if (!SSL_get_read_traffic_secret(ssl_, read_secret, &rs_len)) {
             return std::unexpected("SSL_get_read_traffic_secret failed");
@@ -652,11 +646,11 @@ public:
 private:
     TlsSession() = default;
 
-    SSL*                                ssl_   = nullptr;
-    SSL_CTX*                            ctx_   = nullptr;
-    std::unique_ptr<bio_dpdk::BioContext> bio_ctx_;
-    TlsConfig                           config_;
-    bool                                handshake_done_ = false;
+    SSL*                          ssl_   = nullptr;
+    SSL_CTX*                      ctx_   = nullptr;
+    std::unique_ptr<BioContext>   bio_ctx_;
+    TlsConfig                     config_;
+    bool                          handshake_done_ = false;
 };
 
-} // namespace eph::dpdk
+} // namespace eph::net

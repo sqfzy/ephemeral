@@ -7,9 +7,9 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/dpdk/http.hpp"
+#include "eph/net/http.hpp"
 
-using namespace eph::dpdk::http;
+using namespace eph::net::http;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WebSocket key generation
@@ -324,4 +324,67 @@ TEST(Http, ParseResponseHeaderEndOffset) {
     // header_end_offset should point past "\r\n\r\n"
     EXPECT_EQ(result->header_end_offset,
               response.find("\r\n\r\n") + 4);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Base64 edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(Http, Base64EncodeAllByteValues) {
+    // Encode all 256 byte values and verify output is valid base64
+    uint8_t all_bytes[256];
+    for (int i = 0; i < 256; ++i) all_bytes[i] = static_cast<uint8_t>(i);
+
+    std::string result = detail::base64_encode(all_bytes, 256);
+    // 256 bytes -> ceil(256/3)*4 = 344 chars
+    EXPECT_EQ(result.size(), 344u);
+
+    // All chars must be valid base64
+    for (char c : result) {
+        EXPECT_TRUE(std::isalnum(c) || c == '+' || c == '/' || c == '=')
+            << "Invalid base64 char: 0x" << std::hex << static_cast<int>(c);
+    }
+}
+
+TEST(Http, Base64Encode16Bytes) {
+    // WebSocket key is always 16 bytes -> 24 base64 chars
+    uint8_t data[16] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+    std::string result = detail::base64_encode(data, 16);
+    EXPECT_EQ(result.size(), 24u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Response parsing edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(Http, ParseResponseMultipleConnectionValues) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: keep-alive, Upgrade\r\n"
+        "Sec-WebSocket-Accept: abc123\r\n"
+        "\r\n";
+
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->has_connection_upgrade)
+        << "Connection header with multiple values should detect 'Upgrade'";
+}
+
+TEST(Http, ParseResponseStatusCode100) {
+    std::string response =
+        "HTTP/1.1 100 Continue\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status_code, 100);
+}
+
+TEST(Http, ParseResponseStatusCode500) {
+    std::string response =
+        "HTTP/1.1 500 Internal Server Error\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status_code, 500);
 }

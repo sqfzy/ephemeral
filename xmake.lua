@@ -43,15 +43,24 @@ target("eph-containers")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
-local dpdk_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
+local net_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
+
+target("eph-net")
+    set_kind("headeronly")
+    add_includedirs("eph-net/include", { public = true })
+    add_headerfiles("eph-net/include/(eph/net/**.hpp)")
+    add_deps("eph-base", "eph-utils", "eph-containers", { public = true })
+    add_packages("spdlog", "aws-lc", { public = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
 
 target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
-    add_deps("eph-base", "eph-utils", "eph-containers", { public = true })
-    add_packages("dpdk", "spdlog", "aws-lc", { public = true })
-    add_defines("SPDLOG_ACTIVE_LEVEL=" .. dpdk_log_level, { public = true })
+    add_deps("eph-net", { public = true })
+    add_packages("dpdk", { public = true })
     add_cxflags("-march=corei7", { public = true, force = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
@@ -60,13 +69,13 @@ target("eph-dpdk")
 -- benchmarks
 -- ===========================================================================
 
--- WS pipeline benchmark — needs eph-dpdk (DPDK + aws-lc headers) + Google Benchmark
+-- WS pipeline benchmark — needs eph-net (aws-lc headers) + eph-dpdk (net_header) + Google Benchmark
 target("bench_ws_pipeline")
     set_kind("binary")
     set_group("benchmarks")
     set_default(false)
     add_files("benchmarks/bench_ws_pipeline.cpp")
-    add_deps("eph-dpdk", "eph-containers", "eph-utils", "eph-base")
+    add_deps("eph-dpdk")
     add_packages("benchmark")
 
 for _, file in ipairs(os.files("benchmarks/**.cpp")) do
@@ -88,6 +97,22 @@ end
 -- ===========================================================================
 -- tests
 -- ===========================================================================
+
+-- Tests that need DPDK (net_header, platform)
+local dpdk_tests = {
+    test_net_header = true,
+    test_dpdk_platform = true,
+    test_arp = true,
+}
+
+-- Tests that only need eph-net (no DPDK required)
+local net_tests = {
+    test_websocket = true,
+    test_http = true,
+    test_tls_record = true,
+    test_tcp_concept = true,
+}
+
 for _, file in ipairs(os.files("tests/**.cpp")) do
     local name = path.basename(file)
 
@@ -96,10 +121,16 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         set_group("tests")
         set_default(false)
         add_files(file)
-        add_deps("eph-dpdk")
-        add_deps("eph-containers")
-        add_deps("eph-utils")
-        add_deps("eph-base")
+        if dpdk_tests[name] then
+            add_deps("eph-dpdk")
+        elseif net_tests[name] then
+            add_deps("eph-net")
+        else
+            -- Default: add both for safety (containers, utils tests don't need either)
+            add_deps("eph-containers")
+            add_deps("eph-utils")
+            add_deps("eph-base")
+        end
         add_packages("gtest")
         add_defines("SPDLOG_NO_EXCEPTIONS")
 end

@@ -1,22 +1,22 @@
 #pragma once
 
 /// @file transport.hpp
-/// Public API for the DPDK WebSocket transport.
+/// Generic WebSocket transport over any TcpTransport backend.
 ///
-/// Provides a single entry point for establishing a WSS connection over
-/// DPDK and sending/receiving data with minimal latency.
+/// Provides a single entry point for establishing a WSS connection
+/// and sending/receiving data with minimal latency.
 ///
 /// Architecture:
 ///   Control thread (handshake):
-///     TCP connect → TLS 1.3 handshake → WebSocket Upgrade
+///     TCP connect -> TLS 1.3 handshake -> WebSocket Upgrade
 ///   Data plane (hot path):
-///     app send() → SPSC queue → TX lcore → WS frame → TLS encrypt →
-///     TCP segment → IP packet → tx_burst
+///     app send() -> SPSC queue -> TX thread -> WS frame -> TLS encrypt ->
+///     TCP send
 ///
 /// Thread model:
 ///   - Application thread: calls send()/recv(), non-blocking
-///   - TX lcore: busy-poll SPSC queue, build packets, tx_burst
-///   - RX lcore: busy-poll rx_burst, decrypt, parse WS frames, push to recv queue
+///   - TX thread: busy-poll SPSC queue, build packets, send
+///   - RX thread: busy-poll TCP rx, decrypt, parse WS frames, push to recv queue
 
 #include <atomic>
 #include <chrono>
@@ -35,23 +35,19 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <rte_ethdev.h>
-#include <rte_mbuf.h>
-
 #include "eph/base/cache.hpp"
 #include "eph/containers/bounded_queue.hpp"
-#include "eph/dpdk/http.hpp"
-#include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/tcp.hpp"
-#include "eph/dpdk/tls_record.hpp"
-#include "eph/dpdk/tls_session.hpp"
-#include "eph/dpdk/websocket.hpp"
+#include "eph/net/http.hpp"
+#include "eph/net/tcp_concept.hpp"
+#include "eph/net/tls_record.hpp"
+#include "eph/net/tls_session.hpp"
+#include "eph/net/websocket.hpp"
 
-namespace eph::dpdk {
+namespace eph::net {
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Configuration
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
 struct TransportConfig {
     // Connection target
@@ -59,16 +55,6 @@ struct TransportConfig {
     uint16_t    remote_port = 443;  // Remote TCP port
     std::string ws_path     = "/";  // WebSocket upgrade path
     std::string extra_headers{};    // Additional HTTP headers for upgrade
-
-    // Network identity
-    net::ConnectionTuple tuple{};   // Source/dest IP and ports
-    rte_ether_addr       src_mac{}; // Source MAC address
-    rte_ether_addr       dst_mac{}; // Destination (gateway) MAC address
-
-    // DPDK port/queue
-    uint16_t port_id      = 0;
-    uint16_t tx_queue_id  = 0;
-    uint16_t rx_queue_id  = 0;
 
     // TLS
     std::string ca_cert_path{};     // CA cert file, empty = system default
@@ -80,8 +66,8 @@ struct TransportConfig {
     std::chrono::milliseconds ws_timeout{3000};
 
     // Performance
-    uint16_t tx_burst_size = 32;    // Max packets per tx_burst
-    uint16_t rx_burst_size = 32;    // Max packets per rx_burst
+    uint16_t tx_burst_size = 32;    // Max messages per TX drain batch
+    uint16_t rx_burst_size = 32;    // Max packets per RX poll
 
     // Reconnection (fixed-interval, discard old messages during reconnect)
     std::chrono::milliseconds reconnect_interval{100}; // Interval between retries
@@ -95,11 +81,11 @@ struct TransportConfig {
     int rx_cpu = -1;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Transport stats
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
-/// Per-thread stats — TX thread and RX thread each own their own counters.
+/// Per-thread stats -- TX thread and RX thread each own their own counters.
 /// Merged at query time to avoid atomic contention on the hot path.
 struct ThreadStats {
     uint64_t packets       = 0;
@@ -110,27 +96,26 @@ struct ThreadStats {
 
 /// Aggregated transport statistics (returned by stats()).
 struct TransportStats {
-    uint64_t tx_packets       = 0;
-    uint64_t tx_bytes         = 0;
-    uint64_t tx_dropped       = 0;
-    uint64_t rx_packets       = 0;
-    uint64_t rx_bytes         = 0;
-    uint64_t encrypt_errors   = 0;
-    uint64_t decrypt_errors   = 0;
-    uint64_t mbuf_alloc_failures = 0;
-    uint64_t queue_full_count = 0;
+    uint64_t tx_packets        = 0;
+    uint64_t tx_bytes          = 0;
+    uint64_t tx_dropped        = 0;
+    uint64_t rx_packets        = 0;
+    uint64_t rx_bytes          = 0;
+    uint64_t encrypt_errors    = 0;
+    uint64_t decrypt_errors    = 0;
+    uint64_t queue_full_count  = 0;
     uint64_t ws_pings_received = 0;
     uint64_t ws_pongs_sent     = 0;
     uint64_t reconnect_count   = 0;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Internal message types for SPSC queue
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
 namespace detail {
 
-/// Message passed from application thread to TX lcore via SPSC queue.
+/// Message passed from application thread to TX thread via SPSC queue.
 /// Fixed-size to satisfy TrivialData constraint.
 template <size_t MaxPayload>
 struct alignas(eph::base::CACHE_LINE_SIZE) TxMessage {
@@ -153,7 +138,7 @@ struct alignas(eph::base::CACHE_LINE_SIZE) RxMessage {
 
 inline std::shared_ptr<spdlog::logger> transport_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("dpdk.transport");
+        auto lg = spdlog::stdout_color_mt("net.transport");
         lg->set_level(spdlog::level::trace);
         return lg;
     }();
@@ -162,24 +147,33 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 
 } // namespace detail
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Transport — public API
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Transport -- public API
+// ---------------------------------------------------------------------------
 
-/// DPDK WebSocket transport with TLS 1.3 encryption.
+/// Generic WebSocket transport with TLS 1.3 encryption.
 ///
 /// Template parameters:
-///   MaxPayload — maximum application payload size per message
-///   QueueDepth — SPSC queue capacity (must be power of 2)
+///   TcpImpl    -- a type satisfying the TcpTransport concept
+///   MaxPayload -- maximum application payload size per message
+///   QueueDepth -- SPSC queue capacity (must be power of 2)
 ///
 /// Usage:
-///   auto result = Transport<512, 1024>::create(pool, config);
+///   auto factory = [&]() -> std::expected<std::unique_ptr<MyTcp>, std::string> {
+///       auto tcp = std::make_unique<MyTcp>(my_config);
+///       auto r = tcp->connect(std::chrono::milliseconds{3000});
+///       if (!r) return std::unexpected(r.error());
+///       return tcp;
+///   };
+///   auto result = Transport<MyTcp>::create(std::move(factory), config);
 ///   if (!result) { /* handle error */ }
 ///   auto& transport = *result;     // unique_ptr<Transport>
 ///   transport->send(data, len);    // Non-blocking
 ///   transport->recv([](auto* data, auto len) { ... });
-template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
+template <TcpTransport TcpImpl, size_t MaxPayload = 512, size_t QueueDepth = 1024>
 class Transport {
+    static_assert(TcpTransport<TcpImpl>,
+                  "TcpImpl must satisfy TcpTransport concept");
     static_assert(MaxPayload > 0, "MaxPayload must be > 0");
     static_assert(MaxPayload <= tls_const::kMaxRecordPayload,
                   "MaxPayload exceeds TLS max record size (16384)");
@@ -192,18 +186,23 @@ class Transport {
     using RxQueue = eph::containers::BoundedQueue<RxMsg, QueueDepth>;
 
 public:
+    /// Factory callable: creates a new, already-connected TcpImpl instance.
+    /// Called during initial connect and on each reconnection attempt.
+    using TcpFactory = std::function<
+        std::expected<std::unique_ptr<TcpImpl>, std::string>()>;
+
     static constexpr size_t max_payload() noexcept { return MaxPayload; }
     static constexpr size_t queue_depth() noexcept { return QueueDepth; }
 
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
-    /// This is a blocking call — performs the full handshake sequence.
+    /// This is a blocking call -- performs the full handshake sequence.
     /// Returns unique_ptr because Transport owns threads and is non-movable.
     static std::expected<std::unique_ptr<Transport>, std::string>
-    create(rte_mempool* pool, const TransportConfig& config) {
+    create(TcpFactory tcp_factory, const TransportConfig& config) {
         auto log = detail::transport_logger();
 
-        if (!pool) {
-            return std::unexpected("mempool is null");
+        if (!tcp_factory) {
+            return std::unexpected("tcp_factory is null");
         }
         if (config.remote_host.empty()) {
             return std::unexpected("remote_host is empty");
@@ -214,8 +213,8 @@ public:
             config.remote_port, config.ws_path);
 
         auto t = std::unique_ptr<Transport>(new Transport());
-        t->config_ = config;
-        t->pool_   = pool;
+        t->config_      = config;
+        t->tcp_factory_ = std::move(tcp_factory);
 
         auto conn_result = t->do_connect();
         if (!conn_result) {
@@ -226,7 +225,7 @@ public:
 
         t->running_.store(true, std::memory_order_release);
 
-        // Start worker threads (capture raw pointer — Transport outlives threads)
+        // Start worker threads (capture raw pointer -- Transport outlives threads)
         auto* tp = t.get();
         t->tx_thread_ = std::thread([tp] { tp->tx_loop(); });
         t->rx_thread_ = std::thread([tp] { tp->rx_loop(); });
@@ -245,24 +244,26 @@ public:
     Transport(Transport&&)                 = delete;
     Transport& operator=(Transport&&)      = delete;
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // Send API (application thread)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
-    /// Send data as a WebSocket binary frame (non-blocking).
+    /// Send data as a WebSocket frame (non-blocking).
     ///
     /// @param data     Payload data
     /// @param len      Payload length (must be <= MaxPayload)
+    /// @param opcode   WebSocket opcode (default: binary)
     /// @return 0 on success, -EMSGSIZE if too large, -ENOTCONN if not
     ///         connected, -EAGAIN if queue is full
-    int send(const void* data, size_t len) noexcept {
+    int send(const void* data, size_t len,
+             uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > MaxPayload) return -EMSGSIZE;
         if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
             std::memcpy(msg.data, data, len);
             msg.len = static_cast<uint16_t>(len);
-            msg.opcode = ws::opcode::kBinary;
+            msg.opcode = opcode;
         });
 
         if (!ok) {
@@ -283,37 +284,45 @@ public:
         return send(data, len, ws::opcode::kText);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // Receive API (application thread)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     /// Try to receive a message (non-blocking).
     /// @param callback  Called with (data_ptr, len) if a message is available.
     /// @return true if a message was consumed, false if queue empty.
     /// @warning The data pointer passed to callback is only valid for the
     ///          duration of the callback invocation. Copy the data if you
-    ///          need it after the callback returns — the underlying SPSC
+    ///          need it after the callback returns -- the underlying SPSC
     ///          queue slot will be reused.
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    bool recv(F&& callback) noexcept {
+    bool recv(F&& callback) {
         return rx_queue_.try_consume([&](RxMsg& msg) {
             std::invoke(std::forward<F>(callback), msg.data, msg.len);
         });
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // Lifecycle
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     /// Stop the transport gracefully. Sends WebSocket Close frame.
+    ///
+    /// Thread safety: waits for TX/RX threads to exit BEFORE touching
+    /// crypto_ or tcp_, avoiding data races on shared state.
     void stop() noexcept {
         bool was_running = running_.exchange(false, std::memory_order_acq_rel);
 
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping transport");
 
-        // Send WebSocket Close frame via AEAD hot path (only if we initiated stop)
+        // Join worker threads FIRST — ensures no concurrent access to
+        // crypto_/tcp_ from TX/RX threads when we send the Close frame.
+        if (tx_thread_.joinable()) tx_thread_.join();
+        if (rx_thread_.joinable()) rx_thread_.join();
+
+        // Send WebSocket Close frame after threads have exited (no race)
         if (was_running && crypto_ && tcp_ && tcp_->is_established()) {
             uint8_t close_buf[128];
             size_t close_len = ws::build_close_frame(
@@ -325,10 +334,6 @@ public:
                 tcp_->send(tls_buf, tls_len);
             }
         }
-
-        // Join worker threads
-        if (tx_thread_.joinable()) tx_thread_.join();
-        if (rx_thread_.joinable()) rx_thread_.join();
 
         // Close TCP connection
         if (tcp_ && tcp_->is_established()) {
@@ -344,14 +349,14 @@ public:
 
     [[nodiscard]] TransportStats stats() const noexcept {
         return TransportStats{
-            .tx_packets       = tx_stats_.packets,
-            .tx_bytes         = tx_stats_.bytes,
-            .tx_dropped       = tx_stats_.dropped,
-            .rx_packets       = rx_stats_.packets,
-            .rx_bytes         = rx_stats_.bytes,
-            .encrypt_errors   = tx_stats_.crypto_errors,
-            .decrypt_errors   = rx_stats_.crypto_errors,
-            .queue_full_count = queue_full_count_.load(std::memory_order_relaxed),
+            .tx_packets        = tx_stats_.packets,
+            .tx_bytes          = tx_stats_.bytes,
+            .tx_dropped        = tx_stats_.dropped,
+            .rx_packets        = rx_stats_.packets,
+            .rx_bytes          = rx_stats_.bytes,
+            .encrypt_errors    = tx_stats_.crypto_errors,
+            .decrypt_errors    = rx_stats_.crypto_errors,
+            .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed),
             .ws_pings_received = ws_pings_received_.load(std::memory_order_relaxed),
             .ws_pongs_sent     = ws_pongs_sent_.load(std::memory_order_relaxed),
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
@@ -361,31 +366,31 @@ public:
 private:
     Transport() = default;
 
-    TransportConfig                   config_;
-    rte_mempool*                      pool_ = nullptr;
-    std::unique_ptr<TcpSession>       tcp_;
-    std::unique_ptr<TlsSession>       tls_;   // Only used during create(), not on hot path
-    std::unique_ptr<TlsRecordCrypto>  crypto_;
+    TransportConfig                        config_;
+    TcpFactory                             tcp_factory_;
+    std::unique_ptr<TcpImpl>               tcp_;
+    std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
+    std::unique_ptr<TlsRecordCrypto>       crypto_;
 
-    TxQueue                           tx_queue_{};
-    RxQueue                           rx_queue_{};
+    TxQueue                                tx_queue_{};
+    RxQueue                                rx_queue_{};
 
-    std::atomic<bool>                 running_{false};
-    std::thread                       tx_thread_;
-    std::thread                       rx_thread_;
+    std::atomic<bool>                      running_{false};
+    std::thread                            tx_thread_;
+    std::thread                            rx_thread_;
 
     // Per-thread stats to avoid cross-core atomic contention
-    ThreadStats                       tx_stats_{};
-    ThreadStats                       rx_stats_{};
-    // App-thread-only counters (no contention — only send() writes these)
-    std::atomic<uint64_t>             queue_full_count_{0};
-    std::atomic<uint64_t>             ws_pings_received_{0};
-    std::atomic<uint64_t>             ws_pongs_sent_{0};
-    std::atomic<uint64_t>             reconnect_count_{0};
+    ThreadStats                            tx_stats_{};
+    ThreadStats                            rx_stats_{};
+    // App-thread-only counters (no contention -- only send() writes these)
+    std::atomic<uint64_t>                  queue_full_count_{0};
+    std::atomic<uint64_t>                  ws_pings_received_{0};
+    std::atomic<uint64_t>                  ws_pongs_sent_{0};
+    std::atomic<uint64_t>                  reconnect_count_{0};
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // CPU affinity
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     /// Pin the calling thread to a specific CPU core.
     static void pin_this_thread(int cpu, const char* name) {
@@ -403,33 +408,26 @@ private:
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // Connection establishment (reused by create() and reconnect)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
-    /// Full connection sequence: TCP → TLS → WS Upgrade → key export.
+    /// Full connection sequence: TCP (via factory) -> TLS -> WS Upgrade -> key export.
     /// On success, tcp_, tls_, crypto_ are populated and ready.
     /// On failure, previous state is cleaned up.
     std::expected<void, std::string> do_connect() {
         auto log = detail::transport_logger();
 
-        // Phase 1: TCP connect
-        TcpConfig tcp_cfg{
-            .tuple       = config_.tuple,
-            .src_mac     = config_.src_mac,
-            .dst_mac     = config_.dst_mac,
-            .mss         = net::kDefaultMss,
-            .recv_window = 65535,
-            .port_id     = config_.port_id,
-            .tx_queue_id = config_.tx_queue_id,
-            .rx_queue_id = config_.rx_queue_id,
-        };
-
-        tcp_ = std::make_unique<TcpSession>(tcp_cfg, pool_);
-        auto tcp_result = tcp_->connect(config_.tcp_timeout);
+        // Phase 1: Create TCP session via factory (factory handles connect)
+        auto tcp_result = tcp_factory_();
         if (!tcp_result) {
             return std::unexpected(std::format(
-                "TCP connect failed: {}", tcp_result.error()));
+                "TCP factory failed: {}", tcp_result.error()));
+        }
+        tcp_ = std::move(*tcp_result);
+
+        if (!tcp_->is_established()) {
+            return std::unexpected("TCP factory returned non-established session");
         }
 
         // Phase 2: TLS handshake
@@ -440,12 +438,12 @@ private:
             .handshake_timeout = config_.tls_timeout,
         };
 
-        auto tls_result = TlsSession::create(*tcp_, pool_, tls_cfg);
+        auto tls_result = TlsSession<TcpImpl>::create(*tcp_, tls_cfg);
         if (!tls_result) {
             return std::unexpected(std::format(
                 "TLS session failed: {}", tls_result.error()));
         }
-        tls_ = std::make_unique<TlsSession>(std::move(*tls_result));
+        tls_ = std::make_unique<TlsSession<TcpImpl>>(std::move(*tls_result));
 
         auto hs_result = tls_->handshake();
         if (!hs_result) {
@@ -528,9 +526,9 @@ private:
         return false;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // WebSocket upgrade (Phase 3 of handshake)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     std::expected<void, std::string> do_ws_upgrade() {
         auto log = detail::transport_logger();
@@ -624,9 +622,9 @@ private:
         return std::unexpected("WebSocket upgrade response timeout");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // TX worker loop (runs on dedicated thread)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     void tx_loop() {
         pin_this_thread(config_.tx_cpu, "TX");
@@ -643,19 +641,19 @@ private:
             TlsRecordCrypto::encrypted_size(
                 static_cast<uint16_t>(kMaxWsFrame));
 
-        // [P4] Batch buffers for drain loop
+        // Batch buffers for drain loop
         static constexpr int kMaxBatch = 32;
         TxMsg batch[kMaxBatch];
         uint8_t tls_bufs[kMaxBatch][kTlsBufSize];
         uint16_t tls_lens[kMaxBatch];
 
-        // Single WS encode buffer reused per message (no intermediate ws_buf copy)
+        // Single WS encode buffer reused per message
         uint8_t ws_buf[kWsBufSize];
 
         ws::FrameTemplate ws_tmpl = ws::FrameTemplate::for_binary();
 
         while (running_.load(std::memory_order_acquire)) {
-            // [P4] Drain: consume as many messages as available, up to kMaxBatch
+            // Drain: consume as many messages as available, up to kMaxBatch
             int n = 0;
             while (n < kMaxBatch) {
                 bool got = tx_queue_.try_consume([&](TxMsg& msg) {
@@ -667,7 +665,7 @@ private:
 
             if (n == 0) continue;
 
-            // WS encode → TLS encrypt for each message in batch
+            // WS encode -> TLS encrypt for each message in batch
             for (int i = 0; i < n; ++i) {
                 size_t ws_len = ws_tmpl.encode(
                     ws_buf, batch[i].data, batch[i].len);
@@ -700,16 +698,16 @@ private:
         SPDLOG_LOGGER_DEBUG(log, "TX loop exited");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // RX worker loop (runs on dedicated thread)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     void rx_loop() {
         pin_this_thread(config_.rx_cpu, "RX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 
-        // Fixed-size RX buffers — no heap allocation on hot path.
+        // Fixed-size RX buffers -- no heap allocation on hot path.
         // reassembly_buf is 2x max TLS record to handle partial records at boundary.
         static constexpr size_t kReassemblyBufSize =
             2 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
@@ -722,7 +720,7 @@ private:
         auto last_ping = std::chrono::steady_clock::now();
 
         while (running_.load(std::memory_order_acquire)) {
-            // ── WebSocket ping (periodic keepalive) ──
+            // -- WebSocket ping (periodic keepalive) --
             if (config_.ping_interval.count() > 0) {
                 auto now = std::chrono::steady_clock::now();
                 if (now - last_ping >= config_.ping_interval) {
@@ -731,16 +729,9 @@ private:
                 }
             }
 
-            // ── Receive packets ──
-            rte_mbuf* pkts[32];
-            uint16_t nb_rx = rte_eth_rx_burst(
-                config_.port_id, config_.rx_queue_id, pkts, 32);
-
-            if (nb_rx == 0) continue;
-
-            // Process through TCP layer — append to fixed reassembly buffer
+            // -- Receive data via poll_rx --
             bool reconnect_needed = false;
-            auto tcp_result = tcp_->process_rx(pkts, nb_rx,
+            auto rx_result = tcp_->poll_rx(
                 [&](const uint8_t* data, uint16_t len) {
                     if (reassembly_len + len <= kReassemblyBufSize) {
                         std::memcpy(reassembly_storage.get() + reassembly_len,
@@ -756,30 +747,34 @@ private:
                     }
                 });
 
-            // Reassembly buffer overflow → reconnect
+            // Reassembly buffer overflow -> reconnect
             if (reconnect_needed) {
                 if (!do_reconnect()) {
                     running_.store(false, std::memory_order_release);
                     goto rx_exit;
                 }
+                last_ping = std::chrono::steady_clock::now();
                 continue;
             }
 
-            if (!tcp_result) {
+            if (!rx_result) {
                 SPDLOG_LOGGER_WARN(log, "TCP rx error: {}",
-                                   tcp_result.error());
+                                   rx_result.error());
 
-                // ── Auto-reconnect (fixed interval, discard old messages) ──
+                // -- Auto-reconnect (fixed interval, discard old messages) --
                 reassembly_len = 0;
                 if (do_reconnect()) {
                     last_ping = std::chrono::steady_clock::now();
                     continue; // Resume RX loop with new connection
                 }
 
-                // Reconnect exhausted — stop transport
+                // Reconnect exhausted -- stop transport
                 running_.store(false, std::memory_order_release);
                 break;
             }
+
+            // No data received this poll iteration
+            if (*rx_result == 0) continue;
 
             // Decrypt complete TLS records from reassembly buffer
             size_t consumed = 0;
@@ -806,8 +801,8 @@ private:
                 if (!ok) {
                     rx_stats_.crypto_errors++;
                     SPDLOG_LOGGER_WARN(log,
-                        "TLS decrypt failed — triggering reconnect");
-                    // Corrupted record → link unreliable, reconnect
+                        "TLS decrypt failed -- triggering reconnect");
+                    // Corrupted record -> link unreliable, reconnect
                     reassembly_len = 0;
                     if (!do_reconnect()) {
                         running_.store(false, std::memory_order_release);
@@ -856,9 +851,9 @@ private:
         return true;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
     // WebSocket frame processing
-    // ─────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------
 
     void process_ws_data(const uint8_t* data, uint16_t len) {
         auto log = detail::transport_logger();
@@ -894,7 +889,7 @@ private:
                 continue;
             }
 
-            // Data frame — push to receive queue
+            // Data frame -- push to receive queue
             if (frame->is_data() && frame->payload_len > 0 &&
                 frame->payload_len <= MaxPayload) {
 
@@ -945,17 +940,4 @@ private:
     }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Type aliases for common configurations
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Default transport: 512-byte max payload, 1024-deep queue.
-using DefaultTransport = Transport<512, 1024>;
-
-/// Small transport for control messages.
-using SmallTransport = Transport<64, 256>;
-
-/// Large transport for bulk data.
-using LargeTransport = Transport<4096, 512>;
-
-} // namespace eph::dpdk
+} // namespace eph::net

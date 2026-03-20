@@ -10,8 +10,8 @@
 #include <benchmark/benchmark.h>
 
 #include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/tls_record.hpp"
-#include "eph/dpdk/websocket.hpp"
+#include "eph/net/tls_record.hpp"
+#include "eph/net/websocket.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -27,12 +27,12 @@ void fill_random(uint8_t* buf, size_t len, uint32_t seed = 42) {
     }
 }
 
-eph::dpdk::TlsHotState make_roundtrip_state(uint32_t seed = 42) {
-    eph::dpdk::TlsHotState state{};
-    fill_random(state.write.key, eph::dpdk::tls_const::kAes256KeyLen, seed);
-    fill_random(state.write.iv,  eph::dpdk::tls_const::kTls13NonceLen, seed + 1);
-    std::memcpy(state.read.key, state.write.key, eph::dpdk::tls_const::kAes256KeyLen);
-    std::memcpy(state.read.iv,  state.write.iv,  eph::dpdk::tls_const::kTls13NonceLen);
+eph::net::TlsHotState make_roundtrip_state(uint32_t seed = 42) {
+    eph::net::TlsHotState state{};
+    fill_random(state.write.key, eph::net::tls_const::kAes256KeyLen, seed);
+    fill_random(state.write.iv,  eph::net::tls_const::kTls13NonceLen, seed + 1);
+    std::memcpy(state.read.key, state.write.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(state.read.iv,  state.write.iv,  eph::net::tls_const::kTls13NonceLen);
     state.write.seq = 0;
     state.read.seq  = 0;
     return state;
@@ -72,7 +72,7 @@ static void BM_WsMasking(benchmark::State& state) {
     uint8_t mask[4] = {0x12, 0x34, 0x56, 0x78};
 
     for (auto _ : state) {
-        eph::dpdk::ws::apply_mask(data.data(), sz, mask);
+        eph::net::ws::apply_mask(data.data(), sz, mask);
         benchmark::DoNotOptimize(data.data());
     }
     state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(sz));
@@ -87,8 +87,8 @@ static void BM_WsEncode(benchmark::State& state) {
     auto sz = static_cast<size_t>(state.range(0));
     std::vector<uint8_t> payload(sz);
     fill_random(payload.data(), sz);
-    std::vector<uint8_t> out(eph::dpdk::ws::kMaxFrameHeaderLen + sz);
-    auto tmpl = eph::dpdk::ws::FrameTemplate::for_binary();
+    std::vector<uint8_t> out(eph::net::ws::kMaxFrameHeaderLen + sz);
+    auto tmpl = eph::net::ws::FrameTemplate::for_binary();
 
     for (auto _ : state) {
         auto n = tmpl.encode(out.data(), payload.data(), sz);
@@ -106,13 +106,13 @@ static void BM_WsDecode(benchmark::State& state) {
     auto sz = static_cast<size_t>(state.range(0));
     std::vector<uint8_t> payload(sz);
     fill_random(payload.data(), sz);
-    std::vector<uint8_t> frame_buf(eph::dpdk::ws::kMaxFrameHeaderLen + sz);
-    size_t frame_len = eph::dpdk::ws::encode_frame(
-        frame_buf.data(), eph::dpdk::ws::opcode::kBinary,
+    std::vector<uint8_t> frame_buf(eph::net::ws::kMaxFrameHeaderLen + sz);
+    size_t frame_len = eph::net::ws::encode_frame(
+        frame_buf.data(), eph::net::ws::opcode::kBinary,
         payload.data(), sz);
 
     for (auto _ : state) {
-        auto r = eph::dpdk::ws::decode_frame(frame_buf.data(), frame_len);
+        auto r = eph::net::ws::decode_frame(frame_buf.data(), frame_len);
         benchmark::DoNotOptimize(r);
     }
 }
@@ -125,13 +125,13 @@ BENCHMARK(BM_WsDecode)->Apply(PayloadSizeArgs);
 static void BM_TlsEncrypt(benchmark::State& state) {
     auto sz = static_cast<uint16_t>(state.range(0));
     auto hot = make_roundtrip_state();
-    auto crypto = eph::dpdk::TlsRecordCrypto::create(hot);
+    auto crypto = eph::net::TlsRecordCrypto::create(hot);
     if (!crypto) { state.SkipWithError(crypto.error()); return; }
 
     // +1 byte for encrypt()'s temporary content-type append
     std::vector<uint8_t> plaintext(sz + 1);
     fill_random(plaintext.data(), sz, 10);
-    uint16_t out_size = eph::dpdk::TlsRecordCrypto::encrypted_size(sz);
+    uint16_t out_size = eph::net::TlsRecordCrypto::encrypted_size(sz);
     std::vector<uint8_t> ciphertext(out_size);
 
     for (auto _ : state) {
@@ -151,12 +151,12 @@ static void BM_TlsDecrypt(benchmark::State& state) {
     auto hot = make_roundtrip_state();
 
     // Encrypt once to produce a valid record for decrypting
-    auto enc = eph::dpdk::TlsRecordCrypto::create(hot);
+    auto enc = eph::net::TlsRecordCrypto::create(hot);
     if (!enc) { state.SkipWithError(enc.error()); return; }
 
     std::vector<uint8_t> plaintext(sz + 1);
     fill_random(plaintext.data(), sz, 10);
-    uint16_t record_size = eph::dpdk::TlsRecordCrypto::encrypted_size(sz);
+    uint16_t record_size = eph::net::TlsRecordCrypto::encrypted_size(sz);
 
     // Pre-encrypt enough records for all iterations (each uses a unique seq)
     // We re-create the decryptor to keep seq in sync, so pre-encrypt a batch.
@@ -170,10 +170,10 @@ static void BM_TlsDecrypt(benchmark::State& state) {
     }
 
     // Create decryptor with matching read keys
-    eph::dpdk::TlsHotState dec_hot{};
-    std::memcpy(dec_hot.read.key, hot.write.key, eph::dpdk::tls_const::kAes256KeyLen);
-    std::memcpy(dec_hot.read.iv,  hot.write.iv,  eph::dpdk::tls_const::kTls13NonceLen);
-    auto dec = eph::dpdk::TlsRecordCrypto::create(dec_hot);
+    eph::net::TlsHotState dec_hot{};
+    std::memcpy(dec_hot.read.key, hot.write.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.iv,  hot.write.iv,  eph::net::tls_const::kTls13NonceLen);
+    auto dec = eph::net::TlsRecordCrypto::create(dec_hot);
     if (!dec) { state.SkipWithError(dec.error()); return; }
 
     std::vector<uint8_t> decrypted(sz + 16);
@@ -313,7 +313,7 @@ BENCHMARK(BM_TcpHeaderParse)->Apply(PayloadSizeArgs);
 static void BM_E2E_TX(benchmark::State& state) {
     auto sz = static_cast<uint16_t>(state.range(0));
     auto hot = make_roundtrip_state();
-    auto crypto = eph::dpdk::TlsRecordCrypto::create(hot);
+    auto crypto = eph::net::TlsRecordCrypto::create(hot);
     if (!crypto) { state.SkipWithError(crypto.error()); return; }
 
     eph::dpdk::net::PacketTemplate pkt_tmpl{};
@@ -329,15 +329,15 @@ static void BM_E2E_TX(benchmark::State& state) {
     fill_random(payload.data(), sz, 10);
 
     // +1 for TLS content type byte
-    size_t ws_max = eph::dpdk::ws::kMaxFrameHeaderLen + sz + 1;
+    size_t ws_max = eph::net::ws::kMaxFrameHeaderLen + sz + 1;
     std::vector<uint8_t> ws_buf(ws_max);
-    uint16_t tls_max = eph::dpdk::TlsRecordCrypto::encrypted_size(
+    uint16_t tls_max = eph::net::TlsRecordCrypto::encrypted_size(
         static_cast<uint16_t>(ws_max));
     std::vector<uint8_t> tls_buf(tls_max);
     uint16_t total_pkt_max = eph::dpdk::net::kAllHeadersLen + tls_max;
     std::vector<uint8_t> pkt_buf(total_pkt_max);
 
-    auto ws_tmpl = eph::dpdk::ws::FrameTemplate::for_binary();
+    auto ws_tmpl = eph::net::ws::FrameTemplate::for_binary();
     uint32_t seq = 1000, ack = 2000;
 
     for (auto _ : state) {
@@ -392,7 +392,7 @@ static void BM_E2E_RX(benchmark::State& state) {
     auto sz = static_cast<uint16_t>(state.range(0));
     auto hot = make_roundtrip_state();
 
-    auto enc = eph::dpdk::TlsRecordCrypto::create(hot);
+    auto enc = eph::net::TlsRecordCrypto::create(hot);
     if (!enc) { state.SkipWithError(enc.error()); return; }
 
     // Build unmasked WS frame (server → client)
@@ -402,7 +402,7 @@ static void BM_E2E_RX(benchmark::State& state) {
     size_t ws_max = 2 + 8 + sz + 1; // +1 for TLS content type
     std::vector<uint8_t> ws_buf(ws_max);
     size_t ws_pos = 0;
-    ws_buf[ws_pos++] = eph::dpdk::ws::kFinBit | eph::dpdk::ws::opcode::kBinary;
+    ws_buf[ws_pos++] = eph::net::ws::kFinBit | eph::net::ws::opcode::kBinary;
     if (sz < 126) {
         ws_buf[ws_pos++] = static_cast<uint8_t>(sz);
     } else {
@@ -414,7 +414,7 @@ static void BM_E2E_RX(benchmark::State& state) {
     size_t ws_frame_len = ws_pos + sz;
 
     // Pre-encrypt batch of records
-    uint16_t record_size = eph::dpdk::TlsRecordCrypto::encrypted_size(
+    uint16_t record_size = eph::net::TlsRecordCrypto::encrypted_size(
         static_cast<uint16_t>(ws_frame_len));
     constexpr int64_t kBatch = 500'000;
     std::vector<std::vector<uint8_t>> records(kBatch, std::vector<uint8_t>(record_size));
@@ -424,10 +424,10 @@ static void BM_E2E_RX(benchmark::State& state) {
     }
 
     // Decryptor
-    eph::dpdk::TlsHotState dec_hot{};
-    std::memcpy(dec_hot.read.key, hot.write.key, eph::dpdk::tls_const::kAes256KeyLen);
-    std::memcpy(dec_hot.read.iv,  hot.write.iv,  eph::dpdk::tls_const::kTls13NonceLen);
-    auto dec = eph::dpdk::TlsRecordCrypto::create(dec_hot);
+    eph::net::TlsHotState dec_hot{};
+    std::memcpy(dec_hot.read.key, hot.write.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.iv,  hot.write.iv,  eph::net::tls_const::kTls13NonceLen);
+    auto dec = eph::net::TlsRecordCrypto::create(dec_hot);
     if (!dec) { state.SkipWithError(dec.error()); return; }
 
     std::vector<uint8_t> decrypted(ws_frame_len + 16);
@@ -437,7 +437,7 @@ static void BM_E2E_RX(benchmark::State& state) {
         uint16_t dec_len;
         dec->decrypt(records[idx % kBatch].data(), record_size,
                      decrypted.data(), dec_len);
-        auto frame = eph::dpdk::ws::decode_frame(decrypted.data(), dec_len);
+        auto frame = eph::net::ws::decode_frame(decrypted.data(), dec_len);
         benchmark::DoNotOptimize(frame);
         idx++;
     }

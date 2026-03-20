@@ -16,13 +16,31 @@
 #include <expected>
 #include <string>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <openssl/aead.h>
 
-#include "eph/dpdk/tls_session.hpp"
+#include "eph/net/tls_session.hpp"
 
-namespace eph::dpdk {
+namespace eph::net {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logger
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+inline std::shared_ptr<spdlog::logger> tls_record_logger() {
+    static auto l = [] {
+        auto lg = spdlog::stdout_color_mt("net.tls_record");
+        lg->set_level(spdlog::level::trace);
+        return lg;
+    }();
+    return l;
+}
+
+} // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS record constants
@@ -235,7 +253,12 @@ public:
         // Restore the byte we temporarily overwrote
         if (plaintext) plaintext[plaintext_len] = saved;
 
-        if (!ok) return 0;
+        if (!ok) {
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "EVP_AEAD_CTX_seal failed: plaintext_len={}, write_seq={}",
+                plaintext_len, write_seq_);
+            return 0;
+        }
 
         write_seq_++;
         return tls_record::kRecordHeaderLen + static_cast<uint16_t>(ciphertext_len);
@@ -281,7 +304,7 @@ public:
         uint8_t nonce[tls_const::kTls13NonceLen];
         tls_record::build_nonce(nonce, read_iv_, read_seq_);
 
-        // Single-call AEAD open: nonce + AAD (record header) + ciphertext+tag → plaintext
+        // Single-call AEAD open: nonce + AAD (record header) + ciphertext+tag -> plaintext
         size_t plaintext_len = 0;
 
         if (!EVP_AEAD_CTX_open(&dec_ctx_, out, &plaintext_len,
@@ -289,7 +312,10 @@ public:
                                 nonce, tls_const::kTls13NonceLen,
                                 ciphertext, payload_len,
                                 record, tls_record::kRecordHeaderLen)) {
-            return false; // Authentication failure or decryption error
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "EVP_AEAD_CTX_open failed: record_len={}, read_seq={}",
+                record_len, read_seq_);
+            return false;
         }
 
         // TLS 1.3: last byte of decrypted data is the inner content type — strip it
@@ -323,4 +349,4 @@ private:
     uint64_t read_seq_  = 0;
 };
 
-} // namespace eph::dpdk
+} // namespace eph::net

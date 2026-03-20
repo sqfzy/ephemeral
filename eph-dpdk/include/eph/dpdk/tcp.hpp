@@ -31,37 +31,12 @@
 #include <rte_mbuf.h>
 
 #include "eph/dpdk/net_header.hpp"
+#include "eph/net/tcp_concept.hpp"
 
 namespace eph::dpdk {
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TCP state
-// ─────────────────────────────────────────────────────────────────────────────
-
-enum class TcpState : uint8_t {
-    Closed,
-    SynSent,
-    Established,
-    FinWait1,
-    FinWait2,
-    TimeWait,
-    CloseWait,
-    LastAck,
-};
-
-constexpr const char* tcp_state_name(TcpState s) noexcept {
-    switch (s) {
-        case TcpState::Closed:      return "CLOSED";
-        case TcpState::SynSent:     return "SYN_SENT";
-        case TcpState::Established: return "ESTABLISHED";
-        case TcpState::FinWait1:    return "FIN_WAIT_1";
-        case TcpState::FinWait2:    return "FIN_WAIT_2";
-        case TcpState::TimeWait:    return "TIME_WAIT";
-        case TcpState::CloseWait:   return "CLOSE_WAIT";
-        case TcpState::LastAck:     return "LAST_ACK";
-    }
-    return "UNKNOWN";
-}
+using eph::net::TcpState;
+using eph::net::tcp_state_name;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -434,6 +409,23 @@ public:
         return data_count;
     }
 
+    /// Poll DPDK rx and process received packets through the TCP state machine.
+    /// This is the TcpTransport concept-compatible interface that encapsulates
+    /// rte_eth_rx_burst + process_rx into a single call.
+    ///
+    /// @return On success: count of data packets processed (may be 0 if no
+    ///         data packets in this burst, e.g. pure ACKs). On error: returns
+    ///         unexpected with error message; all received packets are freed.
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
+        rte_mbuf* pkts[32];
+        uint16_t nb_rx = rte_eth_rx_burst(
+            config_.port_id, config_.rx_queue_id, pkts, 32);
+        if (nb_rx == 0) return uint16_t{0};
+        return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Connection close
     // ─────────────────────────────────────────────────────────────────────────
@@ -538,6 +530,9 @@ private:
     }
 
     /// Sequence number comparison: is a after b? (handles wrap-around)
+    /// Sequence number comparison handling 32-bit wrap-around (RFC 1323).
+    /// Treats a and b as positions on a circular 32-bit timeline:
+    /// returns true if a is "after" b in the circular sense.
     static bool seq_after(uint32_t a, uint32_t b) noexcept {
         return static_cast<int32_t>(a - b) > 0;
     }
@@ -571,5 +566,8 @@ private:
         }
     }
 };
+
+static_assert(eph::net::TcpTransport<TcpSession>,
+    "TcpSession must satisfy TcpTransport concept");
 
 } // namespace eph::dpdk

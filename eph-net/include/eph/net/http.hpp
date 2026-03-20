@@ -19,7 +19,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-namespace eph::dpdk::http {
+namespace eph::net::http {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Base64 encoding (for WebSocket key)
@@ -50,7 +50,7 @@ inline std::string base64_encode(const uint8_t* data, size_t len) {
 
 inline std::shared_ptr<spdlog::logger> http_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("dpdk.http");
+        auto lg = spdlog::stdout_color_mt("net.http");
         lg->set_level(spdlog::level::trace);
         return lg;
     }();
@@ -231,4 +231,4 @@ inline bool validate_ws_accept(std::string_view ws_key,
     return expected == accept_value;
 }
 
-} // namespace eph::dpdk::http
+} // namespace eph::net::http

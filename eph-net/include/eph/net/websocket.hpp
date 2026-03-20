@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file websocket.hpp
-/// WebSocket protocol implementation (RFC 6455) for DPDK transport.
+/// WebSocket protocol implementation (RFC 6455).
 ///
 /// Supports:
 ///   - Binary and text frames
@@ -25,7 +25,7 @@
 
 #include <openssl/rand.h>
 
-namespace eph::dpdk::ws {
+namespace eph::net::ws {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WebSocket constants
@@ -68,7 +68,7 @@ namespace detail {
 
 inline std::shared_ptr<spdlog::logger> ws_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("dpdk.websocket");
+        auto lg = spdlog::stdout_color_mt("net.websocket");
         lg->set_level(spdlog::level::trace);
         return lg;
     }();
@@ -450,4 +450,4 @@ struct FrameTemplate {
     }
 };
 
-} // namespace eph::dpdk::ws
+} // namespace eph::net::ws
