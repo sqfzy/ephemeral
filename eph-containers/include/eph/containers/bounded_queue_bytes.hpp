@@ -283,6 +283,23 @@ class BoundedQueueBytes {
         return ok ? std::make_optional(copy_len) : std::nullopt;
     }
 
+    /**
+     * @brief 带超时的拷贝读取（带时间戳）
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<uint32_t> try_pop_wts_for(
+        std::span<uint8_t> out_buf, uint64_t& out_ts,
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        uint32_t copy_len = 0;
+        bool ok = try_consume_wts_for(
+            [&](std::span<const uint8_t> data, uint64_t ts) {
+                copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+                std::memcpy(out_buf.data(), data.data(), copy_len);
+                out_ts = ts;
+            }, timeout);
+        return ok ? std::make_optional(copy_len) : std::nullopt;
+    }
+
     // ===========================================================================
     // 状态查询
     // ===========================================================================

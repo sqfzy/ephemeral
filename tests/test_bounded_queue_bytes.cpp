@@ -180,3 +180,28 @@ TEST(BoundedQueueBytesTimed, TryPushWtsForWithTimestamp) {
     EXPECT_TRUE(ok);
     EXPECT_EQ(ts, 12345u);
 }
+
+TEST(BoundedQueueBytesTimed, TryPopWtsForSuccess) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 3> payload = {0xAA, 0xBB, 0xCC};
+    EXPECT_TRUE(queue.try_push_wts(payload, 42));
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    auto len = queue.try_pop_wts_for(out, ts, std::chrono::milliseconds(10));
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(out[0], 0xAA);
+    EXPECT_EQ(out[1], 0xBB);
+    EXPECT_EQ(out[2], 0xCC);
+    EXPECT_EQ(ts, 42u);
+}
+
+TEST(BoundedQueueBytesTimed, TryPopWtsForTimeout) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    auto len = queue.try_pop_wts_for(out, ts, std::chrono::milliseconds(5));
+    EXPECT_FALSE(len.has_value());
+}
