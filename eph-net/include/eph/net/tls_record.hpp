@@ -308,9 +308,9 @@ public:
         size_t plaintext_len = 0;
 
         if (!EVP_AEAD_CTX_open(&dec_ctx_, out, &plaintext_len,
-                                payload_len, // max_out_len
+                                payload_len - tls_record::kAuthTagLen, // max_out_len: plaintext capacity (excludes tag)
                                 nonce, tls_const::kTls13NonceLen,
-                                ciphertext, payload_len,
+                                ciphertext, payload_len, // in_len: ciphertext + tag
                                 record, tls_record::kRecordHeaderLen)) {
             SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
                 "EVP_AEAD_CTX_open failed: record_len={}, read_seq={}",

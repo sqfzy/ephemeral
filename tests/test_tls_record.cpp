@@ -469,6 +469,35 @@ TEST(TlsRecord, DecryptWithWrongSeqFails) {
     EXPECT_FALSE(ok) << "Decrypt with wrong sequence number should fail (nonce mismatch)";
 }
 
+// Regression: max_out_len must not exceed output buffer capacity.
+// Previously max_out_len included the 16-byte auth tag, causing potential
+// buffer overrun on the decryption failure path when out buffer was tight.
+TEST(TlsRecord, DecryptFailureDoesNotOverrunTightBuffer) {
+    auto state = make_roundtrip_state();
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    constexpr uint16_t kPlainLen = 32;
+    std::vector<uint8_t> pt(kPlainLen + 1, 0x55);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(kPlainLen);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = enc->encrypt(pt.data(), kPlainLen, record.data());
+    ASSERT_GT(written, 0u);
+
+    // Decryptor with wrong key — forces decryption failure
+    auto bad_state = make_test_state(999);
+    auto dec = TlsRecordCrypto::create(bad_state);
+    ASSERT_TRUE(dec.has_value());
+
+    // Output buffer sized exactly for plaintext + content type (no room for tag).
+    // Before the fix, max_out_len = payload_len (49) would exceed this buffer (33).
+    constexpr uint16_t kOutSize = kPlainLen + 1; // plaintext + content type byte
+    uint8_t out[kOutSize];
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out, dec_len);
+    EXPECT_FALSE(ok) << "Decryption with wrong key must fail without overrunning buffer";
+}
+
 TEST(TlsRecord, NonZeroInitialSequence) {
     auto state = make_roundtrip_state();
     state.write.seq = 100;
