@@ -308,6 +308,19 @@ class alignas(Align<T>) EvictingQueue {
         return Capacity;
     }
 
+    /// Approximate number of unread entries (for monitoring/debugging only).
+    /// The result may be stale by the time it is read in a concurrent context.
+    [[nodiscard]] size_t size_approx() const noexcept {
+        uint64_t written = global_index_.load(std::memory_order_relaxed);
+        uint64_t read    = reader_.last_global_index_;
+        // Clamp: writer may have advanced past Capacity unread entries
+        uint64_t pending = (written >= read) ? (written - read) : 0;
+        return static_cast<size_t>(std::min(pending, static_cast<uint64_t>(Capacity)));
+    }
+
+    /// Check if there are no unread entries (approximate).
+    [[nodiscard]] bool empty() const noexcept { return size_approx() == 0; }
+
     /// Total number of writes performed since construction.
     /// Useful for monitoring throughput and computing discard rates.
     /// @note Relaxed load — safe to call from any thread for approximate monitoring.

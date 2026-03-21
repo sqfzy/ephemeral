@@ -326,3 +326,46 @@ TYPED_TEST(EvictingQueueTest, WriteCountUnaffectedByClear) {
     queue.push(data);
     EXPECT_EQ(queue.write_count(), 3u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// size_approx / empty observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(EvictingQueueTest, SizeApproxReflectsUnreadEntries) {
+    EvictingQueue<TestData, 4> queue;
+
+    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(queue.size_approx(), 0u);
+
+    TestData d{};
+    d.seq = 1;
+    queue.push(d);
+    EXPECT_EQ(queue.size_approx(), 1u);
+    EXPECT_FALSE(queue.empty());
+
+    d.seq = 2;
+    queue.push(d);
+    EXPECT_EQ(queue.size_approx(), 2u);
+
+    // Consume latest
+    auto out = queue.try_pop_latest();
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->seq, 2u);
+    // After consuming latest, all entries are considered read
+    EXPECT_EQ(queue.size_approx(), 0u);
+    EXPECT_TRUE(queue.empty());
+}
+
+TEST(EvictingQueueTest, SizeApproxCappedAtCapacity) {
+    EvictingQueue<TestData, 2> queue;
+
+    TestData d{};
+    // Push 5 entries into capacity-2 queue (overwrites)
+    for (int i = 0; i < 5; ++i) {
+        d.seq = static_cast<uint32_t>(i);
+        queue.push(d);
+    }
+
+    // size_approx should be capped at Capacity, not 5
+    EXPECT_LE(queue.size_approx(), 2u);
+}

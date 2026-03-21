@@ -239,6 +239,12 @@ class EvictingQueueBytes {
     /// @note Only accurate when called from the writer thread.
     [[nodiscard]] uint64_t total_pushed() const noexcept { return push_count_; }
 
+    /// Approximate number of unread entries (for monitoring/debugging only).
+    [[nodiscard]] size_t size_approx() const noexcept { return queue_.size_approx(); }
+
+    /// Check if there are no unread entries (approximate).
+    [[nodiscard]] bool empty() const noexcept { return queue_.empty(); }
+
    private:
     EvictingQueue<DataWrap, Capacity> queue_;
 
