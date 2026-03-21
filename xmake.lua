@@ -10,7 +10,8 @@ if is_mode("release") then
     set_optimize("fastest")
 end
 
-add_requires("numactl", "tabulate", "benchmark", "spdlog", "dpdk", { optional = true })
+add_requires("numactl", "tabulate", "benchmark", "spdlog", { optional = true })
+add_requires("vcpkg::dpdk", { optional = true, alias = "dpdk" })
 add_requires("aws-lc", { optional = true })
 add_requires("gtest", { system = false, configs = { main = true } })
 
