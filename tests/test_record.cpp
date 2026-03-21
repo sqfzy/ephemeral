@@ -358,3 +358,43 @@ TEST_F(RecordTest, ConcurrentRecorderEmptyReport) {
   auto stats = rec.compute_stats();
   EXPECT_FALSE(stats.has_value());
 }
+
+// ---------------------------------------------------------------------------
+// HdrHistogram::report() tests
+// ---------------------------------------------------------------------------
+
+TEST(HdrHistogramReport, EmptyHistogramReportsEmpty) {
+    HdrHistogram hist(1, 10000, 3);
+    auto r = hist.report("Latency");
+    EXPECT_NE(r.find("empty"), std::string::npos);
+    EXPECT_NE(r.find("Latency"), std::string::npos);
+}
+
+TEST(HdrHistogramReport, PopulatedHistogramIncludesAllPercentiles) {
+    HdrHistogram hist(1, 100000, 3);
+    for (uint64_t i = 1; i <= 1000; ++i) {
+        hist.record(i);
+    }
+
+    auto r = hist.report("Roundtrip", "ns");
+    EXPECT_NE(r.find("Roundtrip"), std::string::npos);
+    EXPECT_NE(r.find("1000 samples"), std::string::npos);
+    EXPECT_NE(r.find("p50"), std::string::npos);
+    EXPECT_NE(r.find("p90"), std::string::npos);
+    EXPECT_NE(r.find("p99"), std::string::npos);
+    EXPECT_NE(r.find("p99.9"), std::string::npos);
+    EXPECT_NE(r.find("p99.99"), std::string::npos);
+    EXPECT_NE(r.find("mean"), std::string::npos);
+    EXPECT_NE(r.find("stddev"), std::string::npos);
+    EXPECT_NE(r.find("ns"), std::string::npos);
+}
+
+TEST(HdrHistogramReport, ReportWithoutUnitOmitsUnitSuffix) {
+    HdrHistogram hist(1, 10000, 3);
+    hist.record(42);
+
+    auto r = hist.report("Test");
+    // Should have values but no unit suffix beyond the numbers
+    EXPECT_NE(r.find("Test"), std::string::npos);
+    EXPECT_NE(r.find("1 samples"), std::string::npos);
+}

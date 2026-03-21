@@ -357,6 +357,48 @@ class HdrHistogram {
         return sizeof(*this) + counts_.capacity() * sizeof(uint64_t);
     }
 
+    /**
+     * @brief 生成格式化的百分位统计报告
+     *
+     * 输出标准百分位（p50/p90/p99/p99.9/p99.99）以及基本统计量。
+     * 可选单位名称用于标注（如 "ns"、"us"、"cycles"）。
+     *
+     * @param title 报告标题
+     * @param unit  数值单位名称（默认为空）
+     * @return 格式化的多行报告字符串
+     */
+    [[nodiscard]] std::string report(std::string_view title = "Histogram",
+                                     std::string_view unit = "") const {
+        if (total_count_ == 0) {
+            return std::format("{}: (empty, no samples recorded)\n", title);
+        }
+
+        auto vals = get_percentiles({50.0, 90.0, 99.0, 99.9, 99.99});
+        std::string u = unit.empty() ? "" : std::format(" {}", unit);
+
+        return std::format(
+            "{}: {} samples\n"
+            "  min   : {}{}\n"
+            "  p50   : {}{}\n"
+            "  p90   : {}{}\n"
+            "  p99   : {}{}\n"
+            "  p99.9 : {}{}\n"
+            "  p99.99: {}{}\n"
+            "  max   : {}{}\n"
+            "  mean  : {:.1f}{}\n"
+            "  stddev: {:.1f}{}\n",
+            title, total_count_,
+            get_min_value(), u,
+            vals[0], u,
+            vals[1], u,
+            vals[2], u,
+            vals[3], u,
+            vals[4], u,
+            get_max_value(), u,
+            get_mean(), u,
+            get_std_deviation(), u);
+    }
+
     [[nodiscard]] bool is_compatible(const HdrHistogram& other) const noexcept {
         return lowest_trackable_value_ == other.lowest_trackable_value_ &&
                highest_trackable_value_ == other.highest_trackable_value_ &&
