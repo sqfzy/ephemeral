@@ -57,6 +57,17 @@ inline std::shared_ptr<spdlog::logger> http_logger() {
     return l;
 }
 
+/// Case-insensitive string comparison for HTTP header matching.
+inline bool iequals(std::string_view a, std::string_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i])))
+            return false;
+    }
+    return true;
+}
+
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,9 +75,13 @@ inline std::shared_ptr<spdlog::logger> http_logger() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Generate a random 16-byte WebSocket key, base64-encoded.
-inline std::string generate_ws_key() {
+inline std::expected<std::string, std::string> generate_ws_key() {
     uint8_t raw[16];
-    RAND_bytes(raw, sizeof(raw));
+    if (RAND_bytes(raw, sizeof(raw)) != 1) {
+        SPDLOG_LOGGER_ERROR(detail::http_logger(),
+            "RAND_bytes failed for WebSocket key generation");
+        return std::unexpected("RAND_bytes failed for WebSocket key generation");
+    }
     return detail::base64_encode(raw, sizeof(raw));
 }
 
@@ -147,9 +162,11 @@ parse_upgrade_response(const char* data, size_t len) {
         (space2 != std::string_view::npos) ? space2 - code_start : std::string_view::npos);
 
     result.status_code = 0;
+    int digits = 0;
     for (char c : code_str) {
         if (c < '0' || c > '9') break;
         result.status_code = result.status_code * 10 + (c - '0');
+        if (++digits >= 3) break; // HTTP status codes are 3 digits
     }
 
     SPDLOG_LOGGER_DEBUG(log, "HTTP response status: {}", result.status_code);
@@ -180,25 +197,31 @@ parse_upgrade_response(const char* data, size_t len) {
             value.remove_prefix(1);
         }
 
-        // Case-insensitive header matching
-        auto iequals = [](std::string_view a, std::string_view b) {
-            if (a.size() != b.size()) return false;
-            for (size_t i = 0; i < a.size(); ++i) {
-                if (std::tolower(static_cast<unsigned char>(a[i])) !=
-                    std::tolower(static_cast<unsigned char>(b[i])))
-                    return false;
-            }
-            return true;
-        };
-
-        if (iequals(name, "Upgrade")) {
-            result.has_upgrade = iequals(value, "websocket");
-        } else if (iequals(name, "Connection")) {
-            // Connection header may contain multiple values
-            result.has_connection_upgrade =
-                (value.find("Upgrade") != std::string_view::npos ||
-                 value.find("upgrade") != std::string_view::npos);
-        } else if (iequals(name, "Sec-WebSocket-Accept")) {
+        if (detail::iequals(name, "Upgrade")) {
+            result.has_upgrade = detail::iequals(value, "websocket");
+        } else if (detail::iequals(name, "Connection")) {
+            // Connection header is a comma-separated list of tokens (RFC 7230 §6.1).
+            // Match whole tokens case-insensitively to avoid "noupgrade" false positives.
+            result.has_connection_upgrade = [&] {
+                size_t pos = 0;
+                while (pos < value.size()) {
+                    // Skip leading whitespace
+                    while (pos < value.size() && (value[pos] == ' ' || value[pos] == '\t'))
+                        ++pos;
+                    // Find token end (comma or end of string)
+                    size_t end = value.find(',', pos);
+                    if (end == std::string_view::npos) end = value.size();
+                    // Trim trailing whitespace from token
+                    size_t tok_end = end;
+                    while (tok_end > pos && (value[tok_end - 1] == ' ' || value[tok_end - 1] == '\t'))
+                        --tok_end;
+                    if (detail::iequals(value.substr(pos, tok_end - pos), "upgrade"))
+                        return true;
+                    pos = (end < value.size()) ? end + 1 : end;
+                }
+                return false;
+            }();
+        } else if (detail::iequals(name, "Sec-WebSocket-Accept")) {
             result.sec_ws_accept = std::string(value);
         }
     }
@@ -219,14 +242,18 @@ inline bool validate_ws_accept(std::string_view ws_key,
     input.append(ws_key);
     input.append(kMagicGuid);
 
-    // SHA-1 hash
+    // SHA-1 hash (required by RFC 6455, not for cryptographic security)
     uint8_t hash[20];
     unsigned int hash_len = 0;
-    EVP_Digest(input.data(), input.size(), hash, &hash_len,
-               EVP_sha1(), nullptr);
+    if (!EVP_Digest(input.data(), input.size(), hash, &hash_len,
+                    EVP_sha1(), nullptr)) {
+        SPDLOG_LOGGER_ERROR(detail::http_logger(),
+            "EVP_Digest(SHA-1) failed during WebSocket accept validation");
+        return false;
+    }
 
     // Base64 encode
-    std::string expected = detail::base64_encode(hash, 20);
+    std::string expected = detail::base64_encode(hash, hash_len);
 
     return expected == accept_value;
 }

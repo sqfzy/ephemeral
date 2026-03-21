@@ -30,6 +30,7 @@
 #include <thread>
 
 #include <cerrno>
+#include <immintrin.h>
 #include <sched.h>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -376,6 +377,9 @@ private:
     RxQueue                                rx_queue_{};
 
     std::atomic<bool>                      running_{false};
+    // RX sets reconnecting_=true before modifying crypto_/tcp_;
+    // TX spins while this flag is set to avoid data races.
+    std::atomic<bool>                      reconnecting_{false};
     std::thread                            tx_thread_;
     std::thread                            rx_thread_;
 
@@ -491,6 +495,10 @@ private:
             return false;
         }
 
+        // Signal TX thread to pause: it must not touch crypto_/tcp_
+        // while we are reconnecting.
+        reconnecting_.store(true, std::memory_order_release);
+
         // Drain and discard TX queue (stale market data)
         TxMsg discard;
         while (tx_queue_.try_consume([&](TxMsg& m) { discard = m; })) {}
@@ -511,6 +519,7 @@ private:
             auto result = do_connect();
             if (result) {
                 reconnect_count_.fetch_add(1, std::memory_order_relaxed);
+                reconnecting_.store(false, std::memory_order_release);
                 SPDLOG_LOGGER_INFO(log,
                     "Reconnected successfully on attempt {}", attempt);
                 return true;
@@ -521,6 +530,7 @@ private:
                 attempt, result.error());
         }
 
+        reconnecting_.store(false, std::memory_order_release);
         SPDLOG_LOGGER_ERROR(log,
             "All {} reconnect attempts exhausted", max_attempts);
         return false;
@@ -534,7 +544,11 @@ private:
         auto log = detail::transport_logger();
 
         // Generate WebSocket key
-        std::string ws_key = http::generate_ws_key();
+        auto ws_key_result = http::generate_ws_key();
+        if (!ws_key_result) {
+            return std::unexpected(ws_key_result.error());
+        }
+        std::string ws_key = std::move(*ws_key_result);
 
         // Build upgrade request
         std::string host = config_.remote_host;
@@ -641,18 +655,37 @@ private:
             TlsRecordCrypto::encrypted_size(
                 static_cast<uint16_t>(kMaxWsFrame));
 
-        // Batch buffers for drain loop
-        static constexpr int kMaxBatch = 32;
-        TxMsg batch[kMaxBatch];
-        uint8_t tls_bufs[kMaxBatch][kTlsBufSize];
-        uint16_t tls_lens[kMaxBatch];
+        // Batch buffers for drain loop (sized from config)
+        const int kMaxBatch = config_.tx_burst_size;
+        auto batch    = std::make_unique<TxMsg[]>(kMaxBatch);
+        auto tls_bufs_storage = std::make_unique<uint8_t[]>(
+            static_cast<size_t>(kMaxBatch) * kTlsBufSize);
+        auto tls_lens = std::make_unique<uint16_t[]>(kMaxBatch);
 
         // Single WS encode buffer reused per message
         uint8_t ws_buf[kWsBufSize];
 
         ws::FrameTemplate ws_tmpl = ws::FrameTemplate::for_binary();
 
+        auto last_ping = std::chrono::steady_clock::now();
+
         while (running_.load(std::memory_order_acquire)) {
+            // Spin-wait while RX thread is reconnecting to avoid
+            // touching crypto_/tcp_ which are being replaced.
+            if (reconnecting_.load(std::memory_order_acquire)) [[unlikely]] {
+                _mm_pause();
+                continue;
+            }
+
+            // -- WebSocket ping (periodic keepalive, owned by TX thread) --
+            if (config_.ping_interval.count() > 0) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - last_ping >= config_.ping_interval) {
+                    send_ws_ping(ws_buf, tls_bufs_storage.get());
+                    last_ping = now;
+                }
+            }
+
             // Drain: consume as many messages as available, up to kMaxBatch
             int n = 0;
             while (n < kMaxBatch) {
@@ -667,12 +700,24 @@ private:
 
             // WS encode -> TLS encrypt for each message in batch
             for (int i = 0; i < n; ++i) {
-                size_t ws_len = ws_tmpl.encode(
-                    ws_buf, batch[i].data, batch[i].len);
+                size_t ws_len;
 
+                // Control frames (pong) use encode_frame directly;
+                // data frames use the precomputed template.
+                if (batch[i].opcode == ws::opcode::kPong) {
+                    ws_len = ws::encode_frame(
+                        ws_buf, ws::opcode::kPong,
+                        batch[i].data, batch[i].len);
+                } else {
+                    ws_len = ws_tmpl.encode(
+                        ws_buf, batch[i].data, batch[i].len);
+                }
+
+                uint8_t* tls_buf_i = tls_bufs_storage.get() +
+                    static_cast<size_t>(i) * kTlsBufSize;
                 tls_lens[i] = crypto_->encrypt(
                     ws_buf, static_cast<uint16_t>(ws_len),
-                    tls_bufs[i]);
+                    tls_buf_i);
 
                 if (tls_lens[i] == 0) {
                     tx_stats_.crypto_errors++;
@@ -683,10 +728,12 @@ private:
             for (int i = 0; i < n; ++i) {
                 if (tls_lens[i] == 0) continue;
 
-                auto result = tcp_->send(tls_bufs[i], tls_lens[i]);
+                uint8_t* tls_buf_i = tls_bufs_storage.get() +
+                    static_cast<size_t>(i) * kTlsBufSize;
+                auto result = tcp_->send(tls_buf_i, tls_lens[i]);
                 if (!result) {
                     tx_stats_.dropped++;
-                    SPDLOG_LOGGER_TRACE(log,
+                    SPDLOG_LOGGER_WARN(log,
                         "TCP send failed (dropped): {}", result.error());
                 } else {
                     tx_stats_.packets++;
@@ -717,18 +764,7 @@ private:
         auto reassembly_storage = std::make_unique<uint8_t[]>(kReassemblyBufSize);
         size_t reassembly_len = 0;
 
-        auto last_ping = std::chrono::steady_clock::now();
-
         while (running_.load(std::memory_order_acquire)) {
-            // -- WebSocket ping (periodic keepalive) --
-            if (config_.ping_interval.count() > 0) {
-                auto now = std::chrono::steady_clock::now();
-                if (now - last_ping >= config_.ping_interval) {
-                    send_ws_ping();
-                    last_ping = now;
-                }
-            }
-
             // -- Receive data via poll_rx --
             bool reconnect_needed = false;
             auto rx_result = tcp_->poll_rx(
@@ -751,9 +787,8 @@ private:
             if (reconnect_needed) {
                 if (!do_reconnect()) {
                     running_.store(false, std::memory_order_release);
-                    goto rx_exit;
+                    break;
                 }
-                last_ping = std::chrono::steady_clock::now();
                 continue;
             }
 
@@ -764,7 +799,6 @@ private:
                 // -- Auto-reconnect (fixed interval, discard old messages) --
                 reassembly_len = 0;
                 if (do_reconnect()) {
-                    last_ping = std::chrono::steady_clock::now();
                     continue; // Resume RX loop with new connection
                 }
 
@@ -802,14 +836,14 @@ private:
                     rx_stats_.crypto_errors++;
                     SPDLOG_LOGGER_WARN(log,
                         "TLS decrypt failed -- triggering reconnect");
-                    // Corrupted record -> link unreliable, reconnect
+                    // Corrupted record -> link unreliable, reconnect.
+                    // Reset reassembly state and skip compact logic below.
                     reassembly_len = 0;
+                    consumed = 0;
                     if (!do_reconnect()) {
                         running_.store(false, std::memory_order_release);
-                        goto rx_exit;
                     }
-                    last_ping = std::chrono::steady_clock::now();
-                    break; // Resume with fresh connection
+                    break; // Resume with fresh connection or exit outer loop
                 }
 
                 process_ws_data(decrypt_buf.get(), decrypted_len);
@@ -827,19 +861,16 @@ private:
             }
         }
 
-    rx_exit:
         SPDLOG_LOGGER_DEBUG(log, "RX loop exited");
     }
 
-    /// Send a WebSocket ping frame (encrypted via AEAD + TCP).
-    /// Returns true if ping was sent successfully.
-    bool send_ws_ping() noexcept {
-        uint8_t ping_buf[64];
-        size_t ping_len = ws::build_ping_frame(ping_buf);
+    /// Send a WebSocket ping frame (called from TX thread only).
+    /// Uses caller-provided buffers to avoid extra stack allocations.
+    bool send_ws_ping(uint8_t* ws_buf, uint8_t* tls_buf) noexcept {
+        size_t ping_len = ws::build_ping_frame(ws_buf);
 
-        uint8_t tls_buf[128];
         uint16_t tls_len = crypto_->encrypt(
-            ping_buf, static_cast<uint16_t>(ping_len), tls_buf);
+            ws_buf, static_cast<uint16_t>(ping_len), tls_buf);
         if (tls_len == 0) return false;
 
         auto result = tcp_->send(tls_buf, tls_len);
@@ -906,37 +937,47 @@ private:
 
                 if (ok) {
                     rx_stats_.bytes += frame->payload_len;
+                } else {
+                    rx_stats_.dropped++;
+                    // Log every 1000th drop to avoid log flooding
+                    if (rx_stats_.dropped % 1000 == 1) {
+                        SPDLOG_LOGGER_WARN(log,
+                            "RX queue full, dropping data frame "
+                            "(total dropped: {})", rx_stats_.dropped);
+                    }
                 }
             }
         }
     }
 
-    /// Send pong response via AEAD + TCP (no SSL object needed).
+    /// Enqueue pong response into TX queue so the TX thread sends it.
+    /// This avoids data races: only TX thread touches crypto_->encrypt().
     void handle_ping(const ws::DecodedFrame& ping_frame) {
-        uint8_t pong_buf[256];
-        size_t pong_len;
+        // Ping payload is at most 125 bytes (RFC 6455 §5.5).
+        // Enqueue the unmasked payload with kPong opcode; TX thread
+        // will encode the WS frame and encrypt it.
+        size_t pong_payload_len = std::min(
+            static_cast<size_t>(ping_frame.payload_len),
+            static_cast<size_t>(MaxPayload));
 
-        if (ping_frame.masked && ping_frame.payload_len > 0) {
-            uint8_t unmasked[125];
-            std::memcpy(unmasked, ping_frame.payload, ping_frame.payload_len);
-            ws::apply_mask(unmasked, ping_frame.payload_len,
-                           ping_frame.mask_key);
-            pong_len = ws::build_pong_frame(
-                pong_buf, unmasked, ping_frame.payload_len);
+        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+            if (ping_frame.payload && pong_payload_len > 0) {
+                std::memcpy(msg.data, ping_frame.payload, pong_payload_len);
+                if (ping_frame.masked) {
+                    ws::apply_mask(msg.data, pong_payload_len,
+                                   ping_frame.mask_key);
+                }
+            }
+            msg.len = static_cast<uint16_t>(pong_payload_len);
+            msg.opcode = ws::opcode::kPong;
+        });
+
+        if (ok) {
+            ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
         } else {
-            pong_len = ws::build_pong_frame(
-                pong_buf, ping_frame.payload, ping_frame.payload_len);
+            SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
+                "TX queue full, dropping pong response");
         }
-
-        // Encrypt and send via TCP (same AEAD path as data frames)
-        uint8_t tls_buf[512];
-        uint16_t tls_len = crypto_->encrypt(
-            pong_buf, static_cast<uint16_t>(pong_len), tls_buf);
-        if (tls_len > 0) {
-            tcp_->send(tls_buf, tls_len);
-        }
-
-        ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
     }
 };
 

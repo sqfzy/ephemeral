@@ -68,7 +68,7 @@ inline void build_nonce(uint8_t out[tls_const::kTls13NonceLen],
 
     uint64_t seq_be;
     if constexpr (std::endian::native == std::endian::little) {
-        seq_be = __builtin_bswap64(seq);
+        seq_be = std::byteswap(seq);
     } else {
         seq_be = seq;
     }
