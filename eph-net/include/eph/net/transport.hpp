@@ -199,18 +199,59 @@ struct TransportStats {
     uint64_t ws_pongs_sent     = 0;
     uint64_t pong_timeouts     = 0;
     uint64_t reconnect_count   = 0;
+    uint64_t uptime_ns         = 0;  ///< Nanoseconds since Transport::create()
+
+    // -----------------------------------------------------------------------
+    // Rate helpers — compute averages over uptime for monitoring dashboards.
+    // Return 0.0 if uptime_ns == 0 to avoid division by zero.
+    // -----------------------------------------------------------------------
+
+    /// TX packets per second (average over uptime).
+    [[nodiscard]] double tx_pps() const noexcept {
+        return uptime_ns > 0
+            ? static_cast<double>(tx_packets) * 1e9 / static_cast<double>(uptime_ns)
+            : 0.0;
+    }
+
+    /// RX packets per second (average over uptime).
+    [[nodiscard]] double rx_pps() const noexcept {
+        return uptime_ns > 0
+            ? static_cast<double>(rx_packets) * 1e9 / static_cast<double>(uptime_ns)
+            : 0.0;
+    }
+
+    /// TX bytes per second (average over uptime).
+    [[nodiscard]] double tx_bps() const noexcept {
+        return uptime_ns > 0
+            ? static_cast<double>(tx_bytes) * 1e9 / static_cast<double>(uptime_ns)
+            : 0.0;
+    }
+
+    /// RX bytes per second (average over uptime).
+    [[nodiscard]] double rx_bps() const noexcept {
+        return uptime_ns > 0
+            ? static_cast<double>(rx_bytes) * 1e9 / static_cast<double>(uptime_ns)
+            : 0.0;
+    }
+
+    /// Uptime as a chrono duration.
+    [[nodiscard]] std::chrono::nanoseconds uptime() const noexcept {
+        return std::chrono::nanoseconds{uptime_ns};
+    }
 
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
+        double uptime_s = static_cast<double>(uptime_ns) / 1e9;
         return std::format(
-            "TransportStats:\n"
-            "  TX: {} packets, {} bytes, {} dropped, {} encrypt errors\n"
-            "  RX: {} packets, {} bytes, {} dropped, {} decrypt errors\n"
+            "TransportStats (uptime: {:.1f}s):\n"
+            "  TX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), {} dropped, {} encrypt errors\n"
+            "  RX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), {} dropped, {} decrypt errors\n"
             "  Queue full: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}",
-            tx_packets, tx_bytes, tx_dropped, encrypt_errors,
-            rx_packets, rx_bytes, rx_dropped, decrypt_errors,
+            uptime_s,
+            tx_packets, tx_pps(), tx_bytes, tx_bps(), tx_dropped, encrypt_errors,
+            rx_packets, rx_pps(), rx_bytes, rx_bps(), rx_dropped, decrypt_errors,
             queue_full_count,
             ws_pings_received, ws_pongs_sent, pong_timeouts,
             reconnect_count);
@@ -332,6 +373,7 @@ public:
             return std::unexpected(conn_result.error());
         }
 
+        t->created_at_ = std::chrono::steady_clock::now();
         t->running_.store(true, std::memory_order_release);
         t->notify_state(TransportEvent::kConnected, config.remote_host);
 
@@ -754,6 +796,9 @@ public:
     }
 
     [[nodiscard]] TransportStats stats() const noexcept {
+        auto now = std::chrono::steady_clock::now();
+        auto uptime = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - created_at_).count();
         return TransportStats{
             .tx_packets        = tx_stats_.packets,
             .tx_bytes          = tx_stats_.bytes,
@@ -768,6 +813,7 @@ public:
             .ws_pongs_sent     = ws_pongs_sent_.load(std::memory_order_relaxed),
             .pong_timeouts     = pong_timeouts_.load(std::memory_order_relaxed),
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
+            .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
         };
     }
 
@@ -784,6 +830,9 @@ private:
     std::string                            cipher_name_{"none"};
     std::string                            ws_subprotocol_{};
     std::unique_ptr<TlsRecordCrypto>       crypto_;
+
+    // Uptime tracking
+    std::chrono::steady_clock::time_point  created_at_{};
 
     TxQueue                                tx_queue_{};
     RxQueue                                rx_queue_{};

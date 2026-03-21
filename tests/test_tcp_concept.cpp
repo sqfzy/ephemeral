@@ -343,7 +343,7 @@ TEST(TransportStatsDump, MultiLineOutput) {
     stats.reconnect_count = 1;
 
     auto d = stats.dump();
-    EXPECT_NE(d.find("TransportStats:"), std::string::npos);
+    EXPECT_NE(d.find("TransportStats"), std::string::npos);
     EXPECT_NE(d.find("50 packets"), std::string::npos);
     EXPECT_NE(d.find("2500 bytes"), std::string::npos);
     EXPECT_NE(d.find("3 dropped"), std::string::npos);
