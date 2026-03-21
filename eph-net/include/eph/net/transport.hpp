@@ -126,6 +126,10 @@ struct TransportConfig {
 
     // WebSocket ping (sent by TX thread at configured interval)
     std::chrono::seconds ping_interval{30};  // 0 = disable ping
+    // Pong timeout: if no pong is received within this duration after a ping,
+    // the connection is considered dead and a reconnect is triggered.
+    // 0 = disable pong timeout detection (default for backward compatibility).
+    std::chrono::seconds pong_timeout{0};
 
     // CPU affinity for worker threads (-1 = no pinning)
     int tx_cpu = -1;
@@ -159,6 +163,10 @@ struct TransportConfig {
             return "reconnect_interval must be positive when auto-reconnect is enabled";
         if (ping_interval.count() < 0)
             return "ping_interval must be >= 0 (0 disables ping)";
+        if (pong_timeout.count() < 0)
+            return "pong_timeout must be >= 0 (0 disables pong timeout)";
+        if (pong_timeout.count() > 0 && ping_interval.count() <= 0)
+            return "pong_timeout requires ping_interval > 0";
         return {};
     }
 };
@@ -183,11 +191,13 @@ struct TransportStats {
     uint64_t tx_dropped        = 0;
     uint64_t rx_packets        = 0;
     uint64_t rx_bytes          = 0;
+    uint64_t rx_dropped        = 0;
     uint64_t encrypt_errors    = 0;
     uint64_t decrypt_errors    = 0;
     uint64_t queue_full_count  = 0;
     uint64_t ws_pings_received = 0;
     uint64_t ws_pongs_sent     = 0;
+    uint64_t pong_timeouts     = 0;
     uint64_t reconnect_count   = 0;
 
     /// Multi-line formatted dump for logging/debugging.
@@ -195,14 +205,14 @@ struct TransportStats {
         return std::format(
             "TransportStats:\n"
             "  TX: {} packets, {} bytes, {} dropped, {} encrypt errors\n"
-            "  RX: {} packets, {} bytes, {} decrypt errors\n"
+            "  RX: {} packets, {} bytes, {} dropped, {} decrypt errors\n"
             "  Queue full: {}\n"
-            "  WebSocket: {} pings received, {} pongs sent\n"
+            "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}",
             tx_packets, tx_bytes, tx_dropped, encrypt_errors,
-            rx_packets, rx_bytes, decrypt_errors,
+            rx_packets, rx_bytes, rx_dropped, decrypt_errors,
             queue_full_count,
-            ws_pings_received, ws_pongs_sent,
+            ws_pings_received, ws_pongs_sent, pong_timeouts,
             reconnect_count);
     }
 };
@@ -723,6 +733,7 @@ public:
         queue_full_count_.store(0, std::memory_order_relaxed);
         ws_pings_received_.store(0, std::memory_order_relaxed);
         ws_pongs_sent_.store(0, std::memory_order_relaxed);
+        pong_timeouts_.store(0, std::memory_order_relaxed);
         reconnect_count_.store(0, std::memory_order_relaxed);
     }
 
@@ -736,6 +747,12 @@ public:
         return cipher_name_;
     }
 
+    /// Negotiated WebSocket subprotocol (from server's Sec-WebSocket-Protocol
+    /// response header), or empty string if none was negotiated.
+    [[nodiscard]] std::string_view ws_subprotocol() const noexcept {
+        return ws_subprotocol_;
+    }
+
     [[nodiscard]] TransportStats stats() const noexcept {
         return TransportStats{
             .tx_packets        = tx_stats_.packets,
@@ -743,11 +760,13 @@ public:
             .tx_dropped        = tx_stats_.dropped,
             .rx_packets        = rx_stats_.packets,
             .rx_bytes          = rx_stats_.bytes,
+            .rx_dropped        = rx_stats_.dropped,
             .encrypt_errors    = tx_stats_.crypto_errors,
             .decrypt_errors    = rx_stats_.crypto_errors,
             .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed),
             .ws_pings_received = ws_pings_received_.load(std::memory_order_relaxed),
             .ws_pongs_sent     = ws_pongs_sent_.load(std::memory_order_relaxed),
+            .pong_timeouts     = pong_timeouts_.load(std::memory_order_relaxed),
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
         };
     }
@@ -763,6 +782,7 @@ private:
     // Connection metadata captured after each successful handshake
     std::string                            tls_version_{"none"};
     std::string                            cipher_name_{"none"};
+    std::string                            ws_subprotocol_{};
     std::unique_ptr<TlsRecordCrypto>       crypto_;
 
     TxQueue                                tx_queue_{};
@@ -786,6 +806,15 @@ private:
     std::atomic<uint64_t>                  ws_pings_received_{0};
     std::atomic<uint64_t>                  ws_pongs_sent_{0};
     std::atomic<uint64_t>                  reconnect_count_{0};
+    std::atomic<uint64_t>                  pong_timeouts_{0};
+
+    // Pong timeout tracking (TX thread writes ping time, RX thread writes pong time).
+    // Using atomics with relaxed ordering — occasional stale reads are acceptable
+    // since pong timeout detection is a best-effort liveness check, not a
+    // precision requirement.
+    using SteadyTimePoint = std::chrono::steady_clock::time_point;
+    std::atomic<int64_t>                   last_pong_ns_{0};      // RX writes, TX reads
+    bool                                   ping_awaiting_pong_{false}; // TX-thread-local
 
     // WebSocket fragmentation reassembly buffer (RX thread only).
     // Accumulates continuation frames until FIN=1.
@@ -896,6 +925,13 @@ private:
         // Capture connection metadata for user queries
         tls_version_ = tls_->tls_version();
         cipher_name_ = tls_->cipher_name();
+
+        // Initialize pong timestamp to "now" so pong timeout doesn't fire
+        // before the first ping/pong exchange completes.
+        last_pong_ns_.store(
+            std::chrono::steady_clock::now().time_since_epoch().count(),
+            std::memory_order_relaxed);
+        ping_awaiting_pong_ = false;
 
         SPDLOG_LOGGER_INFO(log,
             "Connected: {} (TLS: {}, cipher: {})",
@@ -1087,7 +1123,12 @@ private:
                         "Sec-WebSocket-Accept validation failed");
                 }
 
-                SPDLOG_LOGGER_INFO(log, "WebSocket upgrade successful");
+                // Store negotiated subprotocol for user queries
+                ws_subprotocol_ = std::move(parsed->sec_ws_protocol);
+
+                SPDLOG_LOGGER_INFO(log, "WebSocket upgrade successful{}",
+                    ws_subprotocol_.empty() ? ""
+                        : std::format(" (subprotocol: {})", ws_subprotocol_));
                 return {};
             }
         }
@@ -1139,11 +1180,35 @@ private:
                 continue;
             }
 
-            // -- WebSocket ping (periodic keepalive, owned by TX thread) --
+            // -- WebSocket ping / pong timeout (periodic keepalive, owned by TX thread) --
             if (config_.ping_interval.count() > 0) {
                 auto now = std::chrono::steady_clock::now();
+
+                // Check pong timeout before sending next ping.
+                // If we sent a ping and haven't received a pong within pong_timeout,
+                // the peer is considered dead — trigger reconnect via running_=false.
+                if (config_.pong_timeout.count() > 0 && ping_awaiting_pong_) {
+                    auto last_pong_tp = SteadyTimePoint{
+                        std::chrono::nanoseconds{
+                            last_pong_ns_.load(std::memory_order_relaxed)}};
+                    if (now - last_pong_tp > config_.pong_timeout) {
+                        pong_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                        SPDLOG_LOGGER_WARN(log,
+                            "Pong timeout: no pong received within {}s, "
+                            "triggering reconnect",
+                            config_.pong_timeout.count());
+                        // Signal RX thread to reconnect by resetting TCP.
+                        // RX will detect the broken connection and handle reconnect.
+                        tcp_->reset();
+                        ping_awaiting_pong_ = false;
+                        continue;
+                    }
+                }
+
                 if (now - last_ping >= config_.ping_interval) {
-                    send_ws_ping(ws_buf, tls_bufs_storage.get());
+                    if (send_ws_ping(ws_buf, tls_bufs_storage.get())) {
+                        ping_awaiting_pong_ = true;
+                    }
                     last_ping = now;
                 }
             }
@@ -1403,6 +1468,10 @@ private:
             }
 
             if (frame->is_pong()) {
+                // Record pong arrival for timeout detection (TX thread reads this).
+                last_pong_ns_.store(
+                    std::chrono::steady_clock::now().time_since_epoch().count(),
+                    std::memory_order_relaxed);
                 continue;
             }
 
@@ -1585,12 +1654,12 @@ struct std::formatter<eph::net::TransportStats> : std::formatter<std::string> {
         return std::formatter<std::string>::format(
             std::format(
                 "TX: {}pkts/{}B (dropped:{}, encrypt_err:{}) | "
-                "RX: {}pkts/{}B (decrypt_err:{}) | "
-                "queue_full:{} ping:{} pong:{} reconnect:{}",
+                "RX: {}pkts/{}B (dropped:{}, decrypt_err:{}) | "
+                "queue_full:{} ping:{} pong:{} pong_timeout:{} reconnect:{}",
                 s.tx_packets, s.tx_bytes, s.tx_dropped, s.encrypt_errors,
-                s.rx_packets, s.rx_bytes, s.decrypt_errors,
+                s.rx_packets, s.rx_bytes, s.rx_dropped, s.decrypt_errors,
                 s.queue_full_count, s.ws_pings_received,
-                s.ws_pongs_sent, s.reconnect_count),
+                s.ws_pongs_sent, s.pong_timeouts, s.reconnect_count),
             ctx);
     }
 };

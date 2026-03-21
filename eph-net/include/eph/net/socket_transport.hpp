@@ -13,6 +13,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <optional>
 #include <string>
 
 #include <arpa/inet.h>
@@ -479,5 +480,52 @@ using SocketWssTransport = Transport<SocketTransport, 512, 1024>;
 
 /// Large-payload variant (4KB messages, e.g. JSON market data).
 using SocketWssLargeTransport = Transport<SocketTransport, 4096, 512>;
+
+/// Convenience factory: creates a fully connected SocketWssTransport
+/// from just a TransportConfig, eliminating the TcpFactory boilerplate.
+///
+/// Equivalent to:
+///   auto factory = [&]() { /* create SocketTransport, connect */ };
+///   auto transport = SocketWssTransport::create(factory, config);
+///
+/// Optionally accepts a SocketConfig for fine-grained TCP tuning;
+/// if omitted, sensible defaults are derived from the TransportConfig.
+///
+/// @param config     Transport configuration (host, port, TLS, WS settings)
+/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.)
+/// @return Connected SocketWssTransport or error string
+template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
+[[nodiscard]] inline auto
+socket_wss_connect(
+    const TransportConfig& config,
+    std::optional<SocketConfig> sock_cfg = std::nullopt)
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, MaxPayload, QueueDepth>>,
+                     std::string>
+{
+    SocketConfig sc = sock_cfg.value_or(SocketConfig{
+        .host         = config.remote_host,
+        .port         = config.remote_port,
+        .tcp_nodelay  = true,
+    });
+
+    // Ensure host/port match TransportConfig if not explicitly overridden
+    if (!sock_cfg) {
+        sc.host = config.remote_host;
+        sc.port = config.remote_port;
+    }
+
+    auto tcp_timeout = config.tcp_timeout;
+
+    auto tcp_factory = [sc, tcp_timeout]()
+        -> std::expected<std::unique_ptr<SocketTransport>, std::string> {
+        auto tcp = std::make_unique<SocketTransport>(sc);
+        auto result = tcp->connect(tcp_timeout);
+        if (!result) return std::unexpected(result.error());
+        return tcp;
+    };
+
+    return Transport<SocketTransport, MaxPayload, QueueDepth>::create(
+        std::move(tcp_factory), config);
+}
 
 } // namespace eph::net
