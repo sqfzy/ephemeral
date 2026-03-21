@@ -255,6 +255,40 @@ class EvictingQueueBytes {
         return ok ? std::make_optional(copy_len) : std::nullopt;
     }
 
+    /**
+     * @brief 带超时的零拷贝读取最新数据（带时间戳和丢包信息）
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, std::span<const uint8_t>, uint64_t, uint32_t>
+    [[nodiscard]] bool try_consume_latest_wts_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_consume_latest_wts(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_consume_latest_wts(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    /**
+     * @brief 带超时的拷贝读取（带时间戳和丢包信息）
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<uint32_t> try_pop_latest_wts_for(
+        std::span<uint8_t> out_buf, uint64_t& out_ts, uint32_t& out_discarded,
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        uint32_t copy_len = 0;
+        bool ok = try_consume_latest_wts_for(
+            [&](std::span<const uint8_t> data, uint64_t ts, uint32_t discarded) {
+                copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+                std::memcpy(out_buf.data(), data.data(), copy_len);
+                out_ts = ts;
+                out_discarded = discarded;
+            }, timeout);
+        return ok ? std::make_optional(copy_len) : std::nullopt;
+    }
+
     // ===========================================================================
     // 状态查询
     // ===========================================================================

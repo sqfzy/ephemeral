@@ -265,3 +265,100 @@ TEST(EvictingQueueBytesTimed, TryPopLatestForSucceedsAfterWrite) {
     EXPECT_EQ(out[0], 0xCC);
     writer.join();
 }
+
+// ===========================================================================
+// Timed _wts variants
+// ===========================================================================
+
+TEST(EvictingQueueBytesTimed, TryConsumeLatestWtsForSuccess) {
+    EvictingQueueBytes<64, 4> queue;
+    std::array<uint8_t, 4> payload = {1, 2, 3, 4};
+    ASSERT_TRUE(queue.try_push_wts(payload, 999));
+
+    uint64_t ts = 0;
+    uint32_t discarded = 0;
+    size_t captured_len = 0;
+
+    bool ok = queue.try_consume_latest_wts_for(
+        [&](std::span<const uint8_t> data, uint64_t t, uint32_t d) {
+            captured_len = data.size();
+            ts = t;
+            discarded = d;
+        },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(captured_len, 4u);
+    EXPECT_EQ(ts, 999u);
+    EXPECT_EQ(discarded, 0u);
+}
+
+TEST(EvictingQueueBytesTimed, TryConsumeLatestWtsForTimeout) {
+    EvictingQueueBytes<64, 4> queue;
+
+    bool ok = queue.try_consume_latest_wts_for(
+        [](std::span<const uint8_t>, uint64_t, uint32_t) {},
+        std::chrono::milliseconds(5));
+    EXPECT_FALSE(ok);
+}
+
+TEST(EvictingQueueBytesTimed, TryPopLatestWtsForSuccess) {
+    EvictingQueueBytes<64, 4> queue;
+    std::array<uint8_t, 3> payload = {0xAA, 0xBB, 0xCC};
+    ASSERT_TRUE(queue.try_push_wts(payload, 12345));
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    uint32_t discarded = 0;
+
+    auto len = queue.try_pop_latest_wts_for(
+        out, ts, discarded, std::chrono::milliseconds(10));
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(out[0], 0xAA);
+    EXPECT_EQ(out[1], 0xBB);
+    EXPECT_EQ(out[2], 0xCC);
+    EXPECT_EQ(ts, 12345u);
+    EXPECT_EQ(discarded, 0u);
+}
+
+TEST(EvictingQueueBytesTimed, TryPopLatestWtsForTimeout) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    uint32_t discarded = 0;
+
+    auto len = queue.try_pop_latest_wts_for(
+        out, ts, discarded, std::chrono::milliseconds(5));
+    EXPECT_FALSE(len.has_value());
+}
+
+TEST(EvictingQueueBytesTimed, TryPopLatestWtsForTracksDiscarded) {
+    EvictingQueueBytes<64, 2> queue;
+
+    // Push 3 messages into capacity-2 queue (first gets evicted)
+    std::array<uint8_t, 2> p1 = {1, 1};
+    std::array<uint8_t, 2> p2 = {2, 2};
+    std::array<uint8_t, 2> p3 = {3, 3};
+    ASSERT_TRUE(queue.try_push_wts(p1, 100));
+    ASSERT_TRUE(queue.try_push_wts(p2, 200));
+
+    // Read once to establish baseline pop id
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    uint32_t discarded = 0;
+    auto len = queue.try_pop_latest_wts_for(
+        out, ts, discarded, std::chrono::milliseconds(10));
+    ASSERT_TRUE(len.has_value());
+
+    // Push more — evicts old data
+    ASSERT_TRUE(queue.try_push_wts(p3, 300));
+    ASSERT_TRUE(queue.try_push_wts(p1, 400));
+    ASSERT_TRUE(queue.try_push_wts(p2, 500));
+
+    len = queue.try_pop_latest_wts_for(
+        out, ts, discarded, std::chrono::milliseconds(10));
+    ASSERT_TRUE(len.has_value());
+    // Some messages were discarded between reads
+    EXPECT_GT(discarded, 0u);
+}
