@@ -165,6 +165,10 @@ public:
     TlsRecordCrypto(const TlsRecordCrypto&) = delete;
     TlsRecordCrypto& operator=(const TlsRecordCrypto&) = delete;
 
+    // Safety: EVP_AEAD_CTX in BoringSSL/aws-lc is a flat struct (aead pointer +
+    // key schedule arrays) with no internal self-referencing pointers, so bitwise
+    // copy is safe. If aws-lc changes this invariant, these move operations must
+    // be updated to use EVP_AEAD_CTX_init + cleanup instead of direct copy.
     TlsRecordCrypto(TlsRecordCrypto&& other) noexcept
         : enc_ctx_(other.enc_ctx_)
         , dec_ctx_(other.dec_ctx_)

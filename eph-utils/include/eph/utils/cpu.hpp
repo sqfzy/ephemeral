@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <fstream>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -176,8 +177,7 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
   }
 
   // 按 hw_thread_id 排序
-  std::sort(cpus.begin(), cpus.end(),
-            [](auto &a, auto &b) { return a.hw_thread_id < b.hw_thread_id; });
+  std::ranges::sort(cpus, {}, &CpuTopologyInfo::hw_thread_id);
 #else
   // macOS/Windows 回退方案
   SPDLOG_LOGGER_DEBUG(log, "Using simplified topology (non-Linux)");

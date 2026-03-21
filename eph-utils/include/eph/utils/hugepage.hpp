@@ -3,6 +3,7 @@
 #include <memory>
 #include <utility>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #if defined(__linux__)
@@ -11,6 +12,18 @@
 #endif
 
 namespace eph::utils {
+
+namespace detail {
+
+inline std::shared_ptr<spdlog::logger> hugepage_logger() {
+    static auto l = [] {
+        auto lg = spdlog::stdout_color_mt("utils.hugepage");
+        return lg;
+    }();
+    return l;
+}
+
+} // namespace detail
 
 /**
  * @brief 大页内存分配辅助工具
@@ -132,8 +145,9 @@ public:
     }
 
     // 大页分配失败，回退到普通内存
-    SPDLOG_WARN("Hugepage allocation failed for {} bytes, falling back to aligned_alloc",
-                actual_size);
+    SPDLOG_LOGGER_WARN(detail::hugepage_logger(),
+        "Hugepage allocation failed for {} bytes, falling back to aligned_alloc",
+        actual_size);
     return std::aligned_alloc(actual_alignment, actual_size);
 
 #elif defined(_WIN32)

@@ -311,6 +311,7 @@ class BoundedQueue {
      * @brief 阻塞式消费
      */
     template <typename F>
+        requires std::invocable<F, T&>
     void consume(F&& visitor) noexcept {
         while (!try_consume(std::forward<F>(visitor))) {
             cpu_relax();

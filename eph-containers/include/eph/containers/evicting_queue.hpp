@@ -297,7 +297,6 @@ class alignas(Align<T>) EvictingQueue {
     [[nodiscard]] static constexpr size_t capacity() noexcept {
         return Capacity;
     }
-
 };
 
 /**

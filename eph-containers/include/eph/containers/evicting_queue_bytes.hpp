@@ -31,6 +31,9 @@ class EvictingQueueBytes {
     // Writer (Wait-free)
     // ===========================================================================
 
+    /// @note Unlike BoundedQueueBytes::try_push_wts, this method only returns
+    /// false when payload exceeds MaxDataSize. The underlying EvictingQueue is
+    /// wait-free and never blocks on queue fullness — old data is overwritten.
     [[nodiscard]] bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;

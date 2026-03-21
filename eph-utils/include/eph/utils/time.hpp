@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <optional>
+#include <ranges>
 #include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -176,7 +177,7 @@ public:
     }
 
     // 计算中位数（更鲁棒）
-    std::sort(std::begin(samples), std::end(samples));
+    std::ranges::sort(samples);
     ns_per_cycle_ = samples[num_samples / 2];
 
     // === 4. 合理性检查 ===
