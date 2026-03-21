@@ -325,6 +325,8 @@ public:
                 "send() failed: {}", strerror(errno)));
         }
 
+        SPDLOG_LOGGER_TRACE(detail::socket_logger(),
+            "send() completed: {} bytes", len);
         return len;
     }
 
@@ -344,6 +346,8 @@ public:
         ssize_t n = ::recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
 
         if (n > 0) {
+            SPDLOG_LOGGER_TRACE(detail::socket_logger(),
+                "recv() got {} bytes", n);
             std::invoke(std::forward<F>(data_callback),
                         static_cast<const uint8_t*>(buf),
                         static_cast<uint16_t>(n));
