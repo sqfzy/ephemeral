@@ -17,6 +17,7 @@
 ///
 /// EAL args go BEFORE the '--' separator; application args go AFTER.
 
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -105,6 +106,18 @@ static void print_usage(const char* prog) {
         prog);
 }
 
+/// Parse an integer from a string view, exit with error on failure.
+static int parse_int(std::string_view sv, std::string_view flag_name) {
+    int value = 0;
+    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), value);
+    if (ec != std::errc{} || ptr != sv.data() + sv.size()) {
+        std::cerr << std::format("Error: {} requires a valid integer, got '{}'\n",
+                                 flag_name, sv);
+        std::exit(1);
+    }
+    return value;
+}
+
 static AppConfig parse_app_args(int argc, char** argv) {
     AppConfig cfg{};
 
@@ -120,17 +133,17 @@ static AppConfig parse_app_args(int argc, char** argv) {
         };
 
         if (arg == "--host")        { cfg.host       = std::string(next_val("--host")); }
-        else if (arg == "--port")   { cfg.port       = static_cast<uint16_t>(std::stoi(std::string(next_val("--port")))); }
+        else if (arg == "--port")   { cfg.port       = static_cast<uint16_t>(parse_int(next_val("--port"), "--port")); }
         else if (arg == "--ws-path"){ cfg.ws_path    = std::string(next_val("--ws-path")); }
         else if (arg == "--local-ip")   { cfg.local_ip   = std::string(next_val("--local-ip")); }
         else if (arg == "--gateway-ip") { cfg.gateway_ip = std::string(next_val("--gateway-ip")); }
-        else if (arg == "--local-port") { cfg.local_port = static_cast<uint16_t>(std::stoi(std::string(next_val("--local-port")))); }
+        else if (arg == "--local-port") { cfg.local_port = static_cast<uint16_t>(parse_int(next_val("--local-port"), "--local-port")); }
         else if (arg == "--msg")        { cfg.message    = std::string(next_val("--msg")); }
-        else if (arg == "--count")      { cfg.count      = std::stoi(std::string(next_val("--count"))); }
-        else if (arg == "--interval")   { cfg.interval_ms = std::stoi(std::string(next_val("--interval"))); }
+        else if (arg == "--count")      { cfg.count      = parse_int(next_val("--count"), "--count"); }
+        else if (arg == "--interval")   { cfg.interval_ms = parse_int(next_val("--interval"), "--interval"); }
         else if (arg == "--ca-cert")    { cfg.ca_cert    = std::string(next_val("--ca-cert")); }
         else if (arg == "--no-verify")  { cfg.no_verify  = true; }
-        else if (arg == "--dpdk-port")  { cfg.dpdk_port  = static_cast<uint16_t>(std::stoi(std::string(next_val("--dpdk-port")))); }
+        else if (arg == "--dpdk-port")  { cfg.dpdk_port  = static_cast<uint16_t>(parse_int(next_val("--dpdk-port"), "--dpdk-port")); }
         else if (arg == "--help")       { print_usage("ws_echo_client"); std::exit(0); }
         else {
             std::cerr << std::format("Unknown app arg: {}\n", arg);
