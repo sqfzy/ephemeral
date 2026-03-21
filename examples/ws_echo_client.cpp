@@ -159,7 +159,11 @@ static AppConfig parse_app_args(int argc, char** argv) {
     // Generate random ephemeral port if not specified
     if (cfg.local_port == 0) {
         uint16_t rnd;
-        RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
+        if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
+            // Fallback: use time-based port selection
+            rnd = static_cast<uint16_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+        }
         cfg.local_port = 49152 + (rnd % 16384);  // RFC 6335 dynamic range
     }
 

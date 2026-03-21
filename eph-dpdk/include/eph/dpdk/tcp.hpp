@@ -592,7 +592,13 @@ private:
     /// Generate initial sequence number using CSPRNG (RFC 6528).
     static uint32_t generate_isn() noexcept {
         uint32_t isn;
-        RAND_bytes(reinterpret_cast<uint8_t*>(&isn), sizeof(isn));
+        if (RAND_bytes(reinterpret_cast<uint8_t*>(&isn), sizeof(isn)) != 1) {
+            // CSPRNG failure — fall back to time-based ISN (weaker but non-zero)
+            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+                "RAND_bytes failed for ISN generation, using time-based fallback");
+            isn = static_cast<uint32_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+        }
         return isn;
     }
 
