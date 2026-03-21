@@ -554,3 +554,69 @@ TEST(WsFrame, ZeroPayloadBinaryFrame) {
     EXPECT_EQ(result->payload_len, 0u);
     EXPECT_TRUE(result->fin);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Encoder validation (payload_len bounds checking)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsEncodeValidation, RejectPayloadLenWithMsbSet) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {0x01, 0x02, 0x03, 0x04};
+    // MSB set → exceeds kMaxPayloadLen
+    uint64_t bad_len = uint64_t{1} << 63;
+    size_t result = encode_frame_header(buf, opcode::kBinary, bad_len, true, mask);
+    EXPECT_EQ(result, 0u) << "Should reject payload_len with MSB set";
+}
+
+TEST(WsEncodeValidation, RejectControlFramePayloadOver125) {
+    uint8_t buf[256];
+    uint8_t mask[4] = {0x01, 0x02, 0x03, 0x04};
+    // Ping with 126 bytes → exceeds control frame limit
+    size_t result = encode_frame_header(buf, opcode::kPing, 126, true, mask);
+    EXPECT_EQ(result, 0u) << "Ping payload must not exceed 125 bytes";
+
+    // Close with 126 bytes
+    result = encode_frame_header(buf, opcode::kClose, 126, true, mask);
+    EXPECT_EQ(result, 0u) << "Close payload must not exceed 125 bytes";
+
+    // Pong with 126 bytes
+    result = encode_frame_header(buf, opcode::kPong, 126, true, mask);
+    EXPECT_EQ(result, 0u) << "Pong payload must not exceed 125 bytes";
+}
+
+TEST(WsEncodeValidation, AcceptControlFramePayloadExactly125) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {0x01, 0x02, 0x03, 0x04};
+    size_t result = encode_frame_header(buf, opcode::kPing, 125, true, mask);
+    EXPECT_GT(result, 0u) << "Ping with 125 bytes should be accepted";
+}
+
+TEST(WsEncodeValidation, AcceptMaxPayloadLen) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {0x01, 0x02, 0x03, 0x04};
+    uint64_t max_len = kMaxPayloadLen;
+    size_t result = encode_frame_header(buf, opcode::kBinary, max_len, true, mask);
+    EXPECT_EQ(result, 14u) << "Max payload len should produce 14-byte header";
+}
+
+TEST(WsEncodeValidation, EncodeFrameReturnsZeroOnInvalidPayload) {
+    uint8_t buf[64];
+    uint8_t payload[130] = {};
+    // Trying to encode a ping frame with 130 bytes payload
+    size_t result = encode_frame(buf, opcode::kPing, payload, 130);
+    EXPECT_EQ(result, 0u) << "encode_frame should return 0 for invalid control payload";
+}
+
+TEST(WsEncodeValidation, IsValidPayloadLen) {
+    // Data frame: any length up to kMaxPayloadLen is valid
+    EXPECT_TRUE(is_valid_payload_len(opcode::kBinary, 0));
+    EXPECT_TRUE(is_valid_payload_len(opcode::kBinary, 65536));
+    EXPECT_TRUE(is_valid_payload_len(opcode::kBinary, kMaxPayloadLen));
+    EXPECT_FALSE(is_valid_payload_len(opcode::kBinary, kMaxPayloadLen + 1));
+
+    // Control frame: limited to 125
+    EXPECT_TRUE(is_valid_payload_len(opcode::kPing, 0));
+    EXPECT_TRUE(is_valid_payload_len(opcode::kPing, 125));
+    EXPECT_FALSE(is_valid_payload_len(opcode::kPing, 126));
+    EXPECT_FALSE(is_valid_payload_len(opcode::kClose, 126));
+}

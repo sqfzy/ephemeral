@@ -59,6 +59,10 @@ inline constexpr uint8_t kMaskBit = 0x80;
 inline constexpr size_t kMaxFrameHeaderLen = 14;
 // Minimum header size: 2 (base) + 4 (mask) = 6
 inline constexpr size_t kMinFrameHeaderLen = 6;
+// RFC 6455 §5.2: the most significant bit of a 64-bit payload length MUST be 0
+inline constexpr uint64_t kMaxPayloadLen = (uint64_t{1} << 63) - 1;
+// RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
+inline constexpr size_t kMaxControlPayloadLen = 125;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Logger
@@ -202,13 +206,29 @@ inline void generate_mask_key(uint8_t mask[4]) noexcept {
 ///
 /// @param out          Output buffer (must have at least kMaxFrameHeaderLen bytes)
 /// @param opcode_val   Frame opcode (kBinary, kText, kPing, etc.)
-/// @param payload_len  Payload length
+/// @param payload_len  Payload length (must not exceed kMaxPayloadLen;
+///                     control frames limited to kMaxControlPayloadLen)
 /// @param fin          FIN bit (true for complete messages)
 /// @param mask_key     4-byte mask key (client MUST mask)
-/// @return Number of header bytes written
+/// @return Number of header bytes written, or 0 if payload_len is invalid
 inline size_t encode_frame_header(uint8_t* out, uint8_t opcode_val,
                                    uint64_t payload_len, bool fin,
                                    const uint8_t mask_key[4]) noexcept {
+    // RFC 6455 §5.2: MSB of 64-bit payload length must be 0
+    if (payload_len > kMaxPayloadLen) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+            "payload_len {} exceeds maximum {} (MSB must be 0)",
+            payload_len, kMaxPayloadLen);
+        return 0;
+    }
+    // RFC 6455 §5.5: control frame payload must not exceed 125 bytes
+    if ((opcode_val & 0x08) && payload_len > kMaxControlPayloadLen) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+            "control frame (opcode=0x{:02X}) payload_len {} exceeds limit {}",
+            opcode_val, payload_len, kMaxControlPayloadLen);
+        return 0;
+    }
+
     size_t pos = 0;
 
     // Byte 0: FIN + opcode
@@ -233,6 +253,14 @@ inline size_t encode_frame_header(uint8_t* out, uint8_t opcode_val,
     pos += 4;
 
     return pos;
+}
+
+/// Check whether a payload length is valid for the given opcode.
+constexpr bool is_valid_payload_len(uint8_t opcode_val,
+                                     uint64_t payload_len) noexcept {
+    if (payload_len > kMaxPayloadLen) return false;
+    if ((opcode_val & 0x08) && payload_len > kMaxControlPayloadLen) return false;
+    return true;
 }
 
 /// Compute the frame header size for a given payload length (client, masked).
@@ -263,6 +291,9 @@ inline size_t encode_frame(uint8_t* out, uint8_t opcode_val,
 
     size_t header_len = encode_frame_header(out, opcode_val, payload_len,
                                              fin, mask_key);
+    if (header_len == 0) [[unlikely]] {
+        return 0; // Validation failed (logged by encode_frame_header)
+    }
 
     // [P1] Single-pass copy + mask (fused memcpy + XOR)
     if (payload && payload_len > 0) {
