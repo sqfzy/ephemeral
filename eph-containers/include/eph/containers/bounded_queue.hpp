@@ -339,6 +339,19 @@ class BoundedQueue {
     // 状态查询
     // ===========================================================================
 
+    /// 丢弃所有排队中的元素，将队列重置为空状态。
+    ///
+    /// @warning 仅在确保无并发读写时调用（例如重连阶段、初始化前后）。
+    ///          在 SPSC 热路径中调用此方法是未定义行为。
+    void clear() noexcept {
+        // 将 head 追赶到 tail，等效于消费所有元素但不执行任何回调。
+        const size_t tail = writer_.tail_.load(std::memory_order_acquire);
+        reader_.head_.store(tail, std::memory_order_release);
+        // 刷新影子索引，使后续 try_produce/try_consume 看到一致状态
+        writer_.shadow_head_ = tail;
+        reader_.shadow_tail_ = tail;
+    }
+
     /// 获取当前队列中的元素数量（估计值，仅供监控/调试，不保证跨线程一致性）
     [[nodiscard]] size_t size() const noexcept {
         auto tail = writer_.tail_.load(std::memory_order_relaxed);

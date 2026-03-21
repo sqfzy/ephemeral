@@ -510,8 +510,8 @@ private:
         // while we are reconnecting.
         reconnecting_.store(true, std::memory_order_release);
 
-        // Drain and discard TX queue (stale market data)
-        while (tx_queue_.try_consume([](TxMsg&) {})) {}
+        // Discard stale TX queue data (TX thread is paused via reconnecting_ flag)
+        tx_queue_.clear();
 
         for (int attempt = 1; attempt <= max_attempts; ++attempt) {
             SPDLOG_LOGGER_INFO(log,

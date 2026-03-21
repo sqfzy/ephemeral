@@ -250,3 +250,72 @@ TYPED_TEST(BoundedQueueTest, MultiThreadStress) {
     EXPECT_EQ(next_expected - 1, total_messages);
     std::println("BoundedQueue stress test done. Processed {} messages.", total_messages);
 }
+
+// clear() 测试：清空后队列为空且可以继续使用
+TYPED_TEST(BoundedQueueTest, ClearResetsQueue) {
+    TypeParam queue;
+    BoundedTestData data;
+
+    // 填入若干元素
+    for (uint32_t i = 0; i < std::min<size_t>(queue.capacity(), 8); ++i) {
+        data.seq = i;
+        ASSERT_TRUE(queue.try_push(data));
+    }
+    EXPECT_FALSE(queue.empty());
+
+    // clear 后应为空
+    queue.clear();
+    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(queue.size(), 0u);
+    EXPECT_FALSE(queue.full());
+
+    // clear 后应能正常写入和读取
+    data.seq = 999;
+    EXPECT_TRUE(queue.try_push(data));
+    auto res = queue.try_pop();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 999u);
+}
+
+// clear() 在已空队列上调用不应出错
+TYPED_TEST(BoundedQueueTest, ClearOnEmptyQueue) {
+    TypeParam queue;
+    queue.clear();
+    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(queue.size(), 0u);
+
+    BoundedTestData data;
+    data.seq = 1;
+    EXPECT_TRUE(queue.try_push(data));
+    auto res = queue.try_pop();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 1u);
+}
+
+// clear() 在满队列上调用
+TYPED_TEST(BoundedQueueTest, ClearOnFullQueue) {
+    TypeParam queue;
+    BoundedTestData data;
+
+    // 填满
+    for (size_t i = 0; i < queue.capacity(); ++i) {
+        data.seq = static_cast<uint32_t>(i);
+        ASSERT_TRUE(queue.try_push(data));
+    }
+    EXPECT_TRUE(queue.full());
+
+    queue.clear();
+    EXPECT_TRUE(queue.empty());
+    EXPECT_FALSE(queue.full());
+
+    // 填满后 clear 再填满应正常工作
+    for (size_t i = 0; i < queue.capacity(); ++i) {
+        data.seq = static_cast<uint32_t>(i + 1000);
+        ASSERT_TRUE(queue.try_push(data));
+    }
+    EXPECT_TRUE(queue.full());
+
+    auto res = queue.try_pop();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 1000u);
+}
