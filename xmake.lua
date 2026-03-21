@@ -145,6 +145,10 @@ local dpdk_examples = {
     ws_echo_client = true,
 }
 
+local net_examples = {
+    socket_wss_client = true,
+}
+
 for _, file in ipairs(os.files("examples/**.cpp")) do
     local name = path.basename(file)
 
@@ -155,6 +159,8 @@ for _, file in ipairs(os.files("examples/**.cpp")) do
         add_files(file)
         if dpdk_examples[name] then
             add_deps("eph-dpdk")
+        elseif net_examples[name] then
+            add_deps("eph-net")
         else
             add_deps("eph-containers")
         end
