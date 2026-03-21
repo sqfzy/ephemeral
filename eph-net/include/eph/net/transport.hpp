@@ -54,6 +54,21 @@ namespace eph::net {
 // Configuration
 // ---------------------------------------------------------------------------
 
+/// Connection lifecycle events reported via the on_state_change callback.
+enum class TransportEvent : uint8_t {
+    kConnected,       ///< Initial connection or reconnection succeeded
+    kDisconnected,    ///< Connection lost (before reconnect attempt)
+    kReconnecting,    ///< Reconnect attempt starting (attempt number in detail)
+    kStopped,         ///< Transport stopped (graceful or exhausted retries)
+};
+
+/// Callback type for connection state changes.
+/// @param event  The lifecycle event
+/// @param detail Context string (e.g., error message, attempt count)
+/// @warning Called from RX thread (or stop() caller). Must be non-blocking.
+using TransportStateCallback =
+    std::function<void(TransportEvent event, std::string_view detail)>;
+
 struct TransportConfig {
     // Connection target
     std::string remote_host{};      // Hostname for TLS SNI and HTTP Host
@@ -84,6 +99,9 @@ struct TransportConfig {
     // CPU affinity for worker threads (-1 = no pinning)
     int tx_cpu = -1;
     int rx_cpu = -1;
+
+    // Connection state change callback (optional, called from worker threads)
+    TransportStateCallback on_state_change{};
 };
 
 // ---------------------------------------------------------------------------
@@ -230,6 +248,7 @@ public:
         }
 
         t->running_.store(true, std::memory_order_release);
+        t->notify_state(TransportEvent::kConnected, config.remote_host);
 
         // Start worker threads (capture raw pointer -- Transport outlives threads)
         auto* tp = t.get();
@@ -376,6 +395,7 @@ public:
             tcp_->close();
         }
 
+        notify_state(TransportEvent::kStopped);
         SPDLOG_LOGGER_INFO(log, "Transport stopped");
     }
 
@@ -426,6 +446,22 @@ private:
     std::atomic<uint64_t>                  ws_pings_received_{0};
     std::atomic<uint64_t>                  ws_pongs_sent_{0};
     std::atomic<uint64_t>                  reconnect_count_{0};
+
+    // -----------------------------------------------------------------------
+    // State change notification
+    // -----------------------------------------------------------------------
+
+    void notify_state(TransportEvent event, std::string_view detail = {}) noexcept {
+        if (config_.on_state_change) {
+            try {
+                config_.on_state_change(event, detail);
+            } catch (...) {
+                // Callback must not throw, but guard defensively
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "on_state_change callback threw an exception");
+            }
+        }
+    }
 
     // -----------------------------------------------------------------------
     // CPU affinity
@@ -530,6 +566,8 @@ private:
             return false;
         }
 
+        notify_state(TransportEvent::kDisconnected, config_.remote_host);
+
         // Signal TX thread to pause: it must not touch crypto_/tcp_
         // while we are reconnecting.
         reconnecting_.store(true, std::memory_order_release);
@@ -543,6 +581,9 @@ private:
                 attempt, max_attempts,
                 config_.reconnect_interval.count());
 
+            notify_state(TransportEvent::kReconnecting,
+                std::format("{}/{}", attempt, max_attempts));
+
             std::this_thread::sleep_for(config_.reconnect_interval);
 
             // Clean up old connection state
@@ -554,6 +595,8 @@ private:
             if (result) {
                 reconnect_count_.fetch_add(1, std::memory_order_relaxed);
                 reconnecting_.store(false, std::memory_order_release);
+                notify_state(TransportEvent::kConnected,
+                    std::format("reconnect attempt {}", attempt));
                 SPDLOG_LOGGER_INFO(log,
                     "Reconnected successfully on attempt {}", attempt);
                 return true;
