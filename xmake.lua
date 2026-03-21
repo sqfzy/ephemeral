@@ -62,7 +62,7 @@ target("eph-dpdk")
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
     add_deps("eph-net", { public = true })
     add_packages("dpdk", { public = true })
-    add_cxflags("-march=corei7", { public = true, force = true })
+    add_cxflags("-march=native", { public = true, force = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
