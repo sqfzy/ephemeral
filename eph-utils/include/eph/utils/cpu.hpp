@@ -1,10 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
 #include <fstream>
-#include <regex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/resource.h>
 #include <thread>
 #include <vector>
@@ -71,27 +72,49 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
   std::vector<CpuTopologyInfo> cpus;
 
 #if defined(__linux__)
-  std::regex const res[3] = {std::regex(R"(physical id\s+:\s+(\d+))"),
-                             std::regex(R"(core id\s+:\s+(\d+))"),
-                             std::regex(R"(processor\s+:\s+(\d+))")};
+  // /proc/cpuinfo format: "key\t: value\n" per field, blank lines between CPUs.
+  // We match "physical id", "core id", "processor" and extract the integer after ": ".
+  static constexpr std::string_view kKeys[] = {
+      "physical id", "core id", "processor"
+  };
+
+  // Parse the unsigned integer after ": " in a cpuinfo line.
+  // Returns (true, value) on success, (false, 0) on parse failure.
+  auto parse_cpuinfo_line = [](std::string_view line, std::string_view key)
+      -> std::pair<bool, unsigned> {
+    auto pos = line.find(key);
+    if (pos == std::string_view::npos) return {false, 0};
+
+    // Find the colon separator after the key
+    auto colon = line.find(':', pos + key.size());
+    if (colon == std::string_view::npos) return {false, 0};
+
+    // Skip whitespace after colon
+    auto val_start = colon + 1;
+    while (val_start < line.size() && line[val_start] == ' ') ++val_start;
+
+    unsigned value = 0;
+    auto [ptr, ec] = std::from_chars(
+        line.data() + val_start, line.data() + line.size(), value);
+    if (ec != std::errc{}) return {false, 0};
+
+    return {true, value};
+  };
 
   std::ifstream cpuinfo("/proc/cpuinfo");
-  std::smatch m;
   CpuTopologyInfo element{};
   unsigned valid_mask = 0;
 
   for (std::string line; getline(cpuinfo, line);) {
     for (unsigned i = 0; i < 3; ++i) {
-      if ((valid_mask & (1 << i)) || !std::regex_match(line, m, res[i]))
-        continue;
+      if (valid_mask & (1 << i)) continue;
 
-      unsigned value = std::stoul(m[1]);
-      if (i == 0)
-        element.socket_id = value;
-      else if (i == 1)
-        element.core_id = value;
-      else
-        element.hw_thread_id = value;
+      auto [ok, value] = parse_cpuinfo_line(line, kKeys[i]);
+      if (!ok) continue;
+
+      if (i == 0)      element.socket_id = value;
+      else if (i == 1) element.core_id = value;
+      else             element.hw_thread_id = value;
 
       valid_mask |= (1 << i);
       if (valid_mask == 7) { // 全部收集完毕
@@ -158,13 +181,29 @@ inline void set_thread_affinity(unsigned cpu_id) {
  */
 inline double get_cpu_base_frequency() {
 #if defined(__linux__)
-  std::regex re(R"(model name\s*:[^@]+@\s*([\d.]+)\s*GHz)");
+  // Parse "model name" line, looking for "@ X.XX GHz" pattern.
+  // Example: "model name\t: Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz"
   std::ifstream cpuinfo("/proc/cpuinfo");
-  std::smatch m;
   for (std::string line; getline(cpuinfo, line);) {
-    if (std::regex_match(line, m, re)) {
-      return std::stod(m[1]);
-    }
+    if (line.find("model name") == std::string::npos) continue;
+
+    auto at_pos = line.find('@');
+    if (at_pos == std::string::npos) continue;
+
+    // Skip whitespace after '@'
+    auto num_start = at_pos + 1;
+    while (num_start < line.size() && line[num_start] == ' ') ++num_start;
+
+    // Parse the floating-point frequency value
+    double freq = 0.0;
+    auto [ptr, ec] = std::from_chars(
+        line.data() + num_start, line.data() + line.size(), freq);
+    if (ec != std::errc{}) continue;
+
+    // Verify "GHz" follows (skip whitespace)
+    std::string_view rest(ptr, line.data() + line.size() - ptr);
+    while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+    if (rest.starts_with("GHz")) return freq;
   }
 #endif
   return 1.0; // 回退值

@@ -23,8 +23,6 @@
 
 namespace eph::utils {
 
-using eph::utils::TSC;
-
 namespace fs = std::filesystem;
 
 // ============================================================================

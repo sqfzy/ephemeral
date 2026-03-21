@@ -13,6 +13,9 @@ namespace eph::containers {
 
 template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class BoundedQueueBytes {
+    static_assert(MaxDataSize <= UINT32_MAX,
+                  "MaxDataSize must fit in uint32_t (used for len field)");
+
    public:
     struct DataWrap {
         uint64_t ts;

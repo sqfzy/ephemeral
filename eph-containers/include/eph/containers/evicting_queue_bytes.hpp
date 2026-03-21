@@ -13,6 +13,9 @@ namespace eph::containers {
 
 template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class EvictingQueueBytes {
+    static_assert(MaxDataSize <= UINT32_MAX,
+                  "MaxDataSize must fit in uint32_t (used for len field)");
+
    public:
     struct DataWrap {
         uint64_t id;
@@ -225,12 +228,12 @@ class EvictingQueueBytes {
     // ---------------------------------------------------------------------------
     // Writer 独占区
     // ---------------------------------------------------------------------------
-    alignas(64) uint64_t push_count_{0};
+    alignas(CACHE_LINE_SIZE) uint64_t push_count_{0};
 
     // ---------------------------------------------------------------------------
     // Reader 独占区
     // ---------------------------------------------------------------------------
-    alignas(64) uint64_t last_pop_id_{0};
+    alignas(CACHE_LINE_SIZE) uint64_t last_pop_id_{0};
 };
 
 }  // namespace eph::containers
