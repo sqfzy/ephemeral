@@ -399,6 +399,42 @@ public:
         return send(sv.data(), sv.size(), ws::opcode::kBinary);
     }
 
+    /// Send a WebSocket Close frame with a custom status code and reason.
+    ///
+    /// This enqueues the Close frame for transmission by the TX thread.
+    /// The transport continues running until the server echoes the Close
+    /// frame or stop() is called. For immediate shutdown, use stop().
+    ///
+    /// @param status_code  Close reason code (e.g., ws::close_code::kGoingAway)
+    /// @param reason       Optional human-readable reason (max 123 bytes, truncated if longer)
+    /// @return 0 on success, -ENOTCONN if not connected, -EAGAIN if queue full
+    int send_close(uint16_t status_code,
+                   std::string_view reason = {}) noexcept {
+        if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
+
+        // Close payload: 2-byte status code + optional reason (max 123 chars per RFC 6455 §5.5)
+        size_t reason_len = std::min(reason.size(), size_t{123});
+        uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
+
+        if (payload_len > MaxPayload) return -EMSGSIZE;
+
+        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+            msg.data[0] = static_cast<uint8_t>(status_code >> 8);
+            msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
+            if (reason_len > 0) {
+                std::memcpy(msg.data + 2, reason.data(), reason_len);
+            }
+            msg.len = payload_len;
+            msg.opcode = ws::opcode::kClose;
+        });
+
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return -EAGAIN;
+        }
+        return 0;
+    }
+
     /// Batch-send multiple messages (all-or-nothing semantics).
     ///
     /// Enqueues all messages with a single atomic tail update, amortizing
