@@ -51,7 +51,8 @@ inline std::string base64_encode(const uint8_t* data, size_t len) {
 
 inline std::shared_ptr<spdlog::logger> http_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("net.http");
+        auto lg = spdlog::get("net.http");
+        if (!lg) lg = spdlog::stdout_color_mt("net.http");
         // Inherit level from spdlog global default
         return lg;
     }();

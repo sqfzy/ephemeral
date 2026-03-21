@@ -140,7 +140,8 @@ struct alignas(eph::base::CACHE_LINE_SIZE) RxMessage {
 
 inline std::shared_ptr<spdlog::logger> transport_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("net.transport");
+        auto lg = spdlog::get("net.transport");
+        if (!lg) lg = spdlog::stdout_color_mt("net.transport");
         // Inherit level from spdlog global default
         return lg;
     }();

@@ -33,7 +33,8 @@ namespace detail {
 
 inline std::shared_ptr<spdlog::logger> tls_record_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("net.tls_record");
+        auto lg = spdlog::get("net.tls_record");
+        if (!lg) lg = spdlog::stdout_color_mt("net.tls_record");
         // Inherit level from spdlog global default
         return lg;
     }();

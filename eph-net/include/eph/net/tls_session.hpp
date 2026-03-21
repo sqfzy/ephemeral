@@ -98,7 +98,8 @@ namespace detail {
 
 inline std::shared_ptr<spdlog::logger> tls_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("net.tls");
+        auto lg = spdlog::get("net.tls");
+        if (!lg) lg = spdlog::stdout_color_mt("net.tls");
         // Inherit level from spdlog global default
         return lg;
     }();

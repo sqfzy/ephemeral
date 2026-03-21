@@ -29,7 +29,8 @@ namespace detail {
 
 inline std::shared_ptr<spdlog::logger> tsc_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("utils.tsc");
+        auto lg = spdlog::get("utils.tsc");
+        if (!lg) lg = spdlog::stdout_color_mt("utils.tsc");
         // Inherit level from spdlog global default
         return lg;
     }();

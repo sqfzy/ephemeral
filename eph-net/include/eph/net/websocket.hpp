@@ -68,7 +68,8 @@ namespace detail {
 
 inline std::shared_ptr<spdlog::logger> ws_logger() {
     static auto l = [] {
-        auto lg = spdlog::stdout_color_mt("net.websocket");
+        auto lg = spdlog::get("net.websocket");
+        if (!lg) lg = spdlog::stdout_color_mt("net.websocket");
         // Inherit level from spdlog global default
         return lg;
     }();
