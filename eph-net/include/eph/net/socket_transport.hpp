@@ -40,6 +40,10 @@ struct SocketConfig {
     bool        tcp_nodelay = true;   // Disable Nagle for lower latency
     int         recv_buf_size = 0;    // 0 = OS default
     int         send_buf_size = 0;    // 0 = OS default
+    bool        tcp_keepalive = false;   // Enable TCP keepalive probes
+    int         keepalive_idle = 60;     // Seconds before first probe (TCP_KEEPIDLE)
+    int         keepalive_interval = 10; // Seconds between probes (TCP_KEEPINTVL)
+    int         keepalive_count = 3;     // Probes before declaring dead (TCP_KEEPCNT)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,6 +162,22 @@ public:
         if (config_.tcp_nodelay) {
             int flag = 1;
             ::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+        }
+
+        // Enable TCP keepalive probes
+        if (config_.tcp_keepalive) {
+            int flag = 1;
+            ::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag));
+            ::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPIDLE,
+                         &config_.keepalive_idle, sizeof(config_.keepalive_idle));
+            ::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPINTVL,
+                         &config_.keepalive_interval, sizeof(config_.keepalive_interval));
+            ::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPCNT,
+                         &config_.keepalive_count, sizeof(config_.keepalive_count));
+            SPDLOG_LOGGER_DEBUG(log,
+                "TCP keepalive enabled: idle={}s, interval={}s, count={}",
+                config_.keepalive_idle, config_.keepalive_interval,
+                config_.keepalive_count);
         }
 
         // Set buffer sizes if configured
