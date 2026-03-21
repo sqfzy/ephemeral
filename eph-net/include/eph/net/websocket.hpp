@@ -370,6 +370,21 @@ decode_frame(const uint8_t* data, size_t len) {
         return std::unexpected("incomplete");
     }
 
+    // RFC 6455 §5.2: RSV1-3 must be 0 unless an extension is negotiated
+    if (data[0] & 0x70) {
+        return std::unexpected("non-zero RSV bits without negotiated extension");
+    }
+
+    // RFC 6455 §5.5: control frames MUST have FIN=1 and payload <= 125
+    if (frame.opcode & 0x08) {
+        if (!frame.fin) {
+            return std::unexpected("fragmented control frame");
+        }
+        if (frame.payload_len > 125) {
+            return std::unexpected("control frame payload exceeds 125 bytes");
+        }
+    }
+
     frame.payload = data + pos;
     frame.total_len = pos + static_cast<size_t>(frame.payload_len);
 

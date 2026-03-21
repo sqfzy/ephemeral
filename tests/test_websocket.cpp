@@ -481,6 +481,68 @@ TEST(WsBoundary, PayloadLen65536_LargeHeader) {
     EXPECT_EQ(total_frame_size(65536), 65536u + 14u);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RFC 6455 compliance validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(WsFrame, RejectNonZeroRsvBits) {
+    // Build a valid frame then set RSV1 bit
+    uint8_t buf[16] = {};
+    buf[0] = kFinBit | 0x40 | opcode::kBinary; // FIN=1, RSV1=1
+    buf[1] = 0x00; // unmasked, zero payload
+
+    auto result = decode_frame(buf, 2);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "non-zero RSV bits without negotiated extension");
+
+    // RSV2 bit
+    buf[0] = kFinBit | 0x20 | opcode::kText;
+    result = decode_frame(buf, 2);
+    ASSERT_FALSE(result.has_value());
+
+    // RSV3 bit
+    buf[0] = kFinBit | 0x10 | opcode::kBinary;
+    result = decode_frame(buf, 2);
+    ASSERT_FALSE(result.has_value());
+}
+
+TEST(WsFrame, RejectFragmentedControlFrame) {
+    // Ping with FIN=0 is illegal
+    uint8_t buf[8] = {};
+    buf[0] = opcode::kPing; // FIN=0, opcode=Ping
+    buf[1] = 0x00; // no mask, zero payload
+
+    auto result = decode_frame(buf, 2);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "fragmented control frame");
+}
+
+TEST(WsFrame, RejectOversizedControlFrame) {
+    // Close frame with 126-byte payload (exceeds 125-byte limit)
+    uint8_t buf[256] = {};
+    buf[0] = kFinBit | opcode::kClose;
+    buf[1] = 126; // 2-byte extended length encoding = 126 bytes payload
+    buf[2] = 0x00;
+    buf[3] = 126; // payload_len = 126
+
+    auto result = decode_frame(buf, 256);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "control frame payload exceeds 125 bytes");
+}
+
+TEST(WsFrame, AcceptMaxSizeControlFrame) {
+    // Close frame with exactly 125 bytes payload — should be accepted
+    uint8_t buf[256] = {};
+    buf[0] = kFinBit | opcode::kPing;
+    buf[1] = 125; // exactly at the limit
+
+    auto result = decode_frame(buf, 127); // 2 header + 125 payload
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kPing);
+    EXPECT_EQ(result->payload_len, 125u);
+    EXPECT_TRUE(result->fin);
+}
+
 TEST(WsFrame, ZeroPayloadBinaryFrame) {
     uint8_t buf[64];
     size_t len = encode_frame(buf, opcode::kBinary, nullptr, 0);
