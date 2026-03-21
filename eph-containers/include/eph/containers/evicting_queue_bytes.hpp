@@ -223,6 +223,15 @@ class EvictingQueueBytes {
     // 状态查询
     // ===========================================================================
 
+    /// 丢弃所有未读数据，将队列重置为空状态。
+    /// @warning 仅在确保无并发读写时调用。
+    void clear() noexcept {
+        queue_.clear();
+        // 同步 reader 的 last_pop_id_ 到 writer 的 push_count_，
+        // 使后续丢包计数从 0 开始。
+        last_pop_id_ = push_count_;
+    }
+
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
 
    private:

@@ -92,3 +92,25 @@ TYPED_TEST(BoundedQueueBytesTest, MultiThreadByteStress) {
 
     EXPECT_EQ(last_seq, total_messages);
 }
+
+// clear() 测试
+TEST(BoundedQueueBytesTest, ClearResetsQueue) {
+    BoundedQueueBytes<64, 8> queue;
+
+    std::array<uint8_t, 64> payload{};
+    payload.fill(0xAB);
+    EXPECT_TRUE(queue.try_push(payload));
+    EXPECT_FALSE(queue.empty());
+
+    queue.clear();
+    EXPECT_TRUE(queue.empty());
+    EXPECT_EQ(queue.size(), 0u);
+
+    // 写入新数据后应正常工作
+    payload.fill(0xCD);
+    EXPECT_TRUE(queue.try_push(payload));
+    std::array<uint8_t, 64> out{};
+    auto res = queue.try_pop(out);
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(out[0], 0xCD);
+}

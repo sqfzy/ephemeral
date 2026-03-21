@@ -148,3 +148,25 @@ TYPED_TEST(EvictingQueueBytesTest, MultiThreadStress) {
     EXPECT_EQ(last_received, total_messages);
     std::println("Multi-thread stress test done. Processed {} out of {} messages.", received_count, total_messages);
 }
+
+// clear() 测试
+TEST(EvictingQueueBytesTest, ClearDiscardsData) {
+    EvictingQueueBytes<256, 4> queue;
+
+    std::vector<uint8_t> payload(256, 0xAB);
+    EXPECT_TRUE(queue.try_push(payload));
+
+    queue.clear();
+
+    // clear 后不应读到旧数据
+    std::vector<uint8_t> out(256, 0);
+    auto res = queue.try_pop_latest(out);
+    EXPECT_FALSE(res.has_value());
+
+    // 写入新数据后应正常读取
+    std::vector<uint8_t> new_payload(256, 0xCD);
+    EXPECT_TRUE(queue.try_push(new_payload));
+    res = queue.try_pop_latest(out);
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(out[0], 0xCD);
+}

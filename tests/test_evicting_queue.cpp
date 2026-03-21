@@ -256,3 +256,38 @@ TYPED_TEST(EvictingQueueTest, RapidOverwriteLatestWins) {
     EXPECT_EQ(res->seq, 1000u);
     EXPECT_EQ(res->payload[0], 1000u);
 }
+
+// clear() 测试：清空后 try_consume_latest 返回 false，直到新数据写入
+TYPED_TEST(EvictingQueueTest, ClearDiscardsUnreadData) {
+    TypeParam queue;
+    TestData data;
+    data.seq = 42;
+    data.payload.fill(42);
+    queue.push(data);
+
+    // clear 后不应读到旧数据
+    queue.clear();
+    EXPECT_FALSE(queue.try_pop_latest().has_value());
+
+    // 写入新数据后应正常读取
+    data.seq = 99;
+    data.payload.fill(99);
+    queue.push(data);
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 99u);
+}
+
+// clear() 在未写入任何数据的空队列上安全调用
+TYPED_TEST(EvictingQueueTest, ClearOnFreshQueue) {
+    TypeParam queue;
+    queue.clear();
+    EXPECT_FALSE(queue.try_pop_latest().has_value());
+
+    TestData data;
+    data.seq = 1;
+    queue.push(data);
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 1u);
+}

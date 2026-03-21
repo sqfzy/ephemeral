@@ -208,6 +208,10 @@ class BoundedQueueBytes {
     // 状态查询
     // ===========================================================================
 
+    /// 丢弃所有排队中的数据，将队列重置为空状态。
+    /// @warning 仅在确保无并发读写时调用。
+    void clear() noexcept { queue_.clear(); }
+
     [[nodiscard]] size_t size() const noexcept { return queue_.size(); }
     
     [[nodiscard]] bool empty() const noexcept { return queue_.empty(); }

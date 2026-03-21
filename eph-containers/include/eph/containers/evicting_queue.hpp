@@ -291,6 +291,16 @@ class alignas(Align<T>) EvictingQueue {
     // 状态查询
     // ===========================================================================
 
+    /// 重置队列状态，丢弃所有未读数据。
+    ///
+    /// @warning 仅在确保无并发读写时调用。
+    void clear() noexcept {
+        // 将 reader 的 last_global_index_ 追赶到 writer 的当前位置，
+        // 使后续 try_consume_latest 认为没有新数据。
+        uint64_t idx = global_index_.load(std::memory_order_acquire);
+        reader_.last_global_index_ = idx;
+    }
+
     /**
      * @brief 获取缓冲区容量
      */
@@ -447,6 +457,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     // ===========================================================================
     // 状态查询
     // ===========================================================================
+
+    /// 重置队列状态，丢弃所有未读数据。
+    ///
+    /// @warning 仅在确保无并发读写时调用。
+    void clear() noexcept {
+        uint64_t seq = seq_.load(std::memory_order_acquire);
+        last_seq_ = seq;
+    }
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
 };
