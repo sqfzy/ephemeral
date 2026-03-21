@@ -155,6 +155,10 @@ struct TransportConfig {
             return "tls_timeout must be positive";
         if (ws_timeout.count() <= 0)
             return "ws_timeout must be positive";
+        if (max_reconnect_attempts > 0 && reconnect_interval.count() <= 0)
+            return "reconnect_interval must be positive when auto-reconnect is enabled";
+        if (ping_interval.count() < 0)
+            return "ping_interval must be >= 0 (0 disables ping)";
         return {};
     }
 };

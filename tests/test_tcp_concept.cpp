@@ -367,3 +367,54 @@ TEST(Formatter, TransportStatsFormatsCorrectly) {
     EXPECT_NE(s.find("4000"), std::string::npos);   // rx_bytes
     EXPECT_NE(s.find("reconnect:1"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::validate()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigValidation, ValidConfigPasses) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.remote_port = 443;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidation, EmptyHostFails) {
+    TransportConfig cfg;
+    cfg.remote_port = 443;
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidation, ZeroReconnectIntervalWithAutoReconnectFails) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.max_reconnect_attempts = 5;
+    cfg.reconnect_interval = std::chrono::milliseconds{0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("reconnect_interval"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidation, ZeroReconnectIntervalWithDisabledAutoReconnectPasses) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.max_reconnect_attempts = 0; // auto-reconnect disabled
+    cfg.reconnect_interval = std::chrono::milliseconds{0};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidation, NegativePingIntervalFails) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ping_interval = std::chrono::seconds{-1};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("ping_interval"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidation, ZeroPingIntervalPasses) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ping_interval = std::chrono::seconds{0}; // disables ping
+    EXPECT_TRUE(cfg.validate().empty());
+}
