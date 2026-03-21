@@ -328,6 +328,30 @@ TEST(TransportAPI, ConnectionMetadataAccessorsExist) {
     [[maybe_unused]] auto fn2 = &T::cipher_name;
 }
 
+TEST(TransportStatsDump, MultiLineOutput) {
+    TransportStats stats{};
+    stats.tx_packets = 50;
+    stats.tx_bytes = 2500;
+    stats.rx_packets = 40;
+    stats.rx_bytes = 2000;
+    stats.tx_dropped = 3;
+    stats.encrypt_errors = 1;
+    stats.decrypt_errors = 2;
+    stats.queue_full_count = 5;
+    stats.ws_pings_received = 10;
+    stats.ws_pongs_sent = 10;
+    stats.reconnect_count = 1;
+
+    auto d = stats.dump();
+    EXPECT_NE(d.find("TransportStats:"), std::string::npos);
+    EXPECT_NE(d.find("50 packets"), std::string::npos);
+    EXPECT_NE(d.find("2500 bytes"), std::string::npos);
+    EXPECT_NE(d.find("3 dropped"), std::string::npos);
+    EXPECT_NE(d.find("Queue full: 5"), std::string::npos);
+    EXPECT_NE(d.find("10 pings received"), std::string::npos);
+    EXPECT_NE(d.find("Reconnections: 1"), std::string::npos);
+}
+
 TEST(Formatter, TransportStatsFormatsCorrectly) {
     TransportStats stats{};
     stats.tx_packets = 100;

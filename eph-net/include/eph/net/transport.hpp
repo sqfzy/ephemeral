@@ -185,6 +185,22 @@ struct TransportStats {
     uint64_t ws_pings_received = 0;
     uint64_t ws_pongs_sent     = 0;
     uint64_t reconnect_count   = 0;
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "TransportStats:\n"
+            "  TX: {} packets, {} bytes, {} dropped, {} encrypt errors\n"
+            "  RX: {} packets, {} bytes, {} decrypt errors\n"
+            "  Queue full: {}\n"
+            "  WebSocket: {} pings received, {} pongs sent\n"
+            "  Reconnections: {}",
+            tx_packets, tx_bytes, tx_dropped, encrypt_errors,
+            rx_packets, rx_bytes, decrypt_errors,
+            queue_full_count,
+            ws_pings_received, ws_pongs_sent,
+            reconnect_count);
+    }
 };
 
 // ---------------------------------------------------------------------------
