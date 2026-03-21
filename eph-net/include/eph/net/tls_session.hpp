@@ -210,6 +210,9 @@ class TlsSession {
                 // Reduce CPU waste while waiting for handshake data
                 std::this_thread::yield();
             }
+            SPDLOG_LOGGER_WARN(detail::tls_logger(),
+                "BIO poll_rx_blocking timed out after {}ms",
+                poll_timeout.count());
             return 0; // Timeout
         }
     };
