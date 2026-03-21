@@ -638,6 +638,11 @@ public:
         return TransportState::kConnected;
     }
 
+    /// Check if the transport is connected and data can flow.
+    [[nodiscard]] bool is_connected() const noexcept {
+        return state() == TransportState::kConnected;
+    }
+
     /// Reset all statistics counters to zero.
     /// Useful for windowed measurement: call stats(), then reset_stats().
     /// @warning Not thread-safe with stats() — call from one thread only
