@@ -123,6 +123,8 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
   std::ifstream cpuinfo("/proc/cpuinfo");
   CpuTopologyInfo element{};
   unsigned valid_mask = 0;
+  // Track processor IDs separately for ARM fallback (no physical id / core id)
+  std::vector<unsigned> processor_ids;
 
   for (std::string line; getline(cpuinfo, line);) {
     for (unsigned i = 0; i < 3; ++i) {
@@ -133,14 +135,28 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
 
       if (i == 0)      element.socket_id = value;
       else if (i == 1) element.core_id = value;
-      else             element.hw_thread_id = value;
+      else {
+        element.hw_thread_id = value;
+        processor_ids.push_back(value);
+      }
 
       valid_mask |= (1 << i);
-      if (valid_mask == 7) { // 全部收集完毕
+      if (valid_mask == 7) { // All three fields collected (x86)
         cpus.push_back(element);
         valid_mask = 0;
       }
       break;
+    }
+  }
+
+  // ARM /proc/cpuinfo lacks "physical id" and "core id" — fall back to
+  // simplified topology using only the "processor" field we collected.
+  if (cpus.empty() && !processor_ids.empty()) {
+    SPDLOG_LOGGER_INFO(log,
+        "physical id/core id not found in /proc/cpuinfo, "
+        "using simplified topology ({} processors)", processor_ids.size());
+    for (unsigned id : processor_ids) {
+      cpus.push_back({0, id, id});
     }
   }
 
