@@ -31,6 +31,7 @@
 
 #include <cerrno>
 #include <sched.h>
+#include <system_error>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -408,7 +409,7 @@ private:
         } else {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
                 "Failed to pin {} thread to CPU {}: {}",
-                name, cpu, strerror(errno));
+                name, cpu, std::generic_category().message(errno));
         }
     }
 

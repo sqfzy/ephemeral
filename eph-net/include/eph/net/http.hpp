@@ -6,6 +6,7 @@
 /// Builds HTTP Upgrade requests and parses 101 Switching Protocols responses.
 /// Not a general-purpose HTTP library — intentionally minimal for low latency.
 
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -162,12 +163,8 @@ parse_upgrade_response(const char* data, size_t len) {
         (space2 != std::string_view::npos) ? space2 - code_start : std::string_view::npos);
 
     result.status_code = 0;
-    int digits = 0;
-    for (char c : code_str) {
-        if (c < '0' || c > '9') break;
-        result.status_code = result.status_code * 10 + (c - '0');
-        if (++digits >= 3) break; // HTTP status codes are 3 digits
-    }
+    std::from_chars(code_str.data(), code_str.data() + code_str.size(),
+                    result.status_code);
 
     SPDLOG_LOGGER_DEBUG(log, "HTTP response status: {}", result.status_code);
 
@@ -203,21 +200,21 @@ parse_upgrade_response(const char* data, size_t len) {
             // Connection header is a comma-separated list of tokens (RFC 7230 §6.1).
             // Match whole tokens case-insensitively to avoid "noupgrade" false positives.
             result.has_connection_upgrade = [&] {
-                size_t pos = 0;
-                while (pos < value.size()) {
+                size_t tok_pos = 0;
+                while (tok_pos < value.size()) {
                     // Skip leading whitespace
-                    while (pos < value.size() && (value[pos] == ' ' || value[pos] == '\t'))
-                        ++pos;
+                    while (tok_pos < value.size() && (value[tok_pos] == ' ' || value[tok_pos] == '\t'))
+                        ++tok_pos;
                     // Find token end (comma or end of string)
-                    size_t end = value.find(',', pos);
+                    size_t end = value.find(',', tok_pos);
                     if (end == std::string_view::npos) end = value.size();
                     // Trim trailing whitespace from token
                     size_t tok_end = end;
-                    while (tok_end > pos && (value[tok_end - 1] == ' ' || value[tok_end - 1] == '\t'))
+                    while (tok_end > tok_pos && (value[tok_end - 1] == ' ' || value[tok_end - 1] == '\t'))
                         --tok_end;
-                    if (detail::iequals(value.substr(pos, tok_end - pos), "upgrade"))
+                    if (detail::iequals(value.substr(tok_pos, tok_end - tok_pos), "upgrade"))
                         return true;
-                    pos = (end < value.size()) ? end + 1 : end;
+                    tok_pos = (end < value.size()) ? end + 1 : end;
                 }
                 return false;
             }();

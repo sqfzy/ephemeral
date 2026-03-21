@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <sys/resource.h>
 #include <utility>
 
 #if defined(__linux__)

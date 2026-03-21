@@ -209,6 +209,7 @@ class BoundedQueue {
      * @brief 阻塞式原地构造
      */
     template <typename... Args>
+        requires std::is_constructible_v<T, Args...>
     void emplace(Args&&... args) noexcept {
         while (!try_emplace(std::forward<Args>(args)...)) {
             cpu_relax();
