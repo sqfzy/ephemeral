@@ -1,0 +1,23 @@
+# DPDK af_packet 环境配置
+# 生成时间：2026-03-21 18:32:26
+# 网卡：eth_main（a0:80:69:b8:94:67）
+#
+# 原理：DPDK 使用专用 IP（172.21.83.253），内核不认领该地址，
+# 因此内核不会对服务器的 SYN-ACK 生成 RST 包 → 无需 iptables 规则。
+
+# ── EAL 参数（'--' 之前）──
+EAL_VDEV="--vdev=net_af_packet0,iface=eth_main"
+EAL_NO_PCI="--no-pci"
+
+# ── 应用参数（'--' 之后）──
+DPDK_LOCAL_IP="172.21.83.253"
+DPDK_GATEWAY_IP="172.21.80.1"
+KERNEL_IP="172.21.82.175"
+
+# ── 完整命令示例 ──
+# sudo ./ws_echo_client \
+#     --vdev=net_af_packet0,iface=eth_main --no-pci \
+#     -- \
+#     --host echo.example.com \
+#     --local-ip 172.21.83.253 \
+#     --gateway-ip 172.21.80.1

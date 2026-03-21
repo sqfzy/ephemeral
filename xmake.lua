@@ -139,6 +139,10 @@ end
 -- ===========================================================================
 -- examples
 -- ===========================================================================
+local dpdk_examples = {
+    ws_echo_client = true,
+}
+
 for _, file in ipairs(os.files("examples/**.cpp")) do
     local name = path.basename(file)
 
@@ -147,7 +151,11 @@ for _, file in ipairs(os.files("examples/**.cpp")) do
         set_group("examples")
         set_default(false)
         add_files(file)
-        add_deps("eph-containers")
+        if dpdk_examples[name] then
+            add_deps("eph-dpdk")
+        else
+            add_deps("eph-containers")
+        end
         add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
         set_symbols("debug")
 end
