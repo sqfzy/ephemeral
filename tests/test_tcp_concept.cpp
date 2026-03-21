@@ -257,6 +257,22 @@ TEST(TransportConfigValidate, NegativeReconnectAttemptsIsInvalid) {
     EXPECT_FALSE(cfg.validate().empty());
 }
 
+TEST(TransportConfigValidate, MaxReconnectBackoffDefaultsToZero) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    // max_reconnect_backoff defaults to 0 (meaning 16x base)
+    EXPECT_EQ(cfg.max_reconnect_backoff.count(), 0);
+    // Config should still be valid
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidate, ExplicitMaxReconnectBackoffIsValid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.max_reconnect_backoff = std::chrono::milliseconds{30000};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
 TEST(TransportConfigValidate, ZeroTimeoutsAreInvalid) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";

@@ -26,6 +26,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -118,8 +119,9 @@ struct TransportConfig {
     uint16_t tx_burst_size = 32;    // Max messages per TX drain batch
     uint16_t rx_burst_size = 32;    // Max packets per RX poll
 
-    // Reconnection (fixed-interval, discard old messages during reconnect)
-    std::chrono::milliseconds reconnect_interval{100}; // Interval between retries
+    // Reconnection (exponential backoff with jitter, discard old messages)
+    std::chrono::milliseconds reconnect_interval{100}; // Base interval (first retry)
+    std::chrono::milliseconds max_reconnect_backoff{0}; // Max backoff cap (0 = 16x base)
     int max_reconnect_attempts = 10;                    // 0 = disable auto-reconnect
 
     // WebSocket ping (sent by TX thread at configured interval)
@@ -769,9 +771,12 @@ private:
         return {};
     }
 
-    /// Attempt reconnection with fixed interval. Discards old SPSC queue data.
-    /// Called from RX thread when disconnect is detected.
-    /// Returns true if reconnection succeeded.
+    /// Attempt reconnection with exponential backoff and jitter.
+    /// Discards old SPSC queue data. Called from RX thread when disconnect
+    /// is detected. Returns true if reconnection succeeded.
+    ///
+    /// Backoff schedule: base * 2^(attempt-1), capped at max_reconnect_backoff.
+    /// Each delay is jittered by ±25% to avoid thundering herd.
     bool do_reconnect() {
         auto log = detail::transport_logger();
         int max_attempts = config_.max_reconnect_attempts;
@@ -790,16 +795,35 @@ private:
         tx_queue_.clear();
         ws_frag_buf_.clear();
 
+        // Compute backoff cap: explicit max, or 16x base as default
+        auto base_ms = config_.reconnect_interval.count();
+        auto max_backoff_ms = config_.max_reconnect_backoff.count();
+        if (max_backoff_ms <= 0) {
+            max_backoff_ms = base_ms * 16;
+        }
+
+        // Thread-local RNG for jitter (seeded from hardware entropy)
+        thread_local std::mt19937 rng{std::random_device{}()};
+
+        auto current_delay_ms = base_ms;
+
         for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+            // Apply ±25% jitter to current delay
+            auto jitter_lo = current_delay_ms * 3 / 4;  // 75%
+            auto jitter_hi = current_delay_ms * 5 / 4;  // 125%
+            std::uniform_int_distribution<int64_t> dist(
+                std::max(jitter_lo, int64_t{1}), std::max(jitter_hi, int64_t{1}));
+            auto actual_delay_ms = dist(rng);
+
             SPDLOG_LOGGER_INFO(log,
-                "Reconnect attempt {}/{} in {}ms",
-                attempt, max_attempts,
-                config_.reconnect_interval.count());
+                "Reconnect attempt {}/{} in {}ms (backoff: {}ms)",
+                attempt, max_attempts, actual_delay_ms, current_delay_ms);
 
             notify_state(TransportEvent::kReconnecting,
                 std::format("{}/{}", attempt, max_attempts));
 
-            std::this_thread::sleep_for(config_.reconnect_interval);
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds{actual_delay_ms});
 
             // Clean up old connection state
             crypto_.reset();
@@ -820,6 +844,9 @@ private:
             SPDLOG_LOGGER_WARN(log,
                 "Reconnect attempt {} failed: {}",
                 attempt, result.error());
+
+            // Exponential backoff: double delay, capped at max
+            current_delay_ms = std::min(current_delay_ms * 2, max_backoff_ms);
         }
 
         reconnecting_.store(false, std::memory_order_release);
