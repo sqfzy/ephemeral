@@ -375,6 +375,37 @@ public:
             "recv() failed: {}", strerror(errno)));
     }
 
+    /// Poll for incoming data with a timeout.
+    /// Uses poll() to wait for data availability, avoiding CPU-burning spin loops.
+    /// Returns the number of poll_rx callback invocations (0 or 1), or error.
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    std::expected<uint16_t, std::string> poll_rx_for(
+            F&& data_callback,
+            std::chrono::duration<Rep, Period> timeout) {
+        // First try non-blocking read
+        auto result = poll_rx(std::forward<F>(data_callback));
+        if (!result.has_value() || *result > 0) return result;
+
+        // No data available — wait with poll()
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(timeout);
+        struct pollfd pfd{};
+        pfd.fd = fd_;
+        pfd.events = POLLIN;
+
+        int ret = ::poll(&pfd, 1, static_cast<int>(ms.count()));
+        if (ret < 0) {
+            if (errno == EINTR) return uint16_t{0};
+            SPDLOG_LOGGER_ERROR(detail::socket_logger(),
+                "poll() failed: {}", strerror(errno));
+            return std::unexpected(std::format("poll() failed: {}", strerror(errno)));
+        }
+        if (ret == 0) return uint16_t{0}; // Timeout
+
+        // Data ready, do the actual read
+        return poll_rx(std::forward<F>(data_callback));
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Connection close
     // ─────────────────────────────────────────────────────────────────────────

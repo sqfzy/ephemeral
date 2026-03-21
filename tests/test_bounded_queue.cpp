@@ -600,3 +600,179 @@ TEST(BoundedQueueBlocking, PushN_SpinsUntilSpaceAvailable) {
     EXPECT_EQ(v3.seq, 10u);
     EXPECT_EQ(v4.seq, 11u);
 }
+
+// ===========================================================================
+// Timed batch operations
+// ===========================================================================
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPushSuccess) {
+    TypeParam queue;
+    std::vector<BoundedTestData> batch(2);
+    batch[0].seq = 42;
+    batch[1].seq = 43;
+
+    bool ok = queue.try_push_n_for(
+        std::span<const BoundedTestData>{batch},
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(queue.size(), 2u);
+
+    auto v0 = queue.pop();
+    auto v1 = queue.pop();
+    EXPECT_EQ(v0.seq, 42u);
+    EXPECT_EQ(v1.seq, 43u);
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPushTimeoutOnFull) {
+    TypeParam queue;
+    const size_t cap = queue.capacity();
+
+    // Fill the queue
+    for (size_t i = 0; i < cap; ++i) {
+        BoundedTestData d;
+        d.seq = static_cast<uint32_t>(i);
+        ASSERT_TRUE(queue.try_push(d));
+    }
+
+    // Batch push should timeout on full queue
+    std::vector<BoundedTestData> batch(2);
+    bool ok = queue.try_push_n_for(
+        std::span<const BoundedTestData>{batch},
+        std::chrono::milliseconds(5));
+    EXPECT_FALSE(ok);
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPushWaitsForSpace) {
+    // Use capacity-2 queue for deterministic test
+    BoundedQueue<BoundedTestData, 4> queue;
+
+    // Fill 3 of 4 slots
+    for (uint32_t i = 0; i < 3; ++i) {
+        BoundedTestData d;
+        d.seq = i;
+        ASSERT_TRUE(queue.try_push(d));
+    }
+
+    // Batch of 2 needs 2 free slots, only 1 available
+    std::vector<BoundedTestData> batch(2);
+    batch[0].seq = 100;
+    batch[1].seq = 101;
+
+    std::atomic<bool> done{false};
+    std::thread writer([&] {
+        bool ok = queue.try_push_n_for(
+            std::span<const BoundedTestData>{batch},
+            std::chrono::milliseconds(200));
+        EXPECT_TRUE(ok);
+        done.store(true, std::memory_order_release);
+    });
+
+    // Let writer spin briefly
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    EXPECT_FALSE(done.load(std::memory_order_acquire));
+
+    // Free 2 slots so batch push succeeds
+    (void)queue.pop();
+    (void)queue.pop();
+
+    writer.join();
+    EXPECT_TRUE(done.load(std::memory_order_acquire));
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchProduceNSuccess) {
+    TypeParam queue;
+    const size_t n = std::min<size_t>(queue.capacity(), 2);
+
+    bool ok = queue.try_produce_n_for(
+        n,
+        [](BoundedTestData& slot, size_t idx) {
+            slot.seq = static_cast<uint32_t>(idx + 10);
+        },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(queue.size(), n);
+
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_EQ(queue.pop().seq, static_cast<uint32_t>(i + 10));
+    }
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPopSuccess) {
+    TypeParam queue;
+    const size_t count = std::min<size_t>(queue.capacity(), 4);
+
+    // Push elements up to capacity
+    for (uint32_t i = 0; i < count; ++i) {
+        BoundedTestData d;
+        d.seq = i;
+        ASSERT_TRUE(queue.try_push(d));
+    }
+
+    std::array<BoundedTestData, 4> out{};
+    size_t n = queue.try_pop_n_for(
+        std::span<BoundedTestData>{out.data(), count},
+        std::chrono::milliseconds(10));
+    EXPECT_EQ(n, count);
+    for (uint32_t i = 0; i < n; ++i) {
+        EXPECT_EQ(out[i].seq, i);
+    }
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPopTimeoutOnEmpty) {
+    TypeParam queue;
+
+    std::array<BoundedTestData, 2> out{};
+    size_t n = queue.try_pop_n_for(
+        std::span<BoundedTestData>{out},
+        std::chrono::milliseconds(5));
+    EXPECT_EQ(n, 0u);
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPopWaitsForData) {
+    BoundedQueue<BoundedTestData, 4> queue;
+
+    std::array<BoundedTestData, 2> out{};
+    std::atomic<size_t> popped{0};
+
+    std::thread reader([&] {
+        size_t n = queue.try_pop_n_for(
+            std::span<BoundedTestData>{out},
+            std::chrono::milliseconds(200));
+        popped.store(n, std::memory_order_release);
+    });
+
+    // Let reader spin briefly
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    EXPECT_EQ(popped.load(std::memory_order_acquire), 0u);
+
+    // Push data so reader can proceed
+    BoundedTestData d;
+    d.seq = 77;
+    queue.push(d);
+    d.seq = 78;
+    queue.push(d);
+
+    reader.join();
+    EXPECT_GE(popped.load(std::memory_order_acquire), 1u);
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPushZeroLength) {
+    TypeParam queue;
+
+    // Zero-length batch should succeed immediately
+    bool ok = queue.try_push_n_for(
+        std::span<const BoundedTestData>{},
+        std::chrono::milliseconds(0));
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(queue.empty());
+}
+
+TYPED_TEST(BoundedQueueTest, TimedBatchPopZeroLength) {
+    TypeParam queue;
+
+    // Zero-length pop should return 0 immediately
+    size_t n = queue.try_pop_n_for(
+        std::span<BoundedTestData>{},
+        std::chrono::milliseconds(0));
+    EXPECT_EQ(n, 0u);
+}

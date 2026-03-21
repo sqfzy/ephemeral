@@ -567,6 +567,23 @@ public:
     struct ReceivedMessage {
         std::vector<uint8_t> data;
         uint8_t opcode = ws::opcode::kBinary;
+
+        /// Check if this is a text message.
+        [[nodiscard]] bool is_text() const noexcept {
+            return opcode == ws::opcode::kText;
+        }
+        /// Check if this is a binary message.
+        [[nodiscard]] bool is_binary() const noexcept {
+            return opcode == ws::opcode::kBinary;
+        }
+        /// Check if this is a close frame.
+        [[nodiscard]] bool is_close() const noexcept {
+            return opcode == ws::opcode::kClose;
+        }
+        /// Return the payload as a string_view (valid only for text messages).
+        [[nodiscard]] std::string_view text() const noexcept {
+            return {reinterpret_cast<const char*>(data.data()), data.size()};
+        }
     };
 
     /// Try to receive a message with opcode info (non-blocking).
@@ -671,6 +688,26 @@ public:
             std::this_thread::yield();
         }
         return false;
+    }
+
+    /// Blocking receive returning a ReceivedMessage with opcode and timeout.
+    /// Returns nullopt on timeout or transport stopped.
+    [[nodiscard]] std::optional<ReceivedMessage> wait_recv_msg(
+            std::chrono::milliseconds timeout) {
+        std::optional<ReceivedMessage> result;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (running_.load(std::memory_order_acquire)) {
+            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+                result.emplace(ReceivedMessage{
+                    .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
+                    .opcode = msg.opcode,
+                });
+            });
+            if (got) return result;
+            if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
+            std::this_thread::yield();
+        }
+        return std::nullopt;
     }
 
     // -----------------------------------------------------------------------

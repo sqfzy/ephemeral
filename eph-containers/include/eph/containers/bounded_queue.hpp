@@ -338,6 +338,52 @@ class BoundedQueue {
             timeout);
     }
 
+    /**
+     * @brief 带超时的批量写入 (全部或全不语义)
+     *
+     * 自旋等待直到有足够连续空间容纳所有元素或超时。
+     * 成功时以单次 atomic store 原子发布所有元素。
+     *
+     * @param data    待写入的元素序列
+     * @param timeout 最大等待时间
+     * @return true 全部写入成功; false 超时，无任何写入
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_push_n_for(std::span<const T> data,
+                                       std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_push_n(data)) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_push_n(data)) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    /**
+     * @brief 带超时的批量零拷贝写入 (Visitor 模式)
+     *
+     * 自旋等待直到有足够连续空间或超时。成功时预留 n 个槽位，
+     * 依次调用 writer(slot, index)，最后以单次 release store 发布。
+     *
+     * @param n       要写入的元素个数
+     * @param writer  回调 void(T& slot, size_t index)，index 为 0..n-1
+     * @param timeout 最大等待时间
+     * @return true 全部写入成功; false 超时，无任何写入
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, T&, size_t>
+    [[nodiscard]] bool try_produce_n_for(size_t n, F&& writer,
+                                          std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_produce_n(n, std::forward<F>(writer))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_produce_n(n, std::forward<F>(writer))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
     // ===========================================================================
     // Reader 操作
     // ===========================================================================
@@ -501,6 +547,30 @@ class BoundedQueue {
         std::optional<T> res;
         (void)try_consume_for([&](T& data) { res.emplace(data); }, timeout);
         return res;
+    }
+
+    /**
+     * @brief 带超时的批量读取 (尽力而为语义)
+     *
+     * 等待至少一个元素可用（或超时），然后一次消费最多 out.size() 个元素。
+     * 与 try_pop_n 不同，此方法在队列暂时为空时会自旋等待而非立即返回 0。
+     *
+     * @param out     输出缓冲区
+     * @param timeout 最大等待时间
+     * @return 实际读取的元素数量（0 表示超时且队列为空）
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] size_t try_pop_n_for(std::span<T> out,
+                                        std::chrono::duration<Rep, Period> timeout) noexcept {
+        size_t n = try_pop_n(out);
+        if (n > 0) return n;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            n = try_pop_n(out);
+            if (n > 0) return n;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return 0;
     }
 
     // ===========================================================================
