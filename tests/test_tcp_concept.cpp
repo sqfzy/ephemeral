@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "eph/net/tcp_concept.hpp"
+#include "eph/net/socket_transport.hpp"
 
 using namespace eph::net;
 
@@ -298,6 +299,17 @@ TEST(Formatter, TransportStateFormatsCorrectly) {
     EXPECT_EQ(std::format("{}", TransportState::kConnected), "CONNECTED");
     EXPECT_EQ(std::format("{}", TransportState::kReconnecting), "RECONNECTING");
     EXPECT_EQ(std::format("{}", TransportState::kStopped), "STOPPED");
+}
+
+// Verify Transport exposes tls_version() and cipher_name() APIs.
+// Full integration test requires a live TLS server; here we verify
+// the API compiles and the default Transport type aliases exist.
+TEST(TransportAPI, ConnectionMetadataAccessorsExist) {
+    // SocketWssTransport is Transport<SocketTransport, 512, 1024>
+    using T = eph::net::SocketWssTransport;
+    // Verify the methods exist on the type (via member pointer)
+    [[maybe_unused]] auto fn1 = &T::tls_version;
+    [[maybe_unused]] auto fn2 = &T::cipher_name;
 }
 
 TEST(Formatter, TransportStatsFormatsCorrectly) {

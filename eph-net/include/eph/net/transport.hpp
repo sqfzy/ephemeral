@@ -595,6 +595,16 @@ public:
         reconnect_count_.store(0, std::memory_order_relaxed);
     }
 
+    /// Negotiated TLS version string (e.g. "TLSv1.3"), or "none" if not connected.
+    [[nodiscard]] std::string_view tls_version() const noexcept {
+        return tls_version_;
+    }
+
+    /// Negotiated cipher suite name (e.g. "TLS_AES_256_GCM_SHA384"), or "none".
+    [[nodiscard]] std::string_view cipher_name() const noexcept {
+        return cipher_name_;
+    }
+
     [[nodiscard]] TransportStats stats() const noexcept {
         return TransportStats{
             .tx_packets        = tx_stats_.packets,
@@ -618,6 +628,10 @@ private:
     TcpFactory                             tcp_factory_;
     std::unique_ptr<TcpImpl>               tcp_;
     std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
+
+    // Connection metadata captured after each successful handshake
+    std::string                            tls_version_{"none"};
+    std::string                            cipher_name_{"none"};
     std::unique_ptr<TlsRecordCrypto>       crypto_;
 
     TxQueue                                tx_queue_{};
@@ -745,10 +759,13 @@ private:
         }
         crypto_ = std::make_unique<TlsRecordCrypto>(std::move(*crypto));
 
+        // Capture connection metadata for user queries
+        tls_version_ = tls_->tls_version();
+        cipher_name_ = tls_->cipher_name();
+
         SPDLOG_LOGGER_INFO(log,
             "Connected: {} (TLS: {}, cipher: {})",
-            config_.remote_host, tls_->tls_version(),
-            tls_->cipher_name());
+            config_.remote_host, tls_version_, cipher_name_);
         return {};
     }
 
