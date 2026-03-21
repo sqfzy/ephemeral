@@ -394,3 +394,58 @@ TEST(Http, ParseResponseStatusCode500) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->status_code, 500);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket subprotocol negotiation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(Http, ParseResponseWithSubprotocol) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        "Sec-WebSocket-Protocol: graphql-ws\r\n"
+        "\r\n";
+
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 101);
+    EXPECT_EQ(result->sec_ws_protocol, "graphql-ws");
+}
+
+TEST(Http, ParseResponseWithoutSubprotocol) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: abc123\r\n"
+        "\r\n";
+
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->sec_ws_protocol.empty())
+        << "Missing Sec-WebSocket-Protocol should yield empty string";
+}
+
+TEST(Http, ParseResponseSubprotocolCaseInsensitiveHeader) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "sec-websocket-protocol: ocpp1.6\r\n"
+        "Sec-WebSocket-Accept: abc123\r\n"
+        "\r\n";
+
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->sec_ws_protocol, "ocpp1.6");
+}
+
+TEST(Http, BuildUpgradeRequestWithSubprotocol) {
+    std::string req = build_upgrade_request(
+        "api.exchange.com", "/ws", "key123==",
+        "Sec-WebSocket-Protocol: graphql-ws\r\n");
+    EXPECT_NE(req.find("Sec-WebSocket-Protocol: graphql-ws\r\n"),
+              std::string::npos);
+}

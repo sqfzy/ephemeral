@@ -113,6 +113,7 @@ local net_tests = {
     test_http = true,
     test_tls_record = true,
     test_tcp_concept = true,
+    test_socket_transport = true,
 }
 
 for _, file in ipairs(os.files("tests/**.cpp")) do

@@ -81,6 +81,7 @@ struct TransportConfig {
     std::string remote_host{};      // Hostname for TLS SNI and HTTP Host
     uint16_t    remote_port = 443;  // Remote TCP port
     std::string ws_path     = "/";  // WebSocket upgrade path
+    std::string ws_subprotocol{};   // WebSocket subprotocol (Sec-WebSocket-Protocol)
     std::string extra_headers{};    // Additional HTTP headers for upgrade
 
     // TLS
@@ -452,6 +453,56 @@ public:
         return result;
     }
 
+    /// Batch-receive up to max_count messages (non-blocking, best-effort).
+    ///
+    /// Calls callback with (data_ptr, len) for each available message,
+    /// consuming up to max_count from the RX queue in a single drain loop.
+    ///
+    /// @param callback    Called with (data_ptr, len) for each message
+    /// @param max_count   Maximum number of messages to consume
+    /// @return Number of messages actually consumed
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    size_t recv_n(F&& callback, size_t max_count) {
+        size_t count = 0;
+        while (count < max_count) {
+            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+                std::invoke(std::forward<F>(callback), msg.data, msg.len);
+            });
+            if (!got) break;
+            ++count;
+        }
+        return count;
+    }
+
+    /// Batch-receive up to max_count messages with opcode (non-blocking).
+    ///
+    /// @param callback    Called with (data_ptr, len, opcode) for each message
+    /// @param max_count   Maximum number of messages to consume
+    /// @return Number of messages actually consumed
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
+    size_t recv_n(F&& callback, size_t max_count) {
+        size_t count = 0;
+        while (count < max_count) {
+            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+                std::invoke(std::forward<F>(callback),
+                            msg.data, msg.len, msg.opcode);
+            });
+            if (!got) break;
+            ++count;
+        }
+        return count;
+    }
+
+    /// Drain all available messages (non-blocking).
+    /// Equivalent to recv_n(callback, queue_depth()).
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    size_t drain_recv(F&& callback) {
+        return recv_n(std::forward<F>(callback), QueueDepth);
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------------
@@ -759,8 +810,15 @@ private:
             host += ":" + std::to_string(config_.remote_port);
         }
 
+        // Build extra headers including subprotocol if configured
+        std::string headers = config_.extra_headers;
+        if (!config_.ws_subprotocol.empty()) {
+            headers += std::format("Sec-WebSocket-Protocol: {}\r\n",
+                                   config_.ws_subprotocol);
+        }
+
         std::string request = http::build_upgrade_request(
-            host, config_.ws_path, ws_key, config_.extra_headers);
+            host, config_.ws_path, ws_key, headers);
 
         SPDLOG_LOGGER_DEBUG(log, "Sending WebSocket upgrade request");
 

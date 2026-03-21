@@ -120,6 +120,7 @@ inline std::string build_upgrade_request(
 struct UpgradeResponse {
     int         status_code = 0;
     std::string sec_ws_accept{};
+    std::string sec_ws_protocol{};  // Negotiated subprotocol (may be empty)
     bool        has_upgrade = false;
     bool        has_connection_upgrade = false;
     size_t      header_end_offset = 0; // Position after "\r\n\r\n"
@@ -232,6 +233,8 @@ parse_upgrade_response(const char* data, size_t len) {
             }();
         } else if (detail::iequals(name, "Sec-WebSocket-Accept")) {
             result.sec_ws_accept = std::string(value);
+        } else if (detail::iequals(name, "Sec-WebSocket-Protocol")) {
+            result.sec_ws_protocol = std::string(value);
         }
     }
 
