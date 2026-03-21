@@ -643,6 +643,35 @@ public:
         return state() == TransportState::kConnected;
     }
 
+    // -----------------------------------------------------------------------
+    // Queue occupancy (backpressure monitoring)
+    // -----------------------------------------------------------------------
+
+    /// Approximate number of messages pending in the TX queue.
+    /// Useful for detecting backpressure before send() returns -EAGAIN.
+    /// @note Result is approximate — the producer and consumer may
+    ///       advance between the size() read and the caller's use.
+    [[nodiscard]] size_t tx_queue_size() const noexcept {
+        return tx_queue_.size();
+    }
+
+    /// Approximate number of messages available in the RX queue.
+    [[nodiscard]] size_t rx_queue_size() const noexcept {
+        return rx_queue_.size();
+    }
+
+    /// TX queue occupancy as a fraction [0.0, 1.0].
+    [[nodiscard]] double tx_queue_fill_ratio() const noexcept {
+        return static_cast<double>(tx_queue_.size()) /
+               static_cast<double>(QueueDepth);
+    }
+
+    /// RX queue occupancy as a fraction [0.0, 1.0].
+    [[nodiscard]] double rx_queue_fill_ratio() const noexcept {
+        return static_cast<double>(rx_queue_.size()) /
+               static_cast<double>(QueueDepth);
+    }
+
     /// Reset all statistics counters to zero.
     /// Useful for windowed measurement: call stats(), then reset_stats().
     /// @warning Not thread-safe with stats() — call from one thread only
