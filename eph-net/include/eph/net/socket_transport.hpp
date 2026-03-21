@@ -161,19 +161,39 @@ public:
         // Set TCP_NODELAY
         if (config_.tcp_nodelay) {
             int flag = 1;
-            ::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+            if (::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY,
+                             &flag, sizeof(flag)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set TCP_NODELAY: {}",
+                                   strerror(errno));
+            }
         }
 
         // Enable TCP keepalive probes
         if (config_.tcp_keepalive) {
             int flag = 1;
-            ::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE, &flag, sizeof(flag));
-            ::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPIDLE,
-                         &config_.keepalive_idle, sizeof(config_.keepalive_idle));
-            ::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPINTVL,
-                         &config_.keepalive_interval, sizeof(config_.keepalive_interval));
-            ::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPCNT,
-                         &config_.keepalive_count, sizeof(config_.keepalive_count));
+            if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE,
+                             &flag, sizeof(flag)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set SO_KEEPALIVE: {}",
+                                   strerror(errno));
+            }
+            if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPIDLE,
+                             &config_.keepalive_idle,
+                             sizeof(config_.keepalive_idle)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set TCP_KEEPIDLE: {}",
+                                   strerror(errno));
+            }
+            if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPINTVL,
+                             &config_.keepalive_interval,
+                             sizeof(config_.keepalive_interval)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set TCP_KEEPINTVL: {}",
+                                   strerror(errno));
+            }
+            if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPCNT,
+                             &config_.keepalive_count,
+                             sizeof(config_.keepalive_count)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set TCP_KEEPCNT: {}",
+                                   strerror(errno));
+            }
             SPDLOG_LOGGER_DEBUG(log,
                 "TCP keepalive enabled: idle={}s, interval={}s, count={}",
                 config_.keepalive_idle, config_.keepalive_interval,
@@ -182,12 +202,20 @@ public:
 
         // Set buffer sizes if configured
         if (config_.recv_buf_size > 0) {
-            ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF,
-                         &config_.recv_buf_size, sizeof(config_.recv_buf_size));
+            if (::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF,
+                             &config_.recv_buf_size,
+                             sizeof(config_.recv_buf_size)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set SO_RCVBUF={}: {}",
+                                   config_.recv_buf_size, strerror(errno));
+            }
         }
         if (config_.send_buf_size > 0) {
-            ::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF,
-                         &config_.send_buf_size, sizeof(config_.send_buf_size));
+            if (::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF,
+                             &config_.send_buf_size,
+                             sizeof(config_.send_buf_size)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set SO_SNDBUF={}: {}",
+                                   config_.send_buf_size, strerror(errno));
+            }
         }
 
         state_ = TcpState::SynSent;
@@ -229,7 +257,13 @@ public:
         // Check for connection error
         int so_error = 0;
         socklen_t so_len = sizeof(so_error);
-        ::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+        if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_error, &so_len) != 0) {
+            SPDLOG_LOGGER_ERROR(log, "getsockopt(SO_ERROR) failed: {}",
+                                strerror(errno));
+            close_fd();
+            return std::unexpected(std::format(
+                "getsockopt(SO_ERROR) failed: {}", strerror(errno)));
+        }
         if (so_error != 0) {
             SPDLOG_LOGGER_ERROR(log, "Connection failed: {}", strerror(so_error));
             close_fd();
@@ -405,9 +439,18 @@ private:
         if (fd_ < 0) return;
         int mss_val = 0;
         socklen_t len = sizeof(mss_val);
-        if (::getsockopt(fd_, IPPROTO_TCP, TCP_MAXSEG, &mss_val, &len) == 0
-            && mss_val > 0) {
+        if (::getsockopt(fd_, IPPROTO_TCP, TCP_MAXSEG, &mss_val, &len) != 0) {
+            SPDLOG_LOGGER_WARN(detail::socket_logger(),
+                "Failed to query TCP_MAXSEG: {}, using default mss={}",
+                strerror(errno), mss_);
+            return;
+        }
+        if (mss_val > 0) {
             mss_ = static_cast<uint16_t>(mss_val);
+        } else {
+            SPDLOG_LOGGER_WARN(detail::socket_logger(),
+                "TCP_MAXSEG returned {}, using default mss={}",
+                mss_val, mss_);
         }
     }
 };
