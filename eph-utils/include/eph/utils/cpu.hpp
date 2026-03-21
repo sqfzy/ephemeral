@@ -125,8 +125,15 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
     }
   }
 
-  if (cpus.size() != std::thread::hardware_concurrency()) {
-    throw std::runtime_error("CPU topology detection failed");
+  auto hw_threads = std::thread::hardware_concurrency();
+  // hardware_concurrency() may return 0 if the value is not computable
+  if (hw_threads != 0 && cpus.size() != hw_threads) {
+    throw std::runtime_error("CPU topology detection failed: parsed " +
+        std::to_string(cpus.size()) + " CPUs, expected " +
+        std::to_string(hw_threads));
+  }
+  if (cpus.empty()) {
+    throw std::runtime_error("CPU topology detection failed: no CPUs found");
   }
 
   // 按 hw_thread_id 排序

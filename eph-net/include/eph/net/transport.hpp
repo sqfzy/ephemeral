@@ -30,7 +30,6 @@
 #include <thread>
 
 #include <cerrno>
-#include <immintrin.h>
 #include <sched.h>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -38,6 +37,7 @@
 
 #include "eph/base/cache.hpp"
 #include "eph/containers/bounded_queue.hpp"
+#include "eph/utils/cpu.hpp"
 #include "eph/net/http.hpp"
 #include "eph/net/tcp_concept.hpp"
 #include "eph/net/tls_record.hpp"
@@ -673,7 +673,7 @@ private:
             // Spin-wait while RX thread is reconnecting to avoid
             // touching crypto_/tcp_ which are being replaced.
             if (reconnecting_.load(std::memory_order_acquire)) [[unlikely]] {
-                _mm_pause();
+                eph::utils::cpu_relax();
                 continue;
             }
 
