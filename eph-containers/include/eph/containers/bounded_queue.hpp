@@ -185,6 +185,43 @@ class BoundedQueue {
     }
 
     /**
+     * @brief 批量零拷贝写入 (Visitor 模式)
+     *
+     * 预留 n 个连续槽位，依次对每个槽位调用 writer(slot, index)，
+     * 最后以单次 release store 原子发布所有元素。
+     * 避免构造临时数组再 try_push_n，消除热路径堆分配。
+     *
+     * @param n      要写入的元素个数
+     * @param writer 回调 void(T& slot, size_t index)，index 为 0..n-1
+     * @return true 全部写入成功; false 剩余空间不足，无任何写入
+     */
+    template <typename F>
+        requires std::invocable<F, T&, size_t>
+    [[nodiscard]] bool try_produce_n(size_t n, F&& writer) noexcept {
+        if (n == 0) return true;
+
+        const size_t tail = writer_.tail_.load(std::memory_order_relaxed);
+
+        size_t available = Capacity - (tail - writer_.shadow_head_);
+        if (available < n) {
+            const size_t head = reader_.head_.load(std::memory_order_acquire);
+            writer_.shadow_head_ = head;
+            available = Capacity - (tail - head);
+            if (available < n) {
+                return false;
+            }
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            std::invoke(std::forward<F>(writer),
+                        buffer_[(tail + i) & mask_], i);
+        }
+
+        writer_.tail_.store(tail + n, std::memory_order_release);
+        return true;
+    }
+
+    /**
      * @brief 阻塞式零拷贝写入 (Visitor 模式)
      * 自旋直到有空间可用，然后执行 writer 回调。
      */

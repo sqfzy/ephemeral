@@ -319,3 +319,67 @@ TYPED_TEST(BoundedQueueTest, ClearOnFullQueue) {
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->seq, 1000u);
 }
+
+// ---------------------------------------------------------------------------
+// try_produce_n tests
+// ---------------------------------------------------------------------------
+
+TYPED_TEST(BoundedQueueTest, TryProduceN_BasicOperation) {
+    TypeParam queue;
+    constexpr size_t n = std::min(size_t{4}, queue.capacity());
+
+    bool ok = queue.try_produce_n(n, [](BoundedTestData& slot, size_t i) {
+        slot.seq = static_cast<uint32_t>(i + 100);
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(queue.size(), n);
+
+    for (size_t i = 0; i < n; ++i) {
+        auto val = queue.try_pop();
+        ASSERT_TRUE(val.has_value());
+        EXPECT_EQ(val->seq, static_cast<uint32_t>(i + 100));
+    }
+    EXPECT_TRUE(queue.empty());
+}
+
+TYPED_TEST(BoundedQueueTest, TryProduceN_EmptyBatch) {
+    TypeParam queue;
+    EXPECT_TRUE(queue.try_produce_n(0, [](BoundedTestData&, size_t) {}));
+    EXPECT_TRUE(queue.empty());
+}
+
+TYPED_TEST(BoundedQueueTest, TryProduceN_FailsWhenInsufficientSpace) {
+    TypeParam queue;
+    // Fill queue
+    for (size_t i = 0; i < queue.capacity(); ++i) {
+        BoundedTestData d;
+        d.seq = static_cast<uint32_t>(i);
+        ASSERT_TRUE(queue.try_push(d));
+    }
+    // Batch produce should fail (queue full)
+    bool ok = queue.try_produce_n(1, [](BoundedTestData& slot, size_t) {
+        slot.seq = 999;
+    });
+    EXPECT_FALSE(ok);
+    // Original data should be intact
+    auto val = queue.try_pop();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 0u);
+}
+
+TYPED_TEST(BoundedQueueTest, TryProduceN_FillsExactCapacity) {
+    TypeParam queue;
+    bool ok = queue.try_produce_n(queue.capacity(),
+        [](BoundedTestData& slot, size_t i) {
+            slot.seq = static_cast<uint32_t>(i);
+        });
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(queue.full());
+
+    // Verify all elements
+    for (size_t i = 0; i < queue.capacity(); ++i) {
+        auto val = queue.try_pop();
+        ASSERT_TRUE(val.has_value());
+        EXPECT_EQ(val->seq, static_cast<uint32_t>(i));
+    }
+}

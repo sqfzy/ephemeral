@@ -383,6 +383,7 @@ public:
     ///
     /// Enqueues all messages with a single atomic tail update, amortizing
     /// the per-message atomic store overhead. All messages share the same opcode.
+    /// Zero heap allocations — writes directly into pre-reserved queue slots.
     ///
     /// @param payloads  Array of {data, len} pairs
     /// @param count     Number of messages
@@ -397,17 +398,14 @@ public:
             if (payloads[i].size() > MaxPayload) return -EMSGSIZE;
         }
 
-        // Build TxMsg array on the stack (count is bounded by queue depth)
-        // and use try_push_n for single-atomic-store batch enqueue.
-        auto msgs = std::make_unique<TxMsg[]>(count);
-        for (size_t i = 0; i < count; ++i) {
-            std::memcpy(msgs[i].data, payloads[i].data(), payloads[i].size());
-            msgs[i].len = static_cast<uint16_t>(payloads[i].size());
-            msgs[i].opcode = opcode;
-        }
+        // Write directly into queue slots — no temporary array needed.
+        bool ok = tx_queue_.try_produce_n(count,
+            [&](TxMsg& slot, size_t i) {
+                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
+                slot.len = static_cast<uint16_t>(payloads[i].size());
+                slot.opcode = opcode;
+            });
 
-        bool ok = tx_queue_.try_push_n(
-            std::span<const TxMsg>(msgs.get(), count));
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
             return -EAGAIN;
