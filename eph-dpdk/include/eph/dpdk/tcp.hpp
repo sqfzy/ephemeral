@@ -104,6 +104,7 @@ public:
         pkt_template_.src_mac = config.src_mac;
         pkt_template_.dst_mac = config.dst_mac;
         pkt_template_.tuple   = config.tuple;
+        pkt_template_.mss     = config.mss;
 
         SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
             "TcpSession created: {}:{} -> {}:{}",

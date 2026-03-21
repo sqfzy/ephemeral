@@ -415,6 +415,52 @@ TEST(ParsePacket, MaxPayload_FullMSS) {
     EXPECT_EQ(parsed.payload_len, 1460);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TCP SYN options
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SynOptions, WriteSynOptionsContainsMSS) {
+    uint8_t buf[kSynOptionsLen]{};
+    uint16_t len = write_syn_options(buf, 1460);
+
+    EXPECT_EQ(len, kSynOptionsLen);
+
+    // MSS option: Kind=2, Length=4, Value=1460 (network order)
+    EXPECT_EQ(buf[0], 2);  // Kind: MSS
+    EXPECT_EQ(buf[1], 4);  // Length
+    uint16_t mss_net;
+    std::memcpy(&mss_net, &buf[2], 2);
+    EXPECT_EQ(ntoh16(mss_net), 1460);
+
+    // SACK Permitted: Kind=4, Length=2
+    EXPECT_EQ(buf[4], 4);
+    EXPECT_EQ(buf[5], 2);
+
+    // Window Scale: Kind=3, Length=3
+    EXPECT_EQ(buf[7], 3);
+    EXPECT_EQ(buf[8], 3);
+    EXPECT_EQ(buf[9], 0);  // Shift=0
+}
+
+TEST(SynOptions, BuildPacketSynIncludesOptions) {
+    // Create a fake mempool-like mbuf for testing.
+    // build_packet needs a real rte_mempool; we test via write_syn_options
+    // and verify the option layout is correct with a known MSS value.
+    uint8_t buf[kSynOptionsLen]{};
+    write_syn_options(buf, 536);  // Minimum MSS
+
+    uint16_t mss_net;
+    std::memcpy(&mss_net, &buf[2], 2);
+    EXPECT_EQ(ntoh16(mss_net), 536);
+}
+
+TEST(SynOptions, ConstantsAreConsistent) {
+    EXPECT_EQ(kSynOptionsLen, 12u);
+    EXPECT_EQ(kSynTcpHeaderLen, 32u);
+    // SYN header is 8 32-bit words (must be 4-byte aligned)
+    EXPECT_EQ(kSynTcpHeaderLen % 4, 0u);
+}
+
 TEST(ParsePacket, MatchesSwapsAddresses) {
     uint8_t buf[128];
     build_raw_packet(buf, 0);

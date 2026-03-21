@@ -43,6 +43,10 @@ inline constexpr uint8_t kTcpUrg = 0x20;
 // Default TCP MSS for Ethernet (MTU 1500 - IP header - TCP header)
 inline constexpr uint16_t kDefaultMss = 1460;
 
+// SYN options: MSS(4) + SACK_PERM(2) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) = 12 bytes
+inline constexpr uint16_t kSynOptionsLen = 12;
+inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen; // 32 bytes
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte order helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +157,36 @@ inline uint16_t tcp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TCP SYN options
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Write standard TCP SYN options into buffer.
+/// Layout: MSS(4) + SACK_PERM(2) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) = 12 bytes
+/// @param buf  Pointer to option area (right after 20-byte TCP header)
+/// @param mss  MSS value in host byte order
+/// @return Number of bytes written (always kSynOptionsLen = 12)
+inline uint16_t write_syn_options(uint8_t* buf, uint16_t mss) noexcept {
+    buf[0] = 2;                            // Kind: MSS
+    buf[1] = 4;                            // Length
+    uint16_t mss_net = hton16(mss);
+    std::memcpy(&buf[2], &mss_net, 2);
+
+    buf[4] = 4;                            // Kind: SACK Permitted
+    buf[5] = 2;                            // Length
+
+    buf[6] = 1;                            // Kind: NOP (padding)
+
+    buf[7] = 3;                            // Kind: Window Scale
+    buf[8] = 3;                            // Length
+    buf[9] = 0;                            // Shift count (2^0 = 1, no scaling)
+
+    buf[10] = 1;                           // Kind: NOP
+    buf[11] = 1;                           // Kind: NOP
+
+    return kSynOptionsLen;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Connection tuple
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -178,6 +212,7 @@ struct PacketTemplate {
     rte_ether_addr dst_mac{};
     ConnectionTuple tuple{};
     uint16_t ip_id = 0; // Incremented per packet
+    uint16_t mss = kDefaultMss; // MSS advertised in SYN options
 
     /// [P2] Enable NIC TX checksum offload (IP + TCP).
     /// When true, sets ol_flags and computes pseudo-header checksum only.
@@ -201,7 +236,12 @@ struct PacketTemplate {
         rte_mbuf* mbuf = rte_pktmbuf_alloc(pool);
         if (!mbuf) return nullptr;
 
-        const uint16_t total_len = kAllHeadersLen + payload_len;
+        // SYN packets include TCP options (MSS, SACK, WinScale) to avoid
+        // being dropped by middleboxes that expect standard TCP options.
+        const bool is_syn = (flags & kTcpSyn) != 0;
+        const uint16_t tcp_hdr_len = is_syn ? kSynTcpHeaderLen : kTcpHeaderLen;
+        const uint16_t total_len = kEtherHeaderLen + kIpv4HeaderLen + tcp_hdr_len + payload_len;
+
         auto* pkt = reinterpret_cast<uint8_t*>(
             rte_pktmbuf_append(mbuf, total_len));
         if (!pkt) {
@@ -219,7 +259,7 @@ struct PacketTemplate {
         auto* ip = reinterpret_cast<rte_ipv4_hdr*>(pkt + kEtherHeaderLen);
         ip->version_ihl     = 0x45; // Version 4, IHL 5 (20 bytes)
         ip->type_of_service  = 0;
-        ip->total_length     = hton16(kIpv4HeaderLen + kTcpHeaderLen + payload_len);
+        ip->total_length     = hton16(kIpv4HeaderLen + tcp_hdr_len + payload_len);
         ip->packet_id        = hton16(ip_id++);
         ip->fragment_offset  = hton16(0x4000); // Don't Fragment
         ip->time_to_live     = 64;
@@ -236,15 +276,22 @@ struct PacketTemplate {
         tcp->dst_port  = hton16(tuple.dst_port);
         tcp->sent_seq  = hton32(seq);
         tcp->recv_ack  = hton32(ack);
-        tcp->data_off   = (kTcpHeaderLen / 4) << 4; // 5 words, no options
+        tcp->data_off   = (tcp_hdr_len / 4) << 4;
         tcp->tcp_flags  = flags;
         tcp->rx_win     = hton16(window);
         tcp->cksum      = 0;
         tcp->tcp_urp    = 0;
 
+        // Write SYN options (MSS, SACK Permitted, Window Scale)
+        if (is_syn) {
+            auto* opt_ptr = pkt + kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;
+            write_syn_options(opt_ptr, mss);
+        }
+
         // Copy payload if present
         if (payload && payload_len > 0) {
-            std::memcpy(pkt + kAllHeadersLen, payload, payload_len);
+            std::memcpy(pkt + kEtherHeaderLen + kIpv4HeaderLen + tcp_hdr_len,
+                        payload, payload_len);
         }
 
         // [P2] Checksum: hardware offload or software fallback
@@ -253,14 +300,14 @@ struct PacketTemplate {
             mbuf->ol_flags = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
             mbuf->l2_len = kEtherHeaderLen;
             mbuf->l3_len = kIpv4HeaderLen;
-            mbuf->l4_len = kTcpHeaderLen;
+            mbuf->l4_len = tcp_hdr_len;
             // IP checksum field must be 0 for HW offload
             ip->hdr_checksum = 0;
             // TCP checksum field must contain pseudo-header checksum
             tcp->cksum = rte_ipv4_phdr_cksum(ip, mbuf->ol_flags);
         } else {
             mbuf->ol_flags = 0; // Clear any stale offload flags
-            uint16_t tcp_total = kTcpHeaderLen + payload_len;
+            uint16_t tcp_total = tcp_hdr_len + payload_len;
             tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
         }
 
