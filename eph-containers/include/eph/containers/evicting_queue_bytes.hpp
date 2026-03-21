@@ -234,6 +234,11 @@ class EvictingQueueBytes {
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
 
+    /// Total number of messages successfully pushed (writer-side counter).
+    /// Useful for monitoring throughput and computing discard rates.
+    /// @note Only accurate when called from the writer thread.
+    [[nodiscard]] uint64_t total_pushed() const noexcept { return push_count_; }
+
    private:
     EvictingQueue<DataWrap, Capacity> queue_;
 

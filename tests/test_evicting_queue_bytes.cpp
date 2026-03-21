@@ -170,3 +170,41 @@ TEST(EvictingQueueBytesTest, ClearDiscardsData) {
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(out[0], 0xCD);
 }
+
+TEST(EvictingQueueBytesTest, TotalPushedStartsAtZero) {
+    EvictingQueueBytes<256, 4> queue;
+    EXPECT_EQ(queue.total_pushed(), 0u);
+}
+
+TEST(EvictingQueueBytesTest, TotalPushedIncrementsOnPush) {
+    EvictingQueueBytes<256, 4> queue;
+    std::vector<uint8_t> payload(64, 0xAA);
+
+    for (uint64_t i = 1; i <= 10; ++i) {
+        EXPECT_TRUE(queue.try_push(payload));
+        EXPECT_EQ(queue.total_pushed(), i);
+    }
+}
+
+TEST(EvictingQueueBytesTest, TotalPushedNotIncrementedOnOversizedPayload) {
+    EvictingQueueBytes<64, 4> queue;
+    std::vector<uint8_t> oversized(65, 0xBB);
+
+    EXPECT_FALSE(queue.try_push(oversized));
+    EXPECT_EQ(queue.total_pushed(), 0u);
+}
+
+TEST(EvictingQueueBytesTest, TotalPushedPersistsAcrossClear) {
+    EvictingQueueBytes<256, 4> queue;
+    std::vector<uint8_t> payload(32, 0xCC);
+
+    EXPECT_TRUE(queue.try_push(payload));
+    EXPECT_TRUE(queue.try_push(payload));
+    EXPECT_EQ(queue.total_pushed(), 2u);
+
+    queue.clear();
+    EXPECT_EQ(queue.total_pushed(), 2u);
+
+    EXPECT_TRUE(queue.try_push(payload));
+    EXPECT_EQ(queue.total_pushed(), 3u);
+}

@@ -102,6 +102,30 @@ struct TransportConfig {
 
     // Connection state change callback (optional, called from worker threads)
     TransportStateCallback on_state_change{};
+
+    /// Validate configuration, returning an error description or empty string on success.
+    /// Call before Transport::create() to get early, actionable error messages.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (remote_host.empty())
+            return "remote_host must not be empty";
+        if (remote_port == 0)
+            return "remote_port must be > 0";
+        if (ws_path.empty())
+            return "ws_path must not be empty";
+        if (tx_burst_size == 0)
+            return "tx_burst_size must be > 0";
+        if (rx_burst_size == 0)
+            return "rx_burst_size must be > 0";
+        if (max_reconnect_attempts < 0)
+            return "max_reconnect_attempts must be >= 0";
+        if (tcp_timeout.count() <= 0)
+            return "tcp_timeout must be positive";
+        if (tls_timeout.count() <= 0)
+            return "tls_timeout must be positive";
+        if (ws_timeout.count() <= 0)
+            return "ws_timeout must be positive";
+        return {};
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -228,8 +252,8 @@ public:
         if (!tcp_factory) {
             return std::unexpected("tcp_factory is null");
         }
-        if (config.remote_host.empty()) {
-            return std::unexpected("remote_host is empty");
+        if (auto err = config.validate(); !err.empty()) {
+            return std::unexpected(std::string(err));
         }
 
         SPDLOG_LOGGER_INFO(log,
@@ -343,6 +367,18 @@ public:
         });
     }
 
+    /// Try to receive a message with opcode (non-blocking).
+    /// @param callback  Called with (data_ptr, len, opcode) if a message is available.
+    ///                  opcode is one of ws::opcode::kBinary, ws::opcode::kText, etc.
+    /// @return true if a message was consumed, false if queue empty.
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
+    bool recv(F&& callback) {
+        return rx_queue_.try_consume([&](RxMsg& msg) {
+            std::invoke(std::forward<F>(callback), msg.data, msg.len, msg.opcode);
+        });
+    }
+
     /// Try to receive a message as a copied byte vector (non-blocking).
     /// Returns the payload bytes, or nullopt if the queue is empty.
     /// Prefer the callback variant for zero-copy hot paths.
@@ -350,6 +386,25 @@ public:
         std::optional<std::vector<uint8_t>> result;
         rx_queue_.try_consume([&](RxMsg& msg) {
             result.emplace(msg.data, msg.data + msg.len);
+        });
+        return result;
+    }
+
+    /// Received message with opcode metadata.
+    struct ReceivedMessage {
+        std::vector<uint8_t> data;
+        uint8_t opcode = ws::opcode::kBinary;
+    };
+
+    /// Try to receive a message with opcode info (non-blocking).
+    /// Returns payload + opcode, or nullopt if the queue is empty.
+    [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg() {
+        std::optional<ReceivedMessage> result;
+        rx_queue_.try_consume([&](RxMsg& msg) {
+            result.emplace(ReceivedMessage{
+                .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
+                .opcode = msg.opcode,
+            });
         });
         return result;
     }
@@ -401,6 +456,19 @@ public:
 
     [[nodiscard]] bool is_running() const noexcept {
         return running_.load(std::memory_order_acquire);
+    }
+
+    /// Reset all statistics counters to zero.
+    /// Useful for windowed measurement: call stats(), then reset_stats().
+    /// @warning Not thread-safe with stats() — call from one thread only
+    ///          (typically the application thread between measurement windows).
+    void reset_stats() noexcept {
+        tx_stats_ = {};
+        rx_stats_ = {};
+        queue_full_count_.store(0, std::memory_order_relaxed);
+        ws_pings_received_.store(0, std::memory_order_relaxed);
+        ws_pongs_sent_.store(0, std::memory_order_relaxed);
+        reconnect_count_.store(0, std::memory_order_relaxed);
     }
 
     [[nodiscard]] TransportStats stats() const noexcept {

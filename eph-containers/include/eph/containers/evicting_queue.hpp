@@ -307,6 +307,13 @@ class alignas(Align<T>) EvictingQueue {
     [[nodiscard]] static constexpr size_t capacity() noexcept {
         return Capacity;
     }
+
+    /// Total number of writes performed since construction.
+    /// Useful for monitoring throughput and computing discard rates.
+    /// @note Relaxed load — safe to call from any thread for approximate monitoring.
+    [[nodiscard]] uint64_t write_count() const noexcept {
+        return global_index_.load(std::memory_order_relaxed);
+    }
 };
 
 /**
@@ -467,6 +474,13 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     }
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
+
+    /// Total number of writes performed since construction.
+    /// @note Relaxed load — safe to call from any thread for approximate monitoring.
+    [[nodiscard]] uint64_t write_count() const noexcept {
+        // seq_ increments by 2 per write (odd→even), so total writes = seq / 2
+        return seq_.load(std::memory_order_relaxed) / 2;
+    }
 };
 
 }  // namespace eph::containers

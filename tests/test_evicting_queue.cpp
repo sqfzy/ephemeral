@@ -291,3 +291,38 @@ TYPED_TEST(EvictingQueueTest, ClearOnFreshQueue) {
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->seq, 1u);
 }
+
+TYPED_TEST(EvictingQueueTest, WriteCountStartsAtZero) {
+    TypeParam queue;
+    EXPECT_EQ(queue.write_count(), 0u);
+}
+
+TYPED_TEST(EvictingQueueTest, WriteCountIncrementsOnPush) {
+    TypeParam queue;
+    TestData data{};
+
+    for (uint32_t i = 1; i <= 10; ++i) {
+        data.seq = i;
+        queue.push(data);
+        EXPECT_EQ(queue.write_count(), i);
+    }
+}
+
+TYPED_TEST(EvictingQueueTest, WriteCountUnaffectedByClear) {
+    TypeParam queue;
+    TestData data{};
+
+    data.seq = 1;
+    queue.push(data);
+    data.seq = 2;
+    queue.push(data);
+    EXPECT_EQ(queue.write_count(), 2u);
+
+    queue.clear();
+    // write_count persists across clear — it's a lifetime counter
+    EXPECT_EQ(queue.write_count(), 2u);
+
+    data.seq = 3;
+    queue.push(data);
+    EXPECT_EQ(queue.write_count(), 3u);
+}

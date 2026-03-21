@@ -201,3 +201,73 @@ TEST(MockTcpSession, MssReturns1460) {
     MockTcpSession session;
     EXPECT_EQ(session.mss(), 1460);
 }
+
+// ---------------------------------------------------------------------------
+// TransportConfig validation tests
+// ---------------------------------------------------------------------------
+
+#include "eph/net/transport.hpp"
+
+using eph::net::TransportConfig;
+
+TEST(TransportConfigValidate, DefaultWithHostIsValid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidate, EmptyHostIsInvalid) {
+    TransportConfig cfg;
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("remote_host"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidate, ZeroPortIsInvalid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.remote_port = 0;
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("remote_port"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidate, EmptyWsPathIsInvalid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "";
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("ws_path"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidate, ZeroBurstSizeIsInvalid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.tx_burst_size = 0;
+    EXPECT_FALSE(cfg.validate().empty());
+
+    cfg.tx_burst_size = 32;
+    cfg.rx_burst_size = 0;
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidate, NegativeReconnectAttemptsIsInvalid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.max_reconnect_attempts = -1;
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidate, ZeroTimeoutsAreInvalid) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+
+    cfg.tcp_timeout = std::chrono::milliseconds{0};
+    EXPECT_FALSE(cfg.validate().empty());
+
+    cfg.tcp_timeout = std::chrono::milliseconds{3000};
+    cfg.tls_timeout = std::chrono::milliseconds{0};
+    EXPECT_FALSE(cfg.validate().empty());
+
+    cfg.tls_timeout = std::chrono::milliseconds{5000};
+    cfg.ws_timeout = std::chrono::milliseconds{0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
