@@ -62,6 +62,13 @@ enum class TransportEvent : uint8_t {
     kStopped,         ///< Transport stopped (graceful or exhausted retries)
 };
 
+/// Current connection state (pollable via Transport::state()).
+enum class TransportState : uint8_t {
+    kConnected,       ///< Connection established and data can flow
+    kReconnecting,    ///< Connection lost, reconnection in progress
+    kStopped,         ///< Transport stopped (call stop() or exhausted retries)
+};
+
 /// Callback type for connection state changes.
 /// @param event  The lifecycle event
 /// @param detail Context string (e.g., error message, attempt count)
@@ -348,6 +355,42 @@ public:
         return send(sv.data(), sv.size(), ws::opcode::kBinary);
     }
 
+    /// Batch-send multiple messages (all-or-nothing semantics).
+    ///
+    /// Enqueues all messages with a single atomic tail update, amortizing
+    /// the per-message atomic store overhead. All messages share the same opcode.
+    ///
+    /// @param payloads  Array of {data, len} pairs
+    /// @param count     Number of messages
+    /// @param opcode    WebSocket opcode for all messages
+    /// @return 0 on success, -EMSGSIZE if any payload exceeds MaxPayload,
+    ///         -ENOTCONN if not connected, -EAGAIN if queue has insufficient space
+    int send_n(const std::span<const uint8_t>* payloads, size_t count,
+               uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
+
+        for (size_t i = 0; i < count; ++i) {
+            if (payloads[i].size() > MaxPayload) return -EMSGSIZE;
+        }
+
+        // Build TxMsg array on the stack (count is bounded by queue depth)
+        // and use try_push_n for single-atomic-store batch enqueue.
+        auto msgs = std::make_unique<TxMsg[]>(count);
+        for (size_t i = 0; i < count; ++i) {
+            std::memcpy(msgs[i].data, payloads[i].data(), payloads[i].size());
+            msgs[i].len = static_cast<uint16_t>(payloads[i].size());
+            msgs[i].opcode = opcode;
+        }
+
+        bool ok = tx_queue_.try_push_n(
+            std::span<const TxMsg>(msgs.get(), count));
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return -EAGAIN;
+        }
+        return 0;
+    }
+
     // -----------------------------------------------------------------------
     // Receive API (application thread)
     // -----------------------------------------------------------------------
@@ -458,6 +501,15 @@ public:
         return running_.load(std::memory_order_acquire);
     }
 
+    /// Query the current connection state (lock-free, safe from any thread).
+    [[nodiscard]] TransportState state() const noexcept {
+        if (!running_.load(std::memory_order_acquire))
+            return TransportState::kStopped;
+        if (reconnecting_.load(std::memory_order_acquire))
+            return TransportState::kReconnecting;
+        return TransportState::kConnected;
+    }
+
     /// Reset all statistics counters to zero.
     /// Useful for windowed measurement: call stats(), then reset_stats().
     /// @warning Not thread-safe with stats() — call from one thread only
@@ -514,6 +566,11 @@ private:
     std::atomic<uint64_t>                  ws_pings_received_{0};
     std::atomic<uint64_t>                  ws_pongs_sent_{0};
     std::atomic<uint64_t>                  reconnect_count_{0};
+
+    // WebSocket fragmentation reassembly buffer (RX thread only).
+    // Accumulates continuation frames until FIN=1.
+    std::vector<uint8_t>                   ws_frag_buf_;
+    uint8_t                                ws_frag_opcode_ = 0;
 
     // -----------------------------------------------------------------------
     // State change notification
@@ -640,8 +697,9 @@ private:
         // while we are reconnecting.
         reconnecting_.store(true, std::memory_order_release);
 
-        // Discard stale TX queue data (TX thread is paused via reconnecting_ flag)
+        // Discard stale queue data and fragment buffer
         tx_queue_.clear();
+        ws_frag_buf_.clear();
 
         for (int attempt = 1; attempt <= max_attempts; ++attempt) {
             SPDLOG_LOGGER_INFO(log,
@@ -853,15 +911,16 @@ private:
             for (int i = 0; i < n; ++i) {
                 size_t ws_len;
 
-                // Control frames (pong) use encode_frame directly;
-                // data frames use the precomputed template.
-                if (batch[i].opcode == ws::opcode::kPong) {
-                    ws_len = ws::encode_frame(
-                        ws_buf, ws::opcode::kPong,
-                        batch[i].data, batch[i].len);
-                } else {
+                // Use precomputed template for the common case (binary),
+                // fall back to encode_frame for other opcodes (text, pong)
+                // to ensure the correct opcode is written into the frame.
+                if (batch[i].opcode == ws::opcode::kBinary) {
                     ws_len = ws_tmpl.encode(
                         ws_buf, batch[i].data, batch[i].len);
+                } else {
+                    ws_len = ws::encode_frame(
+                        ws_buf, batch[i].opcode,
+                        batch[i].data, batch[i].len);
                 }
 
                 uint8_t* tls_buf_i = tls_bufs_storage.get() +
@@ -1060,9 +1119,12 @@ private:
             }
 
             if (frame->is_close()) {
+                uint16_t code = frame->close_status_code();
                 SPDLOG_LOGGER_INFO(log,
-                    "Received WS Close frame: code={}",
-                    frame->close_status_code());
+                    "Received WS Close frame: code={}", code);
+                // RFC 6455 §5.5.1: respond with a Close frame echoing
+                // the status code before shutting down.
+                handle_close(code);
                 running_.store(false, std::memory_order_release);
                 break;
             }
@@ -1071,32 +1133,109 @@ private:
                 continue;
             }
 
-            // Data frame -- push to receive queue
-            if (frame->is_data() && frame->payload_len > 0 &&
-                frame->payload_len <= MaxPayload) {
+            // Data frame handling with fragmentation reassembly.
+            // RFC 6455 §5.4: first fragment has opcode != 0, FIN=0;
+            // continuation fragments have opcode=0; final fragment has FIN=1.
+            if (!frame->is_data()) continue;
 
-                bool ok = rx_queue_.try_produce([&](RxMsg& msg) {
-                    std::memcpy(msg.data, frame->payload,
-                                frame->payload_len);
-                    if (frame->masked) {
-                        ws::apply_mask(msg.data, frame->payload_len,
-                                       frame->mask_key);
-                    }
-                    msg.len = static_cast<uint16_t>(frame->payload_len);
-                    msg.opcode = frame->opcode;
-                });
+            // Unmask payload in-place if needed (server frames are usually
+            // unmasked, but handle masked frames for robustness).
+            // payload pointer is const; we'll unmask during copy below.
 
-                if (ok) {
-                    rx_stats_.bytes += frame->payload_len;
-                } else {
+            if (frame->opcode != ws::opcode::kContinuation) {
+                // Start of a new message (possibly the only frame if FIN=1)
+                if (!ws_frag_buf_.empty()) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "New WS message started while previous fragment "
+                        "incomplete, discarding {} buffered bytes",
+                        ws_frag_buf_.size());
+                    ws_frag_buf_.clear();
+                }
+                ws_frag_opcode_ = frame->opcode;
+            }
+
+            // Append payload to fragment buffer (or process directly if
+            // single-frame message).
+            bool is_final = frame->fin;
+            bool is_single_frame = (frame->opcode != ws::opcode::kContinuation
+                                    && is_final);
+
+            if (is_single_frame && frame->payload_len <= MaxPayload) {
+                // Fast path: complete single-frame message, no buffering
+                deliver_data_frame(*frame);
+            } else if (is_single_frame) {
+                // Single oversized frame
+                rx_stats_.dropped++;
+                SPDLOG_LOGGER_WARN(log,
+                    "Dropping oversized WS frame: payload_len={}, "
+                    "max={}, opcode=0x{:02x}",
+                    frame->payload_len, MaxPayload, frame->opcode);
+            } else {
+                // Fragmented message: accumulate
+                size_t new_size = ws_frag_buf_.size() + frame->payload_len;
+                if (new_size > MaxPayload) {
                     rx_stats_.dropped++;
-                    // Log every 1000th drop to avoid log flooding
-                    if (rx_stats_.dropped % 1000 == 1) {
-                        SPDLOG_LOGGER_WARN(log,
-                            "RX queue full, dropping data frame "
-                            "(total dropped: {})", rx_stats_.dropped);
+                    SPDLOG_LOGGER_WARN(log,
+                        "Dropping oversized fragmented WS message: "
+                        "accumulated={}, max={}", new_size, MaxPayload);
+                    ws_frag_buf_.clear();
+                    continue;
+                }
+
+                if (frame->payload && frame->payload_len > 0) {
+                    size_t old_size = ws_frag_buf_.size();
+                    ws_frag_buf_.resize(new_size);
+                    std::memcpy(ws_frag_buf_.data() + old_size,
+                                frame->payload, frame->payload_len);
+                    if (frame->masked) {
+                        ws::apply_mask(
+                            ws_frag_buf_.data() + old_size,
+                            frame->payload_len, frame->mask_key);
                     }
                 }
+
+                if (is_final) {
+                    // Reassembly complete — deliver
+                    if (!ws_frag_buf_.empty()) {
+                        bool ok = rx_queue_.try_produce([&](RxMsg& msg) {
+                            std::memcpy(msg.data, ws_frag_buf_.data(),
+                                        ws_frag_buf_.size());
+                            msg.len = static_cast<uint16_t>(ws_frag_buf_.size());
+                            msg.opcode = ws_frag_opcode_;
+                        });
+                        if (ok) {
+                            rx_stats_.bytes += ws_frag_buf_.size();
+                        } else {
+                            rx_stats_.dropped++;
+                        }
+                    }
+                    ws_frag_buf_.clear();
+                }
+            }
+        }
+    }
+
+    /// Deliver a complete single-frame data message to the RX queue.
+    void deliver_data_frame(const ws::DecodedFrame& frame) {
+        if (frame.payload_len == 0) return;
+
+        bool ok = rx_queue_.try_produce([&](RxMsg& msg) {
+            std::memcpy(msg.data, frame.payload, frame.payload_len);
+            if (frame.masked) {
+                ws::apply_mask(msg.data, frame.payload_len, frame.mask_key);
+            }
+            msg.len = static_cast<uint16_t>(frame.payload_len);
+            msg.opcode = frame.opcode;
+        });
+
+        if (ok) {
+            rx_stats_.bytes += frame.payload_len;
+        } else {
+            rx_stats_.dropped++;
+            if (rx_stats_.dropped % 1000 == 1) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "RX queue full, dropping data frame "
+                    "(total dropped: {})", rx_stats_.dropped);
             }
         }
     }
@@ -1129,6 +1268,19 @@ private:
             SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
                 "TX queue full, dropping pong response");
         }
+    }
+
+    /// Enqueue a Close frame response into the TX queue.
+    /// Called from RX thread when a server Close frame is received.
+    void handle_close(uint16_t status_code) {
+        // Encode the 2-byte status code as payload; TX thread will wrap
+        // it in a WS Close frame via encode_frame(kClose, ...).
+        tx_queue_.try_produce([&](TxMsg& msg) {
+            msg.data[0] = static_cast<uint8_t>(status_code >> 8);
+            msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
+            msg.len = 2;
+            msg.opcode = ws::opcode::kClose;
+        });
     }
 };
 
