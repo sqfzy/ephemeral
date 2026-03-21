@@ -208,3 +208,60 @@ TEST(EvictingQueueBytesTest, TotalPushedPersistsAcrossClear) {
     EXPECT_TRUE(queue.try_push(payload));
     EXPECT_EQ(queue.total_pushed(), 3u);
 }
+
+// ===========================================================================
+// Timed operations
+// ===========================================================================
+
+TEST(EvictingQueueBytesTimed, TryPopLatestForSucceeds) {
+    EvictingQueueBytes<64, 4> queue;
+    std::array<uint8_t, 8> payload{};
+    payload.fill(0xBB);
+    ASSERT_TRUE(queue.try_push(payload));
+
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_pop_latest_for(out, std::chrono::milliseconds(10));
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 8u);
+    EXPECT_EQ(out[0], 0xBB);
+}
+
+TEST(EvictingQueueBytesTimed, TryPopLatestForTimesOutOnEmpty) {
+    EvictingQueueBytes<64, 4> queue;
+    std::array<uint8_t, 64> out{};
+    auto start = std::chrono::steady_clock::now();
+    auto len = queue.try_pop_latest_for(out, std::chrono::milliseconds(20));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_FALSE(len.has_value());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
+TEST(EvictingQueueBytesTimed, TryConsumeLatestForSucceeds) {
+    EvictingQueueBytes<64, 4> queue;
+    std::array<uint8_t, 4> payload = {10, 20, 30, 40};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    size_t captured_len = 0;
+    bool ok = queue.try_consume_latest_for([&](std::span<const uint8_t> data) {
+        captured_len = data.size();
+    }, std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(captured_len, 4u);
+}
+
+TEST(EvictingQueueBytesTimed, TryPopLatestForSucceedsAfterWrite) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::thread writer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::array<uint8_t, 4> payload = {0xCC, 0xDD, 0xEE, 0xFF};
+        (void)queue.try_push(payload);
+    });
+
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_pop_latest_for(out, std::chrono::milliseconds(200));
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 4u);
+    EXPECT_EQ(out[0], 0xCC);
+    writer.join();
+}

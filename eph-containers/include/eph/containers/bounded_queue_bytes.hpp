@@ -205,6 +205,85 @@ class BoundedQueueBytes {
     }
 
     // ===========================================================================
+    // 带超时操作 (Writer)
+    // ===========================================================================
+
+    /**
+     * @brief 带超时推入带时间戳的字节流
+     * @return true 成功; false 超时或 payload 过大
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_push_wts_for(std::span<const uint8_t> payload, uint64_t ts,
+                                        std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (payload.size() > MaxDataSize) [[unlikely]] return false;
+
+        return queue_.try_produce_for([&](DataWrap& slot) {
+            slot.ts = ts;
+            slot.len = static_cast<uint32_t>(payload.size());
+            std::memcpy(slot.data.data(), payload.data(), payload.size());
+        }, timeout);
+    }
+
+    /**
+     * @brief 带超时推入字节流
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_push_for(std::span<const uint8_t> payload,
+                                    std::chrono::duration<Rep, Period> timeout) noexcept {
+        return try_push_wts_for(payload, 0, timeout);
+    }
+
+    // ===========================================================================
+    // 带超时操作 (Reader)
+    // ===========================================================================
+
+    /**
+     * @brief 带超时的零拷贝消费
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, std::span<const uint8_t>>
+    [[nodiscard]] bool try_consume_for(F&& visitor,
+                                       std::chrono::duration<Rep, Period> timeout) noexcept {
+        return queue_.try_consume_for([&](const DataWrap& msg) {
+            uint32_t safe_len =
+                std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
+            std::invoke(std::forward<F>(visitor),
+                        std::span<const uint8_t>{msg.data.data(), safe_len});
+        }, timeout);
+    }
+
+    /**
+     * @brief 带超时的零拷贝消费（带时间戳）
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, std::span<const uint8_t>, uint64_t>
+    [[nodiscard]] bool try_consume_wts_for(F&& visitor,
+                                           std::chrono::duration<Rep, Period> timeout) noexcept {
+        return queue_.try_consume_for([&](const DataWrap& msg) {
+            uint32_t safe_len =
+                std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
+            std::invoke(std::forward<F>(visitor),
+                        std::span<const uint8_t>{msg.data.data(), safe_len},
+                        msg.ts);
+        }, timeout);
+    }
+
+    /**
+     * @brief 带超时的拷贝读取
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<uint32_t> try_pop_for(
+        std::span<uint8_t> out_buf,
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        uint32_t copy_len = 0;
+        bool ok = try_consume_for([&](std::span<const uint8_t> data) {
+            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            std::memcpy(out_buf.data(), data.data(), copy_len);
+        }, timeout);
+        return ok ? std::make_optional(copy_len) : std::nullopt;
+    }
+
+    // ===========================================================================
     // 状态查询
     // ===========================================================================
 

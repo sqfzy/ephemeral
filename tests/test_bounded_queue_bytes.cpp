@@ -114,3 +114,69 @@ TEST(BoundedQueueBytesTest, ClearResetsQueue) {
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(out[0], 0xCD);
 }
+
+// ===========================================================================
+// Timed operations
+// ===========================================================================
+
+TEST(BoundedQueueBytesTimed, TryPushForSucceeds) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 8> payload{};
+    payload.fill(0xAB);
+    EXPECT_TRUE(queue.try_push_for(payload, std::chrono::milliseconds(10)));
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_pop(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 8u);
+    EXPECT_EQ(out[0], 0xAB);
+}
+
+TEST(BoundedQueueBytesTimed, TryPushForTimesOutOnFull) {
+    BoundedQueueBytes<64, 2> queue;
+    std::array<uint8_t, 8> payload{};
+    ASSERT_TRUE(queue.try_push(payload));
+    ASSERT_TRUE(queue.try_push(payload));
+    ASSERT_TRUE(queue.full());
+
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(queue.try_push_for(payload, std::chrono::milliseconds(20)));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
+TEST(BoundedQueueBytesTimed, TryPopForTimesOutOnEmpty) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 64> out{};
+    auto start = std::chrono::steady_clock::now();
+    auto len = queue.try_pop_for(out, std::chrono::milliseconds(20));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_FALSE(len.has_value());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
+TEST(BoundedQueueBytesTimed, TryConsumeForSucceeds) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 4> payload = {1, 2, 3, 4};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    size_t captured_len = 0;
+    bool ok = queue.try_consume_for([&](std::span<const uint8_t> data) {
+        captured_len = data.size();
+    }, std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(captured_len, 4u);
+}
+
+TEST(BoundedQueueBytesTimed, TryPushWtsForWithTimestamp) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 4> payload = {5, 6, 7, 8};
+    EXPECT_TRUE(queue.try_push_wts_for(payload, 12345, std::chrono::milliseconds(10)));
+
+    uint64_t ts = 0;
+    bool ok = queue.try_consume_wts_for([&](std::span<const uint8_t> data, uint64_t t) {
+        ts = t;
+        EXPECT_EQ(data.size(), 4u);
+    }, std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(ts, 12345u);
+}

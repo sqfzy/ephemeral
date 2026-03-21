@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -217,6 +218,41 @@ class EvictingQueueBytes {
         while (!try_consume_latest_wts(std::forward<F>(visitor))) {
             cpu_relax();
         }
+    }
+
+    // ===========================================================================
+    // 带超时 Reader
+    // ===========================================================================
+
+    /**
+     * @brief 带超时的零拷贝读取最新数据
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, std::span<const uint8_t>>
+    [[nodiscard]] bool try_consume_latest_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_consume_latest(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_consume_latest(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    /**
+     * @brief 带超时的拷贝读取
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<uint32_t> try_pop_latest_for(
+        std::span<uint8_t> out_buf,
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        uint32_t copy_len = 0;
+        bool ok = try_consume_latest_for([&](std::span<const uint8_t> data) {
+            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            std::memcpy(out_buf.data(), data.data(), copy_len);
+        }, timeout);
+        return ok ? std::make_optional(copy_len) : std::nullopt;
     }
 
     // ===========================================================================
