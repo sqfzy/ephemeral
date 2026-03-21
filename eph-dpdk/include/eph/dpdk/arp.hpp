@@ -107,7 +107,12 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
     if (!mbuf) return nullptr;
 
     constexpr uint16_t frame_len = sizeof(rte_ether_hdr) + sizeof(ArpPacket);
-    auto* pkt = rte_pktmbuf_mtod(mbuf, uint8_t*);
+    auto* pkt = reinterpret_cast<uint8_t*>(
+        rte_pktmbuf_append(mbuf, frame_len));
+    if (!pkt) {
+        rte_pktmbuf_free(mbuf);
+        return nullptr;
+    }
 
     // Ethernet header: broadcast destination
     auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt);
@@ -130,9 +135,6 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
     // Target: zero MAC (unknown), target IP
     std::memset(arp->target_mac, 0, 6);
     arp->target_ip = net::hton32(target_ip);
-
-    mbuf->data_len = frame_len;
-    mbuf->pkt_len  = frame_len;
 
     return mbuf;
 }

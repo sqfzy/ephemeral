@@ -250,7 +250,7 @@ struct PacketTemplate {
         // [P2] Checksum: hardware offload or software fallback
         if (hw_cksum) {
             // Let NIC compute checksums — set offload metadata
-            mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
+            mbuf->ol_flags = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
             mbuf->l2_len = kEtherHeaderLen;
             mbuf->l3_len = kIpv4HeaderLen;
             mbuf->l4_len = kTcpHeaderLen;
@@ -259,6 +259,7 @@ struct PacketTemplate {
             // TCP checksum field must contain pseudo-header checksum
             tcp->cksum = rte_ipv4_phdr_cksum(ip, mbuf->ol_flags);
         } else {
+            mbuf->ol_flags = 0; // Clear any stale offload flags
             uint16_t tcp_total = kTcpHeaderLen + payload_len;
             tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
         }
@@ -320,12 +321,13 @@ struct PacketTemplate {
 
         // [P2] Checksum: hardware offload or software fallback
         if (hw_cksum) {
-            mbuf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
+            mbuf->ol_flags = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM;
             mbuf->l2_len = kEtherHeaderLen;
             mbuf->l3_len = kIpv4HeaderLen;
             mbuf->l4_len = kTcpHeaderLen;
             tcp->cksum = rte_ipv4_phdr_cksum(ip, mbuf->ol_flags);
         } else {
+            mbuf->ol_flags = 0; // Clear any stale offload flags
             uint16_t tcp_total = kTcpHeaderLen + payload_len;
             tcp->cksum = tcp_checksum(ip->src_addr, ip->dst_addr, tcp, tcp_total);
         }

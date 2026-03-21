@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <optional>
+#include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -314,17 +316,20 @@ private:
     bool has_tsc_reliable = false;
 
     // 读取 /proc/cpuinfo
-    if (FILE *fp = fopen("/proc/cpuinfo", "r")) {
-      char line[256];
-      while (fgets(line, sizeof(line), fp)) {
-        if (strstr(line, "constant_tsc"))
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    if (!cpuinfo) {
+      SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
+                               "cannot verify TSC reliability");
+    } else {
+      std::string line;
+      while (std::getline(cpuinfo, line)) {
+        if (line.find("constant_tsc") != std::string::npos)
           has_constant_tsc = true;
-        if (strstr(line, "nonstop_tsc"))
+        if (line.find("nonstop_tsc") != std::string::npos)
           has_nonstop_tsc = true;
-        if (strstr(line, "tsc_reliable"))
+        if (line.find("tsc_reliable") != std::string::npos)
           has_tsc_reliable = true;
       }
-      fclose(fp);
 
       if (!has_constant_tsc) {
         SPDLOG_LOGGER_WARN(log,
