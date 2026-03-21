@@ -580,6 +580,47 @@ public:
         return recv_n(std::forward<F>(callback), QueueDepth);
     }
 
+    /// Blocking receive with timeout — waits for a message to arrive.
+    ///
+    /// Suitable for non-DPDK (socket) transports where busy-polling
+    /// the RX queue is wasteful. Yields the thread between polls to
+    /// keep CPU usage low while maintaining sub-millisecond wake-up.
+    ///
+    /// @param callback  Called with (data_ptr, len) when a message arrives
+    /// @param timeout   Maximum time to wait for a message
+    /// @return true if a message was consumed, false on timeout or stop
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (running_.load(std::memory_order_acquire)) {
+            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+                std::invoke(std::forward<F>(callback), msg.data, msg.len);
+            });
+            if (got) return true;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return false;
+    }
+
+    /// Blocking receive with opcode and timeout.
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
+    bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (running_.load(std::memory_order_acquire)) {
+            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+                std::invoke(std::forward<F>(callback),
+                            msg.data, msg.len, msg.opcode);
+            });
+            if (got) return true;
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return false;
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle
     // -----------------------------------------------------------------------
