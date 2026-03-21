@@ -702,6 +702,9 @@ private:
     // RX sets reconnecting_=true before modifying crypto_/tcp_;
     // TX spins while this flag is set to avoid data races.
     std::atomic<bool>                      reconnecting_{false};
+    // RX sets closing_=true when a server Close frame is received.
+    // TX drains the queue (sending the Close response) before exiting.
+    std::atomic<bool>                      closing_{false};
     std::thread                            tx_thread_;
     std::thread                            rx_thread_;
 
@@ -853,6 +856,7 @@ private:
         // Discard stale queue data and fragment buffer
         tx_queue_.clear();
         ws_frag_buf_.clear();
+        closing_.store(false, std::memory_order_release);
 
         // Compute backoff cap: explicit max, or 16x base as default
         auto base_ms = config_.reconnect_interval.count();
@@ -1085,6 +1089,14 @@ private:
             }
 
             if (n == 0) {
+                // If RX signaled a graceful close and the queue is now
+                // empty, the Close response has been sent — exit.
+                if (closing_.load(std::memory_order_acquire)) [[unlikely]] {
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "TX: closing_ set and queue drained, exiting");
+                    running_.store(false, std::memory_order_release);
+                    break;
+                }
                 eph::utils::cpu_relax();
                 continue;
             }
@@ -1157,6 +1169,13 @@ private:
         size_t reassembly_len = 0;
 
         while (running_.load(std::memory_order_acquire)) {
+            // After a server Close frame, stop receiving — TX will
+            // drain the Close response and set running_=false.
+            if (closing_.load(std::memory_order_acquire)) [[unlikely]] {
+                eph::utils::cpu_relax();
+                continue;
+            }
+
             // -- Receive data via poll_rx --
             bool reconnect_needed = false;
             auto rx_result = tcp_->poll_rx(
@@ -1307,7 +1326,9 @@ private:
                 // RFC 6455 §5.5.1: respond with a Close frame echoing
                 // the status code before shutting down.
                 handle_close(code);
-                running_.store(false, std::memory_order_release);
+                // Signal TX to drain the Close response before exiting.
+                // TX checks closing_ and sends remaining queue items.
+                closing_.store(true, std::memory_order_release);
                 break;
             }
 
