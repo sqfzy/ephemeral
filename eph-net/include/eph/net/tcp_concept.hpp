@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string>
 
 namespace eph::net {
@@ -78,3 +79,15 @@ concept TcpTransport = requires(T& t,
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for TcpState
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::TcpState> : std::formatter<const char*> {
+    auto format(eph::net::TcpState s, auto& ctx) const {
+        return std::formatter<const char*>::format(
+            eph::net::tcp_state_name(s), ctx);
+    }
+};

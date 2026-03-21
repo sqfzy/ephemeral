@@ -69,6 +69,27 @@ enum class TransportState : uint8_t {
     kStopped,         ///< Transport stopped (call stop() or exhausted retries)
 };
 
+/// Return a human-readable name for a TransportEvent.
+constexpr const char* transport_event_name(TransportEvent e) noexcept {
+    switch (e) {
+        case TransportEvent::kConnected:    return "CONNECTED";
+        case TransportEvent::kDisconnected: return "DISCONNECTED";
+        case TransportEvent::kReconnecting: return "RECONNECTING";
+        case TransportEvent::kStopped:      return "STOPPED";
+    }
+    return "UNKNOWN";
+}
+
+/// Return a human-readable name for a TransportState.
+constexpr const char* transport_state_name(TransportState s) noexcept {
+    switch (s) {
+        case TransportState::kConnected:    return "CONNECTED";
+        case TransportState::kReconnecting: return "RECONNECTING";
+        case TransportState::kStopped:      return "STOPPED";
+    }
+    return "UNKNOWN";
+}
+
 /// Callback type for connection state changes.
 /// @param event  The lifecycle event
 /// @param detail Context string (e.g., error message, attempt count)
@@ -1343,3 +1364,39 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::TransportEvent> : std::formatter<const char*> {
+    auto format(eph::net::TransportEvent e, auto& ctx) const {
+        return std::formatter<const char*>::format(
+            eph::net::transport_event_name(e), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::net::TransportState> : std::formatter<const char*> {
+    auto format(eph::net::TransportState s, auto& ctx) const {
+        return std::formatter<const char*>::format(
+            eph::net::transport_state_name(s), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::net::TransportStats> : std::formatter<std::string> {
+    auto format(const eph::net::TransportStats& s, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format(
+                "TX: {}pkts/{}B (dropped:{}, encrypt_err:{}) | "
+                "RX: {}pkts/{}B (decrypt_err:{}) | "
+                "queue_full:{} ping:{} pong:{} reconnect:{}",
+                s.tx_packets, s.tx_bytes, s.tx_dropped, s.encrypt_errors,
+                s.rx_packets, s.rx_bytes, s.decrypt_errors,
+                s.queue_full_count, s.ws_pings_received,
+                s.ws_pongs_sent, s.reconnect_count),
+            ctx);
+    }
+};

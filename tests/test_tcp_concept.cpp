@@ -271,3 +271,47 @@ TEST(TransportConfigValidate, ZeroTimeoutsAreInvalid) {
     cfg.ws_timeout = std::chrono::milliseconds{0};
     EXPECT_FALSE(cfg.validate().empty());
 }
+
+// ---------------------------------------------------------------------------
+// std::formatter specializations
+// ---------------------------------------------------------------------------
+
+TEST(Formatter, TcpStateFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", TcpState::Closed), "CLOSED");
+    EXPECT_EQ(std::format("{}", TcpState::SynSent), "SYN_SENT");
+    EXPECT_EQ(std::format("{}", TcpState::Established), "ESTABLISHED");
+    EXPECT_EQ(std::format("{}", TcpState::FinWait1), "FIN_WAIT_1");
+    EXPECT_EQ(std::format("{}", TcpState::FinWait2), "FIN_WAIT_2");
+    EXPECT_EQ(std::format("{}", TcpState::TimeWait), "TIME_WAIT");
+    EXPECT_EQ(std::format("{}", TcpState::CloseWait), "CLOSE_WAIT");
+    EXPECT_EQ(std::format("{}", TcpState::LastAck), "LAST_ACK");
+}
+
+TEST(Formatter, TransportEventFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", TransportEvent::kConnected), "CONNECTED");
+    EXPECT_EQ(std::format("{}", TransportEvent::kDisconnected), "DISCONNECTED");
+    EXPECT_EQ(std::format("{}", TransportEvent::kReconnecting), "RECONNECTING");
+    EXPECT_EQ(std::format("{}", TransportEvent::kStopped), "STOPPED");
+}
+
+TEST(Formatter, TransportStateFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", TransportState::kConnected), "CONNECTED");
+    EXPECT_EQ(std::format("{}", TransportState::kReconnecting), "RECONNECTING");
+    EXPECT_EQ(std::format("{}", TransportState::kStopped), "STOPPED");
+}
+
+TEST(Formatter, TransportStatsFormatsCorrectly) {
+    TransportStats stats{};
+    stats.tx_packets = 100;
+    stats.tx_bytes = 5000;
+    stats.rx_packets = 80;
+    stats.rx_bytes = 4000;
+    stats.reconnect_count = 1;
+
+    auto s = std::format("{}", stats);
+    EXPECT_NE(s.find("100"), std::string::npos);   // tx_packets
+    EXPECT_NE(s.find("5000"), std::string::npos);   // tx_bytes
+    EXPECT_NE(s.find("80"), std::string::npos);     // rx_packets
+    EXPECT_NE(s.find("4000"), std::string::npos);   // rx_bytes
+    EXPECT_NE(s.find("reconnect:1"), std::string::npos);
+}
