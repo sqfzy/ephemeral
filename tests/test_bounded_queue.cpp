@@ -425,6 +425,138 @@ TYPED_TEST(BoundedQueueTest, ProduceN_BlockingBatchVisitor) {
     EXPECT_TRUE(queue.empty());
 }
 
+// ===========================================================================
+// Timed operations
+// ===========================================================================
+
+TEST(BoundedQueueTimed, TryPushForSucceedsOnEmptyQueue) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    BoundedTestData d{.seq = 42};
+    EXPECT_TRUE(queue.try_push_for(d, std::chrono::milliseconds(10)));
+    auto val = queue.try_pop();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 42u);
+}
+
+TEST(BoundedQueueTimed, TryPushForTimesOutOnFullQueue) {
+    BoundedQueue<BoundedTestData, 2> queue;
+    BoundedTestData d{.seq = 1};
+    ASSERT_TRUE(queue.try_push(d));
+    d.seq = 2;
+    ASSERT_TRUE(queue.try_push(d));
+    ASSERT_TRUE(queue.full());
+
+    auto start = std::chrono::steady_clock::now();
+    d.seq = 3;
+    EXPECT_FALSE(queue.try_push_for(d, std::chrono::milliseconds(20)));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
+TEST(BoundedQueueTimed, TryPopForSucceedsOnNonEmptyQueue) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    BoundedTestData d{.seq = 99};
+    queue.push(d);
+    BoundedTestData out{};
+    EXPECT_TRUE(queue.try_pop_for(out, std::chrono::milliseconds(10)));
+    EXPECT_EQ(out.seq, 99u);
+}
+
+TEST(BoundedQueueTimed, TryPopForTimesOutOnEmptyQueue) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    auto start = std::chrono::steady_clock::now();
+    auto val = queue.try_pop_for(std::chrono::milliseconds(20));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_FALSE(val.has_value());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
+TEST(BoundedQueueTimed, TryPushForSucceedsAfterConsumerDrains) {
+    BoundedQueue<BoundedTestData, 2> queue;
+    BoundedTestData d{.seq = 1};
+    queue.push(d);
+    d.seq = 2;
+    queue.push(d);
+    ASSERT_TRUE(queue.full());
+
+    // Consumer drains after 10ms
+    std::thread consumer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        (void)queue.pop();
+    });
+
+    d.seq = 3;
+    EXPECT_TRUE(queue.try_push_for(d, std::chrono::milliseconds(200)));
+    consumer.join();
+
+    // Drain and verify
+    auto v1 = queue.pop();
+    auto v2 = queue.pop();
+    EXPECT_EQ(v1.seq, 2u);
+    EXPECT_EQ(v2.seq, 3u);
+}
+
+TEST(BoundedQueueTimed, TryPopForSucceedsAfterProducerPushes) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    ASSERT_TRUE(queue.empty());
+
+    // Producer pushes after 10ms
+    std::thread producer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        BoundedTestData d{.seq = 77};
+        queue.push(d);
+    });
+
+    BoundedTestData out{};
+    EXPECT_TRUE(queue.try_pop_for(out, std::chrono::milliseconds(200)));
+    EXPECT_EQ(out.seq, 77u);
+    producer.join();
+}
+
+TEST(BoundedQueueTimed, TryProduceForVisitorPattern) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    bool ok = queue.try_produce_for(
+        [](BoundedTestData& slot) { slot.seq = 55; },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    auto val = queue.try_pop();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 55u);
+}
+
+TEST(BoundedQueueTimed, TryConsumeForVisitorPattern) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    BoundedTestData d{.seq = 66};
+    queue.push(d);
+
+    uint32_t captured = 0;
+    bool ok = queue.try_consume_for(
+        [&](BoundedTestData& data) { captured = data.seq; },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(captured, 66u);
+}
+
+TEST(BoundedQueueTimed, TryEmplaceForSucceeds) {
+    BoundedQueue<BoundedTestData, 4> queue;
+    EXPECT_TRUE(queue.try_emplace_for(std::chrono::milliseconds(10)));
+    auto val = queue.try_pop();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 0u); // default-constructed
+}
+
+TEST(BoundedQueueTimed, ZeroTimeoutActsLikeTry) {
+    BoundedQueue<BoundedTestData, 2> queue;
+    BoundedTestData d{.seq = 1};
+    // Push succeeds immediately on empty queue even with zero timeout
+    EXPECT_TRUE(queue.try_push_for(d, std::chrono::milliseconds(0)));
+    d.seq = 2;
+    EXPECT_TRUE(queue.try_push_for(d, std::chrono::milliseconds(0)));
+    // Queue full, zero timeout should fail immediately
+    d.seq = 3;
+    EXPECT_FALSE(queue.try_push_for(d, std::chrono::milliseconds(0)));
+}
+
 TEST(BoundedQueueBlocking, PushN_SpinsUntilSpaceAvailable) {
     BoundedQueue<BoundedTestData, 4> queue;
 
