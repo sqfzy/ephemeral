@@ -59,9 +59,10 @@ public:
     size_t size = sizeof(T);
     size_t alignment = alignof(T);
     bool is_hugepage = false;
+    size_t allocated_size = 0;
 
     // 分配内存（可能是大页或普通内存）
-    void *mem = allocate(size, alignment, is_hugepage);
+    void *mem = allocate(size, alignment, is_hugepage, allocated_size);
     if (!mem) {
       throw std::bad_alloc();
     }
@@ -71,11 +72,11 @@ public:
       T *obj = new (mem) T(std::forward<Args>(args)...);
 
       // 返回带有自定义删除器的 unique_ptr
-      // 删除器捕获分配信息（大小和类型），确保正确释放
-      return std::unique_ptr<T, Deleter<T>>(obj, Deleter<T>{size, is_hugepage});
+      // 删除器使用实际分配大小（对齐后），确保正确释放
+      return std::unique_ptr<T, Deleter<T>>(obj, Deleter<T>{allocated_size, is_hugepage});
     } catch (...) {
       // 确保如果构造函数抛异常，能正确释放刚分配的内存避免泄露
-      deallocate(mem, size, is_hugepage);
+      deallocate(mem, allocated_size, is_hugepage);
       throw;
     }
   }
@@ -100,7 +101,8 @@ public:
    * @warning 此函数不抛异常，分配失败返回 nullptr
    */
   static void *allocate(size_t size, size_t alignment,
-                        bool &is_hugepage) noexcept {
+                        bool &is_hugepage,
+                        size_t &out_allocated_size) noexcept {
 
     is_hugepage = false;
 
@@ -111,6 +113,9 @@ public:
     // std::aligned_alloc 强制要求申请的内存大小必须是对齐值的整数倍
     size_t actual_size =
         (size + actual_alignment - 1) & ~(actual_alignment - 1);
+
+    // 输出实际分配大小，供 deallocate 使用
+    out_allocated_size = actual_size;
 
 #if defined(__linux__)
     // Linux: 尝试使用 mmap 分配 2MB 大页
@@ -149,7 +154,7 @@ public:
 
 #else
     // 其他平台不支持大页，直接使用标准分配
-    return std::alig
+    return std::aligned_alloc(actual_alignment, actual_size);
 #endif
   }
 
@@ -237,4 +242,4 @@ private:
   };
 };
 
-} // namespace eph::utils::hugepage
+} // namespace eph::utils

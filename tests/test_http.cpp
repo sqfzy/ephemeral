@@ -16,7 +16,9 @@ using namespace eph::net::http;
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(Http, GenerateWsKeyIsBase64) {
-    std::string key = generate_ws_key();
+    auto result = generate_ws_key();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    std::string key = *result;
     // Base64 of 16 bytes = 24 chars (with padding)
     EXPECT_EQ(key.size(), 24u);
     // All characters should be valid base64
@@ -27,9 +29,11 @@ TEST(Http, GenerateWsKeyIsBase64) {
 }
 
 TEST(Http, GenerateWsKeyProducesUniqueKeys) {
-    std::string k1 = generate_ws_key();
-    std::string k2 = generate_ws_key();
-    EXPECT_NE(k1, k2) << "Two consecutive keys should differ";
+    auto r1 = generate_ws_key();
+    auto r2 = generate_ws_key();
+    ASSERT_TRUE(r1.has_value()) << r1.error();
+    ASSERT_TRUE(r2.has_value()) << r2.error();
+    EXPECT_NE(*r1, *r2) << "Two consecutive keys should differ";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,7 +154,9 @@ TEST(Http, ValidateWsAcceptRejectsEmptyKey) {
 
 TEST(Http, ValidateWsAcceptWithGeneratedKey) {
     // Generate a key, compute expected accept, and verify
-    std::string key = generate_ws_key();
+    auto key_result = generate_ws_key();
+    ASSERT_TRUE(key_result.has_value()) << key_result.error();
+    std::string key = *key_result;
 
     // Manually compute: SHA-1(key + GUID) → base64
     static constexpr std::string_view kMagicGuid =

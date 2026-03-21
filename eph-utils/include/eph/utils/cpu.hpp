@@ -8,7 +8,6 @@
 #include <sys/resource.h>
 #include <thread>
 #include <vector>
-#include <boost/asio.hpp>
 
 // for _mm_pause
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
@@ -202,4 +201,4 @@ inline void cpu_relax() noexcept {
 #endif
 }
 
-} // namespace cpu
+} // namespace eph::utils

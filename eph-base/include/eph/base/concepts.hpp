@@ -15,4 +15,4 @@ concept TrivialData =
     std::is_trivially_copyable_v<T> && 
     std::default_initializable<T>;
 
-} // namespace common::base
+} // namespace eph::base

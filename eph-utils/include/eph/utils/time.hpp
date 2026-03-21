@@ -106,6 +106,10 @@ public:
    *   // 使用更长的校准时间提高精度
    *   TSC::init(std::chrono::milliseconds(500));
    * @endcode
+   *
+   * @warning NOT thread-safe. Must be called exactly once from a single thread
+   *          (e.g. during program initialization) before any concurrent use of
+   *          now()/to_ns()/to_cycles().
    */
   static bool
   init(std::chrono::milliseconds duration = std::chrono::milliseconds(200)) {
@@ -335,4 +339,4 @@ private:
   }
 };
 
-} // namespace eph::utils::time
+} // namespace eph::utils

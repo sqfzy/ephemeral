@@ -12,9 +12,11 @@ using namespace eph::utils;
 TEST(HugePageTest, AllocateDeallocateBasic) {
   bool is_hugepage = false;
   size_t size = 4096;
+  size_t allocated_size = 0;
 
-  void *ptr = HugePage::allocate(size, alignof(std::max_align_t), is_hugepage);
+  void *ptr = HugePage::allocate(size, alignof(std::max_align_t), is_hugepage, allocated_size);
   ASSERT_NE(ptr, nullptr);
+  EXPECT_GE(allocated_size, size);
 
   // 写入数据验证内存可用
   memset(ptr, 0x42, size);
@@ -24,20 +26,22 @@ TEST(HugePageTest, AllocateDeallocateBasic) {
   EXPECT_EQ(bytes[0], 0x42);
   EXPECT_EQ(bytes[size - 1], 0x42);
 
-  HugePage::deallocate(ptr, size, is_hugepage);
+  HugePage::deallocate(ptr, allocated_size, is_hugepage);
 }
 
 TEST(HugePageTest, AllocateLargeMemory) {
   bool is_hugepage = false;
   size_t size = 4 * 1024 * 1024; // 4 MB
+  size_t allocated_size = 0;
 
-  void *ptr = HugePage::allocate(size, alignof(std::max_align_t), is_hugepage);
+  void *ptr = HugePage::allocate(size, alignof(std::max_align_t), is_hugepage, allocated_size);
   ASSERT_NE(ptr, nullptr);
+  EXPECT_GE(allocated_size, size);
 
   // 在 Linux 上，4MB 有可能成功分配大页（2MB 页的倍数）
   // 但不保证，所以不强制检查 is_hugepage 的值
 
-  HugePage::deallocate(ptr, size, is_hugepage);
+  HugePage::deallocate(ptr, allocated_size, is_hugepage);
 }
 
 TEST(HugePageTest, DeallocateNullptr) {
@@ -242,13 +246,14 @@ TEST(HugePageTest, ExceptionSafety) {
 
 TEST(HugePageTest, ZeroSizeAllocation) {
   bool is_hugepage = false;
+  size_t allocated_size = 0;
 
   // 零大小分配的行为取决于平台
   // 不应该崩溃
-  void *ptr = HugePage::allocate(0, alignof(std::max_align_t), is_hugepage);
+  void *ptr = HugePage::allocate(0, alignof(std::max_align_t), is_hugepage, allocated_size);
 
   if (ptr) {
-    HugePage::deallocate(ptr, 0, is_hugepage);
+    HugePage::deallocate(ptr, allocated_size, is_hugepage);
   }
 
   SUCCEED();
