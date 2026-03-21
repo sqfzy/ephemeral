@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <concepts>
 #include <functional>
 #include <memory>
@@ -314,6 +315,56 @@ class alignas(Align<T>) EvictingQueue {
     }
 
     // ===========================================================================
+    // Reader 带超时操作
+    // ===========================================================================
+
+    /**
+     * @brief 带超时的零拷贝读取最新数据
+     *
+     * 自旋等待直到有新数据可用或超时。适用于非 CPU-pinned 线程。
+     *
+     * @param visitor 访问数据的回调 void(const T&)
+     * @param timeout 最大等待时间
+     * @return true 读取成功; false 超时
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_consume_latest_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_consume_latest(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_consume_latest(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    /**
+     * @brief 带超时的值拷贝读取
+     * @return true 读取成功; false 超时
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_pop_latest_for(
+        T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
+        return try_consume_latest_for(
+            [&out](const T& data) { out = data; }, timeout);
+    }
+
+    /**
+     * @brief 带超时的读取并返回可选值
+     * @return std::optional 包含数据（成功时）或空（超时时）
+     */
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<T> try_pop_latest_for(
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        std::optional<T> res;
+        (void)try_consume_latest_for(
+            [&res](const T& data) { res.emplace(data); }, timeout);
+        return res;
+    }
+
+    // ===========================================================================
     // 状态查询
     // ===========================================================================
 
@@ -498,6 +549,39 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         T out;
         pop_latest(out);
         return out;
+    }
+
+    // ===========================================================================
+    // Reader 带超时操作
+    // ===========================================================================
+
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_consume_latest_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_consume_latest(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_consume_latest(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_pop_latest_for(
+        T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
+        return try_consume_latest_for(
+            [&out](const T& data) { out = data; }, timeout);
+    }
+
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<T> try_pop_latest_for(
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        std::optional<T> res;
+        (void)try_consume_latest_for(
+            [&res](const T& data) { res.emplace(data); }, timeout);
+        return res;
     }
 
     // ===========================================================================

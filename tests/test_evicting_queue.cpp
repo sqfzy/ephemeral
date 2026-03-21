@@ -384,6 +384,74 @@ TEST(EvictingQueueTest, PushNBatchWriteFromSpan) {
     EXPECT_EQ(out->seq, 3u);
 }
 
+// ===========================================================================
+// Timed operations
+// ===========================================================================
+
+TEST(EvictingQueueTimed, TryPopLatestForSucceedsWithData) {
+    EvictingQueue<TestData, 4> queue;
+    TestData d{.seq = 42};
+    queue.push(d);
+    auto val = queue.try_pop_latest_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 42u);
+}
+
+TEST(EvictingQueueTimed, TryPopLatestForTimesOutOnEmpty) {
+    EvictingQueue<TestData, 4> queue;
+    auto start = std::chrono::steady_clock::now();
+    auto val = queue.try_pop_latest_for(std::chrono::milliseconds(20));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_FALSE(val.has_value());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
+TEST(EvictingQueueTimed, TryPopLatestForSucceedsAfterProducerWrites) {
+    EvictingQueue<TestData, 4> queue;
+
+    std::thread producer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        TestData d{.seq = 88};
+        queue.push(d);
+    });
+
+    TestData out{};
+    EXPECT_TRUE(queue.try_pop_latest_for(out, std::chrono::milliseconds(200)));
+    EXPECT_EQ(out.seq, 88u);
+    producer.join();
+}
+
+TEST(EvictingQueueTimed, TryConsumeLatestForVisitorPattern) {
+    EvictingQueue<TestData, 4> queue;
+    TestData d{.seq = 55};
+    queue.push(d);
+
+    uint32_t captured = 0;
+    bool ok = queue.try_consume_latest_for(
+        [&](const TestData& data) { captured = data.seq; },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(captured, 55u);
+}
+
+TEST(EvictingQueueTimed, SingleSlotSpecializationTimedOp) {
+    EvictingQueue<TestData, 1> queue;
+    TestData d{.seq = 77};
+    queue.push(d);
+    auto val = queue.try_pop_latest_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 77u);
+}
+
+TEST(EvictingQueueTimed, SingleSlotTimesOutOnEmpty) {
+    EvictingQueue<TestData, 1> queue;
+    auto start = std::chrono::steady_clock::now();
+    auto val = queue.try_pop_latest_for(std::chrono::milliseconds(20));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_FALSE(val.has_value());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(15));
+}
+
 TEST(EvictingQueueTest, SizeApproxCappedAtCapacity) {
     EvictingQueue<TestData, 2> queue;
 
