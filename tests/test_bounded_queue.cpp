@@ -383,3 +383,88 @@ TYPED_TEST(BoundedQueueTest, TryProduceN_FillsExactCapacity) {
         EXPECT_EQ(val->seq, static_cast<uint32_t>(i));
     }
 }
+
+// ===========================================================================
+// Blocking batch operations: push_n / produce_n
+// ===========================================================================
+
+TYPED_TEST(BoundedQueueTest, PushN_BlockingBatchWrite) {
+    TypeParam queue;
+    const size_t n = std::min(size_t{4}, queue.capacity());
+
+    std::vector<BoundedTestData> batch(n);
+    for (size_t i = 0; i < n; ++i) {
+        batch[i].seq = static_cast<uint32_t>(i + 100);
+    }
+
+    // push_n should succeed immediately on empty queue
+    queue.push_n(std::span<const BoundedTestData>{batch});
+
+    // Verify all elements
+    for (size_t i = 0; i < n; ++i) {
+        auto val = queue.try_pop();
+        ASSERT_TRUE(val.has_value());
+        EXPECT_EQ(val->seq, static_cast<uint32_t>(i + 100));
+    }
+    EXPECT_TRUE(queue.empty());
+}
+
+TYPED_TEST(BoundedQueueTest, ProduceN_BlockingBatchVisitor) {
+    TypeParam queue;
+    const size_t n = std::min(size_t{4}, queue.capacity());
+
+    queue.produce_n(n, [](BoundedTestData& slot, size_t i) {
+        slot.seq = static_cast<uint32_t>(i + 200);
+    });
+
+    for (size_t i = 0; i < n; ++i) {
+        auto val = queue.try_pop();
+        ASSERT_TRUE(val.has_value());
+        EXPECT_EQ(val->seq, static_cast<uint32_t>(i + 200));
+    }
+    EXPECT_TRUE(queue.empty());
+}
+
+TEST(BoundedQueueBlocking, PushN_SpinsUntilSpaceAvailable) {
+    BoundedQueue<BoundedTestData, 4> queue;
+
+    // Fill queue to capacity
+    for (uint32_t i = 0; i < 4; ++i) {
+        BoundedTestData d;
+        d.seq = i;
+        queue.push(d);
+    }
+    ASSERT_TRUE(queue.full());
+
+    std::vector<BoundedTestData> batch(2);
+    batch[0].seq = 10;
+    batch[1].seq = 11;
+
+    // push_n should block until consumer frees space
+    std::atomic<bool> done{false};
+    std::thread writer([&] {
+        queue.push_n(std::span<const BoundedTestData>{batch});
+        done.store(true, std::memory_order_release);
+    });
+
+    // Small delay to let writer spin
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    EXPECT_FALSE(done.load(std::memory_order_acquire));
+
+    // Free 2 slots so push_n can complete
+    (void)queue.pop();
+    (void)queue.pop();
+
+    writer.join();
+    EXPECT_TRUE(done.load(std::memory_order_acquire));
+
+    // Drain remaining elements: 2 old + 2 new
+    auto v1 = queue.pop(); // old[2]
+    auto v2 = queue.pop(); // old[3]
+    auto v3 = queue.pop(); // new[0]
+    auto v4 = queue.pop(); // new[1]
+    EXPECT_EQ(v1.seq, 2u);
+    EXPECT_EQ(v2.seq, 3u);
+    EXPECT_EQ(v3.seq, 10u);
+    EXPECT_EQ(v4.seq, 11u);
+}

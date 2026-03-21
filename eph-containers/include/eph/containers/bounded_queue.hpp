@@ -255,6 +255,37 @@ class BoundedQueue {
         }
     }
 
+    /**
+     * @brief 阻塞式批量写入 (全部或全不语义)
+     *
+     * 自旋等待直到有足够连续空间容纳所有元素，然后以单次
+     * atomic store 原子发布。适用于 CPU-pinned 线程间短暂拥塞。
+     *
+     * @param data 待写入的元素序列
+     */
+    void push_n(std::span<const T> data) noexcept {
+        while (!try_push_n(data)) {
+            cpu_relax();
+        }
+    }
+
+    /**
+     * @brief 阻塞式批量零拷贝写入 (Visitor 模式)
+     *
+     * 自旋等待直到有足够连续空间，然后依次对每个槽位调用
+     * writer(slot, index)，最后以单次 release store 发布。
+     *
+     * @param n      要写入的元素个数
+     * @param writer 回调 void(T& slot, size_t index)，index 为 0..n-1
+     */
+    template <typename F>
+        requires std::invocable<F, T&, size_t>
+    void produce_n(size_t n, F&& writer) noexcept {
+        while (!try_produce_n(n, std::forward<F>(writer))) {
+            cpu_relax();
+        }
+    }
+
     // ===========================================================================
     // Reader 操作
     // ===========================================================================
