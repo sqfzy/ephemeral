@@ -168,3 +168,91 @@ TYPED_TEST(EvictingQueueTest, MultiThreadStress) {
     EXPECT_EQ(last_received, total_messages);
     std::println("Multi-thread stress test done. Processed {} out of {} messages.", received_count, total_messages);
 }
+
+// 5. 空队列读取应返回 false / nullopt
+TYPED_TEST(EvictingQueueTest, EmptyQueueReturnsEmpty) {
+    TypeParam queue;
+
+    // try_pop_latest on fresh queue
+    auto res = queue.try_pop_latest();
+    EXPECT_FALSE(res.has_value());
+
+    // try_consume_latest should also fail
+    bool consumed = queue.try_consume_latest([](const TestData&) {
+        FAIL() << "Should not be called on empty queue";
+    });
+    EXPECT_FALSE(consumed);
+}
+
+// 6. 连续读取无新数据时持续返回 false
+TYPED_TEST(EvictingQueueTest, RepeatedReadWithoutNewDataReturnsFalse) {
+    TypeParam queue;
+
+    TestData data;
+    data.seq = 1;
+    data.payload.fill(1);
+    queue.push(data);
+
+    // First read succeeds
+    auto res1 = queue.try_pop_latest();
+    ASSERT_TRUE(res1.has_value());
+    EXPECT_EQ(res1->seq, 1u);
+
+    // Subsequent reads without new push return false
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FALSE(queue.try_pop_latest().has_value());
+    }
+
+    // After another push, read should succeed again
+    data.seq = 2;
+    data.payload.fill(2);
+    queue.push(data);
+
+    auto res2 = queue.try_pop_latest();
+    ASSERT_TRUE(res2.has_value());
+    EXPECT_EQ(res2->seq, 2u);
+}
+
+// 7. Capacity=2 边界：推入 2 个后覆盖第 1 个
+TEST(EvictingQueueCapacity2, OverwriteAndReadLatest) {
+    EvictingQueue<TestData, 2> queue;
+
+    TestData d1, d2, d3;
+    d1.seq = 1; d1.payload.fill(1);
+    d2.seq = 2; d2.payload.fill(2);
+    d3.seq = 3; d3.payload.fill(3);
+
+    queue.push(d1);
+    queue.push(d2);
+
+    // Both slots occupied, read latest = d2
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 2u);
+
+    // Now push d3, which overwrites the oldest slot
+    queue.push(d3);
+    auto res2 = queue.try_pop_latest();
+    ASSERT_TRUE(res2.has_value());
+    EXPECT_EQ(res2->seq, 3u);
+    EXPECT_EQ(res2->payload[0], 3u);
+}
+
+// 8. Rapid overwrite: many pushes between reads, last one always wins
+TYPED_TEST(EvictingQueueTest, RapidOverwriteLatestWins) {
+    TypeParam queue;
+
+    // Push 1000 values without reading
+    for (uint32_t i = 1; i <= 1000; ++i) {
+        TestData data;
+        data.seq = i;
+        data.payload.fill(i);
+        queue.push(data);
+    }
+
+    // Only the latest should be returned
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->seq, 1000u);
+    EXPECT_EQ(res->payload[0], 1000u);
+}

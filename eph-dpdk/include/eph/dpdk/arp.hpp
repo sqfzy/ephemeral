@@ -71,7 +71,7 @@ namespace detail {
 inline std::shared_ptr<spdlog::logger> arp_logger() {
     static auto l = [] {
         auto lg = spdlog::stdout_color_mt("dpdk.arp");
-        lg->set_level(spdlog::level::trace);
+        // Inherit level from spdlog global default
         return lg;
     }();
     return l;

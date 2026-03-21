@@ -52,7 +52,7 @@ inline std::string base64_encode(const uint8_t* data, size_t len) {
 inline std::shared_ptr<spdlog::logger> http_logger() {
     static auto l = [] {
         auto lg = spdlog::stdout_color_mt("net.http");
-        lg->set_level(spdlog::level::trace);
+        // Inherit level from spdlog global default
         return lg;
     }();
     return l;
@@ -197,9 +197,12 @@ parse_upgrade_response(const char* data, size_t len) {
         auto name = line.substr(0, colon);
         auto value = line.substr(colon + 1);
 
-        // Trim leading whitespace from value
-        while (!value.empty() && value.front() == ' ') {
+        // Trim leading and trailing OWS (RFC 7230 §3.2.6: SP / HTAB)
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
             value.remove_prefix(1);
+        }
+        while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) {
+            value.remove_suffix(1);
         }
 
         if (detail::iequals(name, "Upgrade")) {

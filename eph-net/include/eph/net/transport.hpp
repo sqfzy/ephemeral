@@ -141,7 +141,7 @@ struct alignas(eph::base::CACHE_LINE_SIZE) RxMessage {
 inline std::shared_ptr<spdlog::logger> transport_logger() {
     static auto l = [] {
         auto lg = spdlog::stdout_color_mt("net.transport");
-        lg->set_level(spdlog::level::trace);
+        // Inherit level from spdlog global default
         return lg;
     }();
     return l;
@@ -326,10 +326,14 @@ public:
 
         // Send WebSocket Close frame after threads have exited (no race)
         if (was_running && crypto_ && tcp_ && tcp_->is_established()) {
-            uint8_t close_buf[128];
+            // Close frame: header (max 14) + payload (max 125) = 139 bytes,
+            // plus 1 byte for encrypt()'s temporary content type append.
+            uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
             size_t close_len = ws::build_close_frame(
                 close_buf, ws::close_code::kNormal, "client shutdown");
-            uint8_t tls_buf[256];
+            // TLS output: record header + ciphertext + content type + auth tag
+            uint8_t tls_buf[TlsRecordCrypto::encrypted_size(
+                ws::kMaxFrameHeaderLen + 125)]{};
             uint16_t tls_len = crypto_->encrypt(
                 close_buf, static_cast<uint16_t>(close_len), tls_buf);
             if (tls_len > 0) {
@@ -501,8 +505,7 @@ private:
         reconnecting_.store(true, std::memory_order_release);
 
         // Drain and discard TX queue (stale market data)
-        TxMsg discard;
-        while (tx_queue_.try_consume([&](TxMsg& m) { discard = m; })) {}
+        while (tx_queue_.try_consume([](TxMsg&) {})) {}
 
         for (int attempt = 1; attempt <= max_attempts; ++attempt) {
             SPDLOG_LOGGER_INFO(log,
@@ -673,7 +676,10 @@ private:
         while (running_.load(std::memory_order_acquire)) {
             // Spin-wait while RX thread is reconnecting to avoid
             // touching crypto_/tcp_ which are being replaced.
+            // Also re-check running_ so stop() can terminate the TX thread
+            // even during a prolonged reconnection attempt.
             if (reconnecting_.load(std::memory_order_acquire)) [[unlikely]] {
+                if (!running_.load(std::memory_order_acquire)) break;
                 eph::utils::cpu_relax();
                 continue;
             }
@@ -697,7 +703,10 @@ private:
                 if (!got) break;
             }
 
-            if (n == 0) continue;
+            if (n == 0) {
+                eph::utils::cpu_relax();
+                continue;
+            }
 
             // WS encode -> TLS encrypt for each message in batch
             for (int i = 0; i < n; ++i) {

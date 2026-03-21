@@ -3,6 +3,8 @@
 #include <memory>
 #include <utility>
 
+#include <spdlog/spdlog.h>
+
 #if defined(__linux__)
 #include <sys/mman.h>
 #include <unistd.h>
@@ -130,7 +132,8 @@ public:
     }
 
     // 大页分配失败，回退到普通内存
-    // 使用 aligned_alloc 保证对齐，避免性能问题
+    SPDLOG_WARN("Hugepage allocation failed for {} bytes, falling back to aligned_alloc",
+                actual_size);
     return std::aligned_alloc(actual_alignment, actual_size);
 
 #elif defined(_WIN32)

@@ -87,7 +87,7 @@ inline uint16_t clamp_desc(uint16_t requested,
 inline std::shared_ptr<spdlog::logger> platform_logger() {
     static auto l = [] {
         auto lg = spdlog::stdout_color_mt("dpdk.platform");
-        lg->set_level(spdlog::level::trace);
+        // Inherit level from spdlog global default
         return lg;
     }();
     return l;
