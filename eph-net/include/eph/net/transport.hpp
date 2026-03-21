@@ -282,6 +282,11 @@ public:
         return send(data.data(), data.size(), opcode);
     }
 
+    /// Send data as a WebSocket binary frame (convenience, explicit intent).
+    int send_binary(const void* data, size_t len) noexcept {
+        return send(data, len, ws::opcode::kBinary);
+    }
+
     /// Send data as a WebSocket text frame (convenience for JSON APIs).
     int send_text(const void* data, size_t len) noexcept {
         return send(data, len, ws::opcode::kText);
