@@ -47,6 +47,8 @@ template <typename T, size_t Capacity>
     requires TrivialData<T>
 class BoundedQueue {
     static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
+    static_assert(std::atomic<size_t>::is_always_lock_free,
+                  "BoundedQueue requires lock-free std::atomic<size_t>");
     static constexpr size_t mask_ = Capacity - 1;
 
    private:

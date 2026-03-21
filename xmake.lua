@@ -32,6 +32,7 @@ target("eph-utils")
     add_includedirs("eph-utils/include", { public = true })
     add_headerfiles("eph-utils/include/(eph/utils/**.hpp)")
     add_deps("eph-base", { public = true })
+    add_packages("spdlog", { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 

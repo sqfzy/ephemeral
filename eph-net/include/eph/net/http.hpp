@@ -163,8 +163,16 @@ parse_upgrade_response(const char* data, size_t len) {
         (space2 != std::string_view::npos) ? space2 - code_start : std::string_view::npos);
 
     result.status_code = 0;
-    std::from_chars(code_str.data(), code_str.data() + code_str.size(),
-                    result.status_code);
+    auto [ptr, ec] = std::from_chars(
+        code_str.data(), code_str.data() + code_str.size(),
+        result.status_code);
+    if (ec != std::errc{}) {
+        SPDLOG_LOGGER_WARN(log,
+            "Failed to parse HTTP status code from '{}'",
+            std::string(code_str));
+        return std::unexpected(std::format(
+            "Malformed HTTP status code: '{}'", code_str));
+    }
 
     SPDLOG_LOGGER_DEBUG(log, "HTTP response status: {}", result.status_code);
 

@@ -57,6 +57,8 @@ template <typename T, size_t Capacity = 8>
 class alignas(Align<T>) EvictingQueue {
     static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
     static_assert(Capacity > 1, "Primary template requires Capacity > 1");
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,
+                  "EvictingQueue requires lock-free std::atomic<uint64_t>");
 
    private:
     // ---- seq 编码/解码辅助 ----

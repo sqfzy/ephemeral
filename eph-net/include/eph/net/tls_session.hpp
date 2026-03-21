@@ -206,6 +206,8 @@ class TlsSession {
             while (std::chrono::steady_clock::now() < deadline) {
                 int n = poll_rx();
                 if (n != 0) return n;  // Got data (>0) or error (-1)
+                // Reduce CPU waste while waiting for handshake data
+                std::this_thread::yield();
             }
             return 0; // Timeout
         }

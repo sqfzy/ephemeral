@@ -6,8 +6,12 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
+
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 
 // for _mm_pause
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
@@ -16,6 +20,19 @@
 #endif
 
 namespace eph::utils {
+
+namespace detail {
+
+inline std::shared_ptr<spdlog::logger> cpu_logger() {
+    static auto l = [] {
+        auto lg = spdlog::stdout_color_mt("utils.cpu");
+        lg->set_level(spdlog::level::trace);
+        return lg;
+    }();
+    return l;
+}
+
+} // namespace detail
 
 /**
  * @brief CPU 拓扑和亲和性管理工具
@@ -68,7 +85,10 @@ struct CpuTopologyInfo {
  * @note 其他平台: 返回简化拓扑（假设单 Socket）
  */
 inline std::vector<CpuTopologyInfo> get_cpu_topology() {
+  auto log = detail::cpu_logger();
   std::vector<CpuTopologyInfo> cpus;
+
+  SPDLOG_LOGGER_DEBUG(log, "Detecting CPU topology");
 
 #if defined(__linux__)
   // /proc/cpuinfo format: "key\t: value\n" per field, blank lines between CPUs.
@@ -127,11 +147,15 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
   auto hw_threads = std::thread::hardware_concurrency();
   // hardware_concurrency() may return 0 if the value is not computable
   if (hw_threads != 0 && cpus.size() != hw_threads) {
+    SPDLOG_LOGGER_ERROR(log,
+        "CPU topology mismatch: parsed {} CPUs, expected {}",
+        cpus.size(), hw_threads);
     throw std::runtime_error("CPU topology detection failed: parsed " +
         std::to_string(cpus.size()) + " CPUs, expected " +
         std::to_string(hw_threads));
   }
   if (cpus.empty()) {
+    SPDLOG_LOGGER_ERROR(log, "No CPUs found in /proc/cpuinfo");
     throw std::runtime_error("CPU topology detection failed: no CPUs found");
   }
 
@@ -140,11 +164,13 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
             [](auto &a, auto &b) { return a.hw_thread_id < b.hw_thread_id; });
 #else
   // macOS/Windows 回退方案
+  SPDLOG_LOGGER_DEBUG(log, "Using simplified topology (non-Linux)");
   for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) {
     cpus.push_back({0, i, i});
   }
 #endif
 
+  SPDLOG_LOGGER_INFO(log, "Detected {} CPUs", cpus.size());
   return cpus;
 }
 
@@ -163,14 +189,27 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
  * @warning 过度使用可能导致负载不均衡
  */
 inline void set_thread_affinity(unsigned cpu_id) {
+  auto log = detail::cpu_logger();
 #if defined(__linux__)
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   CPU_SET(cpu_id, &cpuset);
-  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  if (ret != 0) {
+    SPDLOG_LOGGER_ERROR(log,
+        "pthread_setaffinity_np failed for cpu_id={}: {}",
+        cpu_id, std::generic_category().message(ret));
+  } else {
+    SPDLOG_LOGGER_DEBUG(log, "Thread affinity set to cpu_id={}", cpu_id);
+  }
 #elif defined(__APPLE__)
   // macOS 不支持硬亲和性，只能设置 QoS
+  SPDLOG_LOGGER_DEBUG(log,
+      "macOS: setting QoS instead of hard affinity (cpu_id={})", cpu_id);
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#else
+  SPDLOG_LOGGER_WARN(log,
+      "Thread affinity not supported on this platform (cpu_id={})", cpu_id);
 #endif
 }
 
@@ -186,6 +225,7 @@ inline void set_thread_affinity(unsigned cpu_id) {
  * @note 实际频率可能因睿频/节能而变化，建议使用 TSC 校准
  */
 inline double get_cpu_base_frequency() {
+  auto log = detail::cpu_logger();
 #if defined(__linux__)
   // Parse "model name" line, looking for "@ X.XX GHz" pattern.
   // Example: "model name\t: Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz"
@@ -209,8 +249,16 @@ inline double get_cpu_base_frequency() {
     // Verify "GHz" follows (skip whitespace)
     std::string_view rest(ptr, line.data() + line.size() - ptr);
     while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
-    if (rest.starts_with("GHz")) return freq;
+    if (rest.starts_with("GHz")) {
+      SPDLOG_LOGGER_DEBUG(log, "CPU base frequency: {:.2f} GHz", freq);
+      return freq;
+    }
   }
+  SPDLOG_LOGGER_WARN(log,
+      "Could not parse CPU frequency from /proc/cpuinfo, using fallback");
+#else
+  SPDLOG_LOGGER_DEBUG(log,
+      "CPU frequency detection not available on this platform");
 #endif
   return 1.0; // 回退值
 }

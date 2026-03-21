@@ -6,9 +6,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <format>
 #include <optional>
-#include <print>
+
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -20,6 +21,19 @@
 #endif
 
 namespace eph::utils {
+
+namespace detail {
+
+inline std::shared_ptr<spdlog::logger> tsc_logger() {
+    static auto l = [] {
+        auto lg = spdlog::stdout_color_mt("utils.tsc");
+        lg->set_level(spdlog::level::trace);
+        return lg;
+    }();
+    return l;
+}
+
+} // namespace detail
 
 /**
  * @brief 高精度时间测量工具
@@ -115,7 +129,8 @@ public:
   init(std::chrono::milliseconds duration = std::chrono::milliseconds(200)) {
     using namespace std::chrono;
 
-    std::println("[TSC] Calibrating... ");
+    auto log = detail::tsc_logger();
+    SPDLOG_LOGGER_INFO(log, "Calibrating TSC...");
 
     // === 1. 检查 TSC 可靠性 ===
     check_tsc_reliability();
@@ -143,7 +158,7 @@ public:
       auto t2 = steady_clock::now();
 
       if (c2 <= c1) {
-        std::println(stderr, "  ✗ TSC went backwards (sample {})", i + 1);
+        SPDLOG_LOGGER_ERROR(log, "TSC went backwards (sample {})", i + 1);
         return false;
       }
 
@@ -151,7 +166,7 @@ public:
       double cycles_elapsed = static_cast<double>(c2 - c1);
 
       if (cycles_elapsed < 1.0 || ns_elapsed < 1.0) {
-        std::println(stderr, "  ✗ Invalid calibration sample {}", i + 1);
+        SPDLOG_LOGGER_ERROR(log, "Invalid calibration sample {}", i + 1);
         return false;
       }
 
@@ -165,10 +180,9 @@ public:
     // === 4. 合理性检查 ===
     double freq_ghz = 1.0 / ns_per_cycle_;
     if (freq_ghz < 0.5 || freq_ghz > 10.0) {
-      std::println(stderr,
-                   "  ✗ Suspicious CPU frequency: {:.2f} GHz (expected "
-                   "0.5-10 GHz)",
-                   freq_ghz);
+      SPDLOG_LOGGER_ERROR(log,
+          "Suspicious CPU frequency: {:.2f} GHz (expected 0.5-10 GHz)",
+          freq_ghz);
       return false;
     }
 
@@ -188,17 +202,17 @@ public:
     double cv = stddev / mean; // 变异系数
 
     if (cv > 0.01) { // 超过 1% 的变异被认为不稳定
-      std::println(stderr,
-                   "  ⚠️  High calibration variance (CV={:.2f}%), TSC may be "
-                   "unstable",
-                   cv * 100);
+      SPDLOG_LOGGER_WARN(log,
+          "High calibration variance (CV={:.2f}%), TSC may be unstable",
+          cv * 100);
     }
 
     // === 5. 标记为已初始化 ===
     initialized_ = true;
 
-    std::println("  ✓ CPU Frequency: {:.2f} GHz (±{:.2f}%)", freq_ghz,
-                 cv * 100);
+    SPDLOG_LOGGER_INFO(log,
+        "TSC calibrated: CPU frequency {:.2f} GHz (CV={:.2f}%)",
+        freq_ghz, cv * 100);
 
     return true;
   }
@@ -293,6 +307,7 @@ private:
    * - tsc_reliable: 内核标记 TSC 为不可靠
    */
   static void check_tsc_reliability() noexcept {
+    auto log = detail::tsc_logger();
 #if defined(__linux__) && (defined(__x86_64__) || defined(_M_X64))
     bool has_constant_tsc = false;
     bool has_nonstop_tsc = false;
@@ -311,30 +326,26 @@ private:
       }
       fclose(fp);
 
-      // 打印警告
       if (!has_constant_tsc) {
-        std::println(
-            stderr,
-            "  ⚠️  CPU does not support constant_tsc (frequency scaling may "
-            "affect accuracy)");
+        SPDLOG_LOGGER_WARN(log,
+            "CPU does not support constant_tsc "
+            "(frequency scaling may affect accuracy)");
       }
       if (!has_nonstop_tsc) {
-        std::println(
-            stderr,
-            "  ⚠️  CPU does not support nonstop_tsc (C-states may affect "
-            "accuracy)");
+        SPDLOG_LOGGER_WARN(log,
+            "CPU does not support nonstop_tsc "
+            "(C-states may affect accuracy)");
       }
       if (has_tsc_reliable) {
-        std::println("  ✓ TSC marked as reliable by kernel");
+        SPDLOG_LOGGER_DEBUG(log, "TSC marked as reliable by kernel");
       }
     }
 #elif defined(__aarch64__) || defined(_M_ARM64)
-    // ARM64 的 cntvct_el0 通常是可靠的
-    std::println("  ✓ Using ARM64 generic timer (cntvct_el0)");
+    // ARM64 cntvct_el0 is generally reliable
+    SPDLOG_LOGGER_DEBUG(log, "Using ARM64 generic timer (cntvct_el0)");
 #else
-    std::println(stderr,
-                 "  ⚠️  Hardware TSC not available, using std::chrono "
-                 "(higher overhead)");
+    SPDLOG_LOGGER_WARN(log,
+        "Hardware TSC not available, using std::chrono (higher overhead)");
 #endif
   }
 };
