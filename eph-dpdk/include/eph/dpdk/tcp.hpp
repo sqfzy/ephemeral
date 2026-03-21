@@ -344,20 +344,41 @@ public:
 
                 uint32_t seg_seq = parsed.seq();
 
-                // Out-of-order detection (simplified: no reassembly)
+                // Handle out-of-order: buffer the segment for later delivery.
+                // af_packet commonly delivers segments out of order within a burst.
                 if (seg_seq != rcv_nxt_ && parsed.payload_len > 0) {
-                    SPDLOG_LOGGER_DEBUG(log,
-                        "Out-of-order: expected={}, got={}", rcv_nxt_, seg_seq);
                     stats_.out_of_order++;
+                    if (seq_after(seg_seq, rcv_nxt_) &&
+                        reorder_count_ < kReorderSlots &&
+                        parsed.payload_len <= net::kDefaultMss) {
+                        // Future segment — buffer it
+                        auto& entry = reorder_buf_[reorder_count_++];
+                        entry.seq = seg_seq;
+                        entry.len = parsed.payload_len;
+                        std::memcpy(entry.data, parsed.payload, parsed.payload_len);
+                        SPDLOG_LOGGER_DEBUG(log,
+                            "Buffered out-of-order: expected={}, got={}, buffered={}",
+                            rcv_nxt_, seg_seq, reorder_count_);
+                    } else if (!seq_after(seg_seq, rcv_nxt_)) {
+                        // Duplicate/past segment — just drop
+                        SPDLOG_LOGGER_DEBUG(log,
+                            "Dropping duplicate: expected={}, got={}", rcv_nxt_, seg_seq);
+                    } else {
+                        // Reorder buffer full — genuine loss
+                        SPDLOG_LOGGER_WARN(log,
+                            "Reorder buffer full ({} slots): expected={}, got={}",
+                            kReorderSlots, rcv_nxt_, seg_seq);
+                        rte_pktmbuf_free(pkts[i]);
+                        free_remaining(pkts, i + 1, nb_pkts);
+                        return std::unexpected(std::format(
+                            "Packet loss detected (reorder buffer full): expected seq {}, got {}",
+                            rcv_nxt_, seg_seq));
+                    }
                     rte_pktmbuf_free(pkts[i]);
-                    // Out-of-order = potential packet loss → signal error
-                    free_remaining(pkts, i + 1, nb_pkts);
-                    return std::unexpected(std::format(
-                        "Packet loss detected: expected seq {}, got {}",
-                        rcv_nxt_, seg_seq));
+                    continue;
                 }
 
-                // Process data payload
+                // Process in-order data payload
                 if (parsed.payload_len > 0) {
                     std::invoke(std::forward<F>(data_callback),
                                 parsed.payload, parsed.payload_len);
@@ -365,6 +386,10 @@ public:
                     stats_.rx_bytes += parsed.payload_len;
                     data_count++;
                     need_ack = true;
+
+                    // Drain any buffered segments that are now in-order
+                    data_count += drain_reorder_buf(
+                        std::forward<F>(data_callback));
                 }
             }
 
@@ -509,6 +534,43 @@ public:
     }
 
 private:
+    // ── Reorder buffer ──
+    // Buffers out-of-order segments (payload copied from mbuf) so they can be
+    // delivered once the gap is filled. Avoids treating normal reordering
+    // (common with af_packet) as packet loss.
+    static constexpr size_t kReorderSlots = 8;
+    struct ReorderEntry {
+        uint32_t seq = 0;
+        uint16_t len = 0;
+        uint8_t  data[net::kDefaultMss]{};
+    };
+
+    /// Try to deliver buffered segments that are now in-order.
+    /// @return Number of segments delivered
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, uint16_t>
+    uint16_t drain_reorder_buf(F&& cb) {
+        uint16_t delivered = 0;
+        bool progress = true;
+        while (progress) {
+            progress = false;
+            for (uint8_t i = 0; i < reorder_count_; ++i) {
+                if (reorder_buf_[i].seq == rcv_nxt_) {
+                    std::invoke(std::forward<F>(cb),
+                                reorder_buf_[i].data, reorder_buf_[i].len);
+                    rcv_nxt_ += reorder_buf_[i].len;
+                    stats_.rx_bytes += reorder_buf_[i].len;
+                    delivered++;
+                    // Remove by swapping with last
+                    reorder_buf_[i] = reorder_buf_[--reorder_count_];
+                    progress = true;
+                    break; // Restart scan (indices shifted)
+                }
+            }
+        }
+        return delivered;
+    }
+
     TcpConfig           config_;
     rte_mempool*        pool_;
     TcpState            state_;
@@ -520,6 +582,9 @@ private:
     uint32_t rcv_nxt_;    // RCV.NXT: next expected sequence number from peer
     uint16_t rcv_wnd_;    // RCV.WND: our receive window advertisement
     uint16_t snd_wnd_;    // SND.WND: peer's receive window
+
+    ReorderEntry reorder_buf_[kReorderSlots]{};
+    uint8_t      reorder_count_ = 0;
 
     Stats stats_{};
 
