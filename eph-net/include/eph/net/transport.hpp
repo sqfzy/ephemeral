@@ -25,9 +25,12 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include <cerrno>
 #include <sched.h>
@@ -292,6 +295,16 @@ public:
         return send(data, len, ws::opcode::kText);
     }
 
+    /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
+    int send_text(std::string_view sv) noexcept {
+        return send(sv.data(), sv.size(), ws::opcode::kText);
+    }
+
+    /// Send a string_view as a WebSocket binary frame.
+    int send_binary(std::string_view sv) noexcept {
+        return send(sv.data(), sv.size(), ws::opcode::kBinary);
+    }
+
     // -----------------------------------------------------------------------
     // Receive API (application thread)
     // -----------------------------------------------------------------------
@@ -309,6 +322,17 @@ public:
         return rx_queue_.try_consume([&](RxMsg& msg) {
             std::invoke(std::forward<F>(callback), msg.data, msg.len);
         });
+    }
+
+    /// Try to receive a message as a copied byte vector (non-blocking).
+    /// Returns the payload bytes, or nullopt if the queue is empty.
+    /// Prefer the callback variant for zero-copy hot paths.
+    [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv() {
+        std::optional<std::vector<uint8_t>> result;
+        rx_queue_.try_consume([&](RxMsg& msg) {
+            result.emplace(msg.data, msg.data + msg.len);
+        });
+        return result;
     }
 
     // -----------------------------------------------------------------------
