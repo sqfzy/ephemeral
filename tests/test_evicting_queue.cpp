@@ -356,6 +356,34 @@ TEST(EvictingQueueTest, SizeApproxReflectsUnreadEntries) {
     EXPECT_TRUE(queue.empty());
 }
 
+TEST(EvictingQueueTest, ProduceNBatchWrite) {
+    EvictingQueue<TestData, 8> queue;
+
+    // Batch-write 3 items using visitor pattern
+    queue.produce_n(3, [](TestData& slot, size_t i) {
+        slot.seq = static_cast<uint32_t>(i + 10);
+    });
+
+    // Latest should be the last written (index 2, seq=12)
+    auto out = queue.try_pop_latest();
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->seq, 12u);
+}
+
+TEST(EvictingQueueTest, PushNBatchWriteFromSpan) {
+    EvictingQueue<TestData, 8> queue;
+
+    TestData items[3] = {};
+    items[0].seq = 1;
+    items[1].seq = 2;
+    items[2].seq = 3;
+    queue.push_n(std::span<const TestData>(items, 3));
+
+    auto out = queue.try_pop_latest();
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->seq, 3u);
+}
+
 TEST(EvictingQueueTest, SizeApproxCappedAtCapacity) {
     EvictingQueue<TestData, 2> queue;
 
