@@ -79,6 +79,17 @@ inline constexpr char OrderCancelReject    = '9';
 inline constexpr char MarketDataRequest    = 'V';
 inline constexpr char MarketDataSnapshot   = 'W';
 inline constexpr char MarketDataIncRefresh = 'X';
+
+// Multi-character MsgType values (FIX 4.4+)
+inline constexpr std::string_view TradeCaptureReport       = "AE";
+inline constexpr std::string_view TradeCaptureReportAck    = "AR";
+inline constexpr std::string_view SecurityDefinition       = "d";
+inline constexpr std::string_view SecurityStatus           = "f";
+inline constexpr std::string_view PositionReport           = "AP";
+inline constexpr std::string_view MassQuote                = "i";
+inline constexpr std::string_view QuoteCancel              = "Z";
+inline constexpr std::string_view SecurityList             = "y";
+inline constexpr std::string_view SecurityListRequest      = "x";
 } // namespace msg_type
 
 /// Get human-readable name for a FIX tag number.
@@ -153,8 +164,25 @@ inline constexpr std::string_view msg_type_name(char mt) noexcept {
     case msg_type::MarketDataRequest:    return "MarketDataRequest";
     case msg_type::MarketDataSnapshot:   return "MarketDataSnapshot";
     case msg_type::MarketDataIncRefresh: return "MarketDataIncRefresh";
+    case 'd':                            return "SecurityDefinition";
+    case 'f':                            return "SecurityStatus";
+    case 'i':                            return "MassQuote";
+    case 'Z':                            return "QuoteCancel";
+    case 'y':                            return "SecurityList";
+    case 'x':                            return "SecurityListRequest";
     default:                             return "Unknown";
     }
+}
+
+/// Get human-readable name for a multi-char MsgType string.
+/// Falls back to single-char lookup for length-1 strings.
+inline constexpr std::string_view msg_type_name(std::string_view mt) noexcept {
+    if (mt.empty()) return "Unknown";
+    if (mt.size() == 1) return msg_type_name(mt[0]);
+    if (mt == msg_type::TradeCaptureReport)    return "TradeCaptureReport";
+    if (mt == msg_type::TradeCaptureReportAck) return "TradeCaptureReportAck";
+    if (mt == msg_type::PositionReport)        return "PositionReport";
+    return "Unknown";
 }
 
 } // namespace eph::fix::tag

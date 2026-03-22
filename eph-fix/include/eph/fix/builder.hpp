@@ -79,17 +79,28 @@ public:
         return set(t, value ? std::string_view("Y", 1) : std::string_view("N", 1));
     }
 
-    /// Append a UTCTimestamp field formatted as "YYYYMMDD-HH:MM:SS.sss".
+    /// Timestamp sub-second precision levels.
+    enum class TimestampPrecision : uint8_t {
+        kSeconds = 0,       ///< "YYYYMMDD-HH:MM:SS" (17 chars)
+        kMilliseconds = 3,  ///< "YYYYMMDD-HH:MM:SS.sss" (21 chars)
+        kMicroseconds = 6,  ///< "YYYYMMDD-HH:MM:SS.ssssss" (24 chars)
+        kNanoseconds = 9,   ///< "YYYYMMDD-HH:MM:SS.sssssssss" (27 chars)
+    };
+
+    /// Append a UTCTimestamp field with configurable sub-second precision.
     ///
-    /// FIX 4.4 UTCTimestamp format with millisecond precision.
+    /// FIX 4.4+ UTCTimestamp format. Default is millisecond precision for
+    /// backward compatibility. Use kMicroseconds or kNanoseconds for modern
+    /// FIX venues (CME, ICE, etc.) that require higher precision.
+    ///
     /// @param t        Tag number (e.g. tag::SendingTime, tag::TransactTime)
     /// @param epoch_ns Nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC)
-    MessageBuilder& set_timestamp(uint32_t t, uint64_t epoch_ns) noexcept {
+    /// @param prec     Sub-second precision (default: milliseconds)
+    MessageBuilder& set_timestamp(uint32_t t, uint64_t epoch_ns,
+                                  TimestampPrecision prec = TimestampPrecision::kMilliseconds) noexcept {
         // Convert nanoseconds to components via integer arithmetic only.
         // No gmtime, no floating point — keeps the zero-allocation guarantee.
-        uint64_t epoch_ms  = epoch_ns / 1'000'000;
-        uint64_t epoch_sec = epoch_ms / 1'000;
-        uint32_t millis    = static_cast<uint32_t>(epoch_ms % 1'000);
+        uint64_t epoch_sec = epoch_ns / 1'000'000'000ULL;
 
         // Days since epoch and time-of-day
         uint32_t day_sec   = static_cast<uint32_t>(epoch_sec % 86400);
@@ -110,8 +121,8 @@ public:
         if (mon <= 2) ++y;
         uint32_t year = static_cast<uint32_t>(y);
 
-        // Format: "YYYYMMDD-HH:MM:SS.sss" (21 chars)
-        char tmp[24];
+        // Format base: "YYYYMMDD-HH:MM:SS" (17 chars)
+        char tmp[32];
         tmp[0]  = static_cast<char>('0' + (year / 1000) % 10);
         tmp[1]  = static_cast<char>('0' + (year / 100) % 10);
         tmp[2]  = static_cast<char>('0' + (year / 10) % 10);
@@ -129,12 +140,28 @@ public:
         tmp[14] = ':';
         tmp[15] = static_cast<char>('0' + second / 10);
         tmp[16] = static_cast<char>('0' + second % 10);
-        tmp[17] = '.';
-        tmp[18] = static_cast<char>('0' + (millis / 100) % 10);
-        tmp[19] = static_cast<char>('0' + (millis / 10) % 10);
-        tmp[20] = static_cast<char>('0' + millis % 10);
 
-        return set(t, std::string_view(tmp, 21));
+        size_t total_len = 17;
+        int frac_digits = static_cast<int>(prec);
+
+        if (frac_digits > 0) {
+            tmp[17] = '.';
+            // Extract the sub-second fraction at the requested precision
+            uint64_t sub_ns = epoch_ns % 1'000'000'000ULL;
+            uint64_t frac_val;
+            if (frac_digits == 3) frac_val = sub_ns / 1'000'000ULL;      // ms
+            else if (frac_digits == 6) frac_val = sub_ns / 1'000ULL;     // us
+            else frac_val = sub_ns;                                        // ns
+
+            // Write fractional digits right-to-left with leading zeros
+            for (int i = frac_digits - 1; i >= 0; --i) {
+                tmp[18 + i] = static_cast<char>('0' + frac_val % 10);
+                frac_val /= 10;
+            }
+            total_len = 18 + static_cast<size_t>(frac_digits);
+        }
+
+        return set(t, std::string_view(tmp, total_len));
     }
 
     /// Append a double-valued field with fixed-point precision.
@@ -220,9 +247,34 @@ public:
         overflow_   = false;
     }
 
+    /// Append a single-character enum field (Side, OrdType, ExecType, etc.).
+    ///
+    /// Convenience over set(tag, string_view(&c, 1)) — avoids constructing
+    /// a string_view from a char variable.
+    MessageBuilder& set_char(uint32_t t, char value) noexcept {
+        return set(t, std::string_view(&value, 1));
+    }
+
     /// Check whether the builder has overflowed the buffer.
     /// Useful for detecting overflow mid-build without waiting for finish().
     [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
+
+    /// Number of body bytes written so far (excluding header reservation).
+    /// Valid during building, before finish(). After finish(), use size().
+    [[nodiscard]] size_t bytes_used() const noexcept {
+        return pos_ - body_start_;
+    }
+
+    /// Approximate remaining buffer capacity for body fields.
+    /// Accounts for the 7-byte CheckSum trailer that finish() will append.
+    /// Returns 0 if already overflowed or no space remains.
+    [[nodiscard]] size_t remaining_capacity() const noexcept {
+        if (overflow_) return 0;
+        // Reserve 7 bytes for "10=XXX\x01" checksum trailer
+        constexpr size_t kTrailerLen = 7;
+        if (pos_ + kTrailerLen >= capacity_) return 0;
+        return capacity_ - pos_ - kTrailerLen;
+    }
 
     /// Pointer to the finalized message data (valid only after finish()).
     [[nodiscard]] const uint8_t* data() const noexcept { return buf_; }

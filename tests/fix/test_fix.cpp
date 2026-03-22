@@ -64,7 +64,26 @@ TEST(FixTags, msg_type_name_known) {
 }
 
 TEST(FixTags, msg_type_name_unknown) {
-    EXPECT_EQ(tag::msg_type_name('Z'), "Unknown");
+    EXPECT_EQ(tag::msg_type_name('~'), "Unknown");
+}
+
+TEST(FixTags, msg_type_name_new_single_char) {
+    EXPECT_EQ(tag::msg_type_name('d'), "SecurityDefinition");
+    EXPECT_EQ(tag::msg_type_name('f'), "SecurityStatus");
+    EXPECT_EQ(tag::msg_type_name('i'), "MassQuote");
+    EXPECT_EQ(tag::msg_type_name('Z'), "QuoteCancel");
+    EXPECT_EQ(tag::msg_type_name('y'), "SecurityList");
+    EXPECT_EQ(tag::msg_type_name('x'), "SecurityListRequest");
+}
+
+TEST(FixTags, msg_type_name_multi_char) {
+    using namespace std::string_view_literals;
+    EXPECT_EQ(tag::msg_type_name("AE"sv), "TradeCaptureReport");
+    EXPECT_EQ(tag::msg_type_name("AR"sv), "TradeCaptureReportAck");
+    EXPECT_EQ(tag::msg_type_name("AP"sv), "PositionReport");
+    EXPECT_EQ(tag::msg_type_name("ZZ"sv), "Unknown");
+    // Single-char via string_view overload
+    EXPECT_EQ(tag::msg_type_name("D"sv), "NewOrderSingle");
 }
 
 // ===========================================================================
@@ -1475,7 +1494,7 @@ TEST(FixDispatch, dispatches_heartbeat) {
 }
 
 TEST(FixDispatch, unknown_msg_type_dispatches_unknown) {
-    auto raw = make_fix_msg("FIX.4.4", "35=Z\x01");
+    auto raw = make_fix_msg("FIX.4.4", "35=~\x01");
     auto msg = parse(raw.data(), raw.size());
     ASSERT_TRUE(msg.has_value());
 
@@ -1750,4 +1769,242 @@ TEST(FixCustomCapacity, basic_parser_class_with_custom_capacity) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->kMaxFields, 16u);
     EXPECT_EQ(result->field_count(), 2u);
+}
+
+// ===========================================================================
+// Timestamp microsecond/nanosecond precision (parser)
+// ===========================================================================
+
+TEST(FixParser, get_timestamp_microsecond_precision) {
+    // "20260322-12:30:45.123456" — 24 chars, microsecond precision
+    std::string body = "35=D\x01" "52=20260322-12:30:45.123456\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+
+    // Expected: 2026-03-22 12:30:45.123456 UTC as nanoseconds since epoch
+    // Verify the sub-second part: 123456 microseconds = 123456000 nanoseconds
+    uint64_t sub_sec_ns = *ts % 1'000'000'000ULL;
+    EXPECT_EQ(sub_sec_ns, 123'456'000ULL);
+}
+
+TEST(FixParser, get_timestamp_nanosecond_precision) {
+    // "20260322-12:30:45.123456789" — 27 chars, nanosecond precision
+    std::string body = "35=D\x01" "52=20260322-12:30:45.123456789\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+
+    uint64_t sub_sec_ns = *ts % 1'000'000'000ULL;
+    EXPECT_EQ(sub_sec_ns, 123'456'789ULL);
+}
+
+TEST(FixParser, get_timestamp_invalid_precision_length_rejected) {
+    // 2 fractional digits — not a valid FIX precision
+    std::string body = "35=D\x01" "52=20260322-12:30:45.12\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_microsecond_roundtrip) {
+    // Build with microsecond precision, parse back
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // 2026-03-22 12:30:45.123456 UTC
+    // First compute the epoch_ns for this timestamp
+    // Use a known value and verify round-trip
+    uint64_t epoch_ns = 1774191045'123'456'789ULL; // some timestamp with ns
+
+    b.set_timestamp(tag::SendingTime, epoch_ns,
+                    MessageBuilder::TimestampPrecision::kMicroseconds);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    // Microsecond precision loses the last 3 ns digits
+    EXPECT_EQ(*ts / 1000ULL, epoch_ns / 1000ULL);
+}
+
+TEST(FixParser, get_timestamp_nanosecond_roundtrip) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    uint64_t epoch_ns = 1774191045'123'456'789ULL;
+
+    b.set_timestamp(tag::SendingTime, epoch_ns,
+                    MessageBuilder::TimestampPrecision::kNanoseconds);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    // Nanosecond precision preserves full value
+    EXPECT_EQ(*ts, epoch_ns);
+}
+
+TEST(FixParser, get_timestamp_seconds_only_roundtrip) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    uint64_t epoch_ns = 1774191045'000'000'000ULL; // exact second
+
+    b.set_timestamp(tag::SendingTime, epoch_ns,
+                    MessageBuilder::TimestampPrecision::kSeconds);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+
+    // Verify format is exactly 17 chars (no fractional part)
+    auto sv = result->get(tag::SendingTime);
+    ASSERT_TRUE(sv.has_value());
+    EXPECT_EQ(sv->size(), 17u);
+
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    EXPECT_EQ(*ts, epoch_ns);
+}
+
+// ===========================================================================
+// Multi-char MsgType dispatch
+// ===========================================================================
+
+TEST(FixDispatch, dispatches_trade_capture_report) {
+    std::string body = "35=AE\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    bool dispatched = false;
+    dispatch(*result, [&](auto tag, const auto&) {
+        if constexpr (std::is_same_v<decltype(tag), msg::TradeCaptureReport>) {
+            dispatched = true;
+        }
+    });
+    EXPECT_TRUE(dispatched);
+}
+
+TEST(FixDispatch, dispatches_trade_capture_report_ack) {
+    std::string body = "35=AR\x01" "55=MSFT\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    bool dispatched = false;
+    dispatch(*result, [&](auto tag, const auto&) {
+        if constexpr (std::is_same_v<decltype(tag), msg::TradeCaptureReportAck>) {
+            dispatched = true;
+        }
+    });
+    EXPECT_TRUE(dispatched);
+}
+
+TEST(FixDispatch, dispatches_position_report) {
+    std::string body = "35=AP\x01" "55=GOOG\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    bool dispatched = false;
+    dispatch(*result, [&](auto tag, const auto&) {
+        if constexpr (std::is_same_v<decltype(tag), msg::PositionReport>) {
+            dispatched = true;
+        }
+    });
+    EXPECT_TRUE(dispatched);
+}
+
+TEST(FixDispatch, unknown_multi_char_msg_type_dispatches_unknown) {
+    std::string body = "35=ZZ\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    bool dispatched = false;
+    dispatch(*result, [&](auto tag, const auto&) {
+        if constexpr (std::is_same_v<decltype(tag), msg::Unknown>) {
+            dispatched = true;
+        }
+    });
+    EXPECT_TRUE(dispatched);
+}
+
+TEST(FixDispatch, single_char_security_definition) {
+    std::string body = "35=d\x01" "55=TSLA\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    bool dispatched = false;
+    dispatch(*result, [&](auto tag, const auto&) {
+        if constexpr (std::is_same_v<decltype(tag), msg::SecurityDefinition>) {
+            dispatched = true;
+        }
+    });
+    EXPECT_TRUE(dispatched);
+}
+
+// ===========================================================================
+// MessageBuilder: bytes_used, remaining_capacity, set_char
+// ===========================================================================
+
+TEST(FixBuilder, set_char_single_char_field) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_char(tag::Side, '1');     // Buy
+    b.set_char(tag::OrdType, '2'); // Limit
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_char(tag::Side), '1');
+    EXPECT_EQ(result->get_char(tag::OrdType), '2');
+}
+
+TEST(FixBuilder, bytes_used_tracks_body_bytes) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_EQ(b.bytes_used(), 0u);
+
+    b.set(tag::MsgType, "D"); // "35=D\x01" = 5 bytes
+    EXPECT_EQ(b.bytes_used(), 5u);
+
+    b.set(tag::Symbol, "AAPL"); // "55=AAPL\x01" = 8 bytes
+    EXPECT_EQ(b.bytes_used(), 13u);
+}
+
+TEST(FixBuilder, remaining_capacity_decreases) {
+    uint8_t buf[128];
+    MessageBuilder b(buf, sizeof(buf));
+    size_t initial = b.remaining_capacity();
+    EXPECT_GT(initial, 0u);
+
+    b.set(tag::MsgType, "D");
+    EXPECT_LT(b.remaining_capacity(), initial);
+}
+
+TEST(FixBuilder, remaining_capacity_zero_after_overflow) {
+    uint8_t buf[32]; // Very small buffer
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "VERY_LONG_SYMBOL_NAME_THAT_OVERFLOWS");
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.remaining_capacity(), 0u);
 }

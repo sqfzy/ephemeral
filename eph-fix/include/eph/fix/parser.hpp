@@ -204,7 +204,10 @@ public:
 
         // Minimum: "YYYYMMDD-HH:MM:SS" (17 chars)
         // With millis: "YYYYMMDD-HH:MM:SS.sss" (21 chars)
-        if (sv->size() != 17 && sv->size() != 21) return std::nullopt;
+        // With micros: "YYYYMMDD-HH:MM:SS.ssssss" (24 chars)
+        // With nanos:  "YYYYMMDD-HH:MM:SS.sssssssss" (27 chars)
+        if (sv->size() != 17 && sv->size() != 21 &&
+            sv->size() != 24 && sv->size() != 27) return std::nullopt;
 
         const char* p = sv->data();
 
@@ -247,13 +250,21 @@ public:
 
         if (hour > 23 || minute > 59 || second > 60) return std::nullopt;
 
-        // Parse optional milliseconds
-        uint32_t millis = 0;
-        if (sv->size() == 21) {
+        // Parse optional sub-second fraction (ms, us, or ns)
+        uint64_t frac_ns = 0;
+        if (sv->size() > 17) {
             if (p[17] != '.') return std::nullopt;
-            int ms2 = digit(p[18]), ms1 = digit(p[19]), ms0 = digit(p[20]);
-            if (ms2 < 0 || ms1 < 0 || ms0 < 0) return std::nullopt;
-            millis = static_cast<uint32_t>(ms2 * 100 + ms1 * 10 + ms0);
+            size_t frac_len = sv->size() - 18; // digits after '.'
+            uint64_t frac_val = 0;
+            for (size_t i = 0; i < frac_len; ++i) {
+                int d = digit(p[18 + i]);
+                if (d < 0) return std::nullopt;
+                frac_val = frac_val * 10 + static_cast<uint64_t>(d);
+            }
+            // Scale to nanoseconds: ms(*1e6), us(*1e3), ns(*1)
+            if (frac_len == 3) frac_ns = frac_val * 1'000'000ULL;      // ms
+            else if (frac_len == 6) frac_ns = frac_val * 1'000ULL;     // us
+            else if (frac_len == 9) frac_ns = frac_val;                 // ns
         }
 
         // Civil date → days since epoch (inverse of Howard Hinnant algorithm)
@@ -272,7 +283,7 @@ public:
 
         uint64_t epoch_sec = static_cast<uint64_t>(days) * 86400
                            + hour * 3600 + minute * 60 + second;
-        return epoch_sec * 1'000'000'000ULL + millis * 1'000'000ULL;
+        return epoch_sec * 1'000'000'000ULL + frac_ns;
     }
 
     /// Random-access iterator over parsed fields.
@@ -638,6 +649,16 @@ struct OrderCancelReject {};
 struct MarketDataRequest {};
 struct MarketDataSnapshot {};
 struct MarketDataIncRefresh {};
+// Multi-character MsgType (FIX 4.4+)
+struct TradeCaptureReport {};
+struct TradeCaptureReportAck {};
+struct SecurityDefinition {};
+struct SecurityStatus {};
+struct PositionReport {};
+struct MassQuote {};
+struct QuoteCancel {};
+struct SecurityList {};
+struct SecurityListRequest {};
 struct Unknown {};
 } // namespace msg
 
@@ -650,6 +671,10 @@ struct Unknown {};
 /// The handler is invoked as `handler(Tag{}, view)` where:
 ///   - Tag is one of the msg:: structs above (compile-time MsgType)
 ///   - view is the parsed MessageView (by const reference)
+///
+/// Supports both single-char (e.g. "D", "8") and multi-char (e.g. "AE", "AP")
+/// MsgType values. Multi-char types are matched first via string comparison;
+/// single-char types fall through to a fast switch.
 ///
 /// Usage with overload set:
 ///   struct MyHandler {
@@ -667,6 +692,16 @@ decltype(auto) dispatch(const BasicMessageView<MaxFields>& view, Handler&& handl
     if (!mt || mt->empty()) {
         return handler(msg::Unknown{}, view);
     }
+
+    // Multi-char MsgType dispatch (FIX 4.4+)
+    if (mt->size() > 1) {
+        if (*mt == tag::msg_type::TradeCaptureReport)    return handler(msg::TradeCaptureReport{}, view);
+        if (*mt == tag::msg_type::TradeCaptureReportAck) return handler(msg::TradeCaptureReportAck{}, view);
+        if (*mt == tag::msg_type::PositionReport)        return handler(msg::PositionReport{}, view);
+        return handler(msg::Unknown{}, view);
+    }
+
+    // Single-char MsgType dispatch (fast path)
     char c = (*mt)[0];
     switch (c) {
     case tag::msg_type::Heartbeat:            return handler(msg::Heartbeat{}, view);
@@ -681,6 +716,13 @@ decltype(auto) dispatch(const BasicMessageView<MaxFields>& view, Handler&& handl
     case tag::msg_type::MarketDataRequest:    return handler(msg::MarketDataRequest{}, view);
     case tag::msg_type::MarketDataSnapshot:   return handler(msg::MarketDataSnapshot{}, view);
     case tag::msg_type::MarketDataIncRefresh: return handler(msg::MarketDataIncRefresh{}, view);
+    // Single-char types that also have string_view constants
+    case 'd':                                 return handler(msg::SecurityDefinition{}, view);
+    case 'f':                                 return handler(msg::SecurityStatus{}, view);
+    case 'i':                                 return handler(msg::MassQuote{}, view);
+    case 'Z':                                 return handler(msg::QuoteCancel{}, view);
+    case 'y':                                 return handler(msg::SecurityList{}, view);
+    case 'x':                                 return handler(msg::SecurityListRequest{}, view);
     default:                                  return handler(msg::Unknown{}, view);
     }
 }
