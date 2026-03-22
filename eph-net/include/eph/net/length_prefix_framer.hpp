@@ -24,8 +24,16 @@ class LengthPrefixFramer {
 public:
     static constexpr size_t max_overhead() noexcept { return 2; }
 
+    /// Maximum payload length representable in a 2-byte big-endian header.
+    static constexpr size_t kMaxPayloadLen = 65535;
+
     size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
+        // Guard: payload must fit in a uint16_t length field.
+        // Silently truncating would corrupt the wire format, so return 0
+        // to signal failure (caller already checks return value > 0).
+        if (len > kMaxPayloadLen || len == 0) return 0;
+
         // 2-byte big-endian length prefix
         out[0] = static_cast<uint8_t>((len >> 8) & 0xFF);
         out[1] = static_cast<uint8_t>(len & 0xFF);

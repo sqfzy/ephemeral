@@ -246,7 +246,49 @@ TEST(LengthPrefixFramer, MsgTypeWithDifferentTypes) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 12: FrameError names
+// Test 12: LengthPrefixFramer encode validation
+// ---------------------------------------------------------------------------
+
+TEST(LengthPrefixFramer, EncodeRejectsZeroLength) {
+    uint8_t out[16];
+    LengthPrefixFramer framer;
+    uint8_t data[] = {0x41};
+    EXPECT_EQ(framer.encode(out, data, 0, 0), 0u);
+}
+
+TEST(LengthPrefixFramer, EncodeRejectsOversizedPayload) {
+    // len > 65535 should return 0
+    uint8_t out[16];
+    LengthPrefixFramer framer;
+    uint8_t data[] = {0x41};
+    EXPECT_EQ(framer.encode(out, data, 65536, 0), 0u);
+    EXPECT_EQ(framer.encode(out, data, 100000, 0), 0u);
+}
+
+TEST(LengthPrefixFramer, EncodeAcceptsMaxPayload) {
+    // len == 65535 should succeed (we just check return value, not actual memcpy)
+    std::vector<uint8_t> out(65535 + 2);
+    std::vector<uint8_t> data(65535, 0x42);
+    LengthPrefixFramer framer;
+    EXPECT_EQ(framer.encode(out.data(), data.data(), 65535, 0), 65535u + 2);
+    // Verify header encodes 0xFFFF
+    EXPECT_EQ(out[0], 0xFF);
+    EXPECT_EQ(out[1], 0xFF);
+}
+
+TEST(LengthPrefixFramer, EncodeAcceptsSingleByte) {
+    uint8_t out[16];
+    LengthPrefixFramer framer;
+    uint8_t data[] = {0x41};
+    size_t written = framer.encode(out, data, 1, 0);
+    EXPECT_EQ(written, 3u);
+    EXPECT_EQ(out[0], 0x00);
+    EXPECT_EQ(out[1], 0x01);
+    EXPECT_EQ(out[2], 0x41);
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: FrameError names
 // ---------------------------------------------------------------------------
 
 TEST(FrameError, ErrorNames) {

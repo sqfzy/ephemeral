@@ -12,9 +12,23 @@
 #include <cstring>
 #include <string_view>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include "eph/fix/tags.hpp"
 
 namespace eph::fix {
+
+namespace detail {
+inline std::shared_ptr<spdlog::logger> fix_builder_logger() {
+    static auto l = [] {
+        auto lg = spdlog::get("fix.builder");
+        if (!lg) lg = spdlog::stdout_color_mt("fix.builder");
+        return lg;
+    }();
+    return l;
+}
+} // namespace detail
 
 /// Builds a FIX message into a caller-provided buffer.
 ///
@@ -39,7 +53,8 @@ public:
         // Guard: null buffer or insufficient capacity → immediate overflow state.
         // kHeaderReserve (32 bytes) is needed for BeginString + BodyLength prefix,
         // plus at least ~20 bytes for a minimal field + checksum trailer.
-        if (buf == nullptr || capacity < kHeaderReserve) {
+        if (buf == nullptr || capacity < kHeaderReserve) [[unlikely]] {
+            log_invalid_construction(buf, capacity);
             overflow_ = true;
             return;
         }
@@ -51,18 +66,23 @@ public:
 
     /// Append a string-valued field: tag=value\x01.
     MessageBuilder& set(uint32_t t, std::string_view value) noexcept {
-        if (overflow_) return *this;
+        if (overflow_) [[unlikely]] return *this;
 
         // Write "tag=value\x01"
         size_t tag_len = write_uint(t, pos_);
         size_t needed = tag_len + 1 + value.size() + 1; // tag + '=' + value + SOH
-        if (pos_ + needed > capacity_) { overflow_ = true; return *this; }
+        if (pos_ + needed > capacity_) [[unlikely]] {
+            log_overflow(t, needed, capacity_ - pos_);
+            overflow_ = true;
+            return *this;
+        }
 
         pos_ += tag_len;
         buf_[pos_++] = '=';
         std::memcpy(buf_ + pos_, value.data(), value.size());
         pos_ += value.size();
         buf_[pos_++] = '\x01';
+        ++field_count_;
         return *this;
     }
 
@@ -75,9 +95,19 @@ public:
 
     /// Append a field from a raw byte pointer + length.
     /// The data must NOT contain SOH (0x01) bytes, as the parser uses SOH
-    /// as a field delimiter. For true binary FIX fields (Data/RawData), a
-    /// length-aware parser would be required.
+    /// as a field delimiter. Sets overflow flag if SOH is found.
+    /// For true binary FIX fields (Data/RawData), a length-aware parser
+    /// would be required.
     MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
+        if (data != nullptr) {
+            for (size_t i = 0; i < len; ++i) {
+                if (data[i] == 0x01) [[unlikely]] {
+                    log_soh_found(t, i);
+                    overflow_ = true;
+                    return *this;
+                }
+            }
+        }
         return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
 
@@ -177,8 +207,15 @@ public:
 
     /// Append a double-valued field with fixed-point precision.
     /// Sets overflow flag if value is NaN or Infinity (not representable in FIX).
+    /// Precision is clamped to [0, 15] to prevent buffer overrun in format_double().
     MessageBuilder& set_double(uint32_t t, double value, int precision = 2) noexcept {
-        if (!std::isfinite(value)) { overflow_ = true; return *this; }
+        if (!std::isfinite(value)) [[unlikely]] {
+            log_non_finite(t);
+            overflow_ = true;
+            return *this;
+        }
+        if (precision < 0) precision = 0;
+        if (precision > 15) precision = 15;
         char tmp[32];
         size_t n = format_double(value, tmp, precision);
         return set(t, std::string_view(tmp, n));
@@ -212,8 +249,8 @@ public:
         hpos += format_uint(body_length, header + hpos);
         header[hpos++] = '\x01';
 
-        if (hpos > body_start_) {
-            // Header doesn't fit in reserved space
+        if (hpos > body_start_) [[unlikely]] {
+            log_header_overflow(hpos, body_start_);
             overflow_ = true;
             return 0;
         }
@@ -231,7 +268,11 @@ public:
         uint8_t cs = static_cast<uint8_t>(sum & 0xFF);
 
         // Append "10=XXX\x01" (exactly 7 bytes)
-        if (pos_ + kTrailerLen > capacity_) { overflow_ = true; return 0; }
+        if (pos_ + kTrailerLen > capacity_) [[unlikely]] {
+            log_trailer_overflow(pos_, capacity_);
+            overflow_ = true;
+            return 0;
+        }
 
         buf_[pos_++] = '1';
         buf_[pos_++] = '0';
@@ -257,6 +298,7 @@ public:
         body_start_ = kHeaderReserve;
         pos_        = kHeaderReserve;
         total_len_  = 0;
+        field_count_ = 0;
         overflow_   = false;
     }
 
@@ -271,6 +313,9 @@ public:
     /// Check whether the builder has overflowed the buffer.
     /// Useful for detecting overflow mid-build without waiting for finish().
     [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
+
+    /// Number of body fields appended so far (excludes BeginString, BodyLength, CheckSum).
+    [[nodiscard]] size_t field_count() const noexcept { return field_count_; }
 
     /// Number of body bytes written so far (excluding header reservation).
     /// Valid during building, before finish(). After finish(), use size().
@@ -302,6 +347,7 @@ private:
     size_t   body_start_ = 0;
     size_t   pos_        = 0;
     size_t   total_len_  = 0;
+    size_t   field_count_ = 0;
     bool     overflow_   = false;
 
     /// Write an unsigned integer as ASCII digits into buf_ at offset, returning digit count.
@@ -380,6 +426,49 @@ private:
         }
 
         return off;
+    }
+
+    // -- Cold logging helpers (noinline to keep hot paths small) ---------------
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_invalid_construction(const uint8_t* buf, size_t capacity) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: invalid construction, buf={}, capacity={} (min {})",
+            fmt::ptr(buf), capacity, kHeaderReserve);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_overflow(uint32_t tag, size_t needed, size_t remaining) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: buffer overflow at tag={}, needed={} bytes, remaining={}",
+            tag, needed, remaining);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_soh_found(uint32_t tag, size_t offset) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: SOH byte found in set_raw() data at offset {}, tag={}",
+            offset, tag);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_non_finite(uint32_t tag) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: non-finite double for tag={}", tag);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_header_overflow(size_t hpos, size_t body_start) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: header too large ({} bytes) for reserved space ({})",
+            hpos, body_start);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_trailer_overflow(size_t pos, size_t capacity) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: no room for checksum trailer, pos={}, capacity={}",
+            pos, capacity);
     }
 };
 

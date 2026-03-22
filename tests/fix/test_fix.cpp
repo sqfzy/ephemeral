@@ -2527,3 +2527,151 @@ TEST(FixBuilder, session_tags_resend_request_roundtrip) {
     EXPECT_EQ(result->get_int(tag::BeginSeqNo), 1);
     EXPECT_EQ(result->get_int(tag::EndSeqNo), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Builder: set_raw SOH validation
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, set_raw_rejects_embedded_soh) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // Data containing SOH (0x01) should trigger overflow
+    const uint8_t raw_data[] = {0x41, 0x01, 0x42};
+    b.set_raw(58, raw_data, sizeof(raw_data));
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_raw_accepts_clean_data) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    const uint8_t raw_data[] = {0x41, 0x42, 0x43};
+    b.set_raw(58, raw_data, sizeof(raw_data));
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}
+
+TEST(FixBuilder, set_raw_empty_data_succeeds) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_raw(58, nullptr, 0);
+    EXPECT_FALSE(b.has_overflow());
+}
+
+// ---------------------------------------------------------------------------
+// Builder: set_double precision clamping
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, set_double_negative_precision_clamped_to_zero) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 123.456, -5);
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    // With precision 0 (clamped from -5), value should be "123"
+    EXPECT_EQ(result->get(tag::Price).value(), "123");
+}
+
+TEST(FixBuilder, set_double_excessive_precision_clamped_to_15) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 1.5, 100);
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: field_count accessor
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, field_count_tracks_appended_fields) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_EQ(b.field_count(), 0u);
+
+    b.set(tag::MsgType, "D");
+    EXPECT_EQ(b.field_count(), 1u);
+
+    b.set(tag::SenderCompID, "SENDER");
+    EXPECT_EQ(b.field_count(), 2u);
+
+    b.set_int(tag::MsgSeqNum, 1);
+    EXPECT_EQ(b.field_count(), 3u);
+
+    b.set_double(tag::Price, 100.0);
+    EXPECT_EQ(b.field_count(), 4u);
+
+    b.set_bool(tag::PossDupFlag, true);
+    EXPECT_EQ(b.field_count(), 5u);
+
+    b.set_char(tag::Side, '1');
+    EXPECT_EQ(b.field_count(), 6u);
+}
+
+TEST(FixBuilder, field_count_resets_on_reset) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "SENDER");
+    EXPECT_EQ(b.field_count(), 2u);
+
+    b.reset();
+    EXPECT_EQ(b.field_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: timestamp precision levels
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, timestamp_all_precision_levels) {
+    // 2024-01-15 09:50:45.123456789 UTC (epoch_sec = 1705312245)
+    uint64_t epoch_ns = 1705312245ULL * 1'000'000'000ULL + 123'456'789ULL;
+
+    for (auto prec : {MessageBuilder::TimestampPrecision::kSeconds,
+                      MessageBuilder::TimestampPrecision::kMilliseconds,
+                      MessageBuilder::TimestampPrecision::kMicroseconds,
+                      MessageBuilder::TimestampPrecision::kNanoseconds}) {
+        uint8_t buf[256];
+        MessageBuilder b(buf, sizeof(buf));
+        b.set(tag::MsgType, "D");
+        b.set_timestamp(tag::SendingTime, epoch_ns, prec);
+        size_t len = b.finish();
+        ASSERT_GT(len, 0u) << "precision=" << static_cast<int>(prec);
+
+        auto result = parse(buf, len);
+        ASSERT_TRUE(result.has_value());
+        auto ts = result->get(tag::SendingTime).value();
+        // All should start with the same date-time prefix
+        EXPECT_TRUE(ts.starts_with("20240115-09:50:45"))
+            << "precision=" << static_cast<int>(prec) << " got=" << ts;
+
+        switch (prec) {
+        case MessageBuilder::TimestampPrecision::kSeconds:
+            EXPECT_EQ(ts.size(), 17u);
+            break;
+        case MessageBuilder::TimestampPrecision::kMilliseconds:
+            EXPECT_EQ(ts.size(), 21u);
+            EXPECT_EQ(ts.substr(18, 3), "123");
+            break;
+        case MessageBuilder::TimestampPrecision::kMicroseconds:
+            EXPECT_EQ(ts.size(), 24u);
+            EXPECT_EQ(ts.substr(18, 6), "123456");
+            break;
+        case MessageBuilder::TimestampPrecision::kNanoseconds:
+            EXPECT_EQ(ts.size(), 27u);
+            EXPECT_EQ(ts.substr(18, 9), "123456789");
+            break;
+        }
+    }
+}
