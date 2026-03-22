@@ -568,3 +568,43 @@ TEST(ItchParser, ParseAllEmptyBuffer) {
     EXPECT_EQ(count, 0u);
     EXPECT_EQ(consumed, 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Test: std::formatter<MessageView>
+// ---------------------------------------------------------------------------
+
+TEST(ItchFormatter, MessageViewFormat) {
+    // Build a SystemEvent message with known header values
+    uint8_t buf[11];
+    std::memset(buf, 0, sizeof(buf));
+    buf[0] = 'S'; // SystemEvent
+    // stock_locate = 42 (BE)
+    buf[1] = 0x00; buf[2] = 0x2A;
+    // tracking = 0
+    buf[3] = 0x00; buf[4] = 0x00;
+    // timestamp = 123456789 ns (BE 6 bytes): 0x00000007'5BCD15
+    buf[5] = 0x00; buf[6] = 0x00; buf[7] = 0x07;
+    buf[8] = 0x5B; buf[9] = 0xCD; buf[10] = 0x15;
+
+    auto result = parse(buf, sizeof(buf));
+    ASSERT_TRUE(result.has_value());
+
+    auto formatted = std::format("{}", *result);
+    EXPECT_EQ(formatted, "ITCH[SystemEvent locate=42 ts=123456789ns len=11]");
+}
+
+TEST(ItchFormatter, MessageViewFormatUnknownType) {
+    // Build a fake message with unknown type (won't parse, but we can construct
+    // a MessageView directly for formatting)
+    eph::itch::MessageView mv{};
+    // Allocate a dummy buffer for the MessageView to point to
+    uint8_t dummy[20];
+    std::memset(dummy, 0, sizeof(dummy));
+    dummy[0] = 0xFF; // unknown type
+    mv.msg_type = 0xFF;
+    mv.data = dummy;
+    mv.length = 20;
+
+    auto formatted = std::format("{}", mv);
+    EXPECT_EQ(formatted, "ITCH[Unknown locate=0 ts=0ns len=20]");
+}

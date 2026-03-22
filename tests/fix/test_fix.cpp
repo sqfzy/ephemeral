@@ -641,6 +641,87 @@ TEST(FixFramer, satisfies_concept) {
 // std::formatter
 // ===========================================================================
 
+// ===========================================================================
+// Repeating group support: count() and get_nth()
+// ===========================================================================
+
+TEST(FixRepeatingGroup, count_returns_zero_for_absent_tag) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->count(tag::Price), 0u);
+}
+
+TEST(FixRepeatingGroup, count_returns_one_for_unique_tag) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->count(tag::Symbol), 1u);
+}
+
+TEST(FixRepeatingGroup, count_and_get_nth_for_repeating_fields) {
+    // Simulate a market data message with 3 MDEntryPx values
+    std::string body =
+        "35=W\x01"
+        "268=3\x01"       // NoMDEntries=3
+        "269=0\x01"       // MDEntryType=Bid
+        "270=150.50\x01"  // MDEntryPx
+        "269=1\x01"       // MDEntryType=Offer
+        "270=151.00\x01"  // MDEntryPx
+        "269=2\x01"       // MDEntryType=Trade
+        "270=150.75\x01"; // MDEntryPx
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    EXPECT_EQ(result->count(tag::MDEntryPx), 3u);
+    EXPECT_EQ(result->count(tag::MDEntryType), 3u);
+    EXPECT_EQ(result->count(tag::NoMDEntries), 1u);
+
+    EXPECT_EQ(result->get_nth(tag::MDEntryPx, 0).value(), "150.50");
+    EXPECT_EQ(result->get_nth(tag::MDEntryPx, 1).value(), "151.00");
+    EXPECT_EQ(result->get_nth(tag::MDEntryPx, 2).value(), "150.75");
+
+    EXPECT_EQ(result->get_nth(tag::MDEntryType, 0).value(), "0");
+    EXPECT_EQ(result->get_nth(tag::MDEntryType, 1).value(), "1");
+    EXPECT_EQ(result->get_nth(tag::MDEntryType, 2).value(), "2");
+}
+
+TEST(FixRepeatingGroup, get_nth_out_of_range_returns_nullopt) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_nth(tag::Symbol, 1).has_value()); // only index 0 exists
+    EXPECT_FALSE(result->get_nth(tag::Price, 0).has_value());  // tag absent
+}
+
+// ===========================================================================
+// std::formatter<MessageView>
+// ===========================================================================
+
+TEST(FixFormatter, message_view_format_basic) {
+    std::string body = "35=D\x01" "55=AAPL\x01" "54=1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto formatted = std::format("{}", *result);
+    EXPECT_EQ(formatted, "35=D|55=AAPL|54=1");
+}
+
+TEST(FixFormatter, message_view_format_single_field) {
+    std::string body = "35=D\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto formatted = std::format("{}", *result);
+    EXPECT_EQ(formatted, "35=D");
+}
+
 TEST(FixFormatter, parse_error_format) {
     EXPECT_EQ(std::format("{}", ParseError::kIncomplete), "incomplete");
     EXPECT_EQ(std::format("{}", ParseError::kInvalidFormat), "invalid format");

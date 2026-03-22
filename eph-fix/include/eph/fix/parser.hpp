@@ -168,6 +168,32 @@ public:
         }
     }
 
+    /// Count how many times a tag appears in the message.
+    /// Useful for repeating groups (e.g. NoMDEntries, NoMDEntryTypes).
+    [[nodiscard]] size_t count(uint32_t t) const noexcept {
+        size_t n = 0;
+        for (size_t i = 0; i < count_; ++i) {
+            if (fields_[i].tag == t) ++n;
+        }
+        return n;
+    }
+
+    /// Look up the nth occurrence (0-based) of a tag.
+    /// Returns nullopt if fewer than n+1 occurrences exist.
+    /// Enables iteration over repeating group fields:
+    ///   for (size_t i = 0; i < msg.count(tag::MDEntryPx); ++i)
+    ///       auto px = msg.get_nth(tag::MDEntryPx, i);
+    [[nodiscard]] std::optional<std::string_view> get_nth(uint32_t t, size_t n) const noexcept {
+        size_t seen = 0;
+        for (size_t i = 0; i < count_; ++i) {
+            if (fields_[i].tag == t) {
+                if (seen == n) return fields_[i].value;
+                ++seen;
+            }
+        }
+        return std::nullopt;
+    }
+
     // -- Internal (used by parse()) --
     // Kept public because MessageView is a value type produced by parse().
 
@@ -419,5 +445,24 @@ struct std::formatter<eph::fix::ParseError> : std::formatter<std::string_view> {
     auto format(eph::fix::ParseError e, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::fix::parse_error_name(e), ctx);
+    }
+};
+
+/// std::formatter specialization for fix::MessageView.
+///
+/// Formats a parsed FIX message as "tag=value|tag=value|..." with pipe delimiters.
+/// Tag numbers are emitted as-is (use tag::tag_name() separately for human-readable names).
+/// Example output: "35=D|49=SENDER|56=TARGET|55=AAPL|54=1|44=150.50"
+template <>
+struct std::formatter<eph::fix::MessageView> {
+    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+    auto format(const eph::fix::MessageView& msg, auto& ctx) const {
+        auto out = ctx.out();
+        for (size_t i = 0; i < msg.field_count(); ++i) {
+            if (i > 0) *out++ = '|';
+            out = std::format_to(out, "{}={}", msg.fields_[i].tag, msg.fields_[i].value);
+        }
+        return out;
     }
 };

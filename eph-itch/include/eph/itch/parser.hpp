@@ -188,3 +188,20 @@ struct std::formatter<eph::itch::ParseError> : std::formatter<std::string_view> 
             eph::itch::parse_error_name(e), ctx);
     }
 };
+
+/// std::formatter specialization for itch::MessageView.
+///
+/// Formats as "ITCH[TypeName locate=N ts=Nns len=N]".
+/// Example: "ITCH[AddOrder locate=42 ts=123456789ns len=35]"
+template <>
+struct std::formatter<eph::itch::MessageView> {
+    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+    auto format(const eph::itch::MessageView& msg, auto& ctx) const {
+        return std::format_to(ctx.out(), "ITCH[{} locate={} ts={}ns len={}]",
+                              eph::itch::message_type_name(msg.msg_type),
+                              msg.stock_locate(),
+                              msg.timestamp_ns(),
+                              msg.length);
+    }
+};
