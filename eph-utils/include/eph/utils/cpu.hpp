@@ -197,16 +197,20 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
  * 设置线程的 CPU 亲和性，使其只在指定核心上运行。
  * 用于减少线程迁移开销和缓存失效。
  * 
- * @param cpu_id 目标 CPU 核心的逻辑 ID（0 到 hardware_concurrency()-1）
- * 
+ * @param cpu_id 目标 CPU 核心的逻辑 ID（0 到 hardware_concurrency()-1），
+ *               负值表示不绑定（直接返回）
+ * @param name 可选的线程/角色名称，用于日志标识
+ *
  * @note Linux: 使用 pthread_setaffinity_np 硬绑定
  * @note macOS: 不支持硬亲和性，仅设置 QoS 类
  * @note Windows: 需要额外实现
- * 
+ *
  * @warning 过度使用可能导致负载不均衡
  */
-inline void set_thread_affinity(unsigned cpu_id) {
+inline void set_thread_affinity(int cpu_id, const char* name = nullptr) {
+  if (cpu_id < 0) return;
   auto log = detail::cpu_logger();
+  const char* tag = name ? name : "thread";
 #if defined(__linux__)
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
@@ -214,19 +218,21 @@ inline void set_thread_affinity(unsigned cpu_id) {
   int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
   if (ret != 0) {
     SPDLOG_LOGGER_ERROR(log,
-        "pthread_setaffinity_np failed for cpu_id={}: {}",
-        cpu_id, std::generic_category().message(ret));
+        "Failed to pin {} to cpu_id={}: {}",
+        tag, cpu_id, std::generic_category().message(ret));
   } else {
-    SPDLOG_LOGGER_DEBUG(log, "Thread affinity set to cpu_id={}", cpu_id);
+    SPDLOG_LOGGER_INFO(log, "{} pinned to cpu_id={}", tag, cpu_id);
   }
 #elif defined(__APPLE__)
   // macOS 不支持硬亲和性，只能设置 QoS
   SPDLOG_LOGGER_DEBUG(log,
-      "macOS: setting QoS instead of hard affinity (cpu_id={})", cpu_id);
+      "macOS: setting QoS instead of hard affinity for {} (cpu_id={})",
+      tag, cpu_id);
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #else
   SPDLOG_LOGGER_WARN(log,
-      "Thread affinity not supported on this platform (cpu_id={})", cpu_id);
+      "Thread affinity not supported on this platform for {} (cpu_id={})",
+      tag, cpu_id);
 #endif
 }
 

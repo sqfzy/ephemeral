@@ -33,9 +33,6 @@
 #include <thread>
 #include <vector>
 
-#include <cerrno>
-#include <sched.h>
-#include <system_error>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -979,25 +976,6 @@ private:
         }
     }
 
-    // -----------------------------------------------------------------------
-    // CPU affinity
-    // -----------------------------------------------------------------------
-
-    /// Pin the calling thread to a specific CPU core.
-    static void pin_this_thread(int cpu, const char* name) {
-        if (cpu < 0) return;
-        cpu_set_t cs;
-        CPU_ZERO(&cs);
-        CPU_SET(cpu, &cs);
-        if (sched_setaffinity(0, sizeof(cs), &cs) == 0) {
-            SPDLOG_LOGGER_INFO(detail::transport_logger(),
-                "{} thread pinned to CPU {}", name, cpu);
-        } else {
-            SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Failed to pin {} thread to CPU {}: {}",
-                name, cpu, std::generic_category().message(errno));
-        }
-    }
 
     // -----------------------------------------------------------------------
     // Connection establishment (reused by create() and reconnect)
@@ -1363,7 +1341,7 @@ private:
     // -----------------------------------------------------------------------
 
     void tx_loop() {
-        pin_this_thread(config_.tx_cpu, "TX");
+        eph::utils::set_thread_affinity(config_.tx_cpu, "TX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "TX loop started");
 
@@ -1533,7 +1511,7 @@ private:
     // -----------------------------------------------------------------------
 
     void rx_loop() {
-        pin_this_thread(config_.rx_cpu, "RX");
+        eph::utils::set_thread_affinity(config_.rx_cpu, "RX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 

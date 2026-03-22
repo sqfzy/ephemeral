@@ -144,29 +144,17 @@ end
 -- ===========================================================================
 -- examples
 -- ===========================================================================
-local dpdk_examples = {
-    dpdk_ws_echo_client = true,
-}
-
-local net_examples = {
-    socket_wss_client = true,
-}
-
-for _, file in ipairs(os.files("examples/**.cpp")) do
-    local name = path.basename(file)
-
-    target(name)
-        set_kind("binary")
-        set_group("examples")
-        set_default(false)
-        add_files(file)
-        if dpdk_examples[name] then
-            add_deps("eph-dpdk")
-        elseif net_examples[name] then
-            add_deps("eph-net")
-        else
-            add_deps("eph-containers")
-        end
-        add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-        set_symbols("debug")
-end
+-- Unified ws_echo_client: always links eph-net (socket backend),
+-- conditionally adds DPDK support when the dpdk package is available.
+target("ws_echo_client")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/ws_echo_client.cpp")
+    add_deps("eph-net")
+    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
+    set_symbols("debug")
+    if has_package("dpdk") then
+        add_deps("eph-dpdk")
+        add_defines("EPH_HAS_DPDK")
+    end
