@@ -1643,3 +1643,111 @@ TEST(FixBuilder, has_overflow_false_after_reset) {
     b.reset();
     EXPECT_FALSE(b.has_overflow());
 }
+
+// ===========================================================================
+// BasicMessageView<N> — custom capacity template parameter
+// ===========================================================================
+
+TEST(FixCustomCapacity, parse_with_small_capacity_overflows_earlier) {
+    // Build a body with 5 fields — exceeds capacity of 4
+    std::string body;
+    for (int i = 0; i < 5; ++i) {
+        body += std::to_string(5000 + i) + "=v\x01";
+    }
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    // Default capacity (128) should succeed
+    auto result_default = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result_default.has_value());
+    EXPECT_EQ(result_default->field_count(), 5u);
+
+    // Small capacity (4) should overflow
+    auto result_small = parse<4>(raw.data(), raw.size());
+    ASSERT_FALSE(result_small.has_value());
+    EXPECT_EQ(result_small.error(), ParseError::kFieldOverflow);
+}
+
+TEST(FixCustomCapacity, parse_with_large_capacity_handles_many_fields) {
+    // Build a body with 200 fields — exceeds default 128 but fits 256
+    std::string body;
+    body += "35=D\x01";
+    for (int i = 0; i < 199; ++i) {
+        body += std::to_string(5000 + i) + "=v\x01";
+    }
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    // Default capacity (128) should overflow
+    auto result_default = parse(raw.data(), raw.size());
+    ASSERT_FALSE(result_default.has_value());
+    EXPECT_EQ(result_default.error(), ParseError::kFieldOverflow);
+
+    // Large capacity (256) should succeed
+    auto result_large = parse<256>(raw.data(), raw.size());
+    ASSERT_TRUE(result_large.has_value());
+    EXPECT_EQ(result_large->field_count(), 200u);
+    EXPECT_EQ(result_large->kMaxFields, 256u);
+}
+
+TEST(FixCustomCapacity, dispatch_deduces_template_from_view) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse<16>(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    bool dispatched = false;
+    dispatch(*result, [&](auto tag_type, const auto& view) {
+        if constexpr (std::is_same_v<decltype(tag_type), msg::NewOrderSingle>) {
+            dispatched = true;
+            EXPECT_EQ(view.kMaxFields, 16u);
+            auto sym = view.get(tag::Symbol);
+            ASSERT_TRUE(sym.has_value());
+            EXPECT_EQ(*sym, "AAPL");
+        }
+    });
+    EXPECT_TRUE(dispatched);
+}
+
+TEST(FixCustomCapacity, parse_all_with_custom_capacity) {
+    std::string body1 = "35=D\x01" "55=AAPL\x01";
+    std::string body2 = "35=8\x01" "55=MSFT\x01";
+    auto raw1 = make_fix_msg("FIX.4.4", body1);
+    auto raw2 = make_fix_msg("FIX.4.4", body2);
+
+    std::vector<uint8_t> combined;
+    combined.insert(combined.end(), raw1.begin(), raw1.end());
+    combined.insert(combined.end(), raw2.begin(), raw2.end());
+
+    size_t msg_count = 0;
+    size_t consumed = parse_all<16>(combined.data(), combined.size(),
+        [&](const BasicMessageView<16>& view) {
+            ++msg_count;
+            EXPECT_EQ(view.kMaxFields, 16u);
+        });
+
+    EXPECT_EQ(msg_count, 2u);
+    EXPECT_EQ(consumed, combined.size());
+}
+
+TEST(FixCustomCapacity, formatter_works_with_custom_capacity) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse<16>(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    std::string formatted = std::format("{}", *result);
+    EXPECT_NE(formatted.find("35=D"), std::string::npos);
+    EXPECT_NE(formatted.find("55=AAPL"), std::string::npos);
+}
+
+TEST(FixCustomCapacity, basic_parser_class_with_custom_capacity) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    BasicParser<16> parser;
+    auto result = parser(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->kMaxFields, 16u);
+    EXPECT_EQ(result->field_count(), 2u);
+}
