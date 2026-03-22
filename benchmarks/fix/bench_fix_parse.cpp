@@ -204,11 +204,11 @@ static void BM_FixBuildMarketData(benchmark::State& state) {
         b.set(tag::SendingTime, "20260322-12:00:00.000");
         b.set(tag::MDReqID, "md-req-001");
         b.set(tag::Symbol, "TSLA");
-        b.set_int(268, 5);
+        b.set_int(tag::NoMDEntries, 5);
         for (int i = 0; i < 5; ++i) {
-            b.set_int(269, i % 2);
-            b.set_double(270, 200.00 + i * 0.25, 2);
-            b.set_int(271, (i + 1) * 100);
+            b.set_int(tag::MDEntryType, i % 2);
+            b.set_double(tag::MDEntryPx, 200.00 + i * 0.25, 2);
+            b.set_int(tag::MDEntrySize, (i + 1) * 100);
         }
         size_t len = b.finish("FIX.4.4");
         benchmark::DoNotOptimize(len);
