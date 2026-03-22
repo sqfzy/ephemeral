@@ -691,6 +691,20 @@ class BoundedQueue {
     [[nodiscard]] static constexpr size_t capacity() noexcept {
         return Capacity;
     }
+
+    /// 估计剩余可写入空间（Capacity - size()）。
+    /// 适用于批量写入前预检查：if (q.available_write() >= n) q.try_push_n(...)
+    /// @note 估计值，不保证跨线程一致性。
+    [[nodiscard]] size_t available_write() const noexcept {
+        size_t used = size();
+        return (used < Capacity) ? (Capacity - used) : 0;
+    }
+
+    /// 估计可读取的元素数量（等价于 size()，语义别名）。
+    /// @note 估计值，不保证跨线程一致性。
+    [[nodiscard]] size_t available_read() const noexcept {
+        return size();
+    }
 };
 
 }  // namespace eph::containers

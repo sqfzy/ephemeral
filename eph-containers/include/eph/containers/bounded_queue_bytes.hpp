@@ -390,12 +390,18 @@ class BoundedQueueBytes {
     void clear() noexcept { queue_.clear(); }
 
     [[nodiscard]] size_t size() const noexcept { return queue_.size(); }
-    
+
     [[nodiscard]] bool empty() const noexcept { return queue_.empty(); }
-    
+
     [[nodiscard]] bool full() const noexcept { return queue_.full(); }
-    
+
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
+
+    /// 估计剩余可写入空间
+    [[nodiscard]] size_t available_write() const noexcept { return queue_.available_write(); }
+
+    /// 估计可读取的消息数量
+    [[nodiscard]] size_t available_read() const noexcept { return queue_.available_read(); }
 
    private:
     BoundedQueue<DataWrap, Capacity> queue_;

@@ -556,6 +556,38 @@ public:
         return SendError::kOk;
     }
 
+    /// Send a WebSocket Ping frame to probe connection liveness.
+    ///
+    /// Optionally includes application payload (max 125 bytes per RFC 6455 §5.5).
+    /// The server MUST reply with a Pong frame echoing the same payload.
+    /// Use this for custom heartbeat strategies beyond the built-in ping_interval.
+    ///
+    /// @param payload      Optional ping payload data (nullptr for empty ping)
+    /// @param payload_len  Payload length (must be <= 125, truncated if larger)
+    /// @return SendError::kOk on success, or a specific error code
+    SendError send_ping(const void* payload = nullptr,
+                        size_t payload_len = 0) noexcept {
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+
+        // RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
+        payload_len = std::min(payload_len, size_t{125});
+        if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
+
+        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+            if (payload && payload_len > 0) {
+                std::memcpy(msg.data, payload, payload_len);
+            }
+            msg.len = static_cast<uint16_t>(payload_len);
+            msg.opcode = ws::opcode::kPing;
+        });
+
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return SendError::kQueueFull;
+        }
+        return SendError::kOk;
+    }
+
     /// Batch-send multiple messages (all-or-nothing semantics).
     ///
     /// Enqueues all messages with a single atomic tail update, amortizing

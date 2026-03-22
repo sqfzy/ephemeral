@@ -93,6 +93,42 @@ TYPED_TEST(BoundedQueueTest, FullEmptyStatus) {
     EXPECT_FALSE(queue.try_pop().has_value());
 }
 
+// available_write / available_read queries
+TYPED_TEST(BoundedQueueTest, AvailableWriteReadQueries) {
+    TypeParam queue;
+    const size_t cap = TypeParam::capacity();
+    BoundedTestData data;
+
+    // Empty queue: full write capacity, no read available
+    EXPECT_EQ(queue.available_write(), cap);
+    EXPECT_EQ(queue.available_read(), 0u);
+
+    // Push half
+    size_t half = cap / 2;
+    for (size_t i = 0; i < half; ++i) {
+        EXPECT_TRUE(queue.try_push(data));
+    }
+    EXPECT_EQ(queue.available_write(), cap - half);
+    EXPECT_EQ(queue.available_read(), half);
+
+    // Fill completely
+    for (size_t i = half; i < cap; ++i) {
+        EXPECT_TRUE(queue.try_push(data));
+    }
+    EXPECT_EQ(queue.available_write(), 0u);
+    EXPECT_EQ(queue.available_read(), cap);
+
+    // Pop one
+    EXPECT_TRUE(queue.try_pop().has_value());
+    EXPECT_EQ(queue.available_write(), 1u);
+    EXPECT_EQ(queue.available_read(), cap - 1);
+
+    // Clear
+    queue.clear();
+    EXPECT_EQ(queue.available_write(), cap);
+    EXPECT_EQ(queue.available_read(), 0u);
+}
+
 // 3. 批量操作 try_push_n / try_pop_n
 TYPED_TEST(BoundedQueueTest, BatchPushPopBasic) {
     TypeParam queue;
