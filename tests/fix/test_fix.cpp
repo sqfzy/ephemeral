@@ -1097,3 +1097,116 @@ TEST(FixParseAll, partial_message_at_end_stops) {
     EXPECT_EQ(count, 1u);
     EXPECT_EQ(consumed, raw1.size());
 }
+
+// ===========================================================================
+// set_timestamp() builder method
+// ===========================================================================
+
+TEST(FixBuilder, set_timestamp_epoch_zero) {
+    // 1970-01-01 00:00:00.000 UTC
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, 0);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::SendingTime).value(), "19700101-00:00:00.000");
+}
+
+TEST(FixBuilder, set_timestamp_known_date) {
+    // 2024-03-15 14:30:45.123 UTC
+    // Manually computed: 2024-03-15 is day 19797 from epoch
+    // 19797 * 86400 + 14*3600 + 30*60 + 45 = 1710513045
+    // In nanoseconds: 1710513045123000000
+    uint64_t epoch_ns = 1'710'513'045'123'000'000ULL;
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, epoch_ns);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::SendingTime).value(), "20240315-14:30:45.123");
+}
+
+TEST(FixBuilder, set_timestamp_transact_time) {
+    // Test with TransactTime tag (60)
+    // 2026-01-01 00:00:00.000 UTC = 1767225600 seconds
+    uint64_t epoch_ns = 1'767'225'600'000'000'000ULL;
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::TransactTime, epoch_ns);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::TransactTime).value(), "20260101-00:00:00.000");
+}
+
+TEST(FixBuilder, set_timestamp_millisecond_precision) {
+    // Verify millisecond precision: 999ms
+    // 1970-01-01 00:00:00.999 UTC
+    uint64_t epoch_ns = 999'000'000ULL;
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, epoch_ns);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::SendingTime).value(), "19700101-00:00:00.999");
+}
+
+TEST(FixBuilder, set_timestamp_end_of_day) {
+    // 1970-01-01 23:59:59.500 UTC
+    uint64_t epoch_ns = (23ULL*3600 + 59*60 + 59) * 1'000'000'000ULL + 500'000'000ULL;
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, epoch_ns);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::SendingTime).value(), "19700101-23:59:59.500");
+}
+
+TEST(FixBuilder, set_timestamp_format_length) {
+    // Verify the timestamp is exactly 21 characters: YYYYMMDD-HH:MM:SS.sss
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, 0);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get(tag::SendingTime).value();
+    EXPECT_EQ(ts.size(), 21u);
+    // Verify format: YYYYMMDD-HH:MM:SS.sss
+    EXPECT_EQ(ts[8], '-');
+    EXPECT_EQ(ts[11], ':');
+    EXPECT_EQ(ts[14], ':');
+    EXPECT_EQ(ts[17], '.');
+}

@@ -73,6 +73,64 @@ public:
         return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
 
+    /// Append a UTCTimestamp field formatted as "YYYYMMDD-HH:MM:SS.sss".
+    ///
+    /// FIX 4.4 UTCTimestamp format with millisecond precision.
+    /// @param t        Tag number (e.g. tag::SendingTime, tag::TransactTime)
+    /// @param epoch_ns Nanoseconds since Unix epoch (1970-01-01 00:00:00 UTC)
+    MessageBuilder& set_timestamp(uint32_t t, uint64_t epoch_ns) noexcept {
+        // Convert nanoseconds to components via integer arithmetic only.
+        // No gmtime, no floating point — keeps the zero-allocation guarantee.
+        uint64_t epoch_ms  = epoch_ns / 1'000'000;
+        uint64_t epoch_sec = epoch_ms / 1'000;
+        uint32_t millis    = static_cast<uint32_t>(epoch_ms % 1'000);
+
+        // Days since epoch and time-of-day
+        uint32_t day_sec   = static_cast<uint32_t>(epoch_sec % 86400);
+        uint32_t hour      = day_sec / 3600;
+        uint32_t minute    = (day_sec % 3600) / 60;
+        uint32_t second    = day_sec % 60;
+
+        // Civil date from day count (algorithm from Howard Hinnant)
+        int64_t  z  = static_cast<int64_t>(epoch_sec / 86400) + 719468;
+        int64_t  era = (z >= 0 ? z : z - 146096) / 146097;
+        uint64_t doe = static_cast<uint64_t>(z - era * 146097);
+        uint64_t yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+        int64_t  y   = static_cast<int64_t>(yoe) + era * 400;
+        uint64_t doy = doe - (365*yoe + yoe/4 - yoe/100);
+        uint64_t mp  = (5*doy + 2) / 153;
+        uint32_t day = static_cast<uint32_t>(doy - (153*mp + 2)/5 + 1);
+        uint32_t mon = static_cast<uint32_t>(mp < 10 ? mp + 3 : mp - 9);
+        if (mon <= 2) ++y;
+        uint32_t year = static_cast<uint32_t>(y);
+
+        // Format: "YYYYMMDD-HH:MM:SS.sss" (21 chars)
+        char tmp[24];
+        tmp[0]  = static_cast<char>('0' + (year / 1000) % 10);
+        tmp[1]  = static_cast<char>('0' + (year / 100) % 10);
+        tmp[2]  = static_cast<char>('0' + (year / 10) % 10);
+        tmp[3]  = static_cast<char>('0' + year % 10);
+        tmp[4]  = static_cast<char>('0' + mon / 10);
+        tmp[5]  = static_cast<char>('0' + mon % 10);
+        tmp[6]  = static_cast<char>('0' + day / 10);
+        tmp[7]  = static_cast<char>('0' + day % 10);
+        tmp[8]  = '-';
+        tmp[9]  = static_cast<char>('0' + hour / 10);
+        tmp[10] = static_cast<char>('0' + hour % 10);
+        tmp[11] = ':';
+        tmp[12] = static_cast<char>('0' + minute / 10);
+        tmp[13] = static_cast<char>('0' + minute % 10);
+        tmp[14] = ':';
+        tmp[15] = static_cast<char>('0' + second / 10);
+        tmp[16] = static_cast<char>('0' + second % 10);
+        tmp[17] = '.';
+        tmp[18] = static_cast<char>('0' + (millis / 100) % 10);
+        tmp[19] = static_cast<char>('0' + (millis / 10) % 10);
+        tmp[20] = static_cast<char>('0' + millis % 10);
+
+        return set(t, std::string_view(tmp, 21));
+    }
+
     /// Append a double-valued field with fixed-point precision.
     MessageBuilder& set_double(uint32_t t, double value, int precision = 2) noexcept {
         char tmp[32];
