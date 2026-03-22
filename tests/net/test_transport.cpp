@@ -702,6 +702,40 @@ TEST_F(TransportTest, BatchSendN) {
     EXPECT_GE(stats.tx_packets, 2u);
 }
 
+TEST_F(TransportTest, BatchSendNRejectsInvalidUtf8Text) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // First payload is valid UTF-8, second is invalid
+    std::vector<uint8_t> valid = {'h', 'e', 'l', 'l', 'o'};
+    std::vector<uint8_t> invalid = {0xFF, 0xFE};
+    std::span<const uint8_t> payloads[] = {valid, invalid};
+
+    auto err = tp->send_n(payloads, 2, ws::opcode::kText);
+    EXPECT_EQ(err, SendError::kInvalidUtf8);
+
+    // Verify no messages were enqueued (all-or-nothing)
+    EXPECT_EQ(tp->tx_queue_size(), 0u);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, BatchSendNAcceptsValidUtf8Text) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::vector<uint8_t> p1 = {'h', 'i'};
+    std::vector<uint8_t> p2 = {'o', 'k'};
+    std::span<const uint8_t> payloads[] = {p1, p2};
+
+    auto err = tp->send_n(payloads, 2, ws::opcode::kText);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
 // ===========================================================================
 // Stats tests
 // ===========================================================================

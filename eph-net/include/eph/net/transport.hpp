@@ -406,6 +406,11 @@ public:
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
+            // RFC 6455 §5.6: text frames must contain valid UTF-8
+            if (opcode == ws::opcode::kText &&
+                !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
+                return SendError::kInvalidUtf8;
+            }
         }
 
         // Write directly into queue slots — no temporary array needed.
