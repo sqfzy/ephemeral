@@ -180,9 +180,9 @@ public:
 
     /// Look up the nth occurrence (0-based) of a tag.
     /// Returns nullopt if fewer than n+1 occurrences exist.
-    /// Enables iteration over repeating group fields:
-    ///   for (size_t i = 0; i < msg.count(tag::MDEntryPx); ++i)
-    ///       auto px = msg.get_nth(tag::MDEntryPx, i);
+    ///
+    /// @note For iterating all occurrences, prefer for_each_matching() which
+    ///       is O(n) total vs. O(n*k) when calling get_nth() in a loop.
     [[nodiscard]] std::optional<std::string_view> get_nth(uint32_t t, size_t n) const noexcept {
         size_t seen = 0;
         for (size_t i = 0; i < count_; ++i) {
@@ -192,6 +192,20 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    /// Invoke callback for every occurrence of a tag. O(n) single pass.
+    /// Preferred over count()+get_nth() loop for iterating repeating groups.
+    ///
+    /// Usage:
+    ///   msg.for_each_matching(tag::MDEntryPx, [](std::string_view value) {
+    ///       double px = ...;
+    ///   });
+    template <typename Fn>
+    void for_each_matching(uint32_t t, Fn&& fn) const {
+        for (size_t i = 0; i < count_; ++i) {
+            if (fields_[i].tag == t) fn(fields_[i].value);
+        }
     }
 
     // -- Internal (used by parse()) --

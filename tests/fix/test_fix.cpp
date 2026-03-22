@@ -698,6 +698,38 @@ TEST(FixRepeatingGroup, get_nth_out_of_range_returns_nullopt) {
     EXPECT_FALSE(result->get_nth(tag::Price, 0).has_value());  // tag absent
 }
 
+TEST(FixRepeatingGroup, for_each_matching_collects_all_values) {
+    std::string body =
+        "35=W\x01"
+        "268=3\x01"
+        "270=100.00\x01"
+        "270=200.00\x01"
+        "270=300.00\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    std::vector<std::string> prices;
+    result->for_each_matching(tag::MDEntryPx, [&](std::string_view v) {
+        prices.emplace_back(v);
+    });
+    ASSERT_EQ(prices.size(), 3u);
+    EXPECT_EQ(prices[0], "100.00");
+    EXPECT_EQ(prices[1], "200.00");
+    EXPECT_EQ(prices[2], "300.00");
+}
+
+TEST(FixRepeatingGroup, for_each_matching_absent_tag_no_calls) {
+    std::string body = "35=D\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    size_t calls = 0;
+    result->for_each_matching(tag::Price, [&](std::string_view) { ++calls; });
+    EXPECT_EQ(calls, 0u);
+}
+
 // ===========================================================================
 // std::formatter<MessageView>
 // ===========================================================================
@@ -720,6 +752,13 @@ TEST(FixFormatter, message_view_format_single_field) {
 
     auto formatted = std::format("{}", *result);
     EXPECT_EQ(formatted, "35=D");
+}
+
+TEST(FixFormatter, message_view_format_empty) {
+    // A MessageView with 0 fields should format as empty string
+    MessageView empty_msg;
+    auto formatted = std::format("{}", empty_msg);
+    EXPECT_TRUE(formatted.empty());
 }
 
 TEST(FixFormatter, parse_error_format) {
