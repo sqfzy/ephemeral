@@ -607,6 +607,50 @@ public:
     // Lifecycle
     // -----------------------------------------------------------------------
 
+    /// Initiate a graceful WebSocket close handshake (RFC 6455 §7.1.1).
+    ///
+    /// Sends a Close frame with the given status code and waits for the
+    /// server to echo a Close response, up to the specified timeout.
+    /// After the server responds (or timeout expires), calls stop().
+    ///
+    /// This is the RFC-compliant way to shut down: the client sends Close,
+    /// the server echoes Close, then both sides close the TCP connection.
+    ///
+    /// @param status_code  Close reason code (default: 1000 Normal Closure)
+    /// @param reason       Optional human-readable close reason (max 123 bytes)
+    /// @param timeout      Maximum time to wait for server Close response
+    /// @return true if server responded with Close before timeout
+    bool close_gracefully(
+            uint16_t status_code = ws::close_code::kNormal,
+            std::string_view reason = "client shutdown",
+            std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) noexcept {
+        auto err = send_close(status_code, reason);
+        if (err != SendError::kOk) {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "close_gracefully: send_close failed: {}", err);
+            stop();
+            return false;
+        }
+
+        // Wait for the server Close response (RX thread sets closing_=true)
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (running_.load(std::memory_order_acquire) &&
+               !closing_.load(std::memory_order_acquire)) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "close_gracefully: timed out waiting for server Close "
+                    "response ({}ms)", timeout.count());
+                stop();
+                return false;
+            }
+            std::this_thread::yield();
+        }
+
+        // Server responded with Close — stop cleanly
+        stop();
+        return true;
+    }
+
     /// Stop the transport gracefully. Sends WebSocket Close frame.
     ///
     /// Thread safety: waits for TX/RX threads to exit BEFORE touching
