@@ -52,6 +52,18 @@ inline constexpr uint16_t kPolicyViolation  = 1008;
 inline constexpr uint16_t kMessageTooBig    = 1009;
 } // namespace close_code
 
+/// Check if a close status code is valid for sending per RFC 6455 §7.4.
+/// Valid ranges: 1000-1003, 1007-1011, 3000-4999.
+/// Codes 1004-1006 and 1015 are reserved and MUST NOT be sent in a Close frame.
+constexpr bool is_valid_close_code(uint16_t code) noexcept {
+    // Standard codes that may be sent
+    if (code >= 1000 && code <= 1003) return true;
+    if (code >= 1007 && code <= 1011) return true;
+    // Registered (IANA) and private-use ranges
+    if (code >= 3000 && code <= 4999) return true;
+    return false;
+}
+
 inline constexpr uint8_t kFinBit  = 0x80;
 inline constexpr uint8_t kMaskBit = 0x80;
 

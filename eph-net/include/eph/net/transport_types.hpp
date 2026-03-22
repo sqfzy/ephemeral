@@ -30,6 +30,7 @@ enum class SendError : int8_t {
     kNotConnected    = -2,  ///< Transport not running
     kQueueFull       = -3,  ///< TX queue is full (transient backpressure)
     kInvalidUtf8     = -4,  ///< Text frame payload is not valid UTF-8 (RFC 6455 §5.6)
+    kInvalidCloseCode = -5, ///< Close status code is not valid per RFC 6455 §7.4
 };
 
 /// Return a human-readable name for a SendError.
@@ -40,6 +41,7 @@ constexpr const char* send_error_name(SendError e) noexcept {
         case SendError::kNotConnected:    return "NOT_CONNECTED";
         case SendError::kQueueFull:       return "QUEUE_FULL";
         case SendError::kInvalidUtf8:     return "INVALID_UTF8";
+        case SendError::kInvalidCloseCode: return "INVALID_CLOSE_CODE";
     }
     return "UNKNOWN";
 }
@@ -203,6 +205,14 @@ struct TransportConfig {
             return "pong_timeout must be >= 0 (0 disables pong timeout)";
         if (pong_timeout.count() > 0 && ping_interval.count() <= 0)
             return "pong_timeout requires ping_interval > 0";
+        if (!extra_headers.empty()) {
+            // HTTP headers must end with \r\n for correct framing
+            if (extra_headers.size() < 2 ||
+                extra_headers[extra_headers.size() - 2] != '\r' ||
+                extra_headers[extra_headers.size() - 1] != '\n') {
+                return "extra_headers must end with \\r\\n";
+            }
+        }
         return {};
     }
 };

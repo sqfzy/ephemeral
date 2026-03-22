@@ -271,6 +271,11 @@ public:
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > MaxPayload) return SendError::kMessageTooLarge;
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        // RFC 6455 §5.6: text frames must contain valid UTF-8
+        if (opcode == ws::opcode::kText &&
+            !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
+            return SendError::kInvalidUtf8;
+        }
 
         bool ok = tx_queue_.try_produce_for([&](TxMsg& msg) {
             std::memcpy(msg.data, data, len);
@@ -293,6 +298,35 @@ public:
         return send_for(data.data(), data.size(), timeout, opcode);
     }
 
+    /// Send a WebSocket text frame with timeout and UTF-8 validation.
+    /// Combines send_text()'s UTF-8 check with send_for()'s backpressure wait.
+    template <typename Rep, typename Period>
+    SendError send_text_for(const void* data, size_t len,
+                            std::chrono::duration<Rep, Period> timeout) noexcept {
+        return send_for(data, len, timeout, ws::opcode::kText);
+    }
+
+    /// Send a string_view as a WebSocket text frame with timeout.
+    template <typename Rep, typename Period>
+    SendError send_text_for(std::string_view sv,
+                            std::chrono::duration<Rep, Period> timeout) noexcept {
+        return send_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
+    }
+
+    /// Send a WebSocket binary frame with timeout (convenience, explicit intent).
+    template <typename Rep, typename Period>
+    SendError send_binary_for(const void* data, size_t len,
+                              std::chrono::duration<Rep, Period> timeout) noexcept {
+        return send_for(data, len, timeout, ws::opcode::kBinary);
+    }
+
+    /// Send a span as a WebSocket binary frame with timeout.
+    template <typename Rep, typename Period>
+    SendError send_binary_for(std::span<const uint8_t> data,
+                              std::chrono::duration<Rep, Period> timeout) noexcept {
+        return send_for(data.data(), data.size(), timeout, ws::opcode::kBinary);
+    }
+
     /// Send a WebSocket Close frame with a custom status code and reason.
     ///
     /// This enqueues the Close frame for transmission by the TX thread.
@@ -305,6 +339,7 @@ public:
     SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!ws::is_valid_close_code(status_code)) return SendError::kInvalidCloseCode;
 
         // Close payload: 2-byte status code + optional reason (max 123 chars per RFC 6455 §5.5)
         size_t reason_len = std::min(reason.size(), size_t{123});
@@ -483,18 +518,16 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     size_t recv_n(F&& callback, size_t max_count) {
-        size_t count = 0;
-        while (count < max_count) {
-            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+        return rx_queue_.try_consume_n(max_count,
+            [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback), msg.data, msg.len);
             });
-            if (!got) break;
-            ++count;
-        }
-        return count;
     }
 
     /// Batch-receive up to max_count messages with opcode (non-blocking).
+    ///
+    /// Uses try_consume_n for amortized atomic operations (single head
+    /// update for the entire batch, matching send_n's try_produce_n).
     ///
     /// @param callback    Called with (data_ptr, len, opcode) for each message
     /// @param max_count   Maximum number of messages to consume
@@ -502,16 +535,11 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
     size_t recv_n(F&& callback, size_t max_count) {
-        size_t count = 0;
-        while (count < max_count) {
-            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+        return rx_queue_.try_consume_n(max_count,
+            [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback),
                             msg.data, msg.len, msg.opcode);
             });
-            if (!got) break;
-            ++count;
-        }
-        return count;
     }
 
     /// Drain all available messages (non-blocking).
