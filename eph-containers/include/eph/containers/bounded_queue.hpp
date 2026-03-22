@@ -8,13 +8,12 @@
 #include <optional>
 #include <span>
 
-#include "eph/base/concepts.hpp"
+#include "eph/containers/concepts.hpp"
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/cpu.hpp"
 
 namespace eph::containers {
 
-using eph::base::TrivialData;
 using eph::utils::Align;
 using eph::utils::cpu_relax;
 

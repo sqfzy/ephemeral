@@ -21,18 +21,10 @@ option("use_numa")
     set_description("Enable NUMA support")
     add_defines("USE_NUMA")
 
-target("eph-base")
-    set_kind("headeronly")
-    add_includedirs("eph-base/include", { public = true })
-    add_headerfiles("eph-base/include/(eph/base/**.hpp)")
-    add_rules("utils.install.cmake_importfiles")
-    add_rules("utils.install.pkgconfig_importfiles")
-
 target("eph-utils")
     set_kind("headeronly")
     add_includedirs("eph-utils/include", { public = true })
     add_headerfiles("eph-utils/include/(eph/utils/**.hpp)")
-    add_deps("eph-base", { public = true })
     add_packages("spdlog", { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
@@ -41,7 +33,7 @@ target("eph-containers")
     set_kind("headeronly")
     add_includedirs("eph-containers/include", { public = true })
     add_headerfiles("eph-containers/include/(eph/containers/**.hpp)")
-    add_deps("eph-base", "eph-utils", { public = true })
+    add_deps("eph-utils", { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
@@ -51,7 +43,7 @@ target("eph-net")
     set_kind("headeronly")
     add_includedirs("eph-net/include", { public = true })
     add_headerfiles("eph-net/include/(eph/net/**.hpp)")
-    add_deps("eph-base", "eph-utils", "eph-containers", { public = true })
+    add_deps("eph-utils", "eph-containers", { public = true })
     add_packages("spdlog", "aws-lc", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
@@ -63,9 +55,9 @@ target("eph-dpdk")
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
     -- DPDK backend only needs the TcpTransport concept and public types from
     -- eph-net (tcp_concept.hpp, transport_types.hpp), not TLS/WS internals.
-    -- We add eph-net's include path directly and depend on eph-base/utils/containers
+    -- We add eph-net's include path directly and depend on eph-utils/containers
     -- to avoid inheriting eph-net's aws-lc package dependency.
-    add_deps("eph-base", "eph-utils", "eph-containers", { public = true })
+    add_deps("eph-utils", "eph-containers", { public = true })
     add_includedirs("eph-net/include", { public = true })
     add_packages("spdlog", { public = true })
     -- aws-lc is optional: only needed when using Transport<TcpSession> aliases
@@ -81,29 +73,30 @@ target("eph-dpdk")
 -- benchmarks
 -- ===========================================================================
 
--- WS pipeline benchmark — needs eph-net (aws-lc headers) + eph-dpdk (net_header) + Google Benchmark
-target("bench_ws_pipeline")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/bench_ws_pipeline.cpp")
-    add_deps("eph-dpdk")
-    add_packages("benchmark")
+-- Benchmark dependency map: each layer depends on its own module
+local bench_deps = {
+    -- DPDK layer (TCP header + E2E pipeline)
+    bench_tcp_header        = "eph-dpdk",
+    bench_pipeline          = "eph-dpdk",
+    -- Net layer (WS, TLS, transport pipeline)
+    bench_ws                = "eph-net",
+    bench_tls               = "eph-net",
+    bench_transport_pipeline = "eph-net",
+}
 
 for _, file in ipairs(os.files("benchmarks/**.cpp")) do
     local name = path.basename(file)
-    if name == "bench_ws_pipeline" then goto continue end
 
     target(name)
         set_kind("binary")
         set_group("benchmarks")
         set_default(false)
         add_files(file)
-        add_deps("eph-containers")
-        add_packages("tabulate")
+        add_deps(bench_deps[name] or "eph-containers")
         add_packages("benchmark")
-
-    ::continue::
+        if not bench_deps[name] then
+            add_packages("tabulate")
+        end
 end
 
 -- ===========================================================================
@@ -140,10 +133,9 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         elseif net_tests[name] then
             add_deps("eph-net")
         else
-            -- Default: add both for safety (containers, utils tests don't need either)
+            -- Default: containers + utils for generic tests
             add_deps("eph-containers")
             add_deps("eph-utils")
-            add_deps("eph-base")
         end
         add_packages("gtest")
         add_defines("SPDLOG_NO_EXCEPTIONS")

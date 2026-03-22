@@ -40,7 +40,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include "eph/base/cache.hpp"
+#include "eph/utils/alignment.hpp"
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/record.hpp"
@@ -62,7 +62,7 @@ namespace detail {
 /// Message passed from application thread to TX thread via SPSC queue.
 /// Fixed-size to satisfy TrivialData constraint.
 template <size_t MaxPayload>
-struct alignas(eph::base::CACHE_LINE_SIZE) TxMessage {
+struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
     uint8_t  data[MaxPayload]{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
@@ -74,7 +74,7 @@ struct alignas(eph::base::CACHE_LINE_SIZE) TxMessage {
 
 /// Message passed from RX processing to application via SPSC queue.
 template <size_t MaxPayload>
-struct alignas(eph::base::CACHE_LINE_SIZE) RxMessage {
+struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
     uint8_t  data[MaxPayload]{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;

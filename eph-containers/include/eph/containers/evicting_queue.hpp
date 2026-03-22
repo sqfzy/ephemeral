@@ -12,15 +12,13 @@
 #include <type_traits>
 #include <utility>
 
-#include "eph/base/cache.hpp"
-#include "eph/base/concepts.hpp"
+#include "eph/containers/concepts.hpp"
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/cpu.hpp"
 
 namespace eph::containers {
 
-using eph::base::CACHE_LINE_SIZE;
-using eph::base::TrivialData;
+using eph::utils::CACHE_LINE_SIZE;
 using eph::utils::Align;
 using eph::utils::cpu_relax;
 
