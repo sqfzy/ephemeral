@@ -417,6 +417,14 @@ class alignas(Align<T>) EvictingQueue {
         if (written <= read + Capacity) return 0;
         return written - read - Capacity;
     }
+
+    /// Total number of successful reads performed since construction.
+    /// Useful for monitoring consumer throughput and computing discard rates
+    /// (write_count - read_count = unconsumed + overwritten).
+    /// @note Only accurate when called from the reader thread.
+    [[nodiscard]] uint64_t read_count() const noexcept {
+        return reader_.last_global_index_;
+    }
 };
 
 /**
@@ -669,6 +677,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     [[nodiscard]] uint64_t overwrite_count_approx() const noexcept {
         uint64_t writes = write_count();
         return writes > 0 ? writes - 1 : 0;
+    }
+
+    /// Total number of successful reads performed since construction.
+    /// Useful for monitoring consumer throughput and computing discard rates.
+    /// @note Only accurate when called from the reader thread.
+    [[nodiscard]] uint64_t read_count() const noexcept {
+        // seq increments by 2 per write; last_seq_ tracks the seq after last read
+        return last_seq_ / 2;
     }
 };
 

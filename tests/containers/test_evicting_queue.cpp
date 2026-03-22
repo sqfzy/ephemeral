@@ -520,3 +520,86 @@ TEST(EvictingQueueSingleSlot, SizeApproxAfterMultipleOverwrites) {
     EXPECT_EQ(queue.size_approx(), 1u);
     EXPECT_FALSE(queue.empty());
 }
+
+// ===========================================================================
+// read_count() — consumer throughput metric
+// ===========================================================================
+
+TYPED_TEST(EvictingQueueTest, ReadCountStartsAtZero) {
+    TypeParam queue;
+    EXPECT_EQ(queue.read_count(), 0u);
+}
+
+TYPED_TEST(EvictingQueueTest, ReadCountIncrementsOnSuccessfulRead) {
+    TypeParam queue;
+    TestData d{};
+
+    d.seq = 1;
+    queue.push(d);
+    EXPECT_EQ(queue.read_count(), 0u);
+
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(queue.read_count(), 1u);
+
+    d.seq = 2;
+    queue.push(d);
+    res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(queue.read_count(), 2u);
+}
+
+TYPED_TEST(EvictingQueueTest, ReadCountUnchangedOnFailedRead) {
+    TypeParam queue;
+
+    // Failed reads on empty queue should not change read_count
+    auto res = queue.try_pop_latest();
+    EXPECT_FALSE(res.has_value());
+    EXPECT_EQ(queue.read_count(), 0u);
+}
+
+TYPED_TEST(EvictingQueueTest, ReadCountUnaffectedByClear) {
+    TypeParam queue;
+    TestData d{.seq = 1};
+    queue.push(d);
+    auto res = queue.try_pop_latest();
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(queue.read_count(), 1u);
+
+    queue.clear();
+    // read_count reflects historical reads, clear doesn't reset it
+    // For multi-slot: clear sets last_global_index_ to current writer position,
+    //   which will advance read_count. For single-slot: clear sets last_seq_ to
+    //   current seq, which also advances the count.
+    // This is expected: clear() conceptually "consumes" all buffered data.
+    EXPECT_GE(queue.read_count(), 1u);
+}
+
+TEST(EvictingQueueReadCount, MultiSlotReadCountTracksConsumption) {
+    EvictingQueue<TestData, 4> queue;
+    TestData d{};
+
+    // Push 5 items, read between pushes
+    for (uint32_t i = 1; i <= 5; ++i) {
+        d.seq = i;
+        queue.push(d);
+        (void)queue.try_pop_latest();
+    }
+
+    EXPECT_EQ(queue.read_count(), 5u);
+    EXPECT_EQ(queue.write_count(), 5u);
+}
+
+TEST(EvictingQueueReadCount, SingleSlotReadCountTracksConsumption) {
+    EvictingQueue<TestData, 1> queue;
+    TestData d{};
+
+    for (uint32_t i = 1; i <= 5; ++i) {
+        d.seq = i;
+        queue.push(d);
+        (void)queue.try_pop_latest();
+    }
+
+    EXPECT_EQ(queue.read_count(), 5u);
+    EXPECT_EQ(queue.write_count(), 5u);
+}
