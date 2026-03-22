@@ -12,9 +12,23 @@
 #include <format>
 #include <string_view>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include "eph/itch/messages.hpp"
 
 namespace eph::itch {
+
+namespace detail {
+inline std::shared_ptr<spdlog::logger> itch_parser_logger() {
+    static auto l = [] {
+        auto lg = spdlog::get("itch.parser");
+        if (!lg) lg = spdlog::stdout_color_mt("itch.parser");
+        return lg;
+    }();
+    return l;
+}
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // Parse errors
@@ -134,8 +148,18 @@ parse(const uint8_t* data, size_t len) noexcept {
     const uint8_t type = data[0];
     const size_t  expected = message_size(type);
 
-    if (expected == 0) return std::unexpected(ParseError::kUnknownType);
-    if (len < expected) return std::unexpected(ParseError::kTruncated);
+    if (expected == 0) {
+        SPDLOG_LOGGER_WARN(detail::itch_parser_logger(),
+            "ITCH parse: unknown message type=0x{:02x} ('{:c}'), len={}",
+            type, static_cast<char>(type), len);
+        return std::unexpected(ParseError::kUnknownType);
+    }
+    if (len < expected) {
+        SPDLOG_LOGGER_WARN(detail::itch_parser_logger(),
+            "ITCH parse: truncated {} message: have {} bytes, need {}",
+            message_type_name(type), len, expected);
+        return std::unexpected(ParseError::kTruncated);
+    }
 
     return MessageView{
         .msg_type = type,

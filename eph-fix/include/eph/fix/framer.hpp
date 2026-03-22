@@ -10,10 +10,24 @@
 #include <cstdint>
 #include <cstring>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include "eph/fix/parser.hpp"
 #include "eph/net/framer_concept.hpp"
 
 namespace eph::fix {
+
+namespace detail {
+inline std::shared_ptr<spdlog::logger> fix_framer_logger() {
+    static auto l = [] {
+        auto lg = spdlog::get("fix.framer");
+        if (!lg) lg = spdlog::stdout_color_mt("fix.framer");
+        return lg;
+    }();
+    return l;
+}
+} // namespace detail
 
 /// FIX protocol framer -- finds message boundaries by scanning for the
 /// CheckSum tag ("10=XXX\x01") in the byte stream.
@@ -51,6 +65,9 @@ public:
 
         // Must start with "8="
         if (msg[0] != '8' || msg[1] != '=') {
+            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                "FIX frame missing BeginString: first bytes=0x{:02x}{:02x}, len={}",
+                static_cast<uint8_t>(msg[0]), static_cast<uint8_t>(msg[1]), len);
             return std::unexpected(eph::net::FrameError::kInvalidFormat);
         }
 
@@ -63,6 +80,9 @@ public:
         // Must be "9=" (BodyLength)
         if (p + 2 > end) return std::unexpected(eph::net::FrameError::kIncomplete);
         if (p[0] != '9' || p[1] != '=') {
+            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                "FIX frame missing BodyLength tag: expected '9=' at offset {}, len={}",
+                static_cast<size_t>(p - msg), len);
             return std::unexpected(eph::net::FrameError::kInvalidFormat);
         }
         p += 2;
@@ -72,6 +92,8 @@ public:
         while (p < end && *p != '\x01') {
             char c = *p++;
             if (c < '0' || c > '9') {
+                SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                    "FIX frame BodyLength contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
             }
             body_length = body_length * 10 + static_cast<size_t>(c - '0');
@@ -88,9 +110,14 @@ public:
         // Verify CheckSum field presence and value
         const char* cs = msg + header_len + body_length;
         if (cs[0] != '1' || cs[1] != '0' || cs[2] != '=') {
+            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                "FIX frame CheckSum field malformed: expected '10=' at offset {}, body_length={}",
+                header_len + body_length, body_length);
             return std::unexpected(eph::net::FrameError::kInvalidFormat);
         }
         if (cs[6] != '\x01') {
+            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                "FIX frame CheckSum field missing trailing SOH, body_length={}", body_length);
             return std::unexpected(eph::net::FrameError::kInvalidFormat);
         }
 
@@ -99,6 +126,8 @@ public:
         for (size_t i = 3; i < 6; ++i) {
             char c = cs[i];
             if (c < '0' || c > '9') {
+                SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                    "FIX frame CheckSum value contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
             }
             declared_cs = declared_cs * 10 + static_cast<uint32_t>(c - '0');
@@ -108,6 +137,9 @@ public:
         size_t cs_body_len = header_len + body_length;
         uint8_t computed = compute_checksum(data, cs_body_len);
         if (computed != static_cast<uint8_t>(declared_cs)) {
+            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                "FIX frame checksum mismatch: declared={}, computed={}, body_length={}",
+                declared_cs, computed, body_length);
             return std::unexpected(eph::net::FrameError::kInvalidFormat);
         }
 

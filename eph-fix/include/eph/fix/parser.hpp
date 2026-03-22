@@ -17,9 +17,23 @@
 #include <string_view>
 #include <type_traits>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include "eph/fix/tags.hpp"
 
 namespace eph::fix {
+
+namespace detail {
+inline std::shared_ptr<spdlog::logger> fix_parser_logger() {
+    static auto l = [] {
+        auto lg = spdlog::get("fix.parser");
+        if (!lg) lg = spdlog::stdout_color_mt("fix.parser");
+        return lg;
+    }();
+    return l;
+}
+} // namespace detail
 
 /// Error codes from parse().
 enum class ParseError : uint8_t {
@@ -48,11 +62,16 @@ struct Field {
 
 /// Zero-copy view of a parsed FIX message.
 ///
-/// Stores up to kMaxFields fields on the stack. All string_view values
+/// Stores up to MaxFields fields on the stack. All string_view values
 /// reference the original input buffer, so the buffer must outlive this object.
-class MessageView {
+///
+/// @tparam MaxFieldsV  Maximum number of fields (default 128). Increase for
+///                     large FIX messages (e.g. market data snapshots with
+///                     many repeating groups).
+template <size_t MaxFieldsV = 128>
+class BasicMessageView {
 public:
-    static constexpr size_t kMaxFields = 128;
+    static constexpr size_t kMaxFields = MaxFieldsV;
 
     /// Number of parsed fields (excluding BeginString, BodyLength, CheckSum).
     [[nodiscard]] size_t field_count() const noexcept { return count_; }
@@ -326,6 +345,9 @@ public:
     }
 };
 
+/// Default MessageView with 128-field capacity (sufficient for most FIX messages).
+using MessageView = BasicMessageView<>;
+
 /// Parse a raw tag number from decimal ASCII digits.
 /// Advances `p` past the '=' delimiter. Returns 0 on failure.
 /// FIX tag numbers are small (1–99999 in practice), but we guard against
@@ -411,12 +433,14 @@ inline bool verify_checksum(const uint8_t* data, size_t len) noexcept {
 /// The parser scans for SOH (0x01) delimiters, extracts tag=value pairs,
 /// and validates the message structure (BeginString, BodyLength, CheckSum).
 ///
+/// @tparam MaxFields  Maximum number of fields in the parsed view (default 128)
 /// @param data  Pointer to raw FIX bytes (may contain multiple messages)
 /// @param len   Number of available bytes
-/// @return MessageView on success, ParseError on failure
+/// @return BasicMessageView on success, ParseError on failure
 ///
 /// On kIncomplete, the caller should wait for more data and retry.
-inline std::expected<MessageView, ParseError>
+template <size_t MaxFields = 128>
+inline std::expected<BasicMessageView<MaxFields>, ParseError>
 parse(const uint8_t* data, size_t len) noexcept {
     if (len == 0) return std::unexpected(ParseError::kIncomplete);
 
@@ -426,7 +450,11 @@ parse(const uint8_t* data, size_t len) noexcept {
 
     // -- First field must be BeginString (tag 8) --
     uint32_t t1 = parse_tag_number(p, end);
-    if (t1 != tag::BeginString) return std::unexpected(ParseError::kInvalidFormat);
+    if (t1 != tag::BeginString) {
+        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+            "FIX parse: first tag is {} (expected 8=BeginString), len={}", t1, len);
+        return std::unexpected(ParseError::kInvalidFormat);
+    }
 
     const char* v1_start = p;
     while (p != end && *p != '\x01') ++p;
@@ -437,7 +465,11 @@ parse(const uint8_t* data, size_t len) noexcept {
     // -- Second field must be BodyLength (tag 9) --
     if (p >= end) return std::unexpected(ParseError::kIncomplete);
     uint32_t t2 = parse_tag_number(p, end);
-    if (t2 != tag::BodyLength) return std::unexpected(ParseError::kInvalidFormat);
+    if (t2 != tag::BodyLength) {
+        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+            "FIX parse: second tag is {} (expected 9=BodyLength), len={}", t2, len);
+        return std::unexpected(ParseError::kInvalidFormat);
+    }
 
     const char* v2_start = p;
     while (p != end && *p != '\x01') ++p;
@@ -448,7 +480,11 @@ parse(const uint8_t* data, size_t len) noexcept {
     // Parse body length value
     size_t body_length = 0;
     for (char c : body_len_str) {
-        if (c < '0' || c > '9') return std::unexpected(ParseError::kInvalidFormat);
+        if (c < '0' || c > '9') {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: BodyLength contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
+            return std::unexpected(ParseError::kInvalidFormat);
+        }
         body_length = body_length * 10 + static_cast<size_t>(c - '0');
     }
 
@@ -463,9 +499,14 @@ parse(const uint8_t* data, size_t len) noexcept {
     // Verify the checksum
     const char* cs_field = body_start + body_length;
     if (cs_field[0] != '1' || cs_field[1] != '0' || cs_field[2] != '=') {
+        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+            "FIX parse: CheckSum field malformed at offset {}, body_length={}",
+            header_len + body_length, body_length);
         return std::unexpected(ParseError::kInvalidFormat);
     }
     if (cs_field[6] != '\x01') {
+        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+            "FIX parse: CheckSum field missing trailing SOH, body_length={}", body_length);
         return std::unexpected(ParseError::kInvalidFormat);
     }
 
@@ -473,7 +514,11 @@ parse(const uint8_t* data, size_t len) noexcept {
     uint32_t declared_cs = 0;
     for (int i = 3; i < 6; ++i) {
         char c = cs_field[i];
-        if (c < '0' || c > '9') return std::unexpected(ParseError::kInvalidFormat);
+        if (c < '0' || c > '9') {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: CheckSum value contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
+            return std::unexpected(ParseError::kInvalidFormat);
+        }
         declared_cs = declared_cs * 10 + static_cast<uint32_t>(c - '0');
     }
 
@@ -482,11 +527,14 @@ parse(const uint8_t* data, size_t len) noexcept {
     uint8_t computed_cs = compute_checksum(data, cs_body_len);
 
     if (computed_cs != static_cast<uint8_t>(declared_cs)) {
+        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+            "FIX parse: checksum mismatch: declared={}, computed={}, body_length={}",
+            declared_cs, computed_cs, body_length);
         return std::unexpected(ParseError::kChecksumMismatch);
     }
 
-    // Now parse body fields into MessageView
-    MessageView view;
+    // Now parse body fields into BasicMessageView
+    BasicMessageView<MaxFields> view;
     view.total_len_ = total_needed;
 
     const char* bp = body_start;
@@ -494,16 +542,26 @@ parse(const uint8_t* data, size_t len) noexcept {
 
     while (bp < body_end) {
         uint32_t field_tag = parse_tag_number(bp, body_end);
-        if (field_tag == 0) return std::unexpected(ParseError::kInvalidFormat);
+        if (field_tag == 0) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: malformed tag at body offset {}", static_cast<size_t>(bp - body_start));
+            return std::unexpected(ParseError::kInvalidFormat);
+        }
 
         const char* val_start = bp;
         while (bp < body_end && *bp != '\x01') ++bp;
-        if (bp >= body_end) return std::unexpected(ParseError::kInvalidFormat);
+        if (bp >= body_end) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: field tag={} value missing SOH delimiter", field_tag);
+            return std::unexpected(ParseError::kInvalidFormat);
+        }
 
         std::string_view val(val_start, static_cast<size_t>(bp - val_start));
         ++bp; // skip SOH
 
         if (!view.push(field_tag, val)) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: field overflow at tag={}, count={}", field_tag, view.field_count());
             return std::unexpected(ParseError::kFieldOverflow);
         }
     }
@@ -517,21 +575,22 @@ parse(const uint8_t* data, size_t len) noexcept {
 /// Stops on the first parse error or when the buffer is exhausted.
 /// Return false from the callback to stop early.
 ///
+/// @tparam MaxFields  Maximum number of fields per message (default 128)
 /// @param data     Pointer to a buffer of concatenated FIX messages
 /// @param len      Number of available bytes
-/// @param callback Called with (const MessageView&) for each parsed message.
+/// @param callback Called with (const BasicMessageView<MaxFields>&) for each parsed message.
 ///                 Return true to continue, false to stop early.
 /// @return Number of bytes successfully consumed (sum of parsed message lengths)
-template <typename Fn>
-    requires std::invocable<Fn, const MessageView&>
+template <size_t MaxFields = 128, typename Fn>
+    requires std::invocable<Fn, const BasicMessageView<MaxFields>&>
 size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
-    noexcept(callback(std::declval<const MessageView&>()))) {
+    noexcept(callback(std::declval<const BasicMessageView<MaxFields>&>()))) {
     size_t offset = 0;
     while (offset < len) {
-        auto result = parse(data + offset, len - offset);
+        auto result = parse<MaxFields>(data + offset, len - offset);
         if (!result) break;
 
-        if constexpr (std::is_same_v<std::invoke_result_t<Fn, const MessageView&>, bool>) {
+        if constexpr (std::is_same_v<std::invoke_result_t<Fn, const BasicMessageView<MaxFields>&>, bool>) {
             if (!callback(*result)) {
                 offset += result->total_len();
                 break;
@@ -545,14 +604,20 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
 }
 
 /// Non-owning parser class for stateless usage or future extension.
-class Parser {
+///
+/// @tparam MaxFields  Maximum number of fields per message (default 128)
+template <size_t MaxFields = 128>
+class BasicParser {
 public:
     /// Parse a FIX message from raw bytes.
-    [[nodiscard]] std::expected<MessageView, ParseError>
+    [[nodiscard]] std::expected<BasicMessageView<MaxFields>, ParseError>
     operator()(const uint8_t* data, size_t len) const noexcept {
-        return parse(data, len);
+        return parse<MaxFields>(data, len);
     }
 };
+
+/// Default Parser with 128-field capacity.
+using Parser = BasicParser<>;
 
 // ---------------------------------------------------------------------------
 // Tag types for type-safe dispatch
@@ -588,16 +653,16 @@ struct Unknown {};
 ///
 /// Usage with overload set:
 ///   struct MyHandler {
-///       void operator()(fix::msg::NewOrderSingle, const fix::MessageView& v) { ... }
-///       void operator()(fix::msg::ExecutionReport, const fix::MessageView& v) { ... }
-///       template <typename T>
-///       void operator()(T, const fix::MessageView&) { /* default: ignore */ }
+///       void operator()(fix::msg::NewOrderSingle, const auto& v) { ... }
+///       void operator()(fix::msg::ExecutionReport, const auto& v) { ... }
+///       template <typename T, typename V>
+///       void operator()(T, const V&) { /* default: ignore */ }
 ///   };
 ///   fix::dispatch(msg_view, MyHandler{});
 ///
 /// If MsgType is missing or unrecognized, msg::Unknown is dispatched.
-template <typename Handler>
-decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
+template <size_t MaxFields = 128, typename Handler>
+decltype(auto) dispatch(const BasicMessageView<MaxFields>& view, Handler&& handler) {
     auto mt = view.msg_type();
     if (!mt || mt->empty()) {
         return handler(msg::Unknown{}, view);
@@ -631,16 +696,16 @@ struct std::formatter<eph::fix::ParseError> : std::formatter<std::string_view> {
     }
 };
 
-/// std::formatter specialization for fix::MessageView.
+/// std::formatter specialization for fix::BasicMessageView.
 ///
 /// Formats a parsed FIX message as "tag=value|tag=value|..." with pipe delimiters.
 /// Tag numbers are emitted as-is (use tag::tag_name() separately for human-readable names).
 /// Example output: "35=D|49=SENDER|56=TARGET|55=AAPL|54=1|44=150.50"
-template <>
-struct std::formatter<eph::fix::MessageView> {
+template <size_t N>
+struct std::formatter<eph::fix::BasicMessageView<N>> {
     constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
 
-    auto format(const eph::fix::MessageView& msg, auto& ctx) const {
+    auto format(const eph::fix::BasicMessageView<N>& msg, auto& ctx) const {
         auto out = ctx.out();
         for (size_t i = 0; i < msg.field_count(); ++i) {
             if (i > 0) *out++ = '|';

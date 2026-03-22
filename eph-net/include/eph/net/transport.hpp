@@ -375,6 +375,11 @@ public:
 
         // Close payload: 2-byte status code + optional reason (max 123 chars per RFC 6455 §5.5)
         size_t reason_len = std::min(reason.size(), size_t{123});
+        if (reason_len < reason.size()) {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "Close reason truncated from {} to 123 bytes (RFC 6455 §5.5 limit)",
+                reason.size());
+        }
         uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
 
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
@@ -410,7 +415,13 @@ public:
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
         // RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
+        size_t original_len = payload_len;
         payload_len = std::min(payload_len, size_t{125});
+        if (original_len > 125) {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "Ping payload truncated from {} to 125 bytes (RFC 6455 §5.5 limit)",
+                original_len);
+        }
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
