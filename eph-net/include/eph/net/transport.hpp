@@ -247,6 +247,12 @@ struct TransportStats {
     uint64_t pong_timeouts     = 0;
     uint64_t reconnect_count   = 0;
     uint64_t uptime_ns         = 0;  ///< Nanoseconds since Transport::create()
+    uint64_t handshake_ns      = 0;  ///< Last TCP+TLS+WS handshake duration (ns)
+
+    /// Last handshake duration in milliseconds (for human-readable logging).
+    [[nodiscard]] double handshake_ms() const noexcept {
+        return static_cast<double>(handshake_ns) / 1e6;
+    }
 
     // -----------------------------------------------------------------------
     // Rate helpers — compute averages over uptime for monitoring dashboards.
@@ -968,6 +974,7 @@ public:
             .pong_timeouts     = pong_timeouts_.load(std::memory_order_relaxed),
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
             .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
+            .handshake_ns      = last_handshake_ns_,
         };
     }
 
@@ -1010,6 +1017,7 @@ private:
     std::atomic<uint64_t>                  ws_pongs_sent_{0};
     std::atomic<uint64_t>                  reconnect_count_{0};
     std::atomic<uint64_t>                  pong_timeouts_{0};
+    uint64_t                               last_handshake_ns_{0};
 
     // Pong timeout tracking (TX thread writes ping time, RX thread writes pong time).
     // Using atomics with relaxed ordering — occasional stale reads are acceptable
@@ -1069,6 +1077,7 @@ private:
     /// On failure, previous state is cleaned up.
     std::expected<void, std::string> do_connect() {
         auto log = detail::transport_logger();
+        auto connect_start = std::chrono::steady_clock::now();
 
         // Phase 1: Create TCP session via factory (factory handles connect)
         auto tcp_result = tcp_factory_();
@@ -1136,9 +1145,16 @@ private:
             std::memory_order_relaxed);
         ping_awaiting_pong_ = false;
 
+        // Record handshake duration
+        auto connect_end = std::chrono::steady_clock::now();
+        last_handshake_ns_ = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                connect_end - connect_start).count());
+
         SPDLOG_LOGGER_INFO(log,
-            "Connected: {} (TLS: {}, cipher: {})",
-            config_.remote_host, tls_version_, cipher_name_);
+            "Connected: {} (TLS: {}, cipher: {}, handshake: {:.1f}ms)",
+            config_.remote_host, tls_version_, cipher_name_,
+            static_cast<double>(last_handshake_ns_) / 1e6);
         return {};
     }
 
