@@ -399,6 +399,24 @@ class HdrHistogram {
             get_std_deviation(), u);
     }
 
+    /// JSON-formatted histogram summary for monitoring system integration.
+    /// Includes count, min, max, mean, stddev, and standard percentiles.
+    /// Consistent with the to_json() pattern used by RttStats, TransportStats, etc.
+    [[nodiscard]] std::string to_json() const {
+        if (total_count_ == 0) {
+            return "{\"count\":0}";
+        }
+        auto vals = get_percentiles({50.0, 90.0, 99.0, 99.9, 99.99});
+        return std::format(
+            "{{"
+            "\"count\":{},\"min\":{},\"max\":{},"
+            "\"mean\":{:.1f},\"stddev\":{:.1f},"
+            "\"p50\":{},\"p90\":{},\"p99\":{},\"p999\":{},\"p9999\":{}}}",
+            total_count_, get_min_value(), get_max_value(),
+            get_mean(), get_std_deviation(),
+            vals[0], vals[1], vals[2], vals[3], vals[4]);
+    }
+
     [[nodiscard]] bool is_compatible(const HdrHistogram& other) const noexcept {
         return lowest_trackable_value_ == other.lowest_trackable_value_ &&
                highest_trackable_value_ == other.highest_trackable_value_ &&

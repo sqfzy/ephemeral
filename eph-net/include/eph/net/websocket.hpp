@@ -55,6 +55,20 @@ inline constexpr uint16_t kMandatoryExtension = 1010;
 inline constexpr uint16_t kInternalError    = 1011;
 } // namespace close_code
 
+/// Human-readable name for a WebSocket opcode value.
+/// Returns "UNKNOWN(0xNN)" for unrecognized opcodes.
+inline std::string opcode_name(uint8_t op) noexcept {
+    switch (op) {
+    case opcode::kContinuation: return "CONTINUATION";
+    case opcode::kText:         return "TEXT";
+    case opcode::kBinary:       return "BINARY";
+    case opcode::kClose:        return "CLOSE";
+    case opcode::kPing:         return "PING";
+    case opcode::kPong:         return "PONG";
+    default:                    return std::format("UNKNOWN(0x{:02X})", op);
+    }
+}
+
 /// Check if a close status code is valid for sending per RFC 6455 §7.4.
 /// Valid ranges: 1000-1003, 1007-1011, 3000-4999.
 /// Codes 1004-1006 and 1015 are reserved and MUST NOT be sent in a Close frame.
@@ -600,5 +614,32 @@ struct std::formatter<eph::net::ws::DecodeError> : std::formatter<std::string_vi
     auto format(eph::net::ws::DecodeError e, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::net::ws::decode_error_name(e), ctx);
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Opcode formatter — enables std::format("{}", opcode) for logging
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Formatter wrapper for WebSocket opcodes.
+/// WebSocket opcodes are plain uint8_t, not a scoped enum, so we use a
+/// lightweight wrapper to opt into std::format without hijacking all uint8_t.
+///
+/// Usage:
+///   uint8_t op = ws::opcode::kPing;
+///   std::format("opcode: {}", ws::Opcode{op});  // "opcode: PING"
+namespace eph::net::ws {
+
+struct Opcode {
+    uint8_t value;
+};
+
+} // namespace eph::net::ws
+
+template <>
+struct std::formatter<eph::net::ws::Opcode> : std::formatter<std::string> {
+    auto format(eph::net::ws::Opcode op, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            eph::net::ws::opcode_name(op.value), ctx);
     }
 };

@@ -938,3 +938,33 @@ TEST(DecodeErrorFormatter, AllValuesFormat) {
     EXPECT_EQ(std::format("{}", DecodeError::kControlPayloadTooLarge),
               "control frame payload exceeds 125 bytes");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// opcode_name() and Opcode formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(OpcodeName, StandardOpcodes) {
+    EXPECT_EQ(opcode_name(opcode::kContinuation), "CONTINUATION");
+    EXPECT_EQ(opcode_name(opcode::kText), "TEXT");
+    EXPECT_EQ(opcode_name(opcode::kBinary), "BINARY");
+    EXPECT_EQ(opcode_name(opcode::kClose), "CLOSE");
+    EXPECT_EQ(opcode_name(opcode::kPing), "PING");
+    EXPECT_EQ(opcode_name(opcode::kPong), "PONG");
+}
+
+TEST(OpcodeName, UnknownOpcode) {
+    auto name = opcode_name(0x03); // Reserved data opcode
+    EXPECT_NE(name.find("UNKNOWN"), std::string::npos);
+    EXPECT_NE(name.find("0x03"), std::string::npos);
+}
+
+TEST(OpcodeFormatter, FormatsViaWrapper) {
+    EXPECT_EQ(std::format("{}", Opcode{opcode::kText}), "TEXT");
+    EXPECT_EQ(std::format("{}", Opcode{opcode::kPing}), "PING");
+    EXPECT_EQ(std::format("{}", Opcode{opcode::kBinary}), "BINARY");
+}
+
+TEST(OpcodeFormatter, UnknownFormatted) {
+    auto s = std::format("{}", Opcode{0x05});
+    EXPECT_NE(s.find("UNKNOWN"), std::string::npos);
+}

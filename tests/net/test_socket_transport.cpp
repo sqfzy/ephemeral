@@ -305,3 +305,26 @@ TEST(SocketConfigFormat, ToJsonEscapesHostField) {
     // Raw unescaped chars must not appear in the JSON value
     EXPECT_EQ(j.find("host\"with"), std::string::npos);
 }
+
+TEST(SocketConfigFormat, ToJsonEscapesControlChars) {
+    // Verify control characters (U+0000–U+001F) are escaped per RFC 8259 §7.
+    // This was previously a gap: only " and \ were escaped inline.
+    SocketConfig cfg{.host = "host\twith\nnewline", .port = 443};
+    auto j = cfg.to_json();
+    // Tab and newline must be escaped
+    EXPECT_NE(j.find("host\\twith\\nnewline"), std::string::npos);
+    // Raw control chars must not appear
+    EXPECT_EQ(j.find('\t'), std::string::npos);
+    EXPECT_EQ(j.find('\n'), std::string::npos);
+}
+
+TEST(SocketConfigFormat, ToJsonEscapesNullByte) {
+    // Null byte in host (shouldn't happen in practice, but must not break JSON)
+    std::string host_with_null = "host";
+    host_with_null += '\x00';
+    host_with_null += "name";
+    SocketConfig cfg{.host = host_with_null, .port = 443};
+    auto j = cfg.to_json();
+    // Null must be escaped as \u0000
+    EXPECT_NE(j.find("\\u0000"), std::string::npos);
+}

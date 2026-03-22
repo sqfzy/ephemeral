@@ -212,7 +212,9 @@ public:
     }
 
     // === 5. 标记为已初始化 ===
-    initialized_ = true;
+    // Release store: guarantees all preceding writes (especially ns_per_cycle_)
+    // are visible to any thread that observes initialized_==true via acquire load.
+    initialized_.store(true, std::memory_order_release);
 
     SPDLOG_LOGGER_INFO(log,
         "TSC calibrated: CPU frequency {:.2f} GHz (CV={:.2f}%)",
@@ -230,7 +232,7 @@ public:
    * @warning 必须先调用 init() 校准
    */
   [[nodiscard]] static std::optional<double> to_ns(uint64_t cycles) noexcept {
-    if (!initialized_) [[unlikely]] {
+    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
       return std::nullopt;
     }
     return static_cast<double>(cycles) * ns_per_cycle_;
@@ -247,7 +249,7 @@ public:
    */
   template <typename Rep = double>
   [[nodiscard]] static std::optional<uint64_t> to_cycles(Rep ns) noexcept {
-    if (!initialized_) [[unlikely]] {
+    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
       return std::nullopt;
     }
     if (ns < 0) [[unlikely]] {
@@ -274,7 +276,7 @@ public:
   template <class Rep, class Period>
   [[nodiscard]] static std::optional<uint64_t>
   to_cycles(std::chrono::duration<Rep, Period> d) noexcept {
-    if (!initialized_) [[unlikely]] {
+    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
       return std::nullopt;
     }
     double ns = std::chrono::duration<double, std::nano>(d).count();
@@ -284,7 +286,9 @@ public:
   /**
    * @brief 检查 TSC 是否已初始化
    */
-  [[nodiscard]] static bool is_initialized() noexcept { return initialized_; }
+  [[nodiscard]] static bool is_initialized() noexcept {
+    return initialized_.load(std::memory_order_acquire);
+  }
 
   /**
    * @brief 获取校准的纳秒/周期比率（用于高级用途）
@@ -292,15 +296,21 @@ public:
    * @return std::optional<double> 已初始化时返回比率
    */
   [[nodiscard]] static std::optional<double> get_ns_per_cycle() noexcept {
-    if (!initialized_) {
+    if (!initialized_.load(std::memory_order_acquire)) {
       return std::nullopt;
     }
     return ns_per_cycle_;
   }
 
 private:
+  // ns_per_cycle_ is written exactly once by init() before initialized_ is
+  // set to true.  The release store on initialized_ in init() and the acquire
+  // load in to_ns()/to_cycles() establish a happens-before relationship,
+  // guaranteeing that any thread observing initialized_==true will also see
+  // the fully-written ns_per_cycle_ value.  This makes concurrent reads from
+  // worker threads safe without requiring ns_per_cycle_ itself to be atomic.
   static inline double ns_per_cycle_ = 0.0;
-  static inline bool initialized_ = false;
+  static inline std::atomic<bool> initialized_{false};
 
   /**
    * @brief 检查 TSC 的可靠性（Linux x86_64）

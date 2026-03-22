@@ -28,6 +28,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include "eph/net/detail/json_escape.hpp"
 #include "eph/net/tcp_concept.hpp"
 
 namespace eph::net {
@@ -64,18 +65,8 @@ struct SocketConfig {
     }
 
     /// JSON-formatted config for monitoring system integration.
-    /// Host field is sanitized to prevent JSON injection from malformed input.
+    /// String fields are escaped per RFC 8259 §7 to prevent malformed output.
     [[nodiscard]] std::string to_json() const {
-        // Inline host sanitization: replace quotes and backslashes to
-        // prevent JSON injection. Full json_escape from transport_types.hpp
-        // is not available at this point in the include graph.
-        std::string safe_host;
-        safe_host.reserve(host.size());
-        for (char c : host) {
-            if (c == '"') safe_host += "\\\"";
-            else if (c == '\\') safe_host += "\\\\";
-            else safe_host += c;
-        }
         return std::format(
             "{{"
             "\"host\":\"{}\",\"port\":{},"
@@ -83,7 +74,7 @@ struct SocketConfig {
             "\"send_buf_size\":{},\"tcp_keepalive\":{},"
             "\"keepalive_idle\":{},\"keepalive_interval\":{},"
             "\"keepalive_count\":{},\"send_timeout_ms\":{}}}",
-            safe_host, port,
+            detail::json_escape(host), port,
             tcp_nodelay ? "true" : "false", recv_buf_size,
             send_buf_size, tcp_keepalive ? "true" : "false",
             keepalive_idle, keepalive_interval,
