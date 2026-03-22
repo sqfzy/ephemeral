@@ -362,3 +362,83 @@ TEST(EvictingQueueBytesTimed, TryPopLatestWtsForTracksDiscarded) {
     // Some messages were discarded between reads
     EXPECT_GT(discarded, 0u);
 }
+
+// ===========================================================================
+// 批量写入
+// ===========================================================================
+
+TEST(EvictingQueueBytesBatch, PushN_BasicOperation) {
+    EvictingQueueBytes<64, 8> queue;
+
+    std::array<uint8_t, 3> p1{0x01, 0x02, 0x03};
+    std::array<uint8_t, 2> p2{0xAA, 0xBB};
+    std::array<uint8_t, 1> p3{0xFF};
+
+    std::span<const uint8_t> payloads[] = {p1, p2, p3};
+
+    EXPECT_TRUE(queue.push_n(payloads, 3));
+    EXPECT_EQ(queue.total_pushed(), 3u);
+
+    // Read the latest (should be p3, the last written)
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_pop_latest(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 1u);
+    EXPECT_EQ(out[0], 0xFF);
+}
+
+TEST(EvictingQueueBytesBatch, PushNWts_WithTimestamps) {
+    EvictingQueueBytes<64, 8> queue;
+
+    std::array<uint8_t, 2> p1{0x01, 0x02};
+    std::array<uint8_t, 2> p2{0x03, 0x04};
+
+    std::span<const uint8_t> payloads[] = {p1, p2};
+    uint64_t timestamps[] = {100, 200};
+
+    EXPECT_TRUE(queue.push_n_wts(payloads, timestamps, 2));
+    EXPECT_EQ(queue.total_pushed(), 2u);
+
+    // Latest should be p2 with ts=200
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    uint32_t discarded = 0;
+    auto len = queue.try_pop_latest_wts(out, ts, discarded);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 2u);
+    EXPECT_EQ(out[0], 0x03);
+    EXPECT_EQ(ts, 200u);
+}
+
+TEST(EvictingQueueBytesBatch, PushN_FailsOnOversizedPayload) {
+    EvictingQueueBytes<4, 8> queue;
+
+    std::array<uint8_t, 5> too_large{};  // exceeds MaxDataSize=4
+    std::array<uint8_t, 2> ok{};
+
+    std::span<const uint8_t> payloads[] = {ok, too_large};
+    EXPECT_FALSE(queue.push_n(payloads, 2));
+    EXPECT_EQ(queue.total_pushed(), 0u);  // nothing pushed
+}
+
+TEST(EvictingQueueBytesBatch, PushN_EvictsOldData) {
+    EvictingQueueBytes<64, 4> queue;  // capacity 4
+
+    // Push 6 items — first 2 get evicted
+    std::array<uint8_t, 1> items[6];
+    std::span<const uint8_t> payloads[6];
+    for (int i = 0; i < 6; ++i) {
+        items[i] = {static_cast<uint8_t>(i)};
+        payloads[i] = items[i];
+    }
+
+    EXPECT_TRUE(queue.push_n(payloads, 6));
+    EXPECT_EQ(queue.total_pushed(), 6u);
+
+    // Latest should be the last item (5)
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_pop_latest(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 1u);
+    EXPECT_EQ(out[0], 5u);
+}

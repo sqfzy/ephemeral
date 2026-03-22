@@ -54,6 +54,49 @@ class EvictingQueueBytes {
         return try_push_wts(payload, 0);
     }
 
+    /**
+     * @brief 批量推入带时间戳的字节流 (Wait-free)
+     *
+     * 所有 payload 必须 <= MaxDataSize，否则全部不写入。
+     * 底层 EvictingQueue 为 wait-free 写入——旧数据会被覆盖。
+     *
+     * @param payloads   各消息的 payload span 数组
+     * @param timestamps 各消息的时间戳数组（与 payloads 等长）
+     * @param count      消息数量
+     * @return true 全部写入成功; false 某个 payload 过大
+     */
+    [[nodiscard]] bool push_n_wts(const std::span<const uint8_t>* payloads,
+                                   const uint64_t* timestamps,
+                                   size_t count) noexcept {
+        for (size_t i = 0; i < count; ++i) {
+            if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
+        }
+        queue_.produce_n(count, [&](DataWrap& slot, size_t i) {
+            slot.id = ++push_count_;
+            slot.ts = timestamps[i];
+            slot.len = static_cast<uint32_t>(payloads[i].size());
+            std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
+        });
+        return true;
+    }
+
+    /**
+     * @brief 批量推入字节流 (Wait-free, ts=0)
+     */
+    [[nodiscard]] bool push_n(const std::span<const uint8_t>* payloads,
+                               size_t count) noexcept {
+        for (size_t i = 0; i < count; ++i) {
+            if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
+        }
+        queue_.produce_n(count, [&](DataWrap& slot, size_t i) {
+            slot.id = ++push_count_;
+            slot.ts = 0;
+            slot.len = static_cast<uint32_t>(payloads[i].size());
+            std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
+        });
+        return true;
+    }
+
     // ===========================================================================
     // 非阻塞 Reader (Lock-free)
     // ===========================================================================
