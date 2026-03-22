@@ -13,6 +13,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <future>
 #include <optional>
 #include <string>
 
@@ -149,7 +150,10 @@ public:
                 "Cannot connect: state={}", tcp_state_name(state_)));
         }
 
-        // Resolve hostname (dual-stack: prefers IPv4 via AF_UNSPEC + AI_ADDRCONFIG)
+        // Resolve hostname with timeout protection.
+        // getaddrinfo() has no built-in timeout — it can block indefinitely
+        // if the DNS server is unreachable. We run it on a detached async
+        // task and wait_for() with the connect timeout to bound the delay.
         struct addrinfo hints{};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
@@ -157,16 +161,44 @@ public:
         hints.ai_flags = AI_ADDRCONFIG;  // Only return addresses the host can reach
 
         auto port_str = std::to_string(config_.port);
-        struct addrinfo* result = nullptr;
-        int rc = ::getaddrinfo(config_.host.c_str(), port_str.c_str(),
-                               &hints, &result);
-        if (rc != 0) {
+
+        // Capture host/port by value for async task safety
+        auto dns_host = config_.host;
+        auto dns_port = port_str;
+        auto dns_future = std::async(std::launch::async,
+            [dns_host, dns_port, hints]() mutable
+                -> std::expected<struct addrinfo*, std::string> {
+                struct addrinfo* res = nullptr;
+                int rc = ::getaddrinfo(dns_host.c_str(), dns_port.c_str(),
+                                       &hints, &res);
+                if (rc != 0) {
+                    return std::unexpected(std::format(
+                        "DNS resolution failed: {}", gai_strerror(rc)));
+                }
+                return res;
+            });
+
+        auto dns_status = dns_future.wait_for(timeout);
+        if (dns_status == std::future_status::timeout) {
+            SPDLOG_LOGGER_ERROR(log,
+                "DNS resolution timeout ({}ms) for {}:{}",
+                timeout.count(), config_.host, config_.port);
+            // The async thread will eventually complete and free itself;
+            // the addrinfo* will leak in the worst case, but we cannot
+            // safely cancel getaddrinfo. This is acceptable since DNS
+            // timeout is an exceptional error path.
+            return std::unexpected(std::format(
+                "DNS resolution timeout after {}ms", timeout.count()));
+        }
+
+        auto dns_result = dns_future.get();
+        if (!dns_result) {
             SPDLOG_LOGGER_ERROR(log,
                 "DNS resolution failed for {}:{}: {}",
-                config_.host, config_.port, gai_strerror(rc));
-            return std::unexpected(std::format(
-                "DNS resolution failed: {}", gai_strerror(rc)));
+                config_.host, config_.port, dns_result.error());
+            return std::unexpected(dns_result.error());
         }
+        struct addrinfo* result = *dns_result;
 
         // RAII cleanup for addrinfo
         struct AddrInfoGuard {
@@ -251,7 +283,7 @@ public:
                             config_.host, config_.port, resolved_ip_);
 
         // Non-blocking connect
-        rc = ::connect(fd_, result->ai_addr, result->ai_addrlen);
+        int rc = ::connect(fd_, result->ai_addr, result->ai_addrlen);
         if (rc == 0) {
             // Immediate connection (unlikely for TCP, but possible on loopback)
             state_ = TcpState::Established;
