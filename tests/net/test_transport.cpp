@@ -1,0 +1,1049 @@
+/// @file test_transport.cpp
+/// Unit tests for the Transport class using a WS-aware mock TCP backend.
+///
+/// Tests use use_tls=false (plain WS mode) to bypass TLS and focus on
+/// Transport logic: lifecycle, send/recv, reconnection, error paths, stats.
+
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <deque>
+#include <expected>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "eph/net/http.hpp"
+#include "eph/net/tcp_concept.hpp"
+#include "eph/net/transport.hpp"
+#include "eph/net/websocket.hpp"
+
+using namespace eph::net;
+using namespace std::chrono_literals;
+
+// ===========================================================================
+// WsMockTcpTransport — thread-safe mock that auto-responds to WS handshake
+// ===========================================================================
+
+/// A mock TCP transport that:
+///   1. Auto-responds with HTTP 101 to WebSocket upgrade requests
+///   2. Optionally echoes received WS frames back as server (unmasked) frames
+///   3. Supports injecting arbitrary server frames via inject_server_frame()
+///   4. Can simulate TCP errors via set_error_on_next_poll()
+///
+/// Thread safety: all public methods are mutex-protected, safe for
+/// concurrent TX/RX thread access.
+struct WsMockTcpTransport {
+    // -- Mock configuration (set before passing to Transport) --
+    bool echo_mode = false;          // Echo received WS frames back
+    bool fail_connect = false;       // Make connect() fail
+
+    // -- State --
+    TcpState current_state = TcpState::Closed;
+
+    // -- Thread-safe state --
+    mutable std::mutex mtx;
+    std::deque<std::vector<uint8_t>> rx_queue;    // Frames to deliver via poll_rx
+    std::vector<std::vector<uint8_t>> sent_data;  // All data sent via send()
+    bool error_on_next_poll = false;
+    std::string next_poll_error = "mock TCP error";
+    bool handshake_done = false;
+
+    auto connect(std::chrono::milliseconds /*timeout*/)
+        -> std::expected<void, std::string>
+    {
+        if (fail_connect) {
+            return std::unexpected("mock connect failure");
+        }
+        current_state = TcpState::Established;
+        return {};
+    }
+
+    auto send(const void* data, size_t len)
+        -> std::expected<size_t, std::string>
+    {
+        std::lock_guard lock(mtx);
+
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        sent_data.emplace_back(bytes, bytes + len);
+
+        if (!handshake_done) {
+            // Check if this is an HTTP upgrade request
+            std::string_view sv(static_cast<const char*>(data), len);
+            if (sv.starts_with("GET ") && sv.find("Upgrade: websocket") != std::string_view::npos) {
+                // Extract Sec-WebSocket-Key
+                auto key_pos = sv.find("Sec-WebSocket-Key: ");
+                if (key_pos != std::string_view::npos) {
+                    key_pos += 19; // skip "Sec-WebSocket-Key: "
+                    auto key_end = sv.find("\r\n", key_pos);
+                    std::string ws_key(sv.substr(key_pos, key_end - key_pos));
+
+                    // Compute Sec-WebSocket-Accept per RFC 6455
+                    std::string accept = compute_ws_accept(ws_key);
+
+                    // Build HTTP 101 response
+                    std::string response =
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Accept: " + accept + "\r\n"
+                        "\r\n";
+
+                    rx_queue.emplace_back(response.begin(), response.end());
+                    handshake_done = true;
+                }
+            }
+        } else if (echo_mode) {
+            // Decode client WS frame (masked), build server frame (unmasked), queue it
+            echo_ws_frame(bytes, len);
+        }
+
+        return len;
+    }
+
+    template <typename Callback>
+    auto poll_rx(Callback&& cb)
+        -> std::expected<uint16_t, std::string>
+    {
+        std::lock_guard lock(mtx);
+
+        if (error_on_next_poll) {
+            error_on_next_poll = false;
+            return std::unexpected(next_poll_error);
+        }
+
+        if (rx_queue.empty()) {
+            return uint16_t{0};
+        }
+
+        auto& front = rx_queue.front();
+        auto sz = static_cast<uint16_t>(front.size());
+        cb(front.data(), sz);
+        rx_queue.pop_front();
+        return sz;
+    }
+
+    auto close() -> std::expected<void, std::string> {
+        current_state = TcpState::Closed;
+        return {};
+    }
+
+    void reset() noexcept {
+        std::lock_guard lock(mtx);
+        current_state = TcpState::Closed;
+        sent_data.clear();
+        rx_queue.clear();
+        handshake_done = false;
+        error_on_next_poll = false;
+    }
+
+    auto mss() const -> uint16_t { return 1460; }
+    auto state() const -> TcpState { return current_state; }
+    auto is_established() const -> bool { return current_state == TcpState::Established; }
+
+    // -- Mock control methods --
+
+    /// Inject a server-side (unmasked) WS frame into the RX queue.
+    void inject_server_frame(uint8_t opcode, const uint8_t* payload, size_t payload_len) {
+        std::lock_guard lock(mtx);
+        std::vector<uint8_t> frame;
+        build_server_frame(frame, opcode, payload, payload_len);
+        rx_queue.push_back(std::move(frame));
+    }
+
+    /// Inject a server-side text frame.
+    void inject_text(std::string_view text) {
+        inject_server_frame(ws::opcode::kText,
+            reinterpret_cast<const uint8_t*>(text.data()), text.size());
+    }
+
+    /// Inject a server-side binary frame.
+    void inject_binary(const std::vector<uint8_t>& data) {
+        inject_server_frame(ws::opcode::kBinary, data.data(), data.size());
+    }
+
+    /// Make the next poll_rx() call return an error.
+    void set_error_on_next_poll(std::string error = "mock TCP error") {
+        std::lock_guard lock(mtx);
+        error_on_next_poll = true;
+        next_poll_error = std::move(error);
+    }
+
+    /// Get number of send() calls (including handshake).
+    size_t send_count() const {
+        std::lock_guard lock(mtx);
+        return sent_data.size();
+    }
+
+private:
+    /// Compute Sec-WebSocket-Accept from client key (RFC 6455 §4.2.2).
+    static std::string compute_ws_accept(std::string_view key) {
+        static constexpr std::string_view kGuid =
+            "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+        std::string input;
+        input.reserve(key.size() + kGuid.size());
+        input.append(key);
+        input.append(kGuid);
+
+        uint8_t hash[20];
+        unsigned int hash_len = 0;
+        EVP_Digest(input.data(), input.size(), hash, &hash_len,
+                   EVP_sha1(), nullptr);
+
+        return http::detail::base64_encode(hash, hash_len);
+    }
+
+    /// Build a server-side (unmasked) WS frame.
+    static void build_server_frame(std::vector<uint8_t>& out, uint8_t opcode,
+                                    const uint8_t* payload, size_t payload_len) {
+        // FIN + opcode
+        out.push_back(ws::kFinBit | (opcode & 0x0F));
+
+        // Length (no MASK bit for server frames)
+        if (payload_len < 126) {
+            out.push_back(static_cast<uint8_t>(payload_len));
+        } else if (payload_len <= 65535) {
+            out.push_back(126);
+            out.push_back(static_cast<uint8_t>(payload_len >> 8));
+            out.push_back(static_cast<uint8_t>(payload_len & 0xFF));
+        } else {
+            out.push_back(127);
+            for (int i = 7; i >= 0; --i) {
+                out.push_back(static_cast<uint8_t>((payload_len >> (i * 8)) & 0xFF));
+            }
+        }
+
+        // Payload (unmasked)
+        out.insert(out.end(), payload, payload + payload_len);
+    }
+
+    /// Echo a masked client WS frame back as an unmasked server frame.
+    void echo_ws_frame(const uint8_t* data, size_t len) {
+        auto frame = ws::decode_frame(data, len);
+        if (!frame) return;
+
+        // Only echo data frames (text/binary), skip control frames
+        if (frame->opcode == ws::opcode::kText ||
+            frame->opcode == ws::opcode::kBinary) {
+
+            // Unmask the payload (client frames are masked)
+            std::vector<uint8_t> payload(frame->payload,
+                                          frame->payload + frame->payload_len);
+            if (frame->masked) {
+                for (size_t i = 0; i < payload.size(); ++i) {
+                    payload[i] ^= frame->mask_key[i % 4];
+                }
+            }
+
+            std::vector<uint8_t> response;
+            build_server_frame(response, frame->opcode, payload.data(), payload.size());
+            rx_queue.push_back(std::move(response));
+        }
+    }
+};
+
+// Verify WsMockTcpTransport satisfies the concept
+static_assert(TcpTransport<WsMockTcpTransport>,
+    "WsMockTcpTransport must satisfy TcpTransport");
+
+// ===========================================================================
+// Test fixture
+// ===========================================================================
+
+class TransportTest : public ::testing::Test {
+protected:
+    static constexpr size_t kMaxPayload = 512;
+    static constexpr size_t kQueueDepth = 64;
+
+    using TestTransport = Transport<WsMockTcpTransport, kMaxPayload, kQueueDepth>;
+
+    // Shared pointer to the mock so we can inspect/control it after Transport takes ownership.
+    // The factory creates new instances, but we keep a pointer to the latest one.
+    WsMockTcpTransport* last_mock_ = nullptr;
+
+    std::expected<std::unique_ptr<TestTransport>, std::string>
+    create_transport(bool echo = false, bool disable_ping = true,
+                     bool disable_reconnect = true) {
+        TransportConfig config;
+        config.remote_host = "mock.test";
+        config.remote_port = 9999;
+        config.ws_path = "/ws";
+        config.use_tls = false;
+        if (disable_ping) {
+            config.ping_interval = 0s;
+        }
+        if (disable_reconnect) {
+            config.max_reconnect_attempts = 0;
+        }
+
+        auto factory = [this, echo]()
+            -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+        {
+            auto mock = std::make_unique<WsMockTcpTransport>();
+            mock->echo_mode = echo;
+            last_mock_ = mock.get();
+            auto r = mock->connect(3000ms);
+            if (!r) return std::unexpected(r.error());
+            return mock;
+        };
+
+        return TestTransport::create(std::move(factory), config);
+    }
+
+    /// Wait for a condition with timeout (avoids test hangs).
+    template <typename Pred>
+    bool wait_for(Pred&& pred, std::chrono::milliseconds timeout = 2000ms) {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!pred()) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::sleep_for(1ms);
+        }
+        return true;
+    }
+};
+
+// ===========================================================================
+// Lifecycle tests
+// ===========================================================================
+
+TEST_F(TransportTest, CreateAndStop) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    EXPECT_TRUE(tp->is_running());
+    EXPECT_TRUE(tp->is_connected());
+    EXPECT_EQ(tp->state(), TransportState::kConnected);
+    EXPECT_EQ(tp->tls_version(), "none");
+    EXPECT_EQ(tp->cipher_name(), "none");
+
+    tp->stop();
+    EXPECT_FALSE(tp->is_running());
+    EXPECT_EQ(tp->state(), TransportState::kStopped);
+}
+
+TEST_F(TransportTest, DestructorStopsCleanly) {
+    {
+        auto result = create_transport();
+        ASSERT_TRUE(result.has_value());
+        // Destructor should call stop() and join threads without hanging
+    }
+    // If we get here, the destructor didn't deadlock
+}
+
+TEST_F(TransportTest, DoubleStopIsHarmless) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value());
+    auto& tp = *result;
+
+    tp->stop();
+    tp->stop(); // Should not crash or hang
+    EXPECT_FALSE(tp->is_running());
+}
+
+TEST_F(TransportTest, FactoryFailureReturnsError) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+
+    auto factory = []()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        return std::unexpected("simulated factory failure");
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("factory"), std::string::npos);
+}
+
+TEST_F(TransportTest, InvalidConfigReturnsError) {
+    TransportConfig config;
+    // Empty remote_host
+    config.ws_path = "/ws";
+    config.use_tls = false;
+
+    auto factory = []()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        return std::unexpected("should not be called");
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("remote_host"), std::string::npos);
+}
+
+// ===========================================================================
+// Send API tests
+// ===========================================================================
+
+TEST_F(TransportTest, SendBinarySuccess) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    auto err = tp->send_binary(payload, sizeof(payload));
+    EXPECT_EQ(err, SendError::kOk);
+
+    // Wait for TX thread to drain the queue
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    tp->stop();
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.tx_packets, 1u);
+    EXPECT_GE(stats.tx_bytes, sizeof(payload));
+}
+
+TEST_F(TransportTest, SendTextSuccess) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    auto err = tp->send_text("hello");
+    EXPECT_EQ(err, SendError::kOk);
+
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    tp->stop();
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.tx_text_packets, 1u);
+}
+
+TEST_F(TransportTest, SendTextInvalidUtf8Rejected) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // Invalid UTF-8 sequence
+    const uint8_t bad_utf8[] = {0xFF, 0xFE, 0x00};
+    auto err = tp->send_text(bad_utf8, sizeof(bad_utf8));
+    EXPECT_EQ(err, SendError::kInvalidUtf8);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendMessageTooLarge) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    std::vector<uint8_t> big(kMaxPayload + 1, 0x42);
+    auto err = tp->send_binary(big.data(), big.size());
+    EXPECT_EQ(err, SendError::kMessageTooLarge);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendWhenStoppedReturnsNotConnected) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    tp->stop();
+
+    auto err = tp->send_text("hello");
+    EXPECT_EQ(err, SendError::kNotConnected);
+}
+
+TEST_F(TransportTest, SendCloseEnqueues) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    auto err = tp->send_close(ws::close_code::kNormal, "bye");
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendCloseInvalidCodeRejected) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // 1005 is reserved and must not be sent in a Close frame
+    auto err = tp->send_close(1005);
+    EXPECT_EQ(err, SendError::kInvalidCloseCode);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendPingSuccess) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    auto err = tp->send_ping();
+    EXPECT_EQ(err, SendError::kOk);
+
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Receive API tests
+// ===========================================================================
+
+TEST_F(TransportTest, ReceiveServerPushedBinary) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // Give Transport threads time to start
+    std::this_thread::sleep_for(10ms);
+
+    // Inject a server binary frame
+    const std::vector<uint8_t> payload = {0x01, 0x02, 0x03, 0x04};
+    last_mock_->inject_binary(payload);
+
+    // Wait for RX thread to process and enqueue
+    std::vector<uint8_t> received;
+    bool got = wait_for([&] {
+        return tp->recv([&](const uint8_t* data, uint16_t len) {
+            received.assign(data, data + len);
+        });
+    });
+
+    EXPECT_TRUE(got);
+    EXPECT_EQ(received, payload);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ReceiveServerPushedText) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    last_mock_->inject_text("hello from server");
+
+    std::string received;
+    uint8_t received_opcode = 0;
+    bool got = wait_for([&] {
+        return tp->recv([&](const uint8_t* data, uint16_t len, uint8_t opcode) {
+            received.assign(reinterpret_cast<const char*>(data), len);
+            received_opcode = opcode;
+        });
+    });
+
+    EXPECT_TRUE(got);
+    EXPECT_EQ(received, "hello from server");
+    EXPECT_EQ(received_opcode, ws::opcode::kText);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ReceiveMultipleFrames) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject 5 frames
+    for (int i = 0; i < 5; ++i) {
+        std::vector<uint8_t> payload = {static_cast<uint8_t>(i)};
+        last_mock_->inject_binary(payload);
+    }
+
+    // Receive all 5
+    int count = 0;
+    EXPECT_TRUE(wait_for([&] {
+        tp->recv([&](const uint8_t* data, uint16_t len) {
+            EXPECT_EQ(len, 1);
+            EXPECT_EQ(data[0], static_cast<uint8_t>(count));
+            count++;
+        });
+        return count >= 5;
+    }));
+
+    EXPECT_EQ(count, 5);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, TryRecvReturnsNulloptWhenEmpty) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    auto msg = tp->try_recv();
+    EXPECT_FALSE(msg.has_value());
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, TryRecvMsgReturnsPayloadAndOpcode) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    last_mock_->inject_text("test");
+
+    std::optional<TestTransport::ReceivedMessage> msg;
+    EXPECT_TRUE(wait_for([&] {
+        msg = tp->try_recv_msg();
+        return msg.has_value();
+    }));
+
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_TRUE(msg->is_text());
+    EXPECT_EQ(msg->text(), "test");
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Echo roundtrip tests
+// ===========================================================================
+
+TEST_F(TransportTest, EchoRoundtripBinary) {
+    auto result = create_transport(/*echo=*/true);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    const uint8_t payload[] = {0xCA, 0xFE, 0xBA, 0xBE};
+    auto err = tp->send_binary(payload, sizeof(payload));
+    EXPECT_EQ(err, SendError::kOk);
+
+    // Wait for TX to send, mock to echo, RX to receive
+    std::vector<uint8_t> received;
+    bool got = wait_for([&] {
+        return tp->recv([&](const uint8_t* data, uint16_t len) {
+            received.assign(data, data + len);
+        });
+    });
+
+    EXPECT_TRUE(got);
+    EXPECT_EQ(received, (std::vector<uint8_t>{0xCA, 0xFE, 0xBA, 0xBE}));
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, EchoRoundtripText) {
+    auto result = create_transport(/*echo=*/true);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    auto err = tp->send_text("round trip test");
+    EXPECT_EQ(err, SendError::kOk);
+
+    std::string received;
+    bool got = wait_for([&] {
+        return tp->recv([&](const uint8_t* data, uint16_t len) {
+            received.assign(reinterpret_cast<const char*>(data), len);
+        });
+    });
+
+    EXPECT_TRUE(got);
+    EXPECT_EQ(received, "round trip test");
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Queue and backpressure tests
+// ===========================================================================
+
+TEST_F(TransportTest, QueueSizeReflectsBackpressure) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    EXPECT_EQ(tp->tx_queue_size(), 0u);
+    EXPECT_EQ(tp->rx_queue_size(), 0u);
+    EXPECT_LE(tp->tx_queue_fill_ratio(), 0.01);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, BatchSendN) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    std::vector<uint8_t> p1 = {0x01, 0x02};
+    std::vector<uint8_t> p2 = {0x03, 0x04, 0x05};
+    std::span<const uint8_t> payloads[] = {p1, p2};
+
+    auto err = tp->send_n(payloads, 2, ws::opcode::kBinary);
+    EXPECT_EQ(err, SendError::kOk);
+
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    tp->stop();
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.tx_packets, 2u);
+}
+
+// ===========================================================================
+// Stats tests
+// ===========================================================================
+
+TEST_F(TransportTest, StatsAccumulateCorrectly) {
+    auto result = create_transport(/*echo=*/true);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // Send multiple messages
+    for (int i = 0; i < 10; ++i) {
+        uint8_t payload = static_cast<uint8_t>(i);
+        tp->send_binary(&payload, 1);
+    }
+
+    // Wait for all to be sent
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    // Drain echoed messages
+    int received = 0;
+    EXPECT_TRUE(wait_for([&] {
+        tp->recv([&](const uint8_t*, uint16_t) { received++; });
+        return received >= 10;
+    }));
+
+    tp->stop();
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.tx_packets, 10u);
+    EXPECT_GE(stats.tx_bytes, 10u);
+    EXPECT_GE(stats.rx_packets, 10u);
+    EXPECT_GT(stats.uptime_ns, 0u);
+}
+
+TEST_F(TransportTest, ResetStatsZeros) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    tp->send_binary("\x01", 1);
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    tp->reset_stats();
+    auto stats = tp->stats();
+    EXPECT_EQ(stats.tx_packets, 0u);
+    EXPECT_EQ(stats.tx_bytes, 0u);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, HandshakeLatencyRecorded) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    auto stats = tp->stats();
+    EXPECT_GT(stats.handshake_ns, 0u);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// State callback tests
+// ===========================================================================
+
+TEST_F(TransportTest, StateChangeCallbackFires) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 0;
+
+    std::vector<TransportEvent> events;
+    std::mutex events_mtx;
+
+    config.on_state_change = [&](TransportEvent event, std::string_view /*detail*/) {
+        std::lock_guard lock(events_mtx);
+        events.push_back(event);
+    };
+
+    auto factory = []()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error();
+
+    // Should have gotten kConnected
+    {
+        std::lock_guard lock(events_mtx);
+        ASSERT_FALSE(events.empty());
+        EXPECT_EQ(events[0], TransportEvent::kConnected);
+    }
+
+    (*result)->stop();
+
+    // Should have gotten kStopped
+    {
+        std::lock_guard lock(events_mtx);
+        EXPECT_EQ(events.back(), TransportEvent::kStopped);
+    }
+}
+
+// ===========================================================================
+// on_message callback tests
+// ===========================================================================
+
+TEST_F(TransportTest, OnMessageCallbackReceivesDirectly) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 0;
+
+    std::atomic<int> message_count{0};
+    std::string last_message;
+    std::mutex msg_mtx;
+
+    config.on_message = [&](const uint8_t* data, uint16_t len, uint8_t /*opcode*/) {
+        std::lock_guard lock(msg_mtx);
+        last_message.assign(reinterpret_cast<const char*>(data), len);
+        message_count.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    WsMockTcpTransport* mock_ptr = nullptr;
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = mock.get();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error();
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject server frame — should go directly to on_message, not rx queue
+    mock_ptr->inject_text("direct callback");
+
+    EXPECT_TRUE(wait_for([&] {
+        return message_count.load(std::memory_order_relaxed) >= 1;
+    }));
+
+    {
+        std::lock_guard lock(msg_mtx);
+        EXPECT_EQ(last_message, "direct callback");
+    }
+
+    // rx queue should be empty (on_message bypasses it)
+    auto msg = (*result)->try_recv();
+    EXPECT_FALSE(msg.has_value());
+
+    (*result)->stop();
+}
+
+// ===========================================================================
+// Graceful close tests
+// ===========================================================================
+
+TEST_F(TransportTest, CloseGracefullyTimesOutWithoutServerResponse) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // close_gracefully should timeout since mock doesn't auto-respond to Close
+    bool server_responded = tp->close_gracefully(
+        ws::close_code::kNormal, "bye", 100ms);
+
+    EXPECT_FALSE(server_responded);
+    EXPECT_FALSE(tp->is_running());
+}
+
+// ===========================================================================
+// Wait-receive tests
+// ===========================================================================
+
+TEST_F(TransportTest, WaitRecvTimesOutWhenEmpty) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    bool got = tp->wait_recv(
+        [](const uint8_t*, uint16_t) {}, 50ms);
+
+    EXPECT_FALSE(got);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, WaitRecvReturnsWhenDataAvailable) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject after a short delay
+    std::thread injector([&] {
+        std::this_thread::sleep_for(20ms);
+        last_mock_->inject_text("delayed");
+    });
+
+    std::string received;
+    bool got = tp->wait_recv(
+        [&](const uint8_t* data, uint16_t len) {
+            received.assign(reinterpret_cast<const char*>(data), len);
+        }, 2000ms);
+
+    EXPECT_TRUE(got);
+    EXPECT_EQ(received, "delayed");
+
+    injector.join();
+    tp->stop();
+}
+
+// ===========================================================================
+// MaxPayload and QueueDepth template parameters
+// ===========================================================================
+
+TEST_F(TransportTest, MaxPayloadExactFit) {
+    auto result = create_transport(/*echo=*/true);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // Send exactly MaxPayload bytes
+    std::vector<uint8_t> payload(kMaxPayload, 0xAA);
+    auto err = tp->send_binary(payload.data(), payload.size());
+    EXPECT_EQ(err, SendError::kOk);
+
+    // Should echo back
+    std::vector<uint8_t> received;
+    bool got = wait_for([&] {
+        return tp->recv([&](const uint8_t* data, uint16_t len) {
+            received.assign(data, data + len);
+        });
+    });
+
+    EXPECT_TRUE(got);
+    EXPECT_EQ(received.size(), kMaxPayload);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Reconnection tests
+// ===========================================================================
+
+TEST_F(TransportTest, ReconnectOnPollError) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 3;
+    config.reconnect_interval = 50ms;
+
+    std::atomic<int> connect_count{0};
+    WsMockTcpTransport* mock_ptr = nullptr;
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = mock.get();
+        connect_count.fetch_add(1, std::memory_order_relaxed);
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // Initial connection
+    EXPECT_EQ(connect_count.load(), 1);
+
+    std::this_thread::sleep_for(10ms);
+
+    // Trigger a TCP error — RX thread should attempt reconnect
+    mock_ptr->set_error_on_next_poll("simulated disconnect");
+
+    // Wait for reconnection (factory called again)
+    bool reconnected = wait_for([&] {
+        return connect_count.load() >= 2;
+    }, 5000ms);
+
+    EXPECT_TRUE(reconnected);
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.reconnect_count, 1u);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ReconnectExhaustedStopsTransport) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 1;
+    config.reconnect_interval = 10ms;
+
+    std::atomic<int> factory_calls{0};
+    WsMockTcpTransport* mock_ptr = nullptr;
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        int n = factory_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n == 1) {
+            // First call succeeds (initial connection)
+            auto mock = std::make_unique<WsMockTcpTransport>();
+            mock_ptr = mock.get();
+            auto r = mock->connect(3000ms);
+            if (!r) return std::unexpected(r.error());
+            return mock;
+        }
+        // All reconnect attempts fail
+        return std::unexpected("reconnect failure");
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& tp = *result;
+
+    // Wait for RX thread to start, then trigger error
+    std::this_thread::sleep_for(10ms);
+    mock_ptr->set_error_on_next_poll("simulated disconnect");
+
+    // Wait for transport to stop after exhausting reconnect attempts
+    bool stopped = wait_for([&] {
+        return tp->state() == TransportState::kStopped;
+    }, 5000ms);
+
+    EXPECT_TRUE(stopped);
+}

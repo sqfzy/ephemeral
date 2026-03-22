@@ -641,7 +641,8 @@ public:
         auto err = send_close(status_code, reason);
         if (err != SendError::kOk) {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "close_gracefully: send_close failed: {}", err);
+                "close_gracefully: send_close failed: {}",
+                send_error_name(err));
             stop();
             return false;
         }
