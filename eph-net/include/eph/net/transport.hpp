@@ -1238,8 +1238,11 @@ private:
         std::string ws_key = std::move(*ws_key_result);
 
         // Build upgrade request
+        // RFC 6455 §4.1: Host header includes port only when non-default
+        // (443 for wss://, 80 for ws://).
         std::string host = config_.remote_host;
-        if (config_.remote_port != 443) {
+        uint16_t default_port = config_.use_tls ? 443 : 80;
+        if (config_.remote_port != default_port) {
             host += ":" + std::to_string(config_.remote_port);
         }
 

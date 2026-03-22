@@ -1109,3 +1109,117 @@ TEST_F(TransportTest, ReconnectExhaustedStopsTransport) {
 
     EXPECT_TRUE(stopped);
 }
+
+// ---------------------------------------------------------------------------
+// Host header port logic (RFC 6455 §4.1)
+// ---------------------------------------------------------------------------
+
+// Helper: extract Host header value from the mock's first sent_data entry
+static std::string extract_host_header(WsMockTcpTransport& mock) {
+    std::lock_guard lock(mock.mtx);
+    if (mock.sent_data.empty()) return {};
+    auto& req = mock.sent_data.front();
+    std::string_view sv(reinterpret_cast<const char*>(req.data()), req.size());
+    auto pos = sv.find("Host: ");
+    if (pos == std::string_view::npos) return {};
+    pos += 6; // skip "Host: "
+    auto end = sv.find("\r\n", pos);
+    return std::string(sv.substr(pos, end - pos));
+}
+
+TEST_F(TransportTest, PlainWsDefaultPort80_HostOmitsPort) {
+    // ws:// on port 80 → Host header should NOT include ":80"
+    WsMockTcpTransport* mock_ptr = nullptr;
+
+    auto factory = [&mock_ptr]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto tcp = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = tcp.get();
+        tcp->current_state = TcpState::Established;
+        return tcp;
+    };
+
+    TransportConfig config{
+        .remote_host = "example.com",
+        .remote_port = 80,
+        .ws_path = "/ws",
+        .use_tls = false,
+        .max_reconnect_attempts = 0,
+        .ping_interval = 0s,
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    ASSERT_NE(mock_ptr, nullptr);
+
+    auto host = extract_host_header(*mock_ptr);
+    EXPECT_EQ(host, "example.com") << "Port 80 on plain WS should be omitted from Host header";
+
+    (*result)->stop();
+}
+
+TEST_F(TransportTest, PlainWsNonDefaultPort_HostIncludesPort) {
+    // ws:// on port 8080 → Host header SHOULD include ":8080"
+    WsMockTcpTransport* mock_ptr = nullptr;
+
+    auto factory = [&mock_ptr]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto tcp = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = tcp.get();
+        tcp->current_state = TcpState::Established;
+        return tcp;
+    };
+
+    TransportConfig config{
+        .remote_host = "example.com",
+        .remote_port = 8080,
+        .ws_path = "/ws",
+        .use_tls = false,
+        .max_reconnect_attempts = 0,
+        .ping_interval = 0s,
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    ASSERT_NE(mock_ptr, nullptr);
+
+    auto host = extract_host_header(*mock_ptr);
+    EXPECT_EQ(host, "example.com:8080") << "Non-default port should appear in Host header";
+
+    (*result)->stop();
+}
+
+TEST_F(TransportTest, PlainWsPort443_HostIncludesPort) {
+    // Plain WS on port 443 is non-standard → port SHOULD be included
+    // (443 is only the default for wss://, not ws://)
+    WsMockTcpTransport* mock_ptr = nullptr;
+
+    auto factory = [&mock_ptr]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto tcp = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = tcp.get();
+        tcp->current_state = TcpState::Established;
+        return tcp;
+    };
+
+    TransportConfig config{
+        .remote_host = "example.com",
+        .remote_port = 443,
+        .ws_path = "/ws",
+        .use_tls = false,
+        .max_reconnect_attempts = 0,
+        .ping_interval = 0s,
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    ASSERT_NE(mock_ptr, nullptr);
+
+    auto host = extract_host_header(*mock_ptr);
+    EXPECT_EQ(host, "example.com:443") << "Port 443 on plain WS is non-default, should be included";
+
+    (*result)->stop();
+}
