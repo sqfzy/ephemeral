@@ -7,11 +7,13 @@
 /// array of Field views. All string_view values point into the original buffer
 /// -- no allocations, no copies.
 
+#include <concepts>
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 
 #include "eph/fix/tags.hpp"
 
@@ -342,6 +344,39 @@ parse(const uint8_t* data, size_t len) noexcept {
     }
 
     return view;
+}
+
+/// Parse consecutive FIX messages from a buffer, invoking a callback for each.
+///
+/// Processes messages sequentially from the start of the buffer.
+/// Stops on the first parse error or when the buffer is exhausted.
+/// Return false from the callback to stop early.
+///
+/// @param data     Pointer to a buffer of concatenated FIX messages
+/// @param len      Number of available bytes
+/// @param callback Called with (const MessageView&) for each parsed message.
+///                 Return true to continue, false to stop early.
+/// @return Number of bytes successfully consumed (sum of parsed message lengths)
+template <typename Fn>
+    requires std::invocable<Fn, const MessageView&>
+size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
+    noexcept(callback(std::declval<const MessageView&>()))) {
+    size_t offset = 0;
+    while (offset < len) {
+        auto result = parse(data + offset, len - offset);
+        if (!result) break;
+
+        if constexpr (std::is_same_v<std::invoke_result_t<Fn, const MessageView&>, bool>) {
+            if (!callback(*result)) {
+                offset += result->total_len();
+                break;
+            }
+        } else {
+            callback(*result);
+        }
+        offset += result->total_len();
+    }
+    return offset;
 }
 
 /// Non-owning parser class for stateless usage or future extension.

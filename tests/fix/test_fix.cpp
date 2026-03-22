@@ -570,3 +570,71 @@ TEST(FixFramer, encode_passthrough) {
 TEST(FixFramer, satisfies_concept) {
     static_assert(eph::net::MessageFramer<FixFramer>);
 }
+
+// ===========================================================================
+// parse_all (batch parser)
+// ===========================================================================
+
+TEST(FixParseAll, parse_multiple_concatenated_messages) {
+    auto raw1 = make_fix_msg("FIX.4.4", "35=D\x01" "55=AAPL\x01");
+    auto raw2 = make_fix_msg("FIX.4.4", "35=8\x01" "55=TSLA\x01");
+    auto raw3 = make_fix_msg("FIX.4.4", "35=F\x01" "55=MSFT\x01");
+
+    std::vector<uint8_t> combined;
+    combined.insert(combined.end(), raw1.begin(), raw1.end());
+    combined.insert(combined.end(), raw2.begin(), raw2.end());
+    combined.insert(combined.end(), raw3.begin(), raw3.end());
+
+    std::vector<std::string> types;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [&](const MessageView& msg) {
+            types.push_back(std::string(msg.msg_type().value()));
+        });
+
+    EXPECT_EQ(consumed, combined.size());
+    ASSERT_EQ(types.size(), 3u);
+    EXPECT_EQ(types[0], "D");
+    EXPECT_EQ(types[1], "8");
+    EXPECT_EQ(types[2], "F");
+}
+
+TEST(FixParseAll, early_stop_returns_consumed_bytes) {
+    auto raw1 = make_fix_msg("FIX.4.4", "35=D\x01");
+    auto raw2 = make_fix_msg("FIX.4.4", "35=8\x01");
+
+    std::vector<uint8_t> combined;
+    combined.insert(combined.end(), raw1.begin(), raw1.end());
+    combined.insert(combined.end(), raw2.begin(), raw2.end());
+
+    size_t count = 0;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [&](const MessageView&) -> bool {
+            ++count;
+            return false; // stop after first
+        });
+
+    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(consumed, raw1.size());
+}
+
+TEST(FixParseAll, empty_buffer_returns_zero) {
+    size_t consumed = parse_all(nullptr, 0,
+        [](const MessageView&) { FAIL() << "should not be called"; });
+    EXPECT_EQ(consumed, 0u);
+}
+
+TEST(FixParseAll, partial_message_at_end_stops) {
+    auto raw1 = make_fix_msg("FIX.4.4", "35=D\x01");
+    std::string partial = "8=FIX.4.4\x01" "9=50\x01"; // incomplete
+
+    std::vector<uint8_t> combined;
+    combined.insert(combined.end(), raw1.begin(), raw1.end());
+    combined.insert(combined.end(), partial.begin(), partial.end());
+
+    size_t count = 0;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [&](const MessageView&) { ++count; });
+
+    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(consumed, raw1.size());
+}
