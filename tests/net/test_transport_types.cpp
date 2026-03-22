@@ -727,6 +727,18 @@ TEST(TransportConfigJson, PlainWsShowsUseTlsFalse) {
     EXPECT_NE(json.find("\"use_tls\":false"), std::string::npos);
 }
 
+TEST(TransportConfigJson, IncludesExtraHeaders) {
+    TransportConfig cfg{};
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws";
+    cfg.extra_headers = "Authorization: Bearer tok\r\n";
+
+    auto json = cfg.to_json();
+    // extra_headers should appear in JSON (with \r\n escaped)
+    EXPECT_NE(json.find("\"extra_headers\":"), std::string::npos);
+    EXPECT_NE(json.find("Authorization"), std::string::npos);
+}
+
 TEST(ReceivedMessage, AllStandardCloseCodesRoundtrip) {
     // Verify various standard close codes encode/decode correctly
     for (uint16_t code : {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011,
@@ -1052,4 +1064,62 @@ TEST(RttStats, AllConvenienceAccessors) {
     EXPECT_DOUBLE_EQ(rtt.p99_us(), 900.0);
     EXPECT_DOUBLE_EQ(rtt.p999_us(), 4500.0);
     EXPECT_DOUBLE_EQ(rtt.mean_us(), 100.0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::warnings()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigWarnings, NoWarningsForValidConfig) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(TransportConfigWarnings, VerifyPeerWithoutTls) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.use_tls = false;
+    cfg.verify_peer = true;
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1);
+    EXPECT_NE(w[0].find("verify_peer"), std::string::npos);
+}
+
+TEST(TransportConfigWarnings, CaCertPathWithoutTls) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.use_tls = false;
+    cfg.verify_peer = false;
+    cfg.ca_cert_path = "/some/ca.pem";
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1);
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("ca_cert_path") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(TransportConfigWarnings, PongTimeoutExceedsPingInterval) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ping_interval = std::chrono::seconds{10};
+    cfg.pong_timeout = std::chrono::seconds{15};
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1);
+    EXPECT_NE(w[0].find("pong_timeout"), std::string::npos);
+}
+
+TEST(TransportConfigWarnings, LargeBurstSizeWarning) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.tx_burst_size = 2048;
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1);
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("tx_burst_size") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
 }

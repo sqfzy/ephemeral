@@ -8,12 +8,14 @@
 /// can use these types without pulling in TLS, WebSocket, or SPSC queue
 /// headers.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <format>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace eph::net {
 
@@ -405,7 +407,8 @@ struct TransportConfig {
             "\"reconnect_interval_ms\":{},\"max_reconnect_backoff_ms\":{},"
             "\"max_reconnect_attempts\":{},"
             "\"ping_interval_s\":{},\"pong_timeout_s\":{},"
-            "\"tx_cpu\":{},\"rx_cpu\":{}}}",
+            "\"tx_cpu\":{},\"rx_cpu\":{},"
+            "\"extra_headers\":\"{}\"}}",
             detail::json_escape(remote_host), remote_port,
             detail::json_escape(ws_path),
             detail::json_escape(ws_subprotocol),
@@ -419,7 +422,8 @@ struct TransportConfig {
             reconnect_interval.count(), max_reconnect_backoff.count(),
             max_reconnect_attempts,
             ping_interval.count(), pong_timeout.count(),
-            tx_cpu, rx_cpu);
+            tx_cpu, rx_cpu,
+            detail::json_escape(extra_headers));
     }
 
     /// Validate configuration, returning an error description or empty string on success.
@@ -476,6 +480,32 @@ struct TransportConfig {
             }
         }
         return {};
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks connection, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (!use_tls && verify_peer)
+            w.emplace_back("verify_peer=true has no effect when use_tls=false");
+        if (!use_tls && !ca_cert_path.empty())
+            w.emplace_back("ca_cert_path is set but use_tls=false — CA cert will be ignored");
+        if (pong_timeout.count() > 0 &&
+            pong_timeout >= ping_interval)
+            w.emplace_back(std::format(
+                "pong_timeout ({}s) >= ping_interval ({}s) — timeout will "
+                "fire before next ping, consider pong_timeout < ping_interval",
+                pong_timeout.count(), ping_interval.count()));
+        if (tx_burst_size > static_cast<uint16_t>(1024))
+            w.emplace_back(std::format(
+                "tx_burst_size={} is unusually large — may increase "
+                "per-iteration latency variance", tx_burst_size));
+        if (rx_burst_size > static_cast<uint16_t>(1024))
+            w.emplace_back(std::format(
+                "rx_burst_size={} is unusually large — may increase "
+                "per-iteration latency variance", rx_burst_size));
+        return w;
     }
 };
 
@@ -585,15 +615,29 @@ struct RttStats {
     }
 };
 
-/// Per-thread stats -- TX thread and RX thread each own their own counters.
-/// Merged at query time to avoid atomic contention on the hot path.
+/// Per-thread stats — TX thread and RX thread each own their own counters.
+/// Merged at query time via stats().
+///
+/// Fields use std::atomic with relaxed ordering to avoid undefined behavior
+/// when the application thread reads stats while worker threads write them.
+/// On x86_64, relaxed atomics compile to plain loads/stores (zero overhead).
 struct ThreadStats {
-    uint64_t packets       = 0;
-    uint64_t bytes         = 0;
-    uint64_t text_packets  = 0;  ///< Text frame count (subset of packets)
-    uint64_t text_bytes    = 0;  ///< Text frame bytes (subset of bytes)
-    uint64_t dropped       = 0;
-    uint64_t crypto_errors = 0;
+    std::atomic<uint64_t> packets{0};
+    std::atomic<uint64_t> bytes{0};
+    std::atomic<uint64_t> text_packets{0};  ///< Text frame count (subset of packets)
+    std::atomic<uint64_t> text_bytes{0};    ///< Text frame bytes (subset of bytes)
+    std::atomic<uint64_t> dropped{0};
+    std::atomic<uint64_t> crypto_errors{0};
+
+    /// Reset all counters to zero (call from one thread only).
+    void reset() noexcept {
+        packets.store(0, std::memory_order_relaxed);
+        bytes.store(0, std::memory_order_relaxed);
+        text_packets.store(0, std::memory_order_relaxed);
+        text_bytes.store(0, std::memory_order_relaxed);
+        dropped.store(0, std::memory_order_relaxed);
+        crypto_errors.store(0, std::memory_order_relaxed);
+    }
 };
 
 /// Aggregated transport statistics (returned by stats()).
@@ -615,6 +659,8 @@ struct TransportStats {
     uint64_t ws_pongs_sent     = 0;
     uint64_t pong_timeouts     = 0;
     uint64_t reconnect_count   = 0;
+    size_t   tx_queue_hwm      = 0;  ///< Peak TX queue occupancy since last reset
+    size_t   rx_queue_hwm      = 0;  ///< Peak RX queue occupancy since last reset
     uint64_t uptime_ns         = 0;  ///< Nanoseconds since Transport::create()
     uint64_t handshake_ns      = 0;  ///< Last TCP+TLS+WS handshake duration (ns)
     uint64_t tcp_connect_ns    = 0;  ///< Last TCP connect (factory) duration (ns)
@@ -675,7 +721,7 @@ struct TransportStats {
             "text: {} pkts/{} B, {} dropped, {} encrypt errors\n"
             "  RX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), "
             "text: {} pkts/{} B, {} dropped, {} decrypt errors\n"
-            "  Queue full: {}\n"
+            "  Queue full: {}, TX HWM: {}, RX HWM: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}, handshake: {:.1f}ms "
             "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)\n"
@@ -685,7 +731,7 @@ struct TransportStats {
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
             rx_packets, rx_pps(), rx_bytes, rx_bps(),
             rx_text_packets, rx_text_bytes, rx_dropped, decrypt_errors,
-            queue_full_count,
+            queue_full_count, tx_queue_hwm, rx_queue_hwm,
             ws_pings_received, ws_pongs_sent, pong_timeouts,
             reconnect_count, handshake_ms(),
             static_cast<double>(tcp_connect_ns) / 1e6,
@@ -705,7 +751,8 @@ struct TransportStats {
             "\"rx_packets\":{},\"rx_bytes\":{},\"rx_text_packets\":{},"
             "\"rx_text_bytes\":{},\"rx_dropped\":{},"
             "\"encrypt_errors\":{},\"decrypt_errors\":{},"
-            "\"queue_full_count\":{},\"ws_pings_received\":{},"
+            "\"queue_full_count\":{},\"tx_queue_hwm\":{},\"rx_queue_hwm\":{},"
+            "\"ws_pings_received\":{},"
             "\"ws_pongs_sent\":{},\"pong_timeouts\":{},"
             "\"reconnect_count\":{},\"uptime_ns\":{},"
             "\"handshake_ns\":{},\"tcp_connect_ns\":{},\"tls_handshake_ns\":{},"
@@ -719,7 +766,8 @@ struct TransportStats {
             rx_packets, rx_bytes, rx_text_packets,
             rx_text_bytes, rx_dropped,
             encrypt_errors, decrypt_errors,
-            queue_full_count, ws_pings_received,
+            queue_full_count, tx_queue_hwm, rx_queue_hwm,
+            ws_pings_received,
             ws_pongs_sent, pong_timeouts,
             reconnect_count, uptime_ns,
             handshake_ns, tcp_connect_ns, tls_handshake_ns,

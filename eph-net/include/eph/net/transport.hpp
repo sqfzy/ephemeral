@@ -155,6 +155,11 @@ public:
                 ConnectionError::kInvalidConfig, std::string(err)});
         }
 
+        // Log non-fatal config warnings before proceeding
+        for (const auto& w : config.warnings()) {
+            SPDLOG_LOGGER_WARN(log, "Config warning: {}", w);
+        }
+
         SPDLOG_LOGGER_INFO(log,
             "Creating transport: {}:{}{}", config.remote_host,
             config.remote_port, config.ws_path);
@@ -810,18 +815,32 @@ public:
                static_cast<double>(QueueDepth);
     }
 
+    /// Peak TX queue occupancy since creation or last reset_stats().
+    /// Useful for diagnosing transient backpressure spikes that
+    /// instantaneous tx_queue_size() would miss.
+    [[nodiscard]] size_t tx_queue_hwm() const noexcept {
+        return tx_hwm_.load(std::memory_order_relaxed);
+    }
+
+    /// Peak RX queue occupancy since creation or last reset_stats().
+    [[nodiscard]] size_t rx_queue_hwm() const noexcept {
+        return rx_hwm_.load(std::memory_order_relaxed);
+    }
+
     /// Reset all statistics counters to zero.
     /// Useful for windowed measurement: call stats(), then reset_stats().
     /// @warning Not thread-safe with stats() — call from one thread only
     ///          (typically the application thread between measurement windows).
     void reset_stats() noexcept {
-        tx_stats_ = {};
-        rx_stats_ = {};
+        tx_stats_.reset();
+        rx_stats_.reset();
         queue_full_count_.store(0, std::memory_order_relaxed);
         ws_pings_received_.store(0, std::memory_order_relaxed);
         ws_pongs_sent_.store(0, std::memory_order_relaxed);
         pong_timeouts_.store(0, std::memory_order_relaxed);
         reconnect_count_.store(0, std::memory_order_relaxed);
+        tx_hwm_.store(0, std::memory_order_relaxed);
+        rx_hwm_.store(0, std::memory_order_relaxed);
         rtt_histogram_.reset();
     }
 
@@ -890,23 +909,25 @@ public:
         auto uptime = std::chrono::duration_cast<std::chrono::nanoseconds>(
             now - created_at_).count();
         return TransportStats{
-            .tx_packets        = tx_stats_.packets,
-            .tx_bytes          = tx_stats_.bytes,
-            .tx_text_packets   = tx_stats_.text_packets,
-            .tx_text_bytes     = tx_stats_.text_bytes,
-            .tx_dropped        = tx_stats_.dropped,
-            .rx_packets        = rx_stats_.packets,
-            .rx_bytes          = rx_stats_.bytes,
-            .rx_text_packets   = rx_stats_.text_packets,
-            .rx_text_bytes     = rx_stats_.text_bytes,
-            .rx_dropped        = rx_stats_.dropped,
-            .encrypt_errors    = tx_stats_.crypto_errors,
-            .decrypt_errors    = rx_stats_.crypto_errors,
+            .tx_packets        = tx_stats_.packets.load(std::memory_order_relaxed),
+            .tx_bytes          = tx_stats_.bytes.load(std::memory_order_relaxed),
+            .tx_text_packets   = tx_stats_.text_packets.load(std::memory_order_relaxed),
+            .tx_text_bytes     = tx_stats_.text_bytes.load(std::memory_order_relaxed),
+            .tx_dropped        = tx_stats_.dropped.load(std::memory_order_relaxed),
+            .rx_packets        = rx_stats_.packets.load(std::memory_order_relaxed),
+            .rx_bytes          = rx_stats_.bytes.load(std::memory_order_relaxed),
+            .rx_text_packets   = rx_stats_.text_packets.load(std::memory_order_relaxed),
+            .rx_text_bytes     = rx_stats_.text_bytes.load(std::memory_order_relaxed),
+            .rx_dropped        = rx_stats_.dropped.load(std::memory_order_relaxed),
+            .encrypt_errors    = tx_stats_.crypto_errors.load(std::memory_order_relaxed),
+            .decrypt_errors    = rx_stats_.crypto_errors.load(std::memory_order_relaxed),
             .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed),
             .ws_pings_received = ws_pings_received_.load(std::memory_order_relaxed),
             .ws_pongs_sent     = ws_pongs_sent_.load(std::memory_order_relaxed),
             .pong_timeouts     = pong_timeouts_.load(std::memory_order_relaxed),
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
+            .tx_queue_hwm      = tx_hwm_.load(std::memory_order_relaxed),
+            .rx_queue_hwm      = rx_hwm_.load(std::memory_order_relaxed),
             .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
             .handshake_ns      = last_handshake_ns_,
             .tcp_connect_ns    = last_tcp_connect_ns_,
@@ -923,6 +944,17 @@ private:
     // -----------------------------------------------------------------------
     // Internal enqueue helpers (no UTF-8 validation — caller is responsible)
     // -----------------------------------------------------------------------
+
+    /// Update a high-watermark atomically (relaxed CAS loop).
+    /// Only stores when current size exceeds the recorded peak.
+    static void update_hwm(std::atomic<size_t>& hwm, size_t current) noexcept {
+        size_t prev = hwm.load(std::memory_order_relaxed);
+        while (current > prev &&
+               !hwm.compare_exchange_weak(prev, current,
+                   std::memory_order_relaxed, std::memory_order_relaxed)) {
+            // prev updated by CAS failure — retry
+        }
+    }
 
     /// Enqueue a message to TX queue without UTF-8 validation.
     /// Shared implementation for send() and send_text() to avoid
@@ -942,6 +974,7 @@ private:
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
             return SendError::kQueueFull;
         }
+        update_hwm(tx_hwm_, tx_queue_.size());
         return SendError::kOk;
     }
 
@@ -963,6 +996,7 @@ private:
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
             return SendError::kQueueFull;
         }
+        update_hwm(tx_hwm_, tx_queue_.size());
         return SendError::kOk;
     }
 
@@ -997,6 +1031,11 @@ private:
     // Per-thread stats to avoid cross-core atomic contention
     ThreadStats                            tx_stats_{};
     ThreadStats                            rx_stats_{};
+
+    // Queue high-watermark: peak occupancy since creation or last reset.
+    // Updated by enqueue (TX) and deliver (RX) paths with relaxed atomics.
+    std::atomic<size_t>                    tx_hwm_{0};
+    std::atomic<size_t>                    rx_hwm_{0};
     // App-thread-only counters (no contention -- only send() writes these)
     std::atomic<uint64_t>                  queue_full_count_{0};
     std::atomic<uint64_t>                  ws_pings_received_{0};
@@ -1599,7 +1638,7 @@ private:
                         tls_buf_i);
 
                     if (enc_len == 0) {
-                        tx_stats_.crypto_errors++;
+                        tx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
                     } else {
                         coalesced_len += enc_len;
                         batch_packets++;
@@ -1613,15 +1652,15 @@ private:
                     // Plain WS: send WS frame directly over TCP
                     auto result = tcp_->send(ws_buf, ws_len);
                     if (!result) {
-                        tx_stats_.dropped++;
+                        tx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
                         SPDLOG_LOGGER_WARN(log,
                             "TCP send failed (dropped): {}", result.error());
                     } else {
-                        tx_stats_.packets++;
-                        tx_stats_.bytes += batch[i].len;
+                        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                        tx_stats_.bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
                         if (batch[i].opcode == ws::opcode::kText) {
-                            tx_stats_.text_packets++;
-                            tx_stats_.text_bytes += batch[i].len;
+                            tx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
+                            tx_stats_.text_bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
                         }
                     }
                 }
@@ -1632,13 +1671,13 @@ private:
                 auto result = tcp_->send(tls_bufs_storage.get(), coalesced_len);
                 if (result) {
                     // Commit batch stats only after successful TCP write
-                    tx_stats_.packets += batch_packets;
-                    tx_stats_.bytes += batch_bytes;
-                    tx_stats_.text_packets += batch_text_packets;
-                    tx_stats_.text_bytes += batch_text_bytes;
+                    tx_stats_.packets.fetch_add(batch_packets, std::memory_order_relaxed);
+                    tx_stats_.bytes.fetch_add(batch_bytes, std::memory_order_relaxed);
+                    tx_stats_.text_packets.fetch_add(batch_text_packets, std::memory_order_relaxed);
+                    tx_stats_.text_bytes.fetch_add(batch_text_bytes, std::memory_order_relaxed);
                 } else {
                     // All records in this batch are lost — count as dropped.
-                    tx_stats_.dropped += batch_packets;
+                    tx_stats_.dropped.fetch_add(batch_packets, std::memory_order_relaxed);
                     SPDLOG_LOGGER_WARN(log,
                         "Coalesced TCP send failed ({}B, {} records): {}",
                         coalesced_len, batch_packets, result.error());
@@ -1681,13 +1720,13 @@ private:
                             ws_buf, static_cast<uint16_t>(ws_len), tls_buf_i);
                         if (enc_len > 0) {
                             drain_coalesced += enc_len;
-                            tx_stats_.packets++;
-                            tx_stats_.bytes += batch[i].len;
+                            tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                            tx_stats_.bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
                         }
                     } else {
                         tcp_->send(ws_buf, ws_len);
-                        tx_stats_.packets++;
-                        tx_stats_.bytes += batch[i].len;
+                        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                        tx_stats_.bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
                     }
                 }
 
@@ -1840,7 +1879,7 @@ private:
                     decrypt_buf.get(), decrypted_len);
 
                 if (!ok) {
-                    rx_stats_.crypto_errors++;
+                    rx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
                     SPDLOG_LOGGER_WARN(log,
                         "TLS decrypt failed -- triggering reconnect");
                     // Corrupted record -> link unreliable, reconnect.
@@ -1970,7 +2009,7 @@ private:
             }
 
             offset += frame->total_len;
-            rx_stats_.packets++;
+            rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
 
             if (frame->is_ping()) {
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
@@ -2096,7 +2135,7 @@ private:
                 deliver_data_frame(*frame);
             } else if (is_single_frame) {
                 // Single oversized frame
-                rx_stats_.dropped++;
+                rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
                 SPDLOG_LOGGER_WARN(log,
                     "Dropping oversized WS frame: payload_len={}, "
                     "max={}, opcode=0x{:02x}",
@@ -2105,7 +2144,7 @@ private:
                 // Fragmented message: accumulate
                 size_t new_size = ws_frag_buf_.size() + frame->payload_len;
                 if (new_size > MaxPayload) {
-                    rx_stats_.dropped++;
+                    rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
                     SPDLOG_LOGGER_WARN(log,
                         "Dropping oversized fragmented WS message: "
                         "accumulated={}, max={}", new_size, MaxPayload);
@@ -2146,16 +2185,16 @@ private:
     void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) {
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText && !ws::is_valid_utf8(data, len)) {
-            rx_stats_.dropped++;
+            rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
                 "Dropping text frame with invalid UTF-8 (len={})", len);
             return;
         }
         auto update_rx_stats = [&] {
-            rx_stats_.bytes += len;
+            rx_stats_.bytes.fetch_add(len, std::memory_order_relaxed);
             if (opcode == ws::opcode::kText) {
-                rx_stats_.text_packets++;
-                rx_stats_.text_bytes += len;
+                rx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
+                rx_stats_.text_bytes.fetch_add(len, std::memory_order_relaxed);
             }
         };
 
@@ -2178,16 +2217,17 @@ private:
 
         if (ok) {
             update_rx_stats();
+            update_hwm(rx_hwm_, rx_queue_.size());
         } else {
-            rx_stats_.dropped++;
-            if (rx_stats_.dropped % 1000 == 1) {
+            auto total = rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (total % 1000 == 1) {
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
                     "RX queue full, dropping data frame "
-                    "(total dropped: {})", rx_stats_.dropped);
+                    "(total dropped: {})", total);
             }
             if (config_.on_rx_drop) {
                 try {
-                    config_.on_rx_drop(rx_stats_.dropped);
+                    config_.on_rx_drop(total);
                 } catch (...) {
                     // Callback must not throw
                 }
