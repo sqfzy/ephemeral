@@ -1099,6 +1099,77 @@ TEST(FixParseAll, partial_message_at_end_stops) {
 }
 
 // ===========================================================================
+// MessageView iterators (begin/end, range-for, structured bindings)
+// ===========================================================================
+
+TEST(FixIterator, range_for_loop) {
+    std::string body = "35=D\x01" "55=AAPL\x01" "54=1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    std::vector<uint32_t> tags;
+    std::vector<std::string> values;
+    for (const auto& field : *result) {
+        tags.push_back(field.tag);
+        values.emplace_back(field.value);
+    }
+    ASSERT_EQ(tags.size(), 3u);
+    EXPECT_EQ(tags[0], tag::MsgType);
+    EXPECT_EQ(tags[1], tag::Symbol);
+    EXPECT_EQ(tags[2], tag::Side);
+    EXPECT_EQ(values[0], "D");
+    EXPECT_EQ(values[1], "AAPL");
+    EXPECT_EQ(values[2], "1");
+}
+
+TEST(FixIterator, structured_bindings) {
+    std::string body = "35=D\x01" "44=150.50\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto it = result->begin();
+    auto [t1, v1] = *it++;
+    EXPECT_EQ(t1, tag::MsgType);
+    EXPECT_EQ(v1, "D");
+
+    auto [t2, v2] = *it++;
+    EXPECT_EQ(t2, tag::Price);
+    EXPECT_EQ(v2, "150.50");
+
+    EXPECT_EQ(it, result->end());
+}
+
+TEST(FixIterator, empty_message_view_begin_equals_end) {
+    MessageView empty_msg;
+    EXPECT_EQ(empty_msg.begin(), empty_msg.end());
+    EXPECT_EQ(std::distance(empty_msg.begin(), empty_msg.end()), 0);
+}
+
+TEST(FixIterator, std_find_if) {
+    std::string body = "35=D\x01" "55=AAPL\x01" "54=1\x01" "44=150.50\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto it = std::find_if(result->begin(), result->end(),
+        [](const Field& f) { return f.tag == tag::Price; });
+    ASSERT_NE(it, result->end());
+    EXPECT_EQ(it->value, "150.50");
+}
+
+TEST(FixIterator, iterator_arithmetic) {
+    std::string body = "35=D\x01" "55=AAPL\x01" "54=1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    EXPECT_EQ(result->end() - result->begin(), 3);
+    EXPECT_EQ(result->begin()[2].tag, tag::Side);
+}
+
+// ===========================================================================
 // set_timestamp() builder method
 // ===========================================================================
 

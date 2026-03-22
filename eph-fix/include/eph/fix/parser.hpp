@@ -165,6 +165,13 @@ public:
         return neg ? -val : val;
     }
 
+    /// Random-access iterator over parsed fields.
+    using iterator       = const Field*;
+    using const_iterator = const Field*;
+
+    [[nodiscard]] const_iterator begin() const noexcept { return fields_; }
+    [[nodiscard]] const_iterator end()   const noexcept { return fields_ + count_; }
+
     /// Iterate over all parsed fields, invoking callback(uint32_t tag, std::string_view value).
     template <typename Fn>
     void for_each(Fn&& fn) const {
