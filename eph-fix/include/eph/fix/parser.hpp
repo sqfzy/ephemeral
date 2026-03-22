@@ -494,7 +494,9 @@ parse(const uint8_t* data, size_t len) noexcept {
     std::string_view body_len_str(v2_start, static_cast<size_t>(p - v2_start));
     ++p; // skip SOH
 
-    // Parse body length value
+    // Parse body length value with overflow protection.
+    // Validate against kMaxBodyLength inside the loop to prevent
+    // integer overflow on maliciously large digit strings.
     size_t body_length = 0;
     for (char c : body_len_str) {
         if (c < '0' || c > '9') {
@@ -503,14 +505,12 @@ parse(const uint8_t* data, size_t len) noexcept {
             return std::unexpected(ParseError::kInvalidFormat);
         }
         body_length = body_length * 10 + static_cast<size_t>(c - '0');
-    }
-
-    // Reject absurdly large BodyLength to prevent memory exhaustion attacks.
-    if (body_length > kMaxBodyLength) {
-        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
-            "FIX parse: BodyLength {} exceeds maximum allowed {} bytes",
-            body_length, kMaxBodyLength);
-        return std::unexpected(ParseError::kInvalidFormat);
+        if (body_length > kMaxBodyLength) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: BodyLength exceeds maximum allowed {} bytes",
+                kMaxBodyLength);
+            return std::unexpected(ParseError::kInvalidFormat);
+        }
     }
 
     // Body starts after "9=NNN\x01" and runs for body_length bytes.

@@ -87,7 +87,9 @@ public:
         }
         p += 2;
 
-        // Parse body length digits
+        // Parse body length digits with overflow protection.
+        // Validate against kMaxBodyLength inside the loop to prevent
+        // integer overflow on maliciously large digit strings.
         size_t body_length = 0;
         while (p < end && *p != '\x01') {
             char c = *p++;
@@ -97,17 +99,15 @@ public:
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
             }
             body_length = body_length * 10 + static_cast<size_t>(c - '0');
+            if (body_length > kMaxBodyLength) {
+                SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                    "FIX frame BodyLength exceeds maximum allowed {} bytes",
+                    kMaxBodyLength);
+                return std::unexpected(eph::net::FrameError::kInvalidFormat);
+            }
         }
         if (p >= end) return std::unexpected(eph::net::FrameError::kIncomplete);
         ++p; // skip SOH after body length value
-
-        // Reject absurdly large BodyLength to prevent memory exhaustion attacks.
-        if (body_length > kMaxBodyLength) {
-            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
-                "FIX frame BodyLength {} exceeds maximum allowed {} bytes",
-                body_length, kMaxBodyLength);
-            return std::unexpected(eph::net::FrameError::kInvalidFormat);
-        }
 
         // Body starts here. Total = header + body + checksum ("10=XXX\x01" = 7 bytes)
         size_t header_len = static_cast<size_t>(p - msg);
