@@ -558,7 +558,7 @@ TYPED_TEST(EvictingQueueTest, ReadCountUnchangedOnFailedRead) {
     EXPECT_EQ(queue.read_count(), 0u);
 }
 
-TYPED_TEST(EvictingQueueTest, ReadCountUnaffectedByClear) {
+TYPED_TEST(EvictingQueueTest, ReadCountAdvancedByClear) {
     TypeParam queue;
     TestData d{.seq = 1};
     queue.push(d);
@@ -567,31 +567,13 @@ TYPED_TEST(EvictingQueueTest, ReadCountUnaffectedByClear) {
     EXPECT_EQ(queue.read_count(), 1u);
 
     queue.clear();
-    // read_count reflects historical reads, clear doesn't reset it
-    // For multi-slot: clear sets last_global_index_ to current writer position,
-    //   which will advance read_count. For single-slot: clear sets last_seq_ to
-    //   current seq, which also advances the count.
-    // This is expected: clear() conceptually "consumes" all buffered data.
+    // clear() conceptually "consumes" all buffered data by advancing the reader
+    // position to the writer position, so read_count may increase.
     EXPECT_GE(queue.read_count(), 1u);
 }
 
-TEST(EvictingQueueReadCount, MultiSlotReadCountTracksConsumption) {
-    EvictingQueue<TestData, 4> queue;
-    TestData d{};
-
-    // Push 5 items, read between pushes
-    for (uint32_t i = 1; i <= 5; ++i) {
-        d.seq = i;
-        queue.push(d);
-        (void)queue.try_pop_latest();
-    }
-
-    EXPECT_EQ(queue.read_count(), 5u);
-    EXPECT_EQ(queue.write_count(), 5u);
-}
-
-TEST(EvictingQueueReadCount, SingleSlotReadCountTracksConsumption) {
-    EvictingQueue<TestData, 1> queue;
+TYPED_TEST(EvictingQueueTest, ReadCountTracksConsumptionAcrossMultipleReads) {
+    TypeParam queue;
     TestData d{};
 
     for (uint32_t i = 1; i <= 5; ++i) {
