@@ -513,4 +513,346 @@ inline char cross_type(const uint8_t* msg) noexcept {
 
 } // namespace cross_trade
 
+// ---- StockTradingAction ('H') --------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         stock(8) trading_state(1) reserved(1) reason(4)
+// Body size: 24
+namespace stock_trading_action {
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 11).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Trading state: 'H'=halted, 'P'=paused, 'Q'=quotation-only, 'T'=trading.
+inline char trading_state(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[19]);
+}
+
+/// Reserved (1 byte at offset 20).
+inline char reserved(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[20]);
+}
+
+/// Reason for the trading action (4 bytes at offset 21).
+inline std::string_view reason(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 21), 4};
+}
+
+} // namespace stock_trading_action
+
+// ---- RegSHORestriction ('Y') ---------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         stock(8) reg_sho_action(1)
+// Body size: 19
+namespace reg_sho_restriction {
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 11).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Reg SHO action: '0'=no restriction, '1'=short sale restriction activated,
+///                 '2'=short sale restriction continued.
+inline char reg_sho_action(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[19]);
+}
+
+} // namespace reg_sho_restriction
+
+// ---- MarketParticipantPosition ('L') -------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         mpid(4) stock(8) primary_market_maker(1) market_maker_mode(1)
+//         market_participant_state(1)
+// Body size: 25
+namespace market_participant_position {
+
+/// Market participant identifier (4 bytes at offset 11).
+inline std::string_view mpid(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 4};
+}
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 15).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 15), 8};
+}
+
+/// Primary market maker: 'Y' or 'N'.
+inline char primary_market_maker(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[23]);
+}
+
+/// Market maker mode: 'N'=normal, 'P'=passive, 'S'=syndicate,
+///                    'R'=pre-syndicate, 'L'=penalty.
+inline char market_maker_mode(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[24]);
+}
+
+/// Market participant state: 'A'=active, 'E'=excused/withdrawn,
+///                           'W'=withdrawn, 'S'=suspended, 'D'=deleted.
+inline char market_participant_state(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[25]);
+}
+
+} // namespace market_participant_position
+
+// ---- MWCBDeclineLevel ('V') ----------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         level1(8) level2(8) level3(8)
+// Body size: 34
+// Prices are in price8 format (8 implied decimal places).
+namespace mwcb_decline_level {
+
+/// Level 1 MWCB value (raw, 8 bytes big-endian at offset 11).
+inline uint64_t level1_raw(const uint8_t* msg) noexcept {
+    return read_be64(msg + 11);
+}
+
+/// Level 1 MWCB value in dollars (price8: 8 implied decimal places).
+inline double level1(const uint8_t* msg) noexcept {
+    return level1_raw(msg) / 100000000.0;
+}
+
+/// Level 2 MWCB value (raw, 8 bytes big-endian at offset 19).
+inline uint64_t level2_raw(const uint8_t* msg) noexcept {
+    return read_be64(msg + 19);
+}
+
+/// Level 2 MWCB value in dollars (price8: 8 implied decimal places).
+inline double level2(const uint8_t* msg) noexcept {
+    return level2_raw(msg) / 100000000.0;
+}
+
+/// Level 3 MWCB value (raw, 8 bytes big-endian at offset 27).
+inline uint64_t level3_raw(const uint8_t* msg) noexcept {
+    return read_be64(msg + 27);
+}
+
+/// Level 3 MWCB value in dollars (price8: 8 implied decimal places).
+inline double level3(const uint8_t* msg) noexcept {
+    return level3_raw(msg) / 100000000.0;
+}
+
+} // namespace mwcb_decline_level
+
+// ---- MWCBStatus ('W') ----------------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         breached_level(1)
+// Body size: 11
+namespace mwcb_status {
+
+/// Breached level: '1', '2', or '3'.
+inline char breached_level(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[11]);
+}
+
+} // namespace mwcb_status
+
+// ---- IPOQuotingPeriod ('K') ----------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         stock(8) ipo_quotation_release_time(4)
+//         ipo_quotation_release_qualifier(1) ipo_price(4)
+// Body size: 27
+namespace ipo_quoting_period {
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 11).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// IPO quotation release time as seconds after midnight (4 bytes BE at offset 19).
+inline uint32_t ipo_quotation_release_time(const uint8_t* msg) noexcept {
+    return read_be32(msg + 19);
+}
+
+/// IPO quotation release qualifier: 'A'=anticipated, 'C'=cancelled.
+inline char ipo_quotation_release_qualifier(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[23]);
+}
+
+/// IPO price (raw, 4 bytes BE at offset 24, price4 format).
+inline uint32_t ipo_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 24);
+}
+
+/// IPO price in dollars (4 implied decimal places).
+inline double ipo_price(const uint8_t* msg) noexcept {
+    return ipo_price_raw(msg) / 10000.0;
+}
+
+} // namespace ipo_quoting_period
+
+// ---- LULDAuctionCollar ('J') ---------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         stock(8) auction_collar_reference_price(4)
+//         upper_auction_collar_price(4) lower_auction_collar_price(4)
+//         auction_collar_extension(4)
+// Body size: 34
+namespace luld_auction_collar {
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 11).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Auction collar reference price (raw, 4 bytes BE at offset 19).
+inline uint32_t auction_collar_reference_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 19);
+}
+
+/// Auction collar reference price in dollars (4 implied decimal places).
+inline double auction_collar_reference_price(const uint8_t* msg) noexcept {
+    return auction_collar_reference_price_raw(msg) / 10000.0;
+}
+
+/// Upper auction collar price (raw, 4 bytes BE at offset 23).
+inline uint32_t upper_auction_collar_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 23);
+}
+
+/// Upper auction collar price in dollars (4 implied decimal places).
+inline double upper_auction_collar_price(const uint8_t* msg) noexcept {
+    return upper_auction_collar_price_raw(msg) / 10000.0;
+}
+
+/// Lower auction collar price (raw, 4 bytes BE at offset 27).
+inline uint32_t lower_auction_collar_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 27);
+}
+
+/// Lower auction collar price in dollars (4 implied decimal places).
+inline double lower_auction_collar_price(const uint8_t* msg) noexcept {
+    return lower_auction_collar_price_raw(msg) / 10000.0;
+}
+
+/// Auction collar extension (4 bytes BE at offset 31).
+inline uint32_t auction_collar_extension(const uint8_t* msg) noexcept {
+    return read_be32(msg + 31);
+}
+
+} // namespace luld_auction_collar
+
+// ---- OperationalHalt ('h') -----------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         stock(8) market_code(1) operational_halt_action(1)
+// Body size: 20
+namespace operational_halt {
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 11).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Market code: 'Q'=NASDAQ, 'B'=BX, 'X'=PSX.
+inline char market_code(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[19]);
+}
+
+/// Operational halt action: 'H'=halted, 'T'=resumed.
+inline char operational_halt_action(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[20]);
+}
+
+} // namespace operational_halt
+
+// ---- BrokenTrade ('B') ---------------------------------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6) match_number(8)
+// Body size: 18
+namespace broken_trade {
+
+/// Match number of the broken trade (8 bytes BE at offset 11).
+inline uint64_t match_number(const uint8_t* msg) noexcept {
+    return read_be64(msg + 11);
+}
+
+} // namespace broken_trade
+
+// ---- NOII ('I') — Net Order Imbalance Indicator --------------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         paired_shares(8) imbalance_shares(8) imbalance_direction(1)
+//         stock(8) far_price(4) near_price(4) current_reference_price(4)
+//         cross_type(1) price_variation_indicator(1)
+// Body size: 49
+namespace noii {
+
+/// Paired shares (8 bytes BE at offset 11).
+inline uint64_t paired_shares(const uint8_t* msg) noexcept {
+    return read_be64(msg + 11);
+}
+
+/// Imbalance shares (8 bytes BE at offset 19).
+inline uint64_t imbalance_shares(const uint8_t* msg) noexcept {
+    return read_be64(msg + 19);
+}
+
+/// Imbalance direction: 'B'=buy, 'S'=sell, 'N'=no imbalance, 'O'=insufficient orders.
+inline char imbalance_direction(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[27]);
+}
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 28).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 28), 8};
+}
+
+/// Far price (raw, 4 bytes BE at offset 36).
+inline uint32_t far_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 36);
+}
+
+/// Far price in dollars (4 implied decimal places).
+inline double far_price(const uint8_t* msg) noexcept {
+    return far_price_raw(msg) / 10000.0;
+}
+
+/// Near price (raw, 4 bytes BE at offset 40).
+inline uint32_t near_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 40);
+}
+
+/// Near price in dollars (4 implied decimal places).
+inline double near_price(const uint8_t* msg) noexcept {
+    return near_price_raw(msg) / 10000.0;
+}
+
+/// Current reference price (raw, 4 bytes BE at offset 44).
+inline uint32_t current_reference_price_raw(const uint8_t* msg) noexcept {
+    return read_be32(msg + 44);
+}
+
+/// Current reference price in dollars (4 implied decimal places).
+inline double current_reference_price(const uint8_t* msg) noexcept {
+    return current_reference_price_raw(msg) / 10000.0;
+}
+
+/// Cross type: 'O'=opening, 'C'=closing, 'H'=halted/IPO.
+inline char cross_type(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[48]);
+}
+
+/// Price variation indicator (1 byte at offset 49).
+inline char price_variation_indicator(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[49]);
+}
+
+} // namespace noii
+
+// ---- RPII ('N') — Retail Price Improvement Indicator ---------------------
+// Layout: type(1) locate(2) tracking(2) timestamp(6)
+//         stock(8) interest_flag(1)
+// Body size: 19
+namespace rpii {
+
+/// Stock symbol, right-padded with spaces (8 bytes at offset 11).
+inline std::string_view stock(const uint8_t* msg) noexcept {
+    return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Interest flag: 'B'=buy-side, 'S'=sell-side, 'A'=both, 'N'=none.
+inline char interest_flag(const uint8_t* msg) noexcept {
+    return static_cast<char>(msg[19]);
+}
+
+} // namespace rpii
+
 } // namespace eph::itch
