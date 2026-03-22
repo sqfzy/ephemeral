@@ -972,9 +972,16 @@ private:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            // Queue full → HWM is max capacity
+            update_hwm(tx_hwm_, QueueDepth);
             return SendError::kQueueFull;
         }
-        update_hwm(tx_hwm_, tx_queue_.size());
+        // Sample HWM every 64 enqueues to avoid cross-core size() read
+        // on every send(). size() reads both writer tail and reader head
+        // which sit on separate cache lines — expensive on every call.
+        if ((++tx_hwm_counter_ & 63) == 0) {
+            update_hwm(tx_hwm_, tx_queue_.size());
+        }
         return SendError::kOk;
     }
 
@@ -994,9 +1001,12 @@ private:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            update_hwm(tx_hwm_, QueueDepth);
             return SendError::kQueueFull;
         }
-        update_hwm(tx_hwm_, tx_queue_.size());
+        if ((++tx_hwm_counter_ & 63) == 0) {
+            update_hwm(tx_hwm_, tx_queue_.size());
+        }
         return SendError::kOk;
     }
 
@@ -1034,8 +1044,11 @@ private:
 
     // Queue high-watermark: peak occupancy since creation or last reset.
     // Updated by enqueue (TX) and deliver (RX) paths with relaxed atomics.
+    // Sampled every 64 operations to avoid cross-core size() reads.
     std::atomic<size_t>                    tx_hwm_{0};
     std::atomic<size_t>                    rx_hwm_{0};
+    uint64_t                               tx_hwm_counter_{0};  // app thread only
+    uint64_t                               rx_hwm_counter_{0};  // RX thread only
     // App-thread-only counters (no contention -- only send() writes these)
     std::atomic<uint64_t>                  queue_full_count_{0};
     std::atomic<uint64_t>                  ws_pings_received_{0};
@@ -1608,11 +1621,14 @@ private:
             // TLS mode: pack encrypted records contiguously for a single
             // TCP send, reducing syscall count from N to 1 per batch.
             size_t coalesced_len = 0;
-            // Track batch stats separately so we can roll back on TCP failure.
+            // Track batch stats locally, commit once after the loop.
+            // For TLS: enables rollback on coalesced TCP send failure.
+            // For plain WS: avoids per-message locked atomic operations.
             uint64_t batch_packets = 0;
             uint64_t batch_bytes = 0;
             uint64_t batch_text_packets = 0;
             uint64_t batch_text_bytes = 0;
+            uint64_t batch_dropped = 0;
 
             for (int i = 0; i < n; ++i) {
                 size_t ws_len;
@@ -1649,39 +1665,50 @@ private:
                         }
                     }
                 } else {
-                    // Plain WS: send WS frame directly over TCP
+                    // Plain WS: send WS frame directly over TCP.
+                    // Accumulate stats locally and commit once after the loop
+                    // to avoid per-message locked atomic operations.
                     auto result = tcp_->send(ws_buf, ws_len);
                     if (!result) {
-                        tx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
+                        batch_dropped++;
                         SPDLOG_LOGGER_WARN(log,
                             "TCP send failed (dropped): {}", result.error());
                     } else {
-                        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                        tx_stats_.bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
+                        batch_packets++;
+                        batch_bytes += batch[i].len;
                         if (batch[i].opcode == ws::opcode::kText) {
-                            tx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
-                            tx_stats_.text_bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
+                            batch_text_packets++;
+                            batch_text_bytes += batch[i].len;
                         }
                     }
                 }
             }
 
-            // Send coalesced TLS records in a single TCP write
+            // Commit batch stats atomically (single set of fetch_add calls)
             if (config_.use_tls && coalesced_len > 0) {
                 auto result = tcp_->send(tls_bufs_storage.get(), coalesced_len);
-                if (result) {
-                    // Commit batch stats only after successful TCP write
-                    tx_stats_.packets.fetch_add(batch_packets, std::memory_order_relaxed);
-                    tx_stats_.bytes.fetch_add(batch_bytes, std::memory_order_relaxed);
-                    tx_stats_.text_packets.fetch_add(batch_text_packets, std::memory_order_relaxed);
-                    tx_stats_.text_bytes.fetch_add(batch_text_bytes, std::memory_order_relaxed);
-                } else {
-                    // All records in this batch are lost — count as dropped.
-                    tx_stats_.dropped.fetch_add(batch_packets, std::memory_order_relaxed);
+                if (!result) {
+                    // All TLS records in this batch are lost
+                    batch_dropped += batch_packets;
+                    batch_packets = 0;
+                    batch_bytes = 0;
+                    batch_text_packets = 0;
+                    batch_text_bytes = 0;
                     SPDLOG_LOGGER_WARN(log,
                         "Coalesced TCP send failed ({}B, {} records): {}",
-                        coalesced_len, batch_packets, result.error());
+                        coalesced_len, batch_dropped, result.error());
                 }
+            }
+            if (batch_packets > 0) {
+                tx_stats_.packets.fetch_add(batch_packets, std::memory_order_relaxed);
+                tx_stats_.bytes.fetch_add(batch_bytes, std::memory_order_relaxed);
+                if (batch_text_packets > 0) {
+                    tx_stats_.text_packets.fetch_add(batch_text_packets, std::memory_order_relaxed);
+                    tx_stats_.text_bytes.fetch_add(batch_text_bytes, std::memory_order_relaxed);
+                }
+            }
+            if (batch_dropped > 0) {
+                tx_stats_.dropped.fetch_add(batch_dropped, std::memory_order_relaxed);
             }
         }
 
@@ -1714,19 +1741,30 @@ private:
                             batch[i].data, batch[i].len);
                     }
 
+                    auto account_drain_msg = [&](uint16_t len, uint8_t opcode) {
+                        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                        tx_stats_.bytes.fetch_add(len, std::memory_order_relaxed);
+                        if (opcode == ws::opcode::kText) {
+                            tx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
+                            tx_stats_.text_bytes.fetch_add(len, std::memory_order_relaxed);
+                        }
+                    };
+
                     if (config_.use_tls) {
                         uint8_t* tls_buf_i = tls_bufs_storage.get() + drain_coalesced;
                         uint16_t enc_len = crypto_->encrypt(
                             ws_buf, static_cast<uint16_t>(ws_len), tls_buf_i);
                         if (enc_len > 0) {
                             drain_coalesced += enc_len;
-                            tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                            tx_stats_.bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
+                            account_drain_msg(batch[i].len, batch[i].opcode);
                         }
                     } else {
-                        tcp_->send(ws_buf, ws_len);
-                        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                        tx_stats_.bytes.fetch_add(batch[i].len, std::memory_order_relaxed);
+                        auto result = tcp_->send(ws_buf, ws_len);
+                        if (result) {
+                            account_drain_msg(batch[i].len, batch[i].opcode);
+                        } else {
+                            tx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                 }
 
@@ -2217,7 +2255,10 @@ private:
 
         if (ok) {
             update_rx_stats();
-            update_hwm(rx_hwm_, rx_queue_.size());
+            // Sample RX HWM every 64 deliveries (same rationale as TX)
+            if ((++rx_hwm_counter_ & 63) == 0) {
+                update_hwm(rx_hwm_, rx_queue_.size());
+            }
         } else {
             auto total = rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed) + 1;
             if (total % 1000 == 1) {
