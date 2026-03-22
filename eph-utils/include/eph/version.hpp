@@ -28,4 +28,16 @@ inline constexpr int kVersion =
 /// Human-readable version string — MUST match kVersionMajor.kVersionMinor.kVersionPatch.
 inline constexpr std::string_view kVersionString = "1.0.0";
 
+/// Runtime version string combining library name and version.
+/// Returns "ephemeral/1.0.0" — suitable for User-Agent headers,
+/// log preambles, and CLI --version output.
+inline constexpr std::string_view kVersionFull = "ephemeral/1.0.0";
+
+/// Check at compile time whether the library version is at least (major, minor, patch).
+/// Useful for feature-gating in downstream code:
+///   static_assert(eph::version_at_least(1, 2, 0), "Requires ephemeral >= 1.2.0");
+consteval bool version_at_least(int major, int minor, int patch) noexcept {
+    return kVersion >= (major * 10000 + minor * 100 + patch);
+}
+
 } // namespace eph
