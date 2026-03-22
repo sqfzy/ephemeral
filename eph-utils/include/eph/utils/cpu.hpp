@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <expected>
 #include <format>
 #include <fstream>
 #include <ranges>
@@ -213,8 +214,9 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
  *
  * @warning 过度使用可能导致负载不均衡
  */
-inline void set_thread_affinity(int cpu_id, const char* name = nullptr) {
-  if (cpu_id < 0) return;
+inline std::expected<void, std::string>
+set_thread_affinity(int cpu_id, const char* name = nullptr) {
+  if (cpu_id < 0) return {};
   auto log = detail::cpu_logger();
   const char* tag = name ? name : "thread";
 #if defined(__linux__)
@@ -223,22 +225,26 @@ inline void set_thread_affinity(int cpu_id, const char* name = nullptr) {
   CPU_SET(cpu_id, &cpuset);
   int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
   if (ret != 0) {
-    SPDLOG_LOGGER_ERROR(log,
-        "Failed to pin {} to cpu_id={}: {}",
+    auto msg = std::format("Failed to pin {} to cpu_id={}: {}",
         tag, cpu_id, std::generic_category().message(ret));
-  } else {
-    SPDLOG_LOGGER_INFO(log, "{} pinned to cpu_id={}", tag, cpu_id);
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
   }
+  SPDLOG_LOGGER_INFO(log, "{} pinned to cpu_id={}", tag, cpu_id);
+  return {};
 #elif defined(__APPLE__)
   // macOS 不支持硬亲和性，只能设置 QoS
   SPDLOG_LOGGER_DEBUG(log,
       "macOS: setting QoS instead of hard affinity for {} (cpu_id={})",
       tag, cpu_id);
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+  return {};
 #else
-  SPDLOG_LOGGER_WARN(log,
+  auto msg = std::format(
       "Thread affinity not supported on this platform for {} (cpu_id={})",
       tag, cpu_id);
+  SPDLOG_LOGGER_WARN(log, "{}", msg);
+  return std::unexpected(std::move(msg));
 #endif
 }
 

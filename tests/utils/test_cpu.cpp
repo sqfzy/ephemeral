@@ -19,12 +19,27 @@ TEST(CpuTest, GetCpuTopology) {
 }
 
 TEST(CpuTest, SetThreadAffinity) {
-  // 绑定到 CPU 0 应该不会崩溃
-  EXPECT_NO_THROW(set_thread_affinity(0));
-  
-  // 绑定到最后一个 CPU
+  // Binding to CPU 0 should succeed and return a value
+  auto r0 = set_thread_affinity(0);
+  EXPECT_TRUE(r0.has_value()) << "Failed to pin to cpu 0: " << r0.error();
+
+  // Binding to the last CPU should also succeed
   unsigned last_cpu = std::thread::hardware_concurrency() - 1;
-  EXPECT_NO_THROW(set_thread_affinity(last_cpu));
+  auto r1 = set_thread_affinity(last_cpu);
+  EXPECT_TRUE(r1.has_value()) << "Failed to pin to cpu " << last_cpu << ": " << r1.error();
+}
+
+TEST(CpuTest, SetThreadAffinityNegativeCpuIsNoop) {
+  // Negative cpu_id means "don't bind" — should succeed silently
+  auto r = set_thread_affinity(-1);
+  EXPECT_TRUE(r.has_value());
+}
+
+TEST(CpuTest, SetThreadAffinityInvalidCpuReturnsError) {
+  // An impossibly large cpu_id should fail
+  auto r = set_thread_affinity(99999);
+  EXPECT_FALSE(r.has_value());
+  EXPECT_FALSE(r.error().empty());
 }
 
 TEST(CpuTest, GetCpuBaseFrequency) {
@@ -48,7 +63,7 @@ TEST(CpuTest, ThreadAffinityDoesNotCrash) {
   std::atomic<bool> ready{false};
   
   std::thread t([&] {
-    set_thread_affinity(0);
+    (void)set_thread_affinity(0);
     
     // 模拟自旋等待
     int count = 0;
