@@ -1368,3 +1368,43 @@ TEST(TransportStats, DeltaIdentityWhenSameSnapshot) {
     EXPECT_EQ(d.rx_packets, 0u);
     EXPECT_EQ(d.uptime_ns, 0u);
 }
+
+TEST(TransportStats, DeltaTextCounters) {
+    TransportStats s1{};
+    s1.tx_text_packets = 10;
+    s1.tx_text_bytes = 500;
+    s1.rx_text_packets = 8;
+    s1.rx_text_bytes = 400;
+
+    TransportStats s2{};
+    s2.tx_text_packets = 25;
+    s2.tx_text_bytes = 1200;
+    s2.rx_text_packets = 20;
+    s2.rx_text_bytes = 1000;
+
+    auto d = s2 - s1;
+    EXPECT_EQ(d.tx_text_packets, 15u);
+    EXPECT_EQ(d.tx_text_bytes, 700u);
+    EXPECT_EQ(d.rx_text_packets, 12u);
+    EXPECT_EQ(d.rx_text_bytes, 600u);
+}
+
+TEST(TransportStats, DeltaWebSocketCounters) {
+    TransportStats s1{};
+    s1.ws_pings_received = 5;
+    s1.ws_pongs_sent = 5;
+    s1.pong_timeouts = 1;
+    s1.reconnect_count = 2;
+
+    TransportStats s2{};
+    s2.ws_pings_received = 15;
+    s2.ws_pongs_sent = 14;
+    s2.pong_timeouts = 3;
+    s2.reconnect_count = 4;
+
+    auto d = s2 - s1;
+    EXPECT_EQ(d.ws_pings_received, 10u);
+    EXPECT_EQ(d.ws_pongs_sent, 9u);
+    EXPECT_EQ(d.pong_timeouts, 2u);
+    EXPECT_EQ(d.reconnect_count, 2u);
+}

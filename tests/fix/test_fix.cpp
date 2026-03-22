@@ -2764,6 +2764,35 @@ TEST(FixBuilder, has_tag_prevents_duplicate_tags) {
     EXPECT_EQ(result->get(tag::MsgType).value(), "D");
 }
 
+TEST(FixBuilder, has_tag_with_tag_zero) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    // Tag 0 is not standard FIX but has_tag should handle it
+    b.set(0, "val");
+    EXPECT_TRUE(b.has_tag(0));
+    EXPECT_FALSE(b.has_tag(1));
+}
+
+TEST(FixBuilder, has_tag_with_empty_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "");  // empty value: "35=\x01"
+    EXPECT_TRUE(b.has_tag(tag::MsgType));
+
+    // Verify next field after empty value works
+    b.set(tag::Symbol, "AAPL");
+    EXPECT_TRUE(b.has_tag(tag::Symbol));
+}
+
+TEST(FixBuilder, has_tag_with_large_tag_number) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(99999, "test");
+    EXPECT_TRUE(b.has_tag(99999));
+    EXPECT_FALSE(b.has_tag(9999));
+    EXPECT_FALSE(b.has_tag(999990));
+}
+
 // ===========================================================================
 // ParserStats dump/to_json/formatter
 // ===========================================================================
