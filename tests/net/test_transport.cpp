@@ -1118,6 +1118,123 @@ TEST_F(TransportTest, ReconnectExhaustedStopsTransport) {
     EXPECT_TRUE(stopped);
 }
 
+TEST_F(TransportTest, DataFlowsAfterReconnect) {
+    // After a reconnect, verify that send/recv still works
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 3;
+    config.reconnect_interval = 50ms;
+
+    WsMockTcpTransport* mock_ptr = nullptr;
+    std::atomic<int> connect_count{0};
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        mock->echo_mode = true;
+        mock_ptr = mock.get();
+        connect_count.fetch_add(1, std::memory_order_relaxed);
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Trigger disconnect
+    mock_ptr->set_error_on_next_poll("simulated disconnect");
+
+    // Wait for reconnection
+    bool reconnected = wait_for([&] {
+        return connect_count.load() >= 2;
+    }, 5000ms);
+    ASSERT_TRUE(reconnected);
+
+    // Give RX thread time to resume
+    std::this_thread::sleep_for(20ms);
+
+    // Send data after reconnect and verify echo
+    std::string msg = "post-reconnect";
+    auto err = tp->send_text(msg);
+    EXPECT_EQ(err, SendError::kOk);
+
+    bool received = wait_for([&] {
+        auto m = tp->try_recv_msg();
+        if (m) {
+            EXPECT_TRUE(m->is_text());
+            EXPECT_EQ(m->text(), "post-reconnect");
+            return true;
+        }
+        return false;
+    }, 3000ms);
+    EXPECT_TRUE(received) << "Data should flow after reconnect";
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, OnReconnectAttemptAborts) {
+    // on_reconnect_attempt returning false should abort reconnection
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 5;
+    config.reconnect_interval = 10ms;
+
+    std::atomic<int> attempt_count{0};
+    config.on_reconnect_attempt = [&](int attempt, int /*max*/, std::string_view /*err*/) -> bool {
+        attempt_count.store(attempt, std::memory_order_relaxed);
+        return attempt < 2; // Abort after 2nd attempt
+    };
+
+    std::atomic<int> factory_calls{0};
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        int n = factory_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n == 1) {
+            // First call: succeed (initial connection)
+            auto mock = std::make_unique<WsMockTcpTransport>();
+            last_mock_ = mock.get();
+            auto r = mock->connect(3000ms);
+            if (!r) return std::unexpected(r.error());
+            return mock;
+        }
+        // All reconnect attempts fail
+        return std::unexpected("reconnect failure");
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+    last_mock_->set_error_on_next_poll("simulated disconnect");
+
+    // Wait for transport to stop (should stop after 2 attempts, not 5)
+    bool stopped = wait_for([&] {
+        return tp->state() == TransportState::kStopped;
+    }, 5000ms);
+
+    EXPECT_TRUE(stopped);
+    // Callback should have been called with attempt=2 (the abort point)
+    EXPECT_EQ(attempt_count.load(), 2);
+
+    tp->stop();
+}
+
 // ---------------------------------------------------------------------------
 // Host header port logic (RFC 6455 §4.1)
 // ---------------------------------------------------------------------------
