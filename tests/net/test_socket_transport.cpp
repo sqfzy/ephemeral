@@ -295,3 +295,13 @@ TEST(SocketConfigFormat, StdFormatterWorks) {
     EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
     EXPECT_NE(s.find("8080"), std::string::npos);
 }
+
+TEST(SocketConfigFormat, ToJsonEscapesHostField) {
+    // Verify host field with special chars is escaped in JSON output
+    SocketConfig cfg{.host = "host\"with\\quotes", .port = 443};
+    auto j = cfg.to_json();
+    // Quotes and backslashes must be escaped
+    EXPECT_NE(j.find("host\\\"with\\\\quotes"), std::string::npos);
+    // Raw unescaped chars must not appear in the JSON value
+    EXPECT_EQ(j.find("host\"with"), std::string::npos);
+}
