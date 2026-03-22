@@ -1097,7 +1097,10 @@ private:
             return std::unexpected("Failed to send WebSocket upgrade request");
         }
 
-        // Read upgrade response (with timeout)
+        // Read upgrade response (with timeout).
+        // Cap buffer at 64KB to prevent unbounded allocation from
+        // a misbehaving server sending oversized HTTP responses.
+        static constexpr size_t kMaxUpgradeResponseSize = 65536;
         std::vector<uint8_t> response_buf;
         response_buf.reserve(4096);
 
@@ -1113,6 +1116,12 @@ private:
             }
 
             if (*read_result > 0) {
+                if (response_buf.size() + *read_result > kMaxUpgradeResponseSize) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "WebSocket upgrade response exceeds {}B limit",
+                        kMaxUpgradeResponseSize);
+                    return std::unexpected("WebSocket upgrade response too large");
+                }
                 response_buf.insert(response_buf.end(),
                                     buf, buf + *read_result);
             }
