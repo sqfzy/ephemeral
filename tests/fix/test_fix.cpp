@@ -253,6 +253,129 @@ TEST(FixBuilder, negative_integer) {
     EXPECT_EQ(result->get_int(tag::Text).value(), -999);
 }
 
+TEST(FixBuilder, int64_min_no_ub) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "8");
+    b.set_int(tag::Text, INT64_MIN);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+
+    auto val = result->get(tag::Text);
+    ASSERT_TRUE(val.has_value());
+    // INT64_MIN = -9223372036854775808
+    EXPECT_EQ(val.value(), "-9223372036854775808");
+}
+
+TEST(FixBuilder, zero_integer) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_int(tag::OrderQty, 0);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_int(tag::OrderQty).value(), 0);
+}
+
+TEST(FixBuilder, zero_double) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 0.0);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_DOUBLE_EQ(result->get_double(tag::Price).value(), 0.0);
+}
+
+TEST(FixBuilder, negative_double) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, -42.75);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_DOUBLE_EQ(result->get_double(tag::Price).value(), -42.75);
+}
+
+TEST(FixBuilder, empty_string_field) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Text, "");
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get(tag::Text);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_TRUE(val->empty());
+}
+
+TEST(FixBuilder, finish_with_exact_capacity) {
+    // Build a minimal message and verify it works with a tight buffer
+    uint8_t buf[128];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+    EXPECT_TRUE(verify_checksum(b.data(), b.size()));
+}
+
+TEST(FixBuilder, reset_allows_reuse) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D").set(tag::Symbol, "AAPL");
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+
+    // Reset and build a different message
+    b.reset();
+    b.set(tag::MsgType, "8").set(tag::Symbol, "TSLA").set_int(tag::OrderQty, 200);
+    size_t len2 = b.finish();
+    ASSERT_GT(len2, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->msg_type().value(), "8");
+    EXPECT_EQ(result->get(tag::Symbol).value(), "TSLA");
+    EXPECT_EQ(result->get_int(tag::OrderQty).value(), 200);
+}
+
+TEST(FixBuilder, chained_set_calls) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    // Verify fluent API (set returns *this)
+    b.set(tag::MsgType, "D")
+     .set(tag::Symbol, "AAPL")
+     .set_int(tag::Side, 1)
+     .set_double(tag::Price, 100.0);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::Symbol).value(), "AAPL");
+}
+
 // ===========================================================================
 // Framer
 // ===========================================================================

@@ -139,6 +139,15 @@ public:
         return total;
     }
 
+    /// Reset the builder for reuse with the same buffer.
+    /// Avoids re-constructing when building many messages into the same buffer.
+    void reset() noexcept {
+        body_start_ = kHeaderReserve;
+        pos_        = kHeaderReserve;
+        total_len_  = 0;
+        overflow_   = false;
+    }
+
     /// Pointer to the finalized message data (valid only after finish()).
     [[nodiscard]] const uint8_t* data() const noexcept { return buf_; }
 
@@ -182,14 +191,19 @@ private:
     }
 
     /// Format signed integer to ASCII. Returns number of chars written.
+    /// Handles INT64_MIN correctly by casting to uint64_t before negation.
     static size_t format_int(int64_t val, char* out) noexcept {
         size_t off = 0;
+        uint64_t uval;
         if (val < 0) {
             out[off++] = '-';
-            // Handle INT64_MIN carefully
-            val = -val;
+            // Cast to unsigned BEFORE negation to avoid UB on INT64_MIN.
+            // -static_cast<uint64_t>(val) is well-defined modular arithmetic.
+            uval = -static_cast<uint64_t>(val);
+        } else {
+            uval = static_cast<uint64_t>(val);
         }
-        off += format_uint(static_cast<uint64_t>(val), out + off);
+        off += format_uint(uval, out + off);
         return off;
     }
 

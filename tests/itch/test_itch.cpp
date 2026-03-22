@@ -482,3 +482,72 @@ TEST(ItchParser, ParseWithExtraDataSucceeds) {
     EXPECT_EQ(result->msg_type, 'D');
     EXPECT_EQ(result->length, kOrderDeleteSize);
 }
+
+// ---------------------------------------------------------------------------
+// Test: parse_all batch parsing
+// ---------------------------------------------------------------------------
+
+TEST(ItchParser, ParseAllMultipleMessages) {
+    // Concatenate: SystemEvent (12) + OrderDelete (18) + BrokenTrade (18)
+    constexpr size_t total = kSystemEventSize + kOrderDeleteSize + kBrokenTradeSize;
+    uint8_t buf[total];
+    std::memset(buf, 0, total);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = kOrderDelete;
+    buf[kSystemEventSize + kOrderDeleteSize] = kBrokenTrade;
+
+    size_t count = 0;
+    size_t consumed = parse_all(buf, total, [&](const MessageView& mv) {
+        ++count;
+        if (count == 1) EXPECT_EQ(mv.msg_type, kSystemEvent);
+        if (count == 2) EXPECT_EQ(mv.msg_type, kOrderDelete);
+        if (count == 3) EXPECT_EQ(mv.msg_type, kBrokenTrade);
+    });
+
+    EXPECT_EQ(count, 3u);
+    EXPECT_EQ(consumed, total);
+}
+
+TEST(ItchParser, ParseAllStopsOnError) {
+    // SystemEvent (12) + unknown type (0xFF) — should parse 1, stop at 2nd
+    uint8_t buf[32];
+    std::memset(buf, 0, sizeof(buf));
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = 0xFF; // unknown type
+
+    size_t count = 0;
+    size_t consumed = parse_all(buf, sizeof(buf), [&](const MessageView&) {
+        ++count;
+    });
+
+    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(consumed, kSystemEventSize);
+}
+
+TEST(ItchParser, ParseAllEarlyStop) {
+    // 3 messages, callback returns false on 2nd
+    constexpr size_t total = kSystemEventSize + kOrderDeleteSize + kBrokenTradeSize;
+    uint8_t buf[total];
+    std::memset(buf, 0, total);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = kOrderDelete;
+    buf[kSystemEventSize + kOrderDeleteSize] = kBrokenTrade;
+
+    size_t count = 0;
+    size_t consumed = parse_all(buf, total, [&](const MessageView&) -> bool {
+        ++count;
+        return count < 2; // stop after 2nd
+    });
+
+    EXPECT_EQ(count, 2u);
+    EXPECT_EQ(consumed, kSystemEventSize + kOrderDeleteSize);
+}
+
+TEST(ItchParser, ParseAllEmptyBuffer) {
+    size_t count = 0;
+    size_t consumed = parse_all(nullptr, 0, [&](const MessageView&) {
+        ++count;
+    });
+    EXPECT_EQ(count, 0u);
+    EXPECT_EQ(consumed, 0u);
+}

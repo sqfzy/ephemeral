@@ -143,4 +143,38 @@ parse(const uint8_t* data, size_t len) noexcept {
     };
 }
 
+/// Parse consecutive ITCH messages from a buffer, invoking a callback for each.
+///
+/// Processes messages sequentially from the start of the buffer.
+/// Stops on the first parse error or when the buffer is exhausted.
+/// The callback receives a MessageView for each successfully parsed message.
+/// Return false from the callback to stop early.
+///
+/// @param data     Pointer to a buffer of concatenated ITCH messages
+/// @param len      Number of available bytes
+/// @param callback Called with (MessageView) for each parsed message.
+///                 Return true to continue, false to stop early.
+/// @return Number of bytes successfully consumed (sum of parsed message lengths)
+template <typename Fn>
+    requires std::invocable<Fn, const MessageView&>
+size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
+    noexcept(callback(std::declval<const MessageView&>()))) {
+    size_t offset = 0;
+    while (offset < len) {
+        auto result = parse(data + offset, len - offset);
+        if (!result) break;
+
+        if constexpr (std::is_same_v<std::invoke_result_t<Fn, const MessageView&>, bool>) {
+            if (!callback(*result)) {
+                offset += result->length;
+                break;
+            }
+        } else {
+            callback(*result);
+        }
+        offset += result->length;
+    }
+    return offset;
+}
+
 } // namespace eph::itch
