@@ -356,6 +356,7 @@ struct TransportStats {
     uint64_t reconnect_count   = 0;
     uint64_t uptime_ns         = 0;  ///< Nanoseconds since Transport::create()
     uint64_t handshake_ns      = 0;  ///< Last TCP+TLS+WS handshake duration (ns)
+    std::string remote_ip{};         ///< Resolved remote IP of current connection
 
     /// Last handshake duration in milliseconds (for human-readable logging).
     [[nodiscard]] double handshake_ms() const noexcept {
@@ -404,22 +405,53 @@ struct TransportStats {
     [[nodiscard]] std::string dump() const {
         double uptime_s = static_cast<double>(uptime_ns) / 1e9;
         return std::format(
-            "TransportStats (uptime: {:.1f}s):\n"
+            "TransportStats (uptime: {:.1f}s, remote: {}):\n"
             "  TX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), "
             "text: {} pkts/{} B, {} dropped, {} encrypt errors\n"
             "  RX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), "
             "text: {} pkts/{} B, {} dropped, {} decrypt errors\n"
             "  Queue full: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
-            "  Reconnections: {}",
-            uptime_s,
+            "  Reconnections: {}, handshake: {:.1f}ms",
+            uptime_s, remote_ip.empty() ? "unknown" : remote_ip,
             tx_packets, tx_pps(), tx_bytes, tx_bps(),
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
             rx_packets, rx_pps(), rx_bytes, rx_bps(),
             rx_text_packets, rx_text_bytes, rx_dropped, decrypt_errors,
             queue_full_count,
             ws_pings_received, ws_pongs_sent, pong_timeouts,
-            reconnect_count);
+            reconnect_count, handshake_ms());
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    /// No external JSON library dependency — hand-rolled for zero overhead.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{"
+            "\"tx_packets\":{},\"tx_bytes\":{},\"tx_text_packets\":{},"
+            "\"tx_text_bytes\":{},\"tx_dropped\":{},"
+            "\"rx_packets\":{},\"rx_bytes\":{},\"rx_text_packets\":{},"
+            "\"rx_text_bytes\":{},\"rx_dropped\":{},"
+            "\"encrypt_errors\":{},\"decrypt_errors\":{},"
+            "\"queue_full_count\":{},\"ws_pings_received\":{},"
+            "\"ws_pongs_sent\":{},\"pong_timeouts\":{},"
+            "\"reconnect_count\":{},\"uptime_ns\":{},"
+            "\"handshake_ns\":{},\"handshake_ms\":{:.3f},"
+            "\"tx_pps\":{:.1f},\"rx_pps\":{:.1f},"
+            "\"tx_bps\":{:.1f},\"rx_bps\":{:.1f},"
+            "\"remote_ip\":\"{}\"}}",
+            tx_packets, tx_bytes, tx_text_packets,
+            tx_text_bytes, tx_dropped,
+            rx_packets, rx_bytes, rx_text_packets,
+            rx_text_bytes, rx_dropped,
+            encrypt_errors, decrypt_errors,
+            queue_full_count, ws_pings_received,
+            ws_pongs_sent, pong_timeouts,
+            reconnect_count, uptime_ns,
+            handshake_ns, handshake_ms(),
+            tx_pps(), rx_pps(),
+            tx_bps(), rx_bps(),
+            remote_ip);
     }
 };
 
@@ -474,11 +506,13 @@ struct std::formatter<eph::net::TransportStats> : std::formatter<std::string> {
             std::format(
                 "TX: {}pkts/{}B (dropped:{}, encrypt_err:{}) | "
                 "RX: {}pkts/{}B (dropped:{}, decrypt_err:{}) | "
-                "queue_full:{} ping:{} pong:{} pong_timeout:{} reconnect:{}",
+                "queue_full:{} ping:{} pong:{} pong_timeout:{} reconnect:{}"
+                " remote:{}",
                 s.tx_packets, s.tx_bytes, s.tx_dropped, s.encrypt_errors,
                 s.rx_packets, s.rx_bytes, s.rx_dropped, s.decrypt_errors,
                 s.queue_full_count, s.ws_pings_received,
-                s.ws_pongs_sent, s.pong_timeouts, s.reconnect_count),
+                s.ws_pongs_sent, s.pong_timeouts, s.reconnect_count,
+                s.remote_ip.empty() ? "unknown" : s.remote_ip),
             ctx);
     }
 };

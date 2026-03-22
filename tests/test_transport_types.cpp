@@ -241,6 +241,46 @@ TEST(TransportStats, DumpProducesNonEmptyString) {
     EXPECT_NE(dump.find("TX:"), std::string::npos);
 }
 
+TEST(TransportStats, DumpIncludesRemoteIp) {
+    TransportStats stats{};
+    stats.uptime_ns = 1'000'000'000;
+    stats.remote_ip = "10.0.0.1";
+    auto dump = stats.dump();
+    EXPECT_NE(dump.find("10.0.0.1"), std::string::npos);
+}
+
+TEST(TransportStats, DumpShowsUnknownForEmptyRemoteIp) {
+    TransportStats stats{};
+    stats.uptime_ns = 1'000'000'000;
+    auto dump = stats.dump();
+    EXPECT_NE(dump.find("unknown"), std::string::npos);
+}
+
+TEST(TransportStats, ToJsonProducesValidFormat) {
+    TransportStats stats{};
+    stats.tx_packets = 42;
+    stats.rx_bytes = 1024;
+    stats.uptime_ns = 2'000'000'000;
+    stats.handshake_ns = 5'000'000;
+    stats.remote_ip = "192.168.1.1";
+
+    auto json = stats.to_json();
+    // Basic JSON structure checks
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"tx_packets\":42"), std::string::npos);
+    EXPECT_NE(json.find("\"rx_bytes\":1024"), std::string::npos);
+    EXPECT_NE(json.find("\"remote_ip\":\"192.168.1.1\""), std::string::npos);
+    EXPECT_NE(json.find("\"handshake_ms\":"), std::string::npos);
+    EXPECT_NE(json.find("\"tx_pps\":"), std::string::npos);
+}
+
+TEST(TransportStats, ToJsonHandlesEmptyRemoteIp) {
+    TransportStats stats{};
+    auto json = stats.to_json();
+    EXPECT_NE(json.find("\"remote_ip\":\"\""), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // std::formatter specializations
 // ─────────────────────────────────────────────────────────────────────────────

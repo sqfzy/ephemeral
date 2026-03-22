@@ -824,6 +824,7 @@ public:
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
             .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
             .handshake_ns      = last_handshake_ns_,
+            .remote_ip         = remote_ip_,
         };
     }
 
