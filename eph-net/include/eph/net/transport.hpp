@@ -167,6 +167,10 @@ public:
             return std::unexpected(conn_result.error());
         }
 
+        // Pre-allocate WS fragmentation buffer to avoid heap allocation
+        // on the RX hot path when reassembling multi-frame messages.
+        t->ws_frag_buf_.reserve(MaxPayload);
+
         t->created_at_ = std::chrono::steady_clock::now();
         t->running_.store(true, std::memory_order_release);
         t->notify_state(TransportEvent::kConnected, config.remote_host);
@@ -1687,6 +1691,13 @@ private:
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
                     "RX queue full, dropping data frame "
                     "(total dropped: {})", rx_stats_.dropped);
+            }
+            if (config_.on_rx_drop) {
+                try {
+                    config_.on_rx_drop(rx_stats_.dropped);
+                } catch (...) {
+                    // Callback must not throw
+                }
             }
         }
     }

@@ -200,6 +200,17 @@ struct TransportConfig {
     /// @warning Called from the RX thread — must be non-blocking.
     std::function<void(const uint8_t* payload, uint16_t payload_len)> on_pong{};
 
+    /// RX drop callback (optional, called from RX thread).
+    ///
+    /// Invoked when a received data message is dropped because the RX queue
+    /// is full. Enables applications to detect backpressure and speed up
+    /// consumption. Called at most once per 1000 drops to avoid log flooding.
+    ///
+    /// @param total_dropped  Cumulative number of dropped messages
+    ///
+    /// @warning Called from the RX thread — must be non-blocking.
+    std::function<void(uint64_t total_dropped)> on_rx_drop{};
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before Transport::create() to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
