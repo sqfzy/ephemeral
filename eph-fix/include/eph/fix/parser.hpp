@@ -693,6 +693,34 @@ struct ParserStats {
         first_error_type = {};
         first_error_tag_byte = 0;
     }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        std::string s = std::format(
+            "FIX ParserStats:\n"
+            "  messages_parsed: {}\n"
+            "  parse_errors: {}\n"
+            "  bytes_consumed: {}",
+            messages_parsed, parse_errors, bytes_consumed);
+        if (parse_errors > 0) {
+            s += std::format(
+                "\n  first_error: {} at offset {} (tag_byte=0x{:02x})",
+                parse_error_name(first_error_type),
+                first_error_offset, first_error_tag_byte);
+        }
+        return s;
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"messages_parsed\":{},\"parse_errors\":{},\"bytes_consumed\":{},"
+            "\"first_error_offset\":{},\"first_error_type\":\"{}\","
+            "\"first_error_tag_byte\":{}}}",
+            messages_parsed, parse_errors, bytes_consumed,
+            first_error_offset, parse_error_name(first_error_type),
+            first_error_tag_byte);
+    }
 };
 
 /// Parse consecutive FIX messages with statistics accumulation.
@@ -864,5 +892,16 @@ struct std::formatter<eph::fix::BasicMessageView<N>> {
             out = std::format_to(out, "{}={}", msg.fields_[i].tag, msg.fields_[i].value);
         }
         return out;
+    }
+};
+
+/// std::formatter specialization for fix::ParserStats.
+template <>
+struct std::formatter<eph::fix::ParserStats> : std::formatter<std::string> {
+    auto format(const eph::fix::ParserStats& s, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("FIX(parsed={} errors={} bytes={})",
+                s.messages_parsed, s.parse_errors, s.bytes_consumed),
+            ctx);
     }
 };

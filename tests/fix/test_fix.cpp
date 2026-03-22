@@ -2763,3 +2763,50 @@ TEST(FixBuilder, has_tag_prevents_duplicate_tags) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->get(tag::MsgType).value(), "D");
 }
+
+// ===========================================================================
+// ParserStats dump/to_json/formatter
+// ===========================================================================
+
+TEST(FixParserStats, dump_without_errors) {
+    ParserStats stats;
+    stats.on_message(100);
+    stats.on_message(200);
+    auto d = stats.dump();
+    EXPECT_TRUE(d.find("messages_parsed: 2") != std::string::npos);
+    EXPECT_TRUE(d.find("parse_errors: 0") != std::string::npos);
+    EXPECT_TRUE(d.find("bytes_consumed: 300") != std::string::npos);
+    // No error line when parse_errors == 0
+    EXPECT_TRUE(d.find("first_error") == std::string::npos);
+}
+
+TEST(FixParserStats, dump_with_errors) {
+    ParserStats stats;
+    stats.on_message(50);
+    stats.on_error(42, ParseError::kChecksumMismatch, 0x38);
+    auto d = stats.dump();
+    EXPECT_TRUE(d.find("parse_errors: 1") != std::string::npos);
+    EXPECT_TRUE(d.find("checksum mismatch") != std::string::npos);
+    EXPECT_TRUE(d.find("offset 42") != std::string::npos);
+}
+
+TEST(FixParserStats, to_json_contains_all_fields) {
+    ParserStats stats;
+    stats.on_message(100);
+    stats.on_error(10, ParseError::kInvalidFormat, 0x41);
+    auto j = stats.to_json();
+    EXPECT_TRUE(j.find("\"messages_parsed\":1") != std::string::npos);
+    EXPECT_TRUE(j.find("\"parse_errors\":1") != std::string::npos);
+    EXPECT_TRUE(j.find("\"bytes_consumed\":100") != std::string::npos);
+    EXPECT_TRUE(j.find("\"first_error_offset\":10") != std::string::npos);
+}
+
+TEST(FixParserStats, formatter_produces_summary_line) {
+    ParserStats stats;
+    stats.on_message(200);
+    stats.on_message(300);
+    auto s = std::format("{}", stats);
+    EXPECT_TRUE(s.find("parsed=2") != std::string::npos);
+    EXPECT_TRUE(s.find("errors=0") != std::string::npos);
+    EXPECT_TRUE(s.find("bytes=500") != std::string::npos);
+}

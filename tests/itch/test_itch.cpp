@@ -1692,3 +1692,49 @@ TEST(ItchParserStats, reset_clears_error_offset_fields) {
     EXPECT_EQ(stats.first_error_msg_byte, 0u);
     EXPECT_EQ(stats.parse_errors, 0u);
 }
+
+// ===========================================================================
+// ParserStats dump/to_json/formatter
+// ===========================================================================
+
+TEST(ItchParserStats, dump_without_errors) {
+    ParserStats stats;
+    stats.on_message(35);
+    stats.on_message(44);
+    auto d = stats.dump();
+    EXPECT_TRUE(d.find("messages_parsed: 2") != std::string::npos);
+    EXPECT_TRUE(d.find("parse_errors: 0") != std::string::npos);
+    EXPECT_TRUE(d.find("bytes_consumed: 79") != std::string::npos);
+    EXPECT_TRUE(d.find("first_error") == std::string::npos);
+}
+
+TEST(ItchParserStats, dump_with_errors) {
+    ParserStats stats;
+    stats.on_message(35);
+    stats.on_error(100, ParseError::kUnknownType, 0xFF);
+    auto d = stats.dump();
+    EXPECT_TRUE(d.find("parse_errors: 1") != std::string::npos);
+    EXPECT_TRUE(d.find("unknown message type") != std::string::npos);
+    EXPECT_TRUE(d.find("offset 100") != std::string::npos);
+}
+
+TEST(ItchParserStats, to_json_contains_all_fields) {
+    ParserStats stats;
+    stats.on_message(35);
+    stats.on_error(50, ParseError::kTruncated, 0x41);
+    auto j = stats.to_json();
+    EXPECT_TRUE(j.find("\"messages_parsed\":1") != std::string::npos);
+    EXPECT_TRUE(j.find("\"parse_errors\":1") != std::string::npos);
+    EXPECT_TRUE(j.find("\"bytes_consumed\":35") != std::string::npos);
+    EXPECT_TRUE(j.find("\"first_error_offset\":50") != std::string::npos);
+}
+
+TEST(ItchParserStats, formatter_produces_summary_line) {
+    ParserStats stats;
+    stats.on_message(35);
+    stats.on_message(44);
+    auto s = std::format("{}", stats);
+    EXPECT_TRUE(s.find("parsed=2") != std::string::npos);
+    EXPECT_TRUE(s.find("errors=0") != std::string::npos);
+    EXPECT_TRUE(s.find("bytes=79") != std::string::npos);
+}
