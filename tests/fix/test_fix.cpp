@@ -1398,6 +1398,34 @@ TEST(FixParser, get_timestamp_wrong_length_returns_nullopt) {
     EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
 }
 
+TEST(FixParser, get_timestamp_pre_epoch_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=19691231-23:59:59.999\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_feb_29_non_leap_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=20230229-00:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_feb_31_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=20250231-12:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_apr_31_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=20250431-12:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
 // ===========================================================================
 // dispatch() — type-safe MsgType routing
 // ===========================================================================

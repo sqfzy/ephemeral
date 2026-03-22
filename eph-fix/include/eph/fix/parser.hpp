@@ -205,6 +205,16 @@ public:
 
         if (month < 1 || month > 12 || day < 1 || day > 31) return std::nullopt;
 
+        // Validate day-of-month for the specific month/year
+        // (prevents accepting nonsense like Feb 31)
+        constexpr uint8_t kDaysInMonth[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+        uint32_t max_day = kDaysInMonth[month - 1];
+        if (month == 2) {
+            bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+            if (leap) max_day = 29;
+        }
+        if (day > max_day) return std::nullopt;
+
         // Parse time: HH:MM:SS
         int h1 = digit(p[9]),  h0 = digit(p[10]);
         int n1 = digit(p[12]), n0 = digit(p[13]);
@@ -237,6 +247,9 @@ public:
         uint64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + day - 1;
         uint64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
         int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468;
+
+        // Reject pre-epoch timestamps (return type is uint64_t, cannot represent negative)
+        if (days < 0) return std::nullopt;
 
         uint64_t epoch_sec = static_cast<uint64_t>(days) * 86400
                            + hour * 3600 + minute * 60 + second;

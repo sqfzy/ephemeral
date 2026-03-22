@@ -59,7 +59,7 @@ inline uint64_t read_be48(const uint8_t* p) noexcept {
 /// ITCH encodes stock symbols and other text fields as fixed-width,
 /// right-padded with ASCII spaces (0x20). This returns a view with
 /// trailing spaces removed.
-inline std::string_view trim(std::string_view s) noexcept {
+constexpr std::string_view trim(std::string_view s) noexcept {
     auto end = s.find_last_not_of(' ');
     return (end == std::string_view::npos) ? std::string_view{} : s.substr(0, end + 1);
 }
