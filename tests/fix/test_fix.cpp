@@ -2392,3 +2392,138 @@ TEST(FixMaxBodyLength, parser_rejects_overflow_body_length) {
 TEST(FixMaxBodyLength, constant_is_one_megabyte) {
     EXPECT_EQ(kMaxBodyLength, 1u * 1024 * 1024);
 }
+
+// ===========================================================================
+// ParserStats: error diagnostics (offset, type, byte)
+// ===========================================================================
+
+TEST(FixParserStats, error_captures_offset_and_type) {
+    // Build a valid message, then append garbage that starts with a non-'8' byte
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "0");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    // Append malformed data: "X=..." (not a valid FIX message — first tag is not 8)
+    std::vector<uint8_t> combined(len + 20);
+    std::memcpy(combined.data(), buf, len);
+    std::memcpy(combined.data() + len, "X=badval\x01" "10=000\x01", 20);
+
+    ParserStats stats;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, len);
+    EXPECT_EQ(stats.messages_parsed, 1u);
+    EXPECT_EQ(stats.parse_errors, 1u);
+    EXPECT_EQ(stats.first_error_offset, len);
+    EXPECT_EQ(stats.first_error_type, ParseError::kInvalidFormat);
+    EXPECT_EQ(stats.first_error_tag_byte, static_cast<uint8_t>('X'));
+}
+
+TEST(FixParserStats, first_error_only_captured_once) {
+    // Two malformed messages: only the first error offset should be recorded
+    std::string msg1 = "X=bad\x01";
+    std::string msg2 = "Y=bad\x01";
+    std::string combined = msg1 + msg2;
+
+    ParserStats stats;
+    parse_all(reinterpret_cast<const uint8_t*>(combined.data()),
+              combined.size(), [](const auto&) {}, stats);
+
+    EXPECT_EQ(stats.parse_errors, 1u); // parse_all stops on first error
+    EXPECT_EQ(stats.first_error_offset, 0u);
+    EXPECT_EQ(stats.first_error_tag_byte, static_cast<uint8_t>('X'));
+}
+
+TEST(FixParserStats, reset_clears_error_diagnostics) {
+    ParserStats stats;
+    stats.on_error(42, ParseError::kChecksumMismatch, 0x38);
+    EXPECT_EQ(stats.first_error_offset, 42u);
+    EXPECT_EQ(stats.first_error_type, ParseError::kChecksumMismatch);
+    EXPECT_EQ(stats.first_error_tag_byte, 0x38);
+
+    stats.reset();
+    EXPECT_EQ(stats.first_error_offset, 0u);
+    EXPECT_EQ(stats.first_error_type, ParseError{});
+    EXPECT_EQ(stats.first_error_tag_byte, 0u);
+}
+
+// ===========================================================================
+// Session-level tags: names and builder round-trip
+// ===========================================================================
+
+TEST(FixTags, session_level_tag_names) {
+    EXPECT_EQ(tag::tag_name(tag::EncryptMethod), "EncryptMethod");
+    EXPECT_EQ(tag::tag_name(tag::HeartBtInt), "HeartBtInt");
+    EXPECT_EQ(tag::tag_name(tag::PossDupFlag), "PossDupFlag");
+    EXPECT_EQ(tag::tag_name(tag::PossResend), "PossResend");
+    EXPECT_EQ(tag::tag_name(tag::OrigSendingTime), "OrigSendingTime");
+    EXPECT_EQ(tag::tag_name(tag::GapFillFlag), "GapFillFlag");
+    EXPECT_EQ(tag::tag_name(tag::ResetSeqNumFlag), "ResetSeqNumFlag");
+    EXPECT_EQ(tag::tag_name(tag::NewSeqNo), "NewSeqNo");
+    EXPECT_EQ(tag::tag_name(tag::BeginSeqNo), "BeginSeqNo");
+    EXPECT_EQ(tag::tag_name(tag::EndSeqNo), "EndSeqNo");
+    EXPECT_EQ(tag::tag_name(tag::SenderSubID), "SenderSubID");
+    EXPECT_EQ(tag::tag_name(tag::TargetSubID), "TargetSubID");
+}
+
+TEST(FixBuilder, session_tags_logon_roundtrip) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "A");
+    b.set(tag::SenderCompID, "CLIENT");
+    b.set(tag::TargetCompID, "SERVER");
+    b.set_int(tag::MsgSeqNum, 1);
+    b.set_int(tag::EncryptMethod, 0);
+    b.set_int(tag::HeartBtInt, 30);
+    b.set_bool(tag::ResetSeqNumFlag, true);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result->msg_type(), "A");
+    EXPECT_EQ(result->get_int(tag::EncryptMethod), 0);
+    EXPECT_EQ(result->get_int(tag::HeartBtInt), 30);
+    EXPECT_EQ(result->get_bool(tag::ResetSeqNumFlag), true);
+}
+
+TEST(FixBuilder, session_tags_sequence_reset_roundtrip) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "4"); // SequenceReset
+    b.set(tag::SenderCompID, "CLIENT");
+    b.set(tag::TargetCompID, "SERVER");
+    b.set_int(tag::MsgSeqNum, 5);
+    b.set_bool(tag::GapFillFlag, true);
+    b.set_bool(tag::PossDupFlag, true);
+    b.set_int(tag::NewSeqNo, 10);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_bool(tag::GapFillFlag), true);
+    EXPECT_EQ(result->get_bool(tag::PossDupFlag), true);
+    EXPECT_EQ(result->get_int(tag::NewSeqNo), 10);
+}
+
+TEST(FixBuilder, session_tags_resend_request_roundtrip) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "2"); // ResendRequest
+    b.set(tag::SenderCompID, "CLIENT");
+    b.set(tag::TargetCompID, "SERVER");
+    b.set_int(tag::MsgSeqNum, 3);
+    b.set_int(tag::BeginSeqNo, 1);
+    b.set_int(tag::EndSeqNo, 0); // 0 means infinity in FIX
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_int(tag::BeginSeqNo), 1);
+    EXPECT_EQ(result->get_int(tag::EndSeqNo), 0);
+}

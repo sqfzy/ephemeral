@@ -664,6 +664,9 @@ struct ParserStats {
     uint64_t messages_parsed = 0;   ///< Successfully parsed messages
     uint64_t parse_errors    = 0;   ///< Failed parse attempts
     uint64_t bytes_consumed  = 0;   ///< Total bytes consumed by successful parses
+    size_t   first_error_offset = 0;       ///< Byte offset of the first parse error (0 if no errors)
+    ParseError first_error_type = {};      ///< Type of the first parse error
+    uint8_t    first_error_tag_byte = 0;   ///< First byte at the error location (for diagnostics)
 
     /// Record a successful parse.
     void on_message(size_t msg_bytes) noexcept {
@@ -671,8 +674,13 @@ struct ParserStats {
         bytes_consumed += msg_bytes;
     }
 
-    /// Record a parse error.
-    void on_error() noexcept {
+    /// Record a parse error with offset context for debugging.
+    void on_error(size_t offset, ParseError err, uint8_t tag_byte) noexcept {
+        if (parse_errors == 0) {
+            first_error_offset = offset;
+            first_error_type = err;
+            first_error_tag_byte = tag_byte;
+        }
         ++parse_errors;
     }
 
@@ -681,6 +689,9 @@ struct ParserStats {
         messages_parsed = 0;
         parse_errors    = 0;
         bytes_consumed  = 0;
+        first_error_offset = 0;
+        first_error_type = {};
+        first_error_tag_byte = 0;
     }
 };
 
@@ -706,7 +717,11 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback, ParserStats& st
         if (!result) {
             // kIncomplete is normal (partial trailing message), not an error
             if (result.error() != ParseError::kIncomplete) {
-                stats.on_error();
+                uint8_t err_byte = (offset < len) ? data[offset] : 0;
+                stats.on_error(offset, result.error(), err_byte);
+                SPDLOG_LOGGER_DEBUG(detail::fix_parser_logger(),
+                    "FIX parse error at offset {}: {} (byte=0x{:02x})",
+                    offset, parse_error_name(result.error()), err_byte);
             }
             break;
         }
