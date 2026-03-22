@@ -671,7 +671,36 @@ TEST(TransportConfigToJson, ProducesValidJsonStructure) {
     EXPECT_NE(json.find("\"ws_path\":\"/ws\""), std::string::npos);
     EXPECT_NE(json.find("\"max_reconnect_attempts\":5"), std::string::npos);
     EXPECT_NE(json.find("\"ping_interval_s\":15"), std::string::npos);
+    EXPECT_NE(json.find("\"use_tls\":true"), std::string::npos);
     EXPECT_NE(json.find("\"verify_peer\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"client_cert_path\":\"\""), std::string::npos);
+    EXPECT_NE(json.find("\"client_key_path\":\"\""), std::string::npos);
+}
+
+TEST(TransportConfigJson, IncludesMtlsFields) {
+    TransportConfig cfg{};
+    cfg.remote_host = "mtls.example.com";
+    cfg.ws_path = "/ws";
+    cfg.use_tls = true;
+    cfg.client_cert_path = "/path/to/cert.pem";
+    cfg.client_key_path = "/path/to/key.pem";
+
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"client_cert_path\":\"/path/to/cert.pem\""),
+              std::string::npos);
+    EXPECT_NE(json.find("\"client_key_path\":\"/path/to/key.pem\""),
+              std::string::npos);
+    EXPECT_NE(json.find("\"use_tls\":true"), std::string::npos);
+}
+
+TEST(TransportConfigJson, PlainWsShowsUseTlsFalse) {
+    TransportConfig cfg{};
+    cfg.remote_host = "ws.example.com";
+    cfg.ws_path = "/ws";
+    cfg.use_tls = false;
+
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"use_tls\":false"), std::string::npos);
 }
 
 TEST(ReceivedMessage, AllStandardCloseCodesRoundtrip) {

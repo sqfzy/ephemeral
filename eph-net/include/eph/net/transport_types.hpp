@@ -384,8 +384,10 @@ struct TransportConfig {
         return std::format(
             "{{"
             "\"remote_host\":\"{}\",\"remote_port\":{},\"ws_path\":\"{}\","
-            "\"ws_subprotocol\":\"{}\",\"verify_peer\":{},"
+            "\"ws_subprotocol\":\"{}\","
+            "\"use_tls\":{},\"verify_peer\":{},"
             "\"ca_cert_path\":\"{}\","
+            "\"client_cert_path\":\"{}\",\"client_key_path\":\"{}\","
             "\"tcp_timeout_ms\":{},\"tls_timeout_ms\":{},\"ws_timeout_ms\":{},"
             "\"tx_burst_size\":{},\"rx_burst_size\":{},"
             "\"reconnect_interval_ms\":{},\"max_reconnect_backoff_ms\":{},"
@@ -395,8 +397,11 @@ struct TransportConfig {
             detail::json_escape(remote_host), remote_port,
             detail::json_escape(ws_path),
             detail::json_escape(ws_subprotocol),
+            use_tls ? "true" : "false",
             verify_peer ? "true" : "false",
             detail::json_escape(ca_cert_path),
+            detail::json_escape(client_cert_path),
+            detail::json_escape(client_key_path),
             tcp_timeout.count(), tls_timeout.count(), ws_timeout.count(),
             tx_burst_size, rx_burst_size,
             reconnect_interval.count(), max_reconnect_backoff.count(),
