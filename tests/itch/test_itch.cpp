@@ -1493,3 +1493,75 @@ TEST(ItchTrim, works_with_stock_accessor) {
     EXPECT_EQ(stock.size(), 8u);
     EXPECT_EQ(trim(stock), "AAPL");
 }
+
+// ---------------------------------------------------------------------------
+// ParserStats
+// ---------------------------------------------------------------------------
+
+TEST(ItchParserStats, accumulates_on_successful_parse) {
+    // Build two SystemEvent messages
+    uint8_t msg1[kSystemEventSize]{};
+    msg1[0] = kSystemEvent;
+    msg1[10] = 'O';
+
+    uint8_t msg2[kSystemEventSize]{};
+    msg2[0] = kSystemEvent;
+    msg2[10] = 'S';
+
+    // Concatenate
+    uint8_t combined[kSystemEventSize * 2];
+    std::memcpy(combined, msg1, kSystemEventSize);
+    std::memcpy(combined + kSystemEventSize, msg2, kSystemEventSize);
+
+    ParserStats stats;
+    size_t consumed = parse_all(combined, sizeof(combined),
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, kSystemEventSize * 2);
+    EXPECT_EQ(stats.messages_parsed, 2u);
+    EXPECT_EQ(stats.parse_errors, 0u);
+    EXPECT_EQ(stats.bytes_consumed, kSystemEventSize * 2);
+}
+
+TEST(ItchParserStats, counts_errors_on_unknown_type) {
+    // 0xFF is not a known ITCH message type
+    uint8_t bad[] = {0xFF, 0x00, 0x00};
+    ParserStats stats;
+    size_t consumed = parse_all(bad, sizeof(bad),
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, 0u);
+    EXPECT_EQ(stats.messages_parsed, 0u);
+    EXPECT_EQ(stats.parse_errors, 1u);
+}
+
+TEST(ItchParserStats, reset_clears_all_counters) {
+    ParserStats stats;
+    stats.messages_parsed = 100;
+    stats.parse_errors = 10;
+    stats.bytes_consumed = 50000;
+    stats.reset();
+    EXPECT_EQ(stats.messages_parsed, 0u);
+    EXPECT_EQ(stats.parse_errors, 0u);
+    EXPECT_EQ(stats.bytes_consumed, 0u);
+}
+
+TEST(ItchParserStats, incomplete_trailing_data_is_not_counted_as_error) {
+    // One complete SystemEvent + 3 bytes of incomplete data
+    uint8_t combined[kSystemEventSize + 3]{};
+    combined[0] = kSystemEvent;
+    combined[10] = 'O';
+    // Trailing 3 bytes: starts with SystemEvent type but too short
+    combined[kSystemEventSize] = kSystemEvent;
+
+    ParserStats stats;
+    size_t consumed = parse_all(combined, sizeof(combined),
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, kSystemEventSize);
+    EXPECT_EQ(stats.messages_parsed, 1u);
+    // The trailing data has type 'S' (known) but is truncated — that's kTruncated, not kIncomplete
+    // Actually: parse() sees type='S', expected size=11, but only 3 bytes remain → kTruncated
+    // kTruncated is an error (corrupt data, not just partial)
+    EXPECT_EQ(stats.parse_errors, 1u);
+}

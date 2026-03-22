@@ -203,6 +203,79 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
 }
 
 // ---------------------------------------------------------------------------
+// Parser statistics
+// ---------------------------------------------------------------------------
+
+/// Lightweight counters for monitoring ITCH parse throughput and error rates.
+///
+/// Not thread-safe — use one instance per thread or protect with a mutex.
+/// Designed for hot-path accumulation with a periodic snapshot to a monitoring
+/// system (Prometheus, StatsD, etc.).
+struct ParserStats {
+    uint64_t messages_parsed = 0;   ///< Successfully parsed messages
+    uint64_t parse_errors    = 0;   ///< Failed parse attempts (unknown type or truncated)
+    uint64_t bytes_consumed  = 0;   ///< Total bytes consumed by successful parses
+
+    /// Record a successful parse.
+    void on_message(size_t msg_bytes) noexcept {
+        ++messages_parsed;
+        bytes_consumed += msg_bytes;
+    }
+
+    /// Record a parse error.
+    void on_error() noexcept {
+        ++parse_errors;
+    }
+
+    /// Reset all counters to zero.
+    void reset() noexcept {
+        messages_parsed = 0;
+        parse_errors    = 0;
+        bytes_consumed  = 0;
+    }
+};
+
+/// Parse consecutive ITCH messages with statistics accumulation.
+///
+/// Behaves like parse_all() but also populates a ParserStats struct.
+///
+/// @param data     Pointer to a buffer of concatenated ITCH messages
+/// @param len      Number of available bytes
+/// @param callback Called with (const MessageView&) for each parsed message.
+///                 Return true to continue, false to stop early.
+/// @param stats    [out] Statistics accumulator
+/// @return Number of bytes successfully consumed
+template <typename Fn>
+    requires std::invocable<Fn, const MessageView&>
+size_t parse_all(const uint8_t* data, size_t len, Fn&& callback, ParserStats& stats) noexcept(
+    noexcept(callback(std::declval<const MessageView&>()))) {
+    size_t offset = 0;
+    while (offset < len) {
+        auto result = parse(data + offset, len - offset);
+        if (!result) {
+            // kIncomplete is normal (partial trailing data), not an error
+            if (result.error() != ParseError::kIncomplete) {
+                stats.on_error();
+            }
+            break;
+        }
+
+        stats.on_message(result->length);
+
+        if constexpr (std::is_same_v<std::invoke_result_t<Fn, const MessageView&>, bool>) {
+            if (!callback(*result)) {
+                offset += result->length;
+                break;
+            }
+        } else {
+            callback(*result);
+        }
+        offset += result->length;
+    }
+    return offset;
+}
+
+// ---------------------------------------------------------------------------
 // Tag types for type-safe dispatch
 // ---------------------------------------------------------------------------
 

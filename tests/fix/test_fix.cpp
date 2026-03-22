@@ -2207,3 +2207,80 @@ TEST(FixBuilder, set_timestamp_zero_epoch) {
     ASSERT_TRUE(ts.has_value());
     EXPECT_TRUE(ts->starts_with("19700101-00:00:00"));
 }
+
+// ---------------------------------------------------------------------------
+// ParserStats
+// ---------------------------------------------------------------------------
+
+TEST(FixParserStats, accumulates_on_successful_parse) {
+    // Build two messages
+    uint8_t buf1[256], buf2[256];
+    MessageBuilder b1(buf1, sizeof(buf1));
+    b1.set(tag::MsgType, "0");
+    size_t len1 = b1.finish();
+    ASSERT_GT(len1, 0u);
+
+    MessageBuilder b2(buf2, sizeof(buf2));
+    b2.set(tag::MsgType, "A");
+    size_t len2 = b2.finish();
+    ASSERT_GT(len2, 0u);
+
+    // Concatenate
+    std::vector<uint8_t> combined(len1 + len2);
+    std::memcpy(combined.data(), buf1, len1);
+    std::memcpy(combined.data() + len1, buf2, len2);
+
+    ParserStats stats;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, len1 + len2);
+    EXPECT_EQ(stats.messages_parsed, 2u);
+    EXPECT_EQ(stats.parse_errors, 0u);
+    EXPECT_EQ(stats.bytes_consumed, len1 + len2);
+}
+
+TEST(FixParserStats, counts_errors_on_corrupt_data) {
+    // Corrupt data that isn't just "incomplete"
+    const uint8_t corrupt[] = "GARBAGE_NOT_FIX\x01";
+    ParserStats stats;
+    size_t consumed = parse_all(corrupt, sizeof(corrupt) - 1,
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, 0u);
+    EXPECT_EQ(stats.messages_parsed, 0u);
+    EXPECT_EQ(stats.parse_errors, 1u);
+}
+
+TEST(FixParserStats, reset_clears_all_counters) {
+    ParserStats stats;
+    stats.messages_parsed = 42;
+    stats.parse_errors = 5;
+    stats.bytes_consumed = 9999;
+    stats.reset();
+    EXPECT_EQ(stats.messages_parsed, 0u);
+    EXPECT_EQ(stats.parse_errors, 0u);
+    EXPECT_EQ(stats.bytes_consumed, 0u);
+}
+
+TEST(FixParserStats, incomplete_trailing_data_is_not_counted_as_error) {
+    // Build one complete message + partial trailing data
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "0");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    // Append incomplete data "8=FI" (starts valid but is truncated)
+    std::vector<uint8_t> combined(len + 4);
+    std::memcpy(combined.data(), buf, len);
+    std::memcpy(combined.data() + len, "8=FI", 4);
+
+    ParserStats stats;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [](const auto&) {}, stats);
+
+    EXPECT_EQ(consumed, len);
+    EXPECT_EQ(stats.messages_parsed, 1u);
+    EXPECT_EQ(stats.parse_errors, 0u); // incomplete is not an error
+}
