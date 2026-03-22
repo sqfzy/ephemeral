@@ -353,7 +353,7 @@ struct TransportConfig {
             "TransportConfig:\n"
             "  target: {}:{}{}\n"
             "  subprotocol: {}\n"
-            "  tls: verify_peer={}, ca_cert={}\n"
+            "  tls: use_tls={}, verify_peer={}, ca_cert={}, client_cert={}, client_key={}\n"
             "  timeouts: tcp={}ms, tls={}ms, ws={}ms\n"
             "  burst: tx={}, rx={}\n"
             "  reconnect: interval={}ms, max_backoff={}ms, max_attempts={}\n"
@@ -363,8 +363,11 @@ struct TransportConfig {
             "on_ping={}, on_pong={}, on_rx_drop={}, on_reconnect_attempt={}, "
             "on_reconnected={}",
             remote_host, remote_port, ws_path,
-            ws_subprotocol.empty() ? "(none)" : ws_subprotocol,
-            verify_peer, ca_cert_path.empty() ? "(system default)" : ca_cert_path,
+            ws_subprotocol.empty() ? std::string_view("(none)") : std::string_view(ws_subprotocol),
+            use_tls, verify_peer,
+            ca_cert_path.empty() ? std::string_view("(system default)") : std::string_view(ca_cert_path),
+            client_cert_path.empty() ? std::string_view("(none)") : std::string_view(client_cert_path),
+            client_key_path.empty() ? std::string_view("(none)") : std::string_view(client_key_path),
             tcp_timeout.count(), tls_timeout.count(), ws_timeout.count(),
             tx_burst_size, rx_burst_size,
             reconnect_interval.count(), max_reconnect_backoff.count(),

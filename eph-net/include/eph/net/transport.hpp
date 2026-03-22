@@ -851,7 +851,7 @@ public:
     /// Aggregated connection metadata snapshot.
     /// Combines tls_version, cipher_name, ws_subprotocol, and remote_ip
     /// into a single struct for convenient logging and monitoring.
-    [[nodiscard]] ConnectionInfo connection_info() const noexcept {
+    [[nodiscard]] ConnectionInfo connection_info() const {
         return ConnectionInfo{
             .tls_version    = std::string(tls_version_),
             .cipher_name    = std::string(cipher_name_),

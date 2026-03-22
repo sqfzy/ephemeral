@@ -655,6 +655,30 @@ TEST(TransportConfigDump, DefaultSubprotocolShowsNone) {
     EXPECT_NE(dump.find("(none)"), std::string::npos);
 }
 
+TEST(TransportConfigDump, ShowsMtlsAndUseTls) {
+    TransportConfig cfg;
+    cfg.remote_host = "mtls.example.com";
+    cfg.ws_path = "/ws";
+    cfg.use_tls = true;
+    cfg.client_cert_path = "/certs/client.pem";
+    cfg.client_key_path = "/certs/client.key";
+
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("use_tls=true"), std::string::npos);
+    EXPECT_NE(dump.find("client_cert=/certs/client.pem"), std::string::npos);
+    EXPECT_NE(dump.find("client_key=/certs/client.key"), std::string::npos);
+}
+
+TEST(TransportConfigDump, PlainWsShowsUseTlsFalse) {
+    TransportConfig cfg;
+    cfg.remote_host = "ws.example.com";
+    cfg.ws_path = "/ws";
+    cfg.use_tls = false;
+
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("use_tls=false"), std::string::npos);
+}
+
 TEST(TransportConfigToJson, ProducesValidJsonStructure) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";
