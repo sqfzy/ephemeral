@@ -137,4 +137,24 @@ inline std::string_view tag_name(uint32_t t) noexcept {
     }
 }
 
+/// Get human-readable name for a FIX MsgType character.
+/// Returns "Unknown" for unrecognized message types.
+inline constexpr std::string_view msg_type_name(char mt) noexcept {
+    switch (mt) {
+    case msg_type::Heartbeat:            return "Heartbeat";
+    case msg_type::TestRequest:          return "TestRequest";
+    case msg_type::Logon:                return "Logon";
+    case msg_type::Logout:               return "Logout";
+    case msg_type::NewOrderSingle:       return "NewOrderSingle";
+    case msg_type::OrderCancelRequest:   return "OrderCancelRequest";
+    case msg_type::OrderCancelReplace:   return "OrderCancelReplace";
+    case msg_type::ExecutionReport:      return "ExecutionReport";
+    case msg_type::OrderCancelReject:    return "OrderCancelReject";
+    case msg_type::MarketDataRequest:    return "MarketDataRequest";
+    case msg_type::MarketDataSnapshot:   return "MarketDataSnapshot";
+    case msg_type::MarketDataIncRefresh: return "MarketDataIncRefresh";
+    default:                             return "Unknown";
+    }
+}
+
 } // namespace eph::fix::tag

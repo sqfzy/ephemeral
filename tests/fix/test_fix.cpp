@@ -52,6 +52,21 @@ TEST(FixTags, tag_name_unknown) {
     EXPECT_EQ(tag::tag_name(99999), "Unknown");
 }
 
+TEST(FixTags, msg_type_name_known) {
+    EXPECT_EQ(tag::msg_type_name('D'), "NewOrderSingle");
+    EXPECT_EQ(tag::msg_type_name('8'), "ExecutionReport");
+    EXPECT_EQ(tag::msg_type_name('A'), "Logon");
+    EXPECT_EQ(tag::msg_type_name('5'), "Logout");
+    EXPECT_EQ(tag::msg_type_name('0'), "Heartbeat");
+    EXPECT_EQ(tag::msg_type_name('V'), "MarketDataRequest");
+    EXPECT_EQ(tag::msg_type_name('W'), "MarketDataSnapshot");
+    EXPECT_EQ(tag::msg_type_name('X'), "MarketDataIncRefresh");
+}
+
+TEST(FixTags, msg_type_name_unknown) {
+    EXPECT_EQ(tag::msg_type_name('Z'), "Unknown");
+}
+
 // ===========================================================================
 // Parser
 // ===========================================================================
