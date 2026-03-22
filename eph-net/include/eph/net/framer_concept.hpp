@@ -1,0 +1,73 @@
+#pragma once
+
+/// @file framer_concept.hpp
+/// MessageFramer concept — pluggable message framing for Transport.
+///
+/// Framers handle the wire format layer: encoding application payloads
+/// into framed bytes and decoding framed bytes back into payloads.
+/// Built-in implementations: WsFramer (WebSocket), RawFramer (pass-through),
+/// LengthPrefixFramer (2-byte big-endian length prefix).
+
+#include <cstdint>
+#include <cstring>
+#include <expected>
+#include <string_view>
+
+namespace eph::net {
+
+/// Error codes returned by MessageFramer::decode().
+enum class FrameError : uint8_t {
+    kIncomplete,       ///< Need more data (partial frame in buffer)
+    kInvalidFormat,    ///< Malformed frame (corrupt header, bad length)
+    kPayloadTooLarge,  ///< Payload exceeds maximum allowed size
+};
+
+/// Human-readable name for FrameError.
+constexpr std::string_view frame_error_name(FrameError e) noexcept {
+    switch (e) {
+    case FrameError::kIncomplete:      return "incomplete";
+    case FrameError::kInvalidFormat:   return "invalid format";
+    case FrameError::kPayloadTooLarge: return "payload too large";
+    }
+    return "unknown";
+}
+
+/// Decoded frame — zero-copy view into the receive buffer.
+struct DecodedFrame {
+    const uint8_t* payload;      ///< Pointer to payload data (within input buffer)
+    size_t         payload_len;  ///< Payload length in bytes
+    uint8_t        msg_type;     ///< Protocol-specific message type
+                                 ///< (WS opcode / ITCH msg type byte / FIX MsgType char)
+    bool           is_control;   ///< Control frame (WS ping/pong/close). Data framers always false.
+    size_t         total_len;    ///< Total consumed bytes including frame header
+};
+
+/// Concept for pluggable message framers.
+///
+/// A MessageFramer translates between application payloads and wire-format
+/// framed bytes. It must provide:
+///   - encode(): payload → framed bytes (for TX)
+///   - decode(): framed bytes → DecodedFrame (for RX)
+///   - max_overhead(): maximum bytes added by framing (for buffer pre-allocation)
+template <typename F>
+concept MessageFramer = requires(F f, uint8_t* out, const uint8_t* in,
+                                  size_t len, uint8_t msg_type) {
+    /// Encode a payload into framed wire format.
+    /// @param out       Output buffer (must have at least len + max_overhead() bytes)
+    /// @param in        Input payload data
+    /// @param len       Input payload length
+    /// @param msg_type  Protocol-specific message type hint
+    /// @return Total bytes written to out (header + payload)
+    { f.encode(out, in, len, msg_type) } noexcept -> std::same_as<size_t>;
+
+    /// Decode a framed message from the receive buffer.
+    /// @param in   Input buffer (may contain partial or multiple frames)
+    /// @param len  Available bytes in input buffer
+    /// @return Decoded frame on success, FrameError on failure
+    { F::decode(in, len) } noexcept -> std::same_as<std::expected<DecodedFrame, FrameError>>;
+
+    /// Maximum framing overhead in bytes (used for buffer pre-allocation).
+    { F::max_overhead() } noexcept -> std::convertible_to<size_t>;
+};
+
+} // namespace eph::net

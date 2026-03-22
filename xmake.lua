@@ -50,6 +50,24 @@ target("eph-net")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
+target("eph-itch")
+    set_kind("headeronly")
+    add_includedirs("eph-itch/include", { public = true })
+    add_headerfiles("eph-itch/include/(eph/itch/**.hpp)")
+    add_headerfiles("eph-itch/include/(eph/itch.hpp)")
+    add_deps("eph-net", { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
+
+target("eph-fix")
+    set_kind("headeronly")
+    add_includedirs("eph-fix/include", { public = true })
+    add_headerfiles("eph-fix/include/(eph/fix/**.hpp)")
+    add_headerfiles("eph-fix/include/(eph/fix.hpp)")
+    add_deps("eph-net", { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
+
 target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
@@ -105,6 +123,8 @@ local test_module_deps = {
     containers = "eph-containers",
     utils      = "eph-utils",
     net        = "eph-net",
+    itch       = "eph-itch",
+    fix        = "eph-fix",
     dpdk       = "eph-dpdk",
 }
 
