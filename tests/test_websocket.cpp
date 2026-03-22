@@ -625,6 +625,196 @@ TEST(WsEncodeValidation, IsValidPayloadLen) {
 // UTF-8 validation (RFC 6455 §5.6)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket fragmentation (RFC 6455 §5.4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper: encode a frame with explicit FIN bit control (for fragmentation tests).
+/// Returns total bytes written. Uses server-style encoding (unmasked) for easy
+/// decode_frame testing without needing to unmask.
+static size_t encode_unmasked_frame(uint8_t* out, uint8_t opcode_val,
+                                      const uint8_t* payload, size_t payload_len,
+                                      bool fin) {
+    size_t pos = 0;
+    out[pos++] = (fin ? kFinBit : 0) | (opcode_val & 0x0F);
+    if (payload_len < 126) {
+        out[pos++] = static_cast<uint8_t>(payload_len); // no mask bit
+    } else if (payload_len <= 65535) {
+        out[pos++] = 126;
+        out[pos++] = static_cast<uint8_t>(payload_len >> 8);
+        out[pos++] = static_cast<uint8_t>(payload_len & 0xFF);
+    } else {
+        out[pos++] = 127;
+        for (int i = 7; i >= 0; --i)
+            out[pos++] = static_cast<uint8_t>((payload_len >> (i * 8)) & 0xFF);
+    }
+    if (payload && payload_len > 0) {
+        std::memcpy(out + pos, payload, payload_len);
+    }
+    return pos + payload_len;
+}
+
+TEST(WsFragmentation, FirstFragmentHasOpcodeAndNoFin) {
+    // First fragment: opcode=Text, FIN=0
+    uint8_t buf[64];
+    const uint8_t payload[] = "Hel";
+    size_t len = encode_unmasked_frame(buf, opcode::kText, payload, 3, false);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kText);
+    EXPECT_FALSE(result->fin);
+    EXPECT_TRUE(result->is_data());
+    EXPECT_EQ(result->payload_len, 3u);
+}
+
+TEST(WsFragmentation, ContinuationFrameHasOpcodeZero) {
+    // Continuation fragment: opcode=0, FIN=0
+    uint8_t buf[64];
+    const uint8_t payload[] = "lo ";
+    size_t len = encode_unmasked_frame(buf, opcode::kContinuation, payload, 3, false);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kContinuation);
+    EXPECT_FALSE(result->fin);
+    EXPECT_TRUE(result->is_data());
+}
+
+TEST(WsFragmentation, FinalFragmentHasFin) {
+    // Final fragment: opcode=0, FIN=1
+    uint8_t buf[64];
+    const uint8_t payload[] = "World";
+    size_t len = encode_unmasked_frame(buf, opcode::kContinuation, payload, 5, true);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kContinuation);
+    EXPECT_TRUE(result->fin);
+    EXPECT_TRUE(result->is_data());
+    EXPECT_EQ(result->payload_len, 5u);
+}
+
+TEST(WsFragmentation, ThreeFrameReassemblySequence) {
+    // Simulate a 3-frame fragmented message and verify each frame decodes
+    // correctly, then manually reassemble to verify payload integrity.
+    uint8_t frame_buf[256];
+    std::vector<uint8_t> reassembled;
+
+    // Frame 1: Text, FIN=0, "Hel"
+    const uint8_t p1[] = {'H', 'e', 'l'};
+    size_t len1 = encode_unmasked_frame(frame_buf, opcode::kText, p1, 3, false);
+    auto f1 = decode_frame(frame_buf, len1);
+    ASSERT_TRUE(f1.has_value());
+    EXPECT_EQ(f1->opcode, opcode::kText);
+    EXPECT_FALSE(f1->fin);
+    reassembled.insert(reassembled.end(), f1->payload, f1->payload + f1->payload_len);
+
+    // Frame 2: Continuation, FIN=0, "lo "
+    const uint8_t p2[] = {'l', 'o', ' '};
+    size_t len2 = encode_unmasked_frame(frame_buf, opcode::kContinuation, p2, 3, false);
+    auto f2 = decode_frame(frame_buf, len2);
+    ASSERT_TRUE(f2.has_value());
+    EXPECT_EQ(f2->opcode, opcode::kContinuation);
+    EXPECT_FALSE(f2->fin);
+    reassembled.insert(reassembled.end(), f2->payload, f2->payload + f2->payload_len);
+
+    // Frame 3: Continuation, FIN=1, "World"
+    const uint8_t p3[] = {'W', 'o', 'r', 'l', 'd'};
+    size_t len3 = encode_unmasked_frame(frame_buf, opcode::kContinuation, p3, 5, true);
+    auto f3 = decode_frame(frame_buf, len3);
+    ASSERT_TRUE(f3.has_value());
+    EXPECT_EQ(f3->opcode, opcode::kContinuation);
+    EXPECT_TRUE(f3->fin);
+    reassembled.insert(reassembled.end(), f3->payload, f3->payload + f3->payload_len);
+
+    // Verify reassembled payload
+    std::string msg(reassembled.begin(), reassembled.end());
+    EXPECT_EQ(msg, "Hello World");
+}
+
+TEST(WsFragmentation, ControlFrameInterleaved) {
+    // RFC 6455 §5.4: control frames may appear between data fragments
+    uint8_t frame_buf[256];
+
+    // Fragment 1: Binary, FIN=0
+    const uint8_t p1[] = {0xDE, 0xAD};
+    size_t len1 = encode_unmasked_frame(frame_buf, opcode::kBinary, p1, 2, false);
+    auto f1 = decode_frame(frame_buf, len1);
+    ASSERT_TRUE(f1.has_value());
+    EXPECT_FALSE(f1->fin);
+    EXPECT_TRUE(f1->is_data());
+
+    // Interleaved Ping (control frames must have FIN=1)
+    size_t ping_len = encode_unmasked_frame(frame_buf, opcode::kPing, nullptr, 0, true);
+    auto ping = decode_frame(frame_buf, ping_len);
+    ASSERT_TRUE(ping.has_value());
+    EXPECT_TRUE(ping->is_ping());
+    EXPECT_TRUE(ping->fin);
+    EXPECT_TRUE(ping->is_control());
+
+    // Fragment 2: Continuation, FIN=1
+    const uint8_t p2[] = {0xBE, 0xEF};
+    size_t len2 = encode_unmasked_frame(frame_buf, opcode::kContinuation, p2, 2, true);
+    auto f2 = decode_frame(frame_buf, len2);
+    ASSERT_TRUE(f2.has_value());
+    EXPECT_EQ(f2->opcode, opcode::kContinuation);
+    EXPECT_TRUE(f2->fin);
+}
+
+TEST(WsFragmentation, EmptyFirstFragment) {
+    // Empty first fragment (opcode=Text, FIN=0, payload=0)
+    uint8_t buf[64];
+    size_t len = encode_unmasked_frame(buf, opcode::kText, nullptr, 0, false);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kText);
+    EXPECT_FALSE(result->fin);
+    EXPECT_EQ(result->payload_len, 0u);
+}
+
+TEST(WsFragmentation, SingleFrameMessageHasFin) {
+    // Non-fragmented message: opcode=Binary, FIN=1
+    uint8_t buf[64];
+    const uint8_t payload[] = {0x42};
+    size_t len = encode_unmasked_frame(buf, opcode::kBinary, payload, 1, true);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kBinary);
+    EXPECT_TRUE(result->fin);
+    EXPECT_EQ(result->payload_len, 1u);
+}
+
+TEST(WsFragmentation, MultipleFramesInSingleBuffer) {
+    // Two complete frames back-to-back in one buffer
+    uint8_t buf[256];
+    const uint8_t p1[] = {'A', 'B'};
+    const uint8_t p2[] = {'C', 'D', 'E'};
+
+    size_t len1 = encode_unmasked_frame(buf, opcode::kText, p1, 2, false);
+    size_t len2 = encode_unmasked_frame(buf + len1, opcode::kContinuation, p2, 3, true);
+
+    // Decode first frame
+    auto f1 = decode_frame(buf, len1 + len2);
+    ASSERT_TRUE(f1.has_value());
+    EXPECT_EQ(f1->opcode, opcode::kText);
+    EXPECT_EQ(f1->payload_len, 2u);
+    EXPECT_EQ(f1->total_len, len1);
+
+    // Decode second frame from remaining buffer
+    auto f2 = decode_frame(buf + f1->total_len, len1 + len2 - f1->total_len);
+    ASSERT_TRUE(f2.has_value());
+    EXPECT_EQ(f2->opcode, opcode::kContinuation);
+    EXPECT_EQ(f2->payload_len, 3u);
+    EXPECT_TRUE(f2->fin);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTF-8 validation (RFC 6455 §5.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
 TEST(Utf8Validation, EmptyString) {
     EXPECT_TRUE(is_valid_utf8(nullptr, 0));
     EXPECT_TRUE(is_valid_utf8(std::string_view("")));
