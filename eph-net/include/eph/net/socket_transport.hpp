@@ -320,6 +320,11 @@ public:
         const uint8_t* ptr = static_cast<const uint8_t*>(data);
         size_t remaining = len;
 
+        // Total deadline prevents unbounded retry accumulation when the
+        // socket repeatedly returns EAGAIN across multiple partial writes.
+        auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds{config_.send_timeout_ms};
+
         while (remaining > 0) {
             ssize_t n = ::send(fd_, ptr, remaining, MSG_NOSIGNAL);
             if (n > 0) {
@@ -335,12 +340,32 @@ public:
 
             // n < 0
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // Wait for socket to become writable
+                // Compute remaining time until deadline for this poll wait
+                auto now = std::chrono::steady_clock::now();
+                auto remaining_ms = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(deadline - now).count();
+                if (remaining_ms <= 0) {
+                    SPDLOG_LOGGER_WARN(detail::socket_logger(),
+                        "send() total timeout exceeded: {}ms, "
+                        "{}/{} bytes sent",
+                        config_.send_timeout_ms, len - remaining, len);
+                    return std::unexpected(std::format(
+                        "send() total timeout exceeded ({}ms, {}/{} bytes sent)",
+                        config_.send_timeout_ms, len - remaining, len));
+                }
+
+                // Wait for socket to become writable, capped by deadline
                 struct pollfd pfd{};
                 pfd.fd = fd_;
                 pfd.events = POLLOUT;
-                int rc = ::poll(&pfd, 1, config_.send_timeout_ms);
+                int poll_ms = static_cast<int>(
+                    std::min(remaining_ms,
+                             static_cast<int64_t>(config_.send_timeout_ms)));
+                int rc = ::poll(&pfd, 1, poll_ms);
                 if (rc <= 0) {
+                    SPDLOG_LOGGER_WARN(detail::socket_logger(),
+                        "send() poll timeout: {}ms, {}/{} bytes sent",
+                        poll_ms, len - remaining, len);
                     return std::unexpected(std::format(
                         "send() timeout waiting for writable ({}ms)",
                         config_.send_timeout_ms));
