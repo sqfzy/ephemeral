@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -569,6 +570,23 @@ TEST(FixFramer, encode_passthrough) {
 
 TEST(FixFramer, satisfies_concept) {
     static_assert(eph::net::MessageFramer<FixFramer>);
+}
+
+// ===========================================================================
+// std::formatter
+// ===========================================================================
+
+TEST(FixFormatter, parse_error_format) {
+    EXPECT_EQ(std::format("{}", ParseError::kIncomplete), "incomplete");
+    EXPECT_EQ(std::format("{}", ParseError::kInvalidFormat), "invalid format");
+    EXPECT_EQ(std::format("{}", ParseError::kChecksumMismatch), "checksum mismatch");
+    EXPECT_EQ(std::format("{}", ParseError::kFieldOverflow), "field overflow");
+}
+
+TEST(FixFormatter, frame_error_format) {
+    EXPECT_EQ(std::format("{}", eph::net::FrameError::kIncomplete), "incomplete");
+    EXPECT_EQ(std::format("{}", eph::net::FrameError::kInvalidFormat), "invalid format");
+    EXPECT_EQ(std::format("{}", eph::net::FrameError::kPayloadTooLarge), "payload too large");
 }
 
 // ===========================================================================

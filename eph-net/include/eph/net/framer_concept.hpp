@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <string_view>
 
 namespace eph::net {
@@ -71,3 +72,12 @@ concept MessageFramer = requires(F f, uint8_t* out, const uint8_t* in,
 };
 
 } // namespace eph::net
+
+/// std::formatter specialization for FrameError.
+template <>
+struct std::formatter<eph::net::FrameError> : std::formatter<std::string_view> {
+    auto format(eph::net::FrameError e, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::net::frame_error_name(e), ctx);
+    }
+};

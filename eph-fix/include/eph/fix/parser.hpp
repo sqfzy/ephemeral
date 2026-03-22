@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -390,3 +391,12 @@ public:
 };
 
 } // namespace eph::fix
+
+/// std::formatter specialization for fix::ParseError.
+template <>
+struct std::formatter<eph::fix::ParseError> : std::formatter<std::string_view> {
+    auto format(eph::fix::ParseError e, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::fix::parse_error_name(e), ctx);
+    }
+};

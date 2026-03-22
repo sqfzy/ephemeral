@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <string_view>
 
 #include "eph/itch/messages.hpp"
@@ -178,3 +179,12 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
 }
 
 } // namespace eph::itch
+
+/// std::formatter specialization for itch::ParseError.
+template <>
+struct std::formatter<eph::itch::ParseError> : std::formatter<std::string_view> {
+    auto format(eph::itch::ParseError e, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::itch::parse_error_name(e), ctx);
+    }
+};
