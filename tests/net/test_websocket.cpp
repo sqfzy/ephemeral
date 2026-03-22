@@ -249,6 +249,27 @@ TEST(WsControlFrames, PingPong) {
     EXPECT_TRUE(pong->is_pong());
 }
 
+TEST(WsControlFrames, PingNullPayloadWithLengthTreatedAsEmpty) {
+    uint8_t buf[64];
+    // null payload + non-zero length → should produce zero-payload frame
+    size_t len = build_ping_frame(buf, nullptr, 10);
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_ping());
+    EXPECT_EQ(frame->payload_len, 0u);
+}
+
+TEST(WsControlFrames, PongNullPayloadWithLengthTreatedAsEmpty) {
+    uint8_t buf[64];
+    size_t len = build_pong_frame(buf, nullptr, 5);
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_pong());
+    EXPECT_EQ(frame->payload_len, 0u);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FrameTemplate
 // ─────────────────────────────────────────────────────────────────────────────
