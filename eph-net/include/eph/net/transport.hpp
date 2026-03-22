@@ -1298,7 +1298,8 @@ private:
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 
         // Fixed-size RX buffers -- no heap allocation on hot path.
-        // reassembly_buf is 2x max TLS record to handle partial records at boundary.
+        // TLS reassembly: accumulates raw TCP bytes until complete TLS records form.
+        // Sized for 2x max TLS record to handle partial records at boundary.
         static constexpr size_t kReassemblyBufSize =
             2 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
                  tls_record::kAuthTagLen + 1);
@@ -1306,6 +1307,14 @@ private:
             tls_const::kMaxRecordPayload + 256);
         auto reassembly_storage = std::make_unique<uint8_t[]>(kReassemblyBufSize);
         size_t reassembly_len = 0;
+
+        // WS reassembly: accumulates decrypted bytes when a WebSocket frame
+        // spans multiple TLS records. Without this, partial WS frames at
+        // TLS record boundaries would be silently discarded.
+        static constexpr size_t kWsReassemblyBufSize =
+            ws::kMaxFrameHeaderLen + MaxPayload + 256;
+        auto ws_reassembly_storage = std::make_unique<uint8_t[]>(kWsReassemblyBufSize);
+        size_t ws_reassembly_len = 0;
 
         while (running_.load(std::memory_order_acquire)) {
             // After a server Close frame, stop receiving — TX will
@@ -1329,6 +1338,7 @@ private:
                             "triggering reconnect",
                             reassembly_len, len, kReassemblyBufSize);
                         reassembly_len = 0;
+                        ws_reassembly_len = 0;
                         reconnect_needed = true;
                     }
                 });
@@ -1348,6 +1358,7 @@ private:
 
                 // -- Auto-reconnect (fixed interval, discard old messages) --
                 reassembly_len = 0;
+                ws_reassembly_len = 0;
                 if (do_reconnect()) {
                     continue; // Resume RX loop with new connection
                 }
@@ -1389,6 +1400,7 @@ private:
                     // Corrupted record -> link unreliable, reconnect.
                     // Reset reassembly state and skip compact logic below.
                     reassembly_len = 0;
+                    ws_reassembly_len = 0;
                     consumed = 0;
                     if (!do_reconnect()) {
                         running_.store(false, std::memory_order_release);
@@ -1396,7 +1408,53 @@ private:
                     break; // Resume with fresh connection or exit outer loop
                 }
 
-                process_ws_data(decrypt_buf.get(), decrypted_len);
+                // Prepend any leftover WS bytes from the previous TLS record.
+                // This handles WS frames that span TLS record boundaries.
+                const uint8_t* ws_data;
+                size_t ws_data_len;
+                if (ws_reassembly_len > 0) {
+                    // Append new decrypted data after existing WS leftovers
+                    if (ws_reassembly_len + decrypted_len <= kWsReassemblyBufSize) {
+                        std::memcpy(ws_reassembly_storage.get() + ws_reassembly_len,
+                                    decrypt_buf.get(), decrypted_len);
+                        ws_reassembly_len += decrypted_len;
+                    } else {
+                        SPDLOG_LOGGER_WARN(log,
+                            "WS reassembly buffer overflow ({} + {} > {}), "
+                            "discarding partial frame",
+                            ws_reassembly_len, decrypted_len,
+                            kWsReassemblyBufSize);
+                        ws_reassembly_len = 0;
+                        consumed += record_total;
+                        continue;
+                    }
+                    ws_data = ws_reassembly_storage.get();
+                    ws_data_len = ws_reassembly_len;
+                } else {
+                    ws_data = decrypt_buf.get();
+                    ws_data_len = decrypted_len;
+                }
+
+                size_t ws_consumed = process_ws_data(ws_data, ws_data_len);
+
+                // Save unconsumed WS bytes for next TLS record
+                size_t ws_remaining = ws_data_len - ws_consumed;
+                if (ws_remaining > 0) {
+                    if (ws_data == decrypt_buf.get()) {
+                        // First time: copy leftovers into WS reassembly buffer
+                        std::memcpy(ws_reassembly_storage.get(),
+                                    decrypt_buf.get() + ws_consumed, ws_remaining);
+                    } else {
+                        // Already in WS reassembly buffer: compact to front
+                        std::memmove(ws_reassembly_storage.get(),
+                                     ws_reassembly_storage.get() + ws_consumed,
+                                     ws_remaining);
+                    }
+                    ws_reassembly_len = ws_remaining;
+                } else {
+                    ws_reassembly_len = 0;
+                }
+
                 consumed += record_total;
             }
 
@@ -1436,7 +1494,10 @@ private:
     // WebSocket frame processing
     // -----------------------------------------------------------------------
 
-    void process_ws_data(const uint8_t* data, uint16_t len) {
+    /// Process decrypted WebSocket data. Returns the number of bytes
+    /// consumed. Unconsumed bytes (partial frames) must be preserved
+    /// by the caller and prepended to the next chunk of decrypted data.
+    size_t process_ws_data(const uint8_t* data, size_t len) {
         auto log = detail::transport_logger();
         size_t offset = 0;
 
@@ -1569,6 +1630,7 @@ private:
                 }
             }
         }
+        return offset;
     }
 
     /// Deliver a decoded payload to either the on_message callback or the RX queue.
