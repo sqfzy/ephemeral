@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <format>
 #include <fstream>
 #include <ranges>
 #include <stdexcept>
@@ -328,3 +329,16 @@ inline void cpu_relax() noexcept {
 }
 
 } // namespace eph::utils
+
+/// std::format support for CpuTopologyInfo.
+/// Example: std::format("{}", info) → "socket=0 core=2 thread=4"
+template <>
+struct std::formatter<eph::utils::CpuTopologyInfo> {
+    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+    auto format(const eph::utils::CpuTopologyInfo& info,
+                std::format_context& ctx) const {
+        return std::format_to(ctx.out(), "socket={} core={} thread={}",
+                              info.socket_id, info.core_id, info.hw_thread_id);
+    }
+};

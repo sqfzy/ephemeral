@@ -194,13 +194,8 @@ TEST(HdrHistogramTest, PercentileP0ReturnsMinimum) {
     HdrHistogram h(1, 10'000, 3);
     for (uint64_t i = 100; i <= 200; ++i) h.record(i);
 
+    // p0 returns the first recorded bucket (ceil(0) = 0, first accumulated > 0 matches)
     auto p0 = h.get_value_at_percentile(0.0);
-    // p0 with ceil(0) = 0, so accumulated will never be >= 0
-    // This returns 0 or min depending on implementation
-    // The function uses ceil(0/100 * count) = ceil(0) = 0
-    // accumulated starts at 0, first count > 0 → accumulated >= 0 → return first value
-    // Actually: count_at_percentile = ceil(0.0 * count) = 0
-    // First count with accumulated(>0) >= 0 → returns first recorded bucket
     EXPECT_GE(p0, 100);
     EXPECT_LE(p0, 101);
 }

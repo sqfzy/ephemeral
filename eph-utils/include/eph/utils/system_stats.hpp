@@ -2,6 +2,7 @@
 
 #include <sys/resource.h>
 
+#include <format>
 #include <print>
 
 namespace eph::utils {
@@ -129,3 +130,18 @@ class SystemStats {
 };
 
 }  // namespace eph::utils
+
+/// std::format support for SystemResourceStats.
+/// Example: std::format("{}", stats) → "cpu=0.1234s/0.0567s majflt=0 minflt=42 vcsw=3 ivcsw=1"
+template <>
+struct std::formatter<eph::utils::SystemResourceStats> {
+    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+    auto format(const eph::utils::SystemResourceStats& s,
+                std::format_context& ctx) const {
+        return std::format_to(
+            ctx.out(),
+            "cpu={:.4f}s/{:.4f}s majflt={} minflt={} vcsw={} ivcsw={}",
+            s.user_cpu_s, s.sys_cpu_s, s.majflt, s.minflt, s.nvcsw, s.nivcsw);
+    }
+};
