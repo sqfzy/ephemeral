@@ -340,6 +340,8 @@ public:
                          std::string_view reason = {}) noexcept {
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (!ws::is_valid_close_code(status_code)) return SendError::kInvalidCloseCode;
+        // RFC 6455 §7.1.6: close reason must be valid UTF-8
+        if (!reason.empty() && !ws::is_valid_utf8(reason)) return SendError::kInvalidUtf8;
 
         // Close payload: 2-byte status code + optional reason (max 123 chars per RFC 6455 §5.5)
         size_t reason_len = std::min(reason.size(), size_t{123});

@@ -50,6 +50,8 @@ inline constexpr uint16_t kAbnormalClosure  = 1006;
 inline constexpr uint16_t kInvalidPayload   = 1007;
 inline constexpr uint16_t kPolicyViolation  = 1008;
 inline constexpr uint16_t kMessageTooBig    = 1009;
+inline constexpr uint16_t kMandatoryExtension = 1010;
+inline constexpr uint16_t kInternalError    = 1011;
 } // namespace close_code
 
 /// Check if a close status code is valid for sending per RFC 6455 §7.4.
