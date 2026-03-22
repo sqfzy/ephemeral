@@ -1446,3 +1446,50 @@ TEST(ItchDispatch, body_pointer_matches_accessor_convention) {
         }
     });
 }
+
+// ---------------------------------------------------------------------------
+// trim() — remove trailing spaces from ITCH string fields
+// ---------------------------------------------------------------------------
+
+TEST(ItchTrim, trims_trailing_spaces) {
+    EXPECT_EQ(trim("AAPL    "), "AAPL");
+}
+
+TEST(ItchTrim, no_trailing_spaces) {
+    EXPECT_EQ(trim("MSFT"), "MSFT");
+}
+
+TEST(ItchTrim, all_spaces_returns_empty) {
+    EXPECT_EQ(trim("        "), "");
+}
+
+TEST(ItchTrim, empty_string_returns_empty) {
+    EXPECT_EQ(trim(""), "");
+}
+
+TEST(ItchTrim, single_char_no_trim) {
+    EXPECT_EQ(trim("X"), "X");
+}
+
+TEST(ItchTrim, single_space) {
+    EXPECT_EQ(trim(" "), "");
+}
+
+TEST(ItchTrim, interior_spaces_preserved) {
+    EXPECT_EQ(trim("A B     "), "A B");
+}
+
+TEST(ItchTrim, works_with_stock_accessor) {
+    // End-to-end: parse AddOrder, extract stock, trim
+    uint8_t raw[35];
+    std::memset(raw, ' ', sizeof(raw));
+    raw[0] = kAddOrder;
+    // Write "AAPL" at stock offset (24..31), rest is spaces
+    std::memcpy(raw + 24, "AAPL    ", 8);
+
+    auto view = parse(raw, sizeof(raw));
+    ASSERT_TRUE(view.has_value());
+    auto stock = add_order::stock(view->data);
+    EXPECT_EQ(stock.size(), 8u);
+    EXPECT_EQ(trim(stock), "AAPL");
+}

@@ -52,6 +52,19 @@ inline uint64_t read_be48(const uint8_t* p) noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// String trimming utility
+// ---------------------------------------------------------------------------
+
+/// Trim trailing spaces from a right-padded ITCH string field.
+/// ITCH encodes stock symbols and other text fields as fixed-width,
+/// right-padded with ASCII spaces (0x20). This returns a view with
+/// trailing spaces removed.
+inline std::string_view trim(std::string_view s) noexcept {
+    auto end = s.find_last_not_of(' ');
+    return (end == std::string_view::npos) ? std::string_view{} : s.substr(0, end + 1);
+}
+
+// ---------------------------------------------------------------------------
 // Common header accessors  (all ITCH messages share this layout)
 //
 //   Offset 0:  message_type  (1 byte)  — stripped before these are called
