@@ -1496,3 +1496,346 @@ TEST_F(TransportTest, FragmentedMessage_EmptyContinuation) {
 
     tp->stop();
 }
+
+// ===========================================================================
+// Server-initiated close tests
+// ===========================================================================
+
+TEST_F(TransportTest, ServerCloseFrameDeliveredToRxQueue) {
+    // Server sends a Close frame; it should be delivered to the RX queue
+    // and accessible via try_recv_msg() with close_code()/close_reason().
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Build a server Close frame: code=1000, reason="goodbye"
+    uint8_t close_payload[2 + 7];
+    close_payload[0] = static_cast<uint8_t>(1000 >> 8);
+    close_payload[1] = static_cast<uint8_t>(1000 & 0xFF);
+    std::memcpy(close_payload + 2, "goodbye", 7);
+    last_mock_->inject_server_frame(ws::opcode::kClose, close_payload, sizeof(close_payload));
+
+    // Wait for the close frame to appear in RX queue
+    bool received = false;
+    EXPECT_TRUE(wait_for([&] {
+        auto msg = tp->try_recv_msg();
+        if (msg && msg->is_close()) {
+            EXPECT_EQ(msg->close_code(), 1000u);
+            EXPECT_EQ(msg->close_reason(), "goodbye");
+            received = true;
+            return true;
+        }
+        return false;
+    }));
+
+    EXPECT_TRUE(received);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, OnCloseCallbackFires) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 0;
+
+    std::atomic<bool> close_fired{false};
+    uint16_t close_code = 0;
+    std::string close_reason;
+    std::mutex cb_mtx;
+
+    config.on_close = [&](uint16_t code, std::string_view reason) {
+        std::lock_guard lock(cb_mtx);
+        close_code = code;
+        close_reason = std::string(reason);
+        close_fired.store(true, std::memory_order_relaxed);
+    };
+
+    WsMockTcpTransport* mock_ptr = nullptr;
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = mock.get();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+
+    std::this_thread::sleep_for(10ms);
+
+    // Send Close frame from server
+    uint8_t close_payload[2 + 4];
+    close_payload[0] = static_cast<uint8_t>(1001 >> 8);
+    close_payload[1] = static_cast<uint8_t>(1001 & 0xFF);
+    std::memcpy(close_payload + 2, "gone", 4);
+    mock_ptr->inject_server_frame(ws::opcode::kClose, close_payload, sizeof(close_payload));
+
+    bool fired = wait_for([&] {
+        return close_fired.load(std::memory_order_relaxed);
+    });
+
+    EXPECT_TRUE(fired);
+    {
+        std::lock_guard lock(cb_mtx);
+        EXPECT_EQ(close_code, 1001u);
+        EXPECT_EQ(close_reason, "gone");
+    }
+
+    (*result)->stop();
+}
+
+// ===========================================================================
+// Batch receive tests
+// ===========================================================================
+
+TEST_F(TransportTest, RecvNBatchDrains) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject 5 frames
+    for (int i = 0; i < 5; ++i) {
+        std::vector<uint8_t> payload = {static_cast<uint8_t>(i)};
+        last_mock_->inject_binary(payload);
+    }
+
+    // Wait for all to arrive in RX queue
+    EXPECT_TRUE(wait_for([&] {
+        return tp->rx_queue_size() >= 5;
+    }));
+
+    // Batch receive
+    int count = 0;
+    std::vector<uint8_t> received_bytes;
+    size_t drained = tp->recv_n([&](const uint8_t* data, uint16_t len) {
+        EXPECT_EQ(len, 1);
+        received_bytes.push_back(data[0]);
+        count++;
+    }, 10);
+
+    EXPECT_EQ(drained, 5u);
+    EXPECT_EQ(count, 5);
+    EXPECT_EQ(received_bytes, (std::vector<uint8_t>{0, 1, 2, 3, 4}));
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, RecvNWithOpcodeCallback) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    last_mock_->inject_text("hello");
+    last_mock_->inject_binary({0x42});
+
+    EXPECT_TRUE(wait_for([&] {
+        return tp->rx_queue_size() >= 2;
+    }));
+
+    std::vector<uint8_t> opcodes;
+    size_t drained = tp->recv_n([&](const uint8_t*, uint16_t, uint8_t opcode) {
+        opcodes.push_back(opcode);
+    }, 10);
+
+    EXPECT_EQ(drained, 2u);
+    EXPECT_EQ(opcodes[0], ws::opcode::kText);
+    EXPECT_EQ(opcodes[1], ws::opcode::kBinary);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, DrainRecvConsumesAll) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    for (int i = 0; i < 3; ++i) {
+        last_mock_->inject_binary({static_cast<uint8_t>(i)});
+    }
+
+    EXPECT_TRUE(wait_for([&] {
+        return tp->rx_queue_size() >= 3;
+    }));
+
+    int count = 0;
+    size_t drained = tp->drain_recv([&](const uint8_t*, uint16_t) {
+        count++;
+    });
+
+    EXPECT_EQ(drained, 3u);
+    EXPECT_EQ(tp->rx_queue_size(), 0u);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Send with timeout tests
+// ===========================================================================
+
+TEST_F(TransportTest, SendForSucceeds) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t payload[] = {0x01, 0x02};
+    auto err = tp->send_for(payload, sizeof(payload), 100ms);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendTextForValidatesUtf8) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // Valid UTF-8
+    auto err = tp->send_text_for("hello", 100ms);
+    EXPECT_EQ(err, SendError::kOk);
+
+    // Invalid UTF-8
+    const uint8_t bad[] = {0xFF, 0xFE};
+    err = tp->send_text_for(bad, sizeof(bad), 100ms);
+    EXPECT_EQ(err, SendError::kInvalidUtf8);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendForWhenStoppedReturnsNotConnected) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    tp->stop();
+
+    const uint8_t payload[] = {0x01};
+    auto err = tp->send_for(payload, sizeof(payload), 100ms);
+    EXPECT_EQ(err, SendError::kNotConnected);
+}
+
+// ===========================================================================
+// wait_recv_msg tests
+// ===========================================================================
+
+TEST_F(TransportTest, WaitRecvMsgTimesOutWhenEmpty) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    auto msg = tp->wait_recv_msg(50ms);
+    EXPECT_FALSE(msg.has_value());
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, WaitRecvMsgReturnsMessage) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject after delay
+    std::thread injector([&] {
+        std::this_thread::sleep_for(20ms);
+        last_mock_->inject_text("deferred");
+    });
+
+    auto msg = tp->wait_recv_msg(2000ms);
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_TRUE(msg->is_text());
+    EXPECT_EQ(msg->text(), "deferred");
+
+    injector.join();
+    tp->stop();
+}
+
+// ===========================================================================
+// Ping callback tests
+// ===========================================================================
+
+TEST_F(TransportTest, OnPingCallbackFires) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 0;
+
+    std::atomic<bool> ping_fired{false};
+    config.on_ping = [&](const uint8_t*, uint16_t) {
+        ping_fired.store(true, std::memory_order_relaxed);
+    };
+
+    WsMockTcpTransport* mock_ptr = nullptr;
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = mock.get();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject a ping frame from server
+    const uint8_t ping_payload[] = {0x01, 0x02, 0x03};
+    mock_ptr->inject_server_frame(ws::opcode::kPing, ping_payload, sizeof(ping_payload));
+
+    bool fired = wait_for([&] {
+        return ping_fired.load(std::memory_order_relaxed);
+    });
+
+    EXPECT_TRUE(fired);
+
+    // Also verify pong was sent back (ws_pongs_sent counter)
+    EXPECT_TRUE(wait_for([&] {
+        return (*result)->stats().ws_pongs_sent >= 1;
+    }));
+
+    (*result)->stop();
+}
+
+TEST_F(TransportTest, ServerPingIncrementsPingCounter) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Inject 3 pings
+    for (int i = 0; i < 3; ++i) {
+        last_mock_->inject_server_frame(ws::opcode::kPing, nullptr, 0);
+    }
+
+    EXPECT_TRUE(wait_for([&] {
+        return tp->stats().ws_pings_received >= 3;
+    }));
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.ws_pings_received, 3u);
+    EXPECT_GE(stats.ws_pongs_sent, 3u);
+
+    tp->stop();
+}
