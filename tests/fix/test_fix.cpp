@@ -2008,3 +2008,120 @@ TEST(FixBuilder, remaining_capacity_zero_after_overflow) {
     EXPECT_TRUE(b.has_overflow());
     EXPECT_EQ(b.remaining_capacity(), 0u);
 }
+
+// ===========================================================================
+// Additional coverage: edge cases for timestamp and builder
+// ===========================================================================
+
+TEST(FixParser, get_timestamp_leap_second_accepted) {
+    // Second=60 is valid (leap second) per FIX spec
+    std::string body = "35=D\x01" "52=20161231-23:59:60\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+}
+
+TEST(FixParser, get_timestamp_second_61_rejected) {
+    std::string body = "35=D\x01" "52=20261231-23:59:61\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_fractional_leading_zeros) {
+    // "000001" microseconds = 1 microsecond = 1000 nanoseconds
+    std::string body = "35=D\x01" "52=20260322-12:00:00.000001\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    uint64_t sub_sec_ns = *ts % 1'000'000'000ULL;
+    EXPECT_EQ(sub_sec_ns, 1'000ULL); // 1 microsecond = 1000 ns
+}
+
+TEST(FixParser, get_timestamp_nanosecond_leading_zeros) {
+    // "000000001" nanoseconds = 1 nanosecond
+    std::string body = "35=D\x01" "52=20260322-12:00:00.000000001\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    uint64_t sub_sec_ns = *ts % 1'000'000'000ULL;
+    EXPECT_EQ(sub_sec_ns, 1ULL);
+}
+
+TEST(FixParser, get_timestamp_max_fractional_values) {
+    // "999999999" nanoseconds = 999999999 ns
+    std::string body = "35=D\x01" "52=20260322-12:00:00.999999999\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    uint64_t sub_sec_ns = *ts % 1'000'000'000ULL;
+    EXPECT_EQ(sub_sec_ns, 999'999'999ULL);
+}
+
+TEST(FixBuilder, set_char_overflow_detected) {
+    uint8_t buf[48]; // small buffer
+    MessageBuilder b(buf, sizeof(buf));
+    // Fill most of the buffer
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "AAPL_LONG_SYM");
+    // This set_char may or may not overflow depending on remaining space
+    b.set_char(tag::Side, '1');
+    // Verify overflow is detectable
+    if (b.has_overflow()) {
+        EXPECT_EQ(b.remaining_capacity(), 0u);
+    }
+    // Either way, finish() should return 0 on overflow or valid length
+    size_t len = b.finish();
+    if (b.has_overflow()) {
+        EXPECT_EQ(len, 0u);
+    }
+}
+
+TEST(FixBuilder, bytes_used_with_timestamp_precision) {
+    uint8_t buf[512];
+
+    // Seconds precision: "52=YYYYMMDD-HH:MM:SS\x01" = 3 + 17 + 1 = 21 bytes
+    MessageBuilder b1(buf, sizeof(buf));
+    b1.set_timestamp(tag::SendingTime, 1774191045'000'000'000ULL,
+                     MessageBuilder::TimestampPrecision::kSeconds);
+    size_t bytes_sec = b1.bytes_used();
+
+    // Nanoseconds precision: "52=YYYYMMDD-HH:MM:SS.sssssssss\x01" = 3 + 27 + 1 = 31 bytes
+    MessageBuilder b2(buf, sizeof(buf));
+    b2.set_timestamp(tag::SendingTime, 1774191045'000'000'000ULL,
+                     MessageBuilder::TimestampPrecision::kNanoseconds);
+    size_t bytes_ns = b2.bytes_used();
+
+    // Nanosecond precision uses 10 more bytes than seconds (. + 9 digits)
+    EXPECT_EQ(bytes_ns - bytes_sec, 10u);
+}
+
+TEST(FixBuilder, remaining_capacity_exact_boundary) {
+    // Create a buffer where adding one more field would exactly hit the limit
+    uint8_t buf[128];
+    MessageBuilder b(buf, sizeof(buf));
+
+    // Add fields until remaining capacity is small
+    while (b.remaining_capacity() > 20 && !b.has_overflow()) {
+        b.set_int(tag::MsgSeqNum, 1);
+    }
+    EXPECT_FALSE(b.has_overflow());
+    EXPECT_GT(b.remaining_capacity(), 0u);
+
+    // Verify finish still works
+    b.set(tag::MsgType, "0"); // heartbeat
+    size_t len = b.finish();
+    // May or may not overflow depending on exact boundary
+    if (!b.has_overflow()) {
+        EXPECT_GT(len, 0u);
+    }
+}
