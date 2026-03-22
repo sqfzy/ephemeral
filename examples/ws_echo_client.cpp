@@ -420,14 +420,14 @@ int main(int argc, char** argv) {
                 ? std::format("[{}] {}", sent_count + 1, cfg.message)
                 : cfg.message;
 
-            int rc = tp.send_text(payload.data(), payload.size());
-            if (rc == 0) {
+            auto rc = tp.send_text(payload.data(), payload.size());
+            if (rc == eph::net::SendError::kOk) {
                 spdlog::info(">> Sent: {}", payload);
                 ++sent_count;
-            } else if (rc == -EAGAIN) {
+            } else if (rc == eph::net::SendError::kQueueFull) {
                 spdlog::warn("TX queue full, retrying...");
             } else {
-                spdlog::error("Send failed: {}", rc);
+                spdlog::error("Send failed: {}", eph::net::send_error_name(rc));
                 break;
             }
         }

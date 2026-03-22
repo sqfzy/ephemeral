@@ -418,3 +418,37 @@ TEST(TransportConfigValidation, ZeroPingIntervalPasses) {
     cfg.ping_interval = std::chrono::seconds{0}; // disables ping
     EXPECT_TRUE(cfg.validate().empty());
 }
+
+// ===========================================================================
+// SendError enum
+// ===========================================================================
+
+TEST(SendErrorTest, NameFormatting) {
+    EXPECT_STREQ(send_error_name(SendError::kOk), "OK");
+    EXPECT_STREQ(send_error_name(SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
+    EXPECT_STREQ(send_error_name(SendError::kNotConnected), "NOT_CONNECTED");
+    EXPECT_STREQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
+}
+
+TEST(SendErrorTest, BooleanSemantics) {
+    // kOk is "truthy" (no error), all others are "falsy"
+    EXPECT_FALSE(!SendError::kOk);           // !kOk == false (success)
+    EXPECT_TRUE(!SendError::kMessageTooLarge);
+    EXPECT_TRUE(!SendError::kNotConnected);
+    EXPECT_TRUE(!SendError::kQueueFull);
+
+    // Idiomatic usage: if (auto err = send(...); !err) { handle error }
+    SendError ok = SendError::kOk;
+    SendError fail = SendError::kQueueFull;
+    EXPECT_EQ(ok, SendError::kOk);
+    EXPECT_NE(fail, SendError::kOk);
+}
+
+TEST(SendErrorTest, ExhaustiveSwitch) {
+    // Verify all enum values are distinct
+    auto to_int = [](SendError e) { return static_cast<int8_t>(e); };
+    EXPECT_EQ(to_int(SendError::kOk), 0);
+    EXPECT_NE(to_int(SendError::kMessageTooLarge), to_int(SendError::kNotConnected));
+    EXPECT_NE(to_int(SendError::kNotConnected), to_int(SendError::kQueueFull));
+    EXPECT_NE(to_int(SendError::kMessageTooLarge), to_int(SendError::kQueueFull));
+}

@@ -157,12 +157,12 @@ int main(int argc, char* argv[]) {
         // Send a message
         if (cfg.count == 0 || sent < cfg.count) {
             auto msg = std::format("[{}] {}", sent + 1, cfg.message);
-            int rc = transport->send_text(msg);
-            if (rc == 0) {
+            auto rc = transport->send_text(msg);
+            if (rc == eph::net::SendError::kOk) {
                 std::cout << "TX: " << msg << "\n";
                 ++sent;
             } else {
-                std::cerr << "Send failed: " << rc << "\n";
+                std::cerr << "Send failed: " << eph::net::send_error_name(rc) << "\n";
             }
         }
 

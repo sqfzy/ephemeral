@@ -55,6 +55,36 @@ namespace eph::net {
 // Configuration
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Send result
+// ---------------------------------------------------------------------------
+
+/// Result type for Transport::send() and related methods.
+/// Replaces raw errno return codes with a type-safe enum that
+/// enables exhaustive switch checking at compile time.
+enum class SendError : int8_t {
+    kOk             =  0,   ///< Message enqueued successfully
+    kMessageTooLarge = -1,  ///< Payload exceeds MaxPayload
+    kNotConnected    = -2,  ///< Transport not running
+    kQueueFull       = -3,  ///< TX queue is full (transient backpressure)
+};
+
+/// Return a human-readable name for a SendError.
+constexpr const char* send_error_name(SendError e) noexcept {
+    switch (e) {
+        case SendError::kOk:              return "OK";
+        case SendError::kMessageTooLarge: return "MESSAGE_TOO_LARGE";
+        case SendError::kNotConnected:    return "NOT_CONNECTED";
+        case SendError::kQueueFull:       return "QUEUE_FULL";
+    }
+    return "UNKNOWN";
+}
+
+/// Check if a SendError indicates success (enables `if (!send(...))` pattern).
+constexpr bool operator!(SendError e) noexcept {
+    return e != SendError::kOk;
+}
+
 /// Connection lifecycle events reported via the on_state_change callback.
 enum class TransportEvent : uint8_t {
     kConnected,       ///< Initial connection or reconnection succeeded
@@ -405,12 +435,11 @@ public:
     /// @param data     Payload data
     /// @param len      Payload length (must be <= MaxPayload)
     /// @param opcode   WebSocket opcode (default: binary)
-    /// @return 0 on success, -EMSGSIZE if too large, -ENOTCONN if not
-    ///         connected, -EAGAIN if queue is full
-    int send(const void* data, size_t len,
-             uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (len > MaxPayload) return -EMSGSIZE;
-        if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
+    /// @return SendError::kOk on success, or a specific error code
+    SendError send(const void* data, size_t len,
+                   uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (len > MaxPayload) return SendError::kMessageTooLarge;
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
             std::memcpy(msg.data, data, len);
@@ -420,35 +449,75 @@ public:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return -EAGAIN;
+            return SendError::kQueueFull;
         }
-        return 0;
+        return SendError::kOk;
     }
 
     /// Send data from a span (convenience overload).
-    int send(std::span<const uint8_t> data,
-             uint8_t opcode = ws::opcode::kBinary) noexcept {
+    SendError send(std::span<const uint8_t> data,
+                   uint8_t opcode = ws::opcode::kBinary) noexcept {
         return send(data.data(), data.size(), opcode);
     }
 
     /// Send data as a WebSocket binary frame (convenience, explicit intent).
-    int send_binary(const void* data, size_t len) noexcept {
+    SendError send_binary(const void* data, size_t len) noexcept {
         return send(data, len, ws::opcode::kBinary);
     }
 
     /// Send data as a WebSocket text frame (convenience for JSON APIs).
-    int send_text(const void* data, size_t len) noexcept {
+    SendError send_text(const void* data, size_t len) noexcept {
         return send(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
-    int send_text(std::string_view sv) noexcept {
+    SendError send_text(std::string_view sv) noexcept {
         return send(sv.data(), sv.size(), ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket binary frame.
-    int send_binary(std::string_view sv) noexcept {
+    SendError send_binary(std::string_view sv) noexcept {
         return send(sv.data(), sv.size(), ws::opcode::kBinary);
+    }
+
+    /// Send data with timeout — waits up to `timeout` for TX queue space.
+    ///
+    /// Unlike send() which returns kQueueFull immediately, this variant
+    /// spins briefly waiting for the TX thread to drain the queue.
+    /// Useful for backpressure-aware applications that prefer a short
+    /// wait over implementing their own retry loop.
+    ///
+    /// @param data     Payload data
+    /// @param len      Payload length (must be <= MaxPayload)
+    /// @param timeout  Maximum time to wait for queue space
+    /// @param opcode   WebSocket opcode (default: binary)
+    /// @return SendError::kOk on success, kQueueFull on timeout
+    template <typename Rep, typename Period>
+    SendError send_for(const void* data, size_t len,
+                       std::chrono::duration<Rep, Period> timeout,
+                       uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (len > MaxPayload) return SendError::kMessageTooLarge;
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+
+        bool ok = tx_queue_.try_produce_for([&](TxMsg& msg) {
+            std::memcpy(msg.data, data, len);
+            msg.len = static_cast<uint16_t>(len);
+            msg.opcode = opcode;
+        }, timeout);
+
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return SendError::kQueueFull;
+        }
+        return SendError::kOk;
+    }
+
+    /// Send data from a span with timeout (convenience overload).
+    template <typename Rep, typename Period>
+    SendError send_for(std::span<const uint8_t> data,
+                       std::chrono::duration<Rep, Period> timeout,
+                       uint8_t opcode = ws::opcode::kBinary) noexcept {
+        return send_for(data.data(), data.size(), timeout, opcode);
     }
 
     /// Send a WebSocket Close frame with a custom status code and reason.
@@ -459,16 +528,16 @@ public:
     ///
     /// @param status_code  Close reason code (e.g., ws::close_code::kGoingAway)
     /// @param reason       Optional human-readable reason (max 123 bytes, truncated if longer)
-    /// @return 0 on success, -ENOTCONN if not connected, -EAGAIN if queue full
-    int send_close(uint16_t status_code,
-                   std::string_view reason = {}) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
+    /// @return SendError::kOk on success, or a specific error code
+    SendError send_close(uint16_t status_code,
+                         std::string_view reason = {}) noexcept {
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
         // Close payload: 2-byte status code + optional reason (max 123 chars per RFC 6455 §5.5)
         size_t reason_len = std::min(reason.size(), size_t{123});
         uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
 
-        if (payload_len > MaxPayload) return -EMSGSIZE;
+        if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
             msg.data[0] = static_cast<uint8_t>(status_code >> 8);
@@ -482,9 +551,9 @@ public:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return -EAGAIN;
+            return SendError::kQueueFull;
         }
-        return 0;
+        return SendError::kOk;
     }
 
     /// Batch-send multiple messages (all-or-nothing semantics).
@@ -496,14 +565,13 @@ public:
     /// @param payloads  Array of {data, len} pairs
     /// @param count     Number of messages
     /// @param opcode    WebSocket opcode for all messages
-    /// @return 0 on success, -EMSGSIZE if any payload exceeds MaxPayload,
-    ///         -ENOTCONN if not connected, -EAGAIN if queue has insufficient space
-    int send_n(const std::span<const uint8_t>* payloads, size_t count,
-               uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return -ENOTCONN;
+    /// @return SendError::kOk on success, or a specific error code
+    SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
+                     uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
         for (size_t i = 0; i < count; ++i) {
-            if (payloads[i].size() > MaxPayload) return -EMSGSIZE;
+            if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
         }
 
         // Write directly into queue slots — no temporary array needed.
@@ -516,9 +584,9 @@ public:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return -EAGAIN;
+            return SendError::kQueueFull;
         }
-        return 0;
+        return SendError::kOk;
     }
 
     // -----------------------------------------------------------------------
