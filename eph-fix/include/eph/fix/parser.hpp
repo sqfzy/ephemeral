@@ -716,13 +716,12 @@ decltype(auto) dispatch(const BasicMessageView<MaxFields>& view, Handler&& handl
     case tag::msg_type::MarketDataRequest:    return handler(msg::MarketDataRequest{}, view);
     case tag::msg_type::MarketDataSnapshot:   return handler(msg::MarketDataSnapshot{}, view);
     case tag::msg_type::MarketDataIncRefresh: return handler(msg::MarketDataIncRefresh{}, view);
-    // Single-char types that also have string_view constants
-    case 'd':                                 return handler(msg::SecurityDefinition{}, view);
-    case 'f':                                 return handler(msg::SecurityStatus{}, view);
-    case 'i':                                 return handler(msg::MassQuote{}, view);
-    case 'Z':                                 return handler(msg::QuoteCancel{}, view);
-    case 'y':                                 return handler(msg::SecurityList{}, view);
-    case 'x':                                 return handler(msg::SecurityListRequest{}, view);
+    case tag::msg_type::SecurityDefinition:   return handler(msg::SecurityDefinition{}, view);
+    case tag::msg_type::SecurityStatus:       return handler(msg::SecurityStatus{}, view);
+    case tag::msg_type::MassQuote:            return handler(msg::MassQuote{}, view);
+    case tag::msg_type::QuoteCancel:          return handler(msg::QuoteCancel{}, view);
+    case tag::msg_type::SecurityList:         return handler(msg::SecurityList{}, view);
+    case tag::msg_type::SecurityListRequest:  return handler(msg::SecurityListRequest{}, view);
     default:                                  return handler(msg::Unknown{}, view);
     }
 }

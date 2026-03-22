@@ -218,7 +218,7 @@ public:
         uint8_t cs = static_cast<uint8_t>(sum & 0xFF);
 
         // Append "10=XXX\x01" (exactly 7 bytes)
-        if (pos_ + 7 > capacity_) { overflow_ = true; return 0; }
+        if (pos_ + kTrailerLen > capacity_) { overflow_ = true; return 0; }
 
         buf_[pos_++] = '1';
         buf_[pos_++] = '0';
@@ -270,8 +270,6 @@ public:
     /// Returns 0 if already overflowed or no space remains.
     [[nodiscard]] size_t remaining_capacity() const noexcept {
         if (overflow_) return 0;
-        // Reserve 7 bytes for "10=XXX\x01" checksum trailer
-        constexpr size_t kTrailerLen = 7;
         if (pos_ + kTrailerLen >= capacity_) return 0;
         return capacity_ - pos_ - kTrailerLen;
     }
@@ -284,6 +282,7 @@ public:
 
 private:
     static constexpr size_t kHeaderReserve = 32;
+    static constexpr size_t kTrailerLen = 7;  // "10=XXX\x01"
 
     uint8_t* buf_;
     size_t   capacity_;
