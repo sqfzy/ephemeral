@@ -1397,3 +1397,119 @@ TEST(FixParser, get_timestamp_wrong_length_returns_nullopt) {
     ASSERT_TRUE(msg.has_value());
     EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
 }
+
+// ===========================================================================
+// dispatch() — type-safe MsgType routing
+// ===========================================================================
+
+TEST(FixDispatch, dispatches_new_order_single) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "55=AAPL\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    bool matched = false;
+    dispatch(*msg, [&](auto tag_type, const MessageView& v) {
+        if constexpr (std::is_same_v<decltype(tag_type), msg::NewOrderSingle>) {
+            matched = true;
+            EXPECT_EQ(v.get(tag::Symbol).value(), "AAPL");
+        }
+    });
+    EXPECT_TRUE(matched);
+}
+
+TEST(FixDispatch, dispatches_execution_report) {
+    auto raw = make_fix_msg("FIX.4.4", "35=8\x01" "17=EXEC1\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    bool matched = false;
+    dispatch(*msg, [&](auto tag_type, const MessageView& v) {
+        if constexpr (std::is_same_v<decltype(tag_type), msg::ExecutionReport>) {
+            matched = true;
+            EXPECT_EQ(v.get(tag::ExecID).value(), "EXEC1");
+        }
+    });
+    EXPECT_TRUE(matched);
+}
+
+TEST(FixDispatch, dispatches_heartbeat) {
+    auto raw = make_fix_msg("FIX.4.4", "35=0\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    bool matched = false;
+    dispatch(*msg, [&](auto tag_type, const MessageView&) {
+        if constexpr (std::is_same_v<decltype(tag_type), msg::Heartbeat>) {
+            matched = true;
+        }
+    });
+    EXPECT_TRUE(matched);
+}
+
+TEST(FixDispatch, unknown_msg_type_dispatches_unknown) {
+    auto raw = make_fix_msg("FIX.4.4", "35=Z\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    bool matched = false;
+    dispatch(*msg, [&](auto tag_type, const MessageView&) {
+        if constexpr (std::is_same_v<decltype(tag_type), msg::Unknown>) {
+            matched = true;
+        }
+    });
+    EXPECT_TRUE(matched);
+}
+
+TEST(FixDispatch, handler_return_value_forwarded) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    int result = dispatch(*msg, [](auto tag_type, const MessageView&) -> int {
+        if constexpr (std::is_same_v<decltype(tag_type), msg::NewOrderSingle>) {
+            return 42;
+        }
+        return 0;
+    });
+    EXPECT_EQ(result, 42);
+}
+
+TEST(FixDispatch, all_known_msg_types_dispatch_correctly) {
+    // Verify each known MsgType dispatches to the correct tag type
+    struct TestCase { char mt; std::string_view expected_type; };
+    std::vector<TestCase> cases = {
+        {'0', "Heartbeat"}, {'1', "TestRequest"}, {'A', "Logon"},
+        {'5', "Logout"}, {'D', "NewOrderSingle"}, {'F', "OrderCancelRequest"},
+        {'G', "OrderCancelReplace"}, {'8', "ExecutionReport"},
+        {'9', "OrderCancelReject"}, {'V', "MarketDataRequest"},
+        {'W', "MarketDataSnapshot"}, {'X', "MarketDataIncRefresh"},
+    };
+
+    for (auto& tc : cases) {
+        std::string body = "35=";
+        body += tc.mt;
+        body += '\x01';
+        auto raw = make_fix_msg("FIX.4.4", body);
+        auto msg = parse(raw.data(), raw.size());
+        ASSERT_TRUE(msg.has_value()) << "Failed to parse MsgType=" << tc.mt;
+
+        std::string_view dispatched = "none";
+        dispatch(*msg, [&](auto tag_type, const MessageView&) {
+            using T = decltype(tag_type);
+            if constexpr (std::is_same_v<T, msg::Heartbeat>)            dispatched = "Heartbeat";
+            else if constexpr (std::is_same_v<T, msg::TestRequest>)     dispatched = "TestRequest";
+            else if constexpr (std::is_same_v<T, msg::Logon>)           dispatched = "Logon";
+            else if constexpr (std::is_same_v<T, msg::Logout>)          dispatched = "Logout";
+            else if constexpr (std::is_same_v<T, msg::NewOrderSingle>)  dispatched = "NewOrderSingle";
+            else if constexpr (std::is_same_v<T, msg::OrderCancelRequest>) dispatched = "OrderCancelRequest";
+            else if constexpr (std::is_same_v<T, msg::OrderCancelReplace>) dispatched = "OrderCancelReplace";
+            else if constexpr (std::is_same_v<T, msg::ExecutionReport>)    dispatched = "ExecutionReport";
+            else if constexpr (std::is_same_v<T, msg::OrderCancelReject>)  dispatched = "OrderCancelReject";
+            else if constexpr (std::is_same_v<T, msg::MarketDataRequest>)  dispatched = "MarketDataRequest";
+            else if constexpr (std::is_same_v<T, msg::MarketDataSnapshot>) dispatched = "MarketDataSnapshot";
+            else if constexpr (std::is_same_v<T, msg::MarketDataIncRefresh>) dispatched = "MarketDataIncRefresh";
+            else if constexpr (std::is_same_v<T, msg::Unknown>)         dispatched = "Unknown";
+        });
+        EXPECT_EQ(dispatched, tc.expected_type) << "MsgType=" << tc.mt;
+    }
+}

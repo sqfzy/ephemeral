@@ -530,6 +530,72 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// Tag types for type-safe dispatch
+// ---------------------------------------------------------------------------
+
+/// Tag types — empty structs used for compile-time MsgType discrimination.
+/// Mirrors the eph::itch::msg pattern for zero-overhead dispatch.
+namespace msg {
+struct Heartbeat {};
+struct TestRequest {};
+struct Logon {};
+struct Logout {};
+struct NewOrderSingle {};
+struct OrderCancelRequest {};
+struct OrderCancelReplace {};
+struct ExecutionReport {};
+struct OrderCancelReject {};
+struct MarketDataRequest {};
+struct MarketDataSnapshot {};
+struct MarketDataIncRefresh {};
+struct Unknown {};
+} // namespace msg
+
+// ---------------------------------------------------------------------------
+// dispatch() — type-safe visitor for FIX messages
+// ---------------------------------------------------------------------------
+
+/// Dispatch a parsed FIX message to a handler using tag-type overload resolution.
+///
+/// The handler is invoked as `handler(Tag{}, view)` where:
+///   - Tag is one of the msg:: structs above (compile-time MsgType)
+///   - view is the parsed MessageView (by const reference)
+///
+/// Usage with overload set:
+///   struct MyHandler {
+///       void operator()(fix::msg::NewOrderSingle, const fix::MessageView& v) { ... }
+///       void operator()(fix::msg::ExecutionReport, const fix::MessageView& v) { ... }
+///       template <typename T>
+///       void operator()(T, const fix::MessageView&) { /* default: ignore */ }
+///   };
+///   fix::dispatch(msg_view, MyHandler{});
+///
+/// If MsgType is missing or unrecognized, msg::Unknown is dispatched.
+template <typename Handler>
+decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
+    auto mt = view.msg_type();
+    if (!mt || mt->empty()) {
+        return handler(msg::Unknown{}, view);
+    }
+    char c = (*mt)[0];
+    switch (c) {
+    case tag::msg_type::Heartbeat:            return handler(msg::Heartbeat{}, view);
+    case tag::msg_type::TestRequest:          return handler(msg::TestRequest{}, view);
+    case tag::msg_type::Logon:                return handler(msg::Logon{}, view);
+    case tag::msg_type::Logout:               return handler(msg::Logout{}, view);
+    case tag::msg_type::NewOrderSingle:       return handler(msg::NewOrderSingle{}, view);
+    case tag::msg_type::OrderCancelRequest:   return handler(msg::OrderCancelRequest{}, view);
+    case tag::msg_type::OrderCancelReplace:   return handler(msg::OrderCancelReplace{}, view);
+    case tag::msg_type::ExecutionReport:      return handler(msg::ExecutionReport{}, view);
+    case tag::msg_type::OrderCancelReject:    return handler(msg::OrderCancelReject{}, view);
+    case tag::msg_type::MarketDataRequest:    return handler(msg::MarketDataRequest{}, view);
+    case tag::msg_type::MarketDataSnapshot:   return handler(msg::MarketDataSnapshot{}, view);
+    case tag::msg_type::MarketDataIncRefresh: return handler(msg::MarketDataIncRefresh{}, view);
+    default:                                  return handler(msg::Unknown{}, view);
+    }
+}
+
 } // namespace eph::fix
 
 /// std::formatter specialization for fix::ParseError.
