@@ -746,6 +746,23 @@ TEST(JsonEscape, PassthroughUtf8) {
     EXPECT_EQ(result, "Hello \xe4\xb8\x96\xe7\x95\x8c");
 }
 
+TEST(JsonEscape, AllEscapeCharsString) {
+    // String consisting entirely of characters that need escaping
+    std::string input(100, '"');
+    auto result = detail::json_escape(input);
+    EXPECT_EQ(result.size(), 200u); // each " becomes \"
+    for (size_t i = 0; i < result.size(); i += 2) {
+        EXPECT_EQ(result[i], '\\');
+        EXPECT_EQ(result[i + 1], '"');
+    }
+}
+
+TEST(JsonEscape, MixedAsciiAndUtf8) {
+    // Mix of escaped ASCII and UTF-8 multibyte sequences
+    auto result = detail::json_escape("key=\"\xe4\xb8\xad\xe6\x96\x87\"");
+    EXPECT_EQ(result, "key=\\\"\xe4\xb8\xad\xe6\x96\x87\\\"");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TransportConfig::to_json() escaping
 // ─────────────────────────────────────────────────────────────────────────────
