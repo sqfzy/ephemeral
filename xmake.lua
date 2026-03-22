@@ -96,6 +96,8 @@ local bench_module_deps = {
     containers = "eph-containers",
     utils      = "eph-utils",
     net        = "eph-net",
+    itch       = "eph-itch",
+    fix        = "eph-fix",
     dpdk       = "eph-dpdk",
 }
 

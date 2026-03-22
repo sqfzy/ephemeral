@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -136,28 +137,26 @@ resolve_hostname(const std::string& host) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// connect()
+// Internal: shared connection setup logic
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One-shot connection helper: Platform → MAC → ARP → TcpSession → Transport.
-///
-/// DNS resolution must happen BEFORE EAL initialization (because DPDK may
-/// take over the NIC, disabling the kernel network stack).  Pass the
-/// pre-resolved server IPv4 as `server_ip` (host byte order).
-///
-/// @tparam TransportType  Transport alias — defaults to `DpdkTransport`
-///                        (512-byte payload, 1024-deep queue).  Use
-///                        `DpdkLargeTransport` for bulk data, etc.
-/// @param cfg             Connector configuration (platform, IPs, ports)
-/// @param transport_cfg   Generic transport config (TLS, WS, reconnect)
-/// @param server_ip       Pre-resolved server IPv4 in host byte order
-/// @return ConnectResult on success, error string on failure
-template <typename TransportType = DpdkTransport>
-std::expected<ConnectResult<TransportType>, std::string>
-connect(const ConnectorConfig& cfg,
-        const TransportConfig& transport_cfg,
-        uint32_t server_ip) {
+namespace detail {
 
+/// Intermediate products from prepare_connection(), consumed by connect()
+/// to create the Transport and (optionally) return MAC addresses.
+struct ConnectionSetup {
+    rte_ether_addr src_mac;
+    rte_ether_addr dst_mac;
+    std::function<std::expected<std::unique_ptr<TcpSession<>>, std::string>()> tcp_factory;
+};
+
+/// Shared logic: validate config → get MAC → parse IPs → ARP → ephemeral port
+/// → build TcpConfig + factory.  Used by both connect() overloads.
+inline std::expected<ConnectionSetup, std::string>
+prepare_connection(const ConnectorConfig& cfg,
+                   const TransportConfig& transport_cfg,
+                   uint32_t server_ip,
+                   rte_mempool* mempool) {
     // Validate required fields
     if (cfg.local_ip.empty()) {
         return std::unexpected("ConnectorConfig: local_ip is required");
@@ -168,131 +167,6 @@ connect(const ConnectorConfig& cfg,
     if (server_ip == 0) {
         return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
     }
-
-    SPDLOG_DEBUG("dpdk::connect: local={}, gateway={}, server={}",
-                 cfg.local_ip, cfg.gateway_ip,
-                 net::format_ipv4(server_ip).data());
-
-    // 1. Platform
-    auto platform = Platform::create(cfg.platform);
-    if (!platform) {
-        return std::unexpected(
-            std::format("Platform creation failed: {}", platform.error()));
-    }
-
-    // 2. Source MAC
-    rte_ether_addr src_mac{};
-    if (rte_eth_macaddr_get(cfg.platform.port_id, &src_mac) != 0) {
-        return std::unexpected(
-            std::format("Failed to get MAC for port {}", cfg.platform.port_id));
-    }
-
-    // 3. Parse IPs
-    uint32_t local_ip   = net::parse_ipv4(cfg.local_ip.c_str());
-    uint32_t gateway_ip = net::parse_ipv4(cfg.gateway_ip.c_str());
-    if (local_ip == 0) {
-        return std::unexpected(
-            std::format("Invalid local_ip: '{}'", cfg.local_ip));
-    }
-    if (gateway_ip == 0) {
-        return std::unexpected(
-            std::format("Invalid gateway_ip: '{}'", cfg.gateway_ip));
-    }
-
-    // 4. ARP resolve gateway
-    auto arp_result = arp::resolve(
-        cfg.platform.port_id, cfg.rx_queue_id, platform->mempool(),
-        src_mac, local_ip, gateway_ip, cfg.arp_timeout);
-    if (!arp_result) {
-        return std::unexpected(
-            std::format("ARP resolution failed: {}", arp_result.error()));
-    }
-    rte_ether_addr dst_mac = *arp_result;
-
-    // 5. Ephemeral source port
-    uint16_t src_port = cfg.local_port;
-    if (src_port == 0) {
-        uint16_t rnd;
-        RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
-        src_port = 49152 + (rnd % 16384);
-        SPDLOG_DEBUG("dpdk::connect: ephemeral port {}", src_port);
-    }
-
-    // 6. TCP config + factory
-    TcpConfig tcp_cfg{
-        .tuple = {
-            .src_ip   = local_ip,
-            .dst_ip   = server_ip,
-            .src_port = src_port,
-            .dst_port = transport_cfg.remote_port,
-        },
-        .src_mac     = src_mac,
-        .dst_mac     = dst_mac,
-        .port_id     = cfg.platform.port_id,
-        .tx_queue_id = cfg.tx_queue_id,
-        .rx_queue_id = cfg.rx_queue_id,
-    };
-
-    auto* mempool = platform->mempool();
-    auto connect_timeout = cfg.connect_timeout;
-
-    auto tcp_factory = [tcp_cfg, mempool, connect_timeout]()
-        -> std::expected<std::unique_ptr<TcpSession<>>, std::string> {
-        auto tcp = std::make_unique<TcpSession<>>(tcp_cfg, mempool);
-        auto r = tcp->connect(connect_timeout);
-        if (!r) return std::unexpected(r.error());
-        return tcp;
-    };
-
-    // 7. Create transport (TCP + TLS + WS handshake)
-    auto transport = TransportType::create(
-        std::move(tcp_factory), transport_cfg);
-    if (!transport) {
-        return std::unexpected(
-            std::format("Transport creation failed: {}", transport.error().message()));
-    }
-
-    SPDLOG_DEBUG("dpdk::connect: connection established");
-
-    return ConnectResult<TransportType>{
-        .platform    = std::move(*platform),
-        .transport   = std::move(*transport),
-        .local_mac   = src_mac,
-        .gateway_mac = dst_mac,
-    };
-}
-
-/// Connect using an existing Platform instance (for multi-connection scenarios).
-///
-/// Reuses an already-initialized Platform instead of creating a new one.
-/// This is useful when establishing multiple connections on the same NIC port,
-/// since Platform holds the mempool and port configuration that should be
-/// shared across connections.
-///
-/// @param platform         Already-initialized Platform (must outlive the Transport)
-/// @param cfg              Connector configuration (local_ip, gateway_ip, etc.)
-/// @param transport_cfg    Generic transport config (TLS, WS, reconnect)
-/// @param server_ip        Pre-resolved server IPv4 in host byte order
-template <typename TransportType = DpdkTransport>
-std::expected<std::unique_ptr<TransportType>, std::string>
-connect(Platform& platform,
-        const ConnectorConfig& cfg,
-        const TransportConfig& transport_cfg,
-        uint32_t server_ip) {
-
-    if (cfg.local_ip.empty()) {
-        return std::unexpected("ConnectorConfig: local_ip is required");
-    }
-    if (cfg.gateway_ip.empty()) {
-        return std::unexpected("ConnectorConfig: gateway_ip is required");
-    }
-    if (server_ip == 0) {
-        return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
-    }
-
-    SPDLOG_DEBUG("dpdk::connect(platform&): local={}, gateway={}, server={}",
-                 cfg.local_ip, cfg.gateway_ip,
-                 net::format_ipv4(server_ip).data());
 
     // Source MAC
     rte_ether_addr src_mac{};
@@ -313,7 +187,7 @@ connect(Platform& platform,
 
     // ARP resolve gateway
     auto arp_result = arp::resolve(
-        cfg.platform.port_id, cfg.rx_queue_id, platform.mempool(),
+        cfg.platform.port_id, cfg.rx_queue_id, mempool,
         src_mac, local_ip, gateway_ip, cfg.arp_timeout);
     if (!arp_result) {
         return std::unexpected(
@@ -345,7 +219,6 @@ connect(Platform& platform,
         .rx_queue_id = cfg.rx_queue_id,
     };
 
-    auto* mempool = platform.mempool();
     auto connect_timeout = cfg.connect_timeout;
 
     auto tcp_factory = [tcp_cfg, mempool, connect_timeout]()
@@ -356,9 +229,102 @@ connect(Platform& platform,
         return tcp;
     };
 
+    return ConnectionSetup{
+        .src_mac     = src_mac,
+        .dst_mac     = dst_mac,
+        .tcp_factory = std::move(tcp_factory),
+    };
+}
+
+} // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// connect()
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One-shot connection helper: Platform → MAC → ARP → TcpSession → Transport.
+///
+/// DNS resolution must happen BEFORE EAL initialization (because DPDK may
+/// take over the NIC, disabling the kernel network stack).  Pass the
+/// pre-resolved server IPv4 as `server_ip` (host byte order).
+///
+/// @tparam TransportType  Transport alias — defaults to `DpdkTransport`
+///                        (512-byte payload, 1024-deep queue).  Use
+///                        `DpdkLargeTransport` for bulk data, etc.
+/// @param cfg             Connector configuration (platform, IPs, ports)
+/// @param transport_cfg   Generic transport config (TLS, WS, reconnect)
+/// @param server_ip       Pre-resolved server IPv4 in host byte order
+/// @return ConnectResult on success, error string on failure
+template <typename TransportType = DpdkTransport>
+std::expected<ConnectResult<TransportType>, std::string>
+connect(const ConnectorConfig& cfg,
+        const TransportConfig& transport_cfg,
+        uint32_t server_ip) {
+
+    SPDLOG_DEBUG("dpdk::connect: local={}, gateway={}, server={}",
+                 cfg.local_ip, cfg.gateway_ip,
+                 net::format_ipv4(server_ip).data());
+
+    // 1. Platform
+    auto platform = Platform::create(cfg.platform);
+    if (!platform) {
+        return std::unexpected(
+            std::format("Platform creation failed: {}", platform.error()));
+    }
+
+    // 2. Shared setup: MAC → IPs → ARP → TCP factory
+    auto setup = detail::prepare_connection(
+        cfg, transport_cfg, server_ip, platform->mempool());
+    if (!setup) return std::unexpected(setup.error());
+
+    // 3. Create transport (TCP + TLS + WS handshake)
+    auto transport = TransportType::create(
+        std::move(setup->tcp_factory), transport_cfg);
+    if (!transport) {
+        return std::unexpected(
+            std::format("Transport creation failed: {}", transport.error().message()));
+    }
+
+    SPDLOG_DEBUG("dpdk::connect: connection established");
+
+    return ConnectResult<TransportType>{
+        .platform    = std::move(*platform),
+        .transport   = std::move(*transport),
+        .local_mac   = setup->src_mac,
+        .gateway_mac = setup->dst_mac,
+    };
+}
+
+/// Connect using an existing Platform instance (for multi-connection scenarios).
+///
+/// Reuses an already-initialized Platform instead of creating a new one.
+/// This is useful when establishing multiple connections on the same NIC port,
+/// since Platform holds the mempool and port configuration that should be
+/// shared across connections.
+///
+/// @param platform         Already-initialized Platform (must outlive the Transport)
+/// @param cfg              Connector configuration (local_ip, gateway_ip, etc.)
+/// @param transport_cfg    Generic transport config (TLS, WS, reconnect)
+/// @param server_ip        Pre-resolved server IPv4 in host byte order
+template <typename TransportType = DpdkTransport>
+std::expected<std::unique_ptr<TransportType>, std::string>
+connect(Platform& platform,
+        const ConnectorConfig& cfg,
+        const TransportConfig& transport_cfg,
+        uint32_t server_ip) {
+
+    SPDLOG_DEBUG("dpdk::connect(platform&): local={}, gateway={}, server={}",
+                 cfg.local_ip, cfg.gateway_ip,
+                 net::format_ipv4(server_ip).data());
+
+    // Shared setup: MAC → IPs → ARP → TCP factory
+    auto setup = detail::prepare_connection(
+        cfg, transport_cfg, server_ip, platform.mempool());
+    if (!setup) return std::unexpected(setup.error());
+
     // Create transport (TCP + TLS + WS handshake)
     auto transport = TransportType::create(
-        std::move(tcp_factory), transport_cfg);
+        std::move(setup->tcp_factory), transport_cfg);
     if (!transport) {
         return std::unexpected(
             std::format("Transport creation failed: {}", transport.error().message()));

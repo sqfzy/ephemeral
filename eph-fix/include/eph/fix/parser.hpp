@@ -23,6 +23,7 @@ enum class ParseError : uint8_t {
     kIncomplete,        ///< No complete message found (missing CheckSum tag)
     kInvalidFormat,     ///< Missing BeginString or BodyLength, or malformed tag=value
     kChecksumMismatch,  ///< Computed checksum does not match 10=XXX field
+    kFieldOverflow,     ///< Message contains more fields than kMaxFields capacity
 };
 
 /// Human-readable name for ParseError.
@@ -31,6 +32,7 @@ constexpr std::string_view parse_error_name(ParseError e) noexcept {
     case ParseError::kIncomplete:       return "incomplete";
     case ParseError::kInvalidFormat:    return "invalid format";
     case ParseError::kChecksumMismatch: return "checksum mismatch";
+    case ParseError::kFieldOverflow:   return "field overflow";
     }
     return "unknown";
 }
@@ -316,8 +318,7 @@ parse(const uint8_t* data, size_t len) noexcept {
         ++bp; // skip SOH
 
         if (!view.push(field_tag, val)) {
-            // Too many fields -- silently stop parsing extra fields
-            break;
+            return std::unexpected(ParseError::kFieldOverflow);
         }
     }
 

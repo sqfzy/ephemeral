@@ -144,6 +144,21 @@ TEST(FixParser, for_each_iterates_all_fields) {
     EXPECT_EQ(count, 3u);
 }
 
+TEST(FixParser, parse_field_overflow_returns_error) {
+    // Build a body with more than kMaxFields (128) fields
+    std::string body;
+    body += "35=D\x01";
+    for (int i = 0; i < 128; ++i) {
+        // Use tags 5000+ to avoid collisions with standard tags
+        body += std::to_string(5000 + i) + "=val" + std::to_string(i) + '\x01';
+    }
+    // That's 129 fields total (35=D plus 128 extra), which exceeds kMaxFields=128
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kFieldOverflow);
+}
+
 TEST(FixParser, verify_checksum_valid) {
     std::string body = "35=D\x01" "55=AAPL\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
@@ -266,6 +281,19 @@ TEST(FixFramer, decode_bad_start) {
     std::string bad = "X=FIX.4.4\x01";
     auto result = FixFramer::decode(
         reinterpret_cast<const uint8_t*>(bad.data()), bad.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
+}
+
+TEST(FixFramer, decode_checksum_mismatch) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    // Corrupt a byte in the body to create checksum mismatch
+    // (the checksum field itself remains structurally valid)
+    for (size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == 'A') { raw[i] = 'Z'; break; }
+    }
+    auto result = FixFramer::decode(raw.data(), raw.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
 }
