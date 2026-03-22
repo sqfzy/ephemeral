@@ -1274,3 +1274,97 @@ TEST(TransportStats, ToJsonIncludesTlsSeqFields) {
     EXPECT_NE(json.find("\"tls_seq_limit\":1000"), std::string::npos);
     EXPECT_NE(json.find("\"tls_write_seq_usage\":"), std::string::npos);
 }
+
+// ===========================================================================
+// TransportStats delta (operator-)
+// ===========================================================================
+
+TEST(TransportStats, DeltaSubtractsCounters) {
+    TransportStats s1{};
+    s1.tx_packets = 100;
+    s1.tx_bytes = 5000;
+    s1.rx_packets = 80;
+    s1.rx_bytes = 4000;
+    s1.tx_dropped = 2;
+    s1.rx_dropped = 1;
+    s1.encrypt_errors = 0;
+    s1.decrypt_errors = 0;
+    s1.queue_full_count = 3;
+    s1.uptime_ns = 1'000'000'000;
+
+    TransportStats s2{};
+    s2.tx_packets = 250;
+    s2.tx_bytes = 12000;
+    s2.rx_packets = 200;
+    s2.rx_bytes = 10000;
+    s2.tx_dropped = 5;
+    s2.rx_dropped = 2;
+    s2.encrypt_errors = 1;
+    s2.decrypt_errors = 0;
+    s2.queue_full_count = 7;
+    s2.uptime_ns = 3'000'000'000;
+
+    auto d = s2 - s1;
+    EXPECT_EQ(d.tx_packets, 150u);
+    EXPECT_EQ(d.tx_bytes, 7000u);
+    EXPECT_EQ(d.rx_packets, 120u);
+    EXPECT_EQ(d.rx_bytes, 6000u);
+    EXPECT_EQ(d.tx_dropped, 3u);
+    EXPECT_EQ(d.rx_dropped, 1u);
+    EXPECT_EQ(d.encrypt_errors, 1u);
+    EXPECT_EQ(d.queue_full_count, 4u);
+    EXPECT_EQ(d.uptime_ns, 2'000'000'000u);
+}
+
+TEST(TransportStats, DeltaRateHelpers) {
+    TransportStats s1{};
+    s1.tx_packets = 0;
+    s1.uptime_ns = 0;
+
+    TransportStats s2{};
+    s2.tx_packets = 1000;
+    s2.tx_bytes = 50000;
+    s2.rx_packets = 800;
+    s2.rx_bytes = 40000;
+    s2.uptime_ns = 1'000'000'000;  // 1 second window
+
+    auto d = s2 - s1;
+    EXPECT_DOUBLE_EQ(d.tx_pps(), 1000.0);
+    EXPECT_DOUBLE_EQ(d.rx_pps(), 800.0);
+    EXPECT_DOUBLE_EQ(d.tx_bps(), 50000.0);
+    EXPECT_DOUBLE_EQ(d.rx_bps(), 40000.0);
+}
+
+TEST(TransportStats, DeltaPreservesMetadataFromLater) {
+    TransportStats s1{};
+    s1.remote_ip = "1.2.3.4";
+    s1.tls_write_seq = 10;
+    s1.handshake_ns = 500'000;
+
+    TransportStats s2{};
+    s2.remote_ip = "5.6.7.8";
+    s2.tls_write_seq = 42;
+    s2.tls_read_seq = 7;
+    s2.tls_seq_limit = 1000;
+    s2.handshake_ns = 300'000;
+    s2.tx_queue_hwm = 16;
+
+    auto d = s2 - s1;
+    EXPECT_EQ(d.remote_ip, "5.6.7.8");
+    EXPECT_EQ(d.tls_write_seq, 42u);
+    EXPECT_EQ(d.tls_read_seq, 7u);
+    EXPECT_EQ(d.handshake_ns, 300'000u);
+    EXPECT_EQ(d.tx_queue_hwm, 16u);
+}
+
+TEST(TransportStats, DeltaIdentityWhenSameSnapshot) {
+    TransportStats s{};
+    s.tx_packets = 100;
+    s.rx_packets = 80;
+    s.uptime_ns = 5'000'000'000;
+
+    auto d = s - s;
+    EXPECT_EQ(d.tx_packets, 0u);
+    EXPECT_EQ(d.rx_packets, 0u);
+    EXPECT_EQ(d.uptime_ns, 0u);
+}

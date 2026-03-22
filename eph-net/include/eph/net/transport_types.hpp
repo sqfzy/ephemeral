@@ -686,6 +686,55 @@ struct TransportStats {
         return std::chrono::nanoseconds{uptime_ns};
     }
 
+    /// Compute the delta between two snapshots for windowed metrics.
+    ///
+    /// Usage:
+    ///   auto s1 = transport.stats();
+    ///   // ... wait ...
+    ///   auto s2 = transport.stats();
+    ///   auto delta = s2 - s1;  // delta.tx_pps() gives window-average rate
+    ///
+    /// Counter fields (packets, bytes, errors) are subtracted.
+    /// HWM fields take the later snapshot's value.
+    /// Connection metadata (remote_ip, TLS seq, RTT, handshake timings)
+    /// comes from the later snapshot (rhs is 'this', lhs is 'earlier').
+    [[nodiscard]] TransportStats operator-(const TransportStats& earlier) const noexcept {
+        TransportStats d;
+        d.tx_packets        = tx_packets        - earlier.tx_packets;
+        d.tx_bytes          = tx_bytes          - earlier.tx_bytes;
+        d.tx_text_packets   = tx_text_packets   - earlier.tx_text_packets;
+        d.tx_text_bytes     = tx_text_bytes     - earlier.tx_text_bytes;
+        d.tx_dropped        = tx_dropped        - earlier.tx_dropped;
+        d.rx_packets        = rx_packets        - earlier.rx_packets;
+        d.rx_bytes          = rx_bytes          - earlier.rx_bytes;
+        d.rx_text_packets   = rx_text_packets   - earlier.rx_text_packets;
+        d.rx_text_bytes     = rx_text_bytes     - earlier.rx_text_bytes;
+        d.rx_dropped        = rx_dropped        - earlier.rx_dropped;
+        d.encrypt_errors    = encrypt_errors    - earlier.encrypt_errors;
+        d.decrypt_errors    = decrypt_errors    - earlier.decrypt_errors;
+        d.queue_full_count  = queue_full_count  - earlier.queue_full_count;
+        d.ws_pings_received = ws_pings_received - earlier.ws_pings_received;
+        d.ws_pongs_sent     = ws_pongs_sent     - earlier.ws_pongs_sent;
+        d.pong_timeouts     = pong_timeouts     - earlier.pong_timeouts;
+        d.reconnect_count   = reconnect_count   - earlier.reconnect_count;
+        // HWM: take current snapshot values (not delta)
+        d.tx_queue_hwm      = tx_queue_hwm;
+        d.rx_queue_hwm      = rx_queue_hwm;
+        // Uptime delta = window duration
+        d.uptime_ns         = uptime_ns         - earlier.uptime_ns;
+        // Connection metadata from current snapshot
+        d.handshake_ns      = handshake_ns;
+        d.tcp_connect_ns    = tcp_connect_ns;
+        d.tls_handshake_ns  = tls_handshake_ns;
+        d.ws_upgrade_ns     = ws_upgrade_ns;
+        d.remote_ip         = remote_ip;
+        d.rtt               = rtt;
+        d.tls_write_seq     = tls_write_seq;
+        d.tls_read_seq      = tls_read_seq;
+        d.tls_seq_limit     = tls_seq_limit;
+        return d;
+    }
+
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
         double uptime_s = static_cast<double>(uptime_ns) / 1e9;
