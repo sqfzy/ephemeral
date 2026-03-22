@@ -123,6 +123,11 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
   };
 
   std::ifstream cpuinfo("/proc/cpuinfo");
+  if (!cpuinfo) {
+    SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
+                             "returning simplified topology");
+    // Fall through to the non-Linux fallback below
+  }
   CpuTopologyInfo element{};
   unsigned valid_mask = 0;
   // Track processor IDs separately for ARM fallback (no physical id / core id)
@@ -253,6 +258,11 @@ inline double get_cpu_base_frequency() {
   // Parse "model name" line, looking for "@ X.XX GHz" pattern.
   // Example: "model name\t: Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz"
   std::ifstream cpuinfo("/proc/cpuinfo");
+  if (!cpuinfo) {
+    SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
+                             "using fallback frequency 1.0 GHz");
+    return 1.0;
+  }
   for (std::string line; getline(cpuinfo, line);) {
     if (line.find("model name") == std::string::npos) continue;
 
