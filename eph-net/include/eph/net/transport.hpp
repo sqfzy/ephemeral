@@ -1389,15 +1389,14 @@ private:
                 }
             }
 
-            // Drain: consume as many messages as available, up to kMaxBatch
-            int n = 0;
-            while (n < kMaxBatch) {
-                bool got = tx_queue_.try_consume([&](TxMsg& msg) {
-                    batch[n] = msg;
-                    n++;
-                });
-                if (!got) break;
-            }
+            // Drain: consume as many messages as available, up to kMaxBatch.
+            // Uses try_consume_n for amortized atomic operations (single
+            // head update for the entire batch vs one per message).
+            int n = static_cast<int>(tx_queue_.try_consume_n(
+                static_cast<size_t>(kMaxBatch),
+                [&](TxMsg& msg, [[maybe_unused]] size_t idx) {
+                    batch[idx] = msg;
+                }));
 
             if (n == 0) {
                 // If RX signaled a graceful close and the queue is now
