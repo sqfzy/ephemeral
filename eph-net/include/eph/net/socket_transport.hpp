@@ -557,7 +557,11 @@ public:
         }
 
         SPDLOG_LOGGER_DEBUG(detail::socket_logger(), "Graceful shutdown");
-        ::shutdown(fd_, SHUT_WR);
+        if (::shutdown(fd_, SHUT_WR) != 0) {
+            SPDLOG_LOGGER_WARN(detail::socket_logger(),
+                "shutdown(SHUT_WR) failed: errno={} ({})",
+                errno, std::strerror(errno));
+        }
 
         if (state_ == TcpState::Established) {
             state_ = TcpState::FinWait1;
@@ -577,7 +581,11 @@ public:
         l.l_onoff = 1;
         l.l_linger = 0;
         if (fd_ >= 0) {
-            ::setsockopt(fd_, SOL_SOCKET, SO_LINGER, &l, sizeof(l));
+            if (::setsockopt(fd_, SOL_SOCKET, SO_LINGER, &l, sizeof(l)) != 0) {
+                SPDLOG_LOGGER_WARN(detail::socket_logger(),
+                    "setsockopt(SO_LINGER) for RST failed: errno={} ({})",
+                    errno, std::strerror(errno));
+            }
         }
         close_fd();
     }
