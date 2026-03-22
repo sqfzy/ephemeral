@@ -267,6 +267,16 @@ struct TransportConfig {
                 return "extra_headers must end with \\r\\n";
             }
         }
+        // Sec-WebSocket-Protocol is interpolated directly into the HTTP
+        // Upgrade request.  CR/LF in the value would allow HTTP header
+        // injection (CWE-113), so reject them early.
+        if (!ws_subprotocol.empty()) {
+            for (char c : ws_subprotocol) {
+                if (c == '\r' || c == '\n') {
+                    return "ws_subprotocol must not contain CR or LF (header injection)";
+                }
+            }
+        }
         return {};
     }
 };

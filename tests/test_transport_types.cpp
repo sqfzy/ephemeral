@@ -164,6 +164,29 @@ TEST_F(TransportConfigValidateTest, EmptyExtraHeadersPasses) {
     EXPECT_TRUE(cfg.validate().empty());
 }
 
+TEST_F(TransportConfigValidateTest, SubprotocolWithCRLFFailsHeaderInjection) {
+    auto cfg = valid_config();
+    cfg.ws_subprotocol = "valid-proto";
+    EXPECT_TRUE(cfg.validate().empty());
+
+    // CR injection
+    cfg.ws_subprotocol = "proto\r\nX-Injected: evil";
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("header injection"), std::string_view::npos);
+
+    // LF only
+    cfg.ws_subprotocol = "proto\nevil";
+    EXPECT_FALSE(cfg.validate().empty());
+
+    // CR only
+    cfg.ws_subprotocol = "proto\revil";
+    EXPECT_FALSE(cfg.validate().empty());
+
+    // Empty subprotocol is fine
+    cfg.ws_subprotocol = "";
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TransportStats helpers
 // ─────────────────────────────────────────────────────────────────────────────
