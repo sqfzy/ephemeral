@@ -1,6 +1,7 @@
 /// @file test_transport_types.cpp
 /// Unit tests for transport_types.hpp: SendError, TransportConfig::validate(),
-/// TransportStats helpers, enum formatters, and close code validation.
+/// TransportStats helpers, enum formatters, close code validation, and
+/// ReceivedMessage close frame accessors.
 
 #include <format>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include "eph/net/transport_types.hpp"
 #include "eph/net/websocket.hpp"
+#include "eph/net/socket_transport.hpp"
 
 using namespace eph::net;
 
@@ -456,4 +458,92 @@ TEST(RttStats, FormatterProducesOutput) {
     auto s2 = std::format("{}", rtt);
     EXPECT_NE(s2.find("p50="), std::string::npos);
     EXPECT_NE(s2.find("p99="), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReceivedMessage close frame accessors
+// ─────────────────────────────────────────────────────────────────────────────
+
+using RecvMsg = eph::net::SocketWssTransport::ReceivedMessage;
+
+TEST(ReceivedMessage, CloseCodeExtractsStatusCode) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kClose;
+    // Close payload: 2-byte big-endian status code + reason
+    msg.data = {0x03, 0xE8};  // 1000 = Normal Closure
+    EXPECT_TRUE(msg.is_close());
+    EXPECT_EQ(msg.close_code(), 1000);
+}
+
+TEST(ReceivedMessage, CloseCodeReturnsZeroForNonCloseFrame) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kBinary;
+    msg.data = {0x03, 0xE8};
+    EXPECT_FALSE(msg.is_close());
+    EXPECT_EQ(msg.close_code(), 0);
+}
+
+TEST(ReceivedMessage, CloseCodeReturnsZeroForShortPayload) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kClose;
+    msg.data = {0x03};  // Only 1 byte — too short
+    EXPECT_EQ(msg.close_code(), 0);
+}
+
+TEST(ReceivedMessage, CloseCodeReturnsZeroForEmptyPayload) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kClose;
+    EXPECT_EQ(msg.close_code(), 0);
+}
+
+TEST(ReceivedMessage, CloseReasonExtractsString) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kClose;
+    // 1001 = Going Away, reason = "server shutdown"
+    msg.data = {0x03, 0xE9, 's', 'e', 'r', 'v', 'e', 'r', ' ',
+                's', 'h', 'u', 't', 'd', 'o', 'w', 'n'};
+    EXPECT_EQ(msg.close_code(), 1001);
+    EXPECT_EQ(msg.close_reason(), "server shutdown");
+}
+
+TEST(ReceivedMessage, CloseReasonEmptyWhenNoReasonPresent) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kClose;
+    msg.data = {0x03, 0xE8};  // Code only, no reason
+    EXPECT_EQ(msg.close_reason(), "");
+}
+
+TEST(ReceivedMessage, CloseReasonEmptyForNonCloseFrame) {
+    RecvMsg msg;
+    msg.opcode = ws::opcode::kText;
+    msg.data = {0x03, 0xE8, 'h', 'i'};
+    EXPECT_EQ(msg.close_reason(), "");
+}
+
+TEST(ReceivedMessage, TextAndBinaryTypeChecks) {
+    RecvMsg text_msg;
+    text_msg.opcode = ws::opcode::kText;
+    text_msg.data = {'h', 'e', 'l', 'l', 'o'};
+    EXPECT_TRUE(text_msg.is_text());
+    EXPECT_FALSE(text_msg.is_binary());
+    EXPECT_FALSE(text_msg.is_close());
+    EXPECT_EQ(text_msg.text(), "hello");
+
+    RecvMsg bin_msg;
+    bin_msg.opcode = ws::opcode::kBinary;
+    EXPECT_FALSE(bin_msg.is_text());
+    EXPECT_TRUE(bin_msg.is_binary());
+    EXPECT_FALSE(bin_msg.is_close());
+}
+
+TEST(ReceivedMessage, AllStandardCloseCodesRoundtrip) {
+    // Verify various standard close codes encode/decode correctly
+    for (uint16_t code : {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011,
+                          3000, 3999, 4000, 4999}) {
+        RecvMsg msg;
+        msg.opcode = ws::opcode::kClose;
+        msg.data = {static_cast<uint8_t>(code >> 8),
+                    static_cast<uint8_t>(code & 0xFF)};
+        EXPECT_EQ(msg.close_code(), code) << "Failed for code " << code;
+    }
 }

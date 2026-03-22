@@ -477,12 +477,29 @@ public:
             return opcode == ws::opcode::kBinary;
         }
         /// Check if this is a close frame.
+        /// Close frames are delivered to the RX queue when the server sends
+        /// a WebSocket Close frame. Use close_code() and close_reason() to
+        /// extract the status code and reason string from the payload.
         [[nodiscard]] bool is_close() const noexcept {
             return opcode == ws::opcode::kClose;
         }
         /// Return the payload as a string_view (valid only for text messages).
         [[nodiscard]] std::string_view text() const noexcept {
             return {reinterpret_cast<const char*>(data.data()), data.size()};
+        }
+        /// Extract the close status code from a close frame payload.
+        /// Returns 0 if the payload is too short (< 2 bytes) or not a close frame.
+        /// Common codes: 1000 (Normal), 1001 (GoingAway), 1002 (ProtocolError).
+        [[nodiscard]] uint16_t close_code() const noexcept {
+            if (opcode != ws::opcode::kClose || data.size() < 2) return 0;
+            return static_cast<uint16_t>((data[0] << 8) | data[1]);
+        }
+        /// Extract the close reason string from a close frame payload.
+        /// Returns empty string_view if not a close frame or no reason present.
+        [[nodiscard]] std::string_view close_reason() const noexcept {
+            if (opcode != ws::opcode::kClose || data.size() <= 2) return {};
+            return {reinterpret_cast<const char*>(data.data() + 2),
+                    data.size() - 2};
         }
     };
 
@@ -1711,6 +1728,19 @@ private:
                         SPDLOG_LOGGER_WARN(log,
                             "on_close callback threw an exception");
                     }
+                }
+                // Deliver close frame to RX queue so polling-mode users
+                // can detect server-initiated close via try_recv_msg().
+                // The close payload (2-byte code + optional reason) is
+                // accessible via ReceivedMessage::close_code()/close_reason().
+                if (frame->payload && frame->payload_len > 0 &&
+                    frame->payload_len <= MaxPayload) {
+                    rx_queue_.try_produce([&](RxMsg& msg) {
+                        std::memcpy(msg.data, frame->payload,
+                                    frame->payload_len);
+                        msg.len = static_cast<uint16_t>(frame->payload_len);
+                        msg.opcode = ws::opcode::kClose;
+                    });
                 }
                 // RFC 6455 §5.5.1: respond with a Close frame echoing
                 // the status code before shutting down.
