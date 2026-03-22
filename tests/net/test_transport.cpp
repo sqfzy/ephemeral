@@ -1003,6 +1003,68 @@ TEST_F(TransportTest, ReconnectOnPollError) {
     tp->stop();
 }
 
+TEST_F(TransportTest, OnReconnectedCallbackFires) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 3;
+    config.reconnect_interval = 50ms;
+
+    std::atomic<bool> callback_fired{false};
+    int cb_attempt = 0;
+    uint64_t cb_downtime_ns = 0;
+    uint64_t cb_total = 0;
+    std::mutex cb_mtx;
+
+    config.on_reconnected = [&](int attempt, uint64_t downtime_ns, uint64_t total) {
+        std::lock_guard lock(cb_mtx);
+        cb_attempt = attempt;
+        cb_downtime_ns = downtime_ns;
+        cb_total = total;
+        callback_fired.store(true, std::memory_order_relaxed);
+    };
+
+    WsMockTcpTransport* mock_ptr = nullptr;
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        mock_ptr = mock.get();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Trigger disconnect
+    mock_ptr->set_error_on_next_poll("simulated disconnect");
+
+    // Wait for on_reconnected callback
+    bool fired = wait_for([&] {
+        return callback_fired.load(std::memory_order_relaxed);
+    }, 5000ms);
+
+    EXPECT_TRUE(fired);
+
+    {
+        std::lock_guard lock(cb_mtx);
+        EXPECT_EQ(cb_attempt, 1);
+        EXPECT_GT(cb_downtime_ns, 0u);
+        EXPECT_GE(cb_total, 1u);
+    }
+
+    tp->stop();
+}
+
 TEST_F(TransportTest, ReconnectExhaustedStopsTransport) {
     TransportConfig config;
     config.remote_host = "mock.test";

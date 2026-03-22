@@ -280,6 +280,20 @@ struct TransportConfig {
     std::function<bool(int attempt, int max_attempts, std::string_view error)>
         on_reconnect_attempt{};
 
+    /// Reconnect success callback (optional, called from RX thread).
+    ///
+    /// Invoked after a successful reconnection. This is the ideal place to
+    /// replay subscriptions, re-authenticate, or emit reconnection metrics.
+    ///
+    /// @param attempt       Number of attempts needed to reconnect (1-based)
+    /// @param downtime_ns   Duration the connection was down (nanoseconds)
+    /// @param total_reconnects  Cumulative reconnection count (lifetime)
+    ///
+    /// @warning Called from the RX thread — must be non-blocking.
+    ///          The transport is fully connected when this fires; send() is safe.
+    std::function<void(int attempt, uint64_t downtime_ns, uint64_t total_reconnects)>
+        on_reconnected{};
+
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).
     [[nodiscard]] std::string dump() const {
@@ -294,7 +308,8 @@ struct TransportConfig {
             "  ping: interval={}s, pong_timeout={}s\n"
             "  cpu: tx={}, rx={}\n"
             "  callbacks: on_state_change={}, on_message={}, on_close={}, "
-            "on_ping={}, on_pong={}, on_rx_drop={}, on_reconnect_attempt={}",
+            "on_ping={}, on_pong={}, on_rx_drop={}, on_reconnect_attempt={}, "
+            "on_reconnected={}",
             remote_host, remote_port, ws_path,
             ws_subprotocol.empty() ? "(none)" : ws_subprotocol,
             verify_peer, ca_cert_path.empty() ? "(system default)" : ca_cert_path,
@@ -307,7 +322,8 @@ struct TransportConfig {
             static_cast<bool>(on_state_change), static_cast<bool>(on_message),
             static_cast<bool>(on_close), static_cast<bool>(on_ping),
             static_cast<bool>(on_pong), static_cast<bool>(on_rx_drop),
-            static_cast<bool>(on_reconnect_attempt));
+            static_cast<bool>(on_reconnect_attempt),
+            static_cast<bool>(on_reconnected));
     }
 
     /// JSON-formatted config for monitoring system integration.

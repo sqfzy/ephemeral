@@ -1111,6 +1111,9 @@ private:
 
         notify_state(TransportEvent::kDisconnected, config_.remote_host);
 
+        // Record disconnect time for downtime measurement
+        auto disconnect_time = std::chrono::steady_clock::now();
+
         // Signal TX thread to pause: it must not touch crypto_/tcp_
         // while we are reconnecting.
         reconnecting_.store(true, std::memory_order_release);
@@ -1157,12 +1160,29 @@ private:
 
             auto result = do_connect();
             if (result) {
-                reconnect_count_.fetch_add(1, std::memory_order_relaxed);
+                auto total = reconnect_count_.fetch_add(1, std::memory_order_relaxed) + 1;
                 reconnecting_.store(false, std::memory_order_release);
                 notify_state(TransportEvent::kConnected,
                     std::format("reconnect attempt {}", attempt));
+
+                auto downtime_ns = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - disconnect_time).count());
+
                 SPDLOG_LOGGER_INFO(log,
-                    "Reconnected successfully on attempt {}", attempt);
+                    "Reconnected successfully on attempt {} (downtime: {:.1f}ms)",
+                    attempt, static_cast<double>(downtime_ns) / 1e6);
+
+                // Notify application — ideal for replaying subscriptions
+                if (config_.on_reconnected) {
+                    try {
+                        config_.on_reconnected(attempt, downtime_ns,
+                            static_cast<uint64_t>(total));
+                    } catch (...) {
+                        SPDLOG_LOGGER_WARN(log,
+                            "on_reconnected callback threw an exception");
+                    }
+                }
                 return true;
             }
 
