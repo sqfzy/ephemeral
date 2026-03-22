@@ -70,6 +70,7 @@ public:
     }
 
     /// Look up a tag and parse its value as int64_t.
+    /// Returns nullopt if the value overflows int64_t range.
     [[nodiscard]] std::optional<int64_t> get_int(uint32_t t) const noexcept {
         auto sv = get(t);
         if (!sv || sv->empty()) return std::nullopt;
@@ -80,13 +81,32 @@ public:
         if (*p == '-') { neg = true; ++p; }
         if (p == end) return std::nullopt;
 
-        int64_t val = 0;
+        // Parse as uint64_t with overflow detection, then apply sign.
+        // Max positive: 9223372036854775807 (INT64_MAX)
+        // Max negative magnitude: 9223372036854775808 (|INT64_MIN|)
+        constexpr uint64_t kMaxPositive = static_cast<uint64_t>(INT64_MAX);
+        constexpr uint64_t kMaxNegative = kMaxPositive + 1;
+        constexpr uint64_t kOverflowThreshold = UINT64_MAX / 10;
+
+        uint64_t val = 0;
         while (p != end) {
             char c = *p++;
             if (c < '0' || c > '9') return std::nullopt;
-            val = val * 10 + (c - '0');
+            uint64_t digit = static_cast<uint64_t>(c - '0');
+            // Check for multiplication overflow
+            if (val > kOverflowThreshold) return std::nullopt;
+            val *= 10;
+            if (val > UINT64_MAX - digit) return std::nullopt;
+            val += digit;
         }
-        return neg ? -val : val;
+
+        if (neg) {
+            if (val > kMaxNegative) return std::nullopt;
+            // Safe: kMaxNegative == |INT64_MIN|, and -uint64_t is well-defined
+            return static_cast<int64_t>(-val);
+        }
+        if (val > kMaxPositive) return std::nullopt;
+        return static_cast<int64_t>(val);
     }
 
     /// Look up a tag and parse its value as double.

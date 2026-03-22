@@ -419,6 +419,51 @@ TEST(FixBuilder, reset_allows_reuse) {
     EXPECT_EQ(result->get_int(tag::OrderQty).value(), 200);
 }
 
+TEST(FixParser, get_int_overflow_returns_nullopt) {
+    // Value exceeding INT64_MAX should return nullopt, not silently wrap
+    std::string body = "35=D\x01" "58=99999999999999999999\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::Text).has_value());
+}
+
+TEST(FixParser, get_int_negative_overflow_returns_nullopt) {
+    // Value below INT64_MIN should return nullopt
+    std::string body = "35=D\x01" "58=-99999999999999999999\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::Text).has_value());
+}
+
+TEST(FixParser, get_int_int64_max_exact) {
+    // INT64_MAX should parse successfully
+    std::string body = "35=D\x01" "58=9223372036854775807\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_int(tag::Text).value(), INT64_MAX);
+}
+
+TEST(FixParser, get_int_int64_min_exact) {
+    // INT64_MIN should parse successfully
+    std::string body = "35=D\x01" "58=-9223372036854775808\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_int(tag::Text).value(), INT64_MIN);
+}
+
+TEST(FixParser, get_int_one_past_int64_max_returns_nullopt) {
+    // INT64_MAX + 1 should fail
+    std::string body = "35=D\x01" "58=9223372036854775808\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::Text).has_value());
+}
+
 TEST(FixBuilder, int64_max_roundtrip) {
     uint8_t buf[256];
     MessageBuilder b(buf, sizeof(buf));
