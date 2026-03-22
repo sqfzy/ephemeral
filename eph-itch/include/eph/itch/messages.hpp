@@ -222,6 +222,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 inline char market_category(const uint8_t* msg) noexcept {
     return static_cast<char>(msg[19]);
 }
@@ -298,6 +303,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 24), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 inline uint32_t price_raw(const uint8_t* msg) noexcept {
     return read_be32(msg + 32);
 }
@@ -332,6 +342,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 24), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 inline uint32_t price_raw(const uint8_t* msg) noexcept {
     return read_be32(msg + 32);
 }
@@ -343,6 +358,11 @@ inline double price(const uint8_t* msg) noexcept {
 /// 4-character MPID attribution (right-padded with spaces).
 inline std::string_view attribution(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 36), 4};
+}
+
+/// MPID attribution with trailing spaces removed.
+inline std::string_view attribution_trimmed(const uint8_t* msg) noexcept {
+    return trim(attribution(msg));
 }
 
 } // namespace add_order_mpid
@@ -478,6 +498,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 24), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 inline uint32_t price_raw(const uint8_t* msg) noexcept {
     return read_be32(msg + 32);
 }
@@ -504,6 +529,11 @@ inline uint64_t shares(const uint8_t* msg) noexcept {
 
 inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 19), 8};
+}
+
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
 }
 
 inline uint32_t cross_price_raw(const uint8_t* msg) noexcept {
@@ -537,6 +567,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 /// Trading state: 'H'=halted, 'P'=paused, 'Q'=quotation-only, 'T'=trading.
 inline char trading_state(const uint8_t* msg) noexcept {
     return static_cast<char>(msg[19]);
@@ -565,6 +600,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 /// Reg SHO action: '0'=no restriction, '1'=short sale restriction activated,
 ///                 '2'=short sale restriction continued.
 inline char reg_sho_action(const uint8_t* msg) noexcept {
@@ -588,6 +628,11 @@ inline std::string_view mpid(const uint8_t* msg) noexcept {
 /// Stock symbol, right-padded with spaces (8 bytes at offset 15).
 inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 15), 8};
+}
+
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
 }
 
 /// Primary market maker: 'Y' or 'N'.
@@ -673,6 +718,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 /// IPO quotation release time as seconds after midnight (4 bytes BE at offset 19).
 inline uint32_t ipo_quotation_release_time(const uint8_t* msg) noexcept {
     return read_be32(msg + 19);
@@ -706,6 +756,11 @@ namespace luld_auction_collar {
 /// Stock symbol, right-padded with spaces (8 bytes at offset 11).
 inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
 }
 
 /// Auction collar reference price (raw, 4 bytes BE at offset 19).
@@ -754,6 +809,11 @@ namespace operational_halt {
 /// Stock symbol, right-padded with spaces (8 bytes at offset 11).
 inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
 }
 
 /// Market code: 'Q'=NASDAQ, 'B'=BX, 'X'=PSX.
@@ -808,6 +868,11 @@ inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 28), 8};
 }
 
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
+}
+
 /// Far price (raw, 4 bytes BE at offset 36).
 inline uint32_t far_price_raw(const uint8_t* msg) noexcept {
     return read_be32(msg + 36);
@@ -859,6 +924,11 @@ namespace rpii {
 /// Stock symbol, right-padded with spaces (8 bytes at offset 11).
 inline std::string_view stock(const uint8_t* msg) noexcept {
     return {reinterpret_cast<const char*>(msg + 11), 8};
+}
+
+/// Stock symbol with trailing spaces removed.
+inline std::string_view stock_trimmed(const uint8_t* msg) noexcept {
+    return trim(stock(msg));
 }
 
 /// Interest flag: 'B'=buy-side, 'S'=sell-side, 'A'=both, 'N'=none.

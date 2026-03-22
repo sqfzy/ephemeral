@@ -24,6 +24,12 @@
 
 namespace eph::fix {
 
+/// Maximum allowed BodyLength (tag 9) value for FIX message parsing.
+/// Protects against malformed messages with absurdly large BodyLength values
+/// that would otherwise cause the parser/framer to wait for gigabytes of data.
+/// 1 MB is generous for any real FIX message (typical max is ~10 KB).
+inline constexpr size_t kMaxBodyLength = 1 * 1024 * 1024;
+
 namespace detail {
 inline std::shared_ptr<spdlog::logger> fix_parser_logger() {
     static auto l = [] {
@@ -497,6 +503,14 @@ parse(const uint8_t* data, size_t len) noexcept {
             return std::unexpected(ParseError::kInvalidFormat);
         }
         body_length = body_length * 10 + static_cast<size_t>(c - '0');
+    }
+
+    // Reject absurdly large BodyLength to prevent memory exhaustion attacks.
+    if (body_length > kMaxBodyLength) {
+        SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+            "FIX parse: BodyLength {} exceeds maximum allowed {} bytes",
+            body_length, kMaxBodyLength);
+        return std::unexpected(ParseError::kInvalidFormat);
     }
 
     // Body starts after "9=NNN\x01" and runs for body_length bytes.

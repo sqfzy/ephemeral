@@ -101,6 +101,14 @@ public:
         if (p >= end) return std::unexpected(eph::net::FrameError::kIncomplete);
         ++p; // skip SOH after body length value
 
+        // Reject absurdly large BodyLength to prevent memory exhaustion attacks.
+        if (body_length > kMaxBodyLength) {
+            SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                "FIX frame BodyLength {} exceeds maximum allowed {} bytes",
+                body_length, kMaxBodyLength);
+            return std::unexpected(eph::net::FrameError::kInvalidFormat);
+        }
+
         // Body starts here. Total = header + body + checksum ("10=XXX\x01" = 7 bytes)
         size_t header_len = static_cast<size_t>(p - msg);
         size_t total = header_len + body_length + 7;
