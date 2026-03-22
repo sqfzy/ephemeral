@@ -1048,6 +1048,25 @@ private:
                 "Reconnect attempt {} failed: {}",
                 attempt, result.error());
 
+            // Let application decide whether to continue retrying.
+            // Useful for aborting on non-transient errors (e.g., TLS
+            // certificate rejection, HTTP 403).
+            if (config_.on_reconnect_attempt) {
+                try {
+                    bool should_continue = config_.on_reconnect_attempt(
+                        attempt, max_attempts, result.error());
+                    if (!should_continue) {
+                        SPDLOG_LOGGER_INFO(log,
+                            "Reconnect aborted by on_reconnect_attempt "
+                            "callback after attempt {}", attempt);
+                        break;
+                    }
+                } catch (...) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "on_reconnect_attempt callback threw an exception");
+                }
+            }
+
             // Exponential backoff: double delay, capped at max
             current_delay_ms = std::min(current_delay_ms * 2, max_backoff_ms);
         }

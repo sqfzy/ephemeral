@@ -254,6 +254,42 @@ TEST(TransportTypeFormatters, TransportStatsFormats) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// on_reconnect_attempt callback
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigCallbacks, OnReconnectAttemptCallableSignature) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws";
+
+    int captured_attempt = 0;
+    std::string captured_error;
+
+    cfg.on_reconnect_attempt = [&](int attempt, int max_attempts,
+                                    std::string_view error) -> bool {
+        captured_attempt = attempt;
+        captured_error = std::string(error);
+        // Abort on TLS-related errors
+        if (error.find("TLS") != std::string_view::npos) return false;
+        return attempt < max_attempts;
+    };
+
+    // Simulate a transient error — should continue
+    EXPECT_TRUE(cfg.on_reconnect_attempt(1, 5, "Connection timeout"));
+    EXPECT_EQ(captured_attempt, 1);
+    EXPECT_EQ(captured_error, "Connection timeout");
+
+    // Simulate a TLS error — should abort
+    EXPECT_FALSE(cfg.on_reconnect_attempt(2, 5, "TLS handshake failed"));
+    EXPECT_EQ(captured_attempt, 2);
+}
+
+TEST(TransportConfigCallbacks, OnReconnectAttemptDefaultIsNull) {
+    TransportConfig cfg;
+    EXPECT_FALSE(cfg.on_reconnect_attempt);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // WebSocket close code validation
 // ─────────────────────────────────────────────────────────────────────────────
 

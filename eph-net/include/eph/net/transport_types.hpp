@@ -211,6 +211,23 @@ struct TransportConfig {
     /// @warning Called from the RX thread — must be non-blocking.
     std::function<void(uint64_t total_dropped)> on_rx_drop{};
 
+    /// Reconnect attempt callback (optional, called from RX thread).
+    ///
+    /// Invoked after each failed reconnection attempt. Enables applications to
+    /// observe reconnect failures (for metrics/alerting) and optionally abort
+    /// the reconnect loop early — e.g., when the error indicates a non-transient
+    /// failure such as TLS certificate rejection or HTTP 403.
+    ///
+    /// @param attempt       Current attempt number (1-based)
+    /// @param max_attempts  Total configured attempts
+    /// @param error         Error message from the failed attempt
+    /// @return true to continue retrying, false to abort reconnection
+    ///
+    /// @warning Called from the RX thread — must be non-blocking.
+    ///          If not set, all attempts proceed (equivalent to always returning true).
+    std::function<bool(int attempt, int max_attempts, std::string_view error)>
+        on_reconnect_attempt{};
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before Transport::create() to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
