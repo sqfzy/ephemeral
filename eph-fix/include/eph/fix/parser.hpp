@@ -643,9 +643,9 @@ using Parser = BasicParser<>;
 /// Usage:
 ///   fix::ParserStats stats;
 ///   fix::parse_all(data, len, [&](const auto& msg) {
-///       stats.on_message(msg.total_len());
 ///       // handle msg...
 ///   }, stats);
+///   // stats.messages_parsed, stats.bytes_consumed are updated automatically
 struct ParserStats {
     uint64_t messages_parsed = 0;   ///< Successfully parsed messages
     uint64_t parse_errors    = 0;   ///< Failed parse attempts
