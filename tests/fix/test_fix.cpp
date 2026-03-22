@@ -1261,6 +1261,43 @@ TEST(FixBuilder, set_timestamp_end_of_day) {
     EXPECT_EQ(result->get(tag::SendingTime).value(), "19700101-23:59:59.500");
 }
 
+TEST(FixBuilder, set_timestamp_february_date) {
+    // 2000-02-29 12:00:00.000 UTC (leap day)
+    // 2000-02-29 = day 11016 from epoch
+    // 11016 * 86400 + 12*3600 = 951825600
+    uint64_t epoch_ns = 951'825'600'000'000'000ULL;
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, epoch_ns);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::SendingTime).value(), "20000229-12:00:00.000");
+}
+
+TEST(FixBuilder, set_timestamp_february_non_leap) {
+    // 2023-02-28 08:15:30.456 UTC
+    // 2023-02-28 = 1677542400 epoch seconds + 8*3600 + 15*60 + 30 = 1677572130
+    uint64_t epoch_ns = 1'677'572'130'456'000'000ULL;
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, epoch_ns);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::SendingTime).value(), "20230228-08:15:30.456");
+}
+
 TEST(FixBuilder, set_timestamp_format_length) {
     // Verify the timestamp is exactly 21 characters: YYYYMMDD-HH:MM:SS.sss
     uint8_t buf[256];
