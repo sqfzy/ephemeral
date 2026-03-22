@@ -72,6 +72,15 @@ public:
         return get(tag::MsgType);
     }
 
+    /// Look up a tag and return its single-character value.
+    /// Returns nullopt if the tag is missing or the value is not exactly 1 char.
+    /// Useful for FIX single-char enum fields (Side, OrdType, ExecType, etc.).
+    [[nodiscard]] std::optional<char> get_char(uint32_t t) const noexcept {
+        auto sv = get(t);
+        if (!sv || sv->size() != 1) return std::nullopt;
+        return (*sv)[0];
+    }
+
     /// Look up a tag and parse its value as int64_t.
     /// Returns nullopt if the value overflows int64_t range.
     [[nodiscard]] std::optional<int64_t> get_int(uint32_t t) const noexcept {

@@ -420,6 +420,38 @@ TEST(FixBuilder, reset_allows_reuse) {
     EXPECT_EQ(result->get_int(tag::OrderQty).value(), 200);
 }
 
+TEST(FixParser, get_char_single_char_field) {
+    std::string body = "35=D\x01" "54=1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_char(tag::Side).value(), '1');
+}
+
+TEST(FixParser, get_char_multi_char_returns_nullopt) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_char(tag::Symbol).has_value());
+}
+
+TEST(FixParser, get_char_empty_returns_nullopt) {
+    std::string body = "35=D\x01" "58=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_char(tag::Text).has_value());
+}
+
+TEST(FixParser, get_char_missing_tag_returns_nullopt) {
+    std::string body = "35=D\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_char(tag::Side).has_value());
+}
+
 TEST(FixParser, get_int_overflow_returns_nullopt) {
     // Value exceeding INT64_MAX should return nullopt, not silently wrap
     std::string body = "35=D\x01" "58=99999999999999999999\x01";
