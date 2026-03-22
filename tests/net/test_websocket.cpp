@@ -376,6 +376,40 @@ TEST(WsMasking, MaskedCopy_OddTailBytes) {
     }
 }
 
+TEST(WsMasking, MaskedCopy_ZeroLength) {
+    uint8_t src[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    uint8_t dst[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t mask[4] = {0x11, 0x22, 0x33, 0x44};
+
+    // Zero-length should not modify dst
+    masked_copy(dst, src, 0, mask);
+    EXPECT_EQ(dst[0], 0xFF);
+    EXPECT_EQ(dst[1], 0xFF);
+}
+
+TEST(WsMasking, ApplyMask_ZeroLength) {
+    uint8_t data[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    uint8_t mask[4] = {0x11, 0x22, 0x33, 0x44};
+
+    // Zero-length should not modify data
+    apply_mask(data, 0, mask);
+    EXPECT_EQ(data[0], 0xAA);
+    EXPECT_EQ(data[1], 0xBB);
+}
+
+TEST(WsMasking, MaskedCopy_ExactlyFourBytes) {
+    // Exactly one 32-bit block, no 64-bit loop, no byte tail
+    uint8_t src[4] = {0x01, 0x02, 0x03, 0x04};
+    uint8_t dst[4];
+    uint8_t mask[4] = {0xFF, 0x00, 0xFF, 0x00};
+
+    masked_copy(dst, src, 4, mask);
+    EXPECT_EQ(dst[0], 0xFE);
+    EXPECT_EQ(dst[1], 0x02);
+    EXPECT_EQ(dst[2], 0xFC);
+    EXPECT_EQ(dst[3], 0x04);
+}
+
 TEST(WsMasking, MaskKeyCacheRefill) {
     MaskKeyCache cache;
     std::set<uint32_t> keys;

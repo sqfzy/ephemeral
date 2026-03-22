@@ -927,6 +927,16 @@ TEST(ConnectionInfo, DumpHandlesEmptyFields) {
     EXPECT_NE(dump.find("(none)"), std::string::npos);
 }
 
+TEST(ConnectionInfo, DefaultToJsonProducesValidJson) {
+    ConnectionInfo info{};
+    auto json = info.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"tls_version\":\"\""), std::string::npos);
+    EXPECT_NE(json.find("\"remote_port\":0"), std::string::npos);
+    EXPECT_NE(json.find("\"use_tls\":true"), std::string::npos);
+}
+
 TEST(ConnectionInfo, ToJsonContainsAllFields) {
     ConnectionInfo info{
         .tls_version = "TLSv1.3",
