@@ -48,6 +48,37 @@ struct SocketConfig {
     int         keepalive_count = 3;     // Probes before declaring dead (TCP_KEEPCNT)
     int         send_timeout_ms = 1000;  // Timeout for individual send() poll waits (ms)
 
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "SocketConfig:\n"
+            "  target: {}:{}\n"
+            "  tcp_nodelay: {}, send_timeout: {}ms\n"
+            "  buffers: recv={}, send={}\n"
+            "  keepalive: enabled={}, idle={}s, interval={}s, count={}",
+            host, port,
+            tcp_nodelay, send_timeout_ms,
+            recv_buf_size == 0 ? std::string("OS default") : std::to_string(recv_buf_size),
+            send_buf_size == 0 ? std::string("OS default") : std::to_string(send_buf_size),
+            tcp_keepalive, keepalive_idle, keepalive_interval, keepalive_count);
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{"
+            "\"host\":\"{}\",\"port\":{},"
+            "\"tcp_nodelay\":{},\"recv_buf_size\":{},"
+            "\"send_buf_size\":{},\"tcp_keepalive\":{},"
+            "\"keepalive_idle\":{},\"keepalive_interval\":{},"
+            "\"keepalive_count\":{},\"send_timeout_ms\":{}}}",
+            host, port,
+            tcp_nodelay ? "true" : "false", recv_buf_size,
+            send_buf_size, tcp_keepalive ? "true" : "false",
+            keepalive_idle, keepalive_interval,
+            keepalive_count, send_timeout_ms);
+    }
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before constructing SocketTransport for early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
@@ -696,7 +727,7 @@ socket_wss_connect(
     const TransportConfig& config,
     std::optional<SocketConfig> sock_cfg = std::nullopt)
     -> std::expected<std::unique_ptr<Transport<SocketTransport, MaxPayload, QueueDepth>>,
-                     std::string>
+                     ConnectionErrorInfo>
 {
     SocketConfig sc = sock_cfg.value_or(SocketConfig{
         .host         = config.remote_host,
@@ -708,6 +739,13 @@ socket_wss_connect(
     if (!sock_cfg) {
         sc.host = config.remote_host;
         sc.port = config.remote_port;
+    }
+
+    // Validate SocketConfig early for actionable error messages
+    if (auto err = sc.validate(); !err.empty()) {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kInvalidConfig,
+            std::format("SocketConfig: {}", err)});
     }
 
     auto tcp_timeout = config.tcp_timeout;
@@ -737,7 +775,7 @@ socket_ws_connect(
     TransportConfig config,
     std::optional<SocketConfig> sock_cfg = std::nullopt)
     -> std::expected<std::unique_ptr<Transport<SocketTransport, MaxPayload, QueueDepth>>,
-                     std::string>
+                     ConnectionErrorInfo>
 {
     config.use_tls = false;
 
@@ -750,6 +788,13 @@ socket_ws_connect(
     if (!sock_cfg) {
         sc.host = config.remote_host;
         sc.port = config.remote_port;
+    }
+
+    // Validate SocketConfig early for actionable error messages
+    if (auto err = sc.validate(); !err.empty()) {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kInvalidConfig,
+            std::format("SocketConfig: {}", err)});
     }
 
     auto tcp_timeout = config.tcp_timeout;
@@ -767,3 +812,17 @@ socket_ws_connect(
 }
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for SocketConfig
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::SocketConfig> : std::formatter<std::string> {
+    auto format(const eph::net::SocketConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("{}:{} nodelay={} keepalive={}",
+                c.host, c.port, c.tcp_nodelay, c.tcp_keepalive),
+            ctx);
+    }
+};

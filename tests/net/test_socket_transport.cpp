@@ -265,3 +265,33 @@ TEST(SocketConfigValidate, KeepaliveDisabledIgnoresInvalidValues) {
                      .keepalive_interval = 0, .keepalive_count = 0};
     EXPECT_TRUE(cfg.validate().empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SocketConfig::dump() and to_json()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketConfigFormat, DumpContainsHostPort) {
+    SocketConfig cfg{.host = "example.com", .port = 443};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("example.com"), std::string::npos);
+    EXPECT_NE(d.find("443"), std::string::npos);
+    EXPECT_NE(d.find("SocketConfig"), std::string::npos);
+}
+
+TEST(SocketConfigFormat, ToJsonValidStructure) {
+    SocketConfig cfg{.host = "example.com", .port = 443, .tcp_nodelay = true,
+                     .recv_buf_size = 65536, .send_buf_size = 32768};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"host\":\"example.com\""), std::string::npos);
+    EXPECT_NE(j.find("\"port\":443"), std::string::npos);
+    EXPECT_NE(j.find("\"tcp_nodelay\":true"), std::string::npos);
+    EXPECT_NE(j.find("\"recv_buf_size\":65536"), std::string::npos);
+    EXPECT_NE(j.find("\"send_buf_size\":32768"), std::string::npos);
+}
+
+TEST(SocketConfigFormat, StdFormatterWorks) {
+    SocketConfig cfg{.host = "10.0.0.1", .port = 8080, .tcp_nodelay = false};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(s.find("8080"), std::string::npos);
+}

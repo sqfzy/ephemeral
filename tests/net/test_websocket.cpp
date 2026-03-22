@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <set>
 #include <vector>
 
@@ -922,4 +923,18 @@ TEST(Utf8Validation, SpanOverload) {
 
     std::vector<uint8_t> invalid = {0xFF, 0xFE};
     EXPECT_FALSE(is_valid_utf8(std::span<const uint8_t>(invalid)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DecodeError std::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DecodeErrorFormatter, AllValuesFormat) {
+    EXPECT_EQ(std::format("{}", DecodeError::kIncomplete), "incomplete");
+    EXPECT_EQ(std::format("{}", DecodeError::kReservedBits),
+              "non-zero RSV bits without negotiated extension");
+    EXPECT_EQ(std::format("{}", DecodeError::kFragmentedControl),
+              "fragmented control frame");
+    EXPECT_EQ(std::format("{}", DecodeError::kControlPayloadTooLarge),
+              "control frame payload exceeds 125 bytes");
 }

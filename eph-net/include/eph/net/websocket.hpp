@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -589,3 +590,15 @@ inline bool is_valid_utf8(std::string_view sv) noexcept {
 }
 
 } // namespace eph::net::ws
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for DecodeError
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::ws::DecodeError> : std::formatter<std::string_view> {
+    auto format(eph::net::ws::DecodeError e, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::net::ws::decode_error_name(e), ctx);
+    }
+};
