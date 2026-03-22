@@ -465,3 +465,58 @@ TEST(EvictingQueueTest, SizeApproxCappedAtCapacity) {
     // size_approx should be capped at Capacity, not 5
     EXPECT_LE(queue.size_approx(), 2u);
 }
+
+// ---------------------------------------------------------------------------
+// EvictingQueue<T,1> specialization: size_approx() and empty()
+// ---------------------------------------------------------------------------
+
+TEST(EvictingQueueSingleSlot, SizeApproxStartsAtZero) {
+    EvictingQueue<TestData, 1> queue;
+    EXPECT_EQ(queue.size_approx(), 0u);
+    EXPECT_TRUE(queue.empty());
+}
+
+TEST(EvictingQueueSingleSlot, SizeApproxReflectsUnread) {
+    EvictingQueue<TestData, 1> queue;
+
+    TestData d{};
+    d.seq = 42;
+    queue.push(d);
+
+    // After push, there's 1 unread entry
+    EXPECT_EQ(queue.size_approx(), 1u);
+    EXPECT_FALSE(queue.empty());
+
+    // After consuming, back to 0
+    auto val = queue.try_pop_latest();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 42u);
+    EXPECT_EQ(queue.size_approx(), 0u);
+    EXPECT_TRUE(queue.empty());
+}
+
+TEST(EvictingQueueSingleSlot, SizeApproxAfterClear) {
+    EvictingQueue<TestData, 1> queue;
+
+    TestData d{.seq = 1};
+    queue.push(d);
+    EXPECT_EQ(queue.size_approx(), 1u);
+
+    queue.clear();
+    EXPECT_EQ(queue.size_approx(), 0u);
+    EXPECT_TRUE(queue.empty());
+}
+
+TEST(EvictingQueueSingleSlot, SizeApproxAfterMultipleOverwrites) {
+    EvictingQueue<TestData, 1> queue;
+
+    TestData d{};
+    for (uint32_t i = 0; i < 10; ++i) {
+        d.seq = i;
+        queue.push(d);
+    }
+
+    // Still at most 1 unread
+    EXPECT_EQ(queue.size_approx(), 1u);
+    EXPECT_FALSE(queue.empty());
+}

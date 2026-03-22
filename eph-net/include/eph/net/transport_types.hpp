@@ -111,6 +111,15 @@ struct ConnectionErrorInfo {
         return std::format("[{}] {}", connection_error_name(code), detail);
     }
 
+    /// JSON-formatted error info for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"code\":\"{}\",\"detail\":\"{}\",\"http_status\":{}}}",
+            connection_error_name(code),
+            detail::json_escape(detail),
+            http_status);
+    }
+
     /// HTTP status code from server rejection (only valid when code == kWsUpgradeRejected).
     int http_status = 0;
 };
@@ -528,6 +537,14 @@ struct RttStats {
     uint64_t p99_ns = 0;    ///< 99th percentile RTT (ns)
     uint64_t p999_ns = 0;   ///< 99.9th percentile RTT (ns)
 
+    /// Minimum RTT in microseconds.
+    [[nodiscard]] double min_us() const noexcept {
+        return static_cast<double>(min_ns) / 1e3;
+    }
+    /// Maximum RTT in microseconds.
+    [[nodiscard]] double max_us() const noexcept {
+        return static_cast<double>(max_ns) / 1e3;
+    }
     /// Median RTT in microseconds (convenience for human-readable output).
     [[nodiscard]] double p50_us() const noexcept {
         return static_cast<double>(p50_ns) / 1e3;
@@ -535,6 +552,10 @@ struct RttStats {
     /// 99th percentile RTT in microseconds.
     [[nodiscard]] double p99_us() const noexcept {
         return static_cast<double>(p99_ns) / 1e3;
+    }
+    /// 99.9th percentile RTT in microseconds.
+    [[nodiscard]] double p999_us() const noexcept {
+        return static_cast<double>(p999_ns) / 1e3;
     }
     /// Mean RTT in microseconds.
     [[nodiscard]] double mean_us() const noexcept {
@@ -547,12 +568,8 @@ struct RttStats {
             "RttStats ({} samples):\n"
             "  min: {:.1f}us, p50: {:.1f}us, p99: {:.1f}us, "
             "p999: {:.1f}us, max: {:.1f}us, mean: {:.1f}us",
-            count,
-            static_cast<double>(min_ns) / 1e3,
-            p50_us(), p99_us(),
-            static_cast<double>(p999_ns) / 1e3,
-            static_cast<double>(max_ns) / 1e3,
-            mean_us());
+            count, min_us(), p50_us(), p99_us(),
+            p999_us(), max_us(), mean_us());
     }
 
     /// JSON-formatted RTT stats for monitoring system integration.
@@ -770,6 +787,18 @@ template <>
 struct std::formatter<eph::net::ConnectionErrorInfo> : std::formatter<std::string> {
     auto format(const eph::net::ConnectionErrorInfo& e, auto& ctx) const {
         return std::formatter<std::string>::format(e.message(), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::net::ConnectionInfo> : std::formatter<std::string> {
+    auto format(const eph::net::ConnectionInfo& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("{}:{} tls={} ({}) subproto={}",
+                c.remote_ip.empty() ? "unknown" : c.remote_ip,
+                c.remote_port, c.tls_version, c.cipher_name,
+                c.ws_subprotocol.empty() ? "(none)" : c.ws_subprotocol),
+            ctx);
     }
 };
 

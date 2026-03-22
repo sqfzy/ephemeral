@@ -622,6 +622,18 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
 
+    /// Approximate number of unread entries (0 or 1 for single-slot).
+    /// The result may be stale by the time it is read in a concurrent context.
+    [[nodiscard]] size_t size_approx() const noexcept {
+        uint64_t seq = seq_.load(std::memory_order_relaxed);
+        // If writer is mid-write (odd seq) or no new data since last read, empty
+        if ((seq & 1) || seq <= last_seq_) return 0;
+        return 1;
+    }
+
+    /// Check if there are no unread entries (approximate).
+    [[nodiscard]] bool empty() const noexcept { return size_approx() == 0; }
+
     /// Total number of writes performed since construction.
     /// @note Relaxed load — safe to call from any thread for approximate monitoring.
     [[nodiscard]] uint64_t write_count() const noexcept {

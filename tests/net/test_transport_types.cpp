@@ -972,3 +972,80 @@ TEST(ConnectionInfo, PlainWsShowsUseTlsFalse) {
     auto json = info.to_json();
     EXPECT_NE(json.find("\"use_tls\":false"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionErrorInfo::to_json()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionErrorInfo, ToJsonProducesValidJson) {
+    ConnectionErrorInfo err{
+        .code = ConnectionError::kTlsHandshakeFailed,
+        .detail = "certificate expired",
+        .http_status = 0,
+    };
+    auto json = err.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"code\":\"TLS_HANDSHAKE_FAILED\""), std::string::npos);
+    EXPECT_NE(json.find("\"detail\":\"certificate expired\""), std::string::npos);
+    EXPECT_NE(json.find("\"http_status\":0"), std::string::npos);
+}
+
+TEST(ConnectionErrorInfo, ToJsonEscapesDetail) {
+    ConnectionErrorInfo err{
+        .code = ConnectionError::kWsUpgradeRejected,
+        .detail = "reason: \"forbidden\"",
+        .http_status = 403,
+    };
+    auto json = err.to_json();
+    EXPECT_NE(json.find(R"(reason: \"forbidden\")"), std::string::npos);
+    EXPECT_NE(json.find("\"http_status\":403"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter<ConnectionInfo>
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionInfoFormatter, FormatsWithAllFields) {
+    ConnectionInfo info{
+        .tls_version = "TLSv1.3",
+        .cipher_name = "TLS_AES_256_GCM_SHA384",
+        .ws_subprotocol = "graphql-ws",
+        .remote_ip = "10.0.0.1",
+        .remote_port = 8443,
+        .use_tls = true,
+    };
+    auto str = std::format("{}", info);
+    EXPECT_NE(str.find("10.0.0.1:8443"), std::string::npos);
+    EXPECT_NE(str.find("TLSv1.3"), std::string::npos);
+    EXPECT_NE(str.find("graphql-ws"), std::string::npos);
+}
+
+TEST(ConnectionInfoFormatter, FormatsWithEmptyFields) {
+    ConnectionInfo info{};
+    auto str = std::format("{}", info);
+    EXPECT_NE(str.find("unknown"), std::string::npos);
+    EXPECT_NE(str.find("(none)"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RttStats convenience accessors (min_us, max_us, p999_us)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RttStats, AllConvenienceAccessors) {
+    RttStats rtt{
+        .count = 100,
+        .min_ns = 1000,
+        .max_ns = 5000000,
+        .mean_ns = 100000.0,
+        .p50_ns = 50000,
+        .p99_ns = 900000,
+        .p999_ns = 4500000,
+    };
+    EXPECT_DOUBLE_EQ(rtt.min_us(), 1.0);
+    EXPECT_DOUBLE_EQ(rtt.max_us(), 5000.0);
+    EXPECT_DOUBLE_EQ(rtt.p50_us(), 50.0);
+    EXPECT_DOUBLE_EQ(rtt.p99_us(), 900.0);
+    EXPECT_DOUBLE_EQ(rtt.p999_us(), 4500.0);
+    EXPECT_DOUBLE_EQ(rtt.mean_us(), 100.0);
+}
