@@ -53,6 +53,87 @@ class BoundedQueueBytes {
     }
 
     // ===========================================================================
+    // 批量非阻塞操作 (Writer)
+    // ===========================================================================
+
+    /**
+     * @brief 批量推入带时间戳的字节流 (all-or-nothing 语义)
+     *
+     * @param payloads 各消息的 payload span 数组
+     * @param timestamps 各消息的时间戳数组（与 payloads 等长）
+     * @param count 消息数量
+     * @return true 全部入队成功; false 空间不足或某个 payload 过大，无任何写入
+     */
+    [[nodiscard]] bool try_push_n_wts(const std::span<const uint8_t>* payloads,
+                                       const uint64_t* timestamps,
+                                       size_t count) noexcept {
+        for (size_t i = 0; i < count; ++i) {
+            if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
+        }
+        return queue_.try_produce_n(count, [&](DataWrap& slot, size_t i) {
+            slot.ts = timestamps[i];
+            slot.len = static_cast<uint32_t>(payloads[i].size());
+            std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
+        });
+    }
+
+    /**
+     * @brief 批量推入字节流 (all-or-nothing 语义, ts=0)
+     */
+    [[nodiscard]] bool try_push_n(const std::span<const uint8_t>* payloads,
+                                   size_t count) noexcept {
+        for (size_t i = 0; i < count; ++i) {
+            if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
+        }
+        return queue_.try_produce_n(count, [&](DataWrap& slot, size_t i) {
+            slot.ts = 0;
+            slot.len = static_cast<uint32_t>(payloads[i].size());
+            std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
+        });
+    }
+
+    // ===========================================================================
+    // 批量非阻塞操作 (Reader)
+    // ===========================================================================
+
+    /**
+     * @brief 批量零拷贝消费 (尽力而为语义)
+     *
+     * 消费最多 n 个消息，对每个消息调用 visitor(data_span, index)。
+     *
+     * @param n 最大消费数量
+     * @param visitor 回调 void(std::span<const uint8_t>, size_t index)
+     * @return 实际消费的消息数量
+     */
+    template <typename F>
+        requires std::invocable<F, std::span<const uint8_t>, size_t>
+    [[nodiscard]] size_t try_consume_n(size_t n, F&& visitor) noexcept {
+        return queue_.try_consume_n(n, [&](const DataWrap& msg, size_t idx) {
+            uint32_t safe_len = std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
+            std::invoke(std::forward<F>(visitor),
+                        std::span<const uint8_t>{msg.data.data(), safe_len}, idx);
+        });
+    }
+
+    /**
+     * @brief 批量零拷贝消费带时间戳 (尽力而为语义)
+     *
+     * @param n 最大消费数量
+     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts, size_t index)
+     * @return 实际消费的消息数量
+     */
+    template <typename F>
+        requires std::invocable<F, std::span<const uint8_t>, uint64_t, size_t>
+    [[nodiscard]] size_t try_consume_n_wts(size_t n, F&& visitor) noexcept {
+        return queue_.try_consume_n(n, [&](const DataWrap& msg, size_t idx) {
+            uint32_t safe_len = std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
+            std::invoke(std::forward<F>(visitor),
+                        std::span<const uint8_t>{msg.data.data(), safe_len},
+                        msg.ts, idx);
+        });
+    }
+
+    // ===========================================================================
     // 阻塞操作 (Writer)
     // ===========================================================================
 

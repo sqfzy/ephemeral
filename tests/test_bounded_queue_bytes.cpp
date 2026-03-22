@@ -205,3 +205,145 @@ TEST(BoundedQueueBytesTimed, TryPopWtsForTimeout) {
     auto len = queue.try_pop_wts_for(out, ts, std::chrono::milliseconds(5));
     EXPECT_FALSE(len.has_value());
 }
+
+// ===========================================================================
+// 批量操作
+// ===========================================================================
+
+TEST(BoundedQueueBytesBatch, TryPushN_BasicOperation) {
+    BoundedQueueBytes<64, 8> queue;
+
+    std::array<uint8_t, 3> p1{0x01, 0x02, 0x03};
+    std::array<uint8_t, 2> p2{0xAA, 0xBB};
+    std::array<uint8_t, 1> p3{0xFF};
+
+    std::span<const uint8_t> payloads[] = {p1, p2, p3};
+
+    EXPECT_TRUE(queue.try_push_n(payloads, 3));
+    EXPECT_EQ(queue.size(), 3u);
+
+    // Verify in order
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_pop(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(out[0], 0x01);
+
+    len = queue.try_pop(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 2u);
+    EXPECT_EQ(out[0], 0xAA);
+
+    len = queue.try_pop(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 1u);
+    EXPECT_EQ(out[0], 0xFF);
+}
+
+TEST(BoundedQueueBytesBatch, TryPushNWts_WithTimestamps) {
+    BoundedQueueBytes<64, 8> queue;
+
+    std::array<uint8_t, 2> p1{0x01, 0x02};
+    std::array<uint8_t, 2> p2{0x03, 0x04};
+
+    std::span<const uint8_t> payloads[] = {p1, p2};
+    uint64_t timestamps[] = {100, 200};
+
+    EXPECT_TRUE(queue.try_push_n_wts(payloads, timestamps, 2));
+    EXPECT_EQ(queue.size(), 2u);
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    auto len = queue.try_pop_wts(out, ts);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(ts, 100u);
+    EXPECT_EQ(out[0], 0x01);
+
+    len = queue.try_pop_wts(out, ts);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(ts, 200u);
+    EXPECT_EQ(out[0], 0x03);
+}
+
+TEST(BoundedQueueBytesBatch, TryPushN_FailsOnOversizedPayload) {
+    BoundedQueueBytes<4, 8> queue;
+
+    std::array<uint8_t, 5> too_large{};  // exceeds MaxDataSize=4
+    std::array<uint8_t, 2> ok{};
+
+    std::span<const uint8_t> payloads[] = {ok, too_large};
+    EXPECT_FALSE(queue.try_push_n(payloads, 2));
+    EXPECT_TRUE(queue.empty());  // all-or-nothing: nothing pushed
+}
+
+TEST(BoundedQueueBytesBatch, TryPushN_FailsOnFullQueue) {
+    BoundedQueueBytes<64, 4> queue;
+
+    // Fill with 4 items first
+    for (int i = 0; i < 4; ++i) {
+        std::array<uint8_t, 1> p{static_cast<uint8_t>(i)};
+        ASSERT_TRUE(queue.try_push(p));
+    }
+    EXPECT_TRUE(queue.full());
+
+    std::array<uint8_t, 1> p{0xFF};
+    std::span<const uint8_t> payloads[] = {p};
+    EXPECT_FALSE(queue.try_push_n(payloads, 1));
+}
+
+TEST(BoundedQueueBytesBatch, TryConsumeN_BasicOperation) {
+    BoundedQueueBytes<64, 8> queue;
+
+    // Push 3 items
+    for (uint8_t i = 0; i < 3; ++i) {
+        std::array<uint8_t, 1> p{i};
+        ASSERT_TRUE(queue.try_push(p));
+    }
+
+    std::vector<uint8_t> consumed;
+    size_t n = queue.try_consume_n(2, [&](std::span<const uint8_t> data, size_t idx) {
+        EXPECT_EQ(idx, consumed.size());
+        ASSERT_EQ(data.size(), 1u);
+        consumed.push_back(data[0]);
+    });
+
+    EXPECT_EQ(n, 2u);
+    ASSERT_EQ(consumed.size(), 2u);
+    EXPECT_EQ(consumed[0], 0u);
+    EXPECT_EQ(consumed[1], 1u);
+    EXPECT_EQ(queue.size(), 1u);
+}
+
+TEST(BoundedQueueBytesBatch, TryConsumeNWts_WithTimestamps) {
+    BoundedQueueBytes<64, 8> queue;
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        std::array<uint8_t, 1> p{i};
+        ASSERT_TRUE(queue.try_push_wts(p, static_cast<uint64_t>(i * 100)));
+    }
+
+    std::vector<std::pair<uint8_t, uint64_t>> consumed;
+    size_t n = queue.try_consume_n_wts(3,
+        [&](std::span<const uint8_t> data, uint64_t ts, size_t idx) {
+            EXPECT_EQ(idx, consumed.size());
+            consumed.emplace_back(data[0], ts);
+        });
+
+    EXPECT_EQ(n, 3u);
+    ASSERT_EQ(consumed.size(), 3u);
+    EXPECT_EQ(consumed[0].first, 0u);
+    EXPECT_EQ(consumed[0].second, 0u);
+    EXPECT_EQ(consumed[1].first, 1u);
+    EXPECT_EQ(consumed[1].second, 100u);
+    EXPECT_EQ(consumed[2].first, 2u);
+    EXPECT_EQ(consumed[2].second, 200u);
+}
+
+TEST(BoundedQueueBytesBatch, TryConsumeN_EmptyQueue) {
+    BoundedQueueBytes<64, 8> queue;
+
+    size_t n = queue.try_consume_n(4, [](std::span<const uint8_t>, size_t) {
+        FAIL() << "Should not be called on empty queue";
+    });
+    EXPECT_EQ(n, 0u);
+}
