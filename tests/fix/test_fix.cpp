@@ -2319,3 +2319,76 @@ TEST(FixParserStats, incomplete_trailing_data_is_not_counted_as_error) {
     EXPECT_EQ(stats.messages_parsed, 1u);
     EXPECT_EQ(stats.parse_errors, 0u); // incomplete is not an error
 }
+
+// ===========================================================================
+// kMaxBodyLength validation
+// ===========================================================================
+
+TEST(FixMaxBodyLength, framer_rejects_oversized_body_length) {
+    // Craft a message claiming BodyLength = kMaxBodyLength + 1
+    std::string msg = "8=FIX.4.4\x01" "9=";
+    msg += std::to_string(kMaxBodyLength + 1);
+    msg += "\x01";
+    // Pad enough data to make the framer consider the length (not just incomplete)
+    msg.append(kMaxBodyLength + 100, 'X');
+
+    auto result = FixFramer::decode(
+        reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
+}
+
+TEST(FixMaxBodyLength, framer_accepts_max_body_length) {
+    // BodyLength exactly at kMaxBodyLength should not be rejected by the limit check.
+    // It will fail for other reasons (incomplete data), but NOT kInvalidFormat.
+    std::string msg = "8=FIX.4.4\x01" "9=";
+    msg += std::to_string(kMaxBodyLength);
+    msg += "\x01";
+    // Don't provide enough data for the full message
+    msg.append(100, 'X');
+
+    auto result = FixFramer::decode(
+        reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+    ASSERT_FALSE(result.has_value());
+    // Should be incomplete (not enough data), not invalid format (rejected by limit)
+    EXPECT_EQ(result.error(), eph::net::FrameError::kIncomplete);
+}
+
+TEST(FixMaxBodyLength, framer_rejects_overflow_body_length) {
+    // Many digits that would overflow size_t during parsing
+    std::string msg = "8=FIX.4.4\x01" "9=99999999999999999999\x01";
+    msg.append(100, 'X');
+
+    auto result = FixFramer::decode(
+        reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
+}
+
+TEST(FixMaxBodyLength, parser_rejects_oversized_body_length) {
+    // Build a message with BodyLength > kMaxBodyLength
+    std::string msg = "8=FIX.4.4\x01" "9=";
+    msg += std::to_string(kMaxBodyLength + 1);
+    msg += "\x01";
+    msg.append(kMaxBodyLength + 100, 'X');
+
+    auto result = parse(
+        reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
+
+TEST(FixMaxBodyLength, parser_rejects_overflow_body_length) {
+    // Many digits that would overflow size_t
+    std::string msg = "8=FIX.4.4\x01" "9=99999999999999999999\x01";
+    msg.append(100, 'X');
+
+    auto result = parse(
+        reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
+
+TEST(FixMaxBodyLength, constant_is_one_megabyte) {
+    EXPECT_EQ(kMaxBodyLength, 1u * 1024 * 1024);
+}

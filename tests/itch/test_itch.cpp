@@ -1565,3 +1565,130 @@ TEST(ItchParserStats, incomplete_trailing_data_is_not_counted_as_error) {
     // kTruncated is an error (corrupt data, not just partial)
     EXPECT_EQ(stats.parse_errors, 1u);
 }
+
+// ---------------------------------------------------------------------------
+// stock_trimmed() convenience accessors
+// ---------------------------------------------------------------------------
+
+TEST(ItchStockTrimmed, add_order_stock_trimmed) {
+    uint8_t raw[kAddOrderSize]{};
+    raw[0] = kAddOrder;
+    std::memcpy(raw + 24, "AAPL    ", 8);
+
+    EXPECT_EQ(add_order::stock(raw), "AAPL    ");
+    EXPECT_EQ(add_order::stock_trimmed(raw), "AAPL");
+}
+
+TEST(ItchStockTrimmed, stock_directory_stock_trimmed) {
+    uint8_t raw[kStockDirectorySize]{};
+    raw[0] = kStockDirectory;
+    std::memcpy(raw + 11, "MSFT    ", 8);
+
+    EXPECT_EQ(stock_directory::stock(raw), "MSFT    ");
+    EXPECT_EQ(stock_directory::stock_trimmed(raw), "MSFT");
+}
+
+TEST(ItchStockTrimmed, all_spaces_returns_empty) {
+    uint8_t raw[kAddOrderSize]{};
+    raw[0] = kAddOrder;
+    std::memcpy(raw + 24, "        ", 8);
+
+    EXPECT_EQ(add_order::stock_trimmed(raw), "");
+}
+
+TEST(ItchStockTrimmed, no_trailing_spaces) {
+    uint8_t raw[kAddOrderSize]{};
+    raw[0] = kAddOrder;
+    std::memcpy(raw + 24, "ABCDEFGH", 8);
+
+    EXPECT_EQ(add_order::stock_trimmed(raw), "ABCDEFGH");
+}
+
+TEST(ItchStockTrimmed, add_order_mpid_attribution_trimmed) {
+    // Buffer is 40 bytes to accommodate attribution at offset 36 (4 bytes).
+    uint8_t raw[40]{};
+    raw[0] = kAddOrderMPID;
+    std::memcpy(raw + 36, "GS  ", 4);
+
+    EXPECT_EQ(add_order_mpid::attribution(raw), "GS  ");
+    EXPECT_EQ(add_order_mpid::attribution_trimmed(raw), "GS");
+}
+
+TEST(ItchStockTrimmed, cross_trade_stock_trimmed) {
+    uint8_t raw[kCrossTradeSize]{};
+    raw[0] = kCrossTrade;
+    std::memcpy(raw + 19, "TSLA    ", 8);
+
+    EXPECT_EQ(cross_trade::stock_trimmed(raw), "TSLA");
+}
+
+TEST(ItchStockTrimmed, noii_stock_trimmed) {
+    uint8_t raw[kNOIISize]{};
+    raw[0] = kNOII;
+    std::memcpy(raw + 28, "GOOG    ", 8);
+
+    EXPECT_EQ(noii::stock_trimmed(raw), "GOOG");
+}
+
+// ---------------------------------------------------------------------------
+// ParserStats error offset tracking
+// ---------------------------------------------------------------------------
+
+TEST(ItchParserStats, error_offset_tracks_unknown_type) {
+    // One valid message, then an unknown type
+    uint8_t combined[kSystemEventSize + 3]{};
+    combined[0] = kSystemEvent;
+    combined[10] = 'O';
+    combined[kSystemEventSize] = 0xFF; // unknown type
+
+    ParserStats stats;
+    parse_all(combined, sizeof(combined), [](const auto&) {}, stats);
+
+    EXPECT_EQ(stats.parse_errors, 1u);
+    EXPECT_EQ(stats.first_error_offset, kSystemEventSize);
+    EXPECT_EQ(stats.first_error_type, ParseError::kUnknownType);
+    EXPECT_EQ(stats.first_error_msg_byte, 0xFF);
+}
+
+TEST(ItchParserStats, error_offset_tracks_truncated_type) {
+    // One valid message, then a known type but truncated
+    uint8_t combined[kSystemEventSize + 3]{};
+    combined[0] = kSystemEvent;
+    combined[10] = 'O';
+    combined[kSystemEventSize] = kAddOrder; // needs 35 bytes, only 3 available
+
+    ParserStats stats;
+    parse_all(combined, sizeof(combined), [](const auto&) {}, stats);
+
+    EXPECT_EQ(stats.parse_errors, 1u);
+    EXPECT_EQ(stats.first_error_offset, kSystemEventSize);
+    EXPECT_EQ(stats.first_error_type, ParseError::kTruncated);
+    EXPECT_EQ(stats.first_error_msg_byte, kAddOrder);
+}
+
+TEST(ItchParserStats, no_error_fields_stay_zero) {
+    uint8_t msg[kSystemEventSize]{};
+    msg[0] = kSystemEvent;
+    msg[10] = 'O';
+
+    ParserStats stats;
+    parse_all(msg, sizeof(msg), [](const auto&) {}, stats);
+
+    EXPECT_EQ(stats.parse_errors, 0u);
+    EXPECT_EQ(stats.first_error_offset, 0u);
+    EXPECT_EQ(stats.first_error_msg_byte, 0u);
+}
+
+TEST(ItchParserStats, reset_clears_error_offset_fields) {
+    ParserStats stats;
+    stats.first_error_offset = 42;
+    stats.first_error_type = ParseError::kUnknownType;
+    stats.first_error_msg_byte = 0xFF;
+    stats.parse_errors = 1;
+
+    stats.reset();
+
+    EXPECT_EQ(stats.first_error_offset, 0u);
+    EXPECT_EQ(stats.first_error_msg_byte, 0u);
+    EXPECT_EQ(stats.parse_errors, 0u);
+}
