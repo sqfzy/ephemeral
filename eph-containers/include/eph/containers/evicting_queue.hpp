@@ -396,11 +396,26 @@ class alignas(Align<T>) EvictingQueue {
     /// Check if there are no unread entries (approximate).
     [[nodiscard]] bool empty() const noexcept { return size_approx() == 0; }
 
+    /// Check if the queue is at capacity (writes are overwriting unread data).
+    /// @note Approximate — suitable for monitoring, not synchronization.
+    [[nodiscard]] bool full() const noexcept { return size_approx() >= Capacity; }
+
     /// Total number of writes performed since construction.
     /// Useful for monitoring throughput and computing discard rates.
     /// @note Relaxed load — safe to call from any thread for approximate monitoring.
     [[nodiscard]] uint64_t write_count() const noexcept {
         return global_index_.load(std::memory_order_relaxed);
+    }
+
+    /// Approximate number of writes that overwrote unread data.
+    /// Useful for monitoring data loss due to slow consumers.
+    /// Formula: writes - reads_consumed - buffered = lost items.
+    /// @note Approximate — derived from relaxed atomic loads.
+    [[nodiscard]] uint64_t overwrite_count_approx() const noexcept {
+        uint64_t written = global_index_.load(std::memory_order_relaxed);
+        uint64_t read = reader_.last_global_index_;
+        if (written <= read + Capacity) return 0;
+        return written - read - Capacity;
     }
 };
 
@@ -634,11 +649,26 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     /// Check if there are no unread entries (approximate).
     [[nodiscard]] bool empty() const noexcept { return size_approx() == 0; }
 
+    /// Check if the queue is at capacity (writes are overwriting unread data).
+    /// For single-slot, this is equivalent to !empty().
+    /// @note Approximate — suitable for monitoring, not synchronization.
+    [[nodiscard]] bool full() const noexcept { return size_approx() >= 1; }
+
     /// Total number of writes performed since construction.
     /// @note Relaxed load — safe to call from any thread for approximate monitoring.
     [[nodiscard]] uint64_t write_count() const noexcept {
         // seq_ increments by 2 per write (odd→even), so total writes = seq / 2
         return seq_.load(std::memory_order_relaxed) / 2;
+    }
+
+    /// Approximate number of writes that overwrote unread data.
+    /// For single-slot: write_count - 1 is the upper bound (every write
+    /// after the first potentially overwrites the previous).
+    /// @note Conservative upper bound — actual overwrites may be fewer
+    ///       if the reader consumed values between writes.
+    [[nodiscard]] uint64_t overwrite_count_approx() const noexcept {
+        uint64_t writes = write_count();
+        return writes > 0 ? writes - 1 : 0;
     }
 };
 
