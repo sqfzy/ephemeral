@@ -1620,6 +1620,57 @@ private:
             }
         }
 
+        // Final drain: send any messages queued before stop() was called.
+        // The main loop exited because running_=false; the application may
+        // have enqueued messages right before calling stop().  One last
+        // drain iteration sends them before the thread exits.
+        // Skip if reconnecting (crypto_/tcp_ may be invalid).
+        if (!reconnecting_.load(std::memory_order_acquire) &&
+            tcp_ && tcp_->is_established()) {
+            int remaining = static_cast<int>(tx_queue_.try_consume_n(
+                static_cast<size_t>(kMaxBatch),
+                [&](TxMsg& msg, [[maybe_unused]] size_t idx) {
+                    batch[idx] = msg;
+                }));
+
+            if (remaining > 0) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "TX: draining {} remaining messages before exit", remaining);
+
+                size_t drain_coalesced = 0;
+                for (int i = 0; i < remaining; ++i) {
+                    size_t ws_len;
+                    if (batch[i].opcode == ws::opcode::kBinary) {
+                        ws_len = ws_tmpl.encode(
+                            ws_buf, batch[i].data, batch[i].len);
+                    } else {
+                        ws_len = ws::encode_frame(
+                            ws_buf, batch[i].opcode,
+                            batch[i].data, batch[i].len);
+                    }
+
+                    if (config_.use_tls) {
+                        uint8_t* tls_buf_i = tls_bufs_storage.get() + drain_coalesced;
+                        uint16_t enc_len = crypto_->encrypt(
+                            ws_buf, static_cast<uint16_t>(ws_len), tls_buf_i);
+                        if (enc_len > 0) {
+                            drain_coalesced += enc_len;
+                            tx_stats_.packets++;
+                            tx_stats_.bytes += batch[i].len;
+                        }
+                    } else {
+                        tcp_->send(ws_buf, ws_len);
+                        tx_stats_.packets++;
+                        tx_stats_.bytes += batch[i].len;
+                    }
+                }
+
+                if (config_.use_tls && drain_coalesced > 0) {
+                    tcp_->send(tls_bufs_storage.get(), drain_coalesced);
+                }
+            }
+        }
+
         SPDLOG_LOGGER_DEBUG(log, "TX loop exited");
     }
 

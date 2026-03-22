@@ -929,6 +929,29 @@ TEST_F(TransportTest, CloseGracefullyTimesOutWithoutServerResponse) {
     EXPECT_FALSE(tp->is_running());
 }
 
+TEST_F(TransportTest, StopDrainsRemainingTxMessages) {
+    // Verify that stop() drains queued messages instead of losing them.
+    // Use echo mode so we can count how many were actually sent.
+    auto result = create_transport(/*echo=*/true);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // Enqueue several messages
+    for (int i = 0; i < 5; ++i) {
+        uint8_t payload = static_cast<uint8_t>(i);
+        tp->send_binary(&payload, 1);
+    }
+
+    // Stop immediately (TX thread may not have sent all yet)
+    tp->stop();
+
+    // After stop, all enqueued messages should have been sent.
+    // Check via stats — tx_packets should be >= 5.
+    auto stats = tp->stats();
+    EXPECT_GE(stats.tx_packets, 5u)
+        << "TX drain on stop() should have sent all queued messages";
+}
+
 // ===========================================================================
 // Wait-receive tests
 // ===========================================================================
