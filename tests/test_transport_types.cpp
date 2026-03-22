@@ -73,6 +73,18 @@ TEST_F(TransportConfigValidateTest, EmptyWsPathFails) {
     EXPECT_FALSE(cfg.validate().empty());
 }
 
+TEST_F(TransportConfigValidateTest, WsPathMustStartWithSlash) {
+    auto cfg = valid_config();
+    cfg.ws_path = "ws";
+    EXPECT_FALSE(cfg.validate().empty());
+
+    cfg.ws_path = "/ws";
+    EXPECT_TRUE(cfg.validate().empty());
+
+    cfg.ws_path = "/";
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
 TEST_F(TransportConfigValidateTest, ZeroBurstSizeFails) {
     auto cfg = valid_config();
     cfg.tx_burst_size = 0;

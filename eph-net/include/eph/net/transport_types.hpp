@@ -185,6 +185,8 @@ struct TransportConfig {
             return "remote_port must be > 0";
         if (ws_path.empty())
             return "ws_path must not be empty";
+        if (ws_path[0] != '/')
+            return "ws_path must start with '/'";
         if (tx_burst_size == 0)
             return "tx_burst_size must be > 0";
         if (rx_burst_size == 0)

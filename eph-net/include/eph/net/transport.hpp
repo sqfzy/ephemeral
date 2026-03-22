@@ -204,6 +204,11 @@ public:
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > MaxPayload) return SendError::kMessageTooLarge;
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        // RFC 6455 §5.6: text frames must contain valid UTF-8
+        if (opcode == ws::opcode::kText &&
+            !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
+            return SendError::kInvalidUtf8;
+        }
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
             std::memcpy(msg.data, data, len);
