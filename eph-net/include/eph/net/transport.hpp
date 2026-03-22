@@ -428,6 +428,45 @@ public:
         return SendError::kOk;
     }
 
+    /// Batch-send with timeout — waits up to `timeout` for queue space.
+    ///
+    /// Like send_n() but uses try_produce_n_for() to spin briefly for
+    /// queue capacity rather than returning kQueueFull immediately.
+    ///
+    /// @param payloads  Array of {data, len} pairs
+    /// @param count     Number of messages
+    /// @param timeout   Maximum time to wait for queue space
+    /// @param opcode    WebSocket opcode for all messages
+    /// @return SendError::kOk on success, or a specific error code
+    template <typename Rep, typename Period>
+    SendError send_n_for(const std::span<const uint8_t>* payloads, size_t count,
+                         std::chrono::duration<Rep, Period> timeout,
+                         uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+
+        for (size_t i = 0; i < count; ++i) {
+            if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
+            // RFC 6455 §5.6: text frames must contain valid UTF-8
+            if (opcode == ws::opcode::kText &&
+                !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
+                return SendError::kInvalidUtf8;
+            }
+        }
+
+        bool ok = tx_queue_.try_produce_n_for(count,
+            [&](TxMsg& slot, size_t i) {
+                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
+                slot.len = static_cast<uint16_t>(payloads[i].size());
+                slot.opcode = opcode;
+            }, timeout);
+
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return SendError::kQueueFull;
+        }
+        return SendError::kOk;
+    }
+
     // -----------------------------------------------------------------------
     // Receive API (application thread)
     // -----------------------------------------------------------------------

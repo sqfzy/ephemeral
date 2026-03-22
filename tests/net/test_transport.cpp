@@ -1683,6 +1683,41 @@ TEST_F(TransportTest, DrainRecvConsumesAll) {
     tp->stop();
 }
 
+TEST_F(TransportTest, BatchSendNForSucceeds) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::vector<uint8_t> p1 = {0x01, 0x02};
+    std::vector<uint8_t> p2 = {0x03};
+    std::span<const uint8_t> payloads[] = {p1, p2};
+
+    auto err = tp->send_n_for(payloads, 2, 100ms, ws::opcode::kBinary);
+    EXPECT_EQ(err, SendError::kOk);
+
+    EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
+
+    tp->stop();
+
+    auto stats = tp->stats();
+    EXPECT_GE(stats.tx_packets, 2u);
+}
+
+TEST_F(TransportTest, BatchSendNForRejectsInvalidUtf8) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::vector<uint8_t> valid = {'o', 'k'};
+    std::vector<uint8_t> invalid = {0xFF};
+    std::span<const uint8_t> payloads[] = {valid, invalid};
+
+    auto err = tp->send_n_for(payloads, 2, 100ms, ws::opcode::kText);
+    EXPECT_EQ(err, SendError::kInvalidUtf8);
+
+    tp->stop();
+}
+
 // ===========================================================================
 // Send with timeout tests
 // ===========================================================================
