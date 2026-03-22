@@ -488,7 +488,7 @@ TEST(ItchParser, ParseWithExtraDataSucceeds) {
 // ---------------------------------------------------------------------------
 
 TEST(ItchParser, ParseAllMultipleMessages) {
-    // Concatenate: SystemEvent (12) + OrderDelete (18) + BrokenTrade (18)
+    // Concatenate: SystemEvent (11) + OrderDelete (18) + BrokenTrade (18)
     constexpr size_t total = kSystemEventSize + kOrderDeleteSize + kBrokenTradeSize;
     uint8_t buf[total];
     std::memset(buf, 0, total);

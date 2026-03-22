@@ -359,6 +359,38 @@ TEST(FixBuilder, reset_allows_reuse) {
     EXPECT_EQ(result->get_int(tag::OrderQty).value(), 200);
 }
 
+TEST(FixBuilder, int64_max_roundtrip) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "8");
+    b.set_int(tag::Text, INT64_MAX);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+
+    auto val = result->get(tag::Text);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val.value(), "9223372036854775807");
+}
+
+TEST(FixBuilder, reset_after_overflow) {
+    uint8_t buf[64]; // small buffer
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "VERY_LONG_VALUE_THAT_DEFINITELY_OVERFLOWS");
+    EXPECT_EQ(b.finish(), 0u); // overflow
+
+    // Reset should clear the overflow flag and allow reuse
+    b.reset();
+    b.set(tag::MsgType, "D");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+    EXPECT_TRUE(verify_checksum(b.data(), b.size()));
+}
+
 TEST(FixBuilder, chained_set_calls) {
     uint8_t buf[512];
     MessageBuilder b(buf, sizeof(buf));
