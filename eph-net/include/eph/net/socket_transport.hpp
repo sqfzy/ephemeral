@@ -45,6 +45,7 @@ struct SocketConfig {
     int         keepalive_idle = 60;     // Seconds before first probe (TCP_KEEPIDLE)
     int         keepalive_interval = 10; // Seconds between probes (TCP_KEEPINTVL)
     int         keepalive_count = 3;     // Probes before declaring dead (TCP_KEEPCNT)
+    int         send_timeout_ms = 1000;  // Timeout for individual send() poll waits (ms)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,13 +309,15 @@ public:
 
             // n < 0
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // Wait for socket to become writable (short poll)
+                // Wait for socket to become writable
                 struct pollfd pfd{};
                 pfd.fd = fd_;
                 pfd.events = POLLOUT;
-                int rc = ::poll(&pfd, 1, 1000);
+                int rc = ::poll(&pfd, 1, config_.send_timeout_ms);
                 if (rc <= 0) {
-                    return std::unexpected("send() timeout waiting for writable");
+                    return std::unexpected(std::format(
+                        "send() timeout waiting for writable ({}ms)",
+                        config_.send_timeout_ms));
                 }
                 continue;
             }

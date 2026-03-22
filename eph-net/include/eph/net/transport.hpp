@@ -168,6 +168,23 @@ struct TransportConfig {
     // Connection state change callback (optional, called from worker threads)
     TransportStateCallback on_state_change{};
 
+    /// Push-mode message callback (optional, called from RX thread).
+    ///
+    /// When set, incoming data messages are delivered directly to this
+    /// callback from the RX thread instead of being enqueued to the
+    /// rx_queue_. This eliminates the polling overhead of recv() and is
+    /// ideal for event-driven architectures.
+    ///
+    /// @param data    Payload pointer (valid only during callback invocation)
+    /// @param len     Payload length
+    /// @param opcode  WebSocket opcode (kBinary, kText, etc.)
+    ///
+    /// @warning Called from the RX thread — must be non-blocking and
+    ///          thread-safe with respect to the application thread.
+    ///          Copy the data if you need it after the callback returns.
+    std::function<void(const uint8_t* data, uint16_t len, uint8_t opcode)>
+        on_message{};
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before Transport::create() to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
@@ -1725,17 +1742,10 @@ private:
                 if (is_final) {
                     // Reassembly complete — deliver
                     if (!ws_frag_buf_.empty()) {
-                        bool ok = rx_queue_.try_produce([&](RxMsg& msg) {
-                            std::memcpy(msg.data, ws_frag_buf_.data(),
-                                        ws_frag_buf_.size());
-                            msg.len = static_cast<uint16_t>(ws_frag_buf_.size());
-                            msg.opcode = ws_frag_opcode_;
-                        });
-                        if (ok) {
-                            rx_stats_.bytes += ws_frag_buf_.size();
-                        } else {
-                            rx_stats_.dropped++;
-                        }
+                        deliver_message(
+                            ws_frag_buf_.data(),
+                            static_cast<uint16_t>(ws_frag_buf_.size()),
+                            ws_frag_opcode_);
                     }
                     ws_frag_buf_.clear();
                 }
@@ -1743,21 +1753,27 @@ private:
         }
     }
 
-    /// Deliver a complete single-frame data message to the RX queue.
-    void deliver_data_frame(const ws::DecodedFrame& frame) {
-        if (frame.payload_len == 0) return;
+    /// Deliver a decoded payload to either the on_message callback or the RX queue.
+    void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) {
+        if (config_.on_message) {
+            try {
+                config_.on_message(data, len, opcode);
+            } catch (...) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "on_message callback threw an exception");
+            }
+            rx_stats_.bytes += len;
+            return;
+        }
 
         bool ok = rx_queue_.try_produce([&](RxMsg& msg) {
-            std::memcpy(msg.data, frame.payload, frame.payload_len);
-            if (frame.masked) {
-                ws::apply_mask(msg.data, frame.payload_len, frame.mask_key);
-            }
-            msg.len = static_cast<uint16_t>(frame.payload_len);
-            msg.opcode = frame.opcode;
+            std::memcpy(msg.data, data, len);
+            msg.len = len;
+            msg.opcode = opcode;
         });
 
         if (ok) {
-            rx_stats_.bytes += frame.payload_len;
+            rx_stats_.bytes += len;
         } else {
             rx_stats_.dropped++;
             if (rx_stats_.dropped % 1000 == 1) {
@@ -1765,6 +1781,23 @@ private:
                     "RX queue full, dropping data frame "
                     "(total dropped: {})", rx_stats_.dropped);
             }
+        }
+    }
+
+    /// Deliver a complete single-frame data message.
+    void deliver_data_frame(const ws::DecodedFrame& frame) {
+        if (frame.payload_len == 0) return;
+
+        // For masked frames, unmask into a temp buffer before delivery
+        if (frame.masked) {
+            uint8_t tmp[MaxPayload];
+            std::memcpy(tmp, frame.payload, frame.payload_len);
+            ws::apply_mask(tmp, frame.payload_len, frame.mask_key);
+            deliver_message(tmp, static_cast<uint16_t>(frame.payload_len),
+                            frame.opcode);
+        } else {
+            deliver_message(frame.payload, static_cast<uint16_t>(frame.payload_len),
+                            frame.opcode);
         }
     }
 
