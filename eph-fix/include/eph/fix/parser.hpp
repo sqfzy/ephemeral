@@ -12,6 +12,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -122,6 +123,7 @@ public:
     }
 
     /// Look up a tag and parse its value as double.
+    /// Returns nullopt if the value overflows to infinity.
     [[nodiscard]] std::optional<double> get_double(uint32_t t) const noexcept {
         auto sv = get(t);
         if (!sv || sv->empty()) return std::nullopt;
@@ -152,6 +154,9 @@ public:
             }
             val += frac / divisor;
         }
+        // Guard against overflow to infinity from extremely large inputs.
+        // Use direct comparison instead of std::isfinite for portability.
+        if (val == std::numeric_limits<double>::infinity()) return std::nullopt;
         return neg ? -val : val;
     }
 
@@ -180,13 +185,20 @@ public:
 
 /// Parse a raw tag number from decimal ASCII digits.
 /// Advances `p` past the '=' delimiter. Returns 0 on failure.
+/// FIX tag numbers are small (1–99999 in practice), but we guard against
+/// overflow from malformed input to avoid silent wraparound.
 inline uint32_t parse_tag_number(const char*& p, const char* end) noexcept {
+    constexpr uint32_t kMaxTag = UINT32_MAX / 10;
     uint32_t num = 0;
     if (p == end || *p < '0' || *p > '9') return 0;
     while (p != end && *p != '=') {
         char c = *p++;
         if (c < '0' || c > '9') return 0;
-        num = num * 10 + static_cast<uint32_t>(c - '0');
+        uint32_t digit = static_cast<uint32_t>(c - '0');
+        if (num > kMaxTag) return 0;
+        num *= 10;
+        if (num > UINT32_MAX - digit) return 0;
+        num += digit;
     }
     if (p == end || *p != '=') return 0;
     ++p; // skip '='

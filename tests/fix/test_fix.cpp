@@ -467,6 +467,24 @@ TEST(FixParser, get_char_missing_tag_returns_nullopt) {
     EXPECT_FALSE(result->get_char(tag::Side).has_value());
 }
 
+TEST(FixParser, get_int_bare_minus_returns_nullopt) {
+    std::string body = "35=D\x01" "58=-\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::Text).has_value());
+}
+
+TEST(FixParser, get_double_overflow_returns_nullopt) {
+    // An extremely large number that overflows double to infinity
+    std::string huge_num(310, '9'); // 10^310 > DBL_MAX
+    std::string body = "35=D\x01" "58=" + huge_num + "\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double(tag::Text).has_value());
+}
+
 TEST(FixParser, get_int_overflow_returns_nullopt) {
     // Value exceeding INT64_MAX should return nullopt, not silently wrap
     std::string body = "35=D\x01" "58=99999999999999999999\x01";

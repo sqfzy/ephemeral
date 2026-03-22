@@ -83,7 +83,7 @@ inline constexpr char MarketDataIncRefresh = 'X';
 
 /// Get human-readable name for a FIX tag number.
 /// Returns "Unknown" for unrecognized tags.
-inline std::string_view tag_name(uint32_t t) noexcept {
+inline constexpr std::string_view tag_name(uint32_t t) noexcept {
     switch (t) {
     case Account:               return "Account";
     case AvgPx:                 return "AvgPx";
