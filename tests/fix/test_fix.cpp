@@ -173,6 +173,66 @@ TEST(FixParser, verify_checksum_invalid) {
     EXPECT_FALSE(verify_checksum(raw.data(), raw.size()));
 }
 
+TEST(FixParser, get_int_non_numeric_returns_nullopt) {
+    std::string body = "35=D\x01" "58=abc\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    // Text tag contains "abc" — get_int should return nullopt
+    EXPECT_FALSE(result->get_int(tag::Text).has_value());
+}
+
+TEST(FixParser, get_double_non_numeric_returns_nullopt) {
+    std::string body = "35=D\x01" "58=not.a.number\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double(tag::Text).has_value());
+}
+
+TEST(FixParser, get_int_empty_value_returns_nullopt) {
+    std::string body = "35=D\x01" "58=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::Text).has_value());
+}
+
+TEST(FixParser, exact_max_fields_boundary) {
+    // Build a body with exactly kMaxFields (128) fields
+    std::string body;
+    for (int i = 0; i < 128; ++i) {
+        body += std::to_string(5000 + i) + "=v\x01";
+    }
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    // Should succeed — exactly at the limit
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->field_count(), 128u);
+}
+
+TEST(FixParser, verify_checksum_too_short) {
+    uint8_t tiny[] = {0x31}; // just 1 byte
+    EXPECT_FALSE(verify_checksum(tiny, sizeof(tiny)));
+}
+
+TEST(FixParser, parse_multiple_messages_consumes_first_only) {
+    std::string body1 = "35=D\x01";
+    std::string body2 = "35=8\x01";
+    auto raw1 = make_fix_msg("FIX.4.4", body1);
+    auto raw2 = make_fix_msg("FIX.4.4", body2);
+
+    // Concatenate two messages
+    std::vector<uint8_t> combined;
+    combined.insert(combined.end(), raw1.begin(), raw1.end());
+    combined.insert(combined.end(), raw2.begin(), raw2.end());
+
+    auto result = parse(combined.data(), combined.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->msg_type().value(), "D");
+    EXPECT_EQ(result->total_len(), raw1.size()); // only first consumed
+}
+
 // ===========================================================================
 // Builder
 // ===========================================================================

@@ -543,6 +543,23 @@ TEST(ItchParser, ParseAllEarlyStop) {
     EXPECT_EQ(consumed, kSystemEventSize + kOrderDeleteSize);
 }
 
+TEST(ItchParser, ParseAllPartialTrailingMessage) {
+    // SystemEvent (11) + partial OrderDelete (only 5 bytes of 18)
+    constexpr size_t total = kSystemEventSize + 5;
+    uint8_t buf[total];
+    std::memset(buf, 0, total);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = kOrderDelete;
+
+    size_t count = 0;
+    size_t consumed = parse_all(buf, total, [&](const MessageView&) {
+        ++count;
+    });
+
+    EXPECT_EQ(count, 1u);
+    EXPECT_EQ(consumed, kSystemEventSize); // partial message not consumed
+}
+
 TEST(ItchParser, ParseAllEmptyBuffer) {
     size_t count = 0;
     size_t consumed = parse_all(nullptr, 0, [&](const MessageView&) {
