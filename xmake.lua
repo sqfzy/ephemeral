@@ -70,75 +70,55 @@ target("eph-dpdk")
     add_rules("utils.install.pkgconfig_importfiles")
 
 -- ===========================================================================
--- benchmarks
+-- benchmarks (directory structure encodes module dependency)
 -- ===========================================================================
 
--- Benchmark dependency map: each layer depends on its own module
-local bench_deps = {
-    -- DPDK layer (TCP header + E2E pipeline)
-    bench_tcp_header        = "eph-dpdk",
-    bench_pipeline          = "eph-dpdk",
-    -- Net layer (WS, TLS, transport pipeline)
-    bench_ws                = "eph-net",
-    bench_tls               = "eph-net",
-    bench_transport_pipeline = "eph-net",
+local bench_module_deps = {
+    containers = "eph-containers",
+    utils      = "eph-utils",
+    net        = "eph-net",
+    dpdk       = "eph-dpdk",
 }
 
-for _, file in ipairs(os.files("benchmarks/**.cpp")) do
-    local name = path.basename(file)
-
-    target(name)
-        set_kind("binary")
-        set_group("benchmarks")
-        set_default(false)
-        add_files(file)
-        add_deps(bench_deps[name] or "eph-containers")
-        add_packages("benchmark")
-        if not bench_deps[name] then
-            add_packages("tabulate")
-        end
+for dir, dep in pairs(bench_module_deps) do
+    for _, file in ipairs(os.files("benchmarks/" .. dir .. "/**.cpp")) do
+        target(path.basename(file))
+            set_kind("binary")
+            set_group("benchmarks")
+            set_default(false)
+            add_files(file)
+            add_includedirs("benchmarks")
+            add_deps(dep)
+            add_packages("benchmark")
+            if dir ~= "dpdk" then
+                add_packages("tabulate")
+            end
+    end
 end
 
 -- ===========================================================================
--- tests
+-- tests (directory structure encodes module dependency)
 -- ===========================================================================
 
--- Tests that need DPDK (net_header, platform)
-local dpdk_tests = {
-    test_net_header = true,
-    test_dpdk_platform = true,
-    test_arp = true,
+local test_module_deps = {
+    containers = "eph-containers",
+    utils      = "eph-utils",
+    net        = "eph-net",
+    dpdk       = "eph-dpdk",
 }
 
--- Tests that only need eph-net (no DPDK required)
-local net_tests = {
-    test_websocket = true,
-    test_http = true,
-    test_tls_record = true,
-    test_tcp_concept = true,
-    test_socket_transport = true,
-    test_transport_types = true,
-}
-
-for _, file in ipairs(os.files("tests/**.cpp")) do
-    local name = path.basename(file)
-
-    target(name)
-        set_kind("binary")
-        set_group("tests")
-        set_default(false)
-        add_files(file)
-        if dpdk_tests[name] then
-            add_deps("eph-dpdk")
-        elseif net_tests[name] then
-            add_deps("eph-net")
-        else
-            -- Default: containers + utils for generic tests
-            add_deps("eph-containers")
-            add_deps("eph-utils")
-        end
-        add_packages("gtest")
-        add_defines("SPDLOG_NO_EXCEPTIONS")
+for dir, dep in pairs(test_module_deps) do
+    for _, file in ipairs(os.files("tests/" .. dir .. "/**.cpp")) do
+        target(path.basename(file))
+            set_kind("binary")
+            set_group("tests")
+            set_default(false)
+            add_files(file)
+            add_includedirs("tests")
+            add_deps(dep)
+            add_packages("gtest")
+            add_defines("SPDLOG_NO_EXCEPTIONS")
+    end
 end
 
 -- ===========================================================================
