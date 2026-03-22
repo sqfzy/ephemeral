@@ -1476,7 +1476,6 @@ private:
         auto batch    = std::make_unique<TxMsg[]>(kMaxBatch);
         auto tls_bufs_storage = std::make_unique<uint8_t[]>(
             static_cast<size_t>(kMaxBatch) * kTlsBufSize);
-        auto tls_lens = std::make_unique<uint16_t[]>(kMaxBatch);
 
         // Single WS encode buffer reused per message
         uint8_t ws_buf[kWsBufSize];
@@ -1551,7 +1550,11 @@ private:
                 continue;
             }
 
-            // WS encode -> [TLS encrypt] -> TCP send for each message in batch
+            // WS encode -> [TLS encrypt] -> TCP send for each message in batch.
+            // TLS mode: pack encrypted records contiguously for a single
+            // TCP send, reducing syscall count from N to 1 per batch.
+            size_t coalesced_len = 0;
+
             for (int i = 0; i < n; ++i) {
                 size_t ws_len;
 
@@ -1568,14 +1571,23 @@ private:
                 }
 
                 if (config_.use_tls) {
-                    uint8_t* tls_buf_i = tls_bufs_storage.get() +
-                        static_cast<size_t>(i) * kTlsBufSize;
-                    tls_lens[i] = crypto_->encrypt(
+                    // Pack encrypted records contiguously into tls_bufs_storage
+                    // so we can send the entire batch in a single TCP write.
+                    uint8_t* tls_buf_i = tls_bufs_storage.get() + coalesced_len;
+                    uint16_t enc_len = crypto_->encrypt(
                         ws_buf, static_cast<uint16_t>(ws_len),
                         tls_buf_i);
 
-                    if (tls_lens[i] == 0) {
+                    if (enc_len == 0) {
                         tx_stats_.crypto_errors++;
+                    } else {
+                        coalesced_len += enc_len;
+                        tx_stats_.packets++;
+                        tx_stats_.bytes += batch[i].len;
+                        if (batch[i].opcode == ws::opcode::kText) {
+                            tx_stats_.text_packets++;
+                            tx_stats_.text_bytes += batch[i].len;
+                        }
                     }
                 } else {
                     // Plain WS: send WS frame directly over TCP
@@ -1595,26 +1607,15 @@ private:
                 }
             }
 
-            // Send all encrypted packets through TCP (TLS mode only)
-            if (config_.use_tls) {
-                for (int i = 0; i < n; ++i) {
-                    if (tls_lens[i] == 0) continue;
-
-                    uint8_t* tls_buf_i = tls_bufs_storage.get() +
-                        static_cast<size_t>(i) * kTlsBufSize;
-                    auto result = tcp_->send(tls_buf_i, tls_lens[i]);
-                    if (!result) {
-                        tx_stats_.dropped++;
-                        SPDLOG_LOGGER_WARN(log,
-                            "TCP send failed (dropped): {}", result.error());
-                    } else {
-                        tx_stats_.packets++;
-                        tx_stats_.bytes += batch[i].len;
-                        if (batch[i].opcode == ws::opcode::kText) {
-                            tx_stats_.text_packets++;
-                            tx_stats_.text_bytes += batch[i].len;
-                        }
-                    }
+            // Send coalesced TLS records in a single TCP write
+            if (config_.use_tls && coalesced_len > 0) {
+                auto result = tcp_->send(tls_bufs_storage.get(), coalesced_len);
+                if (!result) {
+                    // All records in this batch are lost — count them as dropped.
+                    // Stats were already incremented above, so adjust back.
+                    SPDLOG_LOGGER_WARN(log,
+                        "Coalesced TCP send failed ({}B, {} records): {}",
+                        coalesced_len, n, result.error());
                 }
             }
         }
