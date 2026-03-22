@@ -115,7 +115,7 @@ struct ConnectionErrorInfo {
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"code\":\"{}\",\"detail\":\"{}\",\"http_status\":{}}}",
-            connection_error_name(code),
+            detail::json_escape(connection_error_name(code)),
             detail::json_escape(detail),
             http_status);
     }
@@ -794,9 +794,12 @@ template <>
 struct std::formatter<eph::net::ConnectionInfo> : std::formatter<std::string> {
     auto format(const eph::net::ConnectionInfo& c, auto& ctx) const {
         return std::formatter<std::string>::format(
-            std::format("{}:{} tls={} ({}) subproto={}",
+            std::format("{}:{} tls={} version={} cipher={} subproto={}",
                 c.remote_ip.empty() ? "unknown" : c.remote_ip,
-                c.remote_port, c.tls_version, c.cipher_name,
+                c.remote_port,
+                c.use_tls ? "true" : "false",
+                c.tls_version.empty() ? "none" : c.tls_version,
+                c.cipher_name.empty() ? "none" : c.cipher_name,
                 c.ws_subprotocol.empty() ? "(none)" : c.ws_subprotocol),
             ctx);
     }

@@ -1017,15 +1017,19 @@ TEST(ConnectionInfoFormatter, FormatsWithAllFields) {
     };
     auto str = std::format("{}", info);
     EXPECT_NE(str.find("10.0.0.1:8443"), std::string::npos);
-    EXPECT_NE(str.find("TLSv1.3"), std::string::npos);
-    EXPECT_NE(str.find("graphql-ws"), std::string::npos);
+    EXPECT_NE(str.find("tls=true"), std::string::npos);
+    EXPECT_NE(str.find("version=TLSv1.3"), std::string::npos);
+    EXPECT_NE(str.find("cipher=TLS_AES_256_GCM_SHA384"), std::string::npos);
+    EXPECT_NE(str.find("subproto=graphql-ws"), std::string::npos);
 }
 
 TEST(ConnectionInfoFormatter, FormatsWithEmptyFields) {
     ConnectionInfo info{};
     auto str = std::format("{}", info);
     EXPECT_NE(str.find("unknown"), std::string::npos);
-    EXPECT_NE(str.find("(none)"), std::string::npos);
+    EXPECT_NE(str.find("tls=true"), std::string::npos);
+    EXPECT_NE(str.find("version=none"), std::string::npos);
+    EXPECT_NE(str.find("subproto=(none)"), std::string::npos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
