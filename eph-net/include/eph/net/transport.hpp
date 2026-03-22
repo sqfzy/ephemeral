@@ -851,6 +851,9 @@ public:
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
             .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
             .handshake_ns      = last_handshake_ns_,
+            .tcp_connect_ns    = last_tcp_connect_ns_,
+            .tls_handshake_ns  = last_tls_handshake_ns_,
+            .ws_upgrade_ns     = last_ws_upgrade_ns_,
             .remote_ip         = remote_ip_,
         };
     }
@@ -942,6 +945,9 @@ private:
     std::atomic<uint64_t>                  reconnect_count_{0};
     std::atomic<uint64_t>                  pong_timeouts_{0};
     uint64_t                               last_handshake_ns_{0};
+    uint64_t                               last_tcp_connect_ns_{0};
+    uint64_t                               last_tls_handshake_ns_{0};
+    uint64_t                               last_ws_upgrade_ns_{0};
 
     // Pong timeout tracking (TX thread writes ping time, RX thread writes pong time).
     // Using atomics with relaxed ordering — occasional stale reads are acceptable
@@ -996,6 +1002,7 @@ private:
         auto connect_start = std::chrono::steady_clock::now();
 
         // Phase 1: Create TCP session via factory (factory handles connect)
+        auto tcp_phase_start = std::chrono::steady_clock::now();
         auto tcp_result = tcp_factory_();
         if (!tcp_result) {
             return std::unexpected(ConnectionErrorInfo{
@@ -1003,6 +1010,9 @@ private:
                 std::format("TCP factory failed: {}", tcp_result.error())});
         }
         tcp_ = std::move(*tcp_result);
+        last_tcp_connect_ns_ = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - tcp_phase_start).count());
 
         if (!tcp_->is_established()) {
             return std::unexpected(ConnectionErrorInfo{
@@ -1010,8 +1020,10 @@ private:
                 "TCP factory returned non-established session"});
         }
 
+        last_tls_handshake_ns_ = 0;
         if (config_.use_tls) {
             // Phase 2: TLS handshake
+            auto tls_phase_start = std::chrono::steady_clock::now();
             TlsConfig tls_cfg{
                 .hostname = config_.remote_host,
                 .ca_cert_path = config_.ca_cert_path,
@@ -1035,13 +1047,20 @@ private:
                     ConnectionError::kTlsHandshakeFailed,
                     std::format("TLS handshake failed: {}", hs_result.error())});
             }
+            last_tls_handshake_ns_ = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - tls_phase_start).count());
         }
 
         // Phase 3: WebSocket upgrade (over TLS or plain TCP)
+        auto ws_phase_start = std::chrono::steady_clock::now();
         auto ws_result = do_ws_upgrade();
         if (!ws_result) {
             return std::unexpected(ws_result.error());
         }
+        last_ws_upgrade_ns_ = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - ws_phase_start).count());
 
         if (config_.use_tls) {
             // Phase 4: Extract keys for AEAD hot path

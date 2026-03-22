@@ -487,6 +487,9 @@ struct TransportStats {
     uint64_t reconnect_count   = 0;
     uint64_t uptime_ns         = 0;  ///< Nanoseconds since Transport::create()
     uint64_t handshake_ns      = 0;  ///< Last TCP+TLS+WS handshake duration (ns)
+    uint64_t tcp_connect_ns    = 0;  ///< Last TCP connect (factory) duration (ns)
+    uint64_t tls_handshake_ns  = 0;  ///< Last TLS handshake duration (ns), 0 if no TLS
+    uint64_t ws_upgrade_ns     = 0;  ///< Last WebSocket upgrade duration (ns)
     std::string remote_ip{};         ///< Resolved remote IP of current connection
 
     /// Last handshake duration in milliseconds (for human-readable logging).
@@ -543,7 +546,8 @@ struct TransportStats {
             "text: {} pkts/{} B, {} dropped, {} decrypt errors\n"
             "  Queue full: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
-            "  Reconnections: {}, handshake: {:.1f}ms",
+            "  Reconnections: {}, handshake: {:.1f}ms "
+            "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)",
             uptime_s, remote_ip.empty() ? "unknown" : remote_ip,
             tx_packets, tx_pps(), tx_bytes, tx_bps(),
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
@@ -551,7 +555,10 @@ struct TransportStats {
             rx_text_packets, rx_text_bytes, rx_dropped, decrypt_errors,
             queue_full_count,
             ws_pings_received, ws_pongs_sent, pong_timeouts,
-            reconnect_count, handshake_ms());
+            reconnect_count, handshake_ms(),
+            static_cast<double>(tcp_connect_ns) / 1e6,
+            static_cast<double>(tls_handshake_ns) / 1e6,
+            static_cast<double>(ws_upgrade_ns) / 1e6);
     }
 
     /// JSON-formatted stats for monitoring system integration.
@@ -567,7 +574,8 @@ struct TransportStats {
             "\"queue_full_count\":{},\"ws_pings_received\":{},"
             "\"ws_pongs_sent\":{},\"pong_timeouts\":{},"
             "\"reconnect_count\":{},\"uptime_ns\":{},"
-            "\"handshake_ns\":{},\"handshake_ms\":{:.3f},"
+            "\"handshake_ns\":{},\"tcp_connect_ns\":{},\"tls_handshake_ns\":{},"
+            "\"ws_upgrade_ns\":{},\"handshake_ms\":{:.3f},"
             "\"tx_pps\":{:.1f},\"rx_pps\":{:.1f},"
             "\"tx_bps\":{:.1f},\"rx_bps\":{:.1f},"
             "\"remote_ip\":\"{}\"}}",
@@ -579,7 +587,8 @@ struct TransportStats {
             queue_full_count, ws_pings_received,
             ws_pongs_sent, pong_timeouts,
             reconnect_count, uptime_ns,
-            handshake_ns, handshake_ms(),
+            handshake_ns, tcp_connect_ns, tls_handshake_ns,
+            ws_upgrade_ns, handshake_ms(),
             tx_pps(), rx_pps(),
             tx_bps(), rx_bps(),
             remote_ip);

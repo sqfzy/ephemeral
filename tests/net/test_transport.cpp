@@ -759,6 +759,14 @@ TEST_F(TransportTest, HandshakeLatencyRecorded) {
 
     auto stats = tp->stats();
     EXPECT_GT(stats.handshake_ns, 0u);
+    // Per-phase breakdown should sum to approximately total handshake
+    EXPECT_GT(stats.tcp_connect_ns, 0u);
+    EXPECT_GT(stats.ws_upgrade_ns, 0u);
+    // TLS is disabled in mock, so tls_handshake_ns should be 0
+    EXPECT_EQ(stats.tls_handshake_ns, 0u);
+    // Sum of phases should be close to total (allow some overhead)
+    uint64_t phase_sum = stats.tcp_connect_ns + stats.tls_handshake_ns + stats.ws_upgrade_ns;
+    EXPECT_LE(phase_sum, stats.handshake_ns);
 
     tp->stop();
 }
