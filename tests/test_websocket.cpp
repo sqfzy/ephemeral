@@ -620,3 +620,82 @@ TEST(WsEncodeValidation, IsValidPayloadLen) {
     EXPECT_FALSE(is_valid_payload_len(opcode::kPing, 126));
     EXPECT_FALSE(is_valid_payload_len(opcode::kClose, 126));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UTF-8 validation (RFC 6455 §5.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(Utf8Validation, EmptyString) {
+    EXPECT_TRUE(is_valid_utf8(nullptr, 0));
+    EXPECT_TRUE(is_valid_utf8(std::string_view("")));
+}
+
+TEST(Utf8Validation, AsciiOnly) {
+    EXPECT_TRUE(is_valid_utf8(std::string_view("Hello, World!")));
+    EXPECT_TRUE(is_valid_utf8(std::string_view("\t\n\r ")));
+}
+
+TEST(Utf8Validation, ValidMultibyte) {
+    // 2-byte: U+00E9 (é) = C3 A9
+    EXPECT_TRUE(is_valid_utf8(std::string_view("caf\xC3\xA9")));
+    // 3-byte: U+4E16 (世) = E4 B8 96
+    EXPECT_TRUE(is_valid_utf8(std::string_view("\xE4\xB8\x96\xE7\x95\x8C")));
+    // 4-byte: U+1F600 (😀) = F0 9F 98 80
+    EXPECT_TRUE(is_valid_utf8(std::string_view("\xF0\x9F\x98\x80")));
+}
+
+TEST(Utf8Validation, InvalidContinuationByte) {
+    // Continuation byte without a leading byte
+    uint8_t data[] = {0x80};
+    EXPECT_FALSE(is_valid_utf8(data, 1));
+    // Missing continuation byte
+    uint8_t data2[] = {0xC3}; // 2-byte start, but no continuation
+    EXPECT_FALSE(is_valid_utf8(data2, 1));
+}
+
+TEST(Utf8Validation, OverlongEncoding) {
+    // Overlong 2-byte encoding of U+0000: C0 80
+    uint8_t data[] = {0xC0, 0x80};
+    EXPECT_FALSE(is_valid_utf8(data, 2));
+    // Overlong 3-byte encoding of U+002F: E0 80 AF
+    uint8_t data2[] = {0xE0, 0x80, 0xAF};
+    EXPECT_FALSE(is_valid_utf8(data2, 3));
+}
+
+TEST(Utf8Validation, SurrogateHalves) {
+    // U+D800 (high surrogate): ED A0 80 — invalid in UTF-8
+    uint8_t data[] = {0xED, 0xA0, 0x80};
+    EXPECT_FALSE(is_valid_utf8(data, 3));
+    // U+DFFF (low surrogate): ED BF BF
+    uint8_t data2[] = {0xED, 0xBF, 0xBF};
+    EXPECT_FALSE(is_valid_utf8(data2, 3));
+}
+
+TEST(Utf8Validation, TruncatedSequence) {
+    // 3-byte sequence cut short
+    uint8_t data[] = {0xE4, 0xB8}; // Missing 3rd byte
+    EXPECT_FALSE(is_valid_utf8(data, 2));
+    // 4-byte sequence cut short
+    uint8_t data2[] = {0xF0, 0x9F, 0x98}; // Missing 4th byte
+    EXPECT_FALSE(is_valid_utf8(data2, 3));
+}
+
+TEST(Utf8Validation, MaxCodepoints) {
+    // U+FFFF (max BMP): EF BF BF — valid
+    uint8_t data[] = {0xEF, 0xBF, 0xBF};
+    EXPECT_TRUE(is_valid_utf8(data, 3));
+    // U+10FFFF (max Unicode): F4 8F BF BF — valid
+    uint8_t data2[] = {0xF4, 0x8F, 0xBF, 0xBF};
+    EXPECT_TRUE(is_valid_utf8(data2, 4));
+    // U+110000 (beyond Unicode): F4 90 80 80 — invalid
+    uint8_t data3[] = {0xF4, 0x90, 0x80, 0x80};
+    EXPECT_FALSE(is_valid_utf8(data3, 4));
+}
+
+TEST(Utf8Validation, SpanOverload) {
+    std::vector<uint8_t> valid = {0x48, 0x65, 0x6C, 0x6C, 0x6F}; // "Hello"
+    EXPECT_TRUE(is_valid_utf8(std::span<const uint8_t>(valid)));
+
+    std::vector<uint8_t> invalid = {0xFF, 0xFE};
+    EXPECT_FALSE(is_valid_utf8(std::span<const uint8_t>(invalid)));
+}
