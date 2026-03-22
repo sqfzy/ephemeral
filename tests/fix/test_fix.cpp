@@ -2170,6 +2170,41 @@ TEST(FixBuilder, set_double_finite_values_still_work) {
 }
 
 // ---------------------------------------------------------------------------
+// Constructor precondition checks
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, null_buffer_causes_immediate_overflow) {
+    MessageBuilder b(nullptr, 1024);
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, zero_capacity_causes_immediate_overflow) {
+    uint8_t buf[1];
+    MessageBuilder b(buf, 0);
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, insufficient_capacity_causes_immediate_overflow) {
+    // Capacity less than kHeaderReserve (32) should immediately overflow
+    uint8_t buf[16];
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, null_buffer_set_returns_without_crash) {
+    // Ensure set() on a null-buffer builder doesn't dereference nullptr
+    MessageBuilder b(nullptr, 512);
+    EXPECT_TRUE(b.has_overflow());
+    b.set(tag::MsgType, "D");        // should be a no-op
+    b.set_int(tag::MsgSeqNum, 1);    // should be a no-op
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+// ---------------------------------------------------------------------------
 // set_timestamp edge cases
 // ---------------------------------------------------------------------------
 

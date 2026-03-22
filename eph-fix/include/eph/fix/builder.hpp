@@ -36,6 +36,13 @@ public:
     /// @param capacity Total buffer size in bytes
     explicit MessageBuilder(uint8_t* buf, size_t capacity) noexcept
         : buf_(buf), capacity_(capacity) {
+        // Guard: null buffer or insufficient capacity → immediate overflow state.
+        // kHeaderReserve (32 bytes) is needed for BeginString + BodyLength prefix,
+        // plus at least ~20 bytes for a minimal field + checksum trailer.
+        if (buf == nullptr || capacity < kHeaderReserve) {
+            overflow_ = true;
+            return;
+        }
         // Reserve space at the front for "8=FIX.4.4\x019=NNNNN\x01" (up to ~24 bytes).
         // We use a generous 32-byte reservation so body length up to 99999 fits.
         body_start_ = kHeaderReserve;
