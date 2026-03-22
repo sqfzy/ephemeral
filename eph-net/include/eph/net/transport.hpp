@@ -1555,6 +1555,11 @@ private:
             // TLS mode: pack encrypted records contiguously for a single
             // TCP send, reducing syscall count from N to 1 per batch.
             size_t coalesced_len = 0;
+            // Track batch stats separately so we can roll back on TCP failure.
+            uint64_t batch_packets = 0;
+            uint64_t batch_bytes = 0;
+            uint64_t batch_text_packets = 0;
+            uint64_t batch_text_bytes = 0;
 
             for (int i = 0; i < n; ++i) {
                 size_t ws_len;
@@ -1583,11 +1588,11 @@ private:
                         tx_stats_.crypto_errors++;
                     } else {
                         coalesced_len += enc_len;
-                        tx_stats_.packets++;
-                        tx_stats_.bytes += batch[i].len;
+                        batch_packets++;
+                        batch_bytes += batch[i].len;
                         if (batch[i].opcode == ws::opcode::kText) {
-                            tx_stats_.text_packets++;
-                            tx_stats_.text_bytes += batch[i].len;
+                            batch_text_packets++;
+                            batch_text_bytes += batch[i].len;
                         }
                     }
                 } else {
@@ -1611,12 +1616,18 @@ private:
             // Send coalesced TLS records in a single TCP write
             if (config_.use_tls && coalesced_len > 0) {
                 auto result = tcp_->send(tls_bufs_storage.get(), coalesced_len);
-                if (!result) {
-                    // All records in this batch are lost — count them as dropped.
-                    // Stats were already incremented above, so adjust back.
+                if (result) {
+                    // Commit batch stats only after successful TCP write
+                    tx_stats_.packets += batch_packets;
+                    tx_stats_.bytes += batch_bytes;
+                    tx_stats_.text_packets += batch_text_packets;
+                    tx_stats_.text_bytes += batch_text_bytes;
+                } else {
+                    // All records in this batch are lost — count as dropped.
+                    tx_stats_.dropped += batch_packets;
                     SPDLOG_LOGGER_WARN(log,
                         "Coalesced TCP send failed ({}B, {} records): {}",
-                        coalesced_len, n, result.error());
+                        coalesced_len, batch_packets, result.error());
                 }
             }
         }
