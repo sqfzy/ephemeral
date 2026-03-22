@@ -149,11 +149,12 @@ public:
                 "Cannot connect: state={}", tcp_state_name(state_)));
         }
 
-        // Resolve hostname
+        // Resolve hostname (dual-stack: prefers IPv4 via AF_UNSPEC + AI_ADDRCONFIG)
         struct addrinfo hints{};
-        hints.ai_family = AF_INET;
+        hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
+        hints.ai_flags = AI_ADDRCONFIG;  // Only return addresses the host can reach
 
         auto port_str = std::to_string(config_.port);
         struct addrinfo* result = nullptr;
@@ -506,19 +507,22 @@ private:
         state_ = TcpState::Closed;
     }
 
-    /// Extract human-readable IP from addrinfo (IPv4 only for now).
+    /// Extract human-readable IP from addrinfo (IPv4 and IPv6).
     void resolve_ip(const struct addrinfo* ai) noexcept {
-        if (!ai || ai->ai_family != AF_INET) {
+        if (!ai) {
             resolved_ip_.clear();
             return;
         }
-        char buf[INET_ADDRSTRLEN]{};
-        auto* sin = reinterpret_cast<const struct sockaddr_in*>(ai->ai_addr);
-        if (::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
-            resolved_ip_ = buf;
-        } else {
-            resolved_ip_.clear();
+        char buf[INET6_ADDRSTRLEN]{};
+        const char* result = nullptr;
+        if (ai->ai_family == AF_INET) {
+            auto* sin = reinterpret_cast<const struct sockaddr_in*>(ai->ai_addr);
+            result = ::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+        } else if (ai->ai_family == AF_INET6) {
+            auto* sin6 = reinterpret_cast<const struct sockaddr_in6*>(ai->ai_addr);
+            result = ::inet_ntop(AF_INET6, &sin6->sin6_addr, buf, sizeof(buf));
         }
+        resolved_ip_ = result ? buf : "";
     }
 
     void query_mss() noexcept {
