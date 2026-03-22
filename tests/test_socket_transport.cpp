@@ -199,3 +199,58 @@ TEST(SocketTransport, LoopbackConnectSendRecv) {
     ::close(client_fd);
     ::close(listen_fd);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SocketConfig::validate()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketConfigValidate, ValidConfigPasses) {
+    SocketConfig cfg{.host = "example.com", .port = 443};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, EmptyHostFails) {
+    SocketConfig cfg{.host = "", .port = 443};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("host"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, ZeroPortFails) {
+    SocketConfig cfg{.host = "example.com", .port = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, ZeroSendTimeoutFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443, .send_timeout_ms = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, NegativeSendTimeoutFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443, .send_timeout_ms = -1};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, KeepaliveWithInvalidIdleFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .tcp_keepalive = true, .keepalive_idle = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, KeepaliveWithInvalidIntervalFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .tcp_keepalive = true, .keepalive_interval = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, KeepaliveWithInvalidCountFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .tcp_keepalive = true, .keepalive_count = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, KeepaliveDisabledIgnoresInvalidValues) {
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .tcp_keepalive = false, .keepalive_idle = 0,
+                     .keepalive_interval = 0, .keepalive_count = 0};
+    EXPECT_TRUE(cfg.validate().empty());
+}

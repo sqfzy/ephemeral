@@ -46,6 +46,26 @@ struct SocketConfig {
     int         keepalive_interval = 10; // Seconds between probes (TCP_KEEPINTVL)
     int         keepalive_count = 3;     // Probes before declaring dead (TCP_KEEPCNT)
     int         send_timeout_ms = 1000;  // Timeout for individual send() poll waits (ms)
+
+    /// Validate configuration, returning an error description or empty string on success.
+    /// Call before constructing SocketTransport for early, actionable error messages.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (host.empty())
+            return "host must not be empty";
+        if (port == 0)
+            return "port must be > 0";
+        if (send_timeout_ms <= 0)
+            return "send_timeout_ms must be positive";
+        if (tcp_keepalive) {
+            if (keepalive_idle <= 0)
+                return "keepalive_idle must be positive when keepalive is enabled";
+            if (keepalive_interval <= 0)
+                return "keepalive_interval must be positive when keepalive is enabled";
+            if (keepalive_count <= 0)
+                return "keepalive_count must be positive when keepalive is enabled";
+        }
+        return {};
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
