@@ -178,6 +178,98 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
     return offset;
 }
 
+// ---------------------------------------------------------------------------
+// Tag types for type-safe dispatch
+// ---------------------------------------------------------------------------
+
+/// Tag types — empty structs used for compile-time message type discrimination.
+/// Pass these to handler overloads or use with `if constexpr` for zero-overhead
+/// dispatch on ITCH message types.
+namespace msg {
+struct SystemEvent {};
+struct StockDirectory {};
+struct StockTradingAction {};
+struct RegSHORestriction {};
+struct MarketParticipantPosition {};
+struct MWCBDeclineLevel {};
+struct MWCBStatus {};
+struct IPOQuotingPeriod {};
+struct LULDAuctionCollar {};
+struct OperationalHalt {};
+struct AddOrder {};
+struct AddOrderMPID {};
+struct OrderExecuted {};
+struct OrderExecutedWithPrice {};
+struct OrderCancel {};
+struct OrderDelete {};
+struct OrderReplace {};
+struct NonCrossTrade {};
+struct CrossTrade {};
+struct BrokenTrade {};
+struct NOII {};
+struct RPII {};
+struct Unknown {};
+} // namespace msg
+
+// ---------------------------------------------------------------------------
+// dispatch() — type-safe visitor for ITCH messages
+// ---------------------------------------------------------------------------
+
+/// Dispatch a parsed ITCH message to a handler using tag-type overload resolution.
+///
+/// The handler is invoked as `handler(Tag{}, body)` where:
+///   - Tag is one of the msg:: structs above (compile-time message type)
+///   - body points to the message body (past the 1-byte type field)
+///
+/// Usage with overload set:
+///   struct MyHandler {
+///       void operator()(itch::msg::AddOrder, const uint8_t* body) { ... }
+///       void operator()(itch::msg::OrderDelete, const uint8_t* body) { ... }
+///       template <typename T>
+///       void operator()(T, const uint8_t*) { /* default: ignore */ }
+///   };
+///   itch::dispatch(msg_view, MyHandler{});
+///
+/// Usage with if-constexpr lambda:
+///   itch::dispatch(msg_view, [](auto tag, const uint8_t* body) {
+///       if constexpr (std::is_same_v<decltype(tag), itch::msg::AddOrder>) {
+///           // handle AddOrder
+///       }
+///   });
+///
+/// The handler return value (if any) is forwarded back to the caller.
+/// If the message type is unknown, msg::Unknown is dispatched.
+template <typename Handler>
+decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
+    const uint8_t* body = view.data + 1; // skip type byte
+
+    switch (view.msg_type) {
+    case kSystemEvent:              return handler(msg::SystemEvent{}, body);
+    case kStockDirectory:           return handler(msg::StockDirectory{}, body);
+    case kStockTradingAction:       return handler(msg::StockTradingAction{}, body);
+    case kRegSHORestriction:        return handler(msg::RegSHORestriction{}, body);
+    case kMarketParticipantPosition: return handler(msg::MarketParticipantPosition{}, body);
+    case kMWCBDeclineLevel:         return handler(msg::MWCBDeclineLevel{}, body);
+    case kMWCBStatus:               return handler(msg::MWCBStatus{}, body);
+    case kIPOQuotingPeriod:         return handler(msg::IPOQuotingPeriod{}, body);
+    case kLULDAuctionCollar:        return handler(msg::LULDAuctionCollar{}, body);
+    case kOperationalHalt:          return handler(msg::OperationalHalt{}, body);
+    case kAddOrder:                 return handler(msg::AddOrder{}, body);
+    case kAddOrderMPID:             return handler(msg::AddOrderMPID{}, body);
+    case kOrderExecuted:            return handler(msg::OrderExecuted{}, body);
+    case kOrderExecutedWithPrice:   return handler(msg::OrderExecutedWithPrice{}, body);
+    case kOrderCancel:              return handler(msg::OrderCancel{}, body);
+    case kOrderDelete:              return handler(msg::OrderDelete{}, body);
+    case kOrderReplace:             return handler(msg::OrderReplace{}, body);
+    case kNonCrossTrade:            return handler(msg::NonCrossTrade{}, body);
+    case kCrossTrade:               return handler(msg::CrossTrade{}, body);
+    case kBrokenTrade:              return handler(msg::BrokenTrade{}, body);
+    case kNOII:                     return handler(msg::NOII{}, body);
+    case kRPII:                     return handler(msg::RPII{}, body);
+    default:                        return handler(msg::Unknown{}, body);
+    }
+}
+
 } // namespace eph::itch
 
 /// std::formatter specialization for itch::ParseError.

@@ -1261,3 +1261,188 @@ TEST(ItchRPII, ParseAllFields) {
     EXPECT_EQ(rpii::stock(msg), "NFLX    ");
     EXPECT_EQ(rpii::interest_flag(msg), 'A');
 }
+
+// ===========================================================================
+// dispatch() — type-safe visitor
+// ===========================================================================
+
+TEST(ItchDispatch, dispatches_add_order_to_correct_tag) {
+    // Build an AddOrder message (35 bytes)
+    uint8_t raw[35];
+    std::memset(raw, 0, sizeof(raw));
+    raw[0] = kAddOrder;
+
+    auto view = parse(raw, sizeof(raw));
+    ASSERT_TRUE(view.has_value());
+
+    bool called = false;
+    dispatch(*view, [&](auto tag, const uint8_t* body) {
+        if constexpr (std::is_same_v<decltype(tag), msg::AddOrder>) {
+            called = true;
+            EXPECT_EQ(body, raw + 1); // body skips type byte
+        } else {
+            FAIL() << "wrong tag type dispatched";
+        }
+    });
+    EXPECT_TRUE(called);
+}
+
+TEST(ItchDispatch, dispatches_cross_trade) {
+    uint8_t raw[39];
+    std::memset(raw, 0, sizeof(raw));
+    raw[0] = kCrossTrade;
+
+    auto view = parse(raw, sizeof(raw));
+    ASSERT_TRUE(view.has_value());
+
+    bool called = false;
+    dispatch(*view, [&](auto tag, const uint8_t*) {
+        if constexpr (std::is_same_v<decltype(tag), msg::CrossTrade>) {
+            called = true;
+        }
+    });
+    EXPECT_TRUE(called);
+}
+
+TEST(ItchDispatch, dispatches_all_22_types) {
+    // Verify dispatch hits the right branch for every known message type
+    struct TypeCounter {
+        int system_event = 0, stock_dir = 0, trading_action = 0, reg_sho = 0;
+        int mpp = 0, mwcb_decline = 0, mwcb_status = 0, ipo = 0;
+        int luld = 0, op_halt = 0, add_order = 0, add_order_mpid = 0;
+        int exec = 0, exec_price = 0, cancel = 0, del = 0, replace = 0;
+        int non_cross = 0, cross = 0, broken = 0, noii = 0, rpii = 0;
+        int unknown = 0;
+
+        void operator()(msg::SystemEvent, const uint8_t*)              { ++system_event; }
+        void operator()(msg::StockDirectory, const uint8_t*)           { ++stock_dir; }
+        void operator()(msg::StockTradingAction, const uint8_t*)       { ++trading_action; }
+        void operator()(msg::RegSHORestriction, const uint8_t*)        { ++reg_sho; }
+        void operator()(msg::MarketParticipantPosition, const uint8_t*){ ++mpp; }
+        void operator()(msg::MWCBDeclineLevel, const uint8_t*)         { ++mwcb_decline; }
+        void operator()(msg::MWCBStatus, const uint8_t*)               { ++mwcb_status; }
+        void operator()(msg::IPOQuotingPeriod, const uint8_t*)         { ++ipo; }
+        void operator()(msg::LULDAuctionCollar, const uint8_t*)        { ++luld; }
+        void operator()(msg::OperationalHalt, const uint8_t*)          { ++op_halt; }
+        void operator()(msg::AddOrder, const uint8_t*)                 { ++add_order; }
+        void operator()(msg::AddOrderMPID, const uint8_t*)             { ++add_order_mpid; }
+        void operator()(msg::OrderExecuted, const uint8_t*)            { ++exec; }
+        void operator()(msg::OrderExecutedWithPrice, const uint8_t*)   { ++exec_price; }
+        void operator()(msg::OrderCancel, const uint8_t*)              { ++cancel; }
+        void operator()(msg::OrderDelete, const uint8_t*)              { ++del; }
+        void operator()(msg::OrderReplace, const uint8_t*)             { ++replace; }
+        void operator()(msg::NonCrossTrade, const uint8_t*)            { ++non_cross; }
+        void operator()(msg::CrossTrade, const uint8_t*)               { ++cross; }
+        void operator()(msg::BrokenTrade, const uint8_t*)              { ++broken; }
+        void operator()(msg::NOII, const uint8_t*)                     { ++noii; }
+        void operator()(msg::RPII, const uint8_t*)                     { ++rpii; }
+        void operator()(msg::Unknown, const uint8_t*)                  { ++unknown; }
+    };
+
+    // Build and dispatch each message type
+    struct TypeInfo { uint8_t type; size_t size; };
+    TypeInfo types[] = {
+        {kSystemEvent, kSystemEventSize}, {kStockDirectory, kStockDirectorySize},
+        {kStockTradingAction, kStockTradingActionSize}, {kRegSHORestriction, kRegSHORestrictionSize},
+        {kMarketParticipantPosition, kMarketParticipantPositionSize},
+        {kMWCBDeclineLevel, kMWCBDeclineLevelSize}, {kMWCBStatus, kMWCBStatusSize},
+        {kIPOQuotingPeriod, kIPOQuotingPeriodSize}, {kLULDAuctionCollar, kLULDAuctionCollarSize},
+        {kOperationalHalt, kOperationalHaltSize}, {kAddOrder, kAddOrderSize},
+        {kAddOrderMPID, kAddOrderMPIDSize}, {kOrderExecuted, kOrderExecutedSize},
+        {kOrderExecutedWithPrice, kOrderExecutedWithPriceSize},
+        {kOrderCancel, kOrderCancelSize}, {kOrderDelete, kOrderDeleteSize},
+        {kOrderReplace, kOrderReplaceSize}, {kNonCrossTrade, kNonCrossTradeSize},
+        {kCrossTrade, kCrossTradeSize}, {kBrokenTrade, kBrokenTradeSize},
+        {kNOII, kNOIISize}, {kRPII, kRPIISize},
+    };
+
+    TypeCounter counter;
+    uint8_t buf[64];
+    for (auto& [type, size] : types) {
+        std::memset(buf, 0, sizeof(buf));
+        buf[0] = type;
+        auto view = parse(buf, size);
+        ASSERT_TRUE(view.has_value()) << "failed to parse type " << static_cast<char>(type);
+        dispatch(*view, counter);
+    }
+
+    EXPECT_EQ(counter.system_event, 1);
+    EXPECT_EQ(counter.stock_dir, 1);
+    EXPECT_EQ(counter.trading_action, 1);
+    EXPECT_EQ(counter.reg_sho, 1);
+    EXPECT_EQ(counter.mpp, 1);
+    EXPECT_EQ(counter.mwcb_decline, 1);
+    EXPECT_EQ(counter.mwcb_status, 1);
+    EXPECT_EQ(counter.ipo, 1);
+    EXPECT_EQ(counter.luld, 1);
+    EXPECT_EQ(counter.op_halt, 1);
+    EXPECT_EQ(counter.add_order, 1);
+    EXPECT_EQ(counter.add_order_mpid, 1);
+    EXPECT_EQ(counter.exec, 1);
+    EXPECT_EQ(counter.exec_price, 1);
+    EXPECT_EQ(counter.cancel, 1);
+    EXPECT_EQ(counter.del, 1);
+    EXPECT_EQ(counter.replace, 1);
+    EXPECT_EQ(counter.non_cross, 1);
+    EXPECT_EQ(counter.cross, 1);
+    EXPECT_EQ(counter.broken, 1);
+    EXPECT_EQ(counter.noii, 1);
+    EXPECT_EQ(counter.rpii, 1);
+    EXPECT_EQ(counter.unknown, 0);
+}
+
+TEST(ItchDispatch, unknown_type_dispatches_to_unknown_tag) {
+    // Construct a MessageView with an unrecognized type manually
+    MessageView view;
+    uint8_t raw[2] = {0xFF, 0x00};
+    view.msg_type = 0xFF;
+    view.data = raw;
+    view.length = 2;
+
+    bool got_unknown = false;
+    dispatch(view, [&](auto tag, const uint8_t*) {
+        if constexpr (std::is_same_v<decltype(tag), msg::Unknown>) {
+            got_unknown = true;
+        } else {
+            FAIL() << "should dispatch Unknown for unrecognized type";
+        }
+    });
+    EXPECT_TRUE(got_unknown);
+}
+
+TEST(ItchDispatch, handler_return_value_forwarded) {
+    uint8_t raw[35];
+    std::memset(raw, 0, sizeof(raw));
+    raw[0] = kAddOrder;
+
+    auto view = parse(raw, sizeof(raw));
+    ASSERT_TRUE(view.has_value());
+
+    int result = dispatch(*view, [](auto tag, const uint8_t*) -> int {
+        if constexpr (std::is_same_v<decltype(tag), msg::AddOrder>) {
+            return 42;
+        }
+        return 0;
+    });
+    EXPECT_EQ(result, 42);
+}
+
+TEST(ItchDispatch, body_pointer_matches_accessor_convention) {
+    // Verify that the body pointer passed to dispatch matches what
+    // the per-message accessor namespaces expect (data + 1, skipping type byte)
+    uint8_t raw[35];
+    std::memset(raw, 0, sizeof(raw));
+    raw[0] = kAddOrder;
+    // Set stock_locate = 0x0042 at body offset 0-1
+    raw[1] = 0x00;
+    raw[2] = 0x42;
+
+    auto view = parse(raw, sizeof(raw));
+    ASSERT_TRUE(view.has_value());
+
+    dispatch(*view, [](auto tag, const uint8_t* body) {
+        if constexpr (std::is_same_v<decltype(tag), msg::AddOrder>) {
+            EXPECT_EQ(stock_locate(body), 0x0042);
+        }
+    });
+}
