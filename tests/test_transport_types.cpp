@@ -210,6 +210,15 @@ TEST(TransportStats, DumpProducesNonEmptyString) {
 // std::formatter specializations
 // ─────────────────────────────────────────────────────────────────────────────
 
+TEST(TransportTypeFormatters, SendErrorFormats) {
+    EXPECT_EQ(std::format("{}", SendError::kOk), "OK");
+    EXPECT_EQ(std::format("{}", SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
+    EXPECT_EQ(std::format("{}", SendError::kNotConnected), "NOT_CONNECTED");
+    EXPECT_EQ(std::format("{}", SendError::kQueueFull), "QUEUE_FULL");
+    EXPECT_EQ(std::format("{}", SendError::kInvalidUtf8), "INVALID_UTF8");
+    EXPECT_EQ(std::format("{}", SendError::kInvalidCloseCode), "INVALID_CLOSE_CODE");
+}
+
 TEST(TransportTypeFormatters, TransportEventFormats) {
     EXPECT_EQ(std::format("{}", TransportEvent::kConnected), "CONNECTED");
     EXPECT_EQ(std::format("{}", TransportEvent::kDisconnected), "DISCONNECTED");

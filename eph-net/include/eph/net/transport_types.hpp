@@ -317,6 +317,14 @@ struct TransportStats {
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <>
+struct std::formatter<eph::net::SendError> : std::formatter<const char*> {
+    auto format(eph::net::SendError e, auto& ctx) const {
+        return std::formatter<const char*>::format(
+            eph::net::send_error_name(e), ctx);
+    }
+};
+
+template <>
 struct std::formatter<eph::net::TransportEvent> : std::formatter<const char*> {
     auto format(eph::net::TransportEvent e, auto& ctx) const {
         return std::formatter<const char*>::format(
