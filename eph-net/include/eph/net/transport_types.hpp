@@ -176,6 +176,30 @@ struct TransportConfig {
     /// @warning Called from the RX thread — must be non-blocking.
     std::function<void(uint16_t code, std::string_view reason)> on_close{};
 
+    /// Ping frame callback (optional, called from RX thread).
+    ///
+    /// Invoked when a WebSocket Ping frame is received from the server,
+    /// before the automatic Pong response is enqueued. Useful for custom
+    /// latency measurement or heartbeat monitoring.
+    ///
+    /// @param payload      Ping payload data (may be nullptr if empty)
+    /// @param payload_len  Payload length (0–125 bytes per RFC 6455 §5.5)
+    ///
+    /// @warning Called from the RX thread — must be non-blocking.
+    std::function<void(const uint8_t* payload, uint16_t payload_len)> on_ping{};
+
+    /// Pong frame callback (optional, called from RX thread).
+    ///
+    /// Invoked when a WebSocket Pong frame is received (in response to a
+    /// Ping sent by this transport or unsolicited). Enables round-trip
+    /// latency measurement when paired with send_ping() timestamps.
+    ///
+    /// @param payload      Pong payload data (echo of the Ping payload)
+    /// @param payload_len  Payload length
+    ///
+    /// @warning Called from the RX thread — must be non-blocking.
+    std::function<void(const uint8_t* payload, uint16_t payload_len)> on_pong{};
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before Transport::create() to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {

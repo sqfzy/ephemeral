@@ -1515,6 +1515,15 @@ private:
 
             if (frame->is_ping()) {
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
+                if (config_.on_ping) {
+                    try {
+                        config_.on_ping(frame->payload,
+                                        static_cast<uint16_t>(frame->payload_len));
+                    } catch (...) {
+                        SPDLOG_LOGGER_WARN(log,
+                            "on_ping callback threw an exception");
+                    }
+                }
                 handle_ping(*frame);
                 continue;
             }
@@ -1554,6 +1563,15 @@ private:
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
                     std::memory_order_relaxed);
+                if (config_.on_pong) {
+                    try {
+                        config_.on_pong(frame->payload,
+                                        static_cast<uint16_t>(frame->payload_len));
+                    } catch (...) {
+                        SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                            "on_pong callback threw an exception");
+                    }
+                }
                 continue;
             }
 
