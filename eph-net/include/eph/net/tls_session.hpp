@@ -413,7 +413,17 @@ public:
 
     ~TlsSession() {
         if (ssl_) {
-            SSL_shutdown(ssl_);
+            // Only attempt TLS close_notify if handshake completed and
+            // the underlying TCP is likely still alive.  When the TCP
+            // connection is already broken, SSL_shutdown would block on
+            // BIO read/write or return an error—both are harmless to
+            // ignore, but we skip the attempt entirely to avoid noisy
+            // error logs and potential delays.
+            if (handshake_done_ && bio_ctx_ && bio_ctx_->tcp &&
+                bio_ctx_->tcp->is_established()) {
+                // Best-effort: ignore return value since we are tearing down
+                SSL_shutdown(ssl_);
+            }
             SSL_free(ssl_); // Also frees the BIO
         }
         if (ctx_) {
