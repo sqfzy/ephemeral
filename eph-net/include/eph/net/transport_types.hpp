@@ -170,6 +170,11 @@ struct TransportConfig {
     std::string ca_cert_path{};     // CA cert file, empty = system default
     bool        verify_peer = true;
 
+    // Mutual TLS (mTLS) — client certificate authentication.
+    // Both must be set together; empty = no client certificate.
+    std::string client_cert_path{}; // Client certificate file (PEM)
+    std::string client_key_path{};  // Client private key file (PEM)
+
     // Timeouts
     std::chrono::milliseconds tcp_timeout{3000};
     std::chrono::milliseconds tls_timeout{5000};
@@ -367,6 +372,10 @@ struct TransportConfig {
             return "rx_burst_size must be > 0";
         if (max_reconnect_attempts < 0)
             return "max_reconnect_attempts must be >= 0";
+        if (client_cert_path.empty() != client_key_path.empty())
+            return "client_cert_path and client_key_path must both be set or both empty";
+        if (!client_cert_path.empty() && !use_tls)
+            return "client certificates require use_tls=true";
         if (tcp_timeout.count() <= 0)
             return "tcp_timeout must be positive";
         if (tls_timeout.count() <= 0)

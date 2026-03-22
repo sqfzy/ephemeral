@@ -88,6 +88,11 @@ struct TlsConfig {
     std::string ca_cert_path{};       // CA certificate file (PEM), empty = use default
     bool        verify_peer = true;   // Verify server certificate
     std::chrono::milliseconds handshake_timeout{5000};
+
+    // Client certificate for mutual TLS (mTLS).
+    // Both must be set together; empty = no client certificate.
+    std::string client_cert_path{};   // Client certificate file (PEM)
+    std::string client_key_path{};    // Client private key file (PEM)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -364,6 +369,40 @@ public:
 
         if (config.verify_peer) {
             SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+        }
+
+        // Load client certificate and key for mutual TLS (mTLS)
+        if (!config.client_cert_path.empty() && !config.client_key_path.empty()) {
+            if (SSL_CTX_use_certificate_chain_file(
+                    ctx, config.client_cert_path.c_str()) != 1) {
+                auto err = detail::ssl_error_string();
+                SSL_CTX_free(ctx);
+                SPDLOG_LOGGER_ERROR(log,
+                    "Failed to load client certificate {}: {}",
+                    config.client_cert_path, err);
+                return std::unexpected(std::format(
+                    "Failed to load client certificate: {}", err));
+            }
+            if (SSL_CTX_use_PrivateKey_file(
+                    ctx, config.client_key_path.c_str(), SSL_FILETYPE_PEM) != 1) {
+                auto err = detail::ssl_error_string();
+                SSL_CTX_free(ctx);
+                SPDLOG_LOGGER_ERROR(log,
+                    "Failed to load client private key {}: {}",
+                    config.client_key_path, err);
+                return std::unexpected(std::format(
+                    "Failed to load client private key: {}", err));
+            }
+            if (SSL_CTX_check_private_key(ctx) != 1) {
+                auto err = detail::ssl_error_string();
+                SSL_CTX_free(ctx);
+                SPDLOG_LOGGER_ERROR(log,
+                    "Client certificate/key mismatch: {}", err);
+                return std::unexpected(std::format(
+                    "Client certificate/key mismatch: {}", err));
+            }
+            SPDLOG_LOGGER_DEBUG(log, "mTLS: loaded client certificate {}",
+                config.client_cert_path);
         }
 
         // Create SSL object

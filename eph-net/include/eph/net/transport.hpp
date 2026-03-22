@@ -1017,6 +1017,8 @@ private:
                 .ca_cert_path = config_.ca_cert_path,
                 .verify_peer = config_.verify_peer,
                 .handshake_timeout = config_.tls_timeout,
+                .client_cert_path = config_.client_cert_path,
+                .client_key_path = config_.client_key_path,
             };
 
             auto tls_result = TlsSession<TcpImpl>::create(*tcp_, tls_cfg);

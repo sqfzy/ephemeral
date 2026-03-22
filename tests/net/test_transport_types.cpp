@@ -189,6 +189,81 @@ TEST_F(TransportConfigValidateTest, SubprotocolWithCRLFFailsHeaderInjection) {
     EXPECT_TRUE(cfg.validate().empty());
 }
 
+TEST_F(TransportConfigValidateTest, MtlsBothPathsMustBeSetTogether) {
+    auto cfg = valid_config();
+
+    // Both set = valid
+    cfg.client_cert_path = "/path/to/cert.pem";
+    cfg.client_key_path = "/path/to/key.pem";
+    EXPECT_TRUE(cfg.validate().empty());
+
+    // Only cert = invalid
+    cfg.client_key_path = "";
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("client_cert_path"), std::string_view::npos);
+
+    // Only key = invalid
+    cfg.client_cert_path = "";
+    cfg.client_key_path = "/path/to/key.pem";
+    EXPECT_FALSE(cfg.validate().empty());
+
+    // Both empty = valid (no mTLS)
+    cfg.client_cert_path = "";
+    cfg.client_key_path = "";
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST_F(TransportConfigValidateTest, MtlsRequiresTls) {
+    auto cfg = valid_config();
+    cfg.use_tls = false;
+    cfg.client_cert_path = "/path/to/cert.pem";
+    cfg.client_key_path = "/path/to/key.pem";
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("use_tls"), std::string_view::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionError enum
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionErrorTest, NameFormatting) {
+    EXPECT_STREQ(connection_error_name(ConnectionError::kInvalidConfig), "INVALID_CONFIG");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kFactoryFailed), "FACTORY_FAILED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kTcpNotEstablished), "TCP_NOT_ESTABLISHED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kTlsSessionFailed), "TLS_SESSION_FAILED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kTlsHandshakeFailed), "TLS_HANDSHAKE_FAILED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kTlsKeyExportFailed), "TLS_KEY_EXPORT_FAILED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kWsUpgradeFailed), "WS_UPGRADE_FAILED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kWsUpgradeRejected), "WS_UPGRADE_REJECTED");
+    EXPECT_STREQ(connection_error_name(ConnectionError::kWsAcceptInvalid), "WS_ACCEPT_INVALID");
+}
+
+TEST(ConnectionErrorTest, InfoMessage) {
+    ConnectionErrorInfo info{
+        .code = ConnectionError::kWsUpgradeRejected,
+        .detail = "HTTP 403 Forbidden",
+        .http_status = 403,
+    };
+    auto msg = info.message();
+    EXPECT_NE(msg.find("WS_UPGRADE_REJECTED"), std::string::npos);
+    EXPECT_NE(msg.find("403"), std::string::npos);
+    EXPECT_EQ(info.http_status, 403);
+}
+
+TEST(ConnectionErrorTest, FormatConnectionError) {
+    EXPECT_EQ(std::format("{}", ConnectionError::kFactoryFailed), "FACTORY_FAILED");
+}
+
+TEST(ConnectionErrorTest, FormatConnectionErrorInfo) {
+    ConnectionErrorInfo info{
+        .code = ConnectionError::kTlsHandshakeFailed,
+        .detail = "cert expired",
+    };
+    auto formatted = std::format("{}", info);
+    EXPECT_NE(formatted.find("TLS_HANDSHAKE_FAILED"), std::string::npos);
+    EXPECT_NE(formatted.find("cert expired"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TransportStats helpers
 // ─────────────────────────────────────────────────────────────────────────────
