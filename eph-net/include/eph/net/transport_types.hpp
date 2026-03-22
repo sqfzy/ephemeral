@@ -468,6 +468,49 @@ struct TransportConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Connection info (aggregated metadata from the current connection)
+// ---------------------------------------------------------------------------
+
+/// Snapshot of connection metadata, aggregating information that would
+/// otherwise require multiple getter calls (tls_version, cipher_name,
+/// remote_ip, ws_subprotocol). Useful for logging/monitoring dashboards.
+struct ConnectionInfo {
+    std::string tls_version;       ///< e.g. "TLSv1.3" or "none"
+    std::string cipher_name;       ///< e.g. "TLS_AES_256_GCM_SHA384" or "none"
+    std::string ws_subprotocol;    ///< Negotiated subprotocol, or empty
+    std::string remote_ip;         ///< Resolved IP, or empty
+    uint16_t    remote_port = 0;   ///< Remote port from config
+    bool        use_tls = true;    ///< Whether TLS is enabled
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "ConnectionInfo:\n"
+            "  remote: {}:{}\n"
+            "  tls: {} ({})\n"
+            "  subprotocol: {}",
+            remote_ip.empty() ? "unknown" : remote_ip, remote_port,
+            tls_version, cipher_name,
+            ws_subprotocol.empty() ? "(none)" : ws_subprotocol);
+    }
+
+    /// JSON-formatted connection info.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{"
+            "\"tls_version\":\"{}\",\"cipher_name\":\"{}\","
+            "\"ws_subprotocol\":\"{}\",\"remote_ip\":\"{}\","
+            "\"remote_port\":{},\"use_tls\":{}}}",
+            detail::json_escape(tls_version),
+            detail::json_escape(cipher_name),
+            detail::json_escape(ws_subprotocol),
+            detail::json_escape(remote_ip),
+            remote_port,
+            use_tls ? "true" : "false");
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Transport stats
 // ---------------------------------------------------------------------------
 

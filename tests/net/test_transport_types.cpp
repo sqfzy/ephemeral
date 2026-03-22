@@ -874,3 +874,67 @@ TEST(TransportStatsJson, EscapesRemoteIp) {
     // Should have escaped quote
     EXPECT_NE(json.find(R"(10.0.0.1\"injected)"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionInfo
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionInfo, DumpContainsAllFields) {
+    ConnectionInfo info{
+        .tls_version = "TLSv1.3",
+        .cipher_name = "TLS_AES_256_GCM_SHA384",
+        .ws_subprotocol = "graphql-ws",
+        .remote_ip = "10.0.0.1",
+        .remote_port = 443,
+        .use_tls = true,
+    };
+    auto dump = info.dump();
+    EXPECT_NE(dump.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(dump.find("443"), std::string::npos);
+    EXPECT_NE(dump.find("TLSv1.3"), std::string::npos);
+    EXPECT_NE(dump.find("TLS_AES_256_GCM_SHA384"), std::string::npos);
+    EXPECT_NE(dump.find("graphql-ws"), std::string::npos);
+}
+
+TEST(ConnectionInfo, DumpHandlesEmptyFields) {
+    ConnectionInfo info{};
+    auto dump = info.dump();
+    EXPECT_NE(dump.find("unknown"), std::string::npos);
+    EXPECT_NE(dump.find("(none)"), std::string::npos);
+}
+
+TEST(ConnectionInfo, ToJsonContainsAllFields) {
+    ConnectionInfo info{
+        .tls_version = "TLSv1.3",
+        .cipher_name = "TLS_AES_256_GCM_SHA384",
+        .ws_subprotocol = "proto",
+        .remote_ip = "10.0.0.1",
+        .remote_port = 8443,
+        .use_tls = true,
+    };
+    auto json = info.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"tls_version\":\"TLSv1.3\""), std::string::npos);
+    EXPECT_NE(json.find("\"cipher_name\":\"TLS_AES_256_GCM_SHA384\""), std::string::npos);
+    EXPECT_NE(json.find("\"ws_subprotocol\":\"proto\""), std::string::npos);
+    EXPECT_NE(json.find("\"remote_ip\":\"10.0.0.1\""), std::string::npos);
+    EXPECT_NE(json.find("\"remote_port\":8443"), std::string::npos);
+    EXPECT_NE(json.find("\"use_tls\":true"), std::string::npos);
+}
+
+TEST(ConnectionInfo, ToJsonEscapesStringFields) {
+    ConnectionInfo info{
+        .tls_version = "TLS\"injected",
+        .remote_ip = "10.0.0.1\\path",
+    };
+    auto json = info.to_json();
+    EXPECT_NE(json.find(R"(TLS\"injected)"), std::string::npos);
+    EXPECT_NE(json.find(R"(10.0.0.1\\path)"), std::string::npos);
+}
+
+TEST(ConnectionInfo, PlainWsShowsUseTlsFalse) {
+    ConnectionInfo info{.use_tls = false};
+    auto json = info.to_json();
+    EXPECT_NE(json.find("\"use_tls\":false"), std::string::npos);
+}

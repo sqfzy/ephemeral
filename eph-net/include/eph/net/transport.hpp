@@ -848,6 +848,20 @@ public:
         return remote_ip_;
     }
 
+    /// Aggregated connection metadata snapshot.
+    /// Combines tls_version, cipher_name, ws_subprotocol, and remote_ip
+    /// into a single struct for convenient logging and monitoring.
+    [[nodiscard]] ConnectionInfo connection_info() const noexcept {
+        return ConnectionInfo{
+            .tls_version    = std::string(tls_version_),
+            .cipher_name    = std::string(cipher_name_),
+            .ws_subprotocol = std::string(ws_subprotocol_),
+            .remote_ip      = std::string(remote_ip_),
+            .remote_port    = config_.remote_port,
+            .use_tls        = config_.use_tls,
+        };
+    }
+
     /// Snapshot of round-trip time statistics from ping/pong measurements.
     ///
     /// Requires TSC to be initialized (TSC::init() called before Transport::create).
