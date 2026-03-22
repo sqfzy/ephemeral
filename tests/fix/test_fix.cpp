@@ -1318,3 +1318,82 @@ TEST(FixBuilder, set_timestamp_format_length) {
     EXPECT_EQ(ts[14], ':');
     EXPECT_EQ(ts[17], '.');
 }
+
+// ===========================================================================
+// get_timestamp() — parse UTCTimestamp back to epoch nanoseconds
+// ===========================================================================
+
+TEST(FixParser, get_timestamp_epoch_zero) {
+    // 1970-01-01 00:00:00.000 → 0 ns
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=19700101-00:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    auto ts = msg->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    EXPECT_EQ(*ts, 0u);
+}
+
+TEST(FixParser, get_timestamp_round_trip) {
+    // Build a timestamp with set_timestamp, then parse it back with get_timestamp
+    constexpr uint64_t epoch_ns = 1'700'000'000'123'000'000ULL; // 2023-11-14 22:13:20.123
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, epoch_ns);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto msg = parse(b.data(), b.size());
+    ASSERT_TRUE(msg.has_value());
+    auto ts = msg->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    // Round-trip: millisecond precision (nanoseconds within the ms are truncated by set_timestamp)
+    EXPECT_EQ(*ts, (epoch_ns / 1'000'000ULL) * 1'000'000ULL);
+}
+
+TEST(FixParser, get_timestamp_without_millis) {
+    // "YYYYMMDD-HH:MM:SS" (17 chars, no fractional seconds)
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=20250101-12:30:45\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    auto ts = msg->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+
+    // 2025-01-01 12:30:45 UTC
+    // Days from 1970-01-01 to 2025-01-01 = 20089
+    uint64_t expected = (20089ULL * 86400 + 12 * 3600 + 30 * 60 + 45) * 1'000'000'000ULL;
+    EXPECT_EQ(*ts, expected);
+}
+
+TEST(FixParser, get_timestamp_feb_29_leap_year) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=20240229-00:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    auto ts = msg->get_timestamp(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    // 2024-02-29 is valid (leap year)
+    EXPECT_GT(*ts, 0u);
+}
+
+TEST(FixParser, get_timestamp_invalid_format_returns_nullopt) {
+    // Wrong separator
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=2025/01/01-12:30:45\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_missing_tag_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "55=AAPL\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_wrong_length_returns_nullopt) {
+    // Too short
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=20250101\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}

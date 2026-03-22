@@ -165,6 +165,73 @@ public:
         return neg ? -val : val;
     }
 
+    /// Look up a tag and parse its value as a FIX UTCTimestamp.
+    /// Expected format: "YYYYMMDD-HH:MM:SS" or "YYYYMMDD-HH:MM:SS.sss"
+    /// Returns nanoseconds since Unix epoch, or nullopt on parse failure.
+    [[nodiscard]] std::optional<uint64_t> get_timestamp(uint32_t t) const noexcept {
+        auto sv = get(t);
+        if (!sv) return std::nullopt;
+
+        // Minimum: "YYYYMMDD-HH:MM:SS" (17 chars)
+        // With millis: "YYYYMMDD-HH:MM:SS.sss" (21 chars)
+        if (sv->size() != 17 && sv->size() != 21) return std::nullopt;
+
+        const char* p = sv->data();
+
+        // Parse date: YYYYMMDD
+        auto digit = [](char c) -> int { return (c >= '0' && c <= '9') ? (c - '0') : -1; };
+
+        int y3 = digit(p[0]), y2 = digit(p[1]), y1 = digit(p[2]), y0 = digit(p[3]);
+        int m1 = digit(p[4]), m0 = digit(p[5]);
+        int d1 = digit(p[6]), d0 = digit(p[7]);
+        if (y3 < 0 || y2 < 0 || y1 < 0 || y0 < 0) return std::nullopt;
+        if (m1 < 0 || m0 < 0 || d1 < 0 || d0 < 0) return std::nullopt;
+        if (p[8] != '-') return std::nullopt;
+
+        uint32_t year  = static_cast<uint32_t>(y3 * 1000 + y2 * 100 + y1 * 10 + y0);
+        uint32_t month = static_cast<uint32_t>(m1 * 10 + m0);
+        uint32_t day   = static_cast<uint32_t>(d1 * 10 + d0);
+
+        if (month < 1 || month > 12 || day < 1 || day > 31) return std::nullopt;
+
+        // Parse time: HH:MM:SS
+        int h1 = digit(p[9]),  h0 = digit(p[10]);
+        int n1 = digit(p[12]), n0 = digit(p[13]);
+        int s1 = digit(p[15]), s0 = digit(p[16]);
+        if (h1 < 0 || h0 < 0 || n1 < 0 || n0 < 0 || s1 < 0 || s0 < 0) return std::nullopt;
+        if (p[11] != ':' || p[14] != ':') return std::nullopt;
+
+        uint32_t hour   = static_cast<uint32_t>(h1 * 10 + h0);
+        uint32_t minute = static_cast<uint32_t>(n1 * 10 + n0);
+        uint32_t second = static_cast<uint32_t>(s1 * 10 + s0);
+
+        if (hour > 23 || minute > 59 || second > 60) return std::nullopt;
+
+        // Parse optional milliseconds
+        uint32_t millis = 0;
+        if (sv->size() == 21) {
+            if (p[17] != '.') return std::nullopt;
+            int ms2 = digit(p[18]), ms1 = digit(p[19]), ms0 = digit(p[20]);
+            if (ms2 < 0 || ms1 < 0 || ms0 < 0) return std::nullopt;
+            millis = static_cast<uint32_t>(ms2 * 100 + ms1 * 10 + ms0);
+        }
+
+        // Civil date → days since epoch (inverse of Howard Hinnant algorithm)
+        // Adjust month so March = 0 (era-based calendar)
+        int64_t y = static_cast<int64_t>(year);
+        uint32_t m = month;
+        if (m <= 2) --y;
+        int64_t era = (y >= 0 ? y : y - 399) / 400;
+        uint64_t yoe = static_cast<uint64_t>(y - era * 400);
+        uint64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + day - 1;
+        uint64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468;
+
+        uint64_t epoch_sec = static_cast<uint64_t>(days) * 86400
+                           + hour * 3600 + minute * 60 + second;
+        return epoch_sec * 1'000'000'000ULL + millis * 1'000'000ULL;
+    }
+
     /// Random-access iterator over parsed fields.
     using iterator       = const Field*;
     using const_iterator = const Field*;
