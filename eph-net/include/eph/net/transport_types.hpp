@@ -23,8 +23,9 @@ namespace eph::net {
 
 namespace detail {
 
-/// Escape a string for safe embedding in JSON values.
+/// Escape a string for safe embedding in JSON values (RFC 8259 §7).
 /// Handles: \", \\, \b, \f, \n, \r, \t, and control chars U+0000–U+001F.
+/// Assumes valid UTF-8 input — multibyte sequences are passed through unchanged.
 /// Returns the input unmodified when no escaping is needed (common fast path).
 [[nodiscard]] inline std::string json_escape(std::string_view sv) {
     // Fast path: scan for characters that need escaping
@@ -38,7 +39,7 @@ namespace detail {
     if (!needs_escape) return std::string(sv);
 
     std::string out;
-    out.reserve(sv.size() + 8); // modest over-allocation for escapes
+    out.reserve(sv.size() + sv.size() / 4 + 4);
     for (char c : sv) {
         switch (c) {
         case '"':  out += "\\\""; break;
