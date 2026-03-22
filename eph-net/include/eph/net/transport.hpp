@@ -206,25 +206,12 @@ public:
     /// @return SendError::kOk on success, or a specific error code
     SendError send(const void* data, size_t len,
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (len > MaxPayload) return SendError::kMessageTooLarge;
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
-            std::memcpy(msg.data, data, len);
-            msg.len = static_cast<uint16_t>(len);
-            msg.opcode = opcode;
-        });
-
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
-        }
-        return SendError::kOk;
+        return enqueue_tx(data, len, opcode);
     }
 
     /// Send data from a span (convenience overload).
@@ -245,7 +232,7 @@ public:
         if (!ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return send(data, len, ws::opcode::kText);
+        return enqueue_tx(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
@@ -254,7 +241,7 @@ public:
         if (!ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
-        return send(sv.data(), sv.size(), ws::opcode::kText);
+        return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket binary frame.
@@ -278,25 +265,12 @@ public:
     SendError send_for(const void* data, size_t len,
                        std::chrono::duration<Rep, Period> timeout,
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (len > MaxPayload) return SendError::kMessageTooLarge;
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-
-        bool ok = tx_queue_.try_produce_for([&](TxMsg& msg) {
-            std::memcpy(msg.data, data, len);
-            msg.len = static_cast<uint16_t>(len);
-            msg.opcode = opcode;
-        }, timeout);
-
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
-        }
-        return SendError::kOk;
+        return enqueue_tx_for(data, len, timeout, opcode);
     }
 
     /// Send data from a span with timeout (convenience overload).
@@ -312,14 +286,20 @@ public:
     template <typename Rep, typename Period>
     SendError send_text_for(const void* data, size_t len,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
-        return send_for(data, len, timeout, ws::opcode::kText);
+        if (!ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
+            return SendError::kInvalidUtf8;
+        }
+        return enqueue_tx_for(data, len, timeout, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame with timeout.
     template <typename Rep, typename Period>
     SendError send_text_for(std::string_view sv,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
-        return send_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
+        if (!ws::is_valid_utf8(sv)) {
+            return SendError::kInvalidUtf8;
+        }
+        return enqueue_tx_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
     }
 
     /// Send a WebSocket binary frame with timeout (convenience, explicit intent).
@@ -769,6 +749,52 @@ public:
 
 private:
     Transport() = default;
+
+    // -----------------------------------------------------------------------
+    // Internal enqueue helpers (no UTF-8 validation — caller is responsible)
+    // -----------------------------------------------------------------------
+
+    /// Enqueue a message to TX queue without UTF-8 validation.
+    /// Shared implementation for send() and send_text() to avoid
+    /// double-validating UTF-8 on the hot path.
+    SendError enqueue_tx(const void* data, size_t len,
+                         uint8_t opcode) noexcept {
+        if (len > MaxPayload) return SendError::kMessageTooLarge;
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+
+        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+            std::memcpy(msg.data, data, len);
+            msg.len = static_cast<uint16_t>(len);
+            msg.opcode = opcode;
+        });
+
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return SendError::kQueueFull;
+        }
+        return SendError::kOk;
+    }
+
+    /// Enqueue with timeout, no UTF-8 validation.
+    template <typename Rep, typename Period>
+    SendError enqueue_tx_for(const void* data, size_t len,
+                             std::chrono::duration<Rep, Period> timeout,
+                             uint8_t opcode) noexcept {
+        if (len > MaxPayload) return SendError::kMessageTooLarge;
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+
+        bool ok = tx_queue_.try_produce_for([&](TxMsg& msg) {
+            std::memcpy(msg.data, data, len);
+            msg.len = static_cast<uint16_t>(len);
+            msg.opcode = opcode;
+        }, timeout);
+
+        if (!ok) {
+            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            return SendError::kQueueFull;
+        }
+        return SendError::kOk;
+    }
 
     TransportConfig                        config_;
     TcpFactory                             tcp_factory_;
