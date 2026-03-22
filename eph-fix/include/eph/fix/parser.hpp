@@ -70,10 +70,7 @@ public:
 
     /// Check if a tag exists in the message.
     [[nodiscard]] bool has(uint32_t t) const noexcept {
-        for (size_t i = 0; i < count_; ++i) {
-            if (fields_[i].tag == t) return true;
-        }
-        return false;
+        return get(t).has_value();
     }
 
     /// Convenience: get MsgType (tag 35) value.

@@ -781,6 +781,61 @@ TEST(FixBuilder, MultipleFieldsSameTag) {
 }
 
 // ===========================================================================
+// has() convenience method
+// ===========================================================================
+
+TEST(FixParser, has_returns_true_for_present_tag) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->has(tag::MsgType));
+    EXPECT_TRUE(result->has(tag::Symbol));
+}
+
+TEST(FixParser, has_returns_false_for_absent_tag) {
+    std::string body = "35=D\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->has(tag::Symbol));
+    EXPECT_FALSE(result->has(tag::Price));
+}
+
+TEST(FixParser, has_returns_false_on_empty_body) {
+    // A minimal message with no body fields (just MsgType is technically required
+    // but the parser doesn't enforce that — so an empty body = 0 fields).
+    MessageView empty_msg;
+    EXPECT_FALSE(empty_msg.has(tag::MsgType));
+    EXPECT_FALSE(empty_msg.has(tag::Symbol));
+}
+
+// ===========================================================================
+// set_raw() builder method
+// ===========================================================================
+
+TEST(FixBuilder, set_raw_roundtrip) {
+    uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_raw(tag::Text, payload, sizeof(payload));
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get(tag::Text);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->size(), 4u);
+    EXPECT_EQ(static_cast<uint8_t>((*val)[0]), 0xDE);
+    EXPECT_EQ(static_cast<uint8_t>((*val)[1]), 0xAD);
+    EXPECT_EQ(static_cast<uint8_t>((*val)[2]), 0xBE);
+    EXPECT_EQ(static_cast<uint8_t>((*val)[3]), 0xEF);
+}
+
+// ===========================================================================
 // Framer
 // ===========================================================================
 

@@ -65,9 +65,10 @@ public:
         return set(t, std::string_view(tmp, n));
     }
 
-    /// Append a raw binary field: tag=<raw bytes>\x01.
-    /// Useful for FIX Data/RawData fields (tags 95/96) where the value may
-    /// contain SOH or other non-printable bytes.
+    /// Append a field from a raw byte pointer + length.
+    /// The data must NOT contain SOH (0x01) bytes, as the parser uses SOH
+    /// as a field delimiter. For true binary FIX fields (Data/RawData), a
+    /// length-aware parser would be required.
     MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
         return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
