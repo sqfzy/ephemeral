@@ -1585,3 +1585,33 @@ TEST(FixBuilder, set_bool_false_writes_N) {
     EXPECT_EQ(msg->get(43).value(), "N");
     EXPECT_FALSE(msg->get_bool(43).value());
 }
+
+// ===========================================================================
+// has_overflow() — early overflow detection
+// ===========================================================================
+
+TEST(FixBuilder, has_overflow_false_initially) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_FALSE(b.has_overflow());
+}
+
+TEST(FixBuilder, has_overflow_true_after_buffer_exceeded) {
+    uint8_t buf[40]; // very small buffer
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_FALSE(b.has_overflow());
+    b.set(tag::MsgType, "D");
+    // This long value should overflow the tiny buffer
+    b.set(tag::Text, "This is a very long text value that will overflow the small buffer");
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, has_overflow_false_after_reset) {
+    uint8_t buf[40];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::Text, "This is a very long text value that will overflow the small buffer");
+    EXPECT_TRUE(b.has_overflow());
+    b.reset();
+    EXPECT_FALSE(b.has_overflow());
+}

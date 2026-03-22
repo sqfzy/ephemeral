@@ -220,6 +220,10 @@ public:
         overflow_   = false;
     }
 
+    /// Check whether the builder has overflowed the buffer.
+    /// Useful for detecting overflow mid-build without waiting for finish().
+    [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
+
     /// Pointer to the finalized message data (valid only after finish()).
     [[nodiscard]] const uint8_t* data() const noexcept { return buf_; }
 
