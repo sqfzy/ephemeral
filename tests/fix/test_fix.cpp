@@ -2125,3 +2125,85 @@ TEST(FixBuilder, remaining_capacity_exact_boundary) {
         EXPECT_GT(len, 0u);
     }
 }
+
+// ---------------------------------------------------------------------------
+// set_double NaN/Infinity protection
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, set_double_nan_causes_overflow) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, std::numeric_limits<double>::quiet_NaN());
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_double_positive_infinity_causes_overflow) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, std::numeric_limits<double>::infinity());
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_double_negative_infinity_causes_overflow) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, -std::numeric_limits<double>::infinity());
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_double_finite_values_still_work) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 0.0);
+    b.set_double(tag::StopPx, -99.99);
+    b.set_double(tag::AvgPx, 1e15, 0); // large but finite
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// set_timestamp edge cases
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, set_timestamp_uint64_max_produces_valid_date) {
+    // UINT64_MAX nanoseconds = ~2554-07-21T23:34:33 — still within YYYYMMDD range.
+    // No overflow possible since max uint64_t ns < year 10000.
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, UINT64_MAX);
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+
+    // Parse back and verify we get a date starting with "2554"
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    EXPECT_TRUE(ts->starts_with("2554"));
+}
+
+TEST(FixBuilder, set_timestamp_zero_epoch) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_timestamp(tag::SendingTime, 0);
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto ts = result->get(tag::SendingTime);
+    ASSERT_TRUE(ts.has_value());
+    EXPECT_TRUE(ts->starts_with("19700101-00:00:00"));
+}

@@ -7,6 +7,7 @@
 /// On finish(), prepends BeginString + BodyLength and appends CheckSum.
 /// No heap allocations.
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
@@ -102,6 +103,9 @@ public:
         // No gmtime, no floating point — keeps the zero-allocation guarantee.
         uint64_t epoch_sec = epoch_ns / 1'000'000'000ULL;
 
+        // Note: the maximum representable date in uint64_t nanoseconds is ~2554-07-21,
+        // well within the YYYYMMDD range (year 9999), so no overflow guard is needed.
+
         // Days since epoch and time-of-day
         uint32_t day_sec   = static_cast<uint32_t>(epoch_sec % 86400);
         uint32_t hour      = day_sec / 3600;
@@ -165,7 +169,9 @@ public:
     }
 
     /// Append a double-valued field with fixed-point precision.
+    /// Sets overflow flag if value is NaN or Infinity (not representable in FIX).
     MessageBuilder& set_double(uint32_t t, double value, int precision = 2) noexcept {
+        if (!std::isfinite(value)) { overflow_ = true; return *this; }
         char tmp[32];
         size_t n = format_double(value, tmp, precision);
         return set(t, std::string_view(tmp, n));
