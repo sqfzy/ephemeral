@@ -180,6 +180,10 @@ static void BM_TlsDecrypt(benchmark::State& state) {
     int64_t idx = 0;
 
     for (auto _ : state) {
+        if (idx > 0 && idx % batch == 0) {
+            // Seq exhausted pre-encrypted batch — reset decryptor to stay in sync
+            dec = eph::net::TlsRecordCrypto::create(dec_hot);
+        }
         uint16_t dec_len;
         auto ok = dec->decrypt(records[idx % batch].data(), record_size,
                                 decrypted.data(), dec_len);
@@ -434,6 +438,10 @@ static void BM_E2E_RX(benchmark::State& state) {
     int64_t idx = 0;
 
     for (auto _ : state) {
+        if (idx > 0 && idx % kBatch == 0) {
+            // Seq exhausted pre-encrypted batch — reset decryptor to stay in sync
+            dec = eph::net::TlsRecordCrypto::create(dec_hot);
+        }
         uint16_t dec_len;
         dec->decrypt(records[idx % kBatch].data(), record_size,
                      decrypted.data(), dec_len);

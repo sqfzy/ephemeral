@@ -153,7 +153,7 @@ end
 -- examples
 -- ===========================================================================
 local dpdk_examples = {
-    ws_echo_client = true,
+    dpdk_ws_echo_client = true,
 }
 
 local net_examples = {

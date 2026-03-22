@@ -1,4 +1,4 @@
-/// @file ws_echo_client.cpp
+/// @file dpdk_ws_echo_client.cpp
 /// DPDK WebSocket (WSS) echo client example.
 ///
 /// Demonstrates the full ephemeral stack:
