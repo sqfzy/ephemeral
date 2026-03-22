@@ -474,6 +474,64 @@ class BoundedQueue {
     }
 
     /**
+     * @brief 批量零拷贝消费 (Visitor 模式, 尽力而为语义)
+     *
+     * 消费最多 min(n, available) 个元素，对每个元素原地调用
+     * visitor(slot, index)，最后以单次 release store 发布所有消费。
+     * 与 try_produce_n 镜像对称——写端批量生产，读端批量消费，均为零拷贝。
+     *
+     * @param n       最大消费数量
+     * @param visitor 回调 void(T& slot, size_t index)，index 为 0..consumed-1
+     * @return 实际消费的元素数量（0 表示队列为空）
+     */
+    template <typename F>
+        requires std::invocable<F, T&, size_t>
+    [[nodiscard]] size_t try_consume_n(size_t n, F&& visitor) noexcept {
+        if (n == 0) return 0;
+
+        const size_t head = reader_.head_.load(std::memory_order_relaxed);
+
+        size_t available = reader_.shadow_tail_ - head;
+        if (available == 0) {
+            const size_t tail = writer_.tail_.load(std::memory_order_acquire);
+            reader_.shadow_tail_ = tail;
+            available = tail - head;
+            if (available == 0) {
+                return 0;
+            }
+        }
+
+        const size_t count = (available < n) ? available : n;
+
+        for (size_t i = 0; i < count; ++i) {
+            std::invoke(std::forward<F>(visitor),
+                        buffer_[(head + i) & mask_], i);
+        }
+
+        reader_.head_.store(head + count, std::memory_order_release);
+        return count;
+    }
+
+    /**
+     * @brief 阻塞式批量零拷贝消费 (Visitor 模式)
+     *
+     * 自旋等待直到至少有一个元素可消费，然后批量消费最多 n 个元素。
+     *
+     * @param n       最大消费数量
+     * @param visitor 回调 void(T& slot, size_t index)
+     * @return 实际消费的元素数量（>= 1）
+     */
+    template <typename F>
+        requires std::invocable<F, T&, size_t>
+    size_t consume_n(size_t n, F&& visitor) noexcept {
+        size_t count;
+        while ((count = try_consume_n(n, std::forward<F>(visitor))) == 0) {
+            cpu_relax();
+        }
+        return count;
+    }
+
+    /**
      * @brief 阻塞式消费
      */
     template <typename F>
@@ -569,6 +627,32 @@ class BoundedQueue {
             cpu_relax();
             n = try_pop_n(out);
             if (n > 0) return n;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return 0;
+    }
+
+    /**
+     * @brief 带超时的批量零拷贝消费 (Visitor 模式, 尽力而为语义)
+     *
+     * 等待至少一个元素可用（或超时），然后批量消费最多 n 个元素，
+     * 对每个元素原地调用 visitor(slot, index)。
+     *
+     * @param n       最大消费数量
+     * @param visitor 回调 void(T& slot, size_t index)
+     * @param timeout 最大等待时间
+     * @return 实际消费的元素数量（0 表示超时且队列为空）
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, T&, size_t>
+    [[nodiscard]] size_t try_consume_n_for(size_t n, F&& visitor,
+                                            std::chrono::duration<Rep, Period> timeout) noexcept {
+        size_t count = try_consume_n(n, std::forward<F>(visitor));
+        if (count > 0) return count;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            count = try_consume_n(n, std::forward<F>(visitor));
+            if (count > 0) return count;
         } while (std::chrono::steady_clock::now() < deadline);
         return 0;
     }
