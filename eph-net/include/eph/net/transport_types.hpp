@@ -275,6 +275,45 @@ struct TransportConfig {
 // Transport stats
 // ---------------------------------------------------------------------------
 
+/// Round-trip time statistics from WebSocket ping/pong measurements.
+/// All values are in nanoseconds. Zero count means no RTT data collected.
+struct RttStats {
+    uint64_t count  = 0;    ///< Number of RTT samples recorded
+    uint64_t min_ns = 0;    ///< Minimum RTT (ns)
+    uint64_t max_ns = 0;    ///< Maximum RTT (ns)
+    double   mean_ns = 0.0; ///< Mean RTT (ns)
+    uint64_t p50_ns = 0;    ///< Median RTT (ns)
+    uint64_t p99_ns = 0;    ///< 99th percentile RTT (ns)
+    uint64_t p999_ns = 0;   ///< 99.9th percentile RTT (ns)
+
+    /// Median RTT in microseconds (convenience for human-readable output).
+    [[nodiscard]] double p50_us() const noexcept {
+        return static_cast<double>(p50_ns) / 1e3;
+    }
+    /// 99th percentile RTT in microseconds.
+    [[nodiscard]] double p99_us() const noexcept {
+        return static_cast<double>(p99_ns) / 1e3;
+    }
+    /// Mean RTT in microseconds.
+    [[nodiscard]] double mean_us() const noexcept {
+        return mean_ns / 1e3;
+    }
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        if (count == 0) return "RttStats: no samples";
+        return std::format(
+            "RttStats ({} samples):\n"
+            "  min: {:.1f}us, p50: {:.1f}us, p99: {:.1f}us, "
+            "p999: {:.1f}us, max: {:.1f}us, mean: {:.1f}us",
+            count,
+            static_cast<double>(min_ns) / 1e3,
+            p50_us(), p99_us(),
+            static_cast<double>(p999_ns) / 1e3,
+            static_cast<double>(max_ns) / 1e3,
+            mean_us());
+    }
+};
+
 /// Per-thread stats -- TX thread and RX thread each own their own counters.
 /// Merged at query time to avoid atomic contention on the hot path.
 struct ThreadStats {
@@ -379,6 +418,20 @@ struct TransportStats {
 // ─────────────────────────────────────────────────────────────────────────────
 // std::formatter specializations
 // ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::RttStats> : std::formatter<std::string> {
+    auto format(const eph::net::RttStats& r, auto& ctx) const {
+        if (r.count == 0) {
+            return std::formatter<std::string>::format("RTT: no samples", ctx);
+        }
+        return std::formatter<std::string>::format(
+            std::format("RTT(n={}): p50={:.0f}us p99={:.0f}us max={:.0f}us",
+                r.count, r.p50_us(), r.p99_us(),
+                static_cast<double>(r.max_ns) / 1e3),
+            ctx);
+    }
+};
 
 template <>
 struct std::formatter<eph::net::SendError> : std::formatter<const char*> {

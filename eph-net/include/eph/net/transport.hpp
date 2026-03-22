@@ -43,6 +43,7 @@
 #include "eph/base/cache.hpp"
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/utils/cpu.hpp"
+#include "eph/utils/record.hpp"
 #include "eph/net/http.hpp"
 #include "eph/net/tcp_concept.hpp"
 #include "eph/net/tls_record.hpp"
@@ -706,6 +707,7 @@ public:
         ws_pongs_sent_.store(0, std::memory_order_relaxed);
         pong_timeouts_.store(0, std::memory_order_relaxed);
         reconnect_count_.store(0, std::memory_order_relaxed);
+        rtt_histogram_.reset();
     }
 
     /// Negotiated TLS version string (e.g. "TLSv1.3"), or "none" if not connected.
@@ -722,6 +724,29 @@ public:
     /// response header), or empty string if none was negotiated.
     [[nodiscard]] std::string_view ws_subprotocol() const noexcept {
         return ws_subprotocol_;
+    }
+
+    /// Snapshot of round-trip time statistics from ping/pong measurements.
+    ///
+    /// Requires TSC to be initialized (TSC::init() called before Transport::create).
+    /// If TSC is not initialized or no pings have been exchanged, all fields are zero.
+    ///
+    /// @note The histogram is owned by the RX thread. This method reads it
+    ///       from the application thread, which is safe because HdrHistogram
+    ///       reads are non-destructive and the RX thread only appends samples.
+    ///       In the worst case, a concurrent write may cause a slightly stale
+    ///       read — acceptable for monitoring purposes.
+    [[nodiscard]] RttStats rtt_stats() const noexcept {
+        if (rtt_histogram_.get_total_count() == 0) return {};
+        return RttStats{
+            .count   = rtt_histogram_.get_total_count(),
+            .min_ns  = rtt_histogram_.get_min_value(),
+            .max_ns  = rtt_histogram_.get_max_value(),
+            .mean_ns = rtt_histogram_.get_mean(),
+            .p50_ns  = rtt_histogram_.get_value_at_percentile(50.0),
+            .p99_ns  = rtt_histogram_.get_value_at_percentile(99.0),
+            .p999_ns = rtt_histogram_.get_value_at_percentile(99.9),
+        };
     }
 
     [[nodiscard]] TransportStats stats() const noexcept {
@@ -845,6 +870,16 @@ private:
     using SteadyTimePoint = std::chrono::steady_clock::time_point;
     std::atomic<int64_t>                   last_pong_ns_{0};      // RX writes, TX reads
     bool                                   ping_awaiting_pong_{false}; // TX-thread-local
+
+    // RTT measurement: TX thread writes TSC timestamp when sending ping,
+    // RX thread reads it when pong arrives and records the delta in the
+    // histogram.  The histogram is owned exclusively by the RX thread.
+    std::atomic<uint64_t>                  last_ping_tsc_{0};     // TX writes, RX reads
+    eph::utils::HdrHistogram               rtt_histogram_{
+        100,          // lowest: 100 ns (~0.1 us)
+        10'000'000'000ULL, // highest: 10 s (covers even slow WAN)
+        3             // 3 significant digits
+    };
 
     // WebSocket fragmentation reassembly buffer (RX thread only).
     // Accumulates continuation frames until FIN=1.
@@ -1540,12 +1575,16 @@ private:
 
     /// Send a WebSocket ping frame (called from TX thread only).
     /// Uses caller-provided buffers to avoid extra stack allocations.
+    /// Records TSC timestamp for RTT measurement by the RX thread.
     bool send_ws_ping(uint8_t* ws_buf, uint8_t* tls_buf) noexcept {
         size_t ping_len = ws::build_ping_frame(ws_buf);
 
         uint16_t tls_len = crypto_->encrypt(
             ws_buf, static_cast<uint16_t>(ping_len), tls_buf);
         if (tls_len == 0) return false;
+
+        // Record TSC just before TCP send for tightest RTT measurement
+        last_ping_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
 
         auto result = tcp_->send(tls_buf, tls_len);
         if (!result) {
@@ -1629,6 +1668,23 @@ private:
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
                     std::memory_order_relaxed);
+
+                // RTT measurement: compute delta from the ping TSC timestamp.
+                // Only record if TSC is initialized and we have a valid ping timestamp.
+                uint64_t ping_tsc = last_ping_tsc_.load(std::memory_order_relaxed);
+                if (ping_tsc > 0 && eph::utils::TSC::is_initialized()) {
+                    uint64_t pong_tsc = eph::utils::TSC::now();
+                    if (pong_tsc > ping_tsc) {
+                        auto rtt_ns = eph::utils::TSC::to_ns(pong_tsc - ping_tsc);
+                        if (rtt_ns) {
+                            rtt_histogram_.record(
+                                static_cast<uint64_t>(*rtt_ns));
+                        }
+                    }
+                    // Clear ping TSC so we don't double-record on spurious pongs
+                    last_ping_tsc_.store(0, std::memory_order_relaxed);
+                }
+
                 if (config_.on_pong) {
                     try {
                         config_.on_pong(frame->payload,

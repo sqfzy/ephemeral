@@ -329,3 +329,68 @@ TEST(WebSocketCloseCode, RegisteredAndPrivateRangesAreValid) {
     EXPECT_TRUE(ws::is_valid_close_code(4000));
     EXPECT_TRUE(ws::is_valid_close_code(4999));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RttStats
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RttStats, DefaultIsZero) {
+    RttStats rtt{};
+    EXPECT_EQ(rtt.count, 0u);
+    EXPECT_EQ(rtt.min_ns, 0u);
+    EXPECT_EQ(rtt.max_ns, 0u);
+    EXPECT_DOUBLE_EQ(rtt.mean_ns, 0.0);
+    EXPECT_EQ(rtt.p50_ns, 0u);
+    EXPECT_EQ(rtt.p99_ns, 0u);
+    EXPECT_EQ(rtt.p999_ns, 0u);
+}
+
+TEST(RttStats, ConvenienceAccessorsConvertToMicroseconds) {
+    RttStats rtt{
+        .count = 100,
+        .min_ns = 1000,
+        .max_ns = 5000000,
+        .mean_ns = 500000.0,
+        .p50_ns = 400000,
+        .p99_ns = 4000000,
+        .p999_ns = 4800000,
+    };
+    EXPECT_DOUBLE_EQ(rtt.p50_us(), 400.0);
+    EXPECT_DOUBLE_EQ(rtt.p99_us(), 4000.0);
+    EXPECT_DOUBLE_EQ(rtt.mean_us(), 500.0);
+}
+
+TEST(RttStats, DumpReturnsNoSamplesWhenEmpty) {
+    RttStats rtt{};
+    EXPECT_EQ(rtt.dump(), "RttStats: no samples");
+}
+
+TEST(RttStats, DumpReturnsFormattedStringWhenPopulated) {
+    RttStats rtt{
+        .count = 42,
+        .min_ns = 1000,
+        .max_ns = 5000000,
+        .mean_ns = 500000.0,
+        .p50_ns = 400000,
+        .p99_ns = 4000000,
+        .p999_ns = 4800000,
+    };
+    auto dump = rtt.dump();
+    EXPECT_NE(dump.find("42 samples"), std::string::npos);
+    EXPECT_NE(dump.find("p50:"), std::string::npos);
+    EXPECT_NE(dump.find("p99:"), std::string::npos);
+}
+
+TEST(RttStats, FormatterProducesOutput) {
+    RttStats rtt{};
+    auto s = std::format("{}", rtt);
+    EXPECT_NE(s.find("no samples"), std::string::npos);
+
+    rtt.count = 10;
+    rtt.p50_ns = 500000;
+    rtt.p99_ns = 2000000;
+    rtt.max_ns = 5000000;
+    auto s2 = std::format("{}", rtt);
+    EXPECT_NE(s2.find("p50="), std::string::npos);
+    EXPECT_NE(s2.find("p99="), std::string::npos);
+}
