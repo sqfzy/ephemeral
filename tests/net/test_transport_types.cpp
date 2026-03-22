@@ -1123,3 +1123,112 @@ TEST(TransportConfigWarnings, LargeBurstSizeWarning) {
     }
     EXPECT_TRUE(found);
 }
+
+TEST(TransportConfigWarnings, LargeRxBurstSizeWarning) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.rx_burst_size = 2048;
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1);
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("rx_burst_size") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(TransportConfigWarnings, PongTimeoutEqualsPingIntervalBoundary) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ping_interval = std::chrono::seconds{10};
+    cfg.pong_timeout = std::chrono::seconds{10};
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1);
+    EXPECT_NE(w[0].find("pong_timeout"), std::string::npos);
+}
+
+TEST(TransportConfigWarnings, MultipleWarningsFromSameConfig) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.use_tls = false;
+    cfg.verify_peer = true;
+    cfg.ca_cert_path = "/some/ca.pem";
+    auto w = cfg.warnings();
+    // Both verify_peer and ca_cert_path warnings should fire
+    ASSERT_GE(w.size(), 2);
+    bool has_verify = false, has_ca = false;
+    for (const auto& msg : w) {
+        if (msg.find("verify_peer") != std::string::npos) has_verify = true;
+        if (msg.find("ca_cert_path") != std::string::npos) has_ca = true;
+    }
+    EXPECT_TRUE(has_verify);
+    EXPECT_TRUE(has_ca);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ThreadStats::reset()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ThreadStats, ResetZeroesAllCounters) {
+    ThreadStats ts;
+    ts.packets.store(100, std::memory_order_relaxed);
+    ts.bytes.store(5000, std::memory_order_relaxed);
+    ts.text_packets.store(42, std::memory_order_relaxed);
+    ts.text_bytes.store(2100, std::memory_order_relaxed);
+    ts.dropped.store(7, std::memory_order_relaxed);
+    ts.crypto_errors.store(3, std::memory_order_relaxed);
+
+    ts.reset();
+
+    EXPECT_EQ(ts.packets.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(ts.bytes.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(ts.text_packets.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(ts.text_bytes.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(ts.dropped.load(std::memory_order_relaxed), 0);
+    EXPECT_EQ(ts.crypto_errors.load(std::memory_order_relaxed), 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportStats HWM in dump()/to_json()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportStatsDump, IncludesHwmFields) {
+    TransportStats stats{};
+    stats.tx_queue_hwm = 512;
+    stats.rx_queue_hwm = 256;
+    auto dump = stats.dump();
+    EXPECT_NE(dump.find("TX HWM: 512"), std::string::npos);
+    EXPECT_NE(dump.find("RX HWM: 256"), std::string::npos);
+}
+
+TEST(TransportStatsJson, IncludesHwmFields) {
+    TransportStats stats{};
+    stats.tx_queue_hwm = 128;
+    stats.rx_queue_hwm = 64;
+    auto json = stats.to_json();
+    EXPECT_NE(json.find("\"tx_queue_hwm\":128"), std::string::npos);
+    EXPECT_NE(json.find("\"rx_queue_hwm\":64"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::to_json() extra_headers escaping
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigJson, ExtraHeadersSpecialCharsEscaped) {
+    TransportConfig cfg{};
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws";
+    cfg.extra_headers = "X-Custom: value\"with\\quotes\r\n";
+
+    auto json = cfg.to_json();
+    // Quotes and backslashes should be escaped in JSON
+    EXPECT_NE(json.find("extra_headers"), std::string::npos);
+    // Raw " and \ must NOT appear unescaped
+    auto pos = json.find("\"extra_headers\":\"");
+    ASSERT_NE(pos, std::string::npos);
+    // Check that the value portion has \\\" (escaped quote)
+    auto value_start = pos + 17; // length of "extra_headers":"
+    auto value = json.substr(value_start);
+    EXPECT_NE(value.find("\\\""), std::string::npos);
+    EXPECT_NE(value.find("\\\\"), std::string::npos);
+}
