@@ -428,6 +428,7 @@ TEST(SendErrorTest, NameFormatting) {
     EXPECT_STREQ(send_error_name(SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
     EXPECT_STREQ(send_error_name(SendError::kNotConnected), "NOT_CONNECTED");
     EXPECT_STREQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
+    EXPECT_STREQ(send_error_name(SendError::kInvalidUtf8), "INVALID_UTF8");
 }
 
 TEST(SendErrorTest, BooleanSemantics) {
@@ -436,6 +437,7 @@ TEST(SendErrorTest, BooleanSemantics) {
     EXPECT_TRUE(!SendError::kMessageTooLarge);
     EXPECT_TRUE(!SendError::kNotConnected);
     EXPECT_TRUE(!SendError::kQueueFull);
+    EXPECT_TRUE(!SendError::kInvalidUtf8);
 
     // Idiomatic usage: if (auto err = send(...); !err) { handle error }
     SendError ok = SendError::kOk;
@@ -451,4 +453,6 @@ TEST(SendErrorTest, ExhaustiveSwitch) {
     EXPECT_NE(to_int(SendError::kMessageTooLarge), to_int(SendError::kNotConnected));
     EXPECT_NE(to_int(SendError::kNotConnected), to_int(SendError::kQueueFull));
     EXPECT_NE(to_int(SendError::kMessageTooLarge), to_int(SendError::kQueueFull));
+    EXPECT_NE(to_int(SendError::kInvalidUtf8), to_int(SendError::kQueueFull));
+    EXPECT_NE(to_int(SendError::kInvalidUtf8), to_int(SendError::kMessageTooLarge));
 }

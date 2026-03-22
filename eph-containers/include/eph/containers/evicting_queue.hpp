@@ -494,6 +494,32 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         });
     }
 
+    /// Batch write N items using a visitor pattern.
+    ///
+    /// Calls visitor(T& slot, size_t index) for each of the N items.
+    /// Each write is individually sequenced (wait-free).
+    /// For Capacity=1, only the last item will be visible to the reader.
+    ///
+    /// @param count    Number of items to write
+    /// @param visitor  Callable: void(T& slot, size_t index)
+    template <typename F>
+        requires std::invocable<F, T&, size_t>
+    void produce_n(size_t count, F&& visitor) noexcept {
+        for (size_t i = 0; i < count; ++i) {
+            produce([&](T& slot) {
+                std::invoke(std::forward<F>(visitor), slot, i);
+            });
+        }
+    }
+
+    /// Batch push N items from a span.
+    /// For Capacity=1, only the last item will be visible to the reader.
+    void push_n(std::span<const T> items) noexcept {
+        produce_n(items.size(), [&](T& slot, size_t i) {
+            slot = items[i];
+        });
+    }
+
     // ===========================================================================
     // Reader
     // ===========================================================================

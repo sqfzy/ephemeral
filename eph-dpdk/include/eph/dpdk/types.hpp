@@ -8,6 +8,7 @@
 
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/transport.hpp"
+#include "eph/net/transport_types.hpp"
 
 namespace eph::dpdk {
 
@@ -23,5 +24,8 @@ using DpdkLargeTransport = eph::net::Transport<TcpSession, 4096, 512>;
 /// Re-export generic types for convenience.
 using eph::net::TransportConfig;
 using eph::net::TransportStats;
+using eph::net::SendError;
+using eph::net::TransportEvent;
+using eph::net::TransportState;
 
 } // namespace eph::dpdk

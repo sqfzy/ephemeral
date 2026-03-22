@@ -61,9 +61,19 @@ target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
-    add_deps("eph-net", { public = true })
+    -- DPDK backend only needs the TcpTransport concept and public types from
+    -- eph-net (tcp_concept.hpp, transport_types.hpp), not TLS/WS internals.
+    -- We add eph-net's include path directly and depend on eph-base/utils/containers
+    -- to avoid inheriting eph-net's aws-lc package dependency.
+    add_deps("eph-base", "eph-utils", "eph-containers", { public = true })
+    add_includedirs("eph-net/include", { public = true })
+    add_packages("spdlog", { public = true })
+    -- aws-lc is optional: only needed when using Transport<TcpSession> aliases
+    -- from types.hpp. Raw DPDK TCP (tcp.hpp) works without it.
+    add_packages("aws-lc", { public = true })
     add_packages("dpdk", { public = true })
     add_cxflags("-march=native", { public = true, force = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
