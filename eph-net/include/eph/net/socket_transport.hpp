@@ -116,7 +116,8 @@ public:
         : config_(std::move(other.config_))
         , fd_(other.fd_)
         , state_(other.state_)
-        , mss_(other.mss_) {
+        , mss_(other.mss_)
+        , resolved_ip_(std::move(other.resolved_ip_)) {
         other.fd_ = -1;
         other.state_ = TcpState::Closed;
     }
@@ -128,6 +129,7 @@ public:
             fd_ = other.fd_;
             state_ = other.state_;
             mss_ = other.mss_;
+            resolved_ip_ = std::move(other.resolved_ip_);
             other.fd_ = -1;
             other.state_ = TcpState::Closed;
         }
@@ -240,9 +242,12 @@ public:
             }
         }
 
+        // Capture resolved IP address for observability
+        resolve_ip(result);
+
         state_ = TcpState::SynSent;
-        SPDLOG_LOGGER_DEBUG(log, "Connecting to {}:{}...",
-                            config_.host, config_.port);
+        SPDLOG_LOGGER_DEBUG(log, "Connecting to {}:{} (resolved: {})...",
+                            config_.host, config_.port, resolved_ip_);
 
         // Non-blocking connect
         rc = ::connect(fd_, result->ai_addr, result->ai_addrlen);
@@ -250,8 +255,8 @@ public:
             // Immediate connection (unlikely for TCP, but possible on loopback)
             state_ = TcpState::Established;
             query_mss();
-            SPDLOG_LOGGER_INFO(log, "Connected to {}:{}",
-                               config_.host, config_.port);
+            SPDLOG_LOGGER_INFO(log, "Connected to {} ({}:{})",
+                               resolved_ip_, config_.host, config_.port);
             return {};
         }
 
@@ -295,8 +300,8 @@ public:
 
         state_ = TcpState::Established;
         query_mss();
-        SPDLOG_LOGGER_INFO(log, "Connected to {}:{} (mss={})",
-                           config_.host, config_.port, mss_);
+        SPDLOG_LOGGER_INFO(log, "Connected to {} ({}:{}, mss={})",
+                           resolved_ip_, config_.host, config_.port, mss_);
         return {};
     }
 
@@ -480,11 +485,18 @@ public:
     }
     [[nodiscard]] int fd() const noexcept { return fd_; }
 
+    /// Resolved IP address string (e.g. "10.0.0.1") from the last connect().
+    /// Empty if connect() has not been called or DNS resolution failed.
+    [[nodiscard]] std::string_view resolved_ip() const noexcept {
+        return resolved_ip_;
+    }
+
 private:
     SocketConfig config_;
     int          fd_    = -1;
     TcpState     state_ = TcpState::Closed;
     uint16_t     mss_   = 1460; // Default MSS for Ethernet
+    std::string  resolved_ip_;  // Resolved IP from last connect()
 
     void close_fd() noexcept {
         if (fd_ >= 0) {
@@ -492,6 +504,21 @@ private:
             fd_ = -1;
         }
         state_ = TcpState::Closed;
+    }
+
+    /// Extract human-readable IP from addrinfo (IPv4 only for now).
+    void resolve_ip(const struct addrinfo* ai) noexcept {
+        if (!ai || ai->ai_family != AF_INET) {
+            resolved_ip_.clear();
+            return;
+        }
+        char buf[INET_ADDRSTRLEN]{};
+        auto* sin = reinterpret_cast<const struct sockaddr_in*>(ai->ai_addr);
+        if (::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
+            resolved_ip_ = buf;
+        } else {
+            resolved_ip_.clear();
+        }
     }
 
     void query_mss() noexcept {

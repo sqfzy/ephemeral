@@ -726,6 +726,13 @@ public:
         return ws_subprotocol_;
     }
 
+    /// Resolved remote IP address (e.g. "10.0.0.1") from the last connection.
+    /// Available if the underlying TcpImpl exposes a resolved_ip() method.
+    /// Returns empty string if not available or not yet connected.
+    [[nodiscard]] std::string_view remote_ip() const noexcept {
+        return remote_ip_;
+    }
+
     /// Snapshot of round-trip time statistics from ping/pong measurements.
     ///
     /// Requires TSC to be initialized (TSC::init() called before Transport::create).
@@ -834,6 +841,7 @@ private:
     std::string                            tls_version_{"none"};
     std::string                            cipher_name_{"none"};
     std::string                            ws_subprotocol_{};
+    std::string                            remote_ip_{};
     std::unique_ptr<TlsRecordCrypto>       crypto_;
 
     // Uptime tracking
@@ -991,6 +999,11 @@ private:
         // Capture connection metadata for user queries
         tls_version_ = tls_->tls_version();
         cipher_name_ = tls_->cipher_name();
+
+        // Extract resolved IP if the TCP backend exposes it
+        if constexpr (requires { tcp_->resolved_ip(); }) {
+            remote_ip_ = std::string(tcp_->resolved_ip());
+        }
 
         // Initialize pong timestamp to "now" so pong timeout doesn't fire
         // before the first ping/pong exchange completes.
