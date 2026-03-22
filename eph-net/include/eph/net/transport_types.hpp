@@ -228,6 +228,60 @@ struct TransportConfig {
     std::function<bool(int attempt, int max_attempts, std::string_view error)>
         on_reconnect_attempt{};
 
+    /// Multi-line formatted dump for logging/debugging.
+    /// Callbacks are shown as set/unset (closures cannot be serialized).
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "TransportConfig:\n"
+            "  target: {}:{}{}\n"
+            "  subprotocol: {}\n"
+            "  tls: verify_peer={}, ca_cert={}\n"
+            "  timeouts: tcp={}ms, tls={}ms, ws={}ms\n"
+            "  burst: tx={}, rx={}\n"
+            "  reconnect: interval={}ms, max_backoff={}ms, max_attempts={}\n"
+            "  ping: interval={}s, pong_timeout={}s\n"
+            "  cpu: tx={}, rx={}\n"
+            "  callbacks: on_state_change={}, on_message={}, on_close={}, "
+            "on_ping={}, on_pong={}, on_rx_drop={}, on_reconnect_attempt={}",
+            remote_host, remote_port, ws_path,
+            ws_subprotocol.empty() ? "(none)" : ws_subprotocol,
+            verify_peer, ca_cert_path.empty() ? "(system default)" : ca_cert_path,
+            tcp_timeout.count(), tls_timeout.count(), ws_timeout.count(),
+            tx_burst_size, rx_burst_size,
+            reconnect_interval.count(), max_reconnect_backoff.count(),
+            max_reconnect_attempts,
+            ping_interval.count(), pong_timeout.count(),
+            tx_cpu, rx_cpu,
+            static_cast<bool>(on_state_change), static_cast<bool>(on_message),
+            static_cast<bool>(on_close), static_cast<bool>(on_ping),
+            static_cast<bool>(on_pong), static_cast<bool>(on_rx_drop),
+            static_cast<bool>(on_reconnect_attempt));
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{"
+            "\"remote_host\":\"{}\",\"remote_port\":{},\"ws_path\":\"{}\","
+            "\"ws_subprotocol\":\"{}\",\"verify_peer\":{},"
+            "\"ca_cert_path\":\"{}\","
+            "\"tcp_timeout_ms\":{},\"tls_timeout_ms\":{},\"ws_timeout_ms\":{},"
+            "\"tx_burst_size\":{},\"rx_burst_size\":{},"
+            "\"reconnect_interval_ms\":{},\"max_reconnect_backoff_ms\":{},"
+            "\"max_reconnect_attempts\":{},"
+            "\"ping_interval_s\":{},\"pong_timeout_s\":{},"
+            "\"tx_cpu\":{},\"rx_cpu\":{}}}",
+            remote_host, remote_port, ws_path,
+            ws_subprotocol, verify_peer ? "true" : "false",
+            ca_cert_path,
+            tcp_timeout.count(), tls_timeout.count(), ws_timeout.count(),
+            tx_burst_size, rx_burst_size,
+            reconnect_interval.count(), max_reconnect_backoff.count(),
+            max_reconnect_attempts,
+            ping_interval.count(), pong_timeout.count(),
+            tx_cpu, rx_cpu);
+    }
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before Transport::create() to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {

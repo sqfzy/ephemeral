@@ -536,6 +536,69 @@ TEST(ReceivedMessage, TextAndBinaryTypeChecks) {
     EXPECT_FALSE(bin_msg.is_close());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::dump() and to_json()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigDump, ContainsKeyFields) {
+    TransportConfig cfg;
+    cfg.remote_host = "ws.example.com";
+    cfg.remote_port = 8443;
+    cfg.ws_path = "/v2/stream";
+    cfg.ws_subprotocol = "graphql-ws";
+    cfg.verify_peer = false;
+    cfg.tcp_timeout = std::chrono::milliseconds{5000};
+
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("ws.example.com"), std::string::npos);
+    EXPECT_NE(dump.find("8443"), std::string::npos);
+    EXPECT_NE(dump.find("/v2/stream"), std::string::npos);
+    EXPECT_NE(dump.find("graphql-ws"), std::string::npos);
+    EXPECT_NE(dump.find("verify_peer=false"), std::string::npos);
+    EXPECT_NE(dump.find("tcp=5000ms"), std::string::npos);
+}
+
+TEST(TransportConfigDump, ShowsCallbackStatus) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws";
+    cfg.on_message = [](const uint8_t*, uint16_t, uint8_t) {};
+    cfg.on_close = [](uint16_t, std::string_view) {};
+
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("on_message=true"), std::string::npos);
+    EXPECT_NE(dump.find("on_close=true"), std::string::npos);
+    EXPECT_NE(dump.find("on_state_change=false"), std::string::npos);
+}
+
+TEST(TransportConfigDump, DefaultSubprotocolShowsNone) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws";
+
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("(none)"), std::string::npos);
+}
+
+TEST(TransportConfigToJson, ProducesValidJsonStructure) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    cfg.max_reconnect_attempts = 5;
+    cfg.ping_interval = std::chrono::seconds{15};
+
+    auto json = cfg.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"remote_host\":\"example.com\""), std::string::npos);
+    EXPECT_NE(json.find("\"remote_port\":443"), std::string::npos);
+    EXPECT_NE(json.find("\"ws_path\":\"/ws\""), std::string::npos);
+    EXPECT_NE(json.find("\"max_reconnect_attempts\":5"), std::string::npos);
+    EXPECT_NE(json.find("\"ping_interval_s\":15"), std::string::npos);
+    EXPECT_NE(json.find("\"verify_peer\":true"), std::string::npos);
+}
+
 TEST(ReceivedMessage, AllStandardCloseCodesRoundtrip) {
     // Verify various standard close codes encode/decode correctly
     for (uint16_t code : {1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011,
