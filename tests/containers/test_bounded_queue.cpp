@@ -991,3 +991,73 @@ TEST(BoundedQueueTimed, TryConsumeNForWaitsForData) {
         EXPECT_EQ(consumed[i], static_cast<uint32_t>(i));
     }
 }
+
+// ===========================================================================
+// try_peek
+// ===========================================================================
+
+TEST(BoundedQueue, try_peek_returns_false_on_empty_queue) {
+    BoundedQueue<BoundedTestData, 4> q;
+    BoundedTestData out;
+    EXPECT_FALSE(q.try_peek(out));
+}
+
+TEST(BoundedQueue, try_peek_optional_returns_nullopt_on_empty) {
+    BoundedQueue<BoundedTestData, 4> q;
+    EXPECT_FALSE(q.try_peek().has_value());
+}
+
+TEST(BoundedQueue, try_peek_reads_head_without_consuming) {
+    BoundedQueue<BoundedTestData, 4> q;
+    BoundedTestData d1{.seq = 42};
+    BoundedTestData d2{.seq = 99};
+    q.try_push(d1);
+    q.try_push(d2);
+
+    BoundedTestData peeked;
+    EXPECT_TRUE(q.try_peek(peeked));
+    EXPECT_EQ(peeked.seq, 42u);
+    EXPECT_EQ(q.size(), 2u);  // Nothing consumed
+
+    // Peek again — same element
+    BoundedTestData peeked2;
+    EXPECT_TRUE(q.try_peek(peeked2));
+    EXPECT_EQ(peeked2.seq, 42u);
+    EXPECT_EQ(q.size(), 2u);
+}
+
+TEST(BoundedQueue, try_peek_then_pop_advances_head) {
+    BoundedQueue<BoundedTestData, 4> q;
+    BoundedTestData d1{.seq = 10};
+    BoundedTestData d2{.seq = 20};
+    q.try_push(d1);
+    q.try_push(d2);
+
+    // Peek sees first element
+    auto peeked = q.try_peek();
+    ASSERT_TRUE(peeked.has_value());
+    EXPECT_EQ(peeked->seq, 10u);
+
+    // Pop consumes it
+    auto popped = q.try_pop();
+    ASSERT_TRUE(popped.has_value());
+    EXPECT_EQ(popped->seq, 10u);
+
+    // Next peek sees second element
+    peeked = q.try_peek();
+    ASSERT_TRUE(peeked.has_value());
+    EXPECT_EQ(peeked->seq, 20u);
+}
+
+TEST(BoundedQueue, try_peek_on_full_queue) {
+    BoundedQueue<BoundedTestData, 4> q;
+    for (uint32_t i = 0; i < 4; ++i) {
+        q.try_push(BoundedTestData{.seq = i});
+    }
+    EXPECT_TRUE(q.full());
+
+    BoundedTestData peeked;
+    EXPECT_TRUE(q.try_peek(peeked));
+    EXPECT_EQ(peeked.seq, 0u);
+    EXPECT_TRUE(q.full());  // Still full — nothing consumed
+}

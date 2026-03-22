@@ -415,6 +415,45 @@ class BoundedQueue {
     }
 
     /**
+     * @brief 查看队首元素但不消费 (Reader 线程专用)
+     *
+     * 读取队首元素的拷贝但不推进 head 指针。适用于消费前需要
+     * 预检查消息类型或决定路由逻辑的场景。
+     *
+     * @param out [out] 目标对象（队列非空时写入）
+     * @return true 队列非空且已复制; false 队列为空
+     *
+     * @note 仅 Reader 线程可调用。多次调用返回同一元素，
+     *       直到 try_pop/consume 推进 head。
+     */
+    [[nodiscard]] bool try_peek(T& out) noexcept {
+        const size_t head = reader_.head_.load(std::memory_order_relaxed);
+
+        if (reader_.shadow_tail_ == head) {
+            const size_t tail = writer_.tail_.load(std::memory_order_acquire);
+            reader_.shadow_tail_ = tail;
+
+            if (head == tail) {
+                return false;
+            }
+        }
+
+        out = buffer_[head & mask_];
+        // Do NOT advance head — element stays in the queue
+        return true;
+    }
+
+    /**
+     * @brief 查看队首元素并返回可选值 (Reader 线程专用)
+     * @return std::optional 包含数据（非空时）或空
+     */
+    [[nodiscard]] std::optional<T> try_peek() noexcept {
+        T val;
+        if (try_peek(val)) return val;
+        return std::nullopt;
+    }
+
+    /**
      * @brief 尝试读取数据到外部变量
      * @param out [out] 目标对象
      * @return true 成功; false 队列为空
