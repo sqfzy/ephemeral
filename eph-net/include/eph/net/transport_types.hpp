@@ -280,6 +280,8 @@ struct TransportConfig {
 struct ThreadStats {
     uint64_t packets       = 0;
     uint64_t bytes         = 0;
+    uint64_t text_packets  = 0;  ///< Text frame count (subset of packets)
+    uint64_t text_bytes    = 0;  ///< Text frame bytes (subset of bytes)
     uint64_t dropped       = 0;
     uint64_t crypto_errors = 0;
 };
@@ -288,9 +290,13 @@ struct ThreadStats {
 struct TransportStats {
     uint64_t tx_packets        = 0;
     uint64_t tx_bytes          = 0;
+    uint64_t tx_text_packets   = 0;  ///< Text frames sent (subset of tx_packets)
+    uint64_t tx_text_bytes     = 0;  ///< Text frame bytes sent (subset of tx_bytes)
     uint64_t tx_dropped        = 0;
     uint64_t rx_packets        = 0;
     uint64_t rx_bytes          = 0;
+    uint64_t rx_text_packets   = 0;  ///< Text frames received (subset of rx_packets)
+    uint64_t rx_text_bytes     = 0;  ///< Text frame bytes received (subset of rx_bytes)
     uint64_t rx_dropped        = 0;
     uint64_t encrypt_errors    = 0;
     uint64_t decrypt_errors    = 0;
@@ -350,14 +356,18 @@ struct TransportStats {
         double uptime_s = static_cast<double>(uptime_ns) / 1e9;
         return std::format(
             "TransportStats (uptime: {:.1f}s):\n"
-            "  TX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), {} dropped, {} encrypt errors\n"
-            "  RX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), {} dropped, {} decrypt errors\n"
+            "  TX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), "
+            "text: {} pkts/{} B, {} dropped, {} encrypt errors\n"
+            "  RX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), "
+            "text: {} pkts/{} B, {} dropped, {} decrypt errors\n"
             "  Queue full: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}",
             uptime_s,
-            tx_packets, tx_pps(), tx_bytes, tx_bps(), tx_dropped, encrypt_errors,
-            rx_packets, rx_pps(), rx_bytes, rx_bps(), rx_dropped, decrypt_errors,
+            tx_packets, tx_pps(), tx_bytes, tx_bps(),
+            tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
+            rx_packets, rx_pps(), rx_bytes, rx_bps(),
+            rx_text_packets, rx_text_bytes, rx_dropped, decrypt_errors,
             queue_full_count,
             ws_pings_received, ws_pongs_sent, pong_timeouts,
             reconnect_count);

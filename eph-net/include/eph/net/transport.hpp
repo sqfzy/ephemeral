@@ -731,9 +731,13 @@ public:
         return TransportStats{
             .tx_packets        = tx_stats_.packets,
             .tx_bytes          = tx_stats_.bytes,
+            .tx_text_packets   = tx_stats_.text_packets,
+            .tx_text_bytes     = tx_stats_.text_bytes,
             .tx_dropped        = tx_stats_.dropped,
             .rx_packets        = rx_stats_.packets,
             .rx_bytes          = rx_stats_.bytes,
+            .rx_text_packets   = rx_stats_.text_packets,
+            .rx_text_bytes     = rx_stats_.text_bytes,
             .rx_dropped        = rx_stats_.dropped,
             .encrypt_errors    = tx_stats_.crypto_errors,
             .decrypt_errors    = rx_stats_.crypto_errors,
@@ -1339,6 +1343,10 @@ private:
                 } else {
                     tx_stats_.packets++;
                     tx_stats_.bytes += batch[i].len;
+                    if (batch[i].opcode == ws::opcode::kText) {
+                        tx_stats_.text_packets++;
+                        tx_stats_.text_bytes += batch[i].len;
+                    }
                 }
             }
         }
@@ -1720,6 +1728,14 @@ private:
                 "Dropping text frame with invalid UTF-8 (len={})", len);
             return;
         }
+        auto update_rx_stats = [&] {
+            rx_stats_.bytes += len;
+            if (opcode == ws::opcode::kText) {
+                rx_stats_.text_packets++;
+                rx_stats_.text_bytes += len;
+            }
+        };
+
         if (config_.on_message) {
             try {
                 config_.on_message(data, len, opcode);
@@ -1727,7 +1743,7 @@ private:
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
                     "on_message callback threw an exception");
             }
-            rx_stats_.bytes += len;
+            update_rx_stats();
             return;
         }
 
@@ -1738,7 +1754,7 @@ private:
         });
 
         if (ok) {
-            rx_stats_.bytes += len;
+            update_rx_stats();
         } else {
             rx_stats_.dropped++;
             if (rx_stats_.dropped % 1000 == 1) {
