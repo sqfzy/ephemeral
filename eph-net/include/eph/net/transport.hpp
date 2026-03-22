@@ -1642,17 +1642,17 @@ private:
                 continue;
             }
 
-            // -- TLS sequence exhaustion early warning --
-            // Log once at 90% of the limit so operators can see reconnect coming.
+            // Log once at 90% of TLS sequence limit so operators
+            // can anticipate the upcoming reconnect for key refresh.
             if (config_.use_tls && !seq_warning_logged_) [[unlikely]] {
                 constexpr uint64_t kSeqWarnThreshold =
                     tls_record::kMaxSequenceNumber * 9 / 10;
-                if (crypto_->write_seq() >= kSeqWarnThreshold) {
+                uint64_t seq = crypto_->write_seq();
+                if (seq >= kSeqWarnThreshold) {
                     SPDLOG_LOGGER_WARN(log,
                         "TLS write sequence at {}/{} (90%%), "
                         "reconnect imminent for key refresh",
-                        crypto_->write_seq(),
-                        tls_record::kMaxSequenceNumber);
+                        seq, tls_record::kMaxSequenceNumber);
                     seq_warning_logged_ = true;
                 }
             }
@@ -1760,15 +1760,13 @@ private:
 
                     if (enc_len == 0) {
                         tx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
-                        // Detect TLS sequence exhaustion: encrypt() returns 0
-                        // when write_seq >= kMaxSequenceNumber. Continuing would
-                        // silently drop all subsequent messages. Trigger reconnect
-                        // to establish fresh keys.
-                        if (crypto_->write_seq() >= tls_record::kMaxSequenceNumber) {
+                        // Sequence exhaustion: encrypt() returns 0 when
+                        // write_seq >= kMaxSequenceNumber. Reconnect for fresh keys.
+                        uint64_t wseq = crypto_->write_seq();
+                        if (wseq >= tls_record::kMaxSequenceNumber) {
                             SPDLOG_LOGGER_ERROR(log,
                                 "TLS write sequence exhausted ({}), "
-                                "triggering reconnect for fresh keys",
-                                crypto_->write_seq());
+                                "triggering reconnect for fresh keys", wseq);
                             tcp_->reset();
                             break;
                         }
@@ -2235,13 +2233,7 @@ private:
 
             if (frame->is_close()) {
                 uint16_t code = frame->close_status_code();
-                // Extract close reason from payload (after 2-byte status code)
-                std::string_view close_reason;
-                if (frame->payload && frame->payload_len > 2) {
-                    close_reason = std::string_view(
-                        reinterpret_cast<const char*>(frame->payload + 2),
-                        frame->payload_len - 2);
-                }
+                std::string_view close_reason = frame->close_reason();
                 SPDLOG_LOGGER_INFO(log,
                     "Received WS Close frame: code={} reason=\"{}\"",
                     code, close_reason);

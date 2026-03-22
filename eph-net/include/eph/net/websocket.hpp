@@ -419,6 +419,8 @@ struct DecodedFrame {
 
     /// For close frames: extract the reason string (after the 2-byte status code).
     /// Returns empty string_view if not a close frame or no reason present.
+    /// @note For masked (client-sent) frames, the returned view contains masked
+    ///       bytes. Unmask the payload first with apply_mask() if needed.
     [[nodiscard]] std::string_view close_reason() const noexcept {
         if (opcode != opcode::kClose || payload_len <= 2 || !payload) {
             return {};
