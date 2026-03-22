@@ -297,7 +297,7 @@ static void BM_Pipeline_WSS_Burst(benchmark::State& state) {
 // Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void PipelinePayloadArgs(benchmark::internal::Benchmark* b) {
+static void PipelinePayloadArgs(::benchmark::Benchmark* b) {
     for (int sz : {64, 256, 1024}) b->Arg(sz);
 }
 
@@ -311,7 +311,7 @@ BENCHMARK(BM_Pipeline_PlainWS)->Apply(PipelinePayloadArgs);
 BENCHMARK(BM_Pipeline_WSS)->Apply(PipelinePayloadArgs);
 
 // WSS burst: payload × burst_size
-static void BurstArgs(benchmark::internal::Benchmark* b) {
+static void BurstArgs(::benchmark::Benchmark* b) {
     for (int sz : {64, 256, 1024}) {
         for (int burst : {1, 8, 32}) {
             b->Args({sz, burst});

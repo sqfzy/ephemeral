@@ -685,3 +685,146 @@ TEST(ReceivedMessage, AllStandardCloseCodesRoundtrip) {
         EXPECT_EQ(msg.close_code(), code) << "Failed for code " << code;
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JSON string escaping (detail::json_escape)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(JsonEscape, PlainStringUnchanged) {
+    auto result = detail::json_escape("hello world");
+    EXPECT_EQ(result, "hello world");
+}
+
+TEST(JsonEscape, EmptyStringUnchanged) {
+    auto result = detail::json_escape("");
+    EXPECT_EQ(result, "");
+}
+
+TEST(JsonEscape, EscapesDoubleQuotes) {
+    auto result = detail::json_escape(R"(say "hello")");
+    EXPECT_EQ(result, R"(say \"hello\")");
+}
+
+TEST(JsonEscape, EscapesBackslashes) {
+    auto result = detail::json_escape(R"(C:\path\to\file)");
+    EXPECT_EQ(result, R"(C:\\path\\to\\file)");
+}
+
+TEST(JsonEscape, EscapesControlCharacters) {
+    auto result = detail::json_escape("line1\nline2\ttab");
+    EXPECT_EQ(result, R"(line1\nline2\ttab)");
+}
+
+TEST(JsonEscape, EscapesAllSpecialChars) {
+    std::string input;
+    input += '"';   // double quote
+    input += '\\';  // backslash
+    input += '\b';  // backspace
+    input += '\f';  // form feed
+    input += '\n';  // newline
+    input += '\r';  // carriage return
+    input += '\t';  // tab
+    auto result = detail::json_escape(input);
+    EXPECT_EQ(result, R"(\"\\\b\f\n\r\t)");
+}
+
+TEST(JsonEscape, EscapesLowControlCharsAsUnicode) {
+    // NUL (0x00) and SOH (0x01) should become \u0000 and \u0001
+    std::string input;
+    input += '\x00'; // NUL
+    input += '\x01'; // SOH
+    input += '\x1F'; // US (last control char)
+    auto result = detail::json_escape(std::string_view(input.data(), input.size()));
+    EXPECT_NE(result.find("\\u0000"), std::string::npos);
+    EXPECT_NE(result.find("\\u0001"), std::string::npos);
+    EXPECT_NE(result.find("\\u001f"), std::string::npos);
+}
+
+TEST(JsonEscape, PassthroughUtf8) {
+    // UTF-8 multibyte characters should pass through unchanged
+    auto result = detail::json_escape("Hello \xe4\xb8\x96\xe7\x95\x8c");
+    EXPECT_EQ(result, "Hello \xe4\xb8\x96\xe7\x95\x8c");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::to_json() escaping
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigJson, EscapesSpecialCharsInStringFields) {
+    TransportConfig cfg;
+    cfg.remote_host = "host\"with\"quotes";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/path\\with\\backslash";
+    cfg.ws_subprotocol = "proto\nnewline";
+
+    auto json = cfg.to_json();
+
+    // Escaped values should appear in JSON
+    EXPECT_NE(json.find(R"(host\"with\"quotes)"), std::string::npos);
+    EXPECT_NE(json.find(R"(/path\\with\\backslash)"), std::string::npos);
+    EXPECT_NE(json.find(R"(proto\nnewline)"), std::string::npos);
+
+    // Raw unescaped values should NOT appear
+    EXPECT_EQ(json.find("host\"with"), std::string::npos)
+        << "Unescaped double quote found in JSON output";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RttStats::to_json()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RttStatsJson, EmptyStatsProducesValidJson) {
+    RttStats rtt{};
+    auto json = rtt.to_json();
+    EXPECT_NE(json.find("\"count\":0"), std::string::npos);
+    EXPECT_NE(json.find("\"min_ns\":0"), std::string::npos);
+}
+
+TEST(RttStatsJson, PopulatedStatsIncludesAllFields) {
+    RttStats rtt{
+        .count = 100,
+        .min_ns = 1000,
+        .max_ns = 50000,
+        .mean_ns = 10000.0,
+        .p50_ns = 8000,
+        .p99_ns = 45000,
+        .p999_ns = 49000,
+    };
+    auto json = rtt.to_json();
+    EXPECT_NE(json.find("\"count\":100"), std::string::npos);
+    EXPECT_NE(json.find("\"min_ns\":1000"), std::string::npos);
+    EXPECT_NE(json.find("\"max_ns\":50000"), std::string::npos);
+    EXPECT_NE(json.find("\"p50_ns\":8000"), std::string::npos);
+    EXPECT_NE(json.find("\"p99_ns\":45000"), std::string::npos);
+    EXPECT_NE(json.find("\"p999_ns\":49000"), std::string::npos);
+    EXPECT_NE(json.find("\"p50_us\":"), std::string::npos);
+    EXPECT_NE(json.find("\"p99_us\":"), std::string::npos);
+    EXPECT_NE(json.find("\"mean_us\":"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportStats RTT integration
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportStatsJson, IncludesRttObject) {
+    TransportStats stats{};
+    stats.rtt = RttStats{.count = 42, .min_ns = 500};
+    auto json = stats.to_json();
+    EXPECT_NE(json.find("\"rtt\":{"), std::string::npos);
+    EXPECT_NE(json.find("\"count\":42"), std::string::npos);
+}
+
+TEST(TransportStatsDump, IncludesRttLine) {
+    TransportStats stats{};
+    stats.rtt = RttStats{.count = 10, .min_ns = 100, .p50_ns = 200};
+    auto dump = stats.dump();
+    EXPECT_NE(dump.find("RttStats"), std::string::npos);
+}
+
+TEST(TransportStatsJson, EscapesRemoteIp) {
+    TransportStats stats{};
+    stats.remote_ip = "10.0.0.1\"injected";
+    auto json = stats.to_json();
+    // Should have escaped quote
+    EXPECT_NE(json.find(R"(10.0.0.1\"injected)"), std::string::npos);
+}

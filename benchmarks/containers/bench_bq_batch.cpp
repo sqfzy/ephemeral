@@ -131,7 +131,7 @@ static void BM_BQ_Batch_ProduceN_ConsumeN(benchmark::State& state) {
 // Registration: PayloadSize × BatchSize
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void BatchSizeArgs(benchmark::internal::Benchmark* b) {
+static void BatchSizeArgs(::benchmark::Benchmark* b) {
     for (int n : {1, 4, 16, 64}) b->Arg(n);
 }
 

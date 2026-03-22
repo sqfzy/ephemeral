@@ -18,6 +18,52 @@
 namespace eph::net {
 
 // ---------------------------------------------------------------------------
+// JSON string escaping (RFC 8259 §7)
+// ---------------------------------------------------------------------------
+
+namespace detail {
+
+/// Escape a string for safe embedding in JSON values.
+/// Handles: \", \\, \b, \f, \n, \r, \t, and control chars U+0000–U+001F.
+/// Returns the input unmodified when no escaping is needed (common fast path).
+[[nodiscard]] inline std::string json_escape(std::string_view sv) {
+    // Fast path: scan for characters that need escaping
+    bool needs_escape = false;
+    for (char c : sv) {
+        if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) {
+            needs_escape = true;
+            break;
+        }
+    }
+    if (!needs_escape) return std::string(sv);
+
+    std::string out;
+    out.reserve(sv.size() + 8); // modest over-allocation for escapes
+    for (char c : sv) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b";  break;
+        case '\f': out += "\\f";  break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                // Control characters: \u00XX
+                out += std::format("\\u{:04x}", static_cast<unsigned char>(c));
+            } else {
+                out += c;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+} // namespace detail
+
+// ---------------------------------------------------------------------------
 // Connection error types
 // ---------------------------------------------------------------------------
 
@@ -332,6 +378,7 @@ struct TransportConfig {
     }
 
     /// JSON-formatted config for monitoring system integration.
+    /// String fields are escaped per RFC 8259 §7 to prevent malformed output.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{"
@@ -344,9 +391,11 @@ struct TransportConfig {
             "\"max_reconnect_attempts\":{},"
             "\"ping_interval_s\":{},\"pong_timeout_s\":{},"
             "\"tx_cpu\":{},\"rx_cpu\":{}}}",
-            remote_host, remote_port, ws_path,
-            ws_subprotocol, verify_peer ? "true" : "false",
-            ca_cert_path,
+            detail::json_escape(remote_host), remote_port,
+            detail::json_escape(ws_path),
+            detail::json_escape(ws_subprotocol),
+            verify_peer ? "true" : "false",
+            detail::json_escape(ca_cert_path),
             tcp_timeout.count(), tls_timeout.count(), ws_timeout.count(),
             tx_burst_size, rx_burst_size,
             reconnect_interval.count(), max_reconnect_backoff.count(),
@@ -453,6 +502,18 @@ struct RttStats {
             static_cast<double>(max_ns) / 1e3,
             mean_us());
     }
+
+    /// JSON-formatted RTT stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{"
+            "\"count\":{},\"min_ns\":{},\"max_ns\":{},"
+            "\"mean_ns\":{:.1f},\"p50_ns\":{},\"p99_ns\":{},\"p999_ns\":{},"
+            "\"p50_us\":{:.3f},\"p99_us\":{:.3f},\"mean_us\":{:.3f}}}",
+            count, min_ns, max_ns,
+            mean_ns, p50_ns, p99_ns, p999_ns,
+            p50_us(), p99_us(), mean_us());
+    }
 };
 
 /// Per-thread stats -- TX thread and RX thread each own their own counters.
@@ -491,6 +552,7 @@ struct TransportStats {
     uint64_t tls_handshake_ns  = 0;  ///< Last TLS handshake duration (ns), 0 if no TLS
     uint64_t ws_upgrade_ns     = 0;  ///< Last WebSocket upgrade duration (ns)
     std::string remote_ip{};         ///< Resolved remote IP of current connection
+    RttStats    rtt{};               ///< Round-trip time statistics from ping/pong
 
     /// Last handshake duration in milliseconds (for human-readable logging).
     [[nodiscard]] double handshake_ms() const noexcept {
@@ -547,7 +609,8 @@ struct TransportStats {
             "  Queue full: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}, handshake: {:.1f}ms "
-            "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)",
+            "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)\n"
+            "  {}",
             uptime_s, remote_ip.empty() ? "unknown" : remote_ip,
             tx_packets, tx_pps(), tx_bytes, tx_bps(),
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
@@ -558,11 +621,13 @@ struct TransportStats {
             reconnect_count, handshake_ms(),
             static_cast<double>(tcp_connect_ns) / 1e6,
             static_cast<double>(tls_handshake_ns) / 1e6,
-            static_cast<double>(ws_upgrade_ns) / 1e6);
+            static_cast<double>(ws_upgrade_ns) / 1e6,
+            rtt.dump());
     }
 
     /// JSON-formatted stats for monitoring system integration.
     /// No external JSON library dependency — hand-rolled for zero overhead.
+    /// String fields are escaped per RFC 8259 §7.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{"
@@ -578,7 +643,8 @@ struct TransportStats {
             "\"ws_upgrade_ns\":{},\"handshake_ms\":{:.3f},"
             "\"tx_pps\":{:.1f},\"rx_pps\":{:.1f},"
             "\"tx_bps\":{:.1f},\"rx_bps\":{:.1f},"
-            "\"remote_ip\":\"{}\"}}",
+            "\"remote_ip\":\"{}\","
+            "\"rtt\":{}}}",
             tx_packets, tx_bytes, tx_text_packets,
             tx_text_bytes, tx_dropped,
             rx_packets, rx_bytes, rx_text_packets,
@@ -591,7 +657,8 @@ struct TransportStats {
             ws_upgrade_ns, handshake_ms(),
             tx_pps(), rx_pps(),
             tx_bps(), rx_bps(),
-            remote_ip);
+            detail::json_escape(remote_ip),
+            rtt.to_json());
     }
 };
 

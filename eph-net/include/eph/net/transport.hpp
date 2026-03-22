@@ -899,6 +899,7 @@ public:
             .tls_handshake_ns  = last_tls_handshake_ns_,
             .ws_upgrade_ns     = last_ws_upgrade_ns_,
             .remote_ip         = remote_ip_,
+            .rtt               = rtt_stats(),
         };
     }
 
