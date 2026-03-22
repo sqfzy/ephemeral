@@ -151,7 +151,7 @@ struct WsMockTcpTransport {
     void inject_server_frame(uint8_t opcode, const uint8_t* payload, size_t payload_len) {
         std::lock_guard lock(mtx);
         std::vector<uint8_t> frame;
-        build_server_frame(frame, opcode, payload, payload_len);
+        build_server_frame_ex(frame, opcode, payload, payload_len);
         rx_queue.push_back(std::move(frame));
     }
 
@@ -164,6 +164,14 @@ struct WsMockTcpTransport {
     /// Inject a server-side binary frame.
     void inject_binary(const std::vector<uint8_t>& data) {
         inject_server_frame(ws::opcode::kBinary, data.data(), data.size());
+    }
+
+    /// Inject a server-side WS frame with explicit FIN control (for fragmentation tests).
+    void inject_frame_ex(uint8_t opcode, const uint8_t* payload, size_t payload_len, bool fin) {
+        std::lock_guard lock(mtx);
+        std::vector<uint8_t> frame;
+        build_server_frame_ex(frame, opcode, payload, payload_len, fin);
+        rx_queue.push_back(std::move(frame));
     }
 
     /// Make the next poll_rx() call return an error.
@@ -198,11 +206,11 @@ private:
         return http::detail::base64_encode(hash, hash_len);
     }
 
-    /// Build a server-side (unmasked) WS frame.
-    static void build_server_frame(std::vector<uint8_t>& out, uint8_t opcode,
-                                    const uint8_t* payload, size_t payload_len) {
-        // FIN + opcode
-        out.push_back(ws::kFinBit | (opcode & 0x0F));
+    /// Build a server-side (unmasked) WS frame with controllable FIN bit.
+    static void build_server_frame_ex(std::vector<uint8_t>& out, uint8_t opcode,
+                                       const uint8_t* payload, size_t payload_len,
+                                       bool fin = true) {
+        out.push_back((fin ? ws::kFinBit : uint8_t{0}) | (opcode & 0x0F));
 
         // Length (no MASK bit for server frames)
         if (payload_len < 126) {
@@ -241,7 +249,7 @@ private:
             }
 
             std::vector<uint8_t> response;
-            build_server_frame(response, frame->opcode, payload.data(), payload.size());
+            build_server_frame_ex(response, frame->opcode, payload.data(), payload.size());
             rx_queue.push_back(std::move(response));
         }
     }
@@ -1222,4 +1230,110 @@ TEST_F(TransportTest, PlainWsPort443_HostIncludesPort) {
     EXPECT_EQ(host, "example.com:443") << "Port 443 on plain WS is non-default, should be included";
 
     (*result)->stop();
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket fragmentation (RFC 6455 §5.4)
+// ---------------------------------------------------------------------------
+
+TEST_F(TransportTest, FragmentedBinaryMessage_TwoFrames) {
+    // Fragment "Hello World" into two parts: "Hello " + "World"
+    auto result = create_transport(/*echo=*/false);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms); // Let RX thread start
+
+    const uint8_t part1[] = "Hello ";
+    const uint8_t part2[] = "World";
+
+    // First fragment: opcode=binary, FIN=0
+    last_mock_->inject_frame_ex(ws::opcode::kBinary, part1, 6, /*fin=*/false);
+    // Continuation frame: opcode=continuation, FIN=1
+    last_mock_->inject_frame_ex(ws::opcode::kContinuation, part2, 5, /*fin=*/true);
+
+    // Wait for reassembled message
+    bool received = false;
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline && !received) {
+        auto msg = tp->try_recv_msg();
+        if (msg) {
+            EXPECT_TRUE(msg->is_binary());
+            std::string payload(msg->data.begin(), msg->data.end());
+            EXPECT_EQ(payload, "Hello World");
+            received = true;
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(received) << "Fragmented message was not reassembled";
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, FragmentedTextMessage_ThreeFrames) {
+    // Fragment "ABC" into three frames: "A", "B", "C"
+    auto result = create_transport(/*echo=*/false);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // First fragment: opcode=text, FIN=0
+    last_mock_->inject_frame_ex(ws::opcode::kText,
+        reinterpret_cast<const uint8_t*>("A"), 1, /*fin=*/false);
+    // Continuation: FIN=0
+    last_mock_->inject_frame_ex(ws::opcode::kContinuation,
+        reinterpret_cast<const uint8_t*>("B"), 1, /*fin=*/false);
+    // Final continuation: FIN=1
+    last_mock_->inject_frame_ex(ws::opcode::kContinuation,
+        reinterpret_cast<const uint8_t*>("C"), 1, /*fin=*/true);
+
+    bool received = false;
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline && !received) {
+        auto msg = tp->try_recv_msg();
+        if (msg) {
+            EXPECT_TRUE(msg->is_text());
+            EXPECT_EQ(msg->text(), "ABC");
+            received = true;
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(received) << "Fragmented text message was not reassembled";
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, FragmentedMessage_EmptyContinuation) {
+    // First fragment has payload, continuation is empty, final has payload
+    auto result = create_transport(/*echo=*/false);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    last_mock_->inject_frame_ex(ws::opcode::kBinary,
+        reinterpret_cast<const uint8_t*>("XY"), 2, /*fin=*/false);
+    // Empty continuation frame
+    last_mock_->inject_frame_ex(ws::opcode::kContinuation,
+        nullptr, 0, /*fin=*/false);
+    // Final with payload
+    last_mock_->inject_frame_ex(ws::opcode::kContinuation,
+        reinterpret_cast<const uint8_t*>("Z"), 1, /*fin=*/true);
+
+    bool received = false;
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline && !received) {
+        auto msg = tp->try_recv_msg();
+        if (msg) {
+            EXPECT_TRUE(msg->is_binary());
+            std::string payload(msg->data.begin(), msg->data.end());
+            EXPECT_EQ(payload, "XYZ");
+            received = true;
+        }
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(received) << "Fragmented message with empty continuation was not reassembled";
+
+    tp->stop();
 }
