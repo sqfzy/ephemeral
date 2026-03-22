@@ -31,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 
@@ -41,12 +42,14 @@
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/record.hpp"
+#include "eph/net/framer_concept.hpp"
 #include "eph/net/http.hpp"
 #include "eph/net/tcp_concept.hpp"
 #include "eph/net/tls_record.hpp"
 #include "eph/net/tls_session.hpp"
 #include "eph/net/transport_types.hpp"
 #include "eph/net/websocket.hpp"
+#include "eph/net/ws_framer.hpp"
 
 namespace eph::net {
 
@@ -112,15 +115,22 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 ///   auto& transport = *result;     // unique_ptr<Transport>
 ///   transport->send(data, len);    // Non-blocking
 ///   transport->recv([](auto* data, auto len) { ... });
-template <TcpTransport TcpImpl, size_t MaxPayload = 512, size_t QueueDepth = 1024>
+template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
+          size_t MaxPayload = 512, size_t QueueDepth = 1024>
 class Transport {
     static_assert(TcpTransport<TcpImpl>,
                   "TcpImpl must satisfy TcpTransport concept");
+    static_assert(MessageFramer<Framer>,
+                  "Framer must satisfy MessageFramer concept");
     static_assert(MaxPayload > 0, "MaxPayload must be > 0");
     static_assert(MaxPayload <= tls_const::kMaxRecordPayload,
                   "MaxPayload exceeds TLS max record size (16384)");
     static_assert(std::has_single_bit(QueueDepth),
                   "QueueDepth must be power of 2");
+
+    /// True when using WebSocket framing (enables WS handshake, ping/pong,
+    /// close handshake, and fragmentation reassembly).
+    static constexpr bool kIsWebSocket = std::is_same_v<Framer, WsFramer>;
 
     using TxMsg = detail::TxMessage<MaxPayload>;
     using RxMsg = detail::RxMessage<MaxPayload>;
@@ -177,7 +187,9 @@ public:
 
         // Pre-allocate WS fragmentation buffer to avoid heap allocation
         // on the RX hot path when reassembling multi-frame messages.
-        t->ws_frag_buf_.reserve(MaxPayload);
+        if constexpr (kIsWebSocket) {
+            t->ws_frag_buf_.reserve(MaxPayload);
+        }
 
         t->created_at_ = std::chrono::steady_clock::now();
         t->running_.store(true, std::memory_order_release);
@@ -767,26 +779,30 @@ public:
         if (rx_thread_.joinable()) rx_thread_.join();
 
         // Send WebSocket Close frame after threads have exited (no race)
-        if (was_running && tcp_ && tcp_->is_established() &&
-            (config_.use_tls ? crypto_ != nullptr : true)) {
-            // Close frame: header (max 14) + payload (max 125) = 139 bytes,
-            // plus 1 byte for encrypt()'s temporary content type append.
-            uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
-            size_t close_len = ws::build_close_frame(
-                close_buf, ws::close_code::kNormal, "client shutdown");
+        // Only applicable when using WsFramer — other framers have no
+        // close handshake at the framing layer.
+        if constexpr (kIsWebSocket) {
+            if (was_running && tcp_ && tcp_->is_established() &&
+                (config_.use_tls ? crypto_ != nullptr : true)) {
+                // Close frame: header (max 14) + payload (max 125) = 139 bytes,
+                // plus 1 byte for encrypt()'s temporary content type append.
+                uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
+                size_t close_len = ws::build_close_frame(
+                    close_buf, ws::close_code::kNormal, "client shutdown");
 
-            if (config_.use_tls) {
-                // TLS output: record header + ciphertext + content type + auth tag
-                uint8_t tls_buf[TlsRecordCrypto::encrypted_size(
-                    ws::kMaxFrameHeaderLen + 125)]{};
-                uint16_t tls_len = crypto_->encrypt(
-                    close_buf, static_cast<uint16_t>(close_len), tls_buf);
-                if (tls_len > 0) {
-                    tcp_->send(tls_buf, tls_len);
+                if (config_.use_tls) {
+                    // TLS output: record header + ciphertext + content type + auth tag
+                    uint8_t tls_buf[TlsRecordCrypto::encrypted_size(
+                        ws::kMaxFrameHeaderLen + 125)]{};
+                    uint16_t tls_len = crypto_->encrypt(
+                        close_buf, static_cast<uint16_t>(close_len), tls_buf);
+                    if (tls_len > 0) {
+                        tcp_->send(tls_buf, tls_len);
+                    }
+                } else {
+                    // Plain WS: send close frame directly over TCP
+                    tcp_->send(close_buf, close_len);
                 }
-            } else {
-                // Plain WS: send close frame directly over TCP
-                tcp_->send(close_buf, close_len);
             }
         }
 
@@ -1195,14 +1211,18 @@ private:
         }
 
         // Phase 3: WebSocket upgrade (over TLS or plain TCP)
-        auto ws_phase_start = std::chrono::steady_clock::now();
-        auto ws_result = do_ws_upgrade();
-        if (!ws_result) {
-            return std::unexpected(ws_result.error());
+        // Only performed when using WsFramer — other framers skip the
+        // HTTP Upgrade handshake and go straight to the data plane.
+        if constexpr (kIsWebSocket) {
+            auto ws_phase_start = std::chrono::steady_clock::now();
+            auto ws_result = do_ws_upgrade();
+            if (!ws_result) {
+                return std::unexpected(ws_result.error());
+            }
+            last_ws_upgrade_ns_ = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - ws_phase_start).count());
         }
-        last_ws_upgrade_ns_ = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - ws_phase_start).count());
 
         if (config_.use_tls) {
             // Phase 4: Extract keys for AEAD hot path
@@ -1237,10 +1257,12 @@ private:
 
         // Initialize pong timestamp to "now" so pong timeout doesn't fire
         // before the first ping/pong exchange completes.
-        last_pong_ns_.store(
-            std::chrono::steady_clock::now().time_since_epoch().count(),
-            std::memory_order_relaxed);
-        ping_awaiting_pong_ = false;
+        if constexpr (kIsWebSocket) {
+            last_pong_ns_.store(
+                std::chrono::steady_clock::now().time_since_epoch().count(),
+                std::memory_order_relaxed);
+            ping_awaiting_pong_ = false;
+        }
 
         // Record handshake duration
         auto connect_end = std::chrono::steady_clock::now();
@@ -1283,7 +1305,9 @@ private:
 
         // Discard stale queue data and fragment buffer
         tx_queue_.clear();
-        ws_frag_buf_.clear();
+        if constexpr (kIsWebSocket) {
+            ws_frag_buf_.clear();
+        }
         closing_.store(false, std::memory_order_release);
 
         // Compute backoff cap: explicit max, or 16x base as default
@@ -1559,12 +1583,12 @@ private:
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "TX loop started");
 
-        // WS encode buffer: header + payload + 1 byte for TLS content type append
-        constexpr size_t kWsBufSize =
-            ws::kMaxFrameHeaderLen + MaxPayload + 1;
-        // TLS output buffer: sized for the actual max WS frame (without the +1 temp byte)
-        constexpr size_t kMaxWsFrame =
-            ws::kMaxFrameHeaderLen + MaxPayload;
+        // Frame encode buffer: header overhead + payload + 1 byte for TLS content type append
+        constexpr size_t kFrameOverhead = kIsWebSocket
+            ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
+        constexpr size_t kWsBufSize = kFrameOverhead + MaxPayload + 1;
+        // TLS output buffer: sized for the actual max frame (without the +1 temp byte)
+        constexpr size_t kMaxWsFrame = kFrameOverhead + MaxPayload;
         constexpr size_t kTlsBufSize =
             TlsRecordCrypto::encrypted_size(
                 static_cast<uint16_t>(kMaxWsFrame));
@@ -1575,10 +1599,17 @@ private:
         auto tls_bufs_storage = std::make_unique<uint8_t[]>(
             static_cast<size_t>(kMaxBatch) * kTlsBufSize);
 
-        // Single WS encode buffer reused per message
+        // Single frame encode buffer reused per message
         uint8_t ws_buf[kWsBufSize];
 
-        ws::FrameTemplate ws_tmpl = ws::FrameTemplate::for_binary();
+        // WS-specific: precomputed frame template for binary opcode fast path
+        [[maybe_unused]] auto ws_tmpl = []() {
+            if constexpr (kIsWebSocket) return ws::FrameTemplate::for_binary();
+            else return 0; // unused placeholder
+        }();
+
+        // Generic framer instance (stateless for most framers)
+        [[maybe_unused]] Framer framer_instance{};
 
         auto last_ping = std::chrono::steady_clock::now();
 
@@ -1594,35 +1625,39 @@ private:
             }
 
             // -- WebSocket ping / pong timeout (periodic keepalive, owned by TX thread) --
-            if (config_.ping_interval.count() > 0) {
-                auto now = std::chrono::steady_clock::now();
+            // Only applicable when using WsFramer; other framers do not have
+            // a ping/pong mechanism at the framing layer.
+            if constexpr (kIsWebSocket) {
+                if (config_.ping_interval.count() > 0) {
+                    auto now = std::chrono::steady_clock::now();
 
-                // Check pong timeout before sending next ping.
-                // If we sent a ping and haven't received a pong within pong_timeout,
-                // the peer is considered dead — trigger reconnect via running_=false.
-                if (config_.pong_timeout.count() > 0 && ping_awaiting_pong_) {
-                    auto last_pong_tp = SteadyTimePoint{
-                        std::chrono::nanoseconds{
-                            last_pong_ns_.load(std::memory_order_relaxed)}};
-                    if (now - last_pong_tp > config_.pong_timeout) {
-                        pong_timeouts_.fetch_add(1, std::memory_order_relaxed);
-                        SPDLOG_LOGGER_WARN(log,
-                            "Pong timeout: no pong received within {}s, "
-                            "triggering reconnect",
-                            config_.pong_timeout.count());
-                        // Signal RX thread to reconnect by resetting TCP.
-                        // RX will detect the broken connection and handle reconnect.
-                        tcp_->reset();
-                        ping_awaiting_pong_ = false;
-                        continue;
+                    // Check pong timeout before sending next ping.
+                    // If we sent a ping and haven't received a pong within pong_timeout,
+                    // the peer is considered dead — trigger reconnect via running_=false.
+                    if (config_.pong_timeout.count() > 0 && ping_awaiting_pong_) {
+                        auto last_pong_tp = SteadyTimePoint{
+                            std::chrono::nanoseconds{
+                                last_pong_ns_.load(std::memory_order_relaxed)}};
+                        if (now - last_pong_tp > config_.pong_timeout) {
+                            pong_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                            SPDLOG_LOGGER_WARN(log,
+                                "Pong timeout: no pong received within {}s, "
+                                "triggering reconnect",
+                                config_.pong_timeout.count());
+                            // Signal RX thread to reconnect by resetting TCP.
+                            // RX will detect the broken connection and handle reconnect.
+                            tcp_->reset();
+                            ping_awaiting_pong_ = false;
+                            continue;
+                        }
                     }
-                }
 
-                if (now - last_ping >= config_.ping_interval) {
-                    if (send_ws_ping(ws_buf, tls_bufs_storage.get())) {
-                        ping_awaiting_pong_ = true;
+                    if (now - last_ping >= config_.ping_interval) {
+                        if (send_ws_ping(ws_buf, tls_bufs_storage.get())) {
+                            ping_awaiting_pong_ = true;
+                        }
+                        last_ping = now;
                     }
-                    last_ping = now;
                 }
             }
 
@@ -1664,16 +1699,22 @@ private:
             for (int i = 0; i < n; ++i) {
                 size_t ws_len;
 
-                // Use precomputed template for the common case (binary),
-                // fall back to encode_frame for other opcodes (text, pong)
-                // to ensure the correct opcode is written into the frame.
-                if (batch[i].opcode == ws::opcode::kBinary) {
-                    ws_len = ws_tmpl.encode(
-                        ws_buf, batch[i].data, batch[i].len);
+                if constexpr (kIsWebSocket) {
+                    // Use precomputed template for the common case (binary),
+                    // fall back to encode_frame for other opcodes (text, pong)
+                    // to ensure the correct opcode is written into the frame.
+                    if (batch[i].opcode == ws::opcode::kBinary) {
+                        ws_len = ws_tmpl.encode(
+                            ws_buf, batch[i].data, batch[i].len);
+                    } else {
+                        ws_len = ws::encode_frame(
+                            ws_buf, batch[i].opcode,
+                            batch[i].data, batch[i].len);
+                    }
                 } else {
-                    ws_len = ws::encode_frame(
-                        ws_buf, batch[i].opcode,
-                        batch[i].data, batch[i].len);
+                    // Generic framer: encode payload into wire format
+                    ws_len = framer_instance.encode(
+                        ws_buf, batch[i].data, batch[i].len, batch[i].opcode);
                 }
 
                 if (config_.use_tls) {
@@ -1763,13 +1804,18 @@ private:
                 size_t drain_coalesced = 0;
                 for (int i = 0; i < remaining; ++i) {
                     size_t ws_len;
-                    if (batch[i].opcode == ws::opcode::kBinary) {
-                        ws_len = ws_tmpl.encode(
-                            ws_buf, batch[i].data, batch[i].len);
+                    if constexpr (kIsWebSocket) {
+                        if (batch[i].opcode == ws::opcode::kBinary) {
+                            ws_len = ws_tmpl.encode(
+                                ws_buf, batch[i].data, batch[i].len);
+                        } else {
+                            ws_len = ws::encode_frame(
+                                ws_buf, batch[i].opcode,
+                                batch[i].data, batch[i].len);
+                        }
                     } else {
-                        ws_len = ws::encode_frame(
-                            ws_buf, batch[i].opcode,
-                            batch[i].data, batch[i].len);
+                        ws_len = framer_instance.encode(
+                            ws_buf, batch[i].data, batch[i].len, batch[i].opcode);
                     }
 
                     auto account_drain_msg = [&](uint16_t len, uint8_t opcode) {
@@ -1828,11 +1874,13 @@ private:
         auto reassembly_storage = std::make_unique<uint8_t[]>(kReassemblyBufSize);
         size_t reassembly_len = 0;
 
-        // WS reassembly: accumulates decrypted bytes when a WebSocket frame
-        // spans multiple TLS records. Without this, partial WS frames at
+        // Frame reassembly: accumulates decrypted bytes when a framed message
+        // spans multiple TLS records. Without this, partial frames at
         // TLS record boundaries would be silently discarded.
+        static constexpr size_t kFrameReassemblyOverhead = kIsWebSocket
+            ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
         static constexpr size_t kWsReassemblyBufSize =
-            ws::kMaxFrameHeaderLen + MaxPayload + 256;
+            kFrameReassemblyOverhead + MaxPayload + 256;
         auto ws_reassembly_storage = std::make_unique<uint8_t[]>(kWsReassemblyBufSize);
         size_t ws_reassembly_len = 0;
 
@@ -1908,10 +1956,10 @@ private:
             // No data received this poll iteration
             if (*rx_result == 0) continue;
 
-            // Plain WS mode: process WS frames directly from TCP data
+            // Plain mode: process framed data directly from TCP
             if (!config_.use_tls) {
-                // Use ws_reassembly buffer to handle partial WS frames
-                size_t ws_consumed = process_ws_data(
+                // Use reassembly buffer to handle partial frames
+                size_t ws_consumed = process_frame_data(
                     ws_reassembly_storage.get(), ws_reassembly_len);
 
                 // Save unconsumed WS bytes for next TCP chunk
@@ -1989,7 +2037,7 @@ private:
                     ws_data_len = decrypted_len;
                 }
 
-                size_t ws_consumed = process_ws_data(ws_data, ws_data_len);
+                size_t ws_consumed = process_frame_data(ws_data, ws_data_len);
 
                 // Save unconsumed WS bytes for next TLS record
                 size_t ws_remaining = ws_data_len - ws_consumed;
@@ -2061,9 +2109,54 @@ private:
     // WebSocket frame processing
     // -----------------------------------------------------------------------
 
-    /// Process decrypted WebSocket data. Returns the number of bytes
+    /// Process decrypted framed data. Returns the number of bytes
     /// consumed. Unconsumed bytes (partial frames) must be preserved
     /// by the caller and prepended to the next chunk of decrypted data.
+    /// For WsFramer: handles WS control frames (ping/pong/close) and
+    /// fragmentation reassembly. For generic framers: simple decode loop.
+    size_t process_frame_data(const uint8_t* data, size_t len) {
+        if constexpr (kIsWebSocket) {
+            return process_ws_data(data, len);
+        } else {
+            return process_generic_data(data, len);
+        }
+    }
+
+    /// Process data using a generic (non-WS) framer. Simple decode loop
+    /// that delivers each successfully decoded frame's payload directly.
+    size_t process_generic_data(const uint8_t* data, size_t len) {
+        auto log = detail::transport_logger();
+        size_t offset = 0;
+
+        while (offset < len) {
+            auto frame = Framer::decode(data + offset, len - offset);
+            if (!frame) {
+                if (frame.error() == FrameError::kIncomplete) break;
+                SPDLOG_LOGGER_WARN(log, "Frame decode error: {}",
+                                   frame_error_name(frame.error()));
+                break;
+            }
+
+            offset += frame->total_len;
+            rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+
+            // Deliver payload directly (no control frame handling for non-WS)
+            if (frame->payload_len > 0 && frame->payload_len <= MaxPayload) {
+                deliver_message(frame->payload,
+                               static_cast<uint16_t>(frame->payload_len),
+                               frame->msg_type);
+            } else if (frame->payload_len > MaxPayload) {
+                rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
+                SPDLOG_LOGGER_WARN(log,
+                    "Dropping oversized frame: payload_len={}, max={}",
+                    frame->payload_len, MaxPayload);
+            }
+        }
+        return offset;
+    }
+
+    /// Process decrypted WebSocket data (WsFramer only). Returns the number
+    /// of bytes consumed.
     size_t process_ws_data(const uint8_t* data, size_t len) {
         auto log = detail::transport_logger();
         size_t offset = 0;

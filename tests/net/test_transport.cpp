@@ -268,7 +268,7 @@ protected:
     static constexpr size_t kMaxPayload = 512;
     static constexpr size_t kQueueDepth = 64;
 
-    using TestTransport = Transport<WsMockTcpTransport, kMaxPayload, kQueueDepth>;
+    using TestTransport = Transport<WsMockTcpTransport, WsFramer, kMaxPayload, kQueueDepth>;
 
     // Shared pointer to the mock so we can inspect/control it after Transport takes ownership.
     // The factory creates new instances, but we keep a pointer to the latest one.

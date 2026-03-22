@@ -700,15 +700,15 @@ namespace eph::net {
 
 /// Standard WSS (TLS) WebSocket transport using kernel sockets.
 /// 512-byte max payload, 1024-deep SPSC queues.
-using SocketWssTransport = Transport<SocketTransport, 512, 1024>;
+using SocketWssTransport = Transport<SocketTransport, WsFramer, 512, 1024>;
 
 /// Large-payload WSS variant (4KB messages, e.g. JSON market data).
-using SocketWssLargeTransport = Transport<SocketTransport, 4096, 512>;
+using SocketWssLargeTransport = Transport<SocketTransport, WsFramer, 4096, 512>;
 
 /// Standard plain WS (no TLS) transport using kernel sockets.
 /// Same as SocketWssTransport but configured with use_tls=false.
 /// Use for internal/test services where TLS is not needed.
-using SocketWsTransport = Transport<SocketTransport, 512, 1024>;
+using SocketWsTransport = Transport<SocketTransport, WsFramer, 512, 1024>;
 
 /// Convenience factory: creates a fully connected SocketWssTransport
 /// from just a TransportConfig, eliminating the TcpFactory boilerplate.
@@ -728,7 +728,7 @@ template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 socket_wss_connect(
     const TransportConfig& config,
     std::optional<SocketConfig> sock_cfg = std::nullopt)
-    -> std::expected<std::unique_ptr<Transport<SocketTransport, MaxPayload, QueueDepth>>,
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
                      ConnectionErrorInfo>
 {
     SocketConfig sc = sock_cfg.value_or(SocketConfig{
@@ -760,7 +760,7 @@ socket_wss_connect(
         return tcp;
     };
 
-    return Transport<SocketTransport, MaxPayload, QueueDepth>::create(
+    return Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>::create(
         std::move(tcp_factory), config);
 }
 
@@ -776,7 +776,7 @@ template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 socket_ws_connect(
     TransportConfig config,
     std::optional<SocketConfig> sock_cfg = std::nullopt)
-    -> std::expected<std::unique_ptr<Transport<SocketTransport, MaxPayload, QueueDepth>>,
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
                      ConnectionErrorInfo>
 {
     config.use_tls = false;
@@ -809,7 +809,7 @@ socket_ws_connect(
         return tcp;
     };
 
-    return Transport<SocketTransport, MaxPayload, QueueDepth>::create(
+    return Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>::create(
         std::move(tcp_factory), config);
 }
 
