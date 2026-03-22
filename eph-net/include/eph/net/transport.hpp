@@ -139,15 +139,20 @@ public:
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
     /// This is a blocking call -- performs the full handshake sequence.
     /// Returns unique_ptr because Transport owns threads and is non-movable.
-    static std::expected<std::unique_ptr<Transport>, std::string>
+    ///
+    /// On failure, returns ConnectionErrorInfo with a typed error code
+    /// for programmatic handling and a detail string for logging.
+    static std::expected<std::unique_ptr<Transport>, ConnectionErrorInfo>
     create(TcpFactory tcp_factory, const TransportConfig& config) {
         auto log = detail::transport_logger();
 
         if (!tcp_factory) {
-            return std::unexpected("tcp_factory is null");
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kInvalidConfig, "tcp_factory is null"});
         }
         if (auto err = config.validate(); !err.empty()) {
-            return std::unexpected(std::string(err));
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kInvalidConfig, std::string(err)});
         }
 
         SPDLOG_LOGGER_INFO(log,
@@ -161,7 +166,7 @@ public:
         auto conn_result = t->do_connect();
         if (!conn_result) {
             SPDLOG_LOGGER_ERROR(log, "Initial connect failed: {}",
-                                conn_result.error());
+                                conn_result.error().message());
             return std::unexpected(conn_result.error());
         }
 
@@ -986,20 +991,23 @@ private:
     /// TLS phases are skipped when config_.use_tls is false (plain ws://).
     /// On success, tcp_ (and optionally tls_, crypto_) are populated and ready.
     /// On failure, previous state is cleaned up.
-    std::expected<void, std::string> do_connect() {
+    std::expected<void, ConnectionErrorInfo> do_connect() {
         auto log = detail::transport_logger();
         auto connect_start = std::chrono::steady_clock::now();
 
         // Phase 1: Create TCP session via factory (factory handles connect)
         auto tcp_result = tcp_factory_();
         if (!tcp_result) {
-            return std::unexpected(std::format(
-                "TCP factory failed: {}", tcp_result.error()));
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kFactoryFailed,
+                std::format("TCP factory failed: {}", tcp_result.error())});
         }
         tcp_ = std::move(*tcp_result);
 
         if (!tcp_->is_established()) {
-            return std::unexpected("TCP factory returned non-established session");
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kTcpNotEstablished,
+                "TCP factory returned non-established session"});
         }
 
         if (config_.use_tls) {
@@ -1013,38 +1021,41 @@ private:
 
             auto tls_result = TlsSession<TcpImpl>::create(*tcp_, tls_cfg);
             if (!tls_result) {
-                return std::unexpected(std::format(
-                    "TLS session failed: {}", tls_result.error()));
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsSessionFailed,
+                    std::format("TLS session failed: {}", tls_result.error())});
             }
             tls_ = std::make_unique<TlsSession<TcpImpl>>(std::move(*tls_result));
 
             auto hs_result = tls_->handshake();
             if (!hs_result) {
-                return std::unexpected(std::format(
-                    "TLS handshake failed: {}", hs_result.error()));
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsHandshakeFailed,
+                    std::format("TLS handshake failed: {}", hs_result.error())});
             }
         }
 
         // Phase 3: WebSocket upgrade (over TLS or plain TCP)
         auto ws_result = do_ws_upgrade();
         if (!ws_result) {
-            return std::unexpected(std::format(
-                "WebSocket upgrade failed: {}", ws_result.error()));
+            return std::unexpected(ws_result.error());
         }
 
         if (config_.use_tls) {
             // Phase 4: Extract keys for AEAD hot path
             auto hot_state = tls_->extract_hot_state();
             if (!hot_state) {
-                return std::unexpected(std::format(
-                    "TLS key export failed: {}", hot_state.error()));
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsKeyExportFailed,
+                    std::format("TLS key export failed: {}", hot_state.error())});
             }
 
             size_t key_len = tls_->cipher_key_len();
             auto crypto = TlsRecordCrypto::create(*hot_state, key_len);
             if (!crypto) {
-                return std::unexpected(std::format(
-                    "TLS AEAD init failed: {}", crypto.error()));
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsKeyExportFailed,
+                    std::format("TLS AEAD init failed: {}", crypto.error())});
             }
             crypto_ = std::make_unique<TlsRecordCrypto>(std::move(*crypto));
 
@@ -1157,15 +1168,16 @@ private:
 
             SPDLOG_LOGGER_WARN(log,
                 "Reconnect attempt {} failed: {}",
-                attempt, result.error());
+                attempt, result.error().message());
 
             // Let application decide whether to continue retrying.
             // Useful for aborting on non-transient errors (e.g., TLS
             // certificate rejection, HTTP 403).
             if (config_.on_reconnect_attempt) {
                 try {
+                    auto err_msg = result.error().message();
                     bool should_continue = config_.on_reconnect_attempt(
-                        attempt, max_attempts, result.error());
+                        attempt, max_attempts, err_msg);
                     if (!should_continue) {
                         SPDLOG_LOGGER_INFO(log,
                             "Reconnect aborted by on_reconnect_attempt "
@@ -1192,13 +1204,14 @@ private:
     // WebSocket upgrade (Phase 3 of handshake)
     // -----------------------------------------------------------------------
 
-    std::expected<void, std::string> do_ws_upgrade() {
+    std::expected<void, ConnectionErrorInfo> do_ws_upgrade() {
         auto log = detail::transport_logger();
 
         // Generate WebSocket key
         auto ws_key_result = http::generate_ws_key();
         if (!ws_key_result) {
-            return std::unexpected(ws_key_result.error());
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kWsUpgradeFailed, ws_key_result.error()});
         }
         std::string ws_key = std::move(*ws_key_result);
 
@@ -1226,14 +1239,17 @@ private:
             auto write_result = tls_->handshake_write(request.data(),
                                                         static_cast<int>(request.size()));
             if (!write_result || *write_result <= 0) {
-                return std::unexpected("Failed to send WebSocket upgrade request");
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kWsUpgradeFailed,
+                    "Failed to send WebSocket upgrade request"});
             }
         } else {
             auto write_result = tcp_->send(request.data(), request.size());
             if (!write_result) {
-                return std::unexpected(std::format(
-                    "Failed to send WebSocket upgrade request: {}",
-                    write_result.error()));
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kWsUpgradeFailed,
+                    std::format("Failed to send WebSocket upgrade request: {}",
+                                write_result.error())});
             }
         }
 
@@ -1253,9 +1269,10 @@ private:
             if (config_.use_tls) {
                 auto read_result = tls_->handshake_read(buf, sizeof(buf));
                 if (!read_result) {
-                    return std::unexpected(std::format(
-                        "Failed to read upgrade response: {}",
-                        read_result.error()));
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        std::format("Failed to read upgrade response: {}",
+                                    read_result.error())});
                 }
                 bytes_read = *read_result;
             } else {
@@ -1267,9 +1284,10 @@ private:
                                                          sizeof(buf)));
                     });
                 if (!rx_result) {
-                    return std::unexpected(std::format(
-                        "Failed to read upgrade response: {}",
-                        rx_result.error()));
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        std::format("Failed to read upgrade response: {}",
+                                    rx_result.error())});
                 }
             }
 
@@ -1278,7 +1296,9 @@ private:
                     SPDLOG_LOGGER_ERROR(log,
                         "WebSocket upgrade response exceeds {}B limit",
                         kMaxUpgradeResponseSize);
-                    return std::unexpected("WebSocket upgrade response too large");
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        "WebSocket upgrade response too large"});
                 }
                 response_buf.insert(response_buf.end(),
                                     buf, buf + bytes_read);
@@ -1296,23 +1316,27 @@ private:
                     response_buf.size());
 
                 if (!parsed) {
-                    return std::unexpected(std::format(
-                        "Failed to parse upgrade response: {}",
-                        parsed.error()));
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        std::format("Failed to parse upgrade response: {}",
+                                    parsed.error())});
                 }
 
                 if (parsed->status_code != 101) {
                     SPDLOG_LOGGER_ERROR(log,
                         "WebSocket upgrade rejected: status={}",
                         parsed->status_code);
-                    return std::unexpected(std::format(
-                        "WebSocket upgrade rejected (status {})",
-                        parsed->status_code));
+                    return std::unexpected(ConnectionErrorInfo{
+                        .code = ConnectionError::kWsUpgradeRejected,
+                        .detail = std::format("WebSocket upgrade rejected (status {})",
+                                    parsed->status_code),
+                        .http_status = parsed->status_code});
                 }
 
                 if (!parsed->has_upgrade || !parsed->has_connection_upgrade) {
-                    return std::unexpected(
-                        "Missing Upgrade/Connection headers in response");
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        "Missing Upgrade/Connection headers in response"});
                 }
 
                 // Validate Sec-WebSocket-Accept
@@ -1320,8 +1344,9 @@ private:
                                                parsed->sec_ws_accept)) {
                     SPDLOG_LOGGER_ERROR(log,
                         "Sec-WebSocket-Accept validation failed");
-                    return std::unexpected(
-                        "Sec-WebSocket-Accept validation failed");
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsAcceptInvalid,
+                        "Sec-WebSocket-Accept validation failed"});
                 }
 
                 // Store negotiated subprotocol for user queries
@@ -1334,7 +1359,9 @@ private:
             }
         }
 
-        return std::unexpected("WebSocket upgrade response timeout");
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kWsUpgradeFailed,
+            "WebSocket upgrade response timeout"});
     }
 
     // -----------------------------------------------------------------------

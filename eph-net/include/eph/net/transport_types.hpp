@@ -18,6 +18,57 @@
 namespace eph::net {
 
 // ---------------------------------------------------------------------------
+// Connection error types
+// ---------------------------------------------------------------------------
+
+/// Categorizes connection failures so callers can programmatically distinguish
+/// between different failure modes (e.g., retry on transient TCP errors but
+/// abort on TLS certificate rejection).
+enum class ConnectionError : uint8_t {
+    kInvalidConfig,      ///< TransportConfig validation failed
+    kFactoryFailed,      ///< TcpFactory returned an error
+    kTcpNotEstablished,  ///< Factory returned a non-established TCP session
+    kTlsSessionFailed,   ///< TLS session creation failed
+    kTlsHandshakeFailed, ///< TLS handshake failed (cert verification, protocol mismatch)
+    kTlsKeyExportFailed, ///< TLS AEAD key export failed
+    kWsUpgradeFailed,    ///< WebSocket HTTP upgrade failed (parse error, timeout)
+    kWsUpgradeRejected,  ///< Server rejected upgrade (non-101 status code)
+    kWsAcceptInvalid,    ///< Sec-WebSocket-Accept validation failed
+};
+
+/// Human-readable name for a ConnectionError.
+constexpr const char* connection_error_name(ConnectionError e) noexcept {
+    switch (e) {
+        case ConnectionError::kInvalidConfig:      return "INVALID_CONFIG";
+        case ConnectionError::kFactoryFailed:      return "FACTORY_FAILED";
+        case ConnectionError::kTcpNotEstablished:  return "TCP_NOT_ESTABLISHED";
+        case ConnectionError::kTlsSessionFailed:   return "TLS_SESSION_FAILED";
+        case ConnectionError::kTlsHandshakeFailed: return "TLS_HANDSHAKE_FAILED";
+        case ConnectionError::kTlsKeyExportFailed: return "TLS_KEY_EXPORT_FAILED";
+        case ConnectionError::kWsUpgradeFailed:    return "WS_UPGRADE_FAILED";
+        case ConnectionError::kWsUpgradeRejected:  return "WS_UPGRADE_REJECTED";
+        case ConnectionError::kWsAcceptInvalid:    return "WS_ACCEPT_INVALID";
+    }
+    return "UNKNOWN";
+}
+
+/// Structured connection error with typed category and detail message.
+/// Replaces opaque error strings from Transport::create(), enabling
+/// callers to match on error category for retry/abort decisions.
+struct ConnectionErrorInfo {
+    ConnectionError code;       ///< Error category (for programmatic matching)
+    std::string     detail;     ///< Human-readable detail (for logging)
+
+    /// Full error message combining category name and detail.
+    [[nodiscard]] std::string message() const {
+        return std::format("[{}] {}", connection_error_name(code), detail);
+    }
+
+    /// HTTP status code from server rejection (only valid when code == kWsUpgradeRejected).
+    int http_status = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Send result
 // ---------------------------------------------------------------------------
 
@@ -551,6 +602,21 @@ struct std::formatter<eph::net::TransportState> : std::formatter<const char*> {
     auto format(eph::net::TransportState s, auto& ctx) const {
         return std::formatter<const char*>::format(
             eph::net::transport_state_name(s), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::net::ConnectionError> : std::formatter<const char*> {
+    auto format(eph::net::ConnectionError e, auto& ctx) const {
+        return std::formatter<const char*>::format(
+            eph::net::connection_error_name(e), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::net::ConnectionErrorInfo> : std::formatter<std::string> {
+    auto format(const eph::net::ConnectionErrorInfo& e, auto& ctx) const {
+        return std::formatter<std::string>::format(e.message(), ctx);
     }
 };
 

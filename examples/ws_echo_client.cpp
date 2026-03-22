@@ -270,7 +270,7 @@ static int run_socket(const AppConfig& cfg) {
         std::move(tcp_factory), transport_cfg);
 
     if (!result) {
-        spdlog::error("Failed to connect: {}", result.error());
+        spdlog::error("Failed to connect: {}", result.error().message());
         return 1;
     }
 
@@ -429,7 +429,7 @@ static int run_dpdk(const AppConfig& cfg, int eal_argc, char** eal_argv) {
             std::move(tcp_factory), transport_cfg);
 
         if (!transport) {
-            spdlog::error("Transport create failed: {}", transport.error());
+            spdlog::error("Transport create failed: {}", transport.error().message());
             exit_code = 1; break;
         }
 

@@ -266,7 +266,7 @@ protected:
     // The factory creates new instances, but we keep a pointer to the latest one.
     WsMockTcpTransport* last_mock_ = nullptr;
 
-    std::expected<std::unique_ptr<TestTransport>, std::string>
+    std::expected<std::unique_ptr<TestTransport>, ConnectionErrorInfo>
     create_transport(bool echo = false, bool disable_ping = true,
                      bool disable_reconnect = true) {
         TransportConfig config;
@@ -313,7 +313,7 @@ protected:
 
 TEST_F(TransportTest, CreateAndStop) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     EXPECT_TRUE(tp->is_running());
@@ -362,7 +362,7 @@ TEST_F(TransportTest, FactoryFailureReturnsError) {
 
     auto result = TestTransport::create(std::move(factory), config);
     ASSERT_FALSE(result.has_value());
-    EXPECT_NE(result.error().find("factory"), std::string::npos);
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
 }
 
 TEST_F(TransportTest, InvalidConfigReturnsError) {
@@ -379,7 +379,7 @@ TEST_F(TransportTest, InvalidConfigReturnsError) {
 
     auto result = TestTransport::create(std::move(factory), config);
     ASSERT_FALSE(result.has_value());
-    EXPECT_NE(result.error().find("remote_host"), std::string::npos);
+    EXPECT_EQ(result.error().code, ConnectionError::kInvalidConfig);
 }
 
 // ===========================================================================
@@ -388,7 +388,7 @@ TEST_F(TransportTest, InvalidConfigReturnsError) {
 
 TEST_F(TransportTest, SendBinarySuccess) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
@@ -407,7 +407,7 @@ TEST_F(TransportTest, SendBinarySuccess) {
 
 TEST_F(TransportTest, SendTextSuccess) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     auto err = tp->send_text("hello");
@@ -423,7 +423,7 @@ TEST_F(TransportTest, SendTextSuccess) {
 
 TEST_F(TransportTest, SendTextInvalidUtf8Rejected) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // Invalid UTF-8 sequence
@@ -436,7 +436,7 @@ TEST_F(TransportTest, SendTextInvalidUtf8Rejected) {
 
 TEST_F(TransportTest, SendMessageTooLarge) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     std::vector<uint8_t> big(kMaxPayload + 1, 0x42);
@@ -448,7 +448,7 @@ TEST_F(TransportTest, SendMessageTooLarge) {
 
 TEST_F(TransportTest, SendWhenStoppedReturnsNotConnected) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     tp->stop();
@@ -459,7 +459,7 @@ TEST_F(TransportTest, SendWhenStoppedReturnsNotConnected) {
 
 TEST_F(TransportTest, SendCloseEnqueues) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     auto err = tp->send_close(ws::close_code::kNormal, "bye");
@@ -470,7 +470,7 @@ TEST_F(TransportTest, SendCloseEnqueues) {
 
 TEST_F(TransportTest, SendCloseInvalidCodeRejected) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // 1005 is reserved and must not be sent in a Close frame
@@ -482,7 +482,7 @@ TEST_F(TransportTest, SendCloseInvalidCodeRejected) {
 
 TEST_F(TransportTest, SendPingSuccess) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     auto err = tp->send_ping();
@@ -499,7 +499,7 @@ TEST_F(TransportTest, SendPingSuccess) {
 
 TEST_F(TransportTest, ReceiveServerPushedBinary) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // Give Transport threads time to start
@@ -525,7 +525,7 @@ TEST_F(TransportTest, ReceiveServerPushedBinary) {
 
 TEST_F(TransportTest, ReceiveServerPushedText) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     std::this_thread::sleep_for(10ms);
@@ -550,7 +550,7 @@ TEST_F(TransportTest, ReceiveServerPushedText) {
 
 TEST_F(TransportTest, ReceiveMultipleFrames) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     std::this_thread::sleep_for(10ms);
@@ -579,7 +579,7 @@ TEST_F(TransportTest, ReceiveMultipleFrames) {
 
 TEST_F(TransportTest, TryRecvReturnsNulloptWhenEmpty) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     auto msg = tp->try_recv();
@@ -590,7 +590,7 @@ TEST_F(TransportTest, TryRecvReturnsNulloptWhenEmpty) {
 
 TEST_F(TransportTest, TryRecvMsgReturnsPayloadAndOpcode) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     std::this_thread::sleep_for(10ms);
@@ -616,7 +616,7 @@ TEST_F(TransportTest, TryRecvMsgReturnsPayloadAndOpcode) {
 
 TEST_F(TransportTest, EchoRoundtripBinary) {
     auto result = create_transport(/*echo=*/true);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     const uint8_t payload[] = {0xCA, 0xFE, 0xBA, 0xBE};
@@ -639,7 +639,7 @@ TEST_F(TransportTest, EchoRoundtripBinary) {
 
 TEST_F(TransportTest, EchoRoundtripText) {
     auto result = create_transport(/*echo=*/true);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     auto err = tp->send_text("round trip test");
@@ -664,7 +664,7 @@ TEST_F(TransportTest, EchoRoundtripText) {
 
 TEST_F(TransportTest, QueueSizeReflectsBackpressure) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     EXPECT_EQ(tp->tx_queue_size(), 0u);
@@ -676,7 +676,7 @@ TEST_F(TransportTest, QueueSizeReflectsBackpressure) {
 
 TEST_F(TransportTest, BatchSendN) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     std::vector<uint8_t> p1 = {0x01, 0x02};
@@ -700,7 +700,7 @@ TEST_F(TransportTest, BatchSendN) {
 
 TEST_F(TransportTest, StatsAccumulateCorrectly) {
     auto result = create_transport(/*echo=*/true);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // Send multiple messages
@@ -730,7 +730,7 @@ TEST_F(TransportTest, StatsAccumulateCorrectly) {
 
 TEST_F(TransportTest, ResetStatsZeros) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     tp->send_binary("\x01", 1);
@@ -746,7 +746,7 @@ TEST_F(TransportTest, ResetStatsZeros) {
 
 TEST_F(TransportTest, HandshakeLatencyRecorded) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     auto stats = tp->stats();
@@ -786,7 +786,7 @@ TEST_F(TransportTest, StateChangeCallbackFires) {
     };
 
     auto result = TestTransport::create(std::move(factory), config);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
 
     // Should have gotten kConnected
     {
@@ -839,7 +839,7 @@ TEST_F(TransportTest, OnMessageCallbackReceivesDirectly) {
     };
 
     auto result = TestTransport::create(std::move(factory), config);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
 
     std::this_thread::sleep_for(10ms);
 
@@ -868,7 +868,7 @@ TEST_F(TransportTest, OnMessageCallbackReceivesDirectly) {
 
 TEST_F(TransportTest, CloseGracefullyTimesOutWithoutServerResponse) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // close_gracefully should timeout since mock doesn't auto-respond to Close
@@ -885,7 +885,7 @@ TEST_F(TransportTest, CloseGracefullyTimesOutWithoutServerResponse) {
 
 TEST_F(TransportTest, WaitRecvTimesOutWhenEmpty) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     bool got = tp->wait_recv(
@@ -898,7 +898,7 @@ TEST_F(TransportTest, WaitRecvTimesOutWhenEmpty) {
 
 TEST_F(TransportTest, WaitRecvReturnsWhenDataAvailable) {
     auto result = create_transport();
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     std::this_thread::sleep_for(10ms);
@@ -928,7 +928,7 @@ TEST_F(TransportTest, WaitRecvReturnsWhenDataAvailable) {
 
 TEST_F(TransportTest, MaxPayloadExactFit) {
     auto result = create_transport(/*echo=*/true);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // Send exactly MaxPayload bytes
@@ -979,7 +979,7 @@ TEST_F(TransportTest, ReconnectOnPollError) {
     };
 
     auto result = TestTransport::create(std::move(factory), config);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // Initial connection
@@ -1033,7 +1033,7 @@ TEST_F(TransportTest, ReconnectExhaustedStopsTransport) {
     };
 
     auto result = TestTransport::create(std::move(factory), config);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     // Wait for RX thread to start, then trigger error
