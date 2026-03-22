@@ -66,6 +66,25 @@ constexpr bool is_valid_close_code(uint16_t code) noexcept {
     return false;
 }
 
+/// Error codes returned by decode_frame() for programmatic handling.
+enum class DecodeError : uint8_t {
+    kIncomplete,            ///< Need more data (partial frame)
+    kReservedBits,          ///< Non-zero RSV bits without extension
+    kFragmentedControl,     ///< Control frame with FIN=0
+    kControlPayloadTooLarge,///< Control frame payload > 125 bytes
+};
+
+/// Human-readable name for a DecodeError value.
+constexpr std::string_view decode_error_name(DecodeError e) noexcept {
+    switch (e) {
+    case DecodeError::kIncomplete:             return "incomplete";
+    case DecodeError::kReservedBits:           return "non-zero RSV bits without negotiated extension";
+    case DecodeError::kFragmentedControl:      return "fragmented control frame";
+    case DecodeError::kControlPayloadTooLarge: return "control frame payload exceeds 125 bytes";
+    }
+    return "unknown";
+}
+
 inline constexpr uint8_t kFinBit  = 0x80;
 inline constexpr uint8_t kMaskBit = 0x80;
 
@@ -367,10 +386,10 @@ struct DecodedFrame {
 /// @param len      Available bytes
 /// @return Decoded frame, or error if incomplete/malformed.
 ///         "incomplete" error means more data is needed.
-inline std::expected<DecodedFrame, std::string>
+inline std::expected<DecodedFrame, DecodeError>
 decode_frame(const uint8_t* data, size_t len) {
     if (len < 2) {
-        return std::unexpected("incomplete");
+        return std::unexpected(DecodeError::kIncomplete);
     }
 
     DecodedFrame frame;
@@ -390,12 +409,12 @@ decode_frame(const uint8_t* data, size_t len) {
     if (len_byte < 126) {
         frame.payload_len = len_byte;
     } else if (len_byte == 126) {
-        if (len < pos + 2) return std::unexpected("incomplete");
+        if (len < pos + 2) return std::unexpected(DecodeError::kIncomplete);
         frame.payload_len = static_cast<uint64_t>(data[pos]) << 8 |
                             static_cast<uint64_t>(data[pos + 1]);
         pos += 2;
     } else { // 127
-        if (len < pos + 8) return std::unexpected("incomplete");
+        if (len < pos + 8) return std::unexpected(DecodeError::kIncomplete);
         frame.payload_len = 0;
         for (int i = 0; i < 8; ++i) {
             frame.payload_len = (frame.payload_len << 8) | data[pos + i];
@@ -405,28 +424,28 @@ decode_frame(const uint8_t* data, size_t len) {
 
     // Masking key (if present — server frames are typically unmasked)
     if (frame.masked) {
-        if (len < pos + 4) return std::unexpected("incomplete");
+        if (len < pos + 4) return std::unexpected(DecodeError::kIncomplete);
         std::memcpy(frame.mask_key, data + pos, 4);
         pos += 4;
     }
 
     // Payload — use subtraction to prevent integer overflow on huge payload_len
     if (frame.payload_len > len || pos > len - frame.payload_len) {
-        return std::unexpected("incomplete");
+        return std::unexpected(DecodeError::kIncomplete);
     }
 
     // RFC 6455 §5.2: RSV1-3 must be 0 unless an extension is negotiated
     if (data[0] & 0x70) {
-        return std::unexpected("non-zero RSV bits without negotiated extension");
+        return std::unexpected(DecodeError::kReservedBits);
     }
 
     // RFC 6455 §5.5: control frames MUST have FIN=1 and payload <= 125
     if (frame.opcode & 0x08) {
         if (!frame.fin) {
-            return std::unexpected("fragmented control frame");
+            return std::unexpected(DecodeError::kFragmentedControl);
         }
         if (frame.payload_len > 125) {
-            return std::unexpected("control frame payload exceeds 125 bytes");
+            return std::unexpected(DecodeError::kControlPayloadTooLarge);
         }
     }
 

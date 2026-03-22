@@ -126,7 +126,7 @@ TEST_P(WsRoundtrip, EncodeDecodeRoundtrip) {
 
     // Decode
     auto result = decode_frame(frame_buf.data(), frame_len);
-    ASSERT_TRUE(result.has_value()) << result.error();
+    ASSERT_TRUE(result.has_value()) << decode_error_name(result.error());
 
     auto& frame = *result;
     EXPECT_EQ(frame.opcode, opcode::kBinary);
@@ -157,13 +157,13 @@ TEST(WsDecode, TooShortReturnsIncomplete) {
     uint8_t data[1] = {0x82};
     auto result = decode_frame(data, 1);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsDecode, EmptyInputReturnsIncomplete) {
     auto result = decode_frame(nullptr, 0);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsDecode, TruncatedPayloadReturnsIncomplete) {
@@ -171,7 +171,7 @@ TEST(WsDecode, TruncatedPayloadReturnsIncomplete) {
     uint8_t data[] = {0x82, 0x0A, 0, 0, 0, 0};
     auto result = decode_frame(data, sizeof(data));
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsDecode, IntegerOverflowProtection) {
@@ -184,7 +184,7 @@ TEST(WsDecode, IntegerOverflowProtection) {
 
     auto result = decode_frame(data, sizeof(data));
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsDecode, UnmaskedServerFrame) {
@@ -316,7 +316,7 @@ TEST(WsBoundary, DecodeIncomplete_OnlyFirstByte) {
     uint8_t buf[1] = {0x82}; // FIN + Binary
     auto result = decode_frame(buf, 1);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsBoundary, DecodeIncomplete_ExtLen126_MissingBytes) {
@@ -324,7 +324,7 @@ TEST(WsBoundary, DecodeIncomplete_ExtLen126_MissingBytes) {
     uint8_t buf[4] = {0x82, 0xFE, 0x00}; // 0xFE = mask|126
     auto result = decode_frame(buf, 3);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsBoundary, DecodeIncomplete_MaskKeyMissing) {
@@ -332,7 +332,7 @@ TEST(WsBoundary, DecodeIncomplete_MaskKeyMissing) {
     uint8_t buf[2] = {0x82, 0x85}; // 0x85 = mask|5
     auto result = decode_frame(buf, 2);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 TEST(WsBoundary, DecodeIncomplete_PayloadTruncated) {
@@ -343,7 +343,7 @@ TEST(WsBoundary, DecodeIncomplete_PayloadTruncated) {
     // Truncate: provide only header, no payload
     auto result = decode_frame(buf, 6);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "incomplete");
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,7 +493,7 @@ TEST(WsFrame, RejectNonZeroRsvBits) {
 
     auto result = decode_frame(buf, 2);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "non-zero RSV bits without negotiated extension");
+    EXPECT_EQ(result.error(), DecodeError::kReservedBits);
 
     // RSV2 bit
     buf[0] = kFinBit | 0x20 | opcode::kText;
@@ -514,7 +514,7 @@ TEST(WsFrame, RejectFragmentedControlFrame) {
 
     auto result = decode_frame(buf, 2);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "fragmented control frame");
+    EXPECT_EQ(result.error(), DecodeError::kFragmentedControl);
 }
 
 TEST(WsFrame, RejectOversizedControlFrame) {
@@ -527,7 +527,7 @@ TEST(WsFrame, RejectOversizedControlFrame) {
 
     auto result = decode_frame(buf, 256);
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), "control frame payload exceeds 125 bytes");
+    EXPECT_EQ(result.error(), DecodeError::kControlPayloadTooLarge);
 }
 
 TEST(WsFrame, AcceptMaxSizeControlFrame) {

@@ -1822,9 +1822,9 @@ private:
         while (offset < len) {
             auto frame = ws::decode_frame(data + offset, len - offset);
             if (!frame) {
-                if (frame.error() == "incomplete") break;
+                if (frame.error() == ws::DecodeError::kIncomplete) break;
                 SPDLOG_LOGGER_WARN(log, "WS frame decode error: {}",
-                                   frame.error());
+                                   ws::decode_error_name(frame.error()));
                 break;
             }
 
