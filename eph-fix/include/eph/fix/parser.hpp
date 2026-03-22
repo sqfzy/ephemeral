@@ -68,6 +68,14 @@ public:
         return std::nullopt;
     }
 
+    /// Check if a tag exists in the message.
+    [[nodiscard]] bool has(uint32_t t) const noexcept {
+        for (size_t i = 0; i < count_; ++i) {
+            if (fields_[i].tag == t) return true;
+        }
+        return false;
+    }
+
     /// Convenience: get MsgType (tag 35) value.
     [[nodiscard]] std::optional<std::string_view> msg_type() const noexcept {
         return get(tag::MsgType);

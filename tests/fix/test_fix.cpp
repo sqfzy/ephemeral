@@ -580,6 +580,207 @@ TEST(FixBuilder, chained_set_calls) {
 }
 
 // ===========================================================================
+// Builder — comprehensive tests (FixBuilder suite)
+// ===========================================================================
+
+TEST(FixBuilder, BasicBuild) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "SENDER");
+    b.set(tag::TargetCompID, "TARGET");
+    b.set(tag::Symbol, "AAPL");
+    b.set_int(tag::Side, 1);
+    b.set_double(tag::Price, 150.50);
+    b.set_int(tag::OrderQty, 100);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u) << "finish() should return non-zero for a valid message";
+    EXPECT_EQ(b.size(), len);
+}
+
+TEST(FixBuilder, RoundTripParseBuiltMessage) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "CLIENT");
+    b.set(tag::TargetCompID, "EXCHANGE");
+    b.set(tag::Symbol, "MSFT");
+    b.set_int(tag::Side, 2);
+    b.set_double(tag::Price, 425.75);
+    b.set_int(tag::OrderQty, 50);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+
+    EXPECT_EQ(result->msg_type().value(), "D");
+    EXPECT_EQ(result->get(tag::SenderCompID).value(), "CLIENT");
+    EXPECT_EQ(result->get(tag::TargetCompID).value(), "EXCHANGE");
+    EXPECT_EQ(result->get(tag::Symbol).value(), "MSFT");
+    EXPECT_EQ(result->get_int(tag::Side).value(), 2);
+    EXPECT_DOUBLE_EQ(result->get_double(tag::Price).value(), 425.75);
+    EXPECT_EQ(result->get_int(tag::OrderQty).value(), 50);
+}
+
+TEST(FixBuilder, ResetAndReuse) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+
+    // Build first message
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "AAPL");
+    b.set_int(tag::Side, 1);
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+
+    // Save first message for verification
+    std::vector<uint8_t> msg1(b.data(), b.data() + b.size());
+
+    // Reset and build second message
+    b.reset();
+    b.set(tag::MsgType, "8");
+    b.set(tag::Symbol, "GOOG");
+    b.set_int(tag::Side, 2);
+    size_t len2 = b.finish();
+    ASSERT_GT(len2, 0u);
+
+    // Both messages should parse correctly
+    auto r1 = parse(msg1.data(), msg1.size());
+    ASSERT_TRUE(r1.has_value()) << parse_error_name(r1.error());
+    EXPECT_EQ(r1->msg_type().value(), "D");
+    EXPECT_EQ(r1->get(tag::Symbol).value(), "AAPL");
+
+    auto r2 = parse(b.data(), b.size());
+    ASSERT_TRUE(r2.has_value()) << parse_error_name(r2.error());
+    EXPECT_EQ(r2->msg_type().value(), "8");
+    EXPECT_EQ(r2->get(tag::Symbol).value(), "GOOG");
+}
+
+TEST(FixBuilder, BufferOverflowReturnsZero) {
+    uint8_t buf[10]; // tiny buffer — cannot fit any valid FIX message
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    size_t len = b.finish();
+    EXPECT_EQ(len, 0u) << "finish() should return 0 when buffer is too small";
+}
+
+TEST(FixBuilder, EmptyBodyProducesValidMessage) {
+    // Build with no user fields — only BeginString, BodyLength, CheckSum
+    uint8_t buf[128];
+    MessageBuilder b(buf, sizeof(buf));
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u) << "empty-body message should still produce valid output";
+    EXPECT_TRUE(verify_checksum(b.data(), b.size()));
+
+    // Should at least have BeginString (tag 8) present
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+}
+
+TEST(FixBuilder, SetIntNegativeValue) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "8");
+    b.set_int(tag::Text, -42);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+    EXPECT_EQ(result->get_int(tag::Text).value(), -42);
+}
+
+TEST(FixBuilder, SetDoubleWithPrecision) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 123.456789, 4);
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+
+    // With precision=4, 123.456789 rounds to 123.4568
+    double parsed = result->get_double(tag::Price).value();
+    EXPECT_NEAR(parsed, 123.4568, 0.00005);
+
+    // Verify string representation has exactly 4 decimal places
+    auto price_str = result->get(tag::Price).value();
+    auto dot_pos = price_str.find('.');
+    ASSERT_NE(dot_pos, std::string_view::npos);
+    EXPECT_EQ(price_str.size() - dot_pos - 1, 4u);
+}
+
+TEST(FixBuilder, CustomBeginString) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "AAPL");
+
+    size_t len = b.finish("FIX.4.2");
+    ASSERT_GT(len, 0u);
+
+    // Verify the message is valid and parseable
+    EXPECT_TRUE(verify_checksum(b.data(), b.size()));
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+
+    // Verify the raw bytes start with "8=FIX.4.2\x01"
+    // (BeginString is parsed but not stored as a regular field by the parser)
+    std::string_view raw(reinterpret_cast<const char*>(b.data()), b.size());
+    EXPECT_TRUE(raw.starts_with("8=FIX.4.2\x01"))
+        << "message should start with custom BeginString";
+
+    // Verify body fields are still intact
+    EXPECT_EQ(result->msg_type().value(), "D");
+    EXPECT_EQ(result->get(tag::Symbol).value(), "AAPL");
+}
+
+TEST(FixBuilder, DataAndSize) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "AAPL");
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    // data() should point to the buffer
+    EXPECT_EQ(b.data(), buf);
+    // size() should equal the return value of finish()
+    EXPECT_EQ(b.size(), len);
+}
+
+TEST(FixBuilder, MultipleFieldsSameTag) {
+    // Add the same tag twice via the builder (simulating repeating groups)
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "W");
+    b.set_int(tag::NoMDEntries, 2);
+    b.set(tag::MDEntryPx, "100.25");
+    b.set(tag::MDEntryPx, "200.50");
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value()) << parse_error_name(result.error());
+
+    // count() should return 2 for the repeated tag
+    EXPECT_EQ(result->count(tag::MDEntryPx), 2u);
+
+    // get_nth() should return correct values in order
+    EXPECT_EQ(result->get_nth(tag::MDEntryPx, 0).value(), "100.25");
+    EXPECT_EQ(result->get_nth(tag::MDEntryPx, 1).value(), "200.50");
+}
+
+// ===========================================================================
 // Framer
 // ===========================================================================
 
