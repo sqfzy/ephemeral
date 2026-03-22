@@ -33,14 +33,8 @@
 #include "eph/net/socket_transport.hpp"
 
 #ifdef EPH_HAS_DPDK
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <rte_ethdev.h>
-#include "eph/dpdk/arp.hpp"
+#include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/platform.hpp"
-#include "eph/dpdk/types.hpp"
 #endif
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,34 +278,7 @@ static int run_socket(const AppConfig& cfg) {
 
 #ifdef EPH_HAS_DPDK
 
-/// Resolve hostname to IPv4 (host byte order) via kernel stack.
-/// Must be called before DPDK takes over the NIC.
-static std::expected<uint32_t, std::string> resolve_hostname(const std::string& host) {
-    uint32_t ip = eph::dpdk::net::parse_ipv4(host.c_str());
-    if (ip != 0) return ip;
-
-    struct addrinfo hints{};
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    struct addrinfo* result = nullptr;
-    int err = getaddrinfo(host.c_str(), nullptr, &hints, &result);
-    if (err != 0 || !result) {
-        return std::unexpected(std::format(
-            "DNS resolution failed for '{}': {}", host, gai_strerror(err)));
-    }
-
-    auto* addr = reinterpret_cast<struct sockaddr_in*>(result->ai_addr);
-    ip = ntohl(addr->sin_addr.s_addr);
-    freeaddrinfo(result);
-
-    spdlog::info("DNS resolved: {} -> {}",
-                 host, eph::dpdk::net::format_ipv4(ip).data());
-    return ip;
-}
-
 static int run_dpdk(const AppConfig& cfg, int eal_argc, char** eal_argv) {
-    // Validate DPDK-specific args
     if (cfg.local_ip.empty()) {
         spdlog::error("--local-ip is required for DPDK backend");
         return 1;
@@ -321,125 +288,48 @@ static int run_dpdk(const AppConfig& cfg, int eal_argc, char** eal_argv) {
         return 1;
     }
 
-    spdlog::info("Connecting to wss://{}:{}{} (DPDK)", cfg.host, cfg.port, cfg.ws_path);
+    auto scheme = cfg.use_tls ? "wss" : "ws";
+    spdlog::info("Connecting to {}://{}:{}{} (DPDK)", scheme, cfg.host, cfg.port, cfg.ws_path);
     spdlog::info("Local={}:{}, gateway={}", cfg.local_ip, cfg.local_port, cfg.gateway_ip);
 
-    // DNS before EAL (uses kernel stack)
-    auto dns_result = resolve_hostname(cfg.host);
-    if (!dns_result) {
-        spdlog::error("{}", dns_result.error());
+    // EAL lifetime managed by RAII guard
+    auto eal = eph::dpdk::EalGuard::init(eal_argc, eal_argv);
+    if (!eal) {
+        spdlog::error("EAL init failed: {}", eal.error());
         return 1;
     }
-    uint32_t server_ip = *dns_result;
+    spdlog::info("EAL initialized ({} args consumed)", eal->args_consumed());
 
-    // EAL init
-    auto eal_result = eph::dpdk::eal_init(eal_argc, eal_argv);
-    if (!eal_result) {
-        spdlog::error("EAL init failed: {}", eal_result.error());
+    // One-shot connect: DNS → Platform → MAC → ARP → TCP → Transport
+    eph::dpdk::ConnectorConfig conn_cfg{
+        .platform = { .port_id = cfg.dpdk_port },
+        .local_ip   = cfg.local_ip,
+        .gateway_ip = cfg.gateway_ip,
+        .local_port = cfg.local_port,
+    };
+
+    eph::net::TransportConfig transport_cfg{
+        .remote_host   = cfg.host,
+        .remote_port   = cfg.port,
+        .ws_path       = cfg.ws_path,
+        .use_tls       = cfg.use_tls,
+        .ca_cert_path  = cfg.ca_cert,
+        .verify_peer   = cfg.verify,
+        .tcp_timeout   = std::chrono::milliseconds{5000},
+        .tls_timeout   = std::chrono::milliseconds{5000},
+        .ws_timeout    = std::chrono::milliseconds{5000},
+        .ping_interval = std::chrono::seconds{30},
+    };
+
+    auto conn = eph::dpdk::connect(conn_cfg, transport_cfg);
+    if (!conn) {
+        spdlog::error("DPDK connect failed: {}", conn.error());
         return 1;
     }
-    spdlog::info("EAL initialized ({} args consumed)", *eal_result);
 
-    int exit_code = 0;
-    do {
-        // Platform
-        eph::dpdk::PlatformConfig plat_cfg{
-            .port_id         = cfg.dpdk_port,
-            .nb_rx_queues    = 1,
-            .nb_tx_queues    = 1,
-            .nb_rx_desc      = 256,
-            .nb_tx_desc      = 512,
-            .mbuf_pool_size  = 4095,
-            .mbuf_cache_size = 256,
-        };
-
-        auto platform = eph::dpdk::Platform::create(plat_cfg);
-        if (!platform) {
-            spdlog::error("Platform create failed: {}", platform.error());
-            exit_code = 1; break;
-        }
-
-        // Source MAC
-        rte_ether_addr src_mac{};
-        if (rte_eth_macaddr_get(cfg.dpdk_port, &src_mac) != 0) {
-            spdlog::error("Failed to get MAC address for port {}", cfg.dpdk_port);
-            exit_code = 1; break;
-        }
-
-        // ARP resolve gateway
-        uint32_t local_ip   = eph::dpdk::net::parse_ipv4(cfg.local_ip.c_str());
-        uint32_t gateway_ip = eph::dpdk::net::parse_ipv4(cfg.gateway_ip.c_str());
-
-        auto arp_result = eph::dpdk::arp::resolve(
-            cfg.dpdk_port, 0, platform->mempool(),
-            src_mac, local_ip, gateway_ip,
-            std::chrono::milliseconds{3000});
-
-        if (!arp_result) {
-            spdlog::error("ARP resolution failed: {}", arp_result.error());
-            exit_code = 1; break;
-        }
-        rte_ether_addr dst_mac = *arp_result;
-
-        // TCP config
-        uint16_t src_port = cfg.local_port;
-        if (src_port == 0) {
-            uint16_t rnd;
-            RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
-            src_port = 49152 + (rnd % 16384);
-        }
-
-        eph::dpdk::TcpConfig tcp_cfg{
-            .tuple = {
-                .src_ip   = local_ip,
-                .dst_ip   = server_ip,
-                .src_port = src_port,
-                .dst_port = cfg.port,
-            },
-            .src_mac     = src_mac,
-            .dst_mac     = dst_mac,
-            .port_id     = cfg.dpdk_port,
-            .tx_queue_id = 0,
-            .rx_queue_id = 0,
-        };
-
-        auto* mempool = platform->mempool();
-
-        auto tcp_factory = [&]()
-            -> std::expected<std::unique_ptr<eph::dpdk::TcpSession>, std::string> {
-            auto tcp = std::make_unique<eph::dpdk::TcpSession>(tcp_cfg, mempool);
-            auto r = tcp->connect(std::chrono::milliseconds{5000});
-            if (!r) return std::unexpected(r.error());
-            return tcp;
-        };
-
-        eph::net::TransportConfig transport_cfg{
-            .remote_host  = cfg.host,
-            .remote_port  = cfg.port,
-            .ws_path      = cfg.ws_path,
-            .ca_cert_path = cfg.ca_cert,
-            .verify_peer  = cfg.verify,
-            .tcp_timeout  = std::chrono::milliseconds{5000},
-            .tls_timeout  = std::chrono::milliseconds{5000},
-            .ws_timeout   = std::chrono::milliseconds{5000},
-            .ping_interval = std::chrono::seconds{30},
-        };
-
-        auto transport = eph::dpdk::DpdkTransport::create(
-            std::move(tcp_factory), transport_cfg);
-
-        if (!transport) {
-            spdlog::error("Transport create failed: {}", transport.error().message());
-            exit_code = 1; break;
-        }
-
-        spdlog::info("WSS connection established (DPDK)");
-        exit_code = echo_loop(**transport, cfg);
-
-    } while (false);
-
-    eph::dpdk::eal_cleanup();
-    return exit_code;
+    spdlog::info("{} connection established (DPDK)", scheme);
+    return echo_loop(*conn->transport, cfg);
+    // EalGuard RAII handles eal_cleanup()
 }
 
 #endif // EPH_HAS_DPDK
