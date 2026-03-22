@@ -58,7 +58,7 @@ std::vector<uint8_t> build_market_data_snapshot() {
     b.set(tag::Symbol, "TSLA");
     // Repeating group: 5 MD entries
     b.set_int(268, 5);  // NoMDEntries
-    for (int i = 0; i < 5; ++i) {
+    for (size_t i = 0; i < 5; ++i) {
         b.set_int(269, i % 2);  // MDEntryType: 0=Bid, 1=Offer
         b.set_double(270, 200.00 + i * 0.25, 2);  // MDEntryPx
         b.set_int(271, (i + 1) * 100);  // MDEntrySize

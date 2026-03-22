@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "eph/fix/parser.hpp"
 #include "eph/net/framer_concept.hpp"
 
 namespace eph::fix {
@@ -95,7 +96,7 @@ public:
 
         // Parse declared checksum (3 ASCII digits)
         uint32_t declared_cs = 0;
-        for (int i = 3; i < 6; ++i) {
+        for (size_t i = 3; i < 6; ++i) {
             char c = cs[i];
             if (c < '0' || c > '9') {
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
@@ -103,13 +104,10 @@ public:
             declared_cs = declared_cs * 10 + static_cast<uint32_t>(c - '0');
         }
 
-        // Compute checksum over everything before "10=..." (sum of bytes mod 256)
-        uint32_t sum = 0;
+        // Validate checksum (reuse compute_checksum from parser.hpp)
         size_t cs_body_len = header_len + body_length;
-        for (size_t i = 0; i < cs_body_len; ++i) {
-            sum += data[i];
-        }
-        if (static_cast<uint8_t>(sum & 0xFF) != static_cast<uint8_t>(declared_cs)) {
+        uint8_t computed = compute_checksum(data, cs_body_len);
+        if (computed != static_cast<uint8_t>(declared_cs)) {
             return std::unexpected(eph::net::FrameError::kInvalidFormat);
         }
 

@@ -39,7 +39,7 @@ void fill_add_order(uint8_t* buf) {
     buf[10] = static_cast<uint8_t>(ts & 0xFF);
     // order_ref (8 bytes)
     uint64_t ref = 12345678;
-    for (int i = 0; i < 8; ++i)
+    for (size_t i = 0; i < 8; ++i)
         buf[11 + i] = static_cast<uint8_t>((ref >> (56 - 8*i)) & 0xFF);
     buf[19] = 'B';  // side
     buf[20] = 0; buf[21] = 0; buf[22] = 0; buf[23] = 100; // shares

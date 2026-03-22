@@ -7,7 +7,6 @@
 /// array of Field views. All string_view values point into the original buffer
 /// -- no allocations, no copies.
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <expected>
