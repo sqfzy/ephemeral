@@ -570,3 +570,67 @@ TEST(HdrHistogramTest, MoveTransfersOwnership) {
     EXPECT_EQ(h2.get_min_value(), 1);
     EXPECT_EQ(h2.get_max_value(), 100);
 }
+
+// ============================================================================
+// Stats serialization (dump / to_json / std::formatter)
+// ============================================================================
+
+static Stats make_test_stats() {
+    return Stats{
+        .name = "TestBench",
+        .count = 1000,
+        .avg_ns = 42.5,
+        .min_ns = 10.0,
+        .max_ns = 500.0,
+        .p50_ns = 35.0,
+        .p90_ns = 80.0,
+        .p99_ns = 200.0,
+        .p999_ns = 450.0,
+        .stddev_ns = 25.3,
+    };
+}
+
+TEST(StatsTest, DumpNonEmpty) {
+    auto s = make_test_stats();
+    auto d = s.dump();
+    EXPECT_NE(d.find("TestBench"), std::string::npos);
+    EXPECT_NE(d.find("1000 samples"), std::string::npos);
+    EXPECT_NE(d.find("42.5"), std::string::npos);  // avg
+    EXPECT_NE(d.find("p99"), std::string::npos);
+}
+
+TEST(StatsTest, DumpEmpty) {
+    Stats s{.name = "Empty", .count = 0};
+    auto d = s.dump();
+    EXPECT_NE(d.find("empty"), std::string::npos);
+}
+
+TEST(StatsTest, ToJsonNonEmpty) {
+    auto s = make_test_stats();
+    auto j = s.to_json();
+    // Verify it's valid JSON-ish structure
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"name\":\"TestBench\""), std::string::npos);
+    EXPECT_NE(j.find("\"count\":1000"), std::string::npos);
+    EXPECT_NE(j.find("\"p99_ns\":"), std::string::npos);
+}
+
+TEST(StatsTest, ToJsonEmpty) {
+    Stats s{.name = "Empty", .count = 0};
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"count\":0"), std::string::npos);
+}
+
+TEST(StatsTest, Formatter) {
+    auto s = make_test_stats();
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("TestBench"), std::string::npos);
+    EXPECT_NE(formatted.find("n=1000"), std::string::npos);
+}
+
+TEST(StatsTest, FormatterEmpty) {
+    Stats s{.name = "NoData", .count = 0};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("no samples"), std::string::npos);
+}

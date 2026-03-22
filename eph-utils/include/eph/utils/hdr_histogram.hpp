@@ -534,6 +534,54 @@ struct Stats {
     double p99_ns;
     double p999_ns;
     double stddev_ns;
+
+    /// Human-readable multi-line summary for logging and diagnostics.
+    [[nodiscard]] std::string dump() const {
+        if (count == 0) {
+            return std::format("{}: (empty, no samples)", name);
+        }
+        return std::format(
+            "{} ({} samples):\n"
+            "  avg: {:.1f} ns, stddev: {:.1f} ns\n"
+            "  min: {:.1f} ns, max: {:.1f} ns\n"
+            "  p50: {:.1f} ns, p90: {:.1f} ns, p99: {:.1f} ns, p99.9: {:.1f} ns",
+            name, count,
+            avg_ns, stddev_ns,
+            min_ns, max_ns,
+            p50_ns, p90_ns, p99_ns, p999_ns);
+    }
+
+    /// JSON-formatted summary for monitoring system integration.
+    /// Consistent with to_json() patterns in TransportStats, RttStats, etc.
+    [[nodiscard]] std::string to_json() const {
+        if (count == 0) {
+            return std::format("{{\"name\":\"{}\",\"count\":0}}", name);
+        }
+        return std::format(
+            "{{\"name\":\"{}\",\"count\":{},\"avg_ns\":{:.2f},"
+            "\"min_ns\":{:.2f},\"max_ns\":{:.2f},\"stddev_ns\":{:.2f},"
+            "\"p50_ns\":{:.2f},\"p90_ns\":{:.2f},"
+            "\"p99_ns\":{:.2f},\"p999_ns\":{:.2f}}}",
+            name, count, avg_ns,
+            min_ns, max_ns, stddev_ns,
+            p50_ns, p90_ns, p99_ns, p999_ns);
+    }
 };
 
 }  // namespace eph::utils
+
+/// std::format support for Stats.
+/// Example: std::format("{}", stats) → "MyBench (1000 samples): avg=42.3ns p99=128.7ns"
+template <>
+struct std::formatter<eph::utils::Stats> : std::formatter<std::string> {
+    auto format(const eph::utils::Stats& s, auto& ctx) const {
+        if (s.count == 0) {
+            return std::formatter<std::string>::format(
+                std::format("{}: no samples", s.name), ctx);
+        }
+        return std::formatter<std::string>::format(
+            std::format("{} (n={}): avg={:.1f}ns p50={:.1f}ns p99={:.1f}ns max={:.1f}ns",
+                s.name, s.count, s.avg_ns, s.p50_ns, s.p99_ns, s.max_ns),
+            ctx);
+    }
+};
