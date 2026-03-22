@@ -99,13 +99,13 @@ public:
     /// For true binary FIX fields (Data/RawData), a length-aware parser
     /// would be required.
     MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
-        if (data != nullptr) {
-            for (size_t i = 0; i < len; ++i) {
-                if (data[i] == 0x01) [[unlikely]] {
-                    log_soh_found(t, i);
-                    overflow_ = true;
-                    return *this;
-                }
+        if (data == nullptr || len == 0)
+            return set(t, std::string_view{});
+        for (size_t i = 0; i < len; ++i) {
+            if (data[i] == 0x01) [[unlikely]] {
+                log_soh_found(t, i);
+                overflow_ = true;
+                return *this;
             }
         }
         return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
@@ -260,7 +260,6 @@ public:
         std::memcpy(buf_ + header_offset, header, hpos);
 
         // Compute checksum over header + body
-        size_t msg_before_cs = pos_ - header_offset;
         uint32_t sum = 0;
         for (size_t i = header_offset; i < pos_; ++i) {
             sum += buf_[i];
