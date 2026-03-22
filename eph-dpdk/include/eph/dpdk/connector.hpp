@@ -237,8 +237,8 @@ connect(const ConnectorConfig& cfg,
     auto connect_timeout = cfg.connect_timeout;
 
     auto tcp_factory = [tcp_cfg, mempool, connect_timeout]()
-        -> std::expected<std::unique_ptr<TcpSession>, std::string> {
-        auto tcp = std::make_unique<TcpSession>(tcp_cfg, mempool);
+        -> std::expected<std::unique_ptr<TcpSession<>>, std::string> {
+        auto tcp = std::make_unique<TcpSession<>>(tcp_cfg, mempool);
         auto r = tcp->connect(connect_timeout);
         if (!r) return std::unexpected(r.error());
         return tcp;
@@ -260,6 +260,127 @@ connect(const ConnectorConfig& cfg,
         .local_mac   = src_mac,
         .gateway_mac = dst_mac,
     };
+}
+
+/// Connect using an existing Platform instance (for multi-connection scenarios).
+///
+/// Reuses an already-initialized Platform instead of creating a new one.
+/// This is useful when establishing multiple connections on the same NIC port,
+/// since Platform holds the mempool and port configuration that should be
+/// shared across connections.
+///
+/// @param platform         Already-initialized Platform (must outlive the Transport)
+/// @param cfg              Connector configuration (local_ip, gateway_ip, etc.)
+/// @param transport_cfg    Generic transport config (TLS, WS, reconnect)
+/// @param server_ip        Pre-resolved server IPv4 in host byte order
+template <typename TransportType = DpdkTransport>
+std::expected<std::unique_ptr<TransportType>, std::string>
+connect(Platform& platform,
+        const ConnectorConfig& cfg,
+        const TransportConfig& transport_cfg,
+        uint32_t server_ip) {
+
+    if (cfg.local_ip.empty()) {
+        return std::unexpected("ConnectorConfig: local_ip is required");
+    }
+    if (cfg.gateway_ip.empty()) {
+        return std::unexpected("ConnectorConfig: gateway_ip is required");
+    }
+    if (server_ip == 0) {
+        return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
+    }
+
+    SPDLOG_DEBUG("dpdk::connect(platform&): local={}, gateway={}, server={}",
+                 cfg.local_ip, cfg.gateway_ip,
+                 net::format_ipv4(server_ip).data());
+
+    // Source MAC
+    rte_ether_addr src_mac{};
+    if (rte_eth_macaddr_get(cfg.platform.port_id, &src_mac) != 0) {
+        return std::unexpected(
+            std::format("Failed to get MAC for port {}", cfg.platform.port_id));
+    }
+
+    // Parse IPs
+    uint32_t local_ip   = net::parse_ipv4(cfg.local_ip.c_str());
+    uint32_t gateway_ip = net::parse_ipv4(cfg.gateway_ip.c_str());
+    if (local_ip == 0) {
+        return std::unexpected(std::format("Invalid local_ip: '{}'", cfg.local_ip));
+    }
+    if (gateway_ip == 0) {
+        return std::unexpected(std::format("Invalid gateway_ip: '{}'", cfg.gateway_ip));
+    }
+
+    // ARP resolve gateway
+    auto arp_result = arp::resolve(
+        cfg.platform.port_id, cfg.rx_queue_id, platform.mempool(),
+        src_mac, local_ip, gateway_ip, cfg.arp_timeout);
+    if (!arp_result) {
+        return std::unexpected(
+            std::format("ARP resolution failed: {}", arp_result.error()));
+    }
+    rte_ether_addr dst_mac = *arp_result;
+
+    // Ephemeral source port
+    uint16_t src_port = cfg.local_port;
+    if (src_port == 0) {
+        uint16_t rnd;
+        RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
+        src_port = 49152 + (rnd % 16384);
+        SPDLOG_DEBUG("dpdk::connect: ephemeral port {}", src_port);
+    }
+
+    // TCP config + factory
+    TcpConfig tcp_cfg{
+        .tuple = {
+            .src_ip   = local_ip,
+            .dst_ip   = server_ip,
+            .src_port = src_port,
+            .dst_port = transport_cfg.remote_port,
+        },
+        .src_mac     = src_mac,
+        .dst_mac     = dst_mac,
+        .port_id     = cfg.platform.port_id,
+        .tx_queue_id = cfg.tx_queue_id,
+        .rx_queue_id = cfg.rx_queue_id,
+    };
+
+    auto* mempool = platform.mempool();
+    auto connect_timeout = cfg.connect_timeout;
+
+    auto tcp_factory = [tcp_cfg, mempool, connect_timeout]()
+        -> std::expected<std::unique_ptr<TcpSession<>>, std::string> {
+        auto tcp = std::make_unique<TcpSession<>>(tcp_cfg, mempool);
+        auto r = tcp->connect(connect_timeout);
+        if (!r) return std::unexpected(r.error());
+        return tcp;
+    };
+
+    // Create transport (TCP + TLS + WS handshake)
+    auto transport = TransportType::create(
+        std::move(tcp_factory), transport_cfg);
+    if (!transport) {
+        return std::unexpected(
+            std::format("Transport creation failed: {}", transport.error().message()));
+    }
+
+    SPDLOG_DEBUG("dpdk::connect(platform&): connection established");
+    return std::move(*transport);
+}
+
+/// Convenience overload: resolves hostname, uses existing Platform.
+template <typename TransportType = DpdkTransport>
+std::expected<std::unique_ptr<TransportType>, std::string>
+connect(Platform& platform,
+        const ConnectorConfig& cfg,
+        const TransportConfig& transport_cfg) {
+    if (transport_cfg.remote_host.empty()) {
+        return std::unexpected(
+            "TransportConfig: remote_host is required for hostname-based connect");
+    }
+    auto ip = resolve_hostname(transport_cfg.remote_host);
+    if (!ip) return std::unexpected(ip.error());
+    return connect<TransportType>(platform, cfg, transport_cfg, *ip);
 }
 
 /// Convenience overload: resolves `transport_cfg.remote_host` via DNS,

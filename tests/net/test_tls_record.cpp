@@ -22,8 +22,8 @@ static_assert(tls_const::kMaxRecordPayload == 16384);
 static_assert(tls_const::kTls13NonceLen == 12);
 static_assert(tls_const::kAes256KeyLen == 32);
 
-static_assert(sizeof(TlsKeyMaterial) == 64, "Must fit one cache line");
-static_assert(sizeof(TlsHotState) == 128, "Must fit two cache lines");
+static_assert(sizeof(TlsKeyMaterial) == 128, "Must fit two cache lines");
+static_assert(sizeof(TlsHotState) == 256, "Must fit four cache lines");
 
 static_assert(TlsRecordCrypto::encrypted_size(0)   == 5 + 0 + 1 + 16);
 static_assert(TlsRecordCrypto::encrypted_size(256) == 5 + 256 + 1 + 16);
@@ -45,10 +45,10 @@ void fill_random(uint8_t* buf, size_t len, uint32_t seed) {
 /// Create a TlsHotState with deterministic random keys for testing.
 TlsHotState make_test_state(uint32_t seed = 42) {
     TlsHotState state{};
-    fill_random(state.write.key, tls_const::kAes256KeyLen, seed);
-    fill_random(state.write.iv,  tls_const::kTls13NonceLen, seed + 1);
-    fill_random(state.read.key,  tls_const::kAes256KeyLen, seed + 2);
-    fill_random(state.read.iv,   tls_const::kTls13NonceLen, seed + 3);
+    fill_random(state.write.ki.key, tls_const::kAes256KeyLen, seed);
+    fill_random(state.write.ki.iv,  tls_const::kTls13NonceLen, seed + 1);
+    fill_random(state.read.ki.key,  tls_const::kAes256KeyLen, seed + 2);
+    fill_random(state.read.ki.iv,   tls_const::kTls13NonceLen, seed + 3);
     state.write.seq = 0;
     state.read.seq  = 0;
     return state;
@@ -57,11 +57,11 @@ TlsHotState make_test_state(uint32_t seed = 42) {
 /// Create a matched encrypt/decrypt pair (same keys for write and read).
 TlsHotState make_roundtrip_state(uint32_t seed = 42) {
     TlsHotState state{};
-    fill_random(state.write.key, tls_const::kAes256KeyLen, seed);
-    fill_random(state.write.iv,  tls_const::kTls13NonceLen, seed + 1);
+    fill_random(state.write.ki.key, tls_const::kAes256KeyLen, seed);
+    fill_random(state.write.ki.iv,  tls_const::kTls13NonceLen, seed + 1);
     // Read uses same key/IV as write — simulates decrypting our own output
-    std::memcpy(state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    std::memcpy(state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
     state.write.seq = 0;
     state.read.seq  = 0;
     return state;
@@ -107,8 +107,8 @@ TEST_P(TlsRoundtrip, EncryptDecryptRoundtrip) {
 
     // For decryptor, swap: read keys = write keys
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
     dec_state.read.seq = 0;
 
     auto dec_result = TlsRecordCrypto::create(dec_state);
@@ -174,8 +174,8 @@ TEST(TlsRecord, MultipleRecordsDecryptInOrder) {
     ASSERT_TRUE(enc.has_value());
 
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
     auto dec = TlsRecordCrypto::create(dec_state);
     ASSERT_TRUE(dec.has_value());
 
@@ -216,8 +216,8 @@ TEST(TlsRecord, DecryptTamperedRecordFails) {
     ASSERT_TRUE(enc.has_value());
 
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
     auto dec = TlsRecordCrypto::create(dec_state);
     ASSERT_TRUE(dec.has_value());
 
@@ -408,10 +408,10 @@ TEST(TlsRecord, DecryptWithWrongKeyFails) {
 TEST(TlsRecord, CreateWithAes128KeyLength) {
     // AES-128 uses 16-byte key
     TlsHotState state{};
-    fill_random(state.write.key, 16, 42);
-    fill_random(state.write.iv, tls_const::kTls13NonceLen, 43);
-    fill_random(state.read.key, 16, 44);
-    fill_random(state.read.iv, tls_const::kTls13NonceLen, 45);
+    fill_random(state.write.ki.key, 16, 42);
+    fill_random(state.write.ki.iv, tls_const::kTls13NonceLen, 43);
+    fill_random(state.read.ki.key, 16, 44);
+    fill_random(state.read.ki.iv, tls_const::kTls13NonceLen, 45);
 
     auto crypto = TlsRecordCrypto::create(state, 16);
     ASSERT_TRUE(crypto.has_value()) << crypto.error();
@@ -425,8 +425,8 @@ TEST(TlsRecord, CreateWithAes128KeyLength) {
 
     // Decrypt with same key (AES-128)
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, 16);
-    std::memcpy(dec_state.read.iv, state.write.iv, tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, 16);
+    std::memcpy(dec_state.read.ki.iv, state.write.ki.iv, tls_const::kTls13NonceLen);
     auto dec = TlsRecordCrypto::create(dec_state, 16);
     ASSERT_TRUE(dec.has_value());
 
@@ -457,8 +457,8 @@ TEST(TlsRecord, DecryptWithWrongSeqFails) {
 
     // Decryptor with WRONG initial seq (1 instead of 0)
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
     dec_state.read.seq = 1; // Mismatch: enc used seq=0
 
     auto dec = TlsRecordCrypto::create(dec_state);
@@ -517,8 +517,8 @@ TEST(TlsRecord, NonZeroInitialSequence) {
 
     // Decryptor with matching seq can decrypt
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv, state.write.iv, tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv, state.write.ki.iv, tls_const::kTls13NonceLen);
     dec_state.read.seq = 100; // Must match encrypt's initial seq
     auto dec = TlsRecordCrypto::create(dec_state);
     ASSERT_TRUE(dec.has_value());
@@ -551,21 +551,22 @@ TEST(TlsRecord, NonceAtMaxSequenceNumber) {
 }
 
 TEST(TlsRecord, EncryptDecryptAtHighSequence) {
+    // Test near (but below) the kMaxSequenceNumber limit
     auto state = make_roundtrip_state();
-    state.write.seq = UINT64_MAX - 5;
-    state.read.seq  = UINT64_MAX - 5;
+    state.write.seq = tls_record::kMaxSequenceNumber - 3;
+    state.read.seq  = tls_record::kMaxSequenceNumber - 3;
 
     auto enc = TlsRecordCrypto::create(state);
     ASSERT_TRUE(enc.has_value());
 
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
-    dec_state.read.seq = UINT64_MAX - 5;
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
+    dec_state.read.seq = tls_record::kMaxSequenceNumber - 3;
     auto dec = TlsRecordCrypto::create(dec_state);
     ASSERT_TRUE(dec.has_value());
 
-    // Encrypt 3 records near seq overflow
+    // Encrypt 3 records near the sequence limit
     for (int i = 0; i < 3; ++i) {
         std::vector<uint8_t> pt(33, static_cast<uint8_t>(i));
         uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
@@ -580,6 +581,13 @@ TEST(TlsRecord, EncryptDecryptAtHighSequence) {
         ASSERT_TRUE(ok) << "Decrypt failed at record " << i;
         EXPECT_EQ(dec_len, 32);
     }
+
+    // The 4th encrypt should fail — seq == kMaxSequenceNumber
+    std::vector<uint8_t> pt(33, 0xFF);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = enc->encrypt(pt.data(), 32, record.data());
+    EXPECT_EQ(written, 0u) << "Should fail at sequence limit";
 }
 
 TEST(TlsRecord, MoveAssign) {
@@ -611,8 +619,8 @@ TEST(TlsRecord, DecryptCorruptedHeader) {
     ASSERT_GT(written, 0u);
 
     TlsHotState dec_state{};
-    std::memcpy(dec_state.read.key, state.write.key, tls_const::kAes256KeyLen);
-    std::memcpy(dec_state.read.iv,  state.write.iv,  tls_const::kTls13NonceLen);
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
     auto dec = TlsRecordCrypto::create(dec_state);
     ASSERT_TRUE(dec.has_value());
 

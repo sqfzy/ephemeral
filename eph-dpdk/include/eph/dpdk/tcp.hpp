@@ -79,6 +79,7 @@ inline std::shared_ptr<spdlog::logger> tcp_logger() {
 ///
 /// Supports three-way handshake, data send/recv, ACK generation,
 /// and graceful close. No retransmission — packet loss triggers reconnect.
+template <size_t ReorderSlots = 8>
 class TcpSession {
 public:
     struct Stats {
@@ -141,6 +142,11 @@ public:
         if (state_ != TcpState::Closed) {
             return std::unexpected(std::format(
                 "Cannot connect: session in state {}", tcp_state_name(state_)));
+        }
+
+        if (snd_nxt_ == 0 && snd_una_ == 0) {
+            SPDLOG_LOGGER_ERROR(log, "ISN generation failed — CSPRNG unavailable");
+            return std::unexpected("ISN generation failed: CSPRNG unavailable");
         }
 
         // Send SYN
@@ -350,7 +356,7 @@ public:
                 if (seg_seq != rcv_nxt_ && parsed.payload_len > 0) {
                     stats_.out_of_order++;
                     if (seq_after(seg_seq, rcv_nxt_) &&
-                        reorder_count_ < kReorderSlots &&
+                        reorder_count_ < ReorderSlots &&
                         parsed.payload_len <= net::kDefaultMss) {
                         // Future segment — buffer it
                         auto& entry = reorder_buf_[reorder_count_++];
@@ -368,7 +374,7 @@ public:
                         // Reorder buffer full — genuine loss
                         SPDLOG_LOGGER_WARN(log,
                             "Reorder buffer full ({} slots): expected={}, got={}",
-                            kReorderSlots, rcv_nxt_, seg_seq);
+                            ReorderSlots, rcv_nxt_, seg_seq);
                         rte_pktmbuf_free(pkts[i]);
                         free_remaining(pkts, i + 1, nb_pkts);
                         return std::unexpected(std::format(
@@ -539,7 +545,6 @@ private:
     // Buffers out-of-order segments (payload copied from mbuf) so they can be
     // delivered once the gap is filled. Avoids treating normal reordering
     // (common with af_packet) as packet loss.
-    static constexpr size_t kReorderSlots = 8;
     struct ReorderEntry {
         uint32_t seq = 0;
         uint16_t len = 0;
@@ -584,20 +589,20 @@ private:
     uint16_t rcv_wnd_;    // RCV.WND: our receive window advertisement
     uint16_t snd_wnd_;    // SND.WND: peer's receive window
 
-    ReorderEntry reorder_buf_[kReorderSlots]{};
+    ReorderEntry reorder_buf_[ReorderSlots]{};
     uint8_t      reorder_count_ = 0;
 
     Stats stats_{};
 
-    /// Generate initial sequence number using CSPRNG (RFC 6528).
+    /// Generate initial sequence number using CSPRNG.
+    /// Returns 0 on CSPRNG failure — caller must treat ISN=0 as connection error.
     static uint32_t generate_isn() noexcept {
-        uint32_t isn;
+        uint32_t isn = 0;
         if (RAND_bytes(reinterpret_cast<uint8_t*>(&isn), sizeof(isn)) != 1) {
-            // CSPRNG failure — fall back to time-based ISN (weaker but non-zero)
-            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
-                "RAND_bytes failed for ISN generation, using time-based fallback");
-            isn = static_cast<uint32_t>(
-                std::chrono::steady_clock::now().time_since_epoch().count());
+            SPDLOG_LOGGER_CRITICAL(detail::tcp_logger(),
+                "RAND_bytes failed for ISN generation — cannot establish "
+                "secure TCP connection");
+            return 0;
         }
         return isn;
     }
@@ -640,7 +645,7 @@ private:
     }
 };
 
-static_assert(eph::net::TcpTransport<TcpSession>,
+static_assert(eph::net::TcpTransport<TcpSession<>>,
     "TcpSession must satisfy TcpTransport concept");
 
 } // namespace eph::dpdk

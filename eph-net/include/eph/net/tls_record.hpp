@@ -54,6 +54,11 @@ inline constexpr uint16_t kLegacyVersion      = 0x0303; // TLS 1.2 for compat
 inline constexpr uint16_t kRecordHeaderLen     = 5;
 inline constexpr uint16_t kAuthTagLen          = 16;
 
+/// Maximum TLS 1.3 record sequence number (conservative: 2^24).
+/// RFC 8446 §5.5 recommends key update at ~2^24.5 records.
+/// Beyond this limit, nonce reuse risk makes continued encryption unsafe.
+inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 24);
+
 /// Build the per-record nonce for TLS 1.3 AES-GCM.
 /// nonce = write_iv XOR (sequence_number padded to 12 bytes)
 /// Optimized: uses uint64_t XOR on the last 8 bytes instead of byte loop.
@@ -134,7 +139,7 @@ public:
 
         // Encryption context (write direction)
         if (!EVP_AEAD_CTX_init(&crypto.enc_ctx_, aead,
-                               state.write.key, key_len,
+                               state.write.ki.key, key_len,
                                tls_record::kAuthTagLen, nullptr)) {
             return std::unexpected("EVP_AEAD_CTX_init failed for encryption");
         }
@@ -142,7 +147,7 @@ public:
 
         // Decryption context (read direction)
         if (!EVP_AEAD_CTX_init(&crypto.dec_ctx_, aead,
-                               state.read.key, key_len,
+                               state.read.ki.key, key_len,
                                tls_record::kAuthTagLen, nullptr)) {
             EVP_AEAD_CTX_cleanup(&crypto.enc_ctx_);
             crypto.enc_init_ = false;
@@ -150,8 +155,8 @@ public:
         }
         crypto.dec_init_ = true;
 
-        std::memcpy(crypto.write_iv_, state.write.iv, tls_const::kTls13NonceLen);
-        std::memcpy(crypto.read_iv_,  state.read.iv,  tls_const::kTls13NonceLen);
+        std::memcpy(crypto.write_iv_, state.write.ki.iv, tls_const::kTls13NonceLen);
+        std::memcpy(crypto.read_iv_,  state.read.ki.iv,  tls_const::kTls13NonceLen);
         crypto.write_seq_ = state.write.seq;
         crypto.read_seq_  = state.read.seq;
 
@@ -222,6 +227,13 @@ public:
                      uint8_t* out) noexcept {
         if (plaintext_len > tls_const::kMaxRecordPayload) return 0;
 
+        if (write_seq_ >= tls_record::kMaxSequenceNumber) {
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "TLS write sequence limit reached ({}): nonce reuse risk, "
+                "must reconnect", write_seq_);
+            return 0;
+        }
+
         uint16_t inner_len = plaintext_len + 1;
         uint16_t encrypted_len = inner_len + tls_record::kAuthTagLen;
 
@@ -290,6 +302,13 @@ public:
     bool decrypt(const uint8_t* record, uint16_t record_len,
                  uint8_t* out, uint16_t& out_len) noexcept {
         if (record_len < tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
+            return false;
+        }
+
+        if (read_seq_ >= tls_record::kMaxSequenceNumber) {
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "TLS read sequence limit reached ({}): nonce reuse risk, "
+                "must reconnect", read_seq_);
             return false;
         }
 

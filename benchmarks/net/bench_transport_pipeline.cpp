@@ -99,10 +99,10 @@ bool read_all(int fd, uint8_t* buf, size_t n) {
 /// Pre-build TLS state for encrypt/decrypt round-trip.
 eph::net::TlsHotState make_tls_state(uint32_t seed = 42) {
     eph::net::TlsHotState state{};
-    fill_random(state.write.key, eph::net::tls_const::kAes256KeyLen, seed);
-    fill_random(state.write.iv,  eph::net::tls_const::kTls13NonceLen, seed + 1);
-    std::memcpy(state.read.key, state.write.key, eph::net::tls_const::kAes256KeyLen);
-    std::memcpy(state.read.iv,  state.write.iv,  eph::net::tls_const::kTls13NonceLen);
+    fill_random(state.write.ki.key, eph::net::tls_const::kAes256KeyLen, seed);
+    fill_random(state.write.ki.iv,  eph::net::tls_const::kTls13NonceLen, seed + 1);
+    std::memcpy(state.read.ki.key, state.write.ki.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(state.read.ki.iv,  state.write.ki.iv,  eph::net::tls_const::kTls13NonceLen);
     state.write.seq = 0;
     state.read.seq  = 0;
     return state;
@@ -184,8 +184,8 @@ static void BM_Pipeline_WSS(benchmark::State& state) {
     if (!enc) { state.SkipWithError(enc.error()); return; }
 
     eph::net::TlsHotState dec_hot{};
-    std::memcpy(dec_hot.read.key, hot.write.key, eph::net::tls_const::kAes256KeyLen);
-    std::memcpy(dec_hot.read.iv,  hot.write.iv,  eph::net::tls_const::kTls13NonceLen);
+    std::memcpy(dec_hot.read.ki.key, hot.write.ki.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.ki.iv,  hot.write.ki.iv,  eph::net::tls_const::kTls13NonceLen);
     auto dec = eph::net::TlsRecordCrypto::create(dec_hot);
     if (!dec) { state.SkipWithError(dec.error()); return; }
 
@@ -247,8 +247,8 @@ static void BM_Pipeline_WSS_Burst(benchmark::State& state) {
     if (!enc) { state.SkipWithError(enc.error()); return; }
 
     eph::net::TlsHotState dec_hot{};
-    std::memcpy(dec_hot.read.key, hot.write.key, eph::net::tls_const::kAes256KeyLen);
-    std::memcpy(dec_hot.read.iv,  hot.write.iv,  eph::net::tls_const::kTls13NonceLen);
+    std::memcpy(dec_hot.read.ki.key, hot.write.ki.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.ki.iv,  hot.write.ki.iv,  eph::net::tls_const::kTls13NonceLen);
     auto dec = eph::net::TlsRecordCrypto::create(dec_hot);
     if (!dec) { state.SkipWithError(dec.error()); return; }
 

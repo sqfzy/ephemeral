@@ -13,13 +13,13 @@
 namespace eph::dpdk {
 
 /// Default DPDK transport: 512-byte max payload, 1024-deep queue.
-using DpdkTransport = eph::net::Transport<TcpSession, 512, 1024>;
+using DpdkTransport = eph::net::Transport<TcpSession<>, 512, 1024>;
 
 /// Small DPDK transport for control messages.
-using DpdkSmallTransport = eph::net::Transport<TcpSession, 64, 256>;
+using DpdkSmallTransport = eph::net::Transport<TcpSession<>, 64, 256>;
 
 /// Large DPDK transport for bulk data.
-using DpdkLargeTransport = eph::net::Transport<TcpSession, 4096, 512>;
+using DpdkLargeTransport = eph::net::Transport<TcpSession<>, 4096, 512>;
 
 /// Re-export generic types for convenience.
 using eph::net::TransportConfig;

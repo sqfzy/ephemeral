@@ -51,33 +51,39 @@ inline constexpr uint16_t kAes256KeyLen      = 32;   // AES-256 key length
 // TLS hot state — cache-line-sized for data plane
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Extracted TLS session material for hot-path AEAD operations.
-/// Split into write/read halves on separate cache lines so TX and RX
-/// lcores never cause false sharing — each touches only its own 64B line.
-struct alignas(64) TlsKeyMaterial {
-    uint8_t  key[tls_const::kAes256KeyLen]{};  // 32 bytes
-    uint8_t  iv[tls_const::kTls13NonceLen]{};   // 12 bytes
-    uint64_t seq = 0;                            // 8 bytes
-    // 12 bytes padding to 64
+/// Key material (read-only after extraction) — kept on its own cache line.
+struct alignas(64) TlsKeyIv {
+    uint8_t key[tls_const::kAes256KeyLen]{};  // 32 bytes
+    uint8_t iv[tls_const::kTls13NonceLen]{};   // 12 bytes
+    // 20 bytes padding to 64
 };
-static_assert(sizeof(TlsKeyMaterial) == 64, "TlsKeyMaterial must be exactly 1 cache line");
+static_assert(sizeof(TlsKeyIv) == 64, "TlsKeyIv must be exactly 1 cache line");
+
+/// Per-direction TLS state: key/iv on one cache line, seq on another.
+/// seq is written on every encrypt/decrypt call; separating it prevents
+/// false sharing that would invalidate the read-only key/iv.
+struct TlsKeyMaterial {
+    TlsKeyIv ki{};       // cache line 1: read-only after handshake
+    alignas(64) uint64_t seq = 0;  // cache line 2: hot write every packet
+};
+static_assert(sizeof(TlsKeyMaterial) == 128, "TlsKeyMaterial must be exactly 2 cache lines");
 
 struct TlsHotState {
-    TlsKeyMaterial write{};
-    TlsKeyMaterial read{};
+    TlsKeyMaterial write{};  // 2 cache lines for TX
+    TlsKeyMaterial read{};   // 2 cache lines for RX
 
-    // Compatibility accessors for existing code
-    uint8_t*       write_key()       noexcept { return write.key; }
-    const uint8_t* write_key() const noexcept { return write.key; }
-    uint8_t*       write_iv()        noexcept { return write.iv; }
-    const uint8_t* write_iv()  const noexcept { return write.iv; }
-    uint8_t*       read_key()        noexcept { return read.key; }
-    const uint8_t* read_key()  const noexcept { return read.key; }
-    uint8_t*       read_iv()         noexcept { return read.iv; }
-    const uint8_t* read_iv()   const noexcept { return read.iv; }
+    // Compatibility accessors
+    uint8_t*       write_key()       noexcept { return write.ki.key; }
+    const uint8_t* write_key() const noexcept { return write.ki.key; }
+    uint8_t*       write_iv()        noexcept { return write.ki.iv; }
+    const uint8_t* write_iv()  const noexcept { return write.ki.iv; }
+    uint8_t*       read_key()        noexcept { return read.ki.key; }
+    const uint8_t* read_key()  const noexcept { return read.ki.key; }
+    uint8_t*       read_iv()         noexcept { return read.ki.iv; }
+    const uint8_t* read_iv()   const noexcept { return read.ki.iv; }
 };
 
-static_assert(sizeof(TlsHotState) == 128, "TlsHotState must be exactly 2 cache lines");
+static_assert(sizeof(TlsHotState) == 256, "TlsHotState must be exactly 4 cache lines");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS session config
@@ -643,14 +649,14 @@ public:
         TlsHotState state{};
 
         if (!tls_keygen::derive_key_iv(write_secret, ws_len,
-                state.write.key, key_len,
-                state.write.iv, tls_const::kTls13NonceLen)) {
+                state.write.ki.key, key_len,
+                state.write.ki.iv, tls_const::kTls13NonceLen)) {
             return std::unexpected("HKDF derive failed for write key");
         }
 
         if (!tls_keygen::derive_key_iv(read_secret, rs_len,
-                state.read.key, key_len,
-                state.read.iv, tls_const::kTls13NonceLen)) {
+                state.read.ki.key, key_len,
+                state.read.ki.iv, tls_const::kTls13NonceLen)) {
             return std::unexpected("HKDF derive failed for read key");
         }
 

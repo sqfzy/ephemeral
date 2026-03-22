@@ -206,12 +206,18 @@ public:
     // Send API (application thread)
     // -----------------------------------------------------------------------
 
-    /// Send data as a WebSocket frame (non-blocking).
+    /// Send data as a WebSocket frame (non-blocking, best-effort).
+    ///
+    /// Semantics: kOk means the message was enqueued in the TX SPSC queue,
+    /// NOT that it was sent on the wire. If the connection drops between
+    /// enqueue and TX thread transmission, the message is silently lost.
+    /// For at-least-once delivery guarantees, implement application-level
+    /// acknowledgment on top of this API.
     ///
     /// @param data     Payload data
     /// @param len      Payload length (must be <= MaxPayload)
     /// @param opcode   WebSocket opcode (default: binary)
-    /// @return SendError::kOk on success, or a specific error code
+    /// @return SendError::kOk on enqueue success, or a specific error code
     SendError send(const void* data, size_t len,
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         // RFC 6455 §5.6: text frames must contain valid UTF-8
@@ -249,6 +255,21 @@ public:
         if (!ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
+        return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+    }
+
+    /// Send a text frame WITHOUT UTF-8 validation (unchecked).
+    ///
+    /// Use this when you know the payload is valid UTF-8 (e.g., ASCII-only
+    /// JSON) and want to skip the validation overhead on the hot path.
+    /// If the payload is not valid UTF-8, the remote peer may close the
+    /// connection per RFC 6455 §5.6 — this is the caller's responsibility.
+    SendError send_text_unchecked(const void* data, size_t len) noexcept {
+        return enqueue_tx(data, len, ws::opcode::kText);
+    }
+
+    /// Send a string_view as an unchecked text frame (no UTF-8 validation).
+    SendError send_text_unchecked(std::string_view sv) noexcept {
         return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
     }
 
@@ -474,6 +495,16 @@ public:
 
     // -----------------------------------------------------------------------
     // Receive API (application thread)
+    //
+    // Two receive modes coexist — choose one per application:
+    //   - Pull (recv/recv_n/drain_recv): application polls the RX queue.
+    //     Use this for latency-sensitive hot loops (DPDK, trading).
+    //   - Push (on_message callback in TransportConfig): RX thread invokes
+    //     the callback directly. Simpler but adds indirection. Use this
+    //     for event-driven applications (socket backend, non-critical path).
+    //
+    // Both modes can be active simultaneously — on_message fires first in
+    // the RX thread, then the message is enqueued for recv() consumption.
     // -----------------------------------------------------------------------
 
     /// Try to receive a message (non-blocking).
@@ -484,7 +515,7 @@ public:
     ///          need it after the callback returns -- the underlying SPSC
     ///          queue slot will be reused.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t>
+        requires std::invocable<F, const uint8_t*, size_t>
     bool recv(F&& callback) {
         return rx_queue_.try_consume([&](RxMsg& msg) {
             std::invoke(std::forward<F>(callback), msg.data, msg.len);
@@ -496,7 +527,7 @@ public:
     ///                  opcode is one of ws::opcode::kBinary, ws::opcode::kText, etc.
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     bool recv(F&& callback) {
         return rx_queue_.try_consume([&](RxMsg& msg) {
             std::invoke(std::forward<F>(callback), msg.data, msg.len, msg.opcode);
@@ -576,7 +607,7 @@ public:
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t>
+        requires std::invocable<F, const uint8_t*, size_t>
     size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
@@ -593,7 +624,7 @@ public:
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
@@ -605,7 +636,7 @@ public:
     /// Drain all available messages (non-blocking).
     /// Equivalent to recv_n(callback, queue_depth()).
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t>
+        requires std::invocable<F, const uint8_t*, size_t>
     size_t drain_recv(F&& callback) {
         return recv_n(std::forward<F>(callback), QueueDepth);
     }
@@ -620,7 +651,7 @@ public:
     /// @param timeout   Maximum time to wait for a message
     /// @return true if a message was consumed, false on timeout or stop
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t>
+        requires std::invocable<F, const uint8_t*, size_t>
     bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
@@ -636,7 +667,7 @@ public:
 
     /// Blocking receive with opcode and timeout.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, uint16_t, uint8_t>
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
