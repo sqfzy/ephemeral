@@ -118,7 +118,9 @@ public:
         , fd_(other.fd_)
         , state_(other.state_)
         , mss_(other.mss_)
-        , resolved_ip_(std::move(other.resolved_ip_)) {
+        , resolved_ip_(std::move(other.resolved_ip_))
+        , dns_latency_ns_(other.dns_latency_ns_)
+        , connect_latency_ns_(other.connect_latency_ns_) {
         other.fd_ = -1;
         other.state_ = TcpState::Closed;
     }
@@ -131,6 +133,8 @@ public:
             state_ = other.state_;
             mss_ = other.mss_;
             resolved_ip_ = std::move(other.resolved_ip_);
+            dns_latency_ns_ = other.dns_latency_ns_;
+            connect_latency_ns_ = other.connect_latency_ns_;
             other.fd_ = -1;
             other.state_ = TcpState::Closed;
         }
@@ -149,6 +153,8 @@ public:
             return std::unexpected(std::format(
                 "Cannot connect: state={}", tcp_state_name(state_)));
         }
+
+        auto connect_start = std::chrono::steady_clock::now();
 
         // Resolve hostname with timeout protection.
         // getaddrinfo() has no built-in timeout — it can block indefinitely
@@ -192,10 +198,14 @@ public:
         }
 
         auto dns_result = dns_future.get();
+        dns_latency_ns_ = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - connect_start).count());
         if (!dns_result) {
             SPDLOG_LOGGER_ERROR(log,
-                "DNS resolution failed for {}:{}: {}",
-                config_.host, config_.port, dns_result.error());
+                "DNS resolution failed for {}:{}: {} (dns: {:.1f}ms)",
+                config_.host, config_.port, dns_result.error(),
+                static_cast<double>(dns_latency_ns_) / 1e6);
             return std::unexpected(dns_result.error());
         }
         struct addrinfo* result = *dns_result;
@@ -288,8 +298,13 @@ public:
             // Immediate connection (unlikely for TCP, but possible on loopback)
             state_ = TcpState::Established;
             query_mss();
-            SPDLOG_LOGGER_INFO(log, "Connected to {} ({}:{})",
-                               resolved_ip_, config_.host, config_.port);
+            connect_latency_ns_ = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - connect_start).count());
+            SPDLOG_LOGGER_INFO(log, "Connected to {} ({}:{}, dns: {:.1f}ms, total: {:.1f}ms)",
+                               resolved_ip_, config_.host, config_.port,
+                               static_cast<double>(dns_latency_ns_) / 1e6,
+                               static_cast<double>(connect_latency_ns_) / 1e6);
             return {};
         }
 
@@ -333,8 +348,13 @@ public:
 
         state_ = TcpState::Established;
         query_mss();
-        SPDLOG_LOGGER_INFO(log, "Connected to {} ({}:{}, mss={})",
-                           resolved_ip_, config_.host, config_.port, mss_);
+        connect_latency_ns_ = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - connect_start).count());
+        SPDLOG_LOGGER_INFO(log, "Connected to {} ({}:{}, mss={}, dns: {:.1f}ms, total: {:.1f}ms)",
+                           resolved_ip_, config_.host, config_.port, mss_,
+                           static_cast<double>(dns_latency_ns_) / 1e6,
+                           static_cast<double>(connect_latency_ns_) / 1e6);
         return {};
     }
 
@@ -549,12 +569,41 @@ public:
         return resolved_ip_;
     }
 
+    /// DNS resolution latency from the last connect() call (nanoseconds).
+    /// Zero if connect() has not been called.
+    [[nodiscard]] uint64_t dns_latency_ns() const noexcept {
+        return dns_latency_ns_;
+    }
+
+    /// Total connect latency including DNS + TCP handshake (nanoseconds).
+    /// Zero if connect() has not been called or failed.
+    [[nodiscard]] uint64_t connect_latency_ns() const noexcept {
+        return connect_latency_ns_;
+    }
+
+    /// Local port number of the connected socket.
+    /// Zero if not connected.
+    [[nodiscard]] uint16_t local_port() const noexcept {
+        if (fd_ < 0) return 0;
+        struct sockaddr_storage addr{};
+        socklen_t len = sizeof(addr);
+        if (::getsockname(fd_, reinterpret_cast<struct sockaddr*>(&addr), &len) != 0)
+            return 0;
+        if (addr.ss_family == AF_INET)
+            return ntohs(reinterpret_cast<struct sockaddr_in*>(&addr)->sin_port);
+        if (addr.ss_family == AF_INET6)
+            return ntohs(reinterpret_cast<struct sockaddr_in6*>(&addr)->sin6_port);
+        return 0;
+    }
+
 private:
     SocketConfig config_;
     int          fd_    = -1;
     TcpState     state_ = TcpState::Closed;
     uint16_t     mss_   = 1460; // Default MSS for Ethernet
     std::string  resolved_ip_;  // Resolved IP from last connect()
+    uint64_t     dns_latency_ns_ = 0;
+    uint64_t     connect_latency_ns_ = 0;
 
     void close_fd() noexcept {
         if (fd_ >= 0) {

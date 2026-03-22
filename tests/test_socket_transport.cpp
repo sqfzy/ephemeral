@@ -29,6 +29,9 @@ TEST(SocketTransport, InitialStateClosed) {
     EXPECT_FALSE(st.is_established());
     EXPECT_EQ(st.mss(), 1460);
     EXPECT_EQ(st.fd(), -1);
+    EXPECT_EQ(st.dns_latency_ns(), 0u);
+    EXPECT_EQ(st.connect_latency_ns(), 0u);
+    EXPECT_EQ(st.local_port(), 0u);
 }
 
 TEST(SocketTransport, ConfigPreserved) {
@@ -191,6 +194,14 @@ TEST(SocketTransport, LoopbackConnectSendRecv) {
     });
     ASSERT_TRUE(rx_result.has_value()) << rx_result.error();
     EXPECT_EQ(received, "pong");
+
+    // Verify connection latency stats are populated
+    EXPECT_GT(st.dns_latency_ns(), 0u);
+    EXPECT_GT(st.connect_latency_ns(), 0u);
+    EXPECT_GE(st.connect_latency_ns(), st.dns_latency_ns());
+
+    // Verify local_port is populated
+    EXPECT_GT(st.local_port(), 0u);
 
     // Graceful close
     auto close_result = st.close();
