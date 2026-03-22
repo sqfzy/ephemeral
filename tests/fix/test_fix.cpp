@@ -2675,3 +2675,91 @@ TEST(FixBuilder, timestamp_all_precision_levels) {
         }
     }
 }
+
+// ===========================================================================
+// Builder has_tag()
+// ===========================================================================
+
+TEST(FixBuilder, has_tag_returns_false_on_empty_builder) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_FALSE(b.has_tag(tag::MsgType));
+    EXPECT_FALSE(b.has_tag(tag::Symbol));
+}
+
+TEST(FixBuilder, has_tag_returns_true_for_present_tag) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "AAPL");
+    b.set_int(tag::Side, 1);
+
+    EXPECT_TRUE(b.has_tag(tag::MsgType));
+    EXPECT_TRUE(b.has_tag(tag::Symbol));
+    EXPECT_TRUE(b.has_tag(tag::Side));
+}
+
+TEST(FixBuilder, has_tag_returns_false_for_absent_tag) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Symbol, "AAPL");
+
+    EXPECT_FALSE(b.has_tag(tag::Side));
+    EXPECT_FALSE(b.has_tag(tag::Price));
+    EXPECT_FALSE(b.has_tag(tag::OrderQty));
+}
+
+TEST(FixBuilder, has_tag_distinguishes_similar_tags) {
+    // Tags 5 vs 55 vs 555 — ensure partial matches don't false-positive
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(55, "AAPL");  // Symbol = 55
+
+    EXPECT_TRUE(b.has_tag(55));
+    EXPECT_FALSE(b.has_tag(5));
+    EXPECT_FALSE(b.has_tag(555));
+}
+
+TEST(FixBuilder, has_tag_works_after_reset) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    EXPECT_TRUE(b.has_tag(tag::MsgType));
+
+    b.reset();
+    EXPECT_FALSE(b.has_tag(tag::MsgType));
+
+    b.set(tag::Symbol, "MSFT");
+    EXPECT_TRUE(b.has_tag(tag::Symbol));
+    EXPECT_FALSE(b.has_tag(tag::MsgType));
+}
+
+TEST(FixBuilder, has_tag_returns_false_after_overflow) {
+    uint8_t buf[48]; // minimal capacity
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // Force overflow with a huge value
+    b.set(tag::Symbol, std::string_view("A very long string that will overflow this tiny buffer!!!!!"));
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_FALSE(b.has_tag(tag::MsgType));  // returns false when overflowed
+}
+
+TEST(FixBuilder, has_tag_prevents_duplicate_tags) {
+    // Demonstrate the recommended pattern: check before set
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    if (!b.has_tag(tag::MsgType)) {
+        b.set(tag::MsgType, "8");  // This should NOT execute
+        FAIL() << "has_tag should have detected MsgType";
+    }
+
+    // Verify only one MsgType was set
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get(tag::MsgType).value(), "D");
+}

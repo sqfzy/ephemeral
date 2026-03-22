@@ -313,6 +313,40 @@ public:
     /// Useful for detecting overflow mid-build without waiting for finish().
     [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
 
+    /// Check whether a tag has already been written to the message body.
+    /// Scans the written fields by parsing "tag=value\x01" boundaries.
+    /// Useful for preventing duplicate tags, which violate the FIX spec
+    /// (outside of repeating groups). O(field_count) scan.
+    [[nodiscard]] bool has_tag(uint32_t t) const noexcept {
+        if (overflow_ || pos_ <= body_start_) return false;
+
+        // Tag as ASCII digits for comparison
+        char tag_str[12];
+        size_t tag_len = format_uint(t, tag_str);
+
+        // Scan body: each field is "tag=value\x01"
+        size_t i = body_start_;
+        while (i < pos_) {
+            // Find '=' to delimit the tag number
+            size_t eq = i;
+            while (eq < pos_ && buf_[eq] != '=') ++eq;
+            if (eq >= pos_) break;
+
+            // Compare tag
+            size_t this_tag_len = eq - i;
+            if (this_tag_len == tag_len &&
+                std::memcmp(buf_ + i, tag_str, tag_len) == 0) {
+                return true;
+            }
+
+            // Skip past value and SOH
+            size_t soh = eq + 1;
+            while (soh < pos_ && buf_[soh] != '\x01') ++soh;
+            i = soh + 1;
+        }
+        return false;
+    }
+
     /// Number of body fields appended so far (excludes BeginString, BodyLength, CheckSum).
     [[nodiscard]] size_t field_count() const noexcept { return field_count_; }
 
