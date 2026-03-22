@@ -73,6 +73,12 @@ public:
         return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
 
+    /// Append a FIX boolean field (Y/N).
+    /// Useful for PossDupFlag, PossResend, ResetSeqNumFlag, GapFillFlag, etc.
+    MessageBuilder& set_bool(uint32_t t, bool value) noexcept {
+        return set(t, value ? std::string_view("Y", 1) : std::string_view("N", 1));
+    }
+
     /// Append a UTCTimestamp field formatted as "YYYYMMDD-HH:MM:SS.sss".
     ///
     /// FIX 4.4 UTCTimestamp format with millisecond precision.

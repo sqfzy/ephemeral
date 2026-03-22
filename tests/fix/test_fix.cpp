@@ -1513,3 +1513,75 @@ TEST(FixDispatch, all_known_msg_types_dispatch_correctly) {
         EXPECT_EQ(dispatched, tc.expected_type) << "MsgType=" << tc.mt;
     }
 }
+
+// ===========================================================================
+// get_bool() / set_bool() — FIX Y/N boolean fields
+// ===========================================================================
+
+TEST(FixParser, get_bool_Y_returns_true) {
+    auto raw = make_fix_msg("FIX.4.4", "35=A\x01" "43=Y\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    // Tag 43 = PossDupFlag
+    auto val = msg->get_bool(43);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_TRUE(*val);
+}
+
+TEST(FixParser, get_bool_N_returns_false) {
+    auto raw = make_fix_msg("FIX.4.4", "35=A\x01" "43=N\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    auto val = msg->get_bool(43);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_FALSE(*val);
+}
+
+TEST(FixParser, get_bool_invalid_value_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=A\x01" "43=X\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_bool(43).has_value());
+}
+
+TEST(FixParser, get_bool_multi_char_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=A\x01" "43=YES\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_bool(43).has_value());
+}
+
+TEST(FixParser, get_bool_missing_tag_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=A\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_bool(43).has_value());
+}
+
+TEST(FixBuilder, set_bool_true_writes_Y) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "A");
+    b.set_bool(43, true);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto msg = parse(b.data(), b.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_EQ(msg->get(43).value(), "Y");
+    EXPECT_TRUE(msg->get_bool(43).value());
+}
+
+TEST(FixBuilder, set_bool_false_writes_N) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "A");
+    b.set_bool(43, false);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto msg = parse(b.data(), b.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_EQ(msg->get(43).value(), "N");
+    EXPECT_FALSE(msg->get_bool(43).value());
+}

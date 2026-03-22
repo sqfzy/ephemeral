@@ -165,6 +165,17 @@ public:
         return neg ? -val : val;
     }
 
+    /// Look up a tag and parse its value as a FIX boolean (Y/N).
+    /// Returns nullopt if the tag is missing or the value is not exactly "Y" or "N".
+    /// Useful for FIX boolean fields (PossDupFlag, PossResend, ResetSeqNumFlag, etc.).
+    [[nodiscard]] std::optional<bool> get_bool(uint32_t t) const noexcept {
+        auto c = get_char(t);
+        if (!c) return std::nullopt;
+        if (*c == 'Y') return true;
+        if (*c == 'N') return false;
+        return std::nullopt;
+    }
+
     /// Look up a tag and parse its value as a FIX UTCTimestamp.
     /// Expected format: "YYYYMMDD-HH:MM:SS" or "YYYYMMDD-HH:MM:SS.sss"
     /// Returns nanoseconds since Unix epoch, or nullopt on parse failure.
