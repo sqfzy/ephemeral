@@ -1232,3 +1232,45 @@ TEST(TransportConfigJson, ExtraHeadersSpecialCharsEscaped) {
     EXPECT_NE(value.find("\\\""), std::string::npos);
     EXPECT_NE(value.find("\\\\"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TLS sequence stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportStats, TlsSeqUsageZeroWhenNoTls) {
+    TransportStats stats{};
+    stats.tls_seq_limit = 0;
+    EXPECT_DOUBLE_EQ(stats.tls_write_seq_usage(), 0.0);
+    EXPECT_DOUBLE_EQ(stats.tls_read_seq_usage(), 0.0);
+}
+
+TEST(TransportStats, TlsSeqUsageComputesCorrectly) {
+    TransportStats stats{};
+    stats.tls_seq_limit = 1000;
+    stats.tls_write_seq = 500;
+    stats.tls_read_seq = 250;
+    EXPECT_DOUBLE_EQ(stats.tls_write_seq_usage(), 0.5);
+    EXPECT_DOUBLE_EQ(stats.tls_read_seq_usage(), 0.25);
+}
+
+TEST(TransportStats, DumpIncludesTlsSeqInfo) {
+    TransportStats stats{};
+    stats.uptime_ns = 1'000'000'000;
+    stats.tls_write_seq = 100;
+    stats.tls_read_seq = 50;
+    stats.tls_seq_limit = 16'777'216;
+    auto dump = stats.dump();
+    EXPECT_NE(dump.find("TLS seq:"), std::string::npos);
+}
+
+TEST(TransportStats, ToJsonIncludesTlsSeqFields) {
+    TransportStats stats{};
+    stats.tls_write_seq = 42;
+    stats.tls_read_seq = 7;
+    stats.tls_seq_limit = 1000;
+    auto json = stats.to_json();
+    EXPECT_NE(json.find("\"tls_write_seq\":42"), std::string::npos);
+    EXPECT_NE(json.find("\"tls_read_seq\":7"), std::string::npos);
+    EXPECT_NE(json.find("\"tls_seq_limit\":1000"), std::string::npos);
+    EXPECT_NE(json.find("\"tls_write_seq_usage\":"), std::string::npos);
+}

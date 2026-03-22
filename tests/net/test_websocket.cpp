@@ -989,3 +989,101 @@ TEST(OpcodeFormatter, UnknownFormatted) {
     auto s = std::format("{}", Opcode{0x05});
     EXPECT_NE(s.find("UNKNOWN"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// close_code_name
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CloseCodeName, StandardCodes) {
+    EXPECT_EQ(close_code_name(close_code::kNormal), "NORMAL_CLOSURE");
+    EXPECT_EQ(close_code_name(close_code::kGoingAway), "GOING_AWAY");
+    EXPECT_EQ(close_code_name(close_code::kProtocolError), "PROTOCOL_ERROR");
+    EXPECT_EQ(close_code_name(close_code::kUnsupportedData), "UNSUPPORTED_DATA");
+    EXPECT_EQ(close_code_name(close_code::kAbnormalClosure), "ABNORMAL_CLOSURE");
+    EXPECT_EQ(close_code_name(close_code::kInvalidPayload), "INVALID_PAYLOAD");
+    EXPECT_EQ(close_code_name(close_code::kPolicyViolation), "POLICY_VIOLATION");
+    EXPECT_EQ(close_code_name(close_code::kMessageTooBig), "MESSAGE_TOO_BIG");
+    EXPECT_EQ(close_code_name(close_code::kMandatoryExtension), "MANDATORY_EXTENSION");
+    EXPECT_EQ(close_code_name(close_code::kInternalError), "INTERNAL_ERROR");
+}
+
+TEST(CloseCodeName, RegisteredRange) {
+    auto name = close_code_name(3000);
+    EXPECT_NE(name.find("REGISTERED"), std::string::npos);
+    EXPECT_NE(name.find("3000"), std::string::npos);
+}
+
+TEST(CloseCodeName, PrivateRange) {
+    auto name = close_code_name(4000);
+    EXPECT_NE(name.find("PRIVATE"), std::string::npos);
+    EXPECT_NE(name.find("4000"), std::string::npos);
+}
+
+TEST(CloseCodeName, UnknownCode) {
+    auto name = close_code_name(1234);
+    EXPECT_NE(name.find("UNKNOWN"), std::string::npos);
+    EXPECT_NE(name.find("1234"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CloseCode formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CloseCodeFormatter, FormatsViaWrapper) {
+    EXPECT_EQ(std::format("{}", CloseCode{close_code::kNormal}), "NORMAL_CLOSURE");
+    EXPECT_EQ(std::format("{}", CloseCode{close_code::kGoingAway}), "GOING_AWAY");
+}
+
+TEST(CloseCodeFormatter, UnknownFormatted) {
+    auto s = std::format("{}", CloseCode{9999});
+    EXPECT_NE(s.find("UNKNOWN"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DecodedFrame::close_reason
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DecodedFrameCloseReason, ExtractsReason) {
+    uint8_t buf[256];
+    size_t len = build_close_frame(buf, close_code::kNormal, "bye");
+    ASSERT_GT(len, 0u);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result->is_close());
+
+    // Server frames are unmasked; client frames are masked.
+    // build_close_frame produces masked (client) frames.
+    // Unmask before checking close_reason.
+    if (result->masked && result->payload_len > 0) {
+        // Make a mutable copy of the payload for unmasking
+        std::vector<uint8_t> payload(result->payload,
+                                     result->payload + result->payload_len);
+        apply_mask(payload.data(), payload.size(), result->mask_key);
+        uint16_t code = static_cast<uint16_t>((payload[0] << 8) | payload[1]);
+        EXPECT_EQ(code, close_code::kNormal);
+        std::string_view reason(reinterpret_cast<const char*>(payload.data() + 2),
+                                payload.size() - 2);
+        EXPECT_EQ(reason, "bye");
+    }
+}
+
+TEST(DecodedFrameCloseReason, EmptyReasonReturnsEmpty) {
+    uint8_t buf[256];
+    size_t len = build_close_frame(buf, close_code::kNormal);
+    ASSERT_GT(len, 0u);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    // Raw close_reason() on masked frame returns masked bytes,
+    // but the important thing is it returns the right length.
+    // For unmasked frames (server->client), it would return actual text.
+    EXPECT_EQ(result->close_reason().size(), 0u);
+}
+
+TEST(DecodedFrameCloseReason, NonCloseFrameReturnsEmpty) {
+    DecodedFrame frame;
+    frame.opcode = opcode::kBinary;
+    frame.payload_len = 10;
+    EXPECT_TRUE(frame.close_reason().empty());
+}

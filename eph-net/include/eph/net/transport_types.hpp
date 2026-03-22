@@ -623,10 +623,29 @@ struct TransportStats {
     uint64_t ws_upgrade_ns     = 0;  ///< Last WebSocket upgrade duration (ns)
     std::string remote_ip{};         ///< Resolved remote IP of current connection
     RttStats    rtt{};               ///< Round-trip time statistics from ping/pong
+    uint64_t tls_write_seq     = 0;  ///< Current TLS write sequence number
+    uint64_t tls_read_seq      = 0;  ///< Current TLS read sequence number
+    uint64_t tls_seq_limit     = 0;  ///< TLS sequence limit (kMaxSequenceNumber)
 
     /// Last handshake duration in milliseconds (for human-readable logging).
     [[nodiscard]] double handshake_ms() const noexcept {
         return static_cast<double>(handshake_ns) / 1e6;
+    }
+
+    /// TLS write sequence usage as a fraction [0.0, 1.0].
+    /// Useful for monitoring: values approaching 1.0 indicate an imminent
+    /// reconnect for key refresh.
+    [[nodiscard]] double tls_write_seq_usage() const noexcept {
+        return tls_seq_limit > 0
+            ? static_cast<double>(tls_write_seq) / static_cast<double>(tls_seq_limit)
+            : 0.0;
+    }
+
+    /// TLS read sequence usage as a fraction [0.0, 1.0].
+    [[nodiscard]] double tls_read_seq_usage() const noexcept {
+        return tls_seq_limit > 0
+            ? static_cast<double>(tls_read_seq) / static_cast<double>(tls_seq_limit)
+            : 0.0;
     }
 
     // -----------------------------------------------------------------------
@@ -680,6 +699,7 @@ struct TransportStats {
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}, handshake: {:.1f}ms "
             "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)\n"
+            "  TLS seq: write={}/{} ({:.1f}%), read={}/{} ({:.1f}%)\n"
             "  {}",
             uptime_s, remote_ip.empty() ? "unknown" : remote_ip,
             tx_packets, tx_pps(), tx_bytes, tx_bps(),
@@ -692,6 +712,8 @@ struct TransportStats {
             static_cast<double>(tcp_connect_ns) / 1e6,
             static_cast<double>(tls_handshake_ns) / 1e6,
             static_cast<double>(ws_upgrade_ns) / 1e6,
+            tls_write_seq, tls_seq_limit, tls_write_seq_usage() * 100.0,
+            tls_read_seq, tls_seq_limit, tls_read_seq_usage() * 100.0,
             rtt.dump());
     }
 
@@ -715,6 +737,8 @@ struct TransportStats {
             "\"tx_pps\":{:.1f},\"rx_pps\":{:.1f},"
             "\"tx_bps\":{:.1f},\"rx_bps\":{:.1f},"
             "\"remote_ip\":\"{}\","
+            "\"tls_write_seq\":{},\"tls_read_seq\":{},\"tls_seq_limit\":{},"
+            "\"tls_write_seq_usage\":{:.6f},\"tls_read_seq_usage\":{:.6f},"
             "\"rtt\":{}}}",
             tx_packets, tx_bytes, tx_text_packets,
             tx_text_bytes, tx_dropped,
@@ -730,6 +754,8 @@ struct TransportStats {
             tx_pps(), rx_pps(),
             tx_bps(), rx_bps(),
             detail::json_escape(remote_ip),
+            tls_write_seq, tls_read_seq, tls_seq_limit,
+            tls_write_seq_usage(), tls_read_seq_usage(),
             rtt.to_json());
     }
 };
@@ -816,11 +842,13 @@ struct std::formatter<eph::net::TransportStats> : std::formatter<std::string> {
                 "TX: {}pkts/{}B (dropped:{}, encrypt_err:{}) | "
                 "RX: {}pkts/{}B (dropped:{}, decrypt_err:{}) | "
                 "queue_full:{} ping:{} pong:{} pong_timeout:{} reconnect:{}"
-                " remote:{}",
+                " tls_seq:{}/{}({:.0f}%) remote:{}",
                 s.tx_packets, s.tx_bytes, s.tx_dropped, s.encrypt_errors,
                 s.rx_packets, s.rx_bytes, s.rx_dropped, s.decrypt_errors,
                 s.queue_full_count, s.ws_pings_received,
                 s.ws_pongs_sent, s.pong_timeouts, s.reconnect_count,
+                s.tls_write_seq, s.tls_seq_limit,
+                s.tls_write_seq_usage() * 100.0,
                 s.remote_ip.empty() ? "unknown" : s.remote_ip),
             ctx);
     }

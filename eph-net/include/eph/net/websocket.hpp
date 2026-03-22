@@ -69,6 +69,29 @@ inline std::string opcode_name(uint8_t op) noexcept {
     }
 }
 
+/// Human-readable name for a WebSocket close status code (RFC 6455 §7.4).
+/// Returns "UNKNOWN(NNNN)" for unrecognized codes.
+inline std::string close_code_name(uint16_t code) noexcept {
+    switch (code) {
+    case close_code::kNormal:             return "NORMAL_CLOSURE";
+    case close_code::kGoingAway:          return "GOING_AWAY";
+    case close_code::kProtocolError:      return "PROTOCOL_ERROR";
+    case close_code::kUnsupportedData:    return "UNSUPPORTED_DATA";
+    case close_code::kAbnormalClosure:    return "ABNORMAL_CLOSURE";
+    case close_code::kInvalidPayload:     return "INVALID_PAYLOAD";
+    case close_code::kPolicyViolation:    return "POLICY_VIOLATION";
+    case close_code::kMessageTooBig:      return "MESSAGE_TOO_BIG";
+    case close_code::kMandatoryExtension: return "MANDATORY_EXTENSION";
+    case close_code::kInternalError:      return "INTERNAL_ERROR";
+    default:
+        if (code >= 3000 && code <= 3999)
+            return std::format("REGISTERED({})", code);
+        if (code >= 4000 && code <= 4999)
+            return std::format("PRIVATE({})", code);
+        return std::format("UNKNOWN({})", code);
+    }
+}
+
 /// Check if a close status code is valid for sending per RFC 6455 §7.4.
 /// Valid ranges: 1000-1003, 1007-1011, 3000-4999.
 /// Codes 1004-1006 and 1015 are reserved and MUST NOT be sent in a Close frame.
@@ -393,6 +416,16 @@ struct DecodedFrame {
         }
         return static_cast<uint16_t>((payload[0] << 8) | payload[1]);
     }
+
+    /// For close frames: extract the reason string (after the 2-byte status code).
+    /// Returns empty string_view if not a close frame or no reason present.
+    [[nodiscard]] std::string_view close_reason() const noexcept {
+        if (opcode != opcode::kClose || payload_len <= 2 || !payload) {
+            return {};
+        }
+        return {reinterpret_cast<const char*>(payload + 2),
+                static_cast<size_t>(payload_len - 2)};
+    }
 };
 
 /// Decode a WebSocket frame from a buffer.
@@ -637,6 +670,17 @@ struct Opcode {
     uint8_t value;
 };
 
+/// Formatter wrapper for WebSocket close status codes.
+/// Close codes are plain uint16_t, so we use a lightweight wrapper
+/// to opt into std::format without hijacking all uint16_t.
+///
+/// Usage:
+///   uint16_t code = ws::close_code::kNormal;
+///   std::format("close: {}", ws::CloseCode{code});  // "close: NORMAL_CLOSURE"
+struct CloseCode {
+    uint16_t value;
+};
+
 } // namespace eph::net::ws
 
 template <>
@@ -644,5 +688,13 @@ struct std::formatter<eph::net::ws::Opcode> : std::formatter<std::string> {
     auto format(eph::net::ws::Opcode op, auto& ctx) const {
         return std::formatter<std::string>::format(
             eph::net::ws::opcode_name(op.value), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::net::ws::CloseCode> : std::formatter<std::string> {
+    auto format(eph::net::ws::CloseCode cc, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            eph::net::ws::close_code_name(cc.value), ctx);
     }
 };

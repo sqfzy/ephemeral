@@ -993,6 +993,9 @@ public:
             .ws_upgrade_ns     = last_ws_upgrade_ns_,
             .remote_ip         = remote_ip_,
             .rtt               = rtt_stats(),
+            .tls_write_seq     = crypto_ ? crypto_->write_seq() : 0,
+            .tls_read_seq      = crypto_ ? crypto_->read_seq() : 0,
+            .tls_seq_limit     = config_.use_tls ? tls_record::kMaxSequenceNumber : 0,
         };
     }
 
@@ -1125,6 +1128,7 @@ private:
     using SteadyTimePoint = std::chrono::steady_clock::time_point;
     std::atomic<int64_t>                   last_pong_ns_{0};      // RX writes, TX reads
     bool                                   ping_awaiting_pong_{false}; // TX-thread-local
+    bool                                   seq_warning_logged_{false}; // TX-thread-local
 
     // RTT measurement: TX thread writes TSC timestamp when sending ping,
     // RX thread reads it when pong arrives and records the delta in the
@@ -1274,6 +1278,9 @@ private:
                 std::memory_order_relaxed);
             ping_awaiting_pong_ = false;
         }
+
+        // Reset TLS sequence warning flag — fresh keys reset the counter
+        seq_warning_logged_ = false;
 
         // Record handshake duration
         auto connect_end = std::chrono::steady_clock::now();
@@ -1635,6 +1642,21 @@ private:
                 continue;
             }
 
+            // -- TLS sequence exhaustion early warning --
+            // Log once at 90% of the limit so operators can see reconnect coming.
+            if (config_.use_tls && !seq_warning_logged_) [[unlikely]] {
+                constexpr uint64_t kSeqWarnThreshold =
+                    tls_record::kMaxSequenceNumber * 9 / 10;
+                if (crypto_->write_seq() >= kSeqWarnThreshold) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "TLS write sequence at {}/{} (90%%), "
+                        "reconnect imminent for key refresh",
+                        crypto_->write_seq(),
+                        tls_record::kMaxSequenceNumber);
+                    seq_warning_logged_ = true;
+                }
+            }
+
             // -- WebSocket ping / pong timeout (periodic keepalive, owned by TX thread) --
             // Only applicable when using WsFramer; other framers do not have
             // a ping/pong mechanism at the framing layer.
@@ -1738,6 +1760,18 @@ private:
 
                     if (enc_len == 0) {
                         tx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
+                        // Detect TLS sequence exhaustion: encrypt() returns 0
+                        // when write_seq >= kMaxSequenceNumber. Continuing would
+                        // silently drop all subsequent messages. Trigger reconnect
+                        // to establish fresh keys.
+                        if (crypto_->write_seq() >= tls_record::kMaxSequenceNumber) {
+                            SPDLOG_LOGGER_ERROR(log,
+                                "TLS write sequence exhausted ({}), "
+                                "triggering reconnect for fresh keys",
+                                crypto_->write_seq());
+                            tcp_->reset();
+                            break;
+                        }
                     } else {
                         coalesced_len += enc_len;
                         batch_packets++;
