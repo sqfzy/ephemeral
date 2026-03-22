@@ -665,12 +665,17 @@ static_assert(TcpTransport<SocketTransport>,
 
 namespace eph::net {
 
-/// Standard WebSocket transport using kernel sockets.
+/// Standard WSS (TLS) WebSocket transport using kernel sockets.
 /// 512-byte max payload, 1024-deep SPSC queues.
 using SocketWssTransport = Transport<SocketTransport, 512, 1024>;
 
-/// Large-payload variant (4KB messages, e.g. JSON market data).
+/// Large-payload WSS variant (4KB messages, e.g. JSON market data).
 using SocketWssLargeTransport = Transport<SocketTransport, 4096, 512>;
+
+/// Standard plain WS (no TLS) transport using kernel sockets.
+/// Same as SocketWssTransport but configured with use_tls=false.
+/// Use for internal/test services where TLS is not needed.
+using SocketWsTransport = Transport<SocketTransport, 512, 1024>;
 
 /// Convenience factory: creates a fully connected SocketWssTransport
 /// from just a TransportConfig, eliminating the TcpFactory boilerplate.
@@ -700,6 +705,48 @@ socket_wss_connect(
     });
 
     // Ensure host/port match TransportConfig if not explicitly overridden
+    if (!sock_cfg) {
+        sc.host = config.remote_host;
+        sc.port = config.remote_port;
+    }
+
+    auto tcp_timeout = config.tcp_timeout;
+
+    auto tcp_factory = [sc, tcp_timeout]()
+        -> std::expected<std::unique_ptr<SocketTransport>, std::string> {
+        auto tcp = std::make_unique<SocketTransport>(sc);
+        auto result = tcp->connect(tcp_timeout);
+        if (!result) return std::unexpected(result.error());
+        return tcp;
+    };
+
+    return Transport<SocketTransport, MaxPayload, QueueDepth>::create(
+        std::move(tcp_factory), config);
+}
+
+/// Convenience factory for plain WebSocket (ws://) connections.
+///
+/// Creates a Transport with use_tls=false.
+///
+/// @param config     Transport configuration (host, port, WS settings)
+/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.)
+/// @return Connected plain WS Transport or error string
+template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
+[[nodiscard]] inline auto
+socket_ws_connect(
+    TransportConfig config,
+    std::optional<SocketConfig> sock_cfg = std::nullopt)
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, MaxPayload, QueueDepth>>,
+                     std::string>
+{
+    config.use_tls = false;
+
+    SocketConfig sc = sock_cfg.value_or(SocketConfig{
+        .host         = config.remote_host,
+        .port         = config.remote_port,
+        .tcp_nodelay  = true,
+    });
+
     if (!sock_cfg) {
         sc.host = config.remote_host;
         sc.port = config.remote_port;

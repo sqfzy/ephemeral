@@ -115,6 +115,7 @@ struct TransportConfig {
     std::string extra_headers{};    // Additional HTTP headers for upgrade
 
     // TLS
+    bool        use_tls     = true; // false = plain ws:// (no TLS handshake/encryption)
     std::string ca_cert_path{};     // CA cert file, empty = system default
     bool        verify_peer = true;
 
