@@ -65,6 +65,13 @@ public:
         return set(t, std::string_view(tmp, n));
     }
 
+    /// Append a raw binary field: tag=<raw bytes>\x01.
+    /// Useful for FIX Data/RawData fields (tags 95/96) where the value may
+    /// contain SOH or other non-printable bytes.
+    MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
+        return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
+    }
+
     /// Append a double-valued field with fixed-point precision.
     MessageBuilder& set_double(uint32_t t, double value, int precision = 2) noexcept {
         char tmp[32];
