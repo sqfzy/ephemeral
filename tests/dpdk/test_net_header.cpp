@@ -71,6 +71,50 @@ TEST(NetHeader, ParseIpv4Invalid) {
     EXPECT_EQ(parse_ipv4("1.2.3"), 0u);
 }
 
+TEST(NetHeader, ParseIpv4NullPointerReturnsZero) {
+    EXPECT_EQ(parse_ipv4(nullptr), 0u);
+}
+
+TEST(NetHeader, ParseIpv4TrailingCharsRejected) {
+    EXPECT_EQ(parse_ipv4("10.0.0.1 "), 0u);
+    EXPECT_EQ(parse_ipv4("10.0.0.1x"), 0u);
+    EXPECT_EQ(parse_ipv4("10.0.0.1."), 0u);
+}
+
+TEST(NetHeader, ParseIpv4TooManyOctets) {
+    EXPECT_EQ(parse_ipv4("10.0.0.1.5"), 0u);
+    EXPECT_EQ(parse_ipv4("1.2.3.4.5.6"), 0u);
+}
+
+TEST(NetHeader, ParseIpv4EmptyOctets) {
+    EXPECT_EQ(parse_ipv4(".0.0.1"), 0u);
+    EXPECT_EQ(parse_ipv4("10..0.1"), 0u);
+    EXPECT_EQ(parse_ipv4("10.0.0."), 0u);
+}
+
+TEST(NetHeader, ParseIpv4LeadingZerosAccepted) {
+    // Leading zeros are accepted as decimal (not octal)
+    EXPECT_EQ(parse_ipv4("010.001.001.001"), 0x0A010101u);
+}
+
+TEST(NetHeader, ParseIpv4FourDigitOctetRejected) {
+    // Octets > 3 digits are rejected (parser reads max 3 digits)
+    EXPECT_EQ(parse_ipv4("1000.0.0.1"), 0u);
+}
+
+TEST(NetHeader, ParseIpv4SingleOctet) {
+    EXPECT_EQ(parse_ipv4("1"), 0u);  // Missing 3 octets
+    EXPECT_EQ(parse_ipv4("1.2"), 0u); // Missing 2 octets
+}
+
+TEST(NetHeader, FormatIpv4Direct) {
+    EXPECT_STREQ(format_ipv4(0x00000000u).data(), "0.0.0.0");
+    EXPECT_STREQ(format_ipv4(0xFFFFFFFFu).data(), "255.255.255.255");
+    EXPECT_STREQ(format_ipv4(0x80000000u).data(), "128.0.0.0");
+    EXPECT_STREQ(format_ipv4(0x0A000001u).data(), "10.0.0.1");
+    EXPECT_STREQ(format_ipv4(0x01020304u).data(), "1.2.3.4");
+}
+
 TEST(NetHeader, FormatIpv4Roundtrip) {
     auto test = [](const char* ip_str) {
         uint32_t ip = parse_ipv4(ip_str);

@@ -266,6 +266,82 @@ TEST(ArpReply, WrongHwTypeIgnored) {
         << "Non-Ethernet hardware type should be ignored";
 }
 
+TEST(ArpReply, WrongHwAddrLenIgnored) {
+    rte_ether_addr mac = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
+    uint32_t ip = net::parse_ipv4("10.0.0.1");
+
+    FakeMbuf fake;
+    size_t len = build_fake_arp_reply(fake.data(), sizeof(fake.buf),
+                                       mac, ip, mac, ip);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    // Set hw_addr_len to 7 instead of 6 (RFC 826: must be 6 for Ethernet)
+    auto* arp = reinterpret_cast<ArpPacket*>(
+        fake.data() + sizeof(rte_ether_hdr));
+    arp->hw_addr_len = 7;
+
+    auto result = parse_arp_reply(&fake.mbuf, ip);
+    EXPECT_FALSE(result.has_value())
+        << "Invalid hw_addr_len should be rejected";
+}
+
+TEST(ArpReply, WrongProtoAddrLenIgnored) {
+    rte_ether_addr mac = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
+    uint32_t ip = net::parse_ipv4("10.0.0.1");
+
+    FakeMbuf fake;
+    size_t len = build_fake_arp_reply(fake.data(), sizeof(fake.buf),
+                                       mac, ip, mac, ip);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    // Set proto_addr_len to 16 instead of 4 (RFC 826: must be 4 for IPv4)
+    auto* arp = reinterpret_cast<ArpPacket*>(
+        fake.data() + sizeof(rte_ether_hdr));
+    arp->proto_addr_len = 16;
+
+    auto result = parse_arp_reply(&fake.mbuf, ip);
+    EXPECT_FALSE(result.has_value())
+        << "Invalid proto_addr_len should be rejected";
+}
+
+TEST(ArpReply, WrongProtoTypeIgnored) {
+    rte_ether_addr mac = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
+    uint32_t ip = net::parse_ipv4("10.0.0.1");
+
+    FakeMbuf fake;
+    size_t len = build_fake_arp_reply(fake.data(), sizeof(fake.buf),
+                                       mac, ip, mac, ip);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    // Change protocol type to IPv6 instead of IPv4
+    auto* arp = reinterpret_cast<ArpPacket*>(
+        fake.data() + sizeof(rte_ether_hdr));
+    arp->proto_type = net::hton16(0x86DD);  // IPv6
+
+    auto result = parse_arp_reply(&fake.mbuf, ip);
+    EXPECT_FALSE(result.has_value())
+        << "Non-IPv4 protocol type should be ignored";
+}
+
+TEST(ArpReply, ZeroAddrLensIgnored) {
+    rte_ether_addr mac = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
+    uint32_t ip = net::parse_ipv4("10.0.0.1");
+
+    FakeMbuf fake;
+    size_t len = build_fake_arp_reply(fake.data(), sizeof(fake.buf),
+                                       mac, ip, mac, ip);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    auto* arp = reinterpret_cast<ArpPacket*>(
+        fake.data() + sizeof(rte_ether_hdr));
+    arp->hw_addr_len = 0;
+    arp->proto_addr_len = 0;
+
+    auto result = parse_arp_reply(&fake.mbuf, ip);
+    EXPECT_FALSE(result.has_value())
+        << "Zero address lengths should be rejected";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAC formatting
 // ─────────────────────────────────────────────────────────────────────────────
