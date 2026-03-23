@@ -562,7 +562,7 @@ public:
     /// Prefer the callback variant for zero-copy hot paths.
     [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv() {
         std::optional<std::vector<uint8_t>> result;
-        rx_queue_.try_consume([&](RxMsg& msg) {
+        (void)rx_queue_.try_consume([&](RxMsg& msg) {
             result.emplace(msg.data, msg.data + msg.len);
         });
         return result;
@@ -612,7 +612,7 @@ public:
     /// Returns payload + opcode, or nullopt if the queue is empty.
     [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg() {
         std::optional<ReceivedMessage> result;
-        rx_queue_.try_consume([&](RxMsg& msg) {
+        (void)rx_queue_.try_consume([&](RxMsg& msg) {
             result.emplace(ReceivedMessage{
                 .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
                 .opcode = msg.opcode,
@@ -1597,7 +1597,7 @@ private:
     // -----------------------------------------------------------------------
 
     void tx_loop() {
-        eph::utils::set_thread_affinity(config_.tx_cpu, "TX");
+        (void)eph::utils::set_thread_affinity(config_.tx_cpu, "TX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "TX loop started");
 
@@ -1902,7 +1902,7 @@ private:
     // -----------------------------------------------------------------------
 
     void rx_loop() {
-        eph::utils::set_thread_affinity(config_.rx_cpu, "RX");
+        (void)eph::utils::set_thread_affinity(config_.rx_cpu, "RX");
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 
@@ -2252,7 +2252,7 @@ private:
                 // accessible via ReceivedMessage::close_code()/close_reason().
                 if (frame->payload && frame->payload_len > 0 &&
                     frame->payload_len <= MaxPayload) {
-                    rx_queue_.try_produce([&](RxMsg& msg) {
+                    (void)rx_queue_.try_produce([&](RxMsg& msg) {
                         std::memcpy(msg.data, frame->payload,
                                     frame->payload_len);
                         msg.len = static_cast<uint16_t>(frame->payload_len);

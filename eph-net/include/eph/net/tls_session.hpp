@@ -424,9 +424,13 @@ public:
             return std::unexpected(std::format("SSL_new failed: {}", err));
         }
 
-        // Set SNI hostname
+        // Set SNI hostname for virtual hosting and certificate matching
         if (!config.hostname.empty()) {
-            SSL_set_tlsext_host_name(ssl, config.hostname.c_str());
+            if (!SSL_set_tlsext_host_name(ssl, config.hostname.c_str())) {
+                SPDLOG_LOGGER_WARN(log,
+                    "Failed to set SNI hostname '{}': {}",
+                    config.hostname, detail::ssl_error_string());
+            }
         }
 
         // Mark as client-side (required by aws-lc before SSL_do_handshake)
@@ -435,9 +439,11 @@ public:
         // Create and attach custom BIO
         BIO* bio = BIO_new(bio_method());
         if (!bio) {
+            auto err = detail::ssl_error_string();
             SSL_free(ssl);
             SSL_CTX_free(ctx);
-            return std::unexpected("BIO_new failed");
+            SPDLOG_LOGGER_ERROR(log, "BIO_new failed: {}", err);
+            return std::unexpected(std::format("BIO_new failed: {}", err));
         }
 
         // Set up BIO context

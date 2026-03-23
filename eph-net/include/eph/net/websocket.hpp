@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <expected>
 #include <format>
 #include <string>
