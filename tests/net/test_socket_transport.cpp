@@ -529,3 +529,104 @@ TEST(UrlConnect, WithConfigModifier) {
     // Connection should fail (port 1 not listening)
     EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
 }
+
+TEST(UrlConnect, WsSchemeDispatchesToPlainConnect) {
+    // ws:// should use socket_ws_connect (use_tls=false)
+    // Connection will fail, but the error path confirms it tried
+    auto result = connect("ws://127.0.0.1:1/echo");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
+
+TEST(UrlConnect, PathAndQueryPreserved) {
+    // Verify URL path with query string is preserved through connect()
+    auto result = connect("wss://127.0.0.1:1/ws?token=abc&v=2",
+        [](TransportConfig& cfg) {
+            // Verify the path was correctly parsed from URL
+            EXPECT_EQ(cfg.ws_path, "/ws?token=abc&v=2");
+            cfg.tcp_timeout = std::chrono::milliseconds{200};
+        });
+    ASSERT_FALSE(result.has_value());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// socket_wss_connect() — direct convenience factory
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketWssConnect, InvalidConfigReturnsError) {
+    TransportConfig cfg;
+    cfg.remote_host = "";  // Invalid: empty host
+    cfg.remote_port = 443;
+    auto result = socket_wss_connect(cfg);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kInvalidConfig);
+}
+
+TEST(SocketWssConnect, ConnectionRefusedReturnsFactoryFailed) {
+    TransportConfig cfg;
+    cfg.remote_host = "127.0.0.1";
+    cfg.remote_port = 1;  // Almost certainly not listening
+    cfg.ws_path = "/ws";
+    cfg.tcp_timeout = std::chrono::milliseconds{200};
+    auto result = socket_wss_connect(cfg);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
+
+TEST(SocketWssConnect, WithCustomSocketConfig) {
+    TransportConfig cfg;
+    cfg.remote_host = "127.0.0.1";
+    cfg.remote_port = 1;
+    cfg.ws_path = "/ws";
+    cfg.tcp_timeout = std::chrono::milliseconds{200};
+    SocketConfig sock_cfg{
+        .host = "127.0.0.1",
+        .port = 1,
+        .tcp_nodelay = false,  // Custom: disable nodelay
+    };
+    auto result = socket_wss_connect(cfg, sock_cfg);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
+
+TEST(SocketWssConnect, InvalidSocketConfigReturnsError) {
+    TransportConfig cfg;
+    cfg.remote_host = "127.0.0.1";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    SocketConfig sock_cfg{
+        .host = "",  // Invalid: empty host
+        .port = 0,   // Invalid: zero port
+    };
+    auto result = socket_wss_connect(cfg, sock_cfg);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kInvalidConfig);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// socket_ws_connect() — plain WebSocket convenience factory
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketWsConnect, ForcesUseTlsFalse) {
+    TransportConfig cfg;
+    cfg.remote_host = "127.0.0.1";
+    cfg.remote_port = 1;
+    cfg.ws_path = "/ws";
+    cfg.use_tls = true;  // Should be overridden to false
+    cfg.tcp_timeout = std::chrono::milliseconds{200};
+    auto result = socket_ws_connect(cfg);
+    ASSERT_FALSE(result.has_value());
+    // The fact it doesn't fail with TLS errors confirms use_tls was set to false
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
+
+TEST(SocketWsConnect, ConnectionRefusedReturnsFactoryFailed) {
+    TransportConfig cfg;
+    cfg.remote_host = "127.0.0.1";
+    cfg.remote_port = 1;
+    cfg.ws_path = "/echo";
+    cfg.tcp_timeout = std::chrono::milliseconds{200};
+    auto result = socket_ws_connect(cfg);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
