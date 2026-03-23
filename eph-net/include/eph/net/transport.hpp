@@ -493,6 +493,7 @@ public:
                          std::chrono::duration<Rep, Period> timeout,
                          uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;

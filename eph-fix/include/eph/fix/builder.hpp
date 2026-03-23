@@ -107,19 +107,14 @@ public:
 
     /// Append a field from a raw byte pointer + length.
     /// The data must NOT contain SOH (0x01) bytes, as the parser uses SOH
-    /// as a field delimiter. Sets overflow flag if SOH is found.
+    /// as a field delimiter. Sets overflow flag if SOH is found (validated
+    /// by set()).
     /// For true binary FIX fields (Data/RawData), a length-aware parser
     /// would be required.
     MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
         if (data == nullptr || len == 0)
             return set(t, std::string_view{});
-        for (size_t i = 0; i < len; ++i) {
-            if (data[i] == 0x01) [[unlikely]] {
-                log_soh_found(t, i);
-                overflow_ = true;
-                return *this;
-            }
-        }
+        // SOH validation is handled by set() — no need to scan here
         return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
 
