@@ -3073,3 +3073,54 @@ TEST(FixBuilder, reset_five_cycle_stress) {
         EXPECT_EQ(*result->get_int(tag::MsgSeqNum), i + 1) << "cycle " << i;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Builder: set() SOH validation
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilder, set_rejects_embedded_soh_in_string_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Value containing SOH (0x01) should trigger overflow
+    std::string_view bad_value("AB\x01" "CD", 5);
+    b.set(58, bad_value);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_rejects_soh_at_start_of_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    std::string_view bad_value("\x01" "ABC", 4);
+    b.set(58, bad_value);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_rejects_soh_at_end_of_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    std::string_view bad_value("ABC\x01", 4);
+    b.set(58, bad_value);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_accepts_clean_string_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(58, "CLEAN_VALUE");
+    EXPECT_FALSE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_empty_value_passes_soh_check) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(58, "");
+    EXPECT_FALSE(b.has_overflow());
+}

@@ -65,8 +65,20 @@ public:
     }
 
     /// Append a string-valued field: tag=value\x01.
+    /// The value must NOT contain SOH (0x01) bytes — SOH is the FIX field
+    /// delimiter and embedding it would corrupt the message. Sets overflow
+    /// flag if SOH is found.
     MessageBuilder& set(uint32_t t, std::string_view value) noexcept {
         if (overflow_) [[unlikely]] return *this;
+
+        // Reject values containing SOH — they would corrupt field boundaries
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '\x01') [[unlikely]] {
+                log_soh_found(t, i);
+                overflow_ = true;
+                return *this;
+            }
+        }
 
         // Write "tag=value\x01"
         size_t tag_len = write_uint(t, pos_);
@@ -497,7 +509,8 @@ private:
     [[gnu::noinline, gnu::cold]]
     static void log_soh_found(uint32_t tag, size_t offset) noexcept {
         SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
-            "FIX builder: SOH byte found in set_raw() data at offset {}, tag={}",
+            "FIX builder: SOH byte found in value at offset {}, tag={} — "
+            "SOH is the FIX field delimiter and would corrupt the message",
             offset, tag);
     }
 

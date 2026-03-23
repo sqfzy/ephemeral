@@ -452,6 +452,7 @@ public:
     SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
                      uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
