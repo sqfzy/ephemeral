@@ -53,7 +53,12 @@ class PlatformTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
         auto result = Platform::create(test_config);
-        ASSERT_TRUE(result.has_value()) << result.error();
+        if (!result.has_value()) {
+            // On single-port NICs, the port may already be consumed by
+            // another test binary in the same run. Skip instead of fail.
+            skip_reason_ = result.error();
+            return;
+        }
         platform_ = new Platform(std::move(*result));
     }
 
@@ -62,10 +67,18 @@ protected:
         platform_ = nullptr;
     }
 
+    void SetUp() override {
+        if (!platform_) {
+            GTEST_SKIP() << "Platform unavailable: " << skip_reason_;
+        }
+    }
+
     static Platform* platform_;
+    static std::string skip_reason_;
 };
 
 Platform* PlatformTest::platform_ = nullptr;
+std::string PlatformTest::skip_reason_;
 
 TEST_F(PlatformTest, HappyPath) {
     EXPECT_TRUE(platform_->is_running());

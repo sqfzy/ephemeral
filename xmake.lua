@@ -4,6 +4,7 @@ set_version("1.0.0")
 add_rules("mode.debug", "mode.release")
 set_languages("c++23")
 
+
 add_rules("plugin.compile_commands.autoupdate", { outputdir = "build" })
 
 if is_mode("release") then
@@ -29,6 +30,26 @@ target("eph-utils")
     add_packages("spdlog", { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
+
+    -- Verify C++23 support at configure time (std::expected, std::format).
+    -- Uses check_cxxsnippets instead of has_features because xmake's
+    -- cxx_std_23 feature detection may not recognize all capable compilers.
+    on_config(function (target)
+        import("lib.detect.check_cxxsnippets")
+        local ok = check_cxxsnippets({test = [[
+            #include <expected>
+            #include <format>
+            void test() {
+                std::expected<int, std::string> e = 42;
+                auto s = std::format("{}", *e);
+            }
+        ]]}, {configs = {languages = "c++23"}})
+        if not ok then
+            raise("C++23 not supported by current compiler.\n"
+                  .. "  GCC >= 13 or Clang >= 17 required.\n"
+                  .. "  Amazon Linux 2023: dnf install gcc14-g++ && EPH_USE_GCC14=1 xmake build")
+        end
+    end)
 
 target("eph-containers")
     set_kind("headeronly")
@@ -135,6 +156,10 @@ end
 -- Must be applied to each binary target (not headeronly eph-dpdk).
 -- Only wrap PMDs we actually use — all librte_*.a would pull in
 -- librte_crypto_openssl which conflicts with aws-lc.
+-- MAINTENANCE: when adding support for a new NIC type, add its librte_net_xxx
+-- here. When adding a new DPDK subsystem that uses constructor self-registration
+-- (like rte_mempool_ring), add it too. Run `strings <binary> | grep rte_pmd` to
+-- verify the PMD is linked.
 function apply_dpdk_pmd_linkgroups()
     add_linkgroups("rte_net_null", "rte_net_ena", "rte_net_af_packet",
                    "rte_bus_pci", "rte_bus_vdev", "rte_mempool_ring",
