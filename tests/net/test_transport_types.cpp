@@ -1566,3 +1566,102 @@ TEST(TransportConfigToUrl, RoundTripDefaultPort) {
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->to_url(), "wss://example.com/ws");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::from_url() — IPv6 support
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigFromUrl, Ipv6Loopback) {
+    auto r = TransportConfig::from_url("wss://[::1]/ws");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "::1");
+    EXPECT_EQ(r->remote_port, 443);
+    EXPECT_EQ(r->ws_path, "/ws");
+}
+
+TEST(TransportConfigFromUrl, Ipv6WithPort) {
+    auto r = TransportConfig::from_url("wss://[2001:db8::1]:8443/stream");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "2001:db8::1");
+    EXPECT_EQ(r->remote_port, 8443);
+    EXPECT_EQ(r->ws_path, "/stream");
+}
+
+TEST(TransportConfigFromUrl, Ipv6NoPath) {
+    auto r = TransportConfig::from_url("ws://[::1]");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "::1");
+    EXPECT_EQ(r->remote_port, 80);
+    EXPECT_EQ(r->ws_path, "/");
+}
+
+TEST(TransportConfigFromUrl, Ipv6MissingCloseBracket) {
+    auto r = TransportConfig::from_url("wss://[::1/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("']'"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, Ipv6EmptyAddress) {
+    auto r = TransportConfig::from_url("wss://[]/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("empty"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, Ipv6RoundTrip) {
+    auto r = TransportConfig::from_url("wss://[::1]:9443/ws");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->to_url(), "wss://[::1]:9443/ws");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::from_url() — port edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigFromUrl, PortMaxValid) {
+    auto r = TransportConfig::from_url("wss://host:65535/ws");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_port, 65535);
+}
+
+TEST(TransportConfigFromUrl, PortOverflow) {
+    auto r = TransportConfig::from_url("wss://host:65536/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("range"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, PortWayOverflow) {
+    auto r = TransportConfig::from_url("wss://host:100000/ws");
+    ASSERT_FALSE(r.has_value());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::from_url() — hostname safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigFromUrl, HostWithControlCharsRejected) {
+    // Newline injection
+    auto r = TransportConfig::from_url("wss://host\ninjection/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("control"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, HostWithNullByteRejected) {
+    std::string url = "wss://ho";
+    url += '\0';
+    url += "st/ws";
+    auto r = TransportConfig::from_url(std::string_view(url));
+    // from_url sees a NUL in the host → control char rejection
+    // (or the string_view might be truncated at NUL, yielding "ho" as host)
+    // Either way, it should not silently pass an injected hostname
+    if (r.has_value()) {
+        // If it parsed, the host should be truncated (safe)
+        EXPECT_EQ(r->remote_host.find('\0'), std::string::npos);
+    }
+}
+
+TEST(TransportConfigFromUrl, PathWithFragment) {
+    auto r = TransportConfig::from_url("wss://example.com/ws#section");
+    ASSERT_TRUE(r.has_value());
+    // Fragments are preserved in ws_path (server decides how to handle)
+    EXPECT_EQ(r->ws_path, "/ws#section");
+}

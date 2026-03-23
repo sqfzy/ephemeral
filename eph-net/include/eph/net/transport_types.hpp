@@ -507,20 +507,39 @@ struct TransportConfig {
             return std::unexpected("URL missing host");
         }
 
-        // Find host boundary (first '/' or ':' or end)
-        size_t host_end = url.find_first_of(":/");
-        if (host_end == std::string_view::npos) {
-            // URL is just "wss://host"
-            cfg.remote_host = std::string(url);
-            cfg.ws_path = "/";
-            return cfg;
+        // IPv6 bracket notation: wss://[::1]:port/path
+        if (url.front() == '[') {
+            size_t bracket_end = url.find(']');
+            if (bracket_end == std::string_view::npos) {
+                return std::unexpected("IPv6 address missing closing ']'");
+            }
+            cfg.remote_host = std::string(url.substr(1, bracket_end - 1));
+            if (cfg.remote_host.empty()) {
+                return std::unexpected("URL has empty IPv6 address");
+            }
+            url.remove_prefix(bracket_end + 1);
+        } else {
+            // Regular hostname: find boundary at first '/' or ':' or end
+            size_t host_end = url.find_first_of(":/");
+            if (host_end == std::string_view::npos) {
+                cfg.remote_host = std::string(url);
+                cfg.ws_path = "/";
+                return cfg;
+            }
+            cfg.remote_host = std::string(url.substr(0, host_end));
+            if (cfg.remote_host.empty()) {
+                return std::unexpected("URL has empty host");
+            }
+            url.remove_prefix(host_end);
         }
 
-        cfg.remote_host = std::string(url.substr(0, host_end));
-        if (cfg.remote_host.empty()) {
-            return std::unexpected("URL has empty host");
+        // Reject control characters in hostname (CWE-93 header injection)
+        for (char c : cfg.remote_host) {
+            if (c < 0x20 || c == 0x7f) {
+                return std::unexpected(
+                    "hostname contains control characters");
+            }
         }
-        url.remove_prefix(host_end);
 
         // Parse optional port
         if (!url.empty() && url.front() == ':') {
@@ -533,17 +552,19 @@ struct TransportConfig {
                 return std::unexpected("URL has empty port after ':'");
             }
 
-            uint16_t port = 0;
+            // Parse as uint32_t first to detect overflow beyond uint16_t
+            uint32_t port32 = 0;
             auto [ptr, ec] = std::from_chars(
-                port_str.data(), port_str.data() + port_str.size(), port);
+                port_str.data(), port_str.data() + port_str.size(), port32);
             if (ec != std::errc{} || ptr != port_str.data() + port_str.size()) {
                 return std::unexpected(
                     std::format("invalid port: '{}'", port_str));
             }
-            if (port == 0) {
-                return std::unexpected("port must be > 0");
+            if (port32 == 0 || port32 > 65535) {
+                return std::unexpected(
+                    std::format("port out of range: {}", port32));
             }
-            cfg.remote_port = port;
+            cfg.remote_port = static_cast<uint16_t>(port32);
 
             if (port_end == std::string_view::npos) {
                 cfg.ws_path = "/";
@@ -572,10 +593,15 @@ struct TransportConfig {
     [[nodiscard]] std::string to_url() const {
         std::string_view scheme = use_tls ? "wss" : "ws";
         uint16_t default_port = use_tls ? 443 : 80;
+        // IPv6 addresses must be bracket-enclosed in URLs
+        bool is_ipv6 = remote_host.find(':') != std::string::npos;
+        std::string host_part = is_ipv6
+            ? std::format("[{}]", remote_host)
+            : remote_host;
         if (remote_port == default_port) {
-            return std::format("{}://{}{}", scheme, remote_host, ws_path);
+            return std::format("{}://{}{}", scheme, host_part, ws_path);
         }
-        return std::format("{}://{}:{}{}", scheme, remote_host,
+        return std::format("{}://{}:{}{}", scheme, host_part,
                            remote_port, ws_path);
     }
 };
