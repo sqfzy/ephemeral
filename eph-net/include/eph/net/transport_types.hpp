@@ -215,6 +215,10 @@ struct TransportConfig {
     int tx_cpu = -1;
     int rx_cpu = -1;
 
+    // RX drop log throttling: log a warning every N drops (0 = disable logging).
+    // The on_rx_drop callback is still invoked on every drop regardless.
+    uint64_t drop_log_interval = 1000;
+
     // Connection state change callback (optional, called from worker threads)
     TransportStateCallback on_state_change{};
 
@@ -274,9 +278,8 @@ struct TransportConfig {
 
     /// RX drop callback (optional, called from RX thread).
     ///
-    /// Invoked when a received data message is dropped because the RX queue
-    /// is full. Enables applications to detect backpressure and speed up
-    /// consumption. Called at most once per 1000 drops to avoid log flooding.
+    /// Invoked on every RX queue drop (unlike the throttled log warning).
+    /// Enables applications to detect backpressure and speed up consumption.
     ///
     /// @param total_dropped  Cumulative number of dropped messages
     ///

@@ -2381,7 +2381,7 @@ private:
     /// Deliver a decoded payload to either the on_message callback or the RX queue.
     /// Text frames are validated for UTF-8 compliance (RFC 6455 §5.6);
     /// invalid frames are dropped with a warning.
-    void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) {
+    void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) noexcept {
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText && !ws::is_valid_utf8(data, len)) {
             rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
@@ -2422,7 +2422,8 @@ private:
             }
         } else {
             auto total = rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (total % 1000 == 1) {
+            if (config_.drop_log_interval > 0 &&
+                total % config_.drop_log_interval == 1) {
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
                     "RX queue full, dropping data frame "
                     "(total dropped: {})", total);
@@ -2438,7 +2439,7 @@ private:
     }
 
     /// Deliver a complete single-frame data message.
-    void deliver_data_frame(const ws::DecodedFrame& frame) {
+    void deliver_data_frame(const ws::DecodedFrame& frame) noexcept {
         if (frame.payload_len == 0) return;
 
         // For masked frames, unmask into a temp buffer before delivery
@@ -2456,7 +2457,7 @@ private:
 
     /// Enqueue pong response into TX queue so the TX thread sends it.
     /// This avoids data races: only TX thread touches crypto_->encrypt().
-    void handle_ping(const ws::DecodedFrame& ping_frame) {
+    void handle_ping(const ws::DecodedFrame& ping_frame) noexcept {
         // Ping payload is at most 125 bytes (RFC 6455 §5.5).
         // Enqueue the unmasked payload with kPong opcode; TX thread
         // will encode the WS frame and encrypt it.
@@ -2486,7 +2487,7 @@ private:
 
     /// Enqueue a Close frame response into the TX queue.
     /// Called from RX thread when a server Close frame is received.
-    void handle_close(uint16_t status_code) {
+    void handle_close(uint16_t status_code) noexcept {
         // Encode the 2-byte status code as payload; TX thread will wrap
         // it in a WS Close frame via encode_frame(kClose, ...).
         tx_queue_.try_produce([&](TxMsg& msg) {

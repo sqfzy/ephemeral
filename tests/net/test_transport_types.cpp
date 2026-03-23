@@ -1665,3 +1665,24 @@ TEST(TransportConfigFromUrl, PathWithFragment) {
     // Fragments are preserved in ws_path (server decides how to handle)
     EXPECT_EQ(r->ws_path, "/ws#section");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::drop_log_interval
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigDropLog, DefaultValueIs1000) {
+    TransportConfig cfg;
+    EXPECT_EQ(cfg.drop_log_interval, 1000u);
+}
+
+TEST(TransportConfigDropLog, CustomValuePreserved) {
+    TransportConfig cfg;
+    cfg.drop_log_interval = 500;
+    EXPECT_EQ(cfg.drop_log_interval, 500u);
+}
+
+TEST(TransportConfigDropLog, ZeroDisablesLogging) {
+    TransportConfig cfg;
+    cfg.drop_log_interval = 0;
+    EXPECT_EQ(cfg.drop_log_interval, 0u);
+}
