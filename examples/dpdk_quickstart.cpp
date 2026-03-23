@@ -28,7 +28,6 @@
 #ifdef EPH_HAS_DPDK
 
 #include <atomic>
-#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -55,9 +54,6 @@ static void signal_handler(int) {
 
 struct AppConfig {
     std::string host        = "echo.websocket.org";
-    uint16_t    port        = 443;
-    std::string ws_path     = "/";
-    bool        use_tls     = true;
     std::string local_ip{};
     std::string gateway_ip{};
     uint16_t    local_port  = 0;  // 0 = random ephemeral
@@ -90,9 +86,6 @@ static AppConfig parse_app_args(int argc, char** argv) {
             return argv[++i];
         };
         if      (arg == "--host")       cfg.host       = next("--host");
-        else if (arg == "--port")       cfg.port       = static_cast<uint16_t>(std::atoi(next("--port")));
-        else if (arg == "--path")       cfg.ws_path    = next("--path");
-        else if (arg == "--no-tls")     cfg.use_tls    = false;
         else if (arg == "--local-ip")   cfg.local_ip   = next("--local-ip");
         else if (arg == "--gateway-ip") cfg.gateway_ip = next("--gateway-ip");
         else if (arg == "--local-port") cfg.local_port = static_cast<uint16_t>(std::atoi(next("--local-port")));
@@ -106,14 +99,13 @@ static AppConfig parse_app_args(int argc, char** argv) {
                 "\n"
                 "App options:\n"
                 "  --host <hostname>     WebSocket server (default: echo.websocket.org)\n"
-                "  --port <port>         Server port (default: 443)\n"
                 "  --local-ip <ip>       Local IPv4 on DPDK port (required)\n"
                 "  --gateway-ip <ip>     Gateway for ARP resolution (required)\n"
                 "  --local-port <port>   Local TCP source port (default: random)\n"
                 "  --dpdk-port <n>       DPDK port ID (default: 0)\n"
                 "  --msg <message>       Message to send (default: \"hello dpdk\")\n"
                 "  --count <n>           Number of messages (default: 3)\n"
-                "  --no-tls              Disable TLS\n",
+                "  --interval <ms>       Milliseconds between sends (default: 1000)\n",
                 "dpdk_quickstart");
             std::exit(0);
         }
@@ -152,34 +144,26 @@ int main(int argc, char** argv) {
     }
     spdlog::info("EAL initialized ({} args consumed)", eal->args_consumed());
 
-    // ── Step 3: Connect using the high-level connector ───────────────────
-    // connect() performs: Platform init → ARP → TCP 3-way handshake →
-    //                     TLS handshake → WebSocket upgrade
-    auto scheme = cfg.use_tls ? "wss" : "ws";
-    spdlog::info("Connecting to {}://{}:{}{} (DPDK)",
-                 scheme, cfg.host, cfg.port, cfg.ws_path);
+    // ── Step 3: Connect using the simplest overload ─────────────────────
+    // connect(host, endpoint) resolves DNS, inits Platform, ARP, TCP, TLS, WS
+    // in one call. Uses defaults: port 443, TLS on, verify_peer on.
+    // Required fields (local_ip, gateway_ip) are enforced at compile time —
+    // DpdkEndpoint has no defaults, so omitting them is a compile error.
+    spdlog::info("Connecting to wss://{} (DPDK)", cfg.host);
     spdlog::info("Local={}:{}, gateway={}", cfg.local_ip, cfg.local_port, cfg.gateway_ip);
 
-    eph::dpdk::ConnectorConfig conn_cfg{
-        .platform   = { .port_id = cfg.dpdk_port },
+    eph::dpdk::DpdkEndpoint endpoint{
         .local_ip   = cfg.local_ip,
         .gateway_ip = cfg.gateway_ip,
+    };
+
+    // Simplest form: just hostname + required endpoint
+    // For custom port/TLS/path, use connect(endpoint, TransportConfig{...}).
+    eph::dpdk::ConnectorOptions opts{
+        .platform   = {.port_id = cfg.dpdk_port},
         .local_port = cfg.local_port,
     };
-
-    eph::net::TransportConfig transport_cfg{
-        .remote_host   = cfg.host,
-        .remote_port   = cfg.port,
-        .ws_path       = cfg.ws_path,
-        .use_tls       = cfg.use_tls,
-        .verify_peer   = false,
-        .tcp_timeout   = std::chrono::milliseconds{5000},
-        .tls_timeout   = std::chrono::milliseconds{5000},
-        .ws_timeout    = std::chrono::milliseconds{5000},
-        .ping_interval = std::chrono::seconds{30},
-    };
-
-    auto conn = eph::dpdk::connect(conn_cfg, transport_cfg);
+    auto conn = eph::dpdk::connect(cfg.host, endpoint, opts);
     if (!conn) {
         spdlog::error("DPDK connect failed: {}", conn.error());
         return 1;

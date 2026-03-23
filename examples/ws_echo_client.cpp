@@ -301,11 +301,9 @@ static int run_dpdk(const AppConfig& cfg, int eal_argc, char** eal_argv) {
     spdlog::info("EAL initialized ({} args consumed)", eal->args_consumed());
 
     // One-shot connect: DNS → Platform → MAC → ARP → TCP → Transport
-    eph::dpdk::ConnectorConfig conn_cfg{
-        .platform = { .port_id = cfg.dpdk_port },
+    eph::dpdk::DpdkEndpoint endpoint{
         .local_ip   = cfg.local_ip,
         .gateway_ip = cfg.gateway_ip,
-        .local_port = cfg.local_port,
     };
 
     eph::net::TransportConfig transport_cfg{
@@ -321,7 +319,9 @@ static int run_dpdk(const AppConfig& cfg, int eal_argc, char** eal_argv) {
         .ping_interval = std::chrono::seconds{30},
     };
 
-    auto conn = eph::dpdk::connect(conn_cfg, transport_cfg);
+    auto conn = eph::dpdk::connect(endpoint, transport_cfg,
+                                   {.platform = {.port_id = cfg.dpdk_port},
+                                    .local_port = cfg.local_port});
     if (!conn) {
         spdlog::error("DPDK connect failed: {}", conn.error());
         return 1;

@@ -9,19 +9,24 @@
 /// fine-grained control can still compose Platform, TcpSession, and Transport
 /// directly.
 ///
-/// Two `connect()` overloads:
-///   - Hostname overload (recommended): resolves DNS from transport_cfg.remote_host
-///   - IP overload: accepts pre-resolved server_ip for exclusive-NIC deployments
+/// Multiple `connect()` overloads, from simplest to most configurable:
 ///
-/// Usage (hostname — most users):
+/// Usage (simplest — hostname + required DPDK endpoint):
 ///   auto eal = EalGuard::init(eal_argc, eal_argv);
-///   eph::dpdk::ConnectorConfig conn_cfg{ .local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1" };
-///   eph::net::TransportConfig  tp_cfg{ .remote_host = "example.com", .remote_port = 443 };
-///   auto result = eph::dpdk::connect(conn_cfg, tp_cfg);
+///   auto result = eph::dpdk::connect("example.com", {"10.0.0.2", "10.0.0.1"});
+///
+/// Usage (with options):
+///   auto result = eph::dpdk::connect("example.com", {"10.0.0.2", "10.0.0.1"},
+///                                    {.local_port = 5000});
+///
+/// Usage (full control — custom TransportConfig):
+///   DpdkEndpoint ep{"10.0.0.2", "10.0.0.1"};
+///   eph::net::TransportConfig tp_cfg{.remote_host = "example.com", .remote_port = 8443};
+///   auto result = eph::dpdk::connect(ep, tp_cfg);
 ///
 /// Usage (pre-resolved IP — exclusive NIC mode):
 ///   uint32_t server_ip = ...; // resolve before EAL init
-///   auto result = eph::dpdk::connect(conn_cfg, tp_cfg, server_ip);
+///   auto result = eph::dpdk::connect(ep, tp_cfg, server_ip);
 
 #include <chrono>
 #include <cstdint>
@@ -52,9 +57,17 @@ namespace eph::dpdk {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Configuration for `connect()`.  Nests `PlatformConfig` so advanced users
-/// can tune queue counts, descriptor counts, and mempool size.
-struct ConnectorConfig {
+/// Required DPDK network identity — no defaults, must be fully specified.
+/// Omitting either field is a compile error (aggregate with no defaults).
+struct DpdkEndpoint {
+    std::string local_ip;    ///< Local IPv4 on DPDK port
+    std::string gateway_ip;  ///< Gateway IPv4 for ARP resolution
+};
+
+/// Optional connection settings — all fields have sensible defaults.
+/// Nests `PlatformConfig` so advanced users can tune queue counts,
+/// descriptor counts, and mempool size.
+struct ConnectorOptions {
     PlatformConfig platform{
         .port_id         = 0,
         .nb_rx_queues    = 1,
@@ -64,13 +77,9 @@ struct ConnectorConfig {
         .mbuf_pool_size  = 4095,
         .mbuf_cache_size = 256,
     };
-
-    std::string local_ip;                 ///< Local IPv4 on DPDK port (required)
-    std::string gateway_ip;               ///< Gateway IPv4 for ARP (required)
-    uint16_t    local_port  = 0;          ///< 0 = random ephemeral (49152-65535)
-    uint16_t    tx_queue_id = 0;
-    uint16_t    rx_queue_id = 0;
-
+    uint16_t local_port  = 0;  ///< 0 = random ephemeral (49152-65535)
+    uint16_t tx_queue_id = 0;
+    uint16_t rx_queue_id = 0;
     std::chrono::milliseconds arp_timeout{3000};
     std::chrono::milliseconds connect_timeout{5000};
 };
@@ -150,19 +159,20 @@ struct ConnectionSetup {
     std::function<std::expected<std::unique_ptr<TcpSession<>>, std::string>()> tcp_factory;
 };
 
-/// Shared logic: validate config → get MAC → parse IPs → ARP → ephemeral port
-/// → build TcpConfig + factory.  Used by both connect() overloads.
+/// Shared logic: validate → get MAC → parse IPs → ARP → ephemeral port
+/// → build TcpConfig + factory.  Used by all connect() overloads.
 inline std::expected<ConnectionSetup, std::string>
-prepare_connection(const ConnectorConfig& cfg,
+prepare_connection(const DpdkEndpoint& ep,
+                   const ConnectorOptions& opts,
                    const TransportConfig& transport_cfg,
                    uint32_t server_ip,
                    rte_mempool* mempool) {
     // Validate required fields
-    if (cfg.local_ip.empty()) {
-        return std::unexpected("ConnectorConfig: local_ip is required");
+    if (ep.local_ip.empty()) {
+        return std::unexpected("DpdkEndpoint: local_ip is required");
     }
-    if (cfg.gateway_ip.empty()) {
-        return std::unexpected("ConnectorConfig: gateway_ip is required");
+    if (ep.gateway_ip.empty()) {
+        return std::unexpected("DpdkEndpoint: gateway_ip is required");
     }
     if (server_ip == 0) {
         return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
@@ -170,25 +180,25 @@ prepare_connection(const ConnectorConfig& cfg,
 
     // Source MAC
     rte_ether_addr src_mac{};
-    if (rte_eth_macaddr_get(cfg.platform.port_id, &src_mac) != 0) {
+    if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
         return std::unexpected(
-            std::format("Failed to get MAC for port {}", cfg.platform.port_id));
+            std::format("Failed to get MAC for port {}", opts.platform.port_id));
     }
 
     // Parse IPs
-    uint32_t local_ip   = net::parse_ipv4(cfg.local_ip.c_str());
-    uint32_t gateway_ip = net::parse_ipv4(cfg.gateway_ip.c_str());
+    uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
+    uint32_t gateway_ip = net::parse_ipv4(ep.gateway_ip.c_str());
     if (local_ip == 0) {
-        return std::unexpected(std::format("Invalid local_ip: '{}'", cfg.local_ip));
+        return std::unexpected(std::format("Invalid local_ip: '{}'", ep.local_ip));
     }
     if (gateway_ip == 0) {
-        return std::unexpected(std::format("Invalid gateway_ip: '{}'", cfg.gateway_ip));
+        return std::unexpected(std::format("Invalid gateway_ip: '{}'", ep.gateway_ip));
     }
 
     // ARP resolve gateway
     auto arp_result = arp::resolve(
-        cfg.platform.port_id, cfg.rx_queue_id, mempool,
-        src_mac, local_ip, gateway_ip, cfg.arp_timeout);
+        opts.platform.port_id, opts.rx_queue_id, mempool,
+        src_mac, local_ip, gateway_ip, opts.arp_timeout);
     if (!arp_result) {
         return std::unexpected(
             std::format("ARP resolution failed: {}", arp_result.error()));
@@ -196,7 +206,7 @@ prepare_connection(const ConnectorConfig& cfg,
     rte_ether_addr dst_mac = *arp_result;
 
     // Ephemeral source port
-    uint16_t src_port = cfg.local_port;
+    uint16_t src_port = opts.local_port;
     if (src_port == 0) {
         uint16_t rnd;
         RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
@@ -214,12 +224,12 @@ prepare_connection(const ConnectorConfig& cfg,
         },
         .src_mac     = src_mac,
         .dst_mac     = dst_mac,
-        .port_id     = cfg.platform.port_id,
-        .tx_queue_id = cfg.tx_queue_id,
-        .rx_queue_id = cfg.rx_queue_id,
+        .port_id     = opts.platform.port_id,
+        .tx_queue_id = opts.tx_queue_id,
+        .rx_queue_id = opts.rx_queue_id,
     };
 
-    auto connect_timeout = cfg.connect_timeout;
+    auto connect_timeout = opts.connect_timeout;
 
     auto tcp_factory = [tcp_cfg, mempool, connect_timeout]()
         -> std::expected<std::unique_ptr<TcpSession<>>, std::string> {
@@ -242,42 +252,34 @@ prepare_connection(const ConnectorConfig& cfg,
 // connect()
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One-shot connection helper: Platform → MAC → ARP → TcpSession → Transport.
-///
-/// DNS resolution must happen BEFORE EAL initialization (because DPDK may
-/// take over the NIC, disabling the kernel network stack).  Pass the
-/// pre-resolved server IPv4 as `server_ip` (host byte order).
+/// Full-control connect: pre-resolved server IP + custom TransportConfig.
 ///
 /// @tparam TransportType  Transport alias — defaults to `DpdkTransport`
-///                        (512-byte payload, 1024-deep queue).  Use
-///                        `DpdkLargeTransport` for bulk data, etc.
-/// @param cfg             Connector configuration (platform, IPs, ports)
+/// @param ep              Required DPDK endpoint (local_ip, gateway_ip)
 /// @param transport_cfg   Generic transport config (TLS, WS, reconnect)
 /// @param server_ip       Pre-resolved server IPv4 in host byte order
-/// @return ConnectResult on success, error string on failure
+/// @param opts            Optional settings (platform, ports, timeouts)
 template <typename TransportType = DpdkTransport>
 std::expected<ConnectResult<TransportType>, std::string>
-connect(const ConnectorConfig& cfg,
+connect(const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
-        uint32_t server_ip) {
+        uint32_t server_ip,
+        const ConnectorOptions& opts = {}) {
 
     SPDLOG_DEBUG("dpdk::connect: local={}, gateway={}, server={}",
-                 cfg.local_ip, cfg.gateway_ip,
+                 ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
 
-    // 1. Platform
-    auto platform = Platform::create(cfg.platform);
+    auto platform = Platform::create(opts.platform);
     if (!platform) {
         return std::unexpected(
             std::format("Platform creation failed: {}", platform.error()));
     }
 
-    // 2. Shared setup: MAC → IPs → ARP → TCP factory
     auto setup = detail::prepare_connection(
-        cfg, transport_cfg, server_ip, platform->mempool());
+        ep, opts, transport_cfg, server_ip, platform->mempool());
     if (!setup) return std::unexpected(setup.error());
 
-    // 3. Create transport (TCP + TLS + WS handshake)
     auto transport = TransportType::create(
         std::move(setup->tcp_factory), transport_cfg);
     if (!transport) {
@@ -295,34 +297,62 @@ connect(const ConnectorConfig& cfg,
     };
 }
 
-/// Connect using an existing Platform instance (for multi-connection scenarios).
+/// DNS-resolving connect: resolves `transport_cfg.remote_host` automatically.
 ///
-/// Reuses an already-initialized Platform instead of creating a new one.
-/// This is useful when establishing multiple connections on the same NIC port,
-/// since Platform holds the mempool and port configuration that should be
-/// shared across connections.
+/// @warning DNS resolution uses the kernel network stack via `getaddrinfo()`.
+///   See `resolve_hostname()` for caveats with exclusive-mode PMDs.
+template <typename TransportType = DpdkTransport>
+std::expected<ConnectResult<TransportType>, std::string>
+connect(const DpdkEndpoint& ep,
+        const TransportConfig& transport_cfg,
+        const ConnectorOptions& opts = {}) {
+    if (transport_cfg.remote_host.empty()) {
+        return std::unexpected(
+            "TransportConfig: remote_host is required for hostname-based connect");
+    }
+    auto ip = resolve_hostname(transport_cfg.remote_host);
+    if (!ip) return std::unexpected(ip.error());
+    return connect<TransportType>(ep, transport_cfg, *ip, opts);
+}
+
+/// Simplest connect: hostname + required endpoint + optional settings.
 ///
-/// @param platform         Already-initialized Platform (must outlive the Transport)
-/// @param cfg              Connector configuration (local_ip, gateway_ip, etc.)
-/// @param transport_cfg    Generic transport config (TLS, WS, reconnect)
-/// @param server_ip        Pre-resolved server IPv4 in host byte order
+/// Builds a default `TransportConfig` (port 443, TLS on) from the hostname.
+/// Required fields (local_ip, gateway_ip) are compile-time enforced —
+/// DpdkEndpoint has no defaults.
+///
+/// @code
+///   auto r = eph::dpdk::connect("example.com", {"10.0.0.2", "10.0.0.1"});
+///   auto r = eph::dpdk::connect("example.com", {"10.0.0.2", "10.0.0.1"},
+///                               {.local_port = 5000});
+/// @endcode
+template <typename TransportType = DpdkTransport>
+std::expected<ConnectResult<TransportType>, std::string>
+connect(std::string_view host, const DpdkEndpoint& ep,
+        const ConnectorOptions& opts = {}) {
+    TransportConfig transport_cfg{
+        .remote_host = std::string(host),
+    };
+    return connect<TransportType>(ep, transport_cfg, opts);
+}
+
+/// Connect with existing Platform + pre-resolved IP.
 template <typename TransportType = DpdkTransport>
 std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
-        const ConnectorConfig& cfg,
+        const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
-        uint32_t server_ip) {
+        uint32_t server_ip,
+        const ConnectorOptions& opts = {}) {
 
     SPDLOG_DEBUG("dpdk::connect(platform&): local={}, gateway={}, server={}",
-                 cfg.local_ip, cfg.gateway_ip,
+                 ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
 
-    // Shared setup: MAC → IPs → ARP → TCP factory
     auto setup = detail::prepare_connection(
-        cfg, transport_cfg, server_ip, platform.mempool());
+        ep, opts, transport_cfg, server_ip, platform.mempool());
     if (!setup) return std::unexpected(setup.error());
 
-    // Create transport (TCP + TLS + WS handshake)
     auto transport = TransportType::create(
         std::move(setup->tcp_factory), transport_cfg);
     if (!transport) {
@@ -334,39 +364,31 @@ connect(Platform& platform,
     return std::move(*transport);
 }
 
-/// Convenience overload: resolves hostname, uses existing Platform.
+/// Connect with existing Platform + DNS resolution.
 template <typename TransportType = DpdkTransport>
 std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
-        const ConnectorConfig& cfg,
-        const TransportConfig& transport_cfg) {
+        const DpdkEndpoint& ep,
+        const TransportConfig& transport_cfg,
+        const ConnectorOptions& opts = {}) {
     if (transport_cfg.remote_host.empty()) {
         return std::unexpected(
             "TransportConfig: remote_host is required for hostname-based connect");
     }
     auto ip = resolve_hostname(transport_cfg.remote_host);
     if (!ip) return std::unexpected(ip.error());
-    return connect<TransportType>(platform, cfg, transport_cfg, *ip);
+    return connect<TransportType>(platform, ep, transport_cfg, *ip, opts);
 }
 
-/// Convenience overload: resolves `transport_cfg.remote_host` via DNS,
-/// then delegates to the `server_ip` overload.
-///
-/// @warning DNS resolution uses the kernel network stack via `getaddrinfo()`.
-///   See `resolve_hostname()` for caveats with exclusive-mode PMDs.
+/// Simplest connect with existing Platform.
 template <typename TransportType = DpdkTransport>
-std::expected<ConnectResult<TransportType>, std::string>
-connect(const ConnectorConfig& cfg,
-        const TransportConfig& transport_cfg) {
-    if (transport_cfg.remote_host.empty()) {
-        return std::unexpected(
-            "TransportConfig: remote_host is required for hostname-based connect");
-    }
-
-    auto ip = resolve_hostname(transport_cfg.remote_host);
-    if (!ip) return std::unexpected(ip.error());
-
-    return connect<TransportType>(cfg, transport_cfg, *ip);
+std::expected<std::unique_ptr<TransportType>, std::string>
+connect(Platform& platform, std::string_view host, const DpdkEndpoint& ep,
+        const ConnectorOptions& opts = {}) {
+    TransportConfig transport_cfg{
+        .remote_host = std::string(host),
+    };
+    return connect<TransportType>(platform, ep, transport_cfg, opts);
 }
 
 } // namespace eph::dpdk

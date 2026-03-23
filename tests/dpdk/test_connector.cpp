@@ -72,21 +72,25 @@ TEST(ResolveHostname, InvalidFormatReturnsError) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ConnectorConfig — default values
+// ConnectorOptions — default values
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(ConnectorConfig, DefaultValues) {
-    ConnectorConfig cfg{};
-    EXPECT_EQ(cfg.platform.port_id, 0);
-    EXPECT_EQ(cfg.platform.nb_rx_queues, 1);
-    EXPECT_EQ(cfg.platform.nb_tx_queues, 1);
-    EXPECT_EQ(cfg.local_port, 0);
-    EXPECT_EQ(cfg.tx_queue_id, 0);
-    EXPECT_EQ(cfg.rx_queue_id, 0);
-    EXPECT_EQ(cfg.arp_timeout, std::chrono::milliseconds{3000});
-    EXPECT_EQ(cfg.connect_timeout, std::chrono::milliseconds{5000});
-    EXPECT_TRUE(cfg.local_ip.empty());
-    EXPECT_TRUE(cfg.gateway_ip.empty());
+TEST(ConnectorOptions, DefaultValues) {
+    ConnectorOptions opts{};
+    EXPECT_EQ(opts.platform.port_id, 0);
+    EXPECT_EQ(opts.platform.nb_rx_queues, 1);
+    EXPECT_EQ(opts.platform.nb_tx_queues, 1);
+    EXPECT_EQ(opts.local_port, 0);
+    EXPECT_EQ(opts.tx_queue_id, 0);
+    EXPECT_EQ(opts.rx_queue_id, 0);
+    EXPECT_EQ(opts.arp_timeout, std::chrono::milliseconds{3000});
+    EXPECT_EQ(opts.connect_timeout, std::chrono::milliseconds{5000});
+}
+
+TEST(DpdkEndpoint, RequiredFieldsMustBeProvided) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    EXPECT_EQ(ep.local_ip, "10.0.0.2");
+    EXPECT_EQ(ep.gateway_ip, "10.0.0.1");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,25 +103,25 @@ TEST(ConnectorConfig, DefaultValues) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(ConnectValidation, EmptyLocalIpReturnsError) {
-    ConnectorConfig cfg{.local_ip = "", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint ep{.local_ip = "", .gateway_ip = "10.0.0.1"};
     eph::net::TransportConfig tp_cfg{.remote_host = "example.com"};
-    auto result = connect(cfg, tp_cfg, 0x0A000002u);
+    auto result = connect(ep, tp_cfg, 0x0A000002u);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("local_ip"), std::string::npos);
 }
 
 TEST(ConnectValidation, EmptyGatewayIpReturnsError) {
-    ConnectorConfig cfg{.local_ip = "10.0.0.2", .gateway_ip = ""};
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = ""};
     eph::net::TransportConfig tp_cfg{.remote_host = "example.com"};
-    auto result = connect(cfg, tp_cfg, 0x0A000002u);
+    auto result = connect(ep, tp_cfg, 0x0A000002u);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("gateway_ip"), std::string::npos);
 }
 
 TEST(ConnectValidation, ZeroServerIpReturnsError) {
-    ConnectorConfig cfg{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
     eph::net::TransportConfig tp_cfg{.remote_host = "example.com"};
-    auto result = connect(cfg, tp_cfg, 0u);
+    auto result = connect(ep, tp_cfg, 0u);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("server_ip"), std::string::npos);
 }
@@ -127,19 +131,19 @@ TEST(ConnectValidation, ZeroServerIpReturnsError) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(ConnectHostnameOverload, EmptyRemoteHostReturnsError) {
-    ConnectorConfig cfg{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
     eph::net::TransportConfig tp_cfg{.remote_host = ""};
-    auto result = connect(cfg, tp_cfg);
+    auto result = connect(ep, tp_cfg);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("remote_host"), std::string::npos);
 }
 
 TEST(ConnectHostnameOverload, UnresolvableHostReturnsError) {
-    ConnectorConfig cfg{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
     eph::net::TransportConfig tp_cfg{
         .remote_host = "this.host.definitely.does.not.exist.invalid",
     };
-    auto result = connect(cfg, tp_cfg);
+    auto result = connect(ep, tp_cfg);
     ASSERT_FALSE(result.has_value());
     // Should contain the DNS error with exclusive-mode hint
     EXPECT_NE(result.error().find("DNS resolution failed"), std::string::npos);
@@ -147,9 +151,9 @@ TEST(ConnectHostnameOverload, UnresolvableHostReturnsError) {
 
 TEST(ConnectHostnameOverload, InvalidLocalIpStillCaughtAfterDns) {
     // DNS succeeds (dotted-decimal) but local_ip is empty → validation error
-    ConnectorConfig cfg{.local_ip = "", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint ep{.local_ip = "", .gateway_ip = "10.0.0.1"};
     eph::net::TransportConfig tp_cfg{.remote_host = "10.0.0.99"};
-    auto result = connect(cfg, tp_cfg);
+    auto result = connect(ep, tp_cfg);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("local_ip"), std::string::npos);
 }
