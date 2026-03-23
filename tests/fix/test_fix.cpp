@@ -3602,3 +3602,141 @@ TEST(FixBuilder, as_span_roundtrip_parse) {
     EXPECT_EQ(result->msg_type(), "D");
     EXPECT_EQ(result->get(tag::Symbol), "AAPL");
 }
+
+// ---------------------------------------------------------------------------
+// GroupEntry typed accessors
+// ---------------------------------------------------------------------------
+
+TEST(FixGroupEntryTyped, get_int_returns_parsed_integer) {
+    // Build a market data message with MDEntrySize as integer
+    std::string body = "35=W\x01"
+                       "268=2\x01"
+                       "269=0\x01" "270=150.25\x01" "271=1000\x01"
+                       "269=1\x01" "270=149.75\x01" "271=2000\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 2u);
+
+    auto sz0 = group[0].get_int(tag::MDEntrySize);
+    ASSERT_TRUE(sz0.has_value());
+    EXPECT_EQ(*sz0, 1000);
+
+    auto sz1 = group[1].get_int(tag::MDEntrySize);
+    ASSERT_TRUE(sz1.has_value());
+    EXPECT_EQ(*sz1, 2000);
+}
+
+TEST(FixGroupEntryTyped, get_double_returns_parsed_price) {
+    std::string body = "35=W\x01"
+                       "268=1\x01"
+                       "269=0\x01" "270=150.25\x01" "271=500\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    auto px = group[0].get_double(tag::MDEntryPx);
+    ASSERT_TRUE(px.has_value());
+    EXPECT_DOUBLE_EQ(*px, 150.25);
+}
+
+TEST(FixGroupEntryTyped, get_char_returns_entry_type) {
+    std::string body = "35=W\x01"
+                       "268=2\x01"
+                       "269=0\x01" "270=100.0\x01"
+                       "269=1\x01" "270=99.0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 2u);
+
+    auto c0 = group[0].get_char(tag::MDEntryType);
+    ASSERT_TRUE(c0.has_value());
+    EXPECT_EQ(*c0, '0');  // Bid
+
+    auto c1 = group[1].get_char(tag::MDEntryType);
+    ASSERT_TRUE(c1.has_value());
+    EXPECT_EQ(*c1, '1');  // Offer
+}
+
+TEST(FixGroupEntryTyped, get_int_missing_field_returns_nullopt) {
+    std::string body = "35=W\x01"
+                       "268=1\x01"
+                       "269=0\x01" "270=100.0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    // MDEntrySize (271) not present in this entry
+    EXPECT_FALSE(group[0].get_int(tag::MDEntrySize).has_value());
+}
+
+TEST(FixGroupEntryTyped, get_double_non_numeric_returns_nullopt) {
+    std::string body = "35=W\x01"
+                       "268=1\x01"
+                       "269=0\x01" "270=abc\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    EXPECT_FALSE(group[0].get_double(tag::MDEntryPx).has_value());
+}
+
+TEST(FixGroupEntryTyped, get_bool_in_group_entry) {
+    // Use a custom tag for bool within a group (PossDupFlag=43)
+    std::string body = "35=W\x01"
+                       "268=1\x01"
+                       "269=0\x01" "43=Y\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    auto b = group[0].get_bool(tag::PossDupFlag);
+    ASSERT_TRUE(b.has_value());
+    EXPECT_TRUE(*b);
+}
+
+TEST(FixGroupEntryTyped, get_timestamp_in_group_entry) {
+    // TransactTime within a group entry
+    std::string body = "35=W\x01"
+                       "268=1\x01"
+                       "269=0\x01" "60=20250315-14:30:00.123\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    auto ts = group[0].get_timestamp(tag::TransactTime);
+    ASSERT_TRUE(ts.has_value());
+    EXPECT_GT(*ts, 0u);
+
+    // Verify the timestamp matches what MessageView would parse
+    auto msg_ts = result->get_timestamp(tag::TransactTime);
+    ASSERT_TRUE(msg_ts.has_value());
+    EXPECT_EQ(*ts, *msg_ts);
+}

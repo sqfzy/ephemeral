@@ -39,6 +39,163 @@ inline std::shared_ptr<spdlog::logger> fix_parser_logger() {
     }();
     return l;
 }
+
+// ---------------------------------------------------------------------------
+// Value-parsing helpers — shared by BasicMessageView and GroupEntry
+// ---------------------------------------------------------------------------
+
+/// Parse a single-character value. Returns nullopt if not exactly 1 char.
+inline std::optional<char> parse_char_value(std::string_view sv) noexcept {
+    if (sv.size() != 1) return std::nullopt;
+    return sv[0];
+}
+
+/// Parse a signed integer from decimal ASCII with overflow detection.
+inline std::optional<int64_t> parse_int_value(std::string_view sv) noexcept {
+    if (sv.empty()) return std::nullopt;
+
+    const char* p   = sv.data();
+    const char* end = p + sv.size();
+    bool neg = false;
+    if (*p == '-') { neg = true; ++p; }
+    if (p == end) return std::nullopt;
+
+    constexpr uint64_t kMaxPositive = static_cast<uint64_t>(INT64_MAX);
+    constexpr uint64_t kMaxNegative = kMaxPositive + 1;
+    constexpr uint64_t kOverflowThreshold = UINT64_MAX / 10;
+
+    uint64_t val = 0;
+    while (p != end) {
+        char c = *p++;
+        if (c < '0' || c > '9') return std::nullopt;
+        uint64_t digit = static_cast<uint64_t>(c - '0');
+        if (val > kOverflowThreshold) return std::nullopt;
+        val *= 10;
+        if (val > UINT64_MAX - digit) return std::nullopt;
+        val += digit;
+    }
+
+    if (neg) {
+        if (val > kMaxNegative) return std::nullopt;
+        return static_cast<int64_t>(-val);
+    }
+    if (val > kMaxPositive) return std::nullopt;
+    return static_cast<int64_t>(val);
+}
+
+/// Parse a double from decimal ASCII (integer + optional fractional part).
+inline std::optional<double> parse_double_value(std::string_view sv) noexcept {
+    if (sv.empty()) return std::nullopt;
+
+    const char* p   = sv.data();
+    const char* end = p + sv.size();
+    bool neg = false;
+    if (*p == '-') { neg = true; ++p; }
+    if (p == end) return std::nullopt;
+
+    double val = 0.0;
+    while (p != end && *p != '.') {
+        char c = *p++;
+        if (c < '0' || c > '9') return std::nullopt;
+        val = val * 10.0 + (c - '0');
+    }
+    if (p != end && *p == '.') {
+        ++p;
+        double frac = 0.0;
+        double divisor = 1.0;
+        while (p != end) {
+            char c = *p++;
+            if (c < '0' || c > '9') return std::nullopt;
+            frac = frac * 10.0 + (c - '0');
+            divisor *= 10.0;
+        }
+        val += frac / divisor;
+    }
+    if (val == std::numeric_limits<double>::infinity()) return std::nullopt;
+    return neg ? -val : val;
+}
+
+/// Parse a FIX boolean (Y/N).
+inline std::optional<bool> parse_bool_value(std::string_view sv) noexcept {
+    auto c = parse_char_value(sv);
+    if (!c) return std::nullopt;
+    if (*c == 'Y') return true;
+    if (*c == 'N') return false;
+    return std::nullopt;
+}
+
+/// Parse a FIX UTCTimestamp to nanoseconds since Unix epoch.
+inline std::optional<uint64_t> parse_timestamp_value(std::string_view sv) noexcept {
+    if (sv.size() != 17 && sv.size() != 21 &&
+        sv.size() != 24 && sv.size() != 27) return std::nullopt;
+
+    const char* p = sv.data();
+    auto digit = [](char c) -> int { return (c >= '0' && c <= '9') ? (c - '0') : -1; };
+
+    int y3 = digit(p[0]), y2 = digit(p[1]), y1 = digit(p[2]), y0 = digit(p[3]);
+    int m1 = digit(p[4]), m0 = digit(p[5]);
+    int d1 = digit(p[6]), d0 = digit(p[7]);
+    if (y3 < 0 || y2 < 0 || y1 < 0 || y0 < 0) return std::nullopt;
+    if (m1 < 0 || m0 < 0 || d1 < 0 || d0 < 0) return std::nullopt;
+    if (p[8] != '-') return std::nullopt;
+
+    uint32_t year  = static_cast<uint32_t>(y3 * 1000 + y2 * 100 + y1 * 10 + y0);
+    uint32_t month = static_cast<uint32_t>(m1 * 10 + m0);
+    uint32_t day   = static_cast<uint32_t>(d1 * 10 + d0);
+
+    if (month < 1 || month > 12 || day < 1 || day > 31) return std::nullopt;
+
+    constexpr uint8_t kDaysInMonth[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    uint32_t max_day = kDaysInMonth[month - 1];
+    if (month == 2) {
+        bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+        if (leap) max_day = 29;
+    }
+    if (day > max_day) return std::nullopt;
+
+    int h1 = digit(p[9]),  h0 = digit(p[10]);
+    int n1 = digit(p[12]), n0 = digit(p[13]);
+    int s1 = digit(p[15]), s0 = digit(p[16]);
+    if (h1 < 0 || h0 < 0 || n1 < 0 || n0 < 0 || s1 < 0 || s0 < 0) return std::nullopt;
+    if (p[11] != ':' || p[14] != ':') return std::nullopt;
+
+    uint32_t hour   = static_cast<uint32_t>(h1 * 10 + h0);
+    uint32_t minute = static_cast<uint32_t>(n1 * 10 + n0);
+    uint32_t second = static_cast<uint32_t>(s1 * 10 + s0);
+
+    if (hour > 23 || minute > 59 || second > 60) return std::nullopt;
+
+    uint64_t frac_ns = 0;
+    if (sv.size() > 17) {
+        if (p[17] != '.') return std::nullopt;
+        size_t frac_len = sv.size() - 18;
+        uint64_t frac_val = 0;
+        for (size_t i = 0; i < frac_len; ++i) {
+            int d = digit(p[18 + i]);
+            if (d < 0) return std::nullopt;
+            frac_val = frac_val * 10 + static_cast<uint64_t>(d);
+        }
+        if (frac_len == 3) frac_ns = frac_val * 1'000'000ULL;
+        else if (frac_len == 6) frac_ns = frac_val * 1'000ULL;
+        else if (frac_len == 9) frac_ns = frac_val;
+    }
+
+    int64_t y = static_cast<int64_t>(year);
+    uint32_t m = month;
+    if (m <= 2) --y;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    uint64_t yoe = static_cast<uint64_t>(y - era * 400);
+    uint64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + day - 1;
+    uint64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468;
+
+    if (days < 0) return std::nullopt;
+
+    uint64_t epoch_sec = static_cast<uint64_t>(days) * 86400
+                       + hour * 3600 + minute * 60 + second;
+    return epoch_sec * 1'000'000'000ULL + frac_ns;
+}
+
 } // namespace detail
 
 /// Error codes from parse().
@@ -108,97 +265,32 @@ public:
     /// Useful for FIX single-char enum fields (Side, OrdType, ExecType, etc.).
     [[nodiscard]] std::optional<char> get_char(uint32_t t) const noexcept {
         auto sv = get(t);
-        if (!sv || sv->size() != 1) return std::nullopt;
-        return (*sv)[0];
+        if (!sv) return std::nullopt;
+        return detail::parse_char_value(*sv);
     }
 
     /// Look up a tag and parse its value as int64_t.
     /// Returns nullopt if the value overflows int64_t range.
     [[nodiscard]] std::optional<int64_t> get_int(uint32_t t) const noexcept {
         auto sv = get(t);
-        if (!sv || sv->empty()) return std::nullopt;
-
-        const char* p   = sv->data();
-        const char* end = p + sv->size();
-        bool neg = false;
-        if (*p == '-') { neg = true; ++p; }
-        if (p == end) return std::nullopt;
-
-        // Parse as uint64_t with overflow detection, then apply sign.
-        // Max positive: 9223372036854775807 (INT64_MAX)
-        // Max negative magnitude: 9223372036854775808 (|INT64_MIN|)
-        constexpr uint64_t kMaxPositive = static_cast<uint64_t>(INT64_MAX);
-        constexpr uint64_t kMaxNegative = kMaxPositive + 1;
-        constexpr uint64_t kOverflowThreshold = UINT64_MAX / 10;
-
-        uint64_t val = 0;
-        while (p != end) {
-            char c = *p++;
-            if (c < '0' || c > '9') return std::nullopt;
-            uint64_t digit = static_cast<uint64_t>(c - '0');
-            // Check for multiplication overflow
-            if (val > kOverflowThreshold) return std::nullopt;
-            val *= 10;
-            if (val > UINT64_MAX - digit) return std::nullopt;
-            val += digit;
-        }
-
-        if (neg) {
-            if (val > kMaxNegative) return std::nullopt;
-            // Safe: kMaxNegative == |INT64_MIN|, and -uint64_t is well-defined
-            return static_cast<int64_t>(-val);
-        }
-        if (val > kMaxPositive) return std::nullopt;
-        return static_cast<int64_t>(val);
+        if (!sv) return std::nullopt;
+        return detail::parse_int_value(*sv);
     }
 
     /// Look up a tag and parse its value as double.
     /// Returns nullopt if the value overflows to infinity.
     [[nodiscard]] std::optional<double> get_double(uint32_t t) const noexcept {
         auto sv = get(t);
-        if (!sv || sv->empty()) return std::nullopt;
-
-        const char* p   = sv->data();
-        const char* end = p + sv->size();
-        bool neg = false;
-        if (*p == '-') { neg = true; ++p; }
-        if (p == end) return std::nullopt;
-
-        double val = 0.0;
-        // Integer part
-        while (p != end && *p != '.') {
-            char c = *p++;
-            if (c < '0' || c > '9') return std::nullopt;
-            val = val * 10.0 + (c - '0');
-        }
-        // Fractional part
-        if (p != end && *p == '.') {
-            ++p;
-            double frac = 0.0;
-            double divisor = 1.0;
-            while (p != end) {
-                char c = *p++;
-                if (c < '0' || c > '9') return std::nullopt;
-                frac = frac * 10.0 + (c - '0');
-                divisor *= 10.0;
-            }
-            val += frac / divisor;
-        }
-        // Guard against overflow to infinity from extremely large inputs.
-        // Use direct comparison instead of std::isfinite for portability.
-        if (val == std::numeric_limits<double>::infinity()) return std::nullopt;
-        return neg ? -val : val;
+        if (!sv) return std::nullopt;
+        return detail::parse_double_value(*sv);
     }
 
     /// Look up a tag and parse its value as a FIX boolean (Y/N).
     /// Returns nullopt if the tag is missing or the value is not exactly "Y" or "N".
-    /// Useful for FIX boolean fields (PossDupFlag, PossResend, ResetSeqNumFlag, etc.).
     [[nodiscard]] std::optional<bool> get_bool(uint32_t t) const noexcept {
-        auto c = get_char(t);
-        if (!c) return std::nullopt;
-        if (*c == 'Y') return true;
-        if (*c == 'N') return false;
-        return std::nullopt;
+        auto sv = get(t);
+        if (!sv) return std::nullopt;
+        return detail::parse_bool_value(*sv);
     }
 
     /// Look up a tag and parse its value as a FIX UTCTimestamp.
@@ -207,89 +299,7 @@ public:
     [[nodiscard]] std::optional<uint64_t> get_timestamp(uint32_t t) const noexcept {
         auto sv = get(t);
         if (!sv) return std::nullopt;
-
-        // Minimum: "YYYYMMDD-HH:MM:SS" (17 chars)
-        // With millis: "YYYYMMDD-HH:MM:SS.sss" (21 chars)
-        // With micros: "YYYYMMDD-HH:MM:SS.ssssss" (24 chars)
-        // With nanos:  "YYYYMMDD-HH:MM:SS.sssssssss" (27 chars)
-        if (sv->size() != 17 && sv->size() != 21 &&
-            sv->size() != 24 && sv->size() != 27) return std::nullopt;
-
-        const char* p = sv->data();
-
-        // Parse date: YYYYMMDD
-        auto digit = [](char c) -> int { return (c >= '0' && c <= '9') ? (c - '0') : -1; };
-
-        int y3 = digit(p[0]), y2 = digit(p[1]), y1 = digit(p[2]), y0 = digit(p[3]);
-        int m1 = digit(p[4]), m0 = digit(p[5]);
-        int d1 = digit(p[6]), d0 = digit(p[7]);
-        if (y3 < 0 || y2 < 0 || y1 < 0 || y0 < 0) return std::nullopt;
-        if (m1 < 0 || m0 < 0 || d1 < 0 || d0 < 0) return std::nullopt;
-        if (p[8] != '-') return std::nullopt;
-
-        uint32_t year  = static_cast<uint32_t>(y3 * 1000 + y2 * 100 + y1 * 10 + y0);
-        uint32_t month = static_cast<uint32_t>(m1 * 10 + m0);
-        uint32_t day   = static_cast<uint32_t>(d1 * 10 + d0);
-
-        if (month < 1 || month > 12 || day < 1 || day > 31) return std::nullopt;
-
-        // Validate day-of-month for the specific month/year
-        // (prevents accepting nonsense like Feb 31)
-        constexpr uint8_t kDaysInMonth[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-        uint32_t max_day = kDaysInMonth[month - 1];
-        if (month == 2) {
-            bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
-            if (leap) max_day = 29;
-        }
-        if (day > max_day) return std::nullopt;
-
-        // Parse time: HH:MM:SS
-        int h1 = digit(p[9]),  h0 = digit(p[10]);
-        int n1 = digit(p[12]), n0 = digit(p[13]);
-        int s1 = digit(p[15]), s0 = digit(p[16]);
-        if (h1 < 0 || h0 < 0 || n1 < 0 || n0 < 0 || s1 < 0 || s0 < 0) return std::nullopt;
-        if (p[11] != ':' || p[14] != ':') return std::nullopt;
-
-        uint32_t hour   = static_cast<uint32_t>(h1 * 10 + h0);
-        uint32_t minute = static_cast<uint32_t>(n1 * 10 + n0);
-        uint32_t second = static_cast<uint32_t>(s1 * 10 + s0);
-
-        if (hour > 23 || minute > 59 || second > 60) return std::nullopt;
-
-        // Parse optional sub-second fraction (ms, us, or ns)
-        uint64_t frac_ns = 0;
-        if (sv->size() > 17) {
-            if (p[17] != '.') return std::nullopt;
-            size_t frac_len = sv->size() - 18; // digits after '.'
-            uint64_t frac_val = 0;
-            for (size_t i = 0; i < frac_len; ++i) {
-                int d = digit(p[18 + i]);
-                if (d < 0) return std::nullopt;
-                frac_val = frac_val * 10 + static_cast<uint64_t>(d);
-            }
-            // Scale to nanoseconds: ms(*1e6), us(*1e3), ns(*1)
-            if (frac_len == 3) frac_ns = frac_val * 1'000'000ULL;      // ms
-            else if (frac_len == 6) frac_ns = frac_val * 1'000ULL;     // us
-            else if (frac_len == 9) frac_ns = frac_val;                 // ns
-        }
-
-        // Civil date → days since epoch (inverse of Howard Hinnant algorithm)
-        // Adjust month so March = 0 (era-based calendar)
-        int64_t y = static_cast<int64_t>(year);
-        uint32_t m = month;
-        if (m <= 2) --y;
-        int64_t era = (y >= 0 ? y : y - 399) / 400;
-        uint64_t yoe = static_cast<uint64_t>(y - era * 400);
-        uint64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + day - 1;
-        uint64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468;
-
-        // Reject pre-epoch timestamps (return type is uint64_t, cannot represent negative)
-        if (days < 0) return std::nullopt;
-
-        uint64_t epoch_sec = static_cast<uint64_t>(days) * 86400
-                           + hour * 3600 + minute * 60 + second;
-        return epoch_sec * 1'000'000'000ULL + frac_ns;
+        return detail::parse_timestamp_value(*sv);
     }
 
     /// Random-access iterator over parsed fields.
@@ -364,6 +374,42 @@ public:
         /// Check if a tag exists in this entry.
         [[nodiscard]] bool has(uint32_t t) const noexcept {
             return get(t).has_value();
+        }
+
+        /// Look up a field and return its single-character value.
+        [[nodiscard]] std::optional<char> get_char(uint32_t t) const noexcept {
+            auto sv = get(t);
+            if (!sv) return std::nullopt;
+            return detail::parse_char_value(*sv);
+        }
+
+        /// Look up a field and parse its value as int64_t.
+        [[nodiscard]] std::optional<int64_t> get_int(uint32_t t) const noexcept {
+            auto sv = get(t);
+            if (!sv) return std::nullopt;
+            return detail::parse_int_value(*sv);
+        }
+
+        /// Look up a field and parse its value as double.
+        [[nodiscard]] std::optional<double> get_double(uint32_t t) const noexcept {
+            auto sv = get(t);
+            if (!sv) return std::nullopt;
+            return detail::parse_double_value(*sv);
+        }
+
+        /// Look up a field and parse its value as a FIX boolean (Y/N).
+        [[nodiscard]] std::optional<bool> get_bool(uint32_t t) const noexcept {
+            auto sv = get(t);
+            if (!sv) return std::nullopt;
+            return detail::parse_bool_value(*sv);
+        }
+
+        /// Look up a field and parse its value as a FIX UTCTimestamp.
+        /// Returns nanoseconds since Unix epoch, or nullopt on parse failure.
+        [[nodiscard]] std::optional<uint64_t> get_timestamp(uint32_t t) const noexcept {
+            auto sv = get(t);
+            if (!sv) return std::nullopt;
+            return detail::parse_timestamp_value(*sv);
         }
 
         /// Iterate over fields in this entry.
