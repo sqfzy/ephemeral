@@ -449,3 +449,22 @@ TEST(BoundedQueueBytesPeek, TryPeekVisitWts_ZeroCopyWithTimestamp) {
     EXPECT_TRUE(visited);
     EXPECT_EQ(queue.size(), 1u);
 }
+
+TEST(BoundedQueueBytesPeek, TryPeek_TruncatesWhenBufferSmaller) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 8> payload{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    // Peek with undersized buffer — should truncate to 3 bytes
+    std::array<uint8_t, 3> small_buf{};
+    auto len = queue.try_peek(small_buf);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(small_buf[0], 0x01);
+    EXPECT_EQ(small_buf[1], 0x02);
+    EXPECT_EQ(small_buf[2], 0x03);
+
+    // Queue still has the full message
+    EXPECT_EQ(queue.size(), 1u);
+}

@@ -536,3 +536,47 @@ TEST(EvictingQueueBytesPeek, TryPeekLatestVisitWts_ZeroCopyWithTimestamp) {
     EXPECT_TRUE(ok);
     EXPECT_TRUE(visited);
 }
+
+TEST(EvictingQueueBytesPeek, TryPeekLatest_TruncatesWhenBufferSmaller) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 8> payload{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    // Peek with undersized buffer — should truncate to 3 bytes
+    std::array<uint8_t, 3> small_buf{};
+    auto len = queue.try_peek_latest(small_buf);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(small_buf[0], 0x01);
+    EXPECT_EQ(small_buf[1], 0x02);
+    EXPECT_EQ(small_buf[2], 0x03);
+}
+
+TEST(EvictingQueueBytesPeek, TryPeekLatest_EvictionDoesNotAffectDiscardCounter) {
+    EvictingQueueBytes<64, 2> queue;  // capacity 2
+
+    // Push 3 items — first gets evicted
+    std::array<uint8_t, 2> p1{1, 1}, p2{2, 2}, p3{3, 3};
+    ASSERT_TRUE(queue.try_push_wts(p1, 100));
+    ASSERT_TRUE(queue.try_push_wts(p2, 200));
+    ASSERT_TRUE(queue.try_push_wts(p3, 300));  // evicts p1
+
+    // Peek — should NOT update discard tracking
+    std::array<uint8_t, 64> out{};
+    auto peek_len = queue.try_peek_latest(out);
+    ASSERT_TRUE(peek_len.has_value());
+    EXPECT_EQ(out[0], 3u);  // latest data (p3)
+
+    // Now consume — discard counter should reflect all skipped messages
+    // from the beginning (since last_pop_id_ was never set by peek)
+    uint64_t ts = 0;
+    uint32_t discarded = 999;
+    std::array<uint8_t, 64> out2{};
+    auto len = queue.try_pop_latest_wts(out2, ts, discarded);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(ts, 300u);
+    // First consume after push: last_pop_id_ was 0, so discarded = 0
+    // (first read always reports 0 discards per the implementation)
+    EXPECT_EQ(discarded, 0u);
+}
