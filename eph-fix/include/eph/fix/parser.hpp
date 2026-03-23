@@ -506,6 +506,50 @@ public:
         return {out_entries, found};
     }
 
+    // -----------------------------------------------------------------------
+    // Diagnostic output
+    // -----------------------------------------------------------------------
+
+    /// Multi-line formatted dump for logging/debugging.
+    /// Includes MsgType name, field count, and all tag=value pairs with
+    /// human-readable tag names.
+    [[nodiscard]] std::string dump() const {
+        auto mt = msg_type();
+        std::string s = std::format(
+            "FIX MessageView ({} fields, {} bytes):\n"
+            "  MsgType: {} ({})",
+            count_, total_len_,
+            mt.value_or("?"),
+            mt ? tag::msg_type_name(*mt) : "unknown");
+        for (size_t i = 0; i < count_; ++i) {
+            s += std::format("\n  [{}] {}({})={}", i,
+                             tag::tag_name(fields_[i].tag),
+                             fields_[i].tag, fields_[i].value);
+        }
+        return s;
+    }
+
+    /// JSON-formatted message for monitoring system integration.
+    /// Produces {"msg_type":"D","field_count":5,"total_len":87,"fields":[...]}.
+    [[nodiscard]] std::string to_json() const {
+        auto mt = msg_type();
+        std::string s = std::format(
+            "{{\"msg_type\":\"{}\",\"msg_type_name\":\"{}\","
+            "\"field_count\":{},\"total_len\":{},\"fields\":[",
+            mt.value_or("?"),
+            mt ? tag::msg_type_name(*mt) : "unknown",
+            count_, total_len_);
+        for (size_t i = 0; i < count_; ++i) {
+            if (i > 0) s += ',';
+            s += std::format("{{\"tag\":{},\"name\":\"{}\",\"value\":\"{}\"}}",
+                             fields_[i].tag,
+                             tag::tag_name(fields_[i].tag),
+                             fields_[i].value);
+        }
+        s += "]}";
+        return s;
+    }
+
     // -- Internal (used by parse()) --
     // Kept public because MessageView is a value type produced by parse().
 

@@ -3740,3 +3740,48 @@ TEST(FixGroupEntryTyped, get_timestamp_in_group_entry) {
     ASSERT_TRUE(msg_ts.has_value());
     EXPECT_EQ(*ts, *msg_ts);
 }
+
+// ---------------------------------------------------------------------------
+// MessageView dump() and to_json()
+// ---------------------------------------------------------------------------
+
+TEST(FixMessageViewDiag, dump_contains_msg_type_and_fields) {
+    std::string body = "35=D\x01" "55=AAPL\x01" "54=1\x01" "38=100\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto d = result->dump();
+    EXPECT_NE(d.find("MsgType: D"), std::string::npos);
+    EXPECT_NE(d.find("NewOrderSingle"), std::string::npos);
+    EXPECT_NE(d.find("Symbol(55)=AAPL"), std::string::npos);
+    EXPECT_NE(d.find("Side(54)=1"), std::string::npos);
+    EXPECT_NE(d.find("4 fields"), std::string::npos);
+}
+
+TEST(FixMessageViewDiag, to_json_contains_all_fields) {
+    std::string body = "35=D\x01" "55=MSFT\x01" "44=250.50\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto j = result->to_json();
+    EXPECT_NE(j.find("\"msg_type\":\"D\""), std::string::npos);
+    EXPECT_NE(j.find("\"msg_type_name\":\"NewOrderSingle\""), std::string::npos);
+    EXPECT_NE(j.find("\"field_count\":3"), std::string::npos);
+    EXPECT_NE(j.find("\"tag\":55"), std::string::npos);
+    EXPECT_NE(j.find("\"value\":\"MSFT\""), std::string::npos);
+    EXPECT_NE(j.find("\"value\":\"250.50\""), std::string::npos);
+}
+
+TEST(FixMessageViewDiag, dump_empty_message) {
+    // A message with only MsgType
+    std::string body = "35=0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto d = result->dump();
+    EXPECT_NE(d.find("Heartbeat"), std::string::npos);
+    EXPECT_NE(d.find("1 fields"), std::string::npos);
+}
