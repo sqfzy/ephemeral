@@ -1113,3 +1113,63 @@ TEST(DecodedFrameCloseReason, NonCloseFrameReturnsEmpty) {
     frame.payload_len = 10;
     EXPECT_TRUE(frame.close_reason().empty());
 }
+
+// ===========================================================================
+// is_valid_close_code — RFC 6455 §7.4 boundary testing
+// ===========================================================================
+
+TEST(CloseCodeValidation, StandardCodesAreValid) {
+    // 1000-1003 are valid standard codes
+    EXPECT_TRUE(is_valid_close_code(1000));
+    EXPECT_TRUE(is_valid_close_code(1001));
+    EXPECT_TRUE(is_valid_close_code(1002));
+    EXPECT_TRUE(is_valid_close_code(1003));
+}
+
+TEST(CloseCodeValidation, ReservedCodesAreInvalid) {
+    // 1004-1006 are reserved and MUST NOT be sent
+    EXPECT_FALSE(is_valid_close_code(1004));
+    EXPECT_FALSE(is_valid_close_code(1005));
+    EXPECT_FALSE(is_valid_close_code(1006));
+}
+
+TEST(CloseCodeValidation, StandardErrorCodesAreValid) {
+    // 1007-1011 are valid standard error codes
+    EXPECT_TRUE(is_valid_close_code(1007));
+    EXPECT_TRUE(is_valid_close_code(1008));
+    EXPECT_TRUE(is_valid_close_code(1009));
+    EXPECT_TRUE(is_valid_close_code(1010));
+    EXPECT_TRUE(is_valid_close_code(1011));
+}
+
+TEST(CloseCodeValidation, ReservedCodesBetweenRangesAreInvalid) {
+    // 1012-1014 are in the gap between standard ranges — invalid
+    EXPECT_FALSE(is_valid_close_code(1012));
+    EXPECT_FALSE(is_valid_close_code(1013));
+    EXPECT_FALSE(is_valid_close_code(1014));
+    // 1015 is reserved (TLS handshake failure, MUST NOT be sent)
+    EXPECT_FALSE(is_valid_close_code(1015));
+}
+
+TEST(CloseCodeValidation, RegisteredRangeIsValid) {
+    // 3000-4999 registered/private-use range
+    EXPECT_TRUE(is_valid_close_code(3000));
+    EXPECT_TRUE(is_valid_close_code(4000));
+    EXPECT_TRUE(is_valid_close_code(4999));
+}
+
+TEST(CloseCodeValidation, BoundaryValuesOutsideRanges) {
+    // Just below and above each valid range
+    EXPECT_FALSE(is_valid_close_code(999));   // below 1000
+    EXPECT_FALSE(is_valid_close_code(2999));  // gap between 1011 and 3000
+    EXPECT_FALSE(is_valid_close_code(5000));  // above 4999
+    EXPECT_FALSE(is_valid_close_code(0));     // zero
+    EXPECT_FALSE(is_valid_close_code(65535)); // max uint16_t
+}
+
+TEST(CloseCodeValidation, UnusedRangesAreInvalid) {
+    // 1016-2999 is the gap — all invalid
+    EXPECT_FALSE(is_valid_close_code(1016));
+    EXPECT_FALSE(is_valid_close_code(2000));
+    EXPECT_FALSE(is_valid_close_code(2999));
+}
