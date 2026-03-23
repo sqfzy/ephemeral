@@ -1101,14 +1101,14 @@ TEST(TransportConfigWarnings, CaCertPathWithoutTls) {
     EXPECT_TRUE(found);
 }
 
-TEST(TransportConfigWarnings, PongTimeoutExceedsPingInterval) {
+TEST(TransportConfigValidation, PongTimeoutExceedsPingIntervalIsError) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";
     cfg.ping_interval = std::chrono::seconds{10};
     cfg.pong_timeout = std::chrono::seconds{15};
-    auto w = cfg.warnings();
-    ASSERT_GE(w.size(), 1);
-    EXPECT_NE(w[0].find("pong_timeout"), std::string::npos);
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("pong_timeout"), std::string_view::npos);
 }
 
 TEST(TransportConfigWarnings, LargeBurstSizeWarning) {
@@ -1137,14 +1137,14 @@ TEST(TransportConfigWarnings, LargeRxBurstSizeWarning) {
     EXPECT_TRUE(found);
 }
 
-TEST(TransportConfigWarnings, PongTimeoutEqualsPingIntervalBoundary) {
+TEST(TransportConfigValidation, PongTimeoutEqualsPingIntervalIsError) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";
     cfg.ping_interval = std::chrono::seconds{10};
     cfg.pong_timeout = std::chrono::seconds{10};
-    auto w = cfg.warnings();
-    ASSERT_GE(w.size(), 1);
-    EXPECT_NE(w[0].find("pong_timeout"), std::string::npos);
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("pong_timeout"), std::string_view::npos);
 }
 
 TEST(TransportConfigWarnings, MultipleWarningsFromSameConfig) {

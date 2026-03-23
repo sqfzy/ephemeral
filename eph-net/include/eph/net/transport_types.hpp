@@ -418,6 +418,10 @@ struct TransportConfig {
             return "pong_timeout must be >= 0 (0 disables pong timeout)";
         if (pong_timeout.count() > 0 && ping_interval.count() <= 0)
             return "pong_timeout requires ping_interval > 0";
+        if (pong_timeout.count() > 0 && ping_interval.count() > 0 &&
+            pong_timeout >= ping_interval)
+            return "pong_timeout must be less than ping_interval "
+                   "(otherwise timeout fires before next ping)";
         if (!extra_headers.empty()) {
             // HTTP headers must end with \r\n for correct framing
             if (extra_headers.size() < 2 ||
@@ -448,12 +452,6 @@ struct TransportConfig {
             w.emplace_back("verify_peer=true has no effect when use_tls=false");
         if (!use_tls && !ca_cert_path.empty())
             w.emplace_back("ca_cert_path is set but use_tls=false — CA cert will be ignored");
-        if (pong_timeout.count() > 0 &&
-            pong_timeout >= ping_interval)
-            w.emplace_back(std::format(
-                "pong_timeout ({}s) >= ping_interval ({}s) — timeout will "
-                "fire before next ping, consider pong_timeout < ping_interval",
-                pong_timeout.count(), ping_interval.count()));
         if (tx_burst_size > static_cast<uint16_t>(1024))
             w.emplace_back(std::format(
                 "tx_burst_size={} is unusually large — may increase "

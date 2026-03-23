@@ -110,6 +110,7 @@ enum class DecodeError : uint8_t {
     kReservedBits,          ///< Non-zero RSV bits without extension
     kFragmentedControl,     ///< Control frame with FIN=0
     kControlPayloadTooLarge,///< Control frame payload > 125 bytes
+    kInvalidOpcode,         ///< Reserved opcode (0x3-0x7, 0xB-0xF per RFC 6455 §5.2)
 };
 
 /// Human-readable name for a DecodeError value.
@@ -119,6 +120,7 @@ constexpr std::string_view decode_error_name(DecodeError e) noexcept {
     case DecodeError::kReservedBits:           return "non-zero RSV bits without negotiated extension";
     case DecodeError::kFragmentedControl:      return "fragmented control frame";
     case DecodeError::kControlPayloadTooLarge: return "control frame payload exceeds 125 bytes";
+    case DecodeError::kInvalidOpcode:          return "reserved opcode (RFC 6455 §5.2)";
     }
     return "unknown";
 }
@@ -489,6 +491,12 @@ decode_frame(const uint8_t* data, size_t len) {
         return std::unexpected(DecodeError::kReservedBits);
     }
 
+    // RFC 6455 §5.2: opcodes 0x3-0x7 (data) and 0xB-0xF (control) are reserved
+    if ((frame.opcode >= 0x3 && frame.opcode <= 0x7) ||
+        (frame.opcode >= 0xB && frame.opcode <= 0xF)) {
+        return std::unexpected(DecodeError::kInvalidOpcode);
+    }
+
     // RFC 6455 §5.5: control frames MUST have FIN=1 and payload <= 125
     if (frame.opcode & 0x08) {
         if (!frame.fin) {
@@ -519,6 +527,12 @@ inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
     // Close payload: 2-byte status code + optional reason (max 123 chars)
     // Control frames MUST have payload <= 125 bytes (RFC 6455 §5.5)
     size_t reason_len = std::min(reason.size(), size_t{123});
+    if (reason.size() > 123) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            "close frame reason truncated from {} to 123 bytes "
+            "(RFC 6455 §5.5 control frame payload limit)",
+            reason.size());
+    }
     size_t close_payload_len = 2 + reason_len;
     uint8_t close_payload[125];
     close_payload[0] = static_cast<uint8_t>(status_code >> 8);

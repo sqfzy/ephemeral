@@ -171,7 +171,11 @@ public:
     if (ns < 0) [[unlikely]] {
       return std::nullopt;
     }
-    return static_cast<uint64_t>(static_cast<double>(ns) / ns_per_cycle_);
+    auto cycles = static_cast<double>(ns) / ns_per_cycle_;
+    if (cycles > static_cast<double>(UINT64_MAX)) [[unlikely]] {
+      return UINT64_MAX; // Saturate on overflow instead of UB
+    }
+    return static_cast<uint64_t>(cycles);
   }
 
   /**

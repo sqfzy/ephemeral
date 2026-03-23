@@ -586,6 +586,30 @@ TEST(WsFrame, RejectOversizedControlFrame) {
     EXPECT_EQ(result.error(), DecodeError::kControlPayloadTooLarge);
 }
 
+TEST(WsFrame, RejectReservedDataOpcodes) {
+    // Opcodes 0x3-0x7 are reserved for future data frames (RFC 6455 §5.2)
+    for (uint8_t op = 0x3; op <= 0x7; ++op) {
+        uint8_t buf[64] = {};
+        buf[0] = kFinBit | op;
+        buf[1] = 0; // zero payload
+        auto result = decode_frame(buf, 2);
+        ASSERT_FALSE(result.has_value()) << "opcode 0x" << std::hex << (int)op;
+        EXPECT_EQ(result.error(), DecodeError::kInvalidOpcode);
+    }
+}
+
+TEST(WsFrame, RejectReservedControlOpcodes) {
+    // Opcodes 0xB-0xF are reserved for future control frames (RFC 6455 §5.2)
+    for (uint8_t op = 0xB; op <= 0xF; ++op) {
+        uint8_t buf[64] = {};
+        buf[0] = kFinBit | op;
+        buf[1] = 0; // zero payload
+        auto result = decode_frame(buf, 2);
+        ASSERT_FALSE(result.has_value()) << "opcode 0x" << std::hex << (int)op;
+        EXPECT_EQ(result.error(), DecodeError::kInvalidOpcode);
+    }
+}
+
 TEST(WsFrame, AcceptMaxSizeControlFrame) {
     // Close frame with exactly 125 bytes payload — should be accepted
     uint8_t buf[256] = {};
@@ -958,6 +982,8 @@ TEST(DecodeErrorFormatter, AllValuesFormat) {
               "fragmented control frame");
     EXPECT_EQ(std::format("{}", DecodeError::kControlPayloadTooLarge),
               "control frame payload exceeds 125 bytes");
+    EXPECT_EQ(std::format("{}", DecodeError::kInvalidOpcode),
+              "reserved opcode (RFC 6455 §5.2)");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

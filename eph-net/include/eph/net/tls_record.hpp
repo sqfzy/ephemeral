@@ -59,6 +59,10 @@ inline constexpr uint16_t kAuthTagLen          = 16;
 /// Beyond this limit, nonce reuse risk makes continued encryption unsafe.
 inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 24);
 
+/// Threshold at which to emit a WARN log about approaching sequence exhaustion.
+/// Set to 90% of kMaxSequenceNumber to give applications time to reconnect.
+inline constexpr uint64_t kSequenceWarnThreshold = kMaxSequenceNumber * 9 / 10;
+
 /// Build the per-record nonce for TLS 1.3 AES-GCM.
 /// nonce = write_iv XOR (sequence_number padded to 12 bytes)
 /// Optimized: uses uint64_t XOR on the last 8 bytes instead of byte loop.
@@ -278,6 +282,16 @@ public:
         }
 
         write_seq_++;
+
+        // Advance warning: approaching sequence exhaustion
+        if (write_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
+                "TLS write sequence at {}% of limit ({}/{}), "
+                "consider reconnecting soon to avoid forced disconnect",
+                write_seq_ * 100 / tls_record::kMaxSequenceNumber,
+                write_seq_, tls_record::kMaxSequenceNumber);
+        }
+
         return tls_record::kRecordHeaderLen + static_cast<uint16_t>(ciphertext_len);
     }
 
@@ -349,6 +363,16 @@ public:
 
         out_len = static_cast<uint16_t>(plaintext_len);
         read_seq_++;
+
+        // Advance warning: approaching sequence exhaustion
+        if (read_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
+                "TLS read sequence at {}% of limit ({}/{}), "
+                "consider reconnecting soon to avoid forced disconnect",
+                read_seq_ * 100 / tls_record::kMaxSequenceNumber,
+                read_seq_, tls_record::kMaxSequenceNumber);
+        }
+
         return true;
     }
 
