@@ -371,10 +371,11 @@ inline size_t encode_frame(uint8_t* out, uint8_t opcode_val,
 
     // [P1] Single-pass copy + mask (fused memcpy + XOR)
     if (payload && payload_len > 0) {
-        masked_copy(out + header_len, payload, payload_len, mask_key);
+        masked_copy(out + header_len, payload,
+                    static_cast<size_t>(payload_len), mask_key);
     }
 
-    return header_len + payload_len;
+    return header_len + static_cast<size_t>(payload_len);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -469,7 +470,7 @@ decode_frame(const uint8_t* data, size_t len) {
     } else { // 127
         if (len < pos + 8) return std::unexpected(DecodeError::kIncomplete);
         frame.payload_len = 0;
-        for (int i = 0; i < 8; ++i) {
+        for (size_t i = 0; i < 8; ++i) {
             frame.payload_len = (frame.payload_len << 8) | data[pos + i];
         }
         pos += 8;
@@ -535,7 +536,9 @@ inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
             reason.size());
     }
     size_t close_payload_len = 2 + reason_len;
-    uint8_t close_payload[125];
+    uint8_t close_payload[2 + 123]; // 2-byte status + max reason
+    static_assert(sizeof(close_payload) == kMaxControlPayloadLen,
+                  "close_payload must fit max control frame payload");
     close_payload[0] = static_cast<uint8_t>(status_code >> 8);
     close_payload[1] = static_cast<uint8_t>(status_code & 0xFF);
     if (reason_len > 0) {

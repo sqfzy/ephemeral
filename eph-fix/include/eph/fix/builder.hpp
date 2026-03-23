@@ -468,7 +468,7 @@ private:
             char frac_buf[20];
             size_t fn = format_uint(frac_int, frac_buf);
             // Pad with leading zeros if needed
-            for (int i = 0; i < precision - static_cast<int>(fn); ++i) {
+            for (size_t i = fn; i < static_cast<size_t>(precision); ++i) {
                 out[off++] = '0';
             }
             std::memcpy(out + off, frac_buf, fn);
