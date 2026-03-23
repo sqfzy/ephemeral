@@ -9,8 +9,10 @@
 #include <sys/resource.h>
 
 #include <cerrno>
+#include <cmath>
 #include <cstring>
 #include <format>
+#include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -47,6 +49,42 @@ struct SystemResourceStats {
             "  ctx_switches: voluntary={} involuntary={}",
             user_cpu_s, sys_cpu_s, total_cpu_s,
             majflt, minflt, nvcsw, nivcsw);
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"user_cpu_s\":{:.6f},\"sys_cpu_s\":{:.6f},\"total_cpu_s\":{:.6f},"
+            "\"majflt\":{},\"minflt\":{},\"nvcsw\":{},\"nivcsw\":{}}}",
+            user_cpu_s, sys_cpu_s, total_cpu_s,
+            majflt, minflt, nvcsw, nivcsw);
+    }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    [[nodiscard]] friend SystemResourceStats operator-(
+        const SystemResourceStats& lhs, const SystemResourceStats& rhs) noexcept {
+        return SystemResourceStats{
+            .majflt     = lhs.majflt     - rhs.majflt,
+            .minflt     = lhs.minflt     - rhs.minflt,
+            .nvcsw      = lhs.nvcsw      - rhs.nvcsw,
+            .nivcsw     = lhs.nivcsw     - rhs.nivcsw,
+            .user_cpu_s = lhs.user_cpu_s - rhs.user_cpu_s,
+            .sys_cpu_s  = lhs.sys_cpu_s  - rhs.sys_cpu_s,
+            .total_cpu_s = lhs.total_cpu_s - rhs.total_cpu_s,
+        };
+    }
+
+    /// Equality comparison (floating-point fields use approximate comparison).
+    [[nodiscard]] friend bool operator==(
+        const SystemResourceStats& lhs, const SystemResourceStats& rhs) noexcept {
+        constexpr double kEps = 1e-9;
+        return lhs.majflt == rhs.majflt &&
+               lhs.minflt == rhs.minflt &&
+               lhs.nvcsw  == rhs.nvcsw  &&
+               lhs.nivcsw == rhs.nivcsw &&
+               std::abs(lhs.user_cpu_s  - rhs.user_cpu_s)  < kEps &&
+               std::abs(lhs.sys_cpu_s   - rhs.sys_cpu_s)   < kEps &&
+               std::abs(lhs.total_cpu_s - rhs.total_cpu_s)  < kEps;
     }
 };
 

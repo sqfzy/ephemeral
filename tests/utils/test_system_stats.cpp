@@ -234,3 +234,85 @@ TEST(SystemResourceStatsTest, DumpContainsAllFields) {
     EXPECT_NE(text.find("voluntary=5"), std::string::npos);
     EXPECT_NE(text.find("involuntary=3"), std::string::npos);
 }
+
+// ============================================================================
+// SystemResourceStats — to_json
+// ============================================================================
+
+TEST(SystemResourceStatsTest, ToJsonContainsAllFields) {
+    SystemResourceStats stats{
+        .majflt = 2,
+        .minflt = 50,
+        .nvcsw = 5,
+        .nivcsw = 3,
+        .user_cpu_s = 0.5,
+        .sys_cpu_s = 0.1,
+        .total_cpu_s = 0.6,
+    };
+
+    auto json = stats.to_json();
+    EXPECT_NE(json.find("\"user_cpu_s\":0.5"), std::string::npos);
+    EXPECT_NE(json.find("\"sys_cpu_s\":0.1"), std::string::npos);
+    EXPECT_NE(json.find("\"majflt\":2"), std::string::npos);
+    EXPECT_NE(json.find("\"minflt\":50"), std::string::npos);
+    EXPECT_NE(json.find("\"nvcsw\":5"), std::string::npos);
+    EXPECT_NE(json.find("\"nivcsw\":3"), std::string::npos);
+}
+
+TEST(SystemResourceStatsTest, ToJsonZeroValues) {
+    SystemResourceStats stats{};
+    auto json = stats.to_json();
+    EXPECT_NE(json.find("\"majflt\":0"), std::string::npos);
+    EXPECT_NE(json.find("\"nvcsw\":0"), std::string::npos);
+}
+
+// ============================================================================
+// SystemResourceStats — operator-
+// ============================================================================
+
+TEST(SystemResourceStatsTest, DiffOperator) {
+    SystemResourceStats s1{
+        .majflt = 1, .minflt = 10, .nvcsw = 5, .nivcsw = 2,
+        .user_cpu_s = 0.1, .sys_cpu_s = 0.05, .total_cpu_s = 0.15,
+    };
+    SystemResourceStats s2{
+        .majflt = 3, .minflt = 50, .nvcsw = 12, .nivcsw = 7,
+        .user_cpu_s = 0.5, .sys_cpu_s = 0.2, .total_cpu_s = 0.7,
+    };
+
+    auto delta = s2 - s1;
+    EXPECT_EQ(delta.majflt, 2);
+    EXPECT_EQ(delta.minflt, 40);
+    EXPECT_EQ(delta.nvcsw, 7);
+    EXPECT_EQ(delta.nivcsw, 5);
+    EXPECT_NEAR(delta.user_cpu_s, 0.4, 1e-9);
+    EXPECT_NEAR(delta.sys_cpu_s, 0.15, 1e-9);
+    EXPECT_NEAR(delta.total_cpu_s, 0.55, 1e-9);
+}
+
+// ============================================================================
+// SystemResourceStats — operator==
+// ============================================================================
+
+TEST(SystemResourceStatsTest, EqualityOperator) {
+    SystemResourceStats a{
+        .majflt = 1, .minflt = 10, .nvcsw = 5, .nivcsw = 2,
+        .user_cpu_s = 0.1, .sys_cpu_s = 0.05, .total_cpu_s = 0.15,
+    };
+    SystemResourceStats b = a;
+    EXPECT_EQ(a, b);
+
+    b.minflt = 11;
+    EXPECT_NE(a, b);
+}
+
+TEST(SystemResourceStatsTest, EqualityApproximateFloats) {
+    SystemResourceStats a{
+        .majflt = 0, .minflt = 0, .nvcsw = 0, .nivcsw = 0,
+        .user_cpu_s = 1.0, .sys_cpu_s = 0.0, .total_cpu_s = 1.0,
+    };
+    SystemResourceStats b = a;
+    // Tiny floating-point perturbation should still compare equal
+    b.user_cpu_s += 1e-12;
+    EXPECT_EQ(a, b);
+}
