@@ -4340,3 +4340,111 @@ TEST(FixParser, max_body_length_exact_boundary) {
     auto result = parse<128, 128>(raw.data(), raw.size());
     EXPECT_TRUE(result.has_value());
 }
+
+// ===========================================================================
+// get_group() — Repeating group parsing
+// ===========================================================================
+
+TEST(FixParser, get_group_parses_two_entry_group) {
+    // MDEntryType (269) is the delimiter; NoMDEntries (268) is the count tag.
+    // Build: 268=2 | 269=0 | 270=1.23 | 269=1 | 270=4.56
+    std::string body = "35=W\x01"   // MsgType=MarketDataSnapshot
+                       "268=2\x01"  // NoMDEntries=2
+                       "269=0\x01"  // MDEntryType=Bid (entry 1)
+                       "270=1.23\x01" // MDEntryPx (entry 1)
+                       "269=1\x01"  // MDEntryType=Offer (entry 2)
+                       "270=4.56\x01"; // MDEntryPx (entry 2)
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto msg = parse<128, 128>(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    MessageView::GroupEntry entries[8];
+    auto group = msg->get_group(268, 269, entries, 8);
+    EXPECT_EQ(group.size(), 2u);
+
+    // Entry 1
+    auto entry_type_0 = group[0].get(269);
+    ASSERT_TRUE(entry_type_0.has_value());
+    EXPECT_EQ(*entry_type_0, "0");
+    auto px_0 = group[0].get(270);
+    ASSERT_TRUE(px_0.has_value());
+    EXPECT_EQ(*px_0, "1.23");
+
+    // Entry 2
+    auto entry_type_1 = group[1].get(269);
+    ASSERT_TRUE(entry_type_1.has_value());
+    EXPECT_EQ(*entry_type_1, "1");
+}
+
+TEST(FixParser, get_group_empty_group_returns_zero_entries) {
+    std::string body = "35=W\x01"
+                       "268=0\x01";  // NoMDEntries=0
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto msg = parse<128, 128>(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    MessageView::GroupEntry entries[4];
+    auto group = msg->get_group(268, 269, entries, 4);
+    EXPECT_EQ(group.size(), 0u);
+}
+
+TEST(FixParser, get_group_missing_count_tag_returns_empty) {
+    std::string body = "35=W\x01"
+                       "269=0\x01";  // delimiter but no count tag
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto msg = parse<128, 128>(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    MessageView::GroupEntry entries[4];
+    auto group = msg->get_group(268, 269, entries, 4);
+    EXPECT_EQ(group.size(), 0u);
+}
+
+TEST(FixParser, get_group_entry_typed_accessors) {
+    // Test GroupEntry::get_int, get_double, get_bool, get_char
+    std::string body = "35=W\x01"
+                       "268=1\x01"
+                       "269=0\x01"       // MDEntryType (char)
+                       "270=99.50\x01"   // MDEntryPx (double)
+                       "271=1000\x01";   // MDEntrySize (int)
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto msg = parse<128, 128>(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+
+    MessageView::GroupEntry entries[4];
+    auto group = msg->get_group(268, 269, entries, 4);
+    ASSERT_EQ(group.size(), 1u);
+
+    auto c = group[0].get_char(269);
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(*c, '0');
+
+    auto px = group[0].get_double(270);
+    ASSERT_TRUE(px.has_value());
+    EXPECT_DOUBLE_EQ(*px, 99.50);
+
+    auto sz = group[0].get_int(271);
+    ASSERT_TRUE(sz.has_value());
+    EXPECT_EQ(*sz, 1000);
+}
+
+// ===========================================================================
+// Builder: as_span and as_string_view accessors
+// ===========================================================================
+
+TEST(FixBuilder, as_span_and_as_string_view_after_finish) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_int(tag::MsgSeqNum, 1);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto span = b.as_span();
+    EXPECT_EQ(span.size(), len);
+    EXPECT_EQ(span.data(), buf);
+
+    auto sv = b.as_string_view();
+    EXPECT_EQ(sv.size(), len);
+    EXPECT_TRUE(sv.starts_with("8=FIX"));
+}
