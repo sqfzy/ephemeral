@@ -84,6 +84,19 @@ target("eph-dpdk")
     -- from types.hpp. Raw DPDK TCP (tcp.hpp) works without it.
     add_packages("aws-lc", { public = true })
     add_packages("dpdk", { public = true })
+    -- ARM64: DPDK headers check RTE_FORCE_INTRINSICS before rte_config.h is included.
+    -- vcpkg's pkgconfig doesn't provide this define, so we must add it explicitly.
+    -- Also force-include rte_config.h so rte_build_config.h defines are available
+    -- before any other DPDK header (e.g. rte_byteorder.h) is parsed.
+    add_defines("RTE_FORCE_INTRINSICS", { public = true })
+    add_cxflags("-include", "rte_config.h", { public = true, force = true })
+    -- Static DPDK PMD drivers use __attribute__((constructor)) to self-register.
+    -- Without --whole-archive, the linker strips unreferenced .a files and the
+    -- constructors never run (rte_eal_init fails with "No such device").
+    -- Only wrap the 5 PMDs we actually use — wrapping all librte_*.a would pull
+    -- in librte_crypto_openssl which conflicts with aws-lc.
+    add_linkgroups("rte_net_null", "rte_net_ena", "rte_net_af_packet",
+                   "rte_bus_pci", "rte_bus_vdev", { whole = true })
     add_cxflags("-march=native", { public = true, force = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
