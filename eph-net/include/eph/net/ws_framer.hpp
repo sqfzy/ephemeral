@@ -47,6 +47,7 @@ public:
             case ws::DecodeError::kReservedBits:
             case ws::DecodeError::kFragmentedControl:
             case ws::DecodeError::kControlPayloadTooLarge:
+            case ws::DecodeError::kInvalidOpcode:
                 return std::unexpected(FrameError::kInvalidFormat);
             }
             // Unreachable, but satisfy the compiler
