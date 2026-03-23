@@ -4,8 +4,10 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <optional>
 #include <span>
+#include <string>
 
 #include "eph/containers/bounded_queue.hpp"
 
@@ -478,6 +480,64 @@ class BoundedQueueBytes {
 
     /// 估计可读取的消息数量
     [[nodiscard]] size_t available_read() const noexcept { return queue_.available_read(); }
+
+    // ===========================================================================
+    // 可观测性
+    // ===========================================================================
+
+    /// Queue statistics snapshot for monitoring/debugging.
+    /// Delegates to the underlying BoundedQueue stats.
+    struct Stats {
+        size_t total_pushed;   ///< Total messages ever pushed (monotonic)
+        size_t total_popped;   ///< Total messages ever popped (monotonic)
+        size_t current_size;   ///< Approximate current occupancy
+        size_t capacity;       ///< Fixed capacity
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            double utilization = capacity > 0
+                ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
+                : 0.0;
+            return std::format(
+                "BoundedQueueBytes::Stats:\n"
+                "  capacity: {}\n"
+                "  current_size: {} ({:.1f}% full)\n"
+                "  total_pushed: {}\n"
+                "  total_popped: {}",
+                capacity, current_size, utilization,
+                total_pushed, total_popped);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
+                capacity, current_size, total_pushed, total_popped);
+        }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .total_pushed = lhs.total_pushed - rhs.total_pushed,
+                .total_popped = lhs.total_popped - rhs.total_popped,
+                .current_size = lhs.current_size,  // point-in-time, not diffable
+                .capacity     = lhs.capacity,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
+    };
+
+    /// Take a point-in-time statistics snapshot.
+    [[nodiscard]] Stats stats() const noexcept {
+        auto s = queue_.stats();
+        return Stats{
+            .total_pushed = s.total_pushed,
+            .total_popped = s.total_popped,
+            .current_size = s.current_size,
+            .capacity     = s.capacity,
+        };
+    }
 
    private:
     BoundedQueue<DataWrap, Capacity> queue_;

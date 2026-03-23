@@ -468,3 +468,94 @@ TEST(BoundedQueueBytesPeek, TryPeek_TruncatesWhenBufferSmaller) {
     // Queue still has the full message
     EXPECT_EQ(queue.size(), 1u);
 }
+
+// ===========================================================================
+// Stats tests
+// ===========================================================================
+
+TEST(BoundedQueueBytesStats, EmptyQueueStats) {
+    BoundedQueueBytes<64, 4> queue;
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, 0u);
+    EXPECT_EQ(s.total_popped, 0u);
+    EXPECT_EQ(s.current_size, 0u);
+    EXPECT_EQ(s.capacity, 4u);
+}
+
+TEST(BoundedQueueBytesStats, StatsAfterPushPop) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 3> payload{0x01, 0x02, 0x03};
+
+    ASSERT_TRUE(queue.try_push(payload));
+    ASSERT_TRUE(queue.try_push(payload));
+
+    auto s1 = queue.stats();
+    EXPECT_EQ(s1.total_pushed, 2u);
+    EXPECT_EQ(s1.total_popped, 0u);
+    EXPECT_EQ(s1.current_size, 2u);
+
+    std::array<uint8_t, 64> out{};
+    ASSERT_TRUE(queue.try_pop(out).has_value());
+
+    auto s2 = queue.stats();
+    EXPECT_EQ(s2.total_pushed, 2u);
+    EXPECT_EQ(s2.total_popped, 1u);
+    EXPECT_EQ(s2.current_size, 1u);
+}
+
+TEST(BoundedQueueBytesStats, StatsDiffOperator) {
+    BoundedQueueBytes<64, 8> queue;
+    auto s1 = queue.stats();
+
+    std::array<uint8_t, 2> payload{0xAA, 0xBB};
+    for (int i = 0; i < 5; ++i)
+        ASSERT_TRUE(queue.try_push(payload));
+
+    std::array<uint8_t, 64> out{};
+    ASSERT_TRUE(queue.try_pop(out).has_value());
+    ASSERT_TRUE(queue.try_pop(out).has_value());
+
+    auto s2 = queue.stats();
+    auto delta = s2 - s1;
+
+    EXPECT_EQ(delta.total_pushed, 5u);
+    EXPECT_EQ(delta.total_popped, 2u);
+    EXPECT_EQ(delta.current_size, 3u);  // point-in-time from s2
+    EXPECT_EQ(delta.capacity, 8u);
+}
+
+TEST(BoundedQueueBytesStats, StatsEquality) {
+    BoundedQueueBytes<64, 4> queue;
+    auto s1 = queue.stats();
+    auto s2 = queue.stats();
+    EXPECT_EQ(s1, s2);
+
+    std::array<uint8_t, 2> payload{0x01, 0x02};
+    ASSERT_TRUE(queue.try_push(payload));
+    auto s3 = queue.stats();
+    EXPECT_NE(s1, s3);
+}
+
+TEST(BoundedQueueBytesStats, StatsDumpContainsKey) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 2> payload{0x01, 0x02};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    auto s = queue.stats();
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("BoundedQueueBytes"), std::string::npos);
+    EXPECT_NE(dump.find("capacity: 4"), std::string::npos);
+    EXPECT_NE(dump.find("total_pushed: 1"), std::string::npos);
+}
+
+TEST(BoundedQueueBytesStats, StatsToJsonValid) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 2> payload{0x01, 0x02};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    auto s = queue.stats();
+    auto json = s.to_json();
+    EXPECT_NE(json.find("\"capacity\":4"), std::string::npos);
+    EXPECT_NE(json.find("\"total_pushed\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"total_popped\":0"), std::string::npos);
+}
