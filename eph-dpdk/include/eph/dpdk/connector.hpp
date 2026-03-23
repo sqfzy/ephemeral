@@ -46,6 +46,7 @@
 #include <rte_ethdev.h>
 
 #include "eph/dpdk/arp.hpp"
+#include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/tcp.hpp"
@@ -82,6 +83,7 @@ struct ConnectorOptions {
     uint16_t rx_queue_id = 0;
     std::chrono::milliseconds arp_timeout{3000};
     std::chrono::milliseconds connect_timeout{5000};
+    dns::DnsConfig dns{};  ///< DNS config for DPDK DNS fallback (default: 8.8.8.8)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,8 +301,13 @@ connect(const DpdkEndpoint& ep,
 
 /// DNS-resolving connect: resolves `transport_cfg.remote_host` automatically.
 ///
-/// @warning DNS resolution uses the kernel network stack via `getaddrinfo()`.
-///   See `resolve_hostname()` for caveats with exclusive-mode PMDs.
+/// Resolution strategy:
+///   1. Try kernel DNS (getaddrinfo) — works with bifurcated drivers
+///   2. Fall back to DPDK DNS — creates Platform, does ARP for gateway,
+///      sends UDP DNS query through the NIC
+///
+/// The DPDK DNS fallback uses 8.8.8.8 as the default nameserver.
+/// Configure via `ConnectorOptions::dns`.
 template <typename TransportType = DpdkTransport>
 std::expected<ConnectResult<TransportType>, std::string>
 connect(const DpdkEndpoint& ep,
@@ -310,9 +317,81 @@ connect(const DpdkEndpoint& ep,
         return std::unexpected(
             "TransportConfig: remote_host is required for hostname-based connect");
     }
+
+    // Try kernel DNS first (zero cost if driver allows it)
     auto ip = resolve_hostname(transport_cfg.remote_host);
-    if (!ip) return std::unexpected(ip.error());
-    return connect<TransportType>(ep, transport_cfg, *ip, opts);
+    if (ip) {
+        return connect<TransportType>(ep, transport_cfg, *ip, opts);
+    }
+
+    // Kernel DNS failed — fall back to DPDK DNS.
+    // Need Platform + ARP before we can send UDP.
+    SPDLOG_DEBUG("dpdk::connect: kernel DNS failed ({}), trying DPDK DNS",
+                 ip.error());
+
+    auto platform = Platform::create(opts.platform);
+    if (!platform) {
+        return std::unexpected(
+            std::format("Platform creation failed: {}", platform.error()));
+    }
+
+    // Parse local/gateway IPs
+    uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
+    uint32_t gateway_ip = net::parse_ipv4(ep.gateway_ip.c_str());
+    if (local_ip == 0) {
+        return std::unexpected(std::format("Invalid local_ip: '{}'", ep.local_ip));
+    }
+    if (gateway_ip == 0) {
+        return std::unexpected(std::format("Invalid gateway_ip: '{}'", ep.gateway_ip));
+    }
+
+    // Get our MAC
+    rte_ether_addr src_mac{};
+    if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
+        return std::unexpected(
+            std::format("Failed to get MAC for port {}", opts.platform.port_id));
+    }
+
+    // ARP for gateway MAC (needed to send DNS UDP packets)
+    auto gw_mac = arp::resolve(
+        opts.platform.port_id, opts.rx_queue_id, platform->mempool(),
+        src_mac, local_ip, gateway_ip, opts.arp_timeout);
+    if (!gw_mac) {
+        return std::unexpected(
+            std::format("ARP for gateway failed: {}", gw_mac.error()));
+    }
+
+    // DNS resolve over DPDK
+    auto dpdk_ip = dns::resolve(
+        opts.platform.port_id, opts.rx_queue_id, platform->mempool(),
+        src_mac, *gw_mac, local_ip,
+        transport_cfg.remote_host, opts.dns);
+    if (!dpdk_ip) {
+        return std::unexpected(std::format(
+            "DNS resolution failed (both kernel and DPDK): kernel={}, dpdk={}",
+            ip.error(), dpdk_ip.error()));
+    }
+
+    // Now do the TCP connection using the already-created Platform
+    auto setup = detail::prepare_connection(
+        ep, opts, transport_cfg, *dpdk_ip, platform->mempool());
+    if (!setup) return std::unexpected(setup.error());
+
+    auto transport = TransportType::create(
+        std::move(setup->tcp_factory), transport_cfg);
+    if (!transport) {
+        return std::unexpected(
+            std::format("Transport creation failed: {}", transport.error().message()));
+    }
+
+    SPDLOG_DEBUG("dpdk::connect: connection established (via DPDK DNS)");
+
+    return ConnectResult<TransportType>{
+        .platform    = std::move(*platform),
+        .transport   = std::move(*transport),
+        .local_mac   = setup->src_mac,
+        .gateway_mac = setup->dst_mac,
+    };
 }
 
 /// Simplest connect: hostname + required endpoint + optional settings.
@@ -364,7 +443,7 @@ connect(Platform& platform,
     return std::move(*transport);
 }
 
-/// Connect with existing Platform + DNS resolution.
+/// Connect with existing Platform + DNS resolution (kernel, DPDK fallback).
 template <typename TransportType = DpdkTransport>
 std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
@@ -375,9 +454,45 @@ connect(Platform& platform,
         return std::unexpected(
             "TransportConfig: remote_host is required for hostname-based connect");
     }
+
+    // Try kernel DNS first
     auto ip = resolve_hostname(transport_cfg.remote_host);
-    if (!ip) return std::unexpected(ip.error());
-    return connect<TransportType>(platform, ep, transport_cfg, *ip, opts);
+    if (ip) {
+        return connect<TransportType>(platform, ep, transport_cfg, *ip, opts);
+    }
+
+    // Fall back to DPDK DNS
+    SPDLOG_DEBUG("dpdk::connect(platform&): kernel DNS failed, trying DPDK DNS");
+
+    uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
+    uint32_t gateway_ip = net::parse_ipv4(ep.gateway_ip.c_str());
+    if (local_ip == 0 || gateway_ip == 0) {
+        return std::unexpected("Invalid local_ip or gateway_ip for DPDK DNS fallback");
+    }
+
+    rte_ether_addr src_mac{};
+    if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
+        return std::unexpected("Failed to get MAC for DPDK DNS fallback");
+    }
+
+    auto gw_mac = arp::resolve(
+        opts.platform.port_id, opts.rx_queue_id, platform.mempool(),
+        src_mac, local_ip, gateway_ip, opts.arp_timeout);
+    if (!gw_mac) {
+        return std::unexpected(std::format(
+            "DNS fallback: ARP for gateway failed: {}", gw_mac.error()));
+    }
+
+    auto dpdk_ip = dns::resolve(
+        opts.platform.port_id, opts.rx_queue_id, platform.mempool(),
+        src_mac, *gw_mac, local_ip,
+        transport_cfg.remote_host, opts.dns);
+    if (!dpdk_ip) {
+        return std::unexpected(std::format(
+            "DNS failed (kernel: {}, DPDK: {})", ip.error(), dpdk_ip.error()));
+    }
+
+    return connect<TransportType>(platform, ep, transport_cfg, *dpdk_ip, opts);
 }
 
 /// Simplest connect with existing Platform.
