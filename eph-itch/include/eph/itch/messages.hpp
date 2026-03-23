@@ -186,7 +186,7 @@ inline constexpr size_t  kNOIISize = 50;
 
 // Retail Price Improvement Indicator ('N')
 inline constexpr uint8_t kRPII     = 'N';
-inline constexpr size_t  kRPIISize = 19;
+inline constexpr size_t  kRPIISize = 20;
 
 // ---------------------------------------------------------------------------
 // Per-message field accessors

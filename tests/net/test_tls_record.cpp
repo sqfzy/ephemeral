@@ -630,3 +630,43 @@ TEST(TlsRecord, DecryptCorruptedHeader) {
     bool ok = dec->decrypt(record.data(), written, out, dec_len);
     EXPECT_FALSE(ok) << "Corrupted content type should fail";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TlsConfig::validate()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TlsConfig, ValidateDefaultConfigPasses) {
+    TlsConfig cfg{};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TlsConfig, ValidateZeroHandshakeTimeoutFails) {
+    TlsConfig cfg{.handshake_timeout = std::chrono::milliseconds{0}};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("handshake_timeout"), std::string_view::npos);
+}
+
+TEST(TlsConfig, ValidateNegativeHandshakeTimeoutFails) {
+    TlsConfig cfg{.handshake_timeout = std::chrono::milliseconds{-1}};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+}
+
+TEST(TlsConfig, ValidateBothCertAndKeySetPasses) {
+    TlsConfig cfg{.client_cert_path = "/cert.pem", .client_key_path = "/key.pem"};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TlsConfig, ValidateCertWithoutKeyFails) {
+    TlsConfig cfg{.client_cert_path = "/cert.pem"};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("client_cert_path"), std::string_view::npos);
+}
+
+TEST(TlsConfig, ValidateKeyWithoutCertFails) {
+    TlsConfig cfg{.client_key_path = "/key.pem"};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+}

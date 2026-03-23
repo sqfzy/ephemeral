@@ -85,6 +85,19 @@ TEST(RawFramer, DecodeEmptyReturnsIncomplete) {
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
 
+TEST(RawFramer, EncodeNullDataReturnsZero) {
+    uint8_t out[16];
+    RawFramer framer;
+    EXPECT_EQ(framer.encode(out, nullptr, 10, 0), 0u);
+}
+
+TEST(RawFramer, EncodeZeroLengthReturnsZero) {
+    uint8_t out[16];
+    const uint8_t data[] = {1, 2, 3};
+    RawFramer framer;
+    EXPECT_EQ(framer.encode(out, data, 0, 0), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // Test 5: LengthPrefixFramer encode — 2-byte BE header prepended
 // ---------------------------------------------------------------------------

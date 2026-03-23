@@ -449,3 +449,27 @@ TEST(Http, BuildUpgradeRequestWithSubprotocol) {
     EXPECT_NE(req.find("Sec-WebSocket-Protocol: graphql-ws\r\n"),
               std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Input validation — empty params must return empty string
+// ---------------------------------------------------------------------------
+
+TEST(Http, BuildUpgradeRequestEmptyHostReturnsEmpty) {
+    std::string req = build_upgrade_request("", "/ws", "key123==");
+    EXPECT_TRUE(req.empty());
+}
+
+TEST(Http, BuildUpgradeRequestEmptyPathReturnsEmpty) {
+    std::string req = build_upgrade_request("example.com", "", "key123==");
+    EXPECT_TRUE(req.empty());
+}
+
+TEST(Http, BuildUpgradeRequestEmptyKeyReturnsEmpty) {
+    std::string req = build_upgrade_request("example.com", "/ws", "");
+    EXPECT_TRUE(req.empty());
+}
+
+TEST(Http, BuildUpgradeRequestAllEmptyReturnsEmpty) {
+    std::string req = build_upgrade_request("", "", "");
+    EXPECT_TRUE(req.empty());
+}
