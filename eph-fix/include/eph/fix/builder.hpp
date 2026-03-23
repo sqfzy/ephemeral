@@ -374,6 +374,9 @@ public:
 private:
     static constexpr size_t kHeaderReserve = 32;
     static constexpr size_t kTrailerLen = 7;  // "10=XXX\x01"
+    // "8=" + version (≤15) + SOH + "9=" + body_len (≤7 digits) + SOH = ≤28
+    static_assert(kHeaderReserve >= 28,
+                  "kHeaderReserve must fit BeginString + BodyLength header");
 
     uint8_t* buf_;
     size_t   capacity_;

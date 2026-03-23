@@ -337,6 +337,47 @@ class alignas(Align<T>) EvictingQueue {
     }
 
     /**
+     * @brief 带超时的零拷贝查看最新数据但不标记为已消费
+     *
+     * 自旋等待直到有新数据可用或超时。与 try_peek_latest 相同，
+     * 不推进 reader 索引，因此后续 consume 仍可读取同一条数据。
+     *
+     * @param visitor 访问数据的回调 void(const T&)
+     * @param timeout 最大等待时间
+     * @return true 读取成功; false 超时
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_peek_latest_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_peek_latest(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_peek_latest(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    /// @brief 带超时的值拷贝查看 (不消费)
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_peek_latest_for(
+        T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
+        return try_peek_latest_for(
+            [&out](const T& data) { out = data; }, timeout);
+    }
+
+    /// @brief 带超时的查看并返回可选值 (不消费)
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<T> try_peek_latest_for(
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        std::optional<T> res;
+        (void)try_peek_latest_for(
+            [&res](const T& data) { res.emplace(data); }, timeout);
+        return res;
+    }
+
+    /**
      * @brief 阻塞式零拷贝读取 (自旋直到成功)
      */
     template <typename F>
@@ -659,6 +700,36 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
             return res;
         }
         return std::nullopt;
+    }
+
+    /// 带超时的零拷贝查看最新数据但不标记为已消费 (Capacity=1 特化)
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_peek_latest_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_peek_latest(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_peek_latest(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    template <typename Rep, typename Period>
+    [[nodiscard]] bool try_peek_latest_for(
+        T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
+        return try_peek_latest_for(
+            [&out](const T& data) { out = data; }, timeout);
+    }
+
+    template <typename Rep, typename Period>
+    [[nodiscard]] std::optional<T> try_peek_latest_for(
+        std::chrono::duration<Rep, Period> timeout) noexcept {
+        std::optional<T> res;
+        (void)try_peek_latest_for(
+            [&res](const T& data) { res.emplace(data); }, timeout);
+        return res;
     }
 
     template <typename F>

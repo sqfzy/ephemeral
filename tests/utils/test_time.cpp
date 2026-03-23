@@ -83,8 +83,29 @@ TEST_F(TimeTest, TscMeasureActualDelay) {
 
 TEST_F(TimeTest, TscIsInitialized) {
   EXPECT_TRUE(TSC::is_initialized());
-  
+
   auto ns_per_cycle = TSC::get_ns_per_cycle();
   ASSERT_TRUE(ns_per_cycle.has_value());
   EXPECT_GT(*ns_per_cycle, 0.0);
+}
+
+TEST_F(TimeTest, concurrent_init_is_safe) {
+  // TSC::init() is guarded by std::call_once — concurrent calls must not race.
+  // Since init was already called in SetUpTestSuite, all threads here should
+  // observe the already-initialized state and return true immediately.
+  constexpr int kThreads = 8;
+  std::atomic<int> success_count{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kThreads);
+
+  for (int i = 0; i < kThreads; ++i) {
+    threads.emplace_back([&] {
+      if (TSC::init()) success_count.fetch_add(1, std::memory_order_relaxed);
+    });
+  }
+  for (auto& t : threads) t.join();
+
+  // All threads should succeed (call_once returns cached result).
+  EXPECT_EQ(success_count.load(), kThreads);
+  EXPECT_TRUE(TSC::is_initialized());
 }

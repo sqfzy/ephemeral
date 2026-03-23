@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -125,12 +126,112 @@ public:
    *   TSC::init(std::chrono::milliseconds(500));
    * @endcode
    *
-   * @warning NOT thread-safe. Must be called exactly once from a single thread
-   *          (e.g. during program initialization) before any concurrent use of
-   *          now()/to_ns()/to_cycles().
+   * @note Thread-safe: concurrent calls are serialized via std::call_once.
+   *       Only the first call performs calibration; subsequent calls return the
+   *       cached result.
    */
   static bool
   init(std::chrono::milliseconds duration = std::chrono::milliseconds(200)) {
+    bool result = false;
+    std::call_once(init_flag_, [&] { result = do_init_(duration); });
+    // If call_once already fired, return the stored result.
+    if (!result) result = initialized_.load(std::memory_order_acquire);
+    return result;
+  }
+
+  /**
+   * @brief 将 CPU 周期数转换为纳秒
+   *
+   * @param cycles CPU 周期数（通常是两次 now() 调用的差值）
+   * @return std::optional<double> 成功时返回纳秒数，未初始化时返回 nullopt
+   *
+   * @warning 必须先调用 init() 校准
+   */
+  [[nodiscard]] static std::optional<double> to_ns(uint64_t cycles) noexcept {
+    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
+      return std::nullopt;
+    }
+    return static_cast<double>(cycles) * ns_per_cycle_;
+  }
+
+  /**
+   * @brief 将纳秒转换为 CPU 周期数
+   *
+   * @tparam Rep 数值类型（默认 double）
+   * @param ns 纳秒数
+   * @return std::optional<uint64_t> 成功时返回周期数，未初始化时返回 nullopt
+   *
+   * @warning 必须先调用 init() 校准
+   */
+  template <typename Rep = double>
+  [[nodiscard]] static std::optional<uint64_t> to_cycles(Rep ns) noexcept {
+    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
+      return std::nullopt;
+    }
+    if (ns < 0) [[unlikely]] {
+      return std::nullopt;
+    }
+    return static_cast<uint64_t>(static_cast<double>(ns) / ns_per_cycle_);
+  }
+
+  /**
+   * @brief 将 std::chrono::duration 转换为 CPU 周期数
+   *
+   * @tparam Rep std::chrono::duration 的表示类型
+   * @tparam Period std::chrono::duration 的周期类型
+   * @param d 时间长度
+   * @return std::optional<uint64_t> 成功时返回周期数
+   *
+   * @example
+   * @code
+   *   if (auto cycles = TSC::to_cycles(std::chrono::microseconds(100))) {
+   *     std::println("100us = {} cycles", *cycles);
+   *   }
+   * @endcode
+   */
+  template <class Rep, class Period>
+  [[nodiscard]] static std::optional<uint64_t>
+  to_cycles(std::chrono::duration<Rep, Period> d) noexcept {
+    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
+      return std::nullopt;
+    }
+    double ns = std::chrono::duration<double, std::nano>(d).count();
+    return to_cycles(ns);
+  }
+
+  /**
+   * @brief 检查 TSC 是否已初始化
+   */
+  [[nodiscard]] static bool is_initialized() noexcept {
+    return initialized_.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief 获取校准的纳秒/周期比率（用于高级用途）
+   *
+   * @return std::optional<double> 已初始化时返回比率
+   */
+  [[nodiscard]] static std::optional<double> get_ns_per_cycle() noexcept {
+    if (!initialized_.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+    return ns_per_cycle_;
+  }
+
+private:
+  // ns_per_cycle_ is written exactly once by init() before initialized_ is
+  // set to true.  The release store on initialized_ in init() and the acquire
+  // load in to_ns()/to_cycles() establish a happens-before relationship,
+  // guaranteeing that any thread observing initialized_==true will also see
+  // the fully-written ns_per_cycle_ value.  This makes concurrent reads from
+  // worker threads safe without requiring ns_per_cycle_ itself to be atomic.
+  static inline double ns_per_cycle_ = 0.0;
+  static inline std::atomic<bool> initialized_{false};
+  static inline std::once_flag init_flag_;
+
+  /// Actual calibration logic, called exactly once via std::call_once.
+  static bool
+  do_init_(std::chrono::milliseconds duration) {
     using namespace std::chrono;
 
     auto log = detail::tsc_logger();
@@ -222,95 +323,6 @@ public:
 
     return true;
   }
-
-  /**
-   * @brief 将 CPU 周期数转换为纳秒
-   *
-   * @param cycles CPU 周期数（通常是两次 now() 调用的差值）
-   * @return std::optional<double> 成功时返回纳秒数，未初始化时返回 nullopt
-   *
-   * @warning 必须先调用 init() 校准
-   */
-  [[nodiscard]] static std::optional<double> to_ns(uint64_t cycles) noexcept {
-    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
-      return std::nullopt;
-    }
-    return static_cast<double>(cycles) * ns_per_cycle_;
-  }
-
-  /**
-   * @brief 将纳秒转换为 CPU 周期数
-   *
-   * @tparam Rep 数值类型（默认 double）
-   * @param ns 纳秒数
-   * @return std::optional<uint64_t> 成功时返回周期数，未初始化时返回 nullopt
-   *
-   * @warning 必须先调用 init() 校准
-   */
-  template <typename Rep = double>
-  [[nodiscard]] static std::optional<uint64_t> to_cycles(Rep ns) noexcept {
-    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
-      return std::nullopt;
-    }
-    if (ns < 0) [[unlikely]] {
-      return std::nullopt;
-    }
-    return static_cast<uint64_t>(static_cast<double>(ns) / ns_per_cycle_);
-  }
-
-  /**
-   * @brief 将 std::chrono::duration 转换为 CPU 周期数
-   *
-   * @tparam Rep std::chrono::duration 的表示类型
-   * @tparam Period std::chrono::duration 的周期类型
-   * @param d 时间长度
-   * @return std::optional<uint64_t> 成功时返回周期数
-   *
-   * @example
-   * @code
-   *   if (auto cycles = TSC::to_cycles(std::chrono::microseconds(100))) {
-   *     std::println("100us = {} cycles", *cycles);
-   *   }
-   * @endcode
-   */
-  template <class Rep, class Period>
-  [[nodiscard]] static std::optional<uint64_t>
-  to_cycles(std::chrono::duration<Rep, Period> d) noexcept {
-    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
-      return std::nullopt;
-    }
-    double ns = std::chrono::duration<double, std::nano>(d).count();
-    return to_cycles(ns);
-  }
-
-  /**
-   * @brief 检查 TSC 是否已初始化
-   */
-  [[nodiscard]] static bool is_initialized() noexcept {
-    return initialized_.load(std::memory_order_acquire);
-  }
-
-  /**
-   * @brief 获取校准的纳秒/周期比率（用于高级用途）
-   *
-   * @return std::optional<double> 已初始化时返回比率
-   */
-  [[nodiscard]] static std::optional<double> get_ns_per_cycle() noexcept {
-    if (!initialized_.load(std::memory_order_acquire)) {
-      return std::nullopt;
-    }
-    return ns_per_cycle_;
-  }
-
-private:
-  // ns_per_cycle_ is written exactly once by init() before initialized_ is
-  // set to true.  The release store on initialized_ in init() and the acquire
-  // load in to_ns()/to_cycles() establish a happens-before relationship,
-  // guaranteeing that any thread observing initialized_==true will also see
-  // the fully-written ns_per_cycle_ value.  This makes concurrent reads from
-  // worker threads safe without requiring ns_per_cycle_ itself to be atomic.
-  static inline double ns_per_cycle_ = 0.0;
-  static inline std::atomic<bool> initialized_{false};
 
   /**
    * @brief 检查 TSC 的可靠性（Linux x86_64）

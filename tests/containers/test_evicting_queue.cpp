@@ -774,3 +774,83 @@ TEST(EvictingQueueStress, ConcurrentPeekNeverReturnsTornData) {
     // Should have had some successes
     EXPECT_GT(peek_successes.load(), 0u);
 }
+
+// ===========================================================================
+// try_peek_latest_for — non-consuming read with timeout
+// ===========================================================================
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_returns_false_on_empty_queue_timeout) {
+    TypeParam queue;
+    TestData out{};
+    // Very short timeout — should return false quickly on empty queue
+    EXPECT_FALSE(queue.try_peek_latest_for(out, std::chrono::microseconds(10)));
+}
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_returns_data_when_available) {
+    TypeParam queue;
+    TestData d{.seq = 42};
+    queue.push(d);
+
+    TestData out{};
+    EXPECT_TRUE(queue.try_peek_latest_for(out, std::chrono::milliseconds(10)));
+    EXPECT_EQ(out.seq, 42u);
+}
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_does_not_consume) {
+    TypeParam queue;
+    TestData d{.seq = 99};
+    queue.push(d);
+
+    // Peek twice — both should succeed with same data
+    auto v1 = queue.try_peek_latest_for(std::chrono::milliseconds(10));
+    auto v2 = queue.try_peek_latest_for(std::chrono::milliseconds(10));
+    ASSERT_TRUE(v1.has_value());
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v1->seq, 99u);
+    EXPECT_EQ(v2->seq, 99u);
+
+    // Consume should still work after peeks
+    auto consumed = queue.try_pop_latest();
+    ASSERT_TRUE(consumed.has_value());
+    EXPECT_EQ(consumed->seq, 99u);
+}
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_visitor_receives_data_before_timeout) {
+    TypeParam queue;
+    TestData d{.seq = 7};
+    queue.push(d);
+
+    uint32_t seen_seq = 0;
+    bool ok = queue.try_peek_latest_for(
+        [&](const TestData& data) { seen_seq = data.seq; },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(seen_seq, 7u);
+}
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_visitor_returns_false_on_timeout) {
+    TypeParam queue;
+    uint32_t seen_seq = 0;
+    bool ok = queue.try_peek_latest_for(
+        [&](const TestData& data) { seen_seq = data.seq; },
+        std::chrono::microseconds(10));
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(seen_seq, 0u);
+}
+
+TEST(EvictingQueueTest_PeekFor, delayed_write_unblocks_peek) {
+    EvictingQueue<TestData, 4> queue;
+    std::atomic<bool> peeked{false};
+
+    std::thread writer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        queue.push(TestData{.seq = 123});
+    });
+
+    TestData out{};
+    bool ok = queue.try_peek_latest_for(out, std::chrono::milliseconds(100));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(out.seq, 123u);
+
+    writer.join();
+}

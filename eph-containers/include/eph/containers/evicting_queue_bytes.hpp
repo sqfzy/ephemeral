@@ -287,6 +287,46 @@ class EvictingQueueBytes {
         });
     }
 
+    /**
+     * @brief 带超时的零拷贝查看最新消息但不更新读取状态 (Visitor 模式)
+     *
+     * @param visitor 回调 void(std::span<const uint8_t>)
+     * @param timeout 最大等待时间
+     * @return true 有新数据且已回调; false 超时
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, std::span<const uint8_t>>
+    [[nodiscard]] bool try_peek_latest_visit_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_peek_latest_visit(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_peek_latest_visit(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
+    /**
+     * @brief 带超时的零拷贝查看最新消息但不更新读取状态（带时间戳, Visitor 模式）
+     *
+     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts)
+     * @param timeout 最大等待时间
+     * @return true 有新数据且已回调; false 超时
+     */
+    template <typename F, typename Rep, typename Period>
+        requires std::invocable<F, std::span<const uint8_t>, uint64_t>
+    [[nodiscard]] bool try_peek_latest_visit_wts_for(
+        F&& visitor, std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (try_peek_latest_visit_wts(std::forward<F>(visitor))) return true;
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        do {
+            cpu_relax();
+            if (try_peek_latest_visit_wts(std::forward<F>(visitor))) return true;
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+
     // ===========================================================================
     // 阻塞 Reader (自旋等待)
     // ===========================================================================
