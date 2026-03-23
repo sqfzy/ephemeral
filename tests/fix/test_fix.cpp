@@ -3786,6 +3786,27 @@ TEST(FixMessageViewDiag, dump_empty_message) {
     EXPECT_NE(d.find("1 fields"), std::string::npos);
 }
 
+TEST(FixMessageViewDiag, to_json_escapes_special_characters) {
+    // Build a message where Text field contains a double-quote and backslash
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::Text, "say \"hello\" and \\done");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+
+    auto j = result->to_json();
+    // The quotes and backslash in the value must be escaped
+    EXPECT_NE(j.find("say \\\"hello\\\" and \\\\done"), std::string::npos)
+        << "JSON output should escape \" and \\, got: " << j;
+    // Verify it's still valid-ish JSON (starts and ends correctly)
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}
+
 // ---------------------------------------------------------------------------
 // Unique setter family completion
 // ---------------------------------------------------------------------------

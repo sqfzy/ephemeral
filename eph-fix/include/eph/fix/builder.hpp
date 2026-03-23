@@ -317,73 +317,45 @@ public:
     /// Sets the overflow flag and logs a warning on duplicate.
     /// Use for non-repeating-group fields where duplicates violate the FIX spec.
     MessageBuilder& set_unique(uint32_t t, std::string_view value) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set(t, value);
     }
 
     /// Like set_int(), but rejects duplicates.
     MessageBuilder& set_int_unique(uint32_t t, int64_t value) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set_int(t, value);
     }
 
     /// Like set_double(), but rejects duplicates.
     MessageBuilder& set_double_unique(uint32_t t, double value, int precision = 2) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set_double(t, value, precision);
     }
 
     /// Like set_char(), but rejects duplicates.
     MessageBuilder& set_char_unique(uint32_t t, char value) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set_char(t, value);
     }
 
     /// Like set_bool(), but rejects duplicates.
     /// Useful for safety-critical flags (PossDupFlag, ResetSeqNumFlag, etc.).
     MessageBuilder& set_bool_unique(uint32_t t, bool value) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set_bool(t, value);
     }
 
     /// Like set_timestamp(), but rejects duplicates.
     MessageBuilder& set_timestamp_unique(uint32_t t, uint64_t epoch_ns,
                                          TimestampPrecision prec = TimestampPrecision::kMilliseconds) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set_timestamp(t, epoch_ns, prec);
     }
 
     /// Like set_raw(), but rejects duplicates.
     MessageBuilder& set_raw_unique(uint32_t t, const uint8_t* data, size_t len) noexcept {
-        if (has_tag(t)) [[unlikely]] {
-            log_duplicate_tag(t);
-            overflow_ = true;
-            return *this;
-        }
+        if (reject_if_duplicate(t)) return *this;
         return set_raw(t, data, len);
     }
 
@@ -461,6 +433,17 @@ public:
     }
 
 private:
+    /// Check for duplicate tag — sets overflow and logs if found.
+    /// Returns true if the tag is a duplicate (caller should abort).
+    [[nodiscard]] bool reject_if_duplicate(uint32_t t) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return true;
+        }
+        return false;
+    }
+
     /// Write a tag=value\x01 field without SOH validation.
     /// Used by internal formatting methods (set_int, set_bool, set_double,
     /// set_timestamp) that produce known-safe ASCII output.

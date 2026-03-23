@@ -14,6 +14,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -38,6 +39,30 @@ inline std::shared_ptr<spdlog::logger> fix_parser_logger() {
         return lg;
     }();
     return l;
+}
+
+// ---------------------------------------------------------------------------
+// JSON escaping helper for to_json() output
+// ---------------------------------------------------------------------------
+
+/// Append a JSON-escaped string (RFC 8259 §7) to an existing buffer.
+/// Handles: \", \\, and control chars U+0000–U+001F.
+/// FIX field values are typically printable ASCII, so the fast path
+/// (no escaping needed) is the common case.
+inline void json_escape_append(std::string& out, std::string_view sv) {
+    for (char c : sv) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20) {
+                out += std::format("\\u{:04x}", static_cast<unsigned char>(c));
+            } else {
+                out += c;
+            }
+            break;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +556,7 @@ public:
 
     /// JSON-formatted message for monitoring system integration.
     /// Produces {"msg_type":"D","field_count":5,"total_len":87,"fields":[...]}.
+    /// Field values are JSON-escaped (RFC 8259 §7) to prevent malformed output.
     [[nodiscard]] std::string to_json() const {
         auto mt = msg_type();
         std::string s = std::format(
@@ -541,10 +567,11 @@ public:
             count_, total_len_);
         for (size_t i = 0; i < count_; ++i) {
             if (i > 0) s += ',';
-            s += std::format("{{\"tag\":{},\"name\":\"{}\",\"value\":\"{}\"}}",
+            s += std::format("{{\"tag\":{},\"name\":\"{}\",\"value\":\"",
                              fields_[i].tag,
-                             tag::tag_name(fields_[i].tag),
-                             fields_[i].value);
+                             tag::tag_name(fields_[i].tag));
+            detail::json_escape_append(s, fields_[i].value);
+            s += "\"}";
         }
         s += "]}";
         return s;
