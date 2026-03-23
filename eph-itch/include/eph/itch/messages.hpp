@@ -192,12 +192,43 @@ inline constexpr size_t  kRPIISize = 20;
 // Aggregate message size helpers
 // ---------------------------------------------------------------------------
 
+namespace detail {
+/// Compile-time max/min over all ITCH 5.0 message sizes.
+/// Adding a new message type here automatically updates kMaxMessageSize/kMinMessageSize.
+inline constexpr size_t kAllMessageSizes[] = {
+    kSystemEventSize, kStockDirectorySize, kStockTradingActionSize,
+    kRegSHORestrictionSize, kMarketParticipantPositionSize,
+    kMWCBDeclineLevelSize, kMWCBStatusSize, kIPOQuotingPeriodSize,
+    kLULDAuctionCollarSize, kOperationalHaltSize,
+    kAddOrderSize, kAddOrderMPIDSize, kOrderExecutedSize,
+    kOrderExecutedWithPriceSize, kOrderCancelSize, kOrderDeleteSize,
+    kOrderReplaceSize, kNonCrossTradeSize, kCrossTradeSize,
+    kBrokenTradeSize, kNOIISize, kRPIISize,
+};
+
+consteval size_t max_of(const size_t* arr, size_t n) {
+    size_t m = arr[0];
+    for (size_t i = 1; i < n; ++i) if (arr[i] > m) m = arr[i];
+    return m;
+}
+consteval size_t min_of(const size_t* arr, size_t n) {
+    size_t m = arr[0];
+    for (size_t i = 1; i < n; ++i) if (arr[i] < m) m = arr[i];
+    return m;
+}
+} // namespace detail
+
 /// Maximum on-wire message size across all ITCH 5.0 message types.
 /// Useful for buffer pre-allocation: any single ITCH message fits in this many bytes.
-inline constexpr size_t kMaxMessageSize = kNOIISize;  // 50 bytes (largest)
+/// Automatically derived from the per-type size constants — no manual update needed.
+inline constexpr size_t kMaxMessageSize = detail::max_of(
+    detail::kAllMessageSizes,
+    sizeof(detail::kAllMessageSizes) / sizeof(detail::kAllMessageSizes[0]));
 
 /// Minimum on-wire message size across all ITCH 5.0 message types.
-inline constexpr size_t kMinMessageSize = kSystemEventSize;  // 11 bytes (smallest)
+inline constexpr size_t kMinMessageSize = detail::min_of(
+    detail::kAllMessageSizes,
+    sizeof(detail::kAllMessageSizes) / sizeof(detail::kAllMessageSizes[0]));
 
 // ---------------------------------------------------------------------------
 // Per-message field accessors

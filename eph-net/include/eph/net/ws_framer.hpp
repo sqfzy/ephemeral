@@ -61,8 +61,8 @@ public:
                             "exceeds 125 bytes (RFC 6455 §5.5 violation)");
                 return std::unexpected(FrameError::kInvalidFormat);
             case ws::DecodeError::kInvalidOpcode:
-                SPDLOG_WARN("WsFramer::decode: invalid opcode in "
-                            "frame header");
+                SPDLOG_WARN("WsFramer::decode: invalid opcode {:#04x} "
+                            "in frame header", len > 0 ? (data[0] & 0x0F) : 0);
                 return std::unexpected(FrameError::kInvalidFormat);
             }
             // Unreachable, but satisfy the compiler

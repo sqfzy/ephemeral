@@ -2012,9 +2012,9 @@ TEST_F(TransportTest, QueueHwmStartsLow) {
 
     std::this_thread::sleep_for(5ms);
 
-    // HWM should be non-negative
-    EXPECT_GE(tp->tx_queue_hwm(), 0u);
-    EXPECT_GE(tp->rx_queue_hwm(), 0u);
+    // HWM should be well below queue capacity after creation
+    EXPECT_LT(tp->tx_queue_hwm(), TestTransport::queue_depth());
+    EXPECT_LT(tp->rx_queue_hwm(), TestTransport::queue_depth());
 
     tp->stop();
 }
