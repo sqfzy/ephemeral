@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include <spdlog/spdlog.h>
+
 #include "eph/net/framer_concept.hpp"
 
 namespace eph::net {
@@ -32,7 +34,11 @@ public:
         // Guard: payload must fit in a uint16_t length field.
         // Silently truncating would corrupt the wire format, so return 0
         // to signal failure (caller already checks return value > 0).
-        if (len > kMaxPayloadLen || len == 0) return 0;
+        if (len > kMaxPayloadLen || len == 0) [[unlikely]] {
+            SPDLOG_DEBUG("LengthPrefixFramer::encode: invalid len={} "
+                         "(max={}, min=1)", len, kMaxPayloadLen);
+            return 0;
+        }
 
         // 2-byte big-endian length prefix
         out[0] = static_cast<uint8_t>((len >> 8) & 0xFF);

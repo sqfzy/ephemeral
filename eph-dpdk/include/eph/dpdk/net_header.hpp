@@ -41,6 +41,11 @@ inline constexpr uint8_t kTcpPsh = 0x08;
 inline constexpr uint8_t kTcpAck = 0x10;
 inline constexpr uint8_t kTcpUrg = 0x20;
 
+// IPv4 header defaults
+inline constexpr uint8_t  kIpv4VersionIhl5 = 0x45;   // Version 4, IHL 5 (20 bytes, no options)
+inline constexpr uint16_t kIpDontFragment   = 0x4000; // Don't Fragment flag in fragment_offset field
+inline constexpr uint8_t  kDefaultTtl       = 64;     // Default Time-To-Live
+
 // Default TCP MSS for Ethernet (MTU 1500 - IP header - TCP header)
 inline constexpr uint16_t kDefaultMss = 1460;
 
@@ -234,6 +239,7 @@ struct PacketTemplate {
                            uint8_t flags, uint16_t window,
                            const void* payload = nullptr,
                            uint16_t payload_len = 0) noexcept {
+        if (!pool) [[unlikely]] return nullptr;
         rte_mbuf* mbuf = rte_pktmbuf_alloc(pool);
         if (!mbuf) return nullptr;
 
@@ -258,12 +264,12 @@ struct PacketTemplate {
 
         // ── IPv4 header ──
         auto* ip = reinterpret_cast<rte_ipv4_hdr*>(pkt + kEtherHeaderLen);
-        ip->version_ihl     = 0x45; // Version 4, IHL 5 (20 bytes)
+        ip->version_ihl     = kIpv4VersionIhl5;
         ip->type_of_service  = 0;
         ip->total_length     = hton16(kIpv4HeaderLen + tcp_hdr_len + payload_len);
         ip->packet_id        = hton16(ip_id++);
-        ip->fragment_offset  = hton16(0x4000); // Don't Fragment
-        ip->time_to_live     = 64;
+        ip->fragment_offset  = hton16(kIpDontFragment);
+        ip->time_to_live     = kDefaultTtl;
         ip->next_proto_id    = kIpProtoTcp;
         ip->hdr_checksum     = 0;
         ip->src_addr         = hton32(tuple.src_ip);
@@ -453,6 +459,7 @@ struct ParsedPacket {
 /// Returns empty ParsedPacket (all nullptrs) if the packet is not a valid
 /// IPv4/TCP packet or is too short.
 inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
+    if (!mbuf) [[unlikely]] return {};
     const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
     if (pkt_len < kAllHeadersLen) return {};
 

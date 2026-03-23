@@ -99,6 +99,15 @@ struct TlsConfig {
     // Both must be set together; empty = no client certificate.
     std::string client_cert_path{};   // Client certificate file (PEM)
     std::string client_key_path{};    // Client private key file (PEM)
+
+    /// Validate configuration, returning an error description or empty string on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (handshake_timeout.count() <= 0)
+            return "handshake_timeout must be positive";
+        if (client_cert_path.empty() != client_key_path.empty())
+            return "client_cert_path and client_key_path must both be set or both empty";
+        return {};
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

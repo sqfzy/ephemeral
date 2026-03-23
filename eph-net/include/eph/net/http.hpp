@@ -100,6 +100,15 @@ inline std::string build_upgrade_request(
     std::string_view ws_key,
     std::string_view extra_headers = {}) {
 
+    if (host.empty() || path.empty() || ws_key.empty()) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(detail::http_logger(),
+            "build_upgrade_request: invalid params: host={}, path={}, key={}",
+            host.empty() ? "(empty)" : host,
+            path.empty() ? "(empty)" : path,
+            ws_key.empty() ? "(empty)" : ws_key);
+        return {};
+    }
+
     return std::format(
         "GET {} HTTP/1.1\r\n"
         "Host: {}\r\n"

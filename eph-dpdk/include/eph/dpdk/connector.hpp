@@ -55,6 +55,14 @@
 namespace eph::dpdk {
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// IANA ephemeral port range (RFC 6335 §6): 49152–65535.
+inline constexpr uint16_t kEphemeralPortMin   = 49152;
+inline constexpr uint16_t kEphemeralPortRange = 16384; // 65535 - 49152 + 1
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -120,6 +128,8 @@ struct ConnectResult {
 /// @return IPv4 address in host byte order, or error string
 inline std::expected<uint32_t, std::string>
 resolve_hostname(const std::string& host) {
+    SPDLOG_DEBUG("Resolving hostname: '{}'", host);
+
     // Fast path: dotted-decimal IPv4
     uint32_t ip = net::parse_ipv4(host.c_str());
     if (ip != 0) return ip;
@@ -214,7 +224,7 @@ prepare_connection(const DpdkEndpoint& ep,
         if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
             return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
         }
-        src_port = 49152 + (rnd % 16384);
+        src_port = kEphemeralPortMin + (rnd % kEphemeralPortRange);
         SPDLOG_DEBUG("dpdk::connect: ephemeral port {}", src_port);
     }
 
@@ -383,7 +393,7 @@ connect(const DpdkEndpoint& ep,
         if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
             return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
         }
-        src_port = 49152 + (rnd % 16384);
+        src_port = kEphemeralPortMin + (rnd % kEphemeralPortRange);
     }
 
     TcpConfig tcp_cfg{
