@@ -182,7 +182,7 @@ inline constexpr size_t  kBrokenTradeSize = 18;
 
 // Net Order Imbalance Indicator ('I')
 inline constexpr uint8_t kNOII     = 'I';
-inline constexpr size_t  kNOIISize = 49;
+inline constexpr size_t  kNOIISize = 50;
 
 // Retail Price Improvement Indicator ('N')
 inline constexpr uint8_t kRPII     = 'N';

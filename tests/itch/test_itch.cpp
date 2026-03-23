@@ -67,7 +67,7 @@ TEST(ItchMessages, MessageTypeConstantsAndSizes) {
     EXPECT_EQ(kNonCrossTradeSize, 43u);
     EXPECT_EQ(kCrossTradeSize, 39u);
     EXPECT_EQ(kBrokenTradeSize, 18u);
-    EXPECT_EQ(kNOIISize, 49u);
+    EXPECT_EQ(kNOIISize, 50u);
     EXPECT_EQ(kRPIISize, 19u);
 }
 

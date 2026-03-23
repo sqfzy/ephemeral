@@ -271,9 +271,10 @@ struct Platform::Impl {
 
         rte_eth_conf eth_conf{};
         std::memset(&eth_conf, 0, sizeof(eth_conf));
-        // Intersection: requested offloads ∩ NIC capabilities.
-        eth_conf.rxmode.offloads = 0 & dev_info.rx_offload_capa;
-        eth_conf.txmode.offloads = 0 & dev_info.tx_offload_capa;
+        // No offloads requested — conservative default for minimal setup.
+        // Checksum offload is handled per-packet via PacketTemplate::hw_cksum.
+        eth_conf.rxmode.offloads = 0;
+        eth_conf.txmode.offloads = 0;
 
         ret = rte_eth_dev_configure(config.port_id,
                                     config.nb_rx_queues,
