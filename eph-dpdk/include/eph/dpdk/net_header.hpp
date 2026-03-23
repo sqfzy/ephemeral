@@ -27,6 +27,7 @@ namespace eph::dpdk::net {
 
 inline constexpr uint16_t kEtherTypeIpv4   = 0x0800;
 inline constexpr uint8_t  kIpProtoTcp      = 6;
+inline constexpr uint8_t  kIpProtoUdp      = 17;
 inline constexpr uint16_t kIpv4HeaderLen   = 20; // No options
 inline constexpr uint16_t kTcpHeaderLen    = 20; // No options
 inline constexpr uint16_t kEtherHeaderLen  = 14;

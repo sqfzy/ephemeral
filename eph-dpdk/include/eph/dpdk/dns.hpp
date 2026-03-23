@@ -39,7 +39,6 @@ namespace eph::dpdk::dns {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr uint8_t  kIpProtoUdp      = 17;
 inline constexpr uint16_t kUdpHeaderLen    = 8;
 inline constexpr uint16_t kDnsHeaderLen    = 12;
 inline constexpr uint16_t kDnsPort         = 53;
@@ -182,19 +181,23 @@ inline size_t build_dns_query(uint8_t* out, uint16_t tx_id,
 /// @return New offset after the name, or 0 on error
 inline size_t skip_dns_name(const uint8_t* data, size_t offset, size_t len) noexcept {
     bool followed_pointer = false;
-    size_t end_offset = 0;  // Position after the name field (before any pointer)
+    size_t end_offset = 0;
 
-    while (offset < len) {
+    // Max iterations guards against pointer loops in malicious packets.
+    // A valid DNS name has at most 127 labels (253 chars / 2 chars min per label),
+    // so 128 iterations is generous.
+    constexpr int kMaxIterations = 128;
+    int iterations = 0;
+
+    while (offset < len && iterations++ < kMaxIterations) {
         uint8_t label_len = data[offset];
 
         if (label_len == 0) {
-            // Root label — end of name
             if (!followed_pointer) end_offset = offset + 1;
             return end_offset ? end_offset : offset + 1;
         }
 
         if ((label_len & 0xC0) == 0xC0) {
-            // Pointer: 2-byte offset into the message
             if (offset + 1 >= len) return 0;
             if (!followed_pointer) end_offset = offset + 2;
             uint16_t ptr = static_cast<uint16_t>(
@@ -205,12 +208,11 @@ inline size_t skip_dns_name(const uint8_t* data, size_t offset, size_t len) noex
             continue;
         }
 
-        // Regular label
         if (label_len > 63) return 0;
         offset += 1 + label_len;
     }
 
-    return 0;  // Ran off the end
+    return 0;  // Ran off the end or hit iteration limit
 }
 
 /// Parse a DNS response and extract the first A record IP address.
@@ -295,8 +297,6 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     return std::unexpected("DNS response: no A record found");
 }
 
-} // namespace detail
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Build complete DNS query packet (Ethernet + IPv4 + UDP + DNS)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +313,9 @@ inline rte_mbuf* build_dns_packet(
     uint16_t dst_port,        // host byte order
     const uint8_t* dns_payload,
     size_t dns_len) noexcept {
+
+    // Guard against dns_len overflow when cast to uint16_t
+    if (dns_len > kMaxDnsPacketLen) return nullptr;
 
     auto* mbuf = rte_pktmbuf_alloc(pool);
     if (!mbuf) return nullptr;
@@ -341,7 +344,7 @@ inline rte_mbuf* build_dns_packet(
     ip->version_ihl     = 0x45;  // IPv4, IHL=5 (20 bytes)
     ip->total_length    = net::hton16(ip_total);
     ip->time_to_live    = 64;
-    ip->next_proto_id   = kIpProtoUdp;
+    ip->next_proto_id   = net::kIpProtoUdp;
     ip->src_addr        = net::hton32(src_ip);
     ip->dst_addr        = net::hton32(dst_ip);
     ip->hdr_checksum    = 0;
@@ -381,7 +384,7 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 
     // Check IP protocol = UDP and source = nameserver
     auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(pkt + net::kEtherHeaderLen);
-    if (ip->next_proto_id != kIpProtoUdp) return std::nullopt;
+    if (ip->next_proto_id != net::kIpProtoUdp) return std::nullopt;
     if (net::ntoh32(ip->src_addr) != nameserver_ip) return std::nullopt;
 
     // Check UDP source port = 53
@@ -398,8 +401,14 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 
     auto result = detail::parse_dns_response(dns_data, dns_len, tx_id);
     if (result) return *result;
+
+    SPDLOG_LOGGER_DEBUG(dns_logger(),
+        "DNS packet from {} discarded: {}",
+        net::format_ipv4(nameserver_ip).data(), result.error());
     return std::nullopt;
 }
+
+} // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API: blocking DNS resolution over DPDK
@@ -482,7 +491,7 @@ resolve(uint16_t port_id,
         // Send (or resend) DNS query
         auto now = std::chrono::steady_clock::now();
         if (now >= next_send && requests_sent < 3) {
-            auto* pkt = build_dns_packet(
+            auto* pkt = detail::build_dns_packet(
                 pool, src_mac, dst_mac, src_ip,
                 cfg.nameserver_ip, src_port, cfg.port,
                 dns_buf, dns_len);
@@ -510,7 +519,7 @@ resolve(uint16_t port_id,
         uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts, 16);
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
-            auto resolved_ip = try_parse_dns_packet(
+            auto resolved_ip = detail::try_parse_dns_packet(
                 pkts[i], tx_id_net, cfg.nameserver_ip);
             if (resolved_ip) {
                 SPDLOG_LOGGER_INFO(log,

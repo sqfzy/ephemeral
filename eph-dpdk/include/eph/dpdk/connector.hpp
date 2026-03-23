@@ -372,13 +372,41 @@ connect(const DpdkEndpoint& ep,
             ip.error(), dpdk_ip.error()));
     }
 
-    // Now do the TCP connection using the already-created Platform
-    auto setup = detail::prepare_connection(
-        ep, opts, transport_cfg, *dpdk_ip, platform->mempool());
-    if (!setup) return std::unexpected(setup.error());
+    // Build TCP connection reusing the gateway MAC we already resolved.
+    // prepare_connection() would ARP again internally, so we construct
+    // the TcpConfig directly to avoid the redundant ARP.
+    uint16_t src_port = opts.local_port;
+    if (src_port == 0) {
+        uint16_t rnd;
+        RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
+        src_port = 49152 + (rnd % 16384);
+    }
+
+    TcpConfig tcp_cfg{
+        .tuple = {
+            .src_ip   = local_ip,
+            .dst_ip   = *dpdk_ip,
+            .src_port = src_port,
+            .dst_port = transport_cfg.remote_port,
+        },
+        .src_mac     = src_mac,
+        .dst_mac     = *gw_mac,
+        .port_id     = opts.platform.port_id,
+        .tx_queue_id = opts.tx_queue_id,
+        .rx_queue_id = opts.rx_queue_id,
+    };
+
+    auto connect_timeout = opts.connect_timeout;
+    auto tcp_factory = [tcp_cfg, mempool = platform->mempool(), connect_timeout]()
+        -> std::expected<std::unique_ptr<TcpSession<>>, std::string> {
+        auto tcp = std::make_unique<TcpSession<>>(tcp_cfg, mempool);
+        auto r = tcp->connect(connect_timeout);
+        if (!r) return std::unexpected(r.error());
+        return tcp;
+    };
 
     auto transport = TransportType::create(
-        std::move(setup->tcp_factory), transport_cfg);
+        std::move(tcp_factory), transport_cfg);
     if (!transport) {
         return std::unexpected(
             std::format("Transport creation failed: {}", transport.error().message()));
@@ -389,8 +417,8 @@ connect(const DpdkEndpoint& ep,
     return ConnectResult<TransportType>{
         .platform    = std::move(*platform),
         .transport   = std::move(*transport),
-        .local_mac   = setup->src_mac,
-        .gateway_mac = setup->dst_mac,
+        .local_mac   = src_mac,
+        .gateway_mac = *gw_mac,
     };
 }
 
