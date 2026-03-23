@@ -402,6 +402,82 @@ TEST(HdrHistogramTest, MergePreservesPercentileAccuracy) {
 }
 
 // ============================================================================
+// Subtract
+// ============================================================================
+
+TEST(HdrHistogramTest, SubtractBasic) {
+    HdrHistogram h1(1, 10'000, 3);
+    HdrHistogram h2(1, 10'000, 3);
+
+    for (uint64_t i = 1; i <= 100; ++i) h1.record(i);
+    for (uint64_t i = 1; i <= 50; ++i) h2.record(i);
+
+    EXPECT_TRUE(h1.subtract(h2));
+    EXPECT_EQ(h1.get_total_count(), 50);
+    // After subtracting 1..50, only 51..100 remain
+    EXPECT_GE(h1.get_min_value(), 50);
+    EXPECT_LE(h1.get_max_value(), 101);
+}
+
+TEST(HdrHistogramTest, SubtractIncompatibleReturnsFalse) {
+    HdrHistogram h1(1, 10'000, 3);
+    HdrHistogram h2(1, 100'000, 3);
+    EXPECT_FALSE(h1.subtract(h2));
+}
+
+TEST(HdrHistogramTest, SubtractEmptyHistogram) {
+    HdrHistogram h1(1, 10'000, 3);
+    HdrHistogram h2(1, 10'000, 3);
+
+    h1.record(100);
+    h1.record(200);
+
+    EXPECT_TRUE(h1.subtract(h2));
+    EXPECT_EQ(h1.get_total_count(), 2);
+}
+
+TEST(HdrHistogramTest, SubtractSelfYieldsEmpty) {
+    HdrHistogram h1(1, 10'000, 3);
+    for (uint64_t i = 1; i <= 100; ++i) h1.record(i);
+
+    HdrHistogram copy = h1;
+    EXPECT_TRUE(h1.subtract(copy));
+    EXPECT_EQ(h1.get_total_count(), 0);
+    EXPECT_EQ(h1.get_min_value(), 0);
+    EXPECT_EQ(h1.get_max_value(), 0);
+}
+
+TEST(HdrHistogramTest, SubtractLargerCountReturnsFalse) {
+    HdrHistogram h1(1, 10'000, 3);
+    HdrHistogram h2(1, 10'000, 3);
+
+    h1.record(100);
+    h2.record(100);
+    h2.record(100);
+
+    // h2 has more counts than h1 — subtraction would underflow
+    EXPECT_FALSE(h1.subtract(h2));
+}
+
+TEST(HdrHistogramTest, SubtractWindowedMeasurement) {
+    // Simulate windowed measurement: snapshot at T1, record more, snapshot at T2
+    HdrHistogram running(1, 100'000, 3);
+
+    // Phase 1: initial samples
+    for (uint64_t i = 1; i <= 500; ++i) running.record(i);
+    HdrHistogram t1_snapshot = running;
+
+    // Phase 2: more samples
+    for (uint64_t i = 501; i <= 1000; ++i) running.record(i);
+    HdrHistogram t2_snapshot = running;
+
+    // Delta = T2 - T1 should contain only phase 2 samples
+    EXPECT_TRUE(t2_snapshot.subtract(t1_snapshot));
+    EXPECT_EQ(t2_snapshot.get_total_count(), 500);
+    EXPECT_GE(t2_snapshot.get_min_value(), 500);
+}
+
+// ============================================================================
 // IsCompatible
 // ============================================================================
 

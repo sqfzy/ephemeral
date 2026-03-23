@@ -345,6 +345,43 @@ class HdrHistogram {
         return true;
     }
 
+    /// Subtract another histogram's counts from this one (windowed measurement).
+    ///
+    /// Computes the difference `this -= other` for each bucket. Useful for
+    /// windowed measurement: take a snapshot at T1, record more samples,
+    /// take a snapshot at T2, then `T2.subtract(T1)` yields only the samples
+    /// recorded between T1 and T2.
+    ///
+    /// @note min/max are recomputed by scanning the resulting counts, since
+    ///       subtraction may invalidate the previous min/max values.
+    /// @return true on success, false if histograms are incompatible
+    bool subtract(const HdrHistogram& other) noexcept {
+        if (!is_compatible(other)) return false;
+        if (other.total_count_ > total_count_) return false;
+
+        for (int32_t i = 0; i < counts_len_; ++i) {
+            if (counts_[i] < other.counts_[i]) return false;
+        }
+
+        for (int32_t i = 0; i < counts_len_; ++i) {
+            counts_[i] -= other.counts_[i];
+        }
+        total_count_ -= other.total_count_;
+
+        // Recompute min/max from remaining counts
+        min_value_ = std::numeric_limits<uint64_t>::max();
+        max_value_ = 0;
+        for (int32_t i = 0; i < counts_len_; ++i) {
+            if (counts_[i] > 0) {
+                uint64_t v = value_from_index(i);
+                min_value_ = std::min(min_value_, v);
+                max_value_ = std::max(max_value_, next_non_equivalent_value(v) - 1);
+            }
+        }
+
+        return true;
+    }
+
     [[nodiscard]] size_t get_memory_size() const noexcept {
         return sizeof(*this) + counts_.capacity() * sizeof(uint64_t);
     }
