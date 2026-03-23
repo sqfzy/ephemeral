@@ -280,6 +280,18 @@ connect(const DpdkEndpoint& ep,
         uint32_t server_ip,
         const ConnectorOptions& opts = {}) {
 
+    // Validate before Platform::create() to fail fast on bad config
+    // (Platform init is expensive and single-port NICs only allow one)
+    if (ep.local_ip.empty()) {
+        return std::unexpected("DpdkEndpoint: local_ip is required");
+    }
+    if (ep.gateway_ip.empty()) {
+        return std::unexpected("DpdkEndpoint: gateway_ip is required");
+    }
+    if (server_ip == 0) {
+        return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
+    }
+
     SPDLOG_DEBUG("dpdk::connect: local={}, gateway={}, server={}",
                  ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
