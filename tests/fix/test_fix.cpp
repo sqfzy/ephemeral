@@ -3124,3 +3124,55 @@ TEST(FixBuilder, set_empty_value_passes_soh_check) {
     b.set(58, "");
     EXPECT_FALSE(b.has_overflow());
 }
+
+TEST(FixBuilder, set_rejects_multiple_soh_bytes_in_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Value with SOH bytes at positions 2 and 5 — first one triggers overflow
+    std::string_view bad("AB\x01" "CD\x01" "EF", 8);
+    b.set(58, bad);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, reset_after_soh_rejection_allows_rebuild) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // SOH in value triggers overflow
+    std::string_view bad("X\x01Y", 3);
+    b.set(58, bad);
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+
+    // Reset clears overflow, rebuild succeeds
+    b.reset();
+    b.set(tag::MsgType, "D");
+    b.set_int(tag::MsgSeqNum, 1);
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result->get_int(tag::MsgSeqNum), 1);
+}
+
+TEST(FixBuilder, set_double_precision_clamped_at_15) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Precision 16 should be clamped to 15 without crashing
+    b.set_double(tag::Price, 1.5, 16);
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get_double(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_NEAR(*price, 1.5, 1e-12);
+}
