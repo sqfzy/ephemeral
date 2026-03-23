@@ -674,3 +674,103 @@ TYPED_TEST(EvictingQueueTest, TryPeekLatestSeesNewDataAfterPush) {
     ASSERT_TRUE(v2.has_value());
     EXPECT_EQ(v2->seq, 20u);
 }
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestAfterClearAndPush) {
+    TypeParam queue;
+    TestData d{.seq = 1};
+    queue.push(d);
+
+    queue.clear();
+    EXPECT_FALSE(queue.try_peek_latest().has_value());
+
+    d.seq = 2;
+    queue.push(d);
+    auto v = queue.try_peek_latest();
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(v->seq, 2u);
+}
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestAllOverloadsConsistent) {
+    TypeParam queue;
+    TestData d{.seq = 55};
+    queue.push(d);
+
+    // Visitor overload
+    uint32_t visitor_seq = 0;
+    bool ok1 = queue.try_peek_latest([&](const TestData& data) {
+        visitor_seq = data.seq;
+    });
+
+    // Value-copy overload
+    TestData ref_out{};
+    bool ok2 = queue.try_peek_latest(ref_out);
+
+    // Optional overload
+    auto opt = queue.try_peek_latest();
+
+    EXPECT_TRUE(ok1);
+    EXPECT_TRUE(ok2);
+    ASSERT_TRUE(opt.has_value());
+    EXPECT_EQ(visitor_seq, 55u);
+    EXPECT_EQ(ref_out.seq, 55u);
+    EXPECT_EQ(opt->seq, 55u);
+}
+
+// Concurrent stress test: writer pushes rapidly while reader peeks
+TEST(EvictingQueueStress, ConcurrentPeekNeverReturnsTornData) {
+    // Use Capacity=4 for the stress test
+    EvictingQueue<TestData, 4> queue;
+    constexpr uint32_t kIterations = 500'000;
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> peek_successes{0};
+    std::atomic<uint64_t> peek_failures{0};
+    std::atomic<uint64_t> torn_reads{0};
+
+    // Writer thread: push items with seq = i, payload filled with i
+    std::thread writer([&] {
+        for (uint32_t i = 1; i <= kIterations; ++i) {
+            queue.produce([&](TestData& slot) {
+                slot.seq = i;
+                slot.payload.fill(i);
+            });
+        }
+        stop.store(true, std::memory_order_release);
+    });
+
+    // Reader thread: peek and verify data consistency
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_acquire) ||
+               queue.try_peek_latest().has_value()) {
+            TestData peeked{};
+            if (queue.try_peek_latest(peeked)) {
+                // Verify consistency: all payload values must match seq
+                bool consistent = true;
+                for (auto v : peeked.payload) {
+                    if (v != peeked.seq) {
+                        consistent = false;
+                        break;
+                    }
+                }
+                if (consistent) {
+                    peek_successes.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    torn_reads.fetch_add(1, std::memory_order_relaxed);
+                }
+                // Consume to allow seeing new data
+                (void)queue.try_pop_latest();
+            } else {
+                peek_failures.fetch_add(1, std::memory_order_relaxed);
+                eph::utils::cpu_relax();
+            }
+        }
+    });
+
+    writer.join();
+    reader.join();
+
+    // CRITICAL: No torn reads should ever be observed
+    EXPECT_EQ(torn_reads.load(), 0u)
+        << "Detected torn reads in concurrent try_peek_latest!";
+    // Should have had some successes
+    EXPECT_GT(peek_successes.load(), 0u);
+}

@@ -634,3 +634,49 @@ TEST(StatsTest, FormatterEmpty) {
     auto formatted = std::format("{}", s);
     EXPECT_NE(formatted.find("no samples"), std::string::npos);
 }
+
+TEST(StatsTest, DumpSingleSample) {
+    Stats s{.name = "One", .count = 1, .avg_ns = 100.0, .min_ns = 100.0,
+            .max_ns = 100.0, .p50_ns = 100.0, .p90_ns = 100.0,
+            .p99_ns = 100.0, .p999_ns = 100.0, .stddev_ns = 0.0};
+    auto d = s.dump();
+    EXPECT_NE(d.find("1 samples"), std::string::npos);
+    EXPECT_NE(d.find("stddev: 0.0"), std::string::npos);
+}
+
+TEST(StatsTest, ToJsonExtremeValues) {
+    Stats s{.name = "Extreme", .count = UINT64_MAX,
+            .avg_ns = 1e18, .min_ns = 0.001, .max_ns = 1e18,
+            .p50_ns = 1e9, .p90_ns = 1e12, .p99_ns = 1e15,
+            .p999_ns = 1e18, .stddev_ns = 1e12};
+    auto j = s.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    // Should contain the extreme count
+    EXPECT_NE(j.find(std::to_string(UINT64_MAX)), std::string::npos);
+}
+
+TEST(StatsTest, ToJsonZeroValues) {
+    Stats s{.name = "AllZero", .count = 42, .avg_ns = 0.0, .min_ns = 0.0,
+            .max_ns = 0.0, .p50_ns = 0.0, .p90_ns = 0.0,
+            .p99_ns = 0.0, .p999_ns = 0.0, .stddev_ns = 0.0};
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"count\":42"), std::string::npos);
+    EXPECT_NE(j.find("\"avg_ns\":0.00"), std::string::npos);
+}
+
+TEST(StatsTest, AllThreeSerializationsConsistent) {
+    auto s = make_test_stats();
+    auto d = s.dump();
+    auto j = s.to_json();
+    auto f = std::format("{}", s);
+
+    // All three should contain the name and count
+    EXPECT_NE(d.find("TestBench"), std::string::npos);
+    EXPECT_NE(j.find("TestBench"), std::string::npos);
+    EXPECT_NE(f.find("TestBench"), std::string::npos);
+
+    // dump and to_json should contain p99
+    EXPECT_NE(d.find("200.0"), std::string::npos);   // p99 in dump
+    EXPECT_NE(j.find("200.00"), std::string::npos);   // p99 in json
+}

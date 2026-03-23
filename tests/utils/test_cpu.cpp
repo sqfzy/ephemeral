@@ -40,6 +40,15 @@ TEST(CpuTest, SetThreadAffinityInvalidCpuReturnsError) {
   auto r = set_thread_affinity(99999);
   EXPECT_FALSE(r.has_value());
   EXPECT_FALSE(r.error().empty());
+  // Error message should be actionable: include cpu_id and errno description
+  EXPECT_NE(r.error().find("99999"), std::string::npos);
+}
+
+TEST(CpuTest, SetThreadAffinityAtHwcBoundary) {
+  // Binding to exactly hardware_concurrency() should fail (0-indexed)
+  unsigned hwc = std::thread::hardware_concurrency();
+  auto r = set_thread_affinity(static_cast<int>(hwc));
+  EXPECT_FALSE(r.has_value());
 }
 
 TEST(CpuTest, GetCpuBaseFrequency) {
