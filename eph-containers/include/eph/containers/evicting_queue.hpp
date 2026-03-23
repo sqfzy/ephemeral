@@ -822,13 +822,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     }
 
     /// Approximate number of writes that overwrote unread data.
-    /// For single-slot: write_count - 1 is the upper bound (every write
-    /// after the first potentially overwrites the previous).
-    /// @note Conservative upper bound — actual overwrites may be fewer
-    ///       if the reader consumed values between writes.
+    /// Uses actual read count for accuracy (consistent with the primary
+    /// template's formula: max(0, writes - reads - Capacity)).
+    /// @note Approximate — derived from relaxed atomic loads.
     [[nodiscard]] uint64_t overwrite_count_approx() const noexcept {
         uint64_t writes = write_count();
-        return writes > 0 ? writes - 1 : 0;
+        uint64_t reads  = read_count();
+        if (writes <= reads + 1) return 0;
+        return writes - reads - 1;
     }
 
     /// Total number of successful reads performed since construction.

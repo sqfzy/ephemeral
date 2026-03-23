@@ -896,3 +896,109 @@ TYPED_TEST(EvictingQueueTest, try_peek_latest_for_sees_newer_write_after_push) {
     ASSERT_TRUE(v2.has_value());
     EXPECT_EQ(v2->seq, 2u);
 }
+
+// ===========================================================================
+// overwrite_count_approx() — data loss monitoring
+// ===========================================================================
+
+TYPED_TEST(EvictingQueueTest, OverwriteCountStartsAtZero) {
+    TypeParam queue;
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+}
+
+TYPED_TEST(EvictingQueueTest, OverwriteCountZeroWhenReaderKeepsUp) {
+    TypeParam queue;
+    TestData d{};
+
+    for (uint32_t i = 1; i <= 5; ++i) {
+        d.seq = i;
+        queue.push(d);
+        // Consume immediately — reader keeps up, no overwrites
+        auto val = queue.try_pop_latest();
+        ASSERT_TRUE(val.has_value());
+    }
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+}
+
+TEST(EvictingQueueOverwrite, MultiSlotOverwriteTracking) {
+    EvictingQueue<TestData, 4> queue;
+    TestData d{};
+
+    // Write 4 entries (fills capacity, no overwrite yet)
+    for (uint32_t i = 0; i < 4; ++i) {
+        d.seq = i;
+        queue.push(d);
+    }
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+
+    // Write 3 more without reading — overwrites 3 entries
+    for (uint32_t i = 4; i < 7; ++i) {
+        d.seq = i;
+        queue.push(d);
+    }
+    EXPECT_EQ(queue.overwrite_count_approx(), 3u);
+}
+
+TEST(EvictingQueueOverwrite, SingleSlotOverwriteAccuracy) {
+    EvictingQueue<TestData, 1> queue;
+    TestData d{};
+
+    // Write 1 entry — no overwrite (buffer holds it)
+    d.seq = 1;
+    queue.push(d);
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+
+    // Consume the entry
+    auto val = queue.try_pop_latest();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+
+    // Write 5 entries without reading — 4 overwrites (5 writes, buffer holds 1)
+    for (uint32_t i = 2; i <= 6; ++i) {
+        d.seq = i;
+        queue.push(d);
+    }
+    // read_count = 1 (last consumed was write #1), write_count = 6
+    // overwrite = 6 - 1 - 1 = 4
+    EXPECT_EQ(queue.write_count(), 6u);
+    EXPECT_EQ(queue.read_count(), 1u);
+    EXPECT_EQ(queue.overwrite_count_approx(), 4u);
+
+    // Consume latest (jumps reader to write #6)
+    val = queue.try_pop_latest();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 6u);
+    // read_count = 6, write_count = 6, overwrite = max(0, 6 - 6 - 1) = 0
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+}
+
+TEST(EvictingQueueOverwrite, SingleSlotNoOverwriteWhenAllConsumed) {
+    EvictingQueue<TestData, 1> queue;
+    TestData d{};
+
+    // Write and consume 5 entries — no overwrites
+    for (uint32_t i = 1; i <= 5; ++i) {
+        d.seq = i;
+        queue.push(d);
+        auto val = queue.try_pop_latest();
+        ASSERT_TRUE(val.has_value());
+    }
+    EXPECT_EQ(queue.overwrite_count_approx(), 0u);
+    EXPECT_EQ(queue.write_count(), 5u);
+    EXPECT_EQ(queue.read_count(), 5u);
+}
+
+TEST(EvictingQueueOverwrite, SingleSlotAllOverwritten) {
+    EvictingQueue<TestData, 1> queue;
+    TestData d{};
+
+    // Write 10 entries without ever reading
+    for (uint32_t i = 1; i <= 10; ++i) {
+        d.seq = i;
+        queue.push(d);
+    }
+    // 10 writes, 0 reads, 1 buffered → 9 overwrites
+    EXPECT_EQ(queue.overwrite_count_approx(), 9u);
+    EXPECT_EQ(queue.write_count(), 10u);
+    EXPECT_EQ(queue.read_count(), 0u);
+}
