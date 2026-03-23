@@ -203,3 +203,34 @@ TEST(SystemStatsTest, PrintReportDoesNotCrash) {
 
     EXPECT_NO_THROW(stats.print_report());
 }
+
+TEST(SystemStatsTest, LogReportDoesNotCrash) {
+    SystemStats stats;
+
+    volatile double x = 0;
+    for (int i = 0; i < 1000; ++i) {
+        x += std::sin(i);
+    }
+
+    EXPECT_NO_THROW(stats.log_report());
+}
+
+TEST(SystemResourceStatsTest, DumpContainsAllFields) {
+    SystemResourceStats stats{
+        .majflt = 2,
+        .minflt = 50,
+        .nvcsw = 5,
+        .nivcsw = 3,
+        .user_cpu_s = 0.5,
+        .sys_cpu_s = 0.1,
+        .total_cpu_s = 0.6,
+    };
+
+    auto text = stats.dump();
+    EXPECT_NE(text.find("0.5000"), std::string::npos);
+    EXPECT_NE(text.find("0.1000"), std::string::npos);
+    EXPECT_NE(text.find("major=2"), std::string::npos);
+    EXPECT_NE(text.find("minor=50"), std::string::npos);
+    EXPECT_NE(text.find("voluntary=5"), std::string::npos);
+    EXPECT_NE(text.find("involuntary=3"), std::string::npos);
+}

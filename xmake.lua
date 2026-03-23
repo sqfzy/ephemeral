@@ -72,6 +72,7 @@ target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
+    add_headerfiles("eph-dpdk/include/(eph/dpdk.hpp)")
     -- DPDK backend only needs the TcpTransport concept and public types from
     -- eph-net (tcp_concept.hpp, transport_types.hpp), not TLS/WS internals.
     -- We add eph-net's include path directly and depend on eph-utils/containers

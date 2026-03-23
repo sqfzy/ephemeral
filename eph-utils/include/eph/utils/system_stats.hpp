@@ -1,57 +1,76 @@
 #pragma once
 
+/// @file system_stats.hpp
+/// RAII system resource profiler (getrusage-based).
+///
+/// Captures CPU time, page faults, and context switches between
+/// construction and snapshot(). Standalone — no coupling with Recorder.
+
 #include <sys/resource.h>
 
 #include <format>
-#include <print>
+
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
 
 namespace eph::utils {
 
-// ============================================================================
-// SystemStats — 独立的系统资源采集（RAII）
-// ============================================================================
+namespace detail {
+inline std::shared_ptr<spdlog::logger> system_stats_logger() {
+    static auto l = [] {
+        auto lg = spdlog::get("utils.system_stats");
+        if (!lg) lg = spdlog::stdout_color_mt("utils.system_stats");
+        return lg;
+    }();
+    return l;
+}
+} // namespace detail
 
-/**
- * @brief 系统资源统计数据
- */
+/// System resource consumption snapshot (delta from a baseline).
 struct SystemResourceStats {
-    long majflt;         // Major Page Faults（需要磁盘 I/O 的缺页）
-    long minflt;         // Minor Page Faults（无需磁盘 I/O 的缺页）
-    long nvcsw;          // Voluntary Context Switches（主动让出 CPU）
-    long nivcsw;         // Involuntary Context Switches（被抢占）
-    double user_cpu_s;   // User CPU time (seconds)
-    double sys_cpu_s;    // System CPU time (seconds)
-    double total_cpu_s;  // Total CPU time (seconds)
+    long majflt;         ///< Major page faults (required disk I/O)
+    long minflt;         ///< Minor page faults (no disk I/O needed)
+    long nvcsw;          ///< Voluntary context switches (thread yielded CPU)
+    long nivcsw;         ///< Involuntary context switches (preempted)
+    double user_cpu_s;   ///< User CPU time (seconds)
+    double sys_cpu_s;    ///< System CPU time (seconds)
+    double total_cpu_s;  ///< Total CPU time (seconds)
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "SystemResourceStats:\n"
+            "  cpu: user={:.4f}s sys={:.4f}s total={:.4f}s\n"
+            "  faults: major={} minor={}\n"
+            "  ctx_switches: voluntary={} involuntary={}",
+            user_cpu_s, sys_cpu_s, total_cpu_s,
+            majflt, minflt, nvcsw, nivcsw);
+    }
 };
 
-/**
- * @brief 独立的系统资源采集器（RAII）
- *
- * 构造时快照 getrusage，snapshot() 时计算差值。
- * 与 Recorder 完全无耦合，用户自行决定使用粒度。
- *
- * @example
- * @code
- * SystemStats sys_stats;
- * // ... 执行被测代码 ...
- * auto resource = sys_stats.snapshot();
- * std::println("User CPU: {:.4f}s", resource.user_cpu_s);
- * @endcode
- */
+/// RAII system resource profiler.
+///
+/// Snapshots getrusage at construction; snapshot() computes the delta.
+/// Decoupled from Recorder — callers decide measurement granularity.
+///
+/// @example
+/// @code
+/// SystemStats sys_stats;
+/// // ... run code under test ...
+/// auto resource = sys_stats.snapshot();
+/// SPDLOG_INFO("Resource usage: {}", resource);
+/// @endcode
 class SystemStats {
    public:
-    /**
-     * @brief 构造并记录初始资源状态
-     * @param auto_print 析构时是否自动打印报告
-     */
-    explicit SystemStats(bool auto_print = false)
-        : auto_print_(auto_print) {
+    /// @param auto_log Log resource report at destruction via spdlog.
+    explicit SystemStats(bool auto_log = false)
+        : auto_log_(auto_log) {
         getrusage(RUSAGE_SELF, &initial_rusage_);
     }
 
     ~SystemStats() {
-        if (auto_print_) {
-            print_report();
+        if (auto_log_) {
+            log_report();
         }
     }
 
@@ -60,51 +79,37 @@ class SystemStats {
     SystemStats(SystemStats&&) = default;
     SystemStats& operator=(SystemStats&&) = default;
 
-    /**
-     * @brief 获取从构造/重置以来的资源消耗差值
-     */
+    /// Compute resource delta since construction or last reset().
     [[nodiscard]] SystemResourceStats snapshot() const noexcept {
         rusage current{};
         getrusage(RUSAGE_SELF, &current);
         return compute_delta(current);
     }
 
-    /**
-     * @brief 重置基准线
-     */
+    /// Reset the baseline to the current resource state.
     void reset() noexcept {
         getrusage(RUSAGE_SELF, &initial_rusage_);
     }
 
-    /**
-     * @brief 打印系统资源报告
-     */
-    void print_report() const {
+    /// Log a formatted resource report via spdlog at INFO level.
+    void log_report() const {
         auto s = snapshot();
+        auto log = detail::system_stats_logger();
+        SPDLOG_LOGGER_INFO(log,
+            "System resources: user={:.4f}s sys={:.4f}s "
+            "majflt={} minflt={} vcsw={} ivcsw={}",
+            s.user_cpu_s, s.sys_cpu_s,
+            s.majflt, s.minflt, s.nvcsw, s.nivcsw);
+    }
 
-        constexpr int w_label = 30;
-        constexpr int w_val = 12;
-        constexpr int total_w = w_label + (w_val * 6) + 18;
-
-        std::println("{:-^{}}", " System Resources ", total_w);
-        std::println(
-            "{:<{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}}",
-            "CPU Time", w_label, "User(s)", w_val, "Sys(s)", w_val,
-            "MajFault", w_val, "MinFault", w_val, "VolCtx", w_val,
-            "InvCtx", w_val);
-        std::println("{:-^{}}", "", total_w);
-        std::println(
-            "{:<{}} | {:>{}.4f} | {:>{}.4f} | {:>{}} | {:>{}} | {:>{}} | "
-            "{:>{}}",
-            "Usage", w_label, s.user_cpu_s, w_val, s.sys_cpu_s, w_val,
-            s.majflt, w_val, s.minflt, w_val, s.nvcsw, w_val,
-            s.nivcsw, w_val);
-        std::println("{:-^{}}\n", "", total_w);
+    /// @deprecated Use log_report() instead. Kept for backward compatibility.
+    void print_report() const {
+        log_report();
     }
 
    private:
     rusage initial_rusage_{};
-    bool auto_print_;
+    bool auto_log_;
 
     [[nodiscard]] SystemResourceStats compute_delta(
         const rusage& current) const noexcept {
@@ -132,7 +137,6 @@ class SystemStats {
 }  // namespace eph::utils
 
 /// std::format support for SystemResourceStats.
-/// Example: std::format("{}", stats) → "cpu=0.1234s/0.0567s majflt=0 minflt=42 vcsw=3 ivcsw=1"
 template <>
 struct std::formatter<eph::utils::SystemResourceStats> {
     constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
