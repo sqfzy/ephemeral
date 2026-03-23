@@ -840,7 +840,6 @@ TYPED_TEST(EvictingQueueTest, try_peek_latest_for_visitor_returns_false_on_timeo
 
 TEST(EvictingQueueTest_PeekFor, delayed_write_unblocks_peek) {
     EvictingQueue<TestData, 4> queue;
-    std::atomic<bool> peeked{false};
 
     std::thread writer([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
