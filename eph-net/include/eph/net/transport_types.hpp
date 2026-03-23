@@ -9,8 +9,10 @@
 /// headers.
 
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <functional>
 #include <string>
@@ -461,6 +463,120 @@ struct TransportConfig {
                 "rx_burst_size={} is unusually large — may increase "
                 "per-iteration latency variance", rx_burst_size));
         return w;
+    }
+
+    /// Parse a WebSocket URL into a TransportConfig.
+    ///
+    /// Supported URL forms:
+    ///   wss://host/path            (port=443, use_tls=true)
+    ///   ws://host/path             (port=80,  use_tls=false)
+    ///   wss://host:port/path       (explicit port)
+    ///   wss://host                 (path defaults to "/")
+    ///   wss://host:port/path?query (query is included in ws_path)
+    ///
+    /// Only sets remote_host, remote_port, ws_path, and use_tls.
+    /// All other config fields retain their default values and can be
+    /// modified after construction.
+    ///
+    /// @param url  WebSocket URL string
+    /// @return TransportConfig on success, or error description
+    [[nodiscard]] static std::expected<TransportConfig, std::string>
+    from_url(std::string_view url) {
+        // Strip leading/trailing whitespace
+        while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+            url.remove_prefix(1);
+        while (!url.empty() && (url.back() == ' ' || url.back() == '\t'))
+            url.remove_suffix(1);
+
+        TransportConfig cfg;
+
+        // Parse scheme
+        if (url.starts_with("wss://")) {
+            cfg.use_tls = true;
+            cfg.remote_port = 443;
+            url.remove_prefix(6);
+        } else if (url.starts_with("ws://")) {
+            cfg.use_tls = false;
+            cfg.remote_port = 80;
+            url.remove_prefix(5);
+        } else {
+            return std::unexpected("URL must start with ws:// or wss://");
+        }
+
+        if (url.empty()) {
+            return std::unexpected("URL missing host");
+        }
+
+        // Find host boundary (first '/' or ':' or end)
+        size_t host_end = url.find_first_of(":/");
+        if (host_end == std::string_view::npos) {
+            // URL is just "wss://host"
+            cfg.remote_host = std::string(url);
+            cfg.ws_path = "/";
+            return cfg;
+        }
+
+        cfg.remote_host = std::string(url.substr(0, host_end));
+        if (cfg.remote_host.empty()) {
+            return std::unexpected("URL has empty host");
+        }
+        url.remove_prefix(host_end);
+
+        // Parse optional port
+        if (!url.empty() && url.front() == ':') {
+            url.remove_prefix(1); // skip ':'
+            size_t port_end = url.find('/');
+            std::string_view port_str = (port_end == std::string_view::npos)
+                ? url : url.substr(0, port_end);
+
+            if (port_str.empty()) {
+                return std::unexpected("URL has empty port after ':'");
+            }
+
+            uint16_t port = 0;
+            auto [ptr, ec] = std::from_chars(
+                port_str.data(), port_str.data() + port_str.size(), port);
+            if (ec != std::errc{} || ptr != port_str.data() + port_str.size()) {
+                return std::unexpected(
+                    std::format("invalid port: '{}'", port_str));
+            }
+            if (port == 0) {
+                return std::unexpected("port must be > 0");
+            }
+            cfg.remote_port = port;
+
+            if (port_end == std::string_view::npos) {
+                cfg.ws_path = "/";
+                return cfg;
+            }
+            url.remove_prefix(port_end);
+        }
+
+        // Remaining is path (+ optional query/fragment)
+        if (url.empty()) {
+            cfg.ws_path = "/";
+        } else {
+            cfg.ws_path = std::string(url);
+        }
+
+        return cfg;
+    }
+
+    /// Serialize the connection target as a WebSocket URL.
+    ///
+    /// Inverse of from_url(): reconstructs a URL from remote_host,
+    /// remote_port, ws_path, and use_tls. Omits the port when it
+    /// matches the scheme default (443 for wss, 80 for ws).
+    ///
+    /// @return URL string like "wss://host:port/path"
+    [[nodiscard]] std::string to_url() const {
+        std::string_view scheme = use_tls ? "wss" : "ws";
+        uint16_t default_port = use_tls ? 443 : 80;
+        if (remote_port == default_port) {
+            return std::format("{}://{}{}", scheme, remote_host, ws_path);
+        }
+        return std::format("{}://{}:{}{}", scheme, remote_host,
+                           remote_port, ws_path);
     }
 };
 

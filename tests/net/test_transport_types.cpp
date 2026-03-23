@@ -1408,3 +1408,161 @@ TEST(TransportStats, DeltaWebSocketCounters) {
     EXPECT_EQ(d.pong_timeouts, 2u);
     EXPECT_EQ(d.reconnect_count, 2u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::from_url()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigFromUrl, WssFullUrl) {
+    auto r = TransportConfig::from_url("wss://example.com:8443/ws/v2");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "example.com");
+    EXPECT_EQ(r->remote_port, 8443);
+    EXPECT_EQ(r->ws_path, "/ws/v2");
+    EXPECT_TRUE(r->use_tls);
+}
+
+TEST(TransportConfigFromUrl, WsFullUrl) {
+    auto r = TransportConfig::from_url("ws://localhost:9000/feed");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "localhost");
+    EXPECT_EQ(r->remote_port, 9000);
+    EXPECT_EQ(r->ws_path, "/feed");
+    EXPECT_FALSE(r->use_tls);
+}
+
+TEST(TransportConfigFromUrl, WssDefaultPort) {
+    auto r = TransportConfig::from_url("wss://api.example.com/stream");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "api.example.com");
+    EXPECT_EQ(r->remote_port, 443);
+    EXPECT_EQ(r->ws_path, "/stream");
+    EXPECT_TRUE(r->use_tls);
+}
+
+TEST(TransportConfigFromUrl, WsDefaultPort) {
+    auto r = TransportConfig::from_url("ws://localhost/ws");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_port, 80);
+    EXPECT_FALSE(r->use_tls);
+}
+
+TEST(TransportConfigFromUrl, HostOnly) {
+    auto r = TransportConfig::from_url("wss://api.exchange.io");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "api.exchange.io");
+    EXPECT_EQ(r->remote_port, 443);
+    EXPECT_EQ(r->ws_path, "/");
+}
+
+TEST(TransportConfigFromUrl, HostAndPortNoPath) {
+    auto r = TransportConfig::from_url("wss://api.exchange.io:9443");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "api.exchange.io");
+    EXPECT_EQ(r->remote_port, 9443);
+    EXPECT_EQ(r->ws_path, "/");
+}
+
+TEST(TransportConfigFromUrl, PathWithQueryString) {
+    auto r = TransportConfig::from_url("wss://stream.exchange.com/ws?token=abc123");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "stream.exchange.com");
+    EXPECT_EQ(r->ws_path, "/ws?token=abc123");
+}
+
+TEST(TransportConfigFromUrl, LeadingTrailingWhitespace) {
+    auto r = TransportConfig::from_url("  wss://example.com/ws  ");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->remote_host, "example.com");
+    EXPECT_EQ(r->ws_path, "/ws");
+}
+
+TEST(TransportConfigFromUrl, ErrorInvalidScheme) {
+    auto r = TransportConfig::from_url("https://example.com/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("ws://"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, ErrorMissingHost) {
+    auto r = TransportConfig::from_url("wss://");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(TransportConfigFromUrl, ErrorEmptyHost) {
+    auto r = TransportConfig::from_url("wss://:443/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("empty host"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, ErrorInvalidPort) {
+    auto r = TransportConfig::from_url("wss://host:abc/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("port"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, ErrorPortZero) {
+    auto r = TransportConfig::from_url("wss://host:0/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("port"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, ErrorEmptyPortAfterColon) {
+    auto r = TransportConfig::from_url("wss://host:/ws");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("port"), std::string::npos);
+}
+
+TEST(TransportConfigFromUrl, ErrorEmptyString) {
+    auto r = TransportConfig::from_url("");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(TransportConfigFromUrl, ValidatePassesAfterFromUrl) {
+    auto r = TransportConfig::from_url("wss://example.com:443/ws");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig::to_url()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigToUrl, WssDefaultPort) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    cfg.use_tls = true;
+    EXPECT_EQ(cfg.to_url(), "wss://example.com/ws");
+}
+
+TEST(TransportConfigToUrl, WsDefaultPort) {
+    TransportConfig cfg;
+    cfg.remote_host = "localhost";
+    cfg.remote_port = 80;
+    cfg.ws_path = "/feed";
+    cfg.use_tls = false;
+    EXPECT_EQ(cfg.to_url(), "ws://localhost/feed");
+}
+
+TEST(TransportConfigToUrl, NonDefaultPort) {
+    TransportConfig cfg;
+    cfg.remote_host = "api.exchange.io";
+    cfg.remote_port = 8443;
+    cfg.ws_path = "/stream";
+    cfg.use_tls = true;
+    EXPECT_EQ(cfg.to_url(), "wss://api.exchange.io:8443/stream");
+}
+
+TEST(TransportConfigToUrl, RoundTripFromUrl) {
+    auto original = "wss://api.exchange.io:9443/ws/v2";
+    auto r = TransportConfig::from_url(original);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->to_url(), original);
+}
+
+TEST(TransportConfigToUrl, RoundTripDefaultPort) {
+    auto r = TransportConfig::from_url("wss://example.com/ws");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->to_url(), "wss://example.com/ws");
+}
