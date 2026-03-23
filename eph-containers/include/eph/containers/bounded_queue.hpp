@@ -46,8 +46,8 @@ using eph::utils::cpu_relax;
 template <typename T, size_t Capacity>
     requires TrivialData<T>
 class BoundedQueue {
-    static_assert(Capacity >= 2, "Capacity must be at least 2");
-    static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
+    static_assert(Capacity >= 1 && std::has_single_bit(Capacity),
+                  "Capacity must be a power of 2 (1, 2, 4, 8, ...)");
     static_assert(std::atomic<size_t>::is_always_lock_free,
                   "BoundedQueue requires lock-free std::atomic<size_t>");
     static constexpr size_t mask_ = Capacity - 1;
