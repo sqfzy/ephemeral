@@ -97,6 +97,7 @@ enum class SendError : int8_t {
     kQueueFull       = -3,  ///< TX queue is full (transient backpressure)
     kInvalidUtf8     = -4,  ///< Text frame payload is not valid UTF-8 (RFC 6455 §5.6)
     kInvalidCloseCode = -5, ///< Close status code is not valid per RFC 6455 §7.4
+    kNullData         = -6, ///< data pointer is null but len > 0
 };
 
 /// Return a human-readable name for a SendError.
@@ -108,6 +109,7 @@ constexpr const char* send_error_name(SendError e) noexcept {
         case SendError::kQueueFull:       return "QUEUE_FULL";
         case SendError::kInvalidUtf8:     return "INVALID_UTF8";
         case SendError::kInvalidCloseCode: return "INVALID_CLOSE_CODE";
+        case SendError::kNullData:         return "NULL_DATA";
     }
     return "UNKNOWN";
 }

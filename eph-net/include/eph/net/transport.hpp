@@ -1022,6 +1022,7 @@ private:
     /// double-validating UTF-8 on the hot path.
     SendError enqueue_tx(const void* data, size_t len,
                          uint8_t opcode) noexcept {
+        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (len > MaxPayload) return SendError::kMessageTooLarge;
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
@@ -1051,6 +1052,7 @@ private:
     SendError enqueue_tx_for(const void* data, size_t len,
                              std::chrono::duration<Rep, Period> timeout,
                              uint8_t opcode) noexcept {
+        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (len > MaxPayload) return SendError::kMessageTooLarge;
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
 

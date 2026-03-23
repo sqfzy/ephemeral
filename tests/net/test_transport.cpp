@@ -465,6 +465,21 @@ TEST_F(TransportTest, SendWhenStoppedReturnsNotConnected) {
     EXPECT_EQ(err, SendError::kNotConnected);
 }
 
+TEST_F(TransportTest, SendNullDataWithLenReturnsNullData) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    auto err = tp->send(nullptr, 10);
+    EXPECT_EQ(err, SendError::kNullData);
+
+    // Null data with len=0 should succeed (no-op payload)
+    auto err2 = tp->send(nullptr, 0);
+    EXPECT_EQ(err2, SendError::kOk);
+
+    tp->stop();
+}
+
 TEST_F(TransportTest, SendCloseEnqueues) {
     auto result = create_transport();
     ASSERT_TRUE(result.has_value()) << result.error().message();
