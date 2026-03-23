@@ -3785,3 +3785,60 @@ TEST(FixMessageViewDiag, dump_empty_message) {
     EXPECT_NE(d.find("Heartbeat"), std::string::npos);
     EXPECT_NE(d.find("1 fields"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Unique setter family completion
+// ---------------------------------------------------------------------------
+
+TEST(FixBuilderUniqueSetters, set_char_unique_rejects_duplicate) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_char_unique(tag::Side, '1');
+    EXPECT_FALSE(b.has_overflow());
+    b.set_char_unique(tag::Side, '2');  // duplicate
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderUniqueSetters, set_bool_unique_rejects_duplicate) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "A");
+    b.set_bool_unique(tag::ResetSeqNumFlag, true);
+    EXPECT_FALSE(b.has_overflow());
+    b.set_bool_unique(tag::ResetSeqNumFlag, false);  // duplicate
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderUniqueSetters, set_timestamp_unique_rejects_duplicate) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    uint64_t ts = 1710500000'000'000'000ULL;
+    b.set_timestamp_unique(tag::SendingTime, ts);
+    EXPECT_FALSE(b.has_overflow());
+    b.set_timestamp_unique(tag::SendingTime, ts + 1);  // duplicate
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderUniqueSetters, set_raw_unique_rejects_duplicate) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    uint8_t raw_data[] = {0x41, 0x42, 0x43};
+    b.set_raw_unique(tag::Text, raw_data, 3);
+    EXPECT_FALSE(b.has_overflow());
+    b.set_raw_unique(tag::Text, raw_data, 3);  // duplicate
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderUniqueSetters, set_char_unique_allows_different_tags) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_char_unique(tag::Side, '1');
+    b.set_char_unique(tag::OrdType, '2');  // different tag, OK
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}

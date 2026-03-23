@@ -345,6 +345,48 @@ public:
         return set_double(t, value, precision);
     }
 
+    /// Like set_char(), but rejects duplicates.
+    MessageBuilder& set_char_unique(uint32_t t, char value) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set_char(t, value);
+    }
+
+    /// Like set_bool(), but rejects duplicates.
+    /// Useful for safety-critical flags (PossDupFlag, ResetSeqNumFlag, etc.).
+    MessageBuilder& set_bool_unique(uint32_t t, bool value) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set_bool(t, value);
+    }
+
+    /// Like set_timestamp(), but rejects duplicates.
+    MessageBuilder& set_timestamp_unique(uint32_t t, uint64_t epoch_ns,
+                                         TimestampPrecision prec = TimestampPrecision::kMilliseconds) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set_timestamp(t, epoch_ns, prec);
+    }
+
+    /// Like set_raw(), but rejects duplicates.
+    MessageBuilder& set_raw_unique(uint32_t t, const uint8_t* data, size_t len) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set_raw(t, data, len);
+    }
+
     /// Check whether the builder has overflowed the buffer.
     /// Useful for detecting overflow mid-build without waiting for finish().
     [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
