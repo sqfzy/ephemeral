@@ -296,9 +296,7 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback, ParserStats& st
             if (result.error() != ParseError::kIncomplete) {
                 uint8_t err_byte = (offset < len) ? data[offset] : 0;
                 stats.on_error(offset, result.error(), err_byte);
-                SPDLOG_LOGGER_DEBUG(detail::itch_parser_logger(),
-                    "ITCH parse error at offset {}: {} (msg_byte=0x{:02x})",
-                    offset, parse_error_name(result.error()), err_byte);
+                // parse() already logs at WARN level; stats capture the details
             }
             break;
         }

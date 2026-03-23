@@ -370,7 +370,11 @@ public:
                     "Failed to load CA cert: {}", err));
             }
         } else {
-            SSL_CTX_set_default_verify_paths(ctx);
+            if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+                SPDLOG_LOGGER_WARN(log,
+                    "SSL_CTX_set_default_verify_paths failed: "
+                    "default CA certificates may not be available");
+            }
         }
 
         if (config.verify_peer) {

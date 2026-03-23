@@ -105,12 +105,18 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
                                     uint32_t src_ip,
                                     uint32_t target_ip) noexcept {
     auto* mbuf = rte_pktmbuf_alloc(pool);
-    if (!mbuf) return nullptr;
+    if (!mbuf) {
+        SPDLOG_LOGGER_ERROR(detail::arp_logger(),
+            "ARP request: rte_pktmbuf_alloc failed, mempool may be exhausted");
+        return nullptr;
+    }
 
     constexpr uint16_t frame_len = sizeof(rte_ether_hdr) + sizeof(ArpPacket);
     auto* pkt = reinterpret_cast<uint8_t*>(
         rte_pktmbuf_append(mbuf, frame_len));
     if (!pkt) {
+        SPDLOG_LOGGER_ERROR(detail::arp_logger(),
+            "ARP request: rte_pktmbuf_append failed for {} bytes", frame_len);
         rte_pktmbuf_free(mbuf);
         return nullptr;
     }
@@ -159,9 +165,11 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
 
     auto* arp = reinterpret_cast<const ArpPacket*>(pkt + sizeof(rte_ether_hdr));
 
-    // Validate ARP reply for IPv4 over Ethernet
+    // Validate ARP reply for IPv4 over Ethernet (RFC 826)
     if (net::ntoh16(arp->hw_type) != kArpHwTypeEthernet) return std::nullopt;
     if (net::ntoh16(arp->proto_type) != kArpProtoIpv4) return std::nullopt;
+    if (arp->hw_addr_len != kArpHwAddrLen) return std::nullopt;
+    if (arp->proto_addr_len != kArpProtoAddrLen) return std::nullopt;
     if (net::ntoh16(arp->opcode) != kArpOpReply) return std::nullopt;
 
     // Check sender IP matches the address we're resolving

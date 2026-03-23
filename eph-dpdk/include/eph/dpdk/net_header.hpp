@@ -503,10 +503,33 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
 /// Parse an IPv4 address string "a.b.c.d" to host-order uint32_t.
 /// Returns 0 on invalid input.
 inline uint32_t parse_ipv4(const char* str) noexcept {
-    uint32_t a, b, c, d;
-    if (sscanf(str, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return 0;
-    if (a > 255 || b > 255 || c > 255 || d > 255) return 0;
-    return (a << 24) | (b << 16) | (c << 8) | d;
+    if (!str) return 0;
+
+    uint32_t octets[4]{};
+    const char* p = str;
+
+    for (int i = 0; i < 4; ++i) {
+        if (i > 0) {
+            if (*p != '.') return 0;
+            ++p;
+        }
+        // Parse up to 3 digits
+        if (*p < '0' || *p > '9') return 0;
+        uint32_t val = 0;
+        int digits = 0;
+        while (*p >= '0' && *p <= '9' && digits < 3) {
+            val = val * 10 + static_cast<uint32_t>(*p - '0');
+            ++p;
+            ++digits;
+        }
+        if (val > 255) return 0;
+        octets[i] = val;
+    }
+
+    // Must be at end of string (no trailing characters)
+    if (*p != '\0') return 0;
+
+    return (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3];
 }
 
 /// Format an IPv4 address from host-order uint32_t to "a.b.c.d".
