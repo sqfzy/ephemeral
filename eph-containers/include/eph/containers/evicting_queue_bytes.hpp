@@ -488,7 +488,7 @@ class EvictingQueueBytes {
         uint64_t last_pop_id;      ///< ID of last consumed message (reader-side)
         size_t   current_size;     ///< Approximate unread entries
         size_t   capacity;         ///< Fixed capacity
-        uint64_t total_overwritten;///< Messages overwritten before being read
+        uint64_t total_overwritten; ///< Messages overwritten before being read
 
         /// Multi-line formatted dump for logging/debugging.
         [[nodiscard]] std::string dump() const {
