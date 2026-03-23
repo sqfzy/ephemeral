@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <string_view>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -369,6 +370,17 @@ public:
 
     /// Total message length (valid only after finish()).
     [[nodiscard]] size_t size() const noexcept { return total_len_; }
+
+    /// View of the finalized message as a span (valid only after finish()).
+    [[nodiscard]] std::span<const uint8_t> as_span() const noexcept {
+        return {buf_, total_len_};
+    }
+
+    /// View of the finalized message as a string_view (valid only after finish()).
+    /// Useful for logging or text-based transport.
+    [[nodiscard]] std::string_view as_string_view() const noexcept {
+        return {reinterpret_cast<const char*>(buf_), total_len_};
+    }
 
 private:
     /// Write a tag=value\x01 field without SOH validation.

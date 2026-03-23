@@ -3176,3 +3176,184 @@ TEST(FixBuilder, set_double_precision_clamped_at_15) {
     ASSERT_TRUE(price.has_value());
     EXPECT_NEAR(*price, 1.5, 1e-12);
 }
+
+// ===========================================================================
+// Builder convenience accessors: as_span(), as_string_view()
+// ===========================================================================
+
+TEST(FixBuilder, as_span_returns_finalized_message) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "SENDER");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto sp = b.as_span();
+    EXPECT_EQ(sp.size(), len);
+    EXPECT_EQ(sp.data(), buf);
+    // Verify content matches data()/size()
+    EXPECT_EQ(sp.data(), b.data());
+    EXPECT_EQ(sp.size(), b.size());
+}
+
+TEST(FixBuilder, as_string_view_returns_finalized_message) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "SENDER");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto sv = b.as_string_view();
+    EXPECT_EQ(sv.size(), len);
+    EXPECT_EQ(sv.data(), reinterpret_cast<const char*>(buf));
+    // Verify it starts with "8=FIX"
+    EXPECT_TRUE(sv.starts_with("8=FIX"));
+}
+
+TEST(FixBuilder, as_span_empty_before_finish) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // Not finished yet — size() is 0
+    auto sp = b.as_span();
+    EXPECT_EQ(sp.size(), 0u);
+}
+
+TEST(FixBuilder, as_span_empty_on_overflow) {
+    uint8_t buf[32];  // Too small for header reserve
+    MessageBuilder b(buf, 10);
+    auto sp = b.as_span();
+    EXPECT_EQ(sp.size(), 0u);
+}
+
+// ===========================================================================
+// RepeatingGroupView
+// ===========================================================================
+
+TEST(FixRepeatingGroup, basic_market_data_group) {
+    // Build: 268=2 | 269=0 | 270=100.50 | 271=500 | 269=1 | 270=101.00 | 271=300
+    std::string body =
+        "35=W\x01"
+        "268=2\x01"
+        "269=0\x01" "270=100.50\x01" "271=500\x01"
+        "269=1\x01" "270=101.00\x01" "271=300\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+
+    ASSERT_EQ(group.size(), 2u);
+
+    // Entry 0: MDEntryType=0, MDEntryPx=100.50, MDEntrySize=500
+    EXPECT_EQ(group[0].get(tag::MDEntryType), "0");
+    EXPECT_EQ(group[0].get(tag::MDEntryPx), "100.50");
+    EXPECT_EQ(group[0].get(tag::MDEntrySize), "500");
+    EXPECT_TRUE(group[0].has(tag::MDEntryType));
+
+    // Entry 1: MDEntryType=1, MDEntryPx=101.00, MDEntrySize=300
+    EXPECT_EQ(group[1].get(tag::MDEntryType), "1");
+    EXPECT_EQ(group[1].get(tag::MDEntryPx), "101.00");
+    EXPECT_EQ(group[1].get(tag::MDEntrySize), "300");
+}
+
+TEST(FixRepeatingGroup, single_entry_group) {
+    std::string body =
+        "35=W\x01"
+        "268=1\x01"
+        "269=0\x01" "270=99.75\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+
+    ASSERT_EQ(group.size(), 1u);
+    EXPECT_EQ(group[0].get(tag::MDEntryPx), "99.75");
+}
+
+TEST(FixRepeatingGroup, missing_count_tag_returns_empty) {
+    std::string body = "35=D\x01" "55=AAPL\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+
+    EXPECT_EQ(group.size(), 0u);
+    EXPECT_TRUE(group.empty());
+}
+
+TEST(FixRepeatingGroup, count_exceeds_actual_entries) {
+    // count_tag says 3, but only 2 delimiter tags present
+    std::string body =
+        "35=W\x01"
+        "268=3\x01"
+        "269=0\x01" "270=100.00\x01"
+        "269=1\x01" "270=101.00\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+
+    // Should return only the 2 actually found, not 3
+    EXPECT_EQ(group.size(), 2u);
+}
+
+TEST(FixRepeatingGroup, range_for_iteration) {
+    std::string body =
+        "35=W\x01"
+        "268=3\x01"
+        "269=0\x01" "270=10.0\x01"
+        "269=1\x01" "270=20.0\x01"
+        "269=2\x01" "270=30.0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+
+    size_t count = 0;
+    for (const auto& entry : group) {
+        EXPECT_TRUE(entry.has(tag::MDEntryType));
+        EXPECT_TRUE(entry.has(tag::MDEntryPx));
+        ++count;
+    }
+    EXPECT_EQ(count, 3u);
+}
+
+TEST(FixRepeatingGroup, entry_field_iteration) {
+    std::string body =
+        "35=W\x01"
+        "268=1\x01"
+        "269=0\x01" "270=50.00\x01" "271=100\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    // Iterate fields within the single entry
+    size_t field_count = 0;
+    for (const auto& field : group[0]) {
+        EXPECT_GT(field.tag, 0u);
+        ++field_count;
+    }
+    EXPECT_EQ(field_count, 3u);  // MDEntryType, MDEntryPx, MDEntrySize
+}

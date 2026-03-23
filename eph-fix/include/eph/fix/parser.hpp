@@ -347,6 +347,111 @@ public:
         }
     }
 
+    /// A single entry in a FIX repeating group — a span of Field pointers
+    /// from the delimiter tag to the next delimiter (or group end).
+    struct GroupEntry {
+        const Field* fields;  ///< Pointer to first field of this entry
+        size_t       count;   ///< Number of fields in this entry
+
+        /// Look up a field within this group entry.
+        [[nodiscard]] std::optional<std::string_view> get(uint32_t t) const noexcept {
+            for (size_t i = 0; i < count; ++i) {
+                if (fields[i].tag == t) return fields[i].value;
+            }
+            return std::nullopt;
+        }
+
+        /// Check if a tag exists in this entry.
+        [[nodiscard]] bool has(uint32_t t) const noexcept {
+            return get(t).has_value();
+        }
+
+        /// Iterate over fields in this entry.
+        [[nodiscard]] const Field* begin() const noexcept { return fields; }
+        [[nodiscard]] const Field* end()   const noexcept { return fields + count; }
+    };
+
+    /// View over a FIX repeating group — provides structured iteration.
+    ///
+    /// FIX repeating groups follow the pattern:
+    ///   count_tag=N | delim_tag=v1 | field=v | ... | delim_tag=v2 | field=v | ...
+    ///
+    /// Each entry starts at a delimiter tag occurrence and extends to the
+    /// next delimiter tag or the end of the group's fields.
+    struct RepeatingGroupView {
+        const GroupEntry* entries;  ///< Pointer to entries array
+        size_t            count;    ///< Number of group entries
+
+        [[nodiscard]] size_t size()  const noexcept { return count; }
+        [[nodiscard]] bool   empty() const noexcept { return count == 0; }
+
+        [[nodiscard]] const GroupEntry& operator[](size_t i) const noexcept {
+            return entries[i];
+        }
+
+        [[nodiscard]] const GroupEntry* begin() const noexcept { return entries; }
+        [[nodiscard]] const GroupEntry* end()   const noexcept { return entries + count; }
+    };
+
+    /// Extract a repeating group by its count tag and delimiter tag.
+    ///
+    /// @param count_tag  The tag that specifies the number of entries
+    ///                   (e.g., tag::NoMDEntries = 268)
+    /// @param delim_tag  The first tag of each group entry
+    ///                   (e.g., tag::MDEntryType = 269)
+    /// @param out_entries Caller-provided buffer for GroupEntry results
+    /// @param max_entries Size of out_entries buffer
+    /// @return RepeatingGroupView over the populated entries, or empty if
+    ///         count_tag is missing or no delimiter tags found
+    ///
+    /// Usage:
+    ///   GroupEntry entries[64];
+    ///   auto group = msg.get_group(tag::NoMDEntries, tag::MDEntryType,
+    ///                              entries, 64);
+    ///   for (auto& entry : group) {
+    ///       auto px = entry.get(tag::MDEntryPx);
+    ///       auto sz = entry.get(tag::MDEntrySize);
+    ///   }
+    [[nodiscard]] RepeatingGroupView get_group(
+        uint32_t count_tag, uint32_t delim_tag,
+        GroupEntry* out_entries, size_t max_entries) const noexcept {
+
+        // Find expected count
+        auto count_val = get_int(count_tag);
+        if (!count_val || *count_val <= 0) {
+            return {out_entries, 0};
+        }
+
+        size_t expected = static_cast<size_t>(*count_val);
+        size_t found = 0;
+
+        // Scan for delimiter tag occurrences — each starts a new entry
+        for (size_t i = 0; i < count_ && found < max_entries; ++i) {
+            if (fields_[i].tag == delim_tag) {
+                // Find end of this entry: next delimiter or end of fields
+                size_t entry_end = count_;
+                for (size_t j = i + 1; j < count_; ++j) {
+                    if (fields_[j].tag == delim_tag) {
+                        entry_end = j;
+                        break;
+                    }
+                }
+                out_entries[found] = GroupEntry{
+                    .fields = &fields_[i],
+                    .count  = entry_end - i,
+                };
+                ++found;
+                i = entry_end - 1;  // loop increment handles +1
+            }
+        }
+
+        // Clamp to declared count (don't return more entries than the
+        // count tag promised, even if extra delimiter tags exist)
+        if (found > expected) found = expected;
+
+        return {out_entries, found};
+    }
+
     // -- Internal (used by parse()) --
     // Kept public because MessageView is a value type produced by parse().
 
