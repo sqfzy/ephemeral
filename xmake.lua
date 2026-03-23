@@ -90,13 +90,9 @@ target("eph-dpdk")
     -- before any other DPDK header (e.g. rte_byteorder.h) is parsed.
     add_defines("RTE_FORCE_INTRINSICS", { public = true })
     add_cxflags("-include", "rte_config.h", { public = true, force = true })
-    -- Static DPDK PMD drivers use __attribute__((constructor)) to self-register.
-    -- Without --whole-archive, the linker strips unreferenced .a files and the
-    -- constructors never run (rte_eal_init fails with "No such device").
-    -- Only wrap the 5 PMDs we actually use — wrapping all librte_*.a would pull
-    -- in librte_crypto_openssl which conflicts with aws-lc.
-    add_linkgroups("rte_net_null", "rte_net_ena", "rte_net_af_packet",
-                   "rte_bus_pci", "rte_bus_vdev", { whole = true })
+    -- NOTE: PMD whole-archive linking is applied to binary targets, not here.
+    -- Headeronly targets don't participate in linking, so add_linkgroups here
+    -- would not propagate. See apply_dpdk_pmd_linkgroups() below.
     add_cxflags("-march=native", { public = true, force = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
@@ -132,6 +128,19 @@ for dir, dep in pairs(bench_module_deps) do
 end
 
 -- ===========================================================================
+-- Static DPDK PMD whole-archive helper
+-- ===========================================================================
+-- PMD drivers use __attribute__((constructor)) to self-register at load time.
+-- Static linking strips unreferenced .a files, losing these constructors.
+-- Must be applied to each binary target (not headeronly eph-dpdk).
+-- Only wrap PMDs we actually use — all librte_*.a would pull in
+-- librte_crypto_openssl which conflicts with aws-lc.
+function apply_dpdk_pmd_linkgroups()
+    add_linkgroups("rte_net_null", "rte_net_ena", "rte_net_af_packet",
+                   "rte_bus_pci", "rte_bus_vdev", { whole = true })
+end
+
+-- ===========================================================================
 -- tests (directory structure encodes module dependency)
 -- ===========================================================================
 
@@ -155,6 +164,7 @@ for dir, dep in pairs(test_module_deps) do
             add_deps(dep)
             add_packages("gtest")
             add_defines("SPDLOG_NO_EXCEPTIONS")
+            if dir == "dpdk" then apply_dpdk_pmd_linkgroups() end
     end
 end
 
@@ -174,6 +184,7 @@ target("ws_echo_client")
     if has_package("dpdk") then
         add_deps("eph-dpdk")
         add_defines("EPH_HAS_DPDK")
+        apply_dpdk_pmd_linkgroups()
     end
 
 target("minimal_ws_client")
@@ -213,6 +224,7 @@ target("dpdk_quickstart")
     if has_package("dpdk") then
         add_deps("eph-dpdk")
         add_defines("EPH_HAS_DPDK")
+        apply_dpdk_pmd_linkgroups()
     end
 
 target("framer_showcase")
