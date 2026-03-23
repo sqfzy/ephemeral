@@ -137,7 +137,8 @@ end
 -- librte_crypto_openssl which conflicts with aws-lc.
 function apply_dpdk_pmd_linkgroups()
     add_linkgroups("rte_net_null", "rte_net_ena", "rte_net_af_packet",
-                   "rte_bus_pci", "rte_bus_vdev", { whole = true })
+                   "rte_bus_pci", "rte_bus_vdev", "rte_mempool_ring",
+                   { whole = true })
 end
 
 -- ===========================================================================
@@ -171,8 +172,7 @@ end
 -- ===========================================================================
 -- examples
 -- ===========================================================================
--- Unified ws_echo_client: always links eph-net (socket backend),
--- conditionally adds DPDK support when the dpdk package is available.
+-- Socket-only WebSocket echo client (no DPDK dependency).
 target("ws_echo_client")
     set_kind("binary")
     set_group("examples")
@@ -181,11 +181,17 @@ target("ws_echo_client")
     add_deps("eph-net")
     add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
     set_symbols("debug")
-    if has_package("dpdk") then
-        add_deps("eph-dpdk")
-        add_defines("EPH_HAS_DPDK")
-        apply_dpdk_pmd_linkgroups()
-    end
+
+-- DPDK WebSocket echo client (requires DPDK).
+target("ws_echo_client_dpdk")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/ws_echo_client_dpdk.cpp")
+    add_deps("eph-net", "eph-dpdk")
+    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
+    set_symbols("debug")
+    apply_dpdk_pmd_linkgroups()
 
 target("minimal_ws_client")
     set_kind("binary")
@@ -220,12 +226,8 @@ target("dpdk_quickstart")
     set_group("examples")
     set_default(false)
     add_files("examples/dpdk_quickstart.cpp")
-    add_deps("eph-net")
-    if has_package("dpdk") then
-        add_deps("eph-dpdk")
-        add_defines("EPH_HAS_DPDK")
-        apply_dpdk_pmd_linkgroups()
-    end
+    add_deps("eph-net", "eph-dpdk")
+    apply_dpdk_pmd_linkgroups()
 
 target("framer_showcase")
     set_kind("binary")

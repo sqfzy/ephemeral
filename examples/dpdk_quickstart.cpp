@@ -25,8 +25,6 @@
 ///   - minimal_ws_client.cpp  — same thing with socket backend
 ///   - ws_echo_client.cpp     — unified client supporting both backends
 
-#ifdef EPH_HAS_DPDK
-
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -214,15 +212,3 @@ int main(int argc, char** argv) {
     // EalGuard RAII handles eal_cleanup()
     return 0;
 }
-
-#else // !EPH_HAS_DPDK
-
-#include <iostream>
-
-int main() {
-    std::cerr << "Error: this example requires DPDK support.\n"
-              << "Rebuild with: xmake f --dpdk=y && xmake build dpdk_quickstart\n";
-    return 1;
-}
-
-#endif // EPH_HAS_DPDK

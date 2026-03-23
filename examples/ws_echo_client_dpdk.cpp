@@ -1,29 +1,36 @@
-/// @file ws_echo_client.cpp
-/// WebSocket echo client using the socket (kernel) backend.
+/// @file ws_echo_client_dpdk.cpp
+/// WebSocket echo client using the DPDK (kernel-bypass) backend.
 ///
 /// Usage:
-///   ./ws_echo_client --host echo.websocket.org
-///   ./ws_echo_client --host echo.websocket.org --port 443 --path / \
-///       --msg "hello" --count 5 --interval 1000 --no-tls
+///   sudo ./ws_echo_client_dpdk [EAL args] -- [app args]
 ///
-/// For the DPDK backend, see ws_echo_client_dpdk.cpp.
+///   sudo ./ws_echo_client_dpdk -a 0000:28:00.0 -- \
+///       --host echo.websocket.org --local-ip 172.31.23.112 \
+///       --gateway-ip 172.31.16.1 --msg "hello dpdk"
+///
+/// EAL args (e.g. -a <pci_addr>) go BEFORE the '--' separator;
+/// application args go AFTER it.
+///
+/// For the socket backend, see ws_echo_client.cpp.
 
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
-#include <expected>
+#include <cstring>
 #include <format>
 #include <iostream>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
 
 #include <spdlog/spdlog.h>
 
-#include "eph/net/socket_transport.hpp"
+#include <rte_bus.h>
+
+#include "eph/dpdk/connector.hpp"
+#include "eph/dpdk/eal.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -33,12 +40,18 @@ struct AppConfig {
     std::string host        = "echo.websocket.org";
     uint16_t    port        = 443;
     std::string ws_path     = "/";
-    std::string message     = "hello ephemeral";
+    std::string message     = "hello dpdk";
     int         count       = 3;       // 0 = infinite
     int         interval_ms = 1000;
     bool        use_tls     = true;
     bool        verify      = true;
     std::string ca_cert{};
+
+    // DPDK-specific
+    std::string local_ip{};
+    std::string gateway_ip{};
+    uint16_t    local_port  = 0;       // 0 = random ephemeral
+    uint16_t    dpdk_port   = 0;
 };
 
 static std::atomic<bool> g_running{true};
@@ -53,18 +66,24 @@ static void signal_handler(int) {
 
 static void print_usage(const char* prog) {
     std::cerr << std::format(
-        "Usage: {} [options]\n"
+        "Usage: {} [EAL args] -- [app args]\n"
         "\n"
-        "Options:\n"
+        "App options:\n"
         "  --host <hostname>        WebSocket server hostname (default: echo.websocket.org)\n"
         "  --port <port>            Server port (default: 443)\n"
         "  --path <path>            WebSocket upgrade path (default: /)\n"
-        "  --msg <message>          Message to send (default: \"hello ephemeral\")\n"
+        "  --msg <message>          Message to send (default: \"hello dpdk\")\n"
         "  --count <n>              Number of messages, 0=infinite (default: 3)\n"
         "  --interval <ms>          Milliseconds between sends (default: 1000)\n"
         "  --no-tls                 Use plain WebSocket (ws://) instead of WSS\n"
         "  --no-verify              Disable TLS certificate verification\n"
         "  --ca-cert <path>         CA certificate file\n"
+        "\n"
+        "DPDK options:\n"
+        "  --local-ip <ip>          Local IPv4 address on DPDK port (required)\n"
+        "  --gateway-ip <ip>        Gateway IPv4 for ARP resolution (required)\n"
+        "  --local-port <port>      Local TCP source port (default: random)\n"
+        "  --dpdk-port <n>          DPDK port ID (default: 0)\n"
         "  --help                   Show this help\n",
         prog);
 }
@@ -79,9 +98,20 @@ static int parse_int(std::string_view sv, std::string_view flag) {
     return value;
 }
 
-static AppConfig parse_args(int argc, char** argv) {
-    AppConfig cfg;
+struct SplitArgs { int eal_argc; char** eal_argv; int app_argc; char** app_argv; };
+
+static SplitArgs split_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--") == 0) {
+            return { i, argv, argc - i - 1, argv + i + 1 };
+        }
+    }
+    return { argc, argv, 0, nullptr };
+}
+
+static AppConfig parse_app_args(int argc, char** argv) {
+    AppConfig cfg;
+    for (int i = 0; i < argc; ++i) {
         std::string_view arg = argv[i];
         auto next_val = [&](std::string_view name) -> std::string_view {
             if (i + 1 >= argc) {
@@ -100,10 +130,14 @@ static AppConfig parse_args(int argc, char** argv) {
         else if (arg == "--no-tls")     cfg.use_tls    = false;
         else if (arg == "--no-verify")  cfg.verify     = false;
         else if (arg == "--ca-cert")    cfg.ca_cert    = std::string(next_val("--ca-cert"));
-        else if (arg == "--help") { print_usage(argv[0]); std::exit(0); }
+        else if (arg == "--local-ip")   cfg.local_ip   = std::string(next_val("--local-ip"));
+        else if (arg == "--gateway-ip") cfg.gateway_ip = std::string(next_val("--gateway-ip"));
+        else if (arg == "--local-port") cfg.local_port = static_cast<uint16_t>(parse_int(next_val("--local-port"), "--local-port"));
+        else if (arg == "--dpdk-port")  cfg.dpdk_port  = static_cast<uint16_t>(parse_int(next_val("--dpdk-port"), "--dpdk-port"));
+        else if (arg == "--help") { print_usage("ws_echo_client_dpdk"); std::exit(0); }
         else {
             std::cerr << std::format("Unknown argument: {}\n", arg);
-            print_usage(argv[0]);
+            print_usage("ws_echo_client_dpdk");
             std::exit(1);
         }
     }
@@ -119,46 +153,85 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, signal_handler);
     spdlog::set_level(spdlog::level::info);
 
-    auto cfg = parse_args(argc, argv);
-    auto scheme = cfg.use_tls ? "wss" : "ws";
-    spdlog::info("Connecting to {}://{}:{}{}", scheme, cfg.host, cfg.port, cfg.ws_path);
+    auto [eal_argc, eal_argv, app_argc, app_argv] = split_args(argc, argv);
+    int parse_argc = (app_argv != nullptr) ? app_argc : argc - 1;
+    char** parse_argv = (app_argv != nullptr) ? app_argv : argv + 1;
+    auto cfg = parse_app_args(parse_argc, parse_argv);
 
-    eph::net::TransportConfig transport_cfg{
-        .remote_host = cfg.host,
-        .remote_port = cfg.port,
-        .ws_path     = cfg.ws_path,
-        .use_tls     = cfg.use_tls,
-        .ca_cert_path = cfg.ca_cert,
-        .verify_peer = cfg.verify,
-        .max_reconnect_attempts = 3,
-        .ping_interval = std::chrono::seconds{30},
-    };
-
-    eph::net::SocketConfig sock_cfg{
-        .host        = cfg.host,
-        .port        = cfg.port,
-        .tcp_nodelay = true,
-        .tcp_keepalive = true,
-    };
-
-    auto tcp_factory = [sock_cfg]()
-        -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
-        auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
-        auto result = tcp->connect(std::chrono::milliseconds{5000});
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
-
-    auto result = eph::net::Transport<eph::net::SocketTransport>::create(
-        std::move(tcp_factory), transport_cfg);
-
-    if (!result) {
-        spdlog::error("Failed to connect: {}", result.error().message());
+    if (cfg.local_ip.empty()) {
+        spdlog::error("--local-ip is required");
+        return 1;
+    }
+    if (cfg.gateway_ip.empty()) {
+        spdlog::error("--gateway-ip is required");
         return 1;
     }
 
-    auto& tp = **result;
-    spdlog::info("Connected ({})", scheme);
+    auto scheme = cfg.use_tls ? "wss" : "ws";
+    spdlog::info("Connecting to {}://{}:{}{} (DPDK)", scheme, cfg.host, cfg.port, cfg.ws_path);
+    spdlog::info("Local={}:{}, gateway={}", cfg.local_ip, cfg.local_port, cfg.gateway_ip);
+
+    // EAL init
+    auto eal = eph::dpdk::EalGuard::init(eal_argc, eal_argv);
+    if (!eal) {
+        spdlog::error("EAL init failed: {}", eal.error());
+        return 1;
+    }
+    spdlog::info("EAL initialized ({} args consumed)", eal->args_consumed());
+
+    // Require a real PCI NIC
+    if (rte_eth_dev_count_avail() == 0) {
+        spdlog::error("No DPDK ports available — bind a physical NIC with -a <pci_addr>");
+        return 1;
+    }
+    {
+        rte_eth_dev_info dev_info{};
+        if (rte_eth_dev_info_get(cfg.dpdk_port, &dev_info) != 0) {
+            spdlog::error("Failed to query DPDK port {}", cfg.dpdk_port);
+            return 1;
+        }
+        const char* bus_name = dev_info.device
+            ? rte_bus_name(rte_bus_find_by_device(dev_info.device))
+            : nullptr;
+        if (!bus_name || std::strcmp(bus_name, "pci") != 0) {
+            spdlog::error("DPDK port {} is not a PCI device (bus={}) — "
+                          "this example requires a real NIC",
+                          cfg.dpdk_port, bus_name ? bus_name : "none");
+            return 1;
+        }
+        spdlog::info("DPDK port {}: driver={}, bus=pci",
+                     cfg.dpdk_port, dev_info.driver_name);
+    }
+
+    // Connect
+    eph::dpdk::DpdkEndpoint endpoint{
+        .local_ip   = cfg.local_ip,
+        .gateway_ip = cfg.gateway_ip,
+    };
+
+    eph::net::TransportConfig transport_cfg{
+        .remote_host   = cfg.host,
+        .remote_port   = cfg.port,
+        .ws_path       = cfg.ws_path,
+        .use_tls       = cfg.use_tls,
+        .ca_cert_path  = cfg.ca_cert,
+        .verify_peer   = cfg.verify,
+        .tcp_timeout   = std::chrono::milliseconds{5000},
+        .tls_timeout   = std::chrono::milliseconds{5000},
+        .ws_timeout    = std::chrono::milliseconds{5000},
+        .ping_interval = std::chrono::seconds{30},
+    };
+
+    auto conn = eph::dpdk::connect(endpoint, transport_cfg,
+                                   {.platform = {.port_id = cfg.dpdk_port},
+                                    .local_port = cfg.local_port});
+    if (!conn) {
+        spdlog::error("DPDK connect failed: {}", conn.error());
+        return 1;
+    }
+
+    auto& tp = *conn->transport;
+    spdlog::info("{} connection established (DPDK)", scheme);
 
     // Echo loop
     int sent = 0, received = 0;
