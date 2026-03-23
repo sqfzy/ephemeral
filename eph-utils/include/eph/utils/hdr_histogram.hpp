@@ -136,11 +136,13 @@ class HdrHistogram {
     bool record(uint64_t value) noexcept {
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
+            ++dropped_count_;
             return false;
         }
 
         int32_t idx = counts_index_for(value);
         if (idx < 0 || idx >= counts_len_) [[unlikely]] {
+            ++dropped_count_;
             return false;
         }
 
@@ -159,11 +161,13 @@ class HdrHistogram {
         if (count == 0) return true;
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
+            dropped_count_ += count;
             return false;
         }
 
         int32_t idx = counts_index_for(value);
         if (idx < 0 || idx >= counts_len_) [[unlikely]] {
+            dropped_count_ += count;
             return false;
         }
 
@@ -180,6 +184,7 @@ class HdrHistogram {
         total_count_ = 0;
         min_value_ = std::numeric_limits<uint64_t>::max();
         max_value_ = 0;
+        dropped_count_ = 0;
     }
 
     // ========== 查询 API ==========
@@ -266,6 +271,12 @@ class HdrHistogram {
 
     [[nodiscard]] uint64_t get_total_count() const noexcept {
         return total_count_;
+    }
+
+    /// Number of samples rejected because they fell outside the trackable range.
+    /// Non-zero values indicate the histogram range should be widened.
+    [[nodiscard]] uint64_t get_dropped_count() const noexcept {
+        return dropped_count_;
     }
 
     [[nodiscard]] uint64_t get_min_value() const noexcept {
@@ -403,7 +414,7 @@ class HdrHistogram {
         auto vals = get_percentiles({50.0, 90.0, 99.0, 99.9, 99.99});
         std::string u = unit.empty() ? "" : std::format(" {}", unit);
 
-        return std::format(
+        std::string result = std::format(
             "{}: {} samples\n"
             "  min   : {}{}\n"
             "  p50   : {}{}\n"
@@ -424,24 +435,36 @@ class HdrHistogram {
             get_max_value(), u,
             get_mean(), u,
             get_std_deviation(), u);
+        if (dropped_count_ > 0) {
+            result += std::format("  dropped: {} (out of range)\n", dropped_count_);
+        }
+        return result;
     }
 
     /// JSON-formatted histogram summary for monitoring system integration.
     /// Includes count, min, max, mean, stddev, and standard percentiles.
     /// Consistent with the to_json() pattern used by RttStats, TransportStats, etc.
     [[nodiscard]] std::string to_json() const {
-        if (total_count_ == 0) {
+        if (total_count_ == 0 && dropped_count_ == 0) {
             return "{\"count\":0}";
         }
+        if (total_count_ == 0) {
+            return std::format("{{\"count\":0,\"dropped\":{}}}", dropped_count_);
+        }
         auto vals = get_percentiles({50.0, 90.0, 99.0, 99.9, 99.99});
-        return std::format(
+        std::string json = std::format(
             "{{"
             "\"count\":{},\"min\":{},\"max\":{},"
             "\"mean\":{:.1f},\"stddev\":{:.1f},"
-            "\"p50\":{},\"p90\":{},\"p99\":{},\"p999\":{},\"p9999\":{}}}",
+            "\"p50\":{},\"p90\":{},\"p99\":{},\"p999\":{},\"p9999\":{}",
             total_count_, get_min_value(), get_max_value(),
             get_mean(), get_std_deviation(),
             vals[0], vals[1], vals[2], vals[3], vals[4]);
+        if (dropped_count_ > 0) {
+            json += std::format(",\"dropped\":{}", dropped_count_);
+        }
+        json += "}";
+        return json;
     }
 
     [[nodiscard]] bool is_compatible(const HdrHistogram& other) const noexcept {
@@ -467,6 +490,7 @@ class HdrHistogram {
     uint64_t total_count_ = 0;
     uint64_t min_value_ = std::numeric_limits<uint64_t>::max();
     uint64_t max_value_ = 0;
+    uint64_t dropped_count_ = 0;  ///< Samples rejected (out of trackable range)
 
     void establish_size(uint64_t max_value) {
         int32_t buckets_needed = get_buckets_needed_to_cover_value(max_value);

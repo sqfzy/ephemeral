@@ -511,6 +511,19 @@ class EvictingQueueBytes {
                 capacity, current_size, total_pushed,
                 last_pop_id, total_overwritten);
         }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .total_pushed      = lhs.total_pushed - rhs.total_pushed,
+                .last_pop_id       = lhs.last_pop_id,  // point-in-time, not diffable
+                .current_size      = lhs.current_size,
+                .capacity          = lhs.capacity,
+                .total_overwritten = lhs.total_overwritten - rhs.total_overwritten,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
     /// Take a point-in-time statistics snapshot.

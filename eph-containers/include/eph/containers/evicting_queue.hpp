@@ -552,6 +552,19 @@ class alignas(Align<T>) EvictingQueue {
                 "\"total_popped\":{},\"overwritten\":{}}}",
                 capacity, current_size, total_pushed, total_popped, overwritten);
         }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .total_pushed = lhs.total_pushed - rhs.total_pushed,
+                .total_popped = lhs.total_popped - rhs.total_popped,
+                .overwritten  = lhs.overwritten - rhs.overwritten,
+                .current_size = lhs.current_size,  // point-in-time, not diffable
+                .capacity     = lhs.capacity,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
     /// Take a point-in-time statistics snapshot.
@@ -919,6 +932,19 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
                 "\"total_popped\":{},\"overwritten\":{}}}",
                 capacity, current_size, total_pushed, total_popped, overwritten);
         }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .total_pushed = lhs.total_pushed - rhs.total_pushed,
+                .total_popped = lhs.total_popped - rhs.total_popped,
+                .overwritten  = lhs.overwritten - rhs.overwritten,
+                .current_size = lhs.current_size,
+                .capacity     = lhs.capacity,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
     /// Take a point-in-time statistics snapshot.

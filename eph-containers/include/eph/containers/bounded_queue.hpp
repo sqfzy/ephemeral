@@ -800,6 +800,19 @@ class BoundedQueue {
                 "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
                 capacity, current_size, total_pushed, total_popped);
         }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        /// Usage: auto delta = stats_t2 - stats_t1;
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .total_pushed = lhs.total_pushed - rhs.total_pushed,
+                .total_popped = lhs.total_popped - rhs.total_popped,
+                .current_size = lhs.current_size,  // point-in-time, not diffable
+                .capacity     = lhs.capacity,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
     /// Take a point-in-time statistics snapshot.

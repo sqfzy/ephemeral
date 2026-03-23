@@ -201,6 +201,10 @@ struct SocketConfig {
             return "host must not be empty";
         if (port == 0)
             return "port must be > 0";
+        if (recv_buf_size < 0)
+            return "recv_buf_size must be >= 0 (0 = OS default)";
+        if (send_buf_size < 0)
+            return "send_buf_size must be >= 0 (0 = OS default)";
         if (send_timeout_ms <= 0)
             return "send_timeout_ms must be positive";
         if (tcp_keepalive) {
