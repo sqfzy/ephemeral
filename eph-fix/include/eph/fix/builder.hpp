@@ -80,29 +80,14 @@ public:
             }
         }
 
-        // Write "tag=value\x01"
-        size_t tag_len = write_uint(t, pos_);
-        size_t needed = tag_len + 1 + value.size() + 1; // tag + '=' + value + SOH
-        if (pos_ + needed > capacity_) [[unlikely]] {
-            log_overflow(t, needed, capacity_ - pos_);
-            overflow_ = true;
-            return *this;
-        }
-
-        pos_ += tag_len;
-        buf_[pos_++] = '=';
-        std::memcpy(buf_ + pos_, value.data(), value.size());
-        pos_ += value.size();
-        buf_[pos_++] = '\x01';
-        ++field_count_;
-        return *this;
+        return set_trusted(t, value);
     }
 
     /// Append an integer-valued field.
     MessageBuilder& set_int(uint32_t t, int64_t value) noexcept {
         char tmp[24];
         size_t n = format_int(value, tmp);
-        return set(t, std::string_view(tmp, n));
+        return set_trusted(t, std::string_view(tmp, n));
     }
 
     /// Append a field from a raw byte pointer + length.
@@ -113,15 +98,22 @@ public:
     /// would be required.
     MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
         if (data == nullptr || len == 0)
-            return set(t, std::string_view{});
-        // SOH validation is handled by set() — no need to scan here
-        return set(t, std::string_view(reinterpret_cast<const char*>(data), len));
+            return set_trusted(t, std::string_view{});
+        // SOH validation: set_raw() accepts arbitrary bytes, must validate
+        for (size_t i = 0; i < len; ++i) {
+            if (data[i] == 0x01) [[unlikely]] {
+                log_soh_found(t, i);
+                overflow_ = true;
+                return *this;
+            }
+        }
+        return set_trusted(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
 
     /// Append a FIX boolean field (Y/N).
     /// Useful for PossDupFlag, PossResend, ResetSeqNumFlag, GapFillFlag, etc.
     MessageBuilder& set_bool(uint32_t t, bool value) noexcept {
-        return set(t, value ? std::string_view("Y", 1) : std::string_view("N", 1));
+        return set_trusted(t, value ? std::string_view("Y", 1) : std::string_view("N", 1));
     }
 
     /// Timestamp sub-second precision levels.
@@ -209,7 +201,7 @@ public:
             total_len = 18 + static_cast<size_t>(frac_digits);
         }
 
-        return set(t, std::string_view(tmp, total_len));
+        return set_trusted(t, std::string_view(tmp, total_len));
     }
 
     /// Append a double-valued field with fixed-point precision.
@@ -225,7 +217,7 @@ public:
         if (precision > 15) precision = 15;
         char tmp[32];
         size_t n = format_double(value, tmp, precision);
-        return set(t, std::string_view(tmp, n));
+        return set_trusted(t, std::string_view(tmp, n));
     }
 
     /// Finalize the message: prepend BeginString + BodyLength, append CheckSum.
@@ -379,6 +371,29 @@ public:
     [[nodiscard]] size_t size() const noexcept { return total_len_; }
 
 private:
+    /// Write a tag=value\x01 field without SOH validation.
+    /// Used by internal formatting methods (set_int, set_bool, set_double,
+    /// set_timestamp) that produce known-safe ASCII output.
+    MessageBuilder& set_trusted(uint32_t t, std::string_view value) noexcept {
+        if (overflow_) [[unlikely]] return *this;
+
+        size_t tag_len = write_uint(t, pos_);
+        size_t needed = tag_len + 1 + value.size() + 1;
+        if (pos_ + needed > capacity_) [[unlikely]] {
+            log_overflow(t, needed, capacity_ - pos_);
+            overflow_ = true;
+            return *this;
+        }
+
+        pos_ += tag_len;
+        buf_[pos_++] = '=';
+        std::memcpy(buf_ + pos_, value.data(), value.size());
+        pos_ += value.size();
+        buf_[pos_++] = '\x01';
+        ++field_count_;
+        return *this;
+    }
+
     static constexpr size_t kHeaderReserve = 32;
     static constexpr size_t kTrailerLen = 7;  // "10=XXX\x01"
     // "8=" + version (≤15) + SOH + "9=" + body_len (≤7 digits) + SOH = ≤28
