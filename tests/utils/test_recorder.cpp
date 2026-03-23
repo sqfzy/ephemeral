@@ -274,6 +274,37 @@ TEST_F(RecorderTest, PrintReportNoData) {
 // Recorder — Real TSC measurement
 // ============================================================================
 
+TEST_F(RecorderTest, HistogramAccessorReflectsRecordedData) {
+    Recorder rec("HistAccess");
+    rec.record(100);
+    rec.record(200);
+    rec.record(300);
+
+    const auto& hist = rec.histogram();
+    // Histogram should have recorded 3 values
+    EXPECT_EQ(hist.get_total_count(), 3u);
+    // Median should be near 200 (HdrHistogram quantizes to significant digits)
+    double median = hist.get_value_at_percentile(50.0);
+    EXPECT_GE(median, 150.0);
+    EXPECT_LE(median, 250.0);
+}
+
+TEST_F(RecorderTest, HistogramAccessorEmptyRecorder) {
+    Recorder rec("HistEmpty");
+    const auto& hist = rec.histogram();
+    EXPECT_EQ(hist.get_total_count(), 0u);
+}
+
+TEST_F(RecorderTest, HistogramAccessorAfterReset) {
+    Recorder rec("HistReset");
+    rec.record(500);
+    EXPECT_EQ(rec.histogram().get_total_count(), 1u);
+    rec.reset();
+    EXPECT_EQ(rec.histogram().get_total_count(), 0u);
+}
+
+// ============================================================================
+
 TEST_F(RecorderTest, RecordRealTscMeasurements) {
     Recorder rec("RealTSC");
 

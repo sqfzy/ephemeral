@@ -2966,6 +2966,39 @@ TEST(FixBuilder, set_double_rounding_carry_precision3) {
     EXPECT_EQ(*price, "2.000");
 }
 
+TEST(FixBuilder, set_double_rounding_carry_precision0) {
+    // 0.6 at precision=0: int_part=0, no fractional part → should produce "0"
+    // (precision=0 skips the fractional branch entirely, no carry possible)
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 0.6, 0);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "0"); // truncated, no rounding at precision=0
+}
+
+TEST(FixBuilder, set_double_rounding_carry_large_value) {
+    // 999.999 at precision=2: frac=0.999, frac_int=100 → carry → "1000.00"
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 999.999, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "1000.00");
+}
+
 TEST(FixBuilder, set_double_no_carry_when_not_needed) {
     // 1.50 at precision=2: should stay "1.50"
     uint8_t buf[256];
