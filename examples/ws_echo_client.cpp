@@ -33,6 +33,8 @@
 #include "eph/net/socket_transport.hpp"
 
 #ifdef EPH_HAS_DPDK
+#include <rte_bus.h>
+
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
 #endif
@@ -299,6 +301,31 @@ static int run_dpdk(const AppConfig& cfg, int eal_argc, char** eal_argv) {
         return 1;
     }
     spdlog::info("EAL initialized ({} args consumed)", eal->args_consumed());
+
+    // Require a real PCI NIC — reject virtual devices (--no-pci, net_null, net_pcap)
+    if (rte_eth_dev_count_avail() == 0) {
+        spdlog::error("No DPDK ports available — bind a physical NIC with -a <pci_addr>");
+        return 1;
+    }
+    {
+        rte_eth_dev_info dev_info{};
+        if (rte_eth_dev_info_get(cfg.dpdk_port, &dev_info) != 0) {
+            spdlog::error("Failed to query DPDK port {}", cfg.dpdk_port);
+            return 1;
+        }
+        // Real NICs are on the "pci" bus; virtual devices use "vdev" or have no bus
+        const char* bus_name = dev_info.device
+            ? rte_bus_name(rte_bus_find_by_device(dev_info.device))
+            : nullptr;
+        if (!bus_name || std::strcmp(bus_name, "pci") != 0) {
+            spdlog::error("DPDK port {} is not a PCI device (bus={}) — "
+                          "this example requires a real NIC",
+                          cfg.dpdk_port, bus_name ? bus_name : "none");
+            return 1;
+        }
+        spdlog::info("DPDK port {}: driver={}, bus=pci",
+                     cfg.dpdk_port, dev_info.driver_name);
+    }
 
     // One-shot connect: DNS → Platform → MAC → ARP → TCP → Transport
     eph::dpdk::DpdkEndpoint endpoint{
