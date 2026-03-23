@@ -1035,3 +1035,42 @@ TEST(EvictingQueueStats, SingleSlotStatsSnapshot) {
     EXPECT_EQ(s.overwritten, 0u);
     EXPECT_EQ(s.capacity, 1u);
 }
+
+TEST(EvictingQueueStats, dump_contains_key_info) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 1});
+    queue.push(TestData{.seq = 2});
+    queue.push(TestData{.seq = 3});
+
+    auto s = queue.stats();
+    auto dump = s.dump();
+
+    EXPECT_NE(dump.find("EvictingQueue"), std::string::npos);
+    EXPECT_NE(dump.find("capacity: 4"), std::string::npos);
+    EXPECT_NE(dump.find("total_pushed: 3"), std::string::npos);
+}
+
+TEST(EvictingQueueStats, to_json_is_valid_format) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 1});
+
+    auto s = queue.stats();
+    auto json = s.to_json();
+
+    EXPECT_NE(json.find("\"capacity\":4"), std::string::npos);
+    EXPECT_NE(json.find("\"total_pushed\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"overwritten\":"), std::string::npos);
+}
+
+TEST(EvictingQueueStats, single_slot_dump_works) {
+    EvictingQueue<TestData, 1> queue;
+    queue.push(TestData{.seq = 1});
+    queue.push(TestData{.seq = 2});  // overwrites
+
+    auto s = queue.stats();
+    auto dump = s.dump();
+
+    EXPECT_NE(dump.find("EvictingQueue"), std::string::npos);
+    EXPECT_NE(dump.find("capacity: 1"), std::string::npos);
+    EXPECT_NE(dump.find("total_pushed: 2"), std::string::npos);
+}

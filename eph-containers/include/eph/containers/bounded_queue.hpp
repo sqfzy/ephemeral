@@ -4,9 +4,11 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <format>
 #include <functional>
 #include <optional>
 #include <span>
+#include <string>
 
 #include "eph/containers/concepts.hpp"
 #include "eph/utils/alignment.hpp"
@@ -776,6 +778,28 @@ class BoundedQueue {
         size_t total_popped;   ///< Total items ever popped (monotonic)
         size_t current_size;   ///< Approximate current occupancy
         size_t capacity;       ///< Fixed capacity
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            double utilization = capacity > 0
+                ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
+                : 0.0;
+            return std::format(
+                "BoundedQueue::Stats:\n"
+                "  capacity: {}\n"
+                "  current_size: {} ({:.1f}% full)\n"
+                "  total_pushed: {}\n"
+                "  total_popped: {}",
+                capacity, current_size, utilization,
+                total_pushed, total_popped);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
+                capacity, current_size, total_pushed, total_popped);
+        }
     };
 
     /// Take a point-in-time statistics snapshot.

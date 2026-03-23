@@ -5,10 +5,12 @@
 #include <bit>
 #include <chrono>
 #include <concepts>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -525,6 +527,31 @@ class alignas(Align<T>) EvictingQueue {
         uint64_t overwritten;        ///< Approximate overwrites (data loss)
         size_t   current_size;       ///< Approximate unread entries
         size_t   capacity;           ///< Fixed capacity
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            double loss_rate = total_pushed > 0
+                ? static_cast<double>(overwritten) * 100.0 / static_cast<double>(total_pushed)
+                : 0.0;
+            return std::format(
+                "EvictingQueue::Stats:\n"
+                "  capacity: {}\n"
+                "  current_size: {}\n"
+                "  total_pushed: {}\n"
+                "  total_popped: {}\n"
+                "  overwritten: {} ({:.1f}% loss)",
+                capacity, current_size,
+                total_pushed, total_popped,
+                overwritten, loss_rate);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
+                "\"total_popped\":{},\"overwritten\":{}}}",
+                capacity, current_size, total_pushed, total_popped, overwritten);
+        }
     };
 
     /// Take a point-in-time statistics snapshot.
@@ -867,6 +894,31 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         uint64_t overwritten;        ///< Approximate overwrites (data loss)
         size_t   current_size;       ///< Approximate unread entries (0 or 1)
         size_t   capacity;           ///< Fixed capacity (always 1)
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            double loss_rate = total_pushed > 0
+                ? static_cast<double>(overwritten) * 100.0 / static_cast<double>(total_pushed)
+                : 0.0;
+            return std::format(
+                "EvictingQueue::Stats:\n"
+                "  capacity: {}\n"
+                "  current_size: {}\n"
+                "  total_pushed: {}\n"
+                "  total_popped: {}\n"
+                "  overwritten: {} ({:.1f}% loss)",
+                capacity, current_size,
+                total_pushed, total_popped,
+                overwritten, loss_rate);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
+                "\"total_popped\":{},\"overwritten\":{}}}",
+                capacity, current_size, total_pushed, total_popped, overwritten);
+        }
     };
 
     /// Take a point-in-time statistics snapshot.

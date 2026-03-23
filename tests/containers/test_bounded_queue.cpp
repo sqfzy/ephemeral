@@ -1147,3 +1147,31 @@ TEST(BoundedQueue, stats_after_wraparound) {
     EXPECT_EQ(s.total_popped, 2u);
     EXPECT_EQ(s.current_size, 2u);
 }
+
+TEST(BoundedQueueStats, dump_contains_key_info) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 1});
+    q.try_push(BoundedTestData{.seq = 2});
+
+    auto s = q.stats();
+    auto dump = s.dump();
+
+    EXPECT_NE(dump.find("BoundedQueue"), std::string::npos);
+    EXPECT_NE(dump.find("capacity: 4"), std::string::npos);
+    EXPECT_NE(dump.find("current_size: 2"), std::string::npos);
+    EXPECT_NE(dump.find("total_pushed: 2"), std::string::npos);
+    EXPECT_NE(dump.find("total_popped: 0"), std::string::npos);
+}
+
+TEST(BoundedQueueStats, to_json_is_valid_format) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 1});
+
+    auto s = q.stats();
+    auto json = s.to_json();
+
+    EXPECT_NE(json.find("\"capacity\":4"), std::string::npos);
+    EXPECT_NE(json.find("\"current_size\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"total_pushed\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"total_popped\":0"), std::string::npos);
+}
