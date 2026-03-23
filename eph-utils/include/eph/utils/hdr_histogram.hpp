@@ -627,6 +627,25 @@ struct Stats {
             min_ns, max_ns, stddev_ns,
             p50_ns, p90_ns, p99_ns, p999_ns);
     }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    /// Numeric fields are subtracted; name is taken from the later snapshot.
+    [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+        return Stats{
+            .name      = lhs.name,
+            .count     = lhs.count - rhs.count,
+            .avg_ns    = lhs.avg_ns,     // point-in-time, not diffable
+            .min_ns    = lhs.min_ns,     // point-in-time
+            .max_ns    = lhs.max_ns,     // point-in-time
+            .p50_ns    = lhs.p50_ns,     // point-in-time
+            .p90_ns    = lhs.p90_ns,     // point-in-time
+            .p99_ns    = lhs.p99_ns,     // point-in-time
+            .p999_ns   = lhs.p999_ns,    // point-in-time
+            .stddev_ns = lhs.stddev_ns,  // point-in-time
+        };
+    }
+
+    [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
 };
 
 }  // namespace eph::utils

@@ -295,6 +295,37 @@ TEST_F(RecordTest, SystemStatsReset) {
 }
 
 // ============================================================================
+// Stats — operator- and operator==
+// ============================================================================
+
+TEST_F(RecordTest, StatsDiffOperator) {
+  Stats s1{.name = "test", .count = 10, .avg_ns = 100.0, .min_ns = 50.0,
+            .max_ns = 200.0, .p50_ns = 90.0, .p90_ns = 150.0,
+            .p99_ns = 190.0, .p999_ns = 198.0, .stddev_ns = 30.0};
+  Stats s2{.name = "test", .count = 30, .avg_ns = 120.0, .min_ns = 40.0,
+            .max_ns = 250.0, .p50_ns = 100.0, .p90_ns = 180.0,
+            .p99_ns = 230.0, .p999_ns = 245.0, .stddev_ns = 40.0};
+
+  auto delta = s2 - s1;
+  EXPECT_EQ(delta.name, "test");
+  EXPECT_EQ(delta.count, 20u);
+  // Point-in-time fields come from lhs (s2)
+  EXPECT_DOUBLE_EQ(delta.avg_ns, 120.0);
+  EXPECT_DOUBLE_EQ(delta.p50_ns, 100.0);
+}
+
+TEST_F(RecordTest, StatsEqualityOperator) {
+  Stats s1{.name = "test", .count = 10, .avg_ns = 100.0, .min_ns = 50.0,
+            .max_ns = 200.0, .p50_ns = 90.0, .p90_ns = 150.0,
+            .p99_ns = 190.0, .p999_ns = 198.0, .stddev_ns = 30.0};
+  Stats s2 = s1;
+  EXPECT_EQ(s1, s2);
+
+  s2.count = 11;
+  EXPECT_NE(s1, s2);
+}
+
+// ============================================================================
 // ConcurrentRecorder (多线程)
 // ============================================================================
 
