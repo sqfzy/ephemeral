@@ -305,7 +305,7 @@ inline constexpr bool is_known_type(uint8_t type) noexcept {
 
 // ---- SystemEvent ('S') ---------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6) event_code(1)
-// Total: 11 + 1 = 12... spec says 11 including type byte, so event_code @10
+// Total: 1+2+2+6+1 = 12 but ITCH spec counts 11 (offset-based). event_code @10.
 namespace system_event {
 
 /// Event code: 'O'=start-of-messages, 'S'=start-of-system-hours,
