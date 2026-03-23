@@ -135,6 +135,19 @@ get_cpu_topology() {
   std::vector<unsigned> processor_ids;
 
   for (std::string line; getline(cpuinfo, line);) {
+    // Empty line separates CPU blocks in /proc/cpuinfo.
+    // Reset partial state to avoid leaking fields across blocks
+    // (e.g., ARM where physical id / core id may be absent).
+    if (line.empty() || line.find_first_not_of(" \t\r") == std::string::npos) {
+      if (valid_mask != 0 && valid_mask != 7) {
+        SPDLOG_LOGGER_TRACE(log,
+            "Discarding partial CPU entry (valid_mask=0x{:x})", valid_mask);
+      }
+      valid_mask = 0;
+      element = {};
+      continue;
+    }
+
     for (unsigned i = 0; i < 3; ++i) {
       if (valid_mask & (1 << i)) continue;
 
@@ -152,6 +165,7 @@ get_cpu_topology() {
       if (valid_mask == 7) { // All three fields collected (x86)
         cpus.push_back(element);
         valid_mask = 0;
+        element = {};
       }
       break;
     }

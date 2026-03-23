@@ -337,17 +337,10 @@ connect(const DpdkEndpoint& ep,
     }
 
     // Kernel DNS failed — fall back to DPDK DNS.
-    // Need Platform + ARP before we can send UDP.
+    // Validate config before creating Platform to fail fast on bad input.
     SPDLOG_DEBUG("dpdk::connect: kernel DNS failed ({}), trying DPDK DNS",
                  ip.error());
 
-    auto platform = Platform::create(opts.platform);
-    if (!platform) {
-        return std::unexpected(
-            std::format("Platform creation failed: {}", platform.error()));
-    }
-
-    // Parse local/gateway IPs
     uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
     uint32_t gateway_ip = net::parse_ipv4(ep.gateway_ip.c_str());
     if (local_ip == 0) {
@@ -357,20 +350,27 @@ connect(const DpdkEndpoint& ep,
         return std::unexpected(std::format("Invalid gateway_ip: '{}'", ep.gateway_ip));
     }
 
-    // Get our MAC
+    // Need Platform + ARP before we can send UDP DNS queries.
+    auto platform = Platform::create(opts.platform);
+    if (!platform) {
+        return std::unexpected(
+            std::format("Platform creation failed: {}", platform.error()));
+    }
+
     rte_ether_addr src_mac{};
     if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
         return std::unexpected(
             std::format("Failed to get MAC for port {}", opts.platform.port_id));
     }
 
-    // ARP for gateway MAC (needed to send DNS UDP packets)
+    // ARP for gateway MAC (needed to route DNS UDP packets)
     auto gw_mac = arp::resolve(
         opts.platform.port_id, opts.rx_queue_id, platform->mempool(),
         src_mac, local_ip, gateway_ip, opts.arp_timeout);
     if (!gw_mac) {
-        return std::unexpected(
-            std::format("ARP for gateway failed: {}", gw_mac.error()));
+        return std::unexpected(std::format(
+            "DNS fallback: ARP for gateway {} failed: {}",
+            ep.gateway_ip, gw_mac.error()));
     }
 
     // DNS resolve over DPDK

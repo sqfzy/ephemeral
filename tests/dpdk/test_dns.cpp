@@ -26,9 +26,9 @@ TEST(DnsQnameEncode, SimpleHostname) {
 TEST(DnsQnameEncode, SingleLabel) {
     uint8_t buf[256];
     size_t len = encode_qname(buf, "localhost");
-    ASSERT_EQ(len, 10u);  // \x09 l o c a l h o s t \x00
+    ASSERT_EQ(len, 11u);  // \x09 l o c a l h o s t \x00 = 1+9+1
     EXPECT_EQ(buf[0], 9);
-    EXPECT_EQ(buf[10 - 1], 0);
+    EXPECT_EQ(buf[10], 0);  // Root label terminator
 }
 
 TEST(DnsQnameEncode, ThreeLabels) {

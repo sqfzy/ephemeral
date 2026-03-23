@@ -441,21 +441,21 @@ resolve(uint16_t port_id,
         const std::string& hostname,
         const DnsConfig& cfg = {}) {
 
+    // Fast path: dotted-decimal IPv4 needs no pool, no nameserver, no network
+    uint32_t ip = net::parse_ipv4(hostname.c_str());
+    if (ip != 0) return ip;
+
     auto log = detail::dns_logger();
 
-    if (!pool) {
-        return std::unexpected("DNS resolve: mempool is null");
-    }
     if (hostname.empty()) {
         return std::unexpected("DNS resolve: hostname is empty");
+    }
+    if (!pool) {
+        return std::unexpected("DNS resolve: mempool is null");
     }
     if (cfg.nameserver_ip == 0) {
         return std::unexpected("DNS resolve: nameserver_ip is 0");
     }
-
-    // Fast path: if hostname is already a dotted-decimal IPv4, parse directly
-    uint32_t ip = net::parse_ipv4(hostname.c_str());
-    if (ip != 0) return ip;
 
     SPDLOG_LOGGER_DEBUG(log, "DNS resolve: {} via {} on port {} queue {}",
         hostname, net::format_ipv4(cfg.nameserver_ip).data(),
