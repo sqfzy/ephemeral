@@ -393,6 +393,36 @@ TEST(TransportTypeFormatters, TransportStatsFormats) {
     EXPECT_NE(formatted.find("1024"), std::string::npos);
 }
 
+TEST(TransportTypeFormatters, TransportConfigFormats) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    cfg.use_tls = true;
+    cfg.max_reconnect_attempts = 5;
+    cfg.reconnect_interval = std::chrono::milliseconds{200};
+
+    auto formatted = std::format("{}", cfg);
+    EXPECT_NE(formatted.find("example.com"), std::string::npos);
+    EXPECT_NE(formatted.find("443"), std::string::npos);
+    EXPECT_NE(formatted.find("/ws"), std::string::npos);
+    EXPECT_NE(formatted.find("tls=true"), std::string::npos);
+    EXPECT_NE(formatted.find("reconnect=5/200"), std::string::npos);
+}
+
+TEST(TransportTypeFormatters, TransportConfigFormatsPlainWs) {
+    TransportConfig cfg;
+    cfg.remote_host = "local";
+    cfg.remote_port = 8080;
+    cfg.ws_path = "/";
+    cfg.use_tls = false;
+    cfg.max_reconnect_attempts = 0;
+
+    auto formatted = std::format("{}", cfg);
+    EXPECT_NE(formatted.find("tls=false"), std::string::npos);
+    EXPECT_NE(formatted.find("reconnect=0/"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // on_reconnect_attempt callback
 // ─────────────────────────────────────────────────────────────────────────────

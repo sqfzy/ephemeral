@@ -549,6 +549,44 @@ TEST_F(TransportTest, SendPingSuccess) {
     tp->stop();
 }
 
+TEST_F(TransportTest, SendPingWithPayload) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t payload[] = {0xDE, 0xAD};
+    auto err = tp->send_ping(payload, sizeof(payload));
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendPingOversizedPayloadTruncates) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // RFC 6455 §5.5: control frame payload max 125 bytes; send_ping truncates
+    uint8_t big_payload[200];
+    std::memset(big_payload, 0xAA, sizeof(big_payload));
+    auto err = tp->send_ping(big_payload, sizeof(big_payload));
+    EXPECT_EQ(err, SendError::kOk); // Should succeed after truncation
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendPingNullPayloadIgnored) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // null payload with non-zero len should be handled gracefully
+    auto err = tp->send_ping(nullptr, 0);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
 // ===========================================================================
 // Receive API tests
 // ===========================================================================

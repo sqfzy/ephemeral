@@ -688,3 +688,20 @@ TYPED_TEST(EvictingQueueBytesTest, stats_reflects_push_and_consume) {
     EXPECT_FALSE(s2.dump().empty());
     EXPECT_FALSE(s2.to_json().empty());
 }
+
+TYPED_TEST(EvictingQueueBytesTest, stats_tracks_overwritten_after_eviction) {
+    TypeParam queue;
+    const size_t cap = queue.capacity();
+
+    // Fill beyond capacity to trigger evictions
+    for (size_t i = 0; i < cap + 5; ++i) {
+        uint8_t byte = static_cast<uint8_t>(i & 0xFF);
+        queue.try_push(std::span<const uint8_t>(&byte, 1));
+    }
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, cap + 5);
+    // Overwritten count should reflect the evicted entries
+    EXPECT_GT(s.total_overwritten, 0u);
+    EXPECT_EQ(s.capacity, cap);
+}
