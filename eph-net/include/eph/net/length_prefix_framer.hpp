@@ -49,15 +49,23 @@ public:
 
     static std::expected<DecodedFrame, FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
-        if (len < 2) return std::unexpected(FrameError::kIncomplete);
+        if (len < 2) {
+            SPDLOG_DEBUG("LengthPrefixFramer::decode: incomplete header, "
+                         "need 2 bytes but have {}", len);
+            return std::unexpected(FrameError::kIncomplete);
+        }
 
         uint16_t msg_len = static_cast<uint16_t>(
             (static_cast<uint16_t>(data[0]) << 8) | data[1]);
 
         if (msg_len == 0) {
+            SPDLOG_WARN("LengthPrefixFramer::decode: zero-length payload "
+                        "(invalid format)");
             return std::unexpected(FrameError::kInvalidFormat);
         }
         if (len < 2u + msg_len) {
+            SPDLOG_DEBUG("LengthPrefixFramer::decode: incomplete payload, "
+                         "need {} bytes but have {}", 2u + msg_len, len);
             return std::unexpected(FrameError::kIncomplete);
         }
 

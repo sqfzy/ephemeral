@@ -189,6 +189,17 @@ inline constexpr uint8_t kRPII     = 'N';
 inline constexpr size_t  kRPIISize = 20;
 
 // ---------------------------------------------------------------------------
+// Aggregate message size helpers
+// ---------------------------------------------------------------------------
+
+/// Maximum on-wire message size across all ITCH 5.0 message types.
+/// Useful for buffer pre-allocation: any single ITCH message fits in this many bytes.
+inline constexpr size_t kMaxMessageSize = kNOIISize;  // 50 bytes (largest)
+
+/// Minimum on-wire message size across all ITCH 5.0 message types.
+inline constexpr size_t kMinMessageSize = kSystemEventSize;  // 11 bytes (smallest)
+
+// ---------------------------------------------------------------------------
 // Per-message field accessors
 // ---------------------------------------------------------------------------
 // Each namespace operates on the *full* message pointer (byte 0 = type tag).

@@ -1738,3 +1738,71 @@ TEST(ItchParserStats, formatter_produces_summary_line) {
     EXPECT_TRUE(s.find("errors=0") != std::string::npos);
     EXPECT_TRUE(s.find("bytes=79") != std::string::npos);
 }
+
+// ===========================================================================
+// Aggregate message size helpers
+// ===========================================================================
+
+TEST(ItchMessages, MaxMessageSizeIsNOII) {
+    // NOII ('I') at 50 bytes is the largest ITCH 5.0 message
+    EXPECT_EQ(kMaxMessageSize, 50u);
+    EXPECT_EQ(kMaxMessageSize, kNOIISize);
+}
+
+TEST(ItchMessages, MinMessageSizeIsSystemEvent) {
+    // SystemEvent ('S') at 11 bytes is the smallest ITCH 5.0 message
+    EXPECT_EQ(kMinMessageSize, 11u);
+    EXPECT_EQ(kMinMessageSize, kSystemEventSize);
+}
+
+TEST(ItchMessages, MaxMessageSizeIsActuallyLargest) {
+    // Verify kMaxMessageSize >= all individual message sizes
+    EXPECT_GE(kMaxMessageSize, kSystemEventSize);
+    EXPECT_GE(kMaxMessageSize, kStockDirectorySize);
+    EXPECT_GE(kMaxMessageSize, kStockTradingActionSize);
+    EXPECT_GE(kMaxMessageSize, kRegSHORestrictionSize);
+    EXPECT_GE(kMaxMessageSize, kMarketParticipantPositionSize);
+    EXPECT_GE(kMaxMessageSize, kMWCBDeclineLevelSize);
+    EXPECT_GE(kMaxMessageSize, kMWCBStatusSize);
+    EXPECT_GE(kMaxMessageSize, kIPOQuotingPeriodSize);
+    EXPECT_GE(kMaxMessageSize, kLULDAuctionCollarSize);
+    EXPECT_GE(kMaxMessageSize, kOperationalHaltSize);
+    EXPECT_GE(kMaxMessageSize, kAddOrderSize);
+    EXPECT_GE(kMaxMessageSize, kAddOrderMPIDSize);
+    EXPECT_GE(kMaxMessageSize, kOrderExecutedSize);
+    EXPECT_GE(kMaxMessageSize, kOrderExecutedWithPriceSize);
+    EXPECT_GE(kMaxMessageSize, kOrderCancelSize);
+    EXPECT_GE(kMaxMessageSize, kOrderDeleteSize);
+    EXPECT_GE(kMaxMessageSize, kOrderReplaceSize);
+    EXPECT_GE(kMaxMessageSize, kNonCrossTradeSize);
+    EXPECT_GE(kMaxMessageSize, kCrossTradeSize);
+    EXPECT_GE(kMaxMessageSize, kBrokenTradeSize);
+    EXPECT_GE(kMaxMessageSize, kNOIISize);
+    EXPECT_GE(kMaxMessageSize, kRPIISize);
+}
+
+TEST(ItchMessages, MinMessageSizeIsActuallySmallest) {
+    // Verify kMinMessageSize <= all individual message sizes
+    EXPECT_LE(kMinMessageSize, kSystemEventSize);
+    EXPECT_LE(kMinMessageSize, kStockDirectorySize);
+    EXPECT_LE(kMinMessageSize, kStockTradingActionSize);
+    EXPECT_LE(kMinMessageSize, kRegSHORestrictionSize);
+    EXPECT_LE(kMinMessageSize, kMarketParticipantPositionSize);
+    EXPECT_LE(kMinMessageSize, kMWCBDeclineLevelSize);
+    EXPECT_LE(kMinMessageSize, kMWCBStatusSize);
+    EXPECT_LE(kMinMessageSize, kIPOQuotingPeriodSize);
+    EXPECT_LE(kMinMessageSize, kLULDAuctionCollarSize);
+    EXPECT_LE(kMinMessageSize, kOperationalHaltSize);
+    EXPECT_LE(kMinMessageSize, kAddOrderSize);
+    EXPECT_LE(kMinMessageSize, kAddOrderMPIDSize);
+    EXPECT_LE(kMinMessageSize, kOrderExecutedSize);
+    EXPECT_LE(kMinMessageSize, kOrderExecutedWithPriceSize);
+    EXPECT_LE(kMinMessageSize, kOrderCancelSize);
+    EXPECT_LE(kMinMessageSize, kOrderDeleteSize);
+    EXPECT_LE(kMinMessageSize, kOrderReplaceSize);
+    EXPECT_LE(kMinMessageSize, kNonCrossTradeSize);
+    EXPECT_LE(kMinMessageSize, kCrossTradeSize);
+    EXPECT_LE(kMinMessageSize, kBrokenTradeSize);
+    EXPECT_LE(kMinMessageSize, kNOIISize);
+    EXPECT_LE(kMinMessageSize, kRPIISize);
+}

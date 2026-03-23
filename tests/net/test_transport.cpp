@@ -1912,3 +1912,172 @@ TEST_F(TransportTest, ServerPingIncrementsPingCounter) {
 
     tp->stop();
 }
+
+// ===========================================================================
+// send_text_unchecked — bypasses UTF-8 validation
+// ===========================================================================
+
+TEST_F(TransportTest, SendTextUncheckedAcceptsAscii) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    auto err = tp->send_text_unchecked("hello", 5);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendTextUncheckedStringViewOverload) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    auto err = tp->send_text_unchecked(std::string_view{"test"});
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// try_recv_msg — returns ReceivedMessage with opcode metadata
+// ===========================================================================
+
+TEST_F(TransportTest, TryRecvMsgReturnsNulloptWhenEmpty) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    auto msg = tp->try_recv_msg();
+    EXPECT_FALSE(msg.has_value());
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, TryRecvMsgReturnsBinaryMessage) {
+    auto result = create_transport(/*echo=*/false);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    // Inject a binary frame from server
+    uint8_t payload[] = {0x01, 0x02, 0x03};
+    last_mock_->inject_server_frame(ws::opcode::kBinary, payload, 3);
+
+    std::optional<TestTransport::ReceivedMessage> msg;
+    EXPECT_TRUE(wait_for([&] {
+        msg = tp->try_recv_msg();
+        return msg.has_value();
+    }));
+
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_TRUE(msg->is_binary());
+    EXPECT_FALSE(msg->is_text());
+    EXPECT_EQ(msg->data.size(), 3u);
+    EXPECT_EQ(msg->data[0], 0x01);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Queue fill ratio and HWM
+// ===========================================================================
+
+TEST_F(TransportTest, QueueFillRatioStartsAtZero) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    // TX queue should be near-empty after creation
+    EXPECT_LE(tp->tx_queue_fill_ratio(), 0.1);
+    // RX queue should be empty (no server data)
+    EXPECT_LE(tp->rx_queue_fill_ratio(), 0.1);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, QueueHwmStartsLow) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    // HWM should be non-negative
+    EXPECT_GE(tp->tx_queue_hwm(), 0u);
+    EXPECT_GE(tp->rx_queue_hwm(), 0u);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// reset_stats — zeroes all counters
+// ===========================================================================
+
+TEST_F(TransportTest, ResetStatsClearsCounters) {
+    auto result = create_transport(/*echo=*/false);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    // Send some data to populate stats
+    uint8_t data[] = {0xAA, 0xBB};
+    tp->send(data, 2);
+
+    // Wait for TX to process
+    EXPECT_TRUE(wait_for([&] {
+        return tp->stats().tx_packets > 0;
+    }));
+    EXPECT_GT(tp->stats().tx_packets, 0u);
+
+    // Reset and verify
+    tp->reset_stats();
+
+    auto stats = tp->stats();
+    EXPECT_EQ(stats.tx_packets, 0u);
+    EXPECT_EQ(stats.tx_bytes, 0u);
+    EXPECT_EQ(stats.tx_dropped, 0u);
+
+    tp->stop();
+}
+
+// ===========================================================================
+// connection_info — accessible after creation
+// ===========================================================================
+
+TEST_F(TransportTest, ConnectionInfoAvailable) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    auto info = tp->connection_info();
+    // In plain WS mode, TLS version should be "none"
+    EXPECT_EQ(info.tls_version, "none");
+    EXPECT_EQ(info.cipher_name, "none");
+    EXPECT_FALSE(info.use_tls);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ConnectionInfoToJsonIsValid) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    auto json = tp->connection_info().to_json();
+    // Should contain the key fields
+    EXPECT_TRUE(json.find("\"tls_version\"") != std::string::npos);
+    EXPECT_TRUE(json.find("\"use_tls\"") != std::string::npos);
+
+    tp->stop();
+}

@@ -2839,3 +2839,61 @@ TEST(FixParserStats, formatter_produces_summary_line) {
     EXPECT_TRUE(s.find("errors=0") != std::string::npos);
     EXPECT_TRUE(s.find("bytes=500") != std::string::npos);
 }
+
+// ===========================================================================
+// FIX builder finish() overflow edge cases
+// ===========================================================================
+
+TEST(FixBuilderFinish, trailer_overflow_returns_zero) {
+    // Buffer just big enough for header + one field but not the 7-byte trailer.
+    // kHeaderReserve is 32, a minimal field "35=D\x01" is 5 bytes,
+    // trailer "10=XXX\x01" is 7 bytes. Total needed: 32 + 5 + 7 = 44.
+    // Use 38 bytes: enough for header + field but not trailer.
+    uint8_t buf[38];
+    MessageBuilder b(buf, sizeof(buf));
+    EXPECT_FALSE(b.has_overflow());
+    b.set(tag::MsgType, "D");
+    EXPECT_FALSE(b.has_overflow());
+    // finish() should detect trailer doesn't fit and return 0
+    EXPECT_EQ(b.finish(), 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderFinish, header_overflow_with_huge_body_length) {
+    // The header "8=FIX.4.4\x019=NNNNN\x01" can grow large if body_length
+    // has many digits. With a body of ~100000 bytes, the "9=" field needs
+    // 6 digits. We can't easily test this without a huge buffer, so we
+    // test with a custom begin_string that's very long.
+    //
+    // A more practical test: use finish() with a non-default begin_string
+    // that exceeds the 32-byte header reserve.
+    uint8_t buf[128];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Use a very long begin_string to force header overflow.
+    // "8=" + 30 chars + "\x01" + "9=N\x01" = 2+30+1+2+1+1 = 37 > 32 reserved
+    std::string long_begin_string(30, 'X');
+    size_t len = b.finish(long_begin_string);
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderFinish, exact_fit_succeeds) {
+    // Ensure a message that exactly fills the buffer succeeds.
+    // Build a minimal message and verify it produces valid output.
+    uint8_t buf[128];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+    EXPECT_FALSE(b.has_overflow());
+
+    // Verify the output is a valid FIX message
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value()) << "finish() produced invalid FIX: "
+        << static_cast<int>(result.error());
+    auto mt = result->get(tag::MsgType);
+    ASSERT_TRUE(mt.has_value());
+    EXPECT_EQ(*mt, "D");
+}

@@ -4,6 +4,8 @@
 /// WebSocket MessageFramer adapter — wraps ws::encode_frame / ws::decode_frame
 /// into the MessageFramer concept interface for use with Transport.
 
+#include <spdlog/spdlog.h>
+
 #include <eph/net/framer_concept.hpp>
 #include <eph/net/websocket.hpp>
 
@@ -43,11 +45,24 @@ public:
             // Map ws::DecodeError → eph::net::FrameError
             switch (result.error()) {
             case ws::DecodeError::kIncomplete:
+                SPDLOG_DEBUG("WsFramer::decode: incomplete frame, "
+                             "available={} bytes", len);
                 return std::unexpected(FrameError::kIncomplete);
             case ws::DecodeError::kReservedBits:
+                SPDLOG_WARN("WsFramer::decode: reserved bits set in "
+                            "frame header (protocol violation)");
+                return std::unexpected(FrameError::kInvalidFormat);
             case ws::DecodeError::kFragmentedControl:
+                SPDLOG_WARN("WsFramer::decode: fragmented control "
+                            "frame (RFC 6455 §5.5 violation)");
+                return std::unexpected(FrameError::kInvalidFormat);
             case ws::DecodeError::kControlPayloadTooLarge:
+                SPDLOG_WARN("WsFramer::decode: control frame payload "
+                            "exceeds 125 bytes (RFC 6455 §5.5 violation)");
+                return std::unexpected(FrameError::kInvalidFormat);
             case ws::DecodeError::kInvalidOpcode:
+                SPDLOG_WARN("WsFramer::decode: invalid opcode in "
+                            "frame header");
                 return std::unexpected(FrameError::kInvalidFormat);
             }
             // Unreachable, but satisfy the compiler
