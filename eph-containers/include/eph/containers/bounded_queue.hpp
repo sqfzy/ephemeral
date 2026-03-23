@@ -460,20 +460,7 @@ class BoundedQueue {
      *       直到 try_pop/consume 推进 head。
      */
     [[nodiscard]] bool try_peek(T& out) noexcept {
-        const size_t head = reader_.head_.load(std::memory_order_relaxed);
-
-        if (reader_.shadow_tail_ == head) {
-            const size_t tail = writer_.tail_.load(std::memory_order_acquire);
-            reader_.shadow_tail_ = tail;
-
-            if (head == tail) {
-                return false;
-            }
-        }
-
-        out = buffer_[head & mask_];
-        // Do NOT advance head — element stays in the queue
-        return true;
+        return try_peek([&out](const T& data) { out = data; });
     }
 
     /**
