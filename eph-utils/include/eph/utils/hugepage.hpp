@@ -197,7 +197,11 @@ public:
 #if defined(__linux__)
     if (is_hugepage) {
       // 释放 mmap 分配的大页内存
-      munmap(ptr, size);
+      if (munmap(ptr, size) != 0) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(detail::hugepage_logger(),
+            "munmap failed for hugepage at {}, size={}, errno={}",
+            ptr, size, errno);
+      }
     } else {
       // 释放 aligned_alloc 分配的普通内存
       std::free(ptr);

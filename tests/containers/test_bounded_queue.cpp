@@ -1084,3 +1084,37 @@ TEST(BoundedQueue, try_peek_visitor_reads_without_consuming) {
     EXPECT_TRUE(q.try_peek([&](const BoundedTestData& d) { captured = d.seq; }));
     EXPECT_EQ(captured, 77u);
 }
+
+// ---------------------------------------------------------------------------
+// Stats snapshot
+// ---------------------------------------------------------------------------
+
+TEST(BoundedQueue, stats_empty_queue_returns_zeroes) {
+    BoundedQueue<BoundedTestData, 4> q;
+    auto s = q.stats();
+    EXPECT_EQ(s.total_pushed, 0u);
+    EXPECT_EQ(s.total_popped, 0u);
+    EXPECT_EQ(s.current_size, 0u);
+    EXPECT_EQ(s.capacity, 4u);
+}
+
+TEST(BoundedQueue, stats_tracks_push_and_pop) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 1});
+    q.try_push(BoundedTestData{.seq = 2});
+    q.try_push(BoundedTestData{.seq = 3});
+
+    auto s1 = q.stats();
+    EXPECT_EQ(s1.total_pushed, 3u);
+    EXPECT_EQ(s1.total_popped, 0u);
+    EXPECT_EQ(s1.current_size, 3u);
+
+    BoundedTestData out;
+    q.try_pop(out);
+    q.try_pop(out);
+
+    auto s2 = q.stats();
+    EXPECT_EQ(s2.total_pushed, 3u);
+    EXPECT_EQ(s2.total_popped, 2u);
+    EXPECT_EQ(s2.current_size, 1u);
+}

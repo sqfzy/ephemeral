@@ -517,6 +517,26 @@ class alignas(Align<T>) EvictingQueue {
     [[nodiscard]] uint64_t read_count() const noexcept {
         return reader_.last_global_index_;
     }
+
+    /// Queue statistics snapshot for monitoring/debugging.
+    struct Stats {
+        uint64_t total_pushed;       ///< Total writes since construction
+        uint64_t total_popped;       ///< Total successful reads
+        uint64_t overwritten;        ///< Approximate overwrites (data loss)
+        size_t   current_size;       ///< Approximate unread entries
+        size_t   capacity;           ///< Fixed capacity
+    };
+
+    /// Take a point-in-time statistics snapshot.
+    [[nodiscard]] Stats stats() const noexcept {
+        return Stats{
+            .total_pushed = write_count(),
+            .total_popped = read_count(),
+            .overwritten  = overwrite_count_approx(),
+            .current_size = size_approx(),
+            .capacity     = Capacity,
+        };
+    }
 };
 
 /**
@@ -838,6 +858,26 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     [[nodiscard]] uint64_t read_count() const noexcept {
         // seq increments by 2 per write; last_seq_ tracks the seq after last read
         return last_seq_ / 2;
+    }
+
+    /// Queue statistics snapshot for monitoring/debugging.
+    struct Stats {
+        uint64_t total_pushed;       ///< Total writes since construction
+        uint64_t total_popped;       ///< Total successful reads
+        uint64_t overwritten;        ///< Approximate overwrites (data loss)
+        size_t   current_size;       ///< Approximate unread entries (0 or 1)
+        size_t   capacity;           ///< Fixed capacity (always 1)
+    };
+
+    /// Take a point-in-time statistics snapshot.
+    [[nodiscard]] Stats stats() const noexcept {
+        return Stats{
+            .total_pushed = write_count(),
+            .total_popped = read_count(),
+            .overwritten  = overwrite_count_approx(),
+            .current_size = size_approx(),
+            .capacity     = 1,
+        };
     }
 };
 

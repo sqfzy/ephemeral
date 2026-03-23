@@ -764,6 +764,32 @@ class BoundedQueue {
     [[nodiscard]] size_t available_read() const noexcept {
         return size();
     }
+
+    // ===========================================================================
+    // 可观测性
+    // ===========================================================================
+
+    /// Queue statistics snapshot for monitoring/debugging.
+    /// All values are approximate (relaxed memory order reads).
+    struct Stats {
+        size_t total_pushed;   ///< Total items ever pushed (monotonic)
+        size_t total_popped;   ///< Total items ever popped (monotonic)
+        size_t current_size;   ///< Approximate current occupancy
+        size_t capacity;       ///< Fixed capacity
+    };
+
+    /// Take a point-in-time statistics snapshot.
+    /// Zero overhead — derived from existing atomic indices, no extra counters.
+    [[nodiscard]] Stats stats() const noexcept {
+        auto tail = writer_.tail_.load(std::memory_order_relaxed);
+        auto head = reader_.head_.load(std::memory_order_relaxed);
+        return Stats{
+            .total_pushed = tail,
+            .total_popped = head,
+            .current_size = tail - head,
+            .capacity     = Capacity,
+        };
+    }
 };
 
 }  // namespace eph::containers

@@ -1002,3 +1002,36 @@ TEST(EvictingQueueOverwrite, SingleSlotAllOverwritten) {
     EXPECT_EQ(queue.write_count(), 10u);
     EXPECT_EQ(queue.read_count(), 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Stats snapshot
+// ---------------------------------------------------------------------------
+
+TEST(EvictingQueueStats, MultiSlotStatsSnapshot) {
+    EvictingQueue<TestData, 4> queue;
+    TestData d{};
+
+    for (uint32_t i = 1; i <= 6; ++i) {
+        d.seq = i;
+        queue.push(d);
+    }
+    // Read 2 entries
+    queue.try_consume_latest([](const TestData&) {});
+    queue.try_consume_latest([](const TestData&) {});
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, 6u);
+    EXPECT_EQ(s.capacity, 4u);
+}
+
+TEST(EvictingQueueStats, SingleSlotStatsSnapshot) {
+    EvictingQueue<TestData, 1> queue;
+    TestData d{.seq = 42};
+    queue.push(d);
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, 1u);
+    EXPECT_EQ(s.total_popped, 0u);
+    EXPECT_EQ(s.overwritten, 0u);
+    EXPECT_EQ(s.capacity, 1u);
+}

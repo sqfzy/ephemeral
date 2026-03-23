@@ -42,7 +42,9 @@ TEST(Http, GenerateWsKeyProducesUniqueKeys) {
 
 TEST(Http, BuildUpgradeRequestFormat) {
     std::string key = "dGhlIHNhbXBsZSBub25jZQ==";
-    std::string req = build_upgrade_request("example.com", "/ws", key);
+    auto result = build_upgrade_request("example.com", "/ws", key);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& req = *result;
 
     EXPECT_NE(req.find("GET /ws HTTP/1.1\r\n"), std::string::npos);
     EXPECT_NE(req.find("Host: example.com\r\n"), std::string::npos);
@@ -56,10 +58,12 @@ TEST(Http, BuildUpgradeRequestFormat) {
 }
 
 TEST(Http, BuildUpgradeRequestWithExtraHeaders) {
-    std::string req = build_upgrade_request(
+    auto result = build_upgrade_request(
         "api.exchange.com", "/stream",
         "abc123base64==",
         "Authorization: Bearer tok123\r\n");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& req = *result;
 
     EXPECT_NE(req.find("Authorization: Bearer tok123\r\n"), std::string::npos);
     EXPECT_NE(req.find("Host: api.exchange.com\r\n"), std::string::npos);
@@ -289,7 +293,9 @@ TEST(Http, ParseResponseIncomplete_NoDoubleNewline) {
 }
 
 TEST(Http, BuildUpgradeRequestContainsRequiredHeaders) {
-    std::string req = build_upgrade_request("example.com", "/ws", "dGVzdA==");
+    auto result = build_upgrade_request("example.com", "/ws", "dGVzdA==");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& req = *result;
     EXPECT_NE(req.find("GET /ws HTTP/1.1"), std::string::npos);
     EXPECT_NE(req.find("Host: example.com"), std::string::npos);
     EXPECT_NE(req.find("Upgrade: websocket"), std::string::npos);
@@ -299,15 +305,17 @@ TEST(Http, BuildUpgradeRequestContainsRequiredHeaders) {
 }
 
 TEST(Http, BuildUpgradeRequestWithAuthHeader) {
-    std::string req = build_upgrade_request(
+    auto result = build_upgrade_request(
         "host.com", "/", "key==", "Authorization: Bearer tok\r\n");
-    EXPECT_NE(req.find("Authorization: Bearer tok"), std::string::npos);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("Authorization: Bearer tok"), std::string::npos);
 }
 
 TEST(Http, BuildUpgradeRequestPathWithQuery) {
-    std::string req = build_upgrade_request(
+    auto result = build_upgrade_request(
         "host.com", "/ws?token=abc&v=2", "key==");
-    EXPECT_NE(req.find("GET /ws?token=abc&v=2 HTTP/1.1"), std::string::npos);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("GET /ws?token=abc&v=2 HTTP/1.1"), std::string::npos);
 }
 
 TEST(Http, ValidateWsAcceptCaseSensitive) {
@@ -443,33 +451,34 @@ TEST(Http, ParseResponseSubprotocolCaseInsensitiveHeader) {
 }
 
 TEST(Http, BuildUpgradeRequestWithSubprotocol) {
-    std::string req = build_upgrade_request(
+    auto result = build_upgrade_request(
         "api.exchange.com", "/ws", "key123==",
         "Sec-WebSocket-Protocol: graphql-ws\r\n");
-    EXPECT_NE(req.find("Sec-WebSocket-Protocol: graphql-ws\r\n"),
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("Sec-WebSocket-Protocol: graphql-ws\r\n"),
               std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
-// Input validation — empty params must return empty string
+// Input validation — empty params must return unexpected
 // ---------------------------------------------------------------------------
 
-TEST(Http, BuildUpgradeRequestEmptyHostReturnsEmpty) {
-    std::string req = build_upgrade_request("", "/ws", "key123==");
-    EXPECT_TRUE(req.empty());
+TEST(Http, BuildUpgradeRequestEmptyHostReturnsError) {
+    auto result = build_upgrade_request("", "/ws", "key123==");
+    EXPECT_FALSE(result.has_value());
 }
 
-TEST(Http, BuildUpgradeRequestEmptyPathReturnsEmpty) {
-    std::string req = build_upgrade_request("example.com", "", "key123==");
-    EXPECT_TRUE(req.empty());
+TEST(Http, BuildUpgradeRequestEmptyPathReturnsError) {
+    auto result = build_upgrade_request("example.com", "", "key123==");
+    EXPECT_FALSE(result.has_value());
 }
 
-TEST(Http, BuildUpgradeRequestEmptyKeyReturnsEmpty) {
-    std::string req = build_upgrade_request("example.com", "/ws", "");
-    EXPECT_TRUE(req.empty());
+TEST(Http, BuildUpgradeRequestEmptyKeyReturnsError) {
+    auto result = build_upgrade_request("example.com", "/ws", "");
+    EXPECT_FALSE(result.has_value());
 }
 
-TEST(Http, BuildUpgradeRequestAllEmptyReturnsEmpty) {
-    std::string req = build_upgrade_request("", "", "");
-    EXPECT_TRUE(req.empty());
+TEST(Http, BuildUpgradeRequestAllEmptyReturnsError) {
+    auto result = build_upgrade_request("", "", "");
+    EXPECT_FALSE(result.has_value());
 }

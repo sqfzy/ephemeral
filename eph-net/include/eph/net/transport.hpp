@@ -1456,8 +1456,14 @@ private:
                                    config_.ws_subprotocol);
         }
 
-        std::string request = http::build_upgrade_request(
+        auto request_result = http::build_upgrade_request(
             host, config_.ws_path, ws_key, headers);
+        if (!request_result) [[unlikely]] {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kWsUpgradeFailed,
+                request_result.error()});
+        }
+        std::string request = std::move(*request_result);
 
         SPDLOG_LOGGER_DEBUG(log, "Sending WebSocket upgrade request ({})",
             config_.use_tls ? "TLS" : "plain TCP");

@@ -39,7 +39,11 @@ inline std::expected<int, std::string> eal_init(int argc, char** argv) {
 /// Clean up EAL resources.  Call once, after all ports are closed.
 inline void eal_cleanup() noexcept {
     SPDLOG_DEBUG("Calling rte_eal_cleanup");
-    rte_eal_cleanup();
+    int ret = rte_eal_cleanup();
+    if (ret != 0) [[unlikely]] {
+        SPDLOG_ERROR("rte_eal_cleanup failed (ret={}, rte_errno={}): {}",
+                     ret, rte_errno, rte_strerror(rte_errno));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

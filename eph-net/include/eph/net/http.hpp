@@ -93,20 +93,21 @@ inline std::expected<std::string, std::string> generate_ws_key() {
 /// @param path     Request URI path (e.g. "/ws" or "/stream")
 /// @param ws_key   Base64-encoded 16-byte random key
 /// @param extra_headers  Additional headers (e.g. "Authorization: Bearer xxx\r\n")
-/// @return Complete HTTP request as a string
-inline std::string build_upgrade_request(
+/// @return Complete HTTP request string, or error describing which param is invalid
+inline std::expected<std::string, std::string> build_upgrade_request(
     std::string_view host,
     std::string_view path,
     std::string_view ws_key,
     std::string_view extra_headers = {}) {
 
     if (host.empty() || path.empty() || ws_key.empty()) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(detail::http_logger(),
+        auto msg = std::format(
             "build_upgrade_request: invalid params: host={}, path={}, key={}",
             host.empty() ? "(empty)" : host,
             path.empty() ? "(empty)" : path,
             ws_key.empty() ? "(empty)" : ws_key);
-        return {};
+        SPDLOG_LOGGER_ERROR(detail::http_logger(), "{}", msg);
+        return std::unexpected(std::move(msg));
     }
 
     return std::format(
