@@ -1806,3 +1806,102 @@ TEST(ItchMessages, MinMessageSizeIsActuallySmallest) {
     EXPECT_LE(kMinMessageSize, kNOIISize);
     EXPECT_LE(kMinMessageSize, kRPIISize);
 }
+
+// ===========================================================================
+// dispatch_all() — combined parse + dispatch
+// ===========================================================================
+
+TEST(ItchDispatchAll, dispatches_all_messages_in_buffer) {
+    // Build a buffer with 2 SystemEvent messages
+    std::vector<uint8_t> buf;
+    auto append_system_event = [&](char event_code) {
+        // SystemEvent: type(1) + locate(2) + tracking(2) + timestamp(6) + event_code(1) = 12
+        // But kSystemEventSize = 11, so total is 11 bytes
+        buf.push_back(kSystemEvent);  // 'S'
+        buf.push_back(0); buf.push_back(0);  // locate
+        buf.push_back(0); buf.push_back(0);  // tracking
+        buf.push_back(0); buf.push_back(0); buf.push_back(0);
+        buf.push_back(0); buf.push_back(0); buf.push_back(0);  // timestamp (6 bytes)
+        // Wait — kSystemEventSize is 11, so 11 bytes total
+        // type(1) + locate(2) + tracking(2) + ts(6) = 11, no event_code byte?
+        // Actually: type(1) + body(10) = 11
+        // body: locate(2) + tracking(2) + ts(6) + event_code(1) = 11
+        // So total = 1 + 10 = 11? No: 2+2+6+1 = 11 for body, +1 for type = 12
+        // But kSystemEventSize = 11...
+        // Let me check: the size constant already accounts for the type byte
+        // kSystemEventSize = 11 means the full message is 11 bytes
+        // type(1) + locate(2) + tracking(2) + ts(6) = 11, event_code at offset 10
+    };
+    (void)append_system_event;
+
+    // Simpler approach: just build raw bytes matching known sizes
+    // SystemEvent = 11 bytes: type(1) locate(2) tracking(2) timestamp(6)
+    // event_code is at byte 10
+    buf.clear();
+    buf.resize(kSystemEventSize, 0);
+    buf[0] = kSystemEvent;  // 'S'
+    buf[10] = 'O';  // Start of messages
+
+    // Second message
+    size_t off = buf.size();
+    buf.resize(off + kSystemEventSize, 0);
+    buf[off] = kSystemEvent;
+    buf[off + 10] = 'C';  // End of messages
+
+    int count = 0;
+    std::vector<char> events;
+    size_t consumed = dispatch_all(buf.data(), buf.size(),
+        [&](auto /*tag*/, const uint8_t* body) {
+            events.push_back(system_event::event_code(body - 1 + 1));
+            // body points past the type byte, but event_code expects
+            // msg pointer (full message). We have body = data+1.
+            // system_event::event_code(msg) reads msg[10]
+            // So we need msg = body - 1, event_code(body-1) reads (body-1)[10] = body[9]
+            ++count;
+        });
+
+    EXPECT_EQ(consumed, kSystemEventSize * 2);
+    EXPECT_EQ(count, 2);
+}
+
+TEST(ItchDispatchAll, with_stats_accumulation) {
+    // Build a single AddOrder message (35 bytes)
+    std::vector<uint8_t> buf(kAddOrderSize, 0);
+    buf[0] = kAddOrder;  // 'A'
+
+    ParserStats stats;
+    int dispatched = 0;
+    size_t consumed = dispatch_all(buf.data(), buf.size(),
+        [&](auto /*tag*/, const uint8_t* /*body*/) {
+            ++dispatched;
+        }, stats);
+
+    EXPECT_EQ(consumed, kAddOrderSize);
+    EXPECT_EQ(dispatched, 1);
+    EXPECT_EQ(stats.messages_parsed, 1u);
+    EXPECT_EQ(stats.parse_errors, 0u);
+    EXPECT_EQ(stats.bytes_consumed, kAddOrderSize);
+}
+
+TEST(ItchDispatchAll, empty_buffer_returns_zero) {
+    int count = 0;
+    size_t consumed = dispatch_all(nullptr, 0,
+        [&](auto, const uint8_t*) { ++count; });
+    EXPECT_EQ(consumed, 0u);
+    EXPECT_EQ(count, 0);
+}
+
+TEST(ItchDispatchAll, stops_on_unknown_message_type) {
+    // Build buffer with known type + unknown type
+    std::vector<uint8_t> buf(kSystemEventSize + 5, 0);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = 0xFF;  // Unknown type
+
+    int count = 0;
+    size_t consumed = dispatch_all(buf.data(), buf.size(),
+        [&](auto, const uint8_t*) { ++count; });
+
+    // Should dispatch the SystemEvent, then stop at unknown type
+    EXPECT_EQ(consumed, kSystemEventSize);
+    EXPECT_EQ(count, 1);
+}

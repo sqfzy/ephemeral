@@ -408,6 +408,45 @@ decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// dispatch_all() — parse + dispatch in one pass
+// ---------------------------------------------------------------------------
+
+/// Parse consecutive ITCH messages and dispatch each to a handler via tag-type
+/// overload resolution. Combines parse_all() + dispatch() into a single call.
+///
+/// The handler is invoked as `handler(Tag{}, body)` for each successfully parsed
+/// message (same signature as dispatch()). If the handler returns bool, returning
+/// false stops early.
+///
+/// @param data     Pointer to a buffer of concatenated ITCH messages
+/// @param len      Number of available bytes
+/// @param handler  Handler object/lambda with overloads for msg:: tag types
+/// @return Number of bytes successfully consumed
+template <typename Handler>
+size_t dispatch_all(const uint8_t* data, size_t len, Handler&& handler) {
+    return parse_all(data, len, [&](const MessageView& view) {
+        return dispatch(view, handler);
+    });
+}
+
+/// Parse consecutive ITCH messages with dispatch and statistics accumulation.
+///
+/// Combines parse_all()+dispatch() with ParserStats tracking.
+///
+/// @param data     Pointer to a buffer of concatenated ITCH messages
+/// @param len      Number of available bytes
+/// @param handler  Handler object/lambda with overloads for msg:: tag types
+/// @param stats    [out] Statistics accumulator
+/// @return Number of bytes successfully consumed
+template <typename Handler>
+size_t dispatch_all(const uint8_t* data, size_t len, Handler&& handler,
+                    ParserStats& stats) {
+    return parse_all(data, len, [&](const MessageView& view) {
+        return dispatch(view, handler);
+    }, stats);
+}
+
 } // namespace eph::itch
 
 /// std::formatter specialization for itch::ParseError.
