@@ -1118,3 +1118,32 @@ TEST(BoundedQueue, stats_tracks_push_and_pop) {
     EXPECT_EQ(s2.total_popped, 2u);
     EXPECT_EQ(s2.current_size, 1u);
 }
+
+TEST(BoundedQueue, stats_after_clear_shows_zero_current_size) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 1});
+    q.try_push(BoundedTestData{.seq = 2});
+    q.clear();
+
+    auto s = q.stats();
+    // clear() advances head to match tail, so total_pushed stays but current_size=0
+    EXPECT_EQ(s.total_pushed, 2u);
+    EXPECT_EQ(s.current_size, 0u);
+}
+
+TEST(BoundedQueue, stats_after_wraparound) {
+    BoundedQueue<BoundedTestData, 2> q;
+    BoundedTestData out;
+    // Push 2 (fill), pop 2, push 2 more → indices wrap around capacity
+    q.try_push(BoundedTestData{.seq = 1});
+    q.try_push(BoundedTestData{.seq = 2});
+    q.try_pop(out);
+    q.try_pop(out);
+    q.try_push(BoundedTestData{.seq = 3});
+    q.try_push(BoundedTestData{.seq = 4});
+
+    auto s = q.stats();
+    EXPECT_EQ(s.total_pushed, 4u);
+    EXPECT_EQ(s.total_popped, 2u);
+    EXPECT_EQ(s.current_size, 2u);
+}

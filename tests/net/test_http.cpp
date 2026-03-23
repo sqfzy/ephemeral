@@ -482,3 +482,11 @@ TEST(Http, BuildUpgradeRequestAllEmptyReturnsError) {
     auto result = build_upgrade_request("", "", "");
     EXPECT_FALSE(result.has_value());
 }
+
+TEST(Http, BuildUpgradeRequestErrorContainsParamNames) {
+    auto result = build_upgrade_request("", "/ws", "key==");
+    ASSERT_FALSE(result.has_value());
+    // Error message should identify which parameter is invalid
+    EXPECT_NE(result.error().find("host"), std::string::npos);
+    EXPECT_NE(result.error().find("(empty)"), std::string::npos);
+}
