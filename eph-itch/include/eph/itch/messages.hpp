@@ -231,6 +231,73 @@ inline constexpr size_t kMinMessageSize = detail::min_of(
     sizeof(detail::kAllMessageSizes) / sizeof(detail::kAllMessageSizes[0]));
 
 // ---------------------------------------------------------------------------
+// Message classification helpers
+// ---------------------------------------------------------------------------
+// Classify ITCH message types into logical categories for feed handler routing.
+// All functions are constexpr — usable in compile-time dispatch or switch guards.
+
+/// System and reference-data messages: events, directories, halts, collars.
+/// These carry market-structure metadata rather than order/trade activity.
+inline constexpr bool is_system_message(uint8_t type) noexcept {
+    switch (type) {
+    case kSystemEvent:
+    case kStockDirectory:
+    case kStockTradingAction:
+    case kRegSHORestriction:
+    case kMarketParticipantPosition:
+    case kMWCBDeclineLevel:
+    case kMWCBStatus:
+    case kIPOQuotingPeriod:
+    case kLULDAuctionCollar:
+    case kOperationalHalt:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Order-lifecycle messages: add, execute, cancel, delete, replace.
+/// These represent changes to the order book.
+inline constexpr bool is_order_message(uint8_t type) noexcept {
+    switch (type) {
+    case kAddOrder:
+    case kAddOrderMPID:
+    case kOrderExecuted:
+    case kOrderExecutedWithPrice:
+    case kOrderCancel:
+    case kOrderDelete:
+    case kOrderReplace:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Trade and trade-status messages: non-cross trades, crosses, broken trades.
+inline constexpr bool is_trade_message(uint8_t type) noexcept {
+    switch (type) {
+    case kNonCrossTrade:
+    case kCrossTrade:
+    case kBrokenTrade:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// Imbalance indicator messages: NOII and RPII.
+/// These carry auction imbalance and retail interest data.
+inline constexpr bool is_imbalance_message(uint8_t type) noexcept {
+    return type == kNOII || type == kRPII;
+}
+
+/// Check if a message type byte is a known ITCH 5.0 type.
+inline constexpr bool is_known_type(uint8_t type) noexcept {
+    return is_system_message(type) || is_order_message(type) ||
+           is_trade_message(type) || is_imbalance_message(type);
+}
+
+// ---------------------------------------------------------------------------
 // Per-message field accessors
 // ---------------------------------------------------------------------------
 // Each namespace operates on the *full* message pointer (byte 0 = type tag).

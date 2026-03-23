@@ -22,7 +22,7 @@ public:
 
     size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
-        if (len == 0 || !data) [[unlikely]] return 0;
+        if (len == 0 || !data || !out) [[unlikely]] return 0;
         std::memcpy(out, data, len);
         return len;
     }

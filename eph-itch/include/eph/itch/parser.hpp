@@ -127,6 +127,29 @@ struct MessageView {
     uint16_t stock_locate()    const noexcept { return eph::itch::stock_locate(data + 1); }
     uint16_t tracking_number() const noexcept { return eph::itch::tracking_number(data + 1); }
     uint64_t timestamp_ns()    const noexcept { return eph::itch::timestamp_ns(data + 1); }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "ITCH MessageView:\n"
+            "  type: {} ('{:c}')\n"
+            "  stock_locate: {}\n"
+            "  tracking_number: {}\n"
+            "  timestamp_ns: {}\n"
+            "  length: {}",
+            message_type_name(msg_type), static_cast<char>(msg_type),
+            stock_locate(), tracking_number(), timestamp_ns(), length);
+    }
+
+    /// JSON-formatted message view for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"msg_type\":\"{}\",\"msg_type_char\":\"{:c}\","
+            "\"stock_locate\":{},\"tracking_number\":{},"
+            "\"timestamp_ns\":{},\"length\":{}}}",
+            message_type_name(msg_type), static_cast<char>(msg_type),
+            stock_locate(), tracking_number(), timestamp_ns(), length);
+    }
 };
 
 // ---------------------------------------------------------------------------

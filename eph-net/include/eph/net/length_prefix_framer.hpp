@@ -34,9 +34,10 @@ public:
         // Guard: payload must fit in a uint16_t length field.
         // Silently truncating would corrupt the wire format, so return 0
         // to signal failure (caller already checks return value > 0).
-        if (len > kMaxPayloadLen || len == 0) [[unlikely]] {
-            SPDLOG_DEBUG("LengthPrefixFramer::encode: invalid len={} "
-                         "(max={}, min=1)", len, kMaxPayloadLen);
+        if (len > kMaxPayloadLen || len == 0 || !data || !out) [[unlikely]] {
+            SPDLOG_DEBUG("LengthPrefixFramer::encode: invalid args len={} "
+                         "data={} out={} (max={}, min=1)",
+                         len, fmt::ptr(data), fmt::ptr(out), kMaxPayloadLen);
             return 0;
         }
 

@@ -1966,3 +1966,146 @@ TEST(ItchDispatchAll, stats_incomplete_not_counted_as_error) {
     EXPECT_EQ(stats.messages_parsed, 0u);
     EXPECT_EQ(stats.parse_errors, 0u);  // kIncomplete is not an error
 }
+
+// ---------------------------------------------------------------------------
+// Message classification helpers
+// ---------------------------------------------------------------------------
+
+TEST(ItchClassification, system_messages_classified_correctly) {
+    EXPECT_TRUE(is_system_message(kSystemEvent));
+    EXPECT_TRUE(is_system_message(kStockDirectory));
+    EXPECT_TRUE(is_system_message(kStockTradingAction));
+    EXPECT_TRUE(is_system_message(kRegSHORestriction));
+    EXPECT_TRUE(is_system_message(kMarketParticipantPosition));
+    EXPECT_TRUE(is_system_message(kMWCBDeclineLevel));
+    EXPECT_TRUE(is_system_message(kMWCBStatus));
+    EXPECT_TRUE(is_system_message(kIPOQuotingPeriod));
+    EXPECT_TRUE(is_system_message(kLULDAuctionCollar));
+    EXPECT_TRUE(is_system_message(kOperationalHalt));
+    // Non-system types
+    EXPECT_FALSE(is_system_message(kAddOrder));
+    EXPECT_FALSE(is_system_message(kNonCrossTrade));
+    EXPECT_FALSE(is_system_message(kNOII));
+    EXPECT_FALSE(is_system_message(0xFF));
+}
+
+TEST(ItchClassification, order_messages_classified_correctly) {
+    EXPECT_TRUE(is_order_message(kAddOrder));
+    EXPECT_TRUE(is_order_message(kAddOrderMPID));
+    EXPECT_TRUE(is_order_message(kOrderExecuted));
+    EXPECT_TRUE(is_order_message(kOrderExecutedWithPrice));
+    EXPECT_TRUE(is_order_message(kOrderCancel));
+    EXPECT_TRUE(is_order_message(kOrderDelete));
+    EXPECT_TRUE(is_order_message(kOrderReplace));
+    // Non-order types
+    EXPECT_FALSE(is_order_message(kSystemEvent));
+    EXPECT_FALSE(is_order_message(kNonCrossTrade));
+    EXPECT_FALSE(is_order_message(kNOII));
+}
+
+TEST(ItchClassification, trade_messages_classified_correctly) {
+    EXPECT_TRUE(is_trade_message(kNonCrossTrade));
+    EXPECT_TRUE(is_trade_message(kCrossTrade));
+    EXPECT_TRUE(is_trade_message(kBrokenTrade));
+    // Non-trade types
+    EXPECT_FALSE(is_trade_message(kAddOrder));
+    EXPECT_FALSE(is_trade_message(kSystemEvent));
+    EXPECT_FALSE(is_trade_message(kNOII));
+}
+
+TEST(ItchClassification, imbalance_messages_classified_correctly) {
+    EXPECT_TRUE(is_imbalance_message(kNOII));
+    EXPECT_TRUE(is_imbalance_message(kRPII));
+    EXPECT_FALSE(is_imbalance_message(kAddOrder));
+    EXPECT_FALSE(is_imbalance_message(kNonCrossTrade));
+}
+
+TEST(ItchClassification, is_known_type_covers_all_types) {
+    // All 22 ITCH 5.0 types should be known
+    const uint8_t all_types[] = {
+        kSystemEvent, kStockDirectory, kStockTradingAction, kRegSHORestriction,
+        kMarketParticipantPosition, kMWCBDeclineLevel, kMWCBStatus,
+        kIPOQuotingPeriod, kLULDAuctionCollar, kOperationalHalt,
+        kAddOrder, kAddOrderMPID, kOrderExecuted, kOrderExecutedWithPrice,
+        kOrderCancel, kOrderDelete, kOrderReplace,
+        kNonCrossTrade, kCrossTrade, kBrokenTrade,
+        kNOII, kRPII,
+    };
+    for (uint8_t t : all_types) {
+        EXPECT_TRUE(is_known_type(t)) << "type=" << static_cast<char>(t);
+    }
+    EXPECT_FALSE(is_known_type(0x00));
+    EXPECT_FALSE(is_known_type(0xFF));
+    EXPECT_FALSE(is_known_type('Z'));
+}
+
+TEST(ItchClassification, categories_are_mutually_exclusive) {
+    // Every known type should belong to exactly one category
+    const uint8_t all_types[] = {
+        kSystemEvent, kStockDirectory, kStockTradingAction, kRegSHORestriction,
+        kMarketParticipantPosition, kMWCBDeclineLevel, kMWCBStatus,
+        kIPOQuotingPeriod, kLULDAuctionCollar, kOperationalHalt,
+        kAddOrder, kAddOrderMPID, kOrderExecuted, kOrderExecutedWithPrice,
+        kOrderCancel, kOrderDelete, kOrderReplace,
+        kNonCrossTrade, kCrossTrade, kBrokenTrade,
+        kNOII, kRPII,
+    };
+    for (uint8_t t : all_types) {
+        int count = is_system_message(t) + is_order_message(t) +
+                    is_trade_message(t) + is_imbalance_message(t);
+        EXPECT_EQ(count, 1) << "type=" << static_cast<char>(t)
+                            << " belongs to " << count << " categories";
+    }
+}
+
+TEST(ItchClassification, constexpr_usable) {
+    // Verify all classification functions are constexpr-evaluable
+    static_assert(is_system_message(kSystemEvent));
+    static_assert(!is_system_message(kAddOrder));
+    static_assert(is_order_message(kAddOrder));
+    static_assert(!is_order_message(kNonCrossTrade));
+    static_assert(is_trade_message(kNonCrossTrade));
+    static_assert(is_imbalance_message(kNOII));
+    static_assert(is_known_type(kSystemEvent));
+    static_assert(!is_known_type(0xFF));
+}
+
+// ---------------------------------------------------------------------------
+// MessageView dump()/to_json()
+// ---------------------------------------------------------------------------
+
+TEST(ItchMessageView, dump_contains_key_fields) {
+    // Build a minimal SystemEvent message
+    std::vector<uint8_t> buf(kSystemEventSize, 0);
+    buf[0] = kSystemEvent;
+    // stock_locate = 42 (big-endian at offset 1)
+    buf[1] = 0x00; buf[2] = 0x2A;
+    // tracking = 7 (big-endian at offset 3)
+    buf[3] = 0x00; buf[4] = 0x07;
+
+    auto result = parse(buf.data(), buf.size());
+    ASSERT_TRUE(result.has_value());
+
+    std::string d = result->dump();
+    EXPECT_NE(d.find("SystemEvent"), std::string::npos);
+    EXPECT_NE(d.find("42"), std::string::npos);   // stock_locate
+    EXPECT_NE(d.find("7"), std::string::npos);    // tracking_number
+}
+
+TEST(ItchMessageView, to_json_is_valid_structure) {
+    std::vector<uint8_t> buf(kAddOrderSize, 0);
+    buf[0] = kAddOrder;
+
+    auto result = parse(buf.data(), buf.size());
+    ASSERT_TRUE(result.has_value());
+
+    std::string j = result->to_json();
+    EXPECT_NE(j.find("\"msg_type\":\"AddOrder\""), std::string::npos);
+    EXPECT_NE(j.find("\"msg_type_char\":\"A\""), std::string::npos);
+    EXPECT_NE(j.find("\"stock_locate\":"), std::string::npos);
+    EXPECT_NE(j.find("\"timestamp_ns\":"), std::string::npos);
+    EXPECT_NE(j.find("\"length\":"), std::string::npos);
+    // Should start with { and end with }
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}

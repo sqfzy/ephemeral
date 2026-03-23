@@ -361,3 +361,41 @@ TEST(WsFramer, AllReservedOpcodesReturnInvalidFormat) {
         EXPECT_EQ(result.error(), FrameError::kInvalidFormat);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Null pointer checks
+// ---------------------------------------------------------------------------
+
+TEST(RawFramerEncode, null_output_returns_zero) {
+    RawFramer framer;
+    uint8_t data[] = {0x01, 0x02};
+    EXPECT_EQ(framer.encode(nullptr, data, sizeof(data), 0), 0u);
+}
+
+TEST(RawFramerEncode, null_data_returns_zero) {
+    RawFramer framer;
+    uint8_t out[16] = {};
+    EXPECT_EQ(framer.encode(out, nullptr, 5, 0), 0u);
+}
+
+TEST(RawFramerEncode, null_both_returns_zero) {
+    RawFramer framer;
+    EXPECT_EQ(framer.encode(nullptr, nullptr, 5, 0), 0u);
+}
+
+TEST(LengthPrefixFramerEncode, null_output_returns_zero) {
+    LengthPrefixFramer framer;
+    uint8_t data[] = {0x01, 0x02};
+    EXPECT_EQ(framer.encode(nullptr, data, sizeof(data), 0), 0u);
+}
+
+TEST(LengthPrefixFramerEncode, null_data_returns_zero) {
+    LengthPrefixFramer framer;
+    uint8_t out[16] = {};
+    EXPECT_EQ(framer.encode(out, nullptr, 5, 0), 0u);
+}
+
+TEST(LengthPrefixFramerEncode, null_both_returns_zero) {
+    LengthPrefixFramer framer;
+    EXPECT_EQ(framer.encode(nullptr, nullptr, 5, 0), 0u);
+}
