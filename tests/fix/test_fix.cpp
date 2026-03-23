@@ -3357,3 +3357,64 @@ TEST(FixRepeatingGroup, entry_field_iteration) {
     }
     EXPECT_EQ(field_count, 3u);  // MDEntryType, MDEntryPx, MDEntrySize
 }
+
+// ===========================================================================
+// Duplicate tag prevention: set_unique / set_int_unique / set_double_unique
+// ===========================================================================
+
+TEST(FixBuilder, set_unique_allows_first_occurrence) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_unique(tag::MsgType, "D");
+    b.set_unique(tag::SenderCompID, "SENDER");
+    EXPECT_FALSE(b.has_overflow());
+
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}
+
+TEST(FixBuilder, set_unique_rejects_duplicate_tag) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_unique(tag::MsgType, "D");
+    EXPECT_FALSE(b.has_overflow());
+
+    // Second set_unique with same tag should trigger overflow
+    b.set_unique(tag::MsgType, "8");
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_int_unique_rejects_duplicate) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_int_unique(tag::MsgSeqNum, 1);
+    EXPECT_FALSE(b.has_overflow());
+
+    b.set_int_unique(tag::MsgSeqNum, 2);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_double_unique_rejects_duplicate) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_double_unique(tag::Price, 100.50);
+    EXPECT_FALSE(b.has_overflow());
+
+    b.set_double_unique(tag::Price, 101.00);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_unique_and_set_can_coexist) {
+    // set_unique for session fields, set for repeating group fields
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_unique(tag::MsgType, "W");
+    b.set_int(tag::NoMDEntries, 2);
+    b.set(tag::MDEntryType, "0");
+    b.set(tag::MDEntryType, "1");  // Duplicate via set() is allowed
+    EXPECT_FALSE(b.has_overflow());
+
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}

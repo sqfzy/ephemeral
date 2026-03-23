@@ -309,6 +309,42 @@ public:
         return set(t, std::string_view(&value, 1));
     }
 
+    // -----------------------------------------------------------------------
+    // Unique-tag setters — reject duplicate tags (FIX spec compliance)
+    // -----------------------------------------------------------------------
+
+    /// Like set(), but rejects the field if the tag already exists.
+    /// Sets the overflow flag and logs a warning on duplicate.
+    /// Use for non-repeating-group fields where duplicates violate the FIX spec.
+    MessageBuilder& set_unique(uint32_t t, std::string_view value) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set(t, value);
+    }
+
+    /// Like set_int(), but rejects duplicates.
+    MessageBuilder& set_int_unique(uint32_t t, int64_t value) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set_int(t, value);
+    }
+
+    /// Like set_double(), but rejects duplicates.
+    MessageBuilder& set_double_unique(uint32_t t, double value, int precision = 2) noexcept {
+        if (has_tag(t)) [[unlikely]] {
+            log_duplicate_tag(t);
+            overflow_ = true;
+            return *this;
+        }
+        return set_double(t, value, precision);
+    }
+
     /// Check whether the builder has overflowed the buffer.
     /// Useful for detecting overflow mid-build without waiting for finish().
     [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
@@ -554,6 +590,12 @@ private:
         SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
             "FIX builder: no room for checksum trailer, pos={}, capacity={}",
             pos, capacity);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_duplicate_tag(uint32_t tag) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: duplicate tag={} rejected by set_unique()", tag);
     }
 };
 
