@@ -248,10 +248,7 @@ public:
     }
 
     ~SocketTransport() {
-        if (fd_ >= 0) {
-            ::close(fd_);
-            fd_ = -1;
-        }
+        close_fd();
     }
 
     SocketTransport(const SocketTransport&) = delete;
@@ -759,7 +756,12 @@ private:
 
     void close_fd() noexcept {
         if (fd_ >= 0) {
-            ::close(fd_);
+            int ret = ::close(fd_);
+            if (ret != 0) [[unlikely]] {
+                SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
+                    "close(fd={}) failed: {} (errno={})",
+                    fd_, strerror(errno), errno);
+            }
             fd_ = -1;
         }
         state_ = TcpState::Closed;
