@@ -14,7 +14,6 @@
 /// graceful close. All operations go through DPDK tx_burst/rx_burst — no
 /// kernel sockets are used on the data path.
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <expected>
