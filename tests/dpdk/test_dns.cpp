@@ -280,3 +280,222 @@ TEST(DnsResolve, NullMempoolReturnsError) {
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("mempool"), std::string::npos);
 }
+
+TEST(DnsResolve, ZeroNameserverReturnsError) {
+    rte_ether_addr dummy_mac{};
+    DnsConfig cfg{.nameserver_ip = 0};
+    auto result = dns::resolve(0, 0, nullptr, dummy_mac, dummy_mac, 0,
+                               "example.com", cfg);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("nameserver_ip"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QNAME edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsQnameEncode, TrailingDotReturnsZero) {
+    // "example.com." has an empty label after the trailing dot
+    uint8_t buf[256];
+    EXPECT_EQ(encode_qname(buf, "example.com."), 0u);
+}
+
+TEST(DnsQnameEncode, LeadingDotReturnsZero) {
+    uint8_t buf[256];
+    EXPECT_EQ(encode_qname(buf, ".example.com"), 0u);
+}
+
+TEST(DnsQnameEncode, HostnameTooLongReturnsZero) {
+    // 254 chars exceeds 253 limit
+    std::string long_hostname;
+    for (int i = 0; i < 50; ++i) {
+        if (i > 0) long_hostname += '.';
+        long_hostname += "abcd";
+    }
+    // Make it exceed 253
+    while (long_hostname.size() <= 253) long_hostname += "x";
+    uint8_t buf[512];
+    EXPECT_EQ(encode_qname(buf, long_hostname), 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_dns_query edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsBuildQuery, InvalidHostnameReturnsZero) {
+    uint8_t buf[512];
+    // Empty label in hostname → encode_qname fails → build_dns_query returns 0
+    EXPECT_EQ(build_dns_query(buf, 0x1234, "bad..hostname"), 0u);
+}
+
+TEST(DnsBuildQuery, QueryContainsCorrectQtypeAndQclass) {
+    uint8_t buf[512];
+    size_t len = build_dns_query(buf, net::hton16(0x5678), "test.io");
+
+    // Last 4 bytes should be QTYPE=A(1) + QCLASS=IN(1)
+    ASSERT_GE(len, 4u);
+    uint16_t qtype, qclass;
+    std::memcpy(&qtype, &buf[len - 4], 2);
+    std::memcpy(&qclass, &buf[len - 2], 2);
+    EXPECT_EQ(net::ntoh16(qtype), kDnsTypeA);
+    EXPECT_EQ(net::ntoh16(qclass), kDnsClassIn);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// skip_dns_name edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsSkipName, PointerLoopReturnsZero) {
+    // Two pointers pointing at each other: offset 0 → offset 2, offset 2 → offset 0
+    uint8_t data[4] = {0xC0, 0x02, 0xC0, 0x00};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 0u);  // Should detect the loop via iteration limit
+}
+
+TEST(DnsSkipName, SelfReferencePointerReturnsZero) {
+    // Pointer at offset 0 pointing to itself
+    uint8_t data[2] = {0xC0, 0x00};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 0u);
+}
+
+TEST(DnsSkipName, TruncatedPointerReturnsZero) {
+    // Pointer byte at end of data (missing second byte)
+    uint8_t data[1] = {0xC0};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 0u);
+}
+
+TEST(DnsSkipName, PointerBeyondDataReturnsZero) {
+    // Pointer to offset 100, but data is only 4 bytes
+    uint8_t data[4] = {0xC0, 0x64, 0, 0};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 0u);
+}
+
+TEST(DnsSkipName, LabelExceedsBoundsReturnsZero) {
+    // Label says 10 bytes but only 3 bytes remain
+    uint8_t data[4] = {10, 'a', 'b', 'c'};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 0u);
+}
+
+TEST(DnsSkipName, EmptyNameJustRoot) {
+    uint8_t data[1] = {0};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 1u);
+}
+
+TEST(DnsSkipName, InvalidLabelType) {
+    // Label byte 0x80 is neither regular (< 64) nor pointer (0xC0)
+    // It has top bit set but not both → label_len > 63 → return 0
+    uint8_t data[4] = {0x80, 'a', 'b', 0};
+    size_t offset = skip_dns_name(data, 0, sizeof(data));
+    EXPECT_EQ(offset, 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_dns_response edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsParseResponse, SkipsNonARecordFindsSecondAnswer) {
+    // Build a response with: 1 CNAME record (type 5) then 1 A record
+    uint16_t tx_id = net::hton16(0x9999);
+    uint32_t expected_ip = 0x0A000001;  // 10.0.0.1
+
+    std::vector<uint8_t> pkt;
+
+    // DNS header: 2 answers
+    DnsHeader hdr{};
+    hdr.id       = tx_id;
+    hdr.flags    = net::hton16(kDnsFlagQr | kDnsFlagRd);
+    hdr.qd_count = net::hton16(1);
+    hdr.an_count = net::hton16(2);
+    hdr.ns_count = 0;
+    hdr.ar_count = 0;
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&hdr),
+               reinterpret_cast<uint8_t*>(&hdr) + sizeof(hdr));
+
+    // Question: example.com
+    uint8_t qname[256];
+    size_t qname_len = encode_qname(qname, "example.com");
+    pkt.insert(pkt.end(), qname, qname + qname_len);
+    uint16_t qtype = net::hton16(kDnsTypeA);
+    uint16_t qclass = net::hton16(kDnsClassIn);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&qtype),
+               reinterpret_cast<uint8_t*>(&qtype) + 2);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&qclass),
+               reinterpret_cast<uint8_t*>(&qclass) + 2);
+
+    // Answer 1: CNAME (type 5), should be skipped
+    uint16_t ptr = net::hton16(0xC00C);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&ptr),
+               reinterpret_cast<uint8_t*>(&ptr) + 2);
+    uint16_t cname_type = net::hton16(5);  // CNAME
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&cname_type),
+               reinterpret_cast<uint8_t*>(&cname_type) + 2);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&qclass),
+               reinterpret_cast<uint8_t*>(&qclass) + 2);
+    uint32_t ttl = net::hton32(300);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&ttl),
+               reinterpret_cast<uint8_t*>(&ttl) + 4);
+    // CNAME RDATA: a pointer name (2 bytes)
+    uint16_t cname_rdlen = net::hton16(2);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&cname_rdlen),
+               reinterpret_cast<uint8_t*>(&cname_rdlen) + 2);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&ptr),
+               reinterpret_cast<uint8_t*>(&ptr) + 2);
+
+    // Answer 2: A record
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&ptr),
+               reinterpret_cast<uint8_t*>(&ptr) + 2);
+    uint16_t a_type = net::hton16(kDnsTypeA);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&a_type),
+               reinterpret_cast<uint8_t*>(&a_type) + 2);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&qclass),
+               reinterpret_cast<uint8_t*>(&qclass) + 2);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&ttl),
+               reinterpret_cast<uint8_t*>(&ttl) + 4);
+    uint16_t a_rdlen = net::hton16(4);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&a_rdlen),
+               reinterpret_cast<uint8_t*>(&a_rdlen) + 2);
+    uint32_t ip_net = net::hton32(expected_ip);
+    pkt.insert(pkt.end(), reinterpret_cast<uint8_t*>(&ip_net),
+               reinterpret_cast<uint8_t*>(&ip_net) + 4);
+
+    auto result = parse_dns_response(pkt.data(), pkt.size(), tx_id);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(*result, expected_ip);
+}
+
+TEST(DnsParseResponse, TruncatedAnswerRrReturnsError) {
+    // Build a valid header claiming 1 answer, but truncate the RR data
+    uint16_t tx_id = net::hton16(0xAAAA);
+
+    auto pkt = build_test_response(
+        tx_id, kDnsFlagQr | kDnsFlagRd, 1, "example.com", 0x01020304);
+
+    // Truncate: remove last 2 bytes (partial RDATA)
+    pkt.resize(pkt.size() - 2);
+
+    auto result = parse_dns_response(pkt.data(), pkt.size(), tx_id);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("RDATA exceeds"), std::string::npos);
+}
+
+TEST(DnsParseResponse, WrongRdlengthForARecordSkips) {
+    // A record with rdlength=3 (should be 4) — should skip, not crash
+    uint16_t tx_id = net::hton16(0xBBBB);
+    auto pkt = build_test_response(
+        tx_id, kDnsFlagQr | kDnsFlagRd, 1, "example.com", 0x01020304);
+
+    // Patch rdlength from 4 to 3 (it's the 2 bytes before the last 4 bytes of RDATA)
+    size_t rdlen_offset = pkt.size() - 4 - 2;  // 2 bytes before RDATA
+    pkt[rdlen_offset] = 0;
+    pkt[rdlen_offset + 1] = 3;
+
+    auto result = parse_dns_response(pkt.data(), pkt.size(), tx_id);
+    // Should fail: A record with rdlength != 4 is skipped, no other A record → no A record found
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("no A record"), std::string::npos);
+}
