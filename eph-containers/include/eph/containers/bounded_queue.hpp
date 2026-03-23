@@ -415,6 +415,39 @@ class BoundedQueue {
     }
 
     /**
+     * @brief 零拷贝查看队首元素但不消费 (Visitor 模式, Reader 线程专用)
+     *
+     * 对队首元素原地调用 visitor，但不推进 head 指针。适用于消费前需要
+     * 预检查消息类型或决定路由逻辑的场景，避免不必要的拷贝开销。
+     *
+     * @tparam F 回调类型，签名应为 void(const T& data)
+     * @param visitor 访问数据的回调（接收 const 引用，不可修改）
+     * @return true 队列非空且已回调; false 队列为空
+     *
+     * @note 仅 Reader 线程可调用。多次调用访问同一元素，
+     *       直到 try_pop/consume 推进 head。
+     */
+    template <typename F>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_peek(F&& visitor) noexcept {
+        const size_t head = reader_.head_.load(std::memory_order_relaxed);
+
+        if (reader_.shadow_tail_ == head) {
+            const size_t tail = writer_.tail_.load(std::memory_order_acquire);
+            reader_.shadow_tail_ = tail;
+
+            if (head == tail) {
+                return false;
+            }
+        }
+
+        std::invoke(std::forward<F>(visitor),
+                    std::as_const(buffer_[head & mask_]));
+        // Do NOT advance head — element stays in the queue
+        return true;
+    }
+
+    /**
      * @brief 查看队首元素但不消费 (Reader 线程专用)
      *
      * 读取队首元素的拷贝但不推进 head 指针。适用于消费前需要

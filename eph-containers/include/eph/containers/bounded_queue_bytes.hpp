@@ -134,6 +134,82 @@ class BoundedQueueBytes {
     }
 
     // ===========================================================================
+    // 非阻塞 Peek 操作 (Reader)
+    // ===========================================================================
+
+    /**
+     * @brief 查看队首消息但不消费 (Reader 线程专用)
+     *
+     * 拷贝队首消息到外部 buffer 但不推进 head 指针。适用于消费前需要
+     * 预检查消息类型或决定路由逻辑的场景。
+     *
+     * @param out_buf 输出缓冲区
+     * @return 实际拷贝字节数；std::nullopt 表示队列为空
+     *
+     * @note 仅 Reader 线程可调用。多次调用返回同一消息，
+     *       直到 try_pop/try_consume 推进 head。
+     */
+    [[nodiscard]] std::optional<uint32_t> try_peek(std::span<uint8_t> out_buf) noexcept {
+        uint32_t copy_len = 0;
+        bool success = try_peek_visit([&](std::span<const uint8_t> data) {
+            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            std::memcpy(out_buf.data(), data.data(), copy_len);
+        });
+        return success ? std::make_optional(copy_len) : std::nullopt;
+    }
+
+    /**
+     * @brief 查看队首消息但不消费（带时间戳）
+     *
+     * @param out_buf 输出缓冲区
+     * @param out_ts [out] 时间戳
+     * @return 实际拷贝字节数；std::nullopt 表示队列为空
+     */
+    [[nodiscard]] std::optional<uint32_t> try_peek_wts(std::span<uint8_t> out_buf,
+                                                        uint64_t& out_ts) noexcept {
+        uint32_t copy_len = 0;
+        bool success = try_peek_visit_wts([&](std::span<const uint8_t> data, uint64_t ts) {
+            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            std::memcpy(out_buf.data(), data.data(), copy_len);
+            out_ts = ts;
+        });
+        return success ? std::make_optional(copy_len) : std::nullopt;
+    }
+
+    /**
+     * @brief 零拷贝查看队首消息但不消费 (Visitor 模式)
+     *
+     * @param visitor 回调 void(std::span<const uint8_t>)
+     * @return true 队列非空且已回调; false 队列为空
+     */
+    template <typename F>
+        requires std::invocable<F, std::span<const uint8_t>>
+    [[nodiscard]] bool try_peek_visit(F&& visitor) noexcept {
+        return queue_.try_peek([&](const DataWrap& msg) {
+            uint32_t safe_len = std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
+            std::invoke(std::forward<F>(visitor),
+                        std::span<const uint8_t>{msg.data.data(), safe_len});
+        });
+    }
+
+    /**
+     * @brief 零拷贝查看队首消息但不消费（带时间戳, Visitor 模式）
+     *
+     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts)
+     * @return true 队列非空且已回调; false 队列为空
+     */
+    template <typename F>
+        requires std::invocable<F, std::span<const uint8_t>, uint64_t>
+    [[nodiscard]] bool try_peek_visit_wts(F&& visitor) noexcept {
+        return queue_.try_peek([&](const DataWrap& msg) {
+            uint32_t safe_len = std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
+            std::invoke(std::forward<F>(visitor),
+                        std::span<const uint8_t>{msg.data.data(), safe_len},
+                        msg.ts);
+        });
+    }
+
+    // ===========================================================================
     // 阻塞操作 (Writer)
     // ===========================================================================
 

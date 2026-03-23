@@ -347,3 +347,105 @@ TEST(BoundedQueueBytesBatch, TryConsumeN_EmptyQueue) {
     });
     EXPECT_EQ(n, 0u);
 }
+
+// ===========================================================================
+// Peek 操作
+// ===========================================================================
+
+TEST(BoundedQueueBytesPeek, TryPeek_EmptyQueue) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_peek(out);
+    EXPECT_FALSE(len.has_value());
+}
+
+TEST(BoundedQueueBytesPeek, TryPeek_ReadsWithoutConsuming) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 3> payload{0xAA, 0xBB, 0xCC};
+    ASSERT_TRUE(queue.try_push(payload));
+    EXPECT_EQ(queue.size(), 1u);
+
+    // Peek should return the data without consuming
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_peek(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(out[0], 0xAA);
+    EXPECT_EQ(out[1], 0xBB);
+    EXPECT_EQ(out[2], 0xCC);
+
+    // Queue should still have 1 element
+    EXPECT_EQ(queue.size(), 1u);
+
+    // Peek again — same data
+    std::array<uint8_t, 64> out2{};
+    auto len2 = queue.try_peek(out2);
+    ASSERT_TRUE(len2.has_value());
+    EXPECT_EQ(*len2, 3u);
+    EXPECT_EQ(out2[0], 0xAA);
+
+    // Pop should get the same data and consume it
+    std::array<uint8_t, 64> out3{};
+    auto len3 = queue.try_pop(out3);
+    ASSERT_TRUE(len3.has_value());
+    EXPECT_EQ(*len3, 3u);
+    EXPECT_EQ(out3[0], 0xAA);
+    EXPECT_TRUE(queue.empty());
+}
+
+TEST(BoundedQueueBytesPeek, TryPeekWts_ReturnsTimestamp) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 2> payload{0x01, 0x02};
+    uint64_t ts_in = 9999;
+    ASSERT_TRUE(queue.try_push_wts(payload, ts_in));
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts_out = 0;
+    auto len = queue.try_peek_wts(out, ts_out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 2u);
+    EXPECT_EQ(ts_out, ts_in);
+    EXPECT_EQ(out[0], 0x01);
+
+    // Still in queue
+    EXPECT_EQ(queue.size(), 1u);
+}
+
+TEST(BoundedQueueBytesPeek, TryPeekVisit_ZeroCopy) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 4> payload{0xDE, 0xAD, 0xBE, 0xEF};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    bool visited = false;
+    bool ok = queue.try_peek_visit([&](std::span<const uint8_t> data) {
+        visited = true;
+        EXPECT_EQ(data.size(), 4u);
+        EXPECT_EQ(data[0], 0xDE);
+        EXPECT_EQ(data[3], 0xEF);
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(visited);
+    EXPECT_EQ(queue.size(), 1u);  // not consumed
+}
+
+TEST(BoundedQueueBytesPeek, TryPeekVisitWts_ZeroCopyWithTimestamp) {
+    BoundedQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 2> payload{0x42, 0x43};
+    ASSERT_TRUE(queue.try_push_wts(payload, 12345));
+
+    bool visited = false;
+    bool ok = queue.try_peek_visit_wts([&](std::span<const uint8_t> data, uint64_t ts) {
+        visited = true;
+        EXPECT_EQ(data.size(), 2u);
+        EXPECT_EQ(data[0], 0x42);
+        EXPECT_EQ(ts, 12345u);
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(visited);
+    EXPECT_EQ(queue.size(), 1u);
+}

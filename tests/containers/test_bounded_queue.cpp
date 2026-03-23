@@ -1061,3 +1061,26 @@ TEST(BoundedQueue, try_peek_on_full_queue) {
     EXPECT_EQ(peeked.seq, 0u);
     EXPECT_TRUE(q.full());  // Still full — nothing consumed
 }
+
+TEST(BoundedQueue, try_peek_visitor_returns_false_on_empty) {
+    BoundedQueue<BoundedTestData, 4> q;
+    bool visited = false;
+    EXPECT_FALSE(q.try_peek([&](const BoundedTestData&) { visited = true; }));
+    EXPECT_FALSE(visited);
+}
+
+TEST(BoundedQueue, try_peek_visitor_reads_without_consuming) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 77});
+    q.try_push(BoundedTestData{.seq = 88});
+
+    uint32_t captured = 0;
+    EXPECT_TRUE(q.try_peek([&](const BoundedTestData& d) { captured = d.seq; }));
+    EXPECT_EQ(captured, 77u);
+    EXPECT_EQ(q.size(), 2u);  // nothing consumed
+
+    // Peek again — same element
+    captured = 0;
+    EXPECT_TRUE(q.try_peek([&](const BoundedTestData& d) { captured = d.seq; }));
+    EXPECT_EQ(captured, 77u);
+}

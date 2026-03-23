@@ -6,12 +6,15 @@
 using namespace eph::utils;
 
 TEST(CpuTest, GetCpuTopology) {
-  auto topology = get_cpu_topology();
-  
+  auto result = get_cpu_topology();
+  ASSERT_TRUE(result.has_value()) << "get_cpu_topology failed: " << result.error();
+
+  auto& topology = *result;
+
   // 基本检查
   EXPECT_FALSE(topology.empty());
   EXPECT_EQ(topology.size(), std::thread::hardware_concurrency());
-  
+
   // 检查 hw_thread_id 排序
   for (size_t i = 0; i < topology.size(); ++i) {
     EXPECT_EQ(topology[i].hw_thread_id, i);

@@ -42,7 +42,7 @@ template <size_t PayloadSize, size_t BufSize>
 static void BM_EvictingQueue_PingPong(benchmark::State& state) {
     using T = Payload<PayloadSize>;
     static PingPongContext<T, BufSize>* ctx = new PingPongContext<T, BufSize>();
-    static auto topology = get_cpu_topology();
+    static auto topology = get_cpu_topology().value_or(std::vector<CpuTopologyInfo>{});
 
     if (topology.size() < 2) {
         state.SkipWithError("Need at least 2 cores");
@@ -71,7 +71,7 @@ template <size_t PayloadSize, size_t BufSize>
 static void BM_EvictingQueue_ZeroCopy_PingPong(benchmark::State& state) {
     using T = Payload<PayloadSize>;
     static PingPongContext<T, BufSize>* ctx = new PingPongContext<T, BufSize>();
-    static auto topology = get_cpu_topology();
+    static auto topology = get_cpu_topology().value_or(std::vector<CpuTopologyInfo>{});
 
     if (topology.size() < 2) {
         state.SkipWithError("Need at least 2 cores");

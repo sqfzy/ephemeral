@@ -50,7 +50,7 @@ static void BM_BoundedQueue_PingPong(benchmark::State& state) {
 
     // 静态分配，避免栈溢出并在多次迭代间复用
     static PingPongContext<T, BufSize>* ctx = new PingPongContext<T, BufSize>();
-    static auto topology = get_cpu_topology();
+    static auto topology = get_cpu_topology().value_or(std::vector<CpuTopologyInfo>{});
 
     if (topology.size() < 2) {
         state.SkipWithError("Need at least 2 cores for PingPong test");
@@ -91,7 +91,7 @@ template <size_t PayloadSize, size_t BufSize>
 static void BM_BoundedQueue_ZeroCopy_PingPong(benchmark::State& state) {
     using T = Payload<PayloadSize>;
     static PingPongContext<T, BufSize>* ctx = new PingPongContext<T, BufSize>();
-    static auto topology = get_cpu_topology();
+    static auto topology = get_cpu_topology().value_or(std::vector<CpuTopologyInfo>{});
 
     if (topology.size() < 2) {
         state.SkipWithError("Need at least 2 cores");

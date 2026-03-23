@@ -6,7 +6,6 @@
 #include <format>
 #include <fstream>
 #include <ranges>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -79,16 +78,16 @@ struct CpuTopologyInfo {
 
 /**
  * @brief 获取系统 CPU 拓扑信息
- * 
+ *
  * 返回每个逻辑 CPU 的物理拓扑信息，按硬件线程 ID 排序。
- * 
- * @return std::vector<CpuTopologyInfo> CPU 拓扑信息列表
- * @throws std::runtime_error 如果解析 /proc/cpuinfo 失败（Linux）
- * 
+ *
+ * @return std::expected 包含 CPU 拓扑信息列表，或错误描述字符串
+ *
  * @note Linux: 解析 /proc/cpuinfo
  * @note 其他平台: 返回简化拓扑（假设单 Socket）
  */
-inline std::vector<CpuTopologyInfo> get_cpu_topology() {
+inline std::expected<std::vector<CpuTopologyInfo>, std::string>
+get_cpu_topology() {
   auto log = detail::cpu_logger();
   std::vector<CpuTopologyInfo> cpus;
 
@@ -172,16 +171,16 @@ inline std::vector<CpuTopologyInfo> get_cpu_topology() {
   auto hw_threads = std::thread::hardware_concurrency();
   // hardware_concurrency() may return 0 if the value is not computable
   if (hw_threads != 0 && cpus.size() != hw_threads) {
-    SPDLOG_LOGGER_ERROR(log,
-        "CPU topology mismatch: parsed {} CPUs, expected {}",
+    auto msg = std::format(
+        "CPU topology detection failed: parsed {} CPUs, expected {}",
         cpus.size(), hw_threads);
-    throw std::runtime_error("CPU topology detection failed: parsed " +
-        std::to_string(cpus.size()) + " CPUs, expected " +
-        std::to_string(hw_threads));
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
   }
   if (cpus.empty()) {
-    SPDLOG_LOGGER_ERROR(log, "No CPUs found in /proc/cpuinfo");
-    throw std::runtime_error("CPU topology detection failed: no CPUs found");
+    auto msg = std::string("CPU topology detection failed: no CPUs found");
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
   }
 
   // 按 hw_thread_id 排序

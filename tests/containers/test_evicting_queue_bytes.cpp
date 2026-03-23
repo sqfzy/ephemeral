@@ -442,3 +442,97 @@ TEST(EvictingQueueBytesBatch, PushN_EvictsOldData) {
     EXPECT_EQ(*len, 1u);
     EXPECT_EQ(out[0], 5u);
 }
+
+// ===========================================================================
+// Peek 操作
+// ===========================================================================
+
+TEST(EvictingQueueBytesPeek, TryPeekLatest_EmptyQueue) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_peek_latest(out);
+    EXPECT_FALSE(len.has_value());
+}
+
+TEST(EvictingQueueBytesPeek, TryPeekLatest_ReadsWithoutUpdatingDiscardCounter) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 3> payload{0xAA, 0xBB, 0xCC};
+    ASSERT_TRUE(queue.try_push_wts(payload, 100));
+
+    // Peek — should read data without updating last_pop_id_
+    std::array<uint8_t, 64> out{};
+    auto len = queue.try_peek_latest(out);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 3u);
+    EXPECT_EQ(out[0], 0xAA);
+    EXPECT_EQ(out[1], 0xBB);
+    EXPECT_EQ(out[2], 0xCC);
+
+    // Peek again — same data, no side effects
+    std::array<uint8_t, 64> out2{};
+    auto len2 = queue.try_peek_latest(out2);
+    ASSERT_TRUE(len2.has_value());
+    EXPECT_EQ(*len2, 3u);
+
+    // Now consume — discard counter should be 0 since peek didn't advance reader
+    uint64_t ts = 0;
+    uint32_t discarded = 999;  // sentinel
+    std::array<uint8_t, 64> out3{};
+    auto len3 = queue.try_pop_latest_wts(out3, ts, discarded);
+    ASSERT_TRUE(len3.has_value());
+    EXPECT_EQ(*len3, 3u);
+    EXPECT_EQ(ts, 100u);
+    EXPECT_EQ(discarded, 0u);  // no discards: peek didn't affect tracking
+}
+
+TEST(EvictingQueueBytesPeek, TryPeekLatestWts_ReturnsTimestamp) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 2> payload{0x01, 0x02};
+    ASSERT_TRUE(queue.try_push_wts(payload, 42));
+
+    std::array<uint8_t, 64> out{};
+    uint64_t ts = 0;
+    auto len = queue.try_peek_latest_wts(out, ts);
+    ASSERT_TRUE(len.has_value());
+    EXPECT_EQ(*len, 2u);
+    EXPECT_EQ(ts, 42u);
+    EXPECT_EQ(out[0], 0x01);
+}
+
+TEST(EvictingQueueBytesPeek, TryPeekLatestVisit_ZeroCopy) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 4> payload{0xDE, 0xAD, 0xBE, 0xEF};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    bool visited = false;
+    bool ok = queue.try_peek_latest_visit([&](std::span<const uint8_t> data) {
+        visited = true;
+        EXPECT_EQ(data.size(), 4u);
+        EXPECT_EQ(data[0], 0xDE);
+        EXPECT_EQ(data[3], 0xEF);
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(visited);
+}
+
+TEST(EvictingQueueBytesPeek, TryPeekLatestVisitWts_ZeroCopyWithTimestamp) {
+    EvictingQueueBytes<64, 4> queue;
+
+    std::array<uint8_t, 2> payload{0x42, 0x43};
+    ASSERT_TRUE(queue.try_push_wts(payload, 777));
+
+    bool visited = false;
+    bool ok = queue.try_peek_latest_visit_wts(
+        [&](std::span<const uint8_t> data, uint64_t ts) {
+            visited = true;
+            EXPECT_EQ(data.size(), 2u);
+            EXPECT_EQ(data[0], 0x42);
+            EXPECT_EQ(ts, 777u);
+        });
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(visited);
+}

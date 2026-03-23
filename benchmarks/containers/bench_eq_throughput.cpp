@@ -30,7 +30,7 @@ void Throughput(benchmark::State& state) {
     static std::unique_ptr<EvictingQueue<T, BufSize>> q;
     static std::atomic<uint64_t> total_pops;
 
-    auto topology = get_cpu_topology();
+    auto topology = get_cpu_topology().value_or(std::vector<CpuTopologyInfo>{});
 
     if (state.thread_index() == 0) {
         q = std::make_unique<EvictingQueue<T, BufSize>>();
@@ -79,7 +79,7 @@ void ZeroCopy(benchmark::State& state) {
     static std::unique_ptr<EvictingQueue<T, BufSize>> q;
     static std::atomic<uint64_t> total_pops;
 
-    auto topology = get_cpu_topology();
+    auto topology = get_cpu_topology().value_or(std::vector<CpuTopologyInfo>{});
 
     if (state.thread_index() == 0) {
         q = std::make_unique<EvictingQueue<T, BufSize>>();
