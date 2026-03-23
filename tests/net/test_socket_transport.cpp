@@ -328,3 +328,164 @@ TEST(SocketConfigFormat, ToJsonEscapesNullByte) {
     // Null must be escaped as \u0000
     EXPECT_NE(j.find("\\u0000"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// SocketConfig::from_url()
+// ---------------------------------------------------------------------------
+
+TEST(SocketConfigFromUrl, TcpSchemeWithHostPort) {
+    auto r = SocketConfig::from_url("tcp://example.com:8080");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "example.com");
+    EXPECT_EQ(r->port, 8080);
+}
+
+TEST(SocketConfigFromUrl, SchemelessHostPort) {
+    auto r = SocketConfig::from_url("localhost:9090");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "localhost");
+    EXPECT_EQ(r->port, 9090);
+}
+
+TEST(SocketConfigFromUrl, Ipv6WithBrackets) {
+    auto r = SocketConfig::from_url("tcp://[::1]:443");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "::1");
+    EXPECT_EQ(r->port, 443);
+}
+
+TEST(SocketConfigFromUrl, Ipv6WithoutScheme) {
+    auto r = SocketConfig::from_url("[fe80::1]:5000");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "fe80::1");
+    EXPECT_EQ(r->port, 5000);
+}
+
+TEST(SocketConfigFromUrl, LeadingTrailingWhitespace) {
+    auto r = SocketConfig::from_url("  tcp://host:80  ");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "host");
+    EXPECT_EQ(r->port, 80);
+}
+
+TEST(SocketConfigFromUrl, IpAddress) {
+    auto r = SocketConfig::from_url("10.0.0.1:1234");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "10.0.0.1");
+    EXPECT_EQ(r->port, 1234);
+}
+
+TEST(SocketConfigFromUrl, PortMaxValid) {
+    auto r = SocketConfig::from_url("host:65535");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->port, 65535);
+}
+
+TEST(SocketConfigFromUrl, ErrorEmptyString) {
+    auto r = SocketConfig::from_url("");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorMissingPort) {
+    auto r = SocketConfig::from_url("tcp://example.com");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorEmptyHost) {
+    auto r = SocketConfig::from_url(":8080");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorPortZero) {
+    auto r = SocketConfig::from_url("host:0");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorPortOverflow) {
+    auto r = SocketConfig::from_url("host:65536");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorPortWayOverflow) {
+    auto r = SocketConfig::from_url("host:999999");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorInvalidPort) {
+    auto r = SocketConfig::from_url("host:abc");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorEmptyPortAfterColon) {
+    auto r = SocketConfig::from_url("host:");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorIpv6MissingCloseBracket) {
+    auto r = SocketConfig::from_url("[::1:443");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorIpv6EmptyAddress) {
+    auto r = SocketConfig::from_url("[]:443");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorIpv6MissingPort) {
+    auto r = SocketConfig::from_url("[::1]");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ErrorHostWithControlChars) {
+    auto r = SocketConfig::from_url("ho\tst:80");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(SocketConfigFromUrl, ValidatePassesAfterFromUrl) {
+    auto r = SocketConfig::from_url("tcp://example.com:443");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->validate().empty());
+}
+
+TEST(SocketConfigFromUrl, DefaultFieldsPreserved) {
+    auto r = SocketConfig::from_url("host:80");
+    ASSERT_TRUE(r.has_value());
+    // All non-URL fields should have defaults
+    EXPECT_TRUE(r->tcp_nodelay);
+    EXPECT_EQ(r->recv_buf_size, 0);
+    EXPECT_EQ(r->send_buf_size, 0);
+    EXPECT_FALSE(r->tcp_keepalive);
+    EXPECT_EQ(r->send_timeout_ms, 1000);
+}
+
+// ---------------------------------------------------------------------------
+// SocketConfig::to_url()
+// ---------------------------------------------------------------------------
+
+TEST(SocketConfigToUrl, BasicFormat) {
+    SocketConfig cfg{.host = "example.com", .port = 8080};
+    EXPECT_EQ(cfg.to_url(), "tcp://example.com:8080");
+}
+
+TEST(SocketConfigToUrl, Ipv6BracketEnclosed) {
+    SocketConfig cfg{.host = "::1", .port = 443};
+    EXPECT_EQ(cfg.to_url(), "tcp://[::1]:443");
+}
+
+TEST(SocketConfigToUrl, RoundTrip) {
+    auto original = SocketConfig::from_url("tcp://myhost:9090");
+    ASSERT_TRUE(original.has_value());
+    auto roundtripped = SocketConfig::from_url(original->to_url());
+    ASSERT_TRUE(roundtripped.has_value());
+    EXPECT_EQ(roundtripped->host, original->host);
+    EXPECT_EQ(roundtripped->port, original->port);
+}
+
+TEST(SocketConfigToUrl, Ipv6RoundTrip) {
+    auto original = SocketConfig::from_url("[::1]:5000");
+    ASSERT_TRUE(original.has_value());
+    auto roundtripped = SocketConfig::from_url(original->to_url());
+    ASSERT_TRUE(roundtripped.has_value());
+    EXPECT_EQ(roundtripped->host, "::1");
+    EXPECT_EQ(roundtripped->port, 5000);
+}

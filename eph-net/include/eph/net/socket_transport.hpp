@@ -8,6 +8,7 @@
 /// kernel-bypass latency but want the same Transport<> API.
 
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -79,6 +80,116 @@ struct SocketConfig {
             send_buf_size, tcp_keepalive ? "true" : "false",
             keepalive_idle, keepalive_interval,
             keepalive_count, send_timeout_ms);
+    }
+
+    /// Parse a "host:port" or "tcp://host:port" string into a SocketConfig.
+    ///
+    /// Supported URL forms:
+    ///   tcp://host:port         (explicit scheme)
+    ///   host:port               (scheme-less, port required)
+    ///   tcp://[::1]:port        (IPv6 with brackets)
+    ///   [::1]:port              (IPv6 without scheme)
+    ///
+    /// Only sets host and port. All other config fields retain their
+    /// default values and can be modified after construction.
+    ///
+    /// @param url  Connection target string
+    /// @return SocketConfig on success, or error description
+    [[nodiscard]] static std::expected<SocketConfig, std::string>
+    from_url(std::string_view url) {
+        // Strip leading/trailing whitespace
+        while (!url.empty() && (url.front() == ' ' || url.front() == '\t'))
+            url.remove_prefix(1);
+        while (!url.empty() && (url.back() == ' ' || url.back() == '\t'))
+            url.remove_suffix(1);
+
+        if (url.empty()) {
+            return std::unexpected(std::string("URL must not be empty"));
+        }
+
+        // Strip optional tcp:// scheme
+        if (url.starts_with("tcp://")) {
+            url.remove_prefix(6);
+        }
+
+        if (url.empty()) {
+            return std::unexpected(std::string("URL missing host"));
+        }
+
+        SocketConfig cfg;
+
+        // IPv6 bracket notation: [::1]:port
+        if (url.front() == '[') {
+            size_t bracket_end = url.find(']');
+            if (bracket_end == std::string_view::npos) {
+                return std::unexpected(std::string("IPv6 address missing closing ']'"));
+            }
+            cfg.host = std::string(url.substr(1, bracket_end - 1));
+            if (cfg.host.empty()) {
+                return std::unexpected(std::string("URL has empty IPv6 address"));
+            }
+            url.remove_prefix(bracket_end + 1);
+
+            // Must have :port after bracket
+            if (url.empty() || url.front() != ':') {
+                return std::unexpected(std::string("port is required (use host:port format)"));
+            }
+            url.remove_prefix(1); // skip ':'
+        } else {
+            // Regular hostname: find the last ':' that separates host from port.
+            // For IPv6 without brackets (not supported), this would break,
+            // but IPv6 should always use brackets.
+            size_t colon = url.rfind(':');
+            if (colon == std::string_view::npos) {
+                return std::unexpected(std::string("port is required (use host:port format)"));
+            }
+            cfg.host = std::string(url.substr(0, colon));
+            if (cfg.host.empty()) {
+                return std::unexpected(std::string("URL has empty host"));
+            }
+            url.remove_prefix(colon + 1);
+        }
+
+        // Reject control characters in hostname
+        for (char c : cfg.host) {
+            if (c < 0x20 || c == 0x7f) {
+                return std::unexpected(std::string("hostname contains control characters"));
+            }
+        }
+
+        // Parse port (required)
+        if (url.empty()) {
+            return std::unexpected(std::string("URL has empty port after ':'"));
+        }
+
+        uint32_t port32 = 0;
+        auto [ptr, ec] = std::from_chars(
+            url.data(), url.data() + url.size(), port32);
+        if (ec != std::errc{} || ptr != url.data() + url.size()) {
+            return std::unexpected(
+                std::format("invalid port: '{}'", url));
+        }
+        if (port32 == 0 || port32 > 65535) {
+            return std::unexpected(
+                std::format("port out of range: {}", port32));
+        }
+        cfg.port = static_cast<uint16_t>(port32);
+
+        return cfg;
+    }
+
+    /// Serialize the connection target as "tcp://host:port".
+    ///
+    /// Inverse of from_url(): reconstructs a URL from host and port.
+    /// IPv6 addresses are bracket-enclosed per RFC 2732.
+    ///
+    /// @return URL string like "tcp://host:port"
+    [[nodiscard]] std::string to_url() const {
+        bool is_ipv6 = host.find(':') != std::string::npos;
+        if (is_ipv6) {
+            return std::format("tcp://[{}]:{}", host, port);
+        }
+        return std::format("tcp://{}:{}", host, port);
     }
 
     /// Validate configuration, returning an error description or empty string on success.
