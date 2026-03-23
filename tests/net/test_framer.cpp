@@ -1,5 +1,6 @@
 /// @file test_framer.cpp
-/// Unit tests for the MessageFramer concept, RawFramer, and LengthPrefixFramer.
+/// Unit tests for the MessageFramer concept, RawFramer, LengthPrefixFramer,
+/// and WsFramer.
 /// Covers concept satisfaction, encode/decode paths, error handling, and roundtrips.
 
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include "eph/net/framer_concept.hpp"
 #include "eph/net/length_prefix_framer.hpp"
 #include "eph/net/raw_framer.hpp"
+#include "eph/net/ws_framer.hpp"
 
 using namespace eph::net;
 
@@ -295,4 +297,54 @@ TEST(FrameError, ErrorNames) {
     EXPECT_EQ(frame_error_name(FrameError::kIncomplete), "incomplete");
     EXPECT_EQ(frame_error_name(FrameError::kInvalidFormat), "invalid format");
     EXPECT_EQ(frame_error_name(FrameError::kPayloadTooLarge), "payload too large");
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: WsFramer — concept satisfaction
+// ---------------------------------------------------------------------------
+
+TEST(WsFramerConcept, SatisfiesConcept) {
+    static_assert(MessageFramer<WsFramer>,
+                  "WsFramer must satisfy MessageFramer concept");
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: WsFramer — reserved opcodes map to kInvalidFormat
+// ---------------------------------------------------------------------------
+
+TEST(WsFramer, ReservedOpcodeReturnsInvalidFormat) {
+    // Craft a raw WebSocket frame with reserved data opcode 0x03
+    // Frame: FIN=1 | opcode=0x03, no mask, zero payload
+    uint8_t buf[2] = {};
+    buf[0] = 0x80 | 0x03; // FIN + reserved opcode 0x03
+    buf[1] = 0x00;         // no mask, payload length 0
+
+    WsFramer framer;
+    auto result = framer.decode(buf, sizeof(buf));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), FrameError::kInvalidFormat);
+}
+
+TEST(WsFramer, AllReservedOpcodesReturnInvalidFormat) {
+    WsFramer framer;
+
+    // Reserved data opcodes: 0x3-0x7
+    for (uint8_t op = 0x3; op <= 0x7; ++op) {
+        uint8_t buf[2] = {};
+        buf[0] = 0x80 | op; // FIN + reserved opcode
+        buf[1] = 0x00;
+        auto result = framer.decode(buf, sizeof(buf));
+        EXPECT_FALSE(result.has_value()) << "opcode 0x" << std::hex << (int)op;
+        EXPECT_EQ(result.error(), FrameError::kInvalidFormat);
+    }
+
+    // Reserved control opcodes: 0xB-0xF
+    for (uint8_t op = 0xB; op <= 0xF; ++op) {
+        uint8_t buf[2] = {};
+        buf[0] = 0x80 | op;
+        buf[1] = 0x00;
+        auto result = framer.decode(buf, sizeof(buf));
+        EXPECT_FALSE(result.has_value()) << "opcode 0x" << std::hex << (int)op;
+        EXPECT_EQ(result.error(), FrameError::kInvalidFormat);
+    }
 }

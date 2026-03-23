@@ -125,6 +125,14 @@ TEST_F(TimeTest, to_cycles_negative_returns_nullopt) {
   EXPECT_FALSE(TSC::to_cycles(-0.001).has_value());
 }
 
+TEST_F(TimeTest, to_cycles_overflow_saturates_to_uint64_max) {
+  // A nanosecond value large enough to overflow uint64_t when converted to cycles.
+  // With ns_per_cycle ~ 0.3 (3 GHz CPU), 1e20 ns / 0.3 ~ 3.3e20, which exceeds UINT64_MAX.
+  auto result = TSC::to_cycles(1e20);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, UINT64_MAX);
+}
+
 TEST_F(TimeTest, init_flag_visibility_across_threads) {
   // Verify that a thread spawned after init() sees the calibrated value.
   std::optional<double> observed;
