@@ -585,3 +585,74 @@ TYPED_TEST(EvictingQueueTest, ReadCountTracksConsumptionAcrossMultipleReads) {
     EXPECT_EQ(queue.read_count(), 5u);
     EXPECT_EQ(queue.write_count(), 5u);
 }
+
+// ============================================================================
+// try_peek_latest — non-consuming read
+// ============================================================================
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestOnEmptyReturnsFalse) {
+    TypeParam queue;
+    TestData out{};
+    EXPECT_FALSE(queue.try_peek_latest(out));
+}
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestOptionalOnEmptyReturnsNullopt) {
+    TypeParam queue;
+    EXPECT_FALSE(queue.try_peek_latest().has_value());
+}
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestReadsWithoutConsuming) {
+    TypeParam queue;
+    TestData d{.seq = 42};
+    queue.push(d);
+
+    // Peek should succeed and return the data
+    TestData peeked{};
+    EXPECT_TRUE(queue.try_peek_latest(peeked));
+    EXPECT_EQ(peeked.seq, 42u);
+
+    // Subsequent consume should still return the same data (not consumed by peek)
+    TestData consumed{};
+    EXPECT_TRUE(queue.try_pop_latest(consumed));
+    EXPECT_EQ(consumed.seq, 42u);
+}
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestRepeatedReturnsStaleAfterConsume) {
+    TypeParam queue;
+    TestData d{.seq = 1};
+    queue.push(d);
+
+    // Peek twice — both should return the same value
+    auto v1 = queue.try_peek_latest();
+    auto v2 = queue.try_peek_latest();
+    ASSERT_TRUE(v1.has_value());
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v1->seq, 1u);
+    EXPECT_EQ(v2->seq, 1u);
+
+    // Consume
+    (void)queue.try_pop_latest();
+
+    // Peek should now fail (no new data)
+    EXPECT_FALSE(queue.try_peek_latest().has_value());
+}
+
+TYPED_TEST(EvictingQueueTest, TryPeekLatestSeesNewDataAfterPush) {
+    TypeParam queue;
+    TestData d1{.seq = 10};
+    queue.push(d1);
+
+    auto v1 = queue.try_peek_latest();
+    ASSERT_TRUE(v1.has_value());
+    EXPECT_EQ(v1->seq, 10u);
+
+    // Consume, then push new data
+    (void)queue.try_pop_latest();
+
+    TestData d2{.seq = 20};
+    queue.push(d2);
+
+    auto v2 = queue.try_peek_latest();
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v2->seq, 20u);
+}
