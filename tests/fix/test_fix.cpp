@@ -2897,3 +2897,146 @@ TEST(FixBuilderFinish, exact_fit_succeeds) {
     ASSERT_TRUE(mt.has_value());
     EXPECT_EQ(*mt, "D");
 }
+
+// ===========================================================================
+// Gap #5: format_double() rounding carry tests
+// ===========================================================================
+
+TEST(FixBuilder, set_double_rounding_carry_at_boundary) {
+    // 0.995 at precision=2: frac*100+0.5 = 100 → should produce "1.00" not "0.100"
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 0.995, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "1.00");
+}
+
+TEST(FixBuilder, set_double_rounding_carry_integer_boundary) {
+    // 9.999 at precision=2: should produce "10.00" not "9.100"
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 9.999, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "10.00");
+}
+
+TEST(FixBuilder, set_double_rounding_carry_negative) {
+    // -0.995 at precision=2: should produce "-1.00" not "-0.100"
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, -0.995, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "-1.00");
+}
+
+TEST(FixBuilder, set_double_rounding_carry_precision3) {
+    // 1.9999 at precision=3: should produce "2.000" not "1.1000"
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 1.9999, 3);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "2.000");
+}
+
+TEST(FixBuilder, set_double_no_carry_when_not_needed) {
+    // 1.50 at precision=2: should stay "1.50"
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 1.50, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto price = result->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "1.50");
+}
+
+// ===========================================================================
+// Gap #6: reset() + multi-cycle reuse producing valid FIX roundtrips
+// ===========================================================================
+
+TEST(FixBuilder, reset_and_rebuild_produces_valid_roundtrip) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_int(tag::MsgSeqNum, 1);
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+
+    // Reset and build a completely different message type
+    b.reset();
+    EXPECT_EQ(b.field_count(), 0u);
+    EXPECT_EQ(b.bytes_used(), 0u);
+    EXPECT_FALSE(b.has_overflow());
+
+    b.set(tag::MsgType, "0"); // Heartbeat
+    b.set_int(tag::MsgSeqNum, 2);
+    size_t len2 = b.finish();
+    ASSERT_GT(len2, 0u);
+
+    auto result = parse(buf, len2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result->get(tag::MsgType), "0");
+    EXPECT_EQ(*result->get_int(tag::MsgSeqNum), 2);
+}
+
+TEST(FixBuilder, reset_overflow_then_rebuild_succeeds) {
+    uint8_t buf[48]; // small buffer
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::SenderCompID, std::string_view("VERY_LONG_SENDER_COMP_IDXXXXXXXXXX"));
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+
+    b.reset();
+    EXPECT_FALSE(b.has_overflow());
+    b.set(tag::MsgType, "0");
+    EXPECT_GT(b.finish(), 0u);
+}
+
+TEST(FixBuilder, reset_five_cycle_stress) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+
+    for (int i = 0; i < 5; ++i) {
+        if (i > 0) b.reset();
+        b.set(tag::MsgType, "D");
+        b.set_int(tag::MsgSeqNum, i + 1);
+        size_t len = b.finish();
+        ASSERT_GT(len, 0u) << "cycle " << i;
+
+        auto result = parse(buf, len);
+        ASSERT_TRUE(result.has_value()) << "cycle " << i;
+        EXPECT_EQ(*result->get_int(tag::MsgSeqNum), i + 1) << "cycle " << i;
+    }
+}

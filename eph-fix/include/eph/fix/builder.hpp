@@ -432,8 +432,10 @@ private:
     /// Format double with fixed precision. Returns number of chars written.
     static size_t format_double(double val, char* out, int precision) noexcept {
         size_t off = 0;
+        size_t sign_len = 0;
         if (val < 0) {
             out[off++] = '-';
+            sign_len = 1;
             val = -val;
         }
 
@@ -449,6 +451,18 @@ private:
             double multiplier = 1.0;
             for (int i = 0; i < precision; ++i) multiplier *= 10.0;
             auto frac_int = static_cast<uint64_t>(frac * multiplier + 0.5);
+
+            // Handle rounding carry: e.g. 0.995 at precision=2 →
+            // frac_int=100 which has 3 digits but only 2 slots.
+            // Carry into integer part and reset fractional to zero.
+            uint64_t frac_limit = static_cast<uint64_t>(multiplier);
+            if (frac_int >= frac_limit) {
+                // Rewrite: skip sign, reformat integer+1, re-add '.'
+                off = sign_len;
+                off += format_uint(int_part + 1, out + off);
+                out[off++] = '.';
+                frac_int = 0;
+            }
 
             // Write with leading zeros
             char frac_buf[20];
