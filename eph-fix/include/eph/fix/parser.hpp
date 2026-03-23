@@ -418,14 +418,22 @@ public:
 
         // Find expected count
         auto count_val = get_int(count_tag);
-        if (!count_val || *count_val <= 0) {
+        if (!count_val || *count_val < 0) {
+            return {out_entries, 0};
+        }
+        // count=0 is valid in FIX (empty group)
+        if (*count_val == 0) {
             return {out_entries, 0};
         }
 
         size_t expected = static_cast<size_t>(*count_val);
         size_t found = 0;
 
-        // Scan for delimiter tag occurrences — each starts a new entry
+        // Scan for delimiter tag occurrences — each starts a new entry.
+        // Entry boundary: next delimiter tag or end of fields.
+        // Note: the last entry may include trailing non-group fields —
+        // this is by design since we cannot know the group's tag set.
+        // Use GroupEntry::get() to extract specific fields safely.
         for (size_t i = 0; i < count_ && found < max_entries; ++i) {
             if (fields_[i].tag == delim_tag) {
                 // Find end of this entry: next delimiter or end of fields

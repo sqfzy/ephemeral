@@ -3292,6 +3292,21 @@ TEST(FixRepeatingGroup, missing_count_tag_returns_empty) {
     EXPECT_TRUE(group.empty());
 }
 
+TEST(FixRepeatingGroup, count_zero_returns_empty_group) {
+    // count_tag=0 is valid in FIX — means empty group
+    std::string body = "35=W\x01" "268=0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+
+    EXPECT_EQ(group.size(), 0u);
+    EXPECT_TRUE(group.empty());
+}
+
 TEST(FixRepeatingGroup, count_exceeds_actual_entries) {
     // count_tag says 3, but only 2 delimiter tags present
     std::string body =
