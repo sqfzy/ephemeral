@@ -1095,3 +1095,210 @@ TEST(EvictingQueueStats, to_json_single_slot_has_all_fields) {
     EXPECT_NE(json.find("\"overwritten\":"), std::string::npos);
     EXPECT_NE(json.find("\"current_size\":"), std::string::npos);
 }
+
+// ===========================================================================
+// Timeout variants: try_peek_latest_for / try_consume_latest_for / try_pop_latest_for
+// ===========================================================================
+
+using namespace std::chrono_literals;
+
+// --- try_peek_latest_for ---
+
+TEST(EvictingQueueTimeout, peek_latest_for_returns_immediately_when_data_available) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 42});
+
+    TestData out{};
+    EXPECT_TRUE(queue.try_peek_latest_for(out, 1s));
+    EXPECT_EQ(out.seq, 42u);
+}
+
+TEST(EvictingQueueTimeout, peek_latest_for_visitor_returns_immediately_when_data_available) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 99});
+
+    uint32_t seen = 0;
+    EXPECT_TRUE(queue.try_peek_latest_for(
+        [&seen](const TestData& d) { seen = d.seq; }, 1s));
+    EXPECT_EQ(seen, 99u);
+}
+
+TEST(EvictingQueueTimeout, peek_latest_for_optional_returns_immediately_when_data_available) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 55});
+
+    auto result = queue.try_peek_latest_for(1s);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seq, 55u);
+}
+
+TEST(EvictingQueueTimeout, peek_latest_for_times_out_on_empty_queue) {
+    EvictingQueue<TestData, 4> queue;
+
+    TestData out{};
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(queue.try_peek_latest_for(out, 5ms));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_GE(elapsed, 5ms);
+}
+
+TEST(EvictingQueueTimeout, peek_latest_for_optional_returns_nullopt_on_empty) {
+    EvictingQueue<TestData, 4> queue;
+    auto result = queue.try_peek_latest_for(5ms);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(EvictingQueueTimeout, peek_latest_for_does_not_consume_data) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 10});
+
+    // Peek should not consume
+    TestData out{};
+    EXPECT_TRUE(queue.try_peek_latest_for(out, 1s));
+    EXPECT_EQ(out.seq, 10u);
+
+    // Data should still be available for consume
+    TestData out2{};
+    EXPECT_TRUE(queue.try_pop_latest(out2));
+    EXPECT_EQ(out2.seq, 10u);
+}
+
+TEST(EvictingQueueTimeout, peek_latest_for_zero_timeout_acts_like_try) {
+    EvictingQueue<TestData, 4> queue;
+    TestData out{};
+    EXPECT_FALSE(queue.try_peek_latest_for(out, 0ms));
+
+    queue.push(TestData{.seq = 1});
+    EXPECT_TRUE(queue.try_peek_latest_for(out, 0ms));
+    EXPECT_EQ(out.seq, 1u);
+}
+
+// --- try_consume_latest_for ---
+
+TEST(EvictingQueueTimeout, consume_latest_for_returns_immediately_when_data_available) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 77});
+
+    uint32_t seen = 0;
+    EXPECT_TRUE(queue.try_consume_latest_for(
+        [&seen](const TestData& d) { seen = d.seq; }, 1s));
+    EXPECT_EQ(seen, 77u);
+}
+
+TEST(EvictingQueueTimeout, consume_latest_for_times_out_on_empty_queue) {
+    EvictingQueue<TestData, 4> queue;
+
+    uint32_t seen = 0;
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(queue.try_consume_latest_for(
+        [&seen](const TestData& d) { seen = d.seq; }, 5ms));
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_GE(elapsed, 5ms);
+    EXPECT_EQ(seen, 0u);
+}
+
+TEST(EvictingQueueTimeout, consume_latest_for_consumes_data) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 33});
+
+    uint32_t seen = 0;
+    EXPECT_TRUE(queue.try_consume_latest_for(
+        [&seen](const TestData& d) { seen = d.seq; }, 1s));
+    EXPECT_EQ(seen, 33u);
+
+    // Second consume should fail (data consumed)
+    EXPECT_FALSE(queue.try_consume_latest_for(
+        [](const TestData&) {}, 5ms));
+}
+
+TEST(EvictingQueueTimeout, consume_latest_for_wakes_when_data_arrives) {
+    EvictingQueue<TestData, 4> queue;
+
+    std::atomic<uint32_t> seen{0};
+    std::thread consumer([&] {
+        queue.try_consume_latest_for(
+            [&seen](const TestData& d) { seen.store(d.seq); }, 500ms);
+    });
+
+    std::this_thread::sleep_for(10ms);
+    queue.push(TestData{.seq = 88});
+    consumer.join();
+    EXPECT_EQ(seen.load(), 88u);
+}
+
+// --- try_pop_latest_for ---
+
+TEST(EvictingQueueTimeout, pop_latest_for_ref_returns_immediately_when_data_available) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 44});
+
+    TestData out{};
+    EXPECT_TRUE(queue.try_pop_latest_for(out, 1s));
+    EXPECT_EQ(out.seq, 44u);
+}
+
+TEST(EvictingQueueTimeout, pop_latest_for_optional_returns_immediately_when_data_available) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 66});
+
+    auto result = queue.try_pop_latest_for(1s);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seq, 66u);
+}
+
+TEST(EvictingQueueTimeout, pop_latest_for_ref_times_out_on_empty) {
+    EvictingQueue<TestData, 4> queue;
+    TestData out{};
+    EXPECT_FALSE(queue.try_pop_latest_for(out, 5ms));
+}
+
+TEST(EvictingQueueTimeout, pop_latest_for_optional_returns_nullopt_on_empty) {
+    EvictingQueue<TestData, 4> queue;
+    auto result = queue.try_pop_latest_for(5ms);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(EvictingQueueTimeout, pop_latest_for_consumes_data) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 11});
+
+    auto r1 = queue.try_pop_latest_for(1s);
+    ASSERT_TRUE(r1.has_value());
+    EXPECT_EQ(r1->seq, 11u);
+
+    // Should be empty now
+    auto r2 = queue.try_pop_latest_for(5ms);
+    EXPECT_FALSE(r2.has_value());
+}
+
+TEST(EvictingQueueTimeout, pop_latest_for_zero_timeout_acts_like_try) {
+    EvictingQueue<TestData, 4> queue;
+    auto r = queue.try_pop_latest_for(0ms);
+    EXPECT_FALSE(r.has_value());
+
+    queue.push(TestData{.seq = 22});
+    r = queue.try_pop_latest_for(0ms);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->seq, 22u);
+}
+
+// --- Single-slot timeout behavior ---
+
+TEST(EvictingQueueTimeout, single_slot_peek_for_works) {
+    EvictingQueue<TestData, 1> queue;
+    queue.push(TestData{.seq = 100});
+
+    auto result = queue.try_peek_latest_for(1s);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seq, 100u);
+}
+
+TEST(EvictingQueueTimeout, single_slot_pop_for_overwrite_gets_latest) {
+    EvictingQueue<TestData, 1> queue;
+    queue.push(TestData{.seq = 1});
+    queue.push(TestData{.seq = 2});  // overwrites
+
+    auto result = queue.try_pop_latest_for(1s);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->seq, 2u);
+}
