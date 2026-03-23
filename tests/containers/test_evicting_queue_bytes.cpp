@@ -580,3 +580,82 @@ TEST(EvictingQueueBytesPeek, TryPeekLatest_EvictionDoesNotAffectDiscardCounter) 
     // (first read always reports 0 discards per the implementation)
     EXPECT_EQ(discarded, 0u);
 }
+
+// ===========================================================================
+// try_peek_latest_visit_for — non-consuming peek with timeout
+// ===========================================================================
+
+TYPED_TEST(EvictingQueueBytesTest, peek_visit_for_returns_false_on_empty_timeout) {
+    TypeParam queue;
+    bool called = false;
+    bool ok = queue.try_peek_latest_visit_for(
+        [&](std::span<const uint8_t>) { called = true; },
+        std::chrono::microseconds(10));
+    EXPECT_FALSE(ok);
+    EXPECT_FALSE(called);
+}
+
+TYPED_TEST(EvictingQueueBytesTest, peek_visit_for_receives_data_before_timeout) {
+    TypeParam queue;
+    std::vector<uint8_t> payload{0x01, 0x02, 0x03};
+    queue.try_push(payload);
+
+    std::vector<uint8_t> received;
+    bool ok = queue.try_peek_latest_visit_for(
+        [&](std::span<const uint8_t> data) {
+            received.assign(data.begin(), data.end());
+        },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(received, payload);
+}
+
+TYPED_TEST(EvictingQueueBytesTest, peek_visit_for_does_not_consume) {
+    TypeParam queue;
+    std::vector<uint8_t> payload{0xAA, 0xBB};
+    queue.try_push(payload);
+
+    // Peek twice
+    size_t peek_count = 0;
+    for (int i = 0; i < 2; ++i) {
+        queue.try_peek_latest_visit_for(
+            [&](std::span<const uint8_t> data) {
+                ++peek_count;
+                EXPECT_EQ(data.size(), 2u);
+            },
+            std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(peek_count, 2u);
+
+    // Consume should still succeed
+    std::vector<uint8_t> out(256);
+    auto len = queue.try_pop_latest(out);
+    EXPECT_TRUE(len.has_value());
+}
+
+TYPED_TEST(EvictingQueueBytesTest, peek_visit_wts_for_returns_correct_timestamp) {
+    TypeParam queue;
+    std::vector<uint8_t> payload{0x42};
+    queue.try_push_wts(payload, 12345u);
+
+    uint64_t seen_ts = 0;
+    bool ok = queue.try_peek_latest_visit_wts_for(
+        [&](std::span<const uint8_t> data, uint64_t ts) {
+            EXPECT_EQ(data.size(), 1u);
+            EXPECT_EQ(data[0], 0x42);
+            seen_ts = ts;
+        },
+        std::chrono::milliseconds(10));
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(seen_ts, 12345u);
+}
+
+TYPED_TEST(EvictingQueueBytesTest, peek_visit_wts_for_timeout_on_empty) {
+    TypeParam queue;
+    bool called = false;
+    bool ok = queue.try_peek_latest_visit_wts_for(
+        [&](std::span<const uint8_t>, uint64_t) { called = true; },
+        std::chrono::microseconds(10));
+    EXPECT_FALSE(ok);
+    EXPECT_FALSE(called);
+}

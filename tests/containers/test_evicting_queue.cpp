@@ -853,3 +853,46 @@ TEST(EvictingQueueTest_PeekFor, delayed_write_unblocks_peek) {
 
     writer.join();
 }
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_zero_timeout_on_empty) {
+    TypeParam queue;
+    TestData out{};
+    // Zero timeout should return false immediately without spinning
+    EXPECT_FALSE(queue.try_peek_latest_for(out, std::chrono::nanoseconds(0)));
+}
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_does_not_advance_read_count) {
+    TypeParam queue;
+    TestData d{.seq = 55};
+    queue.push(d);
+
+    // Peek should not advance read counter
+    TestData out{};
+    EXPECT_TRUE(queue.try_peek_latest_for(out, std::chrono::milliseconds(1)));
+    EXPECT_EQ(out.seq, 55u);
+    EXPECT_EQ(queue.read_count(), 0u);
+
+    // Consume should still get the same data
+    auto consumed = queue.try_pop_latest();
+    ASSERT_TRUE(consumed.has_value());
+    EXPECT_EQ(consumed->seq, 55u);
+    EXPECT_EQ(queue.read_count(), 1u);
+}
+
+TYPED_TEST(EvictingQueueTest, try_peek_latest_for_sees_newer_write_after_push) {
+    TypeParam queue;
+    queue.push(TestData{.seq = 1});
+
+    // Peek sees first data
+    auto v1 = queue.try_peek_latest_for(std::chrono::milliseconds(1));
+    ASSERT_TRUE(v1.has_value());
+    EXPECT_EQ(v1->seq, 1u);
+
+    // Push new data (without consuming first)
+    queue.push(TestData{.seq = 2});
+
+    // Peek now sees the newer data
+    auto v2 = queue.try_peek_latest_for(std::chrono::milliseconds(1));
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(v2->seq, 2u);
+}

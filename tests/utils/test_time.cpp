@@ -109,3 +109,29 @@ TEST_F(TimeTest, concurrent_init_is_safe) {
   EXPECT_EQ(success_count.load(), kThreads);
   EXPECT_TRUE(TSC::is_initialized());
 }
+
+TEST_F(TimeTest, repeated_init_returns_cached_result) {
+  // Second init() call should return true without re-calibrating.
+  auto ns1 = TSC::get_ns_per_cycle();
+  ASSERT_TRUE(TSC::init());
+  auto ns2 = TSC::get_ns_per_cycle();
+  ASSERT_TRUE(ns1.has_value());
+  ASSERT_TRUE(ns2.has_value());
+  EXPECT_DOUBLE_EQ(*ns1, *ns2);
+}
+
+TEST_F(TimeTest, to_cycles_negative_returns_nullopt) {
+  EXPECT_FALSE(TSC::to_cycles(-1000.0).has_value());
+  EXPECT_FALSE(TSC::to_cycles(-0.001).has_value());
+}
+
+TEST_F(TimeTest, init_flag_visibility_across_threads) {
+  // Verify that a thread spawned after init() sees the calibrated value.
+  std::optional<double> observed;
+  std::thread t([&] {
+    observed = TSC::get_ns_per_cycle();
+  });
+  t.join();
+  ASSERT_TRUE(observed.has_value());
+  EXPECT_GT(*observed, 0.0);
+}
