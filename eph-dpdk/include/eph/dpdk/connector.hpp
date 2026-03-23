@@ -211,7 +211,9 @@ prepare_connection(const DpdkEndpoint& ep,
     uint16_t src_port = opts.local_port;
     if (src_port == 0) {
         uint16_t rnd;
-        RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
+        if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
+            return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
+        }
         src_port = 49152 + (rnd % 16384);
         SPDLOG_DEBUG("dpdk::connect: ephemeral port {}", src_port);
     }
@@ -378,7 +380,9 @@ connect(const DpdkEndpoint& ep,
     uint16_t src_port = opts.local_port;
     if (src_port == 0) {
         uint16_t rnd;
-        RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd));
+        if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
+            return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
+        }
         src_port = 49152 + (rnd % 16384);
     }
 

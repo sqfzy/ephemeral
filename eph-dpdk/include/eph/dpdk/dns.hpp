@@ -463,9 +463,13 @@ resolve(uint16_t port_id,
 
     // Generate random transaction ID and ephemeral source port
     uint16_t tx_id;
-    RAND_bytes(reinterpret_cast<uint8_t*>(&tx_id), sizeof(tx_id));
+    if (RAND_bytes(reinterpret_cast<uint8_t*>(&tx_id), sizeof(tx_id)) != 1) {
+        return std::unexpected("DNS resolve: CSPRNG failure for transaction ID");
+    }
     uint16_t src_port;
-    RAND_bytes(reinterpret_cast<uint8_t*>(&src_port), sizeof(src_port));
+    if (RAND_bytes(reinterpret_cast<uint8_t*>(&src_port), sizeof(src_port)) != 1) {
+        return std::unexpected("DNS resolve: CSPRNG failure for ephemeral port");
+    }
     src_port = 49152 + (src_port % 16384);  // Ephemeral range
 
     // Build DNS query payload

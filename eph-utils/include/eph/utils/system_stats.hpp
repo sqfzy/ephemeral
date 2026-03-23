@@ -8,6 +8,8 @@
 
 #include <sys/resource.h>
 
+#include <cerrno>
+#include <cstring>
 #include <format>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -65,7 +67,11 @@ class SystemStats {
     /// @param auto_log Log resource report at destruction via spdlog.
     explicit SystemStats(bool auto_log = false)
         : auto_log_(auto_log) {
-        getrusage(RUSAGE_SELF, &initial_rusage_);
+        if (getrusage(RUSAGE_SELF, &initial_rusage_) != 0) {
+            SPDLOG_LOGGER_WARN(detail::system_stats_logger(),
+                "getrusage failed at construction: {}", std::strerror(errno));
+            initial_rusage_ = {};
+        }
     }
 
     ~SystemStats() {
@@ -82,13 +88,21 @@ class SystemStats {
     /// Compute resource delta since construction or last reset().
     [[nodiscard]] SystemResourceStats snapshot() const noexcept {
         rusage current{};
-        getrusage(RUSAGE_SELF, &current);
+        if (getrusage(RUSAGE_SELF, &current) != 0) {
+            SPDLOG_LOGGER_WARN(detail::system_stats_logger(),
+                "getrusage failed in snapshot: {}", std::strerror(errno));
+            return {};
+        }
         return compute_delta(current);
     }
 
     /// Reset the baseline to the current resource state.
     void reset() noexcept {
-        getrusage(RUSAGE_SELF, &initial_rusage_);
+        if (getrusage(RUSAGE_SELF, &initial_rusage_) != 0) {
+            SPDLOG_LOGGER_WARN(detail::system_stats_logger(),
+                "getrusage failed in reset: {}", std::strerror(errno));
+            initial_rusage_ = {};
+        }
     }
 
     /// Log a formatted resource report via spdlog at INFO level.
