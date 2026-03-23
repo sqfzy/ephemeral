@@ -659,3 +659,32 @@ TYPED_TEST(EvictingQueueBytesTest, peek_visit_wts_for_timeout_on_empty) {
     EXPECT_FALSE(ok);
     EXPECT_FALSE(called);
 }
+
+TYPED_TEST(EvictingQueueBytesTest, stats_reflects_push_and_consume) {
+    TypeParam queue;
+
+    // Empty queue stats
+    auto s0 = queue.stats();
+    EXPECT_EQ(s0.total_pushed, 0u);
+    EXPECT_EQ(s0.last_pop_id, 0u);
+    EXPECT_EQ(s0.capacity, queue.capacity());
+
+    // Push a message
+    std::vector<uint8_t> payload = {1, 2, 3, 4};
+    queue.try_push(payload);
+
+    auto s1 = queue.stats();
+    EXPECT_EQ(s1.total_pushed, 1u);
+
+    // Consume it
+    std::vector<uint8_t> buf(256);
+    queue.try_pop_latest(buf);
+
+    auto s2 = queue.stats();
+    EXPECT_EQ(s2.total_pushed, 1u);
+    EXPECT_GT(s2.last_pop_id, 0u);
+
+    // dump() and to_json() should not crash
+    EXPECT_FALSE(s2.dump().empty());
+    EXPECT_FALSE(s2.to_json().empty());
+}

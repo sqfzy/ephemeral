@@ -5,8 +5,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <optional>
 #include <span>
+#include <string>
 
 #include "eph/containers/evicting_queue.hpp"
 
@@ -475,6 +477,53 @@ class EvictingQueueBytes {
 
     /// Check if there are no unread entries (approximate).
     [[nodiscard]] bool empty() const noexcept { return queue_.empty(); }
+
+    // ===========================================================================
+    // 可观测性
+    // ===========================================================================
+
+    /// Queue statistics snapshot for monitoring/debugging.
+    struct Stats {
+        uint64_t total_pushed;     ///< Total messages ever pushed (writer-side)
+        uint64_t last_pop_id;      ///< ID of last consumed message (reader-side)
+        size_t   current_size;     ///< Approximate unread entries
+        size_t   capacity;         ///< Fixed capacity
+        uint64_t total_overwritten;///< Messages overwritten before being read
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "EvictingQueueBytes::Stats:\n"
+                "  capacity: {}\n"
+                "  current_size: {}\n"
+                "  total_pushed: {}\n"
+                "  last_pop_id: {}\n"
+                "  total_overwritten: {}",
+                capacity, current_size,
+                total_pushed, last_pop_id, total_overwritten);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
+                "\"last_pop_id\":{},\"total_overwritten\":{}}}",
+                capacity, current_size, total_pushed,
+                last_pop_id, total_overwritten);
+        }
+    };
+
+    /// Take a point-in-time statistics snapshot.
+    [[nodiscard]] Stats stats() const noexcept {
+        auto q_stats = queue_.stats();
+        return Stats{
+            .total_pushed      = push_count_,
+            .last_pop_id       = last_pop_id_,
+            .current_size      = q_stats.current_size,
+            .capacity          = Capacity,
+            .total_overwritten = q_stats.overwritten,
+        };
+    }
 
    private:
     EvictingQueue<DataWrap, Capacity> queue_;

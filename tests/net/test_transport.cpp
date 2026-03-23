@@ -480,6 +480,39 @@ TEST_F(TransportTest, SendNullDataWithLenReturnsNullData) {
     tp->stop();
 }
 
+TEST_F(TransportTest, SendTextNullDataReturnsNullData) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // send_text with null data + non-zero len must return kNullData
+    // (not crash in is_valid_utf8)
+    auto err = tp->send_text(nullptr, 10);
+    EXPECT_EQ(err, SendError::kNullData);
+
+    // send with text opcode + null data must also be safe
+    auto err2 = tp->send(nullptr, 5, ws::opcode::kText);
+    EXPECT_EQ(err2, SendError::kNullData);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SendForNullDataReturnsNullData) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // send_for with null data + non-zero len
+    auto err = tp->send_for(nullptr, 10, 100ms);
+    EXPECT_EQ(err, SendError::kNullData);
+
+    // send_text_for with null data + non-zero len
+    auto err2 = tp->send_text_for(nullptr, 10, 100ms);
+    EXPECT_EQ(err2, SendError::kNullData);
+
+    tp->stop();
+}
+
 TEST_F(TransportTest, SendCloseEnqueues) {
     auto result = create_transport();
     ASSERT_TRUE(result.has_value()) << result.error().message();
@@ -629,6 +662,90 @@ TEST_F(TransportTest, TryRecvMsgReturnsPayloadAndOpcode) {
     ASSERT_TRUE(msg.has_value());
     EXPECT_TRUE(msg->is_text());
     EXPECT_EQ(msg->text(), "test");
+
+    tp->stop();
+}
+
+// ===========================================================================
+// Peek tests
+// ===========================================================================
+
+TEST_F(TransportTest, RecvPeekReturnsMessageWithoutConsuming) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    last_mock_->inject_text("peek_me");
+
+    // Wait for message to arrive in RX queue
+    EXPECT_TRUE(wait_for([&] {
+        return tp->rx_queue_size() > 0;
+    }));
+
+    // Peek should see the message
+    bool peeked = false;
+    tp->recv_peek([&](const uint8_t* data, size_t len, uint8_t opcode) {
+        peeked = true;
+        EXPECT_EQ(opcode, ws::opcode::kText);
+        EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(data), len), "peek_me");
+    });
+    EXPECT_TRUE(peeked);
+
+    // Queue should still have the message (not consumed)
+    EXPECT_GT(tp->rx_queue_size(), 0u);
+
+    // Now consume it
+    auto msg = tp->try_recv_msg();
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_EQ(msg->text(), "peek_me");
+
+    // Queue should now be empty
+    EXPECT_EQ(tp->rx_queue_size(), 0u);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, RecvPeekEmptyReturnsFalse) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    bool peeked = false;
+    tp->recv_peek([&](const uint8_t*, size_t) {
+        peeked = true;
+    });
+    EXPECT_FALSE(peeked);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, PeekRecvMsgReturnsCopiedMessage) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    last_mock_->inject_text("peek_copy");
+
+    EXPECT_TRUE(wait_for([&] {
+        return tp->rx_queue_size() > 0;
+    }));
+
+    auto msg = tp->peek_recv_msg();
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_TRUE(msg->is_text());
+    EXPECT_EQ(msg->text(), "peek_copy");
+
+    // Message still in queue
+    EXPECT_GT(tp->rx_queue_size(), 0u);
+
+    // Consume should return same message
+    auto msg2 = tp->try_recv_msg();
+    ASSERT_TRUE(msg2.has_value());
+    EXPECT_EQ(msg2->text(), "peek_copy");
 
     tp->stop();
 }
@@ -1313,6 +1430,97 @@ TEST_F(TransportTest, OnReconnectAttemptAborts) {
     EXPECT_EQ(attempt_count.load(), 2);
 
     tp->stop();
+}
+
+TEST_F(TransportTest, ReconnectNowTriggersReconnection) {
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 3;
+    config.reconnect_interval = 10ms;
+
+    std::atomic<int> factory_calls{0};
+    std::atomic<bool> reconnected{false};
+
+    config.on_reconnected = [&](int /*attempt*/, uint64_t /*downtime_ns*/,
+                                 uint64_t /*total*/) {
+        reconnected.store(true, std::memory_order_release);
+    };
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        int n = factory_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        if (n == 1) last_mock_ = mock.get();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(10ms);
+
+    // Force reconnect from application thread
+    EXPECT_TRUE(tp->reconnect_now());
+
+    // Wait for reconnection to complete
+    bool ok = wait_for([&] {
+        return reconnected.load(std::memory_order_acquire);
+    }, 3000ms);
+    EXPECT_TRUE(ok) << "reconnect_now() did not trigger reconnection";
+
+    // Factory should have been called at least twice (initial + reconnect)
+    EXPECT_GE(factory_calls.load(), 2);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ReconnectNowReturnsFalseWhenDisabled) {
+    // Create transport with auto-reconnect disabled
+    TransportConfig config;
+    config.remote_host = "mock.test";
+    config.remote_port = 9999;
+    config.ws_path = "/ws";
+    config.use_tls = false;
+    config.ping_interval = 0s;
+    config.max_reconnect_attempts = 0; // disabled
+
+    auto factory = [&]()
+        -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+    {
+        auto mock = std::make_unique<WsMockTcpTransport>();
+        last_mock_ = mock.get();
+        auto r = mock->connect(3000ms);
+        if (!r) return std::unexpected(r.error());
+        return mock;
+    };
+
+    auto result = TestTransport::create(std::move(factory), config);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // reconnect_now should return false when auto-reconnect is disabled
+    EXPECT_FALSE(tp->reconnect_now());
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ReconnectNowReturnsFalseWhenStopped) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    tp->stop();
+
+    // Should return false when not running
+    EXPECT_FALSE(tp->reconnect_now());
 }
 
 // ---------------------------------------------------------------------------

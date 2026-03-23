@@ -232,6 +232,7 @@ public:
     /// @return SendError::kOk on enqueue success, or a specific error code
     SendError send(const void* data, size_t len,
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
@@ -255,6 +256,7 @@ public:
     /// Validates UTF-8 encoding per RFC 6455 §5.6. Returns kInvalidUtf8
     /// if the payload is not valid UTF-8.
     SendError send_text(const void* data, size_t len) noexcept {
+        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (!ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
@@ -306,6 +308,7 @@ public:
     SendError send_for(const void* data, size_t len,
                        std::chrono::duration<Rep, Period> timeout,
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
+        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
@@ -327,6 +330,7 @@ public:
     template <typename Rep, typename Period>
     SendError send_text_for(const void* data, size_t len,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
+        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (!ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
@@ -623,6 +627,58 @@ public:
         return result;
     }
 
+    // -----------------------------------------------------------------------
+    // Peek API (application thread) — inspect without consuming
+    //
+    // Peek at the next RX message without removing it from the queue.
+    // Useful for message-type routing: inspect the header, then decide
+    // whether to consume with recv() or skip. Multiple peeks return the
+    // same message until recv()/try_recv() advances the head.
+    //
+    // @note Reader-thread only (same thread that calls recv()).
+    // -----------------------------------------------------------------------
+
+    /// Peek at the next message without consuming (non-blocking).
+    /// @param callback  Called with (data_ptr, len) if a message is available.
+    /// @return true if a message was peeked, false if queue empty.
+    /// @warning The data pointer is only valid during the callback invocation.
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, size_t>
+    bool recv_peek(F&& callback) {
+        return rx_queue_.try_peek([&](const RxMsg& msg) {
+            std::invoke(std::forward<F>(callback),
+                        static_cast<const uint8_t*>(msg.data),
+                        static_cast<size_t>(msg.len));
+        });
+    }
+
+    /// Peek at the next message with opcode without consuming (non-blocking).
+    /// @param callback  Called with (data_ptr, len, opcode) if a message is available.
+    /// @return true if a message was peeked, false if queue empty.
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
+    bool recv_peek(F&& callback) {
+        return rx_queue_.try_peek([&](const RxMsg& msg) {
+            std::invoke(std::forward<F>(callback),
+                        static_cast<const uint8_t*>(msg.data),
+                        static_cast<size_t>(msg.len),
+                        msg.opcode);
+        });
+    }
+
+    /// Peek at the next message as a copied ReceivedMessage (non-blocking).
+    /// Returns nullopt if the queue is empty.
+    [[nodiscard]] std::optional<ReceivedMessage> peek_recv_msg() {
+        std::optional<ReceivedMessage> result;
+        (void)rx_queue_.try_peek([&](const RxMsg& msg) {
+            result.emplace(ReceivedMessage{
+                .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
+                .opcode = msg.opcode,
+            });
+        });
+        return result;
+    }
+
     /// Batch-receive up to max_count messages (non-blocking, best-effort).
     ///
     /// Calls callback with (data_ptr, len) for each available message,
@@ -844,6 +900,32 @@ public:
     /// Check if the transport is connected and data can flow.
     [[nodiscard]] bool is_connected() const noexcept {
         return state() == TransportState::kConnected;
+    }
+
+    /// Force an immediate reconnection attempt.
+    ///
+    /// Useful when the application detects stale data (e.g., market data
+    /// feed going silent while TCP remains established) and wants to
+    /// reconnect without waiting for pong timeout or TCP-level detection.
+    ///
+    /// The reconnect happens asynchronously in the RX thread. This method
+    /// returns immediately after signaling. The transport must be running
+    /// and auto-reconnect must be enabled (max_reconnect_attempts > 0).
+    ///
+    /// @return true if the reconnect was signaled, false if the transport
+    ///         is not running or auto-reconnect is disabled.
+    bool reconnect_now() noexcept {
+        if (!running_.load(std::memory_order_acquire)) return false;
+        if (config_.max_reconnect_attempts <= 0) {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "reconnect_now() called but auto-reconnect is disabled "
+                "(max_reconnect_attempts=0)");
+            return false;
+        }
+        SPDLOG_LOGGER_INFO(detail::transport_logger(),
+            "reconnect_now() signaled by application");
+        force_reconnect_.store(true, std::memory_order_release);
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -1100,6 +1182,9 @@ private:
     // RX sets closing_=true when a server Close frame is received.
     // TX drains the queue (sending the Close response) before exiting.
     std::atomic<bool>                      closing_{false};
+    // Application sets force_reconnect_=true via reconnect_now();
+    // RX thread checks this and triggers do_reconnect() when set.
+    std::atomic<bool>                      force_reconnect_{false};
     std::thread                            tx_thread_;
     std::thread                            rx_thread_;
 
@@ -1942,6 +2027,18 @@ private:
             // drain the Close response and set running_=false.
             if (closing_.load(std::memory_order_acquire)) [[unlikely]] {
                 eph::utils::cpu_relax();
+                continue;
+            }
+
+            // Application requested forced reconnect via reconnect_now()
+            if (force_reconnect_.exchange(false, std::memory_order_acq_rel)) [[unlikely]] {
+                SPDLOG_LOGGER_INFO(log, "Processing forced reconnect request");
+                reassembly_len = 0;
+                ws_reassembly_len = 0;
+                if (!do_reconnect()) {
+                    running_.store(false, std::memory_order_release);
+                    break;
+                }
                 continue;
             }
 

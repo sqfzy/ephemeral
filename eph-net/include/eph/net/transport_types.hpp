@@ -1047,3 +1047,15 @@ struct std::formatter<eph::net::TransportStats> : std::formatter<std::string> {
             ctx);
     }
 };
+
+template <>
+struct std::formatter<eph::net::TransportConfig> : std::formatter<std::string> {
+    auto format(const eph::net::TransportConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("TransportConfig({}:{}{} tls={} reconnect={}/{})",
+                c.remote_host, c.remote_port, c.ws_path,
+                c.use_tls ? "true" : "false",
+                c.max_reconnect_attempts, c.reconnect_interval.count()),
+            ctx);
+    }
+};
