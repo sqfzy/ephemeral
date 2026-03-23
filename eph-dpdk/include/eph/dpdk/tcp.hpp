@@ -93,6 +93,7 @@ public:
     };
 
     /// Create a TCP session (does NOT connect yet).
+    /// @pre pool must not be nullptr — the session allocates mbufs from it.
     explicit TcpSession(const TcpConfig& config, rte_mempool* pool) noexcept
         : config_(config)
         , pool_(pool)
@@ -103,17 +104,31 @@ public:
         , rcv_wnd_(config.recv_window)
         , snd_wnd_(0) {
 
+        if (!pool_) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+                "TcpSession created with null mempool — "
+                "all packet allocations will fail");
+        }
+
+        if (config.tuple.src_ip == 0 || config.tuple.dst_ip == 0) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "TcpSession created with zero IP address: src={}, dst={}",
+                net::format_ipv4(config.tuple.src_ip).data(),
+                net::format_ipv4(config.tuple.dst_ip).data());
+        }
+
         pkt_template_.src_mac = config.src_mac;
         pkt_template_.dst_mac = config.dst_mac;
         pkt_template_.tuple   = config.tuple;
         pkt_template_.mss     = config.mss;
 
         SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
-            "TcpSession created: {}:{} -> {}:{}",
+            "TcpSession created: {}:{} -> {}:{}, pool={}",
             net::format_ipv4(config.tuple.src_ip).data(),
             config.tuple.src_port,
             net::format_ipv4(config.tuple.dst_ip).data(),
-            config.tuple.dst_port);
+            config.tuple.dst_port,
+            static_cast<const void*>(pool_));
     }
 
     ~TcpSession() {

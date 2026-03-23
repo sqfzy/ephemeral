@@ -25,11 +25,15 @@
 
 namespace eph::fix {
 
-/// Maximum allowed BodyLength (tag 9) value for FIX message parsing.
+/// Default maximum allowed BodyLength (tag 9) value for FIX message parsing.
 /// Protects against malformed messages with absurdly large BodyLength values
 /// that would otherwise cause the parser/framer to wait for gigabytes of data.
 /// 1 MB is generous for any real FIX message (typical max is ~10 KB).
-inline constexpr size_t kMaxBodyLength = 1 * 1024 * 1024;
+/// Override via the MaxBodyLength template parameter on parse() or FixFramer.
+inline constexpr size_t kDefaultMaxBodyLength = 1 * 1024 * 1024;
+
+/// Backward-compatible alias.
+inline constexpr size_t kMaxBodyLength = kDefaultMaxBodyLength;
 
 namespace detail {
 inline std::shared_ptr<spdlog::logger> fix_parser_logger() {
@@ -680,13 +684,14 @@ inline bool verify_checksum(const uint8_t* data, size_t len) noexcept {
 /// The parser scans for SOH (0x01) delimiters, extracts tag=value pairs,
 /// and validates the message structure (BeginString, BodyLength, CheckSum).
 ///
-/// @tparam MaxFields  Maximum number of fields in the parsed view (default 128)
+/// @tparam MaxFields      Maximum number of fields in the parsed view (default 128)
+/// @tparam MaxBodyLength  Maximum allowed BodyLength value (default 1 MB)
 /// @param data  Pointer to raw FIX bytes (may contain multiple messages)
 /// @param len   Number of available bytes
 /// @return BasicMessageView on success, ParseError on failure
 ///
 /// On kIncomplete, the caller should wait for more data and retry.
-template <size_t MaxFields = 128>
+template <size_t MaxFields = 128, size_t MaxBodyLength = kDefaultMaxBodyLength>
 inline std::expected<BasicMessageView<MaxFields>, ParseError>
 parse(const uint8_t* data, size_t len) noexcept {
     if (len == 0) return std::unexpected(ParseError::kIncomplete);
@@ -735,10 +740,10 @@ parse(const uint8_t* data, size_t len) noexcept {
             return std::unexpected(ParseError::kInvalidFormat);
         }
         body_length = body_length * 10 + static_cast<size_t>(c - '0');
-        if (body_length > kMaxBodyLength) {
+        if (body_length > MaxBodyLength) {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: BodyLength exceeds maximum allowed {} bytes",
-                kMaxBodyLength);
+                MaxBodyLength);
             return std::unexpected(ParseError::kInvalidFormat);
         }
     }

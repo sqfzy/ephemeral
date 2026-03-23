@@ -288,6 +288,7 @@ public:
         }
 
         total_len_ = total;
+        finished_  = true;
         return total;
     }
 
@@ -299,6 +300,7 @@ public:
         total_len_  = 0;
         field_count_ = 0;
         overflow_   = false;
+        finished_   = false;
     }
 
     /// Append a single-character enum field (Side, OrdType, ExecType, etc.).
@@ -357,6 +359,37 @@ public:
     MessageBuilder& set_raw_unique(uint32_t t, const uint8_t* data, size_t len) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_raw(t, data, len);
+    }
+
+    // -----------------------------------------------------------------------
+    // Repeating group support
+    // -----------------------------------------------------------------------
+
+    /// Write a repeating group count tag and return a reference for chaining.
+    ///
+    /// FIX repeating groups follow the pattern:
+    ///   <count_tag>=N\x01  <delim_tag>=...\x01 <field>=...\x01 ...  (entry 1)
+    ///                      <delim_tag>=...\x01 <field>=...\x01 ...  (entry 2)
+    ///
+    /// This method writes the count tag. The caller then appends each entry's
+    /// fields using regular set() calls. Each entry MUST start with the same
+    /// delimiter tag.
+    ///
+    /// Example:
+    ///   b.begin_group(tag::NoPartyIDs, 2);
+    ///   // Entry 1
+    ///   b.set(tag::PartyID, "PARTY1");
+    ///   b.set_char(tag::PartyIDSource, 'D');
+    ///   b.set_int(tag::PartyRole, 1);
+    ///   // Entry 2
+    ///   b.set(tag::PartyID, "PARTY2");
+    ///   b.set_char(tag::PartyIDSource, 'D');
+    ///   b.set_int(tag::PartyRole, 2);
+    ///
+    /// @param count_tag  The group count tag (e.g., NoPartyIDs, NoMDEntries)
+    /// @param count      Number of entries that will follow
+    MessageBuilder& begin_group(uint32_t count_tag, size_t count) noexcept {
+        return set_int(count_tag, static_cast<int64_t>(count));
     }
 
     /// Check whether the builder has overflowed the buffer.
@@ -449,6 +482,12 @@ private:
     /// set_timestamp) that produce known-safe ASCII output.
     MessageBuilder& set_trusted(uint32_t t, std::string_view value) noexcept {
         if (overflow_) [[unlikely]] return *this;
+        if (finished_) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+                "set(tag={}) called after finish() — ignored. Call reset() first.",
+                t);
+            return *this;
+        }
 
         size_t tag_len = write_uint(t, pos_);
         size_t needed = tag_len + 1 + value.size() + 1;
@@ -480,6 +519,7 @@ private:
     size_t   total_len_  = 0;
     size_t   field_count_ = 0;
     bool     overflow_   = false;
+    bool     finished_   = false;  ///< Set after finish() — blocks further set() calls
 
     /// Write an unsigned integer as ASCII digits into buf_ at offset, returning digit count.
     /// Does NOT advance pos_.

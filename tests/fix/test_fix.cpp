@@ -4065,3 +4065,145 @@ TEST(FixMessageViewDiag, to_json_handles_empty_fields) {
     EXPECT_NE(j.find("\"value\":\"\""), std::string::npos)
         << "Empty field value should produce empty JSON string";
 }
+
+// ===========================================================================
+// Evolve: finish() write protection tests
+// ===========================================================================
+
+TEST(FixBuilder, set_after_finish_is_ignored) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+
+    // Attempt to set a field after finish() — should be silently ignored
+    b.set(tag::Symbol, "AAPL");
+    // The message should not have changed
+    EXPECT_EQ(b.size(), len1);
+}
+
+TEST(FixBuilder, set_int_after_finish_is_ignored) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+
+    b.set_int(tag::MsgSeqNum, 42);
+    EXPECT_EQ(b.size(), len1);
+}
+
+TEST(FixBuilder, reset_after_finish_allows_new_message) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+
+    b.reset();
+    b.set(tag::MsgType, "A");
+    b.set(tag::SenderCompID, "SENDER");
+    size_t len2 = b.finish();
+    ASSERT_GT(len2, 0u);
+
+    auto result = parse(buf, len2);
+    ASSERT_TRUE(result.has_value());
+    auto mt = result->get(tag::MsgType);
+    ASSERT_TRUE(mt.has_value());
+    EXPECT_EQ(*mt, "A");
+}
+
+// ===========================================================================
+// Evolve: begin_group() repeating group builder tests
+// ===========================================================================
+
+TEST(FixBuilder, begin_group_writes_count_tag) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "W");
+    b.begin_group(tag::NoMDEntries, 2);
+    b.set_char(tag::MDEntryType, '0');
+    b.set_double(tag::MDEntryPx, 100.50, 2);
+    b.set_char(tag::MDEntryType, '1');
+    b.set_double(tag::MDEntryPx, 101.00, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+
+    // Verify count tag
+    auto count = result->get_int(tag::NoMDEntries);
+    ASSERT_TRUE(count.has_value());
+    EXPECT_EQ(*count, 2);
+
+    // Verify repeating group entries via count()
+    EXPECT_EQ(result->count(tag::MDEntryType), 2u);
+}
+
+TEST(FixBuilder, begin_group_roundtrip_with_group_view) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "W");  // MarketDataSnapshot
+    b.begin_group(tag::NoMDEntries, 2);
+    // Entry 1
+    b.set_char(tag::MDEntryType, '0');  // Bid
+    b.set_double(tag::MDEntryPx, 150.25, 2);
+    b.set_int(tag::MDEntrySize, 1000);
+    // Entry 2
+    b.set_char(tag::MDEntryType, '1');  // Offer
+    b.set_double(tag::MDEntryPx, 150.50, 2);
+    b.set_int(tag::MDEntrySize, 500);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+
+    // Extract repeating group
+    BasicMessageView<128>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType,
+                                   entries, 8);
+    EXPECT_EQ(group.count, 2u);
+
+    // Entry 1
+    auto px1 = group[0].get(tag::MDEntryPx);
+    ASSERT_TRUE(px1.has_value());
+    EXPECT_EQ(*px1, "150.25");
+
+    // Entry 2
+    auto px2 = group[1].get(tag::MDEntryPx);
+    ASSERT_TRUE(px2.has_value());
+    EXPECT_EQ(*px2, "150.50");
+}
+
+// ===========================================================================
+// Evolve: configurable MaxBodyLength tests
+// ===========================================================================
+
+TEST(FixParser, custom_max_body_length_rejects_large_message) {
+    // Build a valid FIX message with a body that exceeds a custom 64-byte limit
+    std::string body = "35=D\x01" "49=SENDER_COMP_ID_THAT_IS_LONG\x01"
+                       "56=TARGET_COMP_ID_THAT_IS_LONG\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    ASSERT_GT(body.size(), 64u);
+
+    // Default limit: should succeed
+    auto result_default = parse(raw.data(), raw.size());
+    EXPECT_TRUE(result_default.has_value());
+
+    // Custom small limit: should fail
+    auto result_small = parse<128, 64>(raw.data(), raw.size());
+    EXPECT_FALSE(result_small.has_value());
+    EXPECT_EQ(result_small.error(), ParseError::kInvalidFormat);
+}
+
+TEST(FixParser, custom_max_body_length_accepts_small_message) {
+    std::string body = "35=D\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    // Even with a tiny limit, small messages should pass
+    auto result = parse<128, 64>(raw.data(), raw.size());
+    EXPECT_TRUE(result.has_value());
+}

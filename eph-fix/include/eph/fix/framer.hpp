@@ -32,6 +32,9 @@ inline std::shared_ptr<spdlog::logger> fix_framer_logger() {
 /// FIX protocol framer -- finds message boundaries by scanning for the
 /// CheckSum tag ("10=XXX\x01") in the byte stream.
 ///
+/// @tparam MaxBodyLength  Maximum allowed BodyLength value (default 1 MB).
+///                        Override for venues with larger messages.
+///
 /// encode() is a pass-through: FIX messages produced by MessageBuilder
 /// are already fully framed (BeginString + BodyLength + CheckSum).
 ///
@@ -39,7 +42,8 @@ inline std::shared_ptr<spdlog::logger> fix_framer_logger() {
 /// 1. Verifying the buffer starts with "8=" (BeginString)
 /// 2. Parsing BodyLength from the "9=NNN\x01" field
 /// 3. Computing the total message length and checking availability
-class FixFramer {
+template <size_t MaxBodyLength = kDefaultMaxBodyLength>
+class BasicFixFramer {
 public:
     static constexpr size_t max_overhead() noexcept { return 0; }
 
@@ -99,10 +103,10 @@ public:
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
             }
             body_length = body_length * 10 + static_cast<size_t>(c - '0');
-            if (body_length > kMaxBodyLength) {
+            if (body_length > MaxBodyLength) {
                 SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
                     "FIX frame BodyLength exceeds maximum allowed {} bytes",
-                    kMaxBodyLength);
+                    MaxBodyLength);
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
             }
         }
@@ -186,6 +190,9 @@ public:
         };
     }
 };
+
+/// Default FixFramer with 1 MB max body length (backward compatible).
+using FixFramer = BasicFixFramer<>;
 
 static_assert(eph::net::MessageFramer<FixFramer>,
     "FixFramer must satisfy MessageFramer concept");
