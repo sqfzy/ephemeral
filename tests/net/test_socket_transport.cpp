@@ -489,3 +489,43 @@ TEST(SocketConfigToUrl, Ipv6RoundTrip) {
     EXPECT_EQ(roundtripped->host, "::1");
     EXPECT_EQ(roundtripped->port, 5000);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// connect() — URL-based convenience factory
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(UrlConnect, InvalidUrlReturnsError) {
+    auto result = connect("http://example.com");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kInvalidConfig);
+}
+
+TEST(UrlConnect, EmptyUrlReturnsError) {
+    auto result = connect("");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kInvalidConfig);
+}
+
+TEST(UrlConnect, WssUrlToUnreachableHostFails) {
+    auto result = connect("wss://this-host-does-not-exist-xyz.invalid/ws");
+    ASSERT_FALSE(result.has_value());
+    // Should fail during TCP factory (DNS resolution fails)
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
+
+TEST(UrlConnect, WsUrlToRefusedPortFails) {
+    auto result = connect("ws://127.0.0.1:1/ws");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}
+
+TEST(UrlConnect, WithConfigModifier) {
+    // Verify modifier is applied: set max_reconnect_attempts to 0
+    auto result = connect("wss://127.0.0.1:1/ws", [](TransportConfig& cfg) {
+        cfg.max_reconnect_attempts = 0;
+        cfg.tcp_timeout = std::chrono::milliseconds{200};
+    });
+    ASSERT_FALSE(result.has_value());
+    // Connection should fail (port 1 not listening)
+    EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
+}

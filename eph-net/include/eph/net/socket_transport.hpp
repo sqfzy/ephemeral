@@ -937,6 +937,55 @@ socket_ws_connect(
         std::move(tcp_factory), config);
 }
 
+/// Create a socket-based WebSocket transport from a URL string.
+///
+/// Combines TransportConfig::from_url() with the appropriate connect
+/// function (wss or ws based on scheme), eliminating boilerplate.
+///
+/// Usage:
+///   // Minimal:
+///   auto t = eph::net::connect("wss://example.com/ws");
+///
+///   // With config customization:
+///   auto t = eph::net::connect("wss://example.com/ws", [](auto& cfg) {
+///       cfg.max_reconnect_attempts = 5;
+///       cfg.on_message = [](auto* data, uint16_t len, uint8_t) { ... };
+///   });
+///
+/// @param url       WebSocket URL (ws:// or wss://)
+/// @param modifier  Optional callback to customize TransportConfig before connecting
+/// @param sock_cfg  Optional socket-level config (TCP_NODELAY, keepalive, etc.)
+/// @return Connected transport, or ConnectionErrorInfo on failure
+template <size_t MaxPayload = 512, size_t QueueDepth = 1024,
+          typename ConfigModifier = std::nullptr_t>
+[[nodiscard]] inline auto
+connect(std::string_view url,
+        ConfigModifier modifier = nullptr,
+        std::optional<SocketConfig> sock_cfg = std::nullopt)
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
+                     ConnectionErrorInfo>
+{
+    auto cfg_result = TransportConfig::from_url(url);
+    if (!cfg_result) {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kInvalidConfig,
+            std::format("Invalid URL: {}", cfg_result.error())});
+    }
+
+    auto cfg = std::move(*cfg_result);
+
+    // Apply user customizations if provided
+    if constexpr (!std::is_null_pointer_v<ConfigModifier>) {
+        modifier(cfg);
+    }
+
+    if (cfg.use_tls) {
+        return socket_wss_connect<MaxPayload, QueueDepth>(cfg, sock_cfg);
+    } else {
+        return socket_ws_connect<MaxPayload, QueueDepth>(cfg, sock_cfg);
+    }
+}
+
 } // namespace eph::net
 
 // ─────────────────────────────────────────────────────────────────────────────
