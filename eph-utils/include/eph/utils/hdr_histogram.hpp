@@ -326,7 +326,7 @@ class HdrHistogram {
      * @brief 合并另一个直方图
      * @return true 合并成功，false 配置不兼容
      */
-    bool merge(const HdrHistogram& other) noexcept {
+    [[nodiscard]] bool merge(const HdrHistogram& other) noexcept {
         if (lowest_trackable_value_ != other.lowest_trackable_value_ ||
             highest_trackable_value_ != other.highest_trackable_value_ ||
             unit_magnitude_ != other.unit_magnitude_ ||
@@ -355,23 +355,21 @@ class HdrHistogram {
     /// @note min/max are recomputed by scanning the resulting counts, since
     ///       subtraction may invalidate the previous min/max values.
     /// @return true on success, false if histograms are incompatible
-    bool subtract(const HdrHistogram& other) noexcept {
+    [[nodiscard]] bool subtract(const HdrHistogram& other) noexcept {
         if (!is_compatible(other)) return false;
         if (other.total_count_ > total_count_) return false;
 
+        // Validate no bucket underflows before mutating
         for (int32_t i = 0; i < counts_len_; ++i) {
             if (counts_[i] < other.counts_[i]) return false;
         }
 
-        for (int32_t i = 0; i < counts_len_; ++i) {
-            counts_[i] -= other.counts_[i];
-        }
+        // Subtract + recompute min/max in a single pass
         total_count_ -= other.total_count_;
-
-        // Recompute min/max from remaining counts
         min_value_ = std::numeric_limits<uint64_t>::max();
         max_value_ = 0;
         for (int32_t i = 0; i < counts_len_; ++i) {
+            counts_[i] -= other.counts_[i];
             if (counts_[i] > 0) {
                 uint64_t v = value_from_index(i);
                 min_value_ = std::min(min_value_, v);

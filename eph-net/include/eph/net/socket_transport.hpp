@@ -150,9 +150,11 @@ struct SocketConfig {
             url.remove_prefix(colon + 1);
         }
 
-        // Reject control characters in hostname
+        // Reject control characters in hostname (cast to unsigned to avoid
+        // signed-char treating bytes >= 0x80 as negative)
         for (char c : cfg.host) {
-            if (c < 0x20 || c == 0x7f) {
+            auto uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc == 0x7f) {
                 return std::unexpected(std::string("hostname contains control characters"));
             }
         }
@@ -758,9 +760,10 @@ private:
         if (fd_ >= 0) {
             int ret = ::close(fd_);
             if (ret != 0) [[unlikely]] {
+                int saved_errno = errno;
                 SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
                     "close(fd={}) failed: {} (errno={})",
-                    fd_, strerror(errno), errno);
+                    fd_, strerror(saved_errno), saved_errno);
             }
             fd_ = -1;
         }

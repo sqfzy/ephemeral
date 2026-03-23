@@ -395,7 +395,7 @@ TEST(HdrHistogramTest, MergePreservesPercentileAccuracy) {
     for (uint64_t i = 1; i <= 5000; ++i) h1.record(i);
     for (uint64_t i = 5001; i <= 10'000; ++i) h2.record(i);
 
-    h1.merge(h2);
+    EXPECT_TRUE(h1.merge(h2));
 
     auto p50 = h1.get_value_at_percentile(50.0);
     EXPECT_NEAR(p50, 5000, 50);

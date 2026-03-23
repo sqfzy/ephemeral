@@ -622,8 +622,8 @@ class ConcurrentRecorder {
                 auto it = std::find(
                     active_locals.begin(), active_locals.end(), local);
                 if (it != active_locals.end()) {
-                    // 将数据 merge 到退役缓冲区
-                    retired_histogram.merge(local->histogram);
+                    // 将数据 merge 到退役缓冲区 (always compatible — same ctor params)
+                    (void)retired_histogram.merge(local->histogram);
                     retired_count += local->count;
                     retired_total_cycles += local->total_cycles;
                     retired_min_cycles =
@@ -656,16 +656,16 @@ class ConcurrentRecorder {
             merged.histogram =
                 HdrHistogram(lowest_cycles, highest_cycles, precision);
 
-            // 先 merge 退役数据
-            merged.histogram.merge(retired_histogram);
+            // 先 merge 退役数据 (always compatible — same ctor params)
+            (void)merged.histogram.merge(retired_histogram);
             merged.count = retired_count;
             merged.total_cycles = retired_total_cycles;
             merged.min_cycles = retired_min_cycles;
             merged.max_cycles = retired_max_cycles;
 
-            // 再 merge 活跃线程数据
+            // 再 merge 活跃线程数据 (always compatible — same ctor params)
             for (const auto* local : active_locals) {
-                merged.histogram.merge(local->histogram);
+                (void)merged.histogram.merge(local->histogram);
                 merged.count += local->count;
                 merged.total_cycles += local->total_cycles;
                 merged.min_cycles =
