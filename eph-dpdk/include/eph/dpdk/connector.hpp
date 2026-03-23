@@ -353,14 +353,14 @@ connect(const DpdkEndpoint& ep,
     // Need Platform + ARP before we can send UDP DNS queries.
     auto platform = Platform::create(opts.platform);
     if (!platform) {
-        return std::unexpected(
-            std::format("Platform creation failed: {}", platform.error()));
+        return std::unexpected(std::format(
+            "DNS fallback: Platform creation failed: {}", platform.error()));
     }
 
     rte_ether_addr src_mac{};
     if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
-        return std::unexpected(
-            std::format("Failed to get MAC for port {}", opts.platform.port_id));
+        return std::unexpected(std::format(
+            "DNS fallback: failed to get MAC for port {}", opts.platform.port_id));
     }
 
     // ARP for gateway MAC (needed to route DNS UDP packets)

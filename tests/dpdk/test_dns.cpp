@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "dpdk_test_env.hpp" // IWYU pragma: keep
+// Note: deliberately NOT including dpdk_test_env.hpp — all tests here are
+// pure codec / validation tests that don't need EAL initialization.
+// This allows them to actually RUN (not just SKIP) on machines without DPDK hardware.
 #include "eph/dpdk/dns.hpp"
 
 using namespace eph::dpdk;
@@ -284,7 +286,9 @@ TEST(DnsResolve, NullMempoolReturnsError) {
 TEST(DnsResolve, ZeroNameserverReturnsError) {
     rte_ether_addr dummy_mac{};
     DnsConfig cfg{.nameserver_ip = 0};
-    auto result = dns::resolve(0, 0, nullptr, dummy_mac, dummy_mac, 0,
+    // Use a non-null pool so we reach the nameserver check (pool check comes first)
+    auto* fake_pool = reinterpret_cast<rte_mempool*>(0x1);
+    auto result = dns::resolve(0, 0, fake_pool, dummy_mac, dummy_mac, 0,
                                "example.com", cfg);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("nameserver_ip"), std::string::npos);
