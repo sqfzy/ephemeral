@@ -1905,3 +1905,64 @@ TEST(ItchDispatchAll, stops_on_unknown_message_type) {
     EXPECT_EQ(consumed, kSystemEventSize);
     EXPECT_EQ(count, 1);
 }
+
+TEST(ItchDispatchAll, truncated_last_message_partial_consume) {
+    // Complete SystemEvent + truncated AddOrder (only 10 of 35 bytes)
+    std::vector<uint8_t> buf(kSystemEventSize + 10, 0);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = kAddOrder;  // Starts the truncated message
+
+    int count = 0;
+    size_t consumed = dispatch_all(buf.data(), buf.size(),
+        [&](auto, const uint8_t*) { ++count; });
+
+    // Should dispatch SystemEvent, stop at truncated AddOrder
+    EXPECT_EQ(consumed, kSystemEventSize);
+    EXPECT_EQ(count, 1);
+}
+
+TEST(ItchDispatchAll, mixed_message_types_dispatched) {
+    // SystemEvent + OrderDelete
+    std::vector<uint8_t> buf(kSystemEventSize + kOrderDeleteSize, 0);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = kOrderDelete;
+
+    bool saw_system = false, saw_delete = false;
+    size_t consumed = dispatch_all(buf.data(), buf.size(),
+        [&](auto tag, const uint8_t*) {
+            if constexpr (std::is_same_v<decltype(tag), msg::SystemEvent>)
+                saw_system = true;
+            if constexpr (std::is_same_v<decltype(tag), msg::OrderDelete>)
+                saw_delete = true;
+        });
+
+    EXPECT_EQ(consumed, kSystemEventSize + kOrderDeleteSize);
+    EXPECT_TRUE(saw_system);
+    EXPECT_TRUE(saw_delete);
+}
+
+TEST(ItchDispatchAll, stats_records_error_on_unknown_type) {
+    // Unknown type byte at start
+    std::vector<uint8_t> buf = {0xFF, 0, 0, 0, 0};
+
+    ParserStats stats;
+    int count = 0;
+    dispatch_all(buf.data(), buf.size(),
+        [&](auto, const uint8_t*) { ++count; }, stats);
+
+    EXPECT_EQ(count, 0);
+    EXPECT_EQ(stats.parse_errors, 1u);
+    EXPECT_EQ(stats.first_error_msg_byte, 0xFF);
+}
+
+TEST(ItchDispatchAll, stats_incomplete_not_counted_as_error) {
+    // A buffer that's too short even for a type lookup
+    std::vector<uint8_t> buf;  // empty
+
+    ParserStats stats;
+    dispatch_all(buf.data(), buf.size(),
+        [](auto, const uint8_t*) {}, stats);
+
+    EXPECT_EQ(stats.messages_parsed, 0u);
+    EXPECT_EQ(stats.parse_errors, 0u);  // kIncomplete is not an error
+}

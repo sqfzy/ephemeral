@@ -1175,3 +1175,21 @@ TEST(BoundedQueueStats, to_json_is_valid_format) {
     EXPECT_NE(json.find("\"total_pushed\":1"), std::string::npos);
     EXPECT_NE(json.find("\"total_popped\":0"), std::string::npos);
 }
+
+TEST(BoundedQueueStats, dump_empty_queue_shows_zero_utilization) {
+    BoundedQueue<BoundedTestData, 4> q;
+    auto s = q.stats();
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("current_size: 0"), std::string::npos);
+    EXPECT_NE(dump.find("0.0% full"), std::string::npos);
+}
+
+TEST(BoundedQueueStats, dump_full_queue_shows_100_percent) {
+    BoundedQueue<BoundedTestData, 2> q;
+    q.try_push(BoundedTestData{.seq = 1});
+    q.try_push(BoundedTestData{.seq = 2});
+    auto s = q.stats();
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("current_size: 2"), std::string::npos);
+    EXPECT_NE(dump.find("100.0% full"), std::string::npos);
+}

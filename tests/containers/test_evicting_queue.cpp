@@ -1074,3 +1074,24 @@ TEST(EvictingQueueStats, single_slot_dump_works) {
     EXPECT_NE(dump.find("capacity: 1"), std::string::npos);
     EXPECT_NE(dump.find("total_pushed: 2"), std::string::npos);
 }
+
+TEST(EvictingQueueStats, dump_zero_pushes_shows_zero_loss) {
+    EvictingQueue<TestData, 4> queue;
+    auto s = queue.stats();
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("total_pushed: 0"), std::string::npos);
+    EXPECT_NE(dump.find("0.0% loss"), std::string::npos);
+}
+
+TEST(EvictingQueueStats, to_json_single_slot_has_all_fields) {
+    EvictingQueue<TestData, 1> queue;
+    queue.push(TestData{.seq = 1});
+    auto s = queue.stats();
+    auto json = s.to_json();
+
+    EXPECT_NE(json.find("\"capacity\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"total_pushed\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"total_popped\":"), std::string::npos);
+    EXPECT_NE(json.find("\"overwritten\":"), std::string::npos);
+    EXPECT_NE(json.find("\"current_size\":"), std::string::npos);
+}

@@ -3433,3 +3433,172 @@ TEST(FixBuilder, set_unique_and_set_can_coexist) {
     size_t len = b.finish();
     EXPECT_GT(len, 0u);
 }
+
+// ===========================================================================
+// Edge case tests for get_group()
+// ===========================================================================
+
+TEST(FixRepeatingGroup, max_entries_limits_output) {
+    // 3 entries in message, but max_entries=2
+    std::string body =
+        "35=W\x01"
+        "268=3\x01"
+        "269=0\x01" "270=10.0\x01"
+        "269=1\x01" "270=20.0\x01"
+        "269=2\x01" "270=30.0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[2];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 2);
+    // Should return only 2 entries despite count=3
+    EXPECT_EQ(group.size(), 2u);
+    EXPECT_EQ(group[0].get(tag::MDEntryPx), "10.0");
+    EXPECT_EQ(group[1].get(tag::MDEntryPx), "20.0");
+}
+
+TEST(FixRepeatingGroup, negative_count_returns_empty) {
+    // Negative count should be treated as absent
+    std::string body = "35=W\x01" "268=-1\x01" "269=0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    EXPECT_EQ(group.size(), 0u);
+}
+
+TEST(FixRepeatingGroup, missing_delimiter_tag_returns_empty) {
+    // count=2 but no delimiter tags present
+    std::string body = "35=W\x01" "268=2\x01" "270=100.0\x01" "271=500\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    EXPECT_EQ(group.size(), 0u);
+}
+
+TEST(FixRepeatingGroup, entry_get_missing_field_returns_nullopt) {
+    std::string body =
+        "35=W\x01" "268=1\x01" "269=0\x01" "270=50.0\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[8];
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 8);
+    ASSERT_EQ(group.size(), 1u);
+
+    // MDEntrySize (271) not present in this entry
+    EXPECT_FALSE(group[0].get(tag::MDEntrySize).has_value());
+    EXPECT_FALSE(group[0].has(tag::MDEntrySize));
+}
+
+TEST(FixRepeatingGroup, max_entries_zero_returns_empty) {
+    std::string body =
+        "35=W\x01" "268=2\x01" "269=0\x01" "269=1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    BasicMessageView<>::GroupEntry entries[1];  // buffer exists but max=0
+    auto group = result->get_group(tag::NoMDEntries, tag::MDEntryType, entries, 0);
+    EXPECT_EQ(group.size(), 0u);
+}
+
+// ===========================================================================
+// Edge case tests for set_unique()
+// ===========================================================================
+
+TEST(FixBuilder, set_unique_with_soh_in_value_causes_overflow) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_unique(tag::Text, "hello\x01world");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_then_set_unique_same_tag_rejects) {
+    // set() first, then set_unique() on same tag should detect duplicate
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_unique(tag::MsgType, "8");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_unique_after_overflow_is_noop) {
+    uint8_t buf[64];
+    MessageBuilder b(buf, sizeof(buf));
+    // Fill buffer to trigger overflow
+    for (int i = 0; i < 10; ++i) {
+        b.set_int(tag::MsgSeqNum, 12345678901234LL);
+    }
+    EXPECT_TRUE(b.has_overflow());
+
+    // set_unique after overflow should not crash
+    b.set_unique(tag::Symbol, "AAPL");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_int_unique_with_negative_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_int_unique(tag::MsgSeqNum, -42);
+    EXPECT_FALSE(b.has_overflow());
+
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_int(tag::MsgSeqNum), -42);
+}
+
+TEST(FixBuilder, set_unique_empty_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set_unique(tag::Text, "");
+    EXPECT_FALSE(b.has_overflow());
+
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    auto text = result->get(tag::Text);
+    ASSERT_TRUE(text.has_value());
+    EXPECT_TRUE(text->empty());
+}
+
+// ===========================================================================
+// as_span / as_string_view edge cases
+// ===========================================================================
+
+TEST(FixBuilder, as_string_view_empty_before_finish) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    auto sv = b.as_string_view();
+    EXPECT_EQ(sv.size(), 0u);
+}
+
+TEST(FixBuilder, as_span_roundtrip_parse) {
+    // Build a message, get as_span, parse it back
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set(tag::SenderCompID, "SENDER");
+    b.set(tag::Symbol, "AAPL");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto sp = b.as_span();
+    auto result = parse(sp.data(), sp.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->msg_type(), "D");
+    EXPECT_EQ(result->get(tag::Symbol), "AAPL");
+}
