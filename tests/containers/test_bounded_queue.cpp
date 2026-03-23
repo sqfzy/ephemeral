@@ -1193,3 +1193,32 @@ TEST(BoundedQueueStats, dump_full_queue_shows_100_percent) {
     EXPECT_NE(dump.find("current_size: 2"), std::string::npos);
     EXPECT_NE(dump.find("100.0% full"), std::string::npos);
 }
+
+TEST(BoundedQueueStats, operator_minus_computes_interval_delta) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 1});
+    q.try_push(BoundedTestData{.seq = 2});
+    auto s1 = q.stats();
+
+    q.try_push(BoundedTestData{.seq = 3});
+    BoundedTestData tmp;
+    q.pop(tmp);
+    auto s2 = q.stats();
+
+    auto delta = s2 - s1;
+    EXPECT_EQ(delta.total_pushed, 1u);  // 1 new push
+    EXPECT_EQ(delta.total_popped, 1u);  // 1 new pop
+    EXPECT_EQ(delta.current_size, s2.current_size);  // point-in-time
+    EXPECT_EQ(delta.capacity, 4u);
+}
+
+TEST(BoundedQueueStats, operator_eq_compares_all_fields) {
+    BoundedQueue<BoundedTestData, 4> q;
+    auto s1 = q.stats();
+    auto s2 = q.stats();
+    EXPECT_EQ(s1, s2);
+
+    q.try_push(BoundedTestData{.seq = 1});
+    auto s3 = q.stats();
+    EXPECT_NE(s1, s3);
+}

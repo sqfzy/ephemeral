@@ -1096,6 +1096,50 @@ TEST(EvictingQueueStats, to_json_single_slot_has_all_fields) {
     EXPECT_NE(json.find("\"current_size\":"), std::string::npos);
 }
 
+TEST(EvictingQueueStats, operator_minus_computes_interval_delta) {
+    EvictingQueue<TestData, 4> queue;
+    queue.push(TestData{.seq = 1});
+    queue.push(TestData{.seq = 2});
+    TestData out{};
+    queue.try_pop_latest(out);  // read up to global_index=2
+    auto s1 = queue.stats();
+
+    queue.push(TestData{.seq = 3});
+    queue.try_pop_latest(out);  // read up to global_index=3
+    auto s2 = queue.stats();
+
+    auto delta = s2 - s1;
+    EXPECT_EQ(delta.total_pushed, 1u);  // 1 new push
+    EXPECT_EQ(delta.total_popped, 1u);  // reader advanced by 1
+    EXPECT_EQ(delta.current_size, s2.current_size);
+    EXPECT_EQ(delta.capacity, 4u);
+}
+
+TEST(EvictingQueueStats, operator_eq_compares_all_fields) {
+    EvictingQueue<TestData, 4> queue;
+    auto s1 = queue.stats();
+    auto s2 = queue.stats();
+    EXPECT_EQ(s1, s2);
+
+    queue.push(TestData{.seq = 1});
+    auto s3 = queue.stats();
+    EXPECT_NE(s1, s3);
+}
+
+TEST(EvictingQueueStats, single_slot_operator_minus_works) {
+    EvictingQueue<TestData, 1> queue;
+    queue.push(TestData{.seq = 1});
+    auto s1 = queue.stats();
+
+    queue.push(TestData{.seq = 2});  // overwrites
+    queue.push(TestData{.seq = 3});  // overwrites again
+    auto s2 = queue.stats();
+
+    auto delta = s2 - s1;
+    EXPECT_EQ(delta.total_pushed, 2u);
+    EXPECT_GE(delta.overwritten, 1u);
+}
+
 // ===========================================================================
 // Timeout variants: try_peek_latest_for / try_consume_latest_for / try_pop_latest_for
 // ===========================================================================

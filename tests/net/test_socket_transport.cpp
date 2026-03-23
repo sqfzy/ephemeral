@@ -266,6 +266,24 @@ TEST(SocketConfigValidate, KeepaliveDisabledIgnoresInvalidValues) {
     EXPECT_TRUE(cfg.validate().empty());
 }
 
+TEST(SocketConfigValidate, NegativeRecvBufSizeFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443, .recv_buf_size = -1};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("recv_buf_size"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, NegativeSendBufSizeFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443, .send_buf_size = -1};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("send_buf_size"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, ZeroBufSizeIsValid) {
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .recv_buf_size = 0, .send_buf_size = 0};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SocketConfig::dump() and to_json()
 // ─────────────────────────────────────────────────────────────────────────────

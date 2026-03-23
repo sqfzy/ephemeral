@@ -756,3 +756,66 @@ TEST(StatsTest, AllThreeSerializationsConsistent) {
     EXPECT_NE(d.find("200.0"), std::string::npos);   // p99 in dump
     EXPECT_NE(j.find("200.00"), std::string::npos);   // p99 in json
 }
+
+// ===========================================================================
+// HdrHistogram dropped sample tracking
+// ===========================================================================
+
+TEST(HdrHistogramDropped, initially_zero) {
+    eph::utils::HdrHistogram h(1, 10000, 3);
+    EXPECT_EQ(h.get_dropped_count(), 0u);
+}
+
+TEST(HdrHistogramDropped, counts_out_of_range_samples) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    EXPECT_TRUE(h.record(500));
+    EXPECT_FALSE(h.record(2000));   // above max
+    EXPECT_FALSE(h.record(0));      // below min
+    EXPECT_EQ(h.get_dropped_count(), 2u);
+    EXPECT_EQ(h.get_total_count(), 1u);
+}
+
+TEST(HdrHistogramDropped, record_values_counts_batch_drops) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    EXPECT_FALSE(h.record_values(5000, 10));
+    EXPECT_EQ(h.get_dropped_count(), 10u);
+}
+
+TEST(HdrHistogramDropped, reset_clears_dropped_count) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    h.record(5000);  // dropped
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+    h.reset();
+    EXPECT_EQ(h.get_dropped_count(), 0u);
+}
+
+TEST(HdrHistogramDropped, report_includes_dropped_when_nonzero) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    h.record(500);
+    h.record(5000);  // dropped
+    auto report = h.report("Test");
+    EXPECT_NE(report.find("dropped"), std::string::npos);
+    EXPECT_NE(report.find("1"), std::string::npos);
+}
+
+TEST(HdrHistogramDropped, report_excludes_dropped_when_zero) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    h.record(500);
+    auto report = h.report("Test");
+    EXPECT_EQ(report.find("dropped"), std::string::npos);
+}
+
+TEST(HdrHistogramDropped, to_json_includes_dropped_when_nonzero) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    h.record(500);
+    h.record(5000);  // dropped
+    auto json = h.to_json();
+    EXPECT_NE(json.find("\"dropped\":1"), std::string::npos);
+}
+
+TEST(HdrHistogramDropped, to_json_excludes_dropped_when_zero) {
+    eph::utils::HdrHistogram h(1, 1000, 3);
+    h.record(500);
+    auto json = h.to_json();
+    EXPECT_EQ(json.find("dropped"), std::string::npos);
+}
