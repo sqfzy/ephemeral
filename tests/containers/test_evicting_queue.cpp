@@ -637,6 +637,24 @@ TYPED_TEST(EvictingQueueTest, TryPeekLatestRepeatedReturnsStaleAfterConsume) {
     EXPECT_FALSE(queue.try_peek_latest().has_value());
 }
 
+TYPED_TEST(EvictingQueueTest, TryPeekLatestVisitorPatternZeroCopy) {
+    TypeParam queue;
+    TestData d{.seq = 77};
+    queue.push(d);
+
+    uint32_t captured_seq = 0;
+    bool ok = queue.try_peek_latest([&](const TestData& data) {
+        captured_seq = data.seq;
+    });
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(captured_seq, 77u);
+
+    // Element should still be consumable after visitor peek
+    TestData consumed{};
+    EXPECT_TRUE(queue.try_pop_latest(consumed));
+    EXPECT_EQ(consumed.seq, 77u);
+}
+
 TYPED_TEST(EvictingQueueTest, TryPeekLatestSeesNewDataAfterPush) {
     TypeParam queue;
     TestData d1{.seq = 10};

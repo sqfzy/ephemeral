@@ -286,19 +286,23 @@ class alignas(Align<T>) EvictingQueue {
     }
 
     /**
-     * @brief 查看最新数据但不标记为已消费 (Reader 线程专用)
+     * @brief 零拷贝查看最新数据但不标记为已消费 (Visitor 模式, Reader 线程专用)
      *
      * 与 try_consume_latest 相同的乐观读取逻辑，但不推进
      * reader_.last_global_index_，因此后续 try_consume_latest
      * 仍会返回同一条数据。适用于需要预检查消息类型或决定
      * 路由逻辑后再决定是否消费的场景。
      *
-     * @param out [out] 目标对象（成功时写入）
+     * @tparam F 回调类型，签名应为 void(const T&)
+     * @param visitor 访问数据的回调（零拷贝）
      * @return true 成功读取; false 无新数据或读取被并发写入打断
      *
-     * @note 仅 Reader 线程可调用。
+     * @note 仅 Reader 线程可调用。visitor 在 seqlock 保护区内执行，
+     *       应尽量短小以减少被并发写入打断的概率。
      */
-    [[nodiscard]] bool try_peek_latest(T& out) noexcept {
+    template <typename F>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_peek_latest(F&& visitor) noexcept {
         uint64_t idx = global_index_.load(std::memory_order_acquire);
         if (idx <= reader_.last_global_index_) return false;
 
@@ -309,7 +313,7 @@ class alignas(Align<T>) EvictingQueue {
         uint64_t actual_idx = decode_idx(seq1);
         if (actual_idx <= reader_.last_global_index_) return false;
 
-        out = s.data_;
+        std::invoke(std::forward<F>(visitor), s.data_);
 
         std::atomic_thread_fence(std::memory_order_acquire);
         uint64_t seq2 = s.seq_.load(std::memory_order_relaxed);
@@ -318,10 +322,17 @@ class alignas(Align<T>) EvictingQueue {
         // Note: last_global_index_ is NOT advanced — element stays "unread"
     }
 
+    /// @brief 查看最新数据但不消费 (值拷贝, Reader 线程专用)
+    [[nodiscard]] bool try_peek_latest(T& out) noexcept {
+        return try_peek_latest([&out](const T& data) { out = data; });
+    }
+
     /// @brief 查看最新数据并返回可选值 (Reader 线程专用)
     [[nodiscard]] std::optional<T> try_peek_latest() noexcept {
-        T val;
-        if (try_peek_latest(val)) return val;
+        std::optional<T> res;
+        if (try_peek_latest([&res](const T& data) { res.emplace(data); })) {
+            return res;
+        }
         return std::nullopt;
     }
 
@@ -620,14 +631,16 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return std::nullopt;
     }
 
-    /// Non-consuming peek for Capacity=1 specialization.
+    /// Zero-copy non-consuming peek for Capacity=1 specialization (Visitor pattern).
     /// Reads the latest data without advancing last_seq_, so subsequent
     /// try_consume_latest will still return the same value.
-    [[nodiscard]] bool try_peek_latest(T& out) noexcept {
+    template <typename F>
+        requires std::invocable<F, const T&>
+    [[nodiscard]] bool try_peek_latest(F&& visitor) noexcept {
         uint64_t seq0 = seq_.load(std::memory_order_acquire);
         if (seq0 <= last_seq_ || (seq0 & 1)) return false;
 
-        out = data_;
+        std::invoke(std::forward<F>(visitor), data_);
 
         std::atomic_thread_fence(std::memory_order_acquire);
         uint64_t seq1 = seq_.load(std::memory_order_relaxed);
@@ -636,9 +649,15 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         // Note: last_seq_ is NOT advanced
     }
 
+    [[nodiscard]] bool try_peek_latest(T& out) noexcept {
+        return try_peek_latest([&out](const T& data) { out = data; });
+    }
+
     [[nodiscard]] std::optional<T> try_peek_latest() noexcept {
-        T val;
-        if (try_peek_latest(val)) return val;
+        std::optional<T> res;
+        if (try_peek_latest([&res](const T& data) { res.emplace(data); })) {
+            return res;
+        }
         return std::nullopt;
     }
 

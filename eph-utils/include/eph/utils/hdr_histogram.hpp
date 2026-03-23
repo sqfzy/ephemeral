@@ -553,6 +553,8 @@ struct Stats {
 
     /// JSON-formatted summary for monitoring system integration.
     /// Consistent with to_json() patterns in TransportStats, RttStats, etc.
+    /// @note `name` is not JSON-escaped; callers must ensure it contains no
+    ///       quotes or control characters (true for all Recorder-generated names).
     [[nodiscard]] std::string to_json() const {
         if (count == 0) {
             return std::format("{{\"name\":\"{}\",\"count\":0}}", name);
