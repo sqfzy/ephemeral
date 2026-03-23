@@ -3863,3 +3863,205 @@ TEST(FixBuilderUniqueSetters, set_char_unique_allows_different_tags) {
     size_t len = b.finish();
     EXPECT_GT(len, 0u);
 }
+
+// ---------------------------------------------------------------------------
+// detail:: value-parsing helpers — edge case coverage
+// ---------------------------------------------------------------------------
+
+// Tests exercise the helpers indirectly through MessageView accessors
+// on messages built with known values.
+
+TEST(FixValueParsers, get_int_empty_value_returns_nullopt) {
+    // Build message with empty value for a numeric tag
+    std::string body = "35=D\x01" "38=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::OrderQty).has_value());
+}
+
+TEST(FixValueParsers, get_int_negative_value) {
+    std::string body = "35=D\x01" "38=-42\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get_int(tag::OrderQty);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(*val, -42);
+}
+
+TEST(FixValueParsers, get_int_int64_max) {
+    std::string body = "35=D\x01" "38=9223372036854775807\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get_int(tag::OrderQty);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(*val, INT64_MAX);
+}
+
+TEST(FixValueParsers, get_int_int64_min) {
+    std::string body = "35=D\x01" "38=-9223372036854775808\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get_int(tag::OrderQty);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(*val, INT64_MIN);
+}
+
+TEST(FixValueParsers, get_int_overflow_returns_nullopt) {
+    // INT64_MAX + 1 = 9223372036854775808 (positive overflow)
+    std::string body = "35=D\x01" "38=9223372036854775808\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::OrderQty).has_value());
+}
+
+TEST(FixValueParsers, get_int_non_numeric_returns_nullopt) {
+    std::string body = "35=D\x01" "38=12abc\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::OrderQty).has_value());
+}
+
+TEST(FixValueParsers, get_int_minus_only_returns_nullopt) {
+    std::string body = "35=D\x01" "38=-\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int(tag::OrderQty).has_value());
+}
+
+TEST(FixValueParsers, get_double_negative) {
+    std::string body = "35=D\x01" "44=-99.5\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get_double(tag::Price);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_DOUBLE_EQ(*val, -99.5);
+}
+
+TEST(FixValueParsers, get_double_integer_only) {
+    std::string body = "35=D\x01" "44=100\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get_double(tag::Price);
+    ASSERT_TRUE(val.has_value());
+    EXPECT_DOUBLE_EQ(*val, 100.0);
+}
+
+TEST(FixValueParsers, get_double_empty_returns_nullopt) {
+    std::string body = "35=D\x01" "44=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double(tag::Price).has_value());
+}
+
+TEST(FixValueParsers, get_bool_lowercase_returns_nullopt) {
+    // FIX booleans are strictly Y/N, not y/n
+    std::string body = "35=D\x01" "43=y\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_bool(tag::PossDupFlag).has_value());
+}
+
+TEST(FixValueParsers, get_bool_empty_returns_nullopt) {
+    std::string body = "35=D\x01" "43=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_bool(tag::PossDupFlag).has_value());
+}
+
+TEST(FixValueParsers, get_char_empty_returns_nullopt) {
+    std::string body = "35=D\x01" "54=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_char(tag::Side).has_value());
+}
+
+TEST(FixValueParsers, get_char_multi_char_returns_nullopt) {
+    std::string body = "35=D\x01" "54=AB\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_char(tag::Side).has_value());
+}
+
+TEST(FixValueParsers, get_timestamp_invalid_month_returns_nullopt) {
+    std::string body = "35=D\x01" "52=20250013-12:00:00\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixValueParsers, get_timestamp_feb29_leap_year) {
+    // 2024 is a leap year
+    std::string body = "35=D\x01" "52=20240229-00:00:00\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixValueParsers, get_timestamp_feb29_non_leap_year_returns_nullopt) {
+    // 2023 is not a leap year
+    std::string body = "35=D\x01" "52=20230229-00:00:00\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixValueParsers, get_timestamp_wrong_length_returns_nullopt) {
+    // 20 chars: not a valid timestamp length (17, 21, 24, 27)
+    std::string body = "35=D\x01" "52=20250315-14:30:00.1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_timestamp(tag::SendingTime).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// JSON escaping edge cases
+// ---------------------------------------------------------------------------
+
+TEST(FixMessageViewDiag, to_json_escapes_control_characters) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // Build a Text field with a tab character
+    b.set(tag::Text, "line1\tline2");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+
+    auto j = result->to_json();
+    // Tab should be escaped as \u0009, not literal tab
+    EXPECT_NE(j.find("\\u0009"), std::string::npos)
+        << "Tab should be \\u0009 in JSON, got: " << j;
+    EXPECT_EQ(j.find('\t'), std::string::npos)
+        << "Literal tab should not appear in JSON";
+}
+
+TEST(FixMessageViewDiag, to_json_handles_empty_fields) {
+    std::string body = "35=D\x01" "58=\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    auto j = result->to_json();
+    EXPECT_NE(j.find("\"value\":\"\""), std::string::npos)
+        << "Empty field value should produce empty JSON string";
+}
