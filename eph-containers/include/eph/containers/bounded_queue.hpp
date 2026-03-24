@@ -771,6 +771,22 @@ class BoundedQueue {
         return 0;
     }
 
+    /**
+     * @brief 消费当前队列中所有可用元素
+     *
+     * 等效于 try_consume_n(Capacity, visitor)，但语义更清晰。
+     * 适用于关机清空、批量处理等场景。
+     *
+     * @tparam F 回调类型，签名应为 void(T& slot, size_t index)
+     * @param visitor 回调函数，index 为 0..consumed-1
+     * @return 实际消费的元素数量（0 表示队列为空）
+     */
+    template <typename F>
+        requires std::invocable<F, T&, size_t>
+    [[nodiscard]] size_t try_consume_all(F&& visitor) noexcept {
+        return try_consume_n(Capacity, std::forward<F>(visitor));
+    }
+
     // ===========================================================================
     // 状态查询
     // ===========================================================================

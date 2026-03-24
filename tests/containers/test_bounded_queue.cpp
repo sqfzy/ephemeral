@@ -1240,3 +1240,65 @@ TEST(BoundedQueueStats, std_formatter_empty_queue) {
     auto formatted = std::format("{}", s);
     EXPECT_NE(formatted.find("current_size: 0"), std::string::npos);
 }
+
+// ===========================================================================
+// try_consume_all — drain all available elements
+// ===========================================================================
+
+TYPED_TEST(BoundedQueueTest, try_consume_all_empty_queue_returns_zero) {
+    TypeParam queue;
+    size_t n = queue.try_consume_all([](BoundedTestData&, size_t) {
+        FAIL() << "Visitor should not be called on empty queue";
+    });
+    EXPECT_EQ(n, 0u);
+}
+
+TYPED_TEST(BoundedQueueTest, try_consume_all_drains_all_elements) {
+    TypeParam queue;
+    const size_t cap = TypeParam::capacity();
+
+    // Fill the queue
+    for (size_t i = 0; i < cap; ++i) {
+        BoundedTestData d;
+        d.seq = static_cast<uint32_t>(i);
+        ASSERT_TRUE(queue.try_push(d));
+    }
+    EXPECT_EQ(queue.size(), cap);
+
+    std::vector<uint32_t> consumed;
+    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t idx) {
+        consumed.push_back(slot.seq);
+        EXPECT_EQ(idx, consumed.size() - 1);
+    });
+
+    EXPECT_EQ(n, cap);
+    EXPECT_EQ(consumed.size(), cap);
+    EXPECT_TRUE(queue.empty());
+
+    // Verify order
+    for (size_t i = 0; i < consumed.size(); ++i) {
+        EXPECT_EQ(consumed[i], static_cast<uint32_t>(i));
+    }
+}
+
+TYPED_TEST(BoundedQueueTest, try_consume_all_partial_fill) {
+    TypeParam queue;
+    // Push 3 elements (less than capacity)
+    const size_t count = std::min<size_t>(3, TypeParam::capacity());
+    for (size_t i = 0; i < count; ++i) {
+        BoundedTestData d;
+        d.seq = static_cast<uint32_t>(i + 100);
+        ASSERT_TRUE(queue.try_push(d));
+    }
+
+    std::vector<uint32_t> consumed;
+    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t) {
+        consumed.push_back(slot.seq);
+    });
+
+    EXPECT_EQ(n, count);
+    EXPECT_TRUE(queue.empty());
+    for (size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(consumed[i], static_cast<uint32_t>(i + 100));
+    }
+}
