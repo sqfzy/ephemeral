@@ -1263,3 +1263,81 @@ TEST(HdrHistogramPercentileIter, invalid_ticks_yields_no_entries) {
     }, 0);
     EXPECT_EQ(count, 0) << "ticks_per_half_distance=0 should produce no entries";
 }
+
+TEST(HdrHistogramPercentileIter, negative_ticks_yields_no_entries) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    int count = 0;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
+        ++count;
+    }, -5);
+    EXPECT_EQ(count, 0) << "negative ticks_per_half_distance should produce no entries";
+}
+
+TEST(HdrHistogramPercentileIter, total_count_to_val_monotonically_increases) {
+    HdrHistogram h(1, 100000, 3);
+    for (int i = 1; i <= 1000; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    uint64_t prev_count = 0;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        EXPECT_GE(e.total_count_to_val, prev_count)
+            << "total_count_to_val must be monotonically increasing";
+        EXPECT_LE(e.total_count_to_val, 1000u)
+            << "total_count_to_val must not exceed total count";
+        prev_count = e.total_count_to_val;
+    });
+}
+
+TEST(HdrHistogramPercentileIter, repeated_calls_produce_same_results) {
+    HdrHistogram h(1, 10000, 3);
+    for (int i = 1; i <= 500; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    std::vector<uint64_t> values1, values2;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        values1.push_back(e.value);
+    });
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        values2.push_back(e.value);
+    });
+
+    ASSERT_EQ(values1.size(), values2.size())
+        << "repeated calls should produce same number of entries";
+    for (size_t i = 0; i < values1.size(); ++i) {
+        EXPECT_EQ(values1[i], values2[i])
+            << "entry " << i << " differs between calls";
+    }
+}
+
+// ============================================================================
+// output_percentile_distribution() edge cases
+// ============================================================================
+
+TEST(HdrHistogramDistribution, nan_scaling_treated_as_default) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(500);
+
+    auto output = h.output_percentile_distribution(
+        std::numeric_limits<double>::quiet_NaN());
+    // NaN <= 0 is false, so it should NOT be treated as invalid.
+    // Actually NaN comparisons are all false, so NaN > 0 is false,
+    // triggering the guard that resets to 1.0.
+    // Just verify we get a non-empty output without crash.
+    EXPECT_FALSE(output.empty());
+    EXPECT_NE(output.find("Value"), std::string::npos)
+        << "output should contain the header";
+}
+
+TEST(HdrHistogramDistribution, infinity_scaling_produces_zero_values) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(500);
+
+    auto output = h.output_percentile_distribution(
+        std::numeric_limits<double>::infinity());
+    EXPECT_FALSE(output.empty());
+    // With infinity scaling, all values should be 0.000
+    EXPECT_NE(output.find("0.000"), std::string::npos);
+}

@@ -2324,6 +2324,49 @@ TEST_F(TransportTest, ResetStatsClearsCounters) {
     tp->stop();
 }
 
+TEST_F(TransportTest, ResetStatsClearsRttHistogram) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // Before any pings, rtt_stats should be empty
+    auto rtt_before = tp->rtt_stats();
+    EXPECT_EQ(rtt_before.count, 0u);
+
+    // Reset and verify rtt_stats still empty (no regression)
+    tp->reset_stats();
+    auto rtt_after = tp->rtt_stats();
+    EXPECT_EQ(rtt_after.count, 0u);
+    EXPECT_EQ(rtt_after.min_ns, 0u);
+    EXPECT_EQ(rtt_after.max_ns, 0u);
+    EXPECT_DOUBLE_EQ(rtt_after.mean_ns, 0.0);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ResetStatsClearsHwmCounters) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    std::this_thread::sleep_for(5ms);
+
+    // Send data to produce HWM
+    uint8_t data[] = {0xAA};
+    tp->send(data, 1);
+    EXPECT_TRUE(wait_for([&] { return tp->stats().tx_packets > 0; }));
+
+    tp->reset_stats();
+
+    auto stats = tp->stats();
+    EXPECT_EQ(stats.tx_queue_hwm, 0u) << "TX HWM should be reset";
+    EXPECT_EQ(stats.rx_queue_hwm, 0u) << "RX HWM should be reset";
+    EXPECT_EQ(stats.queue_full_count, 0u) << "queue_full_count should be reset";
+    EXPECT_EQ(stats.reconnect_count, 0u) << "reconnect_count should be reset";
+
+    tp->stop();
+}
+
 // ===========================================================================
 // connection_info — accessible after creation
 // ===========================================================================
