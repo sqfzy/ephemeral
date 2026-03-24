@@ -250,6 +250,28 @@ TEST(TlsRecord, DecryptTruncatedRecordFails) {
     EXPECT_FALSE(ok);
 }
 
+TEST(TlsRecord, DecryptPayloadSmallerThanAuthTagFails) {
+    // Craft a record header that claims a payload_len smaller than the
+    // auth tag (16 bytes). Without the bounds check, this would underflow
+    // the max_out_len computation in EVP_AEAD_CTX_open.
+    auto state = make_test_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    // Build a fake record: valid header but payload_len = 5 (< 17 = tag + content type)
+    uint8_t record[64] = {};
+    record[0] = 0x17; // kContentTypeAppData
+    record[1] = 0x03;
+    record[2] = 0x03;
+    record[3] = 0x00;
+    record[4] = 0x05; // payload_len = 5, less than kAuthTagLen + 1
+
+    uint8_t out[64];
+    uint16_t dec_len;
+    bool ok = crypto->decrypt(record, 64, out, dec_len);
+    EXPECT_FALSE(ok) << "Decrypting record with payload_len < auth_tag + 1 must fail";
+}
+
 TEST(TlsRecord, EncryptOversizedPayloadReturnsZero) {
     auto state = make_test_state();
     auto crypto = TlsRecordCrypto::create(state);

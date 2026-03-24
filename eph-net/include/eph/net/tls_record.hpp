@@ -336,6 +336,14 @@ public:
             return false;
         }
 
+        // Payload must contain at least the auth tag (16 bytes) + inner content type (1 byte)
+        if (payload_len < tls_record::kAuthTagLen + 1) {
+            SPDLOG_LOGGER_DEBUG(detail::tls_record_logger(),
+                "TLS record too short: payload_len={} < min {}",
+                payload_len, tls_record::kAuthTagLen + 1);
+            return false;
+        }
+
         const uint8_t* ciphertext = record + tls_record::kRecordHeaderLen;
 
         // Build nonce
