@@ -401,6 +401,29 @@ TEST(HdrHistogramTest, MergePreservesPercentileAccuracy) {
     EXPECT_NEAR(p50, 5000, 50);
 }
 
+TEST(HdrHistogramTest, MergeAccumulatesDroppedCount) {
+    HdrHistogram h1(1, 1000, 3);
+    HdrHistogram h2(1, 1000, 3);
+
+    // Record some valid values
+    h1.record(100);
+    h2.record(200);
+
+    // Force some drops by recording out-of-range values
+    h1.record(2000);  // dropped
+    h2.record(5000);  // dropped
+    h2.record(9999);  // dropped
+
+    EXPECT_EQ(h1.get_dropped_count(), 1u);
+    EXPECT_EQ(h2.get_dropped_count(), 2u);
+
+    EXPECT_TRUE(h1.merge(h2));
+
+    // After merge, dropped counts should be summed
+    EXPECT_EQ(h1.get_dropped_count(), 3u);
+    EXPECT_EQ(h1.get_total_count(), 2u);
+}
+
 // ============================================================================
 // Subtract
 // ============================================================================

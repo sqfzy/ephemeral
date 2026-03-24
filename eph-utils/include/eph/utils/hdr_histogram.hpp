@@ -692,18 +692,14 @@ class HdrHistogram {
      * @return true 合并成功，false 配置不兼容
      */
     [[nodiscard]] bool merge(const HdrHistogram& other) noexcept {
-        if (lowest_trackable_value_ != other.lowest_trackable_value_ ||
-            highest_trackable_value_ != other.highest_trackable_value_ ||
-            unit_magnitude_ != other.unit_magnitude_ ||
-            sub_bucket_count_ != other.sub_bucket_count_) {
-            return false;
-        }
+        if (!is_compatible(other)) return false;
 
         for (int32_t i = 0; i < counts_len_; ++i) {
             counts_[i] += other.counts_[i];
         }
 
         total_count_ += other.total_count_;
+        dropped_count_ += other.dropped_count_;
         min_value_ = std::min(min_value_, other.min_value_);
         max_value_ = std::max(max_value_, other.max_value_);
 
