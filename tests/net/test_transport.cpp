@@ -2662,3 +2662,105 @@ TEST_F(TransportTest, SkipUtf8ValidationConfigWarning) {
     EXPECT_TRUE(found)
         << "Config warnings should mention skip_utf8_validation when enabled";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RTT stats
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_F(TransportTest, RttStatsEmptyWhenNoPingsExchanged) {
+    // Default config has ping_interval=0, so no pings are sent
+    auto result = create_transport(/*echo=*/false, /*disable_ping=*/true);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    auto rtt = tp->rtt_stats();
+    EXPECT_EQ(rtt.count, 0u);
+    EXPECT_EQ(rtt.min_ns, 0u);
+    EXPECT_EQ(rtt.max_ns, 0u);
+    EXPECT_DOUBLE_EQ(rtt.mean_ns, 0.0);
+    EXPECT_EQ(rtt.p50_ns, 0u);
+    EXPECT_EQ(rtt.p99_ns, 0u);
+    EXPECT_EQ(rtt.p999_ns, 0u);
+
+    tp->stop();
+}
+
+TEST(RttStatsUnit, ConvenienceAccessorsConvertToMicroseconds) {
+    RttStats rtt{};
+    rtt.count = 10;
+    rtt.min_ns = 1000;
+    rtt.max_ns = 5000;
+    rtt.mean_ns = 2500.0;
+    rtt.p50_ns = 2000;
+    rtt.p99_ns = 4500;
+    rtt.p999_ns = 4900;
+
+    EXPECT_DOUBLE_EQ(rtt.min_us(), 1.0);
+    EXPECT_DOUBLE_EQ(rtt.max_us(), 5.0);
+    EXPECT_DOUBLE_EQ(rtt.mean_us(), 2.5);
+    EXPECT_DOUBLE_EQ(rtt.p50_us(), 2.0);
+    EXPECT_DOUBLE_EQ(rtt.p99_us(), 4.5);
+    EXPECT_DOUBLE_EQ(rtt.p999_us(), 4.9);
+}
+
+TEST(RttStatsUnit, DumpEmptyReturnsNoSamples) {
+    RttStats rtt{};
+    auto dump = rtt.dump();
+    EXPECT_NE(dump.find("no samples"), std::string::npos)
+        << "dump() should indicate no samples when count=0, got: " << dump;
+}
+
+TEST(RttStatsUnit, DumpWithDataIncludesPercentiles) {
+    RttStats rtt{};
+    rtt.count = 100;
+    rtt.min_ns = 500;
+    rtt.max_ns = 10000;
+    rtt.mean_ns = 3000.0;
+    rtt.p50_ns = 2000;
+    rtt.p99_ns = 9000;
+    rtt.p999_ns = 9500;
+
+    auto dump = rtt.dump();
+    EXPECT_NE(dump.find("p50"), std::string::npos);
+    EXPECT_NE(dump.find("p99"), std::string::npos);
+}
+
+TEST(RttStatsUnit, ToJsonEmptyReturnsZeroCount) {
+    RttStats rtt{};
+    auto json = rtt.to_json();
+    EXPECT_NE(json.find("\"count\":0"), std::string::npos);
+}
+
+TEST(RttStatsUnit, ToJsonWithDataIncludesAllFields) {
+    RttStats rtt{};
+    rtt.count = 50;
+    rtt.min_ns = 100;
+    rtt.max_ns = 5000;
+    rtt.mean_ns = 1500.0;
+    rtt.p50_ns = 1000;
+    rtt.p99_ns = 4000;
+    rtt.p999_ns = 4500;
+
+    auto json = rtt.to_json();
+    EXPECT_NE(json.find("\"count\":50"), std::string::npos);
+    EXPECT_NE(json.find("\"min_ns\":100"), std::string::npos);
+    EXPECT_NE(json.find("\"max_ns\":5000"), std::string::npos);
+    EXPECT_NE(json.find("\"p50_ns\":1000"), std::string::npos);
+    EXPECT_NE(json.find("\"p99_ns\":4000"), std::string::npos);
+}
+
+TEST(RttStatsUnit, FormatterProducesOutput) {
+    RttStats rtt{};
+    rtt.count = 10;
+    rtt.min_ns = 500;
+    rtt.max_ns = 5000;
+    rtt.mean_ns = 2000.0;
+    rtt.p50_ns = 1800;
+    rtt.p99_ns = 4500;
+    rtt.p999_ns = 4800;
+
+    auto formatted = std::format("{}", rtt);
+    EXPECT_FALSE(formatted.empty());
+    // Formatter should include percentile information
+    EXPECT_NE(formatted.find("p50"), std::string::npos);
+}
