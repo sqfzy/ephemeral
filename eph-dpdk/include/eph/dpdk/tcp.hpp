@@ -89,6 +89,46 @@ public:
         uint64_t acks_sent       = 0;
         uint64_t out_of_order    = 0;
         uint64_t resets_received = 0;
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "TcpSession::Stats:\n"
+                "  tx_packets: {}\n"
+                "  rx_packets: {}\n"
+                "  tx_bytes: {}\n"
+                "  rx_bytes: {}\n"
+                "  acks_sent: {}\n"
+                "  out_of_order: {}\n"
+                "  resets_received: {}",
+                tx_packets, rx_packets, tx_bytes, rx_bytes,
+                acks_sent, out_of_order, resets_received);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"tx_packets\":{},\"rx_packets\":{},\"tx_bytes\":{},"
+                "\"rx_bytes\":{},\"acks_sent\":{},\"out_of_order\":{},"
+                "\"resets_received\":{}}}",
+                tx_packets, rx_packets, tx_bytes, rx_bytes,
+                acks_sent, out_of_order, resets_received);
+        }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .tx_packets      = lhs.tx_packets      - rhs.tx_packets,
+                .rx_packets      = lhs.rx_packets      - rhs.rx_packets,
+                .tx_bytes        = lhs.tx_bytes        - rhs.tx_bytes,
+                .rx_bytes        = lhs.rx_bytes        - rhs.rx_bytes,
+                .acks_sent       = lhs.acks_sent       - rhs.acks_sent,
+                .out_of_order    = lhs.out_of_order    - rhs.out_of_order,
+                .resets_received = lhs.resets_received  - rhs.resets_received,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
     /// Create a TCP session (does NOT connect yet).
@@ -663,3 +703,12 @@ static_assert(eph::net::TcpTransport<TcpSession<>>,
     "TcpSession must satisfy TcpTransport concept");
 
 } // namespace eph::dpdk
+
+// std::formatter specialization for TcpSession<>::Stats (default ReorderSlots=8).
+// Non-default instantiations share the same Stats layout; call dump() directly.
+template <>
+struct std::formatter<eph::dpdk::TcpSession<>::Stats> : std::formatter<std::string> {
+    auto format(const eph::dpdk::TcpSession<>::Stats& s, auto& ctx) const {
+        return std::formatter<std::string>::format(s.dump(), ctx);
+    }
+};

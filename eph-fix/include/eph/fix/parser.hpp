@@ -956,6 +956,23 @@ struct ParserStats {
             first_error_offset, parse_error_name(first_error_type),
             first_error_tag_byte);
     }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    /// Counter fields are diffed; first_error_* fields are taken from the
+    /// later (lhs) snapshot since they are point-in-time diagnostics.
+    [[nodiscard]] friend ParserStats operator-(const ParserStats& lhs,
+                                               const ParserStats& rhs) noexcept {
+        return ParserStats{
+            .messages_parsed    = lhs.messages_parsed - rhs.messages_parsed,
+            .parse_errors       = lhs.parse_errors    - rhs.parse_errors,
+            .bytes_consumed     = lhs.bytes_consumed  - rhs.bytes_consumed,
+            .first_error_offset = lhs.first_error_offset,
+            .first_error_type   = lhs.first_error_type,
+            .first_error_tag_byte = lhs.first_error_tag_byte,
+        };
+    }
+
+    [[nodiscard]] friend bool operator==(const ParserStats&, const ParserStats&) = default;
 };
 
 /// Parse consecutive FIX messages with statistics accumulation.

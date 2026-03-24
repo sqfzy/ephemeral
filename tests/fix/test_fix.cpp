@@ -2450,6 +2450,40 @@ TEST(FixParserStats, reset_clears_error_diagnostics) {
     EXPECT_EQ(stats.first_error_tag_byte, 0u);
 }
 
+TEST(FixParserStats, operator_minus_diffs_counters) {
+    ParserStats s1{};
+    s1.messages_parsed = 100;
+    s1.parse_errors = 5;
+    s1.bytes_consumed = 5000;
+    s1.first_error_offset = 42;
+    s1.first_error_type = ParseError::kChecksumMismatch;
+
+    ParserStats s2{};
+    s2.messages_parsed = 80;
+    s2.parse_errors = 3;
+    s2.bytes_consumed = 3000;
+
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.messages_parsed, 20u);
+    EXPECT_EQ(delta.parse_errors, 2u);
+    EXPECT_EQ(delta.bytes_consumed, 2000u);
+    // first_error_* taken from lhs (the later snapshot)
+    EXPECT_EQ(delta.first_error_offset, 42u);
+    EXPECT_EQ(delta.first_error_type, ParseError::kChecksumMismatch);
+}
+
+TEST(FixParserStats, equality_compares_all_fields) {
+    ParserStats a{};
+    a.messages_parsed = 10;
+    a.parse_errors = 2;
+    a.bytes_consumed = 500;
+
+    ParserStats b = a;
+    EXPECT_EQ(a, b);
+    b.parse_errors = 3;
+    EXPECT_NE(a, b);
+}
+
 // ===========================================================================
 // Session-level tags: names and builder round-trip
 // ===========================================================================

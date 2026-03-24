@@ -2,6 +2,7 @@
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 #include "eph/dpdk/platform.hpp"
+#include "eph/dpdk/tcp.hpp"
 
 using namespace eph::dpdk;
 
@@ -91,4 +92,110 @@ TEST_F(PlatformTest, CollectReturnsZeroedStats) {
     EXPECT_EQ(stats.rx_packets, 0u);
     EXPECT_EQ(stats.tx_packets, 0u);
     EXPECT_EQ(stats.rx_errors, 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Platform::Stats observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PlatformStats, to_json_contains_all_fields) {
+    Platform::Stats s{
+        .rx_packets = 100, .tx_packets = 200,
+        .rx_bytes = 3000, .tx_bytes = 4000,
+        .rx_missed = 5, .rx_errors = 6, .tx_errors = 7,
+    };
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"rx_packets\":100"), std::string::npos);
+    EXPECT_NE(j.find("\"tx_packets\":200"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_bytes\":3000"), std::string::npos);
+    EXPECT_NE(j.find("\"tx_bytes\":4000"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_missed\":5"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_errors\":6"), std::string::npos);
+    EXPECT_NE(j.find("\"tx_errors\":7"), std::string::npos);
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}
+
+TEST(PlatformStats, dump_contains_all_fields) {
+    Platform::Stats s{.rx_packets = 42, .tx_packets = 99};
+    auto d = s.dump();
+    EXPECT_NE(d.find("Platform::Stats"), std::string::npos);
+    EXPECT_NE(d.find("rx_packets: 42"), std::string::npos);
+    EXPECT_NE(d.find("tx_packets: 99"), std::string::npos);
+}
+
+TEST(PlatformStats, operator_minus_diffs_counters) {
+    Platform::Stats s1{.rx_packets = 100, .tx_packets = 50, .rx_bytes = 3000};
+    Platform::Stats s2{.rx_packets =  80, .tx_packets = 30, .rx_bytes = 1000};
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.rx_packets, 20u);
+    EXPECT_EQ(delta.tx_packets, 20u);
+    EXPECT_EQ(delta.rx_bytes, 2000u);
+}
+
+TEST(PlatformStats, equality_compares_all_fields) {
+    Platform::Stats a{.rx_packets = 1, .tx_packets = 2};
+    Platform::Stats b{.rx_packets = 1, .tx_packets = 2};
+    EXPECT_EQ(a, b);
+    b.tx_packets = 3;
+    EXPECT_NE(a, b);
+}
+
+TEST(PlatformStats, formatter_produces_dump_output) {
+    Platform::Stats s{.rx_packets = 7};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("rx_packets: 7"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpSession::Stats observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpSessionStats, to_json_contains_all_fields) {
+    TcpSession<>::Stats s{
+        .tx_packets = 10, .rx_packets = 20,
+        .tx_bytes = 300, .rx_bytes = 400,
+        .acks_sent = 5, .out_of_order = 1, .resets_received = 2,
+    };
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"tx_packets\":10"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_packets\":20"), std::string::npos);
+    EXPECT_NE(j.find("\"tx_bytes\":300"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_bytes\":400"), std::string::npos);
+    EXPECT_NE(j.find("\"acks_sent\":5"), std::string::npos);
+    EXPECT_NE(j.find("\"out_of_order\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"resets_received\":2"), std::string::npos);
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}
+
+TEST(TcpSessionStats, dump_contains_all_fields) {
+    TcpSession<>::Stats s{.tx_packets = 77, .acks_sent = 33};
+    auto d = s.dump();
+    EXPECT_NE(d.find("TcpSession::Stats"), std::string::npos);
+    EXPECT_NE(d.find("tx_packets: 77"), std::string::npos);
+    EXPECT_NE(d.find("acks_sent: 33"), std::string::npos);
+}
+
+TEST(TcpSessionStats, operator_minus_diffs_counters) {
+    TcpSession<>::Stats s1{.tx_packets = 50, .rx_packets = 100, .acks_sent = 20};
+    TcpSession<>::Stats s2{.tx_packets = 30, .rx_packets =  70, .acks_sent = 10};
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.tx_packets, 20u);
+    EXPECT_EQ(delta.rx_packets, 30u);
+    EXPECT_EQ(delta.acks_sent, 10u);
+}
+
+TEST(TcpSessionStats, equality_compares_all_fields) {
+    TcpSession<>::Stats a{.tx_packets = 1, .rx_packets = 2};
+    TcpSession<>::Stats b{.tx_packets = 1, .rx_packets = 2};
+    EXPECT_EQ(a, b);
+    b.rx_packets = 3;
+    EXPECT_NE(a, b);
+}
+
+TEST(TcpSessionStats, formatter_produces_dump_output) {
+    TcpSession<>::Stats s{.rx_packets = 42};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("rx_packets: 42"), std::string::npos);
 }

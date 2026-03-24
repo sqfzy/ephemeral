@@ -153,6 +153,46 @@ public:
         uint64_t rx_missed  = 0;
         uint64_t rx_errors  = 0;
         uint64_t tx_errors  = 0;
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "Platform::Stats:\n"
+                "  rx_packets: {}\n"
+                "  tx_packets: {}\n"
+                "  rx_bytes: {}\n"
+                "  tx_bytes: {}\n"
+                "  rx_missed: {}\n"
+                "  rx_errors: {}\n"
+                "  tx_errors: {}",
+                rx_packets, tx_packets, rx_bytes, tx_bytes,
+                rx_missed, rx_errors, tx_errors);
+        }
+
+        /// JSON-formatted stats for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"rx_packets\":{},\"tx_packets\":{},\"rx_bytes\":{},"
+                "\"tx_bytes\":{},\"rx_missed\":{},\"rx_errors\":{},"
+                "\"tx_errors\":{}}}",
+                rx_packets, tx_packets, rx_bytes, tx_bytes,
+                rx_missed, rx_errors, tx_errors);
+        }
+
+        /// Compute delta between two snapshots for interval-based monitoring.
+        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+            return Stats{
+                .rx_packets = lhs.rx_packets - rhs.rx_packets,
+                .tx_packets = lhs.tx_packets - rhs.tx_packets,
+                .rx_bytes   = lhs.rx_bytes   - rhs.rx_bytes,
+                .tx_bytes   = lhs.tx_bytes   - rhs.tx_bytes,
+                .rx_missed  = lhs.rx_missed  - rhs.rx_missed,
+                .rx_errors  = lhs.rx_errors  - rhs.rx_errors,
+                .tx_errors  = lhs.tx_errors  - rhs.tx_errors,
+            };
+        }
+
+        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
     /// Create and fully initialize the DPDK platform for one port.
@@ -497,3 +537,11 @@ inline Platform::Stats Platform::collect_stats() const {
 }
 
 } // namespace eph::dpdk
+
+// std::formatter specialization for Platform::Stats
+template <>
+struct std::formatter<eph::dpdk::Platform::Stats> : std::formatter<std::string> {
+    auto format(const eph::dpdk::Platform::Stats& s, auto& ctx) const {
+        return std::formatter<std::string>::format(s.dump(), ctx);
+    }
+};
