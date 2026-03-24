@@ -90,6 +90,15 @@ struct DnsConfig {
     [[nodiscard]] friend bool operator==(const DnsConfig&,
                                           const DnsConfig&) = default;
 
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "DnsConfig:\n"
+            "  nameserver: {}:{}\n"
+            "  timeout: {}ms",
+            net::format_ipv4(nameserver_ip).data(), port, timeout.count());
+    }
+
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"nameserver_ip\":\"{}\",\"port\":{},\"timeout_ms\":{}}}",

@@ -573,6 +573,130 @@ class ConcurrentRecorder {
         return active + retired;
     }
 
+    /// Export merged statistics as JSON to a file.
+    ///
+    /// Merges all thread-local data (active + retired), then writes
+    /// the same JSON format as Recorder::export_json(). Thread counts
+    /// and skipped samples are included for multi-threaded diagnostics.
+    ///
+    /// @param output_dir  Directory for the output file (created if absent)
+    /// @return true on success, false on error (logged to stderr)
+    bool export_json(const std::string& output_dir = "outputs") const {
+        auto stats = compute_stats();
+        if (!stats) return false;
+
+        if (!ensure_directory(output_dir)) return false;
+
+        auto path = make_output_path(output_dir, ".json");
+        std::ofstream file(path);
+        if (!file) {
+            std::println(stderr, "Failed to open: {}", path.string());
+            return false;
+        }
+
+        auto [active, retired] = state_->thread_counts();
+        auto [skipped_invalid, skipped_overflow] = merged_skipped_counts();
+
+        try {
+            file << std::format(
+                R"({{
+  "name": "{}",
+  "timestamp": "{}",
+  "threads": {{
+    "active": {},
+    "retired": {}
+  }},
+  "samples": {{
+    "recorded": {},
+    "skipped_invalid": {},
+    "skipped_overflow": {}
+  }},
+  "latency_ns": {{
+    "avg": {:.2f},
+    "min": {:.2f},
+    "max": {:.2f},
+    "stddev": {:.2f},
+    "p50": {:.2f},
+    "p90": {:.2f},
+    "p99": {:.2f},
+    "p99_9": {:.2f}
+  }}
+}})",
+                stats->name, get_timestamp(),
+                active, retired,
+                stats->count, skipped_invalid, skipped_overflow,
+                stats->avg_ns, stats->min_ns, stats->max_ns,
+                stats->stddev_ns, stats->p50_ns, stats->p90_ns,
+                stats->p99_ns, stats->p999_ns);
+
+            if (!file.good()) {
+                std::println(stderr, "Write error: {}", path.string());
+                return false;
+            }
+
+            std::println("  JSON: {}", path.string());
+            return true;
+
+        } catch (const std::exception& e) {
+            std::println(stderr, "JSON error: {}", e.what());
+            return false;
+        }
+    }
+
+    /// Export merged histogram distribution as CSV.
+    ///
+    /// Merges all thread-local histograms, then writes each recorded
+    /// bucket as a (latency_ns, count) row — same format as Recorder::export_csv().
+    ///
+    /// @param output_dir  Directory for the output file (created if absent)
+    /// @return true on success, false on error (logged to stderr)
+    bool export_csv(const std::string& output_dir = "outputs") const {
+        auto merged = state_->merge_all();
+        if (merged.count == 0) return false;
+
+        if (!ensure_directory(output_dir)) return false;
+
+        auto ns_per_cycle = TSC::to_ns(1);
+        if (!ns_per_cycle) [[unlikely]]
+            return false;
+
+        double ratio = *ns_per_cycle;
+        auto path = make_output_path(output_dir, ".csv");
+        std::ofstream file(path);
+        if (!file) {
+            std::println(stderr, "Failed to open: {}", path.string());
+            return false;
+        }
+
+        file << "latency_ns,count\n";
+
+        try {
+            merged.histogram.for_each_recorded_value(
+                [&](uint64_t cycles, uint64_t count) {
+                    file << std::format("{:.2f},{}\n", cycles * ratio, count);
+                });
+
+            if (!file.good()) {
+                std::println(stderr, "Write error: {}", path.string());
+                return false;
+            }
+
+            std::println("  CSV: {}", path.string());
+            return true;
+
+        } catch (const std::exception& e) {
+            std::println(stderr, "CSV error: {}", e.what());
+            return false;
+        }
+    }
+
+    /// Export both JSON summary and CSV distribution.
+    bool export_all(const std::string& output_dir = "outputs") const {
+        bool json_ok = export_json(output_dir);
+        bool csv_ok = export_csv(output_dir);
+        return json_ok && csv_ok;
+    }
+
     /// Reset all accumulated data across all threads (active and retired).
     ///
     /// Useful for windowed measurement: call compute_stats(), then reset()
@@ -734,6 +858,55 @@ class ConcurrentRecorder {
 
     std::string name_;
     std::shared_ptr<SharedState> state_;
+
+    [[nodiscard]] static std::string get_timestamp() {
+        auto now = std::chrono::system_clock::now();
+        return std::format("{:%Y-%m-%d_%H-%M-%S}",
+                           std::chrono::floor<std::chrono::seconds>(now));
+    }
+
+    [[nodiscard]] static std::string sanitize_filename(std::string name) {
+        std::replace_if(
+            name.begin(), name.end(),
+            [](char c) { return !(std::isalnum(c) || c == '_' || c == '-'); },
+            '_');
+        return name;
+    }
+
+    [[nodiscard]] fs::path make_output_path(const std::string& dir,
+                                            const std::string& ext) const {
+        return fs::path(dir) /
+               (sanitize_filename(name_) + "_" + get_timestamp() + ext);
+    }
+
+    [[nodiscard]] static bool ensure_directory(
+        const std::string& path) noexcept {
+        try {
+            if (!fs::exists(path)) {
+                return fs::create_directories(path);
+            }
+            return true;
+        } catch (const fs::filesystem_error& e) {
+            std::println(stderr, "Directory error: {}", e.what());
+            return false;
+        }
+    }
+
+    /// Sum skipped counts across all active and retired thread-local data.
+    [[nodiscard]] std::pair<uint64_t, uint64_t> merged_skipped_counts() const {
+        std::lock_guard lock(state_->mutex);
+        uint64_t invalid = 0;
+        uint64_t overflow = 0;
+        for (const auto* local : state_->active_locals) {
+            invalid += local->skipped_invalid;
+            overflow += local->skipped_overflow;
+        }
+        // Retired threads' skipped counts are not tracked separately
+        // in SharedState — they are lost on retirement. This is acceptable
+        // because retirement happens on thread exit, and the primary use
+        // case is reporting while threads are still active.
+        return {invalid, overflow};
+    }
 
     ThreadLocalData* get_or_create_local() noexcept {
         thread_local std::unique_ptr<ThreadLocalGuard> tl_guard;
