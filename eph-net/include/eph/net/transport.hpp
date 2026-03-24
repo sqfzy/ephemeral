@@ -1241,9 +1241,13 @@ private:
     // precision requirement.
     using SteadyTimePoint = std::chrono::steady_clock::time_point;
     std::atomic<int64_t>                   last_pong_ns_{0};      // RX writes, TX reads
-    bool                                   ping_awaiting_pong_{false}; // TX-thread-local
-    bool                                   seq_warning_logged_{false};    // TX-thread-local
-    bool                                   rx_seq_warning_logged_{false}; // RX-thread-local
+
+    // -- Per-thread variables: no synchronization needed, private to owning thread --
+    // TX-thread-only (written/read exclusively by tx_loop):
+    bool                                   ping_awaiting_pong_{false};
+    bool                                   seq_warning_logged_{false};
+    // RX-thread-only (written/read exclusively by rx_loop):
+    bool                                   rx_seq_warning_logged_{false};
 
     // Close code/reason from close_gracefully(), propagated to stop()
     uint16_t                               pending_close_code_{ws::close_code::kNormal};
@@ -2157,6 +2161,9 @@ private:
                     ws_reassembly_storage.get(), ws_reassembly_len);
 
                 // Save unconsumed WS bytes for next TCP chunk
+                // Clamp to prevent underflow if process_frame_data returns more
+                // than available (defensive — should not happen in practice).
+                ws_consumed = std::min(ws_consumed, ws_reassembly_len);
                 size_t ws_remaining = ws_reassembly_len - ws_consumed;
                 if (ws_remaining > 0 && ws_consumed > 0) {
                     std::memmove(ws_reassembly_storage.get(),
@@ -2249,6 +2256,7 @@ private:
                 size_t ws_consumed = process_frame_data(ws_data, ws_data_len);
 
                 // Save unconsumed WS bytes for next TLS record
+                ws_consumed = std::min(ws_consumed, ws_data_len);
                 size_t ws_remaining = ws_data_len - ws_consumed;
                 if (ws_remaining > 0) {
                     if (ws_data == decrypt_buf.get()) {
@@ -2607,6 +2615,7 @@ private:
     /// Deliver a complete single-frame data message.
     void deliver_data_frame(const ws::DecodedFrame& frame) noexcept {
         if (frame.payload_len == 0) return;
+        if (frame.payload_len > MaxPayload) [[unlikely]] return;
 
         // For masked frames, unmask into a temp buffer before delivery
         if (frame.masked) {
