@@ -277,6 +277,11 @@ class HdrHistogram {
     ///
     /// @param value  The value to query
     /// @return Percentile in [0.0, 100.0], or 0.0 if no samples recorded
+    ///
+    /// @note HDR Histogram quantizes values into buckets. A bucket that spans
+    ///       [low, low+range) is counted as "at or below" the query value if
+    ///       the bucket's low bound ≤ value. This matches the forward CDF
+    ///       semantics: get_value_at_percentile() returns bucket midpoints.
     [[nodiscard]] double get_percentile_at_or_below(uint64_t value) const noexcept {
         if (total_count_ == 0) return 0.0;
 

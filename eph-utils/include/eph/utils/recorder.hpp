@@ -720,13 +720,20 @@ class ConcurrentRecorder {
     ///
     /// Returns the statistics for the current measurement window, then
     /// resets all histograms (active + retired) under the same lock.
-    /// No data is lost between the read and reset — unlike the separate
-    /// compute_stats() + reset() pattern which has a race window.
+    /// No data is lost between the merge and reset — unlike the separate
+    /// compute_stats() + reset() pattern which has a gap where samples
+    /// are either lost or double-counted.
     ///
     /// Ideal for periodic monitoring dashboards that need non-overlapping
     /// measurement windows.
     ///
     /// @return Stats for the completed window, or nullopt if no data was recorded
+    ///
+    /// @warning Not thread-safe with concurrent record() calls on the same
+    ///          thread-local data. Call from a dedicated reporting thread,
+    ///          ideally when recording threads are idle or between bursts.
+    ///          Samples recorded concurrently with this call may be partially
+    ///          included in the returned stats or silently dropped.
     [[nodiscard]] std::optional<Stats> compute_and_reset() {
         auto merged = state_->merge_all_and_reset();
         if (merged.count == 0) return std::nullopt;
@@ -766,24 +773,7 @@ class ConcurrentRecorder {
     ///          other threads are actively recording.
     void reset() noexcept {
         std::lock_guard lock(state_->mutex);
-        // Reset all active thread-local histograms
-        for (auto* local : state_->active_locals) {
-            local->histogram.reset();
-            local->count = 0;
-            local->total_cycles = 0;
-            local->min_cycles = std::numeric_limits<uint64_t>::max();
-            local->max_cycles = 0;
-            local->skipped_invalid = 0;
-            local->skipped_overflow = 0;
-        }
-        // Reset retired data
-        state_->retired_histogram.reset();
-        state_->retired_count = 0;
-        state_->retired_total_cycles = 0;
-        state_->retired_min_cycles = std::numeric_limits<uint64_t>::max();
-        state_->retired_max_cycles = 0;
-        state_->retired_skipped_invalid = 0;
-        state_->retired_skipped_overflow = 0;
+        state_->reset_all_locked();
     }
 
    private:
@@ -865,10 +855,8 @@ class ConcurrentRecorder {
             uint64_t max_cycles = 0;
         };
 
-        // merge 所有数据（退役 + 活跃）
-        [[nodiscard]] MergedData merge_all() const {
-            std::lock_guard lock(mutex);
-
+        // merge 所有数据（退役 + 活跃）— 调用方持有 mutex
+        [[nodiscard]] MergedData merge_all_locked() const {
             MergedData merged;
             merged.histogram =
                 HdrHistogram(lowest_cycles, highest_cycles, precision);
@@ -894,37 +882,8 @@ class ConcurrentRecorder {
             return merged;
         }
 
-        /// Atomically merge all data and reset — single lock acquisition.
-        ///
-        /// Returns the merged stats from all threads, then resets all
-        /// active and retired histograms. No data is lost between the
-        /// merge and reset (unlike separate compute_stats()+reset()).
-        [[nodiscard]] MergedData merge_all_and_reset() {
-            std::lock_guard lock(mutex);
-
-            MergedData merged;
-            merged.histogram =
-                HdrHistogram(lowest_cycles, highest_cycles, precision);
-
-            // Merge retired data
-            (void)merged.histogram.merge(retired_histogram);
-            merged.count = retired_count;
-            merged.total_cycles = retired_total_cycles;
-            merged.min_cycles = retired_min_cycles;
-            merged.max_cycles = retired_max_cycles;
-
-            // Merge active thread data
-            for (auto* local : active_locals) {
-                (void)merged.histogram.merge(local->histogram);
-                merged.count += local->count;
-                merged.total_cycles += local->total_cycles;
-                merged.min_cycles =
-                    std::min(merged.min_cycles, local->min_cycles);
-                merged.max_cycles =
-                    std::max(merged.max_cycles, local->max_cycles);
-            }
-
-            // Reset all active thread-local histograms
+        // 重置所有数据（退役 + 活跃）— 调用方持有 mutex
+        void reset_all_locked() noexcept {
             for (auto* local : active_locals) {
                 local->histogram.reset();
                 local->count = 0;
@@ -934,8 +893,6 @@ class ConcurrentRecorder {
                 local->skipped_invalid = 0;
                 local->skipped_overflow = 0;
             }
-
-            // Reset retired data
             retired_histogram.reset();
             retired_count = 0;
             retired_total_cycles = 0;
@@ -943,7 +900,23 @@ class ConcurrentRecorder {
             retired_max_cycles = 0;
             retired_skipped_invalid = 0;
             retired_skipped_overflow = 0;
+        }
 
+        // merge 所有数据（退役 + 活跃）
+        [[nodiscard]] MergedData merge_all() const {
+            std::lock_guard lock(mutex);
+            return merge_all_locked();
+        }
+
+        /// Atomically merge all data and reset — single lock acquisition.
+        ///
+        /// Returns the merged stats from all threads, then resets all
+        /// active and retired histograms. No data is lost between the
+        /// merge and reset (unlike separate compute_stats()+reset()).
+        [[nodiscard]] MergedData merge_all_and_reset() {
+            std::lock_guard lock(mutex);
+            auto merged = merge_all_locked();
+            reset_all_locked();
             return merged;
         }
 
