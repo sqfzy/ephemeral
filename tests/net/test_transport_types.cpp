@@ -1716,3 +1716,180 @@ TEST(TransportConfigDropLog, ZeroDisablesLogging) {
     cfg.drop_log_interval = 0;
     EXPECT_EQ(cfg.drop_log_interval, 0u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RttStats operator== and operator-
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RttStats, EqualityDefaultBehavior) {
+    RttStats a{.count = 10, .min_ns = 100, .max_ns = 500, .mean_ns = 300.0,
+               .p50_ns = 250, .p99_ns = 480, .p999_ns = 499};
+    RttStats b = a;
+    EXPECT_EQ(a, b);
+    b.count = 11;
+    EXPECT_NE(a, b);
+}
+
+TEST(RttStats, EqualityDefaultZero) {
+    RttStats a{};
+    RttStats b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(RttStats, DeltaSubtractsCount) {
+    RttStats s1{.count = 50, .min_ns = 100, .max_ns = 900, .mean_ns = 500.0,
+                .p50_ns = 400, .p99_ns = 850, .p999_ns = 890};
+    RttStats s2{.count = 30, .min_ns = 200, .max_ns = 800, .mean_ns = 400.0,
+                .p50_ns = 350, .p99_ns = 700, .p999_ns = 750};
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.count, 20u);
+    // Percentile/mean fields come from the later snapshot (s1)
+    EXPECT_EQ(delta.min_ns, s1.min_ns);
+    EXPECT_EQ(delta.max_ns, s1.max_ns);
+    EXPECT_DOUBLE_EQ(delta.mean_ns, s1.mean_ns);
+    EXPECT_EQ(delta.p50_ns, s1.p50_ns);
+    EXPECT_EQ(delta.p99_ns, s1.p99_ns);
+    EXPECT_EQ(delta.p999_ns, s1.p999_ns);
+}
+
+TEST(RttStats, DeltaIdentityWhenSame) {
+    RttStats s{.count = 100, .min_ns = 50};
+    auto delta = s - s;
+    EXPECT_EQ(delta.count, 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportStats operator==
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportStats, EqualityDefaultBehavior) {
+    TransportStats a{};
+    a.tx_packets = 100;
+    a.rx_bytes = 5000;
+    a.remote_ip = "10.0.0.1";
+    TransportStats b = a;
+    EXPECT_EQ(a, b);
+    b.tx_packets = 101;
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportStats, EqualityIncludesRttAndRemoteIp) {
+    TransportStats a{};
+    a.rtt = {.count = 5, .min_ns = 100};
+    a.remote_ip = "10.0.0.1";
+    TransportStats b = a;
+    EXPECT_EQ(a, b);
+    b.rtt.count = 6;
+    EXPECT_NE(a, b);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ThreadStats::Snapshot — to_json, dump, operator==, operator-
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ThreadStatsSnapshot, SnapshotCapturesCurrentValues) {
+    ThreadStats ts;
+    ts.packets.store(10, std::memory_order_relaxed);
+    ts.bytes.store(500, std::memory_order_relaxed);
+    ts.text_packets.store(3, std::memory_order_relaxed);
+    ts.text_bytes.store(150, std::memory_order_relaxed);
+    ts.dropped.store(1, std::memory_order_relaxed);
+    ts.crypto_errors.store(2, std::memory_order_relaxed);
+    auto snap = ts.snapshot();
+    EXPECT_EQ(snap.packets, 10u);
+    EXPECT_EQ(snap.bytes, 500u);
+    EXPECT_EQ(snap.text_packets, 3u);
+    EXPECT_EQ(snap.text_bytes, 150u);
+    EXPECT_EQ(snap.dropped, 1u);
+    EXPECT_EQ(snap.crypto_errors, 2u);
+}
+
+TEST(ThreadStatsSnapshot, EqualityDefaultBehavior) {
+    ThreadStats::Snapshot a{.packets = 1, .bytes = 2, .text_packets = 3,
+                            .text_bytes = 4, .dropped = 5, .crypto_errors = 6};
+    ThreadStats::Snapshot b = a;
+    EXPECT_EQ(a, b);
+    b.dropped = 99;
+    EXPECT_NE(a, b);
+}
+
+TEST(ThreadStatsSnapshot, DeltaSubtractsAllFields) {
+    ThreadStats::Snapshot s1{.packets = 100, .bytes = 5000, .text_packets = 30,
+                             .text_bytes = 1500, .dropped = 5, .crypto_errors = 2};
+    ThreadStats::Snapshot s2{.packets = 70,  .bytes = 3000, .text_packets = 20,
+                             .text_bytes = 1000, .dropped = 3, .crypto_errors = 1};
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.packets, 30u);
+    EXPECT_EQ(delta.bytes, 2000u);
+    EXPECT_EQ(delta.text_packets, 10u);
+    EXPECT_EQ(delta.text_bytes, 500u);
+    EXPECT_EQ(delta.dropped, 2u);
+    EXPECT_EQ(delta.crypto_errors, 1u);
+}
+
+TEST(ThreadStatsSnapshot, DumpContainsAllFields) {
+    ThreadStats::Snapshot s{.packets = 42, .bytes = 999, .dropped = 7};
+    auto d = s.dump();
+    EXPECT_NE(d.find("ThreadStats::Snapshot"), std::string::npos);
+    EXPECT_NE(d.find("42"), std::string::npos);
+    EXPECT_NE(d.find("999"), std::string::npos);
+    EXPECT_NE(d.find("7"), std::string::npos);
+}
+
+TEST(ThreadStatsSnapshot, ToJsonContainsAllFields) {
+    ThreadStats::Snapshot s{.packets = 10, .bytes = 200, .text_packets = 3,
+                            .text_bytes = 50, .dropped = 1, .crypto_errors = 0};
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"packets\":10"), std::string::npos);
+    EXPECT_NE(j.find("\"bytes\":200"), std::string::npos);
+    EXPECT_NE(j.find("\"text_packets\":3"), std::string::npos);
+    EXPECT_NE(j.find("\"text_bytes\":50"), std::string::npos);
+    EXPECT_NE(j.find("\"dropped\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"crypto_errors\":0"), std::string::npos);
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionErrorInfo operator==
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionErrorInfo, EqualityDefaultBehavior) {
+    ConnectionErrorInfo a{ConnectionError::kTcpNotEstablished, "timeout", 0};
+    ConnectionErrorInfo b = a;
+    EXPECT_EQ(a, b);
+    b.detail = "refused";
+    EXPECT_NE(a, b);
+}
+
+TEST(ConnectionErrorInfo, EqualityIncludesHttpStatus) {
+    ConnectionErrorInfo a{ConnectionError::kWsUpgradeRejected, "403", 403};
+    ConnectionErrorInfo b = a;
+    EXPECT_EQ(a, b);
+    b.http_status = 401;
+    EXPECT_NE(a, b);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SocketConfig operator==
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketConfig, EqualityDefaultBehavior) {
+    SocketConfig a{.host = "localhost", .port = 8080};
+    SocketConfig b = a;
+    EXPECT_EQ(a, b);
+    b.port = 9090;
+    EXPECT_NE(a, b);
+}
+
+TEST(SocketConfig, EqualityIncludesAllFields) {
+    SocketConfig a{.host = "example.com", .port = 443, .tcp_nodelay = true,
+                   .recv_buf_size = 4096, .send_buf_size = 4096,
+                   .tcp_keepalive = true, .keepalive_idle = 30,
+                   .keepalive_interval = 5, .keepalive_count = 2,
+                   .send_timeout_ms = 500};
+    SocketConfig b = a;
+    EXPECT_EQ(a, b);
+    b.tcp_keepalive = false;
+    EXPECT_NE(a, b);
+}

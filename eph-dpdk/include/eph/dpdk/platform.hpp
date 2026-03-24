@@ -113,6 +113,34 @@ struct PlatformConfig {
     /// Poll timeout for link-up after port start (ms).
     /// 0 = single check, move on regardless.
     int      link_timeout_ms = 2000;
+
+    /// Defaulted equality — all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const PlatformConfig&,
+                                         const PlatformConfig&) = default;
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "PlatformConfig:\n"
+            "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
+            "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms",
+            port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
+            mbuf_pool_size, mbuf_cache_size,
+            enable_promiscuous ? "true" : "false", link_timeout_ms);
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"port_id\":{},\"nb_rx_queues\":{},\"nb_tx_queues\":{},"
+            "\"nb_rx_desc\":{},\"nb_tx_desc\":{},"
+            "\"mbuf_pool_size\":{},\"mbuf_cache_size\":{},"
+            "\"enable_promiscuous\":{},\"link_timeout_ms\":{}}}",
+            port_id, nb_rx_queues, nb_tx_queues,
+            nb_rx_desc, nb_tx_desc,
+            mbuf_pool_size, mbuf_cache_size,
+            enable_promiscuous ? "true" : "false", link_timeout_ms);
+    }
 };
 
 /// Validation result — empty string_view on success, error description otherwise.

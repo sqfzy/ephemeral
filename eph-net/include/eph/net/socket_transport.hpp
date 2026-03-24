@@ -82,6 +82,10 @@ struct SocketConfig {
             keepalive_count, send_timeout_ms);
     }
 
+    /// Defaulted equality — all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const SocketConfig&,
+                                         const SocketConfig&) = default;
+
     /// Parse a "host:port" or "tcp://host:port" string into a SocketConfig.
     ///
     /// Supported URL forms:

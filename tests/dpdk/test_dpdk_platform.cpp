@@ -199,3 +199,98 @@ TEST(TcpSessionStats, formatter_produces_dump_output) {
     auto formatted = std::format("{}", s);
     EXPECT_NE(formatted.find("rx_packets: 42"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, equality_compares_all_fields) {
+    TcpConfig a{};
+    a.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+               .src_port = 12345, .dst_port = 443};
+    a.mss = 1460;
+    a.recv_window = 65535;
+    a.port_id = 0;
+    TcpConfig b = a;
+    EXPECT_EQ(a, b);
+    b.mss = 1400;
+    EXPECT_NE(a, b);
+}
+
+TEST(TcpConfig, equality_compares_mac_addresses) {
+    TcpConfig a{};
+    a.src_mac = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
+    TcpConfig b = a;
+    EXPECT_EQ(a, b);
+    b.src_mac = {{0xFF, 0x11, 0x22, 0x33, 0x44, 0x55}};
+    EXPECT_NE(a, b);
+}
+
+TEST(TcpConfig, to_json_contains_all_fields) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 443};
+    cfg.mss = 1460;
+    cfg.recv_window = 65535;
+    cfg.port_id = 1;
+    cfg.tx_queue_id = 2;
+    cfg.rx_queue_id = 3;
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"mss\":1460"), std::string::npos);
+    EXPECT_NE(j.find("\"recv_window\":65535"), std::string::npos);
+    EXPECT_NE(j.find("\"port_id\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"tx_queue_id\":2"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_queue_id\":3"), std::string::npos);
+    EXPECT_NE(j.find("\"src_port\":12345"), std::string::npos);
+    EXPECT_NE(j.find("\"dst_port\":443"), std::string::npos);
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}
+
+TEST(TcpConfig, dump_contains_all_fields) {
+    TcpConfig cfg{};
+    cfg.mss = 1460;
+    cfg.recv_window = 32768;
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("TcpConfig"), std::string::npos);
+    EXPECT_NE(d.find("1460"), std::string::npos);
+    EXPECT_NE(d.find("32768"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlatformConfig observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PlatformConfig, equality_compares_all_fields) {
+    PlatformConfig a{};
+    PlatformConfig b{};
+    EXPECT_EQ(a, b);
+    b.nb_rx_queues = 4;
+    EXPECT_NE(a, b);
+}
+
+TEST(PlatformConfig, to_json_contains_all_fields) {
+    PlatformConfig cfg{.port_id = 1, .nb_rx_queues = 2, .nb_tx_queues = 3,
+                       .nb_rx_desc = 512, .nb_tx_desc = 1024,
+                       .mbuf_pool_size = 8191, .mbuf_cache_size = 512,
+                       .enable_promiscuous = true, .link_timeout_ms = 5000};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"port_id\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"nb_rx_queues\":2"), std::string::npos);
+    EXPECT_NE(j.find("\"nb_tx_queues\":3"), std::string::npos);
+    EXPECT_NE(j.find("\"nb_rx_desc\":512"), std::string::npos);
+    EXPECT_NE(j.find("\"nb_tx_desc\":1024"), std::string::npos);
+    EXPECT_NE(j.find("\"mbuf_pool_size\":8191"), std::string::npos);
+    EXPECT_NE(j.find("\"mbuf_cache_size\":512"), std::string::npos);
+    EXPECT_NE(j.find("\"enable_promiscuous\":true"), std::string::npos);
+    EXPECT_NE(j.find("\"link_timeout_ms\":5000"), std::string::npos);
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+}
+
+TEST(PlatformConfig, dump_contains_all_fields) {
+    PlatformConfig cfg{.port_id = 0, .nb_rx_queues = 2, .nb_tx_queues = 2};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("PlatformConfig"), std::string::npos);
+    EXPECT_NE(d.find("2rx/2tx"), std::string::npos);
+}

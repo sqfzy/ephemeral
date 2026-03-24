@@ -81,6 +81,10 @@ struct ConnectionErrorInfo {
 
     /// HTTP status code from server rejection (only valid when code == kWsUpgradeRejected).
     int http_status = 0;
+
+    /// Defaulted equality — all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const ConnectionErrorInfo&,
+                                         const ConnectionErrorInfo&) = default;
 };
 
 // ---------------------------------------------------------------------------
@@ -702,6 +706,26 @@ struct RttStats {
             p999_us(), max_us(), mean_us());
     }
 
+    /// Compute the delta between two snapshots for windowed metrics.
+    /// Counter fields are subtracted; percentile/mean values come from
+    /// the later snapshot ('this') since they are not meaningfully subtractable.
+    [[nodiscard]] friend RttStats operator-(const RttStats& lhs,
+                                            const RttStats& rhs) noexcept {
+        return {
+            .count  = lhs.count  - rhs.count,
+            .min_ns = lhs.min_ns,
+            .max_ns = lhs.max_ns,
+            .mean_ns = lhs.mean_ns,
+            .p50_ns = lhs.p50_ns,
+            .p99_ns = lhs.p99_ns,
+            .p999_ns = lhs.p999_ns,
+        };
+    }
+
+    /// Defaulted equality — all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const RttStats&,
+                                         const RttStats&) = default;
+
     /// JSON-formatted RTT stats for monitoring system integration.
     [[nodiscard]] std::string to_json() const {
         return std::format(
@@ -737,6 +761,64 @@ struct ThreadStats {
         text_bytes.store(0, std::memory_order_relaxed);
         dropped.store(0, std::memory_order_relaxed);
         crypto_errors.store(0, std::memory_order_relaxed);
+    }
+
+    /// Non-atomic snapshot for logging, comparison, and serialization.
+    struct Snapshot {
+        uint64_t packets       = 0;
+        uint64_t bytes         = 0;
+        uint64_t text_packets  = 0;
+        uint64_t text_bytes    = 0;
+        uint64_t dropped       = 0;
+        uint64_t crypto_errors = 0;
+
+        /// Compute the delta between two snapshots for windowed metrics.
+        [[nodiscard]] friend Snapshot operator-(const Snapshot& lhs,
+                                                const Snapshot& rhs) noexcept {
+            return {
+                .packets       = lhs.packets       - rhs.packets,
+                .bytes         = lhs.bytes         - rhs.bytes,
+                .text_packets  = lhs.text_packets  - rhs.text_packets,
+                .text_bytes    = lhs.text_bytes    - rhs.text_bytes,
+                .dropped       = lhs.dropped       - rhs.dropped,
+                .crypto_errors = lhs.crypto_errors - rhs.crypto_errors,
+            };
+        }
+
+        /// Defaulted equality — all fields must match exactly.
+        [[nodiscard]] friend bool operator==(const Snapshot&,
+                                             const Snapshot&) = default;
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "ThreadStats::Snapshot:\n"
+                "  packets: {}, bytes: {}, text: {} pkts/{} B\n"
+                "  dropped: {}, crypto_errors: {}",
+                packets, bytes, text_packets, text_bytes,
+                dropped, crypto_errors);
+        }
+
+        /// JSON-formatted snapshot for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"packets\":{},\"bytes\":{},\"text_packets\":{},"
+                "\"text_bytes\":{},\"dropped\":{},\"crypto_errors\":{}}}",
+                packets, bytes, text_packets, text_bytes,
+                dropped, crypto_errors);
+        }
+    };
+
+    /// Take a consistent (relaxed) snapshot of all counters.
+    [[nodiscard]] Snapshot snapshot() const noexcept {
+        return {
+            .packets       = packets.load(std::memory_order_relaxed),
+            .bytes         = bytes.load(std::memory_order_relaxed),
+            .text_packets  = text_packets.load(std::memory_order_relaxed),
+            .text_bytes    = text_bytes.load(std::memory_order_relaxed),
+            .dropped       = dropped.load(std::memory_order_relaxed),
+            .crypto_errors = crypto_errors.load(std::memory_order_relaxed),
+        };
     }
 };
 
@@ -952,6 +1034,10 @@ struct TransportStats {
             tls_write_seq_usage(), tls_read_seq_usage(),
             rtt.to_json());
     }
+
+    /// Defaulted equality — all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const TransportStats&,
+                                         const TransportStats&) = default;
 };
 
 } // namespace eph::net

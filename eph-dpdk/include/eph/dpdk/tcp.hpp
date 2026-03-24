@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -50,6 +51,60 @@ struct TcpConfig {
     uint16_t             port_id      = 0;
     uint16_t             tx_queue_id  = 0;
     uint16_t             rx_queue_id  = 0;
+
+    /// Equality comparison (manual because rte_ether_addr is a C struct).
+    [[nodiscard]] friend bool operator==(const TcpConfig& a,
+                                         const TcpConfig& b) noexcept {
+        return a.tuple        == b.tuple
+            && std::memcmp(&a.src_mac, &b.src_mac, sizeof(rte_ether_addr)) == 0
+            && std::memcmp(&a.dst_mac, &b.dst_mac, sizeof(rte_ether_addr)) == 0
+            && a.mss          == b.mss
+            && a.recv_window  == b.recv_window
+            && a.port_id      == b.port_id
+            && a.tx_queue_id  == b.tx_queue_id
+            && a.rx_queue_id  == b.rx_queue_id;
+    }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        auto fmt_mac = [](const rte_ether_addr& m) {
+            return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                m.addr_bytes[0], m.addr_bytes[1], m.addr_bytes[2],
+                m.addr_bytes[3], m.addr_bytes[4], m.addr_bytes[5]);
+        };
+        return std::format(
+            "TcpConfig:\n"
+            "  src: {}:{}, dst: {}:{}\n"
+            "  src_mac: {}, dst_mac: {}\n"
+            "  mss: {}, recv_window: {}\n"
+            "  port_id: {}, tx_queue: {}, rx_queue: {}",
+            net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
+            net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
+            fmt_mac(src_mac), fmt_mac(dst_mac),
+            mss, recv_window,
+            port_id, tx_queue_id, rx_queue_id);
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        auto fmt_mac = [](const rte_ether_addr& m) {
+            return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                m.addr_bytes[0], m.addr_bytes[1], m.addr_bytes[2],
+                m.addr_bytes[3], m.addr_bytes[4], m.addr_bytes[5]);
+        };
+        return std::format(
+            "{{\"src_ip\":\"{}\",\"dst_ip\":\"{}\","
+            "\"src_port\":{},\"dst_port\":{},"
+            "\"src_mac\":\"{}\",\"dst_mac\":\"{}\","
+            "\"mss\":{},\"recv_window\":{},"
+            "\"port_id\":{},\"tx_queue_id\":{},\"rx_queue_id\":{}}}",
+            net::format_ipv4(tuple.src_ip).data(),
+            net::format_ipv4(tuple.dst_ip).data(),
+            tuple.src_port, tuple.dst_port,
+            fmt_mac(src_mac), fmt_mac(dst_mac),
+            mss, recv_window,
+            port_id, tx_queue_id, rx_queue_id);
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
