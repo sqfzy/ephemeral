@@ -892,3 +892,115 @@ TEST(TlsRecord, DecryptAtMaxSequenceNumberFails) {
     bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
     EXPECT_FALSE(ok) << "Decrypt should fail at max sequence number";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decrypt error path coverage — malformed record scenarios
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TlsRecord, DecryptRecordTooShortForHeaderAndTag) {
+    // Record shorter than header(5) + auth_tag(16) = 21 bytes minimum.
+    // This exercises the first early-return path in decrypt().
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t out[64];
+    uint16_t dec_len;
+
+    // Exactly 20 bytes = header(5) + tag(16) - 1 → too short
+    uint8_t short_record[20] = {};
+    short_record[0] = 0x17; // AppData
+    EXPECT_FALSE(crypto->decrypt(short_record, 20, out, dec_len));
+
+    // Zero-length record
+    EXPECT_FALSE(crypto->decrypt(short_record, 0, out, dec_len));
+
+    // Exactly 21 bytes = header(5) + tag(16) → just enough for header parsing
+    // but payload_len in header must also be valid
+    uint8_t minimal_record[21] = {};
+    minimal_record[0] = 0x17;
+    minimal_record[1] = 0x03; minimal_record[2] = 0x03;
+    minimal_record[3] = 0x00; minimal_record[4] = 0x10; // payload_len = 16 = kAuthTagLen
+    // payload_len(16) < kAuthTagLen + 1(17) → should fail at payload size check
+    EXPECT_FALSE(crypto->decrypt(minimal_record, 21, out, dec_len));
+}
+
+TEST(TlsRecord, DecryptRecordHeaderPayloadExceedsRecordLen) {
+    // Header claims a payload_len larger than the actual record data.
+    // This exercises the truncation check path in decrypt().
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    // Header says payload_len = 100, but we only provide header(5) + 20 bytes
+    uint8_t record[25] = {};
+    record[0] = 0x17; // AppData
+    record[1] = 0x03; record[2] = 0x03;
+    record[3] = 0x00; record[4] = 100; // payload_len = 100
+
+    uint8_t out[256];
+    uint16_t dec_len;
+    EXPECT_FALSE(crypto->decrypt(record, 25, out, dec_len))
+        << "Decrypt should fail when header payload_len exceeds actual record_len";
+}
+
+TEST(TlsRecord, DecryptWrongContentTypeFails) {
+    // Record with non-AppData content type should be rejected by parse_record_header.
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t record[64] = {};
+    record[0] = 0x14; // ChangeCipherSpec, not AppData (0x17)
+    record[1] = 0x03; record[2] = 0x03;
+    record[3] = 0x00; record[4] = 0x20; // payload_len = 32
+
+    uint8_t out[64];
+    uint16_t dec_len;
+    EXPECT_FALSE(crypto->decrypt(record, 64, out, dec_len))
+        << "Decrypt should reject non-AppData content type";
+}
+
+TEST(TlsRecord, DecryptPayloadExactlyAuthTagSizeFails) {
+    // Payload of exactly kAuthTagLen bytes (no room for inner content type byte).
+    // payload_len must be > kAuthTagLen to hold at least the content type.
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    constexpr uint16_t payload = tls_record::kAuthTagLen; // 16
+    constexpr uint16_t record_len = tls_record::kRecordHeaderLen + payload; // 21
+    uint8_t record[record_len] = {};
+    record[0] = 0x17;
+    record[1] = 0x03; record[2] = 0x03;
+    record[3] = static_cast<uint8_t>(payload >> 8);
+    record[4] = static_cast<uint8_t>(payload & 0xFF);
+
+    uint8_t out[64];
+    uint16_t dec_len;
+    EXPECT_FALSE(crypto->decrypt(record, record_len, out, dec_len))
+        << "Decrypt should fail when payload = auth_tag (no content type byte)";
+}
+
+TEST(TlsRecord, EncryptZeroLengthNullPlaintext) {
+    // Encrypt with plaintext_len=0 and plaintext=nullptr is valid (TLS padding).
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(0);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = crypto->encrypt(nullptr, 0, record.data());
+    EXPECT_GT(written, 0u) << "Encrypting zero-length payload should succeed";
+
+    // Verify it can be decrypted back
+    auto dec_state = make_roundtrip_state();
+    auto dec = TlsRecordCrypto::create(dec_state);
+    ASSERT_TRUE(dec.has_value());
+
+    std::vector<uint8_t> out(16);
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(dec_len, 0u);
+}
