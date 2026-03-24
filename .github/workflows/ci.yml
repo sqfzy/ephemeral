@@ -1,0 +1,276 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XMAKE_VERSION: "2.9.7"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build + Test matrix: compiler × mode (ARM64 Graviton)
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: ${{ matrix.compiler }} / ${{ matrix.mode }}
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc-13
+            cc: gcc-13
+            cxx: g++-13
+            mode: release
+          - compiler: gcc-13
+            cc: gcc-13
+            cxx: g++-13
+            mode: debug
+          - compiler: gcc-14
+            cc: gcc-14
+            cxx: g++-14
+            mode: release
+          - compiler: clang-18
+            cc: clang-18
+            cxx: clang++-18
+            mode: release
+          - compiler: clang-18
+            cc: clang-18
+            cxx: clang++-18
+            mode: debug
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            gcc-13 g++-13 gcc-14 g++-14 clang-18 \
+            libnuma-dev libssl-dev
+
+      - name: Install xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: ${{ env.XMAKE_VERSION }}
+
+      - name: Configure
+        run: |
+          xmake f -m ${{ matrix.mode }} \
+            --cc=${{ matrix.cc }} --cxx=${{ matrix.cxx }} --ld=${{ matrix.cxx }} \
+            -y
+
+      - name: Build tests
+        run: xmake build -g tests
+
+      - name: Build examples
+        run: xmake build -g examples
+
+      - name: Run tests
+        run: |
+          failed=0
+          for bin in $(xmake show -l targets 2>/dev/null | grep '^test_'); do
+            echo "::group::$bin"
+            if xmake run "$bin" 2>&1; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::$bin failed"
+              failed=1
+            fi
+          done
+          exit $failed
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Sanitizer jobs (ASan+UBSan, TSan) — ARM64 Graviton
+  # ─────────────────────────────────────────────────────────────────────────
+  sanitizers:
+    name: ${{ matrix.sanitizer }}
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            flags: "-fsanitize=address,undefined -fno-omit-frame-pointer"
+            env_vars: "ASAN_OPTIONS=detect_leaks=1:halt_on_error=1"
+          - sanitizer: tsan
+            flags: "-fsanitize=thread"
+            env_vars: "TSAN_OPTIONS=halt_on_error=1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-14 g++-14 libnuma-dev libssl-dev
+
+      - name: Install xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: ${{ env.XMAKE_VERSION }}
+
+      - name: Configure with sanitizer
+        run: |
+          xmake f -m debug \
+            --cc=gcc-14 --cxx=g++-14 --ld=g++-14 \
+            --cxflags="${{ matrix.flags }}" \
+            --ldflags="${{ matrix.flags }}" \
+            -y
+
+      - name: Build tests
+        run: xmake build -g tests
+
+      - name: Run tests under ${{ matrix.sanitizer }}
+        run: |
+          export ${{ matrix.env_vars }}
+          failed=0
+          for bin in $(xmake show -l targets 2>/dev/null | grep '^test_'); do
+            echo "::group::$bin"
+            if xmake run "$bin" 2>&1; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::$bin failed under ${{ matrix.sanitizer }}"
+              failed=1
+            fi
+          done
+          exit $failed
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Benchmarks — self-hosted c8g.metal for production-accurate numbers.
+  # Run on push to main/dev, store results as artifacts.
+  #
+  # Self-hosted runner setup:
+  #   1. Launch c8g.metal instance
+  #   2. Install GitHub Actions runner:
+  #      Settings → Actions → Runners → New self-hosted runner
+  #   3. Label the runner: [self-hosted, linux, arm64, c8g-metal]
+  #   4. Install deps: xmake, gcc-14, libnuma-dev
+  # ─────────────────────────────────────────────────────────────────────────
+  benchmarks:
+    name: benchmarks (c8g.metal)
+    runs-on: [self-hosted, linux, arm64, c8g-metal]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: xmake f -m release --cc=gcc-14 --cxx=g++-14 --ld=g++-14 -y
+
+      - name: Build benchmarks
+        run: xmake build -g benchmarks
+
+      - name: Run benchmarks
+        run: |
+          mkdir -p benchmark-results
+          for bin in $(xmake show -l targets 2>/dev/null | grep '^bench_'); do
+            echo "::group::$bin"
+            xmake run "$bin" --benchmark_format=json \
+              --benchmark_out="benchmark-results/${bin}.json" \
+              --benchmark_repetitions=3 \
+              --benchmark_min_warmup_time=0.5 \
+              2>&1 || true
+            echo "::endgroup::"
+          done
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark-results/
+          retention-days: 90
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Benchmark regression check — PRs only, self-hosted c8g.metal
+  # Blocks merge if median regresses > 5%
+  # ─────────────────────────────────────────────────────────────────────────
+  benchmark-regression:
+    name: perf regression check (c8g.metal)
+    runs-on: [self-hosted, linux, arm64, c8g-metal]
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Run benchmarks on the PR branch
+      - name: Build & run benchmarks (PR)
+        run: |
+          xmake f -m release --cc=gcc-14 --cxx=g++-14 --ld=g++-14 -y
+          xmake build -g benchmarks
+          mkdir -p bench-pr
+          for bin in $(xmake show -l targets 2>/dev/null | grep '^bench_'); do
+            xmake run "$bin" --benchmark_format=json \
+              --benchmark_out="bench-pr/${bin}.json" \
+              --benchmark_repetitions=3 \
+              --benchmark_min_warmup_time=0.5 \
+              2>&1 || true
+          done
+
+      # Run benchmarks on the base branch
+      - name: Build & run benchmarks (base)
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          xmake f -m release --cc=gcc-14 --cxx=g++-14 --ld=g++-14 -y
+          xmake build -g benchmarks 2>/dev/null || true
+          mkdir -p bench-base
+          for bin in $(xmake show -l targets 2>/dev/null | grep '^bench_'); do
+            xmake run "$bin" --benchmark_format=json \
+              --benchmark_out="bench-base/${bin}.json" \
+              --benchmark_repetitions=3 \
+              --benchmark_min_warmup_time=0.5 \
+              2>&1 || true
+          done
+          git checkout -
+
+      - name: Compare benchmarks (>5% median regression blocks merge)
+        run: |
+          status=0
+          for pr_file in bench-pr/*.json; do
+            name=$(basename "$pr_file")
+            base_file="bench-base/$name"
+            [[ -f "$base_file" ]] || continue
+
+            echo "::group::$name"
+
+            pr_times=$(jq -r '.benchmarks[] | select(.run_type == "aggregate" and .aggregate_name == "median") | "\(.name) \(.real_time)"' "$pr_file" 2>/dev/null || true)
+            base_times=$(jq -r '.benchmarks[] | select(.run_type == "aggregate" and .aggregate_name == "median") | "\(.name) \(.real_time)"' "$base_file" 2>/dev/null || true)
+
+            if [[ -z "$pr_times" || -z "$base_times" ]]; then
+              echo "Skipping $name (no median aggregates)"
+              echo "::endgroup::"
+              continue
+            fi
+
+            while IFS=' ' read -r bench_name pr_time; do
+              base_time=$(echo "$base_times" | grep "^$bench_name " | awk '{print $2}')
+              [[ -z "$base_time" ]] && continue
+
+              pct=$(awk "BEGIN { if ($base_time > 0) printf \"%.1f\", (($pr_time - $base_time) / $base_time) * 100; else print \"0\" }")
+
+              if (( $(awk "BEGIN { print ($pct > 5.0) }") )); then
+                echo "::warning::$bench_name regressed by ${pct}% (${base_time} -> ${pr_time})"
+                status=1
+              elif (( $(awk "BEGIN { print ($pct > 0) }") )); then
+                echo "$bench_name: +${pct}% (within threshold)"
+              else
+                echo "$bench_name: ${pct}% (improved or unchanged)"
+              fi
+            done <<< "$pr_times"
+
+            echo "::endgroup::"
+          done
+
+          if [[ $status -ne 0 ]]; then
+            echo "::error::Performance regression detected (>5% on median). Review benchmark results."
+            exit 1
+          fi
+          echo "No significant performance regressions detected."
