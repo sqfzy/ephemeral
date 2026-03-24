@@ -29,6 +29,7 @@
 #include <openssl/hkdf.h>
 #include <openssl/ssl.h>
 
+#include "eph/net/detail/json_escape.hpp"
 #include "eph/net/tcp_concept.hpp"
 
 namespace eph::net {
@@ -107,6 +108,35 @@ struct TlsConfig {
         if (client_cert_path.empty() != client_key_path.empty())
             return "client_cert_path and client_key_path must both be set or both empty";
         return {};
+    }
+
+    [[nodiscard]] friend bool operator==(const TlsConfig&,
+                                          const TlsConfig&) = default;
+
+    /// JSON-formatted config for logging/monitoring.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{"
+            "\"hostname\":\"{}\",\"ca_cert_path\":\"{}\","
+            "\"verify_peer\":{},\"handshake_timeout_ms\":{},"
+            "\"client_cert_path\":\"{}\",\"client_key_path\":\"{}\"}}",
+            detail::json_escape(hostname),
+            detail::json_escape(ca_cert_path),
+            verify_peer ? "true" : "false",
+            handshake_timeout.count(),
+            detail::json_escape(client_cert_path),
+            detail::json_escape(client_key_path));
+    }
+
+    /// Human-readable dump for debug logging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "TlsConfig(hostname='{}', verify_peer={}, timeout={}ms, "
+            "ca='{}', client_cert='{}', client_key='{}')",
+            hostname, verify_peer, handshake_timeout.count(),
+            ca_cert_path,
+            client_cert_path.empty() ? "(none)" : client_cert_path,
+            client_key_path.empty() ? "(none)" : client_key_path);
     }
 };
 
@@ -433,12 +463,28 @@ public:
             return std::unexpected(std::format("SSL_new failed: {}", err));
         }
 
-        // Set SNI hostname for virtual hosting and certificate matching
+        // Set SNI hostname for virtual hosting and certificate matching.
+        // When verify_peer is enabled, SNI is critical: the server uses it
+        // to select the correct certificate.  Failing silently would cause
+        // an opaque handshake failure or, worse, verification against the
+        // wrong certificate.
         if (!config.hostname.empty()) {
             if (!SSL_set_tlsext_host_name(ssl, config.hostname.c_str())) {
+                auto sni_err = detail::ssl_error_string();
+                if (config.verify_peer) {
+                    SSL_free(ssl);
+                    SSL_CTX_free(ctx);
+                    SPDLOG_LOGGER_ERROR(log,
+                        "Failed to set SNI hostname '{}' with verify_peer=true: {}",
+                        config.hostname, sni_err);
+                    return std::unexpected(std::format(
+                        "Failed to set SNI hostname '{}': {}",
+                        config.hostname, sni_err));
+                }
                 SPDLOG_LOGGER_WARN(log,
-                    "Failed to set SNI hostname '{}': {}",
-                    config.hostname, detail::ssl_error_string());
+                    "Failed to set SNI hostname '{}': {} "
+                    "(continuing because verify_peer=false)",
+                    config.hostname, sni_err);
             }
         }
 
@@ -734,3 +780,14 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for TlsConfig
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::TlsConfig> : std::formatter<std::string> {
+    auto format(const eph::net::TlsConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(c.dump(), ctx);
+    }
+};

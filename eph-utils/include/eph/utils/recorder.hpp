@@ -573,6 +573,34 @@ class ConcurrentRecorder {
         return active + retired;
     }
 
+    /// Reset all accumulated data across all threads (active and retired).
+    ///
+    /// Useful for windowed measurement: call compute_stats(), then reset()
+    /// to start a fresh measurement interval.
+    ///
+    /// @warning Not thread-safe with concurrent record() calls — call from
+    ///          a single thread (typically the reporting thread) when no
+    ///          other threads are actively recording.
+    void reset() noexcept {
+        std::lock_guard lock(state_->mutex);
+        // Reset all active thread-local histograms
+        for (auto* local : state_->active_locals) {
+            local->histogram.reset();
+            local->count = 0;
+            local->total_cycles = 0;
+            local->min_cycles = std::numeric_limits<uint64_t>::max();
+            local->max_cycles = 0;
+            local->skipped_invalid = 0;
+            local->skipped_overflow = 0;
+        }
+        // Reset retired data
+        state_->retired_histogram.reset();
+        state_->retired_count = 0;
+        state_->retired_total_cycles = 0;
+        state_->retired_min_cycles = std::numeric_limits<uint64_t>::max();
+        state_->retired_max_cycles = 0;
+    }
+
    private:
     // 每个线程持有的本地数据
     struct ThreadLocalData {

@@ -440,3 +440,32 @@ TEST_F(ConcurrentRecorderTest, PrintReportNoData) {
     ConcurrentRecorder rec("ConcPrint");
     EXPECT_NO_THROW(rec.print_report());
 }
+
+TEST_F(ConcurrentRecorderTest, ResetClearsAllData) {
+    ConcurrentRecorder rec("ConcReset");
+    // Record some data
+    for (int i = 0; i < 100; ++i) {
+        rec.record(1000 + i);
+    }
+    auto stats_before = rec.compute_stats();
+    ASSERT_TRUE(stats_before.has_value());
+    EXPECT_EQ(stats_before->count, 100u);
+
+    // Reset and verify empty
+    rec.reset();
+    auto stats_after = rec.compute_stats();
+    EXPECT_FALSE(stats_after.has_value())
+        << "Expected no data after reset, got count=" << stats_after->count;
+}
+
+TEST_F(ConcurrentRecorderTest, ResetThenRecordFreshData) {
+    ConcurrentRecorder rec("ConcResetFresh");
+    for (int i = 0; i < 50; ++i) rec.record(500);
+    rec.reset();
+
+    // Record new data after reset
+    for (int i = 0; i < 30; ++i) rec.record(800);
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->count, 30u);
+}

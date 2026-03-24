@@ -692,3 +692,49 @@ TEST(TlsConfig, ValidateKeyWithoutCertFails) {
     auto err = cfg.validate();
     EXPECT_FALSE(err.empty());
 }
+
+// TlsConfig observability operators
+
+TEST(TlsConfig, EqualityDefaultBehavior) {
+    TlsConfig a{};
+    TlsConfig b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TlsConfig, EqualityDetectsDifference) {
+    TlsConfig a{.hostname = "host1"};
+    TlsConfig b{.hostname = "host2"};
+    EXPECT_NE(a, b);
+}
+
+TEST(TlsConfig, ToJsonContainsAllFields) {
+    TlsConfig cfg{
+        .hostname = "example.com",
+        .ca_cert_path = "/ca.pem",
+        .verify_peer = false,
+        .handshake_timeout = std::chrono::milliseconds{3000},
+        .client_cert_path = "/client.pem",
+        .client_key_path = "/key.pem",
+    };
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"hostname\":\"example.com\""), std::string::npos);
+    EXPECT_NE(json.find("\"ca_cert_path\":\"/ca.pem\""), std::string::npos);
+    EXPECT_NE(json.find("\"verify_peer\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"handshake_timeout_ms\":3000"), std::string::npos);
+    EXPECT_NE(json.find("\"client_cert_path\":\"/client.pem\""), std::string::npos);
+    EXPECT_NE(json.find("\"client_key_path\":\"/key.pem\""), std::string::npos);
+}
+
+TEST(TlsConfig, DumpContainsHostname) {
+    TlsConfig cfg{.hostname = "example.com"};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("example.com"), std::string::npos);
+    EXPECT_NE(d.find("TlsConfig"), std::string::npos);
+}
+
+TEST(TlsConfig, FormatterProducesNonEmpty) {
+    TlsConfig cfg{.hostname = "test.local"};
+    auto s = std::format("{}", cfg);
+    EXPECT_FALSE(s.empty());
+    EXPECT_NE(s.find("test.local"), std::string::npos);
+}

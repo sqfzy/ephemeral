@@ -71,6 +71,27 @@ inline constexpr uint16_t kEphemeralPortRange = 16384; // 65535 - 49152 + 1
 struct DpdkEndpoint {
     std::string local_ip;    ///< Local IPv4 on DPDK port
     std::string gateway_ip;  ///< Gateway IPv4 for ARP resolution
+
+    /// Validate endpoint, returning error description or empty on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (local_ip.empty())   return "local_ip must not be empty";
+        if (gateway_ip.empty()) return "gateway_ip must not be empty";
+        return {};
+    }
+
+    [[nodiscard]] friend bool operator==(const DpdkEndpoint&,
+                                          const DpdkEndpoint&) = default;
+
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"local_ip\":\"{}\",\"gateway_ip\":\"{}\"}}",
+            local_ip, gateway_ip);
+    }
+
+    [[nodiscard]] std::string dump() const {
+        return std::format("DpdkEndpoint(local={}, gw={})",
+                           local_ip, gateway_ip);
+    }
 };
 
 /// Optional connection settings — all fields have sensible defaults.
@@ -92,6 +113,36 @@ struct ConnectorOptions {
     std::chrono::milliseconds arp_timeout{3000};
     std::chrono::milliseconds connect_timeout{5000};
     dns::DnsConfig dns{};  ///< DNS config for DPDK DNS fallback (default: 8.8.8.8)
+
+    /// Validate options, returning error description or empty on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (auto err = validate_config(platform); !err.empty()) return err;
+        if (arp_timeout.count() <= 0)
+            return "arp_timeout must be positive";
+        if (connect_timeout.count() <= 0)
+            return "connect_timeout must be positive";
+        return {};
+    }
+
+    [[nodiscard]] friend bool operator==(const ConnectorOptions&,
+                                          const ConnectorOptions&) = default;
+
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"platform\":{},\"local_port\":{},\"tx_queue_id\":{},"
+            "\"rx_queue_id\":{},\"arp_timeout_ms\":{},\"connect_timeout_ms\":{}}}",
+            platform.to_json(), local_port, tx_queue_id,
+            rx_queue_id, arp_timeout.count(), connect_timeout.count());
+    }
+
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "ConnectorOptions(port={}, queues=tx{}/rx{}, "
+            "arp_timeout={}ms, connect_timeout={}ms)\n  {}",
+            local_port, tx_queue_id, rx_queue_id,
+            arp_timeout.count(), connect_timeout.count(),
+            platform.dump());
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -561,3 +612,21 @@ connect(Platform& platform, std::string_view host, const DpdkEndpoint& ep,
 }
 
 } // namespace eph::dpdk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::dpdk::DpdkEndpoint> : std::formatter<std::string> {
+    auto format(const eph::dpdk::DpdkEndpoint& ep, auto& ctx) const {
+        return std::formatter<std::string>::format(ep.dump(), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::dpdk::ConnectorOptions> : std::formatter<std::string> {
+    auto format(const eph::dpdk::ConnectorOptions& opts, auto& ctx) const {
+        return std::formatter<std::string>::format(opts.dump(), ctx);
+    }
+};

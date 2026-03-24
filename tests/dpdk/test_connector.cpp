@@ -161,3 +161,87 @@ TEST(ConnectHostnameOverload, InvalidLocalIpStillCaughtAfterDns) {
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("local_ip"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DpdkEndpoint observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DpdkEndpoint, ValidateEmptyLocalIpFails) {
+    DpdkEndpoint ep{.local_ip = "", .gateway_ip = "10.0.0.1"};
+    EXPECT_FALSE(ep.validate().empty());
+}
+
+TEST(DpdkEndpoint, ValidateEmptyGatewayFails) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = ""};
+    EXPECT_FALSE(ep.validate().empty());
+}
+
+TEST(DpdkEndpoint, ValidateValidEndpointPasses) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    EXPECT_TRUE(ep.validate().empty());
+}
+
+TEST(DpdkEndpoint, EqualityDefaultBehavior) {
+    DpdkEndpoint a{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint b{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    EXPECT_EQ(a, b);
+}
+
+TEST(DpdkEndpoint, EqualityDetectsDifference) {
+    DpdkEndpoint a{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint b{.local_ip = "10.0.0.3", .gateway_ip = "10.0.0.1"};
+    EXPECT_NE(a, b);
+}
+
+TEST(DpdkEndpoint, ToJsonContainsFields) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    auto json = ep.to_json();
+    EXPECT_NE(json.find("\"local_ip\":\"10.0.0.2\""), std::string::npos);
+    EXPECT_NE(json.find("\"gateway_ip\":\"10.0.0.1\""), std::string::npos);
+}
+
+TEST(DpdkEndpoint, FormatterProducesNonEmpty) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    auto s = std::format("{}", ep);
+    EXPECT_FALSE(s.empty());
+    EXPECT_NE(s.find("10.0.0.2"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectorOptions observability
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectorOptions, ValidateDefaultPasses) {
+    ConnectorOptions opts{};
+    EXPECT_TRUE(opts.validate().empty());
+}
+
+TEST(ConnectorOptions, ValidateZeroArpTimeoutFails) {
+    ConnectorOptions opts{.arp_timeout = std::chrono::milliseconds{0}};
+    EXPECT_FALSE(opts.validate().empty());
+}
+
+TEST(ConnectorOptions, ValidateZeroConnectTimeoutFails) {
+    ConnectorOptions opts{.connect_timeout = std::chrono::milliseconds{0}};
+    EXPECT_FALSE(opts.validate().empty());
+}
+
+TEST(ConnectorOptions, EqualityDefaultBehavior) {
+    ConnectorOptions a{};
+    ConnectorOptions b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(ConnectorOptions, ToJsonContainsNestedPlatform) {
+    ConnectorOptions opts{.local_port = 5000};
+    auto json = opts.to_json();
+    EXPECT_NE(json.find("\"local_port\":5000"), std::string::npos);
+    EXPECT_NE(json.find("\"port_id\":"), std::string::npos);  // nested platform
+}
+
+TEST(ConnectorOptions, FormatterProducesNonEmpty) {
+    ConnectorOptions opts{};
+    auto s = std::format("{}", opts);
+    EXPECT_FALSE(s.empty());
+    EXPECT_NE(s.find("ConnectorOptions"), std::string::npos);
+}

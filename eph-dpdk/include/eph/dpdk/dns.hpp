@@ -86,6 +86,9 @@ struct DnsConfig {
     uint32_t nameserver_ip = 0x08080808;  ///< DNS server (host order), default 8.8.8.8
     uint16_t port          = kDnsPort;
     std::chrono::milliseconds timeout{3000};
+
+    [[nodiscard]] friend bool operator==(const DnsConfig&,
+                                          const DnsConfig&) = default;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
