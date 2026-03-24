@@ -738,3 +738,75 @@ TEST(TlsConfig, FormatterProducesNonEmpty) {
     EXPECT_FALSE(s.empty());
     EXPECT_NE(s.find("test.local"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TLS sequence warn threshold and limit constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TlsRecord, SequenceWarnThresholdIs90Percent) {
+    // Verify the warn threshold is approximately 90% of the max
+    double ratio = static_cast<double>(tls_record::kSequenceWarnThreshold) /
+                   static_cast<double>(tls_record::kMaxSequenceNumber);
+    EXPECT_GE(ratio, 0.89);
+    EXPECT_LE(ratio, 0.91);
+    EXPECT_LT(tls_record::kSequenceWarnThreshold, tls_record::kMaxSequenceNumber);
+}
+
+TEST(TlsRecord, EncryptAtWarnThresholdStillSucceeds) {
+    // Encryption at the warn threshold should succeed (only kMaxSequenceNumber fails)
+    auto state = make_roundtrip_state();
+    state.write.seq = tls_record::kSequenceWarnThreshold;
+    state.read.seq  = tls_record::kSequenceWarnThreshold;
+
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    TlsHotState dec_state{};
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
+    dec_state.read.seq = tls_record::kSequenceWarnThreshold;
+    auto dec = TlsRecordCrypto::create(dec_state);
+    ASSERT_TRUE(dec.has_value());
+
+    // Encrypt should succeed (warn threshold is not the hard limit)
+    std::vector<uint8_t> pt(17, 0xAB);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(16);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = enc->encrypt(pt.data(), 16, record.data());
+    EXPECT_GT(written, 0u) << "Encrypt should succeed at warn threshold";
+
+    // Verify roundtrip
+    std::vector<uint8_t> out(32);
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(dec_len, 16);
+}
+
+TEST(TlsRecord, DecryptAtMaxSequenceNumberFails) {
+    // Decrypt should fail when read sequence reaches the max
+    auto state = make_roundtrip_state();
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    // Encrypt a valid record at seq=0
+    std::vector<uint8_t> pt(17, 0xCC);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(16);
+    std::vector<uint8_t> record(enc_size);
+    uint16_t written = enc->encrypt(pt.data(), 16, record.data());
+    ASSERT_GT(written, 0u);
+
+    // Create a decryptor with seq at the limit
+    TlsHotState dec_state{};
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
+    dec_state.read.seq = tls_record::kMaxSequenceNumber;
+    auto dec = TlsRecordCrypto::create(dec_state);
+    ASSERT_TRUE(dec.has_value());
+
+    // Decrypt should fail at the sequence limit
+    std::vector<uint8_t> out(32);
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
+    EXPECT_FALSE(ok) << "Decrypt should fail at max sequence number";
+}
