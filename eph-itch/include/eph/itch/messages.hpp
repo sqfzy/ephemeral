@@ -96,95 +96,122 @@ inline uint64_t timestamp_ns(const uint8_t* body) noexcept {
 // ---------------------------------------------------------------------------
 // Message type constants and sizes
 // ---------------------------------------------------------------------------
-// Sizes are the complete on-wire message length (including the 1-byte type
-// field) but *excluding* any framing layer (e.g. the 2-byte MoldUDP64
-// length prefix).
+// Sizes are the complete on-wire message length INCLUDING the 1-byte type
+// field and EXCLUDING any framing layer (e.g. the 2-byte MoldUDP64 length
+// prefix).  Verified against NASDAQ TotalView-ITCH 5.0 specification:
+//   common header = type(1) + stock_locate(2) + tracking_number(2) + timestamp(6) = 11 bytes
+//   each type's size = 11 + message-specific fields.
 
 // System Event ('S')
+// Fields: type(1) locate(2) tracking(2) timestamp(6) event_code(1)
 inline constexpr uint8_t kSystemEvent     = 'S';
-inline constexpr size_t  kSystemEventSize = 11;
+inline constexpr size_t  kSystemEventSize = 12;
 
 // Stock Directory ('R')
+// Fields: ...common(11) stock(8) mktcat(1) finstat(1) roundlotsize(4)
+//         roundlotonly(1) issuecls(1) issuesubtype(2) auth(1) shortsale(1)
+//         ipoflag(1) luld(1) etpflag(1) etplev(4) inverse(1)
 inline constexpr uint8_t kStockDirectory     = 'R';
-inline constexpr size_t  kStockDirectorySize = 38;
+inline constexpr size_t  kStockDirectorySize = 39;
 
 // Stock Trading Action ('H')
+// Fields: ...common(11) stock(8) trading_state(1) reserved(1) reason(4)
 inline constexpr uint8_t kStockTradingAction     = 'H';
-inline constexpr size_t  kStockTradingActionSize = 24;
+inline constexpr size_t  kStockTradingActionSize = 25;
 
 // Reg SHO Restriction ('Y')
+// Fields: ...common(11) stock(8) reg_sho_action(1)
 inline constexpr uint8_t kRegSHORestriction     = 'Y';
-inline constexpr size_t  kRegSHORestrictionSize = 19;
+inline constexpr size_t  kRegSHORestrictionSize = 20;
 
 // Market Participant Position ('L')
+// Fields: ...common(11) mpid(4) stock(8) primary_mm(1) mm_mode(1) state(1)
 inline constexpr uint8_t kMarketParticipantPosition     = 'L';
-inline constexpr size_t  kMarketParticipantPositionSize = 25;
+inline constexpr size_t  kMarketParticipantPositionSize = 26;
 
 // MWCB Decline Level ('V')
+// Fields: ...common(11) level1(8) level2(8) level3(8)
 inline constexpr uint8_t kMWCBDeclineLevel     = 'V';
-inline constexpr size_t  kMWCBDeclineLevelSize = 34;
+inline constexpr size_t  kMWCBDeclineLevelSize = 35;
 
 // MWCB Status ('W')
+// Fields: ...common(11) breached_level(1)
 inline constexpr uint8_t kMWCBStatus     = 'W';
-inline constexpr size_t  kMWCBStatusSize = 11;
+inline constexpr size_t  kMWCBStatusSize = 12;
 
 // IPO Quoting Period Update ('K')
+// Fields: ...common(11) stock(8) release_time(4) release_qualifier(1) ipo_price(4)
 inline constexpr uint8_t kIPOQuotingPeriod     = 'K';
-inline constexpr size_t  kIPOQuotingPeriodSize = 27;
+inline constexpr size_t  kIPOQuotingPeriodSize = 28;
 
 // LULD Auction Collar ('J')
+// Fields: ...common(11) stock(8) ref_price(4) upper(4) lower(4) extension(4)
 inline constexpr uint8_t kLULDAuctionCollar     = 'J';
-inline constexpr size_t  kLULDAuctionCollarSize = 34;
+inline constexpr size_t  kLULDAuctionCollarSize = 35;
 
 // Operational Halt ('h')
+// Fields: ...common(11) stock(8) market_code(1) halt_action(1)
 inline constexpr uint8_t kOperationalHalt     = 'h';
-inline constexpr size_t  kOperationalHaltSize = 20;
+inline constexpr size_t  kOperationalHaltSize = 21;
 
 // Add Order — No MPID ('A')
+// Fields: ...common(11) order_ref(8) side(1) shares(4) stock(8) price(4)
 inline constexpr uint8_t kAddOrder     = 'A';
-inline constexpr size_t  kAddOrderSize = 35;
+inline constexpr size_t  kAddOrderSize = 36;
 
 // Add Order with MPID Attribution ('F')
+// Fields: same as AddOrder + attribution(4)
 inline constexpr uint8_t kAddOrderMPID     = 'F';
-inline constexpr size_t  kAddOrderMPIDSize = 39;
+inline constexpr size_t  kAddOrderMPIDSize = 40;
 
 // Order Executed ('E')
+// Fields: ...common(11) order_ref(8) executed_shares(4) match_number(8)
 inline constexpr uint8_t kOrderExecuted     = 'E';
-inline constexpr size_t  kOrderExecutedSize = 30;
+inline constexpr size_t  kOrderExecutedSize = 31;
 
 // Order Executed With Price ('C')
+// Fields: ...common(11) order_ref(8) exec_shares(4) match_num(8) printable(1) exec_price(4)
 inline constexpr uint8_t kOrderExecutedWithPrice     = 'C';
-inline constexpr size_t  kOrderExecutedWithPriceSize = 35;
+inline constexpr size_t  kOrderExecutedWithPriceSize = 36;
 
 // Order Cancel ('X')
+// Fields: ...common(11) order_ref(8) cancelled_shares(4)
 inline constexpr uint8_t kOrderCancel     = 'X';
-inline constexpr size_t  kOrderCancelSize = 22;
+inline constexpr size_t  kOrderCancelSize = 23;
 
 // Order Delete ('D')
+// Fields: ...common(11) order_ref(8)
 inline constexpr uint8_t kOrderDelete     = 'D';
-inline constexpr size_t  kOrderDeleteSize = 18;
+inline constexpr size_t  kOrderDeleteSize = 19;
 
 // Order Replace ('U')
+// Fields: ...common(11) orig_order_ref(8) new_order_ref(8) shares(4) price(4)
 inline constexpr uint8_t kOrderReplace     = 'U';
-inline constexpr size_t  kOrderReplaceSize = 34;
+inline constexpr size_t  kOrderReplaceSize = 35;
 
 // Non-Cross Trade ('P')
+// Fields: ...common(11) order_ref(8) side(1) shares(4) stock(8) price(4) match_num(8)
 inline constexpr uint8_t kNonCrossTrade     = 'P';
-inline constexpr size_t  kNonCrossTradeSize = 43;
+inline constexpr size_t  kNonCrossTradeSize = 44;
 
 // Cross Trade ('Q')
+// Fields: ...common(11) shares(8) stock(8) cross_price(4) match_num(8) cross_type(1)
 inline constexpr uint8_t kCrossTrade     = 'Q';
-inline constexpr size_t  kCrossTradeSize = 39;
+inline constexpr size_t  kCrossTradeSize = 40;
 
 // Broken Trade ('B')
+// Fields: ...common(11) match_number(8)
 inline constexpr uint8_t kBrokenTrade     = 'B';
-inline constexpr size_t  kBrokenTradeSize = 18;
+inline constexpr size_t  kBrokenTradeSize = 19;
 
 // Net Order Imbalance Indicator ('I')
+// Fields: ...common(11) paired(8) imbalance(8) direction(1) stock(8)
+//         far_price(4) near_price(4) current_ref(4) cross_type(1) price_variation(1)
 inline constexpr uint8_t kNOII     = 'I';
 inline constexpr size_t  kNOIISize = 50;
 
 // Retail Price Improvement Indicator ('N')
+// Fields: ...common(11) stock(8) interest_flag(1)
 inline constexpr uint8_t kRPII     = 'N';
 inline constexpr size_t  kRPIISize = 20;
 
@@ -305,14 +332,14 @@ inline constexpr bool is_known_type(uint8_t type) noexcept {
 
 // ---- SystemEvent ('S') ---------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6) event_code(1)
-// Total: 1+2+2+6+1 = 12 but ITCH spec counts 11 (offset-based). event_code @10.
+// Total: 12  [common header = 11 bytes; event_code at absolute offset 11]
 namespace system_event {
 
 /// Event code: 'O'=start-of-messages, 'S'=start-of-system-hours,
 ///             'Q'=start-of-market-hours, 'M'=end-of-market-hours,
 ///             'E'=end-of-system-hours, 'C'=end-of-messages
 inline char event_code(const uint8_t* msg) noexcept {
-    return static_cast<char>(msg[10]);
+    return static_cast<char>(msg[11]);
 }
 
 } // namespace system_event
@@ -324,7 +351,7 @@ inline char event_code(const uint8_t* msg) noexcept {
 //         authenticity(1) short_sale_threshold(1) ipo_flag(1)
 //         luld_ref_price_tier(1) etp_flag(1) etp_leverage_factor(4)
 //         inverse_indicator(1)
-// Total: 38
+// Total: 39  [etp_leverage_factor at 34-37; inverse_indicator at 38]
 namespace stock_directory {
 
 inline std::string_view stock(const uint8_t* msg) noexcept {
@@ -385,7 +412,7 @@ inline uint32_t etp_leverage_factor(const uint8_t* msg) noexcept {
 }
 
 inline char inverse_indicator(const uint8_t* msg) noexcept {
-    return static_cast<char>(msg[37]);
+    return static_cast<char>(msg[38]);
 }
 
 } // namespace stock_directory
@@ -393,7 +420,7 @@ inline char inverse_indicator(const uint8_t* msg) noexcept {
 // ---- AddOrder ('A') — No MPID --------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         order_ref(8) side(1) shares(4) stock(8) price(4)
-// Total: 35
+// Total: 36  [price at 32-35]
 namespace add_order {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -432,7 +459,7 @@ inline double price(const uint8_t* msg) noexcept {
 // Same as AddOrder but with 4-byte MPID attribution appended.
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         order_ref(8) side(1) shares(4) stock(8) price(4) attribution(4)
-// Total: 39
+// Total: 40  [attribution at 36-39]
 namespace add_order_mpid {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -479,7 +506,7 @@ inline std::string_view attribution_trimmed(const uint8_t* msg) noexcept {
 // ---- OrderExecuted ('E') -------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         order_ref(8) executed_shares(4) match_number(8)
-// Total: 30
+// Total: 31  [match_number at 23-30]
 namespace order_executed {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -500,7 +527,7 @@ inline uint64_t match_number(const uint8_t* msg) noexcept {
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         order_ref(8) executed_shares(4) match_number(8)
 //         printable(1) execution_price(4)
-// Total: 35
+// Total: 36  [execution_price at 32-35]
 namespace order_executed_price {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -533,7 +560,7 @@ inline double execution_price(const uint8_t* msg) noexcept {
 // ---- OrderCancel ('X') ---------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         order_ref(8) cancelled_shares(4)
-// Total: 22
+// Total: 23  [cancelled_shares at 19-22]
 namespace order_cancel {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -548,7 +575,7 @@ inline uint32_t cancelled_shares(const uint8_t* msg) noexcept {
 
 // ---- OrderDelete ('D') ---------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6) order_ref(8)
-// Total: 18
+// Total: 19  [order_ref at 11-18]
 namespace order_delete {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -560,7 +587,7 @@ inline uint64_t order_ref(const uint8_t* msg) noexcept {
 // ---- OrderReplace ('U') --------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         original_order_ref(8) new_order_ref(8) shares(4) price(4)
-// Total: 34
+// Total: 35  [price at 31-34]
 namespace order_replace {
 
 inline uint64_t original_order_ref(const uint8_t* msg) noexcept {
@@ -588,7 +615,7 @@ inline double price(const uint8_t* msg) noexcept {
 // ---- NonCrossTrade ('P') -------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         order_ref(8) side(1) shares(4) stock(8) price(4) match_number(8)
-// Total: 43
+// Total: 44  [match_number at 36-43]
 namespace non_cross_trade {
 
 inline uint64_t order_ref(const uint8_t* msg) noexcept {
@@ -629,7 +656,7 @@ inline uint64_t match_number(const uint8_t* msg) noexcept {
 // ---- CrossTrade ('Q') ----------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         shares(8) stock(8) cross_price(4) match_number(8) cross_type(1)
-// Total: 39
+// Total: 40  [match_number at 31-38; cross_type at 39]
 namespace cross_trade {
 
 inline uint64_t shares(const uint8_t* msg) noexcept {
@@ -660,7 +687,7 @@ inline uint64_t match_number(const uint8_t* msg) noexcept {
 /// Cross type: 'O'=opening, 'C'=closing, 'H'=halted/IPO,
 ///             'I'=intraday/post-close
 inline char cross_type(const uint8_t* msg) noexcept {
-    return static_cast<char>(msg[38]);
+    return static_cast<char>(msg[39]);
 }
 
 } // namespace cross_trade
@@ -668,7 +695,7 @@ inline char cross_type(const uint8_t* msg) noexcept {
 // ---- StockTradingAction ('H') --------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         stock(8) trading_state(1) reserved(1) reason(4)
-// Body size: 24
+// Total: 25  [reason at 21-24]
 namespace stock_trading_action {
 
 /// Stock symbol, right-padded with spaces (8 bytes at offset 11).
@@ -701,7 +728,7 @@ inline std::string_view reason(const uint8_t* msg) noexcept {
 // ---- RegSHORestriction ('Y') ---------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         stock(8) reg_sho_action(1)
-// Body size: 19
+// Total: 20  [reg_sho_action at 19]
 namespace reg_sho_restriction {
 
 /// Stock symbol, right-padded with spaces (8 bytes at offset 11).
@@ -726,7 +753,7 @@ inline char reg_sho_action(const uint8_t* msg) noexcept {
 // Layout: type(1) locate(2) tracking(2) timestamp(6)
 //         mpid(4) stock(8) primary_market_maker(1) market_maker_mode(1)
 //         market_participant_state(1)
-// Body size: 25
+// Total: 26  [market_participant_state at 25]
 namespace market_participant_position {
 
 /// Market participant identifier (4 bytes at offset 11).
@@ -939,7 +966,7 @@ inline char operational_halt_action(const uint8_t* msg) noexcept {
 
 // ---- BrokenTrade ('B') ---------------------------------------------------
 // Layout: type(1) locate(2) tracking(2) timestamp(6) match_number(8)
-// Body size: 18
+// Total: 19  [match_number at 11-18]
 namespace broken_trade {
 
 /// Match number of the broken trade (8 bytes BE at offset 11).
