@@ -25,6 +25,7 @@ TEST(SendError, NameCoversAllVariants) {
     EXPECT_STREQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
     EXPECT_STREQ(send_error_name(SendError::kInvalidUtf8), "INVALID_UTF8");
     EXPECT_STREQ(send_error_name(SendError::kInvalidCloseCode), "INVALID_CLOSE_CODE");
+    EXPECT_STREQ(send_error_name(SendError::kNullData), "NULL_DATA");
 }
 
 TEST(SendError, BangOperatorReturnsTrueOnFailure) {
@@ -34,6 +35,7 @@ TEST(SendError, BangOperatorReturnsTrueOnFailure) {
     EXPECT_TRUE(!SendError::kQueueFull);
     EXPECT_TRUE(!SendError::kInvalidUtf8);
     EXPECT_TRUE(!SendError::kInvalidCloseCode);
+    EXPECT_TRUE(!SendError::kNullData);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,6 +371,7 @@ TEST(TransportTypeFormatters, SendErrorFormats) {
     EXPECT_EQ(std::format("{}", SendError::kQueueFull), "QUEUE_FULL");
     EXPECT_EQ(std::format("{}", SendError::kInvalidUtf8), "INVALID_UTF8");
     EXPECT_EQ(std::format("{}", SendError::kInvalidCloseCode), "INVALID_CLOSE_CODE");
+    EXPECT_EQ(std::format("{}", SendError::kNullData), "NULL_DATA");
 }
 
 TEST(TransportTypeFormatters, TransportEventFormats) {
@@ -1195,6 +1198,27 @@ TEST(TransportConfigWarnings, MultipleWarningsFromSameConfig) {
     EXPECT_TRUE(has_ca);
 }
 
+TEST(TransportConfigWarnings, SkipUtf8ValidationWarning) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.skip_utf8_validation = true;
+    auto w = cfg.warnings();
+    ASSERT_GE(w.size(), 1u);
+    bool has_utf8 = false;
+    for (const auto& msg : w) {
+        if (msg.find("skip_utf8_validation") != std::string::npos) has_utf8 = true;
+    }
+    EXPECT_TRUE(has_utf8);
+
+    // Default (false) should NOT produce this warning
+    TransportConfig cfg2;
+    cfg2.remote_host = "example.com";
+    auto w2 = cfg2.warnings();
+    for (const auto& msg : w2) {
+        EXPECT_EQ(msg.find("skip_utf8_validation"), std::string::npos);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ThreadStats::reset()
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1914,6 +1938,23 @@ TEST(ThreadStatsSnapshot, SnapshotAfterResetIsZero) {
     auto snap = ts.snapshot();
     ThreadStats::Snapshot zero{};
     EXPECT_EQ(snap, zero);
+}
+
+TEST(ThreadStatsSnapshot, FormatterProducesOutput) {
+    ThreadStats::Snapshot s{
+        .packets = 100, .bytes = 5000, .text_packets = 20,
+        .text_bytes = 800, .dropped = 3, .crypto_errors = 1,
+    };
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("100"), std::string::npos);
+    EXPECT_NE(formatted.find("5000"), std::string::npos);
+    EXPECT_NE(formatted.find("20"), std::string::npos);
+    EXPECT_NE(formatted.find("800"), std::string::npos);
+    EXPECT_NE(formatted.find("3"), std::string::npos);
+    // Verify zero snapshot also formats
+    ThreadStats::Snapshot zero{};
+    auto zero_fmt = std::format("{}", zero);
+    EXPECT_FALSE(zero_fmt.empty());
 }
 
 TEST(TransportStats, EqualityDefaultInitialized) {

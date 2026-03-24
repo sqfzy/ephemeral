@@ -1128,6 +1128,17 @@ struct std::formatter<eph::net::ConnectionInfo> : std::formatter<std::string> {
 };
 
 template <>
+struct std::formatter<eph::net::ThreadStats::Snapshot> : std::formatter<std::string> {
+    auto format(const eph::net::ThreadStats::Snapshot& s, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("{}pkts/{}B (text:{}pkts/{}B dropped:{} crypto_err:{})",
+                s.packets, s.bytes, s.text_packets, s.text_bytes,
+                s.dropped, s.crypto_errors),
+            ctx);
+    }
+};
+
+template <>
 struct std::formatter<eph::net::TransportStats> : std::formatter<std::string> {
     auto format(const eph::net::TransportStats& s, auto& ctx) const {
         return std::formatter<std::string>::format(
