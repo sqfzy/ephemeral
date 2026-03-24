@@ -19,6 +19,47 @@ namespace eph::utils {
 namespace fs = std::filesystem;
 
 // ============================================================================
+// Shared file-export helpers (used by Recorder and ConcurrentRecorder)
+// ============================================================================
+
+namespace recorder_detail {
+
+[[nodiscard]] inline std::string get_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    return std::format("{:%Y-%m-%d_%H-%M-%S}",
+                       std::chrono::floor<std::chrono::seconds>(now));
+}
+
+[[nodiscard]] inline std::string sanitize_filename(std::string name) {
+    std::replace_if(
+        name.begin(), name.end(),
+        [](char c) { return !(std::isalnum(c) || c == '_' || c == '-'); },
+        '_');
+    return name;
+}
+
+[[nodiscard]] inline fs::path make_output_path(const std::string& name,
+                                               const std::string& dir,
+                                               const std::string& ext) {
+    return fs::path(dir) /
+           (sanitize_filename(name) + "_" + get_timestamp() + ext);
+}
+
+[[nodiscard]] inline bool ensure_directory(const std::string& path) noexcept {
+    try {
+        if (!fs::exists(path)) {
+            return fs::create_directories(path);
+        }
+        return true;
+    } catch (const fs::filesystem_error& e) {
+        std::println(stderr, "Directory error: {}", e.what());
+        return false;
+    }
+}
+
+}  // namespace recorder_detail
+
+// ============================================================================
 // Recorder — 单线程性能记录器
 // ============================================================================
 
@@ -350,36 +391,14 @@ class Recorder {
     HdrHistogram histogram_;
 
     [[nodiscard]] static std::string get_timestamp() {
-        auto now = std::chrono::system_clock::now();
-        return std::format("{:%Y-%m-%d_%H-%M-%S}",
-                           std::chrono::floor<std::chrono::seconds>(now));
+        return recorder_detail::get_timestamp();
     }
-
-    [[nodiscard]] static std::string sanitize_filename(std::string name) {
-        std::replace_if(
-            name.begin(), name.end(),
-            [](char c) { return !(std::isalnum(c) || c == '_' || c == '-'); },
-            '_');
-        return name;
+    [[nodiscard]] static bool ensure_directory(const std::string& path) noexcept {
+        return recorder_detail::ensure_directory(path);
     }
-
     [[nodiscard]] fs::path make_output_path(const std::string& dir,
                                             const std::string& ext) const {
-        return fs::path(dir) /
-               (sanitize_filename(name_) + "_" + get_timestamp() + ext);
-    }
-
-    [[nodiscard]] static bool ensure_directory(
-        const std::string& path) noexcept {
-        try {
-            if (!fs::exists(path)) {
-                return fs::create_directories(path);
-            }
-            return true;
-        } catch (const fs::filesystem_error& e) {
-            std::println(stderr, "Directory error: {}", e.what());
-            return false;
-        }
+        return recorder_detail::make_output_path(name_, dir, ext);
     }
 
     void print_warnings() const {
@@ -723,6 +742,8 @@ class ConcurrentRecorder {
         state_->retired_total_cycles = 0;
         state_->retired_min_cycles = std::numeric_limits<uint64_t>::max();
         state_->retired_max_cycles = 0;
+        state_->retired_skipped_invalid = 0;
+        state_->retired_skipped_overflow = 0;
     }
 
    private:
@@ -754,6 +775,8 @@ class ConcurrentRecorder {
         uint64_t retired_total_cycles = 0;
         uint64_t retired_min_cycles = std::numeric_limits<uint64_t>::max();
         uint64_t retired_max_cycles = 0;
+        uint64_t retired_skipped_invalid = 0;
+        uint64_t retired_skipped_overflow = 0;
         size_t retired_thread_count = 0;
 
         SharedState(uint64_t low, uint64_t high, int prec)
@@ -782,6 +805,8 @@ class ConcurrentRecorder {
                         std::min(retired_min_cycles, local->min_cycles);
                     retired_max_cycles =
                         std::max(retired_max_cycles, local->max_cycles);
+                    retired_skipped_invalid += local->skipped_invalid;
+                    retired_skipped_overflow += local->skipped_overflow;
                     retired_thread_count++;
 
                     active_locals.erase(it);
@@ -860,51 +885,25 @@ class ConcurrentRecorder {
     std::shared_ptr<SharedState> state_;
 
     [[nodiscard]] static std::string get_timestamp() {
-        auto now = std::chrono::system_clock::now();
-        return std::format("{:%Y-%m-%d_%H-%M-%S}",
-                           std::chrono::floor<std::chrono::seconds>(now));
+        return recorder_detail::get_timestamp();
     }
-
-    [[nodiscard]] static std::string sanitize_filename(std::string name) {
-        std::replace_if(
-            name.begin(), name.end(),
-            [](char c) { return !(std::isalnum(c) || c == '_' || c == '-'); },
-            '_');
-        return name;
+    [[nodiscard]] static bool ensure_directory(const std::string& path) noexcept {
+        return recorder_detail::ensure_directory(path);
     }
-
     [[nodiscard]] fs::path make_output_path(const std::string& dir,
                                             const std::string& ext) const {
-        return fs::path(dir) /
-               (sanitize_filename(name_) + "_" + get_timestamp() + ext);
-    }
-
-    [[nodiscard]] static bool ensure_directory(
-        const std::string& path) noexcept {
-        try {
-            if (!fs::exists(path)) {
-                return fs::create_directories(path);
-            }
-            return true;
-        } catch (const fs::filesystem_error& e) {
-            std::println(stderr, "Directory error: {}", e.what());
-            return false;
-        }
+        return recorder_detail::make_output_path(name_, dir, ext);
     }
 
     /// Sum skipped counts across all active and retired thread-local data.
     [[nodiscard]] std::pair<uint64_t, uint64_t> merged_skipped_counts() const {
         std::lock_guard lock(state_->mutex);
-        uint64_t invalid = 0;
-        uint64_t overflow = 0;
+        uint64_t invalid = state_->retired_skipped_invalid;
+        uint64_t overflow = state_->retired_skipped_overflow;
         for (const auto* local : state_->active_locals) {
             invalid += local->skipped_invalid;
             overflow += local->skipped_overflow;
         }
-        // Retired threads' skipped counts are not tracked separately
-        // in SharedState — they are lost on retirement. This is acceptable
-        // because retirement happens on thread exit, and the primary use
-        // case is reporting while threads are still active.
         return {invalid, overflow};
     }
 
