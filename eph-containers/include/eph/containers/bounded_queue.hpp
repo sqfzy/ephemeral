@@ -153,7 +153,7 @@ class BoundedQueue {
     // ===========================================================================
 
     /**
-     * @brief：尝试零拷贝写入 (Visitor 模式)
+     * @brief尝试零拷贝写入 (Visitor 模式)
      *
      * @tparam F 回调类型，签名应为 void(T& slot)
      * @param writer_func 用于初始化或修改数据的回调函数
@@ -445,7 +445,7 @@ class BoundedQueue {
     // ===========================================================================
 
     /**
-     * @brief：尝试零拷贝消费 (Visitor 模式)
+     * @brief尝试零拷贝消费 (Visitor 模式)
      *
      * @tparam F 回调类型，签名应为 void(T& data)
      * @param visitor 访问数据的回调
