@@ -527,8 +527,7 @@ class HdrHistogram {
         }
 
         // Always emit 100th percentile (max value) if not already emitted
-        uint64_t max_mid = max_value_;
-        if (first || max_mid != last_value_reported) {
+        if (first || max_value_ != last_value_reported) {
             func(PercentileEntry{
                 .value = max_value_,
                 .percentile = 100.0,
