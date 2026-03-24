@@ -1474,3 +1474,19 @@ TEST(HdrHistogramTest, EqualityCopiedHistogram) {
     b.record(999);
     EXPECT_NE(a, b);
 }
+
+// ============================================================================
+// is_compatible() — additional edge cases
+// ============================================================================
+
+TEST(HdrHistogramTest, IsCompatibleDifferentPrecision) {
+    HdrHistogram a(1, 10000, 2);
+    HdrHistogram b(1, 10000, 3);
+    EXPECT_FALSE(a.is_compatible(b));
+}
+
+TEST(HdrHistogramTest, IsCompatibleDefaultConstructed) {
+    HdrHistogram a;
+    HdrHistogram b;
+    EXPECT_TRUE(a.is_compatible(b));
+}
