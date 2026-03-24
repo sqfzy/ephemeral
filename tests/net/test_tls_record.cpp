@@ -612,6 +612,88 @@ TEST(TlsRecord, EncryptDecryptAtHighSequence) {
     EXPECT_EQ(written, 0u) << "Should fail at sequence limit";
 }
 
+TEST(TlsRecord, EncryptExactlyAtMaxSequenceReturnsZero) {
+    // Verify that encrypt at exactly kMaxSequenceNumber fails immediately
+    auto state = make_roundtrip_state();
+    state.write.seq = tls_record::kMaxSequenceNumber;
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    std::vector<uint8_t> pt(17, 0xAA);
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+    uint16_t written = enc->encrypt(pt.data(), 16, record.data());
+    EXPECT_EQ(written, 0u)
+        << "Encrypt must fail when write_seq == kMaxSequenceNumber";
+    // Sequence should not advance on failure
+    EXPECT_EQ(enc->write_seq(), tls_record::kMaxSequenceNumber);
+}
+
+TEST(TlsRecord, DecryptExactlyAtMaxSequenceReturnsZero) {
+    // Encrypt a valid record at seq=0, then try to decrypt with read_seq at limit
+    auto state = make_roundtrip_state();
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    std::vector<uint8_t> pt(17, 0xBB);
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+    uint16_t written = enc->encrypt(pt.data(), 16, record.data());
+    ASSERT_GT(written, 0u);
+
+    TlsHotState dec_state{};
+    std::memcpy(dec_state.read.ki.key, state.write.ki.key, tls_const::kAes256KeyLen);
+    std::memcpy(dec_state.read.ki.iv,  state.write.ki.iv,  tls_const::kTls13NonceLen);
+    dec_state.read.seq = tls_record::kMaxSequenceNumber;
+    auto dec = TlsRecordCrypto::create(dec_state);
+    ASSERT_TRUE(dec.has_value());
+
+    std::vector<uint8_t> out(32);
+    uint16_t dec_len;
+    bool ok = dec->decrypt(record.data(), written, out.data(), dec_len);
+    EXPECT_FALSE(ok) << "Decrypt must fail when read_seq == kMaxSequenceNumber";
+    // Sequence should not advance on failure
+    EXPECT_EQ(dec->read_seq(), tls_record::kMaxSequenceNumber);
+}
+
+TEST(TlsRecord, LastValidEncryptSucceeds) {
+    // The last valid encrypt is at write_seq == kMaxSequenceNumber - 1
+    auto state = make_roundtrip_state();
+    state.write.seq = tls_record::kMaxSequenceNumber - 1;
+    auto enc = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    std::vector<uint8_t> pt(17, 0xCC);
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+    uint16_t written = enc->encrypt(pt.data(), 16, record.data());
+    EXPECT_GT(written, 0u) << "Last valid encrypt must succeed";
+    EXPECT_EQ(enc->write_seq(), tls_record::kMaxSequenceNumber)
+        << "Sequence should advance to kMaxSequenceNumber after last valid encrypt";
+
+    // Next encrypt should now fail
+    std::vector<uint8_t> record2(TlsRecordCrypto::encrypted_size(16));
+    uint16_t written2 = enc->encrypt(pt.data(), 16, record2.data());
+    EXPECT_EQ(written2, 0u) << "Encrypt past limit must fail";
+}
+
+TEST(TlsRecord, SequenceCounterIncrements) {
+    // Verify write_seq and read_seq increment correctly after each operation
+    auto state = make_roundtrip_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    EXPECT_EQ(crypto->write_seq(), 0u);
+    EXPECT_EQ(crypto->read_seq(), 0u);
+
+    // Encrypt 5 records, verify write_seq increments
+    for (uint64_t i = 0; i < 5; ++i) {
+        std::vector<uint8_t> pt(17, static_cast<uint8_t>(i));
+        std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+        uint16_t written = crypto->encrypt(pt.data(), 16, record.data());
+        ASSERT_GT(written, 0u);
+        EXPECT_EQ(crypto->write_seq(), i + 1);
+    }
+    EXPECT_EQ(crypto->read_seq(), 0u) << "Read seq should not change from encrypts";
+}
+
 TEST(TlsRecord, MoveAssign) {
     auto state = make_test_state();
     auto result1 = TlsRecordCrypto::create(state);

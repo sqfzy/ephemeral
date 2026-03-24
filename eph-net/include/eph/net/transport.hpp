@@ -546,9 +546,12 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t>
     bool recv(F&& callback) {
-        return rx_queue_.try_consume([&](RxMsg& msg) {
+        bool consumed = rx_queue_.try_consume([&](RxMsg& msg) {
+            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+                "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
             std::invoke(std::forward<F>(callback), msg.data, msg.len);
         });
+        return consumed;
     }
 
     /// Try to receive a message with opcode (non-blocking).
@@ -558,9 +561,12 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     bool recv(F&& callback) {
-        return rx_queue_.try_consume([&](RxMsg& msg) {
+        bool consumed = rx_queue_.try_consume([&](RxMsg& msg) {
+            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+                "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
             std::invoke(std::forward<F>(callback), msg.data, msg.len, msg.opcode);
         });
+        return consumed;
     }
 
     /// Try to receive a message as a copied byte vector (non-blocking).
@@ -804,6 +810,11 @@ public:
             uint16_t status_code = ws::close_code::kNormal,
             std::string_view reason = "client shutdown",
             std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) noexcept {
+        // Store close code/reason so stop() can propagate them in the
+        // final Close frame instead of using a hardcoded default.
+        pending_close_code_ = status_code;
+        pending_close_reason_ = std::string(reason);
+
         auto err = send_close(status_code, reason);
         if (err != SendError::kOk) {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
@@ -824,7 +835,7 @@ public:
                 stop();
                 return false;
             }
-            std::this_thread::yield();
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
 
         // Server responded with Close — stop cleanly
@@ -857,7 +868,9 @@ public:
                 // plus 1 byte for encrypt()'s temporary content type append.
                 uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
                 size_t close_len = ws::build_close_frame(
-                    close_buf, ws::close_code::kNormal, "client shutdown");
+                    close_buf, pending_close_code_,
+                    pending_close_reason_.empty()
+                        ? "client shutdown" : pending_close_reason_);
 
                 if (config_.use_tls) {
                     // TLS output: record header + ciphertext + content type + auth tag
@@ -1127,8 +1140,13 @@ private:
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
             // Queue full → HWM is max capacity
             update_hwm(tx_hwm_, QueueDepth);
+            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+                "TX enqueue failed: queue full (len={}, opcode={})",
+                len, opcode);
             return SendError::kQueueFull;
         }
+        SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+            "TX enqueue: len={}, opcode={}", len, opcode);
         // Sample HWM every 64 enqueues to avoid cross-core size() read
         // on every send(). size() reads both writer tail and reader head
         // which sit on separate cache lines — expensive on every call.
@@ -1224,7 +1242,12 @@ private:
     using SteadyTimePoint = std::chrono::steady_clock::time_point;
     std::atomic<int64_t>                   last_pong_ns_{0};      // RX writes, TX reads
     bool                                   ping_awaiting_pong_{false}; // TX-thread-local
-    bool                                   seq_warning_logged_{false}; // TX-thread-local
+    bool                                   seq_warning_logged_{false};    // TX-thread-local
+    bool                                   rx_seq_warning_logged_{false}; // RX-thread-local
+
+    // Close code/reason from close_gracefully(), propagated to stop()
+    uint16_t                               pending_close_code_{ws::close_code::kNormal};
+    std::string                            pending_close_reason_{};
 
     // RTT measurement: TX thread writes TSC timestamp when sending ping,
     // RX thread reads it when pong arrives and records the delta in the
@@ -1375,8 +1398,9 @@ private:
             ping_awaiting_pong_ = false;
         }
 
-        // Reset TLS sequence warning flag — fresh keys reset the counter
+        // Reset TLS sequence warning flags — fresh keys reset the counters
         seq_warning_logged_ = false;
+        rx_seq_warning_logged_ = false;
 
         // Record handshake duration
         auto connect_end = std::chrono::steady_clock::now();
@@ -1744,18 +1768,31 @@ private:
                 continue;
             }
 
-            // Log once at 90% of TLS sequence limit so operators
-            // can anticipate the upcoming reconnect for key refresh.
-            if (config_.use_tls && !seq_warning_logged_) [[unlikely]] {
+            // Proactive TLS key refresh: warn at 90%, trigger reconnect at 95%.
+            // This avoids hitting the hard limit where encrypt() returns 0
+            // and messages are lost. Reconnect replaces keys with fresh ones.
+            if (config_.use_tls) [[unlikely]] {
+                uint64_t seq = crypto_->write_seq();
                 constexpr uint64_t kSeqWarnThreshold =
                     tls_record::kMaxSequenceNumber * 9 / 10;
-                uint64_t seq = crypto_->write_seq();
-                if (seq >= kSeqWarnThreshold) {
+                constexpr uint64_t kSeqReconnectThreshold =
+                    tls_record::kMaxSequenceNumber * 95 / 100;
+
+                if (!seq_warning_logged_ && seq >= kSeqWarnThreshold) {
                     SPDLOG_LOGGER_WARN(log,
                         "TLS write sequence at {}/{} (90%%), "
-                        "reconnect imminent for key refresh",
+                        "preemptive reconnect approaching",
                         seq, tls_record::kMaxSequenceNumber);
                     seq_warning_logged_ = true;
+                }
+
+                if (seq >= kSeqReconnectThreshold) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "TLS write sequence at {}/{} (95%%), "
+                        "triggering preemptive reconnect for key refresh",
+                        seq, tls_record::kMaxSequenceNumber);
+                    tcp_->reset();
+                    continue;
                 }
             }
 
@@ -2128,6 +2165,21 @@ private:
                 }
                 ws_reassembly_len = ws_remaining;
                 continue;
+            }
+
+            // Proactive warning at 90% of TLS read sequence limit,
+            // symmetric with the TX thread's write sequence check.
+            if (!rx_seq_warning_logged_) [[likely]] {
+                constexpr uint64_t kSeqWarnThreshold =
+                    tls_record::kMaxSequenceNumber * 9 / 10;
+                uint64_t rseq = crypto_->read_seq();
+                if (rseq >= kSeqWarnThreshold) [[unlikely]] {
+                    SPDLOG_LOGGER_WARN(log,
+                        "TLS read sequence at {}/{} (90%%), "
+                        "reconnect imminent for key refresh",
+                        rseq, tls_record::kMaxSequenceNumber);
+                    rx_seq_warning_logged_ = true;
+                }
             }
 
             // Decrypt complete TLS records from reassembly buffer
