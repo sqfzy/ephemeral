@@ -678,3 +678,104 @@ TEST(ConcurrentRecorderComputeAndReset, includes_retired_thread_data) {
     auto stats2 = rec.compute_stats();
     EXPECT_FALSE(stats2.has_value());
 }
+
+TEST(ConcurrentRecorderComputeAndReset, only_retired_threads_no_active) {
+    ConcurrentRecorder rec("ConcCAROnlyRetired");
+
+    // Record only from worker threads that will retire
+    {
+        std::thread w1([&rec]() {
+            for (int i = 0; i < 50; ++i) rec.record(100);
+        });
+        std::thread w2([&rec]() {
+            for (int i = 0; i < 50; ++i) rec.record(200);
+        });
+        w1.join();
+        w2.join();
+    }
+
+    // Now only retired threads have data — main thread never recorded
+    auto stats = rec.compute_and_reset();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->count, 100u);
+
+    // Verify reset cleared retired data too
+    auto stats2 = rec.compute_stats();
+    EXPECT_FALSE(stats2.has_value());
+}
+
+TEST(ConcurrentRecorderComputeAndReset, stats_percentiles_monotonic) {
+    ConcurrentRecorder rec("ConcCARPercentiles");
+
+    // Record a spread of values to get meaningful percentiles
+    for (uint64_t v = 10; v <= 1000; v += 10) {
+        rec.record(v);
+    }
+
+    auto stats = rec.compute_and_reset();
+    ASSERT_TRUE(stats.has_value());
+
+    // Percentiles must be monotonically non-decreasing
+    EXPECT_LE(stats->min_ns, stats->p50_ns);
+    EXPECT_LE(stats->p50_ns, stats->p90_ns);
+    EXPECT_LE(stats->p90_ns, stats->p99_ns);
+    EXPECT_LE(stats->p99_ns, stats->p999_ns);
+    EXPECT_LE(stats->p999_ns, stats->max_ns);
+
+    // Average should be between min and max
+    EXPECT_GE(stats->avg_ns, stats->min_ns);
+    EXPECT_LE(stats->avg_ns, stats->max_ns);
+
+    // Stddev should be non-negative
+    EXPECT_GE(stats->stddev_ns, 0.0);
+}
+
+TEST(ConcurrentRecorderComputeAndReset, name_preserved_in_stats) {
+    ConcurrentRecorder rec("MyRecorderName");
+    rec.record(42);
+    auto stats = rec.compute_and_reset();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->name, "MyRecorderName");
+}
+
+TEST(ConcurrentRecorderComputeAndReset, rapid_successive_windows) {
+    ConcurrentRecorder rec("ConcCARRapid");
+
+    // 5 rapid windows, each with different sample counts
+    for (int window = 1; window <= 5; ++window) {
+        for (int i = 0; i < window * 10; ++i) {
+            rec.record(50);
+        }
+        auto stats = rec.compute_and_reset();
+        ASSERT_TRUE(stats.has_value());
+        EXPECT_EQ(stats->count, static_cast<uint64_t>(window * 10));
+    }
+
+    // After all windows, no data left
+    EXPECT_FALSE(rec.compute_and_reset().has_value());
+}
+
+TEST(ConcurrentRecorderComputeAndReset, concurrent_record_does_not_crash) {
+    ConcurrentRecorder rec("ConcCARStress");
+    std::atomic<bool> stop{false};
+
+    // Recording thread runs continuously
+    std::thread recorder([&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            rec.record(100);
+        }
+    });
+
+    // Main thread does rapid compute_and_reset calls
+    for (int i = 0; i < 20; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        auto stats = rec.compute_and_reset();
+        // May or may not have data depending on timing — just verify no crash
+        if (stats.has_value()) {
+            EXPECT_GT(stats->count, 0u);
+        }
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    recorder.join();
+}

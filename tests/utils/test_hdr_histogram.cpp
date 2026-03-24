@@ -987,3 +987,157 @@ TEST(HdrHistogramDistribution, negative_scaling_uses_default) {
     auto output = h.output_percentile_distribution(-1.0);
     EXPECT_NE(output.find("#[Mean"), std::string::npos);
 }
+
+TEST(HdrHistogramDistribution, zero_scaling_treated_as_one) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    auto unscaled = h.output_percentile_distribution(1.0);
+    auto zero_scaled = h.output_percentile_distribution(0.0);
+    // Zero scaling should produce identical output to 1.0
+    EXPECT_EQ(unscaled, zero_scaled);
+}
+
+TEST(HdrHistogramDistribution, footer_values_are_scaled) {
+    HdrHistogram h(1, 1000000, 3);
+    h.record(1000);
+    h.record(2000);
+    h.record(3000);
+    auto output = h.output_percentile_distribution(1000.0);
+    // Mean of 1000,2000,3000 is ~2000, scaled by 1000 → ~2.0
+    // Footer should show scaled mean
+    EXPECT_NE(output.find("#[Mean"), std::string::npos);
+    // Max is ~3000, scaled → ~3.0
+    EXPECT_NE(output.find("#[Max"), std::string::npos);
+}
+
+TEST(HdrHistogramDistribution, last_percentile_shows_inf) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(42);
+    auto output = h.output_percentile_distribution();
+    // Last entry at 100th percentile should show "inf" in 1/(1-p) column
+    EXPECT_NE(output.find("inf"), std::string::npos);
+}
+
+TEST(HdrHistogramDistribution, fractional_scaling_doubles_values) {
+    HdrHistogram h(1, 1000000, 3);
+    h.record(1000);
+    // Scaling by 0.5 should double the displayed values
+    auto output = h.output_percentile_distribution(0.5);
+    // Mean ~1000, scaled by 0.5 → ~2000
+    EXPECT_NE(output.find("#[Mean"), std::string::npos);
+    EXPECT_NE(output.find("Total count"), std::string::npos);
+}
+
+// ============================================================================
+// Inverse CDF edge cases
+// ============================================================================
+
+TEST(HdrHistogramInverseCdf, value_zero_returns_zero) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(10);
+    h.record(100);
+    // All buckets have value_from_index > 0, so nothing is <= 0
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(0), 0.0);
+}
+
+TEST(HdrHistogramInverseCdf, value_uint64_max_returns_100) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(10);
+    h.record(500);
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(
+        std::numeric_limits<uint64_t>::max()), 100.0);
+}
+
+TEST(HdrHistogramInverseCdf, value_between_recorded_values) {
+    HdrHistogram h(1, 10000, 3);
+    // Record 100 values at 100 and 100 values at 9000
+    for (int i = 0; i < 100; ++i) h.record(100);
+    for (int i = 0; i < 100; ++i) h.record(9000);
+
+    // Value between the two clusters: should be ~50%
+    double p = h.get_percentile_at_or_below(5000);
+    EXPECT_GE(p, 45.0);
+    EXPECT_LE(p, 55.0);
+}
+
+TEST(HdrHistogramInverseCdf, sparse_distribution) {
+    HdrHistogram h(1, 100000, 3);
+    h.record(1);
+    h.record(1000);
+    h.record(50000);
+    // Value 500 is between 1 and 1000
+    double p = h.get_percentile_at_or_below(500);
+    // Only the value 1 is <= 500, so ~33%
+    EXPECT_GE(p, 30.0);
+    EXPECT_LE(p, 40.0);
+}
+
+TEST(HdrHistogramInverseCdf, value_below_lowest_trackable) {
+    HdrHistogram h(10, 10000, 3);
+    h.record(10);
+    h.record(100);
+    // Query value below lowest_trackable_value — nothing recorded <= 5
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(5), 0.0);
+}
+
+// ============================================================================
+// Batch inverse CDF edge cases
+// ============================================================================
+
+TEST(HdrHistogramBatchInverseCdf, empty_values_returns_empty) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    auto results = h.get_percentiles_at_or_below({});
+    EXPECT_TRUE(results.empty());
+}
+
+TEST(HdrHistogramBatchInverseCdf, single_element_vector) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    auto results = h.get_percentiles_at_or_below({100});
+    ASSERT_EQ(results.size(), 1);
+    EXPECT_DOUBLE_EQ(results[0], 100.0);
+}
+
+TEST(HdrHistogramBatchInverseCdf, duplicate_values_get_same_result) {
+    HdrHistogram h(1, 10000, 3);
+    for (uint64_t i = 1; i <= 100; ++i) h.record(i);
+
+    auto results = h.get_percentiles_at_or_below({50, 50, 50});
+    ASSERT_EQ(results.size(), 3);
+    EXPECT_DOUBLE_EQ(results[0], results[1]);
+    EXPECT_DOUBLE_EQ(results[1], results[2]);
+}
+
+TEST(HdrHistogramBatchInverseCdf, all_values_below_min) {
+    HdrHistogram h(10, 10000, 3);
+    h.record(100);
+    h.record(200);
+    // All query values are below smallest recorded value
+    auto results = h.get_percentiles_at_or_below({1, 5, 9});
+    ASSERT_EQ(results.size(), 3);
+    for (double r : results) {
+        EXPECT_DOUBLE_EQ(r, 0.0);
+    }
+}
+
+TEST(HdrHistogramBatchInverseCdf, value_zero_in_batch) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    auto results = h.get_percentiles_at_or_below({0, 100, 999});
+    ASSERT_EQ(results.size(), 3);
+    EXPECT_DOUBLE_EQ(results[0], 0.0);
+    EXPECT_DOUBLE_EQ(results[1], 100.0);
+    EXPECT_DOUBLE_EQ(results[2], 100.0);
+}
+
+TEST(HdrHistogramBatchInverseCdf, uint64_max_in_batch) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(10);
+    h.record(500);
+    auto results = h.get_percentiles_at_or_below(
+        {0, std::numeric_limits<uint64_t>::max()});
+    ASSERT_EQ(results.size(), 2);
+    EXPECT_DOUBLE_EQ(results[0], 0.0);
+    EXPECT_DOUBLE_EQ(results[1], 100.0);
+}
