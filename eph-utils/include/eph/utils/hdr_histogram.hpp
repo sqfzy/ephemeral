@@ -368,6 +368,12 @@ class HdrHistogram {
         return total_count_;
     }
 
+    /// Check if no samples have been recorded.
+    /// Convenience for `get_total_count() == 0`, consistent with STL containers.
+    [[nodiscard]] bool empty() const noexcept {
+        return total_count_ == 0;
+    }
+
     /// Number of samples rejected because they fell outside the trackable range.
     /// Non-zero values indicate the histogram range should be widened.
     [[nodiscard]] uint64_t get_dropped_count() const noexcept {
@@ -380,6 +386,29 @@ class HdrHistogram {
     }
 
     [[nodiscard]] uint64_t get_max_value() const noexcept { return max_value_; }
+
+    /// Count the number of recorded samples whose values fall within [low, high].
+    ///
+    /// Useful for SLA monitoring: "how many latencies were between 1µs and 10µs?"
+    /// Traverses only the relevant portion of the histogram's bucket array.
+    ///
+    /// @param low   Lower bound (inclusive)
+    /// @param high  Upper bound (inclusive)
+    /// @return Number of samples in [low, high], or 0 if histogram is empty
+    [[nodiscard]] uint64_t get_count_between(uint64_t low, uint64_t high) const noexcept {
+        if (total_count_ == 0 || low > high) return 0;
+
+        uint64_t count = 0;
+        for (int32_t i = 0; i < counts_len_; ++i) {
+            if (counts_[i] == 0) continue;
+            uint64_t bucket_value = value_from_index(i);
+            if (bucket_value > high) break;
+            if (bucket_value >= low) {
+                count += counts_[i];
+            }
+        }
+        return count;
+    }
 
     [[nodiscard]] double get_mean() const noexcept {
         if (total_count_ == 0) return 0.0;
@@ -725,6 +754,18 @@ class HdrHistogram {
             bucket_count_, sub_bucket_count_);
 
         return result;
+    }
+
+    /// Equality comparison: two histograms are equal if they have identical
+    /// configuration and identical recorded data (bucket counts, min/max, dropped).
+    /// Useful for testing and verifying merge/subtract round-trip correctness.
+    [[nodiscard]] bool operator==(const HdrHistogram& other) const noexcept {
+        if (!is_compatible(other)) return false;
+        if (total_count_ != other.total_count_) return false;
+        if (min_value_ != other.min_value_) return false;
+        if (max_value_ != other.max_value_) return false;
+        if (dropped_count_ != other.dropped_count_) return false;
+        return counts_ == other.counts_;
     }
 
     [[nodiscard]] bool is_compatible(const HdrHistogram& other) const noexcept {

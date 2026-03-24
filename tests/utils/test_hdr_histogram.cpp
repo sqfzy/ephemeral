@@ -1341,3 +1341,136 @@ TEST(HdrHistogramDistribution, infinity_scaling_produces_zero_values) {
     // With infinity scaling, all values should be 0.000
     EXPECT_NE(output.find("0.000"), std::string::npos);
 }
+
+// ============================================================================
+// empty()
+// ============================================================================
+
+TEST(HdrHistogramTest, EmptyOnNewHistogram) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_TRUE(h.empty());
+    EXPECT_EQ(h.get_total_count(), 0u);
+}
+
+TEST(HdrHistogramTest, EmptyAfterRecord) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(100);
+    EXPECT_FALSE(h.empty());
+}
+
+TEST(HdrHistogramTest, EmptyAfterReset) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(100);
+    h.record(200);
+    EXPECT_FALSE(h.empty());
+    h.reset();
+    EXPECT_TRUE(h.empty());
+}
+
+TEST(HdrHistogramTest, EmptyNotAffectedByDroppedSamples) {
+    HdrHistogram h(10, 100, 3);
+    // Record value outside range — should be dropped
+    h.record(1);  // below lowest_trackable_value
+    EXPECT_TRUE(h.empty());  // dropped samples don't count
+    EXPECT_GT(h.get_dropped_count(), 0u);
+}
+
+// ============================================================================
+// get_count_between()
+// ============================================================================
+
+TEST(HdrHistogramTest, CountBetweenEmptyHistogram) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_EQ(h.get_count_between(0, 10000), 0u);
+}
+
+TEST(HdrHistogramTest, CountBetweenInvertedRangeReturnsZero) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(100);
+    EXPECT_EQ(h.get_count_between(200, 50), 0u);
+}
+
+TEST(HdrHistogramTest, CountBetweenFullRange) {
+    HdrHistogram h(1, 10000, 3);
+    for (int i = 1; i <= 100; ++i) h.record(i);
+    // Full range should capture all samples
+    EXPECT_EQ(h.get_count_between(1, 10000), 100u);
+}
+
+TEST(HdrHistogramTest, CountBetweenSubRange) {
+    HdrHistogram h(1, 10000, 3);
+    // Record distinct values in known ranges
+    for (int i = 0; i < 50; ++i) h.record(100);   // 50 samples at ~100
+    for (int i = 0; i < 30; ++i) h.record(5000);  // 30 samples at ~5000
+
+    // Low range should capture ~50 samples, high range ~30
+    uint64_t low_count = h.get_count_between(1, 500);
+    uint64_t high_count = h.get_count_between(4000, 10000);
+    EXPECT_EQ(low_count, 50u);
+    EXPECT_EQ(high_count, 30u);
+}
+
+TEST(HdrHistogramTest, CountBetweenSameValue) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(500);
+    h.record(500);
+    h.record(500);
+    // Exact point query should find them
+    uint64_t count = h.get_count_between(500, 500);
+    EXPECT_EQ(count, 3u);
+}
+
+// ============================================================================
+// operator==
+// ============================================================================
+
+TEST(HdrHistogramTest, EqualityDefaultConstructed) {
+    HdrHistogram a;
+    HdrHistogram b;
+    EXPECT_EQ(a, b);
+}
+
+TEST(HdrHistogramTest, EqualityIdenticalData) {
+    HdrHistogram a(1, 10000, 3);
+    HdrHistogram b(1, 10000, 3);
+
+    for (int i = 1; i <= 100; ++i) {
+        a.record(i * 10);
+        b.record(i * 10);
+    }
+    EXPECT_EQ(a, b);
+}
+
+TEST(HdrHistogramTest, EqualityDifferentData) {
+    HdrHistogram a(1, 10000, 3);
+    HdrHistogram b(1, 10000, 3);
+
+    a.record(100);
+    b.record(200);
+    EXPECT_NE(a, b);
+}
+
+TEST(HdrHistogramTest, EqualityIncompatibleConfig) {
+    HdrHistogram a(1, 10000, 3);
+    HdrHistogram b(1, 20000, 3);  // different range
+    EXPECT_NE(a, b);
+}
+
+TEST(HdrHistogramTest, EqualityAfterResetBothEmpty) {
+    HdrHistogram a(1, 10000, 3);
+    HdrHistogram b(1, 10000, 3);
+    a.record(100);
+    a.reset();
+    EXPECT_EQ(a, b);
+}
+
+TEST(HdrHistogramTest, EqualityCopiedHistogram) {
+    HdrHistogram a(1, 10000, 3);
+    for (int i = 1; i <= 50; ++i) a.record(i * 100);
+
+    HdrHistogram b = a;  // copy
+    EXPECT_EQ(a, b);
+
+    b.record(999);
+    EXPECT_NE(a, b);
+}
