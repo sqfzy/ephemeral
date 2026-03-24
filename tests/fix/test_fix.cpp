@@ -4482,3 +4482,62 @@ TEST(FixBuilder, as_span_and_as_string_view_after_finish) {
     EXPECT_EQ(sv.size(), len);
     EXPECT_TRUE(sv.starts_with("8=FIX"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_int_value edge cases: leading zeros, plus sign, whitespace
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FixValueParsers, get_int_leading_zeros_parsed_correctly) {
+    // FIX spec: integer values are plain decimal ASCII
+    // Leading zeros should still parse to the correct numeric value
+    auto result = eph::fix::detail::parse_int_value("0000123");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 123);
+}
+
+TEST(FixValueParsers, get_int_single_zero) {
+    auto result = eph::fix::detail::parse_int_value("0");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 0);
+}
+
+TEST(FixValueParsers, get_int_all_zeros) {
+    auto result = eph::fix::detail::parse_int_value("0000000");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, 0);
+}
+
+TEST(FixValueParsers, get_int_negative_with_leading_zeros) {
+    auto result = eph::fix::detail::parse_int_value("-000042");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, -42);
+}
+
+TEST(FixValueParsers, get_int_plus_sign_rejected) {
+    // FIX protocol does not use '+' prefix for positive integers
+    auto result = eph::fix::detail::parse_int_value("+123");
+    EXPECT_FALSE(result.has_value())
+        << "'+' prefix is not valid in FIX integer values";
+}
+
+TEST(FixValueParsers, get_int_empty_string_rejected) {
+    auto result = eph::fix::detail::parse_int_value("");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(FixValueParsers, get_int_bare_minus_rejected) {
+    auto result = eph::fix::detail::parse_int_value("-");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(FixValueParsers, get_int_whitespace_rejected) {
+    EXPECT_FALSE(eph::fix::detail::parse_int_value(" 123").has_value());
+    EXPECT_FALSE(eph::fix::detail::parse_int_value("123 ").has_value());
+    EXPECT_FALSE(eph::fix::detail::parse_int_value(" ").has_value());
+}
+
+TEST(FixValueParsers, get_int_non_digit_rejected) {
+    EXPECT_FALSE(eph::fix::detail::parse_int_value("12a3").has_value());
+    EXPECT_FALSE(eph::fix::detail::parse_int_value("abc").has_value());
+    EXPECT_FALSE(eph::fix::detail::parse_int_value("1.5").has_value());
+}
