@@ -294,3 +294,44 @@ TEST(PlatformConfig, dump_contains_all_fields) {
     EXPECT_NE(d.find("PlatformConfig"), std::string::npos);
     EXPECT_NE(d.find("2rx/2tx"), std::string::npos);
 }
+
+TEST(PlatformConfig, to_json_promiscuous_false) {
+    PlatformConfig cfg{};
+    cfg.enable_promiscuous = false;
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"enable_promiscuous\":false"), std::string::npos);
+}
+
+TEST(TcpConfig, format_mac_all_zeros) {
+    rte_ether_addr zero = {{0, 0, 0, 0, 0, 0}};
+    EXPECT_EQ(TcpConfig::format_mac(zero), "00:00:00:00:00:00");
+}
+
+TEST(TcpConfig, format_mac_broadcast) {
+    rte_ether_addr bcast = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+    EXPECT_EQ(TcpConfig::format_mac(bcast), "ff:ff:ff:ff:ff:ff");
+}
+
+TEST(TcpConfig, format_mac_mixed_bytes) {
+    rte_ether_addr mac = {{0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E}};
+    EXPECT_EQ(TcpConfig::format_mac(mac), "00:1a:2b:3c:4d:5e");
+}
+
+TEST(TcpConfig, equality_default_initialized) {
+    TcpConfig a{};
+    TcpConfig b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TcpConfig, dump_includes_ip_and_mac) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0xC0A80001,
+                 .src_port = 5000, .dst_port = 443};
+    cfg.src_mac = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(d.find("192.168.0.1"), std::string::npos);
+    EXPECT_NE(d.find("aa:bb:cc:dd:ee:ff"), std::string::npos);
+    EXPECT_NE(d.find("5000"), std::string::npos);
+    EXPECT_NE(d.find("443"), std::string::npos);
+}

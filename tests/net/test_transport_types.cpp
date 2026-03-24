@@ -1893,3 +1893,65 @@ TEST(SocketConfig, EqualityIncludesAllFields) {
     b.tcp_keepalive = false;
     EXPECT_NE(a, b);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edge case tests for observability operators
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ThreadStatsSnapshot, DeltaIdentityWhenSame) {
+    ThreadStats::Snapshot s{.packets = 50, .bytes = 2000, .text_packets = 10,
+                            .text_bytes = 500, .dropped = 3, .crypto_errors = 1};
+    auto delta = s - s;
+    ThreadStats::Snapshot zero{};
+    EXPECT_EQ(delta, zero);
+}
+
+TEST(ThreadStatsSnapshot, SnapshotAfterResetIsZero) {
+    ThreadStats ts;
+    ts.packets.store(42, std::memory_order_relaxed);
+    ts.bytes.store(999, std::memory_order_relaxed);
+    ts.reset();
+    auto snap = ts.snapshot();
+    ThreadStats::Snapshot zero{};
+    EXPECT_EQ(snap, zero);
+}
+
+TEST(TransportStats, EqualityDefaultInitialized) {
+    TransportStats a{};
+    TransportStats b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TransportStats, EqualityDiffersOnRemoteIpOnly) {
+    TransportStats a{};
+    a.remote_ip = "10.0.0.1";
+    TransportStats b{};
+    b.remote_ip = "10.0.0.2";
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportStats, DeltaPreservesRemoteIpFromLhs) {
+    TransportStats s1{};
+    s1.tx_packets = 100;
+    s1.remote_ip = "10.0.0.1";
+    TransportStats s2{};
+    s2.tx_packets = 70;
+    s2.remote_ip = "10.0.0.2";
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.tx_packets, 30u);
+    EXPECT_EQ(delta.remote_ip, "10.0.0.1");
+}
+
+TEST(RttStats, EqualityMeanNsDoublePrecision) {
+    RttStats a{.count = 1, .mean_ns = 123.456789};
+    RttStats b{.count = 1, .mean_ns = 123.456789};
+    EXPECT_EQ(a, b);
+    b.mean_ns = 123.456790;
+    EXPECT_NE(a, b);
+}
+
+TEST(ConnectionErrorInfo, EqualityDiffersOnCodeOnly) {
+    ConnectionErrorInfo a{ConnectionError::kTlsHandshakeFailed, "cert expired", 0};
+    ConnectionErrorInfo b{ConnectionError::kTlsSessionFailed, "cert expired", 0};
+    EXPECT_NE(a, b);
+}
