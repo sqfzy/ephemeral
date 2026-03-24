@@ -130,17 +130,20 @@ struct ConnectorOptions {
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"platform\":{},\"local_port\":{},\"tx_queue_id\":{},"
-            "\"rx_queue_id\":{},\"arp_timeout_ms\":{},\"connect_timeout_ms\":{}}}",
+            "\"rx_queue_id\":{},\"arp_timeout_ms\":{},\"connect_timeout_ms\":{},"
+            "\"dns\":{}}}",
             platform.to_json(), local_port, tx_queue_id,
-            rx_queue_id, arp_timeout.count(), connect_timeout.count());
+            rx_queue_id, arp_timeout.count(), connect_timeout.count(),
+            dns.to_json());
     }
 
     [[nodiscard]] std::string dump() const {
         return std::format(
             "ConnectorOptions(port={}, queues=tx{}/rx{}, "
-            "arp_timeout={}ms, connect_timeout={}ms)\n  {}",
+            "arp_timeout={}ms, connect_timeout={}ms, dns={})\n  {}",
             local_port, tx_queue_id, rx_queue_id,
             arp_timeout.count(), connect_timeout.count(),
+            net::format_ipv4(dns.nameserver_ip).data(),
             platform.dump());
     }
 };

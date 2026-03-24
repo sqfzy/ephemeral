@@ -89,6 +89,12 @@ struct DnsConfig {
 
     [[nodiscard]] friend bool operator==(const DnsConfig&,
                                           const DnsConfig&) = default;
+
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"nameserver_ip\":\"{}\",\"port\":{},\"timeout_ms\":{}}}",
+            net::format_ipv4(nameserver_ip).data(), port, timeout.count());
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

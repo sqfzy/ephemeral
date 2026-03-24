@@ -237,6 +237,8 @@ TEST(ConnectorOptions, ToJsonContainsNestedPlatform) {
     auto json = opts.to_json();
     EXPECT_NE(json.find("\"local_port\":5000"), std::string::npos);
     EXPECT_NE(json.find("\"port_id\":"), std::string::npos);  // nested platform
+    EXPECT_NE(json.find("\"dns\":"), std::string::npos);       // nested dns
+    EXPECT_NE(json.find("\"nameserver_ip\":"), std::string::npos);
 }
 
 TEST(ConnectorOptions, FormatterProducesNonEmpty) {
