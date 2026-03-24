@@ -71,6 +71,54 @@ TEST(CpuTest, CpuRelax) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// set_thread_realtime
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CpuTest, SetThreadRealtimeFifoSucceedsOrEperm) {
+  auto r = set_thread_realtime(RealtimePolicy::Fifo, -1, "test-fifo");
+  if (r.has_value()) {
+    // Succeeded — we had permissions (root or CAP_SYS_NICE)
+    SUCCEED();
+  } else {
+    // Expected failure without privileges: EPERM
+    EXPECT_NE(r.error().find("setcap"), std::string::npos)
+        << "Error should contain hint: " << r.error();
+  }
+}
+
+TEST(CpuTest, SetThreadRealtimeRoundRobinSucceedsOrEperm) {
+  auto r = set_thread_realtime(RealtimePolicy::RoundRobin, -1, "test-rr");
+  if (r.has_value()) {
+    SUCCEED();
+  } else {
+    EXPECT_NE(r.error().find("SCHED_RR"), std::string::npos)
+        << "Error should mention policy: " << r.error();
+  }
+}
+
+TEST(CpuTest, SetThreadRealtimeExplicitPriority) {
+  // Priority 1 is the lowest valid RT priority
+  auto r = set_thread_realtime(RealtimePolicy::Fifo, 1, "test-low-prio");
+  if (r.has_value()) {
+    SUCCEED();
+  } else {
+    // Without privileges, any RT priority fails
+    EXPECT_FALSE(r.error().empty());
+  }
+}
+
+TEST(CpuTest, SetThreadRealtimePriorityClampsToMax) {
+  // Priority 9999 should be clamped to system max (usually 99), not error
+  auto r = set_thread_realtime(RealtimePolicy::Fifo, 9999, "test-clamp");
+  if (r.has_value()) {
+    SUCCEED();
+  } else {
+    // Failure is EPERM, not "invalid priority"
+    EXPECT_NE(r.error().find("Failed"), std::string::npos);
+  }
+}
+
 TEST(CpuTest, ThreadAffinityDoesNotCrash) {
   std::atomic<bool> ready{false};
   

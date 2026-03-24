@@ -12,6 +12,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__linux__)
+#include <sched.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#endif
+
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -261,9 +268,115 @@ set_thread_affinity(int cpu_id, const char* name = nullptr) {
 #endif
 }
 
+/// Real-time scheduling policy for set_thread_realtime().
+enum class RealtimePolicy { Fifo, RoundRobin };
+
+/**
+ * @brief 设置当前线程为实时调度策略
+ *
+ * 将当前线程切换到 SCHED_FIFO 或 SCHED_RR，减少调度延迟。
+ * 适用于 DPDK 轮询线程、低延迟交易路径等对尾延迟敏感的场景。
+ *
+ * @param policy  调度策略：Fifo（先进先出）或 RoundRobin（时间片轮转）
+ * @param priority  实时优先级（1–99），默认为系统允许的最大值。
+ *                  负值表示不设置（直接返回）
+ * @param name  可选的线程/角色名称，用于日志标识
+ *
+ * @note Linux: 使用 pthread_setschedparam。需要 CAP_SYS_NICE 或 root 权限。
+ *   可通过 `ulimit -r 99` 或 `setcap cap_sys_nice+ep <binary>` 授权。
+ * @note macOS: 使用 THREAD_TIME_CONSTRAINT_POLICY 近似实时行为。
+ *
+ * @warning SCHED_FIFO 优先级 99 的线程不会被非实时线程抢占。
+ *   如果线程死循环，可能导致系统无响应。确保线程有退出条件。
+ */
+inline std::expected<void, std::string>
+set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
+                    int priority = -1,
+                    const char* name = nullptr) {
+  auto log = detail::cpu_logger();
+  const char* tag = name ? name : "thread";
+
+#if defined(__linux__)
+  int linux_policy = (policy == RealtimePolicy::Fifo) ? SCHED_FIFO : SCHED_RR;
+  const char* policy_name = (policy == RealtimePolicy::Fifo) ? "SCHED_FIFO" : "SCHED_RR";
+
+  int max_prio = sched_get_priority_max(linux_policy);
+  int min_prio = sched_get_priority_min(linux_policy);
+  if (max_prio < 0 || min_prio < 0) {
+    auto msg = std::format("Failed to query {} priority range for {}: {}",
+        policy_name, tag, std::generic_category().message(errno));
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
+  }
+
+  // Default to max priority; clamp user-provided value to valid range
+  if (priority < 0) {
+    priority = max_prio;
+  } else {
+    priority = std::clamp(priority, min_prio, max_prio);
+  }
+
+  sched_param param{};
+  param.sched_priority = priority;
+
+  int ret = pthread_setschedparam(pthread_self(), linux_policy, &param);
+  if (ret != 0) {
+    auto msg = std::format(
+        "Failed to set {} priority={} for {}: {}. "
+        "Hint: run as root, or: setcap cap_sys_nice+ep <binary>",
+        policy_name, priority, tag, std::generic_category().message(ret));
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
+  }
+
+  SPDLOG_LOGGER_INFO(log, "{} set to {} priority={} (range {}-{})",
+      tag, policy_name, priority, min_prio, max_prio);
+  return {};
+
+#elif defined(__APPLE__)
+  // macOS: use THREAD_TIME_CONSTRAINT_POLICY for near-realtime behavior.
+  // This requests the Mach scheduler to treat this thread as time-critical.
+  SPDLOG_LOGGER_DEBUG(log,
+      "macOS: setting THREAD_TIME_CONSTRAINT_POLICY for {} (priority={})",
+      tag, priority);
+  // Period/computation/constraint in Mach absolute time units.
+  // These values request ~1ms scheduling granularity.
+  mach_timebase_info_data_t info;
+  mach_timebase_info(&info);
+  uint32_t ms_in_abs = static_cast<uint32_t>(1000000ULL * info.denom / info.numer);
+
+  thread_time_constraint_policy_data_t tc_policy{};
+  tc_policy.period      = ms_in_abs;      // 1ms period
+  tc_policy.computation = ms_in_abs / 2;  // 0.5ms computation
+  tc_policy.constraint  = ms_in_abs;      // 1ms deadline
+  tc_policy.preemptible = 0;
+
+  auto kr = thread_policy_set(
+      mach_thread_self(),
+      THREAD_TIME_CONSTRAINT_POLICY,
+      reinterpret_cast<thread_policy_t>(&tc_policy),
+      THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+  if (kr != KERN_SUCCESS) {
+    auto msg = std::format(
+        "macOS: THREAD_TIME_CONSTRAINT_POLICY failed for {}: kern_return={}",
+        tag, kr);
+    SPDLOG_LOGGER_WARN(log, "{}", msg);
+    return std::unexpected(std::move(msg));
+  }
+  SPDLOG_LOGGER_INFO(log, "{} set to THREAD_TIME_CONSTRAINT_POLICY", tag);
+  return {};
+
+#else
+  auto msg = std::format(
+      "Realtime scheduling not supported on this platform for {}", tag);
+  SPDLOG_LOGGER_WARN(log, "{}", msg);
+  return std::unexpected(std::move(msg));
+#endif
+}
+
 /**
  * @brief 获取 CPU 基准频率
- * 
+ *
  * 从系统信息中读取 CPU 的标称频率（非实时频率）。
  * 
  * @return double CPU 频率（GHz）
