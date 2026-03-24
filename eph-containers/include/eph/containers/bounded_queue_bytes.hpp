@@ -183,6 +183,35 @@ class BoundedQueueBytes {
         });
     }
 
+    /**
+     * @brief 一次性消费所有排队消息 (尽力而为语义)
+     *
+     * 等价于 try_consume_n(Capacity, visitor)，语义更清晰。
+     * 适用于关闭前 drain 或周期性批量处理。
+     *
+     * @param visitor 回调 void(std::span<const uint8_t>, size_t index)
+     * @return 实际消费的消息数量
+     */
+    template <typename F>
+        requires std::invocable<F, std::span<const uint8_t>, size_t>
+    [[nodiscard]] size_t try_consume_all(F&& visitor) noexcept {
+        return try_consume_n(Capacity, std::forward<F>(visitor));
+    }
+
+    /**
+     * @brief 一次性消费所有排队消息（带时间戳）
+     *
+     * 等价于 try_consume_n_wts(Capacity, visitor)。
+     *
+     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts, size_t index)
+     * @return 实际消费的消息数量
+     */
+    template <typename F>
+        requires std::invocable<F, std::span<const uint8_t>, uint64_t, size_t>
+    [[nodiscard]] size_t try_consume_all_wts(F&& visitor) noexcept {
+        return try_consume_n_wts(Capacity, std::forward<F>(visitor));
+    }
+
     // ===========================================================================
     // 非阻塞 Peek 操作 (Reader)
     // ===========================================================================

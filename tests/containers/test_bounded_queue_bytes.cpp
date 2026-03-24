@@ -349,6 +349,68 @@ TEST(BoundedQueueBytesBatch, TryConsumeN_EmptyQueue) {
 }
 
 // ===========================================================================
+// try_consume_all / try_consume_all_wts
+// ===========================================================================
+
+TEST(BoundedQueueBytesBatch, TryConsumeAll_DrainsEntireQueue) {
+    BoundedQueueBytes<64, 8> queue;
+
+    // Push 5 messages
+    for (uint8_t i = 0; i < 5; ++i) {
+        std::array<uint8_t, 1> payload{i};
+        ASSERT_TRUE(queue.try_push(payload));
+    }
+    ASSERT_EQ(queue.size(), 5u);
+
+    std::vector<uint8_t> consumed;
+    size_t n = queue.try_consume_all([&](std::span<const uint8_t> data, size_t idx) {
+        ASSERT_EQ(data.size(), 1u);
+        EXPECT_EQ(idx, consumed.size());
+        consumed.push_back(data[0]);
+    });
+
+    EXPECT_EQ(n, 5u);
+    EXPECT_TRUE(queue.empty());
+    ASSERT_EQ(consumed.size(), 5u);
+    for (uint8_t i = 0; i < 5; ++i) {
+        EXPECT_EQ(consumed[i], i);
+    }
+}
+
+TEST(BoundedQueueBytesBatch, TryConsumeAll_EmptyQueue) {
+    BoundedQueueBytes<64, 8> queue;
+
+    size_t n = queue.try_consume_all([](std::span<const uint8_t>, size_t) {
+        FAIL() << "Should not be called on empty queue";
+    });
+    EXPECT_EQ(n, 0u);
+}
+
+TEST(BoundedQueueBytesBatch, TryConsumeAllWts_DrainsWithTimestamps) {
+    BoundedQueueBytes<64, 8> queue;
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        std::array<uint8_t, 1> payload{i};
+        ASSERT_TRUE(queue.try_push_wts(payload, 1000 + i));
+    }
+
+    std::vector<std::pair<uint8_t, uint64_t>> consumed;
+    size_t n = queue.try_consume_all_wts(
+        [&](std::span<const uint8_t> data, uint64_t ts, size_t) {
+            ASSERT_EQ(data.size(), 1u);
+            consumed.emplace_back(data[0], ts);
+        });
+
+    EXPECT_EQ(n, 3u);
+    EXPECT_TRUE(queue.empty());
+    ASSERT_EQ(consumed.size(), 3u);
+    for (uint8_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(consumed[i].first, i);
+        EXPECT_EQ(consumed[i].second, 1000u + i);
+    }
+}
+
+// ===========================================================================
 // Peek 操作
 // ===========================================================================
 
