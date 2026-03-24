@@ -335,3 +335,112 @@ TEST(TcpConfig, dump_includes_ip_and_mac) {
     EXPECT_NE(d.find("5000"), std::string::npos);
     EXPECT_NE(d.find("443"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::validate()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, validate_valid_config_returns_empty) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 443};
+    cfg.mss = 1460;
+    cfg.recv_window = 65535;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TcpConfig, validate_zero_src_ip) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 443};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("src_ip"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_zero_dst_ip) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0,
+                 .src_port = 12345, .dst_port = 443};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("dst_ip"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_zero_src_port) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 0, .dst_port = 443};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("src_port"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_zero_dst_port) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("dst_port"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_zero_mss) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 443};
+    cfg.mss = 0;
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("mss"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_excessive_mss) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 443};
+    cfg.mss = 9001;
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("mss"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_zero_recv_window) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                 .src_port = 12345, .dst_port = 443};
+    cfg.recv_window = 0;
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("recv_window"), std::string_view::npos);
+}
+
+TEST(TcpConfig, validate_default_config_fails) {
+    // Default-constructed config has zero IPs and ports — should fail
+    TcpConfig cfg{};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig std::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, formatter_contains_key_fields) {
+    TcpConfig cfg{};
+    cfg.tuple = {.src_ip = 0x0A000001, .dst_ip = 0xC0A80001,
+                 .src_port = 5000, .dst_port = 443};
+    cfg.mss = 1460;
+    cfg.recv_window = 32768;
+    auto formatted = std::format("{}", cfg);
+    EXPECT_NE(formatted.find("TcpConfig"), std::string::npos);
+    EXPECT_NE(formatted.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(formatted.find("192.168.0.1"), std::string::npos);
+    EXPECT_NE(formatted.find("1460"), std::string::npos);
+    EXPECT_NE(formatted.find("32768"), std::string::npos);
+}
+
+TEST(TcpConfig, formatter_default_config) {
+    TcpConfig cfg{};
+    auto formatted = std::format("{}", cfg);
+    EXPECT_NE(formatted.find("TcpConfig"), std::string::npos);
+}

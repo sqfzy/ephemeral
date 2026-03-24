@@ -52,6 +52,26 @@ struct TcpConfig {
     uint16_t             tx_queue_id  = 0;
     uint16_t             rx_queue_id  = 0;
 
+    /// Validate configuration, returning an error description or empty string on success.
+    /// Call before TcpSession construction to get early, actionable error messages.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (tuple.src_ip == 0)
+            return "src_ip must not be zero";
+        if (tuple.dst_ip == 0)
+            return "dst_ip must not be zero";
+        if (tuple.src_port == 0)
+            return "src_port must be > 0";
+        if (tuple.dst_port == 0)
+            return "dst_port must be > 0";
+        if (mss == 0)
+            return "mss must be > 0";
+        if (mss > 9000)
+            return "mss exceeds jumbo frame limit (9000)";
+        if (recv_window == 0)
+            return "recv_window must be > 0";
+        return {};
+    }
+
     /// Equality comparison (manual because rte_ether_addr is a C struct).
     [[nodiscard]] friend bool operator==(const TcpConfig& a,
                                          const TcpConfig& b) noexcept {
@@ -755,6 +775,19 @@ static_assert(eph::net::TcpTransport<TcpSession<>>,
     "TcpSession must satisfy TcpTransport concept");
 
 } // namespace eph::dpdk
+
+// std::formatter specialization for TcpConfig.
+template <>
+struct std::formatter<eph::dpdk::TcpConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::TcpConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("TcpConfig({}:{} -> {}:{} mss={} wnd={})",
+                eph::dpdk::net::format_ipv4(c.tuple.src_ip).data(), c.tuple.src_port,
+                eph::dpdk::net::format_ipv4(c.tuple.dst_ip).data(), c.tuple.dst_port,
+                c.mss, c.recv_window),
+            ctx);
+    }
+};
 
 // std::formatter specialization for TcpSession<>::Stats (default ReorderSlots=8).
 // Non-default instantiations share the same Stats layout; call dump() directly.
