@@ -64,6 +64,10 @@ inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 24);
 /// Set to 90% of kMaxSequenceNumber to give applications time to reconnect.
 inline constexpr uint64_t kSequenceWarnThreshold = kMaxSequenceNumber * 9 / 10;
 
+/// Threshold at which Transport triggers a preemptive reconnect for key refresh.
+/// Set to 95% of kMaxSequenceNumber — above the warning but below the hard limit.
+inline constexpr uint64_t kSequenceReconnectThreshold = kMaxSequenceNumber * 95 / 100;
+
 /// Build the per-record nonce for TLS 1.3 AES-GCM.
 /// nonce = write_iv XOR (sequence_number padded to 12 bytes)
 /// Optimized: uses uint64_t XOR on the last 8 bytes instead of byte loop.

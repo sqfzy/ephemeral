@@ -1782,12 +1782,8 @@ private:
             // and messages are lost. Reconnect replaces keys with fresh ones.
             if (config_.use_tls) [[unlikely]] {
                 uint64_t seq = crypto_->write_seq();
-                constexpr uint64_t kSeqWarnThreshold =
-                    tls_record::kMaxSequenceNumber * 9 / 10;
-                constexpr uint64_t kSeqReconnectThreshold =
-                    tls_record::kMaxSequenceNumber * 95 / 100;
 
-                if (!seq_warning_logged_ && seq >= kSeqWarnThreshold) {
+                if (!seq_warning_logged_ && seq >= tls_record::kSequenceWarnThreshold) {
                     SPDLOG_LOGGER_WARN(log,
                         "TLS write sequence at {}/{} (90%%), "
                         "preemptive reconnect approaching",
@@ -1795,7 +1791,7 @@ private:
                     seq_warning_logged_ = true;
                 }
 
-                if (seq >= kSeqReconnectThreshold) {
+                if (seq >= tls_record::kSequenceReconnectThreshold) {
                     SPDLOG_LOGGER_WARN(log,
                         "TLS write sequence at {}/{} (95%%), "
                         "triggering preemptive reconnect for key refresh",
@@ -2182,10 +2178,8 @@ private:
             // Proactive warning at 90% of TLS read sequence limit,
             // symmetric with the TX thread's write sequence check.
             if (!rx_seq_warning_logged_) [[likely]] {
-                constexpr uint64_t kSeqWarnThreshold =
-                    tls_record::kMaxSequenceNumber * 9 / 10;
                 uint64_t rseq = crypto_->read_seq();
-                if (rseq >= kSeqWarnThreshold) [[unlikely]] {
+                if (rseq >= tls_record::kSequenceWarnThreshold) [[unlikely]] {
                     SPDLOG_LOGGER_WARN(log,
                         "TLS read sequence at {}/{} (90%%), "
                         "reconnect imminent for key refresh",

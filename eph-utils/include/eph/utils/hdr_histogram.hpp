@@ -387,14 +387,21 @@ class HdrHistogram {
 
     [[nodiscard]] uint64_t get_max_value() const noexcept { return max_value_; }
 
-    /// Count the number of recorded samples whose values fall within [low, high].
+    /// Count recorded samples in buckets whose representative values fall within [low, high].
     ///
     /// Useful for SLA monitoring: "how many latencies were between 1µs and 10µs?"
     /// Traverses only the relevant portion of the histogram's bucket array.
     ///
-    /// @param low   Lower bound (inclusive)
-    /// @param high  Upper bound (inclusive)
-    /// @return Number of samples in [low, high], or 0 if histogram is empty
+    /// @note HDR Histograms quantize values into buckets. This method counts
+    ///       all samples in buckets whose lowest trackable value (representative)
+    ///       is within [low, high]. Due to quantization, a bucket spanning
+    ///       [500, 600) has representative value 500 — it is included when
+    ///       low <= 500 <= high, even though some samples in it may have been
+    ///       closer to 600. This matches the semantics of get_value_at_percentile().
+    ///
+    /// @param low   Lower bound (inclusive, on bucket representative values)
+    /// @param high  Upper bound (inclusive, on bucket representative values)
+    /// @return Number of samples in matching buckets, or 0 if histogram is empty
     [[nodiscard]] uint64_t get_count_between(uint64_t low, uint64_t high) const noexcept {
         if (total_count_ == 0 || low > high) return 0;
 
@@ -756,8 +763,11 @@ class HdrHistogram {
         return result;
     }
 
-    /// Equality comparison: two histograms are equal if they have identical
-    /// configuration and identical recorded data (bucket counts, min/max, dropped).
+    /// Full operational state equality: two histograms are equal if they have
+    /// identical configuration, identical recorded data (bucket counts, min/max),
+    /// AND identical drop history (dropped_count_). This means histograms that
+    /// observed different data streams (one dropped samples, one didn't) compare
+    /// unequal even if their recorded buckets happen to match.
     /// Useful for testing and verifying merge/subtract round-trip correctness.
     [[nodiscard]] bool operator==(const HdrHistogram& other) const noexcept {
         if (!is_compatible(other)) return false;
