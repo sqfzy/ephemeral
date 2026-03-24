@@ -888,6 +888,13 @@ public:
         return running_.load(std::memory_order_acquire);
     }
 
+    /// Read-only access to the configuration used to create this transport.
+    /// Useful for logging, diagnostics, and reconnection-aware logic that
+    /// needs to inspect remote_host, ping_interval, etc. at runtime.
+    [[nodiscard]] const TransportConfig& config() const noexcept {
+        return config_;
+    }
+
     /// Query the current connection state (lock-free, safe from any thread).
     [[nodiscard]] TransportState state() const noexcept {
         if (!running_.load(std::memory_order_acquire))

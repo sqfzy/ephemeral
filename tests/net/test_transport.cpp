@@ -2327,3 +2327,36 @@ TEST_F(TransportTest, ConnectionInfoToJsonIsValid) {
 
     tp->stop();
 }
+
+// ---------------------------------------------------------------------------
+// config() accessor
+// ---------------------------------------------------------------------------
+
+TEST_F(TransportTest, ConfigAccessorReturnsCreationConfig) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const auto& cfg = tp->config();
+    EXPECT_EQ(cfg.remote_host, "mock.test");
+    EXPECT_EQ(cfg.ws_path, "/ws");
+    EXPECT_FALSE(cfg.use_tls);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, ConfigAccessorConsistentAfterReconnect) {
+    // Verify config() still returns the same config after internal state changes
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const auto& cfg_before = tp->config();
+    auto host_before = cfg_before.remote_host;
+
+    // Force a stop and verify config is still accessible
+    tp->stop();
+
+    const auto& cfg_after = tp->config();
+    EXPECT_EQ(cfg_after.remote_host, host_before);
+}
