@@ -705,3 +705,41 @@ TYPED_TEST(EvictingQueueBytesTest, stats_tracks_overwritten_after_eviction) {
     EXPECT_GT(s.total_overwritten, 0u);
     EXPECT_EQ(s.capacity, cap);
 }
+
+TYPED_TEST(EvictingQueueBytesTest, stats_operator_minus_diffs_counters) {
+    TypeParam queue;
+
+    // Push some messages
+    std::vector<uint8_t> payload = {1, 2, 3};
+    for (int i = 0; i < 5; ++i) {
+        queue.try_push(payload);
+    }
+    auto s1 = queue.stats();
+
+    // Push more
+    for (int i = 0; i < 3; ++i) {
+        queue.try_push(payload);
+    }
+    auto s2 = queue.stats();
+
+    auto delta = s2 - s1;
+    EXPECT_EQ(delta.total_pushed, 3u);
+    // Point-in-time fields take the lhs value
+    EXPECT_EQ(delta.current_size, s2.current_size);
+    EXPECT_EQ(delta.capacity, s2.capacity);
+    EXPECT_EQ(delta.last_pop_id, s2.last_pop_id);
+}
+
+TYPED_TEST(EvictingQueueBytesTest, stats_equality_compares_all_fields) {
+    TypeParam queue;
+
+    auto s1 = queue.stats();
+    auto s2 = queue.stats();
+    EXPECT_EQ(s1, s2);
+
+    // Push to change stats
+    std::vector<uint8_t> payload = {1};
+    queue.try_push(payload);
+    auto s3 = queue.stats();
+    EXPECT_NE(s1, s3);
+}
