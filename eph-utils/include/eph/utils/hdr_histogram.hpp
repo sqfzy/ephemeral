@@ -428,6 +428,116 @@ class HdrHistogram {
         }
     }
 
+    /// Percentile entry returned by for_each_percentile().
+    struct PercentileEntry {
+        uint64_t value;              ///< Value at this percentile (bucket midpoint)
+        double   percentile;         ///< Percentile in [0.0, 100.0]
+        uint64_t total_count_to_val; ///< Cumulative count at or below this value
+        double   inv_percentile;     ///< 1/(1-percentile/100), inf at 100%
+    };
+
+    /// Iterate over the percentile distribution at halving-distance steps.
+    ///
+    /// Calls `func(PercentileEntry)` at each percentile step where the value
+    /// changes, using the standard HdrHistogram halving iteration:
+    ///   0%, 50%, 75%, 87.5%, 93.75%, ..., 99.9%, 99.99%, ..., 100%
+    ///
+    /// The `ticks_per_half_distance` parameter controls how many entries are
+    /// emitted between each halving step (default 5, matching hdrhistogram.org).
+    ///
+    /// @param func  Callback invoked for each percentile entry
+    /// @param ticks_per_half_distance  Number of ticks between halving steps
+    template <typename Func>
+        requires std::invocable<Func, const PercentileEntry&>
+    void for_each_percentile(Func func,
+                             int ticks_per_half_distance = 5) const {
+        if (total_count_ == 0 || ticks_per_half_distance < 1) return;
+
+        uint64_t accumulated = 0;
+        int32_t  bucket_idx = 0;
+
+        // Walk through percentile steps
+        double percentile_to_iterate_to = 0.0;
+        uint64_t last_value_reported = 0;
+        bool first = true;
+
+        // Advance bucket_idx to next non-empty bucket, accumulating counts
+        auto advance_to = [&](uint64_t count_needed) -> bool {
+            while (accumulated < count_needed && bucket_idx < counts_len_) {
+                uint64_t count = counts_[bucket_idx];
+                if (count > 0) {
+                    accumulated += count;
+                }
+                if (accumulated < count_needed) {
+                    bucket_idx++;
+                }
+            }
+            return bucket_idx < counts_len_;
+        };
+
+        // Iterate through halving percentile steps
+        for (double half_distance = 100.0; ; ) {
+            double step = half_distance / ticks_per_half_distance;
+
+            for (int tick = 0; tick < ticks_per_half_distance; ++tick) {
+                double target_percentile = percentile_to_iterate_to + step;
+                if (target_percentile > 100.0) target_percentile = 100.0;
+
+                uint64_t count_at_percentile = static_cast<uint64_t>(
+                    std::ceil((target_percentile / 100.0) *
+                              static_cast<double>(total_count_)));
+                if (count_at_percentile == 0) count_at_percentile = 1;
+
+                if (!advance_to(count_at_percentile)) break;
+
+                uint64_t val = value_from_index(bucket_idx);
+                uint64_t high = next_non_equivalent_value(val);
+                uint64_t midpoint = val + (high - val) / 2;
+
+                // Only emit when the value changes (or first entry)
+                if (first || midpoint != last_value_reported) {
+                    double pct = std::min(100.0,
+                        (100.0 * static_cast<double>(accumulated)) /
+                        static_cast<double>(total_count_));
+                    double inv = (pct < 100.0)
+                        ? 1.0 / (1.0 - pct / 100.0)
+                        : std::numeric_limits<double>::infinity();
+
+                    func(PercentileEntry{
+                        .value = midpoint,
+                        .percentile = pct,
+                        .total_count_to_val = accumulated,
+                        .inv_percentile = inv,
+                    });
+
+                    last_value_reported = midpoint;
+                    first = false;
+                }
+
+                percentile_to_iterate_to = target_percentile;
+            }
+
+            // Next half-distance
+            half_distance /= 2.0;
+
+            // Stop when we've reached 100%
+            if (percentile_to_iterate_to >= 100.0) break;
+            // Safety: stop at extremely fine resolution
+            if (half_distance < 1e-10) break;
+        }
+
+        // Always emit 100th percentile (max value) if not already emitted
+        uint64_t max_mid = max_value_;
+        if (first || max_mid != last_value_reported) {
+            func(PercentileEntry{
+                .value = max_value_,
+                .percentile = 100.0,
+                .total_count_to_val = total_count_,
+                .inv_percentile = std::numeric_limits<double>::infinity(),
+            });
+        }
+    }
+
     /**
      * @brief 合并另一个直方图
      * @return true 合并成功，false 配置不兼容

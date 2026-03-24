@@ -1141,3 +1141,125 @@ TEST(HdrHistogramBatchInverseCdf, uint64_max_in_batch) {
     EXPECT_DOUBLE_EQ(results[0], 0.0);
     EXPECT_DOUBLE_EQ(results[1], 100.0);
 }
+
+// ============================================================================
+// for_each_percentile()
+// ============================================================================
+
+TEST(HdrHistogramPercentileIter, empty_histogram_yields_no_entries) {
+    HdrHistogram h(1, 1000, 3);
+    int count = 0;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
+        ++count;
+    });
+    EXPECT_EQ(count, 0);
+}
+
+TEST(HdrHistogramPercentileIter, single_value_yields_entries) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(500);
+
+    std::vector<HdrHistogram::PercentileEntry> entries;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        entries.push_back(e);
+    });
+
+    // Should have at least one entry
+    ASSERT_GE(entries.size(), 1u);
+
+    // First entry should be at 100% (single value means all percentiles == same value)
+    // Last entry should always be at 100%
+    EXPECT_DOUBLE_EQ(entries.back().percentile, 100.0);
+    EXPECT_EQ(entries.back().total_count_to_val, 1u);
+    EXPECT_TRUE(std::isinf(entries.back().inv_percentile));
+}
+
+TEST(HdrHistogramPercentileIter, percentiles_are_monotonically_increasing) {
+    HdrHistogram h(1, 100000, 3);
+    for (int i = 1; i <= 10000; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    double prev_percentile = -1.0;
+    uint64_t prev_value = 0;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        EXPECT_GE(e.percentile, prev_percentile)
+            << "percentile must be monotonically increasing";
+        EXPECT_GE(e.value, prev_value)
+            << "value must be monotonically increasing";
+        EXPECT_GT(e.total_count_to_val, 0u);
+        prev_percentile = e.percentile;
+        prev_value = e.value;
+    });
+
+    // Final percentile should be 100%
+    EXPECT_DOUBLE_EQ(prev_percentile, 100.0);
+}
+
+TEST(HdrHistogramPercentileIter, covers_full_range) {
+    HdrHistogram h(1, 100000, 3);
+    for (int i = 1; i <= 1000; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    bool has_below_50 = false;
+    bool has_above_99 = false;
+    bool has_100 = false;
+
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        if (e.percentile <= 50.0) has_below_50 = true;
+        if (e.percentile > 99.0) has_above_99 = true;
+        if (e.percentile == 100.0) has_100 = true;
+    });
+
+    EXPECT_TRUE(has_below_50) << "should cover low percentiles";
+    EXPECT_TRUE(has_above_99) << "should cover high percentiles";
+    EXPECT_TRUE(has_100) << "should always include 100th percentile";
+}
+
+TEST(HdrHistogramPercentileIter, ticks_per_half_distance_affects_density) {
+    HdrHistogram h(1, 100000, 3);
+    for (int i = 1; i <= 1000; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    int count_1 = 0, count_10 = 0;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
+        ++count_1;
+    }, 1);
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
+        ++count_10;
+    }, 10);
+
+    // More ticks per half distance should produce same or more entries
+    EXPECT_GE(count_10, count_1)
+        << "higher ticks_per_half_distance should yield more entries";
+}
+
+TEST(HdrHistogramPercentileIter, inv_percentile_correct) {
+    HdrHistogram h(1, 100000, 3);
+    for (int i = 1; i <= 10000; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
+        if (e.percentile < 100.0) {
+            double expected_inv = 1.0 / (1.0 - e.percentile / 100.0);
+            EXPECT_NEAR(e.inv_percentile, expected_inv, expected_inv * 1e-9)
+                << "inv_percentile should be 1/(1-p/100) at percentile=" << e.percentile;
+        } else {
+            EXPECT_TRUE(std::isinf(e.inv_percentile))
+                << "inv_percentile should be inf at 100%";
+        }
+    });
+}
+
+TEST(HdrHistogramPercentileIter, invalid_ticks_yields_no_entries) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    int count = 0;
+    h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
+        ++count;
+    }, 0);
+    EXPECT_EQ(count, 0) << "ticks_per_half_distance=0 should produce no entries";
+}
