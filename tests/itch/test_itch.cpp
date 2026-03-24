@@ -47,26 +47,28 @@ TEST(ItchMessages, MessageTypeConstantsAndSizes) {
     EXPECT_EQ(kRPII, 'N');
 
     // Verify sizes (including the 1-byte type field)
-    EXPECT_EQ(kSystemEventSize, 11u);
-    EXPECT_EQ(kStockDirectorySize, 38u);
-    EXPECT_EQ(kStockTradingActionSize, 24u);
-    EXPECT_EQ(kRegSHORestrictionSize, 19u);
-    EXPECT_EQ(kMarketParticipantPositionSize, 25u);
-    EXPECT_EQ(kMWCBDeclineLevelSize, 34u);
-    EXPECT_EQ(kMWCBStatusSize, 11u);
-    EXPECT_EQ(kIPOQuotingPeriodSize, 27u);
-    EXPECT_EQ(kLULDAuctionCollarSize, 34u);
-    EXPECT_EQ(kOperationalHaltSize, 20u);
-    EXPECT_EQ(kAddOrderSize, 35u);
-    EXPECT_EQ(kAddOrderMPIDSize, 39u);
-    EXPECT_EQ(kOrderExecutedSize, 30u);
-    EXPECT_EQ(kOrderExecutedWithPriceSize, 35u);
-    EXPECT_EQ(kOrderCancelSize, 22u);
-    EXPECT_EQ(kOrderDeleteSize, 18u);
-    EXPECT_EQ(kOrderReplaceSize, 34u);
-    EXPECT_EQ(kNonCrossTradeSize, 43u);
-    EXPECT_EQ(kCrossTradeSize, 39u);
-    EXPECT_EQ(kBrokenTradeSize, 18u);
+    // Common header = type(1) + stock_locate(2) + tracking_number(2) + timestamp(6) = 11 bytes
+    // Each message size = 11 + message-specific fields.
+    EXPECT_EQ(kSystemEventSize, 12u);
+    EXPECT_EQ(kStockDirectorySize, 39u);
+    EXPECT_EQ(kStockTradingActionSize, 25u);
+    EXPECT_EQ(kRegSHORestrictionSize, 20u);
+    EXPECT_EQ(kMarketParticipantPositionSize, 26u);
+    EXPECT_EQ(kMWCBDeclineLevelSize, 35u);
+    EXPECT_EQ(kMWCBStatusSize, 12u);
+    EXPECT_EQ(kIPOQuotingPeriodSize, 28u);
+    EXPECT_EQ(kLULDAuctionCollarSize, 35u);
+    EXPECT_EQ(kOperationalHaltSize, 21u);
+    EXPECT_EQ(kAddOrderSize, 36u);
+    EXPECT_EQ(kAddOrderMPIDSize, 40u);
+    EXPECT_EQ(kOrderExecutedSize, 31u);
+    EXPECT_EQ(kOrderExecutedWithPriceSize, 36u);
+    EXPECT_EQ(kOrderCancelSize, 23u);
+    EXPECT_EQ(kOrderDeleteSize, 19u);
+    EXPECT_EQ(kOrderReplaceSize, 35u);
+    EXPECT_EQ(kNonCrossTradeSize, 44u);
+    EXPECT_EQ(kCrossTradeSize, 40u);
+    EXPECT_EQ(kBrokenTradeSize, 19u);
     EXPECT_EQ(kNOIISize, 50u);
     EXPECT_EQ(kRPIISize, 20u);
 }
@@ -295,8 +297,8 @@ TEST(ItchOrderDelete, ParseAllFields) {
 // ---------------------------------------------------------------------------
 
 TEST(ItchParser, ParseHappyPath) {
-    // SystemEvent is 11 bytes, smallest message
-    uint8_t buf[11];
+    // SystemEvent is 12 bytes (type(1) + locate(2) + tracking(2) + ts(6) + event_code(1))
+    uint8_t buf[12];
     std::memset(buf, 0, sizeof(buf));
     buf[0] = 'S'; // SystemEvent
     buf[1] = 0x00; buf[2] = 0x07; // stock_locate = 7
@@ -310,8 +312,8 @@ TEST(ItchParser, ParseHappyPath) {
 }
 
 TEST(ItchParser, ParseHappyPathAddOrder) {
-    // AddOrder is 35 bytes
-    uint8_t buf[35];
+    // AddOrder is 36 bytes (type(1) + common(10) + order_ref(8) + side(1) + shares(4) + stock(8) + price(4))
+    uint8_t buf[36];
     std::memset(buf, 0, sizeof(buf));
     buf[0] = 'A';
 
@@ -354,7 +356,7 @@ TEST(ItchParser, ParseUnknownTypeZeroByte) {
 // ---------------------------------------------------------------------------
 
 TEST(ItchParser, ParseTruncatedReturnsError) {
-    // AddOrder expects 35 bytes, provide only 10
+    // AddOrder expects 36 bytes, provide only 10
     uint8_t buf[10];
     std::memset(buf, 0, sizeof(buf));
     buf[0] = 'A'; // AddOrder type
@@ -575,7 +577,8 @@ TEST(ItchParser, ParseAllEmptyBuffer) {
 
 TEST(ItchFormatter, MessageViewFormat) {
     // Build a SystemEvent message with known header values
-    uint8_t buf[11];
+    // SystemEvent: type(1) + locate(2) + tracking(2) + timestamp(6) + event_code(1) = 12
+    uint8_t buf[12];
     std::memset(buf, 0, sizeof(buf));
     buf[0] = 'S'; // SystemEvent
     // stock_locate = 42 (BE)
@@ -585,12 +588,14 @@ TEST(ItchFormatter, MessageViewFormat) {
     // timestamp = 123456789 ns (BE 6 bytes): 0x00000007'5BCD15
     buf[5] = 0x00; buf[6] = 0x00; buf[7] = 0x07;
     buf[8] = 0x5B; buf[9] = 0xCD; buf[10] = 0x15;
+    // event_code at offset 11
+    buf[11] = 'O';
 
     auto result = parse(buf, sizeof(buf));
     ASSERT_TRUE(result.has_value());
 
     auto formatted = std::format("{}", *result);
-    EXPECT_EQ(formatted, "ITCH[SystemEvent locate=42 ts=123456789ns len=11]");
+    EXPECT_EQ(formatted, "ITCH[SystemEvent locate=42 ts=123456789ns len=12]");
 }
 
 TEST(ItchFormatter, MessageViewFormatUnknownType) {
@@ -833,8 +838,8 @@ TEST(ItchNonCrossTrade, ParseAllFields) {
 TEST(ItchCrossTrade, ParseAllFields) {
     // Layout: type(1) locate(2) tracking(2) timestamp(6)
     //         shares(8) stock(8) cross_price(4) match_number(8) cross_type(1)
-    // Total: 39
-    uint8_t msg[39];
+    // Total: 1+2+2+6+8+8+4+8+1 = 40
+    uint8_t msg[40];
     std::memset(msg, 0, sizeof(msg));
 
     msg[0] = 'Q'; // msg type
@@ -854,36 +859,13 @@ TEST(ItchCrossTrade, ParseAllFields) {
     std::memcpy(msg + 19, "TSLA    ", 8);
 
     // cross_price = 40000 raw (offset 27, 4 bytes BE) -> $4.0000
-    // 40000 = 0x00009C40
     msg[27] = 0x00; msg[28] = 0x00; msg[29] = 0x9C; msg[30] = 0x40;
 
-    // match_number = 88 (offset 31, 8 bytes BE) 0x58
-    msg[38] = 0x58;
+    // match_number = 79 (offset 31, 8 bytes BE)
+    msg[38] = 0x4F; // 79 = 0x4F
 
-    // Oops -- cross_type is at offset 38, but match_number occupies 31..38 (8 bytes).
-    // match_number at offset 31 reads bytes 31-38, and cross_type at offset 38.
-    // That means match_number's last byte and cross_type overlap at index 38.
-    // Let me re-check: match_number = read_be64(msg + 31) reads indices 31..38 (8 bytes).
-    // cross_type = msg[38]. So msg[38] is shared -- that's how ITCH works.
-    // Actually the total is 39 bytes: 1+2+2+6+8+8+4+8+1 = 40, but kCrossTradeSize = 39.
-    // Let me recount: type(1) + locate(2) + tracking(2) + timestamp(6) + shares(8) + stock(8) + cross_price(4) + match_number(8) + cross_type(1)
-    // = 1+2+2+6+8+8+4+8+1 = 40. But size is 39. So there's a discrepancy.
-    // The NASDAQ spec likely has shares as 4 bytes for CrossTrade, not 8. But the code uses read_be64.
-    // Let's just trust the code and use a larger buffer.
-
-    // Re-do with proper buffer. match_number is at offset 31, 8 bytes -> ends at 38.
-    // cross_type at offset 38 overlaps. But total = 39 means indices 0..38.
-    // So match_number occupies 31..38 and cross_type is at 38 -- they DO share the byte.
-    // This seems like a bug in the spec constants, but let's test what the code does.
-    // Actually, cross_type reads msg[38] which is the same as match_number's last byte.
-    // For testing, set match_number and cross_type carefully.
-
-    // Reset and redo match_number + cross_type
-    // match_number = 88 means byte at index 38 = 0x58.
-    // cross_type = msg[38] will read 0x58 = 'X'. Let's just accept that for the test.
-    // Actually let's set match_number to something whose LSB is a valid cross_type char.
-    // 79 = 0x4F = 'O' (opening cross). So match_number = 79, cross_type = 'O'.
-    msg[38] = 0x4F; // 79 & 'O'
+    // cross_type = 'O' (opening cross) at offset 39
+    msg[39] = 'O';
 
     EXPECT_EQ(cross_trade::shares(msg), 10000u);
     EXPECT_EQ(cross_trade::stock(msg), "TSLA    ");
@@ -899,8 +881,8 @@ TEST(ItchCrossTrade, ParseAllFields) {
 
 TEST(ItchSystemEvent, ParseAllFields) {
     // Layout: type(1) locate(2) tracking(2) timestamp(6) event_code(1)
-    // Total: 11
-    uint8_t msg[11];
+    // Total: 12
+    uint8_t msg[12];
     std::memset(msg, 0, sizeof(msg));
 
     msg[0] = 'S'; // msg type
@@ -912,8 +894,8 @@ TEST(ItchSystemEvent, ParseAllFields) {
     // timestamp = 0
     // (all zeros already)
 
-    // event_code = 'O' (start-of-messages) at offset 10
-    msg[10] = 'O';
+    // event_code = 'O' (start-of-messages) at offset 11
+    msg[11] = 'O';
 
     EXPECT_EQ(system_event::event_code(msg), 'O');
 }
@@ -925,8 +907,8 @@ TEST(ItchSystemEvent, ParseAllFields) {
 TEST(ItchStockDirectory, ParseAllFields) {
     // Layout: type(1) locate(2) tracking(2) timestamp(6) stock(8)
     //         market_category(1) financial_status(1) round_lot_size(4) ...
-    // Total: 38
-    uint8_t msg[38];
+    // Total: 39
+    uint8_t msg[39];
     std::memset(msg, 0, sizeof(msg));
 
     msg[0] = 'R'; // msg type
@@ -1267,8 +1249,8 @@ TEST(ItchRPII, ParseAllFields) {
 // ===========================================================================
 
 TEST(ItchDispatch, dispatches_add_order_to_correct_tag) {
-    // Build an AddOrder message (35 bytes)
-    uint8_t raw[35];
+    // Build an AddOrder message (36 bytes)
+    uint8_t raw[36];
     std::memset(raw, 0, sizeof(raw));
     raw[0] = kAddOrder;
 
@@ -1288,7 +1270,7 @@ TEST(ItchDispatch, dispatches_add_order_to_correct_tag) {
 }
 
 TEST(ItchDispatch, dispatches_cross_trade) {
-    uint8_t raw[39];
+    uint8_t raw[40];
     std::memset(raw, 0, sizeof(raw));
     raw[0] = kCrossTrade;
 
@@ -1411,7 +1393,7 @@ TEST(ItchDispatch, unknown_type_dispatches_to_unknown_tag) {
 }
 
 TEST(ItchDispatch, handler_return_value_forwarded) {
-    uint8_t raw[35];
+    uint8_t raw[36];
     std::memset(raw, 0, sizeof(raw));
     raw[0] = kAddOrder;
 
@@ -1430,7 +1412,7 @@ TEST(ItchDispatch, handler_return_value_forwarded) {
 TEST(ItchDispatch, body_pointer_matches_accessor_convention) {
     // Verify that the body pointer passed to dispatch matches what
     // the per-message accessor namespaces expect (data + 1, skipping type byte)
-    uint8_t raw[35];
+    uint8_t raw[36];
     std::memset(raw, 0, sizeof(raw));
     raw[0] = kAddOrder;
     // Set stock_locate = 0x0042 at body offset 0-1
@@ -1481,7 +1463,7 @@ TEST(ItchTrim, interior_spaces_preserved) {
 
 TEST(ItchTrim, works_with_stock_accessor) {
     // End-to-end: parse AddOrder, extract stock, trim
-    uint8_t raw[35];
+    uint8_t raw[36];
     std::memset(raw, ' ', sizeof(raw));
     raw[0] = kAddOrder;
     // Write "AAPL" at stock offset (24..31), rest is spaces
@@ -1502,11 +1484,11 @@ TEST(ItchParserStats, accumulates_on_successful_parse) {
     // Build two SystemEvent messages
     uint8_t msg1[kSystemEventSize]{};
     msg1[0] = kSystemEvent;
-    msg1[10] = 'O';
+    msg1[11] = 'O';
 
     uint8_t msg2[kSystemEventSize]{};
     msg2[0] = kSystemEvent;
-    msg2[10] = 'S';
+    msg2[11] = 'S';
 
     // Concatenate
     uint8_t combined[kSystemEventSize * 2];
@@ -1786,8 +1768,8 @@ TEST(ItchMessages, MaxMessageSizeIsNOII) {
 }
 
 TEST(ItchMessages, MinMessageSizeIsSystemEvent) {
-    // SystemEvent ('S') at 11 bytes is the smallest ITCH 5.0 message
-    EXPECT_EQ(kMinMessageSize, 11u);
+    // SystemEvent ('S') and MWCBStatus ('W') at 12 bytes are the smallest ITCH 5.0 messages
+    EXPECT_EQ(kMinMessageSize, 12u);
     EXPECT_EQ(kMinMessageSize, kSystemEventSize);
 }
 
@@ -1870,19 +1852,19 @@ TEST(ItchDispatchAll, dispatches_all_messages_in_buffer) {
     };
     (void)append_system_event;
 
-    // Simpler approach: just build raw bytes matching known sizes
-    // SystemEvent = 11 bytes: type(1) locate(2) tracking(2) timestamp(6)
-    // event_code is at byte 10
+    // Build raw bytes matching known sizes
+    // SystemEvent = 12 bytes: type(1) locate(2) tracking(2) timestamp(6) event_code(1)
+    // event_code is at byte 11
     buf.clear();
     buf.resize(kSystemEventSize, 0);
     buf[0] = kSystemEvent;  // 'S'
-    buf[10] = 'O';  // Start of messages
+    buf[11] = 'O';  // Start of messages
 
     // Second message
     size_t off = buf.size();
     buf.resize(off + kSystemEventSize, 0);
     buf[off] = kSystemEvent;
-    buf[off + 10] = 'C';  // End of messages
+    buf[off + 11] = 'C';  // End of messages
 
     int count = 0;
     std::vector<char> events;
