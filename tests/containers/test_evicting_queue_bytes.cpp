@@ -743,3 +743,14 @@ TYPED_TEST(EvictingQueueBytesTest, stats_equality_compares_all_fields) {
     auto s3 = queue.stats();
     EXPECT_NE(s1, s3);
 }
+
+TEST(EvictingQueueBytesStats, StdFormatterProducesDumpOutput) {
+    EvictingQueueBytes<64, 4> queue;
+    std::vector<uint8_t> payload = {1, 2, 3};
+    queue.try_push(payload);
+
+    auto s = queue.stats();
+    auto formatted = std::format("{}", s);
+    EXPECT_EQ(formatted, s.dump());
+    EXPECT_NE(formatted.find("EvictingQueueBytes::Stats:"), std::string::npos);
+}

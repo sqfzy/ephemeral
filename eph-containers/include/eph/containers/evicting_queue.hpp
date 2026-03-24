@@ -24,6 +24,62 @@ using eph::utils::CACHE_LINE_SIZE;
 using eph::utils::Align;
 using eph::utils::cpu_relax;
 
+// ---------------------------------------------------------------------------
+// Standalone Stats type (enables std::formatter specialization)
+// ---------------------------------------------------------------------------
+
+/// Queue statistics snapshot for monitoring/debugging.
+/// Defined as a standalone type (rather than nested in the template) to enable
+/// std::formatter specialization — nested types in class templates cannot be
+/// specialized without knowing the template arguments.
+struct EvictingQueueStats {
+    uint64_t total_pushed;       ///< Total writes since construction
+    uint64_t total_popped;       ///< Total successful reads
+    uint64_t overwritten;        ///< Approximate overwrites (data loss)
+    size_t   current_size;       ///< Approximate unread entries
+    size_t   capacity;           ///< Fixed capacity
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        double loss_rate = total_pushed > 0
+            ? static_cast<double>(overwritten) * 100.0 / static_cast<double>(total_pushed)
+            : 0.0;
+        return std::format(
+            "EvictingQueue::Stats:\n"
+            "  capacity: {}\n"
+            "  current_size: {}\n"
+            "  total_pushed: {}\n"
+            "  total_popped: {}\n"
+            "  overwritten: {} ({:.1f}% loss)",
+            capacity, current_size,
+            total_pushed, total_popped,
+            overwritten, loss_rate);
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
+            "\"total_popped\":{},\"overwritten\":{}}}",
+            capacity, current_size, total_pushed, total_popped, overwritten);
+    }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    [[nodiscard]] friend EvictingQueueStats operator-(const EvictingQueueStats& lhs,
+                                                      const EvictingQueueStats& rhs) noexcept {
+        return EvictingQueueStats{
+            .total_pushed = lhs.total_pushed - rhs.total_pushed,
+            .total_popped = lhs.total_popped - rhs.total_popped,
+            .overwritten  = lhs.overwritten - rhs.overwritten,
+            .current_size = lhs.current_size,  // point-in-time, not diffable
+            .capacity     = lhs.capacity,
+        };
+    }
+
+    [[nodiscard]] friend bool operator==(const EvictingQueueStats&,
+                                          const EvictingQueueStats&) = default;
+};
+
 /**
  * @brief 多缓冲顺序锁可丢弃 SPSC 队列
  *
@@ -520,52 +576,8 @@ class alignas(Align<T>) EvictingQueue {
         return reader_.last_global_index_;
     }
 
-    /// Queue statistics snapshot for monitoring/debugging.
-    struct Stats {
-        uint64_t total_pushed;       ///< Total writes since construction
-        uint64_t total_popped;       ///< Total successful reads
-        uint64_t overwritten;        ///< Approximate overwrites (data loss)
-        size_t   current_size;       ///< Approximate unread entries
-        size_t   capacity;           ///< Fixed capacity
-
-        /// Multi-line formatted dump for logging/debugging.
-        [[nodiscard]] std::string dump() const {
-            double loss_rate = total_pushed > 0
-                ? static_cast<double>(overwritten) * 100.0 / static_cast<double>(total_pushed)
-                : 0.0;
-            return std::format(
-                "EvictingQueue::Stats:\n"
-                "  capacity: {}\n"
-                "  current_size: {}\n"
-                "  total_pushed: {}\n"
-                "  total_popped: {}\n"
-                "  overwritten: {} ({:.1f}% loss)",
-                capacity, current_size,
-                total_pushed, total_popped,
-                overwritten, loss_rate);
-        }
-
-        /// JSON-formatted stats for monitoring system integration.
-        [[nodiscard]] std::string to_json() const {
-            return std::format(
-                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
-                "\"total_popped\":{},\"overwritten\":{}}}",
-                capacity, current_size, total_pushed, total_popped, overwritten);
-        }
-
-        /// Compute delta between two snapshots for interval-based monitoring.
-        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
-            return Stats{
-                .total_pushed = lhs.total_pushed - rhs.total_pushed,
-                .total_popped = lhs.total_popped - rhs.total_popped,
-                .overwritten  = lhs.overwritten - rhs.overwritten,
-                .current_size = lhs.current_size,  // point-in-time, not diffable
-                .capacity     = lhs.capacity,
-            };
-        }
-
-        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
-    };
+    /// Alias for the standalone EvictingQueueStats type.
+    using Stats = EvictingQueueStats;
 
     /// Take a point-in-time statistics snapshot.
     [[nodiscard]] Stats stats() const noexcept {
@@ -900,52 +912,8 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return last_seq_ / 2;
     }
 
-    /// Queue statistics snapshot for monitoring/debugging.
-    struct Stats {
-        uint64_t total_pushed;       ///< Total writes since construction
-        uint64_t total_popped;       ///< Total successful reads
-        uint64_t overwritten;        ///< Approximate overwrites (data loss)
-        size_t   current_size;       ///< Approximate unread entries (0 or 1)
-        size_t   capacity;           ///< Fixed capacity (always 1)
-
-        /// Multi-line formatted dump for logging/debugging.
-        [[nodiscard]] std::string dump() const {
-            double loss_rate = total_pushed > 0
-                ? static_cast<double>(overwritten) * 100.0 / static_cast<double>(total_pushed)
-                : 0.0;
-            return std::format(
-                "EvictingQueue::Stats:\n"
-                "  capacity: {}\n"
-                "  current_size: {}\n"
-                "  total_pushed: {}\n"
-                "  total_popped: {}\n"
-                "  overwritten: {} ({:.1f}% loss)",
-                capacity, current_size,
-                total_pushed, total_popped,
-                overwritten, loss_rate);
-        }
-
-        /// JSON-formatted stats for monitoring system integration.
-        [[nodiscard]] std::string to_json() const {
-            return std::format(
-                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
-                "\"total_popped\":{},\"overwritten\":{}}}",
-                capacity, current_size, total_pushed, total_popped, overwritten);
-        }
-
-        /// Compute delta between two snapshots for interval-based monitoring.
-        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
-            return Stats{
-                .total_pushed = lhs.total_pushed - rhs.total_pushed,
-                .total_popped = lhs.total_popped - rhs.total_popped,
-                .overwritten  = lhs.overwritten - rhs.overwritten,
-                .current_size = lhs.current_size,
-                .capacity     = lhs.capacity,
-            };
-        }
-
-        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
-    };
+    /// Alias for the standalone EvictingQueueStats type.
+    using Stats = EvictingQueueStats;
 
     /// Take a point-in-time statistics snapshot.
     [[nodiscard]] Stats stats() const noexcept {
@@ -960,3 +928,13 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
 };
 
 }  // namespace eph::containers
+
+// std::formatter specialization for EvictingQueueStats
+template <>
+struct std::formatter<eph::containers::EvictingQueueStats>
+    : std::formatter<std::string> {
+    auto format(const eph::containers::EvictingQueueStats& s,
+                std::format_context& ctx) const {
+        return std::formatter<std::string>::format(s.dump(), ctx);
+    }
+};

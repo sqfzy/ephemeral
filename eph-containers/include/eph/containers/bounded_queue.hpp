@@ -19,6 +19,59 @@ namespace eph::containers {
 using eph::utils::Align;
 using eph::utils::cpu_relax;
 
+// ---------------------------------------------------------------------------
+// Standalone Stats type (enables std::formatter specialization)
+// ---------------------------------------------------------------------------
+
+/// Queue statistics snapshot for monitoring/debugging.
+/// All values are approximate (relaxed memory order reads).
+/// Defined as a standalone type (rather than nested in the template) to enable
+/// std::formatter specialization — nested types in class templates cannot be
+/// specialized without knowing the template arguments.
+struct BoundedQueueStats {
+    size_t total_pushed;   ///< Total items ever pushed (monotonic)
+    size_t total_popped;   ///< Total items ever popped (monotonic)
+    size_t current_size;   ///< Approximate current occupancy
+    size_t capacity;       ///< Fixed capacity
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        double utilization = capacity > 0
+            ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
+            : 0.0;
+        return std::format(
+            "BoundedQueue::Stats:\n"
+            "  capacity: {}\n"
+            "  current_size: {} ({:.1f}% full)\n"
+            "  total_pushed: {}\n"
+            "  total_popped: {}",
+            capacity, current_size, utilization,
+            total_pushed, total_popped);
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
+            capacity, current_size, total_pushed, total_popped);
+    }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    /// Usage: auto delta = stats_t2 - stats_t1;
+    [[nodiscard]] friend BoundedQueueStats operator-(const BoundedQueueStats& lhs,
+                                                     const BoundedQueueStats& rhs) noexcept {
+        return BoundedQueueStats{
+            .total_pushed = lhs.total_pushed - rhs.total_pushed,
+            .total_popped = lhs.total_popped - rhs.total_popped,
+            .current_size = lhs.current_size,  // point-in-time, not diffable
+            .capacity     = lhs.capacity,
+        };
+    }
+
+    [[nodiscard]] friend bool operator==(const BoundedQueueStats&,
+                                          const BoundedQueueStats&) = default;
+};
+
 /**
  * @brief SPSC 无锁不可丢弃队列
  *
@@ -771,49 +824,8 @@ class BoundedQueue {
     // 可观测性
     // ===========================================================================
 
-    /// Queue statistics snapshot for monitoring/debugging.
-    /// All values are approximate (relaxed memory order reads).
-    struct Stats {
-        size_t total_pushed;   ///< Total items ever pushed (monotonic)
-        size_t total_popped;   ///< Total items ever popped (monotonic)
-        size_t current_size;   ///< Approximate current occupancy
-        size_t capacity;       ///< Fixed capacity
-
-        /// Multi-line formatted dump for logging/debugging.
-        [[nodiscard]] std::string dump() const {
-            double utilization = capacity > 0
-                ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
-                : 0.0;
-            return std::format(
-                "BoundedQueue::Stats:\n"
-                "  capacity: {}\n"
-                "  current_size: {} ({:.1f}% full)\n"
-                "  total_pushed: {}\n"
-                "  total_popped: {}",
-                capacity, current_size, utilization,
-                total_pushed, total_popped);
-        }
-
-        /// JSON-formatted stats for monitoring system integration.
-        [[nodiscard]] std::string to_json() const {
-            return std::format(
-                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
-                capacity, current_size, total_pushed, total_popped);
-        }
-
-        /// Compute delta between two snapshots for interval-based monitoring.
-        /// Usage: auto delta = stats_t2 - stats_t1;
-        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
-            return Stats{
-                .total_pushed = lhs.total_pushed - rhs.total_pushed,
-                .total_popped = lhs.total_popped - rhs.total_popped,
-                .current_size = lhs.current_size,  // point-in-time, not diffable
-                .capacity     = lhs.capacity,
-            };
-        }
-
-        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
-    };
+    /// Alias for the standalone BoundedQueueStats type.
+    using Stats = BoundedQueueStats;
 
     /// Take a point-in-time statistics snapshot.
     /// Zero overhead — derived from existing atomic indices, no extra counters.
@@ -830,3 +842,13 @@ class BoundedQueue {
 };
 
 }  // namespace eph::containers
+
+// std::formatter specialization for BoundedQueueStats
+template <>
+struct std::formatter<eph::containers::BoundedQueueStats>
+    : std::formatter<std::string> {
+    auto format(const eph::containers::BoundedQueueStats& s,
+                std::format_context& ctx) const {
+        return std::formatter<std::string>::format(s.dump(), ctx);
+    }
+};

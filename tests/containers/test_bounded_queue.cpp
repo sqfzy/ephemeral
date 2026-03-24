@@ -1222,3 +1222,21 @@ TEST(BoundedQueueStats, operator_eq_compares_all_fields) {
     auto s3 = q.stats();
     EXPECT_NE(s1, s3);
 }
+
+TEST(BoundedQueueStats, std_formatter_produces_dump_output) {
+    BoundedQueue<BoundedTestData, 4> q;
+    q.try_push(BoundedTestData{.seq = 1});
+    auto s = q.stats();
+
+    auto formatted = std::format("{}", s);
+    EXPECT_EQ(formatted, s.dump());
+    EXPECT_NE(formatted.find("BoundedQueue::Stats:"), std::string::npos);
+    EXPECT_NE(formatted.find("total_pushed: 1"), std::string::npos);
+}
+
+TEST(BoundedQueueStats, std_formatter_empty_queue) {
+    BoundedQueue<BoundedTestData, 4> q;
+    auto s = q.stats();
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("current_size: 0"), std::string::npos);
+}

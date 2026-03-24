@@ -559,3 +559,14 @@ TEST(BoundedQueueBytesStats, StatsToJsonValid) {
     EXPECT_NE(json.find("\"total_pushed\":1"), std::string::npos);
     EXPECT_NE(json.find("\"total_popped\":0"), std::string::npos);
 }
+
+TEST(BoundedQueueBytesStats, StdFormatterProducesDumpOutput) {
+    BoundedQueueBytes<64, 4> queue;
+    std::array<uint8_t, 2> payload{0x01, 0x02};
+    ASSERT_TRUE(queue.try_push(payload));
+
+    auto s = queue.stats();
+    auto formatted = std::format("{}", s);
+    EXPECT_EQ(formatted, s.dump());
+    EXPECT_NE(formatted.find("BoundedQueueBytes::Stats:"), std::string::npos);
+}

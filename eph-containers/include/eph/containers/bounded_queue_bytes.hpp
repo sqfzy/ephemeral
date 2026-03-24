@@ -13,6 +13,54 @@
 
 namespace eph::containers {
 
+// ---------------------------------------------------------------------------
+// Standalone Stats type (enables std::formatter specialization)
+// ---------------------------------------------------------------------------
+
+/// Queue statistics snapshot for BoundedQueueBytes monitoring/debugging.
+struct BoundedQueueBytesStats {
+    size_t total_pushed;   ///< Total messages ever pushed (monotonic)
+    size_t total_popped;   ///< Total messages ever popped (monotonic)
+    size_t current_size;   ///< Approximate current occupancy
+    size_t capacity;       ///< Fixed capacity
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        double utilization = capacity > 0
+            ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
+            : 0.0;
+        return std::format(
+            "BoundedQueueBytes::Stats:\n"
+            "  capacity: {}\n"
+            "  current_size: {} ({:.1f}% full)\n"
+            "  total_pushed: {}\n"
+            "  total_popped: {}",
+            capacity, current_size, utilization,
+            total_pushed, total_popped);
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
+            capacity, current_size, total_pushed, total_popped);
+    }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    [[nodiscard]] friend BoundedQueueBytesStats operator-(const BoundedQueueBytesStats& lhs,
+                                                          const BoundedQueueBytesStats& rhs) noexcept {
+        return BoundedQueueBytesStats{
+            .total_pushed = lhs.total_pushed - rhs.total_pushed,
+            .total_popped = lhs.total_popped - rhs.total_popped,
+            .current_size = lhs.current_size,
+            .capacity     = lhs.capacity,
+        };
+    }
+
+    [[nodiscard]] friend bool operator==(const BoundedQueueBytesStats&,
+                                          const BoundedQueueBytesStats&) = default;
+};
+
 template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class BoundedQueueBytes {
     static_assert(MaxDataSize <= UINT32_MAX,
@@ -485,48 +533,8 @@ class BoundedQueueBytes {
     // 可观测性
     // ===========================================================================
 
-    /// Queue statistics snapshot for monitoring/debugging.
-    /// Delegates to the underlying BoundedQueue stats.
-    struct Stats {
-        size_t total_pushed;   ///< Total messages ever pushed (monotonic)
-        size_t total_popped;   ///< Total messages ever popped (monotonic)
-        size_t current_size;   ///< Approximate current occupancy
-        size_t capacity;       ///< Fixed capacity
-
-        /// Multi-line formatted dump for logging/debugging.
-        [[nodiscard]] std::string dump() const {
-            double utilization = capacity > 0
-                ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
-                : 0.0;
-            return std::format(
-                "BoundedQueueBytes::Stats:\n"
-                "  capacity: {}\n"
-                "  current_size: {} ({:.1f}% full)\n"
-                "  total_pushed: {}\n"
-                "  total_popped: {}",
-                capacity, current_size, utilization,
-                total_pushed, total_popped);
-        }
-
-        /// JSON-formatted stats for monitoring system integration.
-        [[nodiscard]] std::string to_json() const {
-            return std::format(
-                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
-                capacity, current_size, total_pushed, total_popped);
-        }
-
-        /// Compute delta between two snapshots for interval-based monitoring.
-        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
-            return Stats{
-                .total_pushed = lhs.total_pushed - rhs.total_pushed,
-                .total_popped = lhs.total_popped - rhs.total_popped,
-                .current_size = lhs.current_size,  // point-in-time, not diffable
-                .capacity     = lhs.capacity,
-            };
-        }
-
-        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
-    };
+    /// Alias for the standalone BoundedQueueBytesStats type.
+    using Stats = BoundedQueueBytesStats;
 
     /// Take a point-in-time statistics snapshot.
     [[nodiscard]] Stats stats() const noexcept {
@@ -544,3 +552,13 @@ class BoundedQueueBytes {
 };
 
 }  // namespace eph::containers
+
+// std::formatter specialization for BoundedQueueBytesStats
+template <>
+struct std::formatter<eph::containers::BoundedQueueBytesStats>
+    : std::formatter<std::string> {
+    auto format(const eph::containers::BoundedQueueBytesStats& s,
+                std::format_context& ctx) const {
+        return std::formatter<std::string>::format(s.dump(), ctx);
+    }
+};

@@ -14,6 +14,56 @@
 
 namespace eph::containers {
 
+// ---------------------------------------------------------------------------
+// Standalone Stats type (enables std::formatter specialization)
+// ---------------------------------------------------------------------------
+
+/// Queue statistics snapshot for EvictingQueueBytes monitoring/debugging.
+struct EvictingQueueBytesStats {
+    uint64_t total_pushed;     ///< Total messages ever pushed (writer-side)
+    uint64_t last_pop_id;      ///< ID of last consumed message (reader-side)
+    size_t   current_size;     ///< Approximate unread entries
+    size_t   capacity;         ///< Fixed capacity
+    uint64_t total_overwritten; ///< Messages overwritten before being read
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "EvictingQueueBytes::Stats:\n"
+            "  capacity: {}\n"
+            "  current_size: {}\n"
+            "  total_pushed: {}\n"
+            "  last_pop_id: {}\n"
+            "  total_overwritten: {}",
+            capacity, current_size,
+            total_pushed, last_pop_id, total_overwritten);
+    }
+
+    /// JSON-formatted stats for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
+            "\"last_pop_id\":{},\"total_overwritten\":{}}}",
+            capacity, current_size, total_pushed,
+            last_pop_id, total_overwritten);
+    }
+
+    /// Compute delta between two snapshots for interval-based monitoring.
+    [[nodiscard]] friend EvictingQueueBytesStats operator-(const EvictingQueueBytesStats& lhs,
+                                                           const EvictingQueueBytesStats& rhs) noexcept {
+        return EvictingQueueBytesStats{
+            .total_pushed      = lhs.total_pushed - rhs.total_pushed,
+            .last_pop_id       = lhs.last_pop_id,
+            .current_size      = lhs.current_size,
+            .capacity          = lhs.capacity,
+            .total_overwritten = lhs.total_overwritten - rhs.total_overwritten,
+        };
+    }
+
+    [[nodiscard]] friend bool operator==(const EvictingQueueBytesStats&,
+                                          const EvictingQueueBytesStats&) = default;
+};
+
 template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class EvictingQueueBytes {
     static_assert(MaxDataSize <= UINT32_MAX,
@@ -482,49 +532,8 @@ class EvictingQueueBytes {
     // 可观测性
     // ===========================================================================
 
-    /// Queue statistics snapshot for monitoring/debugging.
-    struct Stats {
-        uint64_t total_pushed;     ///< Total messages ever pushed (writer-side)
-        uint64_t last_pop_id;      ///< ID of last consumed message (reader-side)
-        size_t   current_size;     ///< Approximate unread entries
-        size_t   capacity;         ///< Fixed capacity
-        uint64_t total_overwritten; ///< Messages overwritten before being read
-
-        /// Multi-line formatted dump for logging/debugging.
-        [[nodiscard]] std::string dump() const {
-            return std::format(
-                "EvictingQueueBytes::Stats:\n"
-                "  capacity: {}\n"
-                "  current_size: {}\n"
-                "  total_pushed: {}\n"
-                "  last_pop_id: {}\n"
-                "  total_overwritten: {}",
-                capacity, current_size,
-                total_pushed, last_pop_id, total_overwritten);
-        }
-
-        /// JSON-formatted stats for monitoring system integration.
-        [[nodiscard]] std::string to_json() const {
-            return std::format(
-                "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
-                "\"last_pop_id\":{},\"total_overwritten\":{}}}",
-                capacity, current_size, total_pushed,
-                last_pop_id, total_overwritten);
-        }
-
-        /// Compute delta between two snapshots for interval-based monitoring.
-        [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
-            return Stats{
-                .total_pushed      = lhs.total_pushed - rhs.total_pushed,
-                .last_pop_id       = lhs.last_pop_id,  // point-in-time, not diffable
-                .current_size      = lhs.current_size,
-                .capacity          = lhs.capacity,
-                .total_overwritten = lhs.total_overwritten - rhs.total_overwritten,
-            };
-        }
-
-        [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
-    };
+    /// Alias for the standalone EvictingQueueBytesStats type.
+    using Stats = EvictingQueueBytesStats;
 
     /// Take a point-in-time statistics snapshot.
     [[nodiscard]] Stats stats() const noexcept {
@@ -553,3 +562,13 @@ class EvictingQueueBytes {
 };
 
 }  // namespace eph::containers
+
+// std::formatter specialization for EvictingQueueBytesStats
+template <>
+struct std::formatter<eph::containers::EvictingQueueBytesStats>
+    : std::formatter<std::string> {
+    auto format(const eph::containers::EvictingQueueBytesStats& s,
+                std::format_context& ctx) const {
+        return std::formatter<std::string>::format(s.dump(), ctx);
+    }
+};

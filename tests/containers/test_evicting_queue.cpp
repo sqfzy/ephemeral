@@ -1346,3 +1346,74 @@ TEST(EvictingQueueTimeout, single_slot_pop_for_overwrite_gets_latest) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->seq, 2u);
 }
+
+// ===========================================================================
+// full() method
+// ===========================================================================
+
+TEST(EvictingQueueFull, empty_queue_is_not_full) {
+    EvictingQueue<TestData, 4> q;
+    EXPECT_FALSE(q.full());
+}
+
+TEST(EvictingQueueFull, partially_filled_queue_is_not_full) {
+    EvictingQueue<TestData, 4> q;
+    q.push(TestData{.seq = 1});
+    q.push(TestData{.seq = 2});
+    EXPECT_FALSE(q.full());
+}
+
+TEST(EvictingQueueFull, queue_becomes_full_at_capacity) {
+    EvictingQueue<TestData, 4> q;
+    for (uint32_t i = 0; i < 4; ++i) q.push(TestData{.seq = i});
+    EXPECT_TRUE(q.full());
+}
+
+TEST(EvictingQueueFull, queue_stays_full_after_overwrite) {
+    EvictingQueue<TestData, 4> q;
+    for (uint32_t i = 0; i < 8; ++i) q.push(TestData{.seq = i});
+    EXPECT_TRUE(q.full());
+}
+
+TEST(EvictingQueueFull, single_slot_full_after_one_push) {
+    EvictingQueue<TestData, 1> q;
+    EXPECT_FALSE(q.full());
+    q.push(TestData{.seq = 1});
+    EXPECT_TRUE(q.full());
+}
+
+TEST(EvictingQueueFull, not_full_after_consuming_all) {
+    EvictingQueue<TestData, 4> q;
+    for (uint32_t i = 0; i < 4; ++i) q.push(TestData{.seq = i});
+    EXPECT_TRUE(q.full());
+    // Consume all
+    for (uint32_t i = 0; i < 4; ++i) {
+        TestData d;
+        (void)q.try_pop_latest(d);
+    }
+    EXPECT_FALSE(q.full());
+}
+
+// ===========================================================================
+// std::formatter
+// ===========================================================================
+
+TEST(EvictingQueueStats, std_formatter_produces_dump_output) {
+    EvictingQueue<TestData, 4> q;
+    q.push(TestData{.seq = 1});
+    auto s = q.stats();
+
+    auto formatted = std::format("{}", s);
+    EXPECT_EQ(formatted, s.dump());
+    EXPECT_NE(formatted.find("EvictingQueue::Stats:"), std::string::npos);
+    EXPECT_NE(formatted.find("total_pushed: 1"), std::string::npos);
+}
+
+TEST(EvictingQueueStats, std_formatter_with_overwrites) {
+    EvictingQueue<TestData, 2> q;
+    for (uint32_t i = 0; i < 10; ++i) q.push(TestData{.seq = i});
+    auto s = q.stats();
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("total_pushed: 10"), std::string::npos);
+    EXPECT_NE(formatted.find("overwritten:"), std::string::npos);
+}
