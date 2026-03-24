@@ -252,6 +252,27 @@ TEST(DnsConfig, DefaultNameserver) {
     EXPECT_EQ(cfg.timeout, std::chrono::milliseconds{3000});
 }
 
+TEST(DnsConfig, DumpContainsNameserverAndTimeout) {
+    DnsConfig cfg{};
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("DnsConfig:"), std::string::npos);
+    EXPECT_NE(dump.find("8.8.8.8"), std::string::npos);
+    EXPECT_NE(dump.find("53"), std::string::npos);
+    EXPECT_NE(dump.find("3000ms"), std::string::npos);
+}
+
+TEST(DnsConfig, DumpCustomConfig) {
+    DnsConfig cfg{
+        .nameserver_ip = 0x01010101,  // 1.1.1.1
+        .port = 5353,
+        .timeout = std::chrono::milliseconds{500},
+    };
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("1.1.1.1"), std::string::npos);
+    EXPECT_NE(dump.find("5353"), std::string::npos);
+    EXPECT_NE(dump.find("500ms"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // resolve() — fast path: dotted-decimal IPv4 bypass
 // ─────────────────────────────────────────────────────────────────────────────
