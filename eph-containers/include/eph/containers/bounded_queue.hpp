@@ -6,6 +6,7 @@
 #include <chrono>
 #include <format>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
