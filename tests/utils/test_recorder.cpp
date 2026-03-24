@@ -600,3 +600,81 @@ TEST_F(ConcurrentRecorderTest, RetiredThreadSkippedCountsPreserved) {
     ASSERT_TRUE(stats.has_value());
     EXPECT_EQ(stats->count, 10u);
 }
+
+// ============================================================================
+// ConcurrentRecorder: compute_and_reset()
+// ============================================================================
+
+TEST(ConcurrentRecorderComputeAndReset, returns_stats_and_clears_data) {
+    ConcurrentRecorder rec("ConcCAR");
+    for (int i = 0; i < 100; ++i) {
+        rec.record(50);
+    }
+
+    // compute_and_reset should return the accumulated stats
+    auto stats = rec.compute_and_reset();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->count, 100u);
+    EXPECT_GT(stats->avg_ns, 0.0);
+
+    // After reset, data should be gone
+    auto stats2 = rec.compute_stats();
+    EXPECT_FALSE(stats2.has_value());
+}
+
+TEST(ConcurrentRecorderComputeAndReset, empty_returns_nullopt) {
+    ConcurrentRecorder rec("ConcCAREmpty");
+    auto stats = rec.compute_and_reset();
+    EXPECT_FALSE(stats.has_value());
+}
+
+TEST(ConcurrentRecorderComputeAndReset, multi_window_non_overlapping) {
+    ConcurrentRecorder rec("ConcCARWindowed");
+
+    // Window 1: record 50 samples
+    for (int i = 0; i < 50; ++i) {
+        rec.record(100);
+    }
+    auto w1 = rec.compute_and_reset();
+    ASSERT_TRUE(w1.has_value());
+    EXPECT_EQ(w1->count, 50u);
+
+    // Window 2: record 30 samples
+    for (int i = 0; i < 30; ++i) {
+        rec.record(200);
+    }
+    auto w2 = rec.compute_and_reset();
+    ASSERT_TRUE(w2.has_value());
+    EXPECT_EQ(w2->count, 30u);
+
+    // Verify windows don't overlap
+    EXPECT_NE(w1->avg_ns, w2->avg_ns);
+}
+
+TEST(ConcurrentRecorderComputeAndReset, includes_retired_thread_data) {
+    ConcurrentRecorder rec("ConcCARRetired");
+
+    // Record from a worker thread that will retire
+    {
+        std::thread worker([&rec]() {
+            for (int i = 0; i < 100; ++i) {
+                rec.record(50);
+            }
+        });
+        worker.join();
+    }
+
+    // Record from main thread
+    for (int i = 0; i < 50; ++i) {
+        rec.record(50);
+    }
+
+    // compute_and_reset should include both threads' data
+    auto stats = rec.compute_and_reset();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->count, 150u);
+
+    // Verify reset worked
+    auto stats2 = rec.compute_stats();
+    EXPECT_FALSE(stats2.has_value());
+}

@@ -716,6 +716,46 @@ class ConcurrentRecorder {
         return json_ok && csv_ok;
     }
 
+    /// Atomically compute stats and reset all data in one operation.
+    ///
+    /// Returns the statistics for the current measurement window, then
+    /// resets all histograms (active + retired) under the same lock.
+    /// No data is lost between the read and reset — unlike the separate
+    /// compute_stats() + reset() pattern which has a race window.
+    ///
+    /// Ideal for periodic monitoring dashboards that need non-overlapping
+    /// measurement windows.
+    ///
+    /// @return Stats for the completed window, or nullopt if no data was recorded
+    [[nodiscard]] std::optional<Stats> compute_and_reset() {
+        auto merged = state_->merge_all_and_reset();
+        if (merged.count == 0) return std::nullopt;
+
+        auto ns_per_cycle = TSC::to_ns(1);
+        if (!ns_per_cycle) [[unlikely]]
+            return std::nullopt;
+
+        double ratio = *ns_per_cycle;
+        double avg_cyc =
+            static_cast<double>(merged.total_cycles) / merged.count;
+
+        auto percentiles =
+            merged.histogram.get_percentiles({50.0, 90.0, 99.0, 99.9});
+
+        return Stats{
+            .name = name_,
+            .count = merged.count,
+            .avg_ns = avg_cyc * ratio,
+            .min_ns = merged.min_cycles * ratio,
+            .max_ns = merged.max_cycles * ratio,
+            .p50_ns = percentiles[0] * ratio,
+            .p90_ns = percentiles[1] * ratio,
+            .p99_ns = percentiles[2] * ratio,
+            .p999_ns = percentiles[3] * ratio,
+            .stddev_ns = merged.histogram.get_std_deviation() * ratio,
+        };
+    }
+
     /// Reset all accumulated data across all threads (active and retired).
     ///
     /// Useful for windowed measurement: call compute_stats(), then reset()
@@ -850,6 +890,59 @@ class ConcurrentRecorder {
                 merged.max_cycles =
                     std::max(merged.max_cycles, local->max_cycles);
             }
+
+            return merged;
+        }
+
+        /// Atomically merge all data and reset — single lock acquisition.
+        ///
+        /// Returns the merged stats from all threads, then resets all
+        /// active and retired histograms. No data is lost between the
+        /// merge and reset (unlike separate compute_stats()+reset()).
+        [[nodiscard]] MergedData merge_all_and_reset() {
+            std::lock_guard lock(mutex);
+
+            MergedData merged;
+            merged.histogram =
+                HdrHistogram(lowest_cycles, highest_cycles, precision);
+
+            // Merge retired data
+            (void)merged.histogram.merge(retired_histogram);
+            merged.count = retired_count;
+            merged.total_cycles = retired_total_cycles;
+            merged.min_cycles = retired_min_cycles;
+            merged.max_cycles = retired_max_cycles;
+
+            // Merge active thread data
+            for (auto* local : active_locals) {
+                (void)merged.histogram.merge(local->histogram);
+                merged.count += local->count;
+                merged.total_cycles += local->total_cycles;
+                merged.min_cycles =
+                    std::min(merged.min_cycles, local->min_cycles);
+                merged.max_cycles =
+                    std::max(merged.max_cycles, local->max_cycles);
+            }
+
+            // Reset all active thread-local histograms
+            for (auto* local : active_locals) {
+                local->histogram.reset();
+                local->count = 0;
+                local->total_cycles = 0;
+                local->min_cycles = std::numeric_limits<uint64_t>::max();
+                local->max_cycles = 0;
+                local->skipped_invalid = 0;
+                local->skipped_overflow = 0;
+            }
+
+            // Reset retired data
+            retired_histogram.reset();
+            retired_count = 0;
+            retired_total_cycles = 0;
+            retired_min_cycles = std::numeric_limits<uint64_t>::max();
+            retired_max_cycles = 0;
+            retired_skipped_invalid = 0;
+            retired_skipped_overflow = 0;
 
             return merged;
         }

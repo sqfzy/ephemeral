@@ -269,6 +269,96 @@ class HdrHistogram {
         return results;
     }
 
+    /// Inverse CDF: return the percentile (0.0–100.0) at which a given value falls.
+    ///
+    /// Answers "what percentage of recorded samples are at or below this value?"
+    /// Useful for SLA verification: `get_percentile_at_or_below(10000)` returns
+    /// the percentage of latencies ≤ 10µs (if recording in nanoseconds).
+    ///
+    /// @param value  The value to query
+    /// @return Percentile in [0.0, 100.0], or 0.0 if no samples recorded
+    [[nodiscard]] double get_percentile_at_or_below(uint64_t value) const noexcept {
+        if (total_count_ == 0) return 0.0;
+
+        uint64_t accumulated = 0;
+        for (int32_t i = 0; i < counts_len_; ++i) {
+            uint64_t count = counts_[i];
+            if (count == 0) continue;
+
+            uint64_t bucket_value = value_from_index(i);
+            if (bucket_value > value) break;
+
+            accumulated += count;
+        }
+
+        return (100.0 * static_cast<double>(accumulated)) /
+               static_cast<double>(total_count_);
+    }
+
+    /// Batch inverse CDF: return percentiles for multiple values in a single scan.
+    ///
+    /// More efficient than calling get_percentile_at_or_below() in a loop,
+    /// as it traverses the histogram only once.
+    ///
+    /// @param values  Values to query (need not be sorted)
+    /// @return Percentiles in [0.0, 100.0], one per input value
+    [[nodiscard]] std::vector<double> get_percentiles_at_or_below(
+        const std::vector<uint64_t>& values) const {
+        std::vector<double> results(values.size(), 0.0);
+        if (total_count_ == 0 || values.empty()) return results;
+
+        // Sort indices by value for single-pass scan
+        std::vector<size_t> sorted_indices(values.size());
+        std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
+        std::sort(sorted_indices.begin(), sorted_indices.end(),
+                  [&](size_t a, size_t b) {
+                      return values[a] < values[b];
+                  });
+
+        uint64_t accumulated = 0;
+        size_t next_idx = 0;
+        double inv_total = 100.0 / static_cast<double>(total_count_);
+
+        for (int32_t i = 0; i < counts_len_ && next_idx < sorted_indices.size(); ++i) {
+            uint64_t count = counts_[i];
+            if (count == 0) continue;
+
+            uint64_t bucket_value = value_from_index(i);
+
+            // Emit results for all query values < current bucket_value
+            while (next_idx < sorted_indices.size()) {
+                size_t orig = sorted_indices[next_idx];
+                if (values[orig] < bucket_value) {
+                    results[orig] = static_cast<double>(accumulated) * inv_total;
+                    next_idx++;
+                } else {
+                    break;
+                }
+            }
+
+            accumulated += count;
+
+            // Emit results for query values == current bucket_value
+            while (next_idx < sorted_indices.size()) {
+                size_t orig = sorted_indices[next_idx];
+                if (values[orig] <= bucket_value) {
+                    results[orig] = static_cast<double>(accumulated) * inv_total;
+                    next_idx++;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Remaining values > max: they encompass all samples → 100%
+        while (next_idx < sorted_indices.size()) {
+            results[sorted_indices[next_idx]] = 100.0;
+            next_idx++;
+        }
+
+        return results;
+    }
+
     [[nodiscard]] uint64_t get_total_count() const noexcept {
         return total_count_;
     }
@@ -465,6 +555,62 @@ class HdrHistogram {
         }
         json += "}";
         return json;
+    }
+
+    /// Output the percentile distribution in the standard HDR Histogram text format.
+    ///
+    /// Produces output compatible with hdrhistogram.org and hdr-histogram-plotter.
+    /// Each line: "Value  Percentile  TotalCount  1/(1-Percentile)"
+    ///
+    /// @param output_value_unit_scaling  Divisor for output values (e.g., 1000.0
+    ///        to convert nanoseconds to microseconds). Default 1.0 (no scaling).
+    /// @return Multi-line string in standard HDR Histogram percentile distribution format
+    [[nodiscard]] std::string output_percentile_distribution(
+        double output_value_unit_scaling = 1.0) const {
+        if (output_value_unit_scaling <= 0.0) output_value_unit_scaling = 1.0;
+
+        std::string result;
+        result.reserve(4096);
+
+        result += std::format("{:>12s} {:>14s} {:>10s} {:>14s}\n\n",
+                              "Value", "Percentile", "TotalCount", "1/(1-Percentile)");
+
+        if (total_count_ == 0) return result;
+
+        uint64_t accumulated = 0;
+        for (int32_t i = 0; i < counts_len_; ++i) {
+            uint64_t count = counts_[i];
+            if (count == 0) continue;
+
+            accumulated += count;
+            uint64_t val = value_from_index(i);
+            double percentile = (100.0 * static_cast<double>(accumulated)) /
+                                static_cast<double>(total_count_);
+            double scaled_value = static_cast<double>(val) / output_value_unit_scaling;
+
+            if (percentile < 100.0) {
+                double inv = 1.0 / (1.0 - percentile / 100.0);
+                result += std::format("{:12.3f} {:14.6f} {:10} {:14.2f}\n",
+                                      scaled_value, percentile / 100.0,
+                                      accumulated, inv);
+            } else {
+                result += std::format("{:12.3f} {:14.6f} {:10} {:>14s}\n",
+                                      scaled_value, 1.0, accumulated, "inf");
+            }
+        }
+
+        // Footer
+        result += std::format(
+            "#[Mean    = {:12.3f}, StdDeviation   = {:12.3f}]\n"
+            "#[Max     = {:12.3f}, Total count    = {:10}]\n"
+            "#[Buckets = {:10}, SubBuckets     = {:10}]\n",
+            get_mean() / output_value_unit_scaling,
+            get_std_deviation() / output_value_unit_scaling,
+            static_cast<double>(get_max_value()) / output_value_unit_scaling,
+            total_count_,
+            bucket_count_, sub_bucket_count_);
+
+        return result;
     }
 
     [[nodiscard]] bool is_compatible(const HdrHistogram& other) const noexcept {

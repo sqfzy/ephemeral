@@ -819,3 +819,171 @@ TEST(HdrHistogramDropped, to_json_excludes_dropped_when_zero) {
     auto json = h.to_json();
     EXPECT_EQ(json.find("dropped"), std::string::npos);
 }
+
+// ============================================================================
+// Inverse CDF — get_percentile_at_or_below()
+// ============================================================================
+
+TEST(HdrHistogramInverseCdf, empty_histogram_returns_zero) {
+    HdrHistogram h(1, 1000, 3);
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(500), 0.0);
+}
+
+TEST(HdrHistogramInverseCdf, single_value_below_returns_zero) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(500);
+    // Query a value below the recorded value
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(1), 0.0);
+}
+
+TEST(HdrHistogramInverseCdf, single_value_at_or_above_returns_100) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(500);
+    // Query at or above the recorded value → 100%
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(500), 100.0);
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(999), 100.0);
+}
+
+TEST(HdrHistogramInverseCdf, uniform_distribution) {
+    HdrHistogram h(1, 1000, 3);
+    // Record 100 values: 1, 2, 3, ..., 100
+    for (uint64_t i = 1; i <= 100; ++i) {
+        h.record(i);
+    }
+
+    // Value 50 should be around 50th percentile
+    double p50 = h.get_percentile_at_or_below(50);
+    EXPECT_GE(p50, 45.0);
+    EXPECT_LE(p50, 55.0);
+
+    // Value 99 should be around 99th percentile
+    double p99 = h.get_percentile_at_or_below(99);
+    EXPECT_GE(p99, 95.0);
+    EXPECT_LE(p99, 100.0);
+
+    // Value 1000 should be 100%
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(1000), 100.0);
+}
+
+TEST(HdrHistogramInverseCdf, round_trip_with_value_at_percentile) {
+    HdrHistogram h(1, 100000, 3);
+    for (uint64_t i = 1; i <= 10000; ++i) {
+        h.record(i);
+    }
+
+    // Get value at P95, then verify inverse returns ~95%
+    uint64_t v95 = h.get_value_at_percentile(95.0);
+    double p = h.get_percentile_at_or_below(v95);
+    EXPECT_GE(p, 94.0);
+    EXPECT_LE(p, 96.0);
+}
+
+// ============================================================================
+// Batch inverse CDF — get_percentiles_at_or_below()
+// ============================================================================
+
+TEST(HdrHistogramBatchInverseCdf, empty_histogram_returns_zeros) {
+    HdrHistogram h(1, 1000, 3);
+    auto results = h.get_percentiles_at_or_below({100, 500, 900});
+    ASSERT_EQ(results.size(), 3);
+    for (double r : results) {
+        EXPECT_DOUBLE_EQ(r, 0.0);
+    }
+}
+
+TEST(HdrHistogramBatchInverseCdf, unsorted_input_produces_correct_results) {
+    HdrHistogram h(1, 1000, 3);
+    for (uint64_t i = 1; i <= 100; ++i) {
+        h.record(i);
+    }
+
+    // Values in non-sorted order
+    auto results = h.get_percentiles_at_or_below({100, 1, 50});
+    ASSERT_EQ(results.size(), 3);
+
+    // Value 100 → ~100%
+    EXPECT_GE(results[0], 99.0);
+    // Value 1 → ~1%
+    EXPECT_LE(results[1], 5.0);
+    // Value 50 → ~50%
+    EXPECT_GE(results[2], 45.0);
+    EXPECT_LE(results[2], 55.0);
+}
+
+TEST(HdrHistogramBatchInverseCdf, values_above_max_return_100) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(10);
+    h.record(20);
+
+    auto results = h.get_percentiles_at_or_below({5000, 10000});
+    ASSERT_EQ(results.size(), 2);
+    EXPECT_DOUBLE_EQ(results[0], 100.0);
+    EXPECT_DOUBLE_EQ(results[1], 100.0);
+}
+
+TEST(HdrHistogramBatchInverseCdf, consistent_with_single_query) {
+    HdrHistogram h(1, 100000, 3);
+    for (uint64_t i = 1; i <= 10000; ++i) {
+        h.record(i);
+    }
+
+    std::vector<uint64_t> values = {100, 1000, 5000, 9000, 10000};
+    auto batch_results = h.get_percentiles_at_or_below(values);
+
+    for (size_t i = 0; i < values.size(); ++i) {
+        double single_result = h.get_percentile_at_or_below(values[i]);
+        EXPECT_DOUBLE_EQ(batch_results[i], single_result)
+            << "Mismatch at value=" << values[i];
+    }
+}
+
+// ============================================================================
+// Percentile distribution output
+// ============================================================================
+
+TEST(HdrHistogramDistribution, empty_histogram_has_header_only) {
+    HdrHistogram h(1, 1000, 3);
+    auto output = h.output_percentile_distribution();
+    EXPECT_NE(output.find("Value"), std::string::npos);
+    EXPECT_NE(output.find("Percentile"), std::string::npos);
+    // No data lines
+    EXPECT_EQ(output.find("#[Mean"), std::string::npos);
+}
+
+TEST(HdrHistogramDistribution, single_value_produces_one_data_line) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(42);
+    auto output = h.output_percentile_distribution();
+    EXPECT_NE(output.find("1.000000"), std::string::npos);  // 100th percentile
+    EXPECT_NE(output.find("#[Mean"), std::string::npos);
+    EXPECT_NE(output.find("Total count"), std::string::npos);
+}
+
+TEST(HdrHistogramDistribution, scaling_divides_values) {
+    HdrHistogram h(1, 1000000, 3);
+    h.record(1000);
+    h.record(2000);
+
+    // Scale by 1000 → values should be ~1.0 and ~2.0
+    auto output = h.output_percentile_distribution(1000.0);
+    EXPECT_NE(output.find("#[Mean"), std::string::npos);
+}
+
+TEST(HdrHistogramDistribution, multi_value_has_multiple_lines) {
+    HdrHistogram h(1, 10000, 3);
+    for (uint64_t i = 1; i <= 100; ++i) {
+        h.record(i);
+    }
+    auto output = h.output_percentile_distribution();
+    // Should have footer with stats
+    EXPECT_NE(output.find("#[Mean"), std::string::npos);
+    EXPECT_NE(output.find("Total count    =        100"), std::string::npos);
+}
+
+TEST(HdrHistogramDistribution, negative_scaling_uses_default) {
+    HdrHistogram h(1, 1000, 3);
+    h.record(100);
+    // Negative scaling should be treated as 1.0
+    auto output = h.output_percentile_distribution(-1.0);
+    EXPECT_NE(output.find("#[Mean"), std::string::npos);
+}
