@@ -779,3 +779,59 @@ TEST(ConcurrentRecorderComputeAndReset, concurrent_record_does_not_crash) {
     stop.store(true, std::memory_order_relaxed);
     recorder.join();
 }
+
+// ============================================================================
+// ConcurrentRecorder::record_values() — bulk API
+// ============================================================================
+
+TEST(ConcurrentRecorderRecordValues, zero_count_returns_true) {
+    ConcurrentRecorder rec("BulkZero");
+    EXPECT_TRUE(rec.record_values(100, 0));
+}
+
+TEST(ConcurrentRecorderRecordValues, zero_cycles_returns_false) {
+    ConcurrentRecorder rec("BulkZeroCycles");
+    EXPECT_FALSE(rec.record_values(0, 10));
+}
+
+TEST(ConcurrentRecorderRecordValues, bulk_record_matches_individual) {
+    // Record 100 identical samples via record_values
+    ConcurrentRecorder bulk_rec("BulkRec");
+    EXPECT_TRUE(bulk_rec.record_values(500, 100));
+
+    auto bulk_stats = bulk_rec.compute_stats();
+    ASSERT_TRUE(bulk_stats.has_value());
+    EXPECT_EQ(bulk_stats->count, 100u);
+
+    // Record same via individual record() calls
+    ConcurrentRecorder ind_rec("IndRec");
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_TRUE(ind_rec.record(500));
+    }
+
+    auto ind_stats = ind_rec.compute_stats();
+    ASSERT_TRUE(ind_stats.has_value());
+    EXPECT_EQ(ind_stats->count, 100u);
+
+    // Both should have the same average (same value repeated)
+    EXPECT_NEAR(bulk_stats->avg_ns, ind_stats->avg_ns, 0.01);
+}
+
+TEST(ConcurrentRecorderRecordValues, bulk_across_threads) {
+    ConcurrentRecorder rec("BulkThreads");
+    constexpr int kThreads = 4;
+    constexpr uint64_t kCountPerThread = 1000;
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t]() {
+            uint64_t val = static_cast<uint64_t>((t + 1) * 100);
+            rec.record_values(val, kCountPerThread);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats.has_value());
+    EXPECT_EQ(stats->count, kThreads * kCountPerThread);
+}

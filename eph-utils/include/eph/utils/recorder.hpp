@@ -511,6 +511,40 @@ class ConcurrentRecorder {
     }
 
     /**
+     * @brief 批量记录相同值（线程安全）
+     *
+     * 等价于调用 record(cycles) count 次，但避免了重复的 min/max 比较。
+     * 与 Recorder::record_values() 对齐。
+     *
+     * @param cycles 测量值（CPU 周期数）
+     * @param count  记录次数（必须 > 0）
+     * @return true 记录成功，false 值无效或超出范围
+     */
+    bool record_values(uint64_t cycles, uint64_t count) noexcept {
+        if (count == 0) return true;
+
+        auto* local = get_or_create_local();
+        if (!local) [[unlikely]] return false;
+
+        if (cycles == 0) [[unlikely]] {
+            local->skipped_invalid += count;
+            return false;
+        }
+
+        if (!local->histogram.record_values(cycles, count)) [[unlikely]] {
+            local->skipped_overflow += count;
+            return false;
+        }
+
+        local->count += count;
+        local->total_cycles += cycles * count;
+        local->min_cycles = std::min(local->min_cycles, cycles);
+        local->max_cycles = std::max(local->max_cycles, cycles);
+
+        return true;
+    }
+
+    /**
      * @brief 计算合并后的统计数据
      *
      * merge 所有活跃线程和已退出线程的数据。
