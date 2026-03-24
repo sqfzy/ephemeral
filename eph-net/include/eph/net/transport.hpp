@@ -234,7 +234,7 @@ public:
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText &&
+        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
@@ -253,20 +253,23 @@ public:
     }
 
     /// Send data as a WebSocket text frame (convenience for JSON APIs).
-    /// Validates UTF-8 encoding per RFC 6455 §5.6. Returns kInvalidUtf8
-    /// if the payload is not valid UTF-8.
+    /// Validates UTF-8 encoding per RFC 6455 §5.6 unless
+    /// TransportConfig::skip_utf8_validation is true. Returns kInvalidUtf8
+    /// if validation is enabled and the payload is not valid UTF-8.
     SendError send_text(const void* data, size_t len) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (!ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
+        if (!config_.skip_utf8_validation &&
+            !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
         return enqueue_tx(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
-    /// Validates UTF-8 encoding per RFC 6455 §5.6.
+    /// Validates UTF-8 encoding per RFC 6455 §5.6 unless
+    /// TransportConfig::skip_utf8_validation is true.
     SendError send_text(std::string_view sv) noexcept {
-        if (!ws::is_valid_utf8(sv)) {
+        if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
         return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
@@ -310,7 +313,7 @@ public:
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText &&
+        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
@@ -327,11 +330,13 @@ public:
 
     /// Send a WebSocket text frame with timeout and UTF-8 validation.
     /// Combines send_text()'s UTF-8 check with send_for()'s backpressure wait.
+    /// Validation is skipped when TransportConfig::skip_utf8_validation is true.
     template <typename Rep, typename Period>
     SendError send_text_for(const void* data, size_t len,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (!ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
+        if (!config_.skip_utf8_validation &&
+            !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
         return enqueue_tx_for(data, len, timeout, ws::opcode::kText);
@@ -341,7 +346,7 @@ public:
     template <typename Rep, typename Period>
     SendError send_text_for(std::string_view sv,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
-        if (!ws::is_valid_utf8(sv)) {
+        if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
         return enqueue_tx_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
@@ -461,7 +466,7 @@ public:
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
             // RFC 6455 §5.6: text frames must contain valid UTF-8
-            if (opcode == ws::opcode::kText &&
+            if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
                 !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
                 return SendError::kInvalidUtf8;
             }
@@ -502,7 +507,7 @@ public:
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
             // RFC 6455 §5.6: text frames must contain valid UTF-8
-            if (opcode == ws::opcode::kText &&
+            if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
                 !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
                 return SendError::kInvalidUtf8;
             }

@@ -303,6 +303,33 @@ protected:
         return TestTransport::create(std::move(factory), config);
     }
 
+    /// Overload that accepts a config modifier for custom settings.
+    std::expected<std::unique_ptr<TestTransport>, ConnectionErrorInfo>
+    create_transport_with(std::function<void(TransportConfig&)> modifier,
+                          bool echo = false) {
+        TransportConfig config;
+        config.remote_host = "mock.test";
+        config.remote_port = 9999;
+        config.ws_path = "/ws";
+        config.use_tls = false;
+        config.ping_interval = 0s;
+        config.max_reconnect_attempts = 0;
+        if (modifier) modifier(config);
+
+        auto factory = [this, echo]()
+            -> std::expected<std::unique_ptr<WsMockTcpTransport>, std::string>
+        {
+            auto mock = std::make_unique<WsMockTcpTransport>();
+            mock->echo_mode = echo;
+            last_mock_ = mock.get();
+            auto r = mock->connect(3000ms);
+            if (!r) return std::unexpected(r.error());
+            return mock;
+        };
+
+        return TestTransport::create(std::move(factory), config);
+    }
+
     /// Wait for a condition with timeout (avoids test hangs).
     template <typename Pred>
     bool wait_for(Pred&& pred, std::chrono::milliseconds timeout = 2000ms) {
@@ -2512,4 +2539,126 @@ TEST_F(TransportTest, StatsReflectDroppedOnQueueFull) {
         << "Stats queue_full_count should match actual kQueueFull returns";
 
     tp->stop();
+}
+
+// ===========================================================================
+// skip_utf8_validation tests
+// ===========================================================================
+
+TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaSendText) {
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = true;
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t bad_utf8[] = {0xFF, 0xFE, 0x00};
+    auto err = tp->send_text(bad_utf8, sizeof(bad_utf8));
+    EXPECT_EQ(err, SendError::kOk)
+        << "send_text() should accept invalid UTF-8 when skip_utf8_validation=true";
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaSendTextStringView) {
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = true;
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    // Construct a string_view containing invalid UTF-8
+    const char bad[] = {'\xFF', '\xFE', '\x00'};
+    auto err = tp->send_text(std::string_view{bad, 3});
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaSend) {
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = true;
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t bad_utf8[] = {0xFF, 0xFE};
+    auto err = tp->send(bad_utf8, sizeof(bad_utf8), ws::opcode::kText);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaSendFor) {
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = true;
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t bad_utf8[] = {0xFF, 0xFE};
+    auto err = tp->send_for(bad_utf8, sizeof(bad_utf8), 100ms, ws::opcode::kText);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaSendTextFor) {
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = true;
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t bad_utf8[] = {0xFF, 0xFE};
+    auto err = tp->send_text_for(bad_utf8, sizeof(bad_utf8), 100ms);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaBatchSendN) {
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = true;
+    });
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t bad_utf8[] = {0xFF, 0xFE};
+    std::span<const uint8_t> payloads[] = {
+        std::span<const uint8_t>(bad_utf8, sizeof(bad_utf8)),
+    };
+    auto err = tp->send_n(payloads, 1, ws::opcode::kText);
+    EXPECT_EQ(err, SendError::kOk);
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationDefaultFalseStillRejects) {
+    // Verify default behavior is unchanged: skip_utf8_validation defaults to false
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+
+    const uint8_t bad_utf8[] = {0xFF, 0xFE, 0x00};
+    auto err = tp->send_text(bad_utf8, sizeof(bad_utf8));
+    EXPECT_EQ(err, SendError::kInvalidUtf8)
+        << "Default config should still reject invalid UTF-8";
+
+    tp->stop();
+}
+
+TEST_F(TransportTest, SkipUtf8ValidationConfigWarning) {
+    TransportConfig config;
+    config.skip_utf8_validation = true;
+    auto warnings = config.warnings();
+    bool found = false;
+    for (const auto& w : warnings) {
+        if (w.find("skip_utf8_validation") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found)
+        << "Config warnings should mention skip_utf8_validation when enabled";
 }

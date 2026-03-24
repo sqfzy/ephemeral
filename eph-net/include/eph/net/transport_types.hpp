@@ -217,6 +217,14 @@ struct TransportConfig {
     // 0 = disable pong timeout detection (default for backward compatibility).
     std::chrono::seconds pong_timeout{0};
 
+    // UTF-8 validation for text frames (RFC 6455 §5.6).
+    // When true, send_text() and other text-sending methods skip the DFA-based
+    // UTF-8 validation pass, reducing hot-path latency at the cost of RFC
+    // compliance. The caller assumes responsibility for ensuring payloads
+    // contain valid UTF-8; sending invalid data may cause the remote peer to
+    // close the connection.
+    bool skip_utf8_validation = false;
+
     // CPU affinity for worker threads (-1 = no pinning)
     int tx_cpu = -1;
     int rx_cpu = -1;
@@ -469,6 +477,10 @@ struct TransportConfig {
             w.emplace_back(std::format(
                 "rx_burst_size={} is unusually large — may increase "
                 "per-iteration latency variance", rx_burst_size));
+        if (skip_utf8_validation)
+            w.emplace_back("skip_utf8_validation=true — text frames will NOT be "
+                           "validated for UTF-8 conformance (RFC 6455 §5.6); "
+                           "caller assumes responsibility for payload validity");
         return w;
     }
 
