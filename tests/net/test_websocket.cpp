@@ -1173,3 +1173,179 @@ TEST(CloseCodeValidation, UnusedRangesAreInvalid) {
     EXPECT_FALSE(is_valid_close_code(2000));
     EXPECT_FALSE(is_valid_close_code(2999));
 }
+
+// ===========================================================================
+// DecodedFrame::close_status_code()
+// ===========================================================================
+
+TEST(CloseStatusCode, ExtractsStatusCodeFromCloseFrame) {
+    // Build a close frame with status 1000 (Normal Closure)
+    uint8_t buf[128];
+    auto len = build_close_frame(buf, 1000);
+    ASSERT_GT(len, 0);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->is_close());
+
+    // Unmask the payload before reading status code
+    if (result->masked) {
+        apply_mask(const_cast<uint8_t*>(result->payload),
+                   result->payload_len, result->mask_key);
+    }
+    EXPECT_EQ(result->close_status_code(), 1000);
+}
+
+TEST(CloseStatusCode, ExtractsVariousStatusCodes) {
+    for (uint16_t code : {1000, 1001, 1002, 1008, 1011, 3000, 4999}) {
+        uint8_t buf[128];
+        auto len = build_close_frame(buf, code);
+        ASSERT_GT(len, 0) << "Failed to build close frame for code " << code;
+
+        auto result = decode_frame(buf, len);
+        ASSERT_TRUE(result.has_value());
+
+        if (result->masked) {
+            apply_mask(const_cast<uint8_t*>(result->payload),
+                       result->payload_len, result->mask_key);
+        }
+        EXPECT_EQ(result->close_status_code(), code)
+            << "Status code mismatch for " << code;
+    }
+}
+
+TEST(CloseStatusCode, ReturnsZeroForNonCloseFrame) {
+    // Build a text frame and check close_status_code returns 0
+    const uint8_t payload[] = "hello";
+    uint8_t buf[128];
+    auto len = encode_frame(buf, opcode::kText, payload, 5);
+    ASSERT_GT(len, 0);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->is_close());
+    EXPECT_EQ(result->close_status_code(), 0);
+}
+
+TEST(CloseStatusCode, ReturnsZeroForEmptyClosePayload) {
+    // Manually construct an unmasked (server-side) close frame with no payload
+    // encode_frame_header always masks, so we build the frame by hand
+    uint8_t buf[2] = {};
+    buf[0] = 0x88;  // FIN=1, opcode=close(0x08)
+    buf[1] = 0x00;  // MASK=0, payload_len=0
+
+    auto result = decode_frame(buf, 2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->is_close());
+    EXPECT_EQ(result->payload_len, 0u);
+    EXPECT_EQ(result->close_status_code(), 0);
+}
+
+// ===========================================================================
+// 8-byte extended length (payload > 65535)
+// ===========================================================================
+
+TEST(WsLargeFrame, EncodeDecodePayloadOver65535) {
+    // Test the 8-byte extended length path (payload > 65535)
+    constexpr size_t payload_size = 65536;
+    std::vector<uint8_t> payload(payload_size, 0xAB);
+    std::vector<uint8_t> buf(total_frame_size(payload_size) + 16);
+
+    auto written = encode_frame(buf.data(), opcode::kBinary,
+                                 payload.data(), payload_size);
+    ASSERT_GT(written, 0);
+
+    // Header should be 14 bytes (2 base + 8 extended length + 4 mask key)
+    EXPECT_EQ(frame_header_size(payload_size), 14);
+
+    auto result = decode_frame(buf.data(), written);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kBinary);
+    EXPECT_EQ(result->payload_len, payload_size);
+    EXPECT_TRUE(result->fin);
+}
+
+TEST(WsLargeFrame, EncodeDecodePayloadExactly65535) {
+    // 65535 uses 2-byte extended length, not 8-byte
+    constexpr size_t payload_size = 65535;
+    std::vector<uint8_t> payload(payload_size, 0xCD);
+    std::vector<uint8_t> buf(total_frame_size(payload_size) + 16);
+
+    auto written = encode_frame(buf.data(), opcode::kBinary,
+                                 payload.data(), payload_size);
+    ASSERT_GT(written, 0);
+
+    // Header should be 8 bytes (2 base + 2 extended + 4 mask key)
+    EXPECT_EQ(frame_header_size(payload_size), 8);
+
+    auto result = decode_frame(buf.data(), written);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, payload_size);
+}
+
+// ===========================================================================
+// Fragmentation (FIN=0) edge cases
+// ===========================================================================
+
+TEST(WsFragmentation, FirstFragmentHasFinFalse) {
+    const uint8_t payload[] = "part1";
+    uint8_t buf[64];
+    auto written = encode_frame(buf, opcode::kText, payload, 5, /*fin=*/false);
+    ASSERT_GT(written, 0);
+
+    auto result = decode_frame(buf, written);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->fin);
+    EXPECT_EQ(result->opcode, opcode::kText);
+}
+
+TEST(WsFragmentation, MultiPartFragmentRoundtrip) {
+    // First fragment
+    const uint8_t p1[] = "hello";
+    uint8_t buf1[64];
+    auto w1 = encode_frame(buf1, opcode::kText, p1, 5, /*fin=*/false);
+    ASSERT_GT(w1, 0);
+
+    // Continuation fragment (opcode = 0)
+    const uint8_t p2[] = " world";
+    uint8_t buf2[64];
+    auto w2 = encode_frame(buf2, opcode::kContinuation, p2, 6, /*fin=*/true);
+    ASSERT_GT(w2, 0);
+
+    auto r1 = decode_frame(buf1, w1);
+    auto r2 = decode_frame(buf2, w2);
+    ASSERT_TRUE(r1.has_value());
+    ASSERT_TRUE(r2.has_value());
+
+    EXPECT_FALSE(r1->fin);
+    EXPECT_EQ(r1->opcode, opcode::kText);
+    EXPECT_TRUE(r2->fin);
+    EXPECT_EQ(r2->opcode, opcode::kContinuation);
+}
+
+// ===========================================================================
+// decode_frame edge cases
+// ===========================================================================
+
+TEST(WsDecode, IncompleteExtendedLengthReturnsIncomplete) {
+    // Build a frame that claims 2-byte extended length but provide insufficient data
+    uint8_t buf[3] = {};
+    buf[0] = 0x82;  // FIN=1, opcode=binary
+    buf[1] = 126;   // 2-byte extended length follows
+    // Only 3 bytes provided, but 4 bytes needed for header
+
+    auto result = decode_frame(buf, 3);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
+
+TEST(WsDecode, IncompletePayloadReturnsIncomplete) {
+    // Build a valid header for 10-byte payload but only provide 5 bytes of payload
+    uint8_t buf[7] = {};
+    buf[0] = 0x81;  // FIN=1, opcode=text, unmasked (server frame)
+    buf[1] = 10;    // payload_len = 10
+
+    auto result = decode_frame(buf, 7);  // only 5 payload bytes available
+    EXPECT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
