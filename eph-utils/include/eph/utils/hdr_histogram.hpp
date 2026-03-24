@@ -179,6 +179,47 @@ class HdrHistogram {
         return true;
     }
 
+    /// Record a value with coordinated omission correction.
+    ///
+    /// When measuring periodic operations (e.g., one request every
+    /// `expected_interval`), a long pause not only produces one high-latency
+    /// sample but also *prevents* the requests that would have been issued
+    /// during the pause. This method fills in those missing samples:
+    /// for every `expected_interval` step below the recorded `value`,
+    /// an additional sample is recorded.
+    ///
+    /// Example: if expected_interval=10ms and value=50ms, this records
+    /// additional samples at ~40ms, ~30ms, ~20ms — representing the
+    /// requests that were delayed by the stall.
+    ///
+    /// @param value              The measured latency value
+    /// @param expected_interval  The expected interval between operations
+    /// @return true if the primary sample was recorded successfully
+    ///
+    /// @note Based on Gil Tene's coordinated omission correction algorithm.
+    ///       Use this when benchmarking with a constant-rate load generator
+    ///       to avoid underreporting tail latency.
+    bool record_corrected(uint64_t value, uint64_t expected_interval) noexcept {
+        if (!record(value)) return false;
+
+        if (expected_interval == 0 || value <= expected_interval) {
+            return true;
+        }
+
+        // Fill in missing samples for the stalled interval.
+        // Each missing sample represents a request that would have completed
+        // at (value - k * expected_interval) if there had been no stall.
+        uint64_t missing = value - expected_interval;
+        while (missing >= expected_interval) {
+            // Best-effort: if a fill-in sample is out of range, skip it
+            // but continue filling lower values
+            (void)record(missing);
+            missing -= expected_interval;
+        }
+
+        return true;
+    }
+
     void reset() noexcept {
         std::fill(counts_.begin(), counts_.end(), 0);
         total_count_ = 0;

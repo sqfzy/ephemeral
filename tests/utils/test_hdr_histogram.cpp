@@ -1602,3 +1602,58 @@ TEST(HdrHistogramLinearIter, total_count_matches) {
 
     EXPECT_EQ(sum, 500u) << "sum of linear bucket counts must equal total";
 }
+
+// ============================================================================
+// record_corrected() — coordinated omission correction
+// ============================================================================
+
+TEST(HdrHistogramCorrected, value_within_interval_records_single_sample) {
+    HdrHistogram h(1, 100000, 3);
+    EXPECT_TRUE(h.record_corrected(100, 200));
+    // Value <= expected_interval → no fill-in, just the one sample
+    EXPECT_EQ(h.get_total_count(), 1u);
+}
+
+TEST(HdrHistogramCorrected, value_exceeding_interval_fills_missing_samples) {
+    HdrHistogram h(1, 100000, 3);
+    // expected_interval = 1000, value = 5000
+    // Fill-in samples: 4000, 3000, 2000, 1000 → 4 additional + 1 primary = 5
+    EXPECT_TRUE(h.record_corrected(5000, 1000));
+    EXPECT_EQ(h.get_total_count(), 5u);
+}
+
+TEST(HdrHistogramCorrected, zero_interval_records_single_sample) {
+    HdrHistogram h(1, 100000, 3);
+    EXPECT_TRUE(h.record_corrected(5000, 0));
+    EXPECT_EQ(h.get_total_count(), 1u);
+}
+
+TEST(HdrHistogramCorrected, exact_multiple_of_interval) {
+    HdrHistogram h(1, 100000, 3);
+    // value = 3000, interval = 1000 → fill at 2000, 1000 → 2 fill-in + 1 = 3
+    EXPECT_TRUE(h.record_corrected(3000, 1000));
+    EXPECT_EQ(h.get_total_count(), 3u);
+}
+
+TEST(HdrHistogramCorrected, primary_out_of_range_returns_false) {
+    HdrHistogram h(1, 1000, 3);
+    // Value exceeds highest_trackable_value → primary record fails
+    EXPECT_FALSE(h.record_corrected(2000, 100));
+    EXPECT_EQ(h.get_total_count(), 0u);
+}
+
+TEST(HdrHistogramCorrected, fill_in_raises_max_correctly) {
+    HdrHistogram h(1, 100000, 3);
+    h.record_corrected(10000, 2000);
+    // Primary value should be max
+    EXPECT_GE(h.get_max_value(), 9900u); // within bucket resolution
+    // Filled samples should lower the min
+    EXPECT_LE(h.get_min_value(), 2100u); // ~2000 within bucket resolution
+}
+
+TEST(HdrHistogramCorrected, large_stall_produces_many_fill_ins) {
+    HdrHistogram h(1, 1000000, 3);
+    // 100ms stall with 1ms expected interval → 99 fill-in + 1 primary = 100
+    EXPECT_TRUE(h.record_corrected(100000, 1000));
+    EXPECT_EQ(h.get_total_count(), 100u);
+}
