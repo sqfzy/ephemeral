@@ -1258,10 +1258,10 @@ TEST(ItchDispatch, dispatches_add_order_to_correct_tag) {
     ASSERT_TRUE(view.has_value());
 
     bool called = false;
-    dispatch(*view, [&](auto tag, const uint8_t* body) {
+    dispatch(*view, [&](auto tag, const uint8_t* msg) {
         if constexpr (std::is_same_v<decltype(tag), msg::AddOrder>) {
             called = true;
-            EXPECT_EQ(body, raw + 1); // body skips type byte
+            EXPECT_EQ(msg, raw); // full message pointer
         } else {
             FAIL() << "wrong tag type dispatched";
         }
@@ -1409,22 +1409,27 @@ TEST(ItchDispatch, handler_return_value_forwarded) {
     EXPECT_EQ(result, 42);
 }
 
-TEST(ItchDispatch, body_pointer_matches_accessor_convention) {
-    // Verify that the body pointer passed to dispatch matches what
-    // the per-message accessor namespaces expect (data + 1, skipping type byte)
+TEST(ItchDispatch, msg_pointer_matches_accessor_convention) {
+    // Verify that the msg pointer passed to dispatch works directly with
+    // per-message accessor namespaces (byte 0 = type tag, absolute offsets)
     uint8_t raw[36];
     std::memset(raw, 0, sizeof(raw));
     raw[0] = kAddOrder;
-    // Set stock_locate = 0x0042 at body offset 0-1
+    // Set stock_locate = 0x0042 at offset 1-2
     raw[1] = 0x00;
     raw[2] = 0x42;
+    // Set shares = 500 at offset 20 (4 bytes BE)
+    raw[20] = 0x00; raw[21] = 0x00; raw[22] = 0x01; raw[23] = 0xF4;
 
     auto view = parse(raw, sizeof(raw));
     ASSERT_TRUE(view.has_value());
 
-    dispatch(*view, [](auto tag, const uint8_t* body) {
+    dispatch(*view, [](auto tag, const uint8_t* msg) {
         if constexpr (std::is_same_v<decltype(tag), msg::AddOrder>) {
-            EXPECT_EQ(stock_locate(body), 0x0042);
+            // Common header: pass msg+1 to free functions (they expect body pointer)
+            EXPECT_EQ(stock_locate(msg + 1), 0x0042);
+            // Per-message accessors: pass msg directly (they expect full message)
+            EXPECT_EQ(add_order::shares(msg), 500u);
         }
     });
 }
@@ -1869,17 +1874,16 @@ TEST(ItchDispatchAll, dispatches_all_messages_in_buffer) {
     int count = 0;
     std::vector<char> events;
     size_t consumed = dispatch_all(buf.data(), buf.size(),
-        [&](auto /*tag*/, const uint8_t* body) {
-            events.push_back(system_event::event_code(body - 1 + 1));
-            // body points past the type byte, but event_code expects
-            // msg pointer (full message). We have body = data+1.
-            // system_event::event_code(msg) reads msg[10]
-            // So we need msg = body - 1, event_code(body-1) reads (body-1)[10] = body[9]
+        [&](auto /*tag*/, const uint8_t* msg) {
+            events.push_back(system_event::event_code(msg));
             ++count;
         });
 
     EXPECT_EQ(consumed, kSystemEventSize * 2);
     EXPECT_EQ(count, 2);
+    EXPECT_EQ(events.size(), 2u);
+    EXPECT_EQ(events[0], 'O');
+    EXPECT_EQ(events[1], 'C');
 }
 
 TEST(ItchDispatchAll, with_stats_accumulation) {

@@ -395,56 +395,63 @@ struct Unknown {};
 
 /// Dispatch a parsed ITCH message to a handler using tag-type overload resolution.
 ///
-/// The handler is invoked as `handler(Tag{}, body)` where:
+/// The handler is invoked as `handler(Tag{}, msg)` where:
 ///   - Tag is one of the msg:: structs above (compile-time message type)
-///   - body points to the message body (past the 1-byte type field)
+///   - msg points to the full message (byte 0 = type tag), matching the pointer
+///     convention used by all per-message accessor namespaces (e.g.
+///     add_order::price(msg), cross_trade::shares(msg))
 ///
 /// Usage with overload set:
 ///   struct MyHandler {
-///       void operator()(itch::msg::AddOrder, const uint8_t* body) { ... }
-///       void operator()(itch::msg::OrderDelete, const uint8_t* body) { ... }
+///       void operator()(itch::msg::AddOrder, const uint8_t* msg) {
+///           auto ref = itch::add_order::order_ref(msg);  // works directly
+///       }
+///       void operator()(itch::msg::OrderDelete, const uint8_t* msg) { ... }
 ///       template <typename T>
 ///       void operator()(T, const uint8_t*) { /* default: ignore */ }
 ///   };
 ///   itch::dispatch(msg_view, MyHandler{});
 ///
 /// Usage with if-constexpr lambda:
-///   itch::dispatch(msg_view, [](auto tag, const uint8_t* body) {
+///   itch::dispatch(msg_view, [](auto tag, const uint8_t* msg) {
 ///       if constexpr (std::is_same_v<decltype(tag), itch::msg::AddOrder>) {
-///           // handle AddOrder
+///           auto price = itch::add_order::price(msg);  // zero-overhead
 ///       }
 ///   });
+///
+/// For common header fields (stock_locate, tracking_number, timestamp_ns),
+/// use the MessageView convenience methods or pass msg+1 to the free functions.
 ///
 /// The handler return value (if any) is forwarded back to the caller.
 /// If the message type is unknown, msg::Unknown is dispatched.
 template <typename Handler>
 decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
-    const uint8_t* body = view.data + 1; // skip type byte
+    const uint8_t* msg = view.data; // full message pointer (byte 0 = type)
 
     switch (view.msg_type) {
-    case kSystemEvent:              return handler(msg::SystemEvent{}, body);
-    case kStockDirectory:           return handler(msg::StockDirectory{}, body);
-    case kStockTradingAction:       return handler(msg::StockTradingAction{}, body);
-    case kRegSHORestriction:        return handler(msg::RegSHORestriction{}, body);
-    case kMarketParticipantPosition: return handler(msg::MarketParticipantPosition{}, body);
-    case kMWCBDeclineLevel:         return handler(msg::MWCBDeclineLevel{}, body);
-    case kMWCBStatus:               return handler(msg::MWCBStatus{}, body);
-    case kIPOQuotingPeriod:         return handler(msg::IPOQuotingPeriod{}, body);
-    case kLULDAuctionCollar:        return handler(msg::LULDAuctionCollar{}, body);
-    case kOperationalHalt:          return handler(msg::OperationalHalt{}, body);
-    case kAddOrder:                 return handler(msg::AddOrder{}, body);
-    case kAddOrderMPID:             return handler(msg::AddOrderMPID{}, body);
-    case kOrderExecuted:            return handler(msg::OrderExecuted{}, body);
-    case kOrderExecutedWithPrice:   return handler(msg::OrderExecutedWithPrice{}, body);
-    case kOrderCancel:              return handler(msg::OrderCancel{}, body);
-    case kOrderDelete:              return handler(msg::OrderDelete{}, body);
-    case kOrderReplace:             return handler(msg::OrderReplace{}, body);
-    case kNonCrossTrade:            return handler(msg::NonCrossTrade{}, body);
-    case kCrossTrade:               return handler(msg::CrossTrade{}, body);
-    case kBrokenTrade:              return handler(msg::BrokenTrade{}, body);
-    case kNOII:                     return handler(msg::NOII{}, body);
-    case kRPII:                     return handler(msg::RPII{}, body);
-    default:                        return handler(msg::Unknown{}, body);
+    case kSystemEvent:              return handler(msg::SystemEvent{}, msg);
+    case kStockDirectory:           return handler(msg::StockDirectory{}, msg);
+    case kStockTradingAction:       return handler(msg::StockTradingAction{}, msg);
+    case kRegSHORestriction:        return handler(msg::RegSHORestriction{}, msg);
+    case kMarketParticipantPosition: return handler(msg::MarketParticipantPosition{}, msg);
+    case kMWCBDeclineLevel:         return handler(msg::MWCBDeclineLevel{}, msg);
+    case kMWCBStatus:               return handler(msg::MWCBStatus{}, msg);
+    case kIPOQuotingPeriod:         return handler(msg::IPOQuotingPeriod{}, msg);
+    case kLULDAuctionCollar:        return handler(msg::LULDAuctionCollar{}, msg);
+    case kOperationalHalt:          return handler(msg::OperationalHalt{}, msg);
+    case kAddOrder:                 return handler(msg::AddOrder{}, msg);
+    case kAddOrderMPID:             return handler(msg::AddOrderMPID{}, msg);
+    case kOrderExecuted:            return handler(msg::OrderExecuted{}, msg);
+    case kOrderExecutedWithPrice:   return handler(msg::OrderExecutedWithPrice{}, msg);
+    case kOrderCancel:              return handler(msg::OrderCancel{}, msg);
+    case kOrderDelete:              return handler(msg::OrderDelete{}, msg);
+    case kOrderReplace:             return handler(msg::OrderReplace{}, msg);
+    case kNonCrossTrade:            return handler(msg::NonCrossTrade{}, msg);
+    case kCrossTrade:               return handler(msg::CrossTrade{}, msg);
+    case kBrokenTrade:              return handler(msg::BrokenTrade{}, msg);
+    case kNOII:                     return handler(msg::NOII{}, msg);
+    case kRPII:                     return handler(msg::RPII{}, msg);
+    default:                        return handler(msg::Unknown{}, msg);
     }
 }
 
