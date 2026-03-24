@@ -65,13 +65,15 @@ struct TcpConfig {
             && a.rx_queue_id  == b.rx_queue_id;
     }
 
+    /// Format a MAC address as "xx:xx:xx:xx:xx:xx".
+    [[nodiscard]] static std::string format_mac(const rte_ether_addr& m) {
+        return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            m.addr_bytes[0], m.addr_bytes[1], m.addr_bytes[2],
+            m.addr_bytes[3], m.addr_bytes[4], m.addr_bytes[5]);
+    }
+
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
-        auto fmt_mac = [](const rte_ether_addr& m) {
-            return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                m.addr_bytes[0], m.addr_bytes[1], m.addr_bytes[2],
-                m.addr_bytes[3], m.addr_bytes[4], m.addr_bytes[5]);
-        };
         return std::format(
             "TcpConfig:\n"
             "  src: {}:{}, dst: {}:{}\n"
@@ -80,18 +82,13 @@ struct TcpConfig {
             "  port_id: {}, tx_queue: {}, rx_queue: {}",
             net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
             net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
-            fmt_mac(src_mac), fmt_mac(dst_mac),
+            format_mac(src_mac), format_mac(dst_mac),
             mss, recv_window,
             port_id, tx_queue_id, rx_queue_id);
     }
 
     /// JSON-formatted config for monitoring system integration.
     [[nodiscard]] std::string to_json() const {
-        auto fmt_mac = [](const rte_ether_addr& m) {
-            return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                m.addr_bytes[0], m.addr_bytes[1], m.addr_bytes[2],
-                m.addr_bytes[3], m.addr_bytes[4], m.addr_bytes[5]);
-        };
         return std::format(
             "{{\"src_ip\":\"{}\",\"dst_ip\":\"{}\","
             "\"src_port\":{},\"dst_port\":{},"
@@ -101,7 +98,7 @@ struct TcpConfig {
             net::format_ipv4(tuple.src_ip).data(),
             net::format_ipv4(tuple.dst_ip).data(),
             tuple.src_port, tuple.dst_port,
-            fmt_mac(src_mac), fmt_mac(dst_mac),
+            format_mac(src_mac), format_mac(dst_mac),
             mss, recv_window,
             port_id, tx_queue_id, rx_queue_id);
     }

@@ -772,23 +772,6 @@ struct ThreadStats {
         uint64_t dropped       = 0;
         uint64_t crypto_errors = 0;
 
-        /// Compute the delta between two snapshots for windowed metrics.
-        [[nodiscard]] friend Snapshot operator-(const Snapshot& lhs,
-                                                const Snapshot& rhs) noexcept {
-            return {
-                .packets       = lhs.packets       - rhs.packets,
-                .bytes         = lhs.bytes         - rhs.bytes,
-                .text_packets  = lhs.text_packets  - rhs.text_packets,
-                .text_bytes    = lhs.text_bytes    - rhs.text_bytes,
-                .dropped       = lhs.dropped       - rhs.dropped,
-                .crypto_errors = lhs.crypto_errors - rhs.crypto_errors,
-            };
-        }
-
-        /// Defaulted equality — all fields must match exactly.
-        [[nodiscard]] friend bool operator==(const Snapshot&,
-                                             const Snapshot&) = default;
-
         /// Multi-line formatted dump for logging/debugging.
         [[nodiscard]] std::string dump() const {
             return std::format(
@@ -807,6 +790,23 @@ struct ThreadStats {
                 packets, bytes, text_packets, text_bytes,
                 dropped, crypto_errors);
         }
+
+        /// Compute the delta between two snapshots for windowed metrics.
+        [[nodiscard]] friend Snapshot operator-(const Snapshot& lhs,
+                                                const Snapshot& rhs) noexcept {
+            return {
+                .packets       = lhs.packets       - rhs.packets,
+                .bytes         = lhs.bytes         - rhs.bytes,
+                .text_packets  = lhs.text_packets  - rhs.text_packets,
+                .text_bytes    = lhs.text_bytes    - rhs.text_bytes,
+                .dropped       = lhs.dropped       - rhs.dropped,
+                .crypto_errors = lhs.crypto_errors - rhs.crypto_errors,
+            };
+        }
+
+        /// Defaulted equality — all fields must match exactly.
+        [[nodiscard]] friend bool operator==(const Snapshot&,
+                                             const Snapshot&) = default;
     };
 
     /// Take a consistent (relaxed) snapshot of all counters.
@@ -922,43 +922,44 @@ struct TransportStats {
     ///   auto delta = s2 - s1;  // delta.tx_pps() gives window-average rate
     ///
     /// Counter fields (packets, bytes, errors) are subtracted.
-    /// HWM fields take the later snapshot's value.
+    /// HWM fields take the later snapshot's (lhs) value.
     /// Connection metadata (remote_ip, TLS seq, RTT, handshake timings)
-    /// comes from the later snapshot (rhs is 'this', lhs is 'earlier').
-    [[nodiscard]] TransportStats operator-(const TransportStats& earlier) const noexcept {
+    /// comes from the later snapshot (lhs).
+    [[nodiscard]] friend TransportStats operator-(const TransportStats& lhs,
+                                                  const TransportStats& rhs) noexcept {
         TransportStats d;
-        d.tx_packets        = tx_packets        - earlier.tx_packets;
-        d.tx_bytes          = tx_bytes          - earlier.tx_bytes;
-        d.tx_text_packets   = tx_text_packets   - earlier.tx_text_packets;
-        d.tx_text_bytes     = tx_text_bytes     - earlier.tx_text_bytes;
-        d.tx_dropped        = tx_dropped        - earlier.tx_dropped;
-        d.rx_packets        = rx_packets        - earlier.rx_packets;
-        d.rx_bytes          = rx_bytes          - earlier.rx_bytes;
-        d.rx_text_packets   = rx_text_packets   - earlier.rx_text_packets;
-        d.rx_text_bytes     = rx_text_bytes     - earlier.rx_text_bytes;
-        d.rx_dropped        = rx_dropped        - earlier.rx_dropped;
-        d.encrypt_errors    = encrypt_errors    - earlier.encrypt_errors;
-        d.decrypt_errors    = decrypt_errors    - earlier.decrypt_errors;
-        d.queue_full_count  = queue_full_count  - earlier.queue_full_count;
-        d.ws_pings_received = ws_pings_received - earlier.ws_pings_received;
-        d.ws_pongs_sent     = ws_pongs_sent     - earlier.ws_pongs_sent;
-        d.pong_timeouts     = pong_timeouts     - earlier.pong_timeouts;
-        d.reconnect_count   = reconnect_count   - earlier.reconnect_count;
+        d.tx_packets        = lhs.tx_packets        - rhs.tx_packets;
+        d.tx_bytes          = lhs.tx_bytes          - rhs.tx_bytes;
+        d.tx_text_packets   = lhs.tx_text_packets   - rhs.tx_text_packets;
+        d.tx_text_bytes     = lhs.tx_text_bytes     - rhs.tx_text_bytes;
+        d.tx_dropped        = lhs.tx_dropped        - rhs.tx_dropped;
+        d.rx_packets        = lhs.rx_packets        - rhs.rx_packets;
+        d.rx_bytes          = lhs.rx_bytes          - rhs.rx_bytes;
+        d.rx_text_packets   = lhs.rx_text_packets   - rhs.rx_text_packets;
+        d.rx_text_bytes     = lhs.rx_text_bytes     - rhs.rx_text_bytes;
+        d.rx_dropped        = lhs.rx_dropped        - rhs.rx_dropped;
+        d.encrypt_errors    = lhs.encrypt_errors    - rhs.encrypt_errors;
+        d.decrypt_errors    = lhs.decrypt_errors    - rhs.decrypt_errors;
+        d.queue_full_count  = lhs.queue_full_count  - rhs.queue_full_count;
+        d.ws_pings_received = lhs.ws_pings_received - rhs.ws_pings_received;
+        d.ws_pongs_sent     = lhs.ws_pongs_sent     - rhs.ws_pongs_sent;
+        d.pong_timeouts     = lhs.pong_timeouts     - rhs.pong_timeouts;
+        d.reconnect_count   = lhs.reconnect_count   - rhs.reconnect_count;
         // HWM: take current snapshot values (not delta)
-        d.tx_queue_hwm      = tx_queue_hwm;
-        d.rx_queue_hwm      = rx_queue_hwm;
+        d.tx_queue_hwm      = lhs.tx_queue_hwm;
+        d.rx_queue_hwm      = lhs.rx_queue_hwm;
         // Uptime delta = window duration
-        d.uptime_ns         = uptime_ns         - earlier.uptime_ns;
-        // Connection metadata from current snapshot
-        d.handshake_ns      = handshake_ns;
-        d.tcp_connect_ns    = tcp_connect_ns;
-        d.tls_handshake_ns  = tls_handshake_ns;
-        d.ws_upgrade_ns     = ws_upgrade_ns;
-        d.remote_ip         = remote_ip;
-        d.rtt               = rtt;
-        d.tls_write_seq     = tls_write_seq;
-        d.tls_read_seq      = tls_read_seq;
-        d.tls_seq_limit     = tls_seq_limit;
+        d.uptime_ns         = lhs.uptime_ns         - rhs.uptime_ns;
+        // Connection metadata from current (later) snapshot
+        d.handshake_ns      = lhs.handshake_ns;
+        d.tcp_connect_ns    = lhs.tcp_connect_ns;
+        d.tls_handshake_ns  = lhs.tls_handshake_ns;
+        d.ws_upgrade_ns     = lhs.ws_upgrade_ns;
+        d.remote_ip         = lhs.remote_ip;
+        d.rtt               = lhs.rtt;
+        d.tls_write_seq     = lhs.tls_write_seq;
+        d.tls_read_seq      = lhs.tls_read_seq;
+        d.tls_seq_limit     = lhs.tls_seq_limit;
         return d;
     }
 
