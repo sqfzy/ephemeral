@@ -1682,3 +1682,109 @@ TEST(HdrHistogramCorrected, large_stall_produces_many_fill_ins) {
     EXPECT_TRUE(h.record_corrected(100000, 1000));
     EXPECT_EQ(h.get_total_count(), 100u);
 }
+
+TEST(HdrHistogramCorrected, value_equals_interval_records_single_sample) {
+    HdrHistogram h(1, 100000, 3);
+    // Boundary: value == expected_interval → no fill-in
+    EXPECT_TRUE(h.record_corrected(1000, 1000));
+    EXPECT_EQ(h.get_total_count(), 1u);
+}
+
+TEST(HdrHistogramCorrected, interval_one_fills_maximally) {
+    HdrHistogram h(1, 10000, 3);
+    // interval=1, value=100 → fill at 99, 98, ..., 1 → 99 fill-ins + 1 primary = 100
+    EXPECT_TRUE(h.record_corrected(100, 1));
+    EXPECT_EQ(h.get_total_count(), 100u);
+}
+
+TEST(HdrHistogramCorrected, missing_drops_below_trackable_mid_loop) {
+    // lowest_trackable=100, value=200, interval=80
+    // missing=120 (>=100 → record), missing=40 (<100 → break)
+    // Primary + 1 fill-in = 2
+    HdrHistogram h(100, 100000, 3);
+    EXPECT_TRUE(h.record_corrected(200, 80));
+    EXPECT_EQ(h.get_total_count(), 2u);
+}
+
+TEST(HdrHistogramCorrected, fill_in_values_are_actually_recorded) {
+    HdrHistogram h(1, 100000, 3);
+    h.record_corrected(5000, 1000);
+    // Verify fill-in values are present by checking percentiles
+    // Total: 5 samples at ~5000, ~4000, ~3000, ~2000, ~1000
+    EXPECT_EQ(h.get_total_count(), 5u);
+    // p20 should be around 1000 (first quintile)
+    uint64_t p20 = h.get_value_at_percentile(20.0);
+    EXPECT_LE(p20, 1100u);
+    // p80 should be around 4000-5000
+    uint64_t p80 = h.get_value_at_percentile(80.0);
+    EXPECT_GE(p80, 3900u);
+}
+
+// ============================================================================
+// for_each_linear() — additional edge cases
+// ============================================================================
+
+TEST(HdrHistogramLinearIter, step_one_creates_per_unit_buckets) {
+    HdrHistogram h(1, 100, 3);
+    h.record(1);
+    h.record(5);
+    h.record(10);
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(1, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    // Should have 3 entries (one per recorded value, since step=1)
+    ASSERT_EQ(entries.size(), 3u);
+    uint64_t total = 0;
+    for (const auto& e : entries) {
+        total += e.count;
+        EXPECT_EQ(e.range_end - e.range_start, 1u);
+    }
+    EXPECT_EQ(total, 3u);
+}
+
+TEST(HdrHistogramLinearIter, sparse_values_skip_empty_steps) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(100);
+    h.record(5000);
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(100, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    // Only 2 entries: [0,100) or [100,200) and [5000,5100)
+    // Empty steps in between should be skipped
+    ASSERT_EQ(entries.size(), 2u);
+    // First entry should contain value 100
+    EXPECT_LE(entries[0].range_start, 100u);
+    EXPECT_GT(entries[0].range_end, 100u);
+    // Second entry should contain value ~5000
+    EXPECT_LE(entries[1].range_start, 5000u);
+    // Gap between entries should be large
+    EXPECT_GT(entries[1].range_start, entries[0].range_end);
+}
+
+TEST(HdrHistogramLinearIter, consecutive_entries_have_aligned_ranges) {
+    HdrHistogram h(1, 1000, 3);
+    for (int i = 1; i <= 100; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(10, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    // Verify consecutive entries have aligned start/end
+    for (size_t i = 1; i < entries.size(); ++i) {
+        EXPECT_GE(entries[i].range_start, entries[i-1].range_end)
+            << "entry " << i << " range_start should be >= previous range_end";
+    }
+    // All entries must have consistent step width
+    for (const auto& e : entries) {
+        EXPECT_EQ(e.range_end - e.range_start, 10u);
+    }
+}

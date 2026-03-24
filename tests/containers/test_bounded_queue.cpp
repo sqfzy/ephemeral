@@ -1302,3 +1302,57 @@ TYPED_TEST(BoundedQueueTest, try_consume_all_partial_fill) {
         EXPECT_EQ(consumed[i], static_cast<uint32_t>(i + 100));
     }
 }
+
+TEST(BoundedQueueConsumeAll, works_after_head_wraps_around) {
+    // Test try_consume_all after multiple produce/consume cycles that
+    // cause the internal head/tail pointers to wrap around the ring buffer.
+    BoundedQueue<BoundedTestData, 4> queue;
+
+    // Cycle through the buffer several times to advance head/tail
+    for (int cycle = 0; cycle < 10; ++cycle) {
+        for (int i = 0; i < 4; ++i) {
+            BoundedTestData d;
+            d.seq = static_cast<uint32_t>(cycle * 100 + i);
+            ASSERT_TRUE(queue.try_push(d));
+        }
+        // Drain all
+        size_t n = queue.try_consume_all([](BoundedTestData&, size_t) {});
+        EXPECT_EQ(n, 4u);
+    }
+
+    // Now push 2 elements and consume_all — should work correctly
+    // even though head/tail are at high offsets
+    for (int i = 0; i < 2; ++i) {
+        BoundedTestData d;
+        d.seq = static_cast<uint32_t>(999 + i);
+        ASSERT_TRUE(queue.try_push(d));
+    }
+
+    std::vector<uint32_t> consumed;
+    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t idx) {
+        consumed.push_back(slot.seq);
+        EXPECT_EQ(idx, consumed.size() - 1);
+    });
+
+    EXPECT_EQ(n, 2u);
+    EXPECT_EQ(consumed[0], 999u);
+    EXPECT_EQ(consumed[1], 1000u);
+}
+
+TEST(BoundedQueueConsumeAll, capacity_one_queue) {
+    BoundedQueue<BoundedTestData, 1> queue;
+
+    BoundedTestData d;
+    d.seq = 42;
+    ASSERT_TRUE(queue.try_push(d));
+
+    std::vector<uint32_t> consumed;
+    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t idx) {
+        consumed.push_back(slot.seq);
+        EXPECT_EQ(idx, 0u);
+    });
+
+    EXPECT_EQ(n, 1u);
+    EXPECT_EQ(consumed[0], 42u);
+    EXPECT_TRUE(queue.empty());
+}
