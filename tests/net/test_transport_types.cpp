@@ -1955,3 +1955,39 @@ TEST(ConnectionErrorInfo, EqualityDiffersOnCodeOnly) {
     ConnectionErrorInfo b{ConnectionError::kTlsSessionFailed, "cert expired", 0};
     EXPECT_NE(a, b);
 }
+
+// ============================================================================
+// transport_event_name / transport_state_name
+// ============================================================================
+
+TEST(TransportEventName, ReturnsHumanReadableStrings) {
+    EXPECT_STREQ(transport_event_name(TransportEvent::kConnected), "CONNECTED");
+    EXPECT_STREQ(transport_event_name(TransportEvent::kDisconnected), "DISCONNECTED");
+    EXPECT_STREQ(transport_event_name(TransportEvent::kReconnecting), "RECONNECTING");
+    EXPECT_STREQ(transport_event_name(TransportEvent::kStopped), "STOPPED");
+}
+
+TEST(TransportStateName, ReturnsHumanReadableStrings) {
+    EXPECT_STREQ(transport_state_name(TransportState::kConnected), "CONNECTED");
+    EXPECT_STREQ(transport_state_name(TransportState::kReconnecting), "RECONNECTING");
+    EXPECT_STREQ(transport_state_name(TransportState::kStopped), "STOPPED");
+}
+
+// ============================================================================
+// SendError operator!
+// ============================================================================
+
+TEST(SendErrorOperatorNot, OkIsFalsy) {
+    // operator!(kOk) should return false (success → !success = false)
+    // This enables `if (!send(...))` error-checking pattern
+    EXPECT_FALSE(!SendError::kOk);
+}
+
+TEST(SendErrorOperatorNot, ErrorsAreTruthy) {
+    EXPECT_TRUE(!SendError::kQueueFull);
+    EXPECT_TRUE(!SendError::kMessageTooLarge);
+    EXPECT_TRUE(!SendError::kNotConnected);
+    EXPECT_TRUE(!SendError::kInvalidUtf8);
+    EXPECT_TRUE(!SendError::kInvalidCloseCode);
+    EXPECT_TRUE(!SendError::kNullData);
+}
