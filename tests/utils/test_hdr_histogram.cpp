@@ -1490,3 +1490,115 @@ TEST(HdrHistogramTest, IsCompatibleDefaultConstructed) {
     HdrHistogram b;
     EXPECT_TRUE(a.is_compatible(b));
 }
+
+// ============================================================================
+// for_each_linear()
+// ============================================================================
+
+TEST(HdrHistogramLinearIter, empty_histogram_yields_no_entries) {
+    HdrHistogram h(1, 10000, 3);
+    int count = 0;
+    h.for_each_linear(100, [&](const HdrHistogram::LinearEntry&) {
+        ++count;
+    });
+    EXPECT_EQ(count, 0);
+}
+
+TEST(HdrHistogramLinearIter, zero_step_yields_no_entries) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(500);
+    int count = 0;
+    h.for_each_linear(0, [&](const HdrHistogram::LinearEntry&) {
+        ++count;
+    });
+    EXPECT_EQ(count, 0);
+}
+
+TEST(HdrHistogramLinearIter, single_value_single_bucket) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(500);
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(1000, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].range_start, 0u);
+    EXPECT_EQ(entries[0].range_end, 1000u);
+    EXPECT_EQ(entries[0].count, 1u);
+    EXPECT_EQ(entries[0].cumulative_count, 1u);
+    EXPECT_DOUBLE_EQ(entries[0].percentile, 100.0);
+}
+
+TEST(HdrHistogramLinearIter, multiple_buckets_uniform_distribution) {
+    HdrHistogram h(1, 10000, 3);
+    // Record 10 values at 100, 200, ..., 1000
+    for (int i = 1; i <= 10; ++i) {
+        h.record(static_cast<uint64_t>(i * 100));
+    }
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(500, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    // Should have entries for [0,500) and [500,1000) at minimum
+    ASSERT_GE(entries.size(), 2u);
+
+    // Verify cumulative count is monotonically increasing
+    uint64_t prev_cumulative = 0;
+    for (const auto& e : entries) {
+        EXPECT_GT(e.count, 0u) << "linear entries should only appear for non-empty buckets";
+        EXPECT_GT(e.cumulative_count, prev_cumulative);
+        prev_cumulative = e.cumulative_count;
+    }
+
+    // Final cumulative must equal total count
+    EXPECT_EQ(entries.back().cumulative_count, 10u);
+    EXPECT_DOUBLE_EQ(entries.back().percentile, 100.0);
+}
+
+TEST(HdrHistogramLinearIter, step_larger_than_range_collapses_to_one) {
+    HdrHistogram h(1, 10000, 3);
+    h.record(100);
+    h.record(200);
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(100000, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].count, 2u);
+    EXPECT_EQ(entries[0].range_start, 0u);
+}
+
+TEST(HdrHistogramLinearIter, percentile_monotonically_increasing) {
+    HdrHistogram h(1, 10000, 3);
+    for (int i = 1; i <= 1000; ++i) {
+        h.record(static_cast<uint64_t>(i));
+    }
+
+    double prev_pct = -1.0;
+    h.for_each_linear(100, [&](const HdrHistogram::LinearEntry& e) {
+        EXPECT_GT(e.percentile, prev_pct)
+            << "percentile must be monotonically increasing";
+        EXPECT_LE(e.percentile, 100.0);
+        prev_pct = e.percentile;
+    });
+}
+
+TEST(HdrHistogramLinearIter, total_count_matches) {
+    HdrHistogram h(1, 10000, 3);
+    for (int i = 1; i <= 500; ++i) {
+        h.record(static_cast<uint64_t>(i * 2));
+    }
+
+    uint64_t sum = 0;
+    h.for_each_linear(200, [&](const HdrHistogram::LinearEntry& e) {
+        sum += e.count;
+    });
+
+    EXPECT_EQ(sum, 500u) << "sum of linear bucket counts must equal total";
+}

@@ -464,6 +464,72 @@ class HdrHistogram {
         }
     }
 
+    /// Entry returned by for_each_linear().
+    struct LinearEntry {
+        uint64_t range_start;        ///< Inclusive lower bound of this linear bucket
+        uint64_t range_end;          ///< Exclusive upper bound (range_start + step)
+        uint64_t count;              ///< Samples in this linear bucket
+        uint64_t cumulative_count;   ///< Cumulative count up to and including this bucket
+        double   percentile;         ///< Cumulative percentile [0.0, 100.0]
+    };
+
+    /// Iterate over the histogram in fixed-width linear steps.
+    ///
+    /// Aggregates all histogram buckets that fall within each linear step
+    /// `[k*step, (k+1)*step)` and calls `func(LinearEntry)` for each non-empty
+    /// step. Useful for generating fixed-width bar charts and heatmaps.
+    ///
+    /// @param value_units_per_bucket  Width of each linear bucket (must be >= 1)
+    /// @param func  Callback invoked for each non-empty linear bucket
+    ///
+    /// @note  Unlike for_each_recorded_value() which follows the logarithmic
+    ///        internal bucket structure, this iterates at a user-chosen resolution.
+    template <typename Func>
+        requires std::invocable<Func, const LinearEntry&>
+    void for_each_linear(uint64_t value_units_per_bucket, Func func) const {
+        if (total_count_ == 0 || value_units_per_bucket < 1) return;
+
+        uint64_t cumulative = 0;
+        // Walk internal buckets, accumulating into linear steps
+        uint64_t current_step_start = 0;
+        uint64_t current_step_count = 0;
+        int32_t  bucket_idx = 0;
+
+        // Advance step boundary to cover the full histogram range
+        while (current_step_start <= max_value_) {
+            uint64_t step_end = current_step_start + value_units_per_bucket;
+
+            // Accumulate all internal buckets whose representative value
+            // falls within [current_step_start, step_end)
+            while (bucket_idx < counts_len_) {
+                uint64_t bucket_val = value_from_index(bucket_idx);
+                if (bucket_val >= step_end) break;
+
+                uint64_t count = counts_[bucket_idx];
+                if (count > 0 && bucket_val >= current_step_start) {
+                    current_step_count += count;
+                }
+                ++bucket_idx;
+            }
+
+            if (current_step_count > 0) {
+                cumulative += current_step_count;
+                double pct = (100.0 * static_cast<double>(cumulative))
+                             / static_cast<double>(total_count_);
+                func(LinearEntry{
+                    .range_start = current_step_start,
+                    .range_end = step_end,
+                    .count = current_step_count,
+                    .cumulative_count = cumulative,
+                    .percentile = std::min(pct, 100.0),
+                });
+                current_step_count = 0;
+            }
+
+            current_step_start = step_end;
+        }
+    }
+
     /// Percentile entry returned by for_each_percentile().
     struct PercentileEntry {
         uint64_t value;              ///< Value at this percentile (bucket midpoint)
