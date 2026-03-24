@@ -209,10 +209,10 @@ class HdrHistogram {
         // Fill in missing samples for the stalled interval.
         // Each missing sample represents a request that would have completed
         // at (value - k * expected_interval) if there had been no stall.
+        // Stop early when fill-in values drop below the trackable range.
         uint64_t missing = value - expected_interval;
         while (missing >= expected_interval) {
-            // Best-effort: if a fill-in sample is out of range, skip it
-            // but continue filling lower values
+            if (missing < lowest_trackable_value_) break;
             (void)record(missing);
             missing -= expected_interval;
         }
@@ -536,9 +536,14 @@ class HdrHistogram {
         uint64_t current_step_count = 0;
         int32_t  bucket_idx = 0;
 
-        // Advance step boundary to cover the full histogram range
+        // Advance step boundary to cover the full histogram range.
+        // Guard against uint64_t overflow when step_end wraps around.
         while (current_step_start <= max_value_) {
             uint64_t step_end = current_step_start + value_units_per_bucket;
+            // Overflow guard: if addition wrapped, clamp to max+1
+            if (step_end < current_step_start) {
+                step_end = std::numeric_limits<uint64_t>::max();
+            }
 
             // Accumulate all internal buckets whose representative value
             // falls within [current_step_start, step_end)
@@ -547,7 +552,7 @@ class HdrHistogram {
                 if (bucket_val >= step_end) break;
 
                 uint64_t count = counts_[bucket_idx];
-                if (count > 0 && bucket_val >= current_step_start) {
+                if (count > 0) {
                     current_step_count += count;
                 }
                 ++bucket_idx;
@@ -567,6 +572,8 @@ class HdrHistogram {
                 current_step_count = 0;
             }
 
+            // Prevent infinite loop when step_end was clamped to max
+            if (step_end == std::numeric_limits<uint64_t>::max()) break;
             current_step_start = step_end;
         }
     }

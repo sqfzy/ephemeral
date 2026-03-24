@@ -1603,6 +1603,31 @@ TEST(HdrHistogramLinearIter, total_count_matches) {
     EXPECT_EQ(sum, 500u) << "sum of linear bucket counts must equal total";
 }
 
+TEST(HdrHistogramLinearIter, large_step_no_overflow) {
+    // Regression: step size near uint64_t max must not overflow and hang
+    HdrHistogram h(1, 10000, 3);
+    h.record(5000);
+
+    int count = 0;
+    h.for_each_linear(std::numeric_limits<uint64_t>::max() / 2,
+                       [&](const HdrHistogram::LinearEntry& e) {
+        ++count;
+        EXPECT_EQ(e.count, 1u);
+    });
+    EXPECT_EQ(count, 1);
+}
+
+TEST(HdrHistogramCorrected, fill_in_stops_below_lowest_trackable) {
+    // lowest_trackable = 100, value = 500, interval = 50
+    // Fill-ins: 450, 400, 350, 300, 250, 200, 150, 100
+    // 50 is below lowest_trackable → should stop before recording it
+    HdrHistogram h(100, 100000, 3);
+    h.record_corrected(500, 50);
+    // Primary (500) + fill-ins at 450, 400, 350, 300, 250, 200, 150, 100 = 9
+    EXPECT_EQ(h.get_total_count(), 9u);
+    EXPECT_EQ(h.get_dropped_count(), 0u);
+}
+
 // ============================================================================
 // record_corrected() — coordinated omission correction
 // ============================================================================
