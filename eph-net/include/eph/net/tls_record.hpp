@@ -11,6 +11,7 @@
 ///   [ContentType(1)] [Legacy version(2)] [Length(2)] [Encrypted data] [Auth tag(16)]
 
 #include <bit>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -252,6 +253,8 @@ public:
         // Temporarily append TLS 1.3 inner content type byte after payload.
         // Caller guarantees 1 byte of writable space past plaintext_len.
         // Guard: plaintext may be nullptr when plaintext_len == 0 (valid TLS padding).
+        assert((plaintext != nullptr || plaintext_len == 0) &&
+               "encrypt: plaintext must be non-null when plaintext_len > 0");
         uint8_t saved = 0;
         if (plaintext) {
             saved = plaintext[plaintext_len];
@@ -316,6 +319,10 @@ public:
     bool decrypt(const uint8_t* record, uint16_t record_len,
                  uint8_t* out, uint16_t& out_len) noexcept {
         if (record_len < tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
+            SPDLOG_LOGGER_DEBUG(detail::tls_record_logger(),
+                "TLS decrypt: record too short for header+tag: {} < {}",
+                record_len,
+                tls_record::kRecordHeaderLen + tls_record::kAuthTagLen);
             return false;
         }
 
@@ -333,6 +340,9 @@ public:
         }
 
         if (tls_record::kRecordHeaderLen + payload_len > record_len) {
+            SPDLOG_LOGGER_DEBUG(detail::tls_record_logger(),
+                "TLS decrypt: record truncated: header+payload={} > record_len={}",
+                tls_record::kRecordHeaderLen + payload_len, record_len);
             return false;
         }
 
