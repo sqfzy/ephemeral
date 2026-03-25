@@ -36,6 +36,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/containers/evicting_queue.hpp"
+#include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/recorder.hpp"
 #include "eph/utils/time.hpp"
@@ -121,6 +122,7 @@ struct AppConfig {
     std::string host          = "stream.binance.com";
     uint16_t    port          = 9443;
     std::string symbol        = "btcusdt";
+    std::string proxy_url{};     // e.g. "socks5://127.0.0.1:7890"
     int         count         = 100;     // 0 = infinite
     int         ping_interval = 1000;    // ms between manual pings
     bool        use_tls       = true;
@@ -143,6 +145,7 @@ static void print_usage(const char* prog) {
         "  --host <hostname>       Binance stream host (default: stream.binance.com)\n"
         "  --port <port>           Server port (default: 9443)\n"
         "  --symbol <symbol>       Trading pair (default: btcusdt)\n"
+        "  --proxy <url>           Proxy URL: socks5://host:port or http://host:port\n"
         "  --count <n>             Number of pings to send, 0=infinite (default: 100)\n"
         "  --ping-interval <ms>    Milliseconds between pings (default: 1000)\n"
         "  --no-tls                Disable TLS\n"
@@ -166,6 +169,7 @@ static AppConfig parse_args(int argc, char** argv) {
         if      (arg == "--host")          cfg.host          = next("--host");
         else if (arg == "--port")          cfg.port          = static_cast<uint16_t>(std::atoi(next("--port")));
         else if (arg == "--symbol")        cfg.symbol        = next("--symbol");
+        else if (arg == "--proxy")         cfg.proxy_url     = next("--proxy");
         else if (arg == "--count")         cfg.count         = std::atoi(next("--count"));
         else if (arg == "--ping-interval") cfg.ping_interval = std::atoi(next("--ping-interval"));
         else if (arg == "--no-tls")        cfg.use_tls       = false;
@@ -239,15 +243,31 @@ int main(int argc, char** argv) {
         .tcp_keepalive = true,
     };
 
-    auto tcp_factory = [&sock_cfg]()
-        -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
-        auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
-        auto result = tcp->connect(std::chrono::milliseconds{5000});
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
+    // ── Step 4: Build TcpFactory (with or without proxy) ──────────────────
+    HftTransport::TcpFactory tcp_factory;
 
-    // ── Step 4: Connect ───────────────────────────────────────────────────
+    if (!cfg.proxy_url.empty()) {
+        auto proxy_cfg = eph::net::proxy::parse_proxy_url(cfg.proxy_url);
+        if (!proxy_cfg) {
+            spdlog::error("Invalid proxy URL: {}", proxy_cfg.error());
+            return 1;
+        }
+        spdlog::info("Using proxy: {}:{} ({})", proxy_cfg->host, proxy_cfg->port,
+                     proxy_cfg->type == eph::net::proxy::ProxyType::kSocks5
+                         ? "SOCKS5" : "HTTP CONNECT");
+        tcp_factory = eph::net::proxy::make_proxied_factory(
+            sock_cfg, *proxy_cfg, cfg.host, cfg.port);
+    } else {
+        tcp_factory = [sock_cfg]()
+            -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
+            auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
+            auto result = tcp->connect(std::chrono::milliseconds{5000});
+            if (!result) return std::unexpected(result.error());
+            return tcp;
+        };
+    }
+
+    // ── Step 5: Connect ───────────────────────────────────────────────────
     auto scheme = cfg.use_tls ? "wss" : "ws";
     spdlog::info("Connecting to {}://{}:{}{}",
                  scheme, cfg.host, cfg.port, ws_path);

@@ -160,6 +160,13 @@ static AppConfig parse_args(int argc, char** argv) {
         else if (arg == "--dpdk-port")     cfg.dpdk_port     = static_cast<uint16_t>(std::atoi(next("--dpdk-port")));
         else if (arg == "--local-port")    cfg.local_port    = static_cast<uint16_t>(std::atoi(next("--local-port")));
         else if (arg == "--no-tls")        cfg.use_tls       = false;
+        else if (arg == "--proxy") {
+            (void)next("--proxy");  // consume the value
+            std::cerr << "Error: --proxy is not supported with DPDK backend "
+                         "(kernel-bypass has no OS network stack for proxying).\n"
+                         "Use the socket backend (simple_hft) for proxy support.\n";
+            std::exit(1);
+        }
         else if (arg == "--help")        { print_usage(argv[0]); std::exit(0); }
         else {
             std::cerr << std::format("Unknown argument: {}\n", arg);
