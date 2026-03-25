@@ -77,7 +77,7 @@ inline bool iequals(std::string_view a, std::string_view b) noexcept {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Generate a random 16-byte WebSocket key, base64-encoded.
-inline std::expected<std::string, std::string> generate_ws_key() {
+[[nodiscard]] inline std::expected<std::string, std::string> generate_ws_key() {
     uint8_t raw[16];
     if (RAND_bytes(raw, sizeof(raw)) != 1) {
         SPDLOG_LOGGER_ERROR(detail::http_logger(),
@@ -94,7 +94,7 @@ inline std::expected<std::string, std::string> generate_ws_key() {
 /// @param ws_key   Base64-encoded 16-byte random key
 /// @param extra_headers  Additional headers (e.g. "Authorization: Bearer xxx\r\n")
 /// @return Complete HTTP request string, or error describing which param is invalid
-inline std::expected<std::string, std::string> build_upgrade_request(
+[[nodiscard]] inline std::expected<std::string, std::string> build_upgrade_request(
     std::string_view host,
     std::string_view path,
     std::string_view ws_key,
@@ -140,7 +140,7 @@ struct UpgradeResponse {
 /// @param data  Raw HTTP response data
 /// @param len   Data length
 /// @return Parsed response, or error if incomplete/malformed
-inline std::expected<UpgradeResponse, std::string>
+[[nodiscard]] inline std::expected<UpgradeResponse, std::string>
 parse_upgrade_response(const char* data, size_t len) {
     auto log = detail::http_logger();
 

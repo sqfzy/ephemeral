@@ -320,7 +320,7 @@ public:
     // Connection
     // ─────────────────────────────────────────────────────────────────────────
 
-    std::expected<void, std::string>
+    [[nodiscard]] std::expected<void, std::string>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) {
         auto log = detail::socket_logger();
 
@@ -553,7 +553,7 @@ public:
     // Data transfer
     // ─────────────────────────────────────────────────────────────────────────
 
-    std::expected<size_t, std::string>
+    [[nodiscard]] std::expected<size_t, std::string>
     send(const void* data, size_t len) {
         if (state_ != TcpState::Established) {
             return std::unexpected(std::format(
@@ -644,7 +644,7 @@ public:
     /// Non-blocking: returns 0 if no data available.
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
+    [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
         if (state_ != TcpState::Established &&
             state_ != TcpState::FinWait1 &&
             state_ != TcpState::FinWait2) {
@@ -717,7 +717,7 @@ public:
     /// Returns the number of poll_rx callback invocations (0 or 1), or error.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    std::expected<uint16_t, std::string> poll_rx_for(
+    [[nodiscard]] std::expected<uint16_t, std::string> poll_rx_for(
             F&& data_callback,
             std::chrono::duration<Rep, Period> timeout) {
         // First try non-blocking read
@@ -747,7 +747,7 @@ public:
     // Connection close
     // ─────────────────────────────────────────────────────────────────────────
 
-    std::expected<void, std::string> close() {
+    [[nodiscard]] std::expected<void, std::string> close() {
         if (state_ != TcpState::Established &&
             state_ != TcpState::CloseWait) {
             return std::unexpected(std::format(

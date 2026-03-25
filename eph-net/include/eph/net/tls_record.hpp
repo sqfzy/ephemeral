@@ -131,7 +131,7 @@ public:
     /// Initialize with extracted TLS session keys.
     /// @param key_len  AES key length: 16 (AES-128) or 32 (AES-256).
     ///                 Determined by the negotiated cipher suite.
-    static std::expected<TlsRecordCrypto, std::string>
+    [[nodiscard]] static std::expected<TlsRecordCrypto, std::string>
     create(const TlsHotState& state, size_t key_len = tls_const::kAes256KeyLen) {
         TlsRecordCrypto crypto;
 

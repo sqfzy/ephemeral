@@ -440,7 +440,7 @@ struct DecodedFrame {
 /// @param len      Available bytes
 /// @return Decoded frame, or error if incomplete/malformed.
 ///         "incomplete" error means more data is needed.
-inline std::expected<DecodedFrame, DecodeError>
+[[nodiscard]] inline std::expected<DecodedFrame, DecodeError>
 decode_frame(const uint8_t* data, size_t len) {
     if (len < 2) {
         return std::unexpected(DecodeError::kIncomplete);

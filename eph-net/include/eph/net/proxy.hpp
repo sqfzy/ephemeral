@@ -163,7 +163,7 @@ struct HandshakeIO {
 /// @param target_port  Target port
 /// @param cfg          Proxy configuration (auth credentials, timeout)
 /// @return void on success, error string on failure
-inline std::expected<void, std::string>
+[[nodiscard]] inline std::expected<void, std::string>
 socks5_handshake(SocketTransport& tcp,
                  std::string_view target_host, uint16_t target_port,
                  const ProxyConfig& cfg) {
@@ -318,7 +318,7 @@ socks5_handshake(SocketTransport& tcp,
 /// @param target_port  Target port
 /// @param cfg          Proxy configuration (timeout; auth via username/password → Basic auth)
 /// @return void on success, error string on failure
-inline std::expected<void, std::string>
+[[nodiscard]] inline std::expected<void, std::string>
 http_connect_handshake(SocketTransport& tcp,
                        std::string_view target_host, uint16_t target_port,
                        const ProxyConfig& cfg) {
@@ -502,7 +502,7 @@ make_proxied_factory(const SocketConfig& base_sock_cfg,
 ///
 /// @param url  Proxy URL string
 /// @return ProxyConfig on success, error string on failure
-inline std::expected<ProxyConfig, std::string>
+[[nodiscard]] inline std::expected<ProxyConfig, std::string>
 parse_proxy_url(std::string_view url) {
     ProxyConfig cfg;
 
