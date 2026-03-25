@@ -27,6 +27,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/hkdf.h>
+#include <openssl/mem.h>     // OPENSSL_cleanse
 #include <openssl/ssl.h>
 
 #include "eph/net/detail/json_escape.hpp"
@@ -72,6 +73,14 @@ static_assert(sizeof(TlsKeyMaterial) == 128, "TlsKeyMaterial must be exactly 2 c
 struct TlsHotState {
     TlsKeyMaterial write{};  // 2 cache lines for TX
     TlsKeyMaterial read{};   // 2 cache lines for RX
+
+    ~TlsHotState() {
+        // Scrub all key material (keys + IVs) to prevent residual
+        // secret data in freed memory.  OPENSSL_cleanse is a compiler-
+        // barrier-protected memset that won't be optimized away.
+        OPENSSL_cleanse(&write.ki, sizeof(write.ki));
+        OPENSSL_cleanse(&read.ki,  sizeof(read.ki));
+    }
 
     // Compatibility accessors
     uint8_t*       write_key()       noexcept { return write.ki.key; }

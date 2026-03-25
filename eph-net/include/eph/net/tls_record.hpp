@@ -175,6 +175,11 @@ public:
     ~TlsRecordCrypto() {
         if (enc_init_) EVP_AEAD_CTX_cleanup(&enc_ctx_);
         if (dec_init_) EVP_AEAD_CTX_cleanup(&dec_ctx_);
+        // Scrub IVs to prevent key material leakage via cold-boot or
+        // memory-dump attacks.  EVP_AEAD_CTX_cleanup already zeroes the
+        // key schedule inside the ctx, but the IVs live in our own members.
+        OPENSSL_cleanse(write_iv_, sizeof(write_iv_));
+        OPENSSL_cleanse(read_iv_,  sizeof(read_iv_));
     }
 
     TlsRecordCrypto(const TlsRecordCrypto&) = delete;
@@ -195,6 +200,8 @@ public:
         std::memcpy(read_iv_,  other.read_iv_,  tls_const::kTls13NonceLen);
         other.enc_init_ = false;
         other.dec_init_ = false;
+        OPENSSL_cleanse(other.write_iv_, sizeof(other.write_iv_));
+        OPENSSL_cleanse(other.read_iv_,  sizeof(other.read_iv_));
     }
 
     TlsRecordCrypto& operator=(TlsRecordCrypto&& other) noexcept {
@@ -211,6 +218,8 @@ public:
             std::memcpy(read_iv_,  other.read_iv_,  tls_const::kTls13NonceLen);
             other.enc_init_ = false;
             other.dec_init_ = false;
+            OPENSSL_cleanse(other.write_iv_, sizeof(other.write_iv_));
+            OPENSSL_cleanse(other.read_iv_,  sizeof(other.read_iv_));
         }
         return *this;
     }
