@@ -41,49 +41,10 @@
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/utils/recorder.hpp"
 #include "eph/utils/time.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HFT Probe — same as simple_hft.cpp
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct HftProbe {
-    eph::utils::Recorder tx_queue_latency{"tx_queue_latency"};
-    eph::utils::Recorder rx_pipeline_latency{"rx_pipeline_latency"};
-
-    std::atomic<uint64_t> last_tx_enqueue_tsc{0};
-    std::atomic<uint64_t> last_rx_arrival_tsc{0};
-
-    void on_tx_enqueue(uint64_t tsc) noexcept {
-        last_tx_enqueue_tsc.store(tsc, std::memory_order_relaxed);
-    }
-
-    void on_tx_flush(uint64_t tsc) noexcept {
-        uint64_t enqueue_tsc = last_tx_enqueue_tsc.load(std::memory_order_relaxed);
-        if (enqueue_tsc > 0 && tsc > enqueue_tsc) {
-            auto ns = eph::utils::TSC::to_ns(tsc - enqueue_tsc);
-            if (ns) tx_queue_latency.record(static_cast<uint64_t>(*ns));
-        }
-    }
-
-    void on_rx_arrival(uint64_t tsc) noexcept {
-        last_rx_arrival_tsc.store(tsc, std::memory_order_relaxed);
-    }
-
-    void on_rx_deliver(uint64_t tsc) noexcept {
-        uint64_t arrival_tsc = last_rx_arrival_tsc.load(std::memory_order_relaxed);
-        if (arrival_tsc > 0 && tsc > arrival_tsc) {
-            auto ns = eph::utils::TSC::to_ns(tsc - arrival_tsc);
-            if (ns) rx_pipeline_latency.record(static_cast<uint64_t>(*ns));
-        }
-    }
-};
-
-static_assert(eph::net::TransportProbe<HftProbe>);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Transport type alias: DPDK backend + HftProbe + EvictingQueue
+// Transport type alias: DPDK backend + timestamps + EvictingQueue
 // ─────────────────────────────────────────────────────────────────────────────
 
 using HftDpdkTransport = eph::net::Transport<
@@ -91,7 +52,7 @@ using HftDpdkTransport = eph::net::Transport<
     eph::net::WsFramer,
     512,   // MaxPayload
     1024,  // QueueDepth
-    HftProbe,
+    true,  // EnableTimestamps
     eph::containers::EvictingQueue
 >;
 
@@ -100,8 +61,8 @@ using HftDpdkTransport = eph::net::Transport<
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct AppConfig {
-    std::string host          = "stream.binance.com";
-    uint16_t    port          = 9443;
+    std::string host          = "fstream.binance.com";
+    uint16_t    port          = 443;
     std::string symbol        = "btcusdt";
     int         count         = 100;
     int         ping_interval = 1000;    // ms
@@ -128,8 +89,8 @@ static void print_usage(const char* prog) {
         "Usage: {} [EAL args] -- [app args]\n"
         "\n"
         "App options:\n"
-        "  --host <hostname>       Binance stream host (default: stream.binance.com)\n"
-        "  --port <port>           Server port (default: 9443)\n"
+        "  --host <hostname>       Binance stream host (default: fstream.binance.com)\n"
+        "  --port <port>           Server port (default: 443)\n"
         "  --symbol <symbol>       Trading pair (default: btcusdt)\n"
         "  --count <n>             Number of pings, 0=infinite (default: 100)\n"
         "  --ping-interval <ms>    Milliseconds between pings (default: 1000)\n"
@@ -311,7 +272,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Drain market data (EvictingQueue: latest-value semantics)
+        // Drain market data (EvictingQueue: latest-value semantics).
+        // RX pipeline latency measured internally by Transport.
         bool got = tp.recv([&](const uint8_t* data, size_t len) {
             ++market_msgs;
             if ((market_msgs & 0xFF) == 1) {
@@ -338,34 +300,24 @@ int main(int argc, char** argv) {
     auto stats = tp.stats();
     spdlog::info("Transport stats:\n{}", stats.dump());
 
-    auto& probe = tp.probe();
+    // Pipeline latency reports (all from TransportStats)
+    auto print_latency = [](std::string_view label, const eph::net::RttStats& s) {
+        spdlog::info("--- {} ---", label);
+        if (s.count > 0) {
+            spdlog::info("  samples: {}", s.count);
+            spdlog::info("  min:     {:.0f} ns", static_cast<double>(s.min_ns));
+            spdlog::info("  p50:     {:.0f} ns", static_cast<double>(s.p50_ns));
+            spdlog::info("  p99:     {:.0f} ns", static_cast<double>(s.p99_ns));
+            spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(s.p999_ns));
+            spdlog::info("  max:     {:.0f} ns", static_cast<double>(s.max_ns));
+        } else {
+            spdlog::info("  (no samples)");
+        }
+    };
 
-    spdlog::info("--- Latency 1: TX Queue (send → tx_burst) ---");
-    if (probe.tx_queue_latency.has_data()) {
-        probe.tx_queue_latency.print_report();
-    } else {
-        spdlog::info("  (no samples)");
-    }
-
-    spdlog::info("--- Latency 2/3: RX Pipeline (rx_burst → deliver) ---");
-    if (probe.rx_pipeline_latency.has_data()) {
-        probe.rx_pipeline_latency.print_report();
-    } else {
-        spdlog::info("  (no samples)");
-    }
-
-    spdlog::info("--- Latency 4: Ping/Pong RTT (end-to-end) ---");
-    auto rtt = tp.rtt_stats();
-    if (rtt.count > 0) {
-        spdlog::info("  samples: {}", rtt.count);
-        spdlog::info("  min:     {:.0f} ns", static_cast<double>(rtt.min_ns));
-        spdlog::info("  p50:     {:.0f} ns", static_cast<double>(rtt.p50_ns));
-        spdlog::info("  p99:     {:.0f} ns", static_cast<double>(rtt.p99_ns));
-        spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(rtt.p999_ns));
-        spdlog::info("  max:     {:.0f} ns", static_cast<double>(rtt.max_ns));
-    } else {
-        spdlog::info("  (no RTT samples)");
-    }
+    print_latency("Metric 1: TX Queue (enqueue → flush)", stats.tx_latency);
+    print_latency("Metric 2: RX Pipeline (rx_burst → deliver)", stats.rx_latency);
+    print_latency("Metric 3: Ping/Pong RTT (end-to-end)", stats.rtt);
 
     // EalGuard RAII handles eal_cleanup()
     return 0;

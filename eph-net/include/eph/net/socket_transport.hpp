@@ -18,12 +18,16 @@
 #include <optional>
 #include <string>
 
+#include <atomic>
+
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <linux/net_tstamp.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -31,6 +35,8 @@
 
 #include "eph/net/detail/json_escape.hpp"
 #include "eph/net/tcp_concept.hpp"
+#include "eph/net/transport_types.hpp"
+#include "eph/utils/hdr_histogram.hpp"
 
 namespace eph::net {
 
@@ -249,6 +255,12 @@ inline std::shared_ptr<spdlog::logger> socket_logger() {
 /// Provides blocking connect with timeout, non-blocking send/recv,
 /// and graceful/forced close. Suitable for generic (non-DPDK) usage
 /// of the Transport<> template.
+///
+/// When EnableTimestamps is true, uses SO_TIMESTAMPING to capture
+/// kernel-level RX/TX timestamps for fair latency comparison with
+/// DPDK backends. Uses recvmsg() instead of recv() and polls the
+/// error queue for TX timestamps.
+template <bool EnableTimestamps = false>
 class SocketTransport {
 public:
     explicit SocketTransport(const SocketConfig& config) noexcept
@@ -436,6 +448,22 @@ public:
             }
         }
 
+        // Enable kernel RX/TX software timestamps for latency measurement.
+        // Provides netif_receive_skb timestamp (RX) and qdisc/driver timestamp (TX).
+        if constexpr (EnableTimestamps) {
+            int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE
+                         | SOF_TIMESTAMPING_TX_SOFTWARE
+                         | SOF_TIMESTAMPING_SOFTWARE
+                         | SOF_TIMESTAMPING_OPT_TSONLY;
+            if (::setsockopt(fd_, SOL_SOCKET, SO_TIMESTAMPING,
+                             &ts_flags, sizeof(ts_flags)) != 0) {
+                SPDLOG_LOGGER_WARN(log, "Failed to set SO_TIMESTAMPING: {}",
+                                   strerror(errno));
+            } else {
+                SPDLOG_LOGGER_DEBUG(log, "SO_TIMESTAMPING enabled (RX+TX software)");
+            }
+        }
+
         // Capture resolved IP address for observability
         resolve_ip(result);
 
@@ -529,6 +557,18 @@ public:
             std::chrono::milliseconds{config_.send_timeout_ms};
 
         while (remaining > 0) {
+            // Record send time for TX kernel stack latency (send → wire).
+            // Only on the first write of each send() call to avoid
+            // overwriting on partial-write retries.
+            if constexpr (EnableTimestamps) {
+                if (ptr == static_cast<const uint8_t*>(data)) {
+                    struct timespec ts;
+                    ::clock_gettime(CLOCK_REALTIME, &ts);
+                    last_send_realtime_ns_.store(
+                        static_cast<int64_t>(ts.tv_sec) * 1'000'000'000LL + ts.tv_nsec,
+                        std::memory_order_relaxed);
+                }
+            }
             ssize_t n = ::send(fd_, ptr, remaining, MSG_NOSIGNAL);
             if (n > 0) {
                 ptr += n;
@@ -601,7 +641,30 @@ public:
         }
 
         uint8_t buf[16384];
-        ssize_t n = ::recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
+        ssize_t n;
+
+        if constexpr (EnableTimestamps) {
+            // Use recvmsg() to extract kernel RX timestamp from cmsg.
+            struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
+            alignas(struct cmsghdr) uint8_t ctrl[256];
+            struct msghdr msg = {};
+            msg.msg_iov = &iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = ctrl;
+            msg.msg_controllen = sizeof(ctrl);
+
+            n = ::recvmsg(fd_, &msg, MSG_DONTWAIT);
+
+            if (n > 0) {
+                // Extract RX kernel timestamp from cmsg and record kernel stack latency.
+                extract_rx_timestamp(msg);
+
+                // Also poll error queue for any pending TX timestamps.
+                poll_tx_error_queue();
+            }
+        } else {
+            n = ::recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
+        }
 
         if (n > 0) {
             SPDLOG_LOGGER_TRACE(detail::socket_logger(),
@@ -613,7 +676,6 @@ public:
         }
 
         if (n == 0) {
-            // Peer closed connection
             SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
                 "Peer closed connection");
             state_ = TcpState::CloseWait;
@@ -622,7 +684,7 @@ public:
 
         // n < 0
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return uint16_t{0}; // No data available
+            return uint16_t{0};
         }
 
         SPDLOG_LOGGER_ERROR(detail::socket_logger(),
@@ -740,6 +802,36 @@ public:
         return connect_latency_ns_;
     }
 
+    /// Kernel RX stack latency histogram (NIC driver → recv return).
+    /// Only populated when EnableTimestamps=true and SO_TIMESTAMPING succeeded.
+    [[nodiscard]] RttStats rx_latency() const noexcept
+        requires (EnableTimestamps) {
+        return histogram_to_rtt_stats(rx_stack_histogram_);
+    }
+
+    /// Kernel TX stack latency histogram (send call → wire departure).
+    /// Only populated when EnableTimestamps=true and SO_TIMESTAMPING succeeded.
+    [[nodiscard]] RttStats tx_latency() const noexcept
+        requires (EnableTimestamps) {
+        return histogram_to_rtt_stats(tx_stack_histogram_);
+    }
+
+    /// Most recent kernel RX stack delay (ns) from the last poll_rx() call.
+    /// Transport reads this to compute full-path RX latency (kernel + pipeline).
+    /// Returns 0 if no kernel timestamp was available.
+    [[nodiscard]] uint64_t last_kernel_rx_delay_ns() const noexcept
+        requires (EnableTimestamps) {
+        return last_kernel_rx_delay_ns_;
+    }
+
+    /// Most recent kernel TX stack delay (ns) from the error queue.
+    /// Transport reads this to compute full-path TX latency (pipeline + kernel).
+    /// Returns 0 if no TX timestamp was available yet.
+    [[nodiscard]] uint64_t last_kernel_tx_delay_ns() const noexcept
+        requires (EnableTimestamps) {
+        return last_kernel_tx_delay_ns_;
+    }
+
     /// Local port number of the connected socket.
     /// Zero if not connected.
     [[nodiscard]] uint16_t local_port() const noexcept {
@@ -763,6 +855,18 @@ private:
     std::string  resolved_ip_;  // Resolved IP from last connect()
     uint64_t     dns_latency_ns_ = 0;
     uint64_t     connect_latency_ns_ = 0;
+
+    // SO_TIMESTAMPING members (only active when EnableTimestamps=true).
+    // RX: kernel NIC-driver-to-recv latency (CLOCK_REALTIME domain).
+    // TX: kernel send-to-wire latency (CLOCK_REALTIME domain, via error queue).
+    eph::utils::HdrHistogram rx_stack_histogram_{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram tx_stack_histogram_{10, 1'000'000'000ULL, 3};
+    std::atomic<int64_t> last_send_realtime_ns_{0};  // TX thread writes, RX thread reads
+
+    // Per-call kernel delay values (ns). Transport reads these after poll_rx/send
+    // to compute full-path latency = kernel delay + pipeline delay.
+    uint64_t last_kernel_rx_delay_ns_ = 0;  // written by RX thread in poll_rx
+    uint64_t last_kernel_tx_delay_ns_ = 0;  // written by RX thread in poll_tx_error_queue
 
     void close_fd() noexcept {
         if (fd_ >= 0) {
@@ -796,6 +900,91 @@ private:
         resolved_ip_ = result ? buf : "";
     }
 
+    /// Convert HdrHistogram to RttStats (reuses the same stats struct).
+    static RttStats histogram_to_rtt_stats(const eph::utils::HdrHistogram& h) noexcept {
+        if (h.get_total_count() == 0) return {};
+        return RttStats{
+            .count   = h.get_total_count(),
+            .min_ns  = h.get_min_value(),
+            .max_ns  = h.get_max_value(),
+            .mean_ns = h.get_mean(),
+            .p50_ns  = h.get_value_at_percentile(50.0),
+            .p99_ns  = h.get_value_at_percentile(99.0),
+            .p999_ns = h.get_value_at_percentile(99.9),
+        };
+    }
+
+    /// Get current CLOCK_REALTIME in nanoseconds.
+    static int64_t clock_realtime_ns() noexcept {
+        struct timespec ts;
+        ::clock_gettime(CLOCK_REALTIME, &ts);
+        return static_cast<int64_t>(ts.tv_sec) * 1'000'000'000LL + ts.tv_nsec;
+    }
+
+    /// Extract RX kernel timestamp from recvmsg cmsg and record kernel stack latency.
+    void extract_rx_timestamp(const struct msghdr& msg) noexcept {
+        last_kernel_rx_delay_ns_ = 0;  // reset per call
+        int64_t now_ns = clock_realtime_ns();
+
+        for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+             cmsg != nullptr;
+             cmsg = CMSG_NXTHDR(const_cast<struct msghdr*>(&msg), cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET &&
+                cmsg->cmsg_type == SCM_TIMESTAMPING) {
+                // SCM_TIMESTAMPING returns 3 timespecs:
+                //   [0] = software timestamp (SOF_TIMESTAMPING_RX_SOFTWARE)
+                //   [1] = deprecated
+                //   [2] = hardware timestamp
+                auto* ts = reinterpret_cast<const struct timespec*>(CMSG_DATA(cmsg));
+                int64_t kernel_ns = static_cast<int64_t>(ts[0].tv_sec) * 1'000'000'000LL
+                                  + ts[0].tv_nsec;
+                if (kernel_ns > 0 && now_ns > kernel_ns) {
+                    auto delay = static_cast<uint64_t>(now_ns - kernel_ns);
+                    rx_stack_histogram_.record(delay);
+                    last_kernel_rx_delay_ns_ = delay;
+                }
+                break;
+            }
+        }
+    }
+
+    /// Poll the socket error queue for TX kernel timestamps.
+    /// TX timestamps are delivered asynchronously after send() via MSG_ERRQUEUE.
+    void poll_tx_error_queue() noexcept {
+        alignas(struct cmsghdr) uint8_t ctrl[256];
+        uint8_t dummy[1];
+        struct iovec iov = { .iov_base = dummy, .iov_len = sizeof(dummy) };
+        struct msghdr msg = {};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = ctrl;
+        msg.msg_controllen = sizeof(ctrl);
+
+        // Non-blocking read from error queue
+        ssize_t n = ::recvmsg(fd_, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
+        if (n < 0) return;  // EAGAIN = no TX timestamp pending
+
+        int64_t send_ns = last_send_realtime_ns_.load(std::memory_order_relaxed);
+        if (send_ns <= 0) return;
+
+        for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+             cmsg != nullptr;
+             cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+            if (cmsg->cmsg_level == SOL_SOCKET &&
+                cmsg->cmsg_type == SCM_TIMESTAMPING) {
+                auto* ts = reinterpret_cast<const struct timespec*>(CMSG_DATA(cmsg));
+                int64_t kernel_tx_ns = static_cast<int64_t>(ts[0].tv_sec) * 1'000'000'000LL
+                                     + ts[0].tv_nsec;
+                if (kernel_tx_ns > send_ns) {
+                    auto delay = static_cast<uint64_t>(kernel_tx_ns - send_ns);
+                    tx_stack_histogram_.record(delay);
+                    last_kernel_tx_delay_ns_ = delay;
+                }
+                break;
+            }
+        }
+    }
+
     void query_mss() noexcept {
         if (fd_ < 0) return;
         int mss_val = 0;
@@ -816,8 +1005,10 @@ private:
     }
 };
 
-static_assert(TcpTransport<SocketTransport>,
-    "SocketTransport must satisfy TcpTransport concept");
+static_assert(TcpTransport<SocketTransport<false>>,
+    "SocketTransport<false> must satisfy TcpTransport concept");
+static_assert(TcpTransport<SocketTransport<true>>,
+    "SocketTransport<true> must satisfy TcpTransport concept");
 
 } // namespace eph::net
 

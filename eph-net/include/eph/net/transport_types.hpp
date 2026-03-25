@@ -862,6 +862,8 @@ struct TransportStats {
     uint64_t ws_upgrade_ns     = 0;  ///< Last WebSocket upgrade duration (ns)
     std::string remote_ip{};         ///< Resolved remote IP of current connection
     RttStats    rtt{};               ///< Round-trip time statistics from ping/pong
+    RttStats    tx_latency{};        ///< TX queue latency (enqueue → flush), EnableTimestamps only
+    RttStats    rx_latency{};        ///< RX pipeline latency (arrival → deliver), EnableTimestamps only
     uint64_t tls_write_seq     = 0;  ///< Current TLS write sequence number
     uint64_t tls_read_seq      = 0;  ///< Current TLS read sequence number
     uint64_t tls_seq_limit     = 0;  ///< TLS sequence limit (kMaxSequenceNumber)

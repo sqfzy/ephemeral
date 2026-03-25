@@ -45,7 +45,6 @@
 #include "eph/utils/record.hpp"
 #include "eph/net/framer_concept.hpp"
 #include "eph/net/http.hpp"
-#include "eph/net/probe.hpp"
 #include "eph/net/tcp_concept.hpp"
 #include "eph/net/tls_record.hpp"
 #include "eph/net/tls_session.hpp"
@@ -63,11 +62,14 @@ namespace detail {
 
 /// Message passed from application thread to TX thread via SPSC queue.
 /// Fixed-size to satisfy TrivialData constraint.
+/// tsc field is always present (fits in cache-line padding) but only
+/// written/read when Transport::EnableTimestamps is true.
 template <size_t MaxPayload>
 struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
     uint8_t  data[MaxPayload]{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
+    uint64_t tsc = 0;  // enqueue-time TSC (unused when EnableTimestamps=false)
 
     static_assert(MaxPayload > 0, "MaxPayload must be > 0");
     static_assert(MaxPayload <= tls_const::kMaxRecordPayload,
@@ -75,11 +77,13 @@ struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
 };
 
 /// Message passed from RX processing to application via SPSC queue.
+/// tsc carries the arrival-time TSC (unused when EnableTimestamps=false).
 template <size_t MaxPayload>
 struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
     uint8_t  data[MaxPayload]{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
+    uint64_t tsc = 0;  // arrival-time TSC (unused when EnableTimestamps=false)
 };
 
 inline std::shared_ptr<spdlog::logger> transport_logger() {
@@ -119,7 +123,7 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 ///   transport->recv([](auto* data, auto len) { ... });
 template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
           size_t MaxPayload = 512, size_t QueueDepth = 1024,
-          TransportProbe Probe = NullProbe,
+          bool EnableTimestamps = false,
           template <typename, size_t> class RxQueueTmpl =
               eph::containers::BoundedQueue>
 class Transport {
@@ -136,9 +140,6 @@ class Transport {
     /// True when using WebSocket framing (enables WS handshake, ping/pong,
     /// close handshake, and fragmentation reassembly).
     static constexpr bool kIsWebSocket = std::is_same_v<Framer, WsFramer>;
-
-    /// True when the probe is active (not NullProbe).
-    static constexpr bool kProbeEnabled = !std::same_as<Probe, NullProbe>;
 
     /// True when the RX queue uses evicting (latest-value) semantics.
     static constexpr bool kRxEvicting =
@@ -158,11 +159,7 @@ public:
 
     static constexpr size_t max_payload() noexcept { return MaxPayload; }
     static constexpr size_t queue_depth() noexcept { return QueueDepth; }
-    static constexpr bool   probe_enabled() noexcept { return kProbeEnabled; }
-
-    /// Access the probe instance (for reading collected measurements).
-    [[nodiscard]] const Probe& probe() const noexcept { return probe_; }
-    [[nodiscard]]       Probe& probe()       noexcept { return probe_; }
+    static constexpr bool   timestamps_enabled() noexcept { return EnableTimestamps; }
 
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
     /// This is a blocking call -- performs the full handshake sequence.
@@ -457,6 +454,9 @@ public:
             }
             msg.len = static_cast<uint16_t>(payload_len);
             msg.opcode = ws::opcode::kPing;
+            if constexpr (EnableTimestamps) {
+                msg.tsc = eph::utils::TSC::now();
+            }
         });
 
         if (!ok) {
@@ -496,6 +496,9 @@ public:
                 std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
                 slot.len = static_cast<uint16_t>(payloads[i].size());
                 slot.opcode = opcode;
+                if constexpr (EnableTimestamps) {
+                    slot.tsc = eph::utils::TSC::now();
+                }
             });
 
         if (!ok) {
@@ -536,6 +539,9 @@ public:
                 std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
                 slot.len = static_cast<uint16_t>(payloads[i].size());
                 slot.opcode = opcode;
+                if constexpr (EnableTimestamps) {
+                    slot.tsc = eph::utils::TSC::now();
+                }
             }, timeout);
 
         if (!ok) {
@@ -1090,16 +1096,17 @@ public:
     ///       In the worst case, a concurrent write may cause a slightly stale
     ///       read — acceptable for monitoring purposes.
     [[nodiscard]] RttStats rtt_stats() const noexcept {
-        if (rtt_histogram_.get_total_count() == 0) return {};
-        return RttStats{
-            .count   = rtt_histogram_.get_total_count(),
-            .min_ns  = rtt_histogram_.get_min_value(),
-            .max_ns  = rtt_histogram_.get_max_value(),
-            .mean_ns = rtt_histogram_.get_mean(),
-            .p50_ns  = rtt_histogram_.get_value_at_percentile(50.0),
-            .p99_ns  = rtt_histogram_.get_value_at_percentile(99.0),
-            .p999_ns = rtt_histogram_.get_value_at_percentile(99.9),
-        };
+        return histogram_to_stats(rtt_histogram_);
+    }
+
+    /// TX queue latency stats (enqueue → flush). Empty when EnableTimestamps=false.
+    [[nodiscard]] RttStats tx_latency_stats() const noexcept {
+        return histogram_to_stats(tx_latency_histogram_);
+    }
+
+    /// RX pipeline latency stats (arrival → deliver). Empty when EnableTimestamps=false.
+    [[nodiscard]] RttStats rx_latency_stats() const noexcept {
+        return histogram_to_stats(rx_latency_histogram_);
     }
 
     [[nodiscard]] TransportStats stats() const noexcept {
@@ -1133,6 +1140,8 @@ public:
             .ws_upgrade_ns     = last_ws_upgrade_ns_,
             .remote_ip         = remote_ip_,
             .rtt               = rtt_stats(),
+            .tx_latency        = histogram_to_stats(tx_latency_histogram_),
+            .rx_latency        = histogram_to_stats(rx_latency_histogram_),
             .tls_write_seq     = crypto_ ? crypto_->write_seq() : 0,
             .tls_read_seq      = crypto_ ? crypto_->read_seq() : 0,
             .tls_seq_limit     = config_.use_tls ? tls_record::kMaxSequenceNumber : 0,
@@ -1145,6 +1154,20 @@ private:
     // -----------------------------------------------------------------------
     // Internal enqueue helpers (no UTF-8 validation — caller is responsible)
     // -----------------------------------------------------------------------
+
+    /// Convert an HdrHistogram to RttStats (reused for RTT, TX latency, RX latency).
+    static RttStats histogram_to_stats(const eph::utils::HdrHistogram& h) noexcept {
+        if (h.get_total_count() == 0) return {};
+        return RttStats{
+            .count   = h.get_total_count(),
+            .min_ns  = h.get_min_value(),
+            .max_ns  = h.get_max_value(),
+            .mean_ns = h.get_mean(),
+            .p50_ns  = h.get_value_at_percentile(50.0),
+            .p99_ns  = h.get_value_at_percentile(99.0),
+            .p999_ns = h.get_value_at_percentile(99.9),
+        };
+    }
 
     /// Update a high-watermark atomically (relaxed CAS loop).
     /// Only stores when current size exceeds the recorded peak.
@@ -1171,6 +1194,9 @@ private:
             std::memcpy(msg.data, data, len);
             msg.len = len;
             msg.opcode = opcode;
+            if constexpr (EnableTimestamps) {
+                msg.tsc = current_arrival_tsc_;
+            }
             rx_queue_.push(std::move(msg));
             return true;
         } else {
@@ -1178,6 +1204,9 @@ private:
                 std::memcpy(msg.data, data, len);
                 msg.len = len;
                 msg.opcode = opcode;
+                if constexpr (EnableTimestamps) {
+                    msg.tsc = current_arrival_tsc_;
+                }
             });
         }
     }
@@ -1228,6 +1257,9 @@ private:
             std::memcpy(msg.data, data, len);
             msg.len = static_cast<uint16_t>(len);
             msg.opcode = opcode;
+            if constexpr (EnableTimestamps) {
+                msg.tsc = eph::utils::TSC::now();
+            }
         });
 
         if (!ok) {
@@ -1238,10 +1270,6 @@ private:
                 "TX enqueue failed: queue full (len={}, opcode={})",
                 len, opcode);
             return SendError::kQueueFull;
-        }
-        // Probe: message successfully enqueued in TX SPSC queue
-        if constexpr (kProbeEnabled) {
-            probe_.on_tx_enqueue(eph::utils::TSC::now());
         }
         SPDLOG_LOGGER_TRACE(detail::transport_logger(),
             "TX enqueue: len={}, opcode={}", len, opcode);
@@ -1267,15 +1295,15 @@ private:
             std::memcpy(msg.data, data, len);
             msg.len = static_cast<uint16_t>(len);
             msg.opcode = opcode;
+            if constexpr (EnableTimestamps) {
+                msg.tsc = eph::utils::TSC::now();
+            }
         }, timeout);
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
             update_hwm(tx_hwm_, QueueDepth);
             return SendError::kQueueFull;
-        }
-        if constexpr (kProbeEnabled) {
-            probe_.on_tx_enqueue(eph::utils::TSC::now());
         }
         if ((++tx_hwm_counter_ & 63) == 0) {
             update_hwm(tx_hwm_, tx_queue_.size());
@@ -1285,7 +1313,7 @@ private:
 
     TransportConfig                        config_;
     TcpFactory                             tcp_factory_;
-    [[no_unique_address]] Probe            probe_{};
+    uint64_t                               current_arrival_tsc_{0};
     std::unique_ptr<TcpImpl>               tcp_;
     std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
 
@@ -1363,6 +1391,16 @@ private:
         100,          // lowest: 100 ns (~0.1 us)
         10'000'000'000ULL, // highest: 10 s (covers even slow WAN)
         3             // 3 significant digits
+    };
+
+    // Per-message latency histograms (only recorded when EnableTimestamps=true).
+    // TX: enqueue (app thread) → flush (TX thread encode+encrypt done)
+    // RX: arrival (poll_rx return) → deliver (message decoded, about to deliver)
+    eph::utils::HdrHistogram               tx_latency_histogram_{
+        10, 1'000'000'000ULL, 3  // 10ns–1s, 3 significant digits
+    };
+    eph::utils::HdrHistogram               rx_latency_histogram_{
+        10, 1'000'000'000ULL, 3
     };
 
     // WebSocket fragmentation reassembly buffer (RX thread only).
@@ -1991,6 +2029,32 @@ private:
                         ws_buf, batch[i].data, batch[i].len, batch[i].opcode);
                 }
 
+                // Record TSC for RTT measurement when a ping frame is
+                // about to hit the wire (queued via send_ping() API).
+                if constexpr (kIsWebSocket) {
+                    if (batch[i].opcode == ws::opcode::kPing) {
+                        last_ping_tsc_.store(eph::utils::TSC::now(),
+                                             std::memory_order_relaxed);
+                    }
+                }
+
+                // Per-message TX latency: enqueue → flush (+ kernel TX stack if available).
+                // With SO_TIMESTAMPING, adds kernel send-to-wire delay for full-path measurement.
+                if constexpr (EnableTimestamps) {
+                    uint64_t flush_tsc = eph::utils::TSC::now();
+                    if (batch[i].tsc > 0 && flush_tsc > batch[i].tsc) {
+                        auto pipeline_ns = eph::utils::TSC::to_ns(flush_tsc - batch[i].tsc);
+                        if (pipeline_ns) {
+                            uint64_t total = static_cast<uint64_t>(*pipeline_ns);
+                            // Add kernel TX stack delay if the TCP backend provides it
+                            if constexpr (requires { tcp_->last_kernel_tx_delay_ns(); }) {
+                                total += tcp_->last_kernel_tx_delay_ns();
+                            }
+                            tx_latency_histogram_.record(total);
+                        }
+                    }
+                }
+
                 if (config_.use_tls) {
                     // Pack encrypted records contiguously into tls_bufs_storage
                     // so we can send the entire batch in a single TCP write.
@@ -2038,11 +2102,6 @@ private:
                         }
                     }
                 }
-            }
-
-            // Probe: batch encoded + encrypted, about to hit the wire
-            if constexpr (kProbeEnabled) {
-                probe_.on_tx_flush(eph::utils::TSC::now());
             }
 
             // Commit batch stats atomically (single set of fetch_add calls)
@@ -2257,9 +2316,10 @@ private:
             // No data received this poll iteration
             if (*rx_result == 0) continue;
 
-            // Probe: raw bytes arrived from wire (post-poll, pre-decrypt/deframe)
-            if constexpr (kProbeEnabled) {
-                probe_.on_rx_arrival(eph::utils::TSC::now());
+            // Capture arrival TSC for per-message latency measurement.
+            // All messages decoded from this poll_rx share the same arrival timestamp.
+            if constexpr (EnableTimestamps) {
+                current_arrival_tsc_ = eph::utils::TSC::now();
             }
 
             // Plain mode: process framed data directly from TCP
@@ -2445,6 +2505,25 @@ private:
         }
     }
 
+    /// Record per-message RX latency: arrival (poll_rx return) → frame decoded.
+    /// Includes kernel RX stack delay when the TCP backend provides it.
+    /// Called once per decoded frame in both WS and generic framers.
+    void record_rx_latency() noexcept {
+        if constexpr (EnableTimestamps) {
+            uint64_t now_tsc = eph::utils::TSC::now();
+            if (current_arrival_tsc_ > 0 && now_tsc > current_arrival_tsc_) {
+                auto pipeline_ns = eph::utils::TSC::to_ns(now_tsc - current_arrival_tsc_);
+                if (pipeline_ns) {
+                    uint64_t total = static_cast<uint64_t>(*pipeline_ns);
+                    if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
+                        total += tcp_->last_kernel_rx_delay_ns();
+                    }
+                    rx_latency_histogram_.record(total);
+                }
+            }
+        }
+    }
+
     /// Process data using a generic (non-WS) framer. Simple decode loop
     /// that delivers each successfully decoded frame's payload directly.
     size_t process_generic_data(const uint8_t* data, size_t len) {
@@ -2462,6 +2541,7 @@ private:
 
             offset += frame->total_len;
             rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+            record_rx_latency();
 
             // Deliver payload directly (no control frame handling for non-WS)
             if (frame->payload_len > 0 && frame->payload_len <= MaxPayload) {
@@ -2495,6 +2575,7 @@ private:
 
             offset += frame->total_len;
             rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+            record_rx_latency();
 
             if (frame->is_ping()) {
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
@@ -2553,15 +2634,24 @@ private:
                     std::memory_order_relaxed);
 
                 // RTT measurement: compute delta from the ping TSC timestamp.
-                // Only record if TSC is initialized and we have a valid ping timestamp.
+                // Includes kernel TX+RX stack delays when available for full-path RTT.
                 uint64_t ping_tsc = last_ping_tsc_.load(std::memory_order_relaxed);
                 if (ping_tsc > 0 && eph::utils::TSC::is_initialized()) {
                     uint64_t pong_tsc = eph::utils::TSC::now();
                     if (pong_tsc > ping_tsc) {
                         auto rtt_ns = eph::utils::TSC::to_ns(pong_tsc - ping_tsc);
                         if (rtt_ns) {
-                            rtt_histogram_.record(
-                                static_cast<uint64_t>(*rtt_ns));
+                            uint64_t total = static_cast<uint64_t>(*rtt_ns);
+                            // Add kernel stack delays for Socket backend fairness
+                            if constexpr (EnableTimestamps) {
+                                if constexpr (requires { tcp_->last_kernel_tx_delay_ns(); }) {
+                                    total += tcp_->last_kernel_tx_delay_ns();
+                                }
+                                if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
+                                    total += tcp_->last_kernel_rx_delay_ns();
+                                }
+                            }
+                            rtt_histogram_.record(total);
                         }
                     }
                     // Clear ping TSC so we don't double-record on spurious pongs
@@ -2674,11 +2764,6 @@ private:
                 rx_stats_.text_bytes.fetch_add(len, std::memory_order_relaxed);
             }
         };
-
-        // Probe: message decoded and about to be delivered
-        if constexpr (kProbeEnabled) {
-            probe_.on_rx_deliver(eph::utils::TSC::now());
-        }
 
         if (config_.on_message) {
             try {
