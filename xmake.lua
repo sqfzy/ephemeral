@@ -105,6 +105,10 @@ target("eph-dpdk")
     -- from types.hpp. Raw DPDK TCP (tcp.hpp) works without it.
     add_packages("aws-lc", { public = true })
     add_packages("dpdk", { public = true })
+    -- vcpkg's DPDK install includes fmt headers (compiled library, not header-only).
+    -- These shadow spdlog's bundled fmt and produce undefined references at link time.
+    -- Link vcpkg's libfmt to satisfy those symbols.
+    add_links("fmt", { public = true })
     -- ARM64: DPDK headers check RTE_FORCE_INTRINSICS before rte_config.h is included.
     -- vcpkg's pkgconfig doesn't provide this define, so we must add it explicitly.
     -- Also force-include rte_config.h so rte_build_config.h defines are available
