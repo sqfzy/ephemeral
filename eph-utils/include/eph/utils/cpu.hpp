@@ -93,7 +93,7 @@ struct CpuTopologyInfo {
  * @note Linux: 解析 /proc/cpuinfo
  * @note 其他平台: 返回简化拓扑（假设单 Socket）
  */
-inline std::expected<std::vector<CpuTopologyInfo>, std::string>
+[[nodiscard]] inline std::expected<std::vector<CpuTopologyInfo>, std::string>
 get_cpu_topology() {
   auto log = detail::cpu_logger();
   std::vector<CpuTopologyInfo> cpus;
@@ -234,7 +234,7 @@ get_cpu_topology() {
  *
  * @warning 过度使用可能导致负载不均衡
  */
-inline std::expected<void, std::string>
+[[nodiscard]] inline std::expected<void, std::string>
 set_thread_affinity(int cpu_id, const char* name = nullptr) {
   if (cpu_id < 0) return {};
   auto log = detail::cpu_logger();
@@ -289,7 +289,7 @@ enum class RealtimePolicy { Fifo, RoundRobin };
  * @warning SCHED_FIFO 优先级 99 的线程不会被非实时线程抢占。
  *   如果线程死循环，可能导致系统无响应。确保线程有退出条件。
  */
-inline std::expected<void, std::string>
+[[nodiscard]] inline std::expected<void, std::string>
 set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
                     int priority = -1,
                     const char* name = nullptr) {

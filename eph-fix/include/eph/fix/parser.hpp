@@ -74,13 +74,13 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
 // ---------------------------------------------------------------------------
 
 /// Parse a single-character value. Returns nullopt if not exactly 1 char.
-inline std::optional<char> parse_char_value(std::string_view sv) noexcept {
+[[nodiscard]] inline std::optional<char> parse_char_value(std::string_view sv) noexcept {
     if (sv.size() != 1) return std::nullopt;
     return sv[0];
 }
 
 /// Parse a signed integer from decimal ASCII with overflow detection.
-inline std::optional<int64_t> parse_int_value(std::string_view sv) noexcept {
+[[nodiscard]] inline std::optional<int64_t> parse_int_value(std::string_view sv) noexcept {
     if (sv.empty()) return std::nullopt;
 
     const char* p   = sv.data();
@@ -113,7 +113,7 @@ inline std::optional<int64_t> parse_int_value(std::string_view sv) noexcept {
 }
 
 /// Parse a double from decimal ASCII (integer + optional fractional part).
-inline std::optional<double> parse_double_value(std::string_view sv) noexcept {
+[[nodiscard]] inline std::optional<double> parse_double_value(std::string_view sv) noexcept {
     if (sv.empty()) return std::nullopt;
 
     const char* p   = sv.data();
@@ -145,7 +145,7 @@ inline std::optional<double> parse_double_value(std::string_view sv) noexcept {
 }
 
 /// Parse a FIX boolean (Y/N).
-inline std::optional<bool> parse_bool_value(std::string_view sv) noexcept {
+[[nodiscard]] inline std::optional<bool> parse_bool_value(std::string_view sv) noexcept {
     auto c = parse_char_value(sv);
     if (!c) return std::nullopt;
     if (*c == 'Y') return true;
@@ -154,7 +154,7 @@ inline std::optional<bool> parse_bool_value(std::string_view sv) noexcept {
 }
 
 /// Parse a FIX UTCTimestamp to nanoseconds since Unix epoch.
-inline std::optional<uint64_t> parse_timestamp_value(std::string_view sv) noexcept {
+[[nodiscard]] inline std::optional<uint64_t> parse_timestamp_value(std::string_view sv) noexcept {
     if (sv.size() != 17 && sv.size() != 21 &&
         sv.size() != 24 && sv.size() != 27) return std::nullopt;
 
@@ -692,7 +692,7 @@ inline bool verify_checksum(const uint8_t* data, size_t len) noexcept {
 ///
 /// On kIncomplete, the caller should wait for more data and retry.
 template <size_t MaxFields = 128, size_t MaxBodyLength = kDefaultMaxBodyLength>
-inline std::expected<BasicMessageView<MaxFields>, ParseError>
+[[nodiscard]] inline std::expected<BasicMessageView<MaxFields>, ParseError>
 parse(const uint8_t* data, size_t len) noexcept {
     if (len == 0) return std::unexpected(ParseError::kIncomplete);
 

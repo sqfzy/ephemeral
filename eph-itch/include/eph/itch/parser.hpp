@@ -164,7 +164,7 @@ struct MessageView {
 /// @param data  Pointer to message data (first byte is the message type)
 /// @param len   Number of available bytes starting at @p data
 /// @return MessageView on success, ParseError on failure
-inline std::expected<MessageView, ParseError>
+[[nodiscard]] inline std::expected<MessageView, ParseError>
 parse(const uint8_t* data, size_t len) noexcept {
     if (len == 0) return std::unexpected(ParseError::kIncomplete);
 

@@ -60,7 +60,7 @@ public:
     /// length from BodyLength, and verifies that "10=XXX\x01" is present.
     /// The msg_type byte in DecodedFrame is set to the FIX MsgType char
     /// if tag 35 is found in the body, otherwise 0.
-    static std::expected<eph::net::DecodedFrame, eph::net::FrameError>
+    [[nodiscard]] static std::expected<eph::net::DecodedFrame, eph::net::FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len < 2) return std::unexpected(eph::net::FrameError::kIncomplete);
 
