@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
             ++msgs;
             if ((msgs & 0xFF) == 1) {
                 std::string_view json(reinterpret_cast<const char*>(data), len);
-                spdlog::info("[MKT #{:>6}] {:.80}", msgs, json);
+                spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
             }
         });
         if (!got) eph::utils::cpu_relax();
