@@ -141,6 +141,7 @@ struct WsMockTcpTransport {
         error_on_next_poll = false;
     }
 
+    auto last_rx_burst_tsc() const -> uint64_t { return 0; }
     auto mss() const -> uint16_t { return 1460; }
     auto state() const -> TcpState { return current_state; }
     auto is_established() const -> bool { return current_state == TcpState::Established; }

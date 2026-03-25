@@ -37,6 +37,7 @@
 #include "eph/net/tcp_concept.hpp"
 #include "eph/net/transport_types.hpp"
 #include "eph/utils/hdr_histogram.hpp"
+#include "eph/utils/time.hpp"
 
 namespace eph::net {
 
@@ -666,6 +667,10 @@ public:
 
             n = ::recvmsg(fd_, &msg, MSG_DONTWAIT);
 
+            // Capture TSC right after recvmsg — earliest userspace
+            // proxy for "data left kernel", before any further processing.
+            if (n > 0) last_rx_burst_tsc_ = eph::utils::TSC::now();
+
             if (n > 0) {
                 // Extract RX kernel timestamp from cmsg and record kernel stack latency.
                 extract_rx_timestamp(msg);
@@ -675,6 +680,8 @@ public:
             }
         } else {
             n = ::recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
+
+            if (n > 0) last_rx_burst_tsc_ = eph::utils::TSC::now();
         }
 
         if (n > 0) {
@@ -825,6 +832,12 @@ public:
         return histogram_to_rtt_stats(tx_stack_histogram_);
     }
 
+    /// TSC captured right after recvmsg/recv returns data.
+    /// Transport uses this as the RX arrival baseline.
+    [[nodiscard]] uint64_t last_rx_burst_tsc() const noexcept {
+        return last_rx_burst_tsc_;
+    }
+
     /// Most recent kernel RX stack delay (ns) from the last poll_rx() call.
     /// Transport reads this to compute full-path RX latency (kernel + pipeline).
     /// Returns 0 when kEnableSocketTimestamps=false or no timestamp available.
@@ -869,6 +882,9 @@ private:
     eph::utils::HdrHistogram rx_stack_histogram_{10, 1'000'000'000ULL, 3};
     eph::utils::HdrHistogram tx_stack_histogram_{10, 1'000'000'000ULL, 3};
     std::atomic<int64_t> last_send_realtime_ns_{0};  // TX thread writes, RX thread reads
+
+    // TSC captured right after recvmsg/recv returns data.
+    uint64_t last_rx_burst_tsc_ = 0;
 
     // Per-call kernel delay values (ns). Transport reads these after poll_rx/send
     // to compute full-path latency = kernel delay + pipeline delay.

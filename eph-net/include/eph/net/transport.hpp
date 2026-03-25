@@ -1117,9 +1117,29 @@ public:
         return histogram_to_stats(tx_latency_histogram_);
     }
 
+    /// TX queue wait stats (enqueue → drain). Empty when kEnableTimestamps=false.
+    [[nodiscard]] RttStats tx_queue_wait_stats() const noexcept {
+        return histogram_to_stats(tx_queue_wait_histogram_);
+    }
+
+    /// TX encode+encrypt stats (drain → flush). Empty when kEnableTimestamps=false.
+    [[nodiscard]] RttStats tx_encode_stats() const noexcept {
+        return histogram_to_stats(tx_encode_histogram_);
+    }
+
     /// RX pipeline latency stats (arrival → deliver). Empty when kEnableTimestamps=false.
     [[nodiscard]] RttStats rx_latency_stats() const noexcept {
         return histogram_to_stats(rx_latency_histogram_);
+    }
+
+    /// RX decrypt stats (arrival → decrypt done). Empty when kEnableTimestamps=false.
+    [[nodiscard]] RttStats rx_decrypt_stats() const noexcept {
+        return histogram_to_stats(rx_decrypt_histogram_);
+    }
+
+    /// RX decode stats (decrypt done → frame decoded). Empty when kEnableTimestamps=false.
+    [[nodiscard]] RttStats rx_decode_stats() const noexcept {
+        return histogram_to_stats(rx_decode_histogram_);
     }
 
     [[nodiscard]] TransportStats stats() const noexcept {
@@ -1154,7 +1174,11 @@ public:
             .remote_ip         = remote_ip_,
             .rtt               = rtt_stats(),
             .tx_latency        = histogram_to_stats(tx_latency_histogram_),
+            .tx_queue_wait     = histogram_to_stats(tx_queue_wait_histogram_),
+            .tx_encode         = histogram_to_stats(tx_encode_histogram_),
             .rx_latency        = histogram_to_stats(rx_latency_histogram_),
+            .rx_decrypt        = histogram_to_stats(rx_decrypt_histogram_),
+            .rx_decode         = histogram_to_stats(rx_decode_histogram_),
             .tls_write_seq     = crypto_ ? crypto_->write_seq() : 0,
             .tls_read_seq      = crypto_ ? crypto_->read_seq() : 0,
             .tls_seq_limit     = config_.use_tls ? tls_record::kMaxSequenceNumber : 0,
@@ -1327,6 +1351,7 @@ private:
     TransportConfig                        config_;
     TcpFactory                             tcp_factory_;
     uint64_t                               current_arrival_tsc_{0};
+    uint64_t                               current_decrypt_done_tsc_{0};
     std::unique_ptr<TcpImpl>               tcp_;
     std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
 
@@ -1407,12 +1432,30 @@ private:
     };
 
     // Per-message latency histograms (only recorded when kEnableTimestamps=true).
-    // TX: enqueue (app thread) → flush (TX thread encode+encrypt done)
-    // RX: arrival (poll_rx return) → deliver (message decoded, about to deliver)
+    //
+    // TX total:       enqueue (app) → flush (encode+encrypt done)
+    // TX queue wait:  enqueue (app) → drain (TX thread picks up from SPSC)
+    // TX encode:      drain → flush (WS encode + TLS encrypt)
+    //
+    // RX total:       arrival (poll_rx) → frame decoded
+    // RX decrypt:     arrival → TLS decrypt done
+    // RX decode:      TLS decrypt done → WS frame decoded
     eph::utils::HdrHistogram               tx_latency_histogram_{
         10, 1'000'000'000ULL, 3  // 10ns–1s, 3 significant digits
     };
+    eph::utils::HdrHistogram               tx_queue_wait_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
+    eph::utils::HdrHistogram               tx_encode_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
     eph::utils::HdrHistogram               rx_latency_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
+    eph::utils::HdrHistogram               rx_decrypt_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
+    eph::utils::HdrHistogram               rx_decode_histogram_{
         10, 1'000'000'000ULL, 3
     };
 
@@ -2008,6 +2051,13 @@ private:
                 continue;
             }
 
+            // Capture drain TSC once per batch — all messages share the same
+            // drain point since try_consume_n is a single atomic operation.
+            [[maybe_unused]] uint64_t drain_tsc = 0;
+            if constexpr (kEnableTimestamps) {
+                drain_tsc = eph::utils::TSC::now();
+            }
+
             // WS encode -> [TLS encrypt] -> TCP send for each message in batch.
             // TLS mode: pack encrypted records contiguously for a single
             // TCP send, reducing syscall count from N to 1 per batch.
@@ -2051,19 +2101,33 @@ private:
                     }
                 }
 
-                // Per-message TX latency: enqueue → flush (+ kernel TX stack if available).
-                // With SO_TIMESTAMPING, adds kernel send-to-wire delay for full-path measurement.
+                // Per-message TX latency breakdown:
+                //   total:      enqueue → flush (+ kernel TX if available)
+                //   queue_wait: enqueue → drain (SPSC queue transit time)
+                //   encode:     drain → flush (WS encode + TLS encrypt)
                 if constexpr (kEnableTimestamps) {
                     uint64_t flush_tsc = eph::utils::TSC::now();
                     if (batch[i].tsc > 0 && flush_tsc > batch[i].tsc) {
-                        auto pipeline_ns = eph::utils::TSC::to_ns(flush_tsc - batch[i].tsc);
-                        if (pipeline_ns) {
-                            uint64_t total = static_cast<uint64_t>(*pipeline_ns);
-                            // Add kernel TX stack delay if the TCP backend provides it
+                        // Total: enqueue → flush + kernel TX
+                        auto total_ns = eph::utils::TSC::to_ns(flush_tsc - batch[i].tsc);
+                        if (total_ns) {
+                            uint64_t total = static_cast<uint64_t>(*total_ns);
                             if constexpr (requires { tcp_->last_kernel_tx_delay_ns(); }) {
                                 total += tcp_->last_kernel_tx_delay_ns();
                             }
                             tx_latency_histogram_.record(total);
+                        }
+                        // Queue wait: enqueue → drain
+                        if (drain_tsc > batch[i].tsc) {
+                            auto qw_ns = eph::utils::TSC::to_ns(drain_tsc - batch[i].tsc);
+                            if (qw_ns) tx_queue_wait_histogram_.record(
+                                static_cast<uint64_t>(*qw_ns));
+                        }
+                        // Encode+encrypt: drain → flush
+                        if (flush_tsc > drain_tsc) {
+                            auto enc_ns = eph::utils::TSC::to_ns(flush_tsc - drain_tsc);
+                            if (enc_ns) tx_encode_histogram_.record(
+                                static_cast<uint64_t>(*enc_ns));
                         }
                     }
                 }
@@ -2329,10 +2393,11 @@ private:
             // No data received this poll iteration
             if (*rx_result == 0) continue;
 
-            // Capture arrival TSC for per-message latency measurement.
-            // All messages decoded from this poll_rx share the same arrival timestamp.
+            // Use the TCP backend's rx_burst TSC (captured right after
+            // rte_eth_rx_burst / recvmsg) so that TCP parsing + reorder +
+            // memcpy cost inside poll_rx is included in rx_latency.
             if constexpr (kEnableTimestamps) {
-                current_arrival_tsc_ = eph::utils::TSC::now();
+                current_arrival_tsc_ = tcp_->last_rx_burst_tsc();
             }
 
             // Plain mode: process framed data directly from TCP
@@ -2432,6 +2497,11 @@ private:
                     ws_data_len = decrypted_len;
                 }
 
+                // Capture TSC after TLS decrypt, before WS decode.
+                if constexpr (kEnableTimestamps) {
+                    current_decrypt_done_tsc_ = eph::utils::TSC::now();
+                }
+
                 size_t ws_consumed = process_frame_data(ws_data, ws_data_len);
 
                 // Save unconsumed WS bytes for next TLS record
@@ -2518,20 +2588,37 @@ private:
         }
     }
 
-    /// Record per-message RX latency: arrival (poll_rx return) → frame decoded.
-    /// Includes kernel RX stack delay when the TCP backend provides it.
+    /// Record per-message RX latency breakdown:
+    ///   total:   arrival → decoded (+ kernel RX if available)
+    ///   decrypt: arrival → decrypt_done (TLS decryption)
+    ///   decode:  decrypt_done → decoded (WS frame parsing)
     /// Called once per decoded frame in both WS and generic framers.
     void record_rx_latency() noexcept {
         if constexpr (kEnableTimestamps) {
             uint64_t now_tsc = eph::utils::TSC::now();
             if (current_arrival_tsc_ > 0 && now_tsc > current_arrival_tsc_) {
-                auto pipeline_ns = eph::utils::TSC::to_ns(now_tsc - current_arrival_tsc_);
-                if (pipeline_ns) {
-                    uint64_t total = static_cast<uint64_t>(*pipeline_ns);
+                // Total: arrival → decoded + kernel RX
+                auto total_ns = eph::utils::TSC::to_ns(now_tsc - current_arrival_tsc_);
+                if (total_ns) {
+                    uint64_t total = static_cast<uint64_t>(*total_ns);
                     if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
                         total += tcp_->last_kernel_rx_delay_ns();
                     }
                     rx_latency_histogram_.record(total);
+                }
+                // Decrypt: arrival → decrypt_done (TLS only)
+                if (current_decrypt_done_tsc_ > current_arrival_tsc_) {
+                    auto dec_ns = eph::utils::TSC::to_ns(
+                        current_decrypt_done_tsc_ - current_arrival_tsc_);
+                    if (dec_ns) rx_decrypt_histogram_.record(
+                        static_cast<uint64_t>(*dec_ns));
+                }
+                // Decode: decrypt_done → now (WS frame parsing)
+                if (current_decrypt_done_tsc_ > 0 && now_tsc > current_decrypt_done_tsc_) {
+                    auto ws_ns = eph::utils::TSC::to_ns(
+                        now_tsc - current_decrypt_done_tsc_);
+                    if (ws_ns) rx_decode_histogram_.record(
+                        static_cast<uint64_t>(*ws_ns));
                 }
             }
         }
@@ -2577,6 +2664,16 @@ private:
         auto log = detail::transport_logger();
         size_t offset = 0;
 
+        // EvictingQueue last-only optimization: when the app only reads
+        // the latest value, intermediate data frames are wasted work
+        // (stats atomics, latency histogram, UTF-8 check, memcpy,
+        // enqueue — all overwritten immediately). Instead, we decode
+        // all frames but only deliver the last data frame per call.
+        // Control frames (ping/close/pong) are always handled immediately.
+        // BoundedQueue mode: every frame delivered as before.
+        [[maybe_unused]] const ws::DecodedFrame* last_data_frame = nullptr;
+        [[maybe_unused]] uint64_t data_frame_count = 0;
+
         while (offset < len) {
             auto frame = ws::decode_frame(data + offset, len - offset);
             if (!frame) {
@@ -2587,10 +2684,19 @@ private:
             }
 
             offset += frame->total_len;
-            rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-            record_rx_latency();
+
+            // BoundedQueue: per-frame stats + latency as before.
+            // EvictingQueue: deferred to after loop for last data frame only.
+            if constexpr (!kRxEvicting) {
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
+            }
 
             if (frame->is_ping()) {
+                if constexpr (kRxEvicting) {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    record_rx_latency();
+                }
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
                 if (config_.on_ping) {
                     try {
@@ -2606,6 +2712,10 @@ private:
             }
 
             if (frame->is_close()) {
+                if constexpr (kRxEvicting) {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    record_rx_latency();
+                }
                 uint16_t code = frame->close_status_code();
                 std::string_view close_reason = frame->close_reason();
                 SPDLOG_LOGGER_INFO(log,
@@ -2641,6 +2751,10 @@ private:
             }
 
             if (frame->is_pong()) {
+                if constexpr (kRxEvicting) {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    record_rx_latency();
+                }
                 // Record pong arrival for timeout detection (TX thread reads this).
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
@@ -2711,8 +2825,15 @@ private:
                                     && is_final);
 
             if (is_single_frame && frame->payload_len <= MaxPayload) {
-                // Fast path: complete single-frame message, no buffering
-                deliver_data_frame(*frame);
+                // Fast path: complete single-frame message, no buffering.
+                // EvictingQueue: defer delivery, just remember the last frame.
+                // BoundedQueue: deliver immediately (every message matters).
+                if constexpr (kRxEvicting) {
+                    last_data_frame = &*frame;
+                    ++data_frame_count;
+                } else {
+                    deliver_data_frame(*frame);
+                }
             } else if (is_single_frame) {
                 // Single oversized frame
                 rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
@@ -2747,24 +2868,53 @@ private:
                 if (is_final) {
                     // Reassembly complete — deliver
                     if (!ws_frag_buf_.empty()) {
-                        deliver_message(
-                            ws_frag_buf_.data(),
-                            static_cast<uint16_t>(ws_frag_buf_.size()),
-                            ws_frag_opcode_);
+                        if constexpr (kRxEvicting) {
+                            // Cannot defer fragmented frames (buffer reused
+                            // next iteration), so deliver immediately but
+                            // count it for the batch stats update below.
+                            ++data_frame_count;
+                            deliver_message(
+                                ws_frag_buf_.data(),
+                                static_cast<uint16_t>(ws_frag_buf_.size()),
+                                ws_frag_opcode_);
+                            // If a later single-frame overwrites last_data_frame,
+                            // that's fine — this one is already delivered.
+                            last_data_frame = nullptr;
+                        } else {
+                            deliver_message(
+                                ws_frag_buf_.data(),
+                                static_cast<uint16_t>(ws_frag_buf_.size()),
+                                ws_frag_opcode_);
+                        }
                     }
                     ws_frag_buf_.clear();
                 }
             }
         }
+
+        // EvictingQueue: deliver only the last data frame from this batch.
+        // One record_rx_latency() + one deliver + one batch stats update.
+        if constexpr (kRxEvicting) {
+            if (data_frame_count > 0) {
+                rx_stats_.packets.fetch_add(data_frame_count,
+                                            std::memory_order_relaxed);
+                record_rx_latency();
+                if (last_data_frame) {
+                    deliver_data_frame(*last_data_frame);
+                }
+            }
+        }
+
         return offset;
     }
 
     /// Deliver a decoded payload to either the on_message callback or the RX queue.
-    /// Text frames are validated for UTF-8 compliance (RFC 6455 §5.6);
-    /// invalid frames are dropped with a warning.
+    /// Text frames are validated for UTF-8 compliance (RFC 6455 §5.6) unless
+    /// TransportConfig::skip_utf8_validation is true.
     void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) noexcept {
         // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText && !ws::is_valid_utf8(data, len)) {
+        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+            !ws::is_valid_utf8(data, len)) {
             rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
                 "Dropping text frame with invalid UTF-8 (len={})", len);

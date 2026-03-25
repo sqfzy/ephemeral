@@ -49,13 +49,15 @@ constexpr const char* tcp_state_name(TcpState s) noexcept {
 ///
 /// Required methods:
 ///   - connect(timeout)  → establish the TCP connection
-///   - send(data, len)   → send raw bytes
-///   - poll_rx(callback) → poll for incoming data, invoke callback per payload
-///   - close()           → graceful close (FIN)
-///   - reset()           → forced close (RST)
-///   - mss()             → maximum segment size
-///   - state()           → current TCP state
-///   - is_established()  → convenience check
+///   - send(data, len)        → send raw bytes
+///   - poll_rx(callback)      → poll for incoming data, invoke callback per payload
+///   - last_rx_burst_tsc()    → TSC captured right after the lowest-level receive
+///                               (rte_eth_rx_burst / recvmsg) returns data
+///   - close()                → graceful close (FIN)
+///   - reset()                → forced close (RST)
+///   - mss()                  → maximum segment size
+///   - state()                → current TCP state
+///   - is_established()       → convenience check
 template <typename T>
 concept TcpTransport = requires(T& t,
     const void* data, size_t len,
@@ -67,6 +69,9 @@ concept TcpTransport = requires(T& t,
 
     // Data transfer
     { t.send(data, len) } -> std::same_as<std::expected<size_t, std::string>>;
+
+    // Timestamping — TSC captured at the earliest point after data arrives
+    { t.last_rx_burst_tsc() } -> std::convertible_to<uint64_t>;
 
     // State queries
     { t.mss() }            -> std::convertible_to<uint16_t>;

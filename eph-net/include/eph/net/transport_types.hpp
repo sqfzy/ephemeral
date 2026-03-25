@@ -862,8 +862,12 @@ struct TransportStats {
     uint64_t ws_upgrade_ns     = 0;  ///< Last WebSocket upgrade duration (ns)
     std::string remote_ip{};         ///< Resolved remote IP of current connection
     RttStats    rtt{};               ///< Round-trip time statistics from ping/pong
-    RttStats    tx_latency{};        ///< TX queue latency (enqueue → flush), EnableTimestamps only
-    RttStats    rx_latency{};        ///< RX pipeline latency (arrival → deliver), EnableTimestamps only
+    RttStats    tx_latency{};        ///< TX total (enqueue → flush + kernel TX)
+    RttStats    tx_queue_wait{};     ///< TX queue wait (enqueue → drain)
+    RttStats    tx_encode{};         ///< TX encode+encrypt (drain → flush)
+    RttStats    rx_latency{};        ///< RX total (arrival → decoded + kernel RX)
+    RttStats    rx_decrypt{};        ///< RX TLS decrypt (arrival → decrypt done)
+    RttStats    rx_decode{};         ///< RX WS decode (decrypt done → frame decoded)
     uint64_t tls_write_seq     = 0;  ///< Current TLS write sequence number
     uint64_t tls_read_seq      = 0;  ///< Current TLS read sequence number
     uint64_t tls_seq_limit     = 0;  ///< TLS sequence limit (kMaxSequenceNumber)
@@ -991,7 +995,13 @@ struct TransportStats {
             "  Reconnections: {}, handshake: {:.1f}ms "
             "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)\n"
             "  TLS seq: write={}/{} ({:.1f}%), read={}/{} ({:.1f}%)\n"
-            "  {}",
+            "  RTT: {}\n"
+            "  TX latency: {}\n"
+            "    queue_wait: {}\n"
+            "    encode:     {}\n"
+            "  RX latency: {}\n"
+            "    decrypt:    {}\n"
+            "    decode:     {}",
             uptime_s, remote_ip.empty() ? "unknown" : remote_ip,
             tx_packets, tx_pps(), tx_bytes, tx_bps(),
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
@@ -1005,14 +1015,18 @@ struct TransportStats {
             static_cast<double>(ws_upgrade_ns) / 1e6,
             tls_write_seq, tls_seq_limit, tls_write_seq_usage() * 100.0,
             tls_read_seq, tls_seq_limit, tls_read_seq_usage() * 100.0,
-            rtt.dump());
+            rtt.dump(),
+            tx_latency.dump(), tx_queue_wait.dump(), tx_encode.dump(),
+            rx_latency.dump(), rx_decrypt.dump(), rx_decode.dump());
     }
 
     /// JSON-formatted stats for monitoring system integration.
     /// No external JSON library dependency — hand-rolled for zero overhead.
     /// String fields are escaped per RFC 8259 §7.
     [[nodiscard]] std::string to_json() const {
-        return std::format(
+        // Split into two format calls to stay under compile-time
+        // format string length limit (consteval depth).
+        auto part1 = std::format(
             "{{"
             "\"tx_packets\":{},\"tx_bytes\":{},\"tx_text_packets\":{},"
             "\"tx_text_bytes\":{},\"tx_dropped\":{},"
@@ -1024,13 +1038,7 @@ struct TransportStats {
             "\"ws_pongs_sent\":{},\"pong_timeouts\":{},"
             "\"reconnect_count\":{},\"uptime_ns\":{},"
             "\"handshake_ns\":{},\"tcp_connect_ns\":{},\"tls_handshake_ns\":{},"
-            "\"ws_upgrade_ns\":{},\"handshake_ms\":{:.3f},"
-            "\"tx_pps\":{:.1f},\"rx_pps\":{:.1f},"
-            "\"tx_bps\":{:.1f},\"rx_bps\":{:.1f},"
-            "\"remote_ip\":\"{}\","
-            "\"tls_write_seq\":{},\"tls_read_seq\":{},\"tls_seq_limit\":{},"
-            "\"tls_write_seq_usage\":{:.6f},\"tls_read_seq_usage\":{:.6f},"
-            "\"rtt\":{}}}",
+            "\"ws_upgrade_ns\":{},\"handshake_ms\":{:.3f},",
             tx_packets, tx_bytes, tx_text_packets,
             tx_text_bytes, tx_dropped,
             rx_packets, rx_bytes, rx_text_packets,
@@ -1041,13 +1049,25 @@ struct TransportStats {
             ws_pongs_sent, pong_timeouts,
             reconnect_count, uptime_ns,
             handshake_ns, tcp_connect_ns, tls_handshake_ns,
-            ws_upgrade_ns, handshake_ms(),
+            ws_upgrade_ns, handshake_ms());
+        auto part2 = std::format(
+            "\"tx_pps\":{:.1f},\"rx_pps\":{:.1f},"
+            "\"tx_bps\":{:.1f},\"rx_bps\":{:.1f},"
+            "\"remote_ip\":\"{}\","
+            "\"tls_write_seq\":{},\"tls_read_seq\":{},\"tls_seq_limit\":{},"
+            "\"tls_write_seq_usage\":{:.6f},\"tls_read_seq_usage\":{:.6f},"
+            "\"rtt\":{},"
+            "\"tx_latency\":{},\"tx_queue_wait\":{},\"tx_encode\":{},"
+            "\"rx_latency\":{},\"rx_decrypt\":{},\"rx_decode\":{}}}",
             tx_pps(), rx_pps(),
             tx_bps(), rx_bps(),
             detail::json_escape(remote_ip),
             tls_write_seq, tls_read_seq, tls_seq_limit,
             tls_write_seq_usage(), tls_read_seq_usage(),
-            rtt.to_json());
+            rtt.to_json(),
+            tx_latency.to_json(), tx_queue_wait.to_json(), tx_encode.to_json(),
+            rx_latency.to_json(), rx_decrypt.to_json(), rx_decode.to_json());
+        return part1 + part2;
     }
 
     /// Defaulted equality — all fields must match exactly.

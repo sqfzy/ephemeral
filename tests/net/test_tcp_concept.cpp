@@ -63,6 +63,8 @@ struct MockTcpSession {
         rx_buffer.clear();
     }
 
+    auto last_rx_burst_tsc() const -> uint64_t { return 0; }
+
     auto mss() const -> uint16_t { return 1460; }
 
     auto state() const -> TcpState { return current_state; }

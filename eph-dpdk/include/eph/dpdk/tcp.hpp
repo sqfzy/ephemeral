@@ -32,6 +32,7 @@
 
 #include "eph/dpdk/net_header.hpp"
 #include "eph/net/tcp_concept.hpp"
+#include "eph/utils/time.hpp"
 
 namespace eph::dpdk {
 
@@ -582,7 +583,18 @@ public:
         uint16_t nb_rx = rte_eth_rx_burst(
             config_.port_id, config_.rx_queue_id, pkts, 32);
         if (nb_rx == 0) return uint16_t{0};
+        // Capture TSC immediately after rx_burst — the closest
+        // userspace proxy for "packet arrived at NIC ring".
+        last_rx_burst_tsc_ = eph::utils::TSC::now();
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
+    }
+
+    /// TSC captured right after rte_eth_rx_burst returned data.
+    /// Transport uses this as the RX arrival baseline instead of
+    /// timestamping after poll_rx returns, which would miss the
+    /// TCP parsing + reorder + memcpy cost inside process_rx.
+    [[nodiscard]] uint64_t last_rx_burst_tsc() const noexcept {
+        return last_rx_burst_tsc_;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -719,6 +731,10 @@ private:
     uint8_t      reorder_count_ = 0;
 
     Stats stats_{};
+
+    // TSC captured right after rte_eth_rx_burst returns data.
+    // Used by Transport as the true RX arrival baseline.
+    uint64_t last_rx_burst_tsc_ = 0;
 
     /// Generate initial sequence number using CSPRNG.
     /// Returns 0 on CSPRNG failure — caller must treat ISN=0 as connection error.
