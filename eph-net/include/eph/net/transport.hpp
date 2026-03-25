@@ -40,10 +40,12 @@
 
 #include "eph/utils/alignment.hpp"
 #include "eph/containers/bounded_queue.hpp"
+#include "eph/containers/evicting_queue.hpp"
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/record.hpp"
 #include "eph/net/framer_concept.hpp"
 #include "eph/net/http.hpp"
+#include "eph/net/probe.hpp"
 #include "eph/net/tcp_concept.hpp"
 #include "eph/net/tls_record.hpp"
 #include "eph/net/tls_session.hpp"
@@ -116,7 +118,10 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 ///   transport->send(data, len);    // Non-blocking
 ///   transport->recv([](auto* data, auto len) { ... });
 template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
-          size_t MaxPayload = 512, size_t QueueDepth = 1024>
+          size_t MaxPayload = 512, size_t QueueDepth = 1024,
+          TransportProbe Probe = NullProbe,
+          template <typename, size_t> class RxQueueTmpl =
+              eph::containers::BoundedQueue>
 class Transport {
     static_assert(TcpTransport<TcpImpl>,
                   "TcpImpl must satisfy TcpTransport concept");
@@ -132,10 +137,18 @@ class Transport {
     /// close handshake, and fragmentation reassembly).
     static constexpr bool kIsWebSocket = std::is_same_v<Framer, WsFramer>;
 
+    /// True when the probe is active (not NullProbe).
+    static constexpr bool kProbeEnabled = !std::same_as<Probe, NullProbe>;
+
+    /// True when the RX queue uses evicting (latest-value) semantics.
+    static constexpr bool kRxEvicting =
+        std::same_as<RxQueueTmpl<int, 2>,
+                     eph::containers::EvictingQueue<int, 2>>;
+
     using TxMsg = detail::TxMessage<MaxPayload>;
     using RxMsg = detail::RxMessage<MaxPayload>;
     using TxQueue = eph::containers::BoundedQueue<TxMsg, QueueDepth>;
-    using RxQueue = eph::containers::BoundedQueue<RxMsg, QueueDepth>;
+    using RxQueue = RxQueueTmpl<RxMsg, QueueDepth>;
 
 public:
     /// Factory callable: creates a new, already-connected TcpImpl instance.
@@ -145,6 +158,11 @@ public:
 
     static constexpr size_t max_payload() noexcept { return MaxPayload; }
     static constexpr size_t queue_depth() noexcept { return QueueDepth; }
+    static constexpr bool   probe_enabled() noexcept { return kProbeEnabled; }
+
+    /// Access the probe instance (for reading collected measurements).
+    [[nodiscard]] const Probe& probe() const noexcept { return probe_; }
+    [[nodiscard]]       Probe& probe()       noexcept { return probe_; }
 
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
     /// This is a blocking call -- performs the full handshake sequence.
@@ -551,10 +569,12 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t>
     bool recv(F&& callback) {
-        bool consumed = rx_queue_.try_consume([&](RxMsg& msg) {
+        bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
-            std::invoke(std::forward<F>(callback), msg.data, msg.len);
+            std::invoke(std::forward<F>(callback),
+                        static_cast<const uint8_t*>(msg.data),
+                        static_cast<size_t>(msg.len));
         });
         return consumed;
     }
@@ -566,10 +586,12 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     bool recv(F&& callback) {
-        bool consumed = rx_queue_.try_consume([&](RxMsg& msg) {
+        bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
-            std::invoke(std::forward<F>(callback), msg.data, msg.len, msg.opcode);
+            std::invoke(std::forward<F>(callback),
+                        static_cast<const uint8_t*>(msg.data),
+                        static_cast<size_t>(msg.len), msg.opcode);
         });
         return consumed;
     }
@@ -579,7 +601,7 @@ public:
     /// Prefer the callback variant for zero-copy hot paths.
     [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv() {
         std::optional<std::vector<uint8_t>> result;
-        (void)rx_queue_.try_consume([&](RxMsg& msg) {
+        (void)rx_consume([&](const RxMsg& msg) {
             result.emplace(msg.data, msg.data + msg.len);
         });
         return result;
@@ -629,7 +651,7 @@ public:
     /// Returns payload + opcode, or nullopt if the queue is empty.
     [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg() {
         std::optional<ReceivedMessage> result;
-        (void)rx_queue_.try_consume([&](RxMsg& msg) {
+        (void)rx_consume([&](const RxMsg& msg) {
             result.emplace(ReceivedMessage{
                 .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
                 .opcode = msg.opcode,
@@ -656,7 +678,7 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t>
     bool recv_peek(F&& callback) {
-        return rx_queue_.try_peek([&](const RxMsg& msg) {
+        return rx_peek([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
                         static_cast<const uint8_t*>(msg.data),
                         static_cast<size_t>(msg.len));
@@ -669,7 +691,7 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     bool recv_peek(F&& callback) {
-        return rx_queue_.try_peek([&](const RxMsg& msg) {
+        return rx_peek([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
                         static_cast<const uint8_t*>(msg.data),
                         static_cast<size_t>(msg.len),
@@ -681,7 +703,7 @@ public:
     /// Returns nullopt if the queue is empty.
     [[nodiscard]] std::optional<ReceivedMessage> peek_recv_msg() {
         std::optional<ReceivedMessage> result;
-        (void)rx_queue_.try_peek([&](const RxMsg& msg) {
+        (void)rx_peek([&](const RxMsg& msg) {
             result.emplace(ReceivedMessage{
                 .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
                 .opcode = msg.opcode,
@@ -695,11 +717,14 @@ public:
     /// Calls callback with (data_ptr, len) for each available message,
     /// consuming up to max_count from the RX queue in a single drain loop.
     ///
+    /// @note Not available when RxQueue is EvictingQueue (latest-value semantics).
+    ///       Use recv() in a loop instead.
+    ///
     /// @param callback    Called with (data_ptr, len) for each message
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t>
+        requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
@@ -712,11 +737,13 @@ public:
     /// Uses try_consume_n for amortized atomic operations (single head
     /// update for the entire batch, matching send_n's try_produce_n).
     ///
+    /// @note Not available when RxQueue is EvictingQueue.
+    ///
     /// @param callback    Called with (data_ptr, len, opcode) for each message
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
+        requires (std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
     size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
@@ -727,8 +754,9 @@ public:
 
     /// Drain all available messages (non-blocking).
     /// Equivalent to recv_n(callback, queue_depth()).
+    /// @note Not available when RxQueue is EvictingQueue.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t>
+        requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     size_t drain_recv(F&& callback) {
         return recv_n(std::forward<F>(callback), QueueDepth);
     }
@@ -747,8 +775,10 @@ public:
     bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
-            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
-                std::invoke(std::forward<F>(callback), msg.data, msg.len);
+            bool got = rx_consume([&](const RxMsg& msg) {
+                std::invoke(std::forward<F>(callback),
+                            static_cast<const uint8_t*>(msg.data),
+                            static_cast<size_t>(msg.len));
             });
             if (got) return true;
             if (std::chrono::steady_clock::now() >= deadline) return false;
@@ -763,9 +793,10 @@ public:
     bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
-            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+            bool got = rx_consume([&](const RxMsg& msg) {
                 std::invoke(std::forward<F>(callback),
-                            msg.data, msg.len, msg.opcode);
+                            static_cast<const uint8_t*>(msg.data),
+                            static_cast<size_t>(msg.len), msg.opcode);
             });
             if (got) return true;
             if (std::chrono::steady_clock::now() >= deadline) return false;
@@ -781,7 +812,7 @@ public:
         std::optional<ReceivedMessage> result;
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
-            bool got = rx_queue_.try_consume([&](RxMsg& msg) {
+            bool got = rx_consume([&](const RxMsg& msg) {
                 result.emplace(ReceivedMessage{
                     .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
                     .opcode = msg.opcode,
@@ -967,7 +998,7 @@ public:
 
     /// Approximate number of messages available in the RX queue.
     [[nodiscard]] size_t rx_queue_size() const noexcept {
-        return rx_queue_.size();
+        return rx_size();
     }
 
     /// TX queue occupancy as a fraction [0.0, 1.0].
@@ -978,7 +1009,7 @@ public:
 
     /// RX queue occupancy as a fraction [0.0, 1.0].
     [[nodiscard]] double rx_queue_fill_ratio() const noexcept {
-        return static_cast<double>(rx_queue_.size()) /
+        return static_cast<double>(rx_size()) /
                static_cast<double>(QueueDepth);
     }
 
@@ -1126,6 +1157,64 @@ private:
         }
     }
 
+    // -----------------------------------------------------------------------
+    // RxQueue dispatch helpers — abstract BoundedQueue vs EvictingQueue
+    // -----------------------------------------------------------------------
+
+    /// Enqueue a decoded message into the RX queue.
+    /// BoundedQueue: try_produce (backpressure — may fail).
+    /// EvictingQueue: push (evicts oldest — never fails).
+    bool rx_enqueue(const uint8_t* data, uint16_t len,
+                    uint8_t opcode) noexcept {
+        if constexpr (kRxEvicting) {
+            RxMsg msg{};
+            std::memcpy(msg.data, data, len);
+            msg.len = len;
+            msg.opcode = opcode;
+            rx_queue_.push(std::move(msg));
+            return true;
+        } else {
+            return rx_queue_.try_produce([&](RxMsg& msg) {
+                std::memcpy(msg.data, data, len);
+                msg.len = len;
+                msg.opcode = opcode;
+            });
+        }
+    }
+
+    /// Consume one message from the RX queue.
+    /// BoundedQueue: try_consume (FIFO).
+    /// EvictingQueue: try_consume_latest (latest-value).
+    template <typename F>
+    bool rx_consume(F&& visitor) {
+        if constexpr (kRxEvicting) {
+            return rx_queue_.try_consume_latest(std::forward<F>(visitor));
+        } else {
+            return rx_queue_.try_consume(std::forward<F>(visitor));
+        }
+    }
+
+    /// Peek one message from the RX queue without consuming.
+    template <typename F>
+    bool rx_peek(F&& visitor) {
+        if constexpr (kRxEvicting) {
+            return rx_queue_.try_peek_latest(std::forward<F>(visitor));
+        } else {
+            return rx_queue_.try_peek(std::forward<F>(visitor));
+        }
+    }
+
+    /// Approximate RX queue size.
+    [[nodiscard]] size_t rx_size() const noexcept {
+        if constexpr (kRxEvicting) {
+            return rx_queue_.size_approx();
+        } else {
+            return rx_queue_.size();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+
     /// Enqueue a message to TX queue without UTF-8 validation.
     /// Shared implementation for send() and send_text() to avoid
     /// double-validating UTF-8 on the hot path.
@@ -1149,6 +1238,10 @@ private:
                 "TX enqueue failed: queue full (len={}, opcode={})",
                 len, opcode);
             return SendError::kQueueFull;
+        }
+        // Probe: message successfully enqueued in TX SPSC queue
+        if constexpr (kProbeEnabled) {
+            probe_.on_tx_enqueue(eph::utils::TSC::now());
         }
         SPDLOG_LOGGER_TRACE(detail::transport_logger(),
             "TX enqueue: len={}, opcode={}", len, opcode);
@@ -1181,6 +1274,9 @@ private:
             update_hwm(tx_hwm_, QueueDepth);
             return SendError::kQueueFull;
         }
+        if constexpr (kProbeEnabled) {
+            probe_.on_tx_enqueue(eph::utils::TSC::now());
+        }
         if ((++tx_hwm_counter_ & 63) == 0) {
             update_hwm(tx_hwm_, tx_queue_.size());
         }
@@ -1189,6 +1285,7 @@ private:
 
     TransportConfig                        config_;
     TcpFactory                             tcp_factory_;
+    [[no_unique_address]] Probe            probe_{};
     std::unique_ptr<TcpImpl>               tcp_;
     std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
 
@@ -1943,6 +2040,11 @@ private:
                 }
             }
 
+            // Probe: batch encoded + encrypted, about to hit the wire
+            if constexpr (kProbeEnabled) {
+                probe_.on_tx_flush(eph::utils::TSC::now());
+            }
+
             // Commit batch stats atomically (single set of fetch_add calls)
             if (config_.use_tls && coalesced_len > 0) {
                 auto result = tcp_->send(tls_bufs_storage.get(), coalesced_len);
@@ -2154,6 +2256,11 @@ private:
 
             // No data received this poll iteration
             if (*rx_result == 0) continue;
+
+            // Probe: raw bytes arrived from wire (post-poll, pre-decrypt/deframe)
+            if constexpr (kProbeEnabled) {
+                probe_.on_rx_arrival(eph::utils::TSC::now());
+            }
 
             // Plain mode: process framed data directly from TCP
             if (!config_.use_tls) {
@@ -2425,12 +2532,10 @@ private:
                 // accessible via ReceivedMessage::close_code()/close_reason().
                 if (frame->payload && frame->payload_len > 0 &&
                     frame->payload_len <= MaxPayload) {
-                    (void)rx_queue_.try_produce([&](RxMsg& msg) {
-                        std::memcpy(msg.data, frame->payload,
-                                    frame->payload_len);
-                        msg.len = static_cast<uint16_t>(frame->payload_len);
-                        msg.opcode = ws::opcode::kClose;
-                    });
+                    (void)rx_enqueue(
+                        frame->payload,
+                        static_cast<uint16_t>(frame->payload_len),
+                        ws::opcode::kClose);
                 }
                 // RFC 6455 §5.5.1: respond with a Close frame echoing
                 // the status code before shutting down.
@@ -2570,6 +2675,11 @@ private:
             }
         };
 
+        // Probe: message decoded and about to be delivered
+        if constexpr (kProbeEnabled) {
+            probe_.on_rx_deliver(eph::utils::TSC::now());
+        }
+
         if (config_.on_message) {
             try {
                 config_.on_message(data, len, opcode);
@@ -2581,17 +2691,13 @@ private:
             return;
         }
 
-        bool ok = rx_queue_.try_produce([&](RxMsg& msg) {
-            std::memcpy(msg.data, data, len);
-            msg.len = len;
-            msg.opcode = opcode;
-        });
+        bool ok = rx_enqueue(data, len, opcode);
 
         if (ok) {
             update_rx_stats();
             // Sample RX HWM every 64 deliveries (same rationale as TX)
             if ((++rx_hwm_counter_ & 63) == 0) {
-                update_hwm(rx_hwm_, rx_queue_.size());
+                update_hwm(rx_hwm_, rx_size());
             }
         } else {
             auto total = rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed) + 1;
