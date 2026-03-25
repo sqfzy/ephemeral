@@ -42,7 +42,7 @@
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/utils/cpu.hpp"
-#include "eph/utils/record.hpp"
+#include "eph/utils/hdr_histogram.hpp"
 #include "eph/net/framer_concept.hpp"
 #include "eph/net/http.hpp"
 #include "eph/net/tcp_concept.hpp"
@@ -1489,7 +1489,7 @@ private:
     /// TLS phases are skipped when config_.use_tls is false (plain ws://).
     /// On success, tcp_ (and optionally tls_, crypto_) are populated and ready.
     /// On failure, previous state is cleaned up.
-    std::expected<void, ConnectionErrorInfo> do_connect() {
+    [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_connect() {
         auto log = detail::transport_logger();
         auto connect_start = std::chrono::steady_clock::now();
 
@@ -1749,7 +1749,7 @@ private:
     // WebSocket upgrade (Phase 3 of handshake)
     // -----------------------------------------------------------------------
 
-    std::expected<void, ConnectionErrorInfo> do_ws_upgrade() {
+    [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_ws_upgrade() {
         auto log = detail::transport_logger();
 
         // Generate WebSocket key
