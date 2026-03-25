@@ -399,3 +399,55 @@ TEST(LengthPrefixFramerEncode, null_both_returns_zero) {
     LengthPrefixFramer framer;
     EXPECT_EQ(framer.encode(nullptr, nullptr, 5, 0), 0u);
 }
+
+// ---------------------------------------------------------------------------
+// LengthPrefixFramer boundary: decode with trailing data (multi-frame buffer)
+// ---------------------------------------------------------------------------
+
+TEST(LengthPrefixFramer, DecodeIgnoresTrailingData) {
+    // Buffer contains a 3-byte payload frame followed by extra bytes
+    const uint8_t data[] = {0x00, 0x03, 0xAA, 0xBB, 0xCC, 0x00, 0x02, 0xDD, 0xEE};
+    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 3u);
+    EXPECT_EQ(result->total_len, 5u);  // Only first frame consumed
+}
+
+TEST(LengthPrefixFramer, DecodeMaxPayloadLength) {
+    // Decode a frame with max payload length (0xFFFF = 65535)
+    std::vector<uint8_t> data(2 + 65535, 0x42);
+    data[0] = 0xFF;
+    data[1] = 0xFF;
+    auto result = LengthPrefixFramer::decode(data.data(), data.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 65535u);
+    EXPECT_EQ(result->total_len, 65537u);
+    EXPECT_EQ(result->msg_type, 0x42);
+}
+
+TEST(LengthPrefixFramer, DecodeMaxPayloadLengthIncomplete) {
+    // Header says 65535 but buffer only has 65534 payload bytes
+    std::vector<uint8_t> data(2 + 65534, 0x42);
+    data[0] = 0xFF;
+    data[1] = 0xFF;
+    auto result = LengthPrefixFramer::decode(data.data(), data.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), FrameError::kIncomplete);
+}
+
+TEST(LengthPrefixFramer, DecodeExactFit) {
+    // Buffer is exactly header(2) + payload(5) — no extra, no shortage
+    const uint8_t data[] = {0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05};
+    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 5u);
+    EXPECT_EQ(result->total_len, 7u);
+}
+
+TEST(LengthPrefixFramer, DecodeHeaderOnlyNoPayloadBytes) {
+    // Header says 1 byte of payload, but buffer only has the 2-byte header
+    const uint8_t data[] = {0x00, 0x01};
+    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), FrameError::kIncomplete);
+}
