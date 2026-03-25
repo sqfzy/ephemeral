@@ -225,7 +225,7 @@ public:
 
     /// Create and fully initialize the DPDK platform for one port.
     /// EAL must already be initialized (via eph::dpdk::eal_init).
-    static std::expected<Platform, std::string>
+    [[nodiscard]] static std::expected<Platform, std::string>
     create(const PlatformConfig& config);
 
     ~Platform();
@@ -258,7 +258,7 @@ struct Platform::Impl {
 
     ~Impl() { cleanup(); }
 
-    std::expected<void, std::string> enumerate_ports() {
+    [[nodiscard]] std::expected<void, std::string> enumerate_ports() {
         auto log = detail::platform_logger();
         uint16_t count = rte_eth_dev_count_avail();
 
@@ -281,7 +281,7 @@ struct Platform::Impl {
         return {};
     }
 
-    std::expected<void, std::string> create_mempool() {
+    [[nodiscard]] std::expected<void, std::string> create_mempool() {
         auto log = detail::platform_logger();
         SPDLOG_LOGGER_DEBUG(log,
             "Creating mbuf pool: size={}, cache={}, data_room={}",
@@ -305,7 +305,7 @@ struct Platform::Impl {
         return {};
     }
 
-    std::expected<void, std::string> configure_port() {
+    [[nodiscard]] std::expected<void, std::string> configure_port() {
         auto log = detail::platform_logger();
 
         // Query NIC capabilities — offload flags MUST be intersected with
@@ -360,7 +360,7 @@ struct Platform::Impl {
         return {};
     }
 
-    std::expected<void, std::string> setup_queues() {
+    [[nodiscard]] std::expected<void, std::string> setup_queues() {
         auto log = detail::platform_logger();
 
         rte_eth_dev_info dev_info{};
@@ -424,7 +424,7 @@ struct Platform::Impl {
         return {};
     }
 
-    std::expected<void, std::string> start_port() {
+    [[nodiscard]] std::expected<void, std::string> start_port() {
         auto log = detail::platform_logger();
 
         if (config.enable_promiscuous) {
@@ -516,7 +516,7 @@ inline Platform::~Platform() = default;
 inline Platform::Platform(Platform&&) noexcept            = default;
 inline Platform& Platform::operator=(Platform&&) noexcept = default;
 
-inline std::expected<Platform, std::string>
+[[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(const PlatformConfig& config) {
     auto log = detail::platform_logger();
 

@@ -262,7 +262,7 @@ public:
     /// Perform TCP three-way handshake (blocking, polls DPDK rx).
     /// @param timeout  Maximum time to wait for SYN-ACK
     /// @return Error string on failure
-    std::expected<void, std::string>
+    [[nodiscard]] std::expected<void, std::string>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
         auto log = detail::tcp_logger();
 
@@ -373,7 +373,7 @@ public:
     /// @param data     Payload data
     /// @param len      Payload length (must be <= MSS)
     /// @return Number of bytes sent, or error
-    std::expected<size_t, std::string>
+    [[nodiscard]] std::expected<size_t, std::string>
     send(const void* data, size_t len) {
         if (state_ != TcpState::Established) {
             return std::unexpected(std::format(
@@ -433,7 +433,7 @@ public:
     /// @return Number of data packets processed, or error
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    std::expected<uint16_t, std::string>
+    [[nodiscard]] std::expected<uint16_t, std::string>
     process_rx(rte_mbuf** pkts, uint16_t nb_pkts, F&& data_callback) {
         auto log = detail::tcp_logger();
         uint16_t data_count = 0;
@@ -578,7 +578,7 @@ public:
     ///         unexpected with error message; all received packets are freed.
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
+    [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
         rte_mbuf* pkts[32];
         uint16_t nb_rx = rte_eth_rx_burst(
             config_.port_id, config_.rx_queue_id, pkts, 32);
@@ -602,7 +602,7 @@ public:
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Initiate graceful TCP close (send FIN).
-    std::expected<void, std::string> close() {
+    [[nodiscard]] std::expected<void, std::string> close() {
         auto log = detail::tcp_logger();
 
         if (state_ != TcpState::Established &&
@@ -758,7 +758,7 @@ private:
     }
 
     /// Send a bare ACK packet.
-    std::expected<void, std::string> send_ack() {
+    [[nodiscard]] std::expected<void, std::string> send_ack() {
         auto* ack_pkt = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!ack_pkt) {

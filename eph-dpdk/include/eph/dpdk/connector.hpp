@@ -180,7 +180,7 @@ struct ConnectResult {
 ///
 /// @param host  Hostname or dotted-decimal IPv4 string
 /// @return IPv4 address in host byte order, or error string
-inline std::expected<uint32_t, std::string>
+[[nodiscard]] inline std::expected<uint32_t, std::string>
 resolve_hostname(const std::string& host) {
     SPDLOG_DEBUG("Resolving hostname: '{}'", host);
 
@@ -227,7 +227,7 @@ struct ConnectionSetup {
 
 /// Shared logic: validate → get MAC → parse IPs → ARP → ephemeral port
 /// → build TcpConfig + factory.  Used by all connect() overloads.
-inline std::expected<ConnectionSetup, std::string>
+[[nodiscard]] inline std::expected<ConnectionSetup, std::string>
 prepare_connection(const DpdkEndpoint& ep,
                    const ConnectorOptions& opts,
                    const TransportConfig& transport_cfg,
@@ -328,7 +328,7 @@ prepare_connection(const DpdkEndpoint& ep,
 /// @param server_ip       Pre-resolved server IPv4 in host byte order
 /// @param opts            Optional settings (platform, ports, timeouts)
 template <typename TransportType = DpdkTransport>
-std::expected<ConnectResult<TransportType>, std::string>
+[[nodiscard]] std::expected<ConnectResult<TransportType>, std::string>
 connect(const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
         uint32_t server_ip,
@@ -387,7 +387,7 @@ connect(const DpdkEndpoint& ep,
 /// The DPDK DNS fallback uses 8.8.8.8 as the default nameserver.
 /// Configure via `ConnectorOptions::dns`.
 template <typename TransportType = DpdkTransport>
-std::expected<ConnectResult<TransportType>, std::string>
+[[nodiscard]] std::expected<ConnectResult<TransportType>, std::string>
 connect(const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
         const ConnectorOptions& opts = {}) {
@@ -514,7 +514,7 @@ connect(const DpdkEndpoint& ep,
 ///                               {.local_port = 5000});
 /// @endcode
 template <typename TransportType = DpdkTransport>
-std::expected<ConnectResult<TransportType>, std::string>
+[[nodiscard]] std::expected<ConnectResult<TransportType>, std::string>
 connect(std::string_view host, const DpdkEndpoint& ep,
         const ConnectorOptions& opts = {}) {
     TransportConfig transport_cfg{
@@ -525,7 +525,7 @@ connect(std::string_view host, const DpdkEndpoint& ep,
 
 /// Connect with existing Platform + pre-resolved IP.
 template <typename TransportType = DpdkTransport>
-std::expected<std::unique_ptr<TransportType>, std::string>
+[[nodiscard]] std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
         const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
@@ -553,7 +553,7 @@ connect(Platform& platform,
 
 /// Connect with existing Platform + DNS resolution (kernel, DPDK fallback).
 template <typename TransportType = DpdkTransport>
-std::expected<std::unique_ptr<TransportType>, std::string>
+[[nodiscard]] std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
         const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
@@ -605,7 +605,7 @@ connect(Platform& platform,
 
 /// Simplest connect with existing Platform.
 template <typename TransportType = DpdkTransport>
-std::expected<std::unique_ptr<TransportType>, std::string>
+[[nodiscard]] std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform, std::string_view host, const DpdkEndpoint& ep,
         const ConnectorOptions& opts = {}) {
     TransportConfig transport_cfg{

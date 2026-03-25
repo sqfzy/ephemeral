@@ -2271,7 +2271,7 @@ private:
                 }
 
                 if (config_.use_tls && drain_coalesced > 0) {
-                    tcp_->send(tls_bufs_storage.get(), drain_coalesced);
+                    (void)tcp_->send(tls_bufs_storage.get(), drain_coalesced);
                 }
             }
         }
