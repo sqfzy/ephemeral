@@ -377,7 +377,7 @@ class TlsSession {
 
 public:
     /// Create a TLS session over an established TCP connection.
-    static std::expected<TlsSession, std::string>
+    [[nodiscard]] static std::expected<TlsSession, std::string>
     create(TcpImpl& tcp, const TlsConfig& config) {
         auto log = detail::tls_logger();
 
@@ -586,7 +586,7 @@ public:
 
     /// Perform TLS 1.3 handshake (blocking, polls TCP rx through BIO).
     /// Must be called from the control thread, NOT the hot-path lcore.
-    std::expected<void, std::string> handshake() {
+    [[nodiscard]] std::expected<void, std::string> handshake() {
         auto log = detail::tls_logger();
 
         if (handshake_done_) {
@@ -643,7 +643,7 @@ public:
     /// Write data through TLS during handshake/upgrade phase only.
     /// NOT for hot-path use — hot path uses TlsRecordCrypto directly.
     /// Must be called from the control thread (single-threaded).
-    std::expected<int, std::string> handshake_write(const void* data, int len) {
+    [[nodiscard]] std::expected<int, std::string> handshake_write(const void* data, int len) {
         if (!handshake_done_) {
             return std::unexpected("TLS handshake not completed");
         }
@@ -660,7 +660,7 @@ public:
 
     /// Read data through TLS during handshake/upgrade phase only.
     /// Returns 0 if no data available (would block).
-    std::expected<int, std::string> handshake_read(void* buf, int len) {
+    [[nodiscard]] std::expected<int, std::string> handshake_read(void* buf, int len) {
         if (!handshake_done_) {
             return std::unexpected("TLS handshake not completed");
         }
@@ -689,7 +689,7 @@ public:
     ///
     /// Key length is determined dynamically from the negotiated cipher:
     ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key
-    std::expected<TlsHotState, std::string> extract_hot_state() const {
+    [[nodiscard]] std::expected<TlsHotState, std::string> extract_hot_state() const {
         auto log = detail::tls_logger();
 
         if (!handshake_done_) {

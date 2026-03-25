@@ -180,7 +180,7 @@ public:
     ///
     /// On failure, returns ConnectionErrorInfo with a typed error code
     /// for programmatic handling and a detail string for logging.
-    static std::expected<std::unique_ptr<Transport>, ConnectionErrorInfo>
+    [[nodiscard]] static std::expected<std::unique_ptr<Transport>, ConnectionErrorInfo>
     create(TcpFactory tcp_factory, const TransportConfig& config) {
         auto log = detail::transport_logger();
 

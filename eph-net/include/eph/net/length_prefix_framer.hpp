@@ -48,7 +48,7 @@ public:
         return 2 + len;
     }
 
-    static std::expected<DecodedFrame, FrameError>
+    [[nodiscard]] static std::expected<DecodedFrame, FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len < 2) {
             SPDLOG_DEBUG("LengthPrefixFramer::decode: incomplete header, "
