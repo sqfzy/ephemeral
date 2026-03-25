@@ -29,6 +29,7 @@ MODE="check"
 PCI_ADDR=""
 HUGEPAGES=256    # 256 x 2MB = 512MB, enough for most use cases
 ENV_FILE=".dpdk_env"
+FORCE="${FORCE:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --pci)      PCI_ADDR="$2"; shift 2 ;;
         --hugepages) HUGEPAGES="$2"; shift 2 ;;
         --env-file) ENV_FILE="$2"; shift 2 ;;
+        --force)    FORCE="true"; shift ;;
         --help|-h)
             echo "Usage: $0 [options]"
             echo ""
@@ -46,7 +48,13 @@ while [[ $# -gt 0 ]]; do
             echo "  --pci <addr>         PCI address to bind (e.g. 0000:28:00.0)"
             echo "  --hugepages <n>      Number of 2MB hugepages (default: 256)"
             echo "  --env-file <path>    Output env file path (default: .dpdk_env)"
+            echo "  --force              Skip safety checks (DANGEROUS: may lose connectivity)"
             echo "  -h, --help           Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  bash $0                                        # check only"
+            echo "  sudo bash $0 --setup --pci 0000:28:00.0       # configure"
+            echo "  sudo bash $0 --setup --pci 0000:28:00.0 --force  # skip safety"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -208,21 +216,81 @@ setup_nic() {
         return
     fi
 
-    # Safety: refuse to bind the active SSH interface
+    # ── Safety checks (fail-fast before any mutation) ──────────────────────
+
+    local target_iface=""
     if [[ -d "/sys/bus/pci/devices/${PCI_ADDR}/net" ]]; then
-        local iface
-        iface=$(ls "/sys/bus/pci/devices/${PCI_ADDR}/net/" 2>/dev/null | head -1)
-        if ip route get 1.1.1.1 2>/dev/null | grep -q "dev ${iface}"; then
-            fail "${PCI_ADDR} (${iface}) is the default route interface — binding it would kill SSH!"
-            echo "    Use a secondary NIC instead."
+        target_iface=$(ls "/sys/bus/pci/devices/${PCI_ADDR}/net/" 2>/dev/null | head -1)
+    fi
+
+    # Safety 1: refuse if this is the only physical NIC on the system.
+    # Binding the sole NIC leaves the machine completely unreachable.
+    local phy_nic_count=0
+    for pci_dev in /sys/bus/pci/devices/*/net; do
+        [[ -d "$pci_dev" ]] && phy_nic_count=$(( phy_nic_count + 1 ))
+    done
+    if [[ "$phy_nic_count" -le 1 && -n "$target_iface" ]]; then
+        fail "${PCI_ADDR} (${target_iface}) is the ONLY physical NIC on this system"
+        echo "    Binding it to DPDK would make the machine completely unreachable."
+        echo "    Add a second NIC before using DPDK, or use --force to override."
+        if [[ "${FORCE:-}" != "true" ]]; then
             exit 1
         fi
+        warn "Proceeding anyway (--force)"
+    fi
 
-        # dpdk-devbind.py refuses to bind an interface that is still UP.
-        # Bring it down first so the bind succeeds.
-        if ip link show "$iface" 2>/dev/null | grep -q "state UP"; then
-            ip link set "$iface" down
-            info "Brought ${iface} down before binding"
+    # Safety 2: refuse if this NIC carries the default route (likely SSH/management)
+    if [[ -n "$target_iface" ]]; then
+        if ip route get 1.1.1.1 2>/dev/null | grep -q "dev ${target_iface}"; then
+            fail "${PCI_ADDR} (${target_iface}) is the default route interface — binding it would kill SSH!"
+            echo "    Use a secondary NIC instead, or use --force to override."
+            if [[ "${FORCE:-}" != "true" ]]; then
+                exit 1
+            fi
+            warn "Proceeding anyway (--force)"
+        fi
+    fi
+
+    # Safety 3: refuse if an active SSH session is using this NIC.
+    # Detect the source IP of the current SSH connection, then find which
+    # interface routes to that IP.
+    if [[ -n "$target_iface" && -n "${SSH_CONNECTION:-}" ]]; then
+        local ssh_client_ip
+        ssh_client_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}')
+        if [[ -n "$ssh_client_ip" ]]; then
+            local ssh_route_iface
+            ssh_route_iface=$(ip route get "$ssh_client_ip" 2>/dev/null \
+                | grep -oE 'dev [^ ]+' | awk '{print $2}')
+            if [[ "$ssh_route_iface" == "$target_iface" ]]; then
+                fail "${PCI_ADDR} (${target_iface}) is used by your active SSH session (client: ${ssh_client_ip})"
+                echo "    Binding it would immediately disconnect you."
+                echo "    Use a secondary NIC instead, or use --force to override."
+                if [[ "${FORCE:-}" != "true" ]]; then
+                    exit 1
+                fi
+                warn "Proceeding anyway (--force)"
+            fi
+        fi
+    fi
+
+    # Safety 4: interactive confirmation for non-CI environments
+    if [[ -z "${CI:-}" && -z "${FORCE:-}" && -n "$target_iface" ]]; then
+        echo ""
+        warn "About to bind ${PCI_ADDR} (${target_iface}) to DPDK (vfio-pci)."
+        echo "    This will take the interface DOWN and away from the kernel."
+        echo -n "    Continue? [y/N] "
+        read -r confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            echo "    Aborted."
+            exit 0
+        fi
+    fi
+
+    # ── Bring interface down before bind ───────────────────────────────────
+    if [[ -n "$target_iface" ]]; then
+        if ip link show "$target_iface" 2>/dev/null | grep -q "state UP"; then
+            ip link set "$target_iface" down
+            info "Brought ${target_iface} down before binding"
         fi
     fi
 
