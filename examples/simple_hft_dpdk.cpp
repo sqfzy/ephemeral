@@ -141,7 +141,9 @@ static void print_usage(const char* prog) {
 
 static AppConfig parse_args(int argc, char** argv) {
     AppConfig cfg;
-    for (int i = 1; i < argc; ++i) {
+    // app_argv starts at the first app arg (after '--'), not the program name,
+    // so loop from i=0 instead of i=1.
+    for (int i = 0; i < argc; ++i) {
         std::string_view arg = argv[i];
         auto next = [&](std::string_view name) -> const char* {
             if (i + 1 >= argc) {
