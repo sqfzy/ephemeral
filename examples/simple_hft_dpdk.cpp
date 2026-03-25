@@ -107,6 +107,8 @@ struct AppConfig {
     int         ping_interval = 1000;    // ms
     bool        use_tls       = true;
     bool        verify        = false;
+    int         tx_cpu        = -1;
+    int         rx_cpu        = -1;
 
     // DPDK-specific
     std::string local_ip{};
@@ -135,6 +137,8 @@ static void print_usage(const char* prog) {
         "  --gateway-ip <ip>       Gateway IP address (required)\n"
         "  --dpdk-port <id>        DPDK port ID (default: 0)\n"
         "  --local-port <port>     Local TCP source port (default: 32768)\n"
+        "  --tx-cpu <id>           Pin TX thread to CPU\n"
+        "  --rx-cpu <id>           Pin RX thread to CPU\n"
         "  --no-tls                Disable TLS\n"
         "  --help                  Show this help\n", prog);
 }
@@ -161,6 +165,8 @@ static AppConfig parse_args(int argc, char** argv) {
         else if (arg == "--gateway-ip")    cfg.gateway_ip    = next("--gateway-ip");
         else if (arg == "--dpdk-port")     cfg.dpdk_port     = static_cast<uint16_t>(std::atoi(next("--dpdk-port")));
         else if (arg == "--local-port")    cfg.local_port    = static_cast<uint16_t>(std::atoi(next("--local-port")));
+        else if (arg == "--tx-cpu")        cfg.tx_cpu        = std::atoi(next("--tx-cpu"));
+        else if (arg == "--rx-cpu")        cfg.rx_cpu        = std::atoi(next("--rx-cpu"));
         else if (arg == "--no-tls")        cfg.use_tls       = false;
         else if (arg == "--proxy") {
             (void)next("--proxy");  // consume the value
@@ -241,6 +247,8 @@ int main(int argc, char** argv) {
         .max_reconnect_attempts = 3,
         .ping_interval = std::chrono::seconds{0},  // manual pings
         .skip_utf8_validation = true,
+        .tx_cpu = cfg.tx_cpu,
+        .rx_cpu = cfg.rx_cpu,
 
         .on_state_change = [](eph::net::TransportEvent event,
                               std::string_view detail) {
