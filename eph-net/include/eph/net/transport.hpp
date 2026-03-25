@@ -55,6 +55,20 @@
 namespace eph::net {
 
 // ---------------------------------------------------------------------------
+// Compile-time timestamp control (shared with SocketTransport)
+// ---------------------------------------------------------------------------
+
+/// Compile-time switch for per-message TSC timestamps in Transport.
+/// Pass -DEPH_ENABLE_TIMESTAMPS=1 via the build system to enable.
+/// Controls both Transport (message TSC, internal histograms) and
+/// SocketTransport (SO_TIMESTAMPING kernel timestamps).
+#ifndef EPH_ENABLE_TIMESTAMPS
+#define EPH_ENABLE_TIMESTAMPS 0
+#endif
+
+inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+
+// ---------------------------------------------------------------------------
 // Internal message types for SPSC queue
 // ---------------------------------------------------------------------------
 
@@ -63,13 +77,13 @@ namespace detail {
 /// Message passed from application thread to TX thread via SPSC queue.
 /// Fixed-size to satisfy TrivialData constraint.
 /// tsc field is always present (fits in cache-line padding) but only
-/// written/read when Transport::EnableTimestamps is true.
+/// written/read when Transport::kEnableTimestamps is true.
 template <size_t MaxPayload>
 struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
     uint8_t  data[MaxPayload]{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
-    uint64_t tsc = 0;  // enqueue-time TSC (unused when EnableTimestamps=false)
+    uint64_t tsc = 0;  // enqueue-time TSC (unused when kEnableTimestamps=false)
 
     static_assert(MaxPayload > 0, "MaxPayload must be > 0");
     static_assert(MaxPayload <= tls_const::kMaxRecordPayload,
@@ -77,13 +91,13 @@ struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
 };
 
 /// Message passed from RX processing to application via SPSC queue.
-/// tsc carries the arrival-time TSC (unused when EnableTimestamps=false).
+/// tsc carries the arrival-time TSC (unused when kEnableTimestamps=false).
 template <size_t MaxPayload>
 struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
     uint8_t  data[MaxPayload]{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
-    uint64_t tsc = 0;  // arrival-time TSC (unused when EnableTimestamps=false)
+    uint64_t tsc = 0;  // arrival-time TSC (unused when kEnableTimestamps=false)
 };
 
 inline std::shared_ptr<spdlog::logger> transport_logger() {
@@ -123,7 +137,6 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 ///   transport->recv([](auto* data, auto len) { ... });
 template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
           size_t MaxPayload = 512, size_t QueueDepth = 1024,
-          bool EnableTimestamps = false,
           template <typename, size_t> class RxQueueTmpl =
               eph::containers::BoundedQueue>
 class Transport {
@@ -159,7 +172,7 @@ public:
 
     static constexpr size_t max_payload() noexcept { return MaxPayload; }
     static constexpr size_t queue_depth() noexcept { return QueueDepth; }
-    static constexpr bool   timestamps_enabled() noexcept { return EnableTimestamps; }
+    static constexpr bool   timestamps_enabled() noexcept { return kEnableTimestamps; }
 
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
     /// This is a blocking call -- performs the full handshake sequence.
@@ -454,7 +467,7 @@ public:
             }
             msg.len = static_cast<uint16_t>(payload_len);
             msg.opcode = ws::opcode::kPing;
-            if constexpr (EnableTimestamps) {
+            if constexpr (kEnableTimestamps) {
                 msg.tsc = eph::utils::TSC::now();
             }
         });
@@ -496,7 +509,7 @@ public:
                 std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
                 slot.len = static_cast<uint16_t>(payloads[i].size());
                 slot.opcode = opcode;
-                if constexpr (EnableTimestamps) {
+                if constexpr (kEnableTimestamps) {
                     slot.tsc = eph::utils::TSC::now();
                 }
             });
@@ -539,7 +552,7 @@ public:
                 std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
                 slot.len = static_cast<uint16_t>(payloads[i].size());
                 slot.opcode = opcode;
-                if constexpr (EnableTimestamps) {
+                if constexpr (kEnableTimestamps) {
                     slot.tsc = eph::utils::TSC::now();
                 }
             }, timeout);
@@ -1099,12 +1112,12 @@ public:
         return histogram_to_stats(rtt_histogram_);
     }
 
-    /// TX queue latency stats (enqueue → flush). Empty when EnableTimestamps=false.
+    /// TX queue latency stats (enqueue → flush). Empty when kEnableTimestamps=false.
     [[nodiscard]] RttStats tx_latency_stats() const noexcept {
         return histogram_to_stats(tx_latency_histogram_);
     }
 
-    /// RX pipeline latency stats (arrival → deliver). Empty when EnableTimestamps=false.
+    /// RX pipeline latency stats (arrival → deliver). Empty when kEnableTimestamps=false.
     [[nodiscard]] RttStats rx_latency_stats() const noexcept {
         return histogram_to_stats(rx_latency_histogram_);
     }
@@ -1194,7 +1207,7 @@ private:
             std::memcpy(msg.data, data, len);
             msg.len = len;
             msg.opcode = opcode;
-            if constexpr (EnableTimestamps) {
+            if constexpr (kEnableTimestamps) {
                 msg.tsc = current_arrival_tsc_;
             }
             rx_queue_.push(std::move(msg));
@@ -1204,7 +1217,7 @@ private:
                 std::memcpy(msg.data, data, len);
                 msg.len = len;
                 msg.opcode = opcode;
-                if constexpr (EnableTimestamps) {
+                if constexpr (kEnableTimestamps) {
                     msg.tsc = current_arrival_tsc_;
                 }
             });
@@ -1257,7 +1270,7 @@ private:
             std::memcpy(msg.data, data, len);
             msg.len = static_cast<uint16_t>(len);
             msg.opcode = opcode;
-            if constexpr (EnableTimestamps) {
+            if constexpr (kEnableTimestamps) {
                 msg.tsc = eph::utils::TSC::now();
             }
         });
@@ -1295,7 +1308,7 @@ private:
             std::memcpy(msg.data, data, len);
             msg.len = static_cast<uint16_t>(len);
             msg.opcode = opcode;
-            if constexpr (EnableTimestamps) {
+            if constexpr (kEnableTimestamps) {
                 msg.tsc = eph::utils::TSC::now();
             }
         }, timeout);
@@ -1393,7 +1406,7 @@ private:
         3             // 3 significant digits
     };
 
-    // Per-message latency histograms (only recorded when EnableTimestamps=true).
+    // Per-message latency histograms (only recorded when kEnableTimestamps=true).
     // TX: enqueue (app thread) → flush (TX thread encode+encrypt done)
     // RX: arrival (poll_rx return) → deliver (message decoded, about to deliver)
     eph::utils::HdrHistogram               tx_latency_histogram_{
@@ -2040,7 +2053,7 @@ private:
 
                 // Per-message TX latency: enqueue → flush (+ kernel TX stack if available).
                 // With SO_TIMESTAMPING, adds kernel send-to-wire delay for full-path measurement.
-                if constexpr (EnableTimestamps) {
+                if constexpr (kEnableTimestamps) {
                     uint64_t flush_tsc = eph::utils::TSC::now();
                     if (batch[i].tsc > 0 && flush_tsc > batch[i].tsc) {
                         auto pipeline_ns = eph::utils::TSC::to_ns(flush_tsc - batch[i].tsc);
@@ -2318,7 +2331,7 @@ private:
 
             // Capture arrival TSC for per-message latency measurement.
             // All messages decoded from this poll_rx share the same arrival timestamp.
-            if constexpr (EnableTimestamps) {
+            if constexpr (kEnableTimestamps) {
                 current_arrival_tsc_ = eph::utils::TSC::now();
             }
 
@@ -2509,7 +2522,7 @@ private:
     /// Includes kernel RX stack delay when the TCP backend provides it.
     /// Called once per decoded frame in both WS and generic framers.
     void record_rx_latency() noexcept {
-        if constexpr (EnableTimestamps) {
+        if constexpr (kEnableTimestamps) {
             uint64_t now_tsc = eph::utils::TSC::now();
             if (current_arrival_tsc_ > 0 && now_tsc > current_arrival_tsc_) {
                 auto pipeline_ns = eph::utils::TSC::to_ns(now_tsc - current_arrival_tsc_);
@@ -2643,7 +2656,7 @@ private:
                         if (rtt_ns) {
                             uint64_t total = static_cast<uint64_t>(*rtt_ns);
                             // Add kernel stack delays for Socket backend fairness
-                            if constexpr (EnableTimestamps) {
+                            if constexpr (kEnableTimestamps) {
                                 if constexpr (requires { tcp_->last_kernel_tx_delay_ns(); }) {
                                     total += tcp_->last_kernel_tx_delay_ns();
                                 }

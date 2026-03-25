@@ -52,7 +52,6 @@ using HftDpdkTransport = eph::net::Transport<
     eph::net::WsFramer,
     512,   // MaxPayload
     1024,  // QueueDepth
-    true,  // EnableTimestamps
     eph::containers::EvictingQueue
 >;
 

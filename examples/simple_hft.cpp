@@ -44,19 +44,14 @@
 // Transport type alias with timestamps enabled + EvictingQueue
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// One constant controls timestamps at both layers:
-///   - SocketTransport<kTimestamps>: kernel RX/TX timestamps via SO_TIMESTAMPING
-///   - Transport EnableTimestamps: per-message TSC in TxMessage/RxMessage
-constexpr bool kTimestamps = true;
-
-using HftSocketTransport = eph::net::SocketTransport<kTimestamps>;
-
+/// HFT transport: socket backend, WS framer, 512B payload, 1024-depth queue,
+/// EvictingQueue for RX (market data is droppable).
+/// Timestamps controlled by -DEPH_ENABLE_TIMESTAMPS=1 at build time.
 using HftTransport = eph::net::Transport<
-    HftSocketTransport,
+    eph::net::SocketTransport,
     eph::net::WsFramer,
     512,   // MaxPayload — Binance bookTicker messages are ~200 bytes
     1024,  // QueueDepth
-    kTimestamps,  // EnableTimestamps — per-message TSC + internal histograms
     eph::containers::EvictingQueue
 >;
 
@@ -191,7 +186,6 @@ int main(int argc, char** argv) {
 
     // ── Step 4: Build TcpFactory (with or without proxy) ──────────────────
     HftTransport::TcpFactory tcp_factory;
-    HftSocketTransport* sock_ptr = nullptr;  // held for kernel latency reporting
 
     if (!cfg.proxy_url.empty()) {
         auto proxy_cfg = eph::net::proxy::parse_proxy_url(cfg.proxy_url);
@@ -202,22 +196,12 @@ int main(int argc, char** argv) {
         spdlog::info("Using proxy: {}:{} ({})", proxy_cfg->host, proxy_cfg->port,
                      proxy_cfg->type == eph::net::proxy::ProxyType::kSocks5
                          ? "SOCKS5" : "HTTP CONNECT");
-        // Proxy mode: kernel timestamps not supported (proxy adds its own latency).
-        // Use SocketTransport<false> and skip kernel latency reporting.
-        // TODO: template make_proxied_factory for timestamp support through proxy
-        spdlog::warn("Proxy mode: kernel stack timestamps disabled");
-        tcp_factory = [sock_cfg, proxy_cfg = *proxy_cfg,
-                       host = cfg.host, port = cfg.port]()
-            -> std::expected<std::unique_ptr<HftSocketTransport>, std::string> {
-            // For proxy, timestamps on kernel stack are meaningless
-            // (measuring proxy latency, not real network stack)
-            return std::unexpected("Proxy not yet supported with EnableTimestamps=true");
-        };
+        tcp_factory = eph::net::proxy::make_proxied_factory(
+            sock_cfg, *proxy_cfg, cfg.host, cfg.port);
     } else {
-        tcp_factory = [&sock_ptr, sock_cfg]()
-            -> std::expected<std::unique_ptr<HftSocketTransport>, std::string> {
-            auto tcp = std::make_unique<HftSocketTransport>(sock_cfg);
-            sock_ptr = tcp.get();
+        tcp_factory = [sock_cfg]()
+            -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
+            auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
             auto result = tcp->connect(std::chrono::milliseconds{5000});
             if (!result) return std::unexpected(result.error());
             return tcp;
@@ -312,14 +296,8 @@ int main(int argc, char** argv) {
     };
 
     print_latency("Metric 1: TX Queue (enqueue → flush)", stats.tx_latency);
-    print_latency("Metric 2: RX Pipeline (recv → deliver)", stats.rx_latency);
+    print_latency("Metric 2: RX Pipeline (rx_burst → deliver)", stats.rx_latency);
     print_latency("Metric 3: Ping/Pong RTT (end-to-end)", stats.rtt);
-
-    // Kernel stack latency (only available with SocketTransport<true>)
-    if (sock_ptr) {
-        print_latency("Kernel RX Stack (NIC driver → recv)", sock_ptr->rx_latency());
-        print_latency("Kernel TX Stack (send → wire)", sock_ptr->tx_latency());
-    }
 
     return 0;
 }

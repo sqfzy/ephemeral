@@ -41,6 +41,19 @@
 namespace eph::net {
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compile-time timestamp control
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compile-time switch for SO_TIMESTAMPING support in SocketTransport.
+/// Pass -DEPH_ENABLE_TIMESTAMPS=1 via the build system to enable.
+/// Any non-zero value enables; 0 or undefined disables.
+#ifndef EPH_ENABLE_TIMESTAMPS
+#define EPH_ENABLE_TIMESTAMPS 0
+#endif
+
+inline constexpr bool kEnableSocketTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -256,11 +269,9 @@ inline std::shared_ptr<spdlog::logger> socket_logger() {
 /// and graceful/forced close. Suitable for generic (non-DPDK) usage
 /// of the Transport<> template.
 ///
-/// When EnableTimestamps is true, uses SO_TIMESTAMPING to capture
-/// kernel-level RX/TX timestamps for fair latency comparison with
-/// DPDK backends. Uses recvmsg() instead of recv() and polls the
-/// error queue for TX timestamps.
-template <bool EnableTimestamps = false>
+/// When EPH_ENABLE_TIMESTAMPS is defined to true (e.g. -DEPH_ENABLE_TIMESTAMPS=true),
+/// uses SO_TIMESTAMPING to capture kernel-level RX/TX timestamps for fair
+/// latency comparison with DPDK backends.
 class SocketTransport {
 public:
     explicit SocketTransport(const SocketConfig& config) noexcept
@@ -450,7 +461,7 @@ public:
 
         // Enable kernel RX/TX software timestamps for latency measurement.
         // Provides netif_receive_skb timestamp (RX) and qdisc/driver timestamp (TX).
-        if constexpr (EnableTimestamps) {
+        if constexpr (kEnableSocketTimestamps) {
             int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE
                          | SOF_TIMESTAMPING_TX_SOFTWARE
                          | SOF_TIMESTAMPING_SOFTWARE
@@ -560,7 +571,7 @@ public:
             // Record send time for TX kernel stack latency (send → wire).
             // Only on the first write of each send() call to avoid
             // overwriting on partial-write retries.
-            if constexpr (EnableTimestamps) {
+            if constexpr (kEnableSocketTimestamps) {
                 if (ptr == static_cast<const uint8_t*>(data)) {
                     struct timespec ts;
                     ::clock_gettime(CLOCK_REALTIME, &ts);
@@ -643,7 +654,7 @@ public:
         uint8_t buf[16384];
         ssize_t n;
 
-        if constexpr (EnableTimestamps) {
+        if constexpr (kEnableSocketTimestamps) {
             // Use recvmsg() to extract kernel RX timestamp from cmsg.
             struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
             alignas(struct cmsghdr) uint8_t ctrl[256];
@@ -803,32 +814,28 @@ public:
     }
 
     /// Kernel RX stack latency histogram (NIC driver → recv return).
-    /// Only populated when EnableTimestamps=true and SO_TIMESTAMPING succeeded.
-    [[nodiscard]] RttStats rx_latency() const noexcept
-        requires (EnableTimestamps) {
+    /// Only populated when kEnableSocketTimestamps=true.
+    [[nodiscard]] RttStats rx_latency() const noexcept {
         return histogram_to_rtt_stats(rx_stack_histogram_);
     }
 
     /// Kernel TX stack latency histogram (send call → wire departure).
-    /// Only populated when EnableTimestamps=true and SO_TIMESTAMPING succeeded.
-    [[nodiscard]] RttStats tx_latency() const noexcept
-        requires (EnableTimestamps) {
+    /// Only populated when kEnableSocketTimestamps=true.
+    [[nodiscard]] RttStats tx_latency() const noexcept {
         return histogram_to_rtt_stats(tx_stack_histogram_);
     }
 
     /// Most recent kernel RX stack delay (ns) from the last poll_rx() call.
     /// Transport reads this to compute full-path RX latency (kernel + pipeline).
-    /// Returns 0 if no kernel timestamp was available.
-    [[nodiscard]] uint64_t last_kernel_rx_delay_ns() const noexcept
-        requires (EnableTimestamps) {
+    /// Returns 0 when kEnableSocketTimestamps=false or no timestamp available.
+    [[nodiscard]] uint64_t last_kernel_rx_delay_ns() const noexcept {
         return last_kernel_rx_delay_ns_;
     }
 
     /// Most recent kernel TX stack delay (ns) from the error queue.
     /// Transport reads this to compute full-path TX latency (pipeline + kernel).
-    /// Returns 0 if no TX timestamp was available yet.
-    [[nodiscard]] uint64_t last_kernel_tx_delay_ns() const noexcept
-        requires (EnableTimestamps) {
+    /// Returns 0 when kEnableSocketTimestamps=false or no timestamp available.
+    [[nodiscard]] uint64_t last_kernel_tx_delay_ns() const noexcept {
         return last_kernel_tx_delay_ns_;
     }
 
@@ -856,7 +863,7 @@ private:
     uint64_t     dns_latency_ns_ = 0;
     uint64_t     connect_latency_ns_ = 0;
 
-    // SO_TIMESTAMPING members (only active when EnableTimestamps=true).
+    // SO_TIMESTAMPING members (only active when kEnableSocketTimestamps=true).
     // RX: kernel NIC-driver-to-recv latency (CLOCK_REALTIME domain).
     // TX: kernel send-to-wire latency (CLOCK_REALTIME domain, via error queue).
     eph::utils::HdrHistogram rx_stack_histogram_{10, 1'000'000'000ULL, 3};
@@ -1005,10 +1012,8 @@ private:
     }
 };
 
-static_assert(TcpTransport<SocketTransport<false>>,
-    "SocketTransport<false> must satisfy TcpTransport concept");
-static_assert(TcpTransport<SocketTransport<true>>,
-    "SocketTransport<true> must satisfy TcpTransport concept");
+static_assert(TcpTransport<SocketTransport>,
+    "SocketTransport must satisfy TcpTransport concept");
 
 } // namespace eph::net
 
