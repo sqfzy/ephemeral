@@ -684,27 +684,27 @@ struct RttStats {
     uint64_t p999_ns = 0;   ///< 99.9th percentile RTT (ns)
 
     /// Minimum RTT in microseconds.
-    [[nodiscard]] double min_us() const noexcept {
+    [[nodiscard]] constexpr double min_us() const noexcept {
         return static_cast<double>(min_ns) / 1e3;
     }
     /// Maximum RTT in microseconds.
-    [[nodiscard]] double max_us() const noexcept {
+    [[nodiscard]] constexpr double max_us() const noexcept {
         return static_cast<double>(max_ns) / 1e3;
     }
     /// Median RTT in microseconds (convenience for human-readable output).
-    [[nodiscard]] double p50_us() const noexcept {
+    [[nodiscard]] constexpr double p50_us() const noexcept {
         return static_cast<double>(p50_ns) / 1e3;
     }
     /// 99th percentile RTT in microseconds.
-    [[nodiscard]] double p99_us() const noexcept {
+    [[nodiscard]] constexpr double p99_us() const noexcept {
         return static_cast<double>(p99_ns) / 1e3;
     }
     /// 99.9th percentile RTT in microseconds.
-    [[nodiscard]] double p999_us() const noexcept {
+    [[nodiscard]] constexpr double p999_us() const noexcept {
         return static_cast<double>(p999_ns) / 1e3;
     }
     /// Mean RTT in microseconds.
-    [[nodiscard]] double mean_us() const noexcept {
+    [[nodiscard]] constexpr double mean_us() const noexcept {
         return mean_ns / 1e3;
     }
     /// Multi-line formatted dump for logging/debugging.
@@ -873,21 +873,21 @@ struct TransportStats {
     uint64_t tls_seq_limit     = 0;  ///< TLS sequence limit (kMaxSequenceNumber)
 
     /// Last handshake duration in milliseconds (for human-readable logging).
-    [[nodiscard]] double handshake_ms() const noexcept {
+    [[nodiscard]] constexpr double handshake_ms() const noexcept {
         return static_cast<double>(handshake_ns) / 1e6;
     }
 
     /// TLS write sequence usage as a fraction [0.0, 1.0].
     /// Useful for monitoring: values approaching 1.0 indicate an imminent
     /// reconnect for key refresh.
-    [[nodiscard]] double tls_write_seq_usage() const noexcept {
+    [[nodiscard]] constexpr double tls_write_seq_usage() const noexcept {
         return tls_seq_limit > 0
             ? static_cast<double>(tls_write_seq) / static_cast<double>(tls_seq_limit)
             : 0.0;
     }
 
     /// TLS read sequence usage as a fraction [0.0, 1.0].
-    [[nodiscard]] double tls_read_seq_usage() const noexcept {
+    [[nodiscard]] constexpr double tls_read_seq_usage() const noexcept {
         return tls_seq_limit > 0
             ? static_cast<double>(tls_read_seq) / static_cast<double>(tls_seq_limit)
             : 0.0;
@@ -899,35 +899,35 @@ struct TransportStats {
     // -----------------------------------------------------------------------
 
     /// TX packets per second (average over uptime).
-    [[nodiscard]] double tx_pps() const noexcept {
+    [[nodiscard]] constexpr double tx_pps() const noexcept {
         return uptime_ns > 0
             ? static_cast<double>(tx_packets) * 1e9 / static_cast<double>(uptime_ns)
             : 0.0;
     }
 
     /// RX packets per second (average over uptime).
-    [[nodiscard]] double rx_pps() const noexcept {
+    [[nodiscard]] constexpr double rx_pps() const noexcept {
         return uptime_ns > 0
             ? static_cast<double>(rx_packets) * 1e9 / static_cast<double>(uptime_ns)
             : 0.0;
     }
 
     /// TX bytes per second (average over uptime).
-    [[nodiscard]] double tx_bps() const noexcept {
+    [[nodiscard]] constexpr double tx_bps() const noexcept {
         return uptime_ns > 0
             ? static_cast<double>(tx_bytes) * 1e9 / static_cast<double>(uptime_ns)
             : 0.0;
     }
 
     /// RX bytes per second (average over uptime).
-    [[nodiscard]] double rx_bps() const noexcept {
+    [[nodiscard]] constexpr double rx_bps() const noexcept {
         return uptime_ns > 0
             ? static_cast<double>(rx_bytes) * 1e9 / static_cast<double>(uptime_ns)
             : 0.0;
     }
 
     /// Uptime as a chrono duration.
-    [[nodiscard]] std::chrono::nanoseconds uptime() const noexcept {
+    [[nodiscard]] constexpr std::chrono::nanoseconds uptime() const noexcept {
         return std::chrono::nanoseconds{uptime_ns};
     }
 
