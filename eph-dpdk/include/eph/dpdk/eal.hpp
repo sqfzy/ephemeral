@@ -22,7 +22,7 @@ namespace eph::dpdk {
 /// before any other rte_* API.
 ///
 /// @return Number of argv entries consumed by EAL on success.
-inline std::expected<int, std::string> eal_init(int argc, char** argv) {
+[[nodiscard]] inline std::expected<int, std::string> eal_init(int argc, char** argv) {
     SPDLOG_TRACE("Calling rte_eal_init (argc={})", argc);
 
     int ret = rte_eal_init(argc, argv);
@@ -62,7 +62,7 @@ inline void eal_cleanup() noexcept {
 class EalGuard {
 public:
     /// Initialize EAL and return a guard that cleans up on destruction.
-    static std::expected<EalGuard, std::string> init(int argc, char** argv) {
+    [[nodiscard]] static std::expected<EalGuard, std::string> init(int argc, char** argv) {
         auto result = eal_init(argc, argv);
         if (!result) return std::unexpected(result.error());
         SPDLOG_DEBUG("EalGuard created ({} args consumed)", *result);

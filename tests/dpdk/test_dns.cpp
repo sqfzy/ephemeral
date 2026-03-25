@@ -273,6 +273,28 @@ TEST(DnsConfig, DumpCustomConfig) {
     EXPECT_NE(dump.find("500ms"), std::string::npos);
 }
 
+TEST(DnsConfig, ToJsonDefaultConfig) {
+    DnsConfig cfg{};
+    auto json = cfg.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"nameserver_ip\":\"8.8.8.8\""), std::string::npos);
+    EXPECT_NE(json.find("\"port\":53"), std::string::npos);
+    EXPECT_NE(json.find("\"timeout_ms\":3000"), std::string::npos);
+}
+
+TEST(DnsConfig, ToJsonCustomConfig) {
+    DnsConfig cfg{
+        .nameserver_ip = 0x01010101,  // 1.1.1.1
+        .port = 5353,
+        .timeout = std::chrono::milliseconds{500},
+    };
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"nameserver_ip\":\"1.1.1.1\""), std::string::npos);
+    EXPECT_NE(json.find("\"port\":5353"), std::string::npos);
+    EXPECT_NE(json.find("\"timeout_ms\":500"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // resolve() — fast path: dotted-decimal IPv4 bypass
 // ─────────────────────────────────────────────────────────────────────────────

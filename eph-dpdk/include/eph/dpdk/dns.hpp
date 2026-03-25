@@ -238,7 +238,7 @@ inline size_t skip_dns_name(const uint8_t* data, size_t offset, size_t len) noex
 /// @param dns_len   Length of DNS message
 /// @param tx_id     Expected transaction ID (network byte order)
 /// @return IPv4 address in host byte order, or error string
-inline std::expected<uint32_t, std::string>
+[[nodiscard]] inline std::expected<uint32_t, std::string>
 parse_dns_response(const uint8_t* dns_data, size_t dns_len,
                    uint16_t tx_id) noexcept {
     if (dns_len < kDnsHeaderLen) {
@@ -449,7 +449,7 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 /// @param hostname   Hostname to resolve (e.g. "example.com")
 /// @param cfg        DNS configuration (nameserver, port, timeout)
 /// @return Resolved IPv4 address in host byte order, or error string
-inline std::expected<uint32_t, std::string>
+[[nodiscard]] inline std::expected<uint32_t, std::string>
 resolve(uint16_t port_id,
         uint16_t queue_id,
         rte_mempool* pool,

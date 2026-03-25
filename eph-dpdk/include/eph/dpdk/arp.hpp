@@ -196,7 +196,7 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
 /// @param target_ip  IPv4 address to resolve (host byte order)
 /// @param timeout    Maximum wait time (default 1s)
 /// @return Resolved MAC address, or error string on timeout/failure
-inline std::expected<rte_ether_addr, std::string>
+[[nodiscard]] inline std::expected<rte_ether_addr, std::string>
 resolve(uint16_t port_id,
         uint16_t queue_id,
         rte_mempool* pool,
