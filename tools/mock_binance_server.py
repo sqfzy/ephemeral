@@ -158,21 +158,7 @@ def run_server(args):
     print(f"  batch-size: {batch_size} frames/record")
     print(f"  rate:       {rate} msg/s {'(unlimited)' if rate == 0 else ''}")
     print(f"  duration:   {duration}s")
-    print(f"Waiting for client connection...")
 
-    raw_conn, addr = srv.accept()
-    print(f"Client connected: {addr}")
-
-    conn = ctx.wrap_socket(raw_conn, server_side=True)
-    print(f"TLS handshake complete: {conn.version()}, {conn.cipher()[0]}")
-
-    handle_ws_upgrade(conn)
-    print("WebSocket upgrade complete. Sending data...")
-
-    # Disable Nagle for precise record control
-    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-    # Main send loop
     running = True
     def on_signal(sig, frame):
         nonlocal running
@@ -180,64 +166,108 @@ def run_server(args):
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    total_msgs = 0
-    total_bytes = 0
-    total_records = 0
-    seq = 0
-    start = time.monotonic()
-    sym_idx = 0
+    grand_total_msgs = 0
+    grand_total_bytes = 0
+    grand_total_records = 0
+    grand_start = time.monotonic()
+    connection_count = 0
 
-    # Interval between batches
-    if rate > 0:
-        batch_interval = batch_size / rate  # seconds per batch
-    else:
-        batch_interval = 0
+    while running:
+        print(f"Waiting for client connection...")
+        srv.settimeout(1.0)  # poll for shutdown every 1s
+        raw_conn = None
+        while running and raw_conn is None:
+            try:
+                raw_conn, addr = srv.accept()
+            except socket.timeout:
+                elapsed = time.monotonic() - grand_start
+                if duration > 0 and elapsed >= duration:
+                    running = False
+                continue
 
-    try:
-        while running:
-            elapsed = time.monotonic() - start
-            if duration > 0 and elapsed >= duration:
-                break
+        if not running or raw_conn is None:
+            break
 
-            # Build one TLS record = batch_size WS frames
-            buf = bytearray()
-            for _ in range(batch_size):
-                symbol = symbols[sym_idx % len(symbols)]
-                sym_idx += 1
-                payload = make_book_ticker(symbol, seq)
-                seq += 1
-                buf.extend(encode_ws_text_frame(payload))
+        connection_count += 1
+        print(f"Client #{connection_count} connected: {addr}")
 
-            # Single send = single TLS record
-            conn.sendall(bytes(buf))
-            total_msgs += batch_size
-            total_bytes += len(buf)
-            total_records += 1
+        try:
+            conn = ctx.wrap_socket(raw_conn, server_side=True)
+            print(f"TLS handshake complete: {conn.version()}, {conn.cipher()[0]}")
 
-            # Rate limiting
-            if batch_interval > 0:
-                target_time = start + total_records * batch_interval
-                now = time.monotonic()
-                if target_time > now:
-                    time.sleep(target_time - now)
+            handle_ws_upgrade(conn)
+            print("WebSocket upgrade complete. Sending data...")
 
-    except (BrokenPipeError, ConnectionResetError, OSError) as e:
-        print(f"Connection closed: {e}")
+            # Disable Nagle for precise record control
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
-    elapsed = time.monotonic() - start
+            total_msgs = 0
+            total_bytes = 0
+            total_records = 0
+            seq = 0
+            start = time.monotonic()
+            sym_idx = 0
+
+            if rate > 0:
+                batch_interval = batch_size / rate
+            else:
+                batch_interval = 0
+
+            while running:
+                elapsed = time.monotonic() - grand_start
+                if duration > 0 and elapsed >= duration:
+                    running = False
+                    break
+
+                buf = bytearray()
+                for _ in range(batch_size):
+                    symbol = symbols[sym_idx % len(symbols)]
+                    sym_idx += 1
+                    payload = make_book_ticker(symbol, seq)
+                    seq += 1
+                    buf.extend(encode_ws_text_frame(payload))
+
+                conn.sendall(bytes(buf))
+                total_msgs += batch_size
+                total_bytes += len(buf)
+                total_records += 1
+
+                if batch_interval > 0:
+                    target_time = start + total_records * batch_interval
+                    now = time.monotonic()
+                    if target_time > now:
+                        time.sleep(target_time - now)
+
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            print(f"Client #{connection_count} disconnected: {e}")
+        except Exception as e:
+            print(f"Client #{connection_count} error: {e}")
+        finally:
+            conn_elapsed = time.monotonic() - start if 'start' in dir() else 0
+            print(f"  Session: {total_msgs} msgs, {total_records} records, "
+                  f"{conn_elapsed:.1f}s")
+            grand_total_msgs += total_msgs
+            grand_total_bytes += total_bytes
+            grand_total_records += total_records
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    elapsed = time.monotonic() - grand_start
     print(f"\n=== Summary ===")
     print(f"  Duration:    {elapsed:.1f}s")
-    print(f"  Messages:    {total_msgs}")
-    print(f"  TLS records: {total_records}")
-    print(f"  Msg rate:    {total_msgs / elapsed:.0f} msg/s")
-    print(f"  Record rate: {total_records / elapsed:.0f} rec/s")
-    print(f"  Avg batch:   {total_msgs / max(total_records, 1):.1f} frames/record")
-    print(f"  Total bytes: {total_bytes:,}")
+    print(f"  Connections: {connection_count}")
+    print(f"  Messages:    {grand_total_msgs}")
+    print(f"  TLS records: {grand_total_records}")
+    if elapsed > 0:
+        print(f"  Msg rate:    {grand_total_msgs / elapsed:.0f} msg/s")
+        print(f"  Record rate: {grand_total_records / elapsed:.0f} rec/s")
+    print(f"  Avg batch:   {grand_total_msgs / max(grand_total_records, 1):.1f} frames/record")
+    print(f"  Total bytes: {grand_total_bytes:,}")
 
-    conn.close()
     srv.close()
 
-    # Cleanup temp cert
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)
 
