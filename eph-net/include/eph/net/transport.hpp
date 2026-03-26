@@ -2720,6 +2720,11 @@ private:
         // BoundedQueue mode: every frame delivered as before.
         [[maybe_unused]] const ws::DecodedFrame* last_data_frame = nullptr;
         [[maybe_unused]] uint64_t data_frame_count = 0;
+        // Accumulate byte-level stats locally to avoid per-frame atomics.
+        // Flushed once after the loop — saves ~15ns/frame on hot path.
+        uint64_t batch_bytes = 0;
+        uint64_t batch_text_bytes = 0;
+        uint64_t batch_text_packets = 0;
 
         while (offset < len) {
             auto frame = ws::decode_frame(data + offset, len - offset);
@@ -2732,18 +2737,14 @@ private:
 
             offset += frame->total_len;
 
-            // deliver-all: per-frame stats + latency recording.
-            // last-only: deferred to after loop for the last data frame.
-            if constexpr (!kLastOnlyDeliver) {
-                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                record_rx_latency();
-            }
+            // Stats + latency are batched after the loop for BOTH modes.
+            // Per-frame TSC::now() + 3 histogram writes was ~100ns/frame,
+            // which inflated the very latency we measure.  Recording once
+            // at the end captures worst-case (last frame) latency without
+            // the measurement itself contaminating the result.
 
             if (frame->is_ping()) {
-                if constexpr (kLastOnlyDeliver) {
-                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                    record_rx_latency();
-                }
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
                 if (config_.on_ping) {
                     try {
@@ -2759,10 +2760,7 @@ private:
             }
 
             if (frame->is_close()) {
-                if constexpr (kLastOnlyDeliver) {
-                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                    record_rx_latency();
-                }
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 uint16_t code = frame->close_status_code();
                 std::string_view close_reason = frame->close_reason();
                 SPDLOG_LOGGER_INFO(log,
@@ -2798,10 +2796,7 @@ private:
             }
 
             if (frame->is_pong()) {
-                if constexpr (kLastOnlyDeliver) {
-                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                    record_rx_latency();
-                }
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 // Record pong arrival for timeout detection (TX thread reads this).
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
@@ -2873,14 +2868,19 @@ private:
 
             if (is_single_frame && frame->payload_len <= MaxPayload) {
                 // Fast path: complete single-frame message, no buffering.
-                // last-only: defer delivery, just remember the last frame.
-                // deliver-all: deliver immediately (every message matters).
                 if constexpr (kLastOnlyDeliver) {
                     last_data_frame = &*frame;
-                    ++data_frame_count;
                 } else {
-                    deliver_data_frame(*frame);
+                    // defer_stats=true: byte-level stats are flushed
+                    // once after the loop to avoid per-frame atomics.
+                    deliver_data_frame(*frame, /*defer_stats=*/true);
+                    batch_bytes += frame->payload_len;
+                    if (frame->opcode == ws::opcode::kText) {
+                        batch_text_bytes += frame->payload_len;
+                        ++batch_text_packets;
+                    }
                 }
+                ++data_frame_count;
             } else if (is_single_frame) {
                 // Single oversized frame
                 rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
@@ -2915,23 +2915,22 @@ private:
                 if (is_final) {
                     // Reassembly complete — deliver
                     if (!ws_frag_buf_.empty()) {
+                        ++data_frame_count;
+                        auto frag_len = static_cast<uint16_t>(ws_frag_buf_.size());
                         if constexpr (kLastOnlyDeliver) {
                             // Cannot defer fragmented frames (buffer reused
-                            // next iteration), so deliver immediately but
-                            // count it for the batch stats update below.
-                            ++data_frame_count;
-                            deliver_message(
-                                ws_frag_buf_.data(),
-                                static_cast<uint16_t>(ws_frag_buf_.size()),
-                                ws_frag_opcode_);
+                            // next iteration), so deliver immediately.
                             // If a later single-frame overwrites last_data_frame,
                             // that's fine — this one is already delivered.
                             last_data_frame = nullptr;
-                        } else {
-                            deliver_message(
-                                ws_frag_buf_.data(),
-                                static_cast<uint16_t>(ws_frag_buf_.size()),
-                                ws_frag_opcode_);
+                        }
+                        deliver_message(
+                            ws_frag_buf_.data(), frag_len,
+                            ws_frag_opcode_, /*defer_stats=*/true);
+                        batch_bytes += frag_len;
+                        if (ws_frag_opcode_ == ws::opcode::kText) {
+                            batch_text_bytes += frag_len;
+                            ++batch_text_packets;
                         }
                     }
                     ws_frag_buf_.clear();
@@ -2939,13 +2938,22 @@ private:
             }
         }
 
-        // Last-only mode: deliver only the last data frame from this batch.
-        // One record_rx_latency() + one deliver + one batch stats update.
-        if constexpr (kLastOnlyDeliver) {
-            if (data_frame_count > 0) {
-                rx_stats_.packets.fetch_add(data_frame_count,
-                                            std::memory_order_relaxed);
-                record_rx_latency();
+        // Batch stats + latency for all data frames decoded in this call.
+        if (data_frame_count > 0) {
+            rx_stats_.packets.fetch_add(data_frame_count,
+                                        std::memory_order_relaxed);
+            // Flush accumulated byte-level stats (batched from per-frame).
+            if (batch_bytes > 0) {
+                rx_stats_.bytes.fetch_add(batch_bytes, std::memory_order_relaxed);
+            }
+            if (batch_text_packets > 0) {
+                rx_stats_.text_packets.fetch_add(batch_text_packets,
+                                                 std::memory_order_relaxed);
+                rx_stats_.text_bytes.fetch_add(batch_text_bytes,
+                                               std::memory_order_relaxed);
+            }
+            record_rx_latency();
+            if constexpr (kLastOnlyDeliver) {
                 if (last_data_frame) {
                     deliver_data_frame(*last_data_frame);
                 }
@@ -2958,7 +2966,12 @@ private:
     /// Deliver a decoded payload to either the on_message callback or the RX queue.
     /// Text frames are validated for UTF-8 compliance (RFC 6455 §5.6) unless
     /// TransportConfig::skip_utf8_validation is true.
-    void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) noexcept {
+    /// @param defer_stats  When true, skip per-message byte/text stats
+    ///   updates (caller will batch-flush them after the decode loop).
+    ///   All other logic (UTF-8 check, on_message, drop handling) is
+    ///   preserved regardless.
+    void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode,
+                         bool defer_stats = false) noexcept {
         // RFC 6455 §5.6: text frames must contain valid UTF-8
         if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
             !ws::is_valid_utf8(data, len)) {
@@ -2968,6 +2981,7 @@ private:
             return;
         }
         auto update_rx_stats = [&] {
+            if (defer_stats) return;
             rx_stats_.bytes.fetch_add(len, std::memory_order_relaxed);
             if (opcode == ws::opcode::kText) {
                 rx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
@@ -3013,7 +3027,8 @@ private:
     }
 
     /// Deliver a complete single-frame data message.
-    void deliver_data_frame(const ws::DecodedFrame& frame) noexcept {
+    void deliver_data_frame(const ws::DecodedFrame& frame,
+                            bool defer_stats = false) noexcept {
         if (frame.payload_len == 0) return;
         if (frame.payload_len > MaxPayload) [[unlikely]] return;
 
@@ -3023,10 +3038,10 @@ private:
             std::memcpy(tmp, frame.payload, frame.payload_len);
             ws::apply_mask(tmp, frame.payload_len, frame.mask_key);
             deliver_message(tmp, static_cast<uint16_t>(frame.payload_len),
-                            frame.opcode);
+                            frame.opcode, defer_stats);
         } else {
             deliver_message(frame.payload, static_cast<uint16_t>(frame.payload_len),
-                            frame.opcode);
+                            frame.opcode, defer_stats);
         }
     }
 

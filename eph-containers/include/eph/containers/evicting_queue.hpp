@@ -205,13 +205,11 @@ class alignas(Align<T>) EvictingQueue {
         // PERF: ~39.19%
         std::invoke(std::forward<F>(writer_func), s.data_);
 
-        // 5. Store-Store Fence: data writes ─hb→ seq(even)
-        // 保证 data 完全写入后才发布 seq(even)，reader 读到偶数 seq 时 data 已一致
-        std::atomic_thread_fence(std::memory_order_release);
-
-        // 6. 解锁槽位 (seq = even, 表示空闲)
-        // PERF: 17.68%
-        s.seq_.store(encode_seq(next_idx, false), std::memory_order_relaxed);
+        // 5+6. Unlock slot: store-release merges the data→seq(even) fence
+        // with the seq store.  On ARM64 this emits a single `stlr` (~5ns)
+        // instead of `dmb ishst + str` (~15ns).  Semantics are identical:
+        // all prior stores (data writes) are visible before seq(even).
+        s.seq_.store(encode_seq(next_idx, false), std::memory_order_release);
 
         // 7. 发布全局索引: seq(even) ─hb→ global_index
         // Reader acquire global_index 后，能看到对应 slot 的 seq(even) 和完整 data
