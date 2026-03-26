@@ -48,6 +48,7 @@ struct Config {
     int  duration      = 30;
     bool use_tls       = true;
     bool verify        = false;
+    bool use_on_message = false;
     int  tx_cpu        = -1;
     int  rx_cpu        = -1;
 };
@@ -78,6 +79,7 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--proxy")     c.proxy_url = next(a);
         else if (a == "--duration")  c.duration  = std::atoi(next(a));
         else if (a == "--no-tls")    c.use_tls   = false;
+        else if (a == "--on-message") c.use_on_message = true;
         else if (a == "--no-verify") c.verify    = false;
         else if (a == "--tx-cpu")    c.tx_cpu    = std::atoi(next(a));
         else if (a == "--rx-cpu")    c.rx_cpu    = std::atoi(next(a));
@@ -126,6 +128,13 @@ int main(int argc, char** argv) {
         },
     };
 
+    static volatile uint64_t on_msg_sink = 0;
+    if (cfg.use_on_message) {
+        tc.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+            on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
+        };
+    }
+
     eph::net::SocketConfig sc{
         .host = cfg.host, .port = cfg.port,
         .tcp_nodelay = true, .tcp_keepalive = true,
@@ -160,14 +169,18 @@ int main(int argc, char** argv) {
 
     while (g_running.load(std::memory_order_acquire) && tp.is_running()
            && std::chrono::steady_clock::now() < deadline) {
-        bool got = tp.recv([&](const uint8_t* data, size_t len) {
-            ++msgs;
-            if ((msgs & 0xFF) == 1) {
-                std::string_view json(reinterpret_cast<const char*>(data), len);
-                spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
-            }
-        });
-        if (!got) eph::utils::cpu_relax();
+        if (cfg.use_on_message) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } else {
+            bool got = tp.recv([&](const uint8_t* data, size_t len) {
+                ++msgs;
+                if ((msgs & 0xFF) == 1) {
+                    std::string_view json(reinterpret_cast<const char*>(data), len);
+                    spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
+                }
+            });
+            if (!got) eph::utils::cpu_relax();
+        }
     }
 
     // ── Report ──────────────────────────────────────────────────────────────

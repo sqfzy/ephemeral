@@ -53,6 +53,7 @@ struct Config {
     int  duration          = 30;
     bool use_tls           = true;
     bool verify            = false;
+    bool use_on_message    = false;  // bypass queue via on_message callback
     int  tx_cpu            = -1;
     int  rx_cpu            = -1;
 };
@@ -88,6 +89,7 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--tx-cpu")     c.tx_cpu     = std::atoi(next(a));
         else if (a == "--rx-cpu")     c.rx_cpu     = std::atoi(next(a));
         else if (a == "--no-tls")     c.use_tls    = false;
+        else if (a == "--on-message") c.use_on_message = true;
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [EAL args] -- [--host H] [--port P] [--symbols S1,S2,S3]\n"
@@ -148,8 +150,16 @@ int main(int argc, char** argv) {
         },
     };
 
-    spdlog::info("Connecting via DPDK to wss://{}:{}{} ({} symbols)",
-                 cfg.host, cfg.port, ws_path, cfg.symbols.size());
+    // on_message bypasses EvictingQueue — callback runs in RX thread
+    static volatile uint64_t on_msg_sink = 0;
+    if (cfg.use_on_message) {
+        tc.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+            on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
+        };
+    }
+
+    spdlog::info("Connecting via DPDK to wss://{}:{}{} ({} symbols, on_message={})",
+                 cfg.host, cfg.port, ws_path, cfg.symbols.size(), cfg.use_on_message);
     auto conn = eph::dpdk::connect<BenchTransport>(
         eph::dpdk::DpdkEndpoint{.local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip},
         tc, eph::dpdk::ConnectorOptions{.platform = {.port_id = cfg.dpdk_port}, .local_port = cfg.local_port});
@@ -166,14 +176,18 @@ int main(int argc, char** argv) {
 
     while (g_running.load(std::memory_order_acquire) && tp.is_running()
            && std::chrono::steady_clock::now() < deadline) {
-        bool got = tp.recv([&](const uint8_t* data, size_t len) {
-            ++msgs;
-            if ((msgs & 0xFF) == 1) {
-                std::string_view json(reinterpret_cast<const char*>(data), len);
-                spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
-            }
-        });
-        if (!got) eph::utils::cpu_relax();
+        if (cfg.use_on_message) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } else {
+            bool got = tp.recv([&](const uint8_t* data, size_t len) {
+                ++msgs;
+                if ((msgs & 0xFF) == 1) {
+                    std::string_view json(reinterpret_cast<const char*>(data), len);
+                    spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
+                }
+            });
+            if (!got) eph::utils::cpu_relax();
+        }
     }
 
     // ── Report ──────────────────────────────────────────────────────────────
