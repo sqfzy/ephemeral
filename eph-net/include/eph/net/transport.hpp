@@ -1153,6 +1153,17 @@ public:
         return histogram_to_stats(rx_decode_histogram_);
     }
 
+    /// Snapshot the RX pipeline latency histogram for windowed measurement.
+    /// Use HdrHistogram::subtract() to compute per-window delta:
+    ///   auto h1 = tp.rx_latency_histogram_snapshot();
+    ///   /* ... wait ... */
+    ///   auto h2 = tp.rx_latency_histogram_snapshot();
+    ///   h2.subtract(h1);  // h2 now contains only the window's samples
+    /// @warning Brief race with RX thread — acceptable for monitoring.
+    [[nodiscard]] eph::utils::HdrHistogram rx_latency_histogram_snapshot() const noexcept {
+        return rx_latency_histogram_;
+    }
+
     [[nodiscard]] TransportStats stats() const noexcept {
         auto now = std::chrono::steady_clock::now();
         auto uptime = std::chrono::duration_cast<std::chrono::nanoseconds>(

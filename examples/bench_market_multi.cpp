@@ -22,6 +22,7 @@
 ///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 \
 ///       --proxy socks5://127.0.0.1:7890
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -64,6 +65,65 @@ struct Config {
     int  rx_cpu        = -1;
     int  main_cpu        = -1;
 };
+
+/// Per-second window record for traffic vs latency correlation.
+struct WindowRecord {
+    int    second;
+    uint64_t msgs;
+    double msg_rate;
+    uint64_t p50_ns, p99_ns, p999_ns;
+};
+
+/// Convert HdrHistogram to RttStats (standalone version of Transport's private helper).
+static eph::net::RttStats hdr_to_stats(const eph::utils::HdrHistogram& h) noexcept {
+    if (h.get_total_count() == 0) return {};
+    return {
+        .count   = h.get_total_count(),
+        .min_ns  = h.get_min_value(),
+        .max_ns  = h.get_max_value(),
+        .mean_ns = h.get_mean(),
+        .p50_ns  = h.get_value_at_percentile(50.0),
+        .p99_ns  = h.get_value_at_percentile(99.0),
+        .p999_ns = h.get_value_at_percentile(99.9),
+    };
+}
+
+/// Print bucketed traffic-vs-latency summary (windows sorted by msg/s, split into terciles).
+static void print_traffic_summary(std::vector<WindowRecord>& windows) {
+    if (windows.size() < 3) return;
+
+    std::sort(windows.begin(), windows.end(),
+              [](auto& a, auto& b) { return a.msg_rate < b.msg_rate; });
+
+    size_t n = windows.size();
+    size_t t1 = n / 3, t2 = 2 * n / 3;
+
+    auto bucket = [&](size_t from, size_t to) {
+        double min_r = 1e9, max_r = 0;
+        uint64_t sum_p50 = 0, sum_p99 = 0, sum_p999 = 0;
+        for (size_t i = from; i < to; ++i) {
+            min_r = std::min(min_r, windows[i].msg_rate);
+            max_r = std::max(max_r, windows[i].msg_rate);
+            sum_p50 += windows[i].p50_ns;
+            sum_p99 += windows[i].p99_ns;
+            sum_p999 += windows[i].p999_ns;
+        }
+        size_t cnt = to - from;
+        return std::tuple{min_r, max_r, sum_p50 / cnt, sum_p99 / cnt, sum_p999 / cnt, cnt};
+    };
+
+    spdlog::info("=== Traffic vs Latency (by msg/s tercile) ===");
+    auto [lo_min, lo_max, lo_p50, lo_p99, lo_p999, lo_n] = bucket(0, t1);
+    auto [md_min, md_max, md_p50, md_p99, md_p999, md_n] = bucket(t1, t2);
+    auto [hi_min, hi_max, hi_p50, hi_p99, hi_p999, hi_n] = bucket(t2, n);
+
+    spdlog::info("  Low  ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
+                 lo_min, lo_max, lo_n, lo_p50, lo_p99, lo_p999);
+    spdlog::info("  Mid  ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
+                 md_min, md_max, md_n, md_p50, md_p99, md_p999);
+    spdlog::info("  High ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
+                 hi_min, hi_max, hi_n, hi_p50, hi_p99, hi_p999);
+}
 
 static std::atomic<bool> g_running{true};
 static void sig(int) { g_running.store(false, std::memory_order_release); }
@@ -181,8 +241,20 @@ int main(int argc, char** argv) {
         ? start + std::chrono::seconds(cfg.duration)
         : std::chrono::steady_clock::time_point::max();
 
-    while (g_running.load(std::memory_order_acquire) && tp.is_running()
-           && std::chrono::steady_clock::now() < deadline) {
+    // Per-second window tracking for traffic-vs-latency correlation
+    std::vector<WindowRecord> windows;
+    auto prev_hist = tp.rx_latency_histogram_snapshot();
+    uint64_t prev_msgs = 0;
+    auto window_start = start;
+    int window_idx = 0;
+
+    spdlog::info("{:>8} {:>10} {:>10} {:>10} {:>12}",
+                 "time", "msg/s", "p50(ns)", "p99(ns)", "p99.9(ns)");
+
+    while (g_running.load(std::memory_order_acquire) && tp.is_running()) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) break;
+
         if (cfg.use_on_message) {
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
         } else {
@@ -195,12 +267,37 @@ int main(int argc, char** argv) {
             });
             if (!got) eph::utils::cpu_relax();
         }
+
+        // Per-second window snapshot
+        if (std::chrono::steady_clock::now() - window_start >= std::chrono::seconds(1)) {
+            auto snap_time = std::chrono::steady_clock::now();
+            ++window_idx;
+            auto curr_hist = tp.rx_latency_histogram_snapshot();
+            auto delta = curr_hist;
+            (void)delta.subtract(prev_hist);
+            auto ws = hdr_to_stats(delta);
+
+            uint64_t delta_msgs = msgs - prev_msgs;
+            double elapsed_s = std::chrono::duration<double>(snap_time - window_start).count();
+            double rate = delta_msgs / elapsed_s;
+
+            spdlog::info("[T+{:>3}s] {:>8.0f} {:>10} {:>10} {:>12}",
+                         window_idx, rate, ws.p50_ns, ws.p99_ns, ws.p999_ns);
+
+            windows.push_back({window_idx, delta_msgs, rate, ws.p50_ns, ws.p99_ns, ws.p999_ns});
+            prev_hist = std::move(curr_hist);
+            prev_msgs = msgs;
+            window_start = snap_time;
+        }
     }
 
     // ── Report ──────────────────────────────────────────────────────────────
     tp.stop();
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
+
+    // Traffic vs latency bucketed summary
+    print_traffic_summary(windows);
 
     auto stats = tp.stats();
     spdlog::info("=== Multi-Symbol Market Data Benchmark (Socket) ===");
