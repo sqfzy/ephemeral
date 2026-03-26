@@ -7,10 +7,20 @@
 /// Combined stream delivers all symbols in one connection.
 /// LastOnlyDeliver=false ensures every message reaches the app.
 ///
-/// Usage:
-///   ./bench_market_multi
-///   ./bench_market_multi --symbols btcusdt,ethusdt,solusdt --duration 60
-///   ./bench_market_multi --proxy socks5://127.0.0.1:7890
+/// Usage (all threads on isolated, non-overlapping cores):
+///   # Queue mode (default):
+///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --duration 30
+///
+///   # on_message mode (bypass queue):
+///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --on-message --duration 30
+///
+///   # Custom symbols:
+///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 \
+///       --symbols btcusdt,ethusdt,solusdt,bnbusdt --duration 60
+///
+///   # With proxy:
+///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 \
+///       --proxy socks5://127.0.0.1:7890
 
 #include <atomic>
 #include <chrono>

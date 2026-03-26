@@ -6,10 +6,10 @@
 ///
 /// No pings are sent — all rx_latency samples are pure data frames.
 ///
-/// Usage:
-///   ./bench_market
-///   ./bench_market --symbol btcusdt --duration 30
-///   ./bench_market --proxy socks5://127.0.0.1:7890
+/// Usage (all threads on isolated, non-overlapping cores):
+///   ./bench_market --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --duration 30
+///   ./bench_market --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --symbol ethusdt
+///   ./bench_market --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --proxy socks5://127.0.0.1:7890
 
 #include <atomic>
 #include <chrono>

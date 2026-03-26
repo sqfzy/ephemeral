@@ -7,12 +7,24 @@
 /// Combined stream delivers all symbols in one connection.
 /// LastOnlyDeliver=false ensures every message reaches the app.
 ///
-/// Usage:
-///   sudo ./bench_market_multi_dpdk -l 0 -a 0000:xx:00.0 -- \
-///       --local-ip 10.0.0.2 --gateway-ip 10.0.0.1
-///   sudo ./bench_market_multi_dpdk -l 0 -a 0000:xx:00.0 -- \
-///       --local-ip 10.0.0.2 --gateway-ip 10.0.0.1 \
-///       --symbols btcusdt,ethusdt,solusdt --duration 60
+/// Usage (all threads on isolated, non-overlapping cores):
+///   # Core allocation: lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
+///
+///   # Queue mode (default):
+///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- \
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --duration 30
+///
+///   # on_message mode (bypass queue):
+///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- \
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --on-message --duration 30
+///
+///   # Custom symbols:
+///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- \
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 \
+///       --symbols btcusdt,ethusdt,solusdt,bnbusdt --duration 60
 
 #include <atomic>
 #include <chrono>

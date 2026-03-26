@@ -9,8 +9,11 @@
 ///
 /// No market data is subscribed — all rx_latency samples are pure pong frames.
 ///
-/// Usage:
-///   sudo ./bench_pingpong_dpdk -l 0-3 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1
+/// Usage (all threads on isolated, non-overlapping cores):
+///   # lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
+///   sudo ./bench_pingpong_dpdk -a 0000:28:00.0 -l 4-7 -- \
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10
 ///   sudo ./bench_pingpong_dpdk -l 0-3 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1 --count 500
 
 #include <algorithm>

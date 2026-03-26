@@ -13,10 +13,10 @@
 ///       4) RTT                         (end-to-end round-trip)
 ///   - TSC-based nanosecond-precision timing
 ///
-/// Usage:
-///   ./simple_hft
-///   ./simple_hft --symbol btcusdt --count 200 --ping-interval 500
-///   ./simple_hft --host fstream.binance.com --port 443 --no-verify
+/// Usage (all threads on isolated, non-overlapping cores):
+///   ./simple_hft --rx-cpu 0 --tx-cpu 1 --main-cpu 2
+///   ./simple_hft --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --symbol btcusdt --count 200
+///   ./simple_hft --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --host fstream.binance.com
 ///
 /// For the DPDK backend, see simple_hft_dpdk.cpp.
 

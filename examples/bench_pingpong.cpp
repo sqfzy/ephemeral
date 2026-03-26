@@ -9,10 +9,10 @@
 ///
 /// No market data is subscribed — all rx_latency samples are pure pong frames.
 ///
-/// Usage:
-///   ./bench_pingpong
-///   ./bench_pingpong --count 500 --ping-interval 200
-///   ./bench_pingpong --proxy socks5://127.0.0.1:7890
+/// Usage (all threads on isolated, non-overlapping cores):
+///   ./bench_pingpong --rx-cpu 0 --tx-cpu 1 --main-cpu 2
+///   ./bench_pingpong --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --count 500 --ping-interval 200
+///   ./bench_pingpong --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --proxy socks5://127.0.0.1:7890
 
 #include <algorithm>
 #include <atomic>

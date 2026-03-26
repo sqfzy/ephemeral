@@ -6,9 +6,11 @@
 ///
 /// No pings are sent — all rx_latency samples are pure data frames.
 ///
-/// Usage:
-///   sudo ./bench_market_dpdk -l 0-3 -a 0000:xx:00.0 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1
-///   sudo ./bench_market_dpdk -l 0-3 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1 --duration 60
+/// Usage (all threads on isolated, non-overlapping cores):
+///   # lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
+///   sudo ./bench_market_dpdk -a 0000:28:00.0 -l 4-7 -- \
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --duration 30
 
 #include <atomic>
 #include <chrono>
