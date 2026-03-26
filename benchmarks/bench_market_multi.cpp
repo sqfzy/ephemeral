@@ -132,39 +132,50 @@ static eph::net::RttStats hdr_to_stats(const eph::utils::HdrHistogram& h) noexce
 
 /// Print bucketed traffic-vs-latency summary (windows sorted by msg/s, split into terciles).
 static void print_traffic_summary(std::vector<WindowRecord>& windows) {
-    if (windows.size() < 3) return;
+    if (windows.empty()) return;
 
-    std::sort(windows.begin(), windows.end(),
-              [](auto& a, auto& b) { return a.msg_rate < b.msg_rate; });
+    // Absolute traffic thresholds (msg/s).
+    static constexpr double kLowMax  =  500.0;
+    static constexpr double kMidMax  = 1500.0;
 
-    size_t n = windows.size();
-    size_t t1 = n / 3, t2 = 2 * n / 3;
-
-    auto bucket = [&](size_t from, size_t to) {
-        double min_r = 1e9, max_r = 0;
+    struct BucketStats {
+        double   min_r = 1e9, max_r = 0;
         uint64_t sum_p50 = 0, sum_p99 = 0, sum_p999 = 0;
-        for (size_t i = from; i < to; ++i) {
-            min_r = std::min(min_r, windows[i].msg_rate);
-            max_r = std::max(max_r, windows[i].msg_rate);
-            sum_p50 += windows[i].p50_ns;
-            sum_p99 += windows[i].p99_ns;
-            sum_p999 += windows[i].p999_ns;
+        size_t   cnt = 0;
+
+        void add(const WindowRecord& w) {
+            min_r = std::min(min_r, w.msg_rate);
+            max_r = std::max(max_r, w.msg_rate);
+            sum_p50  += w.p50_ns;
+            sum_p99  += w.p99_ns;
+            sum_p999 += w.p999_ns;
+            ++cnt;
         }
-        size_t cnt = to - from;
-        return std::tuple{min_r, max_r, sum_p50 / cnt, sum_p99 / cnt, sum_p999 / cnt, cnt};
     };
 
-    spdlog::info("=== Traffic vs Latency (by msg/s tercile) ===");
-    auto [lo_min, lo_max, lo_p50, lo_p99, lo_p999, lo_n] = bucket(0, t1);
-    auto [md_min, md_max, md_p50, md_p99, md_p999, md_n] = bucket(t1, t2);
-    auto [hi_min, hi_max, hi_p50, hi_p99, hi_p999, hi_n] = bucket(t2, n);
+    BucketStats lo, md, hi;
+    for (auto& w : windows) {
+        if      (w.msg_rate < kLowMax) lo.add(w);
+        else if (w.msg_rate < kMidMax) md.add(w);
+        else                           hi.add(w);
+    }
 
-    spdlog::info("  Low  ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
-                 lo_min, lo_max, lo_n, lo_p50, lo_p99, lo_p999);
-    spdlog::info("  Mid  ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
-                 md_min, md_max, md_n, md_p50, md_p99, md_p999);
-    spdlog::info("  High ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
-                 hi_min, hi_max, hi_n, hi_p50, hi_p99, hi_p999);
+    spdlog::info("=== Traffic vs Latency (absolute thresholds: <{:.0f} / {:.0f}-{:.0f} / >{:.0f} msg/s) ===",
+                 kLowMax, kLowMax, kMidMax, kMidMax);
+
+    auto print = [](const char* label, BucketStats& b) {
+        if (b.cnt == 0) {
+            spdlog::info("  {:>5s} (no windows)", label);
+            return;
+        }
+        spdlog::info("  {:>5s} ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
+                     label, b.min_r, b.max_r, b.cnt,
+                     b.sum_p50 / b.cnt, b.sum_p99 / b.cnt, b.sum_p999 / b.cnt);
+    };
+
+    print("Low",  lo);
+    print("Mid",  md);
+    print("High", hi);
 }
 
 static std::atomic<bool> g_running{true};
