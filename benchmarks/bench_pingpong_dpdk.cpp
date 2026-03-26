@@ -49,7 +49,7 @@ struct Config {
     std::string local_ip{};
     std::string gateway_ip{};
     uint16_t    dpdk_port     = 0;
-    uint16_t    local_port    = 32768;
+    uint16_t    local_port    = 0;  // 0 = random ephemeral port
     int  count                = 200;
     int  ping_interval        = 500;   // ms
     int  payload_size         = 0;     // ping payload bytes (0-125, simulates order data)

@@ -80,7 +80,7 @@ struct AppConfig {
     std::string local_ip{};
     std::string gateway_ip{};
     uint16_t    dpdk_port    = 0;
-    uint16_t    local_port   = 32768;
+    uint16_t    local_port   = 0;  // 0 = random ephemeral port
 };
 
 static std::atomic<bool> g_running{true};
