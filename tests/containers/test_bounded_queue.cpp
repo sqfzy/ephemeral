@@ -1011,8 +1011,8 @@ TEST(BoundedQueue, try_peek_reads_head_without_consuming) {
     BoundedQueue<BoundedTestData, 4> q;
     BoundedTestData d1{.seq = 42};
     BoundedTestData d2{.seq = 99};
-    q.try_push(d1);
-    q.try_push(d2);
+    (void)q.try_push(d1);
+    (void)q.try_push(d2);
 
     BoundedTestData peeked;
     EXPECT_TRUE(q.try_peek(peeked));
@@ -1030,8 +1030,8 @@ TEST(BoundedQueue, try_peek_then_pop_advances_head) {
     BoundedQueue<BoundedTestData, 4> q;
     BoundedTestData d1{.seq = 10};
     BoundedTestData d2{.seq = 20};
-    q.try_push(d1);
-    q.try_push(d2);
+    (void)q.try_push(d1);
+    (void)q.try_push(d2);
 
     // Peek sees first element
     auto peeked = q.try_peek();
@@ -1052,7 +1052,7 @@ TEST(BoundedQueue, try_peek_then_pop_advances_head) {
 TEST(BoundedQueue, try_peek_on_full_queue) {
     BoundedQueue<BoundedTestData, 4> q;
     for (uint32_t i = 0; i < 4; ++i) {
-        q.try_push(BoundedTestData{.seq = i});
+        (void)q.try_push(BoundedTestData{.seq = i});
     }
     EXPECT_TRUE(q.full());
 
@@ -1071,8 +1071,8 @@ TEST(BoundedQueue, try_peek_visitor_returns_false_on_empty) {
 
 TEST(BoundedQueue, try_peek_visitor_reads_without_consuming) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 77});
-    q.try_push(BoundedTestData{.seq = 88});
+    (void)q.try_push(BoundedTestData{.seq = 77});
+    (void)q.try_push(BoundedTestData{.seq = 88});
 
     uint32_t captured = 0;
     EXPECT_TRUE(q.try_peek([&](const BoundedTestData& d) { captured = d.seq; }));
@@ -1100,9 +1100,9 @@ TEST(BoundedQueue, stats_empty_queue_returns_zeroes) {
 
 TEST(BoundedQueue, stats_tracks_push_and_pop) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 1});
-    q.try_push(BoundedTestData{.seq = 2});
-    q.try_push(BoundedTestData{.seq = 3});
+    (void)q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 2});
+    (void)q.try_push(BoundedTestData{.seq = 3});
 
     auto s1 = q.stats();
     EXPECT_EQ(s1.total_pushed, 3u);
@@ -1121,8 +1121,8 @@ TEST(BoundedQueue, stats_tracks_push_and_pop) {
 
 TEST(BoundedQueue, stats_after_clear_shows_zero_current_size) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 1});
-    q.try_push(BoundedTestData{.seq = 2});
+    (void)q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 2});
     q.clear();
 
     auto s = q.stats();
@@ -1135,12 +1135,12 @@ TEST(BoundedQueue, stats_after_wraparound) {
     BoundedQueue<BoundedTestData, 2> q;
     BoundedTestData out;
     // Push 2 (fill), pop 2, push 2 more → indices wrap around capacity
-    q.try_push(BoundedTestData{.seq = 1});
-    q.try_push(BoundedTestData{.seq = 2});
+    (void)q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 2});
     q.try_pop(out);
     q.try_pop(out);
-    q.try_push(BoundedTestData{.seq = 3});
-    q.try_push(BoundedTestData{.seq = 4});
+    (void)q.try_push(BoundedTestData{.seq = 3});
+    (void)q.try_push(BoundedTestData{.seq = 4});
 
     auto s = q.stats();
     EXPECT_EQ(s.total_pushed, 4u);
@@ -1150,8 +1150,8 @@ TEST(BoundedQueue, stats_after_wraparound) {
 
 TEST(BoundedQueueStats, dump_contains_key_info) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 1});
-    q.try_push(BoundedTestData{.seq = 2});
+    (void)q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 2});
 
     auto s = q.stats();
     auto dump = s.dump();
@@ -1165,7 +1165,7 @@ TEST(BoundedQueueStats, dump_contains_key_info) {
 
 TEST(BoundedQueueStats, to_json_is_valid_format) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 1});
 
     auto s = q.stats();
     auto json = s.to_json();
@@ -1186,8 +1186,8 @@ TEST(BoundedQueueStats, dump_empty_queue_shows_zero_utilization) {
 
 TEST(BoundedQueueStats, dump_full_queue_shows_100_percent) {
     BoundedQueue<BoundedTestData, 2> q;
-    q.try_push(BoundedTestData{.seq = 1});
-    q.try_push(BoundedTestData{.seq = 2});
+    (void)q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 2});
     auto s = q.stats();
     auto dump = s.dump();
     EXPECT_NE(dump.find("current_size: 2"), std::string::npos);
@@ -1196,11 +1196,11 @@ TEST(BoundedQueueStats, dump_full_queue_shows_100_percent) {
 
 TEST(BoundedQueueStats, operator_minus_computes_interval_delta) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 1});
-    q.try_push(BoundedTestData{.seq = 2});
+    (void)q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 2});
     auto s1 = q.stats();
 
-    q.try_push(BoundedTestData{.seq = 3});
+    (void)q.try_push(BoundedTestData{.seq = 3});
     BoundedTestData tmp;
     q.pop(tmp);
     auto s2 = q.stats();
@@ -1218,14 +1218,14 @@ TEST(BoundedQueueStats, operator_eq_compares_all_fields) {
     auto s2 = q.stats();
     EXPECT_EQ(s1, s2);
 
-    q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 1});
     auto s3 = q.stats();
     EXPECT_NE(s1, s3);
 }
 
 TEST(BoundedQueueStats, std_formatter_produces_dump_output) {
     BoundedQueue<BoundedTestData, 4> q;
-    q.try_push(BoundedTestData{.seq = 1});
+    (void)q.try_push(BoundedTestData{.seq = 1});
     auto s = q.stats();
 
     auto formatted = std::format("{}", s);

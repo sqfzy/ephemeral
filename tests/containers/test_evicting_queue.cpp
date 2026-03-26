@@ -1389,7 +1389,7 @@ TEST(EvictingQueueFull, not_full_after_consuming_all) {
     // Consume all
     for (uint32_t i = 0; i < 4; ++i) {
         TestData d;
-        (void)q.try_pop_latest(d);
+        (void)(void)q.try_pop_latest(d);
     }
     EXPECT_FALSE(q.full());
 }

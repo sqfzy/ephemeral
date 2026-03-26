@@ -360,7 +360,7 @@ TEST(WsBoundary, DecodeIncomplete_MaskKeyMissing) {
 TEST(WsBoundary, DecodeIncomplete_PayloadTruncated) {
     // Full header but payload truncated
     uint8_t buf[64];
-    size_t len = encode_frame(buf, opcode::kBinary,
+    [[maybe_unused]] size_t len = encode_frame(buf, opcode::kBinary,
                                (const uint8_t*)"hello", 5);
     // Truncate: provide only header, no payload
     auto result = decode_frame(buf, 6);
