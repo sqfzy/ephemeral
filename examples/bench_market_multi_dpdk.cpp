@@ -94,7 +94,7 @@ struct Config {
     int  tx_cpu            = -1;
     int  rx_cpu            = -1;
     int  main_cpu          = -1;
-    eph::net::SymbolDedup symbol_dedup = eph::net::SymbolDedup::kNone;
+    bool use_twophase      = false;
 };
 
 /// Per-second window record for traffic vs latency correlation.
@@ -191,8 +191,8 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--on-message") c.use_on_message = true;
         else if (a == "--mode") {
             std::string_view m = next(a);
-            if      (m == "all")      c.symbol_dedup = eph::net::SymbolDedup::kNone;
-            else if (m == "twophase") c.symbol_dedup = eph::net::SymbolDedup::kTwoPhaseLatest;
+            if      (m == "all")      c.use_twophase = false;
+            else if (m == "twophase") c.use_twophase = true;
             else { std::cerr << std::format("Unknown mode: {} (use all|twophase)\n", m); std::exit(1); }
         }
         else if (a == "--help") {
@@ -245,13 +245,7 @@ int main(int argc, char** argv) {
     }
     auto ws_path = "/stream?streams=" + streams;
 
-    auto mode_name = [](eph::net::SymbolDedup m) -> const char* {
-        switch (m) {
-        case eph::net::SymbolDedup::kNone:           return "all";
-        case eph::net::SymbolDedup::kTwoPhaseLatest: return "twophase";
-        }
-        return "unknown";
-    };
+    const char* mode_name = cfg.use_twophase ? "twophase" : "all";
 
     eph::net::TransportConfig tc{
         .remote_host = cfg.host, .remote_port = cfg.port,
@@ -263,10 +257,9 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
-        .symbol_dedup = cfg.symbol_dedup,
-        .symbol_extractor = (cfg.symbol_dedup != eph::net::SymbolDedup::kNone)
-            ? eph::net::SymbolExtractorFn{binance_symbol_hash}
-            : eph::net::SymbolExtractorFn{},
+        .on_frame_filter = cfg.use_twophase
+            ? eph::net::make_twophase_filter(binance_symbol_hash)
+            : eph::net::FrameFilterFn{},
     };
 
     // on_message bypasses EvictingQueue — callback runs in RX thread
@@ -279,7 +272,7 @@ int main(int argc, char** argv) {
 
     spdlog::info("Connecting via DPDK to wss://{}:{}{} ({} symbols, on_message={}, mode={})",
                  cfg.host, cfg.port, ws_path, cfg.symbols.size(), cfg.use_on_message,
-                 mode_name(cfg.symbol_dedup));
+                 mode_name);
     auto conn = eph::dpdk::connect<BenchTransport>(
         eph::dpdk::DpdkEndpoint{.local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip},
         tc, eph::dpdk::ConnectorOptions{.platform = {.port_id = cfg.dpdk_port}, .local_port = cfg.local_port});
@@ -356,7 +349,7 @@ int main(int argc, char** argv) {
     spdlog::info("=== Multi-Symbol Market Data Benchmark (DPDK) ===");
     spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Mode: {}",
                  cfg.symbols.size(), elapsed_ms / 1000.0, msgs,
-                 mode_name(cfg.symbol_dedup));
+                 mode_name);
     spdlog::info("Transport stats:\n{}", stats.dump());
 
     auto& rx = stats.rx_latency;

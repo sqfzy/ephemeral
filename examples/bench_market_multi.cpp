@@ -85,7 +85,7 @@ struct Config {
     int  tx_cpu        = -1;
     int  rx_cpu        = -1;
     int  main_cpu      = -1;
-    eph::net::SymbolDedup symbol_dedup = eph::net::SymbolDedup::kNone;
+    bool use_twophase   = false;
 };
 
 /// Per-second window record for traffic vs latency correlation.
@@ -180,8 +180,8 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--main-cpu") c.main_cpu = std::atoi(next(a));
         else if (a == "--mode") {
             std::string_view m = next(a);
-            if      (m == "all")      c.symbol_dedup = eph::net::SymbolDedup::kNone;
-            else if (m == "twophase") c.symbol_dedup = eph::net::SymbolDedup::kTwoPhaseLatest;
+            if      (m == "all")      c.use_twophase = false;
+            else if (m == "twophase") c.use_twophase = true;
             else { std::cerr << std::format("Unknown mode: {} (use all|twophase)\n", m); std::exit(1); }
         }
         else if (a == "--help") {
@@ -229,10 +229,9 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
-        .symbol_dedup = cfg.symbol_dedup,
-        .symbol_extractor = (cfg.symbol_dedup != eph::net::SymbolDedup::kNone)
-            ? eph::net::SymbolExtractorFn{binance_symbol_hash}
-            : eph::net::SymbolExtractorFn{},
+        .on_frame_filter = cfg.use_twophase
+            ? eph::net::make_twophase_filter(binance_symbol_hash)
+            : eph::net::FrameFilterFn{},
     };
 
     static volatile uint64_t on_msg_sink = 0;
@@ -260,17 +259,10 @@ int main(int argc, char** argv) {
         };
     }
 
-    auto mode_name = [](eph::net::SymbolDedup m) -> const char* {
-        switch (m) {
-        case eph::net::SymbolDedup::kNone:           return "all";
-        case eph::net::SymbolDedup::kTwoPhaseLatest: return "twophase";
-        }
-        return "unknown";
-    };
+    const char* mode_name = cfg.use_twophase ? "twophase" : "all";
 
     spdlog::info("Connecting to wss://{}:{}{} ({} symbols, mode={})",
-                 cfg.host, cfg.port, ws_path, cfg.symbols.size(),
-                 mode_name(cfg.symbol_dedup));
+                 cfg.host, cfg.port, ws_path, cfg.symbols.size(), mode_name);
     auto result = BenchTransport::create(std::move(factory), tc);
     if (!result) { spdlog::error("Connect failed: {}", result.error().message()); return 1; }
     auto& tp = **result;
@@ -344,8 +336,7 @@ int main(int argc, char** argv) {
     auto stats = tp.stats();
     spdlog::info("=== Multi-Symbol Market Data Benchmark (Socket) ===");
     spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Mode: {}",
-                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs,
-                 mode_name(cfg.symbol_dedup));
+                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs, mode_name);
     spdlog::info("Transport stats:\n{}", stats.dump());
 
     auto& rx = stats.rx_latency;

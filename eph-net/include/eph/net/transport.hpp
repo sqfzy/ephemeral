@@ -2692,9 +2692,9 @@ private:
     /// Process decrypted WebSocket data (WsFramer only). Returns the number
     /// of bytes consumed.
     size_t process_ws_data(const uint8_t* data, size_t len) {
-        // Symbol-aware dedup: route to optimized path when configured.
-        if (config_.symbol_dedup != SymbolDedup::kNone && config_.symbol_extractor) {
-            return process_ws_data_symbol_dedup(data, len);
+        // Batch frame filter: route to filtered path when configured.
+        if (config_.on_frame_filter) {
+            return process_ws_data_filtered(data, len);
         }
 
         auto log = detail::transport_logger();
@@ -3028,7 +3028,6 @@ private:
     struct FrameIndexEntry {
         size_t         offset;       // byte offset in source buffer
         size_t         total_len;    // total WS frame length
-        uint32_t       symbol_hash;  // 0 = control frame or unrecognized
         uint8_t        opcode;
         bool           fin;
         bool           masked;
@@ -3038,13 +3037,11 @@ private:
         bool           is_control;
     };
 
-    /// Process WS data with symbol-aware deduplication.
-    /// Phase 1: forward-scan all WS headers, extract symbol hash, build index.
-    /// Phase 2: deliver only the latest data frame per symbol (+ all control frames).
-    ///
-    /// Strategy selection:
-    ///   kTwoPhaseLatest — forward iterate, track last index per symbol, deliver those
-    size_t process_ws_data_symbol_dedup(const uint8_t* data, size_t len) {
+    /// Process WS data with batch frame filter.
+    /// Phase 1: forward-scan all WS headers, build frame index.
+    /// Phase 2: build FrameView[] for filterable data frames, call filter.
+    /// Phase 3: dispatch frames according to filter decisions.
+    size_t process_ws_data_filtered(const uint8_t* data, size_t len) {
         auto log = detail::transport_logger();
 
         // ── Phase 1: forward scan to build frame index ──────────────────
@@ -3057,7 +3054,7 @@ private:
             auto frame = ws::decode_frame(data + offset, len - offset);
             if (!frame) {
                 if (frame.error() == ws::DecodeError::kIncomplete) break;
-                SPDLOG_LOGGER_WARN(log, "WS frame decode error in dedup scan: {}",
+                SPDLOG_LOGGER_WARN(log, "WS frame decode error in filter scan: {}",
                                    ws::decode_error_name(frame.error()));
                 break;
             }
@@ -3073,96 +3070,66 @@ private:
             entry.payload_len = frame->payload_len;
             entry.is_control  = frame->is_control();
 
-            // Extract symbol hash from data frame payload.
-            // For masked frames, we'd need to unmask first — but server
-            // frames are unmasked (RFC 6455 §5.1), so fast path.
-            if (frame->is_data() && frame->payload && frame->payload_len > 0) {
-                if (!frame->masked) {
-                    entry.symbol_hash = config_.symbol_extractor(
-                        frame->payload, frame->payload_len);
-                } else {
-                    // Rare: unmask into temp buffer for symbol extraction
-                    uint8_t tmp[64];
-                    size_t scan_len = std::min(frame->payload_len,
-                                               static_cast<uint64_t>(sizeof(tmp)));
-                    std::memcpy(tmp, frame->payload, scan_len);
-                    ws::apply_mask(tmp, scan_len, frame->mask_key);
-                    entry.symbol_hash = config_.symbol_extractor(tmp, scan_len);
-                }
-            } else {
-                entry.symbol_hash = 0;
-            }
-
             offset += frame->total_len;
             ++num_frames;
         }
 
         if (num_frames == 0) return offset;
 
-        SPDLOG_LOGGER_TRACE(log,
-            "Symbol dedup: {} frames in batch", num_frames);
+        // ── Phase 2: build FrameView[] for filterable data frames ───────
+        // Only complete, non-control data frames are exposed to the filter.
+        // Control frames and fragmented frames are always delivered.
+        FrameView views[kMaxFramesPerBatch];
+        size_t    view_to_index[kMaxFramesPerBatch]; // maps view idx → index idx
+        size_t    num_views = 0;
 
-        // ── Phase 2: selective delivery (two-phase forward) ─────────────
-        // Pass 1 (forward): find the last index per symbol.
-        // Open-addressing hash table: max 128 frames, 256 slots → ≤50% load.
-        static constexpr size_t kSeenSlots = 256;
-        struct SymbolSlot { uint32_t hash; size_t last_idx; };
-        SymbolSlot slots[kSeenSlots] = {};
+        for (size_t i = 0; i < num_frames; ++i) {
+            auto& entry = index[i];
+            if (entry.is_control) continue;
+            if (entry.opcode == ws::opcode::kContinuation || !entry.fin) continue;
+            if (!entry.payload || entry.payload_len == 0) continue;
 
-        // Track how many data frames we skip vs deliver for stats.
+            auto& v = views[num_views];
+            v.payload     = entry.payload;
+            v.payload_len = static_cast<uint16_t>(
+                std::min(entry.payload_len, static_cast<size_t>(UINT16_MAX)));
+            v.opcode      = entry.opcode;
+            v.deliver     = true;
+            view_to_index[num_views] = i;
+            ++num_views;
+        }
+
+        // Call the filter — it may set deliver=false on some views.
+        if (num_views > 0) {
+            config_.on_frame_filter(std::span<FrameView>(views, num_views));
+        }
+
+        SPDLOG_LOGGER_TRACE(log, "Frame filter: {} frames, {} filterable",
+                            num_frames, num_views);
+
+        // ── Phase 3: dispatch based on filter decisions ─────────────────
+        // Build a deliver bitmap indexed by original frame index.
+        bool deliver[kMaxFramesPerBatch];
+        // Default: all delivered (control/fragmented/empty frames).
+        for (size_t i = 0; i < num_frames; ++i) deliver[i] = true;
+        // Apply filter decisions for data frames.
+        for (size_t vi = 0; vi < num_views; ++vi) {
+            deliver[view_to_index[vi]] = views[vi].deliver;
+        }
+
         uint64_t data_frames_total = 0;
         uint64_t data_frames_delivered = 0;
 
         for (size_t i = 0; i < num_frames; ++i) {
             auto& entry = index[i];
-            if (entry.is_control) continue;
-            if (entry.opcode == ws::opcode::kContinuation || !entry.fin) {
-                ++data_frames_total;
-                continue;  // fragmented: will deliver unconditionally
-            }
-            ++data_frames_total;
-            uint32_t h = entry.symbol_hash;
-            if (h == 0) continue;  // unrecognized: deliver unconditionally
-            size_t slot = h & (kSeenSlots - 1);
-            for (size_t j = 0; j < kSeenSlots; ++j) {
-                size_t s = (slot + j) & (kSeenSlots - 1);
-                if (slots[s].hash == 0) {
-                    slots[s] = {h, i};
-                    break;
-                }
-                if (slots[s].hash == h) {
-                    slots[s].last_idx = i;
-                    break;
-                }
-            }
-        }
-
-        // Build deliver bitmap from latest-per-symbol.
-        bool deliver[kMaxFramesPerBatch] = {};
-        for (auto& s : slots) {
-            if (s.hash != 0) {
-                deliver[s.last_idx] = true;
-                ++data_frames_delivered;
-            }
-        }
-
-        // Pass 2 (forward): deliver control frames + fragmented +
-        // unrecognized + marked latest-per-symbol.
-        for (size_t i = 0; i < num_frames; ++i) {
-            auto& entry = index[i];
             if (entry.is_control) {
                 dispatch_indexed_frame(entry, data + entry.offset);
-            } else if (entry.opcode == ws::opcode::kContinuation ||
-                       !entry.fin) {
-                // Fragmented: always deliver
+                continue;
+            }
+            ++data_frames_total;
+            if (deliver[i]) {
                 dispatch_indexed_frame(entry, data + entry.offset);
                 ++data_frames_delivered;
-            } else if (entry.symbol_hash == 0) {
-                // Unrecognized symbol: deliver unconditionally
-                dispatch_indexed_frame(entry, data + entry.offset);
-                ++data_frames_delivered;
-            } else if (deliver[i]) {
-                dispatch_indexed_frame(entry, data + entry.offset);
             }
         }
 
@@ -3176,7 +3143,7 @@ private:
         uint64_t skipped = data_frames_total - data_frames_delivered;
         if (skipped > 0) {
             SPDLOG_LOGGER_TRACE(log,
-                "Symbol dedup: delivered {}/{} data frames, skipped {}",
+                "Frame filter: delivered {}/{} data frames, skipped {}",
                 data_frames_delivered, data_frames_total, skipped);
         }
 

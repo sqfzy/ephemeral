@@ -15,6 +15,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,24 +25,81 @@
 namespace eph::net {
 
 // ---------------------------------------------------------------------------
-// Symbol-aware deduplication modes for multi-symbol streams
+// Batch frame filter for selective delivery
 // ---------------------------------------------------------------------------
 
-/// Controls how process_ws_data handles batches of WS frames from a combined
-/// multi-symbol stream. When a symbol_extractor is provided, the transport
-/// can skip delivery of stale frames (same symbol superseded by a newer frame
-/// within the same TLS record / TCP segment).
-enum class SymbolDedup : uint8_t {
-    kNone            = 0,  ///< Deliver every frame (existing behavior)
-    kTwoPhaseLatest  = 1,  ///< Forward index scan, forward selective deliver: latest per symbol
+/// Lightweight view of a decoded WS data frame, exposed to batch filters.
+/// Control frames (ping/pong/close) and fragmented frames are NOT included —
+/// they are always delivered unconditionally.
+struct FrameView {
+    const uint8_t* payload     = nullptr; ///< Payload pointer (unmasked for server frames)
+    uint16_t       payload_len = 0;       ///< Payload length
+    uint8_t        opcode      = 0;       ///< WS opcode (text/binary)
+    bool           deliver     = true;    ///< Set to false to skip delivery
 };
 
-/// Callback that extracts a symbol identifier hash from a WS payload.
-/// Must be cheap (no heap allocation). Returns 0 for unrecognized payloads.
-/// @param data    Payload pointer (raw WS payload, already unmasked)
-/// @param len     Payload length
-/// @return Symbol hash (non-zero for recognized payloads)
-using SymbolExtractorFn = std::function<uint32_t(const uint8_t* data, size_t len)>;
+/// Batch frame filter callback. Called from the RX thread after decoding all
+/// WS frames in a TLS record / TCP segment. The filter inspects the batch
+/// and sets `deliver = false` on frames that should be skipped.
+///
+/// @warning Called from the RX thread — must be non-blocking, no heap allocation.
+using FrameFilterFn = std::function<void(std::span<FrameView>)>;
+
+/// Create a batch frame filter that delivers only the latest frame per symbol.
+///
+/// Two-phase forward scan: pass 1 records last index per symbol hash,
+/// pass 2 marks all non-latest as deliver=false. Control frames and
+/// fragmented frames are not subject to filtering (handled by transport).
+///
+/// @param extractor  Extracts a symbol hash from payload.
+///                   Returns 0 for unrecognized payloads (always delivered).
+///
+/// Example:
+/// @code
+///   tc.on_frame_filter = make_twophase_filter(binance_symbol_hash);
+/// @endcode
+inline FrameFilterFn make_twophase_filter(
+    std::function<uint32_t(const uint8_t* data, size_t len)> extractor)
+{
+    return [ext = std::move(extractor)](std::span<FrameView> frames) {
+        // Open-addressing hash table: 256 slots for ≤128 frames → ≤50% load.
+        static constexpr size_t kSlots = 256;
+        struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
+        Slot slots[kSlots] = {};
+
+        // Pass 1: record last index per symbol.
+        for (size_t i = 0; i < frames.size(); ++i) {
+            auto& f = frames[i];
+            uint32_t h = ext(f.payload, f.payload_len);
+            if (h == 0) continue;  // unrecognized: deliver unconditionally
+            size_t slot = h & (kSlots - 1);
+            for (size_t j = 0; j < kSlots; ++j) {
+                size_t s = (slot + j) & (kSlots - 1);
+                if (slots[s].hash == 0) {
+                    slots[s] = {h, i};
+                    break;
+                }
+                if (slots[s].hash == h) {
+                    slots[s].last_idx = i;
+                    break;
+                }
+            }
+        }
+
+        // Pass 2: mark non-latest as skip.
+        // First, mark all recognized frames as skip.
+        for (size_t i = 0; i < frames.size(); ++i) {
+            uint32_t h = ext(frames[i].payload, frames[i].payload_len);
+            if (h != 0) frames[i].deliver = false;
+        }
+        // Then, restore the latest per symbol.
+        for (auto& s : slots) {
+            if (s.hash != 0) {
+                frames[s.last_idx].deliver = true;
+            }
+        }
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Connection error types
@@ -351,13 +409,14 @@ struct TransportConfig {
     std::function<void(int attempt, uint64_t downtime_ns, uint64_t total_reconnects)>
         on_reconnected{};
 
-    // Symbol-aware deduplication for multi-symbol combined streams.
-    // When symbol_dedup != kNone and symbol_extractor is set, the RX
-    // thread indexes all WS data frames in a batch, then delivers only
-    // the latest frame per symbol. Reduces delivery overhead from O(n)
-    // to O(k) where k = number of distinct symbols in the batch.
-    SymbolDedup symbol_dedup = SymbolDedup::kNone;
-    SymbolExtractorFn symbol_extractor{};
+    /// Batch frame filter for selective delivery in multi-symbol streams.
+    /// When set, the RX thread indexes all WS data frames in a batch,
+    /// calls this filter to mark frames as deliver/skip, then dispatches
+    /// only frames with `deliver == true`. Control frames and fragmented
+    /// frames are always delivered regardless of the filter.
+    ///
+    /// Use `make_twophase_filter(extractor)` for latest-per-symbol delivery.
+    FrameFilterFn on_frame_filter{};
 
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).
