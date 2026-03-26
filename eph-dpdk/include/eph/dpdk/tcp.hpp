@@ -558,15 +558,27 @@ public:
             rte_pktmbuf_free(pkts[i]);
         }
 
-        // Send ACK for all received data/FINs
+        // Defer ACK to keep send_ack() off the RX critical path.
+        // Caller (Transport) must call flush_pending_ack() after
+        // processing the data (e.g. after TLS decrypt).
         if (need_ack) {
-            auto r = send_ack();
-            if (!r) {
-                SPDLOG_LOGGER_WARN(log, "Failed to send ACK: {}", r.error());
-            }
+            ack_pending_ = true;
         }
 
         return data_count;
+    }
+
+    /// Send any deferred ACK accumulated by process_rx().
+    /// Call this after data processing (TLS decrypt, WS decode) to keep
+    /// the ACK's rte_eth_tx_burst off the RX latency measurement path.
+    void flush_pending_ack() noexcept {
+        if (!ack_pending_) return;
+        ack_pending_ = false;
+        auto r = send_ack();
+        if (!r) {
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "Failed to send deferred ACK: {}", r.error());
+        }
     }
 
     /// Poll DPDK rx and process received packets through the TCP state machine.
@@ -731,6 +743,10 @@ private:
     uint8_t      reorder_count_ = 0;
 
     Stats stats_{};
+
+    // Deferred ACK flag — set by process_rx(), cleared by flush_pending_ack().
+    // Keeps rte_eth_tx_burst off the RX latency-critical path.
+    bool ack_pending_ = false;
 
     // TSC captured right after rte_eth_rx_burst returns data.
     // Used by Transport as the true RX arrival baseline.

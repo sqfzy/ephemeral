@@ -2417,6 +2417,9 @@ private:
                                  ws_remaining);
                 }
                 ws_reassembly_len = ws_remaining;
+                if constexpr (requires { tcp_->flush_pending_ack(); }) {
+                    tcp_->flush_pending_ack();
+                }
                 continue;
             }
 
@@ -2524,6 +2527,12 @@ private:
                 }
 
                 consumed += record_total;
+            }
+
+            // Flush deferred ACK after TLS decrypt completes, keeping
+            // the ACK's rte_eth_tx_burst off the RX latency measurement path.
+            if constexpr (requires { tcp_->flush_pending_ack(); }) {
+                tcp_->flush_pending_ack();
             }
 
             // Compact: move unconsumed data to front (memmove, not erase)
