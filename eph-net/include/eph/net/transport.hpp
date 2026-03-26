@@ -3033,21 +3033,26 @@ private:
         bool           masked;
         uint32_t       mask_key;
         const uint8_t* payload;
-        size_t         payload_len;
+        uint64_t       payload_len;
         bool           is_control;
     };
 
     /// Process WS data with batch frame filter.
-    /// Phase 1: forward-scan all WS headers, build frame index.
-    /// Phase 2: build FrameView[] for filterable data frames, call filter.
-    /// Phase 3: dispatch frames according to filter decisions.
+    /// Phase 1: forward-scan WS headers, build index + FrameView in single pass.
+    /// Phase 2: call filter on FrameView[].
+    /// Phase 3: dispatch control frames immediately + data frames per filter.
     size_t process_ws_data_filtered(const uint8_t* data, size_t len) {
         auto log = detail::transport_logger();
 
-        // ── Phase 1: forward scan to build frame index ──────────────────
+        // ── Phase 1: single-pass scan ───────────────────────────────────
+        // Build frame index (for dispatch) and FrameView (for filter)
+        // simultaneously to avoid redundant iteration.
         static constexpr size_t kMaxFramesPerBatch = 128;
         FrameIndexEntry index[kMaxFramesPerBatch];
+        FrameView views[kMaxFramesPerBatch];
+        size_t    view_to_frame[kMaxFramesPerBatch]; // view idx → frame idx
         size_t num_frames = 0;
+        size_t num_views = 0;
         size_t offset = 0;
 
         while (offset < len && num_frames < kMaxFramesPerBatch) {
@@ -3070,55 +3075,41 @@ private:
             entry.payload_len = frame->payload_len;
             entry.is_control  = frame->is_control();
 
+            // Build FrameView inline for filterable data frames.
+            if (!entry.is_control &&
+                entry.opcode != ws::opcode::kContinuation &&
+                entry.fin &&
+                entry.payload && entry.payload_len > 0) {
+                auto& v = views[num_views];
+                v.payload     = entry.payload;
+                v.payload_len = static_cast<uint16_t>(
+                    std::min(entry.payload_len, uint64_t{UINT16_MAX}));
+                v.opcode      = entry.opcode;
+                v.deliver     = true;
+                view_to_frame[num_views] = num_frames;
+                ++num_views;
+            }
+
             offset += frame->total_len;
             ++num_frames;
         }
 
         if (num_frames == 0) return offset;
 
-        // ── Phase 2: build FrameView[] for filterable data frames ───────
-        // Only complete, non-control data frames are exposed to the filter.
-        // Control frames and fragmented frames are always delivered.
-        FrameView views[kMaxFramesPerBatch];
-        size_t    view_to_index[kMaxFramesPerBatch]; // maps view idx → index idx
-        size_t    num_views = 0;
-
-        for (size_t i = 0; i < num_frames; ++i) {
-            auto& entry = index[i];
-            if (entry.is_control) continue;
-            if (entry.opcode == ws::opcode::kContinuation || !entry.fin) continue;
-            if (!entry.payload || entry.payload_len == 0) continue;
-
-            auto& v = views[num_views];
-            v.payload     = entry.payload;
-            v.payload_len = static_cast<uint16_t>(
-                std::min(entry.payload_len, static_cast<size_t>(UINT16_MAX)));
-            v.opcode      = entry.opcode;
-            v.deliver     = true;
-            view_to_index[num_views] = i;
-            ++num_views;
-        }
-
-        // Call the filter — it may set deliver=false on some views.
+        // ── Phase 2: call filter ────────────────────────────────────────
         if (num_views > 0) {
             config_.on_frame_filter(std::span<FrameView>(views, num_views));
         }
 
-        SPDLOG_LOGGER_TRACE(log, "Frame filter: {} frames, {} filterable",
-                            num_frames, num_views);
-
-        // ── Phase 3: dispatch based on filter decisions ─────────────────
-        // Build a deliver bitmap indexed by original frame index.
+        // ── Phase 3: dispatch ───────────────────────────────────────────
+        // Build deliver bitmap from filter results.
         bool deliver[kMaxFramesPerBatch];
-        // Default: all delivered (control/fragmented/empty frames).
         for (size_t i = 0; i < num_frames; ++i) deliver[i] = true;
-        // Apply filter decisions for data frames.
         for (size_t vi = 0; vi < num_views; ++vi) {
-            deliver[view_to_index[vi]] = views[vi].deliver;
+            deliver[view_to_frame[vi]] = views[vi].deliver;
         }
 
-        uint64_t data_frames_total = 0;
-        uint64_t data_frames_delivered = 0;
+        uint64_t data_total = 0, data_delivered = 0;
 
         for (size_t i = 0; i < num_frames; ++i) {
             auto& entry = index[i];
@@ -3126,26 +3117,22 @@ private:
                 dispatch_indexed_frame(entry, data + entry.offset);
                 continue;
             }
-            ++data_frames_total;
+            ++data_total;
             if (deliver[i]) {
                 dispatch_indexed_frame(entry, data + entry.offset);
-                ++data_frames_delivered;
+                ++data_delivered;
             }
         }
 
-        // Batch stats update (one atomic per batch, not per frame).
-        if (data_frames_total > 0) {
-            rx_stats_.packets.fetch_add(data_frames_total,
+        if (data_total > 0) {
+            rx_stats_.packets.fetch_add(data_total,
                                         std::memory_order_relaxed);
             record_rx_latency();
         }
 
-        uint64_t skipped = data_frames_total - data_frames_delivered;
-        if (skipped > 0) {
-            SPDLOG_LOGGER_TRACE(log,
-                "Frame filter: delivered {}/{} data frames, skipped {}",
-                data_frames_delivered, data_frames_total, skipped);
-        }
+        SPDLOG_LOGGER_TRACE(log,
+            "Frame filter: {}/{} delivered, {} skipped",
+            data_delivered, data_total, data_total - data_delivered);
 
         return offset;
     }

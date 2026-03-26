@@ -64,13 +64,19 @@ inline FrameFilterFn make_twophase_filter(
     return [ext = std::move(extractor)](std::span<FrameView> frames) {
         // Open-addressing hash table: 256 slots for ≤128 frames → ≤50% load.
         static constexpr size_t kSlots = 256;
+        static constexpr size_t kMaxFrames = 128;
         struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
         Slot slots[kSlots] = {};
 
-        // Pass 1: record last index per symbol.
-        for (size_t i = 0; i < frames.size(); ++i) {
+        // Compute hashes once, cache for reuse in pass 2.
+        uint32_t hashes[kMaxFrames];
+        size_t n = std::min(frames.size(), kMaxFrames);
+
+        // Pass 1: extract hashes + record last index per symbol.
+        for (size_t i = 0; i < n; ++i) {
             auto& f = frames[i];
             uint32_t h = ext(f.payload, f.payload_len);
+            hashes[i] = h;
             if (h == 0) continue;  // unrecognized: deliver unconditionally
             size_t slot = h & (kSlots - 1);
             for (size_t j = 0; j < kSlots; ++j) {
@@ -86,13 +92,11 @@ inline FrameFilterFn make_twophase_filter(
             }
         }
 
-        // Pass 2: mark non-latest as skip.
-        // First, mark all recognized frames as skip.
-        for (size_t i = 0; i < frames.size(); ++i) {
-            uint32_t h = ext(frames[i].payload, frames[i].payload_len);
-            if (h != 0) frames[i].deliver = false;
+        // Pass 2: mark non-latest as skip using cached hashes.
+        for (size_t i = 0; i < n; ++i) {
+            if (hashes[i] != 0) frames[i].deliver = false;
         }
-        // Then, restore the latest per symbol.
+        // Restore latest per symbol.
         for (auto& s : slots) {
             if (s.hash != 0) {
                 frames[s.last_idx].deliver = true;
