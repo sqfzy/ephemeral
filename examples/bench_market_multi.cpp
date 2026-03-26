@@ -1,15 +1,16 @@
-/// @file bench_market.cpp
-/// Market data pipeline latency benchmark — socket (kernel) backend.
+/// @file bench_market_multi.cpp
+/// Multi-symbol market data pipeline latency benchmark — socket (kernel) backend.
 ///
-/// Connects to Binance bookTicker stream and measures the single metric:
+/// Connects to Binance combined bookTicker stream and measures:
 ///   RX pipeline: rx_burst → market data frame decoded
 ///
-/// No pings are sent — all rx_latency samples are pure data frames.
+/// Combined stream delivers all symbols in one connection.
+/// LastOnlyDeliver=false ensures every message reaches the app.
 ///
 /// Usage:
-///   ./bench_market
-///   ./bench_market --symbol btcusdt --duration 30
-///   ./bench_market --proxy socks5://127.0.0.1:7890
+///   ./bench_market_multi
+///   ./bench_market_multi --symbols btcusdt,ethusdt,solusdt --duration 60
+///   ./bench_market_multi --proxy socks5://127.0.0.1:7890
 
 #include <atomic>
 #include <chrono>
@@ -17,8 +18,11 @@
 #include <cstdlib>
 #include <format>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -27,21 +31,21 @@
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/time.hpp"
 
-// Single-symbol: last-only deliver (only latest bookTicker matters)
+// Multi-symbol: larger payload for combined stream wrapper, deliver all frames.
 using BenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
-    512, 1024,
+    4096, 1024,
     eph::containers::EvictingQueue,
-    true  // LastOnlyDeliver
+    false  // LastOnlyDeliver — every symbol's update matters
 >;
 
 struct Config {
     std::string host   = "fstream.binance.com";
     uint16_t    port   = 443;
-    std::string symbol = "btcusdt";
+    std::vector<std::string> symbols = {"btcusdt", "ethusdt", "solusdt"};
     std::string proxy_url{};
-    int  duration      = 30;   // seconds, 0 = infinite
+    int  duration      = 30;
     bool use_tls       = true;
     bool verify        = false;
     int  tx_cpu        = -1;
@@ -51,6 +55,15 @@ struct Config {
 static std::atomic<bool> g_running{true};
 static void sig(int) { g_running.store(false, std::memory_order_release); }
 
+static std::vector<std::string> split(const std::string& s, char delim) {
+    std::vector<std::string> tokens;
+    std::istringstream ss(s);
+    std::string token;
+    while (std::getline(ss, token, delim))
+        if (!token.empty()) tokens.push_back(token);
+    return tokens;
+}
+
 static Config parse_args(int argc, char** argv) {
     Config c;
     for (int i = 1; i < argc; ++i) {
@@ -59,18 +72,18 @@ static Config parse_args(int argc, char** argv) {
             if (i + 1 >= argc) { std::cerr << std::format("{} requires a value\n", n); std::exit(1); }
             return argv[++i];
         };
-        if      (a == "--host")     c.host     = next(a);
-        else if (a == "--port")     c.port     = static_cast<uint16_t>(std::atoi(next(a)));
-        else if (a == "--symbol")   c.symbol   = next(a);
-        else if (a == "--proxy")    c.proxy_url = next(a);
-        else if (a == "--duration") c.duration = std::atoi(next(a));
-        else if (a == "--no-tls")   c.use_tls  = false;
-        else if (a == "--no-verify") c.verify  = false;
-        else if (a == "--tx-cpu")   c.tx_cpu   = std::atoi(next(a));
-        else if (a == "--rx-cpu")   c.rx_cpu   = std::atoi(next(a));
+        if      (a == "--host")      c.host      = next(a);
+        else if (a == "--port")      c.port      = static_cast<uint16_t>(std::atoi(next(a)));
+        else if (a == "--symbols")   c.symbols   = split(next(a), ',');
+        else if (a == "--proxy")     c.proxy_url = next(a);
+        else if (a == "--duration")  c.duration  = std::atoi(next(a));
+        else if (a == "--no-tls")    c.use_tls   = false;
+        else if (a == "--no-verify") c.verify    = false;
+        else if (a == "--tx-cpu")    c.tx_cpu    = std::atoi(next(a));
+        else if (a == "--rx-cpu")    c.rx_cpu    = std::atoi(next(a));
         else if (a == "--help") {
             std::cerr << std::format(
-                "Usage: {} [--host H] [--port P] [--symbol S] [--proxy URL]\n"
+                "Usage: {} [--host H] [--port P] [--symbols S1,S2,S3] [--proxy URL]\n"
                 "       [--duration SEC] [--no-tls] [--no-verify] [--tx-cpu N] [--rx-cpu N]\n", argv[0]);
             std::exit(0);
         }
@@ -93,13 +106,19 @@ int main(int argc, char** argv) {
     }
     spdlog::info("TSC: {:.4f} ns/cycle", eph::utils::TSC::get_ns_per_cycle().value());
 
-    auto ws_path = std::format("/ws/{}@bookTicker", cfg.symbol);
+    // Build combined stream path
+    std::string streams;
+    for (size_t i = 0; i < cfg.symbols.size(); ++i) {
+        if (i > 0) streams += '/';
+        streams += cfg.symbols[i] + "@bookTicker";
+    }
+    auto ws_path = "/stream?streams=" + streams;
 
     eph::net::TransportConfig tc{
         .remote_host = cfg.host, .remote_port = cfg.port,
         .ws_path = ws_path, .use_tls = cfg.use_tls, .verify_peer = cfg.verify,
         .max_reconnect_attempts = 3,
-        .ping_interval = std::chrono::seconds{0},  // no pings — pure data measurement
+        .ping_interval = std::chrono::seconds{0},
         .skip_utf8_validation = true,
         .tx_cpu = cfg.tx_cpu, .rx_cpu = cfg.rx_cpu,
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
@@ -125,7 +144,8 @@ int main(int argc, char** argv) {
         };
     }
 
-    spdlog::info("Connecting to wss://{}:{}{}", cfg.host, cfg.port, ws_path);
+    spdlog::info("Connecting to wss://{}:{}{} ({} symbols)",
+                 cfg.host, cfg.port, ws_path, cfg.symbols.size());
     auto result = BenchTransport::create(std::move(factory), tc);
     if (!result) { spdlog::error("Connect failed: {}", result.error().message()); return 1; }
     auto& tp = **result;
@@ -156,8 +176,9 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() - start).count();
 
     auto stats = tp.stats();
-    spdlog::info("=== Market Data Pipeline Benchmark (Socket) ===");
-    spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
+    spdlog::info("=== Multi-Symbol Market Data Benchmark (Socket) ===");
+    spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {}",
+                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs);
     spdlog::info("Transport stats:\n{}", stats.dump());
 
     auto& rx = stats.rx_latency;

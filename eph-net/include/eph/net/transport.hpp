@@ -135,10 +135,16 @@ inline std::shared_ptr<spdlog::logger> transport_logger() {
 ///   auto& transport = *result;     // unique_ptr<Transport>
 ///   transport->send(data, len);    // Non-blocking
 ///   transport->recv([](auto* data, auto len) { ... });
+/// @tparam LastOnlyDeliver  When true, only the last WS data frame per
+///   process_ws_data() call is delivered; intermediate frames are decoded
+///   but skipped.  Useful for single-symbol streams where only the latest
+///   value matters.  For multi-symbol combined streams, set to false so
+///   every message reaches the application.
 template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
           size_t MaxPayload = 512, size_t QueueDepth = 1024,
           template <typename, size_t> class RxQueueTmpl =
-              eph::containers::BoundedQueue>
+              eph::containers::BoundedQueue,
+          bool LastOnlyDeliver = false>
 class Transport {
     static_assert(TcpTransport<TcpImpl>,
                   "TcpImpl must satisfy TcpTransport concept");
@@ -158,6 +164,11 @@ class Transport {
     static constexpr bool kRxEvicting =
         std::same_as<RxQueueTmpl<int, 2>,
                      eph::containers::EvictingQueue<int, 2>>;
+
+    /// Controls whether only the last WS data frame per batch is delivered.
+    /// Independent of queue type — EvictingQueue can deliver all frames
+    /// (multi-symbol) or only the last (single-symbol).
+    static constexpr bool kLastOnlyDeliver = LastOnlyDeliver;
 
     using TxMsg = detail::TxMessage<MaxPayload>;
     using RxMsg = detail::RxMessage<MaxPayload>;
@@ -2694,15 +2705,15 @@ private:
 
             offset += frame->total_len;
 
-            // BoundedQueue: per-frame stats + latency as before.
-            // EvictingQueue: deferred to after loop for last data frame only.
-            if constexpr (!kRxEvicting) {
+            // deliver-all: per-frame stats + latency recording.
+            // last-only: deferred to after loop for the last data frame.
+            if constexpr (!kLastOnlyDeliver) {
                 rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 record_rx_latency();
             }
 
             if (frame->is_ping()) {
-                if constexpr (kRxEvicting) {
+                if constexpr (kLastOnlyDeliver) {
                     rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                     record_rx_latency();
                 }
@@ -2721,7 +2732,7 @@ private:
             }
 
             if (frame->is_close()) {
-                if constexpr (kRxEvicting) {
+                if constexpr (kLastOnlyDeliver) {
                     rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                     record_rx_latency();
                 }
@@ -2760,7 +2771,7 @@ private:
             }
 
             if (frame->is_pong()) {
-                if constexpr (kRxEvicting) {
+                if constexpr (kLastOnlyDeliver) {
                     rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                     record_rx_latency();
                 }
@@ -2835,9 +2846,9 @@ private:
 
             if (is_single_frame && frame->payload_len <= MaxPayload) {
                 // Fast path: complete single-frame message, no buffering.
-                // EvictingQueue: defer delivery, just remember the last frame.
-                // BoundedQueue: deliver immediately (every message matters).
-                if constexpr (kRxEvicting) {
+                // last-only: defer delivery, just remember the last frame.
+                // deliver-all: deliver immediately (every message matters).
+                if constexpr (kLastOnlyDeliver) {
                     last_data_frame = &*frame;
                     ++data_frame_count;
                 } else {
@@ -2877,7 +2888,7 @@ private:
                 if (is_final) {
                     // Reassembly complete — deliver
                     if (!ws_frag_buf_.empty()) {
-                        if constexpr (kRxEvicting) {
+                        if constexpr (kLastOnlyDeliver) {
                             // Cannot defer fragmented frames (buffer reused
                             // next iteration), so deliver immediately but
                             // count it for the batch stats update below.
@@ -2901,9 +2912,9 @@ private:
             }
         }
 
-        // EvictingQueue: deliver only the last data frame from this batch.
+        // Last-only mode: deliver only the last data frame from this batch.
         // One record_rx_latency() + one deliver + one batch stats update.
-        if constexpr (kRxEvicting) {
+        if constexpr (kLastOnlyDeliver) {
             if (data_frame_count > 0) {
                 rx_stats_.packets.fetch_add(data_frame_count,
                                             std::memory_order_relaxed);

@@ -35,7 +35,8 @@ using BenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
     512, 1024,
-    eph::containers::EvictingQueue
+    eph::containers::EvictingQueue,
+    true  // LastOnlyDeliver
 >;
 
 struct Config {

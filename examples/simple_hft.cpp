@@ -52,7 +52,8 @@ using HftTransport = eph::net::Transport<
     eph::net::WsFramer,
     512,   // MaxPayload — Binance bookTicker messages are ~200 bytes
     1024,  // QueueDepth
-    eph::containers::EvictingQueue
+    eph::containers::EvictingQueue,
+    true   // LastOnlyDeliver — single symbol, only latest matters
 >;
 
 // ─────────────────────────────────────────────────────────────────────────────

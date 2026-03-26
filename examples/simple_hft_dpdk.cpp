@@ -52,7 +52,8 @@ using HftDpdkTransport = eph::net::Transport<
     eph::net::WsFramer,
     512,   // MaxPayload
     1024,  // QueueDepth
-    eph::containers::EvictingQueue
+    eph::containers::EvictingQueue,
+    true   // LastOnlyDeliver — single symbol, only latest matters
 >;
 
 // ─────────────────────────────────────────────────────────────────────────────
