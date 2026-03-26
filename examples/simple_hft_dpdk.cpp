@@ -11,13 +11,13 @@
 ///
 /// Usage (all threads on isolated, non-overlapping cores):
 ///   # lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
-///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 -- 
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 
+///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 --
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10
 ///
-///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 -- 
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 
-///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 
+///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 --
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10
 ///       --symbol ethusdt --count 500 --ping-interval 200
 ///
 /// EAL args (e.g. -a <pci_addr>) go BEFORE the '--' separator;

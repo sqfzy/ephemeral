@@ -15,11 +15,11 @@
 ///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --on-message --duration 30
 ///
 ///   # Custom symbols:
-///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 \
+///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2
 ///       --symbols btcusdt,ethusdt,solusdt,bnbusdt --duration 60
 ///
 ///   # With proxy:
-///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2 \
+///   ./bench_market_multi --rx-cpu 0 --tx-cpu 1 --main-cpu 2
 ///       --proxy socks5://127.0.0.1:7890
 
 #include <algorithm>
@@ -212,10 +212,11 @@ int main(int argc, char** argv) {
 
     static volatile uint64_t on_msg_sink = 0;
     if (cfg.use_on_message) {
-        tc.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+        tc.on_message = [](const uint8_t* data, [[maybe_unused]] uint16_t len, uint8_t) {
             on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
         };
     }
+    (void)on_msg_sink;
 
     eph::net::SocketConfig sc{
         .host = cfg.host, .port = cfg.port,

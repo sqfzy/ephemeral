@@ -11,7 +11,7 @@
 ///
 /// Usage:
 ///   ./production_client --host echo.websocket.org --count 100
-///   ./production_client --host echo.websocket.org --count 1000 
+///   ./production_client --host echo.websocket.org --count 1000
 ///       --tx-cpu 2 --rx-cpu 3 --interval 10
 ///
 /// Prerequisites:
@@ -218,7 +218,7 @@ int main(int argc, char** argv) {
                 uint64_t rtt_cycles = recv_tsc - send_tsc;
                 rtt_recorder.record(rtt_cycles);
 
-                auto rtt_ns = eph::utils::TSC::to_ns(rtt_cycles).value_or(0.0);
+                [[maybe_unused]] auto rtt_ns = eph::utils::TSC::to_ns(rtt_cycles).value_or(0.0);
                 std::string_view echo(reinterpret_cast<const char*>(data), len);
                 SPDLOG_DEBUG("<< {} (RTT: {:.0f} ns)", echo, rtt_ns);
                 ++received;

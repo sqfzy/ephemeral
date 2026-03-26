@@ -3,7 +3,7 @@
 ///
 /// Usage:
 ///   ./ws_echo_client --host echo.websocket.org
-///   ./ws_echo_client --host echo.websocket.org --port 443 --path / 
+///   ./ws_echo_client --host echo.websocket.org --port 443 --path /ws
 ///       --msg "hello" --count 5 --interval 1000 --no-tls
 ///
 /// For the DPDK backend, see ws_echo_client_dpdk.cpp.
