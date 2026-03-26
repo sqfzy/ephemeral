@@ -2037,3 +2037,123 @@ TEST(SendErrorOperatorNot, ErrorsAreTruthy) {
     EXPECT_TRUE(!SendError::kInvalidCloseCode);
     EXPECT_TRUE(!SendError::kNullData);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// make_twophase_filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+// Simple hash: return first byte, 0 on empty.
+uint32_t simple_hash(const uint8_t* data, size_t len) {
+    return len > 0 ? data[0] : 0;
+}
+} // namespace
+
+TEST(TwophaseFilter, StdFunctionOverloadDeliverLatestPerSymbol) {
+    auto filter = make_twophase_filter(
+        std::function<uint32_t(const uint8_t*, size_t)>(simple_hash));
+
+    // 3 frames: symbol A(1), symbol B(2), symbol A(1) — latest A is frame 2
+    uint8_t a = 'A', b = 'B';
+    FrameView views[] = {
+        {&a, 1, 1, true},  // frame 0: symbol A
+        {&b, 1, 1, true},  // frame 1: symbol B
+        {&a, 1, 1, true},  // frame 2: symbol A (latest)
+    };
+
+    filter(std::span{views, 3});
+
+    EXPECT_FALSE(views[0].deliver);  // old A — skipped
+    EXPECT_TRUE(views[1].deliver);   // latest B
+    EXPECT_TRUE(views[2].deliver);   // latest A
+}
+
+TEST(TwophaseFilter, RawFnPtrOverloadDeliverLatestPerSymbol) {
+    auto filter = make_twophase_filter(simple_hash);
+
+    uint8_t a = 'A', b = 'B';
+    FrameView views[] = {
+        {&a, 1, 1, true},
+        {&b, 1, 1, true},
+        {&a, 1, 1, true},
+    };
+
+    filter(std::span{views, 3});
+
+    EXPECT_FALSE(views[0].deliver);
+    EXPECT_TRUE(views[1].deliver);
+    EXPECT_TRUE(views[2].deliver);
+}
+
+TEST(TwophaseFilter, ZeroHashAlwaysDelivered) {
+    // Hash returns 0 → frame always delivered (unrecognized payload)
+    auto filter = make_twophase_filter(
+        std::function<uint32_t(const uint8_t*, size_t)>(
+            [](const uint8_t*, size_t) -> uint32_t { return 0; }));
+
+    uint8_t x = 'X';
+    FrameView views[] = {
+        {&x, 1, 1, true},
+        {&x, 1, 1, true},
+        {&x, 1, 1, true},
+    };
+
+    filter(std::span{views, 3});
+
+    // All frames delivered (hash=0 means always deliver)
+    EXPECT_TRUE(views[0].deliver);
+    EXPECT_TRUE(views[1].deliver);
+    EXPECT_TRUE(views[2].deliver);
+}
+
+TEST(TwophaseFilter, SingleFrameDelivered) {
+    auto filter = make_twophase_filter(simple_hash);
+
+    uint8_t a = 'A';
+    FrameView views[] = {{&a, 1, 1, true}};
+
+    filter(std::span{views, 1});
+
+    EXPECT_TRUE(views[0].deliver);  // only frame = latest
+}
+
+TEST(TwophaseFilter, AllSameSymbolOnlyLatestDelivered) {
+    auto filter = make_twophase_filter(simple_hash);
+
+    uint8_t a = 'A';
+    FrameView views[] = {
+        {&a, 1, 1, true},
+        {&a, 1, 1, true},
+        {&a, 1, 1, true},
+        {&a, 1, 1, true},
+        {&a, 1, 1, true},
+    };
+
+    filter(std::span{views, 5});
+
+    for (int i = 0; i < 4; ++i)
+        EXPECT_FALSE(views[i].deliver) << "frame " << i << " should be skipped";
+    EXPECT_TRUE(views[4].deliver);  // only the last
+}
+
+TEST(TwophaseFilter, EmptySpanNoOp) {
+    auto filter = make_twophase_filter(simple_hash);
+    filter(std::span<FrameView>{});  // should not crash
+}
+
+TEST(TwophaseFilter, ManySymbolsAllLatestDelivered) {
+    auto filter = make_twophase_filter(simple_hash);
+
+    // 26 distinct symbols (A-Z), each appears once → all delivered
+    uint8_t syms[26];
+    FrameView views[26];
+    for (int i = 0; i < 26; ++i) {
+        syms[i] = static_cast<uint8_t>('A' + i);
+        views[i] = {&syms[i], 1, 1, true};
+    }
+
+    filter(std::span{views, 26});
+
+    for (int i = 0; i < 26; ++i)
+        EXPECT_TRUE(views[i].deliver) << "symbol " << char('A' + i) << " should be delivered";
+}
