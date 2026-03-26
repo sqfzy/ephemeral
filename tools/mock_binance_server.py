@@ -144,6 +144,7 @@ def run_server(args):
 
     symbols = args.symbols.split(",")
     batch_size = args.batch_size
+    batch_jitter = args.batch_jitter
     rate = args.rate  # msg/s, 0 = unlimited
     duration = args.duration
 
@@ -155,7 +156,7 @@ def run_server(args):
 
     print(f"Listening on 0.0.0.0:{args.port} (TLS 1.3)")
     print(f"  symbols:    {symbols}")
-    print(f"  batch-size: {batch_size} frames/record")
+    print(f"  batch-size: {batch_size} frames/record{' (jitter)' if batch_jitter else ''}")
     print(f"  rate:       {rate} msg/s {'(unlimited)' if rate == 0 else ''}")
     print(f"  duration:   {duration}s")
 
@@ -219,8 +220,13 @@ def run_server(args):
                     running = False
                     break
 
+                cur_batch = batch_size
+                if batch_jitter and batch_size > 1:
+                    cur_batch = random.randint(
+                        max(1, batch_size // 2), batch_size * 2)
+
                 buf = bytearray()
-                for _ in range(batch_size):
+                for _ in range(cur_batch):
                     symbol = symbols[sym_idx % len(symbols)]
                     sym_idx += 1
                     payload = make_book_ticker(symbol, seq)
@@ -228,7 +234,7 @@ def run_server(args):
                     buf.extend(encode_ws_text_frame(payload))
 
                 conn.sendall(bytes(buf))
-                total_msgs += batch_size
+                total_msgs += cur_batch
                 total_bytes += len(buf)
                 total_records += 1
 
@@ -281,6 +287,8 @@ def main():
                         help="Comma-separated symbol list")
     parser.add_argument("--batch-size", type=int, default=1,
                         help="WS frames per TLS record (default: 1)")
+    parser.add_argument("--batch-jitter", action="store_true",
+                        help="Randomize batch size in [batch/2, batch*2] per record")
     parser.add_argument("--rate", type=int, default=0,
                         help="Target msg/s rate, 0=unlimited (default: 0)")
     parser.add_argument("--duration", type=int, default=30,
