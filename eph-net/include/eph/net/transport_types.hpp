@@ -45,11 +45,6 @@ struct FrameView {
 /// @warning Called from the RX thread — must be non-blocking, no heap allocation.
 using FrameFilterFn = std::function<void(std::span<FrameView>)>;
 
-/// Raw function pointer for symbol hash extraction (no std::function overhead).
-/// Used with the inline two-phase dedup fast path. Returns 0 for unrecognized
-/// payloads (which are always delivered unconditionally).
-using SymbolHashFn = uint32_t (*)(const uint8_t* data, size_t len);
-
 /// Create a batch frame filter that delivers only the latest frame per symbol.
 ///
 /// Two-phase forward scan: pass 1 records last index per symbol hash,
@@ -102,6 +97,50 @@ inline FrameFilterFn make_twophase_filter(
             if (hashes[i] != 0) frames[i].deliver = false;
         }
         // Restore latest per symbol.
+        for (auto& s : slots) {
+            if (s.hash != 0) {
+                frames[s.last_idx].deliver = true;
+            }
+        }
+    };
+}
+
+/// @overload Raw function pointer variant — avoids std::function overhead
+/// on the hot path. Prefer this when the extractor is a plain function.
+inline FrameFilterFn make_twophase_filter(
+    uint32_t (*extractor)(const uint8_t* data, size_t len))
+{
+    return [extractor](std::span<FrameView> frames) {
+        static constexpr size_t kSlots = 256;
+        static constexpr size_t kMaxFrames = 128;
+        struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
+        Slot slots[kSlots] = {};
+
+        uint32_t hashes[kMaxFrames];
+        size_t n = std::min(frames.size(), kMaxFrames);
+
+        for (size_t i = 0; i < n; ++i) {
+            auto& f = frames[i];
+            uint32_t h = extractor(f.payload, f.payload_len);
+            hashes[i] = h;
+            if (h == 0) continue;
+            size_t slot = h & (kSlots - 1);
+            for (size_t j = 0; j < kSlots; ++j) {
+                size_t s = (slot + j) & (kSlots - 1);
+                if (slots[s].hash == 0) {
+                    slots[s] = {h, i};
+                    break;
+                }
+                if (slots[s].hash == h) {
+                    slots[s].last_idx = i;
+                    break;
+                }
+            }
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            if (hashes[i] != 0) frames[i].deliver = false;
+        }
         for (auto& s : slots) {
             if (s.hash != 0) {
                 frames[s.last_idx].deliver = true;
@@ -425,16 +464,9 @@ struct TransportConfig {
     /// frames are always delivered regardless of the filter.
     ///
     /// Use `make_twophase_filter(extractor)` for latest-per-symbol delivery.
-    /// For best performance, prefer `symbol_hash_fn` which uses an optimized
-    /// inline fast path.
+    /// For best performance, prefer the raw function pointer overload of
+    /// `make_twophase_filter` which avoids std::function overhead.
     FrameFilterFn on_frame_filter{};
-
-    /// Symbol hash extractor for inline two-phase dedup (optional).
-    /// When set, enables a fast-path two-phase filter that avoids
-    /// std::function overhead and minimizes per-frame work: only frames
-    /// surviving the dedup are fully decoded. Takes precedence over
-    /// on_frame_filter when both are set.
-    SymbolHashFn symbol_hash_fn = nullptr;
 
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).

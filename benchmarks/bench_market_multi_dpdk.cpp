@@ -278,7 +278,9 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
-        .symbol_hash_fn = cfg.use_twophase ? binance_symbol_hash : nullptr,
+        .on_frame_filter = cfg.use_twophase
+            ? eph::net::make_twophase_filter(binance_symbol_hash)
+            : eph::net::FrameFilterFn{},
     };
 
     // on_message bypasses EvictingQueue — callback runs in RX thread
