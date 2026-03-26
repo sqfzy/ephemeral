@@ -1238,7 +1238,7 @@ private:
     bool rx_enqueue(const uint8_t* data, uint16_t len,
                     uint8_t opcode) noexcept {
         if constexpr (kRxEvicting) {
-            RxMsg msg{};
+            RxMsg msg;  // skip zero-init of data[MaxPayload] — only len bytes matter
             std::memcpy(msg.data, data, len);
             msg.len = len;
             msg.opcode = opcode;
