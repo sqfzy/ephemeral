@@ -1249,14 +1249,17 @@ private:
     bool rx_enqueue(const uint8_t* data, uint16_t len,
                     uint8_t opcode) noexcept {
         if constexpr (kRxEvicting) {
-            RxMsg msg;  // skip zero-init of data[MaxPayload] — only len bytes matter
-            std::memcpy(msg.data, data, len);
-            msg.len = len;
-            msg.opcode = opcode;
-            if constexpr (kEnableTimestamps) {
-                msg.tsc = current_arrival_tsc_;
-            }
-            rx_queue_.push(std::move(msg));
+            // Write directly into the queue slot via produce() to avoid
+            // allocating a 16KB+ RxMsg on the stack and then copying the
+            // entire struct into the slot.  Only `len` bytes are copied.
+            rx_queue_.produce([&](RxMsg& slot) {
+                std::memcpy(slot.data, data, len);
+                slot.len = len;
+                slot.opcode = opcode;
+                if constexpr (kEnableTimestamps) {
+                    slot.tsc = current_arrival_tsc_;
+                }
+            });
             return true;
         } else {
             return rx_queue_.try_produce([&](RxMsg& msg) {
@@ -1374,6 +1377,7 @@ private:
     TcpFactory                             tcp_factory_;
     uint64_t                               current_arrival_tsc_{0};
     uint64_t                               current_decrypt_done_tsc_{0};
+    double                                 ns_per_cycle_{0.0};  // cached at rx_loop entry
     std::unique_ptr<TcpImpl>               tcp_;
     std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
 
@@ -2310,6 +2314,13 @@ private:
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 
+        // Cache TSC conversion factor once — avoids per-frame acquire
+        // load on TSC::initialized_ inside the hot loop.
+        if constexpr (kEnableTimestamps) {
+            auto npc = eph::utils::TSC::get_ns_per_cycle();
+            ns_per_cycle_ = npc.value_or(0.0);
+        }
+
         // Fixed-size RX buffers -- no heap allocation on hot path.
         // TLS reassembly: accumulates raw TCP bytes until complete TLS records form.
         // Sized for 2x max TLS record to handle partial records at boundary.
@@ -2628,28 +2639,28 @@ private:
         if constexpr (kEnableTimestamps) {
             uint64_t now_tsc = eph::utils::TSC::now();
             if (current_arrival_tsc_ > 0 && now_tsc > current_arrival_tsc_) {
+                // Use cached ns_per_cycle_ (set once at rx_loop entry) to
+                // avoid per-frame acquire loads on TSC::initialized_.
+                auto cycles_to_ns = [this](uint64_t c) -> uint64_t {
+                    return static_cast<uint64_t>(static_cast<double>(c) * ns_per_cycle_);
+                };
+
                 // Total: arrival → decoded + kernel RX
-                auto total_ns = eph::utils::TSC::to_ns(now_tsc - current_arrival_tsc_);
-                if (total_ns) {
-                    uint64_t total = static_cast<uint64_t>(*total_ns);
-                    if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
-                        total += tcp_->last_kernel_rx_delay_ns();
-                    }
-                    rx_latency_histogram_.record(total);
+                uint64_t total = cycles_to_ns(now_tsc - current_arrival_tsc_);
+                if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
+                    total += tcp_->last_kernel_rx_delay_ns();
                 }
+                rx_latency_histogram_.record(total);
+
                 // Decrypt: arrival → decrypt_done (TLS only)
                 if (current_decrypt_done_tsc_ > current_arrival_tsc_) {
-                    auto dec_ns = eph::utils::TSC::to_ns(
-                        current_decrypt_done_tsc_ - current_arrival_tsc_);
-                    if (dec_ns) rx_decrypt_histogram_.record(
-                        static_cast<uint64_t>(*dec_ns));
+                    rx_decrypt_histogram_.record(
+                        cycles_to_ns(current_decrypt_done_tsc_ - current_arrival_tsc_));
                 }
                 // Decode: decrypt_done → now (WS frame parsing)
                 if (current_decrypt_done_tsc_ > 0 && now_tsc > current_decrypt_done_tsc_) {
-                    auto ws_ns = eph::utils::TSC::to_ns(
-                        now_tsc - current_decrypt_done_tsc_);
-                    if (ws_ns) rx_decode_histogram_.record(
-                        static_cast<uint64_t>(*ws_ns));
+                    rx_decode_histogram_.record(
+                        cycles_to_ns(now_tsc - current_decrypt_done_tsc_));
                 }
             }
         }

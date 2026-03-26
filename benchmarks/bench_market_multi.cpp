@@ -40,6 +40,7 @@
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
+#include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
 
@@ -71,6 +72,25 @@ static uint32_t binance_symbol_hash(const uint8_t* data, size_t len) {
         ++p;
     }
     return (p > data + kPrefixLen) ? hash : 0;
+}
+
+/// Extract Binance event timestamp (ms) from combined stream JSON.
+/// Scans for "E": in the outer data object and parses the integer.
+/// Returns 0 on parse failure.
+static int64_t binance_event_time_ms(const uint8_t* data, size_t len) {
+    // Combined stream: {"stream":"...","data":{"e":"bookTicker","E":1234567890123,...}}
+    // Scan for "E": pattern — the event time field.
+    std::string_view json(reinterpret_cast<const char*>(data), len);
+    auto pos = json.find("\"E\":");
+    if (pos == std::string_view::npos) return 0;
+    pos += 4;  // skip "E":
+    while (pos < len && json[pos] == ' ') ++pos;
+    int64_t val = 0;
+    while (pos < len && json[pos] >= '0' && json[pos] <= '9') {
+        val = val * 10 + (json[pos] - '0');
+        ++pos;
+    }
+    return val;
 }
 
 struct Config {
@@ -268,6 +288,10 @@ int main(int argc, char** argv) {
     auto& tp = **result;
     spdlog::info("Connected (handshake {:.2f} ms)", tp.stats().handshake_ms());
 
+    // ── Feed latency tracking ─────────────────────────────────────────────
+    // Range: 1us to 60s (in nanoseconds) — covers all practical feed latencies.
+    eph::utils::HdrHistogram feed_hist{1'000, 60'000'000'000ULL, 3};
+
     // ── Main loop: drain market data ────────────────────────────────────────
     uint64_t msgs = 0;
     auto start = std::chrono::steady_clock::now();
@@ -294,6 +318,16 @@ int main(int argc, char** argv) {
         } else {
             bool got = tp.recv([&](const uint8_t* data, size_t len) {
                 ++msgs;
+                // Feed latency: Binance E timestamp vs local wall clock
+                auto event_ms = binance_event_time_ms(data, len);
+                if (event_ms > 0) {
+                    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    auto delta_ms = now_ms - event_ms;
+                    if (delta_ms > 0 && delta_ms < 60000) {
+                        feed_hist.record(static_cast<uint64_t>(delta_ms) * 1'000'000);  // ms → ns
+                    }
+                }
                 if ((msgs & 0xFF) == 1) {
                     std::string_view json(reinterpret_cast<const char*>(data), len);
                     spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
@@ -350,6 +384,20 @@ int main(int argc, char** argv) {
         spdlog::info("  max:     {:.0f} ns", static_cast<double>(rx.max_ns));
     } else {
         spdlog::info("  (no samples)");
+    }
+
+    // Feed latency report
+    auto fl = hdr_to_stats(feed_hist);
+    spdlog::info("--- Feed Latency (Binance E → App recv) ---");
+    if (fl.count > 0) {
+        spdlog::info("  samples: {}", fl.count);
+        spdlog::info("  min:     {:.1f} ms", fl.min_ns / 1e6);
+        spdlog::info("  p50:     {:.1f} ms", fl.p50_ns / 1e6);
+        spdlog::info("  p99:     {:.1f} ms", fl.p99_ns / 1e6);
+        spdlog::info("  p99.9:   {:.1f} ms", fl.p999_ns / 1e6);
+        spdlog::info("  max:     {:.1f} ms", fl.max_ns / 1e6);
+    } else {
+        spdlog::info("  (no samples — check NTP sync)");
     }
 
     return 0;
