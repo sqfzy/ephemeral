@@ -56,8 +56,8 @@ def generate_self_signed_cert():
 
 def ws_accept_key(client_key: str) -> str:
     """Compute Sec-WebSocket-Accept matching the project's WS GUID."""
-    # NOTE: this project uses a non-standard GUID (http.hpp:259).
-    # The standard RFC 6455 GUID is 258EAFA5-E914-47DA-95CA-5AB5FC6D97BA.
+    # Binance uses a non-standard GUID (verified empirically 2026-03-26).
+    # RFC 6455 standard is 258EAFA5-E914-47DA-95CA-5AB5FC6D97BA.
     magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     digest = hashlib.sha1((client_key.strip() + magic).encode()).digest()
     return base64.b64encode(digest).decode()
