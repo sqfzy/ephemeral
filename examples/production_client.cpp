@@ -11,7 +11,7 @@
 ///
 /// Usage:
 ///   ./production_client --host echo.websocket.org --count 100
-///   ./production_client --host echo.websocket.org --count 1000 \
+///   ./production_client --host echo.websocket.org --count 1000 
 ///       --tx-cpu 2 --rx-cpu 3 --interval 10
 ///
 /// Prerequisites:

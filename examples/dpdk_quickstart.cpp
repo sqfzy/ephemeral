@@ -9,8 +9,8 @@
 /// pipeline into a single call.
 ///
 /// Usage:
-///   sudo ./dpdk_quickstart -a 0000:28:00.0 -- \
-///       --host echo.websocket.org \
+///   sudo ./dpdk_quickstart -a 0000:28:00.0 -- 
+///       --host echo.websocket.org 
 ///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///
 /// Arguments BEFORE '--' are DPDK EAL arguments (PCIe device, cores, etc.).

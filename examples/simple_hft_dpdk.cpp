@@ -11,13 +11,13 @@
 ///
 /// Usage (all threads on isolated, non-overlapping cores):
 ///   # lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
-///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 -- \
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 -- 
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 
 ///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10
 ///
-///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 -- \
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
-///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 \
+///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 -- 
+///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 
 ///       --symbol ethusdt --count 500 --ping-interval 200
 ///
 /// EAL args (e.g. -a <pci_addr>) go BEFORE the '--' separator;
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
     }
 
     auto cfg = parse_args(app_argc, app_argv);
-    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
+    if (cfg.main_cpu >= 0) (void)eph::utils::set_thread_affinity(cfg.main_cpu, "main");
 
     if (cfg.local_ip.empty() || cfg.gateway_ip.empty()) {
         spdlog::error("--local-ip and --gateway-ip are required for DPDK backend");

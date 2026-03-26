@@ -106,7 +106,7 @@ static void demo_thread_affinity() {
     spdlog::info("=== Thread Affinity ===");
 
     // Pin the current thread to CPU 0
-    auto result = eph::utils::set_thread_affinity(0, "demo-thread");
+    auto result = (void)eph::utils::set_thread_affinity(0, "demo-thread");
     if (result) {
         spdlog::info("Successfully pinned current thread to CPU 0");
     } else {

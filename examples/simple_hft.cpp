@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     auto cfg = parse_args(argc, argv);
-    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
+    if (cfg.main_cpu >= 0) (void)eph::utils::set_thread_affinity(cfg.main_cpu, "main");
 
     // ── Step 1: Calibrate TSC ─────────────────────────────────────────────
     spdlog::info("Calibrating TSC...");
