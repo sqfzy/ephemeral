@@ -51,7 +51,7 @@
 using BenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
     eph::net::WsFramer,
-    4096, 1024,
+    16384, 1024,
     eph::containers::EvictingQueue,
     false  // LastOnlyDeliver — every symbol's update matters
 >;
@@ -192,16 +192,15 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--mode") {
             std::string_view m = next(a);
             if      (m == "all")      c.symbol_dedup = eph::net::SymbolDedup::kNone;
-            else if (m == "reverse")  c.symbol_dedup = eph::net::SymbolDedup::kReverseLatest;
             else if (m == "twophase") c.symbol_dedup = eph::net::SymbolDedup::kTwoPhaseLatest;
-            else { std::cerr << std::format("Unknown mode: {} (use all|reverse|twophase)\n", m); std::exit(1); }
+            else { std::cerr << std::format("Unknown mode: {} (use all|twophase)\n", m); std::exit(1); }
         }
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [EAL args] -- [--host H] [--port P] [--symbols S1,S2,S3]\n"
                 "       [--local-ip IP] [--gateway-ip IP] [--dpdk-port N] [--local-port N]\n"
                 "       [--duration SEC] [--tx-cpu N] [--rx-cpu N] [--no-tls]\n"
-                "       [--mode all|reverse|twophase]\n",
+                "       [--mode all|twophase]\n",
                 "bench_market_multi_dpdk");
             std::exit(0);
         }
@@ -249,7 +248,6 @@ int main(int argc, char** argv) {
     auto mode_name = [](eph::net::SymbolDedup m) -> const char* {
         switch (m) {
         case eph::net::SymbolDedup::kNone:           return "all";
-        case eph::net::SymbolDedup::kReverseLatest:  return "reverse";
         case eph::net::SymbolDedup::kTwoPhaseLatest: return "twophase";
         }
         return "unknown";

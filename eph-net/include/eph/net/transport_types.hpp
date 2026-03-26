@@ -33,8 +33,7 @@ namespace eph::net {
 /// within the same TLS record / TCP segment).
 enum class SymbolDedup : uint8_t {
     kNone            = 0,  ///< Deliver every frame (existing behavior)
-    kReverseLatest   = 1,  ///< Forward index scan, reverse iterate: deliver latest per symbol
-    kTwoPhaseLatest  = 2,  ///< Forward index scan, forward selective deliver: latest per symbol
+    kTwoPhaseLatest  = 1,  ///< Forward index scan, forward selective deliver: latest per symbol
 };
 
 /// Callback that extracts a symbol identifier hash from a WS payload.

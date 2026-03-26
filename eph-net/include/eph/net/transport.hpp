@@ -3043,7 +3043,6 @@ private:
     /// Phase 2: deliver only the latest data frame per symbol (+ all control frames).
     ///
     /// Strategy selection:
-    ///   kReverseLatest  — reverse iterate index, first seen per symbol wins (latest)
     ///   kTwoPhaseLatest — forward iterate, track last index per symbol, deliver those
     size_t process_ws_data_symbol_dedup(const uint8_t* data, size_t len) {
         auto log = detail::transport_logger();
@@ -3101,125 +3100,69 @@ private:
         if (num_frames == 0) return offset;
 
         SPDLOG_LOGGER_TRACE(log,
-            "Symbol dedup: {} frames in batch, mode={}",
-            num_frames,
-            config_.symbol_dedup == SymbolDedup::kReverseLatest
-                ? "reverse" : "twophase");
+            "Symbol dedup: {} frames in batch", num_frames);
 
-        // ── Phase 2: selective delivery ─────────────────────────────────
-        // Seen-set: simple open-addressing hash set for symbol hashes.
-        // Max 128 frames, so 256-slot table gives ≤50% load factor.
+        // ── Phase 2: selective delivery (two-phase forward) ─────────────
+        // Pass 1 (forward): find the last index per symbol.
+        // Open-addressing hash table: max 128 frames, 256 slots → ≤50% load.
         static constexpr size_t kSeenSlots = 256;
-        static constexpr uint32_t kEmpty = 0;
-        uint32_t seen[kSeenSlots] = {};  // zero-initialized = all empty
-
-        auto seen_insert = [&](uint32_t hash) -> bool {
-            // Returns true if newly inserted, false if already present.
-            if (hash == 0) return true;  // 0 = unrecognized, always deliver
-            size_t slot = hash & (kSeenSlots - 1);
-            for (size_t i = 0; i < kSeenSlots; ++i) {
-                size_t s = (slot + i) & (kSeenSlots - 1);
-                if (seen[s] == kEmpty) { seen[s] = hash; return true; }
-                if (seen[s] == hash) return false;
-            }
-            return true;  // table full, deliver anyway
-        };
+        struct SymbolSlot { uint32_t hash; size_t last_idx; };
+        SymbolSlot slots[kSeenSlots] = {};
 
         // Track how many data frames we skip vs deliver for stats.
         uint64_t data_frames_total = 0;
         uint64_t data_frames_delivered = 0;
 
-        if (config_.symbol_dedup == SymbolDedup::kReverseLatest) {
-            // ── Strategy 1: Reverse iterate ─────────────────────────────
-            // Pass 1 (reverse): mark which frames to deliver.
-            // For data frames, deliver only the first (= latest) per symbol.
-            // Control frames are always delivered.
-            bool deliver[kMaxFramesPerBatch] = {};
-
-            for (size_t i = num_frames; i-- > 0; ) {
-                auto& entry = index[i];
-                if (entry.is_control) {
-                    deliver[i] = true;
-                } else if (entry.opcode == ws::opcode::kContinuation ||
-                           !entry.fin) {
-                    // Fragmented frame: always deliver (dedup is unsafe
-                    // across fragments)
-                    deliver[i] = true;
-                    ++data_frames_total;
-                    ++data_frames_delivered;
-                } else {
-                    ++data_frames_total;
-                    if (seen_insert(entry.symbol_hash)) {
-                        deliver[i] = true;
-                        ++data_frames_delivered;
-                    }
-                }
-            }
-
-            // Pass 2 (forward): deliver marked frames in original order.
-            // Forward order preserves causality for control frames.
-            for (size_t i = 0; i < num_frames; ++i) {
-                if (!deliver[i]) continue;
-                dispatch_indexed_frame(index[i], data + index[i].offset);
-            }
-        } else {
-            // ── Strategy 2: Two-phase forward ───────────────────────────
-            // Pass 1 (forward): find the last index per symbol.
-            // Use the same seen-set but store the latest frame index.
-            struct SymbolSlot { uint32_t hash; size_t last_idx; };
-            SymbolSlot slots[kSeenSlots] = {};
-
-            for (size_t i = 0; i < num_frames; ++i) {
-                auto& entry = index[i];
-                if (entry.is_control) continue;
-                if (entry.opcode == ws::opcode::kContinuation || !entry.fin) {
-                    ++data_frames_total;
-                    continue;  // fragmented: will deliver unconditionally
-                }
+        for (size_t i = 0; i < num_frames; ++i) {
+            auto& entry = index[i];
+            if (entry.is_control) continue;
+            if (entry.opcode == ws::opcode::kContinuation || !entry.fin) {
                 ++data_frames_total;
-                uint32_t h = entry.symbol_hash;
-                if (h == 0) continue;  // unrecognized: deliver unconditionally
-                size_t slot = h & (kSeenSlots - 1);
-                for (size_t j = 0; j < kSeenSlots; ++j) {
-                    size_t s = (slot + j) & (kSeenSlots - 1);
-                    if (slots[s].hash == 0) {
-                        slots[s] = {h, i};
-                        break;
-                    }
-                    if (slots[s].hash == h) {
-                        slots[s].last_idx = i;
-                        break;
-                    }
+                continue;  // fragmented: will deliver unconditionally
+            }
+            ++data_frames_total;
+            uint32_t h = entry.symbol_hash;
+            if (h == 0) continue;  // unrecognized: deliver unconditionally
+            size_t slot = h & (kSeenSlots - 1);
+            for (size_t j = 0; j < kSeenSlots; ++j) {
+                size_t s = (slot + j) & (kSeenSlots - 1);
+                if (slots[s].hash == 0) {
+                    slots[s] = {h, i};
+                    break;
+                }
+                if (slots[s].hash == h) {
+                    slots[s].last_idx = i;
+                    break;
                 }
             }
+        }
 
-            // Build deliver bitmap from latest-per-symbol.
-            bool deliver[kMaxFramesPerBatch] = {};
-            for (auto& s : slots) {
-                if (s.hash != 0) {
-                    deliver[s.last_idx] = true;
-                    ++data_frames_delivered;
-                }
+        // Build deliver bitmap from latest-per-symbol.
+        bool deliver[kMaxFramesPerBatch] = {};
+        for (auto& s : slots) {
+            if (s.hash != 0) {
+                deliver[s.last_idx] = true;
+                ++data_frames_delivered;
             }
+        }
 
-            // Pass 2 (forward): deliver control frames + fragmented +
-            // unrecognized + marked latest-per-symbol.
-            for (size_t i = 0; i < num_frames; ++i) {
-                auto& entry = index[i];
-                if (entry.is_control) {
-                    dispatch_indexed_frame(entry, data + entry.offset);
-                } else if (entry.opcode == ws::opcode::kContinuation ||
-                           !entry.fin) {
-                    // Fragmented: always deliver
-                    dispatch_indexed_frame(entry, data + entry.offset);
-                    ++data_frames_delivered;
-                } else if (entry.symbol_hash == 0) {
-                    // Unrecognized symbol: deliver unconditionally
-                    dispatch_indexed_frame(entry, data + entry.offset);
-                    ++data_frames_delivered;
-                } else if (deliver[i]) {
-                    dispatch_indexed_frame(entry, data + entry.offset);
-                }
+        // Pass 2 (forward): deliver control frames + fragmented +
+        // unrecognized + marked latest-per-symbol.
+        for (size_t i = 0; i < num_frames; ++i) {
+            auto& entry = index[i];
+            if (entry.is_control) {
+                dispatch_indexed_frame(entry, data + entry.offset);
+            } else if (entry.opcode == ws::opcode::kContinuation ||
+                       !entry.fin) {
+                // Fragmented: always deliver
+                dispatch_indexed_frame(entry, data + entry.offset);
+                ++data_frames_delivered;
+            } else if (entry.symbol_hash == 0) {
+                // Unrecognized symbol: deliver unconditionally
+                dispatch_indexed_frame(entry, data + entry.offset);
+                ++data_frames_delivered;
+            } else if (deliver[i]) {
+                dispatch_indexed_frame(entry, data + entry.offset);
             }
         }
 

@@ -47,10 +47,31 @@
 using BenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
-    4096, 1024,
+    16384, 1024,
     eph::containers::EvictingQueue,
     false  // LastOnlyDeliver — every symbol's update matters
 >;
+
+/// Extract symbol hash from Binance combined stream JSON payload.
+/// Format: {"stream":"<symbol>@<channel>","data":{...}}
+/// Scans the first ~64 bytes for "stream":" prefix, hashes until '@'.
+/// Returns 0 on parse failure (payload delivered unconditionally).
+static uint32_t binance_symbol_hash(const uint8_t* data, size_t len) {
+    constexpr size_t kPrefixLen = 11;  // {"stream":"
+    if (len < kPrefixLen + 2) return 0;
+
+    if (data[0] != '{' || data[1] != '"' || data[9] != '"') return 0;
+
+    const uint8_t* p = data + kPrefixLen;
+    const uint8_t* end = data + std::min(len, size_t{64});
+    uint32_t hash = 2166136261u;  // FNV-1a offset basis
+    while (p < end && *p != '@' && *p != '"') {
+        hash ^= *p;
+        hash *= 16777619u;  // FNV-1a prime
+        ++p;
+    }
+    return (p > data + kPrefixLen) ? hash : 0;
+}
 
 struct Config {
     std::string host   = "fstream.binance.com";
@@ -63,7 +84,8 @@ struct Config {
     bool use_on_message = false;
     int  tx_cpu        = -1;
     int  rx_cpu        = -1;
-    int  main_cpu        = -1;
+    int  main_cpu      = -1;
+    eph::net::SymbolDedup symbol_dedup = eph::net::SymbolDedup::kNone;
 };
 
 /// Per-second window record for traffic vs latency correlation.
@@ -156,10 +178,17 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--tx-cpu")    c.tx_cpu    = std::atoi(next(a));
         else if (a == "--rx-cpu")    c.rx_cpu    = std::atoi(next(a));
         else if (a == "--main-cpu") c.main_cpu = std::atoi(next(a));
+        else if (a == "--mode") {
+            std::string_view m = next(a);
+            if      (m == "all")      c.symbol_dedup = eph::net::SymbolDedup::kNone;
+            else if (m == "twophase") c.symbol_dedup = eph::net::SymbolDedup::kTwoPhaseLatest;
+            else { std::cerr << std::format("Unknown mode: {} (use all|twophase)\n", m); std::exit(1); }
+        }
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [--host H] [--port P] [--symbols S1,S2,S3] [--proxy URL]\n"
-                "       [--duration SEC] [--no-tls] [--no-verify] [--tx-cpu N] [--rx-cpu N]\n", argv[0]);
+                "       [--duration SEC] [--no-tls] [--no-verify] [--tx-cpu N] [--rx-cpu N]\n"
+                "       [--mode all|twophase]\n", argv[0]);
             std::exit(0);
         }
         else { std::cerr << std::format("Unknown: {}\n", a); std::exit(1); }
@@ -200,6 +229,10 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
+        .symbol_dedup = cfg.symbol_dedup,
+        .symbol_extractor = (cfg.symbol_dedup != eph::net::SymbolDedup::kNone)
+            ? eph::net::SymbolExtractorFn{binance_symbol_hash}
+            : eph::net::SymbolExtractorFn{},
     };
 
     static volatile uint64_t on_msg_sink = 0;
@@ -227,8 +260,17 @@ int main(int argc, char** argv) {
         };
     }
 
-    spdlog::info("Connecting to wss://{}:{}{} ({} symbols)",
-                 cfg.host, cfg.port, ws_path, cfg.symbols.size());
+    auto mode_name = [](eph::net::SymbolDedup m) -> const char* {
+        switch (m) {
+        case eph::net::SymbolDedup::kNone:           return "all";
+        case eph::net::SymbolDedup::kTwoPhaseLatest: return "twophase";
+        }
+        return "unknown";
+    };
+
+    spdlog::info("Connecting to wss://{}:{}{} ({} symbols, mode={})",
+                 cfg.host, cfg.port, ws_path, cfg.symbols.size(),
+                 mode_name(cfg.symbol_dedup));
     auto result = BenchTransport::create(std::move(factory), tc);
     if (!result) { spdlog::error("Connect failed: {}", result.error().message()); return 1; }
     auto& tp = **result;
@@ -301,8 +343,9 @@ int main(int argc, char** argv) {
 
     auto stats = tp.stats();
     spdlog::info("=== Multi-Symbol Market Data Benchmark (Socket) ===");
-    spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {}",
-                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs);
+    spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Mode: {}",
+                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs,
+                 mode_name(cfg.symbol_dedup));
     spdlog::info("Transport stats:\n{}", stats.dump());
 
     auto& rx = stats.rx_latency;
