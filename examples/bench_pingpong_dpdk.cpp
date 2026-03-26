@@ -30,6 +30,7 @@
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/utils/time.hpp"
+#include "eph/utils/cpu.hpp"
 
 using BenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
@@ -53,6 +54,7 @@ struct Config {
     bool verify               = false;
     int  tx_cpu               = -1;
     int  rx_cpu               = -1;
+    int  main_cpu        = -1;
 };
 
 static std::atomic<bool> g_running{true};
@@ -77,6 +79,7 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--payload-size")  c.payload_size  = std::clamp(std::atoi(next(a)), 0, 125);
         else if (a == "--tx-cpu")        c.tx_cpu        = std::atoi(next(a));
         else if (a == "--rx-cpu")        c.rx_cpu        = std::atoi(next(a));
+        else if (a == "--main-cpu") c.main_cpu = std::atoi(next(a));
         else if (a == "--no-tls")        c.use_tls       = false;
         else if (a == "--help") {
             std::cerr << std::format(
@@ -106,6 +109,7 @@ int main(int argc, char** argv) {
         }
     }
     auto cfg = parse_args(app_argc, app_argv);
+    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
     if (cfg.local_ip.empty() || cfg.gateway_ip.empty()) {
         spdlog::error("--local-ip and --gateway-ip are required"); return 1;
     }

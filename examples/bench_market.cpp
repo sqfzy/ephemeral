@@ -26,6 +26,7 @@
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/time.hpp"
+#include "eph/utils/cpu.hpp"
 
 // Single-symbol: last-only deliver (only latest bookTicker matters)
 using BenchTransport = eph::net::Transport<
@@ -46,6 +47,7 @@ struct Config {
     bool verify        = false;
     int  tx_cpu        = -1;
     int  rx_cpu        = -1;
+    int  main_cpu        = -1;
 };
 
 static std::atomic<bool> g_running{true};
@@ -68,6 +70,7 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--no-verify") c.verify  = false;
         else if (a == "--tx-cpu")   c.tx_cpu   = std::atoi(next(a));
         else if (a == "--rx-cpu")   c.rx_cpu   = std::atoi(next(a));
+        else if (a == "--main-cpu") c.main_cpu = std::atoi(next(a));
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [--host H] [--port P] [--symbol S] [--proxy URL]\n"
@@ -85,6 +88,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     auto cfg = parse_args(argc, argv);
+    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
 
     spdlog::info("Calibrating TSC...");
     if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {

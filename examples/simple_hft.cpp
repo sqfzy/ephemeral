@@ -39,6 +39,7 @@
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/time.hpp"
+#include "eph/utils/cpu.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport type alias with timestamps enabled + EvictingQueue
@@ -71,6 +72,7 @@ struct AppConfig {
     bool        verify        = false;
     int         tx_cpu        = -1;
     int         rx_cpu        = -1;
+    int         main_cpu      = -1;
 };
 
 static std::atomic<bool> g_running{true};
@@ -118,6 +120,7 @@ static AppConfig parse_args(int argc, char** argv) {
         else if (arg == "--no-verify")     cfg.verify        = false;
         else if (arg == "--tx-cpu")        cfg.tx_cpu        = std::atoi(next("--tx-cpu"));
         else if (arg == "--rx-cpu")        cfg.rx_cpu        = std::atoi(next("--rx-cpu"));
+        else if (arg == "--main-cpu") cfg.main_cpu = std::atoi(next("--main-cpu"));
         else if (arg == "--help")        { print_usage(argv[0]); std::exit(0); }
         else {
             std::cerr << std::format("Unknown argument: {}\n", arg);
@@ -138,6 +141,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     auto cfg = parse_args(argc, argv);
+    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
 
     // ── Step 1: Calibrate TSC ─────────────────────────────────────────────
     spdlog::info("Calibrating TSC...");

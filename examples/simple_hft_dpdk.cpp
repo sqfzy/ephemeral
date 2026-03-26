@@ -42,6 +42,7 @@
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/utils/time.hpp"
+#include "eph/utils/cpu.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport type alias: DPDK backend + timestamps + EvictingQueue
@@ -70,6 +71,7 @@ struct AppConfig {
     bool        verify        = false;
     int         tx_cpu        = -1;
     int         rx_cpu        = -1;
+    int         main_cpu      = -1;
 
     // DPDK-specific
     std::string local_ip{};
@@ -128,6 +130,7 @@ static AppConfig parse_args(int argc, char** argv) {
         else if (arg == "--local-port")    cfg.local_port    = static_cast<uint16_t>(std::atoi(next("--local-port")));
         else if (arg == "--tx-cpu")        cfg.tx_cpu        = std::atoi(next("--tx-cpu"));
         else if (arg == "--rx-cpu")        cfg.rx_cpu        = std::atoi(next("--rx-cpu"));
+        else if (arg == "--main-cpu") cfg.main_cpu = std::atoi(next("--main-cpu"));
         else if (arg == "--no-tls")        cfg.use_tls       = false;
         else if (arg == "--proxy") {
             (void)next("--proxy");  // consume the value
@@ -171,6 +174,7 @@ int main(int argc, char** argv) {
     }
 
     auto cfg = parse_args(app_argc, app_argv);
+    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
 
     if (cfg.local_ip.empty() || cfg.gateway_ip.empty()) {
         spdlog::error("--local-ip and --gateway-ip are required for DPDK backend");
