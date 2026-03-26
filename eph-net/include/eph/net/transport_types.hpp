@@ -24,6 +24,27 @@
 namespace eph::net {
 
 // ---------------------------------------------------------------------------
+// Symbol-aware deduplication modes for multi-symbol streams
+// ---------------------------------------------------------------------------
+
+/// Controls how process_ws_data handles batches of WS frames from a combined
+/// multi-symbol stream. When a symbol_extractor is provided, the transport
+/// can skip delivery of stale frames (same symbol superseded by a newer frame
+/// within the same TLS record / TCP segment).
+enum class SymbolDedup : uint8_t {
+    kNone            = 0,  ///< Deliver every frame (existing behavior)
+    kReverseLatest   = 1,  ///< Forward index scan, reverse iterate: deliver latest per symbol
+    kTwoPhaseLatest  = 2,  ///< Forward index scan, forward selective deliver: latest per symbol
+};
+
+/// Callback that extracts a symbol identifier hash from a WS payload.
+/// Must be cheap (no heap allocation). Returns 0 for unrecognized payloads.
+/// @param data    Payload pointer (raw WS payload, already unmasked)
+/// @param len     Payload length
+/// @return Symbol hash (non-zero for recognized payloads)
+using SymbolExtractorFn = std::function<uint32_t(const uint8_t* data, size_t len)>;
+
+// ---------------------------------------------------------------------------
 // Connection error types
 // ---------------------------------------------------------------------------
 
@@ -330,6 +351,14 @@ struct TransportConfig {
     ///          The transport is fully connected when this fires; send() is safe.
     std::function<void(int attempt, uint64_t downtime_ns, uint64_t total_reconnects)>
         on_reconnected{};
+
+    // Symbol-aware deduplication for multi-symbol combined streams.
+    // When symbol_dedup != kNone and symbol_extractor is set, the RX
+    // thread indexes all WS data frames in a batch, then delivers only
+    // the latest frame per symbol. Reduces delivery overhead from O(n)
+    // to O(k) where k = number of distinct symbols in the batch.
+    SymbolDedup symbol_dedup = SymbolDedup::kNone;
+    SymbolExtractorFn symbol_extractor{};
 
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).
