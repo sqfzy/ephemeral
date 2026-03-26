@@ -11,19 +11,19 @@
 ///   # Core allocation: lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
 ///
 ///   # Queue mode (default):
-///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- \
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7
+///       -- --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --duration 30
 ///
 ///   # on_message mode (bypass queue):
-///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- \
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7
+///       -- --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --on-message --duration 30
 ///
 ///   # Custom symbols:
-///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- \
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
-///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 \
+///   sudo ./bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7
+///       -- --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
+///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10
 ///       --symbols btcusdt,ethusdt,solusdt,bnbusdt --duration 60
 
 #include <algorithm>
@@ -187,7 +187,7 @@ int main(int argc, char** argv) {
         }
     }
     auto cfg = parse_args(app_argc, app_argv);
-    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
+    if (cfg.main_cpu >= 0) (void)eph::utils::set_thread_affinity(cfg.main_cpu, "main");
     if (cfg.local_ip.empty() || cfg.gateway_ip.empty()) {
         spdlog::error("--local-ip and --gateway-ip are required"); return 1;
     }
@@ -230,10 +230,11 @@ int main(int argc, char** argv) {
     // on_message bypasses EvictingQueue — callback runs in RX thread
     static volatile uint64_t on_msg_sink = 0;
     if (cfg.use_on_message) {
-        tc.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+        tc.on_message = [](const uint8_t* data, [[maybe_unused]] uint16_t len, uint8_t) {
             on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
         };
     }
+    (void)on_msg_sink;  // read to suppress -Wunused-but-set-variable
 
     spdlog::info("Connecting via DPDK to wss://{}:{}{} ({} symbols, on_message={}, mode={})",
                  cfg.host, cfg.port, ws_path, cfg.symbols.size(), cfg.use_on_message,

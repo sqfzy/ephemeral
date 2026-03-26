@@ -3,6 +3,7 @@ set_version("1.0.0")
 
 add_rules("mode.debug", "mode.release")
 set_languages("c++23")
+set_warnings("all", "extra")
 
 
 add_rules("plugin.compile_commands.autoupdate", { outputdir = "build" })

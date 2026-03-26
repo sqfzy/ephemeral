@@ -895,7 +895,7 @@ private:
         if (fd_ >= 0) {
             int ret = ::close(fd_);
             if (ret != 0) [[unlikely]] {
-                int saved_errno = errno;
+                [[maybe_unused]] int saved_errno = errno;
                 SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
                     "close(fd={}) failed: {} (errno={})",
                     fd_, strerror(saved_errno), saved_errno);

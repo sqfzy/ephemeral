@@ -945,18 +945,18 @@ public:
                     uint16_t tls_len = crypto_->encrypt(
                         close_buf, static_cast<uint16_t>(close_len), tls_buf);
                     if (tls_len > 0) {
-                        tcp_->send(tls_buf, tls_len);
+                        (void)tcp_->send(tls_buf, tls_len);
                     }
                 } else {
                     // Plain WS: send close frame directly over TCP
-                    tcp_->send(close_buf, close_len);
+                    (void)tcp_->send(close_buf, close_len);
                 }
             }
         }
 
         // Close TCP connection
         if (tcp_ && tcp_->is_established()) {
-            tcp_->close();
+            (void)tcp_->close();
         }
 
         notify_state(TransportEvent::kStopped);

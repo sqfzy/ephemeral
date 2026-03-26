@@ -1005,6 +1005,8 @@ TEST(ConnectionInfo, ToJsonContainsAllFields) {
 TEST(ConnectionInfo, ToJsonEscapesStringFields) {
     ConnectionInfo info{
         .tls_version = "TLS\"injected",
+        .cipher_name = {},
+        .ws_subprotocol = {},
         .remote_ip = "10.0.0.1\\path",
     };
     auto json = info.to_json();
@@ -1013,7 +1015,8 @@ TEST(ConnectionInfo, ToJsonEscapesStringFields) {
 }
 
 TEST(ConnectionInfo, PlainWsShowsUseTlsFalse) {
-    ConnectionInfo info{.use_tls = false};
+    ConnectionInfo info{.tls_version = {}, .cipher_name = {}, .ws_subprotocol = {},
+                        .remote_ip = {}, .remote_port = 0, .use_tls = false};
     auto json = info.to_json();
     EXPECT_NE(json.find("\"use_tls\":false"), std::string::npos);
 }
