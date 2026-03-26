@@ -29,7 +29,4 @@ perf/
 perf.data
 perf.data.old
 
-# eph-dpdk nested repo (integrated into monorepo)
-eph-dpdk/.git/
-
-.discuss/
+# .discuss/
