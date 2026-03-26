@@ -458,7 +458,9 @@ TEST_F(TransportTest, SendTextSuccess) {
 }
 
 TEST_F(TransportTest, SendTextInvalidUtf8Rejected) {
-    auto result = create_transport();
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = false;
+    });
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
@@ -901,7 +903,9 @@ TEST_F(TransportTest, BatchSendN) {
 }
 
 TEST_F(TransportTest, BatchSendNRejectsInvalidUtf8Text) {
-    auto result = create_transport();
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = false;
+    });
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
@@ -2016,7 +2020,9 @@ TEST_F(TransportTest, BatchSendNForSucceeds) {
 }
 
 TEST_F(TransportTest, BatchSendNForRejectsInvalidUtf8) {
-    auto result = create_transport();
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = false;
+    });
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
@@ -2047,7 +2053,9 @@ TEST_F(TransportTest, SendForSucceeds) {
 }
 
 TEST_F(TransportTest, SendTextForValidatesUtf8) {
-    auto result = create_transport();
+    auto result = create_transport_with([](TransportConfig& c) {
+        c.skip_utf8_validation = false;
+    });
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
@@ -2678,23 +2686,22 @@ TEST_F(TransportTest, SkipUtf8ValidationAllowsInvalidUtf8ViaBatchSendN) {
     tp->stop();
 }
 
-TEST_F(TransportTest, SkipUtf8ValidationDefaultFalseStillRejects) {
-    // Verify default behavior is unchanged: skip_utf8_validation defaults to false
+TEST_F(TransportTest, SkipUtf8ValidationDefaultTrueAcceptsInvalid) {
+    // Default skip_utf8_validation=true: invalid UTF-8 should be accepted
     auto result = create_transport();
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
     const uint8_t bad_utf8[] = {0xFF, 0xFE, 0x00};
     auto err = tp->send_text(bad_utf8, sizeof(bad_utf8));
-    EXPECT_EQ(err, SendError::kInvalidUtf8)
-        << "Default config should still reject invalid UTF-8";
+    EXPECT_EQ(err, SendError::kOk)
+        << "Default config (skip_utf8_validation=true) should accept invalid UTF-8";
 
     tp->stop();
 }
 
 TEST_F(TransportTest, SkipUtf8ValidationConfigWarning) {
-    TransportConfig config;
-    config.skip_utf8_validation = true;
+    TransportConfig config;  // default: skip_utf8_validation = true
     auto warnings = config.warnings();
     bool found = false;
     for (const auto& w : warnings) {

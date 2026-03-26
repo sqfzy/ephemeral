@@ -223,7 +223,7 @@ struct TransportConfig {
     // compliance. The caller assumes responsibility for ensuring payloads
     // contain valid UTF-8; sending invalid data may cause the remote peer to
     // close the connection.
-    bool skip_utf8_validation = false;
+    bool skip_utf8_validation = true;
 
     // CPU affinity for worker threads (-1 = no pinning)
     int tx_cpu = -1;

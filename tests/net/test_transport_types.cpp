@@ -1106,6 +1106,7 @@ TEST(RttStats, AllConvenienceAccessors) {
 TEST(TransportConfigWarnings, NoWarningsForValidConfig) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";
+    cfg.skip_utf8_validation = false;  // default is true which emits warning
     EXPECT_TRUE(cfg.warnings().empty());
 }
 
@@ -1199,9 +1200,9 @@ TEST(TransportConfigWarnings, MultipleWarningsFromSameConfig) {
 }
 
 TEST(TransportConfigWarnings, SkipUtf8ValidationWarning) {
+    // Default (true) should produce the warning
     TransportConfig cfg;
     cfg.remote_host = "example.com";
-    cfg.skip_utf8_validation = true;
     auto w = cfg.warnings();
     ASSERT_GE(w.size(), 1u);
     bool has_utf8 = false;
@@ -1210,9 +1211,10 @@ TEST(TransportConfigWarnings, SkipUtf8ValidationWarning) {
     }
     EXPECT_TRUE(has_utf8);
 
-    // Default (false) should NOT produce this warning
+    // Explicitly disabled (false) should NOT produce this warning
     TransportConfig cfg2;
     cfg2.remote_host = "example.com";
+    cfg2.skip_utf8_validation = false;
     auto w2 = cfg2.warnings();
     for (const auto& msg : w2) {
         EXPECT_EQ(msg.find("skip_utf8_validation"), std::string::npos);
