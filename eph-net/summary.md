@@ -298,6 +298,10 @@ RFC 6455 WebSocket 协议实现，包含帧编解码、Masking、控制帧构建
   重连次数等），含速率辅助方法和 `to_json()`
 - `RttStats` — RTT 百分位统计（p50, p99, p999）
 - `ThreadStats` — 每线程计数器（避免原子操作竞争）
+- `FrameView` — 批量帧过滤接口的轻量帧视图
+- `FrameFilterFn` — 批量帧过滤回调类型 (`std::function<void(std::span<FrameView>)>`)
+- `make_twophase_filter(extractor)` — 创建 per-symbol 最新帧去重过滤器（两个重载：
+  `std::function` 版本和原生函数指针版本，后者避免间接调用开销）
 
 所有枚举类型均有 `std::formatter` 特化。
 
@@ -360,7 +364,7 @@ net.hpp (便捷头文件)
 | `test_tls_record.cpp` | 624 | TlsRecordCrypto | 加解密往返、序列号递增、错误处理、nonce 构建 |
 | `test_http.cpp` | 451 | HTTP Upgrade | 请求构建、101 响应解析、子协议、错误状态码 |
 | `test_websocket.cpp` | 891 | WebSocket 协议 | 帧编解码、masking、控制帧、UTF-8 校验、碎片化 |
-| `test_transport_types.cpp` | 612 | 公共类型 | Config 校验、Stats 格式化/JSON、SendError 枚举 |
+| `test_transport_types.cpp` | 730+ | 公共类型 | Config 校验、Stats 格式化/JSON、SendError 枚举、make_twophase_filter 去重逻辑 |
 
 **总测试代码**: 3303 行，覆盖 6 个模块。
 
