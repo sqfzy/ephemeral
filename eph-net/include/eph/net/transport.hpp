@@ -1259,6 +1259,23 @@ private:
         }
     }
 
+    /// Lightweight enqueue: skip UTF-8 validation and stats updates.
+    /// Used by deferred-stats path where stats are batched at the end.
+    /// Falls back to on_message callback if set (bypasses queue entirely).
+    void enqueue_data_only(const uint8_t* data, uint16_t len,
+                           uint8_t opcode) noexcept {
+        if (config_.on_message) {
+            try {
+                config_.on_message(data, len, opcode);
+            } catch (...) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "on_message callback threw an exception");
+            }
+            return;
+        }
+        (void)rx_enqueue(data, len, opcode);
+    }
+
     /// Consume one message from the RX queue.
     /// BoundedQueue: try_consume (FIFO).
     /// EvictingQueue: try_consume_latest (latest-value).
@@ -2705,18 +2722,11 @@ private:
 
             offset += frame->total_len;
 
-            // deliver-all: per-frame stats + latency recording.
-            // last-only: deferred to after loop for the last data frame.
-            if constexpr (!kLastOnlyDeliver) {
+            // Stats + latency recording is deferred to after loop for both
+            // deliver-all and last-only modes.  Control frames record immediately.
+            if (frame->is_ping()) {
                 rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 record_rx_latency();
-            }
-
-            if (frame->is_ping()) {
-                if constexpr (kLastOnlyDeliver) {
-                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                    record_rx_latency();
-                }
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
                 if (config_.on_ping) {
                     try {
@@ -2732,10 +2742,8 @@ private:
             }
 
             if (frame->is_close()) {
-                if constexpr (kLastOnlyDeliver) {
-                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                    record_rx_latency();
-                }
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
                 uint16_t code = frame->close_status_code();
                 std::string_view close_reason = frame->close_reason();
                 SPDLOG_LOGGER_INFO(log,
@@ -2771,10 +2779,8 @@ private:
             }
 
             if (frame->is_pong()) {
-                if constexpr (kLastOnlyDeliver) {
-                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-                    record_rx_latency();
-                }
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
                 // Record pong arrival for timeout detection (TX thread reads this).
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
@@ -2846,14 +2852,24 @@ private:
 
             if (is_single_frame && frame->payload_len <= MaxPayload) {
                 // Fast path: complete single-frame message, no buffering.
-                // last-only: defer delivery, just remember the last frame.
-                // deliver-all: deliver immediately (every message matters).
                 if constexpr (kLastOnlyDeliver) {
+                    // last-only: defer delivery, just remember the last frame.
                     last_data_frame = &*frame;
-                    ++data_frame_count;
                 } else {
-                    deliver_data_frame(*frame);
+                    // deliver-all: enqueue immediately, stats deferred.
+                    if (frame->masked) {
+                        uint8_t tmp[MaxPayload];
+                        std::memcpy(tmp, frame->payload, frame->payload_len);
+                        ws::apply_mask(tmp, frame->payload_len, frame->mask_key);
+                        enqueue_data_only(tmp, static_cast<uint16_t>(frame->payload_len),
+                                          frame->opcode);
+                    } else {
+                        enqueue_data_only(frame->payload,
+                                          static_cast<uint16_t>(frame->payload_len),
+                                          frame->opcode);
+                    }
                 }
+                ++data_frame_count;
             } else if (is_single_frame) {
                 // Single oversized frame
                 rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
@@ -2901,10 +2917,11 @@ private:
                             // that's fine — this one is already delivered.
                             last_data_frame = nullptr;
                         } else {
-                            deliver_message(
+                            enqueue_data_only(
                                 ws_frag_buf_.data(),
                                 static_cast<uint16_t>(ws_frag_buf_.size()),
                                 ws_frag_opcode_);
+                            ++data_frame_count;
                         }
                     }
                     ws_frag_buf_.clear();
@@ -2912,13 +2929,12 @@ private:
             }
         }
 
-        // Last-only mode: deliver only the last data frame from this batch.
-        // One record_rx_latency() + one deliver + one batch stats update.
-        if constexpr (kLastOnlyDeliver) {
-            if (data_frame_count > 0) {
-                rx_stats_.packets.fetch_add(data_frame_count,
-                                            std::memory_order_relaxed);
-                record_rx_latency();
+        // Deferred stats: batch packet count + single latency recording.
+        if (data_frame_count > 0) {
+            rx_stats_.packets.fetch_add(data_frame_count,
+                                        std::memory_order_relaxed);
+            record_rx_latency();
+            if constexpr (kLastOnlyDeliver) {
                 if (last_data_frame) {
                     deliver_data_frame(*last_data_frame);
                 }
