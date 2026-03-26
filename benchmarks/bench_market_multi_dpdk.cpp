@@ -107,14 +107,6 @@ struct Config {
     bool use_twophase      = false;
 };
 
-/// Per-second window record for traffic vs latency correlation.
-struct WindowRecord {
-    int    second;
-    uint64_t msgs;
-    double msg_rate;
-    uint64_t p50_ns, p99_ns, p999_ns;
-};
-
 /// Convert HdrHistogram to RttStats (standalone version of Transport's private helper).
 static eph::net::RttStats hdr_to_stats(const eph::utils::HdrHistogram& h) noexcept {
     if (h.get_total_count() == 0) return {};
@@ -127,54 +119,6 @@ static eph::net::RttStats hdr_to_stats(const eph::utils::HdrHistogram& h) noexce
         .p99_ns  = h.get_value_at_percentile(99.0),
         .p999_ns = h.get_value_at_percentile(99.9),
     };
-}
-
-/// Print bucketed traffic-vs-latency summary (windows sorted by msg/s, split into terciles).
-static void print_traffic_summary(std::vector<WindowRecord>& windows) {
-    if (windows.empty()) return;
-
-    // Absolute traffic thresholds (msg/s).
-    static constexpr double kLowMax  =  500.0;
-    static constexpr double kMidMax  = 1500.0;
-
-    struct BucketStats {
-        double   min_r = 1e9, max_r = 0;
-        uint64_t sum_p50 = 0, sum_p99 = 0, sum_p999 = 0;
-        size_t   cnt = 0;
-
-        void add(const WindowRecord& w) {
-            min_r = std::min(min_r, w.msg_rate);
-            max_r = std::max(max_r, w.msg_rate);
-            sum_p50  += w.p50_ns;
-            sum_p99  += w.p99_ns;
-            sum_p999 += w.p999_ns;
-            ++cnt;
-        }
-    };
-
-    BucketStats lo, md, hi;
-    for (auto& w : windows) {
-        if      (w.msg_rate < kLowMax) lo.add(w);
-        else if (w.msg_rate < kMidMax) md.add(w);
-        else                           hi.add(w);
-    }
-
-    spdlog::info("=== Traffic vs Latency (absolute thresholds: <{:.0f} / {:.0f}-{:.0f} / >{:.0f} msg/s) ===",
-                 kLowMax, kLowMax, kMidMax, kMidMax);
-
-    auto print = [](const char* label, BucketStats& b) {
-        if (b.cnt == 0) {
-            spdlog::info("  {:>5s} (no windows)", label);
-            return;
-        }
-        spdlog::info("  {:>5s} ({:>4.0f}-{:>4.0f} msg/s, {:>2} wins): p50={:>6} p99={:>6} p99.9={:>6} ns",
-                     label, b.min_r, b.max_r, b.cnt,
-                     b.sum_p50 / b.cnt, b.sum_p99 / b.cnt, b.sum_p999 / b.cnt);
-    };
-
-    print("Low",  lo);
-    print("Mid",  md);
-    print("High", hi);
 }
 
 static std::atomic<bool> g_running{true};
@@ -311,8 +255,7 @@ int main(int argc, char** argv) {
         ? start + std::chrono::seconds(cfg.duration)
         : std::chrono::steady_clock::time_point::max();
 
-    // Per-second window tracking for traffic-vs-latency correlation
-    std::vector<WindowRecord> windows;
+    // Per-second status line
     auto prev_hist = tp.rx_latency_histogram_snapshot();
     uint64_t prev_msgs = 0;
     auto window_start = start;
@@ -363,7 +306,6 @@ int main(int argc, char** argv) {
             spdlog::info("[T+{:>3}s] {:>8.0f} {:>10} {:>10} {:>12}",
                          window_idx, rate, ws.p50_ns, ws.p99_ns, ws.p999_ns);
 
-            windows.push_back({window_idx, delta_msgs, rate, ws.p50_ns, ws.p99_ns, ws.p999_ns});
             prev_hist = std::move(curr_hist);
             prev_msgs = msgs;
             window_start = snap_time;
@@ -375,17 +317,19 @@ int main(int argc, char** argv) {
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    // Traffic vs latency bucketed summary
-    print_traffic_summary(windows);
-
     auto stats = tp.stats();
+    auto& rx = stats.rx_latency;
+    double avg_frames_per_record = rx.count > 0
+        ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
+
     spdlog::info("=== Multi-Symbol Market Data Benchmark (DPDK) ===");
     spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Mode: {}",
                  cfg.symbols.size(), elapsed_ms / 1000.0, msgs,
                  mode_name);
+    spdlog::info("Avg frames/record: {:.1f} ({} frames, {} records)",
+                 avg_frames_per_record, stats.rx_packets, rx.count);
     spdlog::info("Transport stats:\n{}", stats.dump());
 
-    auto& rx = stats.rx_latency;
     spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
     if (rx.count > 0) {
         spdlog::info("  samples: {}", rx.count);
