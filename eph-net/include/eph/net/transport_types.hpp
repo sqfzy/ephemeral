@@ -867,6 +867,7 @@ struct TransportStats {
     uint64_t tls_write_seq     = 0;  ///< Current TLS write sequence number
     uint64_t tls_read_seq      = 0;  ///< Current TLS read sequence number
     uint64_t tls_seq_limit     = 0;  ///< TLS sequence limit (kMaxSequenceNumber)
+    uint64_t tls_records_skipped = 0; ///< TLS records skipped (EvictingQueue latest-value optimization)
 
     /// Last handshake duration in milliseconds (for human-readable logging).
     [[nodiscard]] double handshake_ms() const noexcept {
@@ -991,7 +992,8 @@ struct TransportStats {
             "  Reconnections: {}, handshake: {:.1f}ms "
             "(tcp: {:.1f}ms, tls: {:.1f}ms, ws: {:.1f}ms)\n"
             "  TLS seq: write={}/{} ({:.1f}%), read={}/{} ({:.1f}%)\n"
-            "  {}",
+            "  {}\n"
+            "  TLS records skipped: {}",
             uptime_s, remote_ip.empty() ? "unknown" : remote_ip,
             tx_packets, tx_pps(), tx_bytes, tx_bps(),
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
@@ -1005,7 +1007,8 @@ struct TransportStats {
             static_cast<double>(ws_upgrade_ns) / 1e6,
             tls_write_seq, tls_seq_limit, tls_write_seq_usage() * 100.0,
             tls_read_seq, tls_seq_limit, tls_read_seq_usage() * 100.0,
-            rtt.dump());
+            rtt.dump(),
+            tls_records_skipped);
     }
 
     /// JSON-formatted stats for monitoring system integration.

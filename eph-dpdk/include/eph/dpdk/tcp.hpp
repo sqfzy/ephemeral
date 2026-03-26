@@ -578,9 +578,13 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
-        rte_mbuf* pkts[32];
+        // Smaller burst size reduces head-of-line blocking: fewer packets
+        // per poll → shorter decrypt+deframe batch → lower P99 latency.
+        // Trade-off: more frequent MMIO reads (~200ns each).
+        static constexpr uint16_t kBurstSize = 8;
+        rte_mbuf* pkts[kBurstSize];
         uint16_t nb_rx = rte_eth_rx_burst(
-            config_.port_id, config_.rx_queue_id, pkts, 32);
+            config_.port_id, config_.rx_queue_id, pkts, kBurstSize);
         if (nb_rx == 0) return uint16_t{0};
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }

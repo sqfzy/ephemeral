@@ -1,14 +1,19 @@
 /// @file bench_market_dpdk.cpp
 /// Market data pipeline latency benchmark — DPDK (kernel-bypass) backend.
 ///
-/// Connects to Binance bookTicker stream and measures the single metric:
-///   RX pipeline: rx_burst → market data frame decoded
+/// Supports two modes:
+///   Single:   /ws/<symbol>@bookTicker  (one symbol per connection)
+///   Combined: /stream?streams=<sym1>@bookTicker/<sym2>@bookTicker/...
 ///
-/// No pings are sent — all rx_latency samples are pure data frames.
+/// Measures RX pipeline latency: rx_burst → market data frame decoded.
 ///
 /// Usage:
-///   sudo ./bench_market_dpdk -l 0-3 -a 0000:xx:00.0 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1
-///   sudo ./bench_market_dpdk -l 0-3 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1 --duration 60
+///   # Single symbol (default)
+///   sudo ./bench_market_dpdk -l 0 -a 0000:xx:00.0 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1
+///
+///   # Combined multi-symbol
+///   sudo ./bench_market_dpdk -l 0 -a 0000:xx:00.0 -- --local-ip 10.0.0.2 --gateway-ip 10.0.0.1 \
+///       --combined --symbols btcusdt,ethusdt,solusdt
 
 #include <atomic>
 #include <chrono>
@@ -17,7 +22,10 @@
 #include <cstring>
 #include <format>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -26,10 +34,19 @@
 #include "eph/dpdk/eal.hpp"
 #include "eph/utils/time.hpp"
 
-using BenchTransport = eph::net::Transport<
+// Single-symbol: small payloads (~140B bookTicker)
+using SingleTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
     eph::net::WsFramer,
     512, 1024,
+    eph::containers::EvictingQueue
+>;
+
+// Combined stream: larger payloads ({"stream":"...","data":{...}} wrapper)
+using CombinedTransport = eph::net::Transport<
+    eph::dpdk::TcpSession<>,
+    eph::net::WsFramer,
+    4096, 1024,
     eph::containers::EvictingQueue
 >;
 
@@ -37,6 +54,9 @@ struct Config {
     std::string host       = "fstream.binance.com";
     uint16_t    port       = 443;
     std::string symbol     = "btcusdt";
+    std::vector<std::string> symbols;  // for combined mode
+    bool combined          = false;
+    bool use_on_message    = false;  // bypass queue, use on_message callback
     std::string local_ip{};
     std::string gateway_ip{};
     uint16_t    dpdk_port  = 0;
@@ -51,6 +71,16 @@ struct Config {
 static std::atomic<bool> g_running{true};
 static void sig(int) { g_running.store(false, std::memory_order_release); }
 
+static std::vector<std::string> split(const std::string& s, char delim) {
+    std::vector<std::string> tokens;
+    std::istringstream ss(s);
+    std::string token;
+    while (std::getline(ss, token, delim)) {
+        if (!token.empty()) tokens.push_back(token);
+    }
+    return tokens;
+}
+
 static Config parse_args(int argc, char** argv) {
     Config c;
     for (int i = 0; i < argc; ++i) {
@@ -62,6 +92,9 @@ static Config parse_args(int argc, char** argv) {
         if      (a == "--host")       c.host       = next(a);
         else if (a == "--port")       c.port       = static_cast<uint16_t>(std::atoi(next(a)));
         else if (a == "--symbol")     c.symbol     = next(a);
+        else if (a == "--symbols")    c.symbols    = split(next(a), ',');
+        else if (a == "--combined")   c.combined   = true;
+        else if (a == "--on-message") c.use_on_message = true;
         else if (a == "--local-ip")   c.local_ip   = next(a);
         else if (a == "--gateway-ip") c.gateway_ip = next(a);
         else if (a == "--dpdk-port")  c.dpdk_port  = static_cast<uint16_t>(std::atoi(next(a)));
@@ -73,13 +106,65 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [EAL args] -- [--host H] [--port P] [--symbol S]\n"
+                "       [--combined] [--symbols S1,S2,S3]\n"
                 "       [--local-ip IP] [--gateway-ip IP] [--dpdk-port N] [--local-port N]\n"
                 "       [--duration SEC] [--tx-cpu N] [--rx-cpu N] [--no-tls]\n", "bench_market_dpdk");
             std::exit(0);
         }
         else { std::cerr << std::format("Unknown: {}\n", a); std::exit(1); }
     }
+    if (c.combined && c.symbols.empty()) {
+        c.symbols = {"btcusdt", "ethusdt", "solusdt"};
+    }
     return c;
+}
+
+template <typename Transport>
+static void run_bench(Transport& tp, const Config& cfg) {
+    uint64_t msgs = 0;
+    auto start = std::chrono::steady_clock::now();
+    auto deadline = cfg.duration > 0
+        ? start + std::chrono::seconds(cfg.duration)
+        : std::chrono::steady_clock::time_point::max();
+
+    while (g_running.load(std::memory_order_acquire) && tp.is_running()
+           && std::chrono::steady_clock::now() < deadline) {
+        if (cfg.use_on_message) {
+            // on_message callback handles data in RX thread; just wait
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        } else {
+            bool got = tp.recv([&](const uint8_t* data, size_t len) {
+                ++msgs;
+                if ((msgs & 0xFF) == 1) {
+                    std::string_view json(reinterpret_cast<const char*>(data), len);
+                    spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
+                }
+            });
+            if (!got) eph::utils::cpu_relax();
+        }
+    }
+
+    tp.stop();
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    auto stats = tp.stats();
+    spdlog::info("=== Market Data Pipeline Benchmark (DPDK) ===");
+    spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
+    spdlog::info("Transport stats:\n{}", stats.dump());
+
+    auto& rx = stats.rx_latency;
+    spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
+    if (rx.count > 0) {
+        spdlog::info("  samples: {}", rx.count);
+        spdlog::info("  min:     {:.0f} ns", static_cast<double>(rx.min_ns));
+        spdlog::info("  p50:     {:.0f} ns", static_cast<double>(rx.p50_ns));
+        spdlog::info("  p99:     {:.0f} ns", static_cast<double>(rx.p99_ns));
+        spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(rx.p999_ns));
+        spdlog::info("  max:     {:.0f} ns", static_cast<double>(rx.max_ns));
+    } else {
+        spdlog::info("  (no samples)");
+    }
 }
 
 int main(int argc, char** argv) {
@@ -87,7 +172,6 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, sig);
     spdlog::set_level(spdlog::level::info);
 
-    // Split EAL args from app args at '--'
     int eal_argc = argc; char** eal_argv = argv;
     int app_argc = 0;    char** app_argv = nullptr;
     for (int i = 1; i < argc; ++i) {
@@ -110,68 +194,66 @@ int main(int argc, char** argv) {
     auto eal = eph::dpdk::EalGuard::init(eal_argc, eal_argv);
     if (!eal) { spdlog::error("EAL init failed: {}", eal.error()); return 1; }
 
-    auto ws_path = std::format("/ws/{}@bookTicker", cfg.symbol);
+    if (cfg.combined) {
+        // Combined stream: /stream?streams=sym1@bookTicker/sym2@bookTicker/...
+        std::string streams;
+        for (size_t i = 0; i < cfg.symbols.size(); ++i) {
+            if (i > 0) streams += '/';
+            streams += cfg.symbols[i] + "@bookTicker";
+        }
+        auto ws_path = "/stream?streams=" + streams;
 
-    eph::net::TransportConfig tc{
-        .remote_host = cfg.host, .remote_port = cfg.port,
-        .ws_path = ws_path, .use_tls = cfg.use_tls, .verify_peer = cfg.verify,
-        .max_reconnect_attempts = 3,
-        .ping_interval = std::chrono::seconds{0},  // no pings
-        .skip_utf8_validation = true,
-        .tx_cpu = cfg.tx_cpu, .rx_cpu = cfg.rx_cpu,
-        .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
-            spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
-        },
-    };
+        eph::net::TransportConfig tc{
+            .remote_host = cfg.host, .remote_port = cfg.port,
+            .ws_path = ws_path, .use_tls = cfg.use_tls, .verify_peer = cfg.verify,
+            .max_reconnect_attempts = 3,
+            .ping_interval = std::chrono::seconds{0},
+            .skip_utf8_validation = true,
+            .tx_cpu = cfg.tx_cpu, .rx_cpu = cfg.rx_cpu,
+            .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
+                spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
+            },
+        };
+        // on_message bypasses EvictingQueue — callback runs in RX thread
+        static volatile uint64_t on_msg_sink = 0;
+        if (cfg.use_on_message) {
+            tc.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+                // Minimal work: touch first cache line to prevent dead-code elimination
+                on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
+            };
+        }
 
-    spdlog::info("Connecting via DPDK to wss://{}:{}{}", cfg.host, cfg.port, ws_path);
-    auto conn = eph::dpdk::connect<BenchTransport>(
-        eph::dpdk::DpdkEndpoint{.local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip},
-        tc, eph::dpdk::ConnectorOptions{.platform = {.port_id = cfg.dpdk_port}, .local_port = cfg.local_port});
-    if (!conn) { spdlog::error("DPDK connect failed: {}", conn.error()); return 1; }
-    auto& tp = *conn->transport;
-    spdlog::info("Connected via DPDK!");
-
-    // ── Main loop: drain market data ────────────────────────────────────────
-    uint64_t msgs = 0;
-    auto start = std::chrono::steady_clock::now();
-    auto deadline = cfg.duration > 0
-        ? start + std::chrono::seconds(cfg.duration)
-        : std::chrono::steady_clock::time_point::max();
-
-    while (g_running.load(std::memory_order_acquire) && tp.is_running()
-           && std::chrono::steady_clock::now() < deadline) {
-        bool got = tp.recv([&](const uint8_t* data, size_t len) {
-            ++msgs;
-            if ((msgs & 0xFF) == 1) {
-                std::string_view json(reinterpret_cast<const char*>(data), len);
-                spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
-            }
-        });
-        if (!got) eph::utils::cpu_relax();
-    }
-
-    // ── Report ──────────────────────────────────────────────────────────────
-    tp.stop();
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start).count();
-
-    auto stats = tp.stats();
-    spdlog::info("=== Market Data Pipeline Benchmark (DPDK) ===");
-    spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
-    spdlog::info("Transport stats:\n{}", stats.dump());
-
-    auto& rx = stats.rx_latency;
-    spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
-    if (rx.count > 0) {
-        spdlog::info("  samples: {}", rx.count);
-        spdlog::info("  min:     {:.0f} ns", static_cast<double>(rx.min_ns));
-        spdlog::info("  p50:     {:.0f} ns", static_cast<double>(rx.p50_ns));
-        spdlog::info("  p99:     {:.0f} ns", static_cast<double>(rx.p99_ns));
-        spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(rx.p999_ns));
-        spdlog::info("  max:     {:.0f} ns", static_cast<double>(rx.max_ns));
+        spdlog::info("Connecting via DPDK to wss://{}:{}{} (on_message={})",
+                     cfg.host, cfg.port, ws_path, cfg.use_on_message);
+        auto conn = eph::dpdk::connect<CombinedTransport>(
+            eph::dpdk::DpdkEndpoint{.local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip},
+            tc, eph::dpdk::ConnectorOptions{.platform = {.port_id = cfg.dpdk_port}, .local_port = cfg.local_port});
+        if (!conn) { spdlog::error("DPDK connect failed: {}", conn.error()); return 1; }
+        spdlog::info("Connected via DPDK (combined, {} symbols)!", cfg.symbols.size());
+        run_bench(*conn->transport, cfg);
     } else {
-        spdlog::info("  (no samples)");
+        // Single stream: /ws/<symbol>@bookTicker
+        auto ws_path = std::format("/ws/{}@bookTicker", cfg.symbol);
+
+        eph::net::TransportConfig tc{
+            .remote_host = cfg.host, .remote_port = cfg.port,
+            .ws_path = ws_path, .use_tls = cfg.use_tls, .verify_peer = cfg.verify,
+            .max_reconnect_attempts = 3,
+            .ping_interval = std::chrono::seconds{0},
+            .skip_utf8_validation = true,
+            .tx_cpu = cfg.tx_cpu, .rx_cpu = cfg.rx_cpu,
+            .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
+                spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
+            },
+        };
+
+        spdlog::info("Connecting via DPDK to wss://{}:{}{}", cfg.host, cfg.port, ws_path);
+        auto conn = eph::dpdk::connect<SingleTransport>(
+            eph::dpdk::DpdkEndpoint{.local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip},
+            tc, eph::dpdk::ConnectorOptions{.platform = {.port_id = cfg.dpdk_port}, .local_port = cfg.local_port});
+        if (!conn) { spdlog::error("DPDK connect failed: {}", conn.error()); return 1; }
+        spdlog::info("Connected via DPDK (single: {})!", cfg.symbol);
+        run_bench(*conn->transport, cfg);
     }
 
     return 0;

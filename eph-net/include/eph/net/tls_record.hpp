@@ -405,6 +405,15 @@ public:
     [[nodiscard]] uint64_t write_seq() const noexcept { return write_seq_; }
     [[nodiscard]] uint64_t read_seq()  const noexcept { return read_seq_; }
 
+    /// Skip N TLS records without decrypting — advances the read sequence
+    /// counter to stay in sync with the server.  Used by Transport when
+    /// RxQueue is EvictingQueue (latest-value semantics) to skip stale
+    /// records and only decrypt the most recent one.
+    ///
+    /// SAFETY: skipped records may contain TLS KeyUpdate messages.  If so,
+    /// the next real decrypt() will fail and Transport will reconnect.
+    void advance_read_seq(uint64_t count) noexcept { read_seq_ += count; }
+
 private:
     TlsRecordCrypto() = default;
 

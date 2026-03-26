@@ -68,6 +68,14 @@ namespace eph::net {
 
 inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 
+/// WS frame dedup strategy for EvictingQueue mode.
+///   0 = deliver-all (baseline, current behavior)
+///   1 = per-symbol reverse dedup (optimization A)
+///   2 = per-symbol two-phase index (optimization B)
+#ifndef EPH_WS_DEDUP_STRATEGY
+#define EPH_WS_DEDUP_STRATEGY 0
+#endif
+
 // ---------------------------------------------------------------------------
 // Internal message types for SPSC queue
 // ---------------------------------------------------------------------------
@@ -1158,6 +1166,7 @@ public:
             .tls_write_seq     = crypto_ ? crypto_->write_seq() : 0,
             .tls_read_seq      = crypto_ ? crypto_->read_seq() : 0,
             .tls_seq_limit     = config_.use_tls ? tls_record::kMaxSequenceNumber : 0,
+            .tls_records_skipped = tls_records_skipped_.load(std::memory_order_relaxed),
         };
     }
 
@@ -1203,7 +1212,7 @@ private:
     bool rx_enqueue(const uint8_t* data, uint16_t len,
                     uint8_t opcode) noexcept {
         if constexpr (kRxEvicting) {
-            RxMsg msg{};
+            RxMsg msg;  // skip zero-init of data[MaxPayload] — only len bytes matter
             std::memcpy(msg.data, data, len);
             msg.len = len;
             msg.opcode = opcode;
@@ -1391,6 +1400,7 @@ private:
     bool                                   seq_warning_logged_{false};
     // RX-thread-only (written/read exclusively by rx_loop):
     bool                                   rx_seq_warning_logged_{false};
+    std::atomic<uint64_t>                  tls_records_skipped_{0};
 
     // Close code/reason from close_gracefully(), propagated to stop()
     uint16_t                               pending_close_code_{ws::close_code::kNormal};
@@ -2368,6 +2378,44 @@ private:
                 }
             }
 
+            // ── Latest-value optimization: skip stale TLS records ──
+            // When RxQueue uses EvictingQueue, scan the reassembly buffer
+            // to count complete TLS records.  If >1, skip all but the last
+            // (advance crypto seq counter without decrypting).
+            if constexpr (kRxEvicting) {
+                size_t scan = 0;
+                size_t record_count = 0;
+                size_t last_record_offset = 0;
+
+                while (scan < reassembly_len) {
+                    if (reassembly_len - scan <
+                        tls_record::kRecordHeaderLen + tls_record::kAuthTagLen)
+                        break;
+                    uint8_t ct; uint16_t plen;
+                    if (!tls_record::parse_record_header(
+                            reassembly_storage.get() + scan, ct, plen))
+                        break;
+                    size_t rtotal = tls_record::kRecordHeaderLen + plen;
+                    if (scan + rtotal > reassembly_len) break;
+                    last_record_offset = scan;
+                    scan += rtotal;
+                    record_count++;
+                }
+
+                if (record_count > 1) {
+                    uint64_t skip = record_count - 1;
+                    crypto_->advance_read_seq(skip);
+                    size_t remaining = reassembly_len - last_record_offset;
+                    std::memmove(reassembly_storage.get(),
+                                 reassembly_storage.get() + last_record_offset,
+                                 remaining);
+                    reassembly_len = remaining;
+                    ws_reassembly_len = 0;
+                    tls_records_skipped_.fetch_add(
+                        skip, std::memory_order_relaxed);
+                }
+            }
+
             // Decrypt complete TLS records from reassembly buffer
             size_t consumed = 0;
             while (reassembly_len - consumed >=
@@ -2403,6 +2451,31 @@ private:
                         running_.store(false, std::memory_order_release);
                     }
                     break; // Resume with fresh connection or exit outer loop
+                }
+
+                // EvictingQueue: if another complete record follows,
+                // skip WS processing for this record (stale data).
+                // We already decrypted it (must, for seq counter), but
+                // the WS frames inside are superseded by newer data.
+                if constexpr (kRxEvicting) {
+                    size_t after = consumed + record_total;
+                    size_t remain = reassembly_len - after;
+                    if (remain >= tls_record::kRecordHeaderLen +
+                                  tls_record::kAuthTagLen) {
+                        uint8_t nct; uint16_t nplen;
+                        if (tls_record::parse_record_header(
+                                reassembly_storage.get() + after,
+                                nct, nplen)) {
+                            size_t next_total =
+                                tls_record::kRecordHeaderLen + nplen;
+                            if (remain >= next_total) {
+                                // Next record is complete — skip WS for this one
+                                ws_reassembly_len = 0;
+                                consumed += record_total;
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 // Prepend any leftover WS bytes from the previous TLS record.
@@ -2571,11 +2644,65 @@ private:
         return offset;
     }
 
+    /// Fast symbol hash extraction from JSON payload.
+    /// Two strategies:
+    ///   1. Combined stream fast path: "stream":"<symbol>@..." at position ~11
+    ///   2. Single stream fallback: "s":"<SYMBOL>" deeper in the JSON
+    /// Returns 0 if symbol not found.
+    static uint32_t extract_symbol_hash(const uint8_t* data, size_t len) noexcept {
+        auto fnv1a = [](const uint8_t* p, size_t max_len, uint8_t delim) -> uint32_t {
+            uint32_t h = 0x811c9dc5u;
+            for (size_t j = 0; j < max_len && p[j] != delim; ++j) {
+                h ^= p[j];
+                h *= 0x01000193u;
+            }
+            return h;
+        };
+
+        // Fast path: combined stream "stream":"<symbol>@bookTicker"
+        // Pattern at byte 1: "stream":"
+        if (len > 20 && data[1] == '"' && data[2] == 's' && data[3] == 't' &&
+            data[9] == '"' && data[10] == ':' && data[11] == '"') {
+            // Hash bytes from position 12 until '@' or '"'
+            return fnv1a(data + 12, std::min(len - 12, size_t{30}), '@');
+        }
+
+        // Fallback: single stream "s":"<SYMBOL>" — scan full payload
+        for (size_t i = 0; i + 4 < len; ++i) {
+            if (data[i] == '"' && data[i+1] == 's' && data[i+2] == '"' &&
+                data[i+3] == ':' && data[i+4] == '"') {
+                return fnv1a(data + i + 5, std::min(len - i - 5, size_t{30}), '"');
+            }
+        }
+        return 0;
+    }
+
     /// Process decrypted WebSocket data (WsFramer only). Returns the number
     /// of bytes consumed.
     size_t process_ws_data(const uint8_t* data, size_t len) {
         auto log = detail::transport_logger();
         size_t offset = 0;
+
+        // ── EvictingQueue fast path (configurable strategy) ──
+        // Strategy 0: deliver-all + deferred stats (baseline)
+        // Strategy 1: per-symbol reverse dedup (only deliver last per symbol)
+        // Strategy 2: per-symbol two-phase index (same result, different scan)
+        // Control frames (ping/close/pong) are always handled immediately.
+        static constexpr int kDedup = EPH_WS_DEDUP_STRATEGY;
+
+        size_t         data_frame_count  = 0;
+
+        // For dedup strategies: index into the WS data buffer.
+        // payload_offset is relative to `data` parameter — valid for the
+        // duration of this process_ws_data call (non-fragmented frames only).
+        struct FrameEntry {
+            size_t   payload_offset;  // offset into `data`
+            uint16_t len;
+            uint8_t  opcode;
+            uint32_t sym_hash;
+        };
+        std::array<FrameEntry, 128> frame_index{};
+        size_t frame_index_count = 0;
 
         while (offset < len) {
             auto frame = ws::decode_frame(data + offset, len - offset);
@@ -2587,10 +2714,10 @@ private:
             }
 
             offset += frame->total_len;
-            rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-            record_rx_latency();
 
             if (frame->is_ping()) {
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
                 if (config_.on_ping) {
                     try {
@@ -2606,12 +2733,13 @@ private:
             }
 
             if (frame->is_close()) {
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
                 uint16_t code = frame->close_status_code();
                 std::string_view close_reason = frame->close_reason();
                 SPDLOG_LOGGER_INFO(log,
                     "Received WS Close frame: code={} reason=\"{}\"",
                     code, close_reason);
-                // Notify application of close reason before responding
                 if (config_.on_close) {
                     try {
                         config_.on_close(code, close_reason);
@@ -2620,10 +2748,6 @@ private:
                             "on_close callback threw an exception");
                     }
                 }
-                // Deliver close frame to RX queue so polling-mode users
-                // can detect server-initiated close via try_recv_msg().
-                // The close payload (2-byte code + optional reason) is
-                // accessible via ReceivedMessage::close_code()/close_reason().
                 if (frame->payload && frame->payload_len > 0 &&
                     frame->payload_len <= MaxPayload) {
                     (void)rx_enqueue(
@@ -2631,23 +2755,18 @@ private:
                         static_cast<uint16_t>(frame->payload_len),
                         ws::opcode::kClose);
                 }
-                // RFC 6455 §5.5.1: respond with a Close frame echoing
-                // the status code before shutting down.
                 handle_close(code);
-                // Signal TX to drain the Close response before exiting.
-                // TX checks closing_ and sends remaining queue items.
                 closing_.store(true, std::memory_order_release);
                 break;
             }
 
             if (frame->is_pong()) {
-                // Record pong arrival for timeout detection (TX thread reads this).
+                rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
                     std::memory_order_relaxed);
 
-                // RTT measurement: compute delta from the ping TSC timestamp.
-                // Includes kernel TX+RX stack delays when available for full-path RTT.
                 uint64_t ping_tsc = last_ping_tsc_.load(std::memory_order_relaxed);
                 if (ping_tsc > 0 && eph::utils::TSC::is_initialized()) {
                     uint64_t pong_tsc = eph::utils::TSC::now();
@@ -2655,7 +2774,6 @@ private:
                         auto rtt_ns = eph::utils::TSC::to_ns(pong_tsc - ping_tsc);
                         if (rtt_ns) {
                             uint64_t total = static_cast<uint64_t>(*rtt_ns);
-                            // Add kernel stack delays for Socket backend fairness
                             if constexpr (kEnableTimestamps) {
                                 if constexpr (requires { tcp_->last_kernel_tx_delay_ns(); }) {
                                     total += tcp_->last_kernel_tx_delay_ns();
@@ -2667,7 +2785,6 @@ private:
                             rtt_histogram_.record(total);
                         }
                     }
-                    // Clear ping TSC so we don't double-record on spurious pongs
                     last_ping_tsc_.store(0, std::memory_order_relaxed);
                 }
 
@@ -2683,17 +2800,12 @@ private:
                 continue;
             }
 
-            // Data frame handling with fragmentation reassembly.
-            // RFC 6455 §5.4: first fragment has opcode != 0, FIN=0;
-            // continuation fragments have opcode=0; final fragment has FIN=1.
+            // Data frame: in EvictingQueue mode, buffer last frame info
+            // and skip intermediate delivers. In BoundedQueue mode, deliver
+            // every frame as before.
             if (!frame->is_data()) continue;
 
-            // Unmask payload in-place if needed (server frames are usually
-            // unmasked, but handle masked frames for robustness).
-            // payload pointer is const; we'll unmask during copy below.
-
             if (frame->opcode != ws::opcode::kContinuation) {
-                // Start of a new message (possibly the only frame if FIN=1)
                 if (!ws_frag_buf_.empty()) {
                     SPDLOG_LOGGER_WARN(log,
                         "New WS message started while previous fragment "
@@ -2704,17 +2816,44 @@ private:
                 ws_frag_opcode_ = frame->opcode;
             }
 
-            // Append payload to fragment buffer (or process directly if
-            // single-frame message).
             bool is_final = frame->fin;
             bool is_single_frame = (frame->opcode != ws::opcode::kContinuation
                                     && is_final);
 
             if (is_single_frame && frame->payload_len <= MaxPayload) {
-                // Fast path: complete single-frame message, no buffering
-                deliver_data_frame(*frame);
+                if constexpr (kRxEvicting) {
+                    if constexpr (kDedup == 0) {
+                        // Strategy 0: deliver all immediately
+                        if (frame->masked) {
+                            uint8_t tmp[MaxPayload];
+                            std::memcpy(tmp, frame->payload, frame->payload_len);
+                            ws::apply_mask(tmp, frame->payload_len, frame->mask_key);
+                            enqueue_data_only(tmp, static_cast<uint16_t>(frame->payload_len),
+                                              frame->opcode);
+                        } else {
+                            enqueue_data_only(frame->payload,
+                                              static_cast<uint16_t>(frame->payload_len),
+                                              frame->opcode);
+                        }
+                    } else {
+                        // Strategy 1 & 2: build index for dedup
+                        if (frame_index_count < frame_index.size()) {
+                            uint32_t sh = extract_symbol_hash(
+                                frame->payload, frame->payload_len);
+                            frame_index[frame_index_count++] = {
+                                static_cast<size_t>(frame->payload - data),
+                                static_cast<uint16_t>(frame->payload_len),
+                                frame->opcode, sh
+                            };
+                        }
+                    }
+                    data_frame_count++;
+                } else {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    record_rx_latency();
+                    deliver_data_frame(*frame);
+                }
             } else if (is_single_frame) {
-                // Single oversized frame
                 rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
                 SPDLOG_LOGGER_WARN(log,
                     "Dropping oversized WS frame: payload_len={}, "
@@ -2745,17 +2884,95 @@ private:
                 }
 
                 if (is_final) {
-                    // Reassembly complete — deliver
-                    if (!ws_frag_buf_.empty()) {
-                        deliver_message(
-                            ws_frag_buf_.data(),
-                            static_cast<uint16_t>(ws_frag_buf_.size()),
-                            ws_frag_opcode_);
+                    if constexpr (kRxEvicting) {
+                        if (!ws_frag_buf_.empty()) {
+                            // Fragmented frames: always deliver immediately
+                            // (can't defer — ws_frag_buf_ gets cleared)
+                            enqueue_data_only(
+                                ws_frag_buf_.data(),
+                                static_cast<uint16_t>(ws_frag_buf_.size()),
+                                ws_frag_opcode_);
+                            data_frame_count++;
+                        }
+                    } else {
+                        if (!ws_frag_buf_.empty()) {
+                            rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                            record_rx_latency();
+                            deliver_message(
+                                ws_frag_buf_.data(),
+                                static_cast<uint16_t>(ws_frag_buf_.size()),
+                                ws_frag_opcode_);
+                        }
                     }
                     ws_frag_buf_.clear();
                 }
             }
         }
+
+        // EvictingQueue: deferred stats + single latency recording
+        if constexpr (kRxEvicting) {
+            if constexpr (kDedup == 1) {
+                // Strategy 1: reverse dedup — iterate backward, deliver first
+                // occurrence per symbol hash (which is the latest frame).
+                std::array<uint32_t, 64> seen_hashes{};
+                size_t seen_count = 0;
+                size_t delivered = 0;
+                for (size_t i = frame_index_count; i > 0; --i) {
+                    auto& e = frame_index[i - 1];
+                    bool dup = false;
+                    for (size_t j = 0; j < seen_count; ++j) {
+                        if (seen_hashes[j] == e.sym_hash) { dup = true; break; }
+                    }
+                    if (dup) continue;
+                    if (seen_count < seen_hashes.size())
+                        seen_hashes[seen_count++] = e.sym_hash;
+                    enqueue_data_only(data + e.payload_offset, e.len, e.opcode);
+                    ++delivered;
+                }
+                if (delivered > 0) {
+                    rx_stats_.packets.fetch_add(
+                        data_frame_count, std::memory_order_relaxed);
+                    record_rx_latency();
+                }
+            } else if constexpr (kDedup == 2) {
+                // Strategy 2: two-phase — forward pass to find last index
+                // per symbol, then deliver only those.
+                std::array<uint32_t, 64> sym_hashes{};
+                std::array<size_t, 64> last_idx{};
+                size_t sym_count = 0;
+                for (size_t i = 0; i < frame_index_count; ++i) {
+                    auto h = frame_index[i].sym_hash;
+                    bool found = false;
+                    for (size_t j = 0; j < sym_count; ++j) {
+                        if (sym_hashes[j] == h) {
+                            last_idx[j] = i; found = true; break;
+                        }
+                    }
+                    if (!found && sym_count < sym_hashes.size()) {
+                        sym_hashes[sym_count] = h;
+                        last_idx[sym_count] = i;
+                        ++sym_count;
+                    }
+                }
+                for (size_t j = 0; j < sym_count; ++j) {
+                    auto& e = frame_index[last_idx[j]];
+                    enqueue_data_only(data + e.payload_offset, e.len, e.opcode);
+                }
+                if (sym_count > 0) {
+                    rx_stats_.packets.fetch_add(
+                        data_frame_count, std::memory_order_relaxed);
+                    record_rx_latency();
+                }
+            } else {
+                // Strategy 0: baseline — already delivered, just record stats
+                if (data_frame_count > 0) {
+                    rx_stats_.packets.fetch_add(
+                        data_frame_count, std::memory_order_relaxed);
+                    record_rx_latency();
+                }
+            }
+        }
+
         return offset;
     }
 
@@ -2764,7 +2981,8 @@ private:
     /// invalid frames are dropped with a warning.
     void deliver_message(const uint8_t* data, uint16_t len, uint8_t opcode) noexcept {
         // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText && !ws::is_valid_utf8(data, len)) {
+        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+            !ws::is_valid_utf8(data, len)) {
             rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
                 "Dropping text frame with invalid UTF-8 (len={})", len);
@@ -2813,6 +3031,22 @@ private:
                 }
             }
         }
+    }
+
+    /// Lightweight enqueue: skip UTF-8 validation and stats updates.
+    /// Used by EvictingQueue fast path where stats are batched at the end.
+    void enqueue_data_only(const uint8_t* data, uint16_t len,
+                           uint8_t opcode) noexcept {
+        if (config_.on_message) {
+            try {
+                config_.on_message(data, len, opcode);
+            } catch (...) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "on_message callback threw an exception");
+            }
+            return;
+        }
+        (void)rx_enqueue(data, len, opcode);
     }
 
     /// Deliver a complete single-frame data message.
