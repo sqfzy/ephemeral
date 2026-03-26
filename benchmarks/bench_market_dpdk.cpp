@@ -8,8 +8,8 @@
 ///
 /// Usage (all threads on isolated, non-overlapping cores):
 ///   # lcore 4-7 (DPDK EAL), rx 8, tx 9, main 10
-///   sudo ./bench_market_dpdk -a 0000:28:00.0 -l 4-7 -- \
-///       --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 \
+///   sudo ./bench_market_dpdk -a 0000:28:00.0 -l 4-7
+///       -- --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --duration 30
 
 #include <atomic>
@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
         }
     }
     auto cfg = parse_args(app_argc, app_argv);
-    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
+    if (cfg.main_cpu >= 0) (void)eph::utils::set_thread_affinity(cfg.main_cpu, "main");
     if (cfg.local_ip.empty() || cfg.gateway_ip.empty()) {
         spdlog::error("--local-ip and --gateway-ip are required"); return 1;
     }
@@ -165,11 +165,15 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() - start).count();
 
     auto stats = tp.stats();
+    auto& rx = stats.rx_latency;
+    double avg_frames_per_record = rx.count > 0
+        ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
+
     spdlog::info("=== Market Data Pipeline Benchmark (DPDK) ===");
     spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
+    spdlog::info("Avg frames/record: {:.1f} ({} frames, {} records)",
+                 avg_frames_per_record, stats.rx_packets, rx.count);
     spdlog::info("Transport stats:\n{}", stats.dump());
-
-    auto& rx = stats.rx_latency;
     spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
     if (rx.count > 0) {
         spdlog::info("  samples: {}", rx.count);

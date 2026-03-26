@@ -39,14 +39,14 @@ void Throughput(benchmark::State& state) {
 
     if (state.thread_index() == 0) {
         // --- 生产者 ---
-        set_thread_affinity(topology[0].hw_thread_id);
+        (void)set_thread_affinity(topology[0].hw_thread_id);
         T val;
         for (auto _ : state) {
             q->push(val);  //
         }
     } else {
         // --- 消费者 ---
-        set_thread_affinity(topology[1].hw_thread_id);
+        (void)set_thread_affinity(topology[1].hw_thread_id);
         T out;
         uint64_t local_pops = 0;
         for (auto _ : state) {
@@ -87,13 +87,13 @@ void ZeroCopy(benchmark::State& state) {
     }
 
     if (state.thread_index() == 0) {
-        set_thread_affinity(topology[0].hw_thread_id);
+        (void)set_thread_affinity(topology[0].hw_thread_id);
         auto writer = [](T& slot) { slot.data[0] = 1; };
         for (auto _ : state) {
             q->produce(writer);
         }
     } else {
-        set_thread_affinity(topology[1].hw_thread_id);
+        (void)set_thread_affinity(topology[1].hw_thread_id);
         uint64_t local_pops = 0;
         auto reader = [](const T& slot) {
             uint8_t d = slot.data[0];

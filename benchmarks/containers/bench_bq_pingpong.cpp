@@ -59,7 +59,7 @@ static void BM_BoundedQueue_PingPong(benchmark::State& state) {
 
     // 线程 0：Initiator (Ping)
     if (state.thread_index() == 0) {
-        set_thread_affinity(topology[0].hw_thread_id);
+        (void)set_thread_affinity(topology[0].hw_thread_id);
 
         T send_val;
         T recv_val;
@@ -74,7 +74,7 @@ static void BM_BoundedQueue_PingPong(benchmark::State& state) {
     }
     // 线程 1：Echoer (Pong)
     else {
-        set_thread_affinity(topology[1].hw_thread_id);
+        (void)set_thread_affinity(topology[1].hw_thread_id);
 
         T val;
         for ([[maybe_unused]] auto _ : state) {
@@ -114,13 +114,13 @@ static void BM_BoundedQueue_ZeroCopy_PingPong(benchmark::State& state) {
     };
 
     if (state.thread_index() == 0) {
-        set_thread_affinity(topology[0].hw_thread_id);
+        (void)set_thread_affinity(topology[0].hw_thread_id);
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.produce(writer);  // Block wait
             ctx->q2.consume(reader);  // Block wait
         }
     } else {
-        set_thread_affinity(topology[1].hw_thread_id);
+        (void)set_thread_affinity(topology[1].hw_thread_id);
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.consume(reader);
             ctx->q2.produce(writer);

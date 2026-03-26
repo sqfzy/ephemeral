@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     auto cfg = parse_args(argc, argv);
-    if (cfg.main_cpu >= 0) eph::utils::set_thread_affinity(cfg.main_cpu, "main");
+    if (cfg.main_cpu >= 0) (void)eph::utils::set_thread_affinity(cfg.main_cpu, "main");
 
     spdlog::info("Calibrating TSC...");
     if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {
@@ -160,11 +160,15 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() - start).count();
 
     auto stats = tp.stats();
+    auto& rx = stats.rx_latency;
+    double avg_frames_per_record = rx.count > 0
+        ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
+
     spdlog::info("=== Market Data Pipeline Benchmark (Socket) ===");
     spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
+    spdlog::info("Avg frames/record: {:.1f} ({} frames, {} records)",
+                 avg_frames_per_record, stats.rx_packets, rx.count);
     spdlog::info("Transport stats:\n{}", stats.dump());
-
-    auto& rx = stats.rx_latency;
     spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
     if (rx.count > 0) {
         spdlog::info("  samples: {}", rx.count);
