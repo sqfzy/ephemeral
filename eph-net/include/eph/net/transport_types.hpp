@@ -45,6 +45,11 @@ struct FrameView {
 /// @warning Called from the RX thread — must be non-blocking, no heap allocation.
 using FrameFilterFn = std::function<void(std::span<FrameView>)>;
 
+/// Raw function pointer for symbol hash extraction (no std::function overhead).
+/// Used with the inline two-phase dedup fast path. Returns 0 for unrecognized
+/// payloads (which are always delivered unconditionally).
+using SymbolHashFn = uint32_t (*)(const uint8_t* data, size_t len);
+
 /// Create a batch frame filter that delivers only the latest frame per symbol.
 ///
 /// Two-phase forward scan: pass 1 records last index per symbol hash,
@@ -420,7 +425,16 @@ struct TransportConfig {
     /// frames are always delivered regardless of the filter.
     ///
     /// Use `make_twophase_filter(extractor)` for latest-per-symbol delivery.
+    /// For best performance, prefer `symbol_hash_fn` which uses an optimized
+    /// inline fast path.
     FrameFilterFn on_frame_filter{};
+
+    /// Symbol hash extractor for inline two-phase dedup (optional).
+    /// When set, enables a fast-path two-phase filter that avoids
+    /// std::function overhead and minimizes per-frame work: only frames
+    /// surviving the dedup are fully decoded. Takes precedence over
+    /// on_frame_filter when both are set.
+    SymbolHashFn symbol_hash_fn = nullptr;
 
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).

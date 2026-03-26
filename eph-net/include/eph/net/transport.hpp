@@ -2703,7 +2703,11 @@ private:
     /// Process decrypted WebSocket data (WsFramer only). Returns the number
     /// of bytes consumed.
     size_t process_ws_data(const uint8_t* data, size_t len) {
-        // Batch frame filter: route to filtered path when configured.
+        // Inline two-phase dedup: fast path with minimal per-frame overhead.
+        if (config_.symbol_hash_fn) {
+            return process_ws_data_twophase_fast(data, len);
+        }
+        // Generic batch frame filter (std::function path).
         if (config_.on_frame_filter) {
             return process_ws_data_filtered(data, len);
         }
@@ -3159,6 +3163,223 @@ private:
         SPDLOG_LOGGER_TRACE(log,
             "Frame filter: {}/{} delivered, {} skipped",
             data_delivered, data_total, data_total - data_delivered);
+
+        return offset;
+    }
+
+    /// Fast-path two-phase dedup using symbol_hash_fn (raw function pointer).
+    ///
+    /// Optimizations over process_ws_data_filtered:
+    ///  1. Quick-scan frame boundaries without full ws::decode_frame
+    ///  2. Inline hash + open-addressing dedup during scan (16-slot table)
+    ///  3. Only ws::decode_frame for frames surviving dedup (~3 out of ~30)
+    ///  4. Direct rx_enqueue for unmasked data frames (skip dispatch chain)
+    ///  5. No FrameView/FrameIndexEntry, no std::function, no deliver bitmap
+    ///  6. Occupied-slot tracking avoids 256-slot full-table scan
+    size_t process_ws_data_twophase_fast(const uint8_t* data, size_t len) {
+        static constexpr size_t kMaxFrames = 128;
+        // 16 slots = 1 cache line for the hash table. Sufficient for ≤8 symbols.
+        static constexpr size_t kSlots = 16;
+
+        // Compact per-frame boundary: 16 bytes (fits 8 per cache line).
+        struct FrameBound {
+            uint32_t offset;      // byte offset in source buffer
+            uint16_t total_len;   // total frame length
+            uint16_t hdr_len;     // header length (payload starts at offset+hdr_len)
+        };
+
+        FrameBound bounds[kMaxFrames];
+        size_t     num_frames = 0;
+        size_t     offset = 0;
+        uint64_t   data_total = 0;
+
+        // 16-slot open-addressing hash table: 128 bytes = 2 cache lines.
+        struct Slot { uint32_t hash = 0; uint16_t last_idx = 0; };
+        Slot slots[kSlots] = {};
+        uint8_t occupied[kSlots];  // indices of non-empty slots
+        size_t  num_occupied = 0;
+
+        // Bitmask of frames to deliver: "latest per symbol" OR "always deliver"
+        // (unrecognized hash, continuation, non-fin, zero-length — all get bit set).
+        uint64_t deliver_lo = 0, deliver_hi = 0;
+
+        auto hash_fn = config_.symbol_hash_fn;
+
+        auto set_deliver = [&](size_t idx) {
+            if (idx < 64) deliver_lo |= (uint64_t{1} << idx);
+            else          deliver_hi |= (uint64_t{1} << (idx - 64));
+        };
+
+        // ── Single pass: boundary scan + hash extraction + dedup ─────────
+        while (offset < len && num_frames < kMaxFrames) {
+            size_t remaining = len - offset;
+            if (remaining < 2) [[unlikely]] break;
+
+            const uint8_t* p = data + offset;
+            uint8_t b0 = p[0], b1 = p[1];
+            size_t  hdr  = 2;
+            size_t  plen = b1 & 0x7F;
+
+            if (plen == 126) {
+                if (remaining < 4) [[unlikely]] break;
+                plen = (size_t(p[2]) << 8) | p[3];
+                hdr = 4;
+            } else if (plen == 127) [[unlikely]] {
+                if (remaining < 10) break;
+                plen = 0;
+                for (int j = 0; j < 8; ++j) plen = (plen << 8) | p[2 + j];
+                hdr = 10;
+            }
+            if (b1 & 0x80) hdr += 4;  // masked
+
+            size_t total = hdr + plen;
+            if (total > remaining) [[unlikely]] break;
+
+            bounds[num_frames] = {
+                static_cast<uint32_t>(offset),
+                static_cast<uint16_t>(std::min(total, size_t{UINT16_MAX})),
+                static_cast<uint16_t>(hdr)
+            };
+
+            uint8_t opcode = b0 & 0x0F;
+            bool is_ctrl = (opcode & 0x08) != 0;
+
+            if (!is_ctrl) {
+                ++data_total;
+                bool hashed = false;
+                // Hash filterable data frames: non-control, fin, non-continuation.
+                if (opcode != 0 && (b0 & 0x80) && plen > 0) {
+                    uint32_t h = hash_fn(p + hdr, plen);
+                    if (h != 0) {
+                        hashed = true;
+                        size_t s = h & (kSlots - 1);
+                        for (size_t j = 0; j < kSlots; ++j) {
+                            size_t si = (s + j) & (kSlots - 1);
+                            if (slots[si].hash == 0) {
+                                slots[si] = {h, static_cast<uint16_t>(num_frames)};
+                                occupied[num_occupied++] = static_cast<uint8_t>(si);
+                                break;
+                            }
+                            if (slots[si].hash == h) {
+                                slots[si].last_idx = static_cast<uint16_t>(num_frames);
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Non-hashable data frames always delivered (continuation, !fin, hash==0).
+                if (!hashed) set_deliver(num_frames);
+            }
+
+            offset += total;
+            ++num_frames;
+        }
+
+        if (num_frames == 0) [[unlikely]] return offset;
+
+        // ── Dispatch: only surviving frames, direct enqueue ──────────────
+        // Mark latest per symbol (only iterate occupied slots).
+        for (size_t j = 0; j < num_occupied; ++j) {
+            set_deliver(slots[occupied[j]].last_idx);
+        }
+
+        // Deferred byte-level stats (flushed once after loop).
+        uint64_t batch_bytes = 0, batch_text_bytes = 0, batch_text_count = 0;
+
+        for (size_t i = 0; i < num_frames; ++i) {
+            auto& b = bounds[i];
+            const uint8_t* frame_ptr = data + b.offset;
+            uint8_t opcode = frame_ptr[0] & 0x0F;
+
+            if (opcode & 0x08) [[unlikely]] {
+                // Control frame: full decode (rare path).
+                auto frame = ws::decode_frame(frame_ptr, b.total_len);
+                if (!frame) continue;
+                if (frame->is_ping()) {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
+                    if (config_.on_ping) {
+                        try { config_.on_ping(frame->payload,
+                                static_cast<uint16_t>(frame->payload_len));
+                        } catch (...) {}
+                    }
+                    handle_ping(*frame);
+                } else if (frame->is_close()) {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    uint16_t code = frame->close_status_code();
+                    SPDLOG_LOGGER_INFO(detail::transport_logger(),
+                        "Received WS Close frame: code={}", code);
+                    if (config_.on_close) {
+                        try { config_.on_close(code, frame->close_reason()); }
+                        catch (...) {}
+                    }
+                    if (frame->payload && frame->payload_len > 0 &&
+                        frame->payload_len <= MaxPayload) {
+                        (void)rx_enqueue(frame->payload,
+                            static_cast<uint16_t>(frame->payload_len),
+                            ws::opcode::kClose);
+                    }
+                    handle_close(code);
+                    closing_.store(true, std::memory_order_release);
+                    break;
+                } else if (frame->is_pong()) {
+                    rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                    last_pong_ns_.store(
+                        std::chrono::steady_clock::now().time_since_epoch().count(),
+                        std::memory_order_relaxed);
+                    if (config_.on_pong) {
+                        try { config_.on_pong(frame->payload,
+                                static_cast<uint16_t>(frame->payload_len));
+                        } catch (...) {}
+                    }
+                }
+                continue;
+            }
+
+            // Data frame: check if it should be delivered (latest per symbol
+            // or always-deliver frame like continuation/unrecognized).
+            bool should_deliver = (i < 64)
+                ? (deliver_lo & (uint64_t{1} << i)) != 0
+                : (deliver_hi & (uint64_t{1} << (i - 64))) != 0;
+
+            if (!should_deliver) continue;
+
+            // Direct delivery: for unmasked server frames, bypass the
+            // deliver_data_frame → deliver_message dispatch chain.
+            const uint8_t* payload = frame_ptr + b.hdr_len;
+            auto plen = static_cast<uint16_t>(b.total_len - b.hdr_len);
+            if (plen == 0 || plen > MaxPayload) [[unlikely]] continue;
+
+            bool masked = (frame_ptr[1] & 0x80) != 0;
+            if (masked) [[unlikely]] {
+                // Rare: server frames are unmasked per RFC 6455 §5.1.
+                auto frame = ws::decode_frame(frame_ptr, b.total_len);
+                if (frame) deliver_data_frame(*frame);
+            } else if (config_.on_message) {
+                // Push-mode callback.
+                try { config_.on_message(payload, plen, opcode); } catch (...) {}
+            } else {
+                // Fast path: direct enqueue, no intermediate copies.
+                rx_enqueue(payload, plen, opcode);
+            }
+            // Batch byte stats (deferred, flushed once below).
+            batch_bytes += plen;
+            if (opcode == ws::opcode::kText) {
+                batch_text_bytes += plen;
+                ++batch_text_count;
+            }
+        }
+
+        if (data_total > 0) {
+            rx_stats_.packets.fetch_add(data_total, std::memory_order_relaxed);
+            if (batch_bytes > 0)
+                rx_stats_.bytes.fetch_add(batch_bytes, std::memory_order_relaxed);
+            if (batch_text_count > 0) {
+                rx_stats_.text_packets.fetch_add(batch_text_count, std::memory_order_relaxed);
+                rx_stats_.text_bytes.fetch_add(batch_text_bytes, std::memory_order_relaxed);
+            }
+            record_rx_latency();
+        }
 
         return offset;
     }

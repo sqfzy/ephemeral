@@ -59,25 +59,18 @@ using BenchTransport = eph::net::Transport<
 
 /// Extract symbol hash from Binance combined stream JSON payload.
 /// Format: {"stream":"<symbol>@<channel>","data":{...}}
-/// Scans the first ~64 bytes for "stream":" prefix, hashes until '@'.
+/// Fast path: reads 4 bytes at the fixed symbol position (byte 11).
+/// This is sufficient to distinguish all common Binance symbol pairs
+/// (btcusdt→"btcu", ethusdt→"ethu", solusdt→"solu", etc.).
 /// Returns 0 on parse failure (payload delivered unconditionally).
 static uint32_t binance_symbol_hash(const uint8_t* data, size_t len) {
-    // {"stream":" is 11 bytes; shortest symbol is ~4 chars + '@'
-    constexpr size_t kPrefixLen = 11;  // {"stream":"
-    if (len < kPrefixLen + 2) return 0;
-
-    // Verify prefix: quick check on key bytes
-    if (data[0] != '{' || data[1] != '"' || data[9] != '"') return 0;
-
-    const uint8_t* p = data + kPrefixLen;
-    const uint8_t* end = data + std::min(len, size_t{64});
-    uint32_t hash = 2166136261u;  // FNV-1a offset basis
-    while (p < end && *p != '@' && *p != '"') {
-        hash ^= *p;
-        hash *= 16777619u;  // FNV-1a prime
-        ++p;
-    }
-    return (p > data + kPrefixLen) ? hash : 0;
+    // {"stream":" is 11 bytes; need at least 4 bytes of symbol.
+    if (len < 15) [[unlikely]] return 0;
+    if (data[0] != '{') [[unlikely]] return 0;
+    // Direct 4-byte read at symbol position — single LDR on ARM64.
+    uint32_t h;
+    std::memcpy(&h, data + 11, 4);
+    return h;
 }
 
 /// Extract Binance event timestamp (ms) from combined stream JSON.
@@ -274,9 +267,7 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
-        .on_frame_filter = cfg.use_twophase
-            ? eph::net::make_twophase_filter(binance_symbol_hash)
-            : eph::net::FrameFilterFn{},
+        .symbol_hash_fn = cfg.use_twophase ? binance_symbol_hash : nullptr,
     };
 
     // on_message bypasses EvictingQueue — callback runs in RX thread
