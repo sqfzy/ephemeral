@@ -326,6 +326,23 @@ struct ParserStats {
         };
     }
 
+    /// Messages parsed per second over a measurement interval.
+    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
+    [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
+        return duration_ns > 0
+            ? static_cast<double>(messages_parsed) * 1e9 / static_cast<double>(duration_ns)
+            : 0.0;
+    }
+
+    /// Parse error rate as a fraction [0.0, 1.0].
+    /// Computed as errors / (parsed + errors).
+    [[nodiscard]] double error_rate() const noexcept {
+        uint64_t total = messages_parsed + parse_errors;
+        return total > 0
+            ? static_cast<double>(parse_errors) / static_cast<double>(total)
+            : 0.0;
+    }
+
     [[nodiscard]] friend bool operator==(const ParserStats&, const ParserStats&) = default;
 };
 
