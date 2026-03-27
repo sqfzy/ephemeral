@@ -234,6 +234,13 @@ public:
         t->running_.store(true, std::memory_order_release);
         t->notify_state(TransportEvent::kConnected, config.remote_host);
 
+        // Flush any pending TCP ACK accumulated during handshake.
+        // Critical for deferred_start: without this, the server's TCP
+        // window fills up and it stops sending data before RX threads start.
+        if constexpr (requires { t->tcp_->flush_pending_ack(); }) {
+            t->tcp_->flush_pending_ack();
+        }
+
         // Hook: allow caller to configure session (e.g., shared RX ring)
         // after handshake but before threads start polling.
         if (config.on_connected_before_threads) {
