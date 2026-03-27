@@ -15,6 +15,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -45,6 +46,57 @@ struct FrameView {
 /// @warning Called from the RX thread — must be non-blocking, no heap allocation.
 using FrameFilterFn = std::function<void(std::span<FrameView>)>;
 
+/// Constants for the two-phase frame filter hash table.
+namespace filter_detail {
+/// Open-addressing hash table slots. 256 slots for ≤128 frames → ≤50% load.
+inline constexpr size_t kFilterSlots = 256;
+/// Maximum frames processed per batch (bounded by stack allocation).
+inline constexpr size_t kMaxFramesPerBatch = 128;
+
+/// Core two-phase filter logic, shared between std::function and function pointer overloads.
+/// ExtractorFn must be callable as uint32_t(const uint8_t*, size_t).
+template <typename ExtractorFn>
+void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
+    struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
+    Slot slots[kFilterSlots] = {};
+
+    // Compute hashes once, cache for reuse in pass 2.
+    uint32_t hashes[kMaxFramesPerBatch];
+    size_t n = std::min(frames.size(), kMaxFramesPerBatch);
+
+    // Pass 1: extract hashes + record last index per symbol.
+    for (size_t i = 0; i < n; ++i) {
+        auto& f = frames[i];
+        uint32_t h = ext(f.payload, f.payload_len);
+        hashes[i] = h;
+        if (h == 0) continue;  // unrecognized: deliver unconditionally
+        size_t slot = h & (kFilterSlots - 1);
+        for (size_t j = 0; j < kFilterSlots; ++j) {
+            size_t s = (slot + j) & (kFilterSlots - 1);
+            if (slots[s].hash == 0) {
+                slots[s] = {h, i};
+                break;
+            }
+            if (slots[s].hash == h) {
+                slots[s].last_idx = i;
+                break;
+            }
+        }
+    }
+
+    // Pass 2: mark non-latest as skip using cached hashes.
+    for (size_t i = 0; i < n; ++i) {
+        if (hashes[i] != 0) frames[i].deliver = false;
+    }
+    // Restore latest per symbol.
+    for (auto& s : slots) {
+        if (s.hash != 0) {
+            frames[s.last_idx].deliver = true;
+        }
+    }
+}
+} // namespace filter_detail
+
 /// Create a batch frame filter that delivers only the latest frame per symbol.
 ///
 /// Two-phase forward scan: pass 1 records last index per symbol hash,
@@ -62,46 +114,7 @@ inline FrameFilterFn make_twophase_filter(
     std::function<uint32_t(const uint8_t* data, size_t len)> extractor)
 {
     return [ext = std::move(extractor)](std::span<FrameView> frames) {
-        // Open-addressing hash table: 256 slots for ≤128 frames → ≤50% load.
-        static constexpr size_t kSlots = 256;
-        static constexpr size_t kMaxFrames = 128;
-        struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
-        Slot slots[kSlots] = {};
-
-        // Compute hashes once, cache for reuse in pass 2.
-        uint32_t hashes[kMaxFrames];
-        size_t n = std::min(frames.size(), kMaxFrames);
-
-        // Pass 1: extract hashes + record last index per symbol.
-        for (size_t i = 0; i < n; ++i) {
-            auto& f = frames[i];
-            uint32_t h = ext(f.payload, f.payload_len);
-            hashes[i] = h;
-            if (h == 0) continue;  // unrecognized: deliver unconditionally
-            size_t slot = h & (kSlots - 1);
-            for (size_t j = 0; j < kSlots; ++j) {
-                size_t s = (slot + j) & (kSlots - 1);
-                if (slots[s].hash == 0) {
-                    slots[s] = {h, i};
-                    break;
-                }
-                if (slots[s].hash == h) {
-                    slots[s].last_idx = i;
-                    break;
-                }
-            }
-        }
-
-        // Pass 2: mark non-latest as skip using cached hashes.
-        for (size_t i = 0; i < n; ++i) {
-            if (hashes[i] != 0) frames[i].deliver = false;
-        }
-        // Restore latest per symbol.
-        for (auto& s : slots) {
-            if (s.hash != 0) {
-                frames[s.last_idx].deliver = true;
-            }
-        }
+        filter_detail::apply_twophase_filter(frames, ext);
     };
 }
 
@@ -111,41 +124,7 @@ inline FrameFilterFn make_twophase_filter(
     uint32_t (*extractor)(const uint8_t* data, size_t len))
 {
     return [extractor](std::span<FrameView> frames) {
-        static constexpr size_t kSlots = 256;
-        static constexpr size_t kMaxFrames = 128;
-        struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
-        Slot slots[kSlots] = {};
-
-        uint32_t hashes[kMaxFrames];
-        size_t n = std::min(frames.size(), kMaxFrames);
-
-        for (size_t i = 0; i < n; ++i) {
-            auto& f = frames[i];
-            uint32_t h = extractor(f.payload, f.payload_len);
-            hashes[i] = h;
-            if (h == 0) continue;
-            size_t slot = h & (kSlots - 1);
-            for (size_t j = 0; j < kSlots; ++j) {
-                size_t s = (slot + j) & (kSlots - 1);
-                if (slots[s].hash == 0) {
-                    slots[s] = {h, i};
-                    break;
-                }
-                if (slots[s].hash == h) {
-                    slots[s].last_idx = i;
-                    break;
-                }
-            }
-        }
-
-        for (size_t i = 0; i < n; ++i) {
-            if (hashes[i] != 0) frames[i].deliver = false;
-        }
-        for (auto& s : slots) {
-            if (s.hash != 0) {
-                frames[s.last_idx].deliver = true;
-            }
-        }
+        filter_detail::apply_twophase_filter(frames, extractor);
     };
 }
 
@@ -202,11 +181,12 @@ struct ConnectionErrorInfo {
             "{{\"code\":\"{}\",\"detail\":\"{}\",\"http_status\":{}}}",
             detail::json_escape(connection_error_name(code)),
             detail::json_escape(detail),
-            http_status);
+            http_status.value_or(0));
     }
 
-    /// HTTP status code from server rejection (only valid when code == kWsUpgradeRejected).
-    int http_status = 0;
+    /// HTTP status code from server rejection.
+    /// Only populated when code == kWsUpgradeRejected; nullopt otherwise.
+    std::optional<int> http_status{};
 
     /// Defaulted equality — all fields must match exactly.
     [[nodiscard]] friend bool operator==(const ConnectionErrorInfo&,

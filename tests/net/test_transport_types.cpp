@@ -249,7 +249,7 @@ TEST(ConnectionErrorTest, InfoMessage) {
     auto msg = info.message();
     EXPECT_NE(msg.find("WS_UPGRADE_REJECTED"), std::string::npos);
     EXPECT_NE(msg.find("403"), std::string::npos);
-    EXPECT_EQ(info.http_status, 403);
+    EXPECT_EQ(info.http_status.value(), 403);
 }
 
 TEST(ConnectionErrorTest, FormatConnectionError) {
