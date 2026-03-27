@@ -1,0 +1,18 @@
+bench_market_multi multi-scenario comparison
+Date: 2026-03-27 15:36
+Commits: 9a026ba (baseline) vs 2db53d7 (optimized)
+
+=== Steady (batch=3, 3000 msg/s) ===
+BASELINE  RX p50: 3732ns  p99: 4652ns  p99.9: 6844ns
+OPTIMIZED RX p50:  612ns  p99: 2204ns  p99.9: 2476ns
+Change:        -83.6%       -52.6%        -63.8%
+
+=== Surge (flash-crash, batch 3→50→3) ===
+BASELINE  RX p50: 5020ns  p99: 11580ns  p99.9: 14364ns
+OPTIMIZED RX p50: 1644ns  p99:  7140ns  p99.9: 11772ns
+Change:        -67.3%        -38.4%        -18.0%
+
+=== Steady high-rate (batch=30, 5000 msg/s) ===
+BASELINE  RX p50: 7788ns  p99: 9676ns   p99.9: 13020ns  max: 105324ns
+OPTIMIZED RX p50: 3828ns  p99: 8460ns   p99.9:  9852ns  max:  12662ns
+Change:        -50.8%       -12.6%         -24.3%         -88.0%

@@ -1,0 +1,19 @@
+bench_market_multi surge profile comparison
+
+=== BASELINE (no optimizations) ===
+  avg batch: 18.8 frames/record, 3532 TLS records
+  RX p50:     5020 ns
+  RX p99:    11580 ns
+  RX p99.9:  14364 ns
+  RX max:    49513 ns
+  decrypt p50: 900 ns
+  decode p50: 1000 ns
+
+=== OPTIMIZED (3 commits) ===
+  avg batch: 18.8 frames/record, 3532 TLS records
+  RX p50:     1644 ns  (-67.3%)
+  RX p99:     7140 ns  (-38.4%)
+  RX p99.9:  11772 ns  (-18.0%)
+  RX max:    13617 ns  (-72.5%)
+  decrypt p50: 600 ns  (-33.3%)
+  decode p50: 1000 ns  (0%)

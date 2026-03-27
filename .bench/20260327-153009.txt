@@ -1,0 +1,13 @@
+Round 4 bench_market_multi (conditional poll_tx_error_queue)
+Date: 2026-03-27 15:30:09
+Commit: fdc43b6
+
+RX Pipeline:
+  samples: 15000
+  min:     506 ns
+  p50:     612 ns
+  p99:     2204 ns
+  p99.9:   2476 ns
+  max:     5774 ns
+  decrypt p50: 300 ns
+  decode p50:  300 ns

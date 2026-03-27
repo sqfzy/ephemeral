@@ -1,0 +1,7 @@
+Round 5 bench_market_multi (fast-path direct enqueue)
+Date: 2026-03-27 15:50
+Commit: 953f20b
+
+batch=3 steady:   p50=644ns  p99=2228ns  p99.9=2564ns
+batch=30 steady:  p50=3700ns p99=8212ns  p99.9=8804ns  decode_p50=2400ns
+surge:            p50=1572ns p99=6396ns  p99.9=11092ns

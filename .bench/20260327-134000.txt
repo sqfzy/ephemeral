@@ -1,0 +1,38 @@
+--------------------------------------------------------------------------------------------
+Benchmark                                  Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------------
+BM_TwophaseFilter/1/3                    244 ns          244 ns      2862251 frames=1 items_per_second=4.09702M/s symbols=3
+BM_TwophaseFilter/10/3                   264 ns          264 ns      2649995 frames=10 items_per_second=37.8976M/s symbols=3
+BM_TwophaseFilter/30/3                   337 ns          337 ns      2075702 frames=30 items_per_second=89.0932M/s symbols=3
+BM_TwophaseFilter/50/3                   416 ns          416 ns      1682789 frames=50 items_per_second=120.142M/s symbols=3
+BM_TwophaseFilter/100/3                  610 ns          610 ns      1146770 frames=100 items_per_second=163.831M/s symbols=3
+BM_TwophaseFilter/1/10                   240 ns          240 ns      2869807 frames=1 items_per_second=4.15941M/s symbols=10
+BM_TwophaseFilter/10/10                  258 ns          258 ns      2715845 frames=10 items_per_second=38.8155M/s symbols=10
+BM_TwophaseFilter/30/10                  335 ns          335 ns      2091845 frames=30 items_per_second=89.5865M/s symbols=10
+BM_TwophaseFilter/50/10                  408 ns          408 ns      1714521 frames=50 items_per_second=122.551M/s symbols=10
+BM_TwophaseFilter/100/10                 608 ns          608 ns      1152139 frames=100 items_per_second=164.416M/s symbols=10
+BM_RxPipeline/1/64                       590 ns          590 ns      1196646 bytes_per_second=142.268Mi/s frames=1 payload=64 record_bytes=88
+BM_RxPipeline/1/256                      625 ns          625 ns      1131359 bytes_per_second=430.392Mi/s frames=1 payload=256 record_bytes=282
+BM_RxPipeline/1/512                      680 ns          680 ns      1029898 bytes_per_second=754.591Mi/s frames=1 payload=512 record_bytes=538
+BM_RxPipeline/10/64                      757 ns          757 ns       923053 bytes_per_second=859.491Mi/s frames=10 payload=64 record_bytes=682
+BM_RxPipeline/10/256                    1016 ns         1016 ns       688839 bytes_per_second=2.40333Gi/s frames=10 payload=256 record_bytes=2.622k
+BM_RxPipeline/10/512                    1407 ns         1407 ns       497598 bytes_per_second=3.42917Gi/s frames=10 payload=512 record_bytes=5.182k
+BM_RxPipeline/30/64                     1144 ns         1144 ns       611629 bytes_per_second=1.62993Gi/s frames=30 payload=64 record_bytes=2.002k
+BM_RxPipeline/30/256                    1930 ns         1930 ns       362587 bytes_per_second=3.77372Gi/s frames=30 payload=256 record_bytes=7.822k
+BM_RxPipeline/30/512                    3096 ns         3096 ns       226063 bytes_per_second=4.66261Gi/s frames=30 payload=512 record_bytes=15.502k
+BM_RxPipeline/100/64                    2205 ns         2205 ns       317574 bytes_per_second=2.79717Gi/s frames=100 payload=64 record_bytes=6.622k
+BM_RxPipeline_LengthPrefix/1/64          329 ns          329 ns      2126123 bytes_per_second=254.897Mi/s frames=1 payload=64 record_bytes=88
+BM_RxPipeline_LengthPrefix/1/256         361 ns          361 ns      1937910 bytes_per_second=739.511Mi/s frames=1 payload=256 record_bytes=280
+BM_RxPipeline_LengthPrefix/1/512         423 ns          423 ns      1653311 bytes_per_second=1.17918Gi/s frames=1 payload=512 record_bytes=536
+BM_RxPipeline_LengthPrefix/10/64         475 ns          475 ns      1471898 bytes_per_second=1.33639Gi/s frames=10 payload=64 record_bytes=682
+BM_RxPipeline_LengthPrefix/10/256        732 ns          732 ns       955422 bytes_per_second=3.30956Gi/s frames=10 payload=256 record_bytes=2.602k
+BM_RxPipeline_LengthPrefix/10/512       1120 ns         1120 ns       624731 bytes_per_second=4.29385Gi/s frames=10 payload=512 record_bytes=5.162k
+BM_RxPipeline_LengthPrefix/30/64         671 ns          671 ns      1041928 bytes_per_second=2.77875Gi/s frames=30 payload=64 record_bytes=2.002k
+BM_RxPipeline_LengthPrefix/30/256       1546 ns         1546 ns       452009 bytes_per_second=4.67727Gi/s frames=30 payload=256 record_bytes=7.762k
+BM_RxPipeline_LengthPrefix/30/512       2711 ns         2711 ns       258162 bytes_per_second=5.30412Gi/s frames=30 payload=512 record_bytes=15.442k
+BM_RxPipeline_LengthPrefix/100/64       1569 ns         1569 ns       446044 bytes_per_second=3.93016Gi/s frames=100 payload=64 record_bytes=6.622k
+BM_RxPipeline_Raw/64                     331 ns          331 ns      2117433 bytes_per_second=248.143Mi/s payload=64 record_bytes=86
+BM_RxPipeline_Raw/256                    363 ns          363 ns      1926374 bytes_per_second=729.624Mi/s payload=256 record_bytes=278
+BM_RxPipeline_Raw/512                    423 ns          423 ns      1653615 bytes_per_second=1.1749Gi/s payload=512 record_bytes=534
+BM_RxPipeline_Raw/1024                   486 ns          486 ns      1430960 bytes_per_second=2.00469Gi/s payload=1.024k record_bytes=1.046k
+BM_RxPipeline_Raw/4096                   947 ns          947 ns       739026 bytes_per_second=4.04936Gi/s payload=4.096k record_bytes=4.118k

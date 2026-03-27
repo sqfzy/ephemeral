@@ -1,0 +1,13 @@
+Round 2 bench_market_multi (extract_rx_timestamp + poll_tx_error_queue throttled to 1/64)
+Date: 2026-03-27 15:23:06
+Commit: bbca0f9
+
+RX Pipeline:
+  samples: 15000
+  min:     534 ns
+  p50:     620 ns
+  p99:     2444 ns
+  p99.9:   2812 ns
+  max:     5126 ns
+  decrypt p50: 300 ns
+  decode p50:  300 ns
