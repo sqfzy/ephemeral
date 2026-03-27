@@ -10,3 +10,4 @@
 #include "eph/fix/parser.hpp"
 #include "eph/fix/builder.hpp"
 #include "eph/fix/framer.hpp"
+#include "eph/fix/session.hpp"
