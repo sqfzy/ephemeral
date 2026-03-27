@@ -614,10 +614,14 @@ public:
 
         if (nb_rx == 0) return uint16_t{0};
         ++stats_.rx_bursts;
-        // Capture TSC immediately — in direct mode this is right after NIC poll;
-        // in shared mode this is after ring dequeue (includes dispatcher latency,
-        // typically ~50-100ns).
-        last_rx_burst_tsc_ = eph::utils::TSC::now();
+        // In direct mode: capture TSC right after NIC poll.
+        // In shared mode: SharedRxDispatcher already stamped last_rx_burst_tsc_
+        // with the NIC arrival time (before ring enqueue), so skip the redundant
+        // TSC::now() call — using the pre-stamped value eliminates ring latency
+        // (~50-100ns) from the timestamp measurement.
+        if (!shared_rx_ring_) {
+            last_rx_burst_tsc_ = eph::utils::TSC::now();
+        }
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }
 

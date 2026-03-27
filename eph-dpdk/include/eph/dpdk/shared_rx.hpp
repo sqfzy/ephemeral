@@ -139,6 +139,12 @@ private:
                 port_id_, rx_queue_id_, pkts, 32);
             if (nb_rx == 0) continue;
 
+            // Capture TSC once per burst, right after NIC poll returns.
+            // Sessions read this via last_rx_burst_tsc() instead of calling
+            // TSC::now() after ring dequeue, eliminating ring latency (~50-100ns)
+            // from the timestamp measurement.
+            const uint64_t burst_tsc = eph::utils::TSC::now();
+
             for (uint16_t i = 0; i < nb_rx; ++i) {
                 auto parsed = net::parse_packet(pkts[i]);
                 if (!parsed.tcp) {
@@ -149,6 +155,9 @@ private:
                 bool matched = false;
                 for (auto& e : entries_) {
                     if (parsed.matches(e.tuple)) {
+                        // Propagate burst TSC to session before enqueue so the
+                        // session has the NIC arrival time, not the dequeue time.
+                        e.session->set_last_rx_burst_tsc(burst_tsc);
                         if (rte_ring_enqueue(e.ring,
                                 static_cast<void*>(pkts[i])) != 0) {
                             rte_pktmbuf_free(pkts[i]);
