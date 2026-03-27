@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <span>
 #include <string_view>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -223,6 +224,20 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(
         offset += result->length;
     }
     return offset;
+}
+
+/// @overload Convenience overload accepting std::span.
+[[nodiscard]] inline std::expected<MessageView, ParseError>
+parse(std::span<const uint8_t> data) noexcept {
+    return parse(data.data(), data.size());
+}
+
+/// @overload Convenience overload accepting std::span.
+template <typename Fn>
+    requires std::invocable<Fn, const MessageView&>
+size_t parse_all(std::span<const uint8_t> data, Fn&& callback) noexcept(
+    noexcept(callback(std::declval<const MessageView&>()))) {
+    return parse_all(data.data(), data.size(), std::forward<Fn>(callback));
 }
 
 // ---------------------------------------------------------------------------

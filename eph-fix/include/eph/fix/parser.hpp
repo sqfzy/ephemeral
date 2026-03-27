@@ -14,6 +14,7 @@
 #include <format>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -885,6 +886,21 @@ public:
 
 /// Default Parser with 128-field capacity.
 using Parser = BasicParser<>;
+
+/// @overload Convenience overload accepting std::span.
+template <size_t MaxFields = 128, size_t MaxBodyLength = kDefaultMaxBodyLength>
+[[nodiscard]] inline std::expected<BasicMessageView<MaxFields>, ParseError>
+parse(std::span<const uint8_t> data) noexcept {
+    return parse<MaxFields, MaxBodyLength>(data.data(), data.size());
+}
+
+/// @overload Convenience overload accepting std::span.
+template <size_t MaxFields = 128, typename Fn>
+    requires std::invocable<Fn, const BasicMessageView<MaxFields>&>
+size_t parse_all(std::span<const uint8_t> data, Fn&& callback) noexcept(
+    noexcept(callback(std::declval<const BasicMessageView<MaxFields>&>()))) {
+    return parse_all<MaxFields>(data.data(), data.size(), std::forward<Fn>(callback));
+}
 
 // ---------------------------------------------------------------------------
 // Parser statistics

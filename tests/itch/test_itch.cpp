@@ -2131,3 +2131,39 @@ TEST(ItchMessageView, to_json_is_valid_structure) {
     EXPECT_EQ(j.front(), '{');
     EXPECT_EQ(j.back(), '}');
 }
+
+// ---------------------------------------------------------------------------
+// std::span overloads
+// ---------------------------------------------------------------------------
+
+TEST(ItchParserSpan, parse_span_overload_matches_raw) {
+    std::vector<uint8_t> buf(kAddOrderSize, 0);
+    buf[0] = kAddOrder;
+
+    auto raw_result = parse(buf.data(), buf.size());
+    auto span_result = parse(std::span<const uint8_t>(buf));
+
+    ASSERT_TRUE(raw_result.has_value());
+    ASSERT_TRUE(span_result.has_value());
+    EXPECT_EQ(raw_result->msg_type, span_result->msg_type);
+    EXPECT_EQ(raw_result->length, span_result->length);
+}
+
+TEST(ItchParserSpan, parse_all_span_overload_matches_raw) {
+    // Build buffer with two consecutive messages
+    std::vector<uint8_t> buf(kSystemEventSize + kAddOrderSize, 0);
+    buf[0] = kSystemEvent;
+    buf[kSystemEventSize] = kAddOrder;
+
+    size_t raw_count = 0;
+    size_t raw_consumed = parse_all(buf.data(), buf.size(),
+        [&](const MessageView&) { raw_count++; });
+
+    size_t span_count = 0;
+    size_t span_consumed = parse_all(std::span<const uint8_t>(buf),
+        [&](const MessageView&) { span_count++; });
+
+    EXPECT_EQ(raw_count, 2u);
+    EXPECT_EQ(span_count, 2u);
+    EXPECT_EQ(raw_consumed, span_consumed);
+}
