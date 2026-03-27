@@ -441,12 +441,18 @@ public:
         uint16_t data_count = 0;
         bool need_ack = false;
 
+        // Collect mbufs for batched free at loop end.
+        // Per-packet rte_pktmbuf_free inside the loop costs ~20-40ns each
+        // and falls within the latency-measured path.
+        rte_mbuf* free_list[32];
+        uint16_t free_count = 0;
+
         for (uint16_t i = 0; i < nb_pkts; ++i) {
             auto parsed = net::parse_packet(pkts[i]);
 
             // Skip non-matching packets
             if (!parsed.tcp || !parsed.matches(config_.tuple)) {
-                rte_pktmbuf_free(pkts[i]);
+                free_list[free_count++] = pkts[i];
                 continue;
             }
 
@@ -457,8 +463,10 @@ public:
                 SPDLOG_LOGGER_WARN(log, "Received RST, closing connection");
                 state_ = TcpState::Closed;
                 stats_.resets_received++;
-                rte_pktmbuf_free(pkts[i]);
+                free_list[free_count++] = pkts[i];
+                // Free remaining + batched list
                 free_remaining(pkts, i + 1, nb_pkts);
+                rte_pktmbuf_free_bulk(free_list, free_count);
                 return std::unexpected("Connection reset by peer");
             }
 
@@ -504,13 +512,14 @@ public:
                         SPDLOG_LOGGER_WARN(log,
                             "Reorder buffer full ({} slots): expected={}, got={}",
                             ReorderSlots, rcv_nxt_, seg_seq);
-                        rte_pktmbuf_free(pkts[i]);
+                        free_list[free_count++] = pkts[i];
                         free_remaining(pkts, i + 1, nb_pkts);
+                        rte_pktmbuf_free_bulk(free_list, free_count);
                         return std::unexpected(std::format(
                             "Packet loss detected (reorder buffer full): expected seq {}, got {}",
                             rcv_nxt_, seg_seq));
                     }
-                    rte_pktmbuf_free(pkts[i]);
+                    free_list[free_count++] = pkts[i];
                     continue;
                 }
 
@@ -557,7 +566,13 @@ public:
                 }
             }
 
-            rte_pktmbuf_free(pkts[i]);
+            free_list[free_count++] = pkts[i];
+        }
+
+        // Batch-free all mbufs at once — avoids per-packet mempool
+        // accounting overhead on the latency-critical path.
+        if (free_count > 0) {
+            rte_pktmbuf_free_bulk(free_list, free_count);
         }
 
         // Defer ACK to keep send_ack() off the RX critical path.
