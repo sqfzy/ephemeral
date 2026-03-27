@@ -74,10 +74,12 @@ static uint32_t binance_symbol_hash(const uint8_t* data, size_t len) {
     return (p > data + kPrefixLen) ? hash : 0;
 }
 
-/// Extract Binance event timestamp (ms) from combined stream JSON.
+/// Extract Binance event timestamp from combined stream JSON.
 /// Scans for "E": in the outer data object and parses the integer.
+/// Returns nanoseconds when connecting to mock server (time.time_ns()),
+/// or milliseconds when connecting to real Binance (epoch ms).
 /// Returns 0 on parse failure.
-static int64_t binance_event_time_ms(const uint8_t* data, size_t len) {
+static int64_t binance_event_time(const uint8_t* data, size_t len) {
     // Combined stream: {"stream":"...","data":{"e":"bookTicker","E":1234567890123,...}}
     // Scan for "E": pattern — the event time field.
     std::string_view json(reinterpret_cast<const char*>(data), len);
@@ -91,6 +93,12 @@ static int64_t binance_event_time_ms(const uint8_t* data, size_t len) {
         ++pos;
     }
     return val;
+}
+
+/// Detect whether a timestamp is in nanoseconds or milliseconds.
+/// Nanosecond epoch values (2020+) are > 1.5e18; millisecond values are ~1.7e12.
+static bool is_nanosecond_timestamp(int64_t ts) {
+    return ts > 1'500'000'000'000'000'000LL;  // > 2017 in ns
 }
 
 struct Config {
@@ -274,14 +282,20 @@ int main(int argc, char** argv) {
         } else {
             bool got = tp.recv([&](const uint8_t* data, size_t len) {
                 ++msgs;
-                // Feed latency: Binance E timestamp vs local wall clock
-                auto event_ms = binance_event_time_ms(data, len);
-                if (event_ms > 0) {
-                    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                // Feed latency: server send timestamp vs local wall clock
+                auto event_ts = binance_event_time(data, len);
+                if (event_ts > 0) {
+                    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
-                    auto delta_ms = now_ms - event_ms;
-                    if (delta_ms > 0 && delta_ms < 60000) {
-                        feed_hist.record(static_cast<uint64_t>(delta_ms) * 1'000'000);  // ms → ns
+                    int64_t delta_ns;
+                    if (is_nanosecond_timestamp(event_ts)) {
+                        delta_ns = now_ns - event_ts;
+                    } else {
+                        // Legacy ms timestamps (real Binance)
+                        delta_ns = now_ns - event_ts * 1'000'000;
+                    }
+                    if (delta_ns > 0 && delta_ns < 60'000'000'000LL) {
+                        feed_hist.record(static_cast<uint64_t>(delta_ns));
                     }
                 }
                 if ((msgs & 0xFF) == 1) {
@@ -352,16 +366,16 @@ int main(int argc, char** argv) {
 
     // Feed latency report
     auto fl = hdr_to_stats(feed_hist);
-    spdlog::info("--- Feed Latency (Binance E → App recv) ---");
+    spdlog::info("--- Feed Latency (server send → App recv) ---");
     if (fl.count > 0) {
         spdlog::info("  samples: {}", fl.count);
-        spdlog::info("  min:     {:.1f} ms", fl.min_ns / 1e6);
-        spdlog::info("  p50:     {:.1f} ms", fl.p50_ns / 1e6);
-        spdlog::info("  p99:     {:.1f} ms", fl.p99_ns / 1e6);
-        spdlog::info("  p99.9:   {:.1f} ms", fl.p999_ns / 1e6);
-        spdlog::info("  max:     {:.1f} ms", fl.max_ns / 1e6);
+        spdlog::info("  min:     {:.0f} ns", static_cast<double>(fl.min_ns));
+        spdlog::info("  p50:     {:.0f} ns", static_cast<double>(fl.p50_ns));
+        spdlog::info("  p99:     {:.0f} ns", static_cast<double>(fl.p99_ns));
+        spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(fl.p999_ns));
+        spdlog::info("  max:     {:.0f} ns", static_cast<double>(fl.max_ns));
     } else {
-        spdlog::info("  (no samples — check NTP sync)");
+        spdlog::info("  (no samples — check clock sync)");
     }
 
     return 0;

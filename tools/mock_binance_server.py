@@ -112,7 +112,7 @@ def make_book_ticker(symbol: str, seq: int) -> bytes:
     jitter = random.uniform(-0.01, 0.01)
     bid = round(base * (1 + jitter), 2)
     ask = round(bid + base * 0.0001, 2)
-    now_ms = int(time.time() * 1000)
+    now_ns = time.time_ns()
     msg = {
         "stream": f"{symbol}@bookTicker",
         "data": {
@@ -123,8 +123,8 @@ def make_book_ticker(symbol: str, seq: int) -> bytes:
             "B": f"{random.uniform(0.1, 10):.3f}",
             "a": f"{ask:.2f}",
             "A": f"{random.uniform(0.1, 10):.3f}",
-            "T": now_ms,
-            "E": now_ms,
+            "T": now_ns,
+            "E": now_ns,
         },
     }
     return json.dumps(msg, separators=(",", ":")).encode()
@@ -303,7 +303,7 @@ def run_server(args):
                                         "symbol": msg.get("params", {}).get("symbol", "UNKNOWN"),
                                         "status": "FILLED",
                                         "executedQty": msg.get("params", {}).get("quantity", "0"),
-                                        "T": int(time.time() * 1000),
+                                        "T": time.time_ns(),
                                     },
                                 }, separators=(",", ":")).encode()
                                 frame = encode_ws_text_frame(resp)
