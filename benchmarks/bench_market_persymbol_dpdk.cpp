@@ -43,7 +43,7 @@
 using BenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
     eph::net::WsFramer,
-    4096, 1024,
+    16384, 1024,
     eph::containers::EvictingQueue,
     true   // LastOnlyDeliver — only latest snapshot per symbol
 >;

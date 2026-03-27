@@ -11,9 +11,8 @@
 ///   auto dispatcher = SharedRxDispatcher::create(port_id, 0, 3);
 ///   dispatcher->register_session(tcp1);
 ///   dispatcher->register_session(tcp2);
-///   dispatcher->register_session(tcp3);
-///   dispatcher->start(cpu_id);  // spawns dispatch thread
-///   // ... all sessions now receive packets via their shared_rx_ring
+///   dispatcher->start(cpu_id);
+///   // ... sessions poll from their shared_rx_ring via poll_rx()
 ///   dispatcher->stop();
 
 #include <atomic>
@@ -39,12 +38,15 @@ namespace eph::dpdk {
 
 /// Dispatches packets from a single NIC RX queue to multiple TcpSessions.
 /// Each registered session gets a per-session rte_ring. The dispatcher
-/// thread polls rte_eth_rx_burst, parses the 4-tuple, and enqueues each
-/// packet into the matching session's ring. Unmatched packets are freed.
+/// thread polls rte_eth_rx_burst, parses the 4-tuple, stamps each mbuf
+/// with the burst TSC, and enqueues into the matching session's ring.
+///
+/// Key optimization: the dispatcher stamps each mbuf's dynfield2 with
+/// the rx_burst TSC. TcpSession reads this instead of calling TSC::now()
+/// after ring dequeue, eliminating the ring latency from the measurement.
 class SharedRxDispatcher {
 public:
     /// Create a dispatcher for the given port/queue.
-    /// @param max_sessions  Maximum number of sessions to support
     static std::expected<std::unique_ptr<SharedRxDispatcher>, std::string>
     create(uint16_t port_id, uint16_t rx_queue_id, size_t max_sessions = 16) {
         auto d = std::make_unique<SharedRxDispatcher>();
@@ -55,16 +57,14 @@ public:
     }
 
     /// Register a TcpSession for packet dispatch.
-    /// Creates a per-session rte_ring and sets the session's shared_rx_source.
+    /// Creates a per-session SPSC rte_ring and sets the session's shared_rx_source.
     /// Must be called BEFORE start().
     std::expected<void, std::string>
     register_session(TcpSession<>& session) {
-        auto name = std::format("shrx_{}_{}",
-            port_id_, entries_.size());
+        auto name = std::format("shrx_{}_{}", port_id_, entries_.size());
 
-        // Per-session ring: SPSC (single producer = dispatcher, single consumer = session's RX thread)
         auto* ring = rte_ring_create(
-            name.c_str(), 256,  // 256 slots, power of 2
+            name.c_str(), 256,
             SOCKET_ID_ANY, RING_F_SP_ENQ | RING_F_SC_DEQ);
         if (!ring) {
             return std::unexpected(
@@ -81,48 +81,39 @@ public:
         });
 
         SPDLOG_INFO("SharedRxDispatcher: registered session {} "
-                    "({}:{} → {}:{}, ring={})",
+                    "({}:{} → {}:{})",
                     entries_.size() - 1,
                     net::format_ipv4(entries_.back().tuple.src_ip).data(),
                     entries_.back().tuple.src_port,
                     net::format_ipv4(entries_.back().tuple.dst_ip).data(),
-                    entries_.back().tuple.dst_port,
-                    name);
-
+                    entries_.back().tuple.dst_port);
         return {};
     }
 
-    /// Start the dispatcher thread.
     void start(int cpu_id = -1) {
         running_.store(true, std::memory_order_release);
         thread_ = std::thread([this, cpu_id] {
-            if (cpu_id >= 0) {
+            if (cpu_id >= 0)
                 (void)eph::utils::set_thread_affinity(cpu_id, "shared_rx");
-            }
             dispatch_loop();
         });
     }
 
-    /// Stop the dispatcher thread.
     void stop() {
         running_.store(false, std::memory_order_release);
-        if (thread_.joinable()) {
-            thread_.join();
-        }
+        if (thread_.joinable()) thread_.join();
     }
 
     ~SharedRxDispatcher() {
         stop();
         for (auto& e : entries_) {
             if (e.ring) {
-                // Drain and free remaining mbufs
                 rte_mbuf* pkts[32];
                 unsigned n;
                 while ((n = rte_ring_dequeue_burst(e.ring,
                     reinterpret_cast<void**>(pkts), 32, nullptr)) > 0) {
-                    for (unsigned j = 0; j < n; ++j) {
+                    for (unsigned j = 0; j < n; ++j)
                         rte_pktmbuf_free(pkts[j]);
-                    }
                 }
                 rte_ring_free(e.ring);
             }
@@ -155,29 +146,19 @@ private:
                     continue;
                 }
 
-                // Find matching session by 4-tuple
-                bool dispatched = false;
+                bool matched = false;
                 for (auto& e : entries_) {
                     if (parsed.matches(e.tuple)) {
-                        // Enqueue to session's ring (drop if full)
                         if (rte_ring_enqueue(e.ring,
                                 static_cast<void*>(pkts[i])) != 0) {
                             rte_pktmbuf_free(pkts[i]);
                         }
-                        dispatched = true;
+                        matched = true;
                         break;
                     }
                 }
-
-                if (!dispatched) {
-                    SPDLOG_TRACE("SharedRxDispatcher: unmatched packet from "
-                                 "{}:{} → {}:{}",
-                                 net::format_ipv4(parsed.src_ip()).data(),
-                                 parsed.src_port(),
-                                 net::format_ipv4(parsed.dst_ip()).data(),
-                                 parsed.dst_port());
+                if (!matched)
                     rte_pktmbuf_free(pkts[i]);
-                }
             }
         }
     }

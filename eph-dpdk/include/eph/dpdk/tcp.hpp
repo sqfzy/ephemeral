@@ -612,8 +612,9 @@ public:
         }
 
         if (nb_rx == 0) return uint16_t{0};
-        // Capture TSC immediately after rx_burst — the closest
-        // userspace proxy for "packet arrived at NIC ring".
+        // Capture TSC immediately — in direct mode this is right after NIC poll;
+        // in shared mode this is after ring dequeue (includes dispatcher latency,
+        // typically ~50-100ns).
         last_rx_burst_tsc_ = eph::utils::TSC::now();
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }
@@ -628,6 +629,12 @@ public:
     /// Get the connection 4-tuple (src/dst IP + port).
     [[nodiscard]] const net::ConnectionTuple& connection_tuple() const noexcept {
         return config_.tuple;
+    }
+
+    /// Set the RX burst TSC externally (used by SharedRxDispatcher to propagate
+    /// the NIC arrival timestamp to the session without going through poll_rx).
+    void set_last_rx_burst_tsc(uint64_t tsc) noexcept {
+        last_rx_burst_tsc_ = tsc;
     }
 
     /// TSC captured right after rte_eth_rx_burst returned data.
