@@ -166,13 +166,13 @@ int main(int argc, char** argv) {
 
     auto stats = tp.stats();
     auto& rx = stats.rx_latency;
-    double avg_frames_per_record = rx.count > 0
-        ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
+    double avg_bytes_per_burst = rx.count > 0
+        ? static_cast<double>(stats.rx_bytes) / rx.count : 0.0;
 
     spdlog::info("=== Market Data Pipeline Benchmark (DPDK) ===");
     spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
-    spdlog::info("Avg frames/record: {:.1f} ({} frames, {} records)",
-                 avg_frames_per_record, stats.rx_packets, rx.count);
+    spdlog::info("Avg bytes/burst: {:.0f} ({} bytes, {} bursts)",
+                 avg_bytes_per_burst, stats.rx_bytes, rx.count);
     spdlog::info("Transport stats:\n{}", stats.dump());
     spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
     if (rx.count > 0) {

@@ -309,11 +309,11 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < N; ++i) {
         auto stats = sessions[i].transport->stats();
         auto& rx = stats.rx_latency;
-        double avg_fpr = rx.count > 0
-            ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
+        double avg_bpb = rx.count > 0
+            ? static_cast<double>(stats.rx_bytes) / rx.count : 0.0;
 
         spdlog::info("--- {} ---", sessions[i].symbol);
-        spdlog::info("  Messages: {} | Avg frames/record: {:.1f}", msg_counts[i], avg_fpr);
+        spdlog::info("  Messages: {} | Avg bytes/burst: {:.0f}", msg_counts[i], avg_bpb);
         if (rx.count > 0) {
             spdlog::info("  RX: p50={} p99={} p99.9={} max={} ns",
                          rx.p50_ns, rx.p99_ns, rx.p999_ns, rx.max_ns);
