@@ -1,8 +1,51 @@
-# Binance Live Traffic Monitoring
+# Binance Live Traffic Monitoring Report
 
-**目的**: 捕获真实大行情流量特征（bytes/burst, frames/record, TCP pkts）
-**开始**: 2026-03-27 08:20 UTC
-**Benchmark**: bench_market_multi_dpdk, twophase, 3 symbols, 30s/轮
+**日期**: 2026-03-27
+**时段**: 08:21-08:51 UTC (16:21-16:51 CST)
+**平台**: AWS EC2 c8g.4xlarge (Graviton, arm64), DPDK kernel-bypass
+**Benchmark**: bench_market_multi_dpdk, twophase mode, 3 symbols (btcusdt+ethusdt+solusdt)
+**采样**: 43 轮 × 30s/轮，连续 30 分钟
+
+---
+
+## 摘要
+
+### 典型值（低波动时段）
+
+| 指标 | 均值 | 范围 |
+|------|------|------|
+| bytes/burst | 177 | 165-194 |
+| WS frames/burst | 3.7 | 2.7-4.7 |
+| TLS records/burst | 0.8 | 0.8-0.9 |
+| TCP pkts/burst | 1.1 | 1.0-1.1 |
+| **p50** | **892 ns** | 860-980 ns |
+| **p99** | **3,150 ns** | 2,780-3,868 ns |
+| **p99.9** | **4,780 ns** | 4,420-5,348 ns |
+
+### 关键发现
+
+1. **每次 rx_burst 平均处理 177 bytes（~1 个 bookTicker JSON）**，对应 0.8 条 TLS record、1.1 个 TCP 包。DPDK tight-poll 下几乎没有积压
+2. **p50 稳定在 ~890ns**，全程波动 <15%。即使流量翻倍（08:35-08:39 burst 数从 10K 跳到 35K/30s），p50 仅从 880 升到 960ns
+3. **p99 稳定在 ~3.1μs**，没有出现 kernel 模式下常见的 buffer-drain 突刺
+4. **本时段未观测到真正的大行情**（batch-size 始终 <5）。真实大行情（如闪崩）batch-size 可达 30-60，预期 p99 = 2.8-3.9μs（参见 mock surge 测试报告）
+
+### 流量高峰事件
+
+08:35-08:39 出现一次 ~3x 流量升高：
+
+| 时间 | bursts/30s | bytes/burst | p50 (ns) | p99 (ns) |
+|------|-----------|-------------|----------|----------|
+| 08:34 (基线) | 6,660 | 167 | 860 | 3,084 |
+| **08:35** | **33,787** | **184** | **980** | **2,972** |
+| **08:36** | **35,798** | **186** | **940** | **2,988** |
+| **08:37** | **31,149** | **191** | **956** | **3,236** |
+| 08:41 (恢复) | 15,769 | 183 | 884 | 3,356 |
+
+流量 3x 但延迟几乎不变——**DPDK 在此流量级别下完全不受影响。**
+
+---
+
+## 原始数据
 
 | 时间 (UTC) | bytes/burst | frames/burst | records/burst | TCP/burst | p50 (ns) | p99 (ns) | p99.9 (ns) | 总 bursts | 总 bytes |
 |-----------|-------------|-------------|--------------|-----------|----------|----------|-----------|-----------|----------|
