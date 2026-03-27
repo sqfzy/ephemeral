@@ -2758,6 +2758,11 @@ private:
         uint64_t batch_text_bytes = 0;
         uint64_t batch_text_packets = 0;
 
+        // Pre-compute whether we can use the direct rx_enqueue fast path,
+        // bypassing deliver_data_frame → deliver_message overhead.
+        // Requires: no UTF-8 validation, no on_message callback.
+        const bool fast_deliver = config_.skip_utf8_validation && !config_.on_message;
+
         while (offset < len) {
             auto frame = ws::decode_frame(data + offset, len - offset);
             if (!frame) {
@@ -2903,9 +2908,18 @@ private:
                 if constexpr (kLastOnlyDeliver) {
                     last_data_frame = &*frame;
                 } else {
-                    // defer_stats=true: byte-level stats are flushed
-                    // once after the loop to avoid per-frame atomics.
-                    deliver_data_frame(*frame, /*defer_stats=*/true);
+                    // Hot-path: bypass deliver_data_frame → deliver_message
+                    // chain when conditions allow direct enqueue.
+                    // Server frames are unmasked; skip_utf8 is checked once;
+                    // on_message is checked once; defer_stats is always true here.
+                    if (fast_deliver && !frame->masked && frame->payload_len > 0)
+                        [[likely]] {
+                        (void)rx_enqueue(frame->payload,
+                            static_cast<uint16_t>(frame->payload_len),
+                            frame->opcode);
+                    } else {
+                        deliver_data_frame(*frame, /*defer_stats=*/true);
+                    }
                     batch_bytes += frame->payload_len;
                     if (frame->opcode == ws::opcode::kText) {
                         batch_text_bytes += frame->payload_len;
