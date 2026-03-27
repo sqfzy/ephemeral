@@ -21,6 +21,9 @@ TEST(SystemResourceStatsTest, DefaultConstruction) {
     EXPECT_DOUBLE_EQ(stats.user_cpu_s, 0.0);
     EXPECT_DOUBLE_EQ(stats.sys_cpu_s, 0.0);
     EXPECT_DOUBLE_EQ(stats.total_cpu_s, 0.0);
+    EXPECT_EQ(stats.maxrss_kb, 0);
+    EXPECT_EQ(stats.rss_kb, 0);
+    EXPECT_EQ(stats.thread_count, 0);
 }
 
 TEST(SystemResourceStatsTest, FormatOutput) {
@@ -32,6 +35,9 @@ TEST(SystemResourceStatsTest, FormatOutput) {
         .user_cpu_s = 0.1234,
         .sys_cpu_s = 0.0567,
         .total_cpu_s = 0.1801,
+        .maxrss_kb = 8192,
+        .rss_kb = 4096,
+        .thread_count = 3,
     };
 
     auto formatted = std::format("{}", stats);
@@ -41,6 +47,9 @@ TEST(SystemResourceStatsTest, FormatOutput) {
     EXPECT_NE(formatted.find("minflt=42"), std::string::npos);
     EXPECT_NE(formatted.find("vcsw=3"), std::string::npos);
     EXPECT_NE(formatted.find("ivcsw=1"), std::string::npos);
+    EXPECT_NE(formatted.find("rss=4096KB"), std::string::npos);
+    EXPECT_NE(formatted.find("maxrss=8192KB"), std::string::npos);
+    EXPECT_NE(formatted.find("threads=3"), std::string::npos);
 }
 
 // ============================================================================
@@ -105,6 +114,61 @@ TEST(SystemStatsTest, SnapshotTotalIsSumOfUserAndSys) {
 
     auto snap = stats.snapshot();
     EXPECT_NEAR(snap.total_cpu_s, snap.user_cpu_s + snap.sys_cpu_s, 1e-9);
+}
+
+TEST(SystemStatsTest, SnapshotReportsMemoryAndThreads) {
+    SystemStats stats;
+    auto snap = stats.snapshot();
+
+    // maxrss should be > 0 for any running process (from getrusage)
+    EXPECT_GT(snap.maxrss_kb, 0) << "Peak RSS should be non-zero for a running process";
+
+#if defined(__linux__)
+    // On Linux, /proc/self/statm and /proc/self/status are available
+    EXPECT_GT(snap.rss_kb, 0) << "Current RSS should be non-zero on Linux";
+    EXPECT_GE(snap.thread_count, 1) << "Thread count should be at least 1";
+#endif
+
+    // RSS should not exceed maxrss (sanity check)
+    if (snap.rss_kb > 0) {
+        EXPECT_LE(snap.rss_kb, snap.maxrss_kb * 2)
+            << "Current RSS should be in a reasonable range relative to maxrss";
+    }
+}
+
+TEST(SystemStatsTest, SnapshotMemoryFieldsInDump) {
+    SystemStats stats;
+    auto snap = stats.snapshot();
+    auto dump = snap.dump();
+
+    EXPECT_NE(dump.find("rss="), std::string::npos);
+    EXPECT_NE(dump.find("maxrss="), std::string::npos);
+    EXPECT_NE(dump.find("threads="), std::string::npos);
+}
+
+TEST(SystemStatsTest, SnapshotMemoryFieldsInJson) {
+    SystemStats stats;
+    auto snap = stats.snapshot();
+    auto json = snap.to_json();
+
+    EXPECT_NE(json.find("\"maxrss_kb\":"), std::string::npos);
+    EXPECT_NE(json.find("\"rss_kb\":"), std::string::npos);
+    EXPECT_NE(json.find("\"thread_count\":"), std::string::npos);
+}
+
+TEST(SystemStatsTest, DeltaPreservesPointInTimeFields) {
+    SystemStats stats;
+    auto snap1 = stats.snapshot();
+
+    // Allocate some memory to change RSS
+    std::vector<char> alloc(1024 * 1024, 'x');
+    auto snap2 = stats.snapshot();
+
+    auto delta = snap2 - snap1;
+    // Memory and thread fields are point-in-time from snap2 (lhs)
+    EXPECT_EQ(delta.maxrss_kb, snap2.maxrss_kb);
+    EXPECT_EQ(delta.rss_kb, snap2.rss_kb);
+    EXPECT_EQ(delta.thread_count, snap2.thread_count);
 }
 
 TEST(SystemStatsTest, SnapshotDetectsMinorPageFaults) {

@@ -10,6 +10,7 @@
 
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <format>
 #include <string>
@@ -39,15 +40,20 @@ struct SystemResourceStats {
     double user_cpu_s;   ///< User CPU time (seconds)
     double sys_cpu_s;    ///< System CPU time (seconds)
     double total_cpu_s;  ///< Total CPU time (seconds)
+    long maxrss_kb;      ///< Peak resident set size (KB, from getrusage ru_maxrss)
+    long rss_kb;         ///< Current RSS (KB, from /proc/self/statm; 0 if unavailable)
+    int  thread_count;   ///< Number of threads (from /proc/self/status; 0 if unavailable)
 
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
         return std::format(
             "SystemResourceStats:\n"
             "  cpu: user={:.4f}s sys={:.4f}s total={:.4f}s\n"
+            "  memory: rss={}KB maxrss={}KB threads={}\n"
             "  faults: major={} minor={}\n"
             "  ctx_switches: voluntary={} involuntary={}",
             user_cpu_s, sys_cpu_s, total_cpu_s,
+            rss_kb, maxrss_kb, thread_count,
             majflt, minflt, nvcsw, nivcsw);
     }
 
@@ -55,22 +61,28 @@ struct SystemResourceStats {
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"user_cpu_s\":{:.6f},\"sys_cpu_s\":{:.6f},\"total_cpu_s\":{:.6f},"
+            "\"maxrss_kb\":{},\"rss_kb\":{},\"thread_count\":{},"
             "\"majflt\":{},\"minflt\":{},\"nvcsw\":{},\"nivcsw\":{}}}",
             user_cpu_s, sys_cpu_s, total_cpu_s,
+            maxrss_kb, rss_kb, thread_count,
             majflt, minflt, nvcsw, nivcsw);
     }
 
     /// Compute delta between two snapshots for interval-based monitoring.
+    /// Memory and thread fields are point-in-time (taken from lhs, not diffed).
     [[nodiscard]] friend SystemResourceStats operator-(
         const SystemResourceStats& lhs, const SystemResourceStats& rhs) noexcept {
         return SystemResourceStats{
-            .majflt     = lhs.majflt     - rhs.majflt,
-            .minflt     = lhs.minflt     - rhs.minflt,
-            .nvcsw      = lhs.nvcsw      - rhs.nvcsw,
-            .nivcsw     = lhs.nivcsw     - rhs.nivcsw,
-            .user_cpu_s = lhs.user_cpu_s - rhs.user_cpu_s,
-            .sys_cpu_s  = lhs.sys_cpu_s  - rhs.sys_cpu_s,
+            .majflt      = lhs.majflt     - rhs.majflt,
+            .minflt      = lhs.minflt     - rhs.minflt,
+            .nvcsw       = lhs.nvcsw      - rhs.nvcsw,
+            .nivcsw      = lhs.nivcsw     - rhs.nivcsw,
+            .user_cpu_s  = lhs.user_cpu_s - rhs.user_cpu_s,
+            .sys_cpu_s   = lhs.sys_cpu_s  - rhs.sys_cpu_s,
             .total_cpu_s = lhs.total_cpu_s - rhs.total_cpu_s,
+            .maxrss_kb   = lhs.maxrss_kb,
+            .rss_kb      = lhs.rss_kb,
+            .thread_count = lhs.thread_count,
         };
     }
 
@@ -82,6 +94,9 @@ struct SystemResourceStats {
                lhs.minflt == rhs.minflt &&
                lhs.nvcsw  == rhs.nvcsw  &&
                lhs.nivcsw == rhs.nivcsw &&
+               lhs.maxrss_kb == rhs.maxrss_kb &&
+               lhs.rss_kb == rhs.rss_kb &&
+               lhs.thread_count == rhs.thread_count &&
                std::abs(lhs.user_cpu_s  - rhs.user_cpu_s)  < kEps &&
                std::abs(lhs.sys_cpu_s   - rhs.sys_cpu_s)   < kEps &&
                std::abs(lhs.total_cpu_s - rhs.total_cpu_s)  < kEps;
@@ -149,8 +164,10 @@ class SystemStats {
         auto log = detail::system_stats_logger();
         SPDLOG_LOGGER_INFO(log,
             "System resources: user={:.4f}s sys={:.4f}s "
+            "rss={}KB maxrss={}KB threads={} "
             "majflt={} minflt={} vcsw={} ivcsw={}",
             s.user_cpu_s, s.sys_cpu_s,
+            s.rss_kb, s.maxrss_kb, s.thread_count,
             s.majflt, s.minflt, s.nvcsw, s.nivcsw);
     }
 
@@ -162,6 +179,41 @@ class SystemStats {
    private:
     rusage initial_rusage_{};
     bool auto_log_;
+
+    /// Read current RSS from /proc/self/statm (Linux). Returns 0 on failure.
+    static long read_current_rss_kb() noexcept {
+#if defined(__linux__)
+        // /proc/self/statm fields: size resident shared text lib data dt (in pages)
+        FILE* f = std::fopen("/proc/self/statm", "r");
+        if (!f) return 0;
+        long pages = 0;
+        // Skip first field (size), read second (resident)
+        if (std::fscanf(f, "%*ld %ld", &pages) != 1) pages = 0;
+        std::fclose(f);
+        // Convert pages to KB (page size is typically 4096)
+        long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+        return pages * page_kb;
+#else
+        return 0;
+#endif
+    }
+
+    /// Read thread count from /proc/self/status (Linux). Returns 0 on failure.
+    static int read_thread_count() noexcept {
+#if defined(__linux__)
+        FILE* f = std::fopen("/proc/self/status", "r");
+        if (!f) return 0;
+        char line[256];
+        int threads = 0;
+        while (std::fgets(line, sizeof(line), f)) {
+            if (std::sscanf(line, "Threads: %d", &threads) == 1) break;
+        }
+        std::fclose(f);
+        return threads;
+#else
+        return 0;
+#endif
+    }
 
     [[nodiscard]] SystemResourceStats compute_delta(
         const rusage& current) const noexcept {
@@ -175,13 +227,16 @@ class SystemStats {
             time_diff(initial_rusage_.ru_stime, current.ru_stime);
 
         return SystemResourceStats{
-            .majflt = current.ru_majflt - initial_rusage_.ru_majflt,
-            .minflt = current.ru_minflt - initial_rusage_.ru_minflt,
-            .nvcsw = current.ru_nvcsw - initial_rusage_.ru_nvcsw,
-            .nivcsw = current.ru_nivcsw - initial_rusage_.ru_nivcsw,
-            .user_cpu_s = utime_s,
-            .sys_cpu_s = stime_s,
+            .majflt      = current.ru_majflt - initial_rusage_.ru_majflt,
+            .minflt      = current.ru_minflt - initial_rusage_.ru_minflt,
+            .nvcsw       = current.ru_nvcsw  - initial_rusage_.ru_nvcsw,
+            .nivcsw      = current.ru_nivcsw - initial_rusage_.ru_nivcsw,
+            .user_cpu_s  = utime_s,
+            .sys_cpu_s   = stime_s,
             .total_cpu_s = utime_s + stime_s,
+            .maxrss_kb   = current.ru_maxrss,  // Peak RSS from getrusage
+            .rss_kb      = read_current_rss_kb(),
+            .thread_count = read_thread_count(),
         };
     }
 };
@@ -197,7 +252,9 @@ struct std::formatter<eph::utils::SystemResourceStats> {
                 std::format_context& ctx) const {
         return std::format_to(
             ctx.out(),
-            "cpu={:.4f}s/{:.4f}s majflt={} minflt={} vcsw={} ivcsw={}",
-            s.user_cpu_s, s.sys_cpu_s, s.majflt, s.minflt, s.nvcsw, s.nivcsw);
+            "cpu={:.4f}s/{:.4f}s rss={}KB maxrss={}KB threads={} "
+            "majflt={} minflt={} vcsw={} ivcsw={}",
+            s.user_cpu_s, s.sys_cpu_s, s.rss_kb, s.maxrss_kb, s.thread_count,
+            s.majflt, s.minflt, s.nvcsw, s.nivcsw);
     }
 };
