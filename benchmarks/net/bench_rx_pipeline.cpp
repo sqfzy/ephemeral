@@ -20,6 +20,8 @@
 
 #include <benchmark/benchmark.h>
 
+#include "eph/net/length_prefix_framer.hpp"
+#include "eph/net/raw_framer.hpp"
 #include "eph/net/tls_record.hpp"
 #include "eph/net/transport_types.hpp"
 #include "eph/net/websocket.hpp"
@@ -253,6 +255,196 @@ BENCHMARK(BM_RxPipeline)
     ->Args({10, 64})->Args({10, 256})->Args({10, 512})
     ->Args({30, 64})->Args({30, 256})->Args({30, 512})
     ->Args({100, 64})  // only 64B payload fits in 16KB TLS record at 100 frames
+    ->Unit(benchmark::kNanosecond);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BM_RxPipeline_LengthPrefix — decrypt → length-prefix decode → deliver
+//
+// Simulates ITCH-style protocol: 2-byte big-endian length prefix framing
+// over TLS, no WebSocket overhead. Measures the cost of the length-prefix
+// framer vs the WS framer in the pipeline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Encode a single length-prefixed message (2-byte BE length + payload).
+size_t encode_length_prefix_frame(uint8_t* out, const uint8_t* payload, size_t len) {
+    out[0] = static_cast<uint8_t>((len >> 8) & 0xFF);
+    out[1] = static_cast<uint8_t>(len & 0xFF);
+    std::memcpy(out + 2, payload, len);
+    return 2 + len;
+}
+
+PreparedRecord build_record_lp(size_t frames, size_t payload_size,
+                                eph::net::TlsRecordCrypto& enc) {
+    std::vector<uint8_t> plaintext;
+    plaintext.reserve(frames * (payload_size + 2));
+    std::vector<uint8_t> payload(payload_size);
+
+    for (size_t i = 0; i < frames; ++i) {
+        fill_random(payload.data(), payload_size, static_cast<uint32_t>(42 + i));
+        payload[0] = static_cast<uint8_t>((i % 3) + 1); // symbol id
+
+        uint8_t frame_buf[16384];
+        size_t frame_len = encode_length_prefix_frame(frame_buf, payload.data(), payload_size);
+        plaintext.insert(plaintext.end(), frame_buf, frame_buf + frame_len);
+    }
+
+    auto plaintext_len = plaintext.size();
+    auto enc_size = eph::net::TlsRecordCrypto::encrypted_size(
+        static_cast<uint16_t>(plaintext_len));
+    std::vector<uint8_t> encrypted(enc_size + 16);
+
+    uint16_t record_len = enc.encrypt(
+        plaintext.data(), static_cast<uint16_t>(plaintext_len),
+        encrypted.data());
+
+    return {std::move(encrypted), record_len, plaintext_len, frames};
+}
+
+/// Build a single plaintext blob for RawFramer (no per-message framing).
+PreparedRecord build_record_raw(size_t payload_size,
+                                 eph::net::TlsRecordCrypto& enc) {
+    std::vector<uint8_t> plaintext(payload_size);
+    fill_random(plaintext.data(), payload_size, 42);
+
+    auto enc_size = eph::net::TlsRecordCrypto::encrypted_size(
+        static_cast<uint16_t>(payload_size));
+    std::vector<uint8_t> encrypted(enc_size + 16);
+
+    uint16_t record_len = enc.encrypt(
+        plaintext.data(), static_cast<uint16_t>(payload_size),
+        encrypted.data());
+
+    return {std::move(encrypted), record_len, payload_size, 1};
+}
+
+} // anonymous namespace
+
+static void BM_RxPipeline_LengthPrefix(benchmark::State& state) {
+    auto num_frames   = static_cast<size_t>(state.range(0));
+    auto payload_size = static_cast<size_t>(state.range(1));
+
+    auto hot = make_tls_state();
+    auto enc = eph::net::TlsRecordCrypto::create(hot);
+    if (!enc) { state.SkipWithError(enc.error()); return; }
+
+    eph::net::TlsHotState dec_hot{};
+    std::memcpy(dec_hot.read.ki.key, hot.write.ki.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.ki.iv,  hot.write.ki.iv,  eph::net::tls_const::kTls13NonceLen);
+
+    auto record = build_record_lp(num_frames, payload_size, *enc);
+    if (record.record_len == 0) {
+        state.SkipWithError("Failed to build TLS record");
+        return;
+    }
+
+    std::vector<uint8_t> decrypt_buf(record.plaintext_len + 256);
+    volatile uint64_t sink = 0;
+
+    for ([[maybe_unused]] auto _ : state) {
+        dec_hot.read.seq = 0;
+        auto dec = eph::net::TlsRecordCrypto::create(dec_hot);
+        if (!dec) [[unlikely]] { state.SkipWithError(dec.error()); return; }
+
+        // Stage 1: TLS decrypt
+        uint16_t decrypted_len = 0;
+        bool ok = dec->decrypt(
+            record.encrypted.data(),
+            static_cast<uint16_t>(record.record_len),
+            decrypt_buf.data(), decrypted_len);
+        if (!ok) [[unlikely]] { state.SkipWithError("TLS decrypt failed"); return; }
+
+        // Stage 2: LengthPrefixFramer decode
+        size_t offset = 0;
+        size_t delivered = 0;
+        while (offset < decrypted_len) {
+            auto frame = eph::net::LengthPrefixFramer::decode(
+                decrypt_buf.data() + offset, decrypted_len - offset);
+            if (!frame) break;
+
+            // Stage 3: Deliver
+            sink = *reinterpret_cast<const uint64_t*>(frame->payload);
+            delivered++;
+            offset += frame->total_len;
+        }
+        benchmark::DoNotOptimize(sink);
+    }
+
+    state.SetBytesProcessed(state.iterations() *
+                            static_cast<int64_t>(record.record_len));
+    state.counters["frames"] = static_cast<double>(num_frames);
+    state.counters["payload"] = static_cast<double>(payload_size);
+    state.counters["record_bytes"] = static_cast<double>(record.record_len);
+}
+
+BENCHMARK(BM_RxPipeline_LengthPrefix)
+    ->Args({1, 64})->Args({1, 256})->Args({1, 512})
+    ->Args({10, 64})->Args({10, 256})->Args({10, 512})
+    ->Args({30, 64})->Args({30, 256})->Args({30, 512})
+    ->Args({100, 64})
+    ->Unit(benchmark::kNanosecond);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BM_RxPipeline_Raw — decrypt → raw deliver (no framing layer)
+//
+// Baseline: TLS decrypt + immediate delivery. No WS or length-prefix framing.
+// Shows the minimum achievable pipeline latency (TLS AEAD cost only).
+// Represents FIX-over-TLS or any protocol with application-level framing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_RxPipeline_Raw(benchmark::State& state) {
+    auto payload_size = static_cast<size_t>(state.range(0));
+
+    auto hot = make_tls_state();
+    auto enc = eph::net::TlsRecordCrypto::create(hot);
+    if (!enc) { state.SkipWithError(enc.error()); return; }
+
+    eph::net::TlsHotState dec_hot{};
+    std::memcpy(dec_hot.read.ki.key, hot.write.ki.key, eph::net::tls_const::kAes256KeyLen);
+    std::memcpy(dec_hot.read.ki.iv,  hot.write.ki.iv,  eph::net::tls_const::kTls13NonceLen);
+
+    auto record = build_record_raw(payload_size, *enc);
+    if (record.record_len == 0) {
+        state.SkipWithError("Failed to build TLS record");
+        return;
+    }
+
+    std::vector<uint8_t> decrypt_buf(record.plaintext_len + 256);
+    volatile uint64_t sink = 0;
+
+    for ([[maybe_unused]] auto _ : state) {
+        dec_hot.read.seq = 0;
+        auto dec = eph::net::TlsRecordCrypto::create(dec_hot);
+        if (!dec) [[unlikely]] { state.SkipWithError(dec.error()); return; }
+
+        // Stage 1: TLS decrypt
+        uint16_t decrypted_len = 0;
+        bool ok = dec->decrypt(
+            record.encrypted.data(),
+            static_cast<uint16_t>(record.record_len),
+            decrypt_buf.data(), decrypted_len);
+        if (!ok) [[unlikely]] { state.SkipWithError("TLS decrypt failed"); return; }
+
+        // Stage 2: RawFramer decode (passthrough)
+        auto frame = eph::net::RawFramer::decode(
+            decrypt_buf.data(), decrypted_len);
+
+        // Stage 3: Deliver
+        if (frame) {
+            sink = *reinterpret_cast<const uint64_t*>(frame->payload);
+        }
+        benchmark::DoNotOptimize(sink);
+    }
+
+    state.SetBytesProcessed(state.iterations() *
+                            static_cast<int64_t>(record.record_len));
+    state.counters["payload"] = static_cast<double>(payload_size);
+    state.counters["record_bytes"] = static_cast<double>(record.record_len);
+}
+
+BENCHMARK(BM_RxPipeline_Raw)
+    ->Arg(64)->Arg(256)->Arg(512)->Arg(1024)->Arg(4096)
     ->Unit(benchmark::kNanosecond);
 
 BENCHMARK_MAIN();
