@@ -20,7 +20,7 @@
 
 ## Overview
 
-ephemeral 是一套为金融交易所行情接入等超低延迟场景设计的 C++23 网络库。项目采用完全 header-only 的设计，分为四个独立模块：`eph-utils`（底层工具）、`eph-containers`（无锁队列）、`eph-net`（基于 POSIX socket 的 WebSocket/TLS 传输层）、`eph-dpdk`（基于 DPDK 用户态网络栈的传输后端）。
+ephemeral 是一套为金融交易所行情接入等超低延迟场景设计的 C++23 网络库。项目采用完全 header-only 的设计，分为六个独立模块：`eph-utils`（底层工具）、`eph-containers`（无锁队列）、`eph-net`（基于 POSIX socket 的 WebSocket/TLS 传输层）、`eph-dpdk`（基于 DPDK 用户态网络栈的传输后端）、`eph-itch`（ITCH 协议解析）、`eph-fix`（FIX 协议解析）。
 
 核心设计目标是通过 C++20 concepts（`TcpTransport`）实现传输后端的零开销抽象——同一套 `Transport<TcpImpl>` 模板可以在 POSIX socket 和 DPDK 用户态 TCP 之间无缝切换，上层协议栈（TLS 1.3 + WebSocket RFC 6455）完全复用。
 
@@ -357,5 +357,17 @@ Key test scenarios:
 | `bench_ws` | `benchmarks/net/` | WebSocket 掩码/编码/解码微基准 |
 | `bench_tls` | `benchmarks/net/` | TLS seal/open 微基准 |
 | `bench_transport_pipeline` | `benchmarks/net/` | 端到端管道延迟（PlainWS / WSS / WSS Burst） |
+| `bench_rx_pipeline` | `benchmarks/net/` | RX 管线微基准：decrypt→decode→filter（in-memory） |
 | `bench_pipeline` | `benchmarks/dpdk/` | DPDK 管道基准 |
 | `bench_tcp_header` | `benchmarks/dpdk/` | 网络头构建/校验和性能 |
+| `bench_market` / `_dpdk` | `benchmarks/` | 单 symbol 行情延迟（Socket / DPDK） |
+| `bench_market_multi` / `_dpdk` | `benchmarks/` | 多 symbol combined stream + twophase filter |
+| `bench_market_persymbol_dpdk` | `benchmarks/` | Per-symbol 独立连接 + SharedRxDispatcher |
+| `bench_pingpong` / `_dpdk` | `benchmarks/` | Ping-pong RTT（Socket / DPDK） |
+| `bench_fix_parse` / `bench_itch_parse` | `benchmarks/` | FIX / ITCH 消息解析吞吐 |
+
+### 工具
+
+| 工具 | 位置 | 用途 |
+|------|------|------|
+| `mock_binance_server.py` | `tools/` | Mock Binance WebSocket server，可控 batch-size/rate/jitter |

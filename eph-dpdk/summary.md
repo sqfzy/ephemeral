@@ -52,11 +52,14 @@ TCP 实现采用极简设计——仅实现 seq/ack 跟踪、窗口管理和 FIN
 
 | 模块/文件 | 职责 | 关键类型/函数 | 依赖 |
 |-----------|------|---------------|------|
-| `eal.hpp` | EAL 生命周期 (每进程一次) | `eal_init()`, `eal_cleanup()` | DPDK `rte_eal`, spdlog |
+| `eal.hpp` | EAL 生命周期 (每进程一次) | `EalGuard::init()`, `eal_cleanup()` | DPDK `rte_eal`, spdlog |
 | `platform.hpp` | NIC 端口/队列/Mempool 初始化 | `Platform`, `PlatformConfig`, `validate_config()` | DPDK `rte_ethdev/rte_mempool`, spdlog |
 | `net_header.hpp` | Eth/IPv4/TCP 头构建、校验和、包解析 | `PacketTemplate`, `ParsedPacket`, `ConnectionTuple`, `parse_packet()` | DPDK `rte_mbuf/rte_ether/rte_ip/rte_tcp` |
 | `arp.hpp` | 无状态 ARP 请求/应答解析 | `ArpPacket`, `resolve()`, `build_arp_request()` | `net_header.hpp`, DPDK, spdlog |
+| `dns.hpp` | DPDK UDP DNS 解析（kernel DNS fallback） | `resolve()`, `DnsConfig` | `net_header.hpp`, DPDK |
 | `tcp.hpp` | 用户态 TCP 状态机 | `TcpSession`, `TcpConfig`, `TcpSession::Stats` | `net_header.hpp`, `eph::net::TcpTransport` concept, OpenSSL/aws-lc (`RAND_bytes`), spdlog |
+| `connector.hpp` | 高层连接助手（Platform→ARP→TCP→Transport 一键建连） | `connect()` (6 重载), `ConnectorOptions`, `ConnectResult`, `DpdkEndpoint` | `platform.hpp`, `tcp.hpp`, `arp.hpp`, `dns.hpp`, eph-net |
+| `shared_rx.hpp` | 多连接共享 RX 队列分发器 | `SharedRxDispatcher`, `register_session()`, `start()/stop()` | `tcp.hpp`, `net_header.hpp`, DPDK `rte_ring` |
 | `types.hpp` | DPDK Transport 类型别名 | `DpdkTransport`, `DpdkSmallTransport`, `DpdkLargeTransport` | `tcp.hpp`, `eph::net::Transport` |
 
 ## 4. 数据流
@@ -122,6 +125,8 @@ eal_init() -> Platform::create() -> ARP resolve()
 - **ISN 生成**: 使用 `RAND_bytes()` (CSPRNG, RFC 6528)
 - **乱序处理**: 8 槽 `ReorderEntry` 缓冲区，每槽最多 1460 字节；缓冲区满则判定为真实丢包，返回错误触发上层重连
 - **关键接口**: `connect()`, `send()`, `poll_rx()`, `process_rx()`, `close()`, `reset()`, `build_data_packet()` (热路径零分配)
+- **共享 RX 模式**: `set_shared_rx_source(rte_ring*)` 切换 poll_rx 从 ring 读取（用于 SharedRxDispatcher）
+- **辅助接口**: `connection_tuple()` 获取 4-tuple, `set_last_rx_burst_tsc()` 外部设置到达时间戳, `flush_pending_ack()` 发送延迟 ACK
 - **模板约束**: `static_assert(eph::net::TcpTransport<TcpSession>)` 编译期验证
 
 ```cpp
@@ -130,6 +135,9 @@ class TcpSession {
     std::expected<size_t, std::string> send(const void* data, size_t len);
     template <typename F> std::expected<uint16_t, std::string> poll_rx(F&&);
     rte_mbuf* build_data_packet(rte_mbuf*, const void*, uint16_t); // 热路径
+    void set_shared_rx_source(rte_ring* ring);  // 切换到共享 RX 模式
+    const net::ConnectionTuple& connection_tuple() const;
+    void flush_pending_ack();
 };
 ```
 
@@ -174,7 +182,49 @@ DPDK NIC 端口初始化封装。
 - 非热路径——仅在 TCP 连接建立前调用一次
 - `ArpPacket`: 28 字节 packed 结构体，`static_assert(sizeof == 28)`
 
-### 5.7 类型别名 (`include/eph/dpdk/types.hpp`)
+### 5.7 Connector (`include/eph/dpdk/connector.hpp`)
+
+高层连接助手，将 Platform→ARP→TCP→TLS→WS 的初始化序列压缩为单次 `connect()` 调用。
+
+- **6 个重载**: 从最简 `connect("host", endpoint)` 到最完整 `connect(platform, endpoint, config, server_ip, opts)`
+- **共享 Platform**: `connect(Platform&, ...)` 重载复用已有 Platform 实例（多连接场景）
+- **ConnectorOptions**: 嵌套 `PlatformConfig`，支持 `gateway_mac`（跳过 ARP）、`local_port`（0=随机）、queue ID 指定
+- **ConnectResult**: 返回 `{platform, transport, local_mac, gateway_mac}`，可复用 gateway_mac 给后续连接
+- **DNS**: 先尝试 kernel DNS，失败后 fallback 到 DPDK UDP DNS
+
+```cpp
+// 最简用法
+auto result = eph::dpdk::connect("fstream.binance.com",
+    {.local_ip = "172.31.23.112", .gateway_ip = "172.31.16.1"});
+
+// 共享 Platform（多连接）
+auto t2 = eph::dpdk::connect(result.platform, ep, config,
+    {.gateway_mac = result.gateway_mac});
+```
+
+### 5.8 SharedRxDispatcher (`include/eph/dpdk/shared_rx.hpp`)
+
+多连接共享 RX 队列分发器。当多个 TcpSession 共享一个 NIC（ENA 不支持 flow director）时，
+由单一线程 poll rte_eth_rx_burst 并按 4-tuple 分发包到对应 session 的 rte_ring。
+
+- **架构**: dispatcher thread → rte_ring (SPSC) → session RX thread
+- **注册**: `register_session(TcpSession&)` 创建 per-session ring 并设置 `shared_rx_source`
+- **线程安全**: ring 为 SPSC（dispatcher 写，session 读），无锁
+- **生命周期**: 析构时自动 drain 残余 mbuf 并释放 ring
+
+```cpp
+auto dispatcher = SharedRxDispatcher::create(port_id, 0, 3);
+dispatcher->register_session(tcp1);
+dispatcher->register_session(tcp2);
+dispatcher->start(cpu_id);  // 启动分发线程
+// ... sessions 通过 poll_rx() 从 ring 读取
+dispatcher->stop();
+```
+
+**已知限制**: ring 方案引入 ~200-400ns 额外延迟（ring ops + cross-core cache miss）。
+适用于需要多连接但无 flow director 的 NIC（如 AWS ENA）。
+
+### 5.9 类型别名 (`include/eph/dpdk/types.hpp`)
 
 将 DPDK 后端的 `TcpSession` 与 eph-net 泛型 Transport 组合：
 
@@ -188,46 +238,47 @@ using DpdkLargeTransport = Transport<TcpSession, 4096, 512>;
 
 | 入口点 | 文件 | 说明 |
 |--------|------|------|
-| `eal_init(argc, argv)` | `eal.hpp` | 初始化 DPDK EAL (每进程一次) |
+| `EalGuard::init(argc, argv)` | `eal.hpp` | 初始化 DPDK EAL (RAII, 每进程一次) |
 | `Platform::create(config)` | `platform.hpp` | 初始化 NIC 端口/队列/Mempool |
-| `TcpSession(config, pool)` | `tcp.hpp` | 创建 TCP 会话 |
+| `connect(endpoint, config)` | `connector.hpp` | 一键建连 (Platform→ARP→TCP→TLS→WS) |
+| `connect(platform, endpoint, config)` | `connector.hpp` | 复用 Platform 建连（多连接） |
 | `TcpSession::connect(timeout)` | `tcp.hpp` | 阻塞式三次握手 |
-| `TcpSession::send(data, len)` | `tcp.hpp` | 发送数据 (单 MSS 限制) |
-| `TcpSession::poll_rx(callback)` | `tcp.hpp` | 轮询收包并处理 |
-| `TcpSession::close()` / `reset()` | `tcp.hpp` | 优雅关闭 / 强制 RST |
+| `TcpSession::poll_rx(callback)` | `tcp.hpp` | 轮询收包（直接或从共享 ring） |
+| `TcpSession::set_shared_rx_source(ring)` | `tcp.hpp` | 切换到 SharedRxDispatcher 模式 |
+| `SharedRxDispatcher::create(port, queue)` | `shared_rx.hpp` | 创建多连接包分发器 |
+| `SharedRxDispatcher::register_session(session)` | `shared_rx.hpp` | 注册 session 到分发器 |
 | `arp::resolve(...)` | `arp.hpp` | 阻塞式 ARP 地址解析 |
-| `DpdkTransport::create(pool, config)` | `types.hpp` + `eph-net` | 完整 WSS 传输 (TCP+TLS+WS) |
 
 ## 7. 依赖关系
 
 ### 内部模块依赖图
 
 ```
-types.hpp
+connector.hpp (高层入口)
     |
+    +---> platform.hpp ──→ DPDK (rte_ethdev, rte_mempool)
+    +---> arp.hpp ──→ net_header.hpp
+    +---> dns.hpp ──→ net_header.hpp
     +---> tcp.hpp
     |        |
-    |        +---> net_header.hpp
-    |        |        |
-    |        |        +---> DPDK (rte_mbuf, rte_ether, rte_ip, rte_tcp)
-    |        |
+    |        +---> net_header.hpp ──→ DPDK (rte_mbuf, rte_ether, rte_ip, rte_tcp)
     |        +---> eph::net::TcpTransport (tcp_concept.hpp)
+    |        +---> DPDK (rte_ring) ← 共享 RX 模式
     |        +---> OpenSSL/aws-lc (RAND_bytes)
     |
     +---> eph::net::Transport (transport.hpp)
-    +---> eph::net::TransportConfig (transport_types.hpp)
 
-arp.hpp
+shared_rx.hpp (多连接分发)
     |
-    +---> net_header.hpp
+    +---> tcp.hpp
+    +---> net_header.hpp (parse_packet, matches)
+    +---> DPDK (rte_ring, rte_ethdev)
 
-platform.hpp
-    |
-    +---> DPDK (rte_ethdev, rte_mempool, rte_lcore)
+types.hpp
+    +---> tcp.hpp
+    +---> eph::net::Transport
 
-eal.hpp
-    |
-    +---> DPDK (rte_eal)
+eal.hpp ──→ DPDK (rte_eal)
 ```
 
 ### 外部依赖
@@ -264,5 +315,9 @@ eal.hpp
 
 | 基准文件 | 测试内容 |
 |----------|----------|
-| `benchmarks/bench_tcp_header.cpp` | TCP 头构建/解析性能 (163 行) |
-| `benchmarks/bench_pipeline.cpp` | 端到端 TX/RX 管线延迟 (190 行) |
+| `benchmarks/dpdk/bench_tcp_header.cpp` | TCP 头构建/解析性能 |
+| `benchmarks/dpdk/bench_pipeline.cpp` | DPDK 端到端 TX/RX 管线延迟 |
+| `benchmarks/bench_market_dpdk.cpp` | 单 symbol 行情延迟（Binance DPDK） |
+| `benchmarks/bench_market_multi_dpdk.cpp` | 多 symbol combined stream 延迟 + twophase filter |
+| `benchmarks/bench_market_persymbol_dpdk.cpp` | Per-symbol 独立连接 + SharedRxDispatcher |
+| `benchmarks/bench_pingpong_dpdk.cpp` | DPDK ping-pong RTT |

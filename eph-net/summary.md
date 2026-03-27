@@ -294,6 +294,9 @@ RFC 6455 WebSocket 协议实现，包含帧编解码、Masking、控制帧构建
 - `TransportEvent` / `TransportState` — 连接生命周期事件与状态
 - `TransportConfig` — 完整连接配置（目标、TLS、超时、性能、重连、回调）
   含 `validate()` 编译期校验和 `dump()` / `to_json()` 序列化
+  - `on_connected_before_threads` — 握手完成后、线程启动前的 hook
+  - `deferred_start` — 延迟启动 RX/TX 线程（多连接顺序建连）
+- `Transport::start_threads()` — 手动启动 RX/TX 线程（配合 deferred_start）
 - `TransportStats` — 聚合运行统计（TX/RX 包数、字节、丢弃、加解密错误、
   重连次数等），含速率辅助方法和 `to_json()`
 - `RttStats` — RTT 百分位统计（p50, p99, p999）
