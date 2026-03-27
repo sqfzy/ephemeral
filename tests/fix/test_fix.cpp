@@ -4484,6 +4484,162 @@ TEST(FixBuilder, as_span_and_as_string_view_after_finish) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// set_decimal: exact decimal encoding without float precision loss
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FixBuilder, set_decimal_basic_roundtrip) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "123.45");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    auto price = mv->get(tag::Price);
+    ASSERT_TRUE(price.has_value());
+    EXPECT_EQ(*price, "123.45");
+}
+
+TEST(FixBuilder, set_decimal_integer_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "100");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "100");
+}
+
+TEST(FixBuilder, set_decimal_negative_value) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "-0.001");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "-0.001");
+}
+
+TEST(FixBuilder, set_decimal_rejects_empty) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_decimal_rejects_bare_minus) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "-");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_decimal_rejects_trailing_dot) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "123.");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_decimal_rejects_letters) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "12.3a");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_decimal_rejects_double_dot) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "1.2.3");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_price: integer mantissa + decimals encoding
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FixBuilder, set_price_basic) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_price(tag::Price, 12345, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "123.45");
+}
+
+TEST(FixBuilder, set_price_negative) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_price(tag::Price, -500, 1);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "-50.0");
+}
+
+TEST(FixBuilder, set_price_zero_decimals) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_price(tag::Price, 100, 0);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "100");
+}
+
+TEST(FixBuilder, set_price_leading_zero_fraction) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // 105 with 3 decimals = 0.105
+    b.set_price(tag::Price, 105, 3);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "0.105");
+}
+
+TEST(FixBuilder, set_price_sub_penny) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // 1234567 with 4 decimals = 123.4567
+    b.set_price(tag::Price, 1234567, 4);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "123.4567");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parse_int_value edge cases: leading zeros, plus sign, whitespace
 // ─────────────────────────────────────────────────────────────────────────────
 

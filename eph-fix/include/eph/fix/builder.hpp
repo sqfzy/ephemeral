@@ -221,6 +221,118 @@ public:
         return set_trusted(t, std::string_view(tmp, n));
     }
 
+    /// Append a decimal-valued field from its string representation.
+    /// Unlike set_double(), this avoids binary floating-point precision loss
+    /// by encoding the decimal value directly as-is. Essential for financial
+    /// data where exact decimal representation is required (prices, quantities).
+    ///
+    /// Validates that the string is a well-formed decimal: optional leading '-',
+    /// one or more digits, optional '.' followed by one or more digits.
+    /// Sets overflow flag if the format is invalid.
+    ///
+    /// @param t       Tag number (e.g. tag::Price, tag::OrderQty)
+    /// @param decimal Decimal string (e.g. "123.45", "-0.001", "100")
+    MessageBuilder& set_decimal(uint32_t t, std::string_view decimal) noexcept {
+        if (overflow_) [[unlikely]] return *this;
+        if (decimal.empty()) [[unlikely]] {
+            log_invalid_decimal(t, decimal);
+            overflow_ = true;
+            return *this;
+        }
+
+        // Validate decimal format: [-]digits[.digits]
+        size_t i = 0;
+        if (decimal[i] == '-') {
+            ++i;
+            if (i >= decimal.size()) [[unlikely]] {
+                log_invalid_decimal(t, decimal);
+                overflow_ = true;
+                return *this;
+            }
+        }
+
+        bool has_digits = false;
+        bool has_dot = false;
+        for (; i < decimal.size(); ++i) {
+            if (decimal[i] >= '0' && decimal[i] <= '9') {
+                has_digits = true;
+            } else if (decimal[i] == '.' && !has_dot) {
+                has_dot = true;
+                // Must have at least one digit after dot
+                if (i + 1 >= decimal.size() || decimal[i + 1] < '0' || decimal[i + 1] > '9') [[unlikely]] {
+                    log_invalid_decimal(t, decimal);
+                    overflow_ = true;
+                    return *this;
+                }
+            } else [[unlikely]] {
+                log_invalid_decimal(t, decimal);
+                overflow_ = true;
+                return *this;
+            }
+        }
+
+        if (!has_digits) [[unlikely]] {
+            log_invalid_decimal(t, decimal);
+            overflow_ = true;
+            return *this;
+        }
+
+        return set_trusted(t, decimal);
+    }
+
+    /// Append a price field from integer mantissa and exponent.
+    /// Encodes price = mantissa * 10^(-decimals) without floating-point.
+    ///
+    /// Example: set_price(tag::Price, 12345, 2) encodes "123.45"
+    ///          set_price(tag::Price, -500, 1) encodes "-50.0"
+    ///          set_price(tag::Price, 100, 0) encodes "100"
+    ///
+    /// @param t        Tag number
+    /// @param mantissa Integer mantissa (may be negative)
+    /// @param decimals Number of decimal places (0-18)
+    MessageBuilder& set_price(uint32_t t, int64_t mantissa, uint8_t decimals = 2) noexcept {
+        if (decimals == 0) {
+            return set_int(t, mantissa);
+        }
+        if (decimals > 18) [[unlikely]] {
+            decimals = 18;
+        }
+
+        char tmp[32];
+        size_t off = 0;
+
+        // Handle sign
+        int64_t abs_val = mantissa;
+        if (mantissa < 0) {
+            tmp[off++] = '-';
+            abs_val = -mantissa;
+        }
+
+        // Compute integer and fractional parts
+        int64_t divisor = 1;
+        for (uint8_t d = 0; d < decimals; ++d) divisor *= 10;
+
+        int64_t int_part = abs_val / divisor;
+        int64_t frac_part = abs_val % divisor;
+
+        // Write integer part
+        off += format_uint(static_cast<uint64_t>(int_part), tmp + off);
+
+        // Write decimal point and fractional part with leading zeros
+        tmp[off++] = '.';
+        // Leading zeros: if frac_part has fewer digits than decimals
+        int64_t frac_divisor = divisor / 10;
+        while (frac_divisor > 0 && frac_part < frac_divisor) {
+            tmp[off++] = '0';
+            frac_divisor /= 10;
+        }
+        if (frac_part > 0) {
+            off += format_uint(static_cast<uint64_t>(frac_part), tmp + off);
+        }
+
+        return set_trusted(t, std::string_view(tmp, off));
+    }
+
     /// Finalize the message: prepend BeginString + BodyLength, append CheckSum.
     ///
     /// @param begin_string  FIX version string (default "FIX.4.4")
@@ -641,6 +753,12 @@ private:
     static void log_non_finite(uint32_t tag) noexcept {
         SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
             "FIX builder: non-finite double for tag={}", tag);
+    }
+
+    [[gnu::noinline, gnu::cold]]
+    static void log_invalid_decimal(uint32_t tag, std::string_view value) noexcept {
+        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            "FIX builder: invalid decimal format '{}' for tag={}", value, tag);
     }
 
     [[gnu::noinline, gnu::cold]]
