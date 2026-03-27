@@ -8,7 +8,7 @@
 /// packets to the correct session by 4-tuple match.
 ///
 /// Usage:
-///   auto dispatcher = SharedRxDispatcher::create(port_id, 0, mempool, 3);
+///   auto dispatcher = SharedRxDispatcher::create(port_id, 0, 3);
 ///   dispatcher->register_session(tcp1);
 ///   dispatcher->register_session(tcp2);
 ///   dispatcher->register_session(tcp3);
@@ -43,12 +43,6 @@ namespace eph::dpdk {
 /// packet into the matching session's ring. Unmatched packets are freed.
 class SharedRxDispatcher {
 public:
-    struct SessionEntry {
-        TcpSession<>* session = nullptr;
-        net::ConnectionTuple tuple{};
-        rte_ring* ring = nullptr;
-    };
-
     /// Create a dispatcher for the given port/queue.
     /// @param max_sessions  Maximum number of sessions to support
     static std::expected<std::unique_ptr<SharedRxDispatcher>, std::string>
@@ -123,10 +117,11 @@ public:
             if (e.ring) {
                 // Drain and free remaining mbufs
                 rte_mbuf* pkts[32];
-                while (rte_ring_dequeue_burst(e.ring,
-                    reinterpret_cast<void**>(pkts), 32, nullptr) > 0) {
-                    for (auto& p : pkts) {
-                        if (p) rte_pktmbuf_free(p);
+                unsigned n;
+                while ((n = rte_ring_dequeue_burst(e.ring,
+                    reinterpret_cast<void**>(pkts), 32, nullptr)) > 0) {
+                    for (unsigned j = 0; j < n; ++j) {
+                        rte_pktmbuf_free(pkts[j]);
                     }
                 }
                 rte_ring_free(e.ring);
@@ -139,6 +134,12 @@ public:
     SharedRxDispatcher& operator=(const SharedRxDispatcher&) = delete;
 
 private:
+    struct SessionEntry {
+        TcpSession<>* session = nullptr;
+        net::ConnectionTuple tuple{};
+        rte_ring* ring = nullptr;
+    };
+
     void dispatch_loop() {
         rte_mbuf* pkts[32];
 
@@ -146,10 +147,6 @@ private:
             uint16_t nb_rx = rte_eth_rx_burst(
                 port_id_, rx_queue_id_, pkts, 32);
             if (nb_rx == 0) continue;
-
-            // Capture TSC once per burst — all sessions in this burst
-            // share the same arrival timestamp (same rx_burst call).
-            uint64_t burst_tsc = eph::utils::TSC::now();
 
             for (uint16_t i = 0; i < nb_rx; ++i) {
                 auto parsed = net::parse_packet(pkts[i]);
@@ -173,6 +170,12 @@ private:
                 }
 
                 if (!dispatched) {
+                    SPDLOG_TRACE("SharedRxDispatcher: unmatched packet from "
+                                 "{}:{} → {}:{}",
+                                 net::format_ipv4(parsed.src_ip()).data(),
+                                 parsed.src_port(),
+                                 net::format_ipv4(parsed.dst_ip()).data(),
+                                 parsed.dst_port());
                     rte_pktmbuf_free(pkts[i]);
                 }
             }
