@@ -1,14 +1,13 @@
 # TODO
 
-## FIX Session Layer
+## ~~FIX Session Layer~~ ✅ Done
 
-FIX 4.4 session management — Logon/Logout, Heartbeat/TestRequest, sequence number tracking, GapFill/PossResend, resend request handling. Required for Binance FIX Market Data and any FIX gateway integration.
+Implemented in `eph-fix/include/eph/fix/session.hpp` (commit `51aa64f`).
+Covers: Logon/Logout, Heartbeat/TestRequest (tag 112), sequence gap detection,
+ResendRequest, SequenceReset-GapFill, PossDupFlag, server HeartBtInt override,
+heartbeat timeout detection. 20 tests.
 
-Current state: `eph-fix` has message parsing and building, but no session state machine.
-
-Estimated effort: 40-80h. Needs `/design` first — state machine complexity (sequence persistence, gap recovery, reconnect resume) warrants formal design.
-
-Reference: `.discuss/discuss-20260327-130500.md`
+Remaining: sequence number persistence to disk (not needed for market data — reset on reconnect).
 
 ## eph-sbe Module
 
