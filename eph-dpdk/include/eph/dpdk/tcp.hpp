@@ -725,6 +725,7 @@ public:
         }
 
         state_ = TcpState::Closed;
+        SPDLOG_LOGGER_DEBUG(log, "RST sent, state -> Closed");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

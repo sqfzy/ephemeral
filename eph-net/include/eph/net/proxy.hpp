@@ -59,6 +59,21 @@ struct ProxyConfig {
 
     /// Timeout for the proxy handshake (not the TCP connect to the proxy).
     std::chrono::milliseconds timeout{5000};
+
+    /// Validate configuration, returning an error description or empty string on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (host.empty())
+            return "proxy host must not be empty";
+        if (port == 0)
+            return "proxy port must be > 0";
+        if (timeout.count() <= 0)
+            return "proxy timeout must be positive";
+        if (type == ProxyType::kSocks5 && username.size() > 255)
+            return "SOCKS5 username exceeds 255 bytes";
+        if (type == ProxyType::kSocks5 && password.size() > 255)
+            return "SOCKS5 password exceeds 255 bytes";
+        return {};
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -171,6 +186,8 @@ socks5_handshake(SocketTransport& tcp,
     detail::HandshakeIO io(tcp);
 
     if (target_host.size() > 255) {
+        SPDLOG_LOGGER_WARN(log,
+            "SOCKS5: target hostname exceeds 255 bytes (len={})", target_host.size());
         return std::unexpected("SOCKS5: target hostname exceeds 255 bytes");
     }
 
@@ -208,6 +225,9 @@ socks5_handshake(SocketTransport& tcp,
     // ── Phase 2: Authentication (if required) ─────────────────────────────
     if (chosen_method == 0x02) {
         if (cfg.username.size() > 255 || cfg.password.size() > 255) {
+            SPDLOG_LOGGER_WARN(log,
+                "SOCKS5: username/password exceeds 255 bytes (user={}, pass=<{}>)",
+                cfg.username.size(), cfg.password.size());
             return std::unexpected("SOCKS5: username/password exceeds 255 bytes");
         }
         // RFC 1929: VER(1) ULEN(1) UNAME(ULEN) PLEN(1) PASSWD(PLEN)
@@ -381,11 +401,17 @@ http_connect_handshake(SocketTransport& tcp,
         }
 
         if (response.size() > 65536) {
+            SPDLOG_LOGGER_WARN(log,
+                "HTTP CONNECT: response too large ({}B > 64KB) from {}:{}",
+                response.size(), target_host, target_port);
             return std::unexpected("HTTP CONNECT: response too large (>64KB)");
         }
     }
 
     if (response.find("\r\n\r\n") == std::string::npos) {
+        SPDLOG_LOGGER_WARN(log,
+            "HTTP CONNECT: handshake timeout ({}ms) to {}:{}, received {}B",
+            cfg.timeout.count(), target_host, target_port, response.size());
         return std::unexpected("HTTP CONNECT: response timeout");
     }
 
@@ -451,6 +477,17 @@ inline std::function<std::expected<std::unique_ptr<SocketTransport>, std::string
 make_proxied_factory(const SocketConfig& base_sock_cfg,
                      const ProxyConfig& proxy_cfg,
                      std::string_view target_host, uint16_t target_port) {
+    // Fail-fast: validate proxy config before capturing into the factory closure
+    if (auto err = proxy_cfg.validate(); !err.empty()) {
+        auto log = detail::proxy_logger();
+        SPDLOG_LOGGER_ERROR(log, "ProxyConfig validation failed: {}", err);
+        // Return a factory that always fails with the validation error
+        return [msg = std::string(err)]()
+            -> std::expected<std::unique_ptr<SocketTransport>, std::string> {
+            return std::unexpected(std::format("ProxyConfig invalid: {}", msg));
+        };
+    }
+
     // Capture by value for reconnection safety (factory is called multiple times)
     return [sock_cfg = base_sock_cfg, proxy = proxy_cfg,
             host = std::string(target_host), port = target_port]()

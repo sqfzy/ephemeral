@@ -345,13 +345,13 @@ connect(const DpdkEndpoint& ep,
         uint32_t server_ip,
         const ConnectorOptions& opts = {}) {
 
-    // Validate before Platform::create() to fail fast on bad config
+    // Validate all configs before Platform::create() to fail fast on bad config
     // (Platform init is expensive and single-port NICs only allow one)
-    if (ep.local_ip.empty()) {
-        return std::unexpected("DpdkEndpoint: local_ip is required");
+    if (auto err = ep.validate(); !err.empty()) {
+        return std::unexpected(std::format("DpdkEndpoint: {}", err));
     }
-    if (ep.gateway_ip.empty()) {
-        return std::unexpected("DpdkEndpoint: gateway_ip is required");
+    if (auto err = opts.validate(); !err.empty()) {
+        return std::unexpected(std::format("ConnectorOptions: {}", err));
     }
     if (server_ip == 0) {
         return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");

@@ -164,6 +164,72 @@ TEST(ProxyConfig, DefaultValues) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig::validate()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfig, ValidateAcceptsValidConfig) {
+    ProxyConfig cfg{.host = "proxy.example.com", .port = 1080};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(ProxyConfig, ValidateRejectsEmptyHost) {
+    ProxyConfig cfg{.host = "", .port = 1080};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("host"), std::string_view::npos);
+}
+
+TEST(ProxyConfig, ValidateRejectsZeroPort) {
+    ProxyConfig cfg{.host = "proxy.example.com", .port = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("port"), std::string_view::npos);
+}
+
+TEST(ProxyConfig, ValidateRejectsNonPositiveTimeout) {
+    ProxyConfig cfg{
+        .host = "proxy.example.com", .port = 1080,
+        .timeout = std::chrono::milliseconds{0}};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("timeout"), std::string_view::npos);
+}
+
+TEST(ProxyConfig, ValidateRejectsLongSocks5Username) {
+    ProxyConfig cfg{
+        .host = "proxy.example.com", .port = 1080,
+        .type = ProxyType::kSocks5,
+        .username = std::string(256, 'x')};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("username"), std::string_view::npos);
+}
+
+TEST(ProxyConfig, ValidateRejectsLongSocks5Password) {
+    ProxyConfig cfg{
+        .host = "proxy.example.com", .port = 1080,
+        .type = ProxyType::kSocks5,
+        .password = std::string(256, 'x')};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("password"), std::string_view::npos);
+}
+
+TEST(ProxyConfig, ValidateAcceptsLongCredentialsForHttpConnect) {
+    // HTTP CONNECT doesn't have the 255-byte SOCKS5 limit
+    ProxyConfig cfg{
+        .host = "proxy.example.com", .port = 8080,
+        .type = ProxyType::kHttpConnect,
+        .username = std::string(300, 'u'),
+        .password = std::string(300, 'p')};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(ProxyConfig, ValidateAcceptsMaxLengthSocks5Credentials) {
+    ProxyConfig cfg{
+        .host = "proxy.example.com", .port = 1080,
+        .type = ProxyType::kSocks5,
+        .username = std::string(255, 'u'),
+        .password = std::string(255, 'p')};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parse_proxy_url — round-trip consistency
 // ─────────────────────────────────────────────────────────────────────────────
 
