@@ -168,19 +168,24 @@ int main(int argc, char** argv) {
     auto& tp = *conn->transport;
     spdlog::info("Connected via DPDK ({} symbols + ping)!", cfg.symbols.size());
 
-    // ── Prepare ping payload ────────────────────────────────────────────────
-    std::array<uint8_t, 125> ping_payload{};
-    for (int i = 0; i < cfg.payload_size; ++i)
-        ping_payload[static_cast<size_t>(i)] = static_cast<uint8_t>('A' + (i % 26));
+    // ── Order simulation setup ─────────────────────────────────────────────
+    // Send a JSON "order" every ping_interval ms. The mock server (or any
+    // echo-like server) responds with a JSON containing the same "id" field.
+    // We measure order RTT = time from send to matching response in recv().
+    eph::utils::HdrHistogram order_rtt_hist{100, 1'000'000'000ULL, 3};  // 100ns-1s
+    uint64_t order_send_tsc = 0;  // TSC when last order was sent
+    int orders_sent = 0;
+    int orders_received = 0;
+    int order_id_counter = 0;
+    bool order_pending = false;  // waiting for response?
 
-    // ── Main loop: recv market data + send periodic pings ───────────────────
+    // ── Main loop: recv market data + send periodic orders ──────────────────
     uint64_t msgs = 0;
-    int pings_sent = 0;
     auto start = std::chrono::steady_clock::now();
     auto deadline = cfg.duration > 0
         ? start + std::chrono::seconds(cfg.duration)
         : std::chrono::steady_clock::time_point::max();
-    auto last_ping = start;
+    auto last_order = start;
     auto interval = std::chrono::milliseconds(cfg.ping_interval);
 
     // Per-second status line
@@ -190,23 +195,47 @@ int main(int argc, char** argv) {
     int window_idx = 0;
 
     spdlog::info("{:>8} {:>10} {:>10} {:>10} {:>12} {:>8}",
-                 "time", "msg/s", "p50(ns)", "p99(ns)", "p99.9(ns)", "pings");
+                 "time", "msg/s", "p50(ns)", "p99(ns)", "p99.9(ns)", "orders");
 
     while (g_running.load(std::memory_order_acquire) && tp.is_running()) {
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) break;
 
-        // Send periodic ping
-        if (now - last_ping >= interval) {
-            auto rc = cfg.payload_size > 0
-                ? tp.send_ping(ping_payload.data(), static_cast<size_t>(cfg.payload_size))
-                : tp.send_ping();
-            if (rc == eph::net::SendError::kOk) ++pings_sent;
-            last_ping = now;
+        // Send periodic simulated order (JSON text frame)
+        if (now - last_order >= interval && !order_pending) {
+            ++order_id_counter;
+            auto order_json = std::format(
+                R"({{"id":"ord_{}","method":"order.place","params":{{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.001","price":"67000.00"}}}})",
+                order_id_counter);
+            auto rc = tp.send_text(order_json);
+            if (rc == eph::net::SendError::kOk) {
+                order_send_tsc = eph::utils::TSC::now();
+                order_pending = true;
+                ++orders_sent;
+            }
+            last_order = now;
         }
 
-        // Drain market data
-        bool got = tp.recv([&](const uint8_t*, size_t) { ++msgs; });
+        // Drain messages: market data + order responses
+        bool got = tp.recv([&](const uint8_t* data, size_t len) {
+            // Check if this is an order response (contains "id":"ord_")
+            std::string_view sv(reinterpret_cast<const char*>(data), len);
+            if (sv.find("\"id\":\"ord_") != std::string_view::npos) {
+                // Order response — measure RTT
+                if (order_pending && order_send_tsc > 0) {
+                    uint64_t now_tsc = eph::utils::TSC::now();
+                    auto rtt_ns = eph::utils::TSC::to_ns(now_tsc - order_send_tsc);
+                    if (rtt_ns) {
+                        order_rtt_hist.record(static_cast<uint64_t>(*rtt_ns));
+                    }
+                    order_pending = false;
+                    ++orders_received;
+                }
+            } else {
+                // Market data
+                ++msgs;
+            }
+        });
         if (!got) eph::utils::cpu_relax();
 
         // Per-second window
@@ -229,7 +258,7 @@ int main(int argc, char** argv) {
             } : eph::net::RttStats{};
 
             spdlog::info("[T+{:>3}s] {:>8.0f} {:>10} {:>10} {:>12} {:>8}",
-                         window_idx, rate, ws.p50_ns, ws.p99_ns, ws.p999_ns, pings_sent);
+                         window_idx, rate, ws.p50_ns, ws.p99_ns, ws.p999_ns, orders_sent);
 
             prev_hist = std::move(curr_hist);
             prev_msgs = msgs;
@@ -247,9 +276,10 @@ int main(int argc, char** argv) {
     double avg_bytes_per_burst = stats.tcp_rx_bursts > 0
         ? static_cast<double>(stats.rx_bytes) / stats.tcp_rx_bursts : 0.0;
 
-    spdlog::info("=== Market Data + Ping/Pong Benchmark (DPDK) ===");
-    spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Pings: {}",
-                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs, pings_sent);
+    spdlog::info("=== Market Data + Order Simulation Benchmark (DPDK) ===");
+    spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Orders: {}/{}",
+                 cfg.symbols.size(), elapsed_ms / 1000.0, msgs,
+                 orders_received, orders_sent);
     spdlog::info("RX totals: {} bytes, {} WS frames, {} TLS records, {} TCP pkts, {} bursts",
                  stats.rx_bytes, stats.rx_packets, rx.count,
                  stats.tcp_rx_packets, stats.tcp_rx_bursts);
@@ -277,8 +307,19 @@ int main(int argc, char** argv) {
     };
 
     print_latency("RX Market Data (rx_burst → frame decoded)", stats.rx_latency);
-    print_latency("RTT Ping/Pong (ping tx → pong rx)", stats.rtt);
-    print_latency("TX Queue Wait (ping enqueue → flush)", stats.tx_latency);
+    print_latency("TX Order (send_text enqueue → flush)", stats.tx_latency);
+
+    // Order RTT from our own histogram
+    auto order_rtt = order_rtt_hist.get_total_count() > 0 ? eph::net::RttStats{
+        .count   = order_rtt_hist.get_total_count(),
+        .min_ns  = order_rtt_hist.get_min_value(),
+        .max_ns  = order_rtt_hist.get_max_value(),
+        .mean_ns = order_rtt_hist.get_mean(),
+        .p50_ns  = order_rtt_hist.get_value_at_percentile(50.0),
+        .p99_ns  = order_rtt_hist.get_value_at_percentile(99.0),
+        .p999_ns = order_rtt_hist.get_value_at_percentile(99.9),
+    } : eph::net::RttStats{};
+    print_latency("Order RTT (send → response received)", order_rtt);
 
     return 0;
 }

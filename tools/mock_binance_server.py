@@ -63,6 +63,35 @@ def ws_accept_key(client_key: str) -> str:
     return base64.b64encode(digest).decode()
 
 
+def decode_ws_frame(data: bytes):
+    """Decode a WebSocket frame from client (masked). Returns (payload, total_len) or (None, 0)."""
+    if len(data) < 2:
+        return None, 0
+    b1 = data[1]
+    masked = (b1 & 0x80) != 0
+    plen = b1 & 0x7F
+    hdr = 2
+    if plen == 126:
+        if len(data) < 4: return None, 0
+        plen = struct.unpack("!H", data[2:4])[0]
+        hdr = 4
+    elif plen == 127:
+        if len(data) < 10: return None, 0
+        plen = struct.unpack("!Q", data[2:10])[0]
+        hdr = 10
+    if masked:
+        if len(data) < hdr + 4 + plen: return None, 0
+        mask = data[hdr:hdr+4]
+        hdr += 4
+        payload = bytearray(data[hdr:hdr+plen])
+        for i in range(plen):
+            payload[i] ^= mask[i % 4]
+        return bytes(payload), hdr + plen
+    else:
+        if len(data) < hdr + plen: return None, 0
+        return bytes(data[hdr:hdr+plen]), hdr + plen
+
+
 def encode_ws_text_frame(payload: bytes) -> bytes:
     """Encode a WebSocket text frame (server→client, no mask)."""
     length = len(payload)
@@ -233,6 +262,61 @@ def run_server(args):
             # Disable Nagle for precise record control
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
+            # Order response thread: reads client frames, responds to orders.
+            # Uses a lock to serialize writes (market data + order responses).
+            import threading
+            conn_lock = threading.Lock()
+            order_count = [0]  # mutable counter in list for closure
+
+            def order_reader():
+                """Read client WS frames and respond to order requests."""
+                buf = b""
+                while running:
+                    try:
+                        conn.settimeout(0.1)
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        buf += chunk
+                    except socket.timeout:
+                        continue
+                    except (OSError, ssl.SSLError):
+                        break
+
+                    # Process all complete frames in buffer
+                    while True:
+                        payload, consumed = decode_ws_frame(buf)
+                        if payload is None:
+                            break
+                        buf = buf[consumed:]
+
+                        # Parse order request and respond
+                        try:
+                            msg = json.loads(payload)
+                            if "id" in msg:
+                                order_count[0] += 1
+                                resp = json.dumps({
+                                    "id": msg["id"],
+                                    "status": 200,
+                                    "result": {
+                                        "orderId": 1000000 + order_count[0],
+                                        "symbol": msg.get("params", {}).get("symbol", "UNKNOWN"),
+                                        "status": "FILLED",
+                                        "executedQty": msg.get("params", {}).get("quantity", "0"),
+                                        "T": int(time.time() * 1000),
+                                    },
+                                }, separators=(",", ":")).encode()
+                                frame = encode_ws_text_frame(resp)
+                                with conn_lock:
+                                    conn.sendall(frame)
+                        except (json.JSONDecodeError, KeyError):
+                            pass  # ignore non-JSON or non-order frames
+
+                print(f"  Order reader stopped ({order_count[0]} orders processed)")
+
+            reader_thread = threading.Thread(target=order_reader, daemon=True)
+            reader_thread.start()
+
             total_msgs = 0
             total_bytes = 0
             total_records = 0
@@ -273,7 +357,8 @@ def run_server(args):
                     seq += 1
                     buf.extend(encode_ws_text_frame(payload))
 
-                conn.sendall(bytes(buf))
+                with conn_lock:
+                    conn.sendall(bytes(buf))
                 total_msgs += cur_batch
                 total_bytes += len(buf)
                 total_records += 1
