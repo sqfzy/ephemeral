@@ -36,6 +36,8 @@
 #include <memory>
 #include <string>
 
+#include <optional>
+
 #include <spdlog/spdlog.h>
 
 #include <openssl/rand.h>
@@ -110,6 +112,10 @@ struct ConnectorOptions {
     uint16_t local_port  = 0;  ///< 0 = random ephemeral (49152-65535)
     uint16_t tx_queue_id = 0;
     uint16_t rx_queue_id = 0;
+    /// Pre-resolved gateway MAC. When set, ARP resolution is skipped.
+    /// Use this for multi-connection scenarios where the first connection
+    /// resolves the gateway MAC and subsequent connections reuse it.
+    std::optional<rte_ether_addr> gateway_mac{};
     std::chrono::milliseconds arp_timeout{3000};
     std::chrono::milliseconds connect_timeout{5000};
     dns::DnsConfig dns{};  ///< DNS config for DPDK DNS fallback (default: 8.8.8.8)
@@ -261,15 +267,20 @@ prepare_connection(const DpdkEndpoint& ep,
         return std::unexpected(std::format("Invalid gateway_ip: '{}'", ep.gateway_ip));
     }
 
-    // ARP resolve gateway
-    auto arp_result = arp::resolve(
-        opts.platform.port_id, opts.rx_queue_id, mempool,
-        src_mac, local_ip, gateway_ip, opts.arp_timeout);
-    if (!arp_result) {
-        return std::unexpected(
-            std::format("ARP resolution failed: {}", arp_result.error()));
+    // ARP resolve gateway (skip if pre-resolved MAC provided)
+    rte_ether_addr dst_mac{};
+    if (opts.gateway_mac) {
+        dst_mac = *opts.gateway_mac;
+    } else {
+        auto arp_result = arp::resolve(
+            opts.platform.port_id, opts.rx_queue_id, mempool,
+            src_mac, local_ip, gateway_ip, opts.arp_timeout);
+        if (!arp_result) {
+            return std::unexpected(
+                std::format("ARP resolution failed: {}", arp_result.error()));
+        }
+        dst_mac = *arp_result;
     }
-    rte_ether_addr dst_mac = *arp_result;
 
     // Ephemeral source port
     uint16_t src_port = opts.local_port;
