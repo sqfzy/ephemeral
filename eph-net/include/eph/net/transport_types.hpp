@@ -994,6 +994,8 @@ struct TransportStats {
     uint64_t rx_text_packets   = 0;  ///< Text frames received (subset of rx_packets)
     uint64_t rx_text_bytes     = 0;  ///< Text frame bytes received (subset of rx_bytes)
     uint64_t rx_dropped        = 0;
+    uint64_t tcp_rx_packets    = 0;  ///< TCP segments received (from TcpSession, 0 if unavailable)
+    uint64_t tcp_rx_bursts     = 0;  ///< Non-empty poll_rx calls (from TcpSession, 0 if unavailable)
     uint64_t encrypt_errors    = 0;
     uint64_t decrypt_errors    = 0;
     uint64_t queue_full_count  = 0;

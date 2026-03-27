@@ -157,7 +157,8 @@ class TcpSession {
 public:
     struct Stats {
         uint64_t tx_packets      = 0;
-        uint64_t rx_packets      = 0;
+        uint64_t rx_packets      = 0;  ///< TCP segments received
+        uint64_t rx_bursts       = 0;  ///< Non-empty rte_eth_rx_burst calls
         uint64_t tx_bytes        = 0;
         uint64_t rx_bytes        = 0;
         uint64_t acks_sent       = 0;
@@ -612,6 +613,7 @@ public:
         }
 
         if (nb_rx == 0) return uint16_t{0};
+        ++stats_.rx_bursts;
         // Capture TSC immediately — in direct mode this is right after NIC poll;
         // in shared mode this is after ring dequeue (includes dispatcher latency,
         // typically ~50-100ns).
@@ -630,6 +632,9 @@ public:
     [[nodiscard]] const net::ConnectionTuple& connection_tuple() const noexcept {
         return config_.tuple;
     }
+
+    /// Get TCP-level statistics (packets, bursts, bytes, etc.).
+    [[nodiscard]] const Stats& tcp_stats() const noexcept { return stats_; }
 
     /// Set the RX burst TSC externally (used by SharedRxDispatcher to propagate
     /// the NIC arrival timestamp to the session without going through poll_rx).

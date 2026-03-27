@@ -1201,6 +1201,16 @@ public:
             .rx_text_packets   = rx_stats_.text_packets.load(std::memory_order_relaxed),
             .rx_text_bytes     = rx_stats_.text_bytes.load(std::memory_order_relaxed),
             .rx_dropped        = rx_stats_.dropped.load(std::memory_order_relaxed),
+            .tcp_rx_packets    = [this]() -> uint64_t {
+                if constexpr (requires { tcp_->tcp_stats(); })
+                    return tcp_ ? tcp_->tcp_stats().rx_packets : 0;
+                else return 0;
+            }(),
+            .tcp_rx_bursts     = [this]() -> uint64_t {
+                if constexpr (requires { tcp_->tcp_stats(); })
+                    return tcp_ ? tcp_->tcp_stats().rx_bursts : 0;
+                else return 0;
+            }(),
             .encrypt_errors    = tx_stats_.crypto_errors.load(std::memory_order_relaxed),
             .decrypt_errors    = rx_stats_.crypto_errors.load(std::memory_order_relaxed),
             .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed),

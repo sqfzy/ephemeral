@@ -313,10 +313,9 @@ int main(int argc, char** argv) {
             ? static_cast<double>(stats.rx_bytes) / rx.count : 0.0;
 
         spdlog::info("--- {} ---", sessions[i].symbol);
-        double avg_frames = rx.count > 0
-            ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
-        spdlog::info("  Messages: {} | Per record: {:.0f} bytes, {:.1f} frames",
-                     msg_counts[i], avg_bpb, avg_frames);
+        spdlog::info("  Messages: {} | {} bytes, {} frames, {} records, {} TCP pkts, {} bursts",
+                     msg_counts[i], stats.rx_bytes, stats.rx_packets, rx.count,
+                     stats.tcp_rx_packets, stats.tcp_rx_bursts);
         if (rx.count > 0) {
             spdlog::info("  RX: p50={} p99={} p99.9={} max={} ns",
                          rx.p50_ns, rx.p99_ns, rx.p999_ns, rx.max_ns);
