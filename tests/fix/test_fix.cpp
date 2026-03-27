@@ -119,6 +119,39 @@ TEST(FixParser, parse_valid_new_order_single) {
     EXPECT_EQ(msg.total_len(), raw.size());
 }
 
+TEST(FixParser, begin_string_accessor_returns_version) {
+    std::string body = "35=0\x01" "49=S\x01" "56=T\x01" "34=1\x01";
+    {
+        auto raw = make_fix_msg("FIX.4.4", body);
+        auto result = parse(raw.data(), raw.size());
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result->begin_string(), "FIX.4.4");
+    }
+    {
+        auto raw = make_fix_msg("FIX.4.2", body);
+        auto result = parse(raw.data(), raw.size());
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result->begin_string(), "FIX.4.2");
+    }
+    {
+        auto raw = make_fix_msg("FIXT.1.1", body);
+        auto result = parse(raw.data(), raw.size());
+        ASSERT_TRUE(result.has_value());
+        EXPECT_EQ(result->begin_string(), "FIXT.1.1");
+    }
+}
+
+TEST(FixParser, begin_string_in_dump_and_json) {
+    std::string body = "35=0\x01" "49=S\x01" "56=T\x01" "34=1\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value());
+
+    EXPECT_NE(result->dump().find("FIX.4.4"), std::string::npos);
+    EXPECT_NE(result->to_json().find("FIX.4.4"), std::string::npos);
+    EXPECT_NE(result->to_json().find("\"begin_string\":"), std::string::npos);
+}
+
 TEST(FixParser, parse_empty_returns_incomplete) {
     auto result = parse(nullptr, 0);
     ASSERT_FALSE(result.has_value());

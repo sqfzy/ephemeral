@@ -103,6 +103,21 @@ struct FixSessionConfig {
 
     /// Callback when session state changes (optional, called from any thread).
     std::function<void(SessionState old_state, SessionState new_state)> on_state_change{};
+
+    /// Validate configuration, returning an error description or empty string on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (sender_comp_id.empty())
+            return "sender_comp_id must not be empty";
+        if (target_comp_id.empty())
+            return "target_comp_id must not be empty";
+        if (heartbeat_interval_sec <= 0)
+            return "heartbeat_interval_sec must be positive";
+        if (begin_string.empty())
+            return "begin_string must not be empty";
+        if (heartbeat_timeout_factor <= 1.0)
+            return "heartbeat_timeout_factor must be > 1.0";
+        return {};
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -272,6 +272,10 @@ public:
     /// Total consumed bytes of the raw FIX message (including CheckSum SOH).
     [[nodiscard]] size_t total_len() const noexcept { return total_len_; }
 
+    /// BeginString value (tag 8), e.g. "FIX.4.4". Points into the original buffer.
+    /// Useful for multi-version FIX handlers that need to dispatch by protocol version.
+    [[nodiscard]] std::string_view begin_string() const noexcept { return begin_string_; }
+
     /// Look up the first field with the given tag.
     [[nodiscard]] std::optional<std::string_view> get(uint32_t t) const noexcept {
         for (size_t i = 0; i < count_; ++i) {
@@ -549,8 +553,10 @@ public:
         s.reserve(80 + count_ * 48);
         std::format_to(std::back_inserter(s),
             "FIX MessageView ({} fields, {} bytes):\n"
+            "  BeginString: {}\n"
             "  MsgType: {} ({})",
             count_, total_len_,
+            begin_string_,
             mt.value_or("?"),
             mt ? tag::msg_type_name(*mt) : "unknown");
         for (size_t i = 0; i < count_; ++i) {
@@ -571,8 +577,10 @@ public:
         std::string s;
         s.reserve(80 + count_ * 64);
         std::format_to(std::back_inserter(s),
-            "{{\"msg_type\":\"{}\",\"msg_type_name\":\"{}\","
+            "{{\"begin_string\":\"{}\","
+            "\"msg_type\":\"{}\",\"msg_type_name\":\"{}\","
             "\"field_count\":{},\"total_len\":{},\"fields\":[",
+            begin_string_,
             mt.value_or("?"),
             mt ? tag::msg_type_name(*mt) : "unknown",
             count_, total_len_);
@@ -595,6 +603,7 @@ public:
     Field  fields_[kMaxFields]{};
     size_t count_     = 0;
     size_t total_len_ = 0;
+    std::string_view begin_string_{};
 
     /// Append a field. Returns false if capacity exceeded.
     bool push(uint32_t t, std::string_view v) noexcept {
@@ -804,6 +813,7 @@ parse(const uint8_t* data, size_t len) noexcept {
     // Now parse body fields into BasicMessageView
     BasicMessageView<MaxFields> view;
     view.total_len_ = total_needed;
+    view.begin_string_ = begin_string;
 
     const char* bp = body_start;
     const char* body_end = body_start + body_length;

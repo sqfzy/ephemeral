@@ -437,3 +437,52 @@ TEST(FixSession, poss_dup_flag_does_not_advance_expected_seq) {
     // expected_inbound_seq should NOT have changed
     EXPECT_EQ(session.expected_inbound_seq(), 2u);
 }
+
+// ---------------------------------------------------------------------------
+// FixSessionConfig::validate()
+// ---------------------------------------------------------------------------
+
+TEST(FixSession, ConfigValidateAcceptsValidConfig) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET"};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(FixSession, ConfigValidateRejectsEmptySender) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "",
+        .target_comp_id = "TARGET"};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("sender"), std::string_view::npos);
+}
+
+TEST(FixSession, ConfigValidateRejectsEmptyTarget) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = ""};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("target"), std::string_view::npos);
+}
+
+TEST(FixSession, ConfigValidateRejectsZeroHeartbeat) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_interval_sec = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("heartbeat"), std::string_view::npos);
+}
+
+TEST(FixSession, ConfigValidateRejectsBadTimeoutFactor) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor = 1.0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("timeout_factor"), std::string_view::npos);
+}
