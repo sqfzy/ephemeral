@@ -171,8 +171,12 @@ int main(int argc, char** argv) {
 
     spdlog::info("=== Market Data Pipeline Benchmark (DPDK) ===");
     spdlog::info("Duration: {:.1f}s | Messages: {}", elapsed_ms / 1000.0, msgs);
-    spdlog::info("Avg bytes/burst: {:.0f} ({} bytes, {} bursts)",
-                 avg_bytes_per_burst, stats.rx_bytes, rx.count);
+    double avg_frames = rx.count > 0
+        ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
+    spdlog::info("RX totals: {} bytes, {} WS frames, {} TLS records",
+                 stats.rx_bytes, stats.rx_packets, rx.count);
+    spdlog::info("Per TLS record: {:.0f} bytes, {:.1f} WS frames",
+                 avg_bytes_per_burst, avg_frames);
     spdlog::info("Transport stats:\n{}", stats.dump());
     spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
     if (rx.count > 0) {
