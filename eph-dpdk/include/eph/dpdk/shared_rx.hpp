@@ -1,0 +1,189 @@
+#pragma once
+
+/// @file shared_rx.hpp
+/// Shared RX dispatcher for multi-session DPDK connections.
+///
+/// When multiple TcpSessions share a single NIC (ENA doesn't support
+/// flow director), one thread must poll rte_eth_rx_burst and dispatch
+/// packets to the correct session by 4-tuple match.
+///
+/// Usage:
+///   auto dispatcher = SharedRxDispatcher::create(port_id, 0, mempool, 3);
+///   dispatcher->register_session(tcp1);
+///   dispatcher->register_session(tcp2);
+///   dispatcher->register_session(tcp3);
+///   dispatcher->start(cpu_id);  // spawns dispatch thread
+///   // ... all sessions now receive packets via their shared_rx_ring
+///   dispatcher->stop();
+
+#include <atomic>
+#include <cstdint>
+#include <expected>
+#include <format>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <spdlog/spdlog.h>
+
+#include <rte_ethdev.h>
+#include <rte_mbuf.h>
+#include <rte_ring.h>
+
+#include "eph/dpdk/net_header.hpp"
+#include "eph/dpdk/tcp.hpp"
+#include "eph/utils/cpu.hpp"
+
+namespace eph::dpdk {
+
+/// Dispatches packets from a single NIC RX queue to multiple TcpSessions.
+/// Each registered session gets a per-session rte_ring. The dispatcher
+/// thread polls rte_eth_rx_burst, parses the 4-tuple, and enqueues each
+/// packet into the matching session's ring. Unmatched packets are freed.
+class SharedRxDispatcher {
+public:
+    struct SessionEntry {
+        TcpSession<>* session = nullptr;
+        net::ConnectionTuple tuple{};
+        rte_ring* ring = nullptr;
+    };
+
+    /// Create a dispatcher for the given port/queue.
+    /// @param max_sessions  Maximum number of sessions to support
+    static std::expected<std::unique_ptr<SharedRxDispatcher>, std::string>
+    create(uint16_t port_id, uint16_t rx_queue_id, size_t max_sessions = 16) {
+        auto d = std::make_unique<SharedRxDispatcher>();
+        d->port_id_ = port_id;
+        d->rx_queue_id_ = rx_queue_id;
+        d->entries_.reserve(max_sessions);
+        return d;
+    }
+
+    /// Register a TcpSession for packet dispatch.
+    /// Creates a per-session rte_ring and sets the session's shared_rx_source.
+    /// Must be called BEFORE start().
+    std::expected<void, std::string>
+    register_session(TcpSession<>& session) {
+        auto name = std::format("shrx_{}_{}",
+            port_id_, entries_.size());
+
+        // Per-session ring: SPSC (single producer = dispatcher, single consumer = session's RX thread)
+        auto* ring = rte_ring_create(
+            name.c_str(), 256,  // 256 slots, power of 2
+            SOCKET_ID_ANY, RING_F_SP_ENQ | RING_F_SC_DEQ);
+        if (!ring) {
+            return std::unexpected(
+                std::format("Failed to create rte_ring '{}': {}",
+                    name, rte_strerror(rte_errno)));
+        }
+
+        session.set_shared_rx_source(ring);
+
+        entries_.push_back({
+            .session = &session,
+            .tuple   = session.connection_tuple(),
+            .ring    = ring,
+        });
+
+        SPDLOG_INFO("SharedRxDispatcher: registered session {} "
+                    "({}:{} → {}:{}, ring={})",
+                    entries_.size() - 1,
+                    net::format_ipv4(entries_.back().tuple.src_ip).data(),
+                    entries_.back().tuple.src_port,
+                    net::format_ipv4(entries_.back().tuple.dst_ip).data(),
+                    entries_.back().tuple.dst_port,
+                    name);
+
+        return {};
+    }
+
+    /// Start the dispatcher thread.
+    void start(int cpu_id = -1) {
+        running_.store(true, std::memory_order_release);
+        thread_ = std::thread([this, cpu_id] {
+            if (cpu_id >= 0) {
+                (void)eph::utils::set_thread_affinity(cpu_id, "shared_rx");
+            }
+            dispatch_loop();
+        });
+    }
+
+    /// Stop the dispatcher thread.
+    void stop() {
+        running_.store(false, std::memory_order_release);
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    ~SharedRxDispatcher() {
+        stop();
+        for (auto& e : entries_) {
+            if (e.ring) {
+                // Drain and free remaining mbufs
+                rte_mbuf* pkts[32];
+                while (rte_ring_dequeue_burst(e.ring,
+                    reinterpret_cast<void**>(pkts), 32, nullptr) > 0) {
+                    for (auto& p : pkts) {
+                        if (p) rte_pktmbuf_free(p);
+                    }
+                }
+                rte_ring_free(e.ring);
+            }
+        }
+    }
+
+    SharedRxDispatcher() = default;
+    SharedRxDispatcher(const SharedRxDispatcher&) = delete;
+    SharedRxDispatcher& operator=(const SharedRxDispatcher&) = delete;
+
+private:
+    void dispatch_loop() {
+        rte_mbuf* pkts[32];
+
+        while (running_.load(std::memory_order_acquire)) {
+            uint16_t nb_rx = rte_eth_rx_burst(
+                port_id_, rx_queue_id_, pkts, 32);
+            if (nb_rx == 0) continue;
+
+            // Capture TSC once per burst — all sessions in this burst
+            // share the same arrival timestamp (same rx_burst call).
+            uint64_t burst_tsc = eph::utils::TSC::now();
+
+            for (uint16_t i = 0; i < nb_rx; ++i) {
+                auto parsed = net::parse_packet(pkts[i]);
+                if (!parsed.tcp) {
+                    rte_pktmbuf_free(pkts[i]);
+                    continue;
+                }
+
+                // Find matching session by 4-tuple
+                bool dispatched = false;
+                for (auto& e : entries_) {
+                    if (parsed.matches(e.tuple)) {
+                        // Enqueue to session's ring (drop if full)
+                        if (rte_ring_enqueue(e.ring,
+                                static_cast<void*>(pkts[i])) != 0) {
+                            rte_pktmbuf_free(pkts[i]);
+                        }
+                        dispatched = true;
+                        break;
+                    }
+                }
+
+                if (!dispatched) {
+                    rte_pktmbuf_free(pkts[i]);
+                }
+            }
+        }
+    }
+
+    uint16_t port_id_ = 0;
+    uint16_t rx_queue_id_ = 0;
+    std::vector<SessionEntry> entries_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+};
+
+} // namespace eph::dpdk

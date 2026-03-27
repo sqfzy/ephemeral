@@ -29,6 +29,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
+#include <rte_ring.h>
 
 #include "eph/dpdk/net_header.hpp"
 #include "eph/net/tcp_concept.hpp"
@@ -585,6 +586,11 @@ public:
     /// This is the TcpTransport concept-compatible interface that encapsulates
     /// rte_eth_rx_burst + process_rx into a single call.
     ///
+    /// When shared_rx_source is set (via set_shared_rx_source), packets are
+    /// read from the shared ring instead of rte_eth_rx_burst. This enables
+    /// multiple TcpSessions to share a single NIC RX queue via an external
+    /// dispatcher thread.
+    ///
     /// @return On success: count of data packets processed (may be 0 if no
     ///         data packets in this burst, e.g. pure ACKs). On error: returns
     ///         unexpected with error message; all received packets are freed.
@@ -592,13 +598,36 @@ public:
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
         rte_mbuf* pkts[32];
-        uint16_t nb_rx = rte_eth_rx_burst(
-            config_.port_id, config_.rx_queue_id, pkts, 32);
+        uint16_t nb_rx = 0;
+
+        if (shared_rx_ring_) {
+            // Shared RX mode: dequeue from ring fed by external dispatcher
+            nb_rx = static_cast<uint16_t>(
+                rte_ring_dequeue_burst(shared_rx_ring_,
+                    reinterpret_cast<void**>(pkts), 32, nullptr));
+        } else {
+            // Direct mode: poll NIC queue directly
+            nb_rx = rte_eth_rx_burst(
+                config_.port_id, config_.rx_queue_id, pkts, 32);
+        }
+
         if (nb_rx == 0) return uint16_t{0};
         // Capture TSC immediately after rx_burst — the closest
         // userspace proxy for "packet arrived at NIC ring".
         last_rx_burst_tsc_ = eph::utils::TSC::now();
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
+    }
+
+    /// Set a shared RX ring for multi-session mode. When set, poll_rx()
+    /// reads from this ring instead of rte_eth_rx_burst. The ring is fed
+    /// by an external SharedRxDispatcher thread.
+    void set_shared_rx_source(rte_ring* ring) noexcept {
+        shared_rx_ring_ = ring;
+    }
+
+    /// Get the connection 4-tuple (src/dst IP + port).
+    [[nodiscard]] const net::ConnectionTuple& connection_tuple() const noexcept {
+        return config_.tuple;
     }
 
     /// TSC captured right after rte_eth_rx_burst returned data.
@@ -751,6 +780,10 @@ private:
     // TSC captured right after rte_eth_rx_burst returns data.
     // Used by Transport as the true RX arrival baseline.
     uint64_t last_rx_burst_tsc_ = 0;
+
+    // Shared RX ring for multi-session dispatcher mode.
+    // When non-null, poll_rx reads from this ring instead of rte_eth_rx_burst.
+    rte_ring* shared_rx_ring_ = nullptr;
 
     /// Generate initial sequence number using CSPRNG.
     /// Returns 0 on CSPRNG failure — caller must treat ISN=0 as connection error.

@@ -1,16 +1,21 @@
 /// @file bench_market_persymbol_dpdk.cpp
 /// Per-symbol independent connection benchmark — DPDK (kernel-bypass).
 ///
-/// Each symbol gets its own Transport + TcpSession + TLS session + WS connection,
-/// using a separate RX/TX queue pair on the same NIC. This eliminates the
-/// combined stream's batch processing bottleneck: each TLS record contains
-/// exactly 1 WS frame, so p99 approaches single-frame decrypt+decode time.
+/// Each symbol gets its own Transport + TcpSession + TLS + WS connection,
+/// all sharing a single NIC RX queue via SharedRxDispatcher. This eliminates
+/// the combined stream's batch processing bottleneck: each TLS record
+/// contains exactly 1 WS frame.
 ///
-/// Usage (3 symbols = 3 queue pairs = 6 dedicated cores):
+/// Architecture:
+///   [NIC queue 0] → [SharedRxDispatcher] → ring₁ → TcpSession₁ → Transport₁
+///                                        → ring₂ → TcpSession₂ → Transport₂
+///                                        → ring₃ → TcpSession₃ → Transport₃
+///
+/// Usage:
 ///   sudo ./bench_market_persymbol_dpdk -a 0000:28:00.0 -l 4-7
 ///       -- --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///       --symbols btcusdt,ethusdt,solusdt --duration 30
-///       --rx-cpus 8,9,10 --tx-cpus 11,12,13 --main-cpu 14
+///       --dispatch-cpu 8 --main-cpu 14
 
 #include <atomic>
 #include <chrono>
@@ -29,6 +34,7 @@
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/shared_rx.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
@@ -67,8 +73,7 @@ struct Config {
     bool use_tls           = true;
     bool verify            = false;
     int  main_cpu          = -1;
-    std::vector<int> rx_cpus;   // one per symbol
-    std::vector<int> tx_cpus;   // one per symbol
+    int  dispatch_cpu      = -1;  // CPU for SharedRxDispatcher
 };
 
 static std::atomic<bool> g_running{true};
@@ -83,13 +88,6 @@ static std::vector<std::string> split(const std::string& s, char delim) {
     return tokens;
 }
 
-static std::vector<int> parse_ints(const std::string& s) {
-    std::vector<int> result;
-    for (auto& tok : split(s, ','))
-        result.push_back(std::atoi(tok.c_str()));
-    return result;
-}
-
 static Config parse_args(int argc, char** argv) {
     Config c;
     for (int i = 0; i < argc; ++i) {
@@ -98,25 +96,16 @@ static Config parse_args(int argc, char** argv) {
             if (i + 1 >= argc) { std::cerr << std::format("{} requires a value\n", n); std::exit(1); }
             return argv[++i];
         };
-        if      (a == "--host")       c.host       = next(a);
-        else if (a == "--port")       c.port       = static_cast<uint16_t>(std::atoi(next(a)));
-        else if (a == "--symbols")    c.symbols    = split(next(a), ',');
-        else if (a == "--local-ip")   c.local_ip   = next(a);
-        else if (a == "--gateway-ip") c.gateway_ip = next(a);
-        else if (a == "--dpdk-port")  c.dpdk_port  = static_cast<uint16_t>(std::atoi(next(a)));
-        else if (a == "--duration")   c.duration   = std::atoi(next(a));
-        else if (a == "--main-cpu")   c.main_cpu   = std::atoi(next(a));
-        else if (a == "--rx-cpus")    c.rx_cpus    = parse_ints(next(a));
-        else if (a == "--tx-cpus")    c.tx_cpus    = parse_ints(next(a));
-        else if (a == "--no-tls")     c.use_tls    = false;
-        else if (a == "--help") {
-            std::cerr << std::format(
-                "Usage: {} [EAL args] -- [--host H] [--port P] [--symbols S1,S2,S3]\n"
-                "       [--local-ip IP] [--gateway-ip IP] [--dpdk-port N]\n"
-                "       [--duration SEC] [--main-cpu N] [--rx-cpus N,N,N] [--tx-cpus N,N,N]\n",
-                "bench_market_persymbol_dpdk");
-            std::exit(0);
-        }
+        if      (a == "--host")         c.host         = next(a);
+        else if (a == "--port")         c.port         = static_cast<uint16_t>(std::atoi(next(a)));
+        else if (a == "--symbols")      c.symbols      = split(next(a), ',');
+        else if (a == "--local-ip")     c.local_ip     = next(a);
+        else if (a == "--gateway-ip")   c.gateway_ip   = next(a);
+        else if (a == "--dpdk-port")    c.dpdk_port    = static_cast<uint16_t>(std::atoi(next(a)));
+        else if (a == "--duration")     c.duration     = std::atoi(next(a));
+        else if (a == "--main-cpu")     c.main_cpu     = std::atoi(next(a));
+        else if (a == "--dispatch-cpu") c.dispatch_cpu = std::atoi(next(a));
+        else if (a == "--no-tls")       c.use_tls      = false;
     }
     return c;
 }
@@ -140,105 +129,151 @@ int main(int argc, char** argv) {
     }
 
     size_t N = cfg.symbols.size();
-    spdlog::info("Per-symbol benchmark: {} symbols, {} connections", N, N);
+    spdlog::info("Per-symbol benchmark: {} symbols via SharedRxDispatcher", N);
 
     spdlog::info("Calibrating TSC...");
     if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {
         spdlog::error("TSC calibration failed"); return 1;
     }
-    spdlog::info("TSC: {:.4f} ns/cycle", eph::utils::TSC::get_ns_per_cycle().value());
 
     spdlog::info("Initializing DPDK EAL...");
     auto eal = eph::dpdk::EalGuard::init(eal_argc, eal_argv);
     if (!eal) { spdlog::error("EAL init failed: {}", eal.error()); return 1; }
 
-    // Connect each symbol on its own queue pair.
-    // First connection creates Platform + resolves ARP; subsequent connections
-    // reuse the shared Platform and pre-resolved gateway MAC.
-    struct SymbolConnection {
-        std::string symbol;
-        std::unique_ptr<BenchTransport> transport;
+    // ── Step 1: Create Platform (single queue pair) ─────────────────────────
+    eph::dpdk::PlatformConfig pcfg{
+        .port_id      = cfg.dpdk_port,
+        .nb_rx_queues = 1,
+        .nb_tx_queues = 1,
+        .mbuf_pool_size = 8191,
     };
-    std::vector<SymbolConnection> connections;
+    auto platform = eph::dpdk::Platform::create(pcfg);
+    if (!platform) { spdlog::error("Platform: {}", platform.error()); return 1; }
 
+    // ── Step 2: Connect all symbols sequentially (no RX threads yet) ────────
+    // First connection resolves ARP; subsequent reuse gateway MAC.
     eph::dpdk::DpdkEndpoint ep{
         .local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip};
 
-    // First symbol: create Platform (N queues) + ARP
-    {
-        auto& sym = cfg.symbols[0];
+    struct SessionInfo {
+        std::string symbol;
+        std::unique_ptr<BenchTransport> transport;
+    };
+    std::vector<SessionInfo> sessions;
+
+    // We need to access the raw TcpSession to register with the dispatcher.
+    // Strategy: connect via the standard connector (which handles ARP, TCP,
+    // TLS, WS upgrade), then the Transport's internal TcpSession is already
+    // connected. We set the shared_rx_source on it before Transport starts
+    // its RX thread.
+    //
+    // But Transport::create() immediately starts threads. So we need a
+    // different approach: use the first connection to get the gateway MAC,
+    // then create all sessions via connector(platform&) which returns
+    // unique_ptr<Transport>. The Transport starts RX immediately, but if
+    // we've already set shared_rx_ring on the TcpSession, poll_rx will
+    // use the ring.
+    //
+    // Problem: we can't access Transport's internal TcpSession easily.
+    //
+    // Simplest approach: Connect the first symbol with the full connector
+    // (creates its own Platform), get the gateway MAC. Then for ALL symbols
+    // (including the first), create fresh connections using the shared
+    // Platform. This wastes the first connection but avoids complexity.
+
+    // Resolve gateway MAC via a temporary connection on the shared platform
+    spdlog::info("Resolving gateway MAC...");
+    eph::dpdk::ConnectorOptions resolve_opts{};
+    auto server_ip = eph::dpdk::resolve_hostname(cfg.host);
+    if (!server_ip) { spdlog::error("DNS: {}", server_ip.error()); return 1; }
+
+    rte_ether_addr src_mac{};
+    rte_eth_macaddr_get(cfg.dpdk_port, &src_mac);
+    auto gw_mac = eph::dpdk::arp::resolve(
+        cfg.dpdk_port, 0, platform->mempool(),
+        src_mac, eph::dpdk::net::parse_ipv4(cfg.local_ip.c_str()),
+        eph::dpdk::net::parse_ipv4(cfg.gateway_ip.c_str()),
+        std::chrono::milliseconds{3000});
+    if (!gw_mac) { spdlog::error("ARP: {}", gw_mac.error()); return 1; }
+    spdlog::info("Gateway MAC resolved");
+
+    // Create dispatcher
+    auto dispatcher = eph::dpdk::SharedRxDispatcher::create(cfg.dpdk_port, 0, N);
+    if (!dispatcher) { spdlog::error("Dispatcher: {}", dispatcher.error()); return 1; }
+
+    // Connect each symbol sequentially. TCP+TLS+WS handshake uses direct
+    // rte_eth_rx_burst (no concurrent RX threads). After handshake, the
+    // on_connected_before_threads hook registers with the dispatcher,
+    // setting shared_rx_ring BEFORE the RX thread starts.
+    //
+    // We store a raw pointer to TcpSession during factory construction so
+    // the hook can register it with the dispatcher.
+    for (size_t i = 0; i < N; ++i) {
+        auto& sym = cfg.symbols[i];
         auto ws_path = "/ws/" + sym + "@bookTicker";
-        int rx_cpu = (!cfg.rx_cpus.empty()) ? cfg.rx_cpus[0] : -1;
-        int tx_cpu = (!cfg.tx_cpus.empty()) ? cfg.tx_cpus[0] : -1;
+
+        // Raw pointer set by factory, used by hook
+        eph::dpdk::TcpSession<>* session_ptr = nullptr;
+
+        eph::dpdk::ConnectorOptions opts{};
+        opts.gateway_mac = *gw_mac;
 
         eph::net::TransportConfig tc{
             .remote_host = cfg.host, .remote_port = cfg.port,
             .ws_path = ws_path, .use_tls = cfg.use_tls, .verify_peer = cfg.verify,
-            .max_reconnect_attempts = 3,
+            .max_reconnect_attempts = 0,
             .ping_interval = std::chrono::seconds{0},
             .skip_utf8_validation = true,
-            .tx_cpu = tx_cpu, .rx_cpu = rx_cpu,
             .on_state_change = [sym](eph::net::TransportEvent e, std::string_view d) {
                 spdlog::info("[{}] {} — {}", sym, eph::net::transport_event_name(e), d);
             },
+            // Hook: register with dispatcher after handshake, before RX thread
+            .on_connected_before_threads = [&, i]() {
+                if (session_ptr) {
+                    auto reg = (*dispatcher)->register_session(*session_ptr);
+                    if (!reg) {
+                        spdlog::error("Failed to register {} with dispatcher: {}",
+                                     cfg.symbols[i], reg.error());
+                    } else {
+                        spdlog::info("  {} registered with dispatcher", cfg.symbols[i]);
+                    }
+                }
+            },
         };
 
-        eph::dpdk::ConnectorOptions opts{};
-        opts.platform.port_id      = cfg.dpdk_port;
-        opts.platform.nb_rx_queues = static_cast<uint16_t>(N);
-        opts.platform.nb_tx_queues = static_cast<uint16_t>(N);
-        opts.platform.mbuf_pool_size = 8191;
-
-        spdlog::info("Connecting {} (queue pair 0, creates Platform with {} queues)...",
-                     sym, N);
-        auto result = eph::dpdk::connect<BenchTransport>(ep, tc, opts);
-        if (!result) {
-            spdlog::error("Failed to connect {}: {}", sym, result.error());
+        // Build tcp_factory that captures session_ptr
+        auto setup = eph::dpdk::detail::prepare_connection(
+            ep, opts, tc, *server_ip, platform->mempool());
+        if (!setup) {
+            spdlog::error("Failed to prepare {}: {}", sym, setup.error());
             return 1;
         }
-        spdlog::info("Connected: {} (gateway MAC resolved)", sym);
-        connections.push_back({sym, std::move(result->transport)});
 
-        // Subsequent symbols: reuse Platform + gateway MAC
-        for (size_t i = 1; i < N; ++i) {
-            auto& sym2 = cfg.symbols[i];
-            auto ws_path2 = "/ws/" + sym2 + "@bookTicker";
-            int rx2 = (i < cfg.rx_cpus.size()) ? cfg.rx_cpus[i] : -1;
-            int tx2 = (i < cfg.tx_cpus.size()) ? cfg.tx_cpus[i] : -1;
+        // Wrap the factory to capture the session pointer
+        auto inner_factory = std::move(setup->tcp_factory);
+        auto tcp_factory = [&session_ptr, inner = std::move(inner_factory)]() mutable
+            -> std::expected<std::unique_ptr<eph::dpdk::TcpSession<>>, std::string> {
+            auto result = inner();
+            if (result) session_ptr = result->get();
+            return result;
+        };
 
-            eph::net::TransportConfig tc2{
-                .remote_host = cfg.host, .remote_port = cfg.port,
-                .ws_path = ws_path2, .use_tls = cfg.use_tls, .verify_peer = cfg.verify,
-                .max_reconnect_attempts = 3,
-                .ping_interval = std::chrono::seconds{0},
-                .skip_utf8_validation = true,
-                .tx_cpu = tx2, .rx_cpu = rx2,
-                .on_state_change = [sym2](eph::net::TransportEvent e, std::string_view d) {
-                    spdlog::info("[{}] {} — {}", sym2, eph::net::transport_event_name(e), d);
-                },
-            };
-
-            eph::dpdk::ConnectorOptions opts2{};
-            opts2.rx_queue_id = static_cast<uint16_t>(i);
-            opts2.tx_queue_id = static_cast<uint16_t>(i);
-            opts2.gateway_mac = result->gateway_mac;  // skip ARP
-
-            spdlog::info("Connecting {} (queue pair {}, rx_cpu={}, tx_cpu={})...",
-                         sym2, i, rx2, tx2);
-            auto conn = eph::dpdk::connect<BenchTransport>(
-                result->platform, ep, tc2, opts2);
-            if (!conn) {
-                spdlog::error("Failed to connect {}: {}", sym2, conn.error());
-                return 1;
-            }
-            connections.push_back({sym2, std::move(*conn)});
-            spdlog::info("Connected: {}", sym2);
+        spdlog::info("Connecting {}...", sym);
+        auto transport = BenchTransport::create(std::move(tcp_factory), tc);
+        if (!transport) {
+            spdlog::error("Failed to connect {}: {}", sym, transport.error().message());
+            return 1;
         }
+        sessions.push_back({sym, std::move(*transport)});
+        spdlog::info("Connected: {}", sym);
     }
 
-    spdlog::info("All {} symbols connected!", N);
+    // ── Step 3: Start dispatcher ────────────────────────────────────────────
+    spdlog::info("Starting SharedRxDispatcher (cpu={})...", cfg.dispatch_cpu);
+    (*dispatcher)->start(cfg.dispatch_cpu);
+    spdlog::info("All {} symbols connected, dispatcher running!", N);
 
-    // ── Main loop: drain all connections ────────────────────────────────────
+    // ── Main loop ───────────────────────────────────────────────────────────
     auto start = std::chrono::steady_clock::now();
     auto deadline = cfg.duration > 0
         ? start + std::chrono::seconds(cfg.duration)
@@ -250,34 +285,31 @@ int main(int argc, char** argv) {
         if (std::chrono::steady_clock::now() >= deadline) break;
 
         for (size_t i = 0; i < N; ++i) {
-            auto& tp = *connections[i].transport;
+            auto& tp = *sessions[i].transport;
             if (!tp.is_running()) continue;
-            tp.recv([&](const uint8_t*, size_t) {
-                ++msg_counts[i];
-            });
+            tp.recv([&](const uint8_t*, size_t) { ++msg_counts[i]; });
         }
         eph::utils::cpu_relax();
     }
 
     // ── Report ──────────────────────────────────────────────────────────────
-    for (size_t i = 0; i < N; ++i) {
-        connections[i].transport->stop();
-    }
+    (*dispatcher)->stop();
+    for (auto& s : sessions) s.transport->stop();
+
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    spdlog::info("=== Per-Symbol Market Data Benchmark (DPDK) ===");
+    spdlog::info("=== Per-Symbol Market Data Benchmark (DPDK + SharedRxDispatcher) ===");
     spdlog::info("Symbols: {} | Duration: {:.1f}s", N, elapsed_ms / 1000.0);
 
     for (size_t i = 0; i < N; ++i) {
-        auto stats = connections[i].transport->stats();
+        auto stats = sessions[i].transport->stats();
         auto& rx = stats.rx_latency;
         double avg_fpr = rx.count > 0
             ? static_cast<double>(stats.rx_packets) / rx.count : 0.0;
 
-        spdlog::info("--- {} ---", connections[i].symbol);
-        spdlog::info("  Messages: {} | Avg frames/record: {:.1f}",
-                     msg_counts[i], avg_fpr);
+        spdlog::info("--- {} ---", sessions[i].symbol);
+        spdlog::info("  Messages: {} | Avg frames/record: {:.1f}", msg_counts[i], avg_fpr);
         if (rx.count > 0) {
             spdlog::info("  RX: p50={} p99={} p99.9={} max={} ns",
                          rx.p50_ns, rx.p99_ns, rx.p999_ns, rx.max_ns);

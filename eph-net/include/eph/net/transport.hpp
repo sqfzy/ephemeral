@@ -234,6 +234,12 @@ public:
         t->running_.store(true, std::memory_order_release);
         t->notify_state(TransportEvent::kConnected, config.remote_host);
 
+        // Hook: allow caller to configure session (e.g., shared RX ring)
+        // after handshake but before threads start polling.
+        if (config.on_connected_before_threads) {
+            config.on_connected_before_threads();
+        }
+
         // Start worker threads (capture raw pointer -- Transport outlives threads)
         auto* tp = t.get();
         t->tx_thread_ = std::thread([tp] { tp->tx_loop(); });
