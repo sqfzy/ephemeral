@@ -15,6 +15,7 @@
 ///   - [126, 65535]:  2 + 2 bytes + 4 bytes mask = 8 bytes
 ///   - [65536+]:      2 + 8 bytes + 4 bytes mask = 14 bytes
 
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -58,7 +59,9 @@ inline constexpr uint16_t kInternalError    = 1011;
 
 /// Human-readable name for a WebSocket opcode value.
 /// Returns "UNKNOWN(0xNN)" for unrecognized opcodes.
-inline std::string opcode_name(uint8_t op) noexcept {
+/// Known opcodes return a constexpr string_view (zero allocation).
+/// Unknown opcodes fall back to a thread-local formatted string.
+inline std::string_view opcode_name(uint8_t op) noexcept {
     switch (op) {
     case opcode::kContinuation: return "CONTINUATION";
     case opcode::kText:         return "TEXT";
@@ -66,13 +69,32 @@ inline std::string opcode_name(uint8_t op) noexcept {
     case opcode::kClose:        return "CLOSE";
     case opcode::kPing:         return "PING";
     case opcode::kPong:         return "PONG";
-    default:                    return std::format("UNKNOWN(0x{:02X})", op);
+    default: [[unlikely]] {
+        // Thread-local buffer avoids heap allocation on every call.
+        // 16 bytes is enough for "UNKNOWN(0xNN)\0".
+        thread_local char buf[16];
+        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf) - 1, op, 16);
+        // Format as "UNKNOWN(0xNN)" manually to avoid std::format overhead
+        constexpr std::string_view prefix = "UNKNOWN(0x";
+        thread_local char out[24];
+        std::memcpy(out, prefix.data(), prefix.size());
+        size_t digits = static_cast<size_t>(ptr - buf);
+        // Pad to 2 hex digits
+        size_t pos = prefix.size();
+        if (digits < 2) out[pos++] = '0';
+        std::memcpy(out + pos, buf, digits);
+        pos += digits;
+        out[pos++] = ')';
+        return {out, pos};
+    }
     }
 }
 
 /// Human-readable name for a WebSocket close status code (RFC 6455 §7.4).
 /// Returns "UNKNOWN(NNNN)" for unrecognized codes.
-inline std::string close_code_name(uint16_t code) noexcept {
+/// Known codes return a constexpr string_view (zero allocation).
+/// Unknown/registered/private codes use a thread-local formatted buffer.
+inline std::string_view close_code_name(uint16_t code) noexcept {
     switch (code) {
     case close_code::kNormal:             return "NORMAL_CLOSURE";
     case close_code::kGoingAway:          return "GOING_AWAY";
@@ -84,12 +106,23 @@ inline std::string close_code_name(uint16_t code) noexcept {
     case close_code::kMessageTooBig:      return "MESSAGE_TOO_BIG";
     case close_code::kMandatoryExtension: return "MANDATORY_EXTENSION";
     case close_code::kInternalError:      return "INTERNAL_ERROR";
-    default:
-        if (code >= 3000 && code <= 3999)
-            return std::format("REGISTERED({})", code);
-        if (code >= 4000 && code <= 4999)
-            return std::format("PRIVATE({})", code);
-        return std::format("UNKNOWN({})", code);
+    default: [[unlikely]] {
+        // Thread-local buffer avoids heap allocation. Max: "REGISTERED(NNNNN)\0" = 18 chars.
+        thread_local char buf[24];
+        const char* prefix;
+        size_t prefix_len;
+        if (code >= 3000 && code <= 3999) {
+            prefix = "REGISTERED("; prefix_len = 11;
+        } else if (code >= 4000 && code <= 4999) {
+            prefix = "PRIVATE("; prefix_len = 8;
+        } else {
+            prefix = "UNKNOWN("; prefix_len = 8;
+        }
+        std::memcpy(buf, prefix, prefix_len);
+        auto [ptr, ec] = std::to_chars(buf + prefix_len, buf + sizeof(buf) - 1, code);
+        *ptr++ = ')';
+        return {buf, static_cast<size_t>(ptr - buf)};
+    }
     }
 }
 
@@ -704,17 +737,17 @@ struct CloseCode {
 } // namespace eph::net::ws
 
 template <>
-struct std::formatter<eph::net::ws::Opcode> : std::formatter<std::string> {
+struct std::formatter<eph::net::ws::Opcode> : std::formatter<std::string_view> {
     auto format(eph::net::ws::Opcode op, auto& ctx) const {
-        return std::formatter<std::string>::format(
+        return std::formatter<std::string_view>::format(
             eph::net::ws::opcode_name(op.value), ctx);
     }
 };
 
 template <>
-struct std::formatter<eph::net::ws::CloseCode> : std::formatter<std::string> {
+struct std::formatter<eph::net::ws::CloseCode> : std::formatter<std::string_view> {
     auto format(eph::net::ws::CloseCode cc, auto& ctx) const {
-        return std::formatter<std::string>::format(
+        return std::formatter<std::string_view>::format(
             eph::net::ws::close_code_name(cc.value), ctx);
     }
 };

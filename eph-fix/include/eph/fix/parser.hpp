@@ -544,14 +544,16 @@ public:
     /// human-readable tag names.
     [[nodiscard]] std::string dump() const {
         auto mt = msg_type();
-        std::string s = std::format(
+        std::string s;
+        s.reserve(80 + count_ * 48);
+        std::format_to(std::back_inserter(s),
             "FIX MessageView ({} fields, {} bytes):\n"
             "  MsgType: {} ({})",
             count_, total_len_,
             mt.value_or("?"),
             mt ? tag::msg_type_name(*mt) : "unknown");
         for (size_t i = 0; i < count_; ++i) {
-            s += std::format("\n  [{}] {}({})={}", i,
+            std::format_to(std::back_inserter(s), "\n  [{}] {}({})={}", i,
                              tag::tag_name(fields_[i].tag),
                              fields_[i].tag, fields_[i].value);
         }
@@ -563,7 +565,11 @@ public:
     /// Field values are JSON-escaped (RFC 8259 §7) to prevent malformed output.
     [[nodiscard]] std::string to_json() const {
         auto mt = msg_type();
-        std::string s = std::format(
+        // Pre-reserve to avoid repeated reallocations: ~64 bytes per field
+        // plus ~80 bytes for the envelope is a reasonable estimate.
+        std::string s;
+        s.reserve(80 + count_ * 64);
+        std::format_to(std::back_inserter(s),
             "{{\"msg_type\":\"{}\",\"msg_type_name\":\"{}\","
             "\"field_count\":{},\"total_len\":{},\"fields\":[",
             mt.value_or("?"),
@@ -571,9 +577,10 @@ public:
             count_, total_len_);
         for (size_t i = 0; i < count_; ++i) {
             if (i > 0) s += ',';
-            s += std::format("{{\"tag\":{},\"name\":\"{}\",\"value\":\"",
-                             fields_[i].tag,
-                             tag::tag_name(fields_[i].tag));
+            std::format_to(std::back_inserter(s),
+                           "{{\"tag\":{},\"name\":\"{}\",\"value\":\"",
+                           fields_[i].tag,
+                           tag::tag_name(fields_[i].tag));
             detail::json_escape_append(s, fields_[i].value);
             s += "\"}";
         }
