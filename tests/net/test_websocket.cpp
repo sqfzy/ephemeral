@@ -1052,6 +1052,67 @@ TEST(CloseCodeName, UnknownCode) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// opcode_name / close_code_name thread-local buffer edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(OpcodeName, AllReservedOpcodes) {
+    // Reserved data opcodes (0x3-0x7) and reserved control opcodes (0xB-0xF)
+    for (uint8_t op : {0x03, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}) {
+        auto name = opcode_name(op);
+        EXPECT_TRUE(name.find("UNKNOWN") != std::string_view::npos)
+            << "opcode 0x" << std::hex << static_cast<int>(op) << " should be UNKNOWN";
+    }
+}
+
+TEST(OpcodeName, MaxOpcode) {
+    auto name = opcode_name(0xFF);
+    EXPECT_TRUE(name.find("UNKNOWN") != std::string_view::npos);
+    EXPECT_TRUE(name.find("FF") != std::string_view::npos
+             || name.find("ff") != std::string_view::npos);
+}
+
+TEST(OpcodeName, ConsecutiveCallsReturnCorrectValues) {
+    // Verify thread-local buffer doesn't corrupt across calls
+    auto n1 = opcode_name(opcode::kPing);
+    EXPECT_EQ(n1, "PING");
+    auto n2 = opcode_name(0x03);
+    EXPECT_TRUE(n2.find("UNKNOWN") != std::string_view::npos);
+    // Known opcode should still work after unknown
+    auto n3 = opcode_name(opcode::kBinary);
+    EXPECT_EQ(n3, "BINARY");
+}
+
+TEST(CloseCodeName, RangeBoundaries) {
+    // Upper bounds of registered and private ranges
+    auto reg_end = close_code_name(3999);
+    EXPECT_TRUE(reg_end.find("REGISTERED") != std::string_view::npos);
+    EXPECT_TRUE(reg_end.find("3999") != std::string_view::npos);
+
+    auto priv_end = close_code_name(4999);
+    EXPECT_TRUE(priv_end.find("PRIVATE") != std::string_view::npos);
+    EXPECT_TRUE(priv_end.find("4999") != std::string_view::npos);
+
+    // Just outside ranges
+    auto below_reg = close_code_name(2999);
+    EXPECT_TRUE(below_reg.find("UNKNOWN") != std::string_view::npos);
+
+    auto above_priv = close_code_name(5000);
+    EXPECT_TRUE(above_priv.find("UNKNOWN") != std::string_view::npos);
+}
+
+TEST(CloseCodeName, ReservedCodesThatAreNotStandard) {
+    // Codes 1004, 1005, 1006 (ABNORMAL_CLOSURE is defined), 1012-1014
+    auto c1004 = close_code_name(1004);
+    EXPECT_TRUE(c1004.find("UNKNOWN") != std::string_view::npos);
+
+    auto c1005 = close_code_name(1005);
+    EXPECT_TRUE(c1005.find("UNKNOWN") != std::string_view::npos);
+
+    auto c1012 = close_code_name(1012);
+    EXPECT_TRUE(c1012.find("UNKNOWN") != std::string_view::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CloseCode formatter
 // ─────────────────────────────────────────────────────────────────────────────
 
