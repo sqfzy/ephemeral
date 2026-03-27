@@ -2780,7 +2780,7 @@ private:
             // at the end captures worst-case (last frame) latency without
             // the measurement itself contaminating the result.
 
-            if (frame->is_ping()) {
+            if (frame->is_ping()) [[unlikely]] {
                 rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 ws_pings_received_.fetch_add(1, std::memory_order_relaxed);
                 if (config_.on_ping) {
@@ -2796,7 +2796,7 @@ private:
                 continue;
             }
 
-            if (frame->is_close()) {
+            if (frame->is_close()) [[unlikely]] {
                 rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 uint16_t code = frame->close_status_code();
                 std::string_view close_reason = frame->close_reason();
@@ -2832,7 +2832,7 @@ private:
                 break;
             }
 
-            if (frame->is_pong()) {
+            if (frame->is_pong()) [[unlikely]] {
                 rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
                 // Record pong arrival for timeout detection (TX thread reads this).
                 last_pong_ns_.store(
@@ -2879,7 +2879,7 @@ private:
             // Data frame handling with fragmentation reassembly.
             // RFC 6455 §5.4: first fragment has opcode != 0, FIN=0;
             // continuation fragments have opcode=0; final fragment has FIN=1.
-            if (!frame->is_data()) continue;
+            if (!frame->is_data()) [[unlikely]] continue;
 
             // Unmask payload in-place if needed (server frames are usually
             // unmasked, but handle masked frames for robustness).
