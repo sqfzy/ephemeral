@@ -38,19 +38,29 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/containers/evicting_queue.hpp"
+#include "eph/net/length_prefix_framer.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
 
-// Multi-symbol: larger payload for combined stream wrapper, deliver all frames.
-using BenchTransport = eph::net::Transport<
+// WebSocket transport (Binance combined stream)
+using WsBenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
     16384, 1024,
     eph::containers::EvictingQueue,
-    false  // LastOnlyDeliver — every symbol's update matters
+    false
+>;
+
+// Non-WS transport: length-prefix framing over raw TLS (for FIX-like protocols)
+using RawBenchTransport = eph::net::Transport<
+    eph::net::SocketTransport,
+    eph::net::LengthPrefixFramer,
+    16384, 1024,
+    eph::containers::EvictingQueue,
+    false
 >;
 
 /// Extract symbol hash from Binance combined stream JSON payload.
@@ -106,6 +116,7 @@ struct Config {
     int  rx_cpu        = -1;
     int  main_cpu      = -1;
     bool use_twophase   = false;
+    std::string protocol = "ws";  // "ws" or "fix"
 };
 
 /// Convert HdrHistogram to RttStats (standalone version of Transport's private helper).
@@ -160,6 +171,13 @@ static Config parse_args(int argc, char** argv) {
             else if (m == "twophase") c.use_twophase = true;
             else { std::cerr << std::format("Unknown mode: {} (use all|twophase)\n", m); std::exit(1); }
         }
+        else if (a == "--protocol") {
+            c.protocol = next(a);
+            if (c.protocol != "ws" && c.protocol != "fix") {
+                std::cerr << std::format("Unknown protocol: {} (use ws|fix)\n", c.protocol);
+                std::exit(1);
+            }
+        }
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [--host H] [--port P] [--symbols S1,S2,S3] [--proxy URL]\n"
@@ -171,6 +189,9 @@ static Config parse_args(int argc, char** argv) {
     }
     return c;
 }
+
+template <typename BenchTransport>
+static int run_bench(const Config& cfg);
 
 int main(int argc, char** argv) {
     std::signal(SIGINT, sig);
@@ -187,13 +208,27 @@ int main(int argc, char** argv) {
     }
     spdlog::info("TSC: {:.4f} ns/cycle", eph::utils::TSC::get_ns_per_cycle().value());
 
-    // Build combined stream path
-    std::string streams;
-    for (size_t i = 0; i < cfg.symbols.size(); ++i) {
-        if (i > 0) streams += '/';
-        streams += cfg.symbols[i] + "@bookTicker";
+    // Protocol dispatch
+    if (cfg.protocol == "fix") {
+        return run_bench<RawBenchTransport>(cfg);
     }
-    auto ws_path = "/stream?streams=" + streams;
+    return run_bench<WsBenchTransport>(cfg);
+}
+
+template <typename BenchTransport>
+static int run_bench(const Config& cfg) {
+    // Build connection path (WS only)
+    std::string ws_path = "/";
+    if constexpr (std::is_same_v<BenchTransport, WsBenchTransport>) {
+        std::string streams;
+        for (size_t i = 0; i < cfg.symbols.size(); ++i) {
+            if (i > 0) streams += '/';
+            streams += cfg.symbols[i] + "@bookTicker";
+        }
+        ws_path = "/stream?streams=" + streams;
+    }
+
+    const char* proto_name = std::is_same_v<BenchTransport, WsBenchTransport> ? "ws" : "fix";
 
     eph::net::TransportConfig tc{
         .remote_host = cfg.host, .remote_port = cfg.port,
@@ -205,10 +240,14 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
-        .on_frame_filter = cfg.use_twophase
-            ? eph::net::make_twophase_filter(binance_symbol_hash)
-            : eph::net::FrameFilterFn{},
     };
+
+    // WS-specific: frame filter
+    if constexpr (std::is_same_v<BenchTransport, WsBenchTransport>) {
+        if (cfg.use_twophase) {
+            tc.on_frame_filter = eph::net::make_twophase_filter(binance_symbol_hash);
+        }
+    }
 
     static volatile uint64_t on_msg_sink = 0;
     if (cfg.use_on_message) {
@@ -223,7 +262,7 @@ int main(int argc, char** argv) {
         .tcp_nodelay = true, .tcp_keepalive = true,
     };
 
-    BenchTransport::TcpFactory factory;
+    typename BenchTransport::TcpFactory factory;
     if (!cfg.proxy_url.empty()) {
         auto pc = eph::net::proxy::parse_proxy_url(cfg.proxy_url);
         if (!pc) { spdlog::error("Invalid proxy: {}", pc.error()); return 1; }

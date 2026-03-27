@@ -44,17 +44,33 @@
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
+// Use LengthPrefixFramer as a stand-in for FIX protocol testing.
+// The actual eph-fix module has OpenSSL header conflicts with aws-lc (used by eph-dpdk).
+// LengthPrefixFramer (2-byte big-endian length prefix) works for mock FIX servers
+// that prefix each message with its length.
+#include "eph/net/length_prefix_framer.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
 
-// Multi-symbol: larger payload for combined stream wrapper, deliver all frames.
-using BenchTransport = eph::net::Transport<
+// WebSocket transport (Binance combined stream)
+using WsBenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
     eph::net::WsFramer,
     16384, 1024,
     eph::containers::EvictingQueue,
-    false  // LastOnlyDeliver — every symbol's update matters
+    false
+>;
+
+// Non-WS transport: uses length-prefix framing over raw TLS (no WebSocket layer).
+// Suitable for FIX-like protocols where a mock server prefixes each message
+// with a 2-byte big-endian length. Eliminates WS frame overhead entirely.
+using RawBenchTransport = eph::net::Transport<
+    eph::dpdk::TcpSession<>,
+    eph::net::LengthPrefixFramer,
+    16384, 1024,
+    eph::containers::EvictingQueue,
+    false
 >;
 
 /// Extract symbol hash from Binance combined stream JSON payload.
@@ -105,6 +121,7 @@ struct Config {
     int  rx_cpu            = -1;
     int  main_cpu          = -1;
     bool use_twophase      = false;
+    std::string protocol   = "ws";  // "ws" or "fix"
 };
 
 /// Convert HdrHistogram to RttStats (standalone version of Transport's private helper).
@@ -160,6 +177,13 @@ static Config parse_args(int argc, char** argv) {
             else if (m == "twophase") c.use_twophase = true;
             else { std::cerr << std::format("Unknown mode: {} (use all|twophase)\n", m); std::exit(1); }
         }
+        else if (a == "--protocol") {
+            c.protocol = next(a);
+            if (c.protocol != "ws" && c.protocol != "fix") {
+                std::cerr << std::format("Unknown protocol: {} (use ws|fix)\n", c.protocol);
+                std::exit(1);
+            }
+        }
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [EAL args] -- [--host H] [--port P] [--symbols S1,S2,S3]\n"
@@ -173,6 +197,9 @@ static Config parse_args(int argc, char** argv) {
     }
     return c;
 }
+
+template <typename BenchTransport>
+static int run_bench(const Config& cfg);
 
 int main(int argc, char** argv) {
     std::signal(SIGINT, sig);
@@ -202,15 +229,29 @@ int main(int argc, char** argv) {
     auto eal = eph::dpdk::EalGuard::init(eal_argc, eal_argv);
     if (!eal) { spdlog::error("EAL init failed: {}", eal.error()); return 1; }
 
-    // Build combined stream path
-    std::string streams;
-    for (size_t i = 0; i < cfg.symbols.size(); ++i) {
-        if (i > 0) streams += '/';
-        streams += cfg.symbols[i] + "@bookTicker";
+    // Protocol dispatch
+    if (cfg.protocol == "fix") {
+        return run_bench<RawBenchTransport>(cfg);
     }
-    auto ws_path = "/stream?streams=" + streams;
+    return run_bench<WsBenchTransport>(cfg);
+}
+
+/// Templated benchmark logic — works with any Transport framer.
+template <typename BenchTransport>
+static int run_bench(const Config& cfg) {
+    // Build connection path (WS only — FIX has no path)
+    std::string ws_path = "/";
+    if constexpr (std::is_same_v<BenchTransport, WsBenchTransport>) {
+        std::string streams;
+        for (size_t i = 0; i < cfg.symbols.size(); ++i) {
+            if (i > 0) streams += '/';
+            streams += cfg.symbols[i] + "@bookTicker";
+        }
+        ws_path = "/stream?streams=" + streams;
+    }
 
     const char* mode_name = cfg.use_twophase ? "twophase" : "all";
+    const char* proto_name = std::is_same_v<BenchTransport, WsBenchTransport> ? "ws" : "fix";
 
     eph::net::TransportConfig tc{
         .remote_host = cfg.host, .remote_port = cfg.port,
@@ -222,10 +263,14 @@ int main(int argc, char** argv) {
         .on_state_change = [](eph::net::TransportEvent e, std::string_view d) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
-        .on_frame_filter = cfg.use_twophase
-            ? eph::net::make_twophase_filter(binance_symbol_hash)
-            : eph::net::FrameFilterFn{},
     };
+
+    // WS-specific: frame filter for multi-symbol dedup
+    if constexpr (std::is_same_v<BenchTransport, WsBenchTransport>) {
+        if (cfg.use_twophase) {
+            tc.on_frame_filter = eph::net::make_twophase_filter(binance_symbol_hash);
+        }
+    }
 
     // on_message bypasses EvictingQueue — callback runs in RX thread
     static volatile uint64_t on_msg_sink = 0;
@@ -234,11 +279,10 @@ int main(int argc, char** argv) {
             on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
         };
     }
-    (void)on_msg_sink;  // read to suppress -Wunused-but-set-variable
+    (void)on_msg_sink;
 
-    spdlog::info("Connecting via DPDK to wss://{}:{}{} ({} symbols, on_message={}, mode={})",
-                 cfg.host, cfg.port, ws_path, cfg.symbols.size(), cfg.use_on_message,
-                 mode_name);
+    spdlog::info("Connecting via DPDK [{}] to {}:{}{} ({} symbols, mode={})",
+                 proto_name, cfg.host, cfg.port, ws_path, cfg.symbols.size(), mode_name);
     auto conn = eph::dpdk::connect<BenchTransport>(
         eph::dpdk::DpdkEndpoint{.local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip},
         tc, eph::dpdk::ConnectorOptions{.platform = {.port_id = cfg.dpdk_port}, .local_port = cfg.local_port});
