@@ -206,14 +206,11 @@ int main(int argc, char** argv) {
     // on_connected_before_threads hook registers with the dispatcher,
     // setting shared_rx_ring BEFORE the RX thread starts.
     //
-    // We store a raw pointer to TcpSession during factory construction so
-    // the hook can register it with the dispatcher.
+    std::vector<eph::dpdk::TcpSession<>*> session_ptrs(N, nullptr);
+
     for (size_t i = 0; i < N; ++i) {
         auto& sym = cfg.symbols[i];
         auto ws_path = "/ws/" + sym + "@bookTicker";
-
-        // Raw pointer set by factory, used by hook
-        eph::dpdk::TcpSession<>* session_ptr = nullptr;
 
         eph::dpdk::ConnectorOptions opts{};
         opts.gateway_mac = *gw_mac;
@@ -227,18 +224,7 @@ int main(int argc, char** argv) {
             .on_state_change = [sym](eph::net::TransportEvent e, std::string_view d) {
                 spdlog::info("[{}] {} — {}", sym, eph::net::transport_event_name(e), d);
             },
-            // Hook: register with dispatcher after handshake, before RX thread
-            .on_connected_before_threads = [&, i]() {
-                if (session_ptr) {
-                    auto reg = (*dispatcher)->register_session(*session_ptr);
-                    if (!reg) {
-                        spdlog::error("Failed to register {} with dispatcher: {}",
-                                     cfg.symbols[i], reg.error());
-                    } else {
-                        spdlog::info("  {} registered with dispatcher", cfg.symbols[i]);
-                    }
-                }
-            },
+            .deferred_start = true,  // don't start RX/TX threads yet
         };
 
         // Build tcp_factory that captures session_ptr
@@ -251,10 +237,10 @@ int main(int argc, char** argv) {
 
         // Wrap the factory to capture the session pointer
         auto inner_factory = std::move(setup->tcp_factory);
-        auto tcp_factory = [&session_ptr, inner = std::move(inner_factory)]() mutable
+        auto tcp_factory = [&session_ptrs, i, inner = std::move(inner_factory)]() mutable
             -> std::expected<std::unique_ptr<eph::dpdk::TcpSession<>>, std::string> {
             auto result = inner();
-            if (result) session_ptr = result->get();
+            if (result) session_ptrs[i] = result->get();
             return result;
         };
 
@@ -268,10 +254,28 @@ int main(int argc, char** argv) {
         spdlog::info("Connected: {}", sym);
     }
 
-    // ── Step 3: Start dispatcher ────────────────────────────────────────────
-    spdlog::info("Starting SharedRxDispatcher (cpu={})...", cfg.dispatch_cpu);
+    // ── Step 3: Register all sessions → start dispatcher → start threads ──
+    for (size_t i = 0; i < N; ++i) {
+        if (!session_ptrs[i]) {
+            spdlog::error("Session {} has null pointer", i);
+            return 1;
+        }
+        auto reg = (*dispatcher)->register_session(*session_ptrs[i]);
+        if (!reg) {
+            spdlog::error("Failed to register {}: {}", cfg.symbols[i], reg.error());
+            return 1;
+        }
+        spdlog::info("  {} registered with dispatcher", cfg.symbols[i]);
+    }
+
+    spdlog::info("Starting dispatcher (cpu={})...", cfg.dispatch_cpu);
     (*dispatcher)->start(cfg.dispatch_cpu);
-    spdlog::info("All {} symbols connected, dispatcher running!", N);
+
+    spdlog::info("Starting {} Transport RX/TX threads...", N);
+    for (auto& s : sessions) {
+        s.transport->start_threads();
+    }
+    spdlog::info("All {} symbols ready!", N);
 
     // ── Main loop ───────────────────────────────────────────────────────────
     auto start = std::chrono::steady_clock::now();

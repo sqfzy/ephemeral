@@ -240,10 +240,11 @@ public:
             config.on_connected_before_threads();
         }
 
-        // Start worker threads (capture raw pointer -- Transport outlives threads)
-        auto* tp = t.get();
-        t->tx_thread_ = std::thread([tp] { tp->tx_loop(); });
-        t->rx_thread_ = std::thread([tp] { tp->rx_loop(); });
+        // Deferred start: if requested, don't start threads now.
+        // Caller must call start_threads() later.
+        if (!config.deferred_start) {
+            t->start_threads();
+        }
 
         SPDLOG_LOGGER_INFO(log, "Transport ready: {}", config.remote_host);
 
@@ -919,6 +920,14 @@ public:
     ///
     /// Thread safety: waits for TX/RX threads to exit BEFORE touching
     /// crypto_ or tcp_, avoiding data races on shared state.
+    /// Start RX/TX worker threads. Only needed when TransportConfig::deferred_start
+    /// is true. Must be called exactly once after create() returns.
+    void start_threads() {
+        auto* tp = this;
+        tx_thread_ = std::thread([tp] { tp->tx_loop(); });
+        rx_thread_ = std::thread([tp] { tp->rx_loop(); });
+    }
+
     void stop() noexcept {
         bool was_running = running_.exchange(false, std::memory_order_acq_rel);
 

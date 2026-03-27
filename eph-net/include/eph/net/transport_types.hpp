@@ -473,6 +473,12 @@ struct TransportConfig {
     /// mode (e.g., set_shared_rx_source) without racing with the RX thread.
     std::function<void()> on_connected_before_threads{};
 
+    /// When true, create() returns without starting RX/TX threads.
+    /// Caller must call transport->start_threads() explicitly.
+    /// Use for multi-connection scenarios where all sessions must be
+    /// established before any RX thread starts polling.
+    bool deferred_start = false;
+
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).
     [[nodiscard]] std::string dump() const {
