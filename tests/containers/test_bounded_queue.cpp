@@ -1241,6 +1241,27 @@ TEST(BoundedQueueStats, std_formatter_empty_queue) {
     EXPECT_NE(formatted.find("current_size: 0"), std::string::npos);
 }
 
+TEST(BoundedQueueStats, throughput_computes_items_per_second) {
+    eph::containers::BoundedQueueStats delta{
+        .total_pushed = 1000,
+        .total_popped = 1000,
+        .current_size = 0,
+        .capacity = 64,
+    };
+    // 1000 items in 0.5 seconds = 2000 items/sec
+    EXPECT_DOUBLE_EQ(delta.throughput(500'000'000), 2000.0);
+}
+
+TEST(BoundedQueueStats, throughput_zero_duration_returns_zero) {
+    eph::containers::BoundedQueueStats delta{
+        .total_pushed = 100,
+        .total_popped = 100,
+        .current_size = 0,
+        .capacity = 64,
+    };
+    EXPECT_DOUBLE_EQ(delta.throughput(0), 0.0);
+}
+
 // ===========================================================================
 // try_consume_all — drain all available elements
 // ===========================================================================

@@ -298,6 +298,25 @@ TEST(TransportStats, RateHelpersComputeCorrectly) {
     EXPECT_DOUBLE_EQ(stats.rx_bps(), 2000.0);
 }
 
+TEST(TransportStats, MbpsConvenienceHelpers) {
+    TransportStats stats{};
+    stats.tx_bytes = 125'000'000;  // 125 MB
+    stats.rx_bytes = 250'000'000;  // 250 MB
+    stats.uptime_ns = 1'000'000'000;  // 1 second
+
+    // 125 MB/s = 1000 Mbps, 250 MB/s = 2000 Mbps
+    EXPECT_DOUBLE_EQ(stats.tx_mbps(), 1000.0);
+    EXPECT_DOUBLE_EQ(stats.rx_mbps(), 2000.0);
+}
+
+TEST(TransportStats, MbpsZeroUptimeReturnsZero) {
+    TransportStats stats{};
+    stats.tx_bytes = 1000;
+    stats.uptime_ns = 0;
+    EXPECT_DOUBLE_EQ(stats.tx_mbps(), 0.0);
+    EXPECT_DOUBLE_EQ(stats.rx_mbps(), 0.0);
+}
+
 TEST(TransportStats, HandshakeMsConversion) {
     TransportStats stats{};
     stats.handshake_ns = 5'000'000;  // 5ms

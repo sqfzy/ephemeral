@@ -1056,6 +1056,17 @@ struct TransportStats {
             : 0.0;
     }
 
+    /// TX throughput in megabits per second (average over uptime).
+    /// Convenience for network performance dashboards.
+    [[nodiscard]] constexpr double tx_mbps() const noexcept {
+        return tx_bps() * 8.0 / 1e6;
+    }
+
+    /// RX throughput in megabits per second (average over uptime).
+    [[nodiscard]] constexpr double rx_mbps() const noexcept {
+        return rx_bps() * 8.0 / 1e6;
+    }
+
     /// Uptime as a chrono duration.
     [[nodiscard]] constexpr std::chrono::nanoseconds uptime() const noexcept {
         return std::chrono::nanoseconds{uptime_ns};
