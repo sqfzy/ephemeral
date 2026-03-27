@@ -268,6 +268,13 @@ target("dpdk_quickstart")
     add_deps("eph-net", "eph-dpdk", "eph-fix")
     apply_dpdk_pmd_linkgroups()
 
+target("ws_via_proxy")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/ws_via_proxy.cpp")
+    add_deps("eph-net")
+
 target("framer_showcase")
     set_kind("binary")
     set_group("examples")
