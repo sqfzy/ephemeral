@@ -82,6 +82,9 @@ inline constexpr uint32_t SecurityExchange       = 207;
 namespace msg_type {
 inline constexpr char Heartbeat            = '0';
 inline constexpr char TestRequest          = '1';
+inline constexpr char ResendRequest        = '2';
+inline constexpr char Reject               = '3';
+inline constexpr char SequenceReset        = '4';
 inline constexpr char Logon                = 'A';
 inline constexpr char Logout               = '5';
 inline constexpr char NewOrderSingle       = 'D';
@@ -183,6 +186,9 @@ inline constexpr std::string_view msg_type_name(char mt) noexcept {
     switch (mt) {
     case msg_type::Heartbeat:            return "Heartbeat";
     case msg_type::TestRequest:          return "TestRequest";
+    case msg_type::ResendRequest:        return "ResendRequest";
+    case msg_type::Reject:               return "Reject";
+    case msg_type::SequenceReset:        return "SequenceReset";
     case msg_type::Logon:                return "Logon";
     case msg_type::Logout:               return "Logout";
     case msg_type::NewOrderSingle:       return "NewOrderSingle";
