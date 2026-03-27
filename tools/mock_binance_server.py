@@ -101,6 +101,33 @@ def make_book_ticker(symbol: str, seq: int) -> bytes:
     return json.dumps(msg, separators=(",", ":")).encode()
 
 
+def surge_profile(elapsed):
+    """Simulates a flash-crash traffic pattern.
+
+    Returns (rate_msg_per_sec, batch_size) at the given elapsed time.
+
+    Timeline:
+      0-3s:   ramp up    500→5000 msg/s, batch 5→50
+      3-8s:   peak       5000 msg/s, batch 50
+      8-15s:  fast decay 5000→1500 msg/s, batch 50→15
+      15-25s: slow decay 1500→500 msg/s, batch 15→3
+      25s+:   steady     500 msg/s, batch 3
+    """
+    if elapsed < 3:
+        t = elapsed / 3.0
+        return (int(500 + 4500 * t), int(5 + 45 * t))
+    elif elapsed < 8:
+        return (5000, 50)
+    elif elapsed < 15:
+        t = (elapsed - 8) / 7.0
+        return (int(5000 - 3500 * t), int(50 - 35 * t))
+    elif elapsed < 25:
+        t = (elapsed - 15) / 10.0
+        return (int(1500 - 1000 * t), int(15 - 12 * t))
+    else:
+        return (500, 3)
+
+
 def handle_ws_upgrade(conn):
     """Read HTTP upgrade request, send 101 response."""
     data = b""
@@ -156,8 +183,12 @@ def run_server(args):
 
     print(f"Listening on 0.0.0.0:{args.port} (TLS 1.3)")
     print(f"  symbols:    {symbols}")
-    print(f"  batch-size: {batch_size} frames/record{' (jitter)' if batch_jitter else ''}")
-    print(f"  rate:       {rate} msg/s {'(unlimited)' if rate == 0 else ''}")
+    print(f"  profile:    {args.profile}")
+    if args.profile == "steady":
+        print(f"  batch-size: {batch_size} frames/record{' (jitter)' if batch_jitter else ''}")
+        print(f"  rate:       {rate} msg/s {'(unlimited)' if rate == 0 else ''}")
+    else:
+        print(f"  surge: 500→5000→500 msg/s, batch 3→50→3")
     print(f"  duration:   {duration}s")
 
     running = True
@@ -209,7 +240,9 @@ def run_server(args):
             start = time.monotonic()
             sym_idx = 0
 
-            if rate > 0:
+            use_surge = (args.profile == "surge")
+
+            if not use_surge and rate > 0:
                 batch_interval = batch_size / rate
             else:
                 batch_interval = 0
@@ -220,10 +253,17 @@ def run_server(args):
                     running = False
                     break
 
-                cur_batch = batch_size
-                if batch_jitter and batch_size > 1:
-                    cur_batch = random.randint(
-                        max(1, batch_size // 2), batch_size * 2)
+                # Determine current rate and batch size
+                if use_surge:
+                    cur_rate, cur_batch = surge_profile(
+                        time.monotonic() - start)
+                    cur_batch = max(1, cur_batch)
+                    batch_interval = cur_batch / cur_rate if cur_rate > 0 else 0
+                else:
+                    cur_batch = batch_size
+                    if batch_jitter and batch_size > 1:
+                        cur_batch = random.randint(
+                            max(1, batch_size // 2), batch_size * 2)
 
                 buf = bytearray()
                 for _ in range(cur_batch):
@@ -239,10 +279,15 @@ def run_server(args):
                 total_records += 1
 
                 if batch_interval > 0:
-                    target_time = start + total_records * batch_interval
-                    now = time.monotonic()
-                    if target_time > now:
-                        time.sleep(target_time - now)
+                    if use_surge:
+                        # Surge mode: sleep for current interval (rate varies)
+                        time.sleep(batch_interval)
+                    else:
+                        # Steady mode: target absolute time for consistent rate
+                        target_time = start + total_records * batch_interval
+                        now = time.monotonic()
+                        if target_time > now:
+                            time.sleep(target_time - now)
 
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             print(f"Client #{connection_count} disconnected: {e}")
@@ -291,6 +336,8 @@ def main():
                         help="Randomize batch size in [batch/2, batch*2] per record")
     parser.add_argument("--rate", type=int, default=0,
                         help="Target msg/s rate, 0=unlimited (default: 0)")
+    parser.add_argument("--profile", choices=["steady", "surge"], default="steady",
+                        help="Traffic profile: steady (constant rate) or surge (simulated flash crash)")
     parser.add_argument("--duration", type=int, default=30,
                         help="Run duration in seconds (default: 30)")
     args = parser.parse_args()
