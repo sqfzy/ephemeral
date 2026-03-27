@@ -60,6 +60,22 @@ struct EvictingQueueBytesStats {
         };
     }
 
+    /// Messages consumed per second over a measurement interval.
+    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
+    [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
+        // For evicting bytes queues, use last_pop_id difference as throughput
+        return duration_ns > 0
+            ? static_cast<double>(last_pop_id) * 1e9 / static_cast<double>(duration_ns)
+            : 0.0;
+    }
+
+    /// Data loss rate as a fraction [0.0, 1.0].
+    [[nodiscard]] double loss_rate() const noexcept {
+        return total_pushed > 0
+            ? static_cast<double>(total_overwritten) / static_cast<double>(total_pushed)
+            : 0.0;
+    }
+
     [[nodiscard]] friend bool operator==(const EvictingQueueBytesStats&,
                                           const EvictingQueueBytesStats&) = default;
 };

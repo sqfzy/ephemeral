@@ -57,6 +57,14 @@ struct BoundedQueueBytesStats {
         };
     }
 
+    /// Messages consumed per second over a measurement interval.
+    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
+    [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
+        return duration_ns > 0
+            ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
+            : 0.0;
+    }
+
     [[nodiscard]] friend bool operator==(const BoundedQueueBytesStats&,
                                           const BoundedQueueBytesStats&) = default;
 };
