@@ -38,7 +38,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/containers/evicting_queue.hpp"
-#include "eph/net/length_prefix_framer.hpp"
+#include "eph/fix/framer.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/hdr_histogram.hpp"
@@ -54,10 +54,10 @@ using WsBenchTransport = eph::net::Transport<
     false
 >;
 
-// Non-WS transport: length-prefix framing over raw TLS (for FIX-like protocols)
-using RawBenchTransport = eph::net::Transport<
+// FIX transport: FIX tag=value framing over raw TLS (no WebSocket layer)
+using FixBenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
-    eph::net::LengthPrefixFramer,
+    eph::fix::FixFramer,
     16384, 1024,
     eph::containers::EvictingQueue,
     false
@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
 
     // Protocol dispatch
     if (cfg.protocol == "fix") {
-        return run_bench<RawBenchTransport>(cfg);
+        return run_bench<FixBenchTransport>(cfg);
     }
     return run_bench<WsBenchTransport>(cfg);
 }

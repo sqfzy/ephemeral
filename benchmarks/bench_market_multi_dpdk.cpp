@@ -44,11 +44,7 @@
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
-// Use LengthPrefixFramer as a stand-in for FIX protocol testing.
-// The actual eph-fix module has OpenSSL header conflicts with aws-lc (used by eph-dpdk).
-// LengthPrefixFramer (2-byte big-endian length prefix) works for mock FIX servers
-// that prefix each message with its length.
-#include "eph/net/length_prefix_framer.hpp"
+#include "eph/fix/framer.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
@@ -62,12 +58,12 @@ using WsBenchTransport = eph::net::Transport<
     false
 >;
 
-// Non-WS transport: uses length-prefix framing over raw TLS (no WebSocket layer).
-// Suitable for FIX-like protocols where a mock server prefixes each message
-// with a 2-byte big-endian length. Eliminates WS frame overhead entirely.
-using RawBenchTransport = eph::net::Transport<
+// FIX transport: FIX tag=value framing over raw TLS (no WebSocket layer).
+// Eliminates WS frame overhead; each FIX message is self-delimiting
+// (starts with 8=FIX, ends with 10=XXX\x01).
+using FixBenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
-    eph::net::LengthPrefixFramer,
+    eph::fix::FixFramer,
     16384, 1024,
     eph::containers::EvictingQueue,
     false
@@ -231,7 +227,7 @@ int main(int argc, char** argv) {
 
     // Protocol dispatch
     if (cfg.protocol == "fix") {
-        return run_bench<RawBenchTransport>(cfg);
+        return run_bench<FixBenchTransport>(cfg);
     }
     return run_bench<WsBenchTransport>(cfg);
 }
