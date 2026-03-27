@@ -1527,6 +1527,21 @@ private:
     // -----------------------------------------------------------------------
 
     void notify_state(TransportEvent event, std::string_view detail = {}) noexcept {
+        // Always log state transitions for production observability —
+        // even if no user callback is registered, the log trail is essential
+        // for diagnosing connection issues post-mortem.
+        if (detail.empty()) {
+            SPDLOG_LOGGER_INFO(detail::transport_logger(),
+                "Transport state: {} [{}:{}]",
+                transport_event_name(event),
+                config_.remote_host, config_.remote_port);
+        } else {
+            SPDLOG_LOGGER_INFO(detail::transport_logger(),
+                "Transport state: {} — {} [{}:{}]",
+                transport_event_name(event), detail,
+                config_.remote_host, config_.remote_port);
+        }
+
         if (config_.on_state_change) {
             try {
                 config_.on_state_change(event, detail);
