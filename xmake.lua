@@ -275,6 +275,13 @@ target("framer_showcase")
     add_files("examples/framer_showcase.cpp")
     add_deps("eph-net")
 
+target("fix_trading_demo")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/fix_trading_demo.cpp")
+    add_deps("eph-fix", "eph-utils")
+
 target("simple_hft")
     set_kind("binary")
     set_group("examples")
