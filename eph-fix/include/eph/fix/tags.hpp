@@ -26,6 +26,7 @@ inline constexpr uint32_t PossDupFlag       = 43;
 inline constexpr uint32_t PossResend        = 97;
 inline constexpr uint32_t EncryptMethod     = 98;
 inline constexpr uint32_t HeartBtInt        = 108;
+inline constexpr uint32_t TestReqID         = 112;
 inline constexpr uint32_t OrigSendingTime   = 122;
 inline constexpr uint32_t GapFillFlag       = 123;
 inline constexpr uint32_t ResetSeqNumFlag   = 141;
@@ -152,6 +153,8 @@ inline constexpr std::string_view tag_name(uint32_t t) noexcept {
     case OrigClOrdID:           return "OrigClOrdID";
     case OrigSendingTime:       return "OrigSendingTime";
     case PossDupFlag:           return "PossDupFlag";
+    // Note: TestReqID added between PossDupFlag and PossResend alphabetically
+    case TestReqID:             return "TestReqID";
     case PossResend:            return "PossResend";
     case Price:                 return "Price";
     case ResetSeqNumFlag:       return "ResetSeqNumFlag";
