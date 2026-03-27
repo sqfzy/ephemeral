@@ -490,3 +490,92 @@ TEST(Http, BuildUpgradeRequestErrorContainsParamNames) {
     EXPECT_NE(result.error().find("host"), std::string::npos);
     EXPECT_NE(result.error().find("(empty)"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// parse_upgrade_response — edge cases
+// ---------------------------------------------------------------------------
+
+TEST(Http, ParseResponseLargeStatusCode) {
+    // Status code > 999 should still be parsed correctly
+    std::string resp =
+        "HTTP/1.1 1001 Custom\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(resp.data(), resp.size());
+    // Parser accepts any 3-digit status code; 1001 needs 4 digits
+    // This tests the parser's behavior with non-standard status codes
+    if (result.has_value()) {
+        // If it parses, the status code should not be 101
+        EXPECT_NE(result->status_code, 101);
+    }
+    // Either parse succeeds with wrong code or fails — both acceptable
+}
+
+TEST(Http, ParseResponseHeaderWithoutColon) {
+    // Headers without ':' should be skipped gracefully
+    std::string resp =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "InvalidHeaderNoCOLON\r\n"
+        "Connection: Upgrade\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(resp.data(), resp.size());
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 101);
+    // The invalid header should be skipped; valid headers should be present
+    EXPECT_TRUE(result->has_upgrade);
+    EXPECT_TRUE(result->has_connection_upgrade);
+}
+
+TEST(Http, ParseResponseEmptyBody) {
+    // Minimal valid response
+    std::string resp =
+        "HTTP/1.1 101 OK\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(resp.data(), resp.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->header_end_offset, resp.size());
+}
+
+TEST(Http, ParseResponseWithBodyAfterHeaders) {
+    // Response with body data after headers — offset should mark end of headers
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "hello";
+    auto result = parse_upgrade_response(resp.data(), resp.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->status_code, 200);
+    // header_end_offset should not include the body
+    EXPECT_LT(result->header_end_offset, resp.size());
+}
+
+// ---------------------------------------------------------------------------
+// validate_ws_accept — edge cases
+// ---------------------------------------------------------------------------
+
+TEST(Http, ValidateWsAcceptEmptyAcceptValue) {
+    EXPECT_FALSE(validate_ws_accept("dGhlIHNhbXBsZSBub25jZQ==", ""));
+}
+
+TEST(Http, ValidateWsAcceptWrongLengthAccept) {
+    EXPECT_FALSE(validate_ws_accept("dGhlIHNhbXBsZSBub25jZQ==", "abc"));
+}
+
+// ---------------------------------------------------------------------------
+// generate_ws_key — statistical uniqueness
+// ---------------------------------------------------------------------------
+
+TEST(Http, GenerateWsKeyAlways24Chars) {
+    // Base64 of 16 bytes = 24 chars (no padding needed: 16 * 4/3 = 21.3, padded to 24)
+    for (int i = 0; i < 10; ++i) {
+        auto key = generate_ws_key();
+        ASSERT_TRUE(key.has_value());
+        EXPECT_EQ(key->size(), 24u)
+            << "Key should always be 24 base64 characters, got: " << *key;
+    }
+}

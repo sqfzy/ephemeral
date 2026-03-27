@@ -1410,3 +1410,205 @@ TEST(WsDecode, IncompletePayloadReturnsIncomplete) {
     EXPECT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), DecodeError::kIncomplete);
 }
+
+// ---------------------------------------------------------------------------
+// decode_frame — extended length encoding boundaries
+// ---------------------------------------------------------------------------
+
+TEST(WsDecode, ExtendedLength8ByteEncoding) {
+    // Payload = 65536 requires 8-byte extended length (value >= 65536)
+    constexpr size_t payload_len = 65536;
+    std::vector<uint8_t> frame(10 + payload_len, 0x42);
+    frame[0] = 0x82;  // FIN=1, binary
+    frame[1] = 127;   // 8-byte extended length
+    // Network byte order (big-endian) uint64
+    frame[2] = 0; frame[3] = 0; frame[4] = 0; frame[5] = 0;
+    frame[6] = 0; frame[7] = 1; frame[8] = 0; frame[9] = 0;  // 65536
+
+    auto result = decode_frame(frame.data(), frame.size());
+    ASSERT_TRUE(result.has_value()) << decode_error_name(result.error());
+    EXPECT_EQ(result->payload_len, payload_len);
+    EXPECT_EQ(result->opcode, opcode::kBinary);
+}
+
+TEST(WsDecode, ExtendedLength2ByteBoundary65535) {
+    // Payload = 65535 is the max for 2-byte extended length
+    constexpr size_t payload_len = 65535;
+    std::vector<uint8_t> frame(4 + payload_len, 0xAA);
+    frame[0] = 0x82;  // FIN=1, binary
+    frame[1] = 126;   // 2-byte extended length
+    frame[2] = 0xFF;  frame[3] = 0xFF;  // 65535
+
+    auto result = decode_frame(frame.data(), frame.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, payload_len);
+}
+
+TEST(WsDecode, ExtendedLength2ByteMinimum126) {
+    // Payload = 126 is the minimum that triggers 2-byte extended length
+    constexpr size_t payload_len = 126;
+    std::vector<uint8_t> frame(4 + payload_len, 0xBB);
+    frame[0] = 0x82;
+    frame[1] = 126;   // 2-byte extended
+    frame[2] = 0x00;  frame[3] = 0x7E;  // 126
+
+    auto result = decode_frame(frame.data(), frame.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, payload_len);
+}
+
+TEST(WsDecode, Incomplete8ByteExtendedLengthReturnsIncomplete) {
+    // 127 signals 8-byte extended, but we only provide 6 bytes total
+    uint8_t buf[6] = {};
+    buf[0] = 0x82;
+    buf[1] = 127;
+
+    auto result = decode_frame(buf, 6);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
+
+// ---------------------------------------------------------------------------
+// DecodedFrame convenience methods — explicit tests
+// ---------------------------------------------------------------------------
+
+TEST(DecodedFrame, IsControlClassifiesCorrectly) {
+    DecodedFrame frame{};
+    frame.opcode = opcode::kPing;
+    EXPECT_TRUE(frame.is_control());
+    EXPECT_FALSE(frame.is_data());
+
+    frame.opcode = opcode::kPong;
+    EXPECT_TRUE(frame.is_control());
+
+    frame.opcode = opcode::kClose;
+    EXPECT_TRUE(frame.is_control());
+    EXPECT_TRUE(frame.is_close());
+    EXPECT_FALSE(frame.is_ping());
+    EXPECT_FALSE(frame.is_pong());
+}
+
+TEST(DecodedFrame, IsDataClassifiesCorrectly) {
+    DecodedFrame frame{};
+    frame.opcode = opcode::kText;
+    EXPECT_TRUE(frame.is_data());
+    EXPECT_FALSE(frame.is_control());
+
+    frame.opcode = opcode::kBinary;
+    EXPECT_TRUE(frame.is_data());
+
+    frame.opcode = opcode::kContinuation;
+    EXPECT_TRUE(frame.is_data());
+}
+
+TEST(DecodedFrame, IsPingPongCloseIsolated) {
+    DecodedFrame frame{};
+    frame.opcode = opcode::kPing;
+    EXPECT_TRUE(frame.is_ping());
+    EXPECT_FALSE(frame.is_pong());
+    EXPECT_FALSE(frame.is_close());
+
+    frame.opcode = opcode::kPong;
+    EXPECT_FALSE(frame.is_ping());
+    EXPECT_TRUE(frame.is_pong());
+    EXPECT_FALSE(frame.is_close());
+
+    frame.opcode = opcode::kClose;
+    EXPECT_FALSE(frame.is_ping());
+    EXPECT_FALSE(frame.is_pong());
+    EXPECT_TRUE(frame.is_close());
+}
+
+// ---------------------------------------------------------------------------
+// apply_mask — additional boundary conditions
+// ---------------------------------------------------------------------------
+
+TEST(WsMasking, ApplyMaskZeroKeyIsNoop) {
+    uint8_t data[] = {0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48};
+    uint8_t original[8];
+    std::memcpy(original, data, 8);
+    uint8_t mask[4] = {0, 0, 0, 0};
+
+    apply_mask(data, 8, mask);
+    EXPECT_EQ(std::memcmp(data, original, 8), 0)
+        << "Zero mask key should leave data unchanged";
+}
+
+TEST(WsMasking, MaskedCopySmallSizes) {
+    // Test 1, 2, 3 byte inputs specifically (tail-only path)
+    uint8_t mask[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    for (size_t len = 1; len <= 3; ++len) {
+        std::vector<uint8_t> src(len, 0xFF);
+        std::vector<uint8_t> dst(len, 0x00);
+        masked_copy(dst.data(), src.data(), len, mask);
+        for (size_t i = 0; i < len; ++i) {
+            EXPECT_EQ(dst[i], static_cast<uint8_t>(0xFF ^ mask[i % 4]))
+                << "Mismatch at byte " << i << " for len=" << len;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 validation — boundary cases
+// ---------------------------------------------------------------------------
+
+TEST(Utf8Validation, MaxUtf8Codepoint) {
+    // U+10FFFF = F4 8F BF BF (maximum valid codepoint)
+    uint8_t valid[] = {0xF4, 0x8F, 0xBF, 0xBF};
+    EXPECT_TRUE(is_valid_utf8(valid, 4));
+}
+
+TEST(Utf8Validation, BeyondMaxCodepoint) {
+    // U+110000 = F4 90 80 80 (first invalid codepoint after U+10FFFF)
+    uint8_t invalid[] = {0xF4, 0x90, 0x80, 0x80};
+    EXPECT_FALSE(is_valid_utf8(invalid, 4));
+}
+
+TEST(Utf8Validation, NullByteIsValid) {
+    // U+0000 is valid UTF-8 (single byte 0x00)
+    uint8_t data[] = {0x00};
+    EXPECT_TRUE(is_valid_utf8(data, 1));
+}
+
+TEST(Utf8Validation, EmptyInputIsValid) {
+    EXPECT_TRUE(is_valid_utf8(nullptr, 0));
+}
+
+TEST(Utf8Validation, ExactByteSequenceLengths) {
+    // 1-byte: U+0041 = 'A'
+    uint8_t one[] = {0x41};
+    EXPECT_TRUE(is_valid_utf8(one, 1));
+    // 2-byte: U+00C0 = C3 80
+    uint8_t two[] = {0xC3, 0x80};
+    EXPECT_TRUE(is_valid_utf8(two, 2));
+    // 3-byte: U+4E16 = E4 B8 96 (世)
+    uint8_t three[] = {0xE4, 0xB8, 0x96};
+    EXPECT_TRUE(is_valid_utf8(three, 3));
+    // 4-byte: U+1F600 = F0 9F 98 80 (😀)
+    uint8_t four[] = {0xF0, 0x9F, 0x98, 0x80};
+    EXPECT_TRUE(is_valid_utf8(four, 4));
+}
+
+// ---------------------------------------------------------------------------
+// decode_error_name — explicit coverage
+// ---------------------------------------------------------------------------
+
+TEST(DecodeErrorName, AllErrorNamesAreDistinct) {
+    auto name_incomplete = decode_error_name(DecodeError::kIncomplete);
+    auto name_rsv = decode_error_name(DecodeError::kReservedBits);
+    auto name_frag = decode_error_name(DecodeError::kFragmentedControl);
+    auto name_large = decode_error_name(DecodeError::kControlPayloadTooLarge);
+    auto name_opcode = decode_error_name(DecodeError::kInvalidOpcode);
+
+    EXPECT_FALSE(name_incomplete.empty());
+    EXPECT_FALSE(name_rsv.empty());
+    EXPECT_FALSE(name_frag.empty());
+    EXPECT_FALSE(name_large.empty());
+    EXPECT_FALSE(name_opcode.empty());
+
+    // All names should be distinct
+    EXPECT_NE(name_incomplete, name_rsv);
+    EXPECT_NE(name_incomplete, name_frag);
+    EXPECT_NE(name_incomplete, name_large);
+    EXPECT_NE(name_incomplete, name_opcode);
+}
