@@ -76,6 +76,24 @@ struct EvictingQueueStats {
         };
     }
 
+    /// Items consumed per second over a measurement interval.
+    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
+    /// @param duration_ns  Measurement interval in nanoseconds
+    [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
+        return duration_ns > 0
+            ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
+            : 0.0;
+    }
+
+    /// Data loss rate as a fraction [0.0, 1.0].
+    /// 0.0 = no loss (consumer keeping up), 1.0 = total loss.
+    /// Apply to a delta for interval-based monitoring.
+    [[nodiscard]] double loss_rate() const noexcept {
+        return total_pushed > 0
+            ? static_cast<double>(overwritten) / static_cast<double>(total_pushed)
+            : 0.0;
+    }
+
     [[nodiscard]] friend bool operator==(const EvictingQueueStats&,
                                           const EvictingQueueStats&) = default;
 };

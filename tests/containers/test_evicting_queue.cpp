@@ -1140,6 +1140,56 @@ TEST(EvictingQueueStats, single_slot_operator_minus_works) {
     EXPECT_GE(delta.overwritten, 1u);
 }
 
+TEST(EvictingQueueStats, throughput_computes_items_per_second) {
+    eph::containers::EvictingQueueStats delta{
+        .total_pushed = 5000,
+        .total_popped = 4000,
+        .overwritten = 1000,
+        .current_size = 0,
+        .capacity = 4,
+    };
+    // 4000 items consumed in 2 seconds = 2000 items/sec
+    EXPECT_DOUBLE_EQ(delta.throughput(2'000'000'000), 2000.0);
+}
+
+TEST(EvictingQueueStats, throughput_zero_duration_returns_zero) {
+    eph::containers::EvictingQueueStats delta{
+        .total_pushed = 100,
+        .total_popped = 50,
+        .overwritten = 50,
+        .current_size = 0,
+        .capacity = 4,
+    };
+    EXPECT_DOUBLE_EQ(delta.throughput(0), 0.0);
+}
+
+TEST(EvictingQueueStats, loss_rate_computes_fraction) {
+    eph::containers::EvictingQueueStats delta{
+        .total_pushed = 1000,
+        .total_popped = 750,
+        .overwritten = 250,
+        .current_size = 0,
+        .capacity = 4,
+    };
+    EXPECT_NEAR(delta.loss_rate(), 0.25, 1e-9);
+}
+
+TEST(EvictingQueueStats, loss_rate_zero_pushes_returns_zero) {
+    eph::containers::EvictingQueueStats delta{};
+    EXPECT_DOUBLE_EQ(delta.loss_rate(), 0.0);
+}
+
+TEST(EvictingQueueStats, loss_rate_no_loss_returns_zero) {
+    eph::containers::EvictingQueueStats delta{
+        .total_pushed = 500,
+        .total_popped = 500,
+        .overwritten = 0,
+        .current_size = 0,
+        .capacity = 4,
+    };
+    EXPECT_DOUBLE_EQ(delta.loss_rate(), 0.0);
+}
+
 // ===========================================================================
 // Timeout variants: try_peek_latest_for / try_consume_latest_for / try_pop_latest_for
 // ===========================================================================
