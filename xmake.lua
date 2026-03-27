@@ -282,6 +282,13 @@ target("fix_trading_demo")
     add_files("examples/fix_trading_demo.cpp")
     add_deps("eph-fix", "eph-utils")
 
+target("itch_feed_demo")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/itch_feed_demo.cpp")
+    add_deps("eph-itch")
+
 target("simple_hft")
     set_kind("binary")
     set_group("examples")
