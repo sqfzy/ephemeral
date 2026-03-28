@@ -169,10 +169,35 @@ private:
     /// Epsilon for floating-point price comparisons.
     static constexpr double kEps = 1e-12;
 
+    /// Epsilon-tolerant equality for floating-point prices.
+    /// Matches ArrayBook::price_eq semantics.
+    [[nodiscard]] static bool price_eq(double a, double b) noexcept {
+        return std::fabs(a - b) < kEps;
+    }
+
+    /// Find a key within epsilon tolerance using lower_bound.
+    /// std::map::find uses exact comparison; this scans nearby keys
+    /// to match ArrayBook's epsilon-tolerant behavior.
+    template <typename Map>
+    static auto find_approx(Map& side, double price) noexcept {
+        // lower_bound finds first key >= price (ascending) or first key
+        // where !(key > price) (descending). Check the found key and its
+        // immediate neighbor for epsilon match.
+        auto it = side.lower_bound(price);
+        if (it != side.end() && price_eq(it->first, price)) return it;
+        if (it != side.begin()) {
+            auto prev = std::prev(it);
+            if (price_eq(prev->first, price)) return prev;
+        }
+        return side.end();
+    }
+
     /// Core update logic for either side.
     /// If qty > 0, insert or update the level.
     /// If qty <= 0, remove the level.
     /// NaN prices are rejected.
+    ///
+    /// Uses epsilon-tolerant price matching consistent with ArrayBook.
     template <typename Map>
     static void update_side(Map& side, double price, double qty) noexcept {
         // Reject NaN prices — they would corrupt map ordering.
@@ -182,8 +207,8 @@ private:
         }
 
         if (qty <= 0.0) {
-            // Remove the level if it exists.
-            auto it = side.find(price);
+            // Remove the level if it exists (epsilon-tolerant lookup).
+            auto it = find_approx(side, price);
             if (it != side.end()) {
                 SPDLOG_TRACE("MapBook remove level price={}", price);
                 side.erase(it);
@@ -194,13 +219,16 @@ private:
             return;
         }
 
-        // Insert or update.
-        auto [it, inserted] = side.insert_or_assign(price, qty);
-        if (inserted) {
+        // Check for existing level within epsilon — update in place
+        // rather than inserting a near-duplicate key.
+        auto it = find_approx(side, price);
+        if (it != side.end()) {
+            SPDLOG_TRACE("MapBook updated price={} qty={}", price, qty);
+            it->second = qty;
+        } else {
+            side.emplace(price, qty);
             SPDLOG_DEBUG("MapBook inserted price={} qty={} (depth={})",
                          price, qty, side.size());
-        } else {
-            SPDLOG_TRACE("MapBook updated price={} qty={}", price, qty);
         }
     }
 };
