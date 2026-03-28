@@ -77,10 +77,10 @@ public:
     ///
     /// Performs a refill before reading — the value is approximate because
     /// another thread may consume tokens between the read and the caller
-    /// acting on the result.
-    [[nodiscard]] double available() const noexcept {
+    /// acting on the result. Non-const because refill mutates internal state.
+    [[nodiscard]] double available() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
-        const_cast<RateLimiter*>(this)->refill_locked();
+        refill_locked();
         return tokens_;
     }
 
