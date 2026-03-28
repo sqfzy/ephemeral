@@ -37,7 +37,7 @@ enum class ConnectionError : uint8_t {
 };
 
 /// Human-readable name for a ConnectionError.
-constexpr const char* connection_error_name(ConnectionError e) noexcept {
+constexpr std::string_view connection_error_name(ConnectionError e) noexcept {
     switch (e) {
         case ConnectionError::kInvalidConfig:      return "INVALID_CONFIG";
         case ConnectionError::kFactoryFailed:      return "FACTORY_FAILED";
@@ -105,7 +105,7 @@ enum class SendError : int8_t {
 };
 
 /// Return a human-readable name for a SendError.
-constexpr const char* send_error_name(SendError e) noexcept {
+constexpr std::string_view send_error_name(SendError e) noexcept {
     switch (e) {
         case SendError::kOk:              return "OK";
         case SendError::kMessageTooLarge: return "MESSAGE_TOO_LARGE";

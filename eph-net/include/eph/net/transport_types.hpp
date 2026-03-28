@@ -157,7 +157,7 @@ enum class TransportState : uint8_t {
 };
 
 /// Return a human-readable name for a TransportEvent.
-constexpr const char* transport_event_name(TransportEvent e) noexcept {
+constexpr std::string_view transport_event_name(TransportEvent e) noexcept {
     switch (e) {
         case TransportEvent::kConnected:    return "CONNECTED";
         case TransportEvent::kDisconnected: return "DISCONNECTED";
@@ -173,7 +173,7 @@ constexpr std::string_view error_name(TransportEvent e) noexcept {
 }
 
 /// Return a human-readable name for a TransportState.
-constexpr const char* transport_state_name(TransportState s) noexcept {
+constexpr std::string_view transport_state_name(TransportState s) noexcept {
     switch (s) {
         case TransportState::kConnected:    return "CONNECTED";
         case TransportState::kReconnecting: return "RECONNECTING";
