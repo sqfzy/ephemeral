@@ -1,10 +1,14 @@
 #pragma once
 
 /// @file system_stats.hpp
-/// RAII system resource profiler (getrusage-based).
+/// RAII system resource profiler (getrusage-based, Linux/macOS only).
 ///
 /// Captures CPU time, page faults, and context switches between
 /// construction and snapshot(). Standalone — no coupling with Recorder.
+
+#if !defined(__linux__) && !defined(__APPLE__)
+#error "system_stats.hpp requires POSIX (getrusage). Not available on this platform."
+#endif
 
 #include <sys/resource.h>
 

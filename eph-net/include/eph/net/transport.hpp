@@ -892,8 +892,11 @@ public:
             std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) noexcept {
         // Store close code/reason so stop() can propagate them in the
         // final Close frame instead of using a hardcoded default.
+        // Write code/reason BEFORE setting close_requested_ (release)
+        // so that stop() sees consistent values after acquire load (M9).
         pending_close_code_ = status_code;
         pending_close_reason_ = std::string(reason);
+        close_requested_.store(true, std::memory_order_release);
 
         auto err = send_close(status_code, reason);
         if (err != SendError::kOk) {
@@ -952,13 +955,21 @@ public:
         if constexpr (kIsWebSocket) {
             if (was_running && tcp_ && tcp_->is_established() &&
                 (config_.use_tls ? crypto_ != nullptr : true)) {
+                // Acquire-load close_requested_ to synchronize with the
+                // release-store in close_gracefully(), ensuring we see
+                // the code/reason written by the app thread (M9).
+                uint16_t close_code = ws::close_code::kNormal;
+                std::string_view close_reason = "client shutdown";
+                if (close_requested_.load(std::memory_order_acquire)) {
+                    close_code = pending_close_code_;
+                    if (!pending_close_reason_.empty())
+                        close_reason = pending_close_reason_;
+                }
                 // Close frame: header (max 14) + payload (max 125) = 139 bytes,
                 // plus 1 byte for encrypt()'s temporary content type append.
                 uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
                 size_t close_len = ws::build_close_frame(
-                    close_buf, pending_close_code_,
-                    pending_close_reason_.empty()
-                        ? "client shutdown" : pending_close_reason_);
+                    close_buf, close_code, close_reason);
 
                 if (config_.use_tls) {
                     // TLS output: record header + ciphertext + content type + auth tag
@@ -1476,9 +1487,14 @@ private:
     // RX-thread-only (written/read exclusively by rx_loop):
     bool                                   rx_seq_warning_logged_{false};
 
-    // Close code/reason from close_gracefully(), propagated to stop()
+    // Close code/reason from close_gracefully(), propagated to stop().
+    // Written by the app thread (close_gracefully) and read by stop()
+    // after threads have joined. The close_requested_ flag provides
+    // happens-before ordering: code/reason are written BEFORE setting
+    // the flag (release), and read AFTER loading it (acquire) (M9).
     uint16_t                               pending_close_code_{ws::close_code::kNormal};
     std::string                            pending_close_reason_{};
+    std::atomic<bool>                      close_requested_{false};
 
     // RTT measurement: TX thread writes TSC timestamp when sending ping,
     // RX thread reads it when pong arrives and records the delta in the
@@ -2050,6 +2066,10 @@ private:
             // This avoids hitting the hard limit where encrypt() returns 0
             // and messages are lost. Reconnect replaces keys with fresh ones.
             if (config_.use_tls) [[unlikely]] {
+                // Guard against null crypto_ during reconnect window —
+                // the RX thread may reset crypto_ between the reconnecting_
+                // flag check above and this dereference (M8).
+                if (!crypto_) continue;
                 uint64_t seq = crypto_->write_seq();
 
                 if (!seq_warning_logged_ && seq >= tls_record::kSequenceWarnThreshold) {
@@ -2211,6 +2231,8 @@ private:
                 }
 
                 if (config_.use_tls) {
+                    // Guard against null crypto_ during reconnect (M8).
+                    if (!crypto_) break;
                     // Pack encrypted records contiguously into tls_bufs_storage
                     // so we can send the entire batch in a single TCP write.
                     uint8_t* tls_buf_i = tls_bufs_storage.get() + coalesced_len;
@@ -2222,6 +2244,7 @@ private:
                         tx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
                         // Sequence exhaustion: encrypt() returns 0 when
                         // write_seq >= kMaxSequenceNumber. Reconnect for fresh keys.
+                        if (!crypto_) break;  // M8: recheck after failed encrypt
                         uint64_t wseq = crypto_->write_seq();
                         if (wseq >= tls_record::kMaxSequenceNumber) {
                             SPDLOG_LOGGER_ERROR(log,
@@ -2331,6 +2354,8 @@ private:
                     };
 
                     if (config_.use_tls) {
+                        // Guard against null crypto_ during reconnect (M8).
+                        if (!crypto_) break;
                         uint8_t* tls_buf_i = tls_bufs_storage.get() + drain_coalesced;
                         uint16_t enc_len = crypto_->encrypt(
                             ws_buf, static_cast<uint16_t>(ws_len), tls_buf_i);
@@ -2644,6 +2669,8 @@ private:
         last_ping_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
 
         if (config_.use_tls) {
+            // Guard against null crypto_ during reconnect (M8).
+            if (!crypto_) return false;
             uint16_t tls_len = crypto_->encrypt(
                 ws_buf, static_cast<uint16_t>(ping_len), tls_buf);
             if (tls_len == 0) return false;

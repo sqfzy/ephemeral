@@ -23,6 +23,7 @@ namespace eph::containers {
 struct EvictingQueueBytesStats {
     uint64_t total_pushed;     ///< Total messages ever pushed (writer-side)
     uint64_t last_pop_id;      ///< ID of last consumed message (reader-side)
+    uint64_t total_popped;     ///< Total messages actually consumed (reader-side)
     size_t   current_size;     ///< Approximate unread entries
     size_t   capacity;         ///< Fixed capacity
     uint64_t total_overwritten; ///< Messages overwritten before being read
@@ -35,18 +36,19 @@ struct EvictingQueueBytesStats {
             "  current_size: {}\n"
             "  total_pushed: {}\n"
             "  last_pop_id: {}\n"
+            "  total_popped: {}\n"
             "  total_overwritten: {}",
             capacity, current_size,
-            total_pushed, last_pop_id, total_overwritten);
+            total_pushed, last_pop_id, total_popped, total_overwritten);
     }
 
     /// JSON-formatted stats for monitoring system integration.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
-            "\"last_pop_id\":{},\"total_overwritten\":{}}}",
+            "\"last_pop_id\":{},\"total_popped\":{},\"total_overwritten\":{}}}",
             capacity, current_size, total_pushed,
-            last_pop_id, total_overwritten);
+            last_pop_id, total_popped, total_overwritten);
     }
 
     /// Compute delta between two snapshots for interval-based monitoring.
@@ -55,6 +57,7 @@ struct EvictingQueueBytesStats {
         return EvictingQueueBytesStats{
             .total_pushed      = lhs.total_pushed - rhs.total_pushed,
             .last_pop_id       = lhs.last_pop_id - rhs.last_pop_id,
+            .total_popped      = lhs.total_popped - rhs.total_popped,
             .current_size      = lhs.current_size,
             .capacity          = lhs.capacity,
             .total_overwritten = lhs.total_overwritten - rhs.total_overwritten,
@@ -65,7 +68,7 @@ struct EvictingQueueBytesStats {
     /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
     [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
         return duration_ns > 0
-            ? static_cast<double>(last_pop_id) * 1e9 / static_cast<double>(duration_ns)
+            ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
             : 0.0;
     }
 
@@ -561,6 +564,7 @@ class EvictingQueueBytes {
         return Stats{
             .total_pushed      = push_count_.load(std::memory_order_relaxed),
             .last_pop_id       = last_pop_id_.load(std::memory_order_relaxed),
+            .total_popped      = q_stats.total_popped,
             .current_size      = q_stats.current_size,
             .capacity          = Capacity,
             .total_overwritten = q_stats.overwritten,

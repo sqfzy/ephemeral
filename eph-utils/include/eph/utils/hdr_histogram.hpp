@@ -459,18 +459,18 @@ class HdrHistogram {
     [[nodiscard]] double get_mean() const noexcept {
         if (total_count_ == 0) return 0.0;
 
-        uint64_t sum = 0;
+        double sum = 0.0;
         for (int32_t i = 0; i < counts_len_; ++i) {
             uint64_t count = counts_[i];
             if (count > 0) {
                 uint64_t low = value_from_index(i);
                 uint64_t high = next_non_equivalent_value(low);
                 uint64_t mid = low + (high - low) / 2;
-                sum += mid * count;
+                sum += static_cast<double>(mid) * static_cast<double>(count);
             }
         }
 
-        return static_cast<double>(sum) / static_cast<double>(total_count_);
+        return sum / static_cast<double>(total_count_);
     }
 
     [[nodiscard]] double get_std_deviation() const noexcept {

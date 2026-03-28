@@ -9,6 +9,7 @@
 #include <mutex>
 #include <print>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "eph/utils/hdr_histogram.hpp"
@@ -1008,21 +1009,29 @@ class ConcurrentRecorder {
     }
 
     ThreadLocalData* get_or_create_local() noexcept {
-        thread_local std::unique_ptr<ThreadLocalGuard> tl_guard;
-        thread_local SharedState* tl_state = nullptr;
+        // Each ConcurrentRecorder has its own SharedState. Multiple recorders
+        // used from the same thread each get an independent ThreadLocalGuard,
+        // keyed by SharedState pointer. This avoids the data-loss problem
+        // where interleaving calls to different recorders from one thread
+        // would repeatedly retire+recreate the single thread-local guard.
+        using GuardMap = std::unordered_map<
+            SharedState*, std::unique_ptr<ThreadLocalGuard>>;
+        thread_local GuardMap tl_guards;
 
-        // 热路径：已初始化且属于同一个 SharedState，直接返回
-        if (tl_state == state_.get()) [[likely]] {
-            return &tl_guard->data;
+        auto* key = state_.get();
+        auto it = tl_guards.find(key);
+        if (it != tl_guards.end()) [[likely]] {
+            return &it->second->data;
         }
 
-        // 冷路径：创建并注册
+        // Cold path: create and register
         try {
-            tl_guard = std::make_unique<ThreadLocalGuard>(
+            auto guard = std::make_unique<ThreadLocalGuard>(
                 state_->lowest_cycles, state_->highest_cycles,
                 state_->precision, state_);
-            tl_state = state_.get();
-            return &tl_guard->data;
+            auto* data = &guard->data;
+            tl_guards.emplace(key, std::move(guard));
+            return data;
         } catch (...) {
             return nullptr;
         }

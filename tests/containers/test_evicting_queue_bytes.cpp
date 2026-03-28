@@ -781,21 +781,21 @@ TEST(EvictingQueueBytesStats, throughput_on_delta_snapshot) {
     auto s2 = queue.stats();
     auto delta = s2 - s1;
 
-    // delta.last_pop_id should reflect only the pops in the interval
+    // delta.total_popped should reflect only the pops in the interval
     EXPECT_EQ(delta.total_pushed, 2u);
-    // last_pop_id delta should be > 0 (items were popped in interval)
-    EXPECT_GT(delta.last_pop_id, 0u);
-    // last_pop_id delta should NOT equal the absolute s2.last_pop_id
-    EXPECT_LT(delta.last_pop_id, s2.last_pop_id);
+    // total_popped delta should be > 0 (items were popped in interval)
+    EXPECT_GT(delta.total_popped, 0u);
+    // total_popped delta should NOT equal the absolute s2.total_popped
+    EXPECT_LT(delta.total_popped, s2.total_popped);
 
     // Throughput over 1 second (1e9 ns) should equal the delta pop count
     double tp = delta.throughput(1'000'000'000);
-    EXPECT_DOUBLE_EQ(tp, static_cast<double>(delta.last_pop_id));
+    EXPECT_DOUBLE_EQ(tp, static_cast<double>(delta.total_popped));
 }
 
 TEST(EvictingQueueBytesStats, throughput_zero_duration_returns_zero) {
     using Stats = eph::containers::EvictingQueueBytesStats;
-    Stats s{.total_pushed = 100, .last_pop_id = 50};
+    Stats s{.total_pushed = 100, .last_pop_id = 50, .total_popped = 50};
     EXPECT_DOUBLE_EQ(s.throughput(0), 0.0);
 }
 
