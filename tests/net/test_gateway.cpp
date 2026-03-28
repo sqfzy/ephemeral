@@ -1,0 +1,254 @@
+#include <gtest/gtest.h>
+
+#include "eph/net/gateway.hpp"
+
+#include <atomic>
+#include <string>
+#include <thread>
+#include <vector>
+
+using namespace eph::net;
+
+// Mock transport for testing
+struct MockTransport {
+    std::atomic<bool> running{false};
+    std::atomic<int> start_count{0};
+    std::atomic<int> stop_count{0};
+    std::atomic<int> reconnect_count{0};
+
+    void start_threads() noexcept {
+        running.store(true, std::memory_order_release);
+        start_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void stop() noexcept {
+        running.store(false, std::memory_order_release);
+        stop_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool is_running() const noexcept {
+        return running.load(std::memory_order_acquire);
+    }
+
+    void reconnect_now() noexcept {
+        reconnect_count.fetch_add(1, std::memory_order_relaxed);
+    }
+};
+
+TEST(Gateway, InitiallyEmpty) {
+    Gateway gw;
+    EXPECT_EQ(gw.connection_count(), 0);
+}
+
+TEST(Gateway, AddConnection) {
+    Gateway gw;
+    MockTransport tp;
+    auto id = gw.add("test-conn", &tp);
+    EXPECT_EQ(id, 0);
+    EXPECT_EQ(gw.connection_count(), 1);
+    EXPECT_EQ(gw.tag(id), "test-conn");
+}
+
+TEST(Gateway, AddMultipleConnections) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    auto id1 = gw.add("binance-btc", &tp1, 1);
+    auto id2 = gw.add("binance-eth", &tp2, 2);
+    auto id3 = gw.add("deribit-btc", &tp3, 3);
+    EXPECT_EQ(gw.connection_count(), 3);
+    EXPECT_EQ(id1, 0);
+    EXPECT_EQ(id2, 1);
+    EXPECT_EQ(id3, 2);
+}
+
+TEST(Gateway, AddNullTransportReturnsMaxSize) {
+    Gateway gw;
+    auto id = gw.add<MockTransport>("null", nullptr);
+    EXPECT_EQ(id, SIZE_MAX);
+    EXPECT_EQ(gw.connection_count(), 0);
+}
+
+TEST(Gateway, StartAllStartsStoppedConnections) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    gw.add("t1", &tp1);
+    gw.add("t2", &tp2);
+
+    EXPECT_FALSE(tp1.is_running());
+    EXPECT_FALSE(tp2.is_running());
+
+    gw.start_all();
+
+    EXPECT_TRUE(tp1.is_running());
+    EXPECT_TRUE(tp2.is_running());
+    EXPECT_EQ(tp1.start_count.load(), 1);
+    EXPECT_EQ(tp2.start_count.load(), 1);
+}
+
+TEST(Gateway, StopAllStopsRunningConnections) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    tp1.running.store(true);
+    tp2.running.store(true);
+
+    gw.add("t1", &tp1);
+    gw.add("t2", &tp2);
+
+    gw.stop_all();
+
+    EXPECT_FALSE(tp1.is_running());
+    EXPECT_FALSE(tp2.is_running());
+}
+
+TEST(Gateway, StopAllSkipsAlreadyStopped) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("t1", &tp);
+    // tp is stopped initially — stop_all should be a no-op
+    gw.stop_all();
+    EXPECT_EQ(tp.stop_count.load(), 0);
+}
+
+TEST(Gateway, ReconnectSpecificConnection) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    tp1.running.store(true);
+    tp2.running.store(true);
+
+    gw.add("t1", &tp1);
+    gw.add("t2", &tp2);
+
+    gw.reconnect(0);
+    EXPECT_EQ(tp1.reconnect_count.load(), 1);
+    EXPECT_EQ(tp2.reconnect_count.load(), 0);
+}
+
+TEST(Gateway, ReconnectInvalidIdIsNoop) {
+    Gateway gw;
+    gw.reconnect(999);  // should not crash
+}
+
+TEST(Gateway, HealthInitiallyStoppedForNewConnections) {
+    Gateway gw;
+    MockTransport tp;
+    auto id = gw.add("t1", &tp);
+    EXPECT_EQ(gw.health(id), ConnHealth::Stopped);
+}
+
+TEST(Gateway, HealthReflectsRunningState) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    auto id = gw.add("t1", &tp);
+    // After add with running=true, health should be Healthy
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+}
+
+TEST(Gateway, CheckHealthDetectsDisconnection) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    auto id = gw.add("t1", &tp);
+
+    // Simulate disconnection
+    tp.running.store(false);
+    gw.check_health();
+
+    EXPECT_EQ(gw.health(id), ConnHealth::Disconnected);
+}
+
+TEST(Gateway, CheckHealthDetectsReconnection) {
+    Gateway gw;
+    MockTransport tp;
+    auto id = gw.add("t1", &tp);
+    gw.start_all();
+
+    // Disconnect then reconnect
+    tp.running.store(false);
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Disconnected);
+
+    tp.running.store(true);
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+}
+
+TEST(Gateway, HealthChangeCallback) {
+    int callback_count = 0;
+    std::string last_tag;
+    ConnHealth last_old{}, last_new{};
+
+    Gateway gw({
+        .on_health_change = [&](std::string_view tag, ConnHealth old_h, ConnHealth new_h) {
+            ++callback_count;
+            last_tag = std::string(tag);
+            last_old = old_h;
+            last_new = new_h;
+        },
+    });
+
+    MockTransport tp;
+    tp.running.store(true);
+    gw.add("exchange-1", &tp);
+
+    tp.running.store(false);
+    gw.check_health();
+
+    EXPECT_EQ(callback_count, 1);
+    EXPECT_EQ(last_tag, "exchange-1");
+    EXPECT_EQ(last_old, ConnHealth::Healthy);
+    EXPECT_EQ(last_new, ConnHealth::Disconnected);
+}
+
+TEST(Gateway, DumpProducesOutput) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    tp1.running.store(true);
+    gw.add("binance-btc", &tp1, 1);
+    gw.add("deribit-eth", &tp2, 5);
+
+    std::string output = gw.dump();
+    EXPECT_NE(output.find("binance-btc"), std::string::npos);
+    EXPECT_NE(output.find("deribit-eth"), std::string::npos);
+    EXPECT_NE(output.find("HEALTHY"), std::string::npos);
+    EXPECT_NE(output.find("STOPPED"), std::string::npos);
+}
+
+TEST(Gateway, DestructorStopsAll) {
+    MockTransport tp;
+    tp.running.store(true);
+    {
+        Gateway gw;
+        gw.add("t1", &tp);
+    }  // destructor should stop
+    EXPECT_FALSE(tp.is_running());
+}
+
+TEST(Gateway, MonitorStartStop) {
+    Gateway gw({.health_check_interval = std::chrono::milliseconds{50}});
+    MockTransport tp;
+    tp.running.store(true);
+    gw.add("t1", &tp);
+
+    gw.start_monitor();
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    gw.stop_monitor();
+    // Should not crash or hang
+}
+
+TEST(Gateway, HealthOutOfBoundsReturnsStopped) {
+    Gateway gw;
+    EXPECT_EQ(gw.health(999), ConnHealth::Stopped);
+}
+
+TEST(Gateway, TagOutOfBoundsReturnsEmpty) {
+    Gateway gw;
+    EXPECT_EQ(gw.tag(999), "");
+}
+
+TEST(ConnHealth, NameCoversAllValues) {
+    EXPECT_EQ(conn_health_name(ConnHealth::Healthy), "HEALTHY");
+    EXPECT_EQ(conn_health_name(ConnHealth::Degraded), "DEGRADED");
+    EXPECT_EQ(conn_health_name(ConnHealth::Disconnected), "DISCONNECTED");
+    EXPECT_EQ(conn_health_name(ConnHealth::Stopped), "STOPPED");
+}
