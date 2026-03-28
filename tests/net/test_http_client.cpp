@@ -1,0 +1,504 @@
+/// @file test_http_client.cpp
+/// Unit tests for HttpClient request builder, response parser, and header lookup.
+///
+/// Tests pure functions (build_http_request, parse_http_response, find_header)
+/// that don't require network access. Live integration tests are separated
+/// into a dedicated test group (HttpClientLive) gated by an environment variable.
+
+#include <string>
+#include <string_view>
+
+#include <gtest/gtest.h>
+
+#include "eph/net/http_client.hpp"
+
+using namespace eph::net;
+
+// =============================================================================
+// build_http_request — GET
+// =============================================================================
+
+TEST(HttpClientRequest, GetBasic) {
+    auto result = build_http_request("GET", "api.binance.com", "/api/v3/ticker/price");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& req = *result;
+
+    EXPECT_NE(req.find("GET /api/v3/ticker/price HTTP/1.1\r\n"), std::string::npos);
+    EXPECT_NE(req.find("Host: api.binance.com\r\n"), std::string::npos);
+    EXPECT_NE(req.find("Connection: close\r\n"), std::string::npos);
+    // Should NOT have Content-Length for GET without body
+    EXPECT_EQ(req.find("Content-Length:"), std::string::npos);
+    // Ends with \r\n\r\n
+    EXPECT_EQ(req.substr(req.size() - 4), "\r\n\r\n");
+}
+
+TEST(HttpClientRequest, GetWithExtraHeaders) {
+    auto result = build_http_request("GET", "api.exchange.com", "/v1/balance",
+        /*body=*/{}, /*content_type=*/{},
+        "Authorization: Bearer tok123\r\nX-MBX-APIKEY: key456\r\n");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& req = *result;
+
+    EXPECT_NE(req.find("Authorization: Bearer tok123\r\n"), std::string::npos);
+    EXPECT_NE(req.find("X-MBX-APIKEY: key456\r\n"), std::string::npos);
+}
+
+TEST(HttpClientRequest, GetWithQueryString) {
+    auto result = build_http_request("GET", "api.binance.com",
+        "/api/v3/depth?symbol=BTCUSDT&limit=5");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("GET /api/v3/depth?symbol=BTCUSDT&limit=5 HTTP/1.1"),
+              std::string::npos);
+}
+
+// =============================================================================
+// build_http_request — POST
+// =============================================================================
+
+TEST(HttpClientRequest, PostWithJsonBody) {
+    std::string body = R"({"symbol":"BTCUSDT","side":"BUY","quantity":"0.01"})";
+    auto result = build_http_request("POST", "api.exchange.com", "/api/v1/order",
+        body, "application/json");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    auto& req = *result;
+
+    EXPECT_NE(req.find("POST /api/v1/order HTTP/1.1\r\n"), std::string::npos);
+    EXPECT_NE(req.find("Content-Type: application/json\r\n"), std::string::npos);
+    EXPECT_NE(req.find(std::format("Content-Length: {}\r\n", body.size())),
+              std::string::npos);
+    // Body should appear after \r\n\r\n
+    auto header_end = req.find("\r\n\r\n");
+    ASSERT_NE(header_end, std::string::npos);
+    EXPECT_EQ(req.substr(header_end + 4), body);
+}
+
+TEST(HttpClientRequest, PostWithFormBody) {
+    std::string body = "symbol=BTCUSDT&side=BUY&quantity=0.01";
+    auto result = build_http_request("POST", "api.exchange.com", "/order",
+        body, "application/x-www-form-urlencoded");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("Content-Type: application/x-www-form-urlencoded\r\n"),
+              std::string::npos);
+    EXPECT_NE(result->find(std::format("Content-Length: {}\r\n", body.size())),
+              std::string::npos);
+}
+
+TEST(HttpClientRequest, PostEmptyBodyOmitsContentType) {
+    auto result = build_http_request("POST", "host.com", "/endpoint",
+        /*body=*/{}, "application/json");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    // Empty body should not produce Content-Type or Content-Length
+    EXPECT_EQ(result->find("Content-Type:"), std::string::npos);
+    EXPECT_EQ(result->find("Content-Length:"), std::string::npos);
+}
+
+TEST(HttpClientRequest, PostWithExtraHeaders) {
+    auto result = build_http_request("POST", "host.com", "/api",
+        R"({"key":"val"})", "application/json",
+        "X-Custom: value\r\n");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("X-Custom: value\r\n"), std::string::npos);
+}
+
+// =============================================================================
+// build_http_request — input validation
+// =============================================================================
+
+TEST(HttpClientRequest, EmptyMethodReturnsError) {
+    auto result = build_http_request("", "host.com", "/path");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("method"), std::string::npos);
+}
+
+TEST(HttpClientRequest, EmptyHostReturnsError) {
+    auto result = build_http_request("GET", "", "/path");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Host"), std::string::npos);
+}
+
+TEST(HttpClientRequest, EmptyPathReturnsError) {
+    auto result = build_http_request("GET", "host.com", "");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Path"), std::string::npos);
+}
+
+// =============================================================================
+// build_http_request — other methods
+// =============================================================================
+
+TEST(HttpClientRequest, DeleteMethod) {
+    auto result = build_http_request("DELETE", "api.exchange.com", "/api/v1/order/123");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("DELETE /api/v1/order/123 HTTP/1.1\r\n"), std::string::npos);
+}
+
+TEST(HttpClientRequest, PutMethodWithBody) {
+    auto result = build_http_request("PUT", "host.com", "/resource",
+        R"({"updated":true})", "application/json");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("PUT /resource HTTP/1.1\r\n"), std::string::npos);
+    EXPECT_NE(result->find("Content-Type: application/json\r\n"), std::string::npos);
+}
+
+// =============================================================================
+// parse_http_response — success cases
+// =============================================================================
+
+TEST(HttpClientResponse, Parse200Ok) {
+    std::string raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 27\r\n"
+        "\r\n"
+        R"({"price":"50000.00","qty":1})";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 200);
+    EXPECT_EQ(result->body, R"({"price":"50000.00","qty":1})");
+    EXPECT_NE(result->headers_raw.find("Content-Type: application/json"),
+              std::string::npos);
+}
+
+TEST(HttpClientResponse, Parse404NotFound) {
+    std::string raw =
+        "HTTP/1.1 404 Not Found\r\n"
+        "Content-Length: 9\r\n"
+        "\r\n"
+        "Not Found";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 404);
+    EXPECT_EQ(result->body, "Not Found");
+}
+
+TEST(HttpClientResponse, Parse500InternalServerError) {
+    std::string raw =
+        "HTTP/1.1 500 Internal Server Error\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 500);
+    EXPECT_TRUE(result->body.empty());
+}
+
+TEST(HttpClientResponse, ParseEmptyBody) {
+    std::string raw =
+        "HTTP/1.1 204 No Content\r\n"
+        "\r\n";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 204);
+    EXPECT_TRUE(result->body.empty());
+}
+
+TEST(HttpClientResponse, ParseBodyLargerThanContentLength) {
+    // Body has extra data — parser should include all data after headers
+    // (Content-Length enforcement is done at the I/O layer, not the parser)
+    std::string raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "helloextra";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 200);
+    // Parser returns everything after headers
+    EXPECT_EQ(result->body, "helloextra");
+}
+
+TEST(HttpClientResponse, ParseMultipleHeaders) {
+    std::string raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "X-RateLimit-Remaining: 1199\r\n"
+        "X-RateLimit-Reset: 1640000000\r\n"
+        "Content-Length: 2\r\n"
+        "\r\n"
+        "{}";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 200);
+    EXPECT_EQ(result->body, "{}");
+    // All headers should be in headers_raw
+    EXPECT_NE(result->headers_raw.find("X-RateLimit-Remaining: 1199"),
+              std::string::npos);
+    EXPECT_NE(result->headers_raw.find("X-RateLimit-Reset: 1640000000"),
+              std::string::npos);
+}
+
+// =============================================================================
+// parse_http_response — error cases
+// =============================================================================
+
+TEST(HttpClientResponse, ParseIncompleteNoHeaderEnd) {
+    std::string raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Incomplete"), std::string::npos);
+}
+
+TEST(HttpClientResponse, ParseMalformedStatusLine) {
+    std::string raw = "GARBAGE\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Malformed"), std::string::npos);
+}
+
+TEST(HttpClientResponse, ParseInvalidStatusCode) {
+    std::string raw = "HTTP/1.1 XYZ Bad\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Invalid"), std::string::npos);
+}
+
+TEST(HttpClientResponse, ParseEmptyInput) {
+    auto result = parse_http_response("");
+    EXPECT_FALSE(result.has_value());
+}
+
+// =============================================================================
+// parse_http_response — edge cases
+// =============================================================================
+
+TEST(HttpClientResponse, ParseStatusCodeOnly) {
+    // Some servers return status code without reason phrase
+    std::string raw = "HTTP/1.1 200\r\n\r\n";
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 200);
+}
+
+TEST(HttpClientResponse, ParseHeadersRawExcludesStatusLine) {
+    std::string raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "\r\n";
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    // headers_raw should NOT contain the status line
+    EXPECT_EQ(result->headers_raw.find("HTTP/1.1"), std::string::npos);
+    EXPECT_NE(result->headers_raw.find("Content-Type: text/plain"),
+              std::string::npos);
+}
+
+TEST(HttpClientResponse, ParseBinaryBody) {
+    // Body with null bytes and binary data
+    std::string raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 8\r\n"
+        "\r\n";
+    raw.append("\x00\x01\x02\x03\x04\x05\x06\x07", 8);
+
+    auto result = parse_http_response(raw);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->body.size(), 8u);
+}
+
+// =============================================================================
+// find_header — case-insensitive header lookup
+// =============================================================================
+
+TEST(HttpClientFindHeader, BasicLookup) {
+    std::string headers =
+        "Content-Type: application/json\r\n"
+        "Content-Length: 42\r\n"
+        "X-Custom: value123\r\n";
+
+    EXPECT_EQ(find_header(headers, "Content-Type"), "application/json");
+    EXPECT_EQ(find_header(headers, "Content-Length"), "42");
+    EXPECT_EQ(find_header(headers, "X-Custom"), "value123");
+}
+
+TEST(HttpClientFindHeader, CaseInsensitive) {
+    std::string headers = "content-type: text/html\r\n";
+
+    EXPECT_EQ(find_header(headers, "Content-Type"), "text/html");
+    EXPECT_EQ(find_header(headers, "CONTENT-TYPE"), "text/html");
+    EXPECT_EQ(find_header(headers, "content-type"), "text/html");
+}
+
+TEST(HttpClientFindHeader, TrimsWhitespace) {
+    std::string headers = "Content-Type:   application/json  \r\n";
+    EXPECT_EQ(find_header(headers, "Content-Type"), "application/json");
+}
+
+TEST(HttpClientFindHeader, NotFoundReturnsEmpty) {
+    std::string headers = "Content-Type: text/html\r\n";
+    EXPECT_EQ(find_header(headers, "X-Missing"), "");
+}
+
+TEST(HttpClientFindHeader, EmptyHeaders) {
+    EXPECT_EQ(find_header("", "Content-Type"), "");
+}
+
+TEST(HttpClientFindHeader, HeaderWithColonInValue) {
+    std::string headers = "Location: https://example.com:8080/path\r\n";
+    EXPECT_EQ(find_header(headers, "Location"), "https://example.com:8080/path");
+}
+
+TEST(HttpClientFindHeader, MultipleHeadersReturnFirst) {
+    // Duplicate headers — returns the first one found
+    std::string headers =
+        "Set-Cookie: a=1\r\n"
+        "Set-Cookie: b=2\r\n";
+    EXPECT_EQ(find_header(headers, "Set-Cookie"), "a=1");
+}
+
+// =============================================================================
+// is_response_complete — Content-Length detection
+// =============================================================================
+
+TEST(HttpClientComplete, CompleteWithContentLength) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, IncompleteBody) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 10\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_FALSE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, NoContentLength) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "some data";
+    // Without Content-Length, we can't know if complete — returns false
+    EXPECT_FALSE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, IncompleteHeaders) {
+    std::string buf = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n";
+    EXPECT_FALSE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, ZeroContentLength) {
+    std::string buf =
+        "HTTP/1.1 204 No Content\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, LowercaseContentLength) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "content-length: 3\r\n"
+        "\r\n"
+        "abc";
+    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+}
+
+// =============================================================================
+// HttpClient::Config
+// =============================================================================
+
+TEST(HttpClientConfig, DefaultValues) {
+    HttpClient::Config cfg;
+    cfg.host = "api.exchange.com";
+    EXPECT_EQ(cfg.port, 443);
+    EXPECT_TRUE(cfg.use_tls);
+    EXPECT_EQ(cfg.timeout, std::chrono::milliseconds{5000});
+    EXPECT_TRUE(cfg.ca_cert_path.empty());
+}
+
+TEST(HttpClientConfig, DumpContainsFields) {
+    HttpClient::Config cfg{
+        .host = "api.binance.com",
+        .port = 443,
+        .use_tls = true,
+        .timeout = std::chrono::milliseconds{3000},
+    };
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("api.binance.com"), std::string::npos);
+    EXPECT_NE(dump.find("443"), std::string::npos);
+    EXPECT_NE(dump.find("3000"), std::string::npos);
+}
+
+// =============================================================================
+// HttpClient construction
+// =============================================================================
+
+TEST(HttpClient, ConstructWithConfig) {
+    HttpClient client(HttpClient::Config{
+        .host = "api.binance.com",
+        .port = 443,
+        .use_tls = true,
+        .timeout = std::chrono::milliseconds{3000},
+    });
+
+    EXPECT_EQ(client.config().host, "api.binance.com");
+    EXPECT_EQ(client.config().port, 443);
+    EXPECT_TRUE(client.config().use_tls);
+}
+
+// =============================================================================
+// Round-trip: build request -> parse response
+// =============================================================================
+
+TEST(HttpClientRoundTrip, BuildAndParseSimulatedExchange) {
+    // Simulate building a request and parsing a typical exchange response
+    auto req = build_http_request("GET", "api.binance.com",
+        "/api/v3/ticker/price?symbol=BTCUSDT");
+    ASSERT_TRUE(req.has_value()) << req.error();
+
+    // Simulate server response
+    std::string server_response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 39\r\n"
+        "X-MBX-USED-WEIGHT-1M: 1\r\n"
+        "\r\n"
+        R"({"symbol":"BTCUSDT","price":"50000.00"})";
+
+    auto resp = parse_http_response(server_response);
+    ASSERT_TRUE(resp.has_value()) << resp.error();
+    EXPECT_EQ(resp->status_code, 200);
+    EXPECT_EQ(resp->body, R"({"symbol":"BTCUSDT","price":"50000.00"})");
+    EXPECT_EQ(find_header(resp->headers_raw, "Content-Type"), "application/json");
+    EXPECT_EQ(find_header(resp->headers_raw, "X-MBX-USED-WEIGHT-1M"), "1");
+}
+
+TEST(HttpClientRoundTrip, PostOrderAndParseResponse) {
+    std::string order_body =
+        R"({"symbol":"ETHUSDT","side":"BUY","type":"LIMIT","price":"3000","quantity":"1"})";
+    auto req = build_http_request("POST", "api.exchange.com", "/api/v1/order",
+        order_body, "application/json",
+        "X-API-KEY: mykey123\r\n");
+    ASSERT_TRUE(req.has_value()) << req.error();
+
+    // Verify request has all parts
+    EXPECT_NE(req->find("POST /api/v1/order HTTP/1.1"), std::string::npos);
+    EXPECT_NE(req->find("X-API-KEY: mykey123"), std::string::npos);
+    EXPECT_NE(req->find(order_body), std::string::npos);
+
+    // Simulate response
+    std::string server_response =
+        "HTTP/1.1 201 Created\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 25\r\n"
+        "\r\n"
+        R"({"orderId":"12345","ok":1})";
+
+    auto resp = parse_http_response(server_response);
+    ASSERT_TRUE(resp.has_value()) << resp.error();
+    EXPECT_EQ(resp->status_code, 201);
+    EXPECT_EQ(resp->body, R"({"orderId":"12345","ok":1})");
+}
