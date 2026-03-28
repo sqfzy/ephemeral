@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -131,8 +132,25 @@ struct ConnectorOptions {
         return {};
     }
 
-    [[nodiscard]] friend bool operator==(const ConnectorOptions&,
-                                          const ConnectorOptions&) = default;
+    [[nodiscard]] friend bool operator==(const ConnectorOptions& a,
+                                          const ConnectorOptions& b) noexcept {
+        // rte_ether_addr is a C struct without operator==, so we compare
+        // the optional<rte_ether_addr> manually via memcmp.
+        auto mac_eq = [](const std::optional<rte_ether_addr>& x,
+                         const std::optional<rte_ether_addr>& y) -> bool {
+            if (x.has_value() != y.has_value()) return false;
+            if (!x.has_value()) return true;
+            return std::memcmp(&*x, &*y, sizeof(rte_ether_addr)) == 0;
+        };
+        return a.platform == b.platform
+            && a.local_port == b.local_port
+            && a.tx_queue_id == b.tx_queue_id
+            && a.rx_queue_id == b.rx_queue_id
+            && mac_eq(a.gateway_mac, b.gateway_mac)
+            && a.arp_timeout == b.arp_timeout
+            && a.connect_timeout == b.connect_timeout
+            && a.dns == b.dns;
+    }
 
     [[nodiscard]] std::string to_json() const {
         return std::format(
