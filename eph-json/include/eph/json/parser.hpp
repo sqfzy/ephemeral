@@ -28,6 +28,63 @@
 namespace eph::json {
 
 // ---------------------------------------------------------------------------
+// Internal: whitespace lookup table (space, tab, newline, carriage return)
+// ---------------------------------------------------------------------------
+namespace detail {
+
+/// 256-byte lookup table: ws_lut[c] is true for whitespace chars.
+/// Replaces repeated (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+/// chains with a single indexed load — one branch instead of four.
+inline constexpr auto make_ws_lut() noexcept {
+    std::array<bool, 256> lut{};
+    lut[' ']  = true;
+    lut['\t'] = true;
+    lut['\n'] = true;
+    lut['\r'] = true;
+    return lut;
+}
+inline constexpr auto kWsLut = make_ws_lut();
+
+/// Skip whitespace using the LUT. Returns pointer past whitespace.
+inline const char* skip_ws(const char* p, const char* end) noexcept {
+    while (p < end && kWsLut[static_cast<unsigned char>(*p)]) ++p;
+    return p;
+}
+
+/// Scan forward to find closing quote, handling escape sequences.
+/// Returns pointer TO the closing '"', or end if not found.
+/// Byte-at-a-time is optimal for the short strings (1-10 chars) typical
+/// in exchange JSON — memchr's call overhead exceeds its SIMD benefit here.
+inline const char* scan_string(const char* p, const char* end) noexcept {
+    while (p < end) {
+        if (*p == '"') return p;
+        if (*p == '\\') [[unlikely]] {
+            ++p; // skip escaped char
+            if (p >= end) [[unlikely]] return end;
+        }
+        ++p;
+    }
+    return end;
+}
+
+/// 256-byte LUT for value-terminating characters: comma, brace, whitespace.
+/// Used to scan unquoted values (numbers, booleans, null) without multiple
+/// branch conditions per byte.
+inline constexpr auto make_val_term_lut() noexcept {
+    std::array<bool, 256> lut{};
+    lut[',']  = true;
+    lut['}']  = true;
+    lut[' ']  = true;
+    lut['\t'] = true;
+    lut['\n'] = true;
+    lut['\r'] = true;
+    return lut;
+}
+inline constexpr auto kValTermLut = make_val_term_lut();
+
+} // namespace detail
+
+// ---------------------------------------------------------------------------
 // Parse error
 // ---------------------------------------------------------------------------
 
@@ -126,10 +183,18 @@ private:
     friend std::expected<JsonView, ParseError>
     parse(const uint8_t* data, size_t len) noexcept;
 
-    /// Single linear scan, used by all accessors. Returns nullptr if not found.
+    /// Single linear scan with first-char + length pre-filter.
+    /// Most keys in exchange messages are 1-2 chars, so checking the first
+    /// char and length before the full comparison eliminates most mismatches
+    /// with a single comparison (packed into one branch).
     [[nodiscard]] const Field* find_field(std::string_view key) const noexcept {
+        const auto len = key.size();
+        const auto c0  = key[0]; // caller never passes empty key
         for (size_t i = 0; i < count_; ++i) {
-            if (fields_[i].key == key) return &fields_[i];
+            const auto& k = fields_[i].key;
+            if (k.size() == len && k[0] == c0 &&
+                (len <= 1 || k == key))
+                return &fields_[i];
         }
         return nullptr;
     }
@@ -232,76 +297,78 @@ private:
 /// @return JsonView on success, ParseError on failure
 [[nodiscard]] inline std::expected<JsonView, ParseError>
 parse(const uint8_t* data, size_t len) noexcept {
-    if (len == 0) return std::unexpected(ParseError::kIncomplete);
+    if (len == 0) [[unlikely]] return std::unexpected(ParseError::kIncomplete);
 
     const char* p = reinterpret_cast<const char*>(data);
     const char* end = p + len;
 
-    // Skip leading whitespace
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+    // Skip leading whitespace (LUT-based)
+    p = detail::skip_ws(p, end);
 
-    if (p >= end || *p != '{') return std::unexpected(ParseError::kInvalidFormat);
+    if (p >= end || *p != '{') [[unlikely]]
+        return std::unexpected(ParseError::kInvalidFormat);
     ++p; // skip '{'
 
     JsonView view;
 
-    while (p < end) {
+    while (p < end) [[likely]] {
         // Skip whitespace
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
-        if (p >= end) return std::unexpected(ParseError::kIncomplete);
+        p = detail::skip_ws(p, end);
+        if (p >= end) [[unlikely]] return std::unexpected(ParseError::kIncomplete);
 
         // End of object
-        if (*p == '}') return view;
+        if (*p == '}') [[unlikely]] return view;
 
         // Comma between fields
-        if (view.count_ > 0) {
-            if (*p != ',') return std::unexpected(ParseError::kInvalidFormat);
+        if (view.count_ > 0) [[likely]] {
+            if (*p != ',') [[unlikely]]
+                return std::unexpected(ParseError::kInvalidFormat);
             ++p;
-            while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
-            if (p >= end) return std::unexpected(ParseError::kIncomplete);
+            p = detail::skip_ws(p, end);
+            if (p >= end) [[unlikely]]
+                return std::unexpected(ParseError::kIncomplete);
         }
 
         // Field overflow check
-        if (view.count_ >= JsonView::kMaxFields) {
+        if (view.count_ >= JsonView::kMaxFields) [[unlikely]] {
             return std::unexpected(ParseError::kFieldOverflow);
         }
 
         // Parse key (must be a quoted string)
-        if (*p != '"') return std::unexpected(ParseError::kInvalidFormat);
+        if (*p != '"') [[unlikely]]
+            return std::unexpected(ParseError::kInvalidFormat);
         ++p;
         const char* key_start = p;
-        while (p < end && *p != '"') {
-            if (*p == '\\') { ++p; if (p >= end) return std::unexpected(ParseError::kIncomplete); }
-            ++p;
-        }
-        if (p >= end) return std::unexpected(ParseError::kIncomplete);
+        p = detail::scan_string(p, end);
+        if (p >= end) [[unlikely]] return std::unexpected(ParseError::kIncomplete);
         std::string_view key(key_start, static_cast<size_t>(p - key_start));
         ++p; // skip closing quote
 
-        // Skip whitespace + colon
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
-        if (p >= end || *p != ':') return std::unexpected(ParseError::kInvalidFormat);
+        // Skip whitespace + colon. In minified JSON (the common case for
+        // exchange data), the colon immediately follows the key — skip_ws
+        // returns instantly when the first char is ':'.
+        p = detail::skip_ws(p, end);
+        if (p >= end || *p != ':') [[unlikely]]
+            return std::unexpected(ParseError::kInvalidFormat);
         ++p;
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
-        if (p >= end) return std::unexpected(ParseError::kIncomplete);
+        p = detail::skip_ws(p, end);
+        if (p >= end) [[unlikely]] return std::unexpected(ParseError::kIncomplete);
 
         // Parse value
         auto& field = view.fields_[view.count_];
         field.key = key;
 
-        if (*p == '"') {
-            // String value
+        if (*p == '"') [[likely]] {
+            // String value — most common in Binance/OKX data.
             ++p;
             const char* val_start = p;
-            while (p < end && *p != '"') {
-                if (*p == '\\') { ++p; if (p >= end) return std::unexpected(ParseError::kIncomplete); }
-                ++p;
-            }
-            if (p >= end) return std::unexpected(ParseError::kIncomplete);
+            p = detail::scan_string(p, end);
+            if (p >= end) [[unlikely]]
+                return std::unexpected(ParseError::kIncomplete);
             field.value = std::string_view(val_start, static_cast<size_t>(p - val_start));
             field.is_string = true;
             ++p; // skip closing quote
-        } else if (*p == '{' || *p == '[') {
+        } else if (*p == '{' || *p == '[') [[unlikely]] {
             // Nested object/array — skip as opaque value (count braces/brackets)
             char open = *p;
             char close = (open == '{') ? '}' : ']';
@@ -323,14 +390,14 @@ parse(const uint8_t* data, size_t len) noexcept {
                 else if (*p == close) --depth;
                 ++p;
             }
-            if (depth != 0) return std::unexpected(ParseError::kIncomplete);
+            if (depth != 0) [[unlikely]]
+                return std::unexpected(ParseError::kIncomplete);
             field.value = std::string_view(val_start, static_cast<size_t>(p - val_start));
             field.is_string = false;
         } else {
-            // Number, boolean, or null
+            // Number, boolean, or null — scan until delimiter (single LUT check)
             const char* val_start = p;
-            while (p < end && *p != ',' && *p != '}' && *p != ' ' &&
-                   *p != '\t' && *p != '\n' && *p != '\r') {
+            while (p < end && !detail::kValTermLut[static_cast<unsigned char>(*p)]) {
                 ++p;
             }
             field.value = std::string_view(val_start, static_cast<size_t>(p - val_start));
