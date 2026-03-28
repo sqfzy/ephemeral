@@ -161,6 +161,7 @@ local bench_module_deps = {
     net        = "eph-net",
     itch       = "eph-itch",
     fix        = "eph-fix",
+    json       = "eph-json",
     dpdk       = "eph-dpdk",
 }
 
