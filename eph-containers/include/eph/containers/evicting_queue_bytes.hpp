@@ -53,7 +53,7 @@ struct EvictingQueueBytesStats {
                                                            const EvictingQueueBytesStats& rhs) noexcept {
         return EvictingQueueBytesStats{
             .total_pushed      = lhs.total_pushed - rhs.total_pushed,
-            .last_pop_id       = lhs.last_pop_id,
+            .last_pop_id       = lhs.last_pop_id - rhs.last_pop_id,
             .current_size      = lhs.current_size,
             .capacity          = lhs.capacity,
             .total_overwritten = lhs.total_overwritten - rhs.total_overwritten,
@@ -63,7 +63,6 @@ struct EvictingQueueBytesStats {
     /// Messages consumed per second over a measurement interval.
     /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
     [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
-        // For evicting bytes queues, use last_pop_id difference as throughput
         return duration_ns > 0
             ? static_cast<double>(last_pop_id) * 1e9 / static_cast<double>(duration_ns)
             : 0.0;

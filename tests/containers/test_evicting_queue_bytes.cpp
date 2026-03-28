@@ -754,3 +754,65 @@ TEST(EvictingQueueBytesStats, StdFormatterProducesDumpOutput) {
     EXPECT_EQ(formatted, s.dump());
     EXPECT_NE(formatted.find("EvictingQueueBytes::Stats:"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// throughput() and loss_rate() tests
+// ---------------------------------------------------------------------------
+
+TEST(EvictingQueueBytesStats, throughput_on_delta_snapshot) {
+    EvictingQueueBytes<64, 4> queue;
+
+    // Push 3 items and pop them
+    std::vector<uint8_t> payload = {0xAA};
+    (void)queue.try_push(payload);
+    (void)queue.try_push(payload);
+    (void)queue.try_push(payload);
+
+    std::array<uint8_t, 64> out{};
+    queue.try_pop_latest(out);
+
+    auto s1 = queue.stats();
+
+    // Push and pop 2 more
+    (void)queue.try_push(payload);
+    (void)queue.try_push(payload);
+    queue.try_pop_latest(out);
+
+    auto s2 = queue.stats();
+    auto delta = s2 - s1;
+
+    // delta.last_pop_id should reflect only the pops in the interval
+    EXPECT_EQ(delta.total_pushed, 2u);
+    // last_pop_id delta should be > 0 (items were popped in interval)
+    EXPECT_GT(delta.last_pop_id, 0u);
+    // last_pop_id delta should NOT equal the absolute s2.last_pop_id
+    EXPECT_LT(delta.last_pop_id, s2.last_pop_id);
+
+    // Throughput over 1 second (1e9 ns) should equal the delta pop count
+    double tp = delta.throughput(1'000'000'000);
+    EXPECT_DOUBLE_EQ(tp, static_cast<double>(delta.last_pop_id));
+}
+
+TEST(EvictingQueueBytesStats, throughput_zero_duration_returns_zero) {
+    using Stats = eph::containers::EvictingQueueBytesStats;
+    Stats s{.total_pushed = 100, .last_pop_id = 50};
+    EXPECT_DOUBLE_EQ(s.throughput(0), 0.0);
+}
+
+TEST(EvictingQueueBytesStats, loss_rate_no_overwrite_returns_zero) {
+    using Stats = eph::containers::EvictingQueueBytesStats;
+    Stats s{.total_pushed = 100, .total_overwritten = 0};
+    EXPECT_DOUBLE_EQ(s.loss_rate(), 0.0);
+}
+
+TEST(EvictingQueueBytesStats, loss_rate_with_overwrite) {
+    using Stats = eph::containers::EvictingQueueBytesStats;
+    Stats s{.total_pushed = 100, .total_overwritten = 25};
+    EXPECT_DOUBLE_EQ(s.loss_rate(), 0.25);
+}
+
+TEST(EvictingQueueBytesStats, loss_rate_no_pushes_returns_zero) {
+    using Stats = eph::containers::EvictingQueueBytesStats;
+    Stats s{.total_pushed = 0, .total_overwritten = 0};
+    EXPECT_DOUBLE_EQ(s.loss_rate(), 0.0);
+}
