@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -68,9 +69,9 @@ struct EvictingQueueStats {
     [[nodiscard]] friend EvictingQueueStats operator-(const EvictingQueueStats& lhs,
                                                       const EvictingQueueStats& rhs) noexcept {
         return EvictingQueueStats{
-            .total_pushed = lhs.total_pushed - rhs.total_pushed,
-            .total_popped = lhs.total_popped - rhs.total_popped,
-            .overwritten  = lhs.overwritten - rhs.overwritten,
+            .total_pushed = lhs.total_pushed >= rhs.total_pushed ? lhs.total_pushed - rhs.total_pushed : 0,
+            .total_popped = lhs.total_popped >= rhs.total_popped ? lhs.total_popped - rhs.total_popped : 0,
+            .overwritten  = lhs.overwritten >= rhs.overwritten ? lhs.overwritten - rhs.overwritten : 0,
             .current_size = lhs.current_size,  // point-in-time, not diffable
             .capacity     = lhs.capacity,
         };
@@ -90,7 +91,7 @@ struct EvictingQueueStats {
     /// Apply to a delta for interval-based monitoring.
     [[nodiscard]] double loss_rate() const noexcept {
         return total_pushed > 0
-            ? static_cast<double>(overwritten) / static_cast<double>(total_pushed)
+            ? std::clamp(static_cast<double>(overwritten) / static_cast<double>(total_pushed), 0.0, 1.0)
             : 0.0;
     }
 

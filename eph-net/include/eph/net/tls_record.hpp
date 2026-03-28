@@ -108,6 +108,17 @@ inline bool parse_record_header(const uint8_t* src,
                                  uint16_t& payload_len) noexcept {
     content_type = src[0];
     payload_len = static_cast<uint16_t>((src[3] << 8) | src[4]);
+
+    // Log unexpected version bytes — TLS 1.3 records use legacy version 0x0303
+    // (TLS 1.2 compat) per RFC 8446 §5.1. Don't reject; some middleboxes
+    // or implementations may use other values.
+    if (src[1] != 0x03 || src[2] != 0x03) {
+        SPDLOG_LOGGER_DEBUG(detail::tls_record_logger(),
+            "TLS record header: unexpected version bytes 0x{:02X}{:02X} "
+            "(expected 0x0303 for TLS 1.2 compat), content_type=0x{:02X}",
+            src[1], src[2], content_type);
+    }
+
     // TLS 1.3: only application_data records pass through AEAD decryption
     return content_type == kContentTypeAppData &&
            payload_len <= tls_const::kMaxRecordPayload + kAuthTagLen + 1;

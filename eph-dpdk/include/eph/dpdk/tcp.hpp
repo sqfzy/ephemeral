@@ -328,6 +328,10 @@ public:
                 "Cannot connect: session in state {}", tcp_state_name(state_)));
         }
 
+        // Clear residual state from any previous failed connection attempt
+        reorder_count_ = 0;
+        ack_pending_ = false;
+
         if (snd_nxt_ == 0 && snd_una_ == 0) {
             SPDLOG_LOGGER_ERROR(log, "ISN generation failed — CSPRNG unavailable");
             return std::unexpected("ISN generation failed: CSPRNG unavailable");

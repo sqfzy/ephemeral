@@ -123,7 +123,10 @@ constexpr std::string_view error_name(SendError e) noexcept {
     return send_error_name(e);
 }
 
-/// Check if a SendError indicates success (enables `if (!send(...))` pattern).
+/// Returns true when an error occurred (non-kOk), enabling the idiom:
+///   if (!send(...)) handle_error();
+/// This inverts the usual boolean convention so that the "not-ok" case
+/// reads naturally as a failure check in if-statements.
 constexpr bool operator!(SendError e) noexcept {
     return e != SendError::kOk;
 }

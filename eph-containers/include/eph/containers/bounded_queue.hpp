@@ -62,8 +62,8 @@ struct BoundedQueueStats {
     [[nodiscard]] friend BoundedQueueStats operator-(const BoundedQueueStats& lhs,
                                                      const BoundedQueueStats& rhs) noexcept {
         return BoundedQueueStats{
-            .total_pushed = lhs.total_pushed - rhs.total_pushed,
-            .total_popped = lhs.total_popped - rhs.total_popped,
+            .total_pushed = lhs.total_pushed >= rhs.total_pushed ? lhs.total_pushed - rhs.total_pushed : 0,
+            .total_popped = lhs.total_popped >= rhs.total_popped ? lhs.total_popped - rhs.total_popped : 0,
             .current_size = lhs.current_size,  // point-in-time, not diffable
             .capacity     = lhs.capacity,
         };

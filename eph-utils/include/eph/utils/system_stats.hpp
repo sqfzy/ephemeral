@@ -25,7 +25,7 @@
 namespace eph::utils {
 
 namespace detail {
-inline std::shared_ptr<spdlog::logger> system_stats_logger() {
+inline const std::shared_ptr<spdlog::logger>& system_stats_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.system_stats");
         if (!lg) lg = spdlog::stdout_color_mt("utils.system_stats");
@@ -133,7 +133,11 @@ class SystemStats {
 
     ~SystemStats() {
         if (auto_log_) {
-            log_report();
+            try {
+                log_report();
+            } catch (...) {
+                // Swallow exceptions to prevent std::terminate from a destructor
+            }
         }
     }
 

@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "eph/core/detail/json_escape.hpp"
 #include "eph/utils/time.hpp"
 
 namespace eph::utils {
@@ -1031,18 +1032,17 @@ struct Stats {
 
     /// JSON-formatted summary for monitoring system integration.
     /// Consistent with to_json() patterns in TransportStats, RttStats, etc.
-    /// @note `name` is not JSON-escaped; callers must ensure it contains no
-    ///       quotes or control characters (true for all Recorder-generated names).
     [[nodiscard]] std::string to_json() const {
+        auto escaped = eph::net::detail::json_escape(name);
         if (count == 0) {
-            return std::format("{{\"name\":\"{}\",\"count\":0}}", name);
+            return std::format("{{\"name\":\"{}\",\"count\":0}}", escaped);
         }
         return std::format(
             "{{\"name\":\"{}\",\"count\":{},\"avg_ns\":{:.2f},"
             "\"min_ns\":{:.2f},\"max_ns\":{:.2f},\"stddev_ns\":{:.2f},"
             "\"p50_ns\":{:.2f},\"p90_ns\":{:.2f},"
             "\"p99_ns\":{:.2f},\"p999_ns\":{:.2f}}}",
-            name, count, avg_ns,
+            escaped, count, avg_ns,
             min_ns, max_ns, stddev_ns,
             p50_ns, p90_ns, p99_ns, p999_ns);
     }
@@ -1052,7 +1052,7 @@ struct Stats {
     [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
         return Stats{
             .name      = lhs.name,
-            .count     = lhs.count - rhs.count,
+            .count     = lhs.count >= rhs.count ? lhs.count - rhs.count : 0,
             .avg_ns    = lhs.avg_ns,     // point-in-time, not diffable
             .min_ns    = lhs.min_ns,     // point-in-time
             .max_ns    = lhs.max_ns,     // point-in-time

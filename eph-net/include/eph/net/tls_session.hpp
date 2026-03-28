@@ -197,6 +197,10 @@ inline bool hkdf_expand_label(const EVP_MD* digest,
     std::memcpy(info + pos, label, label_len);    pos += label_len;
     info[pos++] = 0; // empty context
 
+    // Verify we haven't overflowed the info buffer.
+    // 3 (header) + kPrefixLen(6) + label_len + 1 (context) must fit in 256 bytes.
+    assert(pos <= sizeof(info) && "hkdf_expand_label: info buffer overflow");
+
     return HKDF_expand(out, out_len, digest, secret, secret_len, info, pos) == 1;
 }
 

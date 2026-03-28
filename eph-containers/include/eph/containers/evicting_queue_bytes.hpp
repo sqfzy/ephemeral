@@ -75,7 +75,7 @@ struct EvictingQueueBytesStats {
     /// Data loss rate as a fraction [0.0, 1.0].
     [[nodiscard]] double loss_rate() const noexcept {
         return total_pushed > 0
-            ? static_cast<double>(total_overwritten) / static_cast<double>(total_pushed)
+            ? std::clamp(static_cast<double>(total_overwritten) / static_cast<double>(total_pushed), 0.0, 1.0)
             : 0.0;
     }
 
