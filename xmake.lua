@@ -280,6 +280,15 @@ target("test_binance_rest")
     add_packages("gtest")
     add_defines("SPDLOG_NO_EXCEPTIONS")
 
+target("test_metrics_concept")
+    set_kind("binary")
+    set_group("tests")
+    set_default(false)
+    add_files("tests/core/test_metrics_concept.cpp")
+    add_deps("eph-core", "eph-utils")
+    add_packages("gtest")
+    add_defines("SPDLOG_NO_EXCEPTIONS")
+
 -- ===========================================================================
 -- examples
 -- ===========================================================================
