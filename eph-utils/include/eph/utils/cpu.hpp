@@ -240,6 +240,12 @@ set_thread_affinity(int cpu_id, const char* name = nullptr) {
   auto log = detail::cpu_logger();
   const char* tag = name ? name : "thread";
 #if defined(__linux__)
+  if (static_cast<unsigned>(cpu_id) >= CPU_SETSIZE) {
+    auto msg = std::format(
+        "cpu_id={} exceeds CPU_SETSIZE={} for {}", cpu_id, CPU_SETSIZE, tag);
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
+  }
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   CPU_SET(cpu_id, &cpuset);

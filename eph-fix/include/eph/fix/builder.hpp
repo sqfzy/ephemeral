@@ -301,33 +301,35 @@ public:
         char tmp[32];
         size_t off = 0;
 
-        // Handle sign
-        int64_t abs_val = mantissa;
+        // Handle sign — use unsigned negation to avoid UB on INT64_MIN
+        uint64_t abs_val;
         if (mantissa < 0) {
             tmp[off++] = '-';
-            abs_val = -mantissa;
+            abs_val = -static_cast<uint64_t>(mantissa);
+        } else {
+            abs_val = static_cast<uint64_t>(mantissa);
         }
 
         // Compute integer and fractional parts
-        int64_t divisor = 1;
+        uint64_t divisor = 1;
         for (uint8_t d = 0; d < decimals; ++d) divisor *= 10;
 
-        int64_t int_part = abs_val / divisor;
-        int64_t frac_part = abs_val % divisor;
+        uint64_t int_part = abs_val / divisor;
+        uint64_t frac_part = abs_val % divisor;
 
         // Write integer part
-        off += format_uint(static_cast<uint64_t>(int_part), tmp + off);
+        off += format_uint(int_part, tmp + off);
 
         // Write decimal point and fractional part with leading zeros
         tmp[off++] = '.';
         // Leading zeros: if frac_part has fewer digits than decimals
-        int64_t frac_divisor = divisor / 10;
+        uint64_t frac_divisor = divisor / 10;
         while (frac_divisor > 0 && frac_part < frac_divisor) {
             tmp[off++] = '0';
             frac_divisor /= 10;
         }
         if (frac_part > 0) {
-            off += format_uint(static_cast<uint64_t>(frac_part), tmp + off);
+            off += format_uint(frac_part, tmp + off);
         }
 
         return set_trusted(t, std::string_view(tmp, off));
