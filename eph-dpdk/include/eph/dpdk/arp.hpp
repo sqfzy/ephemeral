@@ -68,14 +68,14 @@ static_assert(sizeof(ArpPacket) == kArpPacketLen,
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> arp_logger() {
+inline spdlog::logger* arp_logger() {
     static auto l = [] {
         auto lg = spdlog::get("dpdk.arp");
         if (!lg) lg = spdlog::stdout_color_mt("dpdk.arp");
         // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 /// Format a MAC address as "xx:xx:xx:xx:xx:xx".

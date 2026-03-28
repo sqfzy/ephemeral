@@ -103,8 +103,8 @@ struct DnsConfig {
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (nameserver_ip == 0)
             return "nameserver_ip must not be 0";
-        if (port == 0 || port > 65535)
-            return "port must be in range [1, 65535]";
+        if (port == 0)
+            return "port must not be 0";
         if (timeout.count() <= 0)
             return "timeout must be positive";
         return {};
@@ -123,13 +123,13 @@ struct DnsConfig {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> dns_logger() {
+inline spdlog::logger* dns_logger() {
     static auto l = [] {
         auto lg = spdlog::get("dpdk.dns");
         if (!lg) lg = spdlog::stdout_color_mt("dpdk.dns");
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

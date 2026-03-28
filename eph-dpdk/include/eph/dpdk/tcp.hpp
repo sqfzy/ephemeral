@@ -137,14 +137,14 @@ struct TcpConfig {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> tcp_logger() {
+inline spdlog::logger* tcp_logger() {
     static auto l = [] {
         auto lg = spdlog::get("dpdk.tcp");
         if (!lg) lg = spdlog::stdout_color_mt("dpdk.tcp");
         // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 } // namespace detail

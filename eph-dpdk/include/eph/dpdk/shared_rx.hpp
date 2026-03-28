@@ -59,6 +59,8 @@ public:
     /// Register a TcpSession for packet dispatch.
     /// Creates a per-session SPSC rte_ring and sets the session's shared_rx_source.
     /// Must be called BEFORE start().
+    /// @warning The session must outlive the dispatcher. Destroying a registered
+    ///          session while the dispatcher is running causes undefined behavior.
     std::expected<void, std::string>
     register_session(TcpSession<>& session) {
         auto name = std::format("shrx_{}_{}", port_id_, entries_.size());
@@ -90,6 +92,7 @@ public:
         return {};
     }
 
+    /// @param cpu_id Core to pin the dispatcher thread to (-1 = no pinning).
     void start(int cpu_id = -1) {
         running_.store(true, std::memory_order_release);
         thread_ = std::thread([this, cpu_id] {

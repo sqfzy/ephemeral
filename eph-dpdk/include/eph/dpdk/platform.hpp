@@ -84,14 +84,14 @@ inline uint16_t clamp_desc(uint16_t requested,
     return clamp_desc(requested, lim.nb_min, lim.nb_max, lim.nb_align);
 }
 
-inline std::shared_ptr<spdlog::logger> platform_logger() {
+inline spdlog::logger* platform_logger() {
     static auto l = [] {
         auto lg = spdlog::get("dpdk.platform");
         if (!lg) lg = spdlog::stdout_color_mt("dpdk.platform");
         // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 } // namespace detail
