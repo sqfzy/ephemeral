@@ -2,14 +2,13 @@
 /// Per-symbol independent connection benchmark — DPDK (kernel-bypass).
 ///
 /// Each symbol gets its own Transport + TcpSession + TLS + WS connection,
-/// all sharing a single NIC RX queue via SharedRxDispatcher. This eliminates
-/// the combined stream's batch processing bottleneck: each TLS record
-/// contains exactly 1 WS frame.
+/// all sharing a single NIC RX queue via Reactor. The Reactor dispatches
+/// packets directly to each TcpSession::process_rx with zero ring overhead.
 ///
 /// Architecture:
-///   [NIC queue 0] → [SharedRxDispatcher] → ring₁ → TcpSession₁ → Transport₁
-///                                        → ring₂ → TcpSession₂ → Transport₂
-///                                        → ring₃ → TcpSession₃ → Transport₃
+///   [NIC queue 0] → [Reactor] → TcpSession₁::process_rx → Transport₁
+///                              → TcpSession₂::process_rx → Transport₂
+///                              → TcpSession₃::process_rx → Transport₃
 ///
 /// Usage:
 ///   sudo ./bench_market_persymbol_dpdk -a 0000:28:00.0 -l 4-7
@@ -34,7 +33,7 @@
 #include "eph/containers/evicting_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/shared_rx.hpp"
+#include "eph/dpdk/reactor.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
@@ -73,7 +72,7 @@ struct Config {
     bool use_tls           = true;
     bool verify            = false;
     int  main_cpu          = -1;
-    int  dispatch_cpu      = -1;  // CPU for SharedRxDispatcher
+    int  dispatch_cpu      = -1;  // CPU for Reactor RX thread
 };
 
 static std::atomic<bool> g_running{true};
@@ -129,7 +128,7 @@ int main(int argc, char** argv) {
     }
 
     size_t N = cfg.symbols.size();
-    spdlog::info("Per-symbol benchmark: {} symbols via SharedRxDispatcher", N);
+    spdlog::info("Per-symbol benchmark: {} symbols via Reactor", N);
 
     spdlog::info("Calibrating TSC...");
     if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {
@@ -151,7 +150,6 @@ int main(int argc, char** argv) {
     if (!platform) { spdlog::error("Platform: {}", platform.error()); return 1; }
 
     // ── Step 2: Connect all symbols sequentially (no RX threads yet) ────────
-    // First connection resolves ARP; subsequent reuse gateway MAC.
     eph::dpdk::DpdkEndpoint ep{
         .local_ip = cfg.local_ip, .gateway_ip = cfg.gateway_ip};
 
@@ -161,29 +159,8 @@ int main(int argc, char** argv) {
     };
     std::vector<SessionInfo> sessions;
 
-    // We need to access the raw TcpSession to register with the dispatcher.
-    // Strategy: connect via the standard connector (which handles ARP, TCP,
-    // TLS, WS upgrade), then the Transport's internal TcpSession is already
-    // connected. We set the shared_rx_source on it before Transport starts
-    // its RX thread.
-    //
-    // But Transport::create() immediately starts threads. So we need a
-    // different approach: use the first connection to get the gateway MAC,
-    // then create all sessions via connector(platform&) which returns
-    // unique_ptr<Transport>. The Transport starts RX immediately, but if
-    // we've already set shared_rx_ring on the TcpSession, poll_rx will
-    // use the ring.
-    //
-    // Problem: we can't access Transport's internal TcpSession easily.
-    //
-    // Simplest approach: Connect the first symbol with the full connector
-    // (creates its own Platform), get the gateway MAC. Then for ALL symbols
-    // (including the first), create fresh connections using the shared
-    // Platform. This wastes the first connection but avoids complexity.
-
-    // Resolve gateway MAC via a temporary connection on the shared platform
+    // Resolve gateway MAC via ARP on the shared platform
     spdlog::info("Resolving gateway MAC...");
-    eph::dpdk::ConnectorOptions resolve_opts{};
     auto server_ip = eph::dpdk::resolve_hostname(cfg.host);
     if (!server_ip) { spdlog::error("DNS: {}", server_ip.error()); return 1; }
 
@@ -197,15 +174,10 @@ int main(int argc, char** argv) {
     if (!gw_mac) { spdlog::error("ARP: {}", gw_mac.error()); return 1; }
     spdlog::info("Gateway MAC resolved");
 
-    // Create dispatcher
-    auto dispatcher = eph::dpdk::SharedRxDispatcher::create(cfg.dpdk_port, 0, N);
-    if (!dispatcher) { spdlog::error("Dispatcher: {}", dispatcher.error()); return 1; }
-
-    // Connect each symbol sequentially. TCP+TLS+WS handshake uses direct
-    // rte_eth_rx_burst (no concurrent RX threads). After handshake, the
-    // on_connected_before_threads hook registers with the dispatcher,
-    // setting shared_rx_ring BEFORE the RX thread starts.
-    //
+    // We need to access the raw TcpSession to register with the Reactor.
+    // Strategy: connect via the standard connector with deferred_start,
+    // capture session pointers, then register with Reactor before starting
+    // Transport threads.
     std::vector<eph::dpdk::TcpSession<>*> session_ptrs(N, nullptr);
 
     for (size_t i = 0; i < N; ++i) {
@@ -254,22 +226,32 @@ int main(int argc, char** argv) {
         spdlog::info("Connected: {}", sym);
     }
 
-    // ── Step 3: Register all sessions → start dispatcher → start threads ──
+    // ── Step 3: Create Reactor, register sessions, start ────────────────────
+    eph::dpdk::Reactor reactor({
+        .port_id     = cfg.dpdk_port,
+        .rx_queue_id = 0,
+        .rx_cpu      = cfg.dispatch_cpu,
+    });
+
     for (size_t i = 0; i < N; ++i) {
         if (!session_ptrs[i]) {
             spdlog::error("Session {} has null pointer", i);
             return 1;
         }
-        auto reg = (*dispatcher)->register_session(*session_ptrs[i]);
-        if (!reg) {
-            spdlog::error("Failed to register {}: {}", cfg.symbols[i], reg.error());
+        // Reactor dispatches directly to process_rx — no intermediate ring.
+        // The on_data callback is a no-op here because Transport's RX thread
+        // will consume data from its internal queue.
+        auto conn = reactor.add_connection(session_ptrs[i],
+            [](const uint8_t*, uint16_t, size_t) {});
+        if (!conn) {
+            spdlog::error("Failed to register {}: {}", cfg.symbols[i], conn.error());
             return 1;
         }
-        spdlog::info("  {} registered with dispatcher", cfg.symbols[i]);
+        spdlog::info("  {} registered with Reactor", cfg.symbols[i]);
     }
 
-    spdlog::info("Starting dispatcher (cpu={})...", cfg.dispatch_cpu);
-    (*dispatcher)->start(cfg.dispatch_cpu);
+    spdlog::info("Starting Reactor (cpu={})...", cfg.dispatch_cpu);
+    reactor.start();
 
     spdlog::info("Starting {} Transport RX/TX threads...", N);
     for (auto& s : sessions) {
@@ -297,13 +279,13 @@ int main(int argc, char** argv) {
     }
 
     // ── Report ──────────────────────────────────────────────────────────────
-    (*dispatcher)->stop();
+    reactor.stop();
     for (auto& s : sessions) s.transport->stop();
 
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    spdlog::info("=== Per-Symbol Market Data Benchmark (DPDK + SharedRxDispatcher) ===");
+    spdlog::info("=== Per-Symbol Market Data Benchmark (DPDK + Reactor) ===");
     spdlog::info("Symbols: {} | Duration: {:.1f}s", N, elapsed_ms / 1000.0);
 
     for (size_t i = 0; i < N; ++i) {

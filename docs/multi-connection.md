@@ -121,26 +121,31 @@ for (auto& tp : transports) {
 }
 ```
 
-## Pattern 4: DPDK SharedRxDispatcher (Shared NIC)
+## Pattern 4: DPDK Reactor (Shared NIC)
 
-When multiple sessions share a single NIC (common on AWS ENA), use SharedRxDispatcher.
+When multiple sessions share a single NIC (common on AWS ENA), use Reactor
+for zero-ring direct dispatch.
 
 ```cpp
-#include "eph/dpdk/shared_rx.hpp"
+#include "eph/dpdk/reactor.hpp"
 
-// Create dispatcher for port 0, queue 0
-auto dispatcher = eph::dpdk::SharedRxDispatcher::create(0, 0, num_symbols);
+// Create reactor for port 0, queue 0
+eph::dpdk::Reactor reactor({
+    .port_id = 0, .rx_queue_id = 0, .rx_cpu = 2,
+});
 
-// Register each session
-for (auto& session : tcp_sessions) {
-    dispatcher->register_session(session);
+// Register each connected session with a data callback
+for (size_t i = 0; i < tcp_sessions.size(); ++i) {
+    reactor.add_connection(&tcp_sessions[i],
+        [i](const uint8_t* data, uint16_t len, size_t conn_id) {
+            process_data(i, data, len);
+        });
 }
 
-// Start dispatcher thread (polls NIC, dispatches to per-session rings)
-dispatcher->start(/*cpu_id=*/2);
+// Start reactor thread (polls NIC, dispatches directly to process_rx)
+reactor.start();
 
-// Each Transport polls from its session's ring via poll_rx()
-// SharedRxDispatcher stamps burst TSC for accurate timing
+// Reactor stamps burst TSC for accurate timing — no ring latency overhead
 ```
 
 See `bench_market_persymbol_dpdk.cpp` for a complete implementation.
@@ -152,7 +157,7 @@ For N symbols on a multi-core system:
 ```
 Core 0:   OS / monitoring
 Core 1:   Application thread (aggregation + processing)
-Core 2:   Shared RX dispatcher (DPDK) or spare
+Core 2:   Reactor RX thread (DPDK) or spare
 Core 3:   Transport 1 TX
 Core 4:   Transport 1 RX
 Core 5:   Transport 2 TX

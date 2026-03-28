@@ -32,7 +32,6 @@
 
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
-#include <rte_ring.h>
 
 #include "eph/dpdk/net_header.hpp"
 #include "eph/net/tcp_concept.hpp"
@@ -327,12 +326,11 @@ public:
         , stats_(other.stats_)
         , ack_pending_(other.ack_pending_)
         , last_rx_burst_tsc_(other.last_rx_burst_tsc_.load(std::memory_order_relaxed))
-        , shared_rx_ring_(other.shared_rx_ring_) {
+{
         // Copy pending reorder entries before invalidating source
         for (uint8_t i = 0; i < reorder_count_; ++i)
             reorder_buf_[i] = other.reorder_buf_[i];
         other.pool_ = nullptr;
-        other.shared_rx_ring_ = nullptr;
         other.state_ = TcpState::Closed;
         other.reorder_count_ = 0;
         other.ack_pending_ = false;
@@ -353,11 +351,9 @@ public:
             stats_ = other.stats_;
             ack_pending_ = other.ack_pending_;
             last_rx_burst_tsc_.store(other.last_rx_burst_tsc_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-            shared_rx_ring_ = other.shared_rx_ring_;
             for (uint8_t i = 0; i < reorder_count_; ++i)
                 reorder_buf_[i] = other.reorder_buf_[i];
             other.pool_ = nullptr;
-            other.shared_rx_ring_ = nullptr;
             other.state_ = TcpState::Closed;
             other.reorder_count_ = 0;
             other.ack_pending_ = false;
@@ -752,10 +748,9 @@ public:
     /// This is the TcpTransport concept-compatible interface that encapsulates
     /// rte_eth_rx_burst + process_rx into a single call.
     ///
-    /// When shared_rx_source is set (via set_shared_rx_source), packets are
-    /// read from the shared ring instead of rte_eth_rx_burst. This enables
-    /// multiple TcpSessions to share a single NIC RX queue via an external
-    /// dispatcher thread.
+    /// For multi-session sharing a single NIC RX queue, use Reactor
+    /// (reactor.hpp) which dispatches directly via process_rx with zero
+    /// ring overhead.
     ///
     /// @return On success: count of data packets processed (may be 0 if no
     ///         data packets in this burst, e.g. pure ACKs). On error: returns
@@ -764,37 +759,14 @@ public:
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
         rte_mbuf* pkts[32];
-        uint16_t nb_rx = 0;
 
-        if (shared_rx_ring_) {
-            // Shared RX mode: dequeue from ring fed by external dispatcher
-            nb_rx = static_cast<uint16_t>(
-                rte_ring_dequeue_burst(shared_rx_ring_,
-                    reinterpret_cast<void**>(pkts), 32, nullptr));
-        } else {
-            // Direct mode: poll NIC queue directly
-            nb_rx = rte_eth_rx_burst(
-                config_.port_id, config_.rx_queue_id, pkts, 32);
-        }
+        uint16_t nb_rx = rte_eth_rx_burst(
+            config_.port_id, config_.rx_queue_id, pkts, 32);
 
         if (nb_rx == 0) return uint16_t{0};
         ++stats_.rx_bursts;
-        // In direct mode: capture TSC right after NIC poll.
-        // In shared mode: SharedRxDispatcher already stamped last_rx_burst_tsc_
-        // with the NIC arrival time (before ring enqueue), so skip the redundant
-        // TSC::now() call — using the pre-stamped value eliminates ring latency
-        // (~50-100ns) from the timestamp measurement.
-        if (!shared_rx_ring_) {
-            last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
-        }
+        last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
-    }
-
-    /// Set a shared RX ring for multi-session mode. When set, poll_rx()
-    /// reads from this ring instead of rte_eth_rx_burst. The ring is fed
-    /// by an external SharedRxDispatcher thread.
-    void set_shared_rx_source(rte_ring* ring) noexcept {
-        shared_rx_ring_ = ring;
     }
 
     /// Get the connection 4-tuple (src/dst IP + port).
@@ -805,7 +777,7 @@ public:
     /// Get TCP-level statistics (packets, bursts, bytes, etc.).
     [[nodiscard]] const Stats& tcp_stats() const noexcept { return stats_; }
 
-    /// Set the RX burst TSC externally (used by SharedRxDispatcher to propagate
+    /// Set the RX burst TSC externally (used by Reactor to propagate
     /// the NIC arrival timestamp to the session without going through poll_rx).
     void set_last_rx_burst_tsc(uint64_t tsc) noexcept {
         last_rx_burst_tsc_.store(tsc, std::memory_order_release);
@@ -964,10 +936,6 @@ private:
     // TSC captured right after rte_eth_rx_burst returns data.
     // Used by Transport as the true RX arrival baseline.
     std::atomic<uint64_t> last_rx_burst_tsc_{0};
-
-    // Shared RX ring for multi-session dispatcher mode.
-    // When non-null, poll_rx reads from this ring instead of rte_eth_rx_burst.
-    rte_ring* shared_rx_ring_ = nullptr;
 
     /// Generate initial sequence number using CSPRNG.
     /// Returns 0 on CSPRNG failure — caller must treat ISN=0 as connection error.

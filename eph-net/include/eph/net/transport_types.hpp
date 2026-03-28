@@ -367,8 +367,8 @@ struct TransportConfig {
     FrameFilterFn on_frame_filter{};
 
     /// Called after successful connection (TCP+TLS+WS) but BEFORE RX/TX
-    /// threads start. Use this to configure the TcpSession for shared RX
-    /// mode (e.g., set_shared_rx_source) without racing with the RX thread.
+    /// threads start. Use this to configure the TcpSession (e.g., register
+    /// with a Reactor) without racing with the RX thread.
     std::function<void()> on_connected_before_threads{};
 
     /// When true, create() returns without starting RX/TX threads.
