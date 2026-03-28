@@ -2005,6 +2005,10 @@ private:
         constexpr size_t kFrameOverhead = kIsWebSocket
             ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
         constexpr size_t kWsBufSize = kFrameOverhead + MaxPayload + 1;
+        // +1 byte: TLS encrypt() temporarily writes the TLS 1.3 inner content
+        // type byte at plaintext[plaintext_len]. This extra byte is mandatory.
+        static_assert(kWsBufSize > kFrameOverhead + MaxPayload,
+                      "ws_buf must include +1 byte for TLS encrypt content type");
         // TLS output buffer: sized for the actual max frame (without the +1 temp byte)
         constexpr size_t kMaxWsFrame = kFrameOverhead + MaxPayload;
         constexpr size_t kTlsBufSize =

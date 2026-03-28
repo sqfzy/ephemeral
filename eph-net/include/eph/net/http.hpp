@@ -252,10 +252,7 @@ parse_upgrade_response(const char* data, size_t len) {
 }
 
 /// Validate the Sec-WebSocket-Accept header against our key.
-/// Validate Sec-WebSocket-Accept using Binance's GUID.
-/// NOTE: Binance uses a non-standard GUID (C5AB0DC85B11) instead of the
-/// RFC 6455 standard (5AB5FC6D97BA). Verified empirically 2026-03-26.
-/// Accept = Base64(SHA-1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+/// Accept = Base64(SHA-1(key + GUID)) per RFC 6455 §4.2.2.
 inline bool validate_ws_accept(std::string_view ws_key,
                                 std::string_view accept_value) {
     static constexpr std::string_view kMagicGuid =

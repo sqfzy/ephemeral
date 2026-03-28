@@ -346,9 +346,11 @@ public:
         // Capture host/port by value for async task safety
         auto dns_host = config_.host;
         auto dns_port = port_str;
+        // Use shared_ptr so that if we time out, the async thread still
+        // frees the addrinfo when it eventually completes (no leak).
         auto dns_future = std::async(std::launch::async,
             [dns_host, dns_port, hints]() mutable
-                -> std::expected<struct addrinfo*, std::string> {
+                -> std::expected<std::shared_ptr<struct addrinfo>, std::string> {
                 struct addrinfo* res = nullptr;
                 int rc = ::getaddrinfo(dns_host.c_str(), dns_port.c_str(),
                                        &hints, &res);
@@ -356,7 +358,10 @@ public:
                     return std::unexpected(std::format(
                         "DNS resolution failed: {}", gai_strerror(rc)));
                 }
-                return res;
+                // Wrap in shared_ptr with freeaddrinfo deleter — if the caller
+                // times out and abandons the future, the async thread's copy of
+                // the shared_ptr will free the addrinfo when it goes out of scope.
+                return std::shared_ptr<struct addrinfo>(res, ::freeaddrinfo);
             });
 
         auto dns_status = dns_future.wait_for(timeout);
@@ -364,10 +369,8 @@ public:
             SPDLOG_LOGGER_ERROR(log,
                 "DNS resolution timeout ({}ms) for {}:{}",
                 timeout.count(), config_.host, config_.port);
-            // The async thread will eventually complete and free itself;
-            // the addrinfo* will leak in the worst case, but we cannot
-            // safely cancel getaddrinfo. This is acceptable since DNS
-            // timeout is an exceptional error path.
+            // The async thread holds a shared_ptr that will freeaddrinfo()
+            // when getaddrinfo eventually returns. No leak.
             return std::unexpected(std::format(
                 "DNS resolution timeout after {}ms", timeout.count()));
         }
@@ -383,13 +386,9 @@ public:
                 static_cast<double>(dns_latency_ns_) / 1e6);
             return std::unexpected(dns_result.error());
         }
-        struct addrinfo* result = *dns_result;
-
-        // RAII cleanup for addrinfo
-        struct AddrInfoGuard {
-            addrinfo* p;
-            ~AddrInfoGuard() { if (p) ::freeaddrinfo(p); }
-        } guard{result};
+        // shared_ptr already handles freeaddrinfo via custom deleter
+        auto result_ptr = *dns_result;
+        struct addrinfo* result = result_ptr.get();
 
         // Create socket
         fd_ = ::socket(result->ai_family, SOCK_STREAM | SOCK_NONBLOCK,

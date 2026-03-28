@@ -156,6 +156,8 @@ inline std::shared_ptr<spdlog::logger> tcp_logger() {
 /// and graceful close. No retransmission — packet loss triggers reconnect.
 template <size_t ReorderSlots = 64>
 class TcpSession {
+    static_assert(ReorderSlots <= 255,
+                  "ReorderSlots must fit in uint8_t (reorder_count_)");
 public:
     struct Stats {
         uint64_t tx_packets      = 0;
@@ -521,7 +523,11 @@ public:
         // Collect mbufs for batched free at loop end.
         // Per-packet rte_pktmbuf_free inside the loop costs ~20-40ns each
         // and falls within the latency-measured path.
-        rte_mbuf* free_list[32];
+        // Safety: free_list is sized to the max burst the callers (poll_rx,
+        // connect) ever pass. Clamp nb_pkts to prevent stack overflow.
+        static constexpr uint16_t kMaxBurst = 32;
+        nb_pkts = std::min(nb_pkts, kMaxBurst);
+        rte_mbuf* free_list[kMaxBurst];
         uint16_t free_count = 0;
 
         for (uint16_t i = 0; i < nb_pkts; ++i) {
@@ -812,6 +818,8 @@ public:
         }
 
         state_ = TcpState::Closed;
+        reorder_count_ = 0;  // Prevent stale data delivery on reconnect
+        ack_pending_ = false;
         SPDLOG_LOGGER_DEBUG(log, "RST sent, state -> Closed");
     }
 

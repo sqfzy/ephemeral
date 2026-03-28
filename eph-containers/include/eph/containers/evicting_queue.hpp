@@ -161,7 +161,8 @@ class alignas(Align<T>) EvictingQueue {
     // ---------------------------------------------------------------------------
     struct alignas(Align<T>) ReaderLine {
         // global_index_ 本地缓存，用于检查是否有新数据。
-        uint64_t last_global_index_{0};
+        // Atomic: written by reader thread, read by monitoring functions from any thread.
+        std::atomic<uint64_t> last_global_index_{0};
     } reader_;
 
     // ---------------------------------------------------------------------------
@@ -301,7 +302,8 @@ class alignas(Align<T>) EvictingQueue {
         uint64_t idx =
             global_index_.load(std::memory_order_acquire);  // PERF: 48.83%
 
-        if (idx <= reader_.last_global_index_) {
+        const uint64_t last_read = reader_.last_global_index_.load(std::memory_order_relaxed);
+        if (idx <= last_read) {
             return false;
         }
 
@@ -319,7 +321,7 @@ class alignas(Align<T>) EvictingQueue {
         uint64_t actual_idx = decode_idx(seq1);
 
         // 如果实际数据的 index 小于等于上次读取的 index，说明这是已经读过的数据
-        if (actual_idx <= reader_.last_global_index_) {
+        if (actual_idx <= last_read) {
             return false;
         }
 
@@ -334,7 +336,7 @@ class alignas(Align<T>) EvictingQueue {
         uint64_t seq2 = s.seq_.load(std::memory_order_relaxed);
 
         if (seq1 == seq2) {
-            reader_.last_global_index_ = actual_idx;
+            reader_.last_global_index_.store(actual_idx, std::memory_order_relaxed);
             return true;
         }
 
@@ -378,14 +380,15 @@ class alignas(Align<T>) EvictingQueue {
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_peek_latest(F&& visitor) noexcept {
         uint64_t idx = global_index_.load(std::memory_order_acquire);
-        if (idx <= reader_.last_global_index_) return false;
+        const uint64_t last_read = reader_.last_global_index_.load(std::memory_order_relaxed);
+        if (idx <= last_read) return false;
 
         const Slot& s = slots_[idx & (Capacity - 1)];
         uint64_t seq1 = s.seq_.load(std::memory_order_acquire);
         if (is_locked(seq1)) [[unlikely]] return false;
 
         uint64_t actual_idx = decode_idx(seq1);
-        if (actual_idx <= reader_.last_global_index_) return false;
+        if (actual_idx <= last_read) return false;
 
         std::invoke(std::forward<F>(visitor), s.data_);
 
@@ -539,7 +542,7 @@ class alignas(Align<T>) EvictingQueue {
         // 将 reader 的 last_global_index_ 追赶到 writer 的当前位置，
         // 使后续 try_consume_latest 认为没有新数据。
         uint64_t idx = global_index_.load(std::memory_order_acquire);
-        reader_.last_global_index_ = idx;
+        reader_.last_global_index_.store(idx, std::memory_order_relaxed);
     }
 
     /**
@@ -553,7 +556,7 @@ class alignas(Align<T>) EvictingQueue {
     /// The result may be stale by the time it is read in a concurrent context.
     [[nodiscard]] size_t size_approx() const noexcept {
         uint64_t written = global_index_.load(std::memory_order_relaxed);
-        uint64_t read    = reader_.last_global_index_;
+        uint64_t read    = reader_.last_global_index_.load(std::memory_order_relaxed);
         // Clamp: writer may have advanced past Capacity unread entries
         uint64_t pending = (written >= read) ? (written - read) : 0;
         return static_cast<size_t>(std::min(pending, static_cast<uint64_t>(Capacity)));
@@ -579,7 +582,7 @@ class alignas(Align<T>) EvictingQueue {
     /// @note Approximate — derived from relaxed atomic loads.
     [[nodiscard]] uint64_t overwrite_count_approx() const noexcept {
         uint64_t written = global_index_.load(std::memory_order_relaxed);
-        uint64_t read = reader_.last_global_index_;
+        uint64_t read = reader_.last_global_index_.load(std::memory_order_relaxed);
         if (written <= read + Capacity) return 0;
         return written - read - Capacity;
     }
@@ -589,7 +592,7 @@ class alignas(Align<T>) EvictingQueue {
     /// (write_count - read_count = unconsumed + overwritten).
     /// @note Only accurate when called from the reader thread.
     [[nodiscard]] uint64_t read_count() const noexcept {
-        return reader_.last_global_index_;
+        return reader_.last_global_index_.load(std::memory_order_relaxed);
     }
 
     /// Alias for the standalone EvictingQueueStats type.
@@ -639,7 +642,8 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
    private:
     // 偶数=空闲，奇数=正在写入
     alignas(Align<T>) std::atomic<uint64_t> seq_{0};
-    alignas(Align<T>) uint64_t last_seq_{0};
+    // Atomic: written by reader thread, read by monitoring functions from any thread.
+    alignas(Align<T>) std::atomic<uint64_t> last_seq_{0};
     alignas(Align<T>) T data_{};
 
    public:
@@ -675,9 +679,11 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         // PERF: 35.19%
         std::invoke(std::forward<F>(writer_func), data_);
 
-        // 3. Unlock (Seq=Even)
-        std::atomic_thread_fence(std::memory_order_release);
-        seq_.store(seq + 2, std::memory_order_relaxed);
+        // 3. Unlock (Seq=Even) — must be release store (not relaxed+fence)
+        // to guarantee all prior writes are visible before the reader sees
+        // the even sequence number. A relaxed store after a release fence is
+        // not equivalent on ARM64.
+        seq_.store(seq + 2, std::memory_order_release);
     }
 
     template <typename U>
@@ -731,7 +737,8 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         // 1. 读取开始版本号 (Acquire)
         // PERF: 45.42%
         uint64_t seq0 = seq_.load(std::memory_order_acquire);
-        if (seq0 <= last_seq_ || (seq0 & 1)) return false;
+        const uint64_t cached_last = last_seq_.load(std::memory_order_relaxed);
+        if (seq0 <= cached_last || (seq0 & 1)) return false;
 
         // 2. 读取数据
         std::invoke(std::forward<F>(visitor), data_);
@@ -742,7 +749,7 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         // 4. 验证结束版本号
         uint64_t seq1 = seq_.load(std::memory_order_relaxed);
         if (seq0 == seq1) {
-            last_seq_ = seq1;
+            last_seq_.store(seq1, std::memory_order_relaxed);
             return true;
         }
         return false;
@@ -767,7 +774,7 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_peek_latest(F&& visitor) noexcept {
         uint64_t seq0 = seq_.load(std::memory_order_acquire);
-        if (seq0 <= last_seq_ || (seq0 & 1)) return false;
+        if (seq0 <= last_seq_.load(std::memory_order_relaxed) || (seq0 & 1)) return false;
 
         std::invoke(std::forward<F>(visitor), data_);
 
@@ -880,7 +887,7 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     /// @warning 仅在确保无并发读写时调用。
     void clear() noexcept {
         uint64_t seq = seq_.load(std::memory_order_acquire);
-        last_seq_ = seq;
+        last_seq_.store(seq, std::memory_order_relaxed);
     }
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
@@ -890,7 +897,7 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     [[nodiscard]] size_t size_approx() const noexcept {
         uint64_t seq = seq_.load(std::memory_order_relaxed);
         // If writer is mid-write (odd seq) or no new data since last read, empty
-        if ((seq & 1) || seq <= last_seq_) return 0;
+        if ((seq & 1) || seq <= last_seq_.load(std::memory_order_relaxed)) return 0;
         return 1;
     }
 
@@ -925,7 +932,7 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     /// @note Only accurate when called from the reader thread.
     [[nodiscard]] uint64_t read_count() const noexcept {
         // seq increments by 2 per write; last_seq_ tracks the seq after last read
-        return last_seq_ / 2;
+        return last_seq_.load(std::memory_order_relaxed) / 2;
     }
 
     /// Alias for the standalone EvictingQueueStats type.
