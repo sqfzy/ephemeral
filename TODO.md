@@ -2,7 +2,7 @@
 
 ## 大功能
 
-- [ ] **eph-gateway（连接管理层）** — 多交易所连接编排、reconnect 状态恢复、连接优先级、健康检查。高复杂度，3-4h。
+- [x] **eph-gateway（连接管理层）** — Gateway: 多 Transport 生命周期管理 + 健康监控 + 优先级 + 20 tests。
 - [ ] **UDP multicast receiver** — equity 行情接收（CME MDP3.0、Nasdaq TotalView via MoldUDP64）。`MulticastReceiver<DpdkImpl>` + IGMP join。中复杂度，2-3h。
 - [ ] **io_uring 后端** — 填补 socket/DPDK 中间层。极高复杂度，需 kernel API + fallback。**优先级低，暂不实施**。
 
