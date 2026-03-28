@@ -180,3 +180,102 @@ TEST(TcpSession, SatisfiesTcpTransportConcept) {
     static_assert(eph::net::TcpTransport<TcpSession<>>,
                   "TcpSession must satisfy TcpTransport concept");
 }
+
+// Default ReorderSlots is now 64 (Layer 1)
+TEST(TcpSession, DefaultReorderSlots64) {
+    // TcpSession<> should use 64 slots by default
+    static_assert(sizeof(TcpSession<>) > sizeof(TcpSession<8>),
+                  "Default TcpSession should be larger than TcpSession<8>");
+    // Both must satisfy the concept
+    static_assert(eph::net::TcpTransport<TcpSession<64>>);
+    static_assert(eph::net::TcpTransport<TcpSession<8>>);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats telemetry fields (Layer 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+using Stats = TcpSession<>::Stats;
+
+TEST(TcpStats, GapBucketZero) {
+    EXPECT_EQ(Stats::gap_bucket(0), 0);
+}
+
+TEST(TcpStats, GapBucketPowersOfTwo) {
+    EXPECT_EQ(Stats::gap_bucket(1), 0);    // [1,2) → bucket 0
+    EXPECT_EQ(Stats::gap_bucket(2), 1);    // [2,4) → bucket 1
+    EXPECT_EQ(Stats::gap_bucket(3), 1);    // [2,4) → bucket 1
+    EXPECT_EQ(Stats::gap_bucket(4), 2);    // [4,8) → bucket 2
+    EXPECT_EQ(Stats::gap_bucket(1460), 10); // MSS-sized gap → bucket 10 ([1024,2048))
+    EXPECT_EQ(Stats::gap_bucket(65535), 15); // Max window → bucket 15
+}
+
+TEST(TcpStats, GapBucketLargeValues) {
+    EXPECT_EQ(Stats::gap_bucket(1u << 20), 20);
+    EXPECT_EQ(Stats::gap_bucket(UINT32_MAX), 31);
+}
+
+TEST(TcpStats, DumpIncludesTelemetryFields) {
+    Stats s{};
+    s.reorder_hits = 42;
+    s.reorder_overflows = 3;
+    s.max_gap_size = 2920;
+    s.gap_histogram[10] = 5;  // bucket [1024, 2048)
+
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("reorder_hits: 42"), std::string::npos);
+    EXPECT_NE(dump.find("reorder_overflows: 3"), std::string::npos);
+    EXPECT_NE(dump.find("max_gap_size: 2920"), std::string::npos);
+    EXPECT_NE(dump.find("gap[2^10..2^11): 5"), std::string::npos);
+}
+
+TEST(TcpStats, ToJsonIncludesTelemetryFields) {
+    Stats s{};
+    s.reorder_hits = 10;
+    s.reorder_overflows = 1;
+    s.max_gap_size = 1460;
+    s.gap_histogram[10] = 7;
+
+    auto json = s.to_json();
+    EXPECT_NE(json.find("\"reorder_hits\":10"), std::string::npos);
+    EXPECT_NE(json.find("\"reorder_overflows\":1"), std::string::npos);
+    EXPECT_NE(json.find("\"max_gap_size\":1460"), std::string::npos);
+    EXPECT_NE(json.find("\"gap_histogram\":{\"10\":7}"), std::string::npos);
+}
+
+TEST(TcpStats, ToJsonOmitsEmptyGapHistogram) {
+    Stats s{};
+    auto json = s.to_json();
+    EXPECT_EQ(json.find("gap_histogram"), std::string::npos);
+}
+
+TEST(TcpStats, OperatorMinusDiffsTelemetryFields) {
+    Stats s1{};
+    s1.reorder_hits = 50;
+    s1.reorder_overflows = 5;
+    s1.max_gap_size = 3000;
+    s1.gap_histogram[10] = 20;
+    s1.gap_histogram[11] = 3;
+
+    Stats s2{};
+    s2.reorder_hits = 30;
+    s2.reorder_overflows = 2;
+    s2.max_gap_size = 1500;
+    s2.gap_histogram[10] = 15;
+    s2.gap_histogram[11] = 1;
+
+    auto delta = s1 - s2;
+    EXPECT_EQ(delta.reorder_hits, 20u);
+    EXPECT_EQ(delta.reorder_overflows, 3u);
+    // max_gap_size is point-in-time (latest snapshot), not diffed
+    EXPECT_EQ(delta.max_gap_size, 3000u);
+    EXPECT_EQ(delta.gap_histogram[10], 5u);
+    EXPECT_EQ(delta.gap_histogram[11], 2u);
+}
+
+TEST(TcpStats, GapBucketIsConstexpr) {
+    // Verify gap_bucket is constexpr-evaluable
+    static_assert(Stats::gap_bucket(0) == 0);
+    static_assert(Stats::gap_bucket(1) == 0);
+    static_assert(Stats::gap_bucket(1024) == 10);
+}

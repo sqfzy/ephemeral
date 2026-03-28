@@ -14,6 +14,8 @@
 /// graceful close. All operations go through DPDK tx_burst/rx_burst — no
 /// kernel sockets are used on the data path.
 
+#include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -152,7 +154,7 @@ inline std::shared_ptr<spdlog::logger> tcp_logger() {
 ///
 /// Supports three-way handshake, data send/recv, ACK generation,
 /// and graceful close. No retransmission — packet loss triggers reconnect.
-template <size_t ReorderSlots = 8>
+template <size_t ReorderSlots = 64>
 class TcpSession {
 public:
     struct Stats {
@@ -165,9 +167,25 @@ public:
         uint64_t out_of_order    = 0;
         uint64_t resets_received = 0;
 
+        // ── Reorder / loss telemetry ──
+        uint64_t reorder_hits      = 0;  ///< Segments successfully buffered & delivered via reorder buf
+        uint64_t reorder_overflows = 0;  ///< Reorder buffer full events (triggered reconnect)
+        uint32_t max_gap_size      = 0;  ///< Largest observed seq gap in bytes (absolute, not delta)
+        /// Log2 gap size histogram: bucket[i] = count of gaps in [2^i, 2^(i+1)).
+        /// bucket[0] = [1,2), bucket[1] = [2,4), ..., bucket[31] = [2^31, 2^32).
+        /// Recording is O(1) via __builtin_clz / std::countl_zero.
+        std::array<uint64_t, 32> gap_histogram{};
+
+        /// Compute the log2 bucket index for a gap size (O(1), single CLZ instruction).
+        static constexpr uint8_t gap_bucket(uint32_t gap) noexcept {
+            if (gap == 0) return 0;
+            // floor(log2(gap)) = 31 - countl_zero(gap)
+            return static_cast<uint8_t>(31u - static_cast<unsigned>(std::countl_zero(gap)));
+        }
+
         /// Multi-line formatted dump for logging/debugging.
         [[nodiscard]] std::string dump() const {
-            return std::format(
+            auto s = std::format(
                 "TcpSession::Stats:\n"
                 "  tx_packets: {}\n"
                 "  rx_packets: {}\n"
@@ -175,32 +193,67 @@ public:
                 "  rx_bytes: {}\n"
                 "  acks_sent: {}\n"
                 "  out_of_order: {}\n"
-                "  resets_received: {}",
+                "  resets_received: {}\n"
+                "  reorder_hits: {}\n"
+                "  reorder_overflows: {}\n"
+                "  max_gap_size: {}",
                 tx_packets, rx_packets, tx_bytes, rx_bytes,
-                acks_sent, out_of_order, resets_received);
+                acks_sent, out_of_order, resets_received,
+                reorder_hits, reorder_overflows, max_gap_size);
+
+            // Append non-zero gap histogram buckets
+            for (size_t i = 0; i < gap_histogram.size(); ++i) {
+                if (gap_histogram[i] > 0) {
+                    s += std::format("\n  gap[2^{}..2^{}): {}",
+                                     i, i + 1, gap_histogram[i]);
+                }
+            }
+            return s;
         }
 
         /// JSON-formatted stats for monitoring system integration.
         [[nodiscard]] std::string to_json() const {
-            return std::format(
+            auto s = std::format(
                 "{{\"tx_packets\":{},\"rx_packets\":{},\"tx_bytes\":{},"
                 "\"rx_bytes\":{},\"acks_sent\":{},\"out_of_order\":{},"
-                "\"resets_received\":{}}}",
+                "\"resets_received\":{},\"reorder_hits\":{},"
+                "\"reorder_overflows\":{},\"max_gap_size\":{}",
                 tx_packets, rx_packets, tx_bytes, rx_bytes,
-                acks_sent, out_of_order, resets_received);
+                acks_sent, out_of_order, resets_received,
+                reorder_hits, reorder_overflows, max_gap_size);
+
+            // Append non-zero gap histogram buckets as sparse array
+            bool has_gap = false;
+            for (size_t i = 0; i < gap_histogram.size(); ++i) {
+                if (gap_histogram[i] > 0) {
+                    if (!has_gap) { s += ",\"gap_histogram\":{"; has_gap = true; }
+                    else { s += ","; }
+                    s += std::format("\"{}\":{}", i, gap_histogram[i]);
+                }
+            }
+            if (has_gap) s += "}";
+            s += "}";
+            return s;
         }
 
         /// Compute delta between two snapshots for interval-based monitoring.
         [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
-            return Stats{
-                .tx_packets      = lhs.tx_packets      - rhs.tx_packets,
-                .rx_packets      = lhs.rx_packets      - rhs.rx_packets,
-                .tx_bytes        = lhs.tx_bytes        - rhs.tx_bytes,
-                .rx_bytes        = lhs.rx_bytes        - rhs.rx_bytes,
-                .acks_sent       = lhs.acks_sent       - rhs.acks_sent,
-                .out_of_order    = lhs.out_of_order    - rhs.out_of_order,
-                .resets_received = lhs.resets_received  - rhs.resets_received,
+            Stats result{
+                .tx_packets        = lhs.tx_packets        - rhs.tx_packets,
+                .rx_packets        = lhs.rx_packets        - rhs.rx_packets,
+                .tx_bytes          = lhs.tx_bytes          - rhs.tx_bytes,
+                .rx_bytes          = lhs.rx_bytes          - rhs.rx_bytes,
+                .acks_sent         = lhs.acks_sent         - rhs.acks_sent,
+                .out_of_order      = lhs.out_of_order      - rhs.out_of_order,
+                .resets_received   = lhs.resets_received   - rhs.resets_received,
+                .reorder_hits      = lhs.reorder_hits      - rhs.reorder_hits,
+                .reorder_overflows = lhs.reorder_overflows - rhs.reorder_overflows,
+                .max_gap_size      = lhs.max_gap_size,  // Point-in-time (not diffable)
             };
+            for (size_t i = 0; i < 32; ++i) {
+                result.gap_histogram[i] = lhs.gap_histogram[i] - rhs.gap_histogram[i];
+            }
+            return result;
         }
 
         [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
@@ -298,9 +351,33 @@ public:
         state_ = TcpState::SynSent;
         snd_nxt_++; // SYN consumes one sequence number
 
-        // Wait for SYN-ACK
+        // Wait for SYN-ACK, retransmitting SYN every 200ms if no response.
+        // Unlike full TCP RTO (RFC 6298, initial 1s), we use a shorter interval
+        // because we target data center environments with <1ms RTT.
+        constexpr auto kSynRetransmitInterval = std::chrono::milliseconds(200);
         auto deadline = std::chrono::steady_clock::now() + timeout;
+        auto next_syn_retransmit = std::chrono::steady_clock::now() + kSynRetransmitInterval;
+
         while (std::chrono::steady_clock::now() < deadline) {
+            // Retransmit SYN if interval elapsed without SYN-ACK
+            auto now = std::chrono::steady_clock::now();
+            if (now >= next_syn_retransmit) {
+                auto* resyn = pkt_template_.build_packet(
+                    pool_, snd_nxt_ - 1, 0, net::kTcpSyn, rcv_wnd_);
+                if (resyn) {
+                    uint16_t resent = rte_eth_tx_burst(
+                        config_.port_id, config_.tx_queue_id, &resyn, 1);
+                    if (resent == 1) {
+                        stats_.tx_packets++;
+                        SPDLOG_LOGGER_DEBUG(log, "SYN retransmit (seq={})",
+                                            snd_nxt_ - 1);
+                    } else {
+                        rte_pktmbuf_free(resyn);
+                    }
+                }
+                next_syn_retransmit = now + kSynRetransmitInterval;
+            }
+
             rte_mbuf* pkts[32];
             uint16_t nb_rx = rte_eth_rx_burst(
                 config_.port_id, config_.rx_queue_id, pkts, 32);
@@ -492,10 +569,19 @@ public:
                 // af_packet commonly delivers segments out of order within a burst.
                 if (seg_seq != rcv_nxt_ && parsed.payload_len > 0) {
                     stats_.out_of_order++;
+
+                    // Record gap telemetry (forward gaps only)
+                    if (seq_after(seg_seq, rcv_nxt_)) {
+                        uint32_t gap = seg_seq - rcv_nxt_;
+                        if (gap > stats_.max_gap_size) stats_.max_gap_size = gap;
+                        stats_.gap_histogram[Stats::gap_bucket(gap)]++;
+                    }
+
                     if (seq_after(seg_seq, rcv_nxt_) &&
                         reorder_count_ < ReorderSlots &&
                         parsed.payload_len <= net::kDefaultMss) {
                         // Future segment — buffer it
+                        stats_.reorder_hits++;
                         auto& entry = reorder_buf_[reorder_count_++];
                         entry.seq = seg_seq;
                         entry.len = parsed.payload_len;
@@ -509,6 +595,7 @@ public:
                             "Dropping duplicate: expected={}, got={}", rcv_nxt_, seg_seq);
                     } else {
                         // Reorder buffer full — genuine loss
+                        stats_.reorder_overflows++;
                         SPDLOG_LOGGER_WARN(log,
                             "Reorder buffer full ({} slots): expected={}, got={}",
                             ReorderSlots, rcv_nxt_, seg_seq);
