@@ -503,6 +503,10 @@ struct TransportConfig {
                 }
             }
         }
+        if (tx_cpu < -1)
+            return "tx_cpu must be >= -1 (-1 = no pinning)";
+        if (rx_cpu < -1)
+            return "rx_cpu must be >= -1 (-1 = no pinning)";
         return {};
     }
 

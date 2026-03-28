@@ -116,6 +116,8 @@ struct FixSessionConfig {
             return "begin_string must not be empty";
         if (heartbeat_timeout_factor <= 1.0)
             return "heartbeat_timeout_factor must be > 1.0";
+        if (heartbeat_timeout_factor > 10.0)
+            return "heartbeat_timeout_factor must be <= 10.0 (likely misconfiguration)";
         return {};
     }
 };

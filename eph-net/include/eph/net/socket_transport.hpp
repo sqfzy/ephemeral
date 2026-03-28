@@ -227,10 +227,18 @@ struct SocketConfig {
             return "port must be > 0";
         if (recv_buf_size < 0)
             return "recv_buf_size must be >= 0 (0 = OS default)";
+        if (recv_buf_size > 0 && recv_buf_size < 1024)
+            return "recv_buf_size must be at least 1024 when set (or 0 for OS default)";
         if (send_buf_size < 0)
             return "send_buf_size must be >= 0 (0 = OS default)";
-        if (send_timeout_ms <= 0)
+        if (send_buf_size > 0 && send_buf_size < 1024)
+            return "send_buf_size must be at least 1024 when set (or 0 for OS default)";
+        if (send_timeout_ms < 0)
+            return "send_timeout_ms must be >= 0";
+        if (send_timeout_ms == 0)
             return "send_timeout_ms must be positive";
+        if (keepalive_interval > 0 && keepalive_idle <= 0)
+            return "keepalive_idle must be positive when keepalive_interval > 0";
         if (tcp_keepalive) {
             if (keepalive_idle <= 0)
                 return "keepalive_idle must be positive when keepalive is enabled";

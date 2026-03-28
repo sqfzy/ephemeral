@@ -612,7 +612,7 @@ public:
     ///          queue slot will be reused.
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t>
-    bool recv(F&& callback) {
+    [[nodiscard]] bool recv(F&& callback) {
         bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
@@ -629,7 +629,7 @@ public:
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t>
-    bool recv(F&& callback) {
+    [[nodiscard]] bool recv(F&& callback) {
         bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
@@ -721,7 +721,7 @@ public:
     /// @warning The data pointer is only valid during the callback invocation.
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t>
-    bool recv_peek(F&& callback) {
+    [[nodiscard]] bool recv_peek(F&& callback) {
         return rx_peek([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
                         static_cast<const uint8_t*>(msg.data),
@@ -734,7 +734,7 @@ public:
     /// @return true if a message was peeked, false if queue empty.
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t>
-    bool recv_peek(F&& callback) {
+    [[nodiscard]] bool recv_peek(F&& callback) {
         return rx_peek([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
                         static_cast<const uint8_t*>(msg.data),
@@ -769,7 +769,7 @@ public:
     /// @return Number of messages actually consumed
     template <typename F>
         requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
-    size_t recv_n(F&& callback, size_t max_count) {
+    [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback), msg.data, msg.len);
@@ -788,7 +788,7 @@ public:
     /// @return Number of messages actually consumed
     template <typename F>
         requires (std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
-    size_t recv_n(F&& callback, size_t max_count) {
+    [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback),
@@ -801,7 +801,7 @@ public:
     /// @note Not available when RxQueue is EvictingQueue.
     template <typename F>
         requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
-    size_t drain_recv(F&& callback) {
+    [[nodiscard]] size_t drain_recv(F&& callback) {
         return recv_n(std::forward<F>(callback), QueueDepth);
     }
 
@@ -816,7 +816,7 @@ public:
     /// @return true if a message was consumed, false on timeout or stop
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t>
-    bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
+    [[nodiscard]] bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
             bool got = rx_consume([&](const RxMsg& msg) {
@@ -834,7 +834,7 @@ public:
     /// Blocking receive with opcode and timeout.
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t>
-    bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
+    [[nodiscard]] bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
             bool got = rx_consume([&](const RxMsg& msg) {

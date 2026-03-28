@@ -99,6 +99,17 @@ struct DnsConfig {
             net::format_ipv4(nameserver_ip).data(), port, timeout.count());
     }
 
+    /// Validate configuration, returning an error description or empty string on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (nameserver_ip == 0)
+            return "nameserver_ip must not be 0";
+        if (port == 0 || port > 65535)
+            return "port must be in range [1, 65535]";
+        if (timeout.count() <= 0)
+            return "timeout must be positive";
+        return {};
+    }
+
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"nameserver_ip\":\"{}\",\"port\":{},\"timeout_ms\":{}}}",

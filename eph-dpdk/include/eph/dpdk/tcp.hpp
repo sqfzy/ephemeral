@@ -309,8 +309,58 @@ public:
 
     TcpSession(const TcpSession&)            = delete;
     TcpSession& operator=(const TcpSession&) = delete;
-    TcpSession(TcpSession&&) noexcept        = default;
-    TcpSession& operator=(TcpSession&&) noexcept = default;
+
+    TcpSession(TcpSession&& other) noexcept
+        : config_(std::move(other.config_))
+        , pool_(other.pool_)
+        , state_(other.state_)
+        , pkt_template_(std::move(other.pkt_template_))
+        , snd_nxt_(other.snd_nxt_)
+        , snd_una_(other.snd_una_)
+        , rcv_nxt_(other.rcv_nxt_)
+        , rcv_wnd_(other.rcv_wnd_)
+        , snd_wnd_(other.snd_wnd_)
+        , reorder_count_(other.reorder_count_)
+        , stats_(other.stats_)
+        , ack_pending_(other.ack_pending_)
+        , last_rx_burst_tsc_(other.last_rx_burst_tsc_)
+        , shared_rx_ring_(other.shared_rx_ring_) {
+        // Copy pending reorder entries before invalidating source
+        for (uint8_t i = 0; i < reorder_count_; ++i)
+            reorder_buf_[i] = other.reorder_buf_[i];
+        other.pool_ = nullptr;
+        other.shared_rx_ring_ = nullptr;
+        other.state_ = TcpState::Closed;
+        other.reorder_count_ = 0;
+        other.ack_pending_ = false;
+    }
+
+    TcpSession& operator=(TcpSession&& other) noexcept {
+        if (this != &other) {
+            config_ = std::move(other.config_);
+            pool_ = other.pool_;
+            state_ = other.state_;
+            pkt_template_ = std::move(other.pkt_template_);
+            snd_nxt_ = other.snd_nxt_;
+            snd_una_ = other.snd_una_;
+            rcv_nxt_ = other.rcv_nxt_;
+            rcv_wnd_ = other.rcv_wnd_;
+            snd_wnd_ = other.snd_wnd_;
+            reorder_count_ = other.reorder_count_;
+            stats_ = other.stats_;
+            ack_pending_ = other.ack_pending_;
+            last_rx_burst_tsc_ = other.last_rx_burst_tsc_;
+            shared_rx_ring_ = other.shared_rx_ring_;
+            for (uint8_t i = 0; i < reorder_count_; ++i)
+                reorder_buf_[i] = other.reorder_buf_[i];
+            other.pool_ = nullptr;
+            other.shared_rx_ring_ = nullptr;
+            other.state_ = TcpState::Closed;
+            other.reorder_count_ = 0;
+            other.ack_pending_ = false;
+        }
+        return *this;
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Connection establishment
