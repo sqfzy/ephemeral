@@ -191,6 +191,17 @@ for dir, dep in pairs(bench_module_deps) do
     end
 end
 
+-- Manual benchmark targets (cross-module dependencies not expressible in the
+-- single-dep-per-directory auto-generation above).
+
+target("bench_array_book")
+    set_kind("binary")
+    set_group("benchmarks")
+    set_default(false)
+    add_files("benchmarks/book/bench_array_book.cpp")
+    add_deps("eph-book", "eph-json")
+    add_packages("benchmark")
+
 -- ===========================================================================
 -- Static DPDK PMD whole-archive helper
 -- ===========================================================================
