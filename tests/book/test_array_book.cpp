@@ -366,3 +366,114 @@ TEST(ArrayBookTest, UpdateAtFullCapacityNoEviction) {
     ASSERT_EQ(book.bid_depth(), 3u);
     EXPECT_NEAR(book.bids()[1].qty, 99.0, kEps);
 }
+
+// ---------------------------------------------------------------------------
+// Test 15: is_crossed()
+// ---------------------------------------------------------------------------
+
+TEST(ArrayBookTest, IsCrossedReturnsFalseWhenEmpty) {
+    ArrayBook<5> book;
+    EXPECT_FALSE(book.is_crossed());
+}
+
+TEST(ArrayBookTest, IsCrossedReturnsFalseWhenOneSideEmpty) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 1.0);
+    EXPECT_FALSE(book.is_crossed());
+}
+
+TEST(ArrayBookTest, IsCrossedReturnsFalseForNormalBook) {
+    ArrayBook<5> book;
+    book.update_bid(99.0, 1.0);
+    book.update_ask(101.0, 1.0);
+    EXPECT_FALSE(book.is_crossed());
+}
+
+TEST(ArrayBookTest, IsCrossedReturnsTrueWhenBidEqualsAsk) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 1.0);
+    book.update_ask(100.0, 1.0);
+    EXPECT_TRUE(book.is_crossed());
+}
+
+TEST(ArrayBookTest, IsCrossedReturnsTrueWhenBidExceedsAsk) {
+    ArrayBook<5> book;
+    book.update_bid(101.0, 1.0);
+    book.update_ask(100.0, 1.0);
+    EXPECT_TRUE(book.is_crossed());
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: total_bid_qty() and total_ask_qty()
+// ---------------------------------------------------------------------------
+
+TEST(ArrayBookTest, TotalBidQtyEmptyBook) {
+    ArrayBook<5> book;
+    EXPECT_NEAR(book.total_bid_qty(), 0.0, kEps);
+}
+
+TEST(ArrayBookTest, TotalBidQtySumsAllLevels) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 10.0);
+    book.update_bid(99.0, 20.0);
+    book.update_bid(98.0, 30.0);
+    EXPECT_NEAR(book.total_bid_qty(), 60.0, kEps);
+}
+
+TEST(ArrayBookTest, TotalAskQtySumsAllLevels) {
+    ArrayBook<5> book;
+    book.update_ask(101.0, 5.0);
+    book.update_ask(102.0, 15.0);
+    EXPECT_NEAR(book.total_ask_qty(), 20.0, kEps);
+}
+
+TEST(ArrayBookTest, TotalQtyUpdatesAfterRemoval) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 10.0);
+    book.update_bid(99.0, 20.0);
+    book.update_bid(100.0, 0.0); // remove
+    EXPECT_NEAR(book.total_bid_qty(), 20.0, kEps);
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: level_count()
+// ---------------------------------------------------------------------------
+
+TEST(ArrayBookTest, LevelCountEmptyBook) {
+    ArrayBook<5> book;
+    EXPECT_EQ(book.level_count(), 0u);
+}
+
+TEST(ArrayBookTest, LevelCountBothSides) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 1.0);
+    book.update_bid(99.0, 1.0);
+    book.update_ask(101.0, 1.0);
+    EXPECT_EQ(book.level_count(), 3u);
+}
+
+TEST(ArrayBookTest, LevelCountAfterClear) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 1.0);
+    book.update_ask(101.0, 1.0);
+    book.clear();
+    EXPECT_EQ(book.level_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: NaN price is rejected
+// ---------------------------------------------------------------------------
+
+TEST(ArrayBookTest, NanPriceIsIgnored) {
+    ArrayBook<5> book;
+    book.update_bid(std::nan(""), 10.0);
+    EXPECT_EQ(book.bid_depth(), 0u);
+
+    book.update_ask(std::nan(""), 5.0);
+    EXPECT_EQ(book.ask_depth(), 0u);
+
+    // NaN removal also doesn't crash
+    book.update_bid(100.0, 10.0);
+    book.update_bid(std::nan(""), 0.0);
+    EXPECT_EQ(book.bid_depth(), 1u);
+}

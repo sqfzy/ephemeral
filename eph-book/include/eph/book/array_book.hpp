@@ -118,6 +118,33 @@ public:
         SPDLOG_DEBUG("ArrayBook cleared");
     }
 
+    /// True if the book is crossed (best_bid >= best_ask).
+    /// This indicates a market anomaly or a stale book.  Returns false when
+    /// either side is empty.
+    [[nodiscard]] bool is_crossed() const noexcept {
+        if (bid_count_ == 0 || ask_count_ == 0) return false;
+        return bids_[0].price >= asks_[0].price - kEps;
+    }
+
+    /// Sum of quantities across all bid levels.
+    [[nodiscard]] double total_bid_qty() const noexcept {
+        double sum = 0.0;
+        for (std::size_t i = 0; i < bid_count_; ++i) sum += bids_[i].qty;
+        return sum;
+    }
+
+    /// Sum of quantities across all ask levels.
+    [[nodiscard]] double total_ask_qty() const noexcept {
+        double sum = 0.0;
+        for (std::size_t i = 0; i < ask_count_; ++i) sum += asks_[i].qty;
+        return sum;
+    }
+
+    /// Total number of active levels (bid + ask).
+    [[nodiscard]] std::size_t level_count() const noexcept {
+        return bid_count_ + ask_count_;
+    }
+
     /// Maximum number of levels per side (compile-time constant).
     static constexpr std::size_t max_levels = MaxLevels;
 
@@ -152,6 +179,12 @@ private:
                      std::size_t& count,
                      double price, double qty,
                      bool descending) noexcept {
+
+        // -- Reject NaN prices — they would corrupt sort order ---------------
+        if (std::isnan(price)) {
+            SPDLOG_WARN("update_side ignoring NaN price");
+            return;
+        }
 
         // -- Search for an existing level at this price ----------------------
         for (std::size_t i = 0; i < count; ++i) {
