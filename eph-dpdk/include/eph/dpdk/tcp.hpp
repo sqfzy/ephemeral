@@ -15,6 +15,7 @@
 /// kernel sockets are used on the data path.
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstdint>
@@ -73,6 +74,8 @@ struct TcpConfig {
             return "mss exceeds jumbo frame limit (9000)";
         if (recv_window == 0)
             return "recv_window must be > 0";
+        if (recv_window > 65535)
+            return "recv_window exceeds 65535 (window scaling not implemented)";
         return {};
     }
 
@@ -323,7 +326,7 @@ public:
         , reorder_count_(other.reorder_count_)
         , stats_(other.stats_)
         , ack_pending_(other.ack_pending_)
-        , last_rx_burst_tsc_(other.last_rx_burst_tsc_)
+        , last_rx_burst_tsc_(other.last_rx_burst_tsc_.load(std::memory_order_relaxed))
         , shared_rx_ring_(other.shared_rx_ring_) {
         // Copy pending reorder entries before invalidating source
         for (uint8_t i = 0; i < reorder_count_; ++i)
@@ -349,7 +352,7 @@ public:
             reorder_count_ = other.reorder_count_;
             stats_ = other.stats_;
             ack_pending_ = other.ack_pending_;
-            last_rx_burst_tsc_ = other.last_rx_burst_tsc_;
+            last_rx_burst_tsc_.store(other.last_rx_burst_tsc_.load(std::memory_order_relaxed), std::memory_order_relaxed);
             shared_rx_ring_ = other.shared_rx_ring_;
             for (uint8_t i = 0; i < reorder_count_; ++i)
                 reorder_buf_[i] = other.reorder_buf_[i];
@@ -782,7 +785,7 @@ public:
         // TSC::now() call — using the pre-stamped value eliminates ring latency
         // (~50-100ns) from the timestamp measurement.
         if (!shared_rx_ring_) {
-            last_rx_burst_tsc_ = eph::utils::TSC::now();
+            last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
         }
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }
@@ -805,7 +808,7 @@ public:
     /// Set the RX burst TSC externally (used by SharedRxDispatcher to propagate
     /// the NIC arrival timestamp to the session without going through poll_rx).
     void set_last_rx_burst_tsc(uint64_t tsc) noexcept {
-        last_rx_burst_tsc_ = tsc;
+        last_rx_burst_tsc_.store(tsc, std::memory_order_release);
     }
 
     /// TSC captured right after rte_eth_rx_burst returned data.
@@ -813,7 +816,7 @@ public:
     /// timestamping after poll_rx returns, which would miss the
     /// TCP parsing + reorder + memcpy cost inside process_rx.
     [[nodiscard]] uint64_t last_rx_burst_tsc() const noexcept {
-        return last_rx_burst_tsc_;
+        return last_rx_burst_tsc_.load(std::memory_order_acquire);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -867,8 +870,8 @@ public:
         auto* rst = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpRst | net::kTcpAck, 0);
         if (rst) {
-            rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &rst, 1);
-            // If tx_burst fails, mbuf will be freed by DPDK on port close
+            uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &rst, 1);
+            if (sent != 1) rte_pktmbuf_free(rst);
         }
 
         state_ = TcpState::Closed;
@@ -960,7 +963,7 @@ private:
 
     // TSC captured right after rte_eth_rx_burst returns data.
     // Used by Transport as the true RX arrival baseline.
-    uint64_t last_rx_burst_tsc_ = 0;
+    std::atomic<uint64_t> last_rx_burst_tsc_{0};
 
     // Shared RX ring for multi-session dispatcher mode.
     // When non-null, poll_rx reads from this ring instead of rte_eth_rx_burst.

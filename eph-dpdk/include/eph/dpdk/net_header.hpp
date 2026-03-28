@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include <spdlog/spdlog.h>
+
 #include <rte_byteorder.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -329,6 +331,12 @@ struct PacketTemplate {
                          uint8_t flags, uint16_t window,
                          const void* payload = nullptr,
                          uint16_t payload_len = 0) noexcept {
+        // SYN requires TCP options (MSS, SACK, WScale) — use build_packet() instead.
+        if (flags & kTcpSyn) [[unlikely]] {
+            SPDLOG_WARN("fill_packet() called with SYN flag; use build_packet() for SYN");
+            return 0;
+        }
+
         const uint16_t total_len = kAllHeadersLen + payload_len;
 
         // Reset mbuf data
@@ -470,6 +478,7 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     if (ntoh16(eth->ether_type) != kEtherTypeIpv4) return {};
 
     auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    if ((ip->version_ihl >> 4) != 4) return {};  // Not IPv4
     uint8_t ihl = (ip->version_ihl & 0x0F) << 2; // * 4 via shift
     if (ihl < kIpv4HeaderLen || ip->next_proto_id != kIpProtoTcp) return {};
 

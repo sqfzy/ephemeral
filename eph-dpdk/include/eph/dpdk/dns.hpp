@@ -413,16 +413,18 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 
     // Check IP protocol = UDP and source = nameserver
     auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(pkt + net::kEtherHeaderLen);
+    uint8_t ihl = (ip->version_ihl & 0x0F) << 2;
+    if (ihl < net::kIpv4HeaderLen) return std::nullopt;
     if (ip->next_proto_id != net::kIpProtoUdp) return std::nullopt;
     if (net::ntoh32(ip->src_addr) != nameserver_ip) return std::nullopt;
 
     // Check UDP source port = 53
     auto* udp = reinterpret_cast<const UdpHeader*>(
-        pkt + net::kEtherHeaderLen + net::kIpv4HeaderLen);
+        pkt + net::kEtherHeaderLen + ihl);
     if (net::ntoh16(udp->src_port) != kDnsPort) return std::nullopt;
 
     // Parse DNS payload
-    const uint8_t* dns_data = pkt + net::kEtherHeaderLen + net::kIpv4HeaderLen
+    const uint8_t* dns_data = pkt + net::kEtherHeaderLen + ihl
                             + kUdpHeaderLen;
     uint16_t udp_len = net::ntoh16(udp->length);
     if (udp_len < kUdpHeaderLen + kDnsHeaderLen) return std::nullopt;
@@ -473,6 +475,10 @@ resolve(uint16_t port_id,
     // Fast path: dotted-decimal IPv4 needs no pool, no nameserver, no network
     uint32_t ip = net::parse_ipv4(hostname.c_str());
     if (ip != 0) return ip;
+
+    if (auto err = cfg.validate(); !err.empty()) {
+        return std::unexpected(std::format("Invalid DNS config: {}", err));
+    }
 
     auto log = detail::dns_logger();
 

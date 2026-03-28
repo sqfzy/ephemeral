@@ -127,6 +127,7 @@ struct ConnectorOptions {
             return "arp_timeout must be positive";
         if (connect_timeout.count() <= 0)
             return "connect_timeout must be positive";
+        if (auto err = dns.validate(); !err.empty()) return err;
         return {};
     }
 
