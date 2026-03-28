@@ -764,29 +764,20 @@ public:
         size_t body_start = header_end + 4;
         size_t body_len = buf.size() - body_start;
 
-        // Look for Content-Length header
-        auto headers = buf.substr(0, header_end);
-        auto cl_pos = headers.find("Content-Length:");
-        if (cl_pos == std::string_view::npos) {
-            cl_pos = headers.find("content-length:");
-        }
-        if (cl_pos == std::string_view::npos) {
+        // Extract raw headers (between status line end and blank line)
+        auto headers_raw = buf.substr(0, header_end);
+
+        // Use case-insensitive find_header instead of manual substring search
+        auto cl_value = find_header(headers_raw, "Content-Length");
+        if (cl_value.empty()) {
             // No Content-Length — rely on connection close
             return false;
         }
 
-        auto val_start = cl_pos + 15; // strlen("Content-Length:")
-        while (val_start < headers.size() &&
-               (headers[val_start] == ' ' || headers[val_start] == '\t'))
-            ++val_start;
-
-        auto val_end = headers.find("\r\n", val_start);
-        if (val_end == std::string_view::npos) val_end = headers.size();
-
         size_t content_length = 0;
         auto [ptr, ec] = std::from_chars(
-            headers.data() + val_start,
-            headers.data() + val_end,
+            cl_value.data(),
+            cl_value.data() + cl_value.size(),
             content_length);
         if (ec != std::errc{}) return false;
 

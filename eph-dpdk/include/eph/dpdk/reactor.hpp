@@ -156,6 +156,7 @@ public:
 
     /// Mark a connection as reconnected (resume processing).
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
+        if (!new_session) return;
         if (conn_id < count_) {
             entries_[conn_id].session = new_session;
             entries_[conn_id].tuple = new_session->connection_tuple();
@@ -170,7 +171,12 @@ public:
     }
 
     /// Access entry by index (for stats, diagnostics).
+    /// Returns a static empty entry if index is out of bounds.
     [[nodiscard]] const ReactorEntry& entry(size_t i) const noexcept {
+        if (i >= count_) [[unlikely]] {
+            static const ReactorEntry empty{};
+            return empty;
+        }
         return entries_[i];
     }
 
@@ -229,6 +235,9 @@ private:
                     // Direct dispatch — zero ring overhead.
                     // process_rx handles TCP state (seq/ack/flags) and
                     // delivers payload via the inline callback.
+                    // process_rx takes ownership of pkts[i] — it frees the mbuf
+                    // internally via free_list or on error via free_remaining.
+                    // No additional rte_pktmbuf_free needed on the matched path.
                     auto result = entry.session->process_rx(
                         &pkts[i], 1,
                         [&](const uint8_t* data, uint16_t len) {

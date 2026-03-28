@@ -73,7 +73,7 @@ enum class TimeInForce : char {
 /// @param tif              Time in force (default Day)
 /// @param sending_time_ns  Epoch nanoseconds for SendingTime (0 = current time)
 /// @return Bytes written to buf, or 0 on overflow / error
-inline size_t build_new_order(
+[[nodiscard]] inline size_t build_new_order(
     uint8_t* buf, size_t capacity,
     std::string_view sender_comp_id,
     std::string_view target_comp_id,
@@ -137,7 +137,7 @@ inline size_t build_new_order(
 /// @param symbol           Instrument symbol
 /// @param side             Side of the original order
 /// @return Bytes written to buf, or 0 on overflow / error
-inline size_t build_cancel_order(
+[[nodiscard]] inline size_t build_cancel_order(
     uint8_t* buf, size_t capacity,
     std::string_view sender_comp_id,
     std::string_view target_comp_id,
@@ -191,7 +191,7 @@ inline size_t build_cancel_order(
 /// @param price            New limit price (ignored for Market orders)
 /// @param tif              Time in force (default Day)
 /// @return Bytes written to buf, or 0 on overflow / error
-inline size_t build_replace_order(
+[[nodiscard]] inline size_t build_replace_order(
     uint8_t* buf, size_t capacity,
     std::string_view sender_comp_id,
     std::string_view target_comp_id,

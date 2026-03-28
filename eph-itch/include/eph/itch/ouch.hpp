@@ -240,6 +240,8 @@ struct CancelOrder {
 ///   type(1) timestamp(8) token(14) side(1) shares(4) symbol(8) price(4)
 ///   tif(4) firm(4) display(1) order_ref(8) capacity(1) int_mkt_sweep(1)
 ///   cross_type(1) order_state(1) bbo_weight(1) = 62 + reserved(4) = 66
+/// @warning All accessors require valid() == true. Calling on an invalid
+///          view is undefined behavior. Always check valid() first.
 class AcceptedView {
 public:
     static constexpr size_t kSize = 66;
@@ -289,6 +291,8 @@ private:
 /// Layout:
 ///   type(1) timestamp(8) token(14) executed_shares(4) execution_price(4)
 ///   liquidity_flag(1) match_number(8) = 40
+/// @warning All accessors require valid() == true. Calling on an invalid
+///          view is undefined behavior. Always check valid() first.
 class ExecutedView {
 public:
     static constexpr size_t kSize = 40;
@@ -323,6 +327,8 @@ private:
 // -------------------------------------------------------------------------
 /// Layout:
 ///   type(1) timestamp(8) token(14) decrement_shares(4) reason(1) = 28
+/// @warning All accessors require valid() == true. Calling on an invalid
+///          view is undefined behavior. Always check valid() first.
 class CanceledView {
 public:
     static constexpr size_t kSize = 28;
@@ -358,6 +364,8 @@ private:
 ///   price(4) tif(4) firm(4) display(1) order_ref(8) capacity(1)
 ///   int_mkt_sweep(1) cross_type(1) order_state(1) previous_token(14)
 ///   = 75 + reserved(5) = 80
+/// @warning All accessors require valid() == true. Calling on an invalid
+///          view is undefined behavior. Always check valid() first.
 class ReplacedView {
 public:
     static constexpr size_t kSize = 80;
