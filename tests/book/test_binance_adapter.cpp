@@ -2,11 +2,13 @@
 /// Unit tests for the BinanceBookAdapter — Binance bookTicker to ArrayBook bridge.
 ///
 /// Covers: basic BBO update, multiple sequential updates, zero-qty level removal,
-/// mid price and spread through the adapter, and malformed input handling.
+/// mid price and spread through the adapter, malformed input handling, and
+/// depth snapshot loading for reconnection recovery.
 
 #include <cmath>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -253,4 +255,165 @@ TEST(BinanceBookAdapter, CombinedStreamEndToEnd) {
     ASSERT_TRUE(ask.has_value());
     EXPECT_NEAR(ask->price, 95000.20, kEps);
     EXPECT_NEAR(ask->qty, 4.50, kEps);
+}
+
+// ===========================================================================
+// Depth snapshot tests — reconnection recovery path
+// ===========================================================================
+
+/// Helper: build a DepthSnapshot with given bid/ask levels.
+static eph::json::binance::DepthSnapshot make_snapshot(
+    int64_t update_id,
+    std::vector<eph::json::binance::DepthLevel> bids,
+    std::vector<eph::json::binance::DepthLevel> asks) {
+    eph::json::binance::DepthSnapshot snap;
+    snap.last_update_id = update_id;
+    snap.bids = std::move(bids);
+    snap.asks = std::move(asks);
+    return snap;
+}
+
+/// Load snapshot with 5 bid + 5 ask levels, verify BBO and depth.
+TEST(BinanceBookAdapter, LoadSnapshot5x5VerifyBbo) {
+    BinanceBookAdapter<20> adapter;
+
+    auto snap = make_snapshot(100000, {
+        {50005.0, 1.0},
+        {50004.0, 2.0},
+        {50003.0, 3.0},
+        {50002.0, 4.0},
+        {50001.0, 5.0},
+    }, {
+        {50006.0, 1.5},
+        {50007.0, 2.5},
+        {50008.0, 3.5},
+        {50009.0, 4.5},
+        {50010.0, 5.5},
+    });
+
+    auto loaded = adapter.load_snapshot(snap);
+    EXPECT_EQ(loaded, 10u);
+
+    const auto& book = adapter.book();
+    EXPECT_EQ(book.bid_depth(), 5u);
+    EXPECT_EQ(book.ask_depth(), 5u);
+
+    // Best bid is highest price
+    auto bid = book.best_bid();
+    ASSERT_TRUE(bid.has_value());
+    EXPECT_NEAR(bid->price, 50005.0, kEps);
+    EXPECT_NEAR(bid->qty, 1.0, kEps);
+
+    // Best ask is lowest price
+    auto ask = book.best_ask();
+    ASSERT_TRUE(ask.has_value());
+    EXPECT_NEAR(ask->price, 50006.0, kEps);
+    EXPECT_NEAR(ask->qty, 1.5, kEps);
+
+    // Mid and spread
+    auto mid = book.mid_price();
+    ASSERT_TRUE(mid.has_value());
+    EXPECT_NEAR(*mid, 50005.5, kEps);
+
+    auto spread = book.spread();
+    ASSERT_TRUE(spread.has_value());
+    EXPECT_NEAR(*spread, 1.0, kEps);
+}
+
+/// Load an empty snapshot — book should be empty.
+TEST(BinanceBookAdapter, LoadEmptySnapshotEmptyBook) {
+    BinanceBookAdapter<20> adapter;
+
+    // Pre-populate book with a ticker update
+    auto json = make_bookticker_json("BTCUSDT", "50000.0", "1.0", "50001.0", "2.0");
+    ASSERT_TRUE(feed_ticker(adapter, json));
+    EXPECT_EQ(adapter.book().bid_depth(), 1u);
+
+    // Load empty snapshot — clears the book
+    auto snap = make_snapshot(200000, {}, {});
+    auto loaded = adapter.load_snapshot(snap);
+    EXPECT_EQ(loaded, 0u);
+
+    EXPECT_FALSE(adapter.book().best_bid().has_value());
+    EXPECT_FALSE(adapter.book().best_ask().has_value());
+    EXPECT_EQ(adapter.book().bid_depth(), 0u);
+    EXPECT_EQ(adapter.book().ask_depth(), 0u);
+}
+
+/// Load snapshot then apply incremental update — verifies composite book state.
+TEST(BinanceBookAdapter, LoadSnapshotThenIncrementalUpdate) {
+    BinanceBookAdapter<20> adapter;
+
+    // Load snapshot with 3 levels per side
+    auto snap = make_snapshot(300000, {
+        {40003.0, 1.0},
+        {40002.0, 2.0},
+        {40001.0, 3.0},
+    }, {
+        {40004.0, 1.0},
+        {40005.0, 2.0},
+        {40006.0, 3.0},
+    });
+    adapter.load_snapshot(snap);
+    EXPECT_EQ(adapter.book().bid_depth(), 3u);
+    EXPECT_EQ(adapter.book().ask_depth(), 3u);
+
+    // Apply incremental bookTicker update — new best bid
+    auto json = make_bookticker_json("BTCUSDT",
+        "40003.50", "0.5",
+        "40003.80", "0.8");
+    ASSERT_TRUE(feed_ticker(adapter, json));
+
+    const auto& book = adapter.book();
+
+    // New best bid should be 40003.50 (above old best 40003.0)
+    auto bid = book.best_bid();
+    ASSERT_TRUE(bid.has_value());
+    EXPECT_NEAR(bid->price, 40003.50, kEps);
+    EXPECT_NEAR(bid->qty, 0.5, kEps);
+
+    // New best ask should be 40003.80 (below old best 40004.0)
+    auto ask = book.best_ask();
+    ASSERT_TRUE(ask.has_value());
+    EXPECT_NEAR(ask->price, 40003.80, kEps);
+    EXPECT_NEAR(ask->qty, 0.8, kEps);
+
+    // Depth increased: 3 snapshot + 1 incremental per side
+    EXPECT_EQ(book.bid_depth(), 4u);
+    EXPECT_EQ(book.ask_depth(), 4u);
+}
+
+/// Verify last_update_id tracking across snapshots.
+TEST(BinanceBookAdapter, LastUpdateIdTracking) {
+    BinanceBookAdapter<20> adapter;
+
+    // Initially zero
+    EXPECT_EQ(adapter.last_update_id(), 0);
+
+    // Load first snapshot
+    auto snap1 = make_snapshot(12345, {
+        {100.0, 1.0},
+    }, {
+        {101.0, 1.0},
+    });
+    adapter.load_snapshot(snap1);
+    EXPECT_EQ(adapter.last_update_id(), 12345);
+
+    // Ticker updates do not change last_update_id
+    auto json = make_bookticker_json("BTCUSDT", "100.0", "2.0", "101.0", "2.0", 99999);
+    ASSERT_TRUE(feed_ticker(adapter, json));
+    EXPECT_EQ(adapter.last_update_id(), 12345);
+
+    // Load second snapshot — update_id advances
+    auto snap2 = make_snapshot(67890, {
+        {200.0, 1.0},
+    }, {
+        {201.0, 1.0},
+    });
+    adapter.load_snapshot(snap2);
+    EXPECT_EQ(adapter.last_update_id(), 67890);
+
+    // Book reflects second snapshot only
+    EXPECT_EQ(adapter.book().bid_depth(), 1u);
+    EXPECT_NEAR(adapter.book().best_bid()->price, 200.0, kEps);
 }

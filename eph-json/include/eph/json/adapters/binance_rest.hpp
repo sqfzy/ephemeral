@@ -29,32 +29,11 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/json/adapters/binance_depth_types.hpp"
 #include "eph/json/parser.hpp"
 #include "eph/net/http_client.hpp"
 
 namespace eph::json::binance {
-
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
-/// A single price/quantity level in the orderbook.
-struct DepthLevel {
-    double price;
-    double qty;
-};
-
-/// Orderbook depth snapshot from GET /api/v3/depth.
-struct DepthSnapshot {
-    int64_t last_update_id = 0;
-    std::vector<DepthLevel> bids;  ///< Sorted descending by price
-    std::vector<DepthLevel> asks;  ///< Sorted ascending by price
-};
-
-/// Server time from GET /api/v3/time.
-struct ServerTime {
-    int64_t server_time_ms = 0;  ///< Milliseconds since epoch
-};
 
 // ---------------------------------------------------------------------------
 // Logger

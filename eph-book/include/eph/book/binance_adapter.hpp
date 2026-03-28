@@ -13,6 +13,7 @@
 /// ensure both are linked when including this header.
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 
@@ -20,6 +21,7 @@
 
 #include "eph/book/array_book.hpp"
 #include "eph/json/adapters/binance.hpp"
+#include "eph/json/adapters/binance_depth_types.hpp"
 #include "eph/json/parser.hpp"
 
 namespace eph::book {
@@ -68,11 +70,41 @@ public:
         return true;
     }
 
-    // TODO: update_from_depth — parse Binance partial depth snapshots
-    //   (@depth stream) where multiple price levels are provided as nested
-    //   arrays: {"bids":[["price","qty"],...],"asks":[["price","qty"],...]}
-    //   Requires array iteration support in JsonView (currently stored as
-    //   opaque strings). Deferred until array parsing is added to eph-json.
+    /// Load a full depth snapshot from Binance REST API response.
+    /// Clears existing book and replaces with snapshot data.
+    /// This is the reconnection recovery path: REST snapshot -> order book.
+    ///
+    /// @param snapshot  Parsed DepthSnapshot from parse_depth_response()
+    /// @return The number of levels loaded (bids + asks)
+    std::size_t load_snapshot(const eph::json::binance::DepthSnapshot& snapshot) noexcept {
+        SPDLOG_DEBUG("BinanceBookAdapter::load_snapshot last_update_id={} "
+                     "bids={} asks={}",
+                     snapshot.last_update_id,
+                     snapshot.bids.size(),
+                     snapshot.asks.size());
+
+        book_.clear();
+        last_update_id_ = snapshot.last_update_id;
+
+        for (const auto& level : snapshot.bids) {
+            SPDLOG_TRACE("load_snapshot bid price={} qty={}", level.price, level.qty);
+            book_.update_bid(level.price, level.qty);
+        }
+
+        for (const auto& level : snapshot.asks) {
+            SPDLOG_TRACE("load_snapshot ask price={} qty={}", level.price, level.qty);
+            book_.update_ask(level.price, level.qty);
+        }
+
+        auto total = book_.bid_depth() + book_.ask_depth();
+        SPDLOG_DEBUG("BinanceBookAdapter::load_snapshot complete: {} levels loaded", total);
+        return total;
+    }
+
+    /// Last update ID from the most recently loaded snapshot.
+    /// Used to validate sequence continuity when applying incremental updates:
+    /// incremental updates with U <= last_update_id should be dropped.
+    [[nodiscard]] int64_t last_update_id() const noexcept { return last_update_id_; }
 
     /// Get the current book state (const).
     [[nodiscard]] const ArrayBook<MaxLevels>& book() const noexcept { return book_; }
@@ -82,6 +114,7 @@ public:
 
 private:
     ArrayBook<MaxLevels> book_;
+    int64_t last_update_id_ = 0;
 
     /// Parse a string_view as double (price/quantity fields).
     /// Handles the decimal format used by Binance: "87245.30000000".
