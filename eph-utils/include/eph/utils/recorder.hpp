@@ -289,7 +289,7 @@ class Recorder {
   }},
   "histogram_memory_bytes": {}
 }})",
-                eph::net::detail::json_escape(stats->name), get_timestamp(),
+                eph::core::detail::json_escape(stats->name), get_timestamp(),
                 stats->count, skipped_invalid_,
                 skipped_overflow_, stats->avg_ns, stats->min_ns, stats->max_ns,
                 stats->stddev_ns, stats->p50_ns, stats->p90_ns, stats->p99_ns,
@@ -678,7 +678,7 @@ class ConcurrentRecorder {
     "p99_9": {:.2f}
   }}
 }})",
-                eph::net::detail::json_escape(stats->name), get_timestamp(),
+                eph::core::detail::json_escape(stats->name), get_timestamp(),
                 active, retired,
                 stats->count, skipped_invalid, skipped_overflow,
                 stats->avg_ns, stats->min_ns, stats->max_ns,

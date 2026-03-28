@@ -567,7 +567,7 @@ TEST(BoundedQueueTimed, TryConsumeForVisitorPattern) {
 
     uint32_t captured = 0;
     bool ok = queue.try_consume_for(
-        [&](BoundedTestData& data) { captured = data.seq; },
+        [&](const BoundedTestData& data) { captured = data.seq; },
         std::chrono::milliseconds(10));
     EXPECT_TRUE(ok);
     EXPECT_EQ(captured, 66u);
@@ -831,7 +831,7 @@ TYPED_TEST(BoundedQueueTest, TryConsumeN_BasicOperation) {
     // Consume at most (cap - 1) via visitor, leaving 1
     const size_t to_consume = cap - 1;
     std::vector<uint32_t> consumed;
-    size_t n = queue.try_consume_n(to_consume, [&](BoundedTestData& slot, size_t idx) {
+    size_t n = queue.try_consume_n(to_consume, [&](const BoundedTestData& slot, size_t idx) {
         consumed.push_back(slot.seq);
         EXPECT_EQ(idx, consumed.size() - 1);
     });
@@ -851,7 +851,7 @@ TYPED_TEST(BoundedQueueTest, TryConsumeN_BasicOperation) {
 TYPED_TEST(BoundedQueueTest, TryConsumeN_EmptyQueue) {
     TypeParam queue;
 
-    size_t n = queue.try_consume_n(4, [](BoundedTestData&, size_t) {
+    size_t n = queue.try_consume_n(4, [](const BoundedTestData&, size_t) {
         FAIL() << "Visitor should not be called on empty queue";
     });
     EXPECT_EQ(n, 0u);
@@ -863,7 +863,7 @@ TYPED_TEST(BoundedQueueTest, TryConsumeN_ZeroCount) {
     d.seq = 1;
     queue.try_push(d);
 
-    size_t n = queue.try_consume_n(0, [](BoundedTestData&, size_t) {
+    size_t n = queue.try_consume_n(0, [](const BoundedTestData&, size_t) {
         FAIL() << "Visitor should not be called with n=0";
     });
     EXPECT_EQ(n, 0u);
@@ -880,7 +880,7 @@ TYPED_TEST(BoundedQueueTest, TryConsumeN_MoreThanAvailable) {
         queue.try_push(d);
     }
 
-    size_t n = queue.try_consume_n(100, [](BoundedTestData& slot, size_t idx) {
+    size_t n = queue.try_consume_n(100, [](const BoundedTestData& slot, size_t idx) {
         EXPECT_EQ(slot.seq, static_cast<uint32_t>(idx));
     });
     EXPECT_EQ(n, 2u);
@@ -905,7 +905,7 @@ TYPED_TEST(BoundedQueueTest, ConsumeN_BlockingBatchVisitor) {
 
     // Blocking consume_n: should spin until data arrives
     std::vector<uint32_t> consumed;
-    size_t n = queue.consume_n(kBatch, [&](BoundedTestData& slot, size_t) {
+    size_t n = queue.consume_n(kBatch, [&](const BoundedTestData& slot, size_t) {
         consumed.push_back(slot.seq);
     });
 
@@ -914,7 +914,7 @@ TYPED_TEST(BoundedQueueTest, ConsumeN_BlockingBatchVisitor) {
 
     // Drain remaining
     while (consumed.size() < kBatch) {
-        queue.consume([&](BoundedTestData& slot) {
+        queue.consume([&](const BoundedTestData& slot) {
             consumed.push_back(slot.seq);
         });
     }
@@ -937,7 +937,7 @@ TEST(BoundedQueueTimed, TryConsumeNForSucceedsImmediately) {
 
     std::vector<uint32_t> consumed;
     size_t n = queue.try_consume_n_for(3,
-        [&](BoundedTestData& slot, size_t) {
+        [&](const BoundedTestData& slot, size_t) {
             consumed.push_back(slot.seq);
         },
         std::chrono::milliseconds(100));
@@ -954,7 +954,7 @@ TEST(BoundedQueueTimed, TryConsumeNForTimesOut) {
 
     auto start = std::chrono::steady_clock::now();
     size_t n = queue.try_consume_n_for(4,
-        [](BoundedTestData&, size_t) {
+        [](const BoundedTestData&, size_t) {
             FAIL() << "Should not be called on timeout";
         },
         std::chrono::milliseconds(10));
@@ -978,7 +978,7 @@ TEST(BoundedQueueTimed, TryConsumeNForWaitsForData) {
 
     std::vector<uint32_t> consumed;
     size_t n = queue.try_consume_n_for(4,
-        [&](BoundedTestData& slot, size_t) {
+        [&](const BoundedTestData& slot, size_t) {
             consumed.push_back(slot.seq);
         },
         std::chrono::milliseconds(500));
@@ -1268,7 +1268,7 @@ TEST(BoundedQueueStats, throughput_zero_duration_returns_zero) {
 
 TYPED_TEST(BoundedQueueTest, try_consume_all_empty_queue_returns_zero) {
     TypeParam queue;
-    size_t n = queue.try_consume_all([](BoundedTestData&, size_t) {
+    size_t n = queue.try_consume_all([](const BoundedTestData&, size_t) {
         FAIL() << "Visitor should not be called on empty queue";
     });
     EXPECT_EQ(n, 0u);
@@ -1287,7 +1287,7 @@ TYPED_TEST(BoundedQueueTest, try_consume_all_drains_all_elements) {
     EXPECT_EQ(queue.size(), cap);
 
     std::vector<uint32_t> consumed;
-    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t idx) {
+    size_t n = queue.try_consume_all([&](const BoundedTestData& slot, size_t idx) {
         consumed.push_back(slot.seq);
         EXPECT_EQ(idx, consumed.size() - 1);
     });
@@ -1313,7 +1313,7 @@ TYPED_TEST(BoundedQueueTest, try_consume_all_partial_fill) {
     }
 
     std::vector<uint32_t> consumed;
-    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t) {
+    size_t n = queue.try_consume_all([&](const BoundedTestData& slot, size_t) {
         consumed.push_back(slot.seq);
     });
 
@@ -1337,7 +1337,7 @@ TEST(BoundedQueueConsumeAll, works_after_head_wraps_around) {
             ASSERT_TRUE(queue.try_push(d));
         }
         // Drain all
-        size_t n = queue.try_consume_all([](BoundedTestData&, size_t) {});
+        size_t n = queue.try_consume_all([](const BoundedTestData&, size_t) {});
         EXPECT_EQ(n, 4u);
     }
 
@@ -1350,7 +1350,7 @@ TEST(BoundedQueueConsumeAll, works_after_head_wraps_around) {
     }
 
     std::vector<uint32_t> consumed;
-    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t idx) {
+    size_t n = queue.try_consume_all([&](const BoundedTestData& slot, size_t idx) {
         consumed.push_back(slot.seq);
         EXPECT_EQ(idx, consumed.size() - 1);
     });
@@ -1368,7 +1368,7 @@ TEST(BoundedQueueConsumeAll, capacity_one_queue) {
     ASSERT_TRUE(queue.try_push(d));
 
     std::vector<uint32_t> consumed;
-    size_t n = queue.try_consume_all([&](BoundedTestData& slot, size_t idx) {
+    size_t n = queue.try_consume_all([&](const BoundedTestData& slot, size_t idx) {
         consumed.push_back(slot.seq);
         EXPECT_EQ(idx, 0u);
     });

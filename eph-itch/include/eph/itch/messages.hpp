@@ -26,21 +26,30 @@ namespace eph::itch {
 inline uint16_t read_be16(const uint8_t* p) noexcept {
     uint16_t v;
     std::memcpy(&v, p, 2);
-    return std::byteswap(v);
+    if constexpr (std::endian::native == std::endian::little)
+        return std::byteswap(v);
+    else
+        return v;
 }
 
 /// Read a big-endian uint32_t from an arbitrary byte pointer.
 inline uint32_t read_be32(const uint8_t* p) noexcept {
     uint32_t v;
     std::memcpy(&v, p, 4);
-    return std::byteswap(v);
+    if constexpr (std::endian::native == std::endian::little)
+        return std::byteswap(v);
+    else
+        return v;
 }
 
 /// Read a big-endian uint64_t from an arbitrary byte pointer.
 inline uint64_t read_be64(const uint8_t* p) noexcept {
     uint64_t v;
     std::memcpy(&v, p, 8);
-    return std::byteswap(v);
+    if constexpr (std::endian::native == std::endian::little)
+        return std::byteswap(v);
+    else
+        return v;
 }
 
 /// Read a 6-byte big-endian timestamp (nanoseconds since midnight) into a

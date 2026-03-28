@@ -1033,7 +1033,7 @@ struct Stats {
     /// JSON-formatted summary for monitoring system integration.
     /// Consistent with to_json() patterns in TransportStats, RttStats, etc.
     [[nodiscard]] std::string to_json() const {
-        auto escaped = eph::net::detail::json_escape(name);
+        auto escaped = eph::core::detail::json_escape(name);
         if (count == 0) {
             return std::format("{{\"name\":\"{}\",\"count\":0}}", escaped);
         }

@@ -771,7 +771,7 @@ public:
         requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
-            [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
+            [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback), msg.data, msg.len);
             });
     }
@@ -790,7 +790,7 @@ public:
         requires (std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
     size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
-            [&](RxMsg& msg, [[maybe_unused]] size_t idx) {
+            [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback),
                             msg.data, msg.len, msg.opcode);
             });
@@ -2132,7 +2132,7 @@ private:
             // head update for the entire batch vs one per message).
             int n = static_cast<int>(tx_queue_.try_consume_n(
                 static_cast<size_t>(kMaxBatch),
-                [&](TxMsg& msg, [[maybe_unused]] size_t idx) {
+                [&](const TxMsg& msg, [[maybe_unused]] size_t idx) {
                     batch[idx] = msg;
                 }));
 
@@ -2319,7 +2319,7 @@ private:
             tcp_ && tcp_->is_established()) {
             int remaining = static_cast<int>(tx_queue_.try_consume_n(
                 static_cast<size_t>(kMaxBatch),
-                [&](TxMsg& msg, [[maybe_unused]] size_t idx) {
+                [&](const TxMsg& msg, [[maybe_unused]] size_t idx) {
                     batch[idx] = msg;
                 }));
 

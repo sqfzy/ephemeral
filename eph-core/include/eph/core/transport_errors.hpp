@@ -73,8 +73,8 @@ struct ConnectionErrorInfo {
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"code\":\"{}\",\"detail\":\"{}\",\"http_status\":{}}}",
-            detail::json_escape(connection_error_name(code)),
-            detail::json_escape(detail),
+            eph::core::detail::json_escape(connection_error_name(code)),
+            eph::core::detail::json_escape(detail),
             http_status.value_or(0));
     }
 

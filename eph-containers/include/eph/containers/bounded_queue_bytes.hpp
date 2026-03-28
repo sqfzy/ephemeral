@@ -192,6 +192,8 @@ class BoundedQueueBytes {
         });
     }
 
+    /// Best-effort drain: consumes all elements visible at the time of the call.
+    /// Does NOT guarantee the queue is empty afterward if the producer is active.
     /**
      * @brief 一次性消费所有排队消息 (尽力而为语义)
      *

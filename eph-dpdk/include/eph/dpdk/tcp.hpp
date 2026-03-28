@@ -926,6 +926,7 @@ private:
                 "secure TCP connection");
             return 0;
         }
+        if (isn == 0) isn = 1;  // Avoid ambiguity with failure return value
         return isn;
     }
 

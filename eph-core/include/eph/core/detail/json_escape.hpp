@@ -11,7 +11,7 @@
 #include <string>
 #include <string_view>
 
-namespace eph::net::detail {
+namespace eph::core::detail {
 
 /// Escape a string for safe embedding in JSON values (RFC 8259 §7).
 /// Handles: \", \\, \b, \f, \n, \r, \t, and control chars U+0000–U+001F.
@@ -52,4 +52,4 @@ namespace eph::net::detail {
     return out;
 }
 
-} // namespace eph::net::detail
+} // namespace eph::core::detail

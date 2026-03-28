@@ -24,7 +24,7 @@
 #include <string_view>
 #include <vector>
 
-#include "eph/core/detail/json_escape.hpp"
+#include "eph/net/detail/json_escape.hpp"
 #include "eph/core/transport_errors.hpp"
 
 namespace eph::net {

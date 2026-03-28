@@ -456,12 +456,12 @@ class BoundedQueue {
     /**
      * @brief尝试零拷贝消费 (Visitor 模式)
      *
-     * @tparam F 回调类型，签名应为 void(T& data)
-     * @param visitor 访问数据的回调
+     * @tparam F 回调类型，签名应为 void(const T& data)
+     * @param visitor 访问数据的回调（接收 const 引用，不可修改）
      * @return true 成功; false 队列为空
      */
     template <typename F>
-        requires std::invocable<F, T&>
+        requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume(F&& visitor) noexcept {
         const size_t head = reader_.head_.load(std::memory_order_relaxed);
 
@@ -474,7 +474,7 @@ class BoundedQueue {
             }
         }
 
-        std::invoke(std::forward<F>(visitor), buffer_[head & mask_]);
+        std::invoke(std::forward<F>(visitor), std::as_const(buffer_[head & mask_]));
 
         reader_.head_.store(head + 1, std::memory_order_release);
         return true;
@@ -545,7 +545,7 @@ class BoundedQueue {
      * @return true 成功; false 队列为空
      */
     [[nodiscard]] bool try_pop(T& out) noexcept {
-        return try_consume([&out](T& data) { out = data; });
+        return try_consume([&out](const T& data) { out = data; });
     }
 
     /**
@@ -554,7 +554,7 @@ class BoundedQueue {
      */
     [[nodiscard]] std::optional<T> try_pop() noexcept {
         std::optional<T> res;
-        if (try_consume([&](T& data) { res.emplace(data); })) {
+        if (try_consume([&](const T& data) { res.emplace(data); })) {
             return res;
         }
         return std::nullopt;
@@ -605,11 +605,11 @@ class BoundedQueue {
      * 与 try_produce_n 镜像对称——写端批量生产，读端批量消费，均为零拷贝。
      *
      * @param n       最大消费数量
-     * @param visitor 回调 void(T& slot, size_t index)，index 为 0..consumed-1
+     * @param visitor 回调 void(const T& slot, size_t index)，index 为 0..consumed-1
      * @return 实际消费的元素数量（0 表示队列为空）
      */
     template <typename F>
-        requires std::invocable<F, T&, size_t>
+        requires std::invocable<F, const T&, size_t>
     [[nodiscard]] size_t try_consume_n(size_t n, F&& visitor) noexcept {
         if (n == 0) return 0;
 
@@ -629,7 +629,7 @@ class BoundedQueue {
 
         for (size_t i = 0; i < count; ++i) {
             std::invoke(std::forward<F>(visitor),
-                        buffer_[(head + i) & mask_], i);
+                        std::as_const(buffer_[(head + i) & mask_]), i);
         }
 
         reader_.head_.store(head + count, std::memory_order_release);
@@ -642,11 +642,11 @@ class BoundedQueue {
      * 自旋等待直到至少有一个元素可消费，然后批量消费最多 n 个元素。
      *
      * @param n       最大消费数量
-     * @param visitor 回调 void(T& slot, size_t index)
+     * @param visitor 回调 void(const T& slot, size_t index)
      * @return 实际消费的元素数量（>= 1）
      */
     template <typename F>
-        requires std::invocable<F, T&, size_t>
+        requires std::invocable<F, const T&, size_t>
     size_t consume_n(size_t n, F&& visitor) noexcept {
         size_t count;
         while ((count = try_consume_n(n, std::forward<F>(visitor))) == 0) {
@@ -659,7 +659,7 @@ class BoundedQueue {
      * @brief 阻塞式消费
      */
     template <typename F>
-        requires std::invocable<F, T&>
+        requires std::invocable<F, const T&>
     void consume(F&& visitor) noexcept {
         while (!try_consume(std::forward<F>(visitor))) {
             cpu_relax();
@@ -671,7 +671,7 @@ class BoundedQueue {
      * 自旋直到有数据可用
      */
     void pop(T& out) noexcept {
-        consume([&out](T& data) { out = data; });
+        consume([&out](const T& data) { out = data; });
     }
 
     /**
@@ -679,7 +679,7 @@ class BoundedQueue {
      */
     [[nodiscard]] T pop() noexcept {
         T res;
-        consume([&res](T& data) { res = data; });
+        consume([&res](const T& data) { res = data; });
         return res;
     }
 
@@ -697,7 +697,7 @@ class BoundedQueue {
      * @return true 消费成功; false 超时
      */
     template <typename F, typename Rep, typename Period>
-        requires std::invocable<F, T&>
+        requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume_for(F&& visitor,
                                        std::chrono::duration<Rep, Period> timeout) noexcept {
         if (try_consume(std::forward<F>(visitor))) return true;
@@ -716,7 +716,7 @@ class BoundedQueue {
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_pop_for(T& out,
                                     std::chrono::duration<Rep, Period> timeout) noexcept {
-        return try_consume_for([&out](T& data) { out = data; }, timeout);
+        return try_consume_for([&out](const T& data) { out = data; }, timeout);
     }
 
     /**
@@ -727,7 +727,7 @@ class BoundedQueue {
     [[nodiscard]] std::optional<T> try_pop_for(
         std::chrono::duration<Rep, Period> timeout) noexcept {
         std::optional<T> res;
-        (void)try_consume_for([&](T& data) { res.emplace(data); }, timeout);
+        (void)try_consume_for([&](const T& data) { res.emplace(data); }, timeout);
         return res;
     }
 
@@ -762,12 +762,12 @@ class BoundedQueue {
      * 对每个元素原地调用 visitor(slot, index)。
      *
      * @param n       最大消费数量
-     * @param visitor 回调 void(T& slot, size_t index)
+     * @param visitor 回调 void(const T& slot, size_t index)
      * @param timeout 最大等待时间
      * @return 实际消费的元素数量（0 表示超时且队列为空）
      */
     template <typename F, typename Rep, typename Period>
-        requires std::invocable<F, T&, size_t>
+        requires std::invocable<F, const T&, size_t>
     [[nodiscard]] size_t try_consume_n_for(size_t n, F&& visitor,
                                             std::chrono::duration<Rep, Period> timeout) noexcept {
         size_t count = try_consume_n(n, std::forward<F>(visitor));
@@ -781,18 +781,20 @@ class BoundedQueue {
         return 0;
     }
 
+    /// Best-effort drain: consumes all elements visible at the time of the call.
+    /// Does NOT guarantee the queue is empty afterward if the producer is active.
     /**
      * @brief 消费当前队列中所有可用元素
      *
      * 等效于 try_consume_n(Capacity, visitor)，但语义更清晰。
      * 适用于关机清空、批量处理等场景。
      *
-     * @tparam F 回调类型，签名应为 void(T& slot, size_t index)
+     * @tparam F 回调类型，签名应为 void(const T& slot, size_t index)
      * @param visitor 回调函数，index 为 0..consumed-1
      * @return 实际消费的元素数量（0 表示队列为空）
      */
     template <typename F>
-        requires std::invocable<F, T&, size_t>
+        requires std::invocable<F, const T&, size_t>
     [[nodiscard]] size_t try_consume_all(F&& visitor) noexcept {
         return try_consume_n(Capacity, std::forward<F>(visitor));
     }
