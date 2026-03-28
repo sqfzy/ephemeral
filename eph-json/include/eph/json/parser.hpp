@@ -71,45 +71,40 @@ public:
 
     /// Get raw value for a key. Returns empty string_view if not found.
     [[nodiscard]] std::string_view get(std::string_view key) const noexcept {
-        for (size_t i = 0; i < count_; ++i) {
-            if (fields_[i].key == key) return fields_[i].value;
-        }
-        return {};
+        auto* f = find_field(key);
+        return f ? f->value : std::string_view{};
     }
 
-    /// Get string value (unquoted). Returns nullopt if not found or not a string.
+    /// Get string value (unquoted). Returns nullopt if not found.
     [[nodiscard]] std::optional<std::string_view>
     get_string(std::string_view key) const noexcept {
-        for (size_t i = 0; i < count_; ++i) {
-            if (fields_[i].key == key) {
-                return fields_[i].value;
-            }
-        }
-        return std::nullopt;
+        auto* f = find_field(key);
+        return f ? std::optional{f->value} : std::nullopt;
     }
 
     /// Parse value as int64_t. Returns nullopt if not found or not a valid integer.
     [[nodiscard]] std::optional<int64_t>
     get_int(std::string_view key) const noexcept {
-        auto sv = get(key);
-        if (sv.empty()) return std::nullopt;
-        return parse_int(sv);
+        auto* f = find_field(key);
+        if (!f) return std::nullopt;
+        return parse_int(f->value);
     }
 
     /// Parse value as double. Returns nullopt if not found or not a valid number.
     [[nodiscard]] std::optional<double>
     get_double(std::string_view key) const noexcept {
-        auto sv = get(key);
-        if (sv.empty()) return std::nullopt;
-        return parse_double(sv);
+        auto* f = find_field(key);
+        if (!f) return std::nullopt;
+        return parse_double(f->value);
     }
 
     /// Parse value as boolean. Returns nullopt if not found or not true/false.
     [[nodiscard]] std::optional<bool>
     get_bool(std::string_view key) const noexcept {
-        auto sv = get(key);
-        if (sv == "true") return true;
-        if (sv == "false") return false;
+        auto* f = find_field(key);
+        if (!f) return std::nullopt;
+        if (f->value == "true") return true;
+        if (f->value == "false") return false;
         return std::nullopt;
     }
 
@@ -118,23 +113,33 @@ public:
 
     /// Check if a key exists.
     [[nodiscard]] bool has(std::string_view key) const noexcept {
-        for (size_t i = 0; i < count_; ++i) {
-            if (fields_[i].key == key) return true;
-        }
-        return false;
+        return find_field(key) != nullptr;
     }
 
-    /// Access field by index (for iteration).
+    /// Access field by index (for iteration). Returns empty field if out of bounds.
     [[nodiscard]] const Field& field_at(size_t i) const noexcept {
-        return fields_[i];
+        static constexpr Field kEmpty{};
+        return i < count_ ? fields_[i] : kEmpty;
     }
 
-    // Internal: used by parse()
+private:
+    friend std::expected<JsonView, ParseError>
+    parse(const uint8_t* data, size_t len) noexcept;
+
+    /// Single linear scan, used by all accessors. Returns nullptr if not found.
+    [[nodiscard]] const Field* find_field(std::string_view key) const noexcept {
+        for (size_t i = 0; i < count_; ++i) {
+            if (fields_[i].key == key) return &fields_[i];
+        }
+        return nullptr;
+    }
+
     std::array<Field, kMaxFields> fields_{};
     size_t count_ = 0;
 
-private:
     /// Parse a string_view as int64_t with overflow protection.
+    /// Uses uint64_t accumulator to handle INT64_MIN correctly
+    /// (its absolute value exceeds INT64_MAX by 1).
     static std::optional<int64_t> parse_int(std::string_view sv) noexcept {
         if (sv.empty()) return std::nullopt;
         bool negative = false;
@@ -142,15 +147,26 @@ private:
         if (sv[0] == '-') { negative = true; pos = 1; }
         if (pos >= sv.size()) return std::nullopt;
 
-        int64_t result = 0;
+        uint64_t result = 0;
+        constexpr uint64_t kMaxPos = static_cast<uint64_t>(INT64_MAX);
+        // INT64_MIN has absolute value INT64_MAX + 1
+        constexpr uint64_t kMaxNeg = kMaxPos + 1;
+        uint64_t limit = negative ? kMaxNeg : kMaxPos;
+
         for (; pos < sv.size(); ++pos) {
             char c = sv[pos];
             if (c < '0' || c > '9') return std::nullopt;
-            // Overflow check
-            if (result > (INT64_MAX - (c - '0')) / 10) return std::nullopt;
-            result = result * 10 + (c - '0');
+            uint64_t digit = static_cast<uint64_t>(c - '0');
+            if (result > (limit - digit) / 10) return std::nullopt;
+            result = result * 10 + digit;
         }
-        return negative ? -result : result;
+
+        if (negative) {
+            // Negate as unsigned THEN cast — avoids signed overflow UB
+            // when result == INT64_MAX + 1 (i.e., parsing INT64_MIN).
+            return static_cast<int64_t>(~result + 1u);
+        }
+        return static_cast<int64_t>(result);
     }
 
     /// Parse a string_view as double (simple: integer + optional fraction).

@@ -244,6 +244,57 @@ TEST(JsonFramer, EncodePassthrough) {
 }
 
 // ---------------------------------------------------------------------------
+// Integer edge cases (INT64_MIN, overflow)
+// ---------------------------------------------------------------------------
+
+TEST(JsonParser, IntMinValue) {
+    // INT64_MIN = -9223372036854775808
+    auto result = parse_str(R"({"v":-9223372036854775808})");
+    ASSERT_TRUE(result.has_value());
+    auto val = result->get_int("v");
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(*val, INT64_MIN);
+}
+
+TEST(JsonParser, IntMaxValue) {
+    auto result = parse_str(R"({"v":9223372036854775807})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_int("v"), INT64_MAX);
+}
+
+TEST(JsonParser, IntOverflowReturnsNullopt) {
+    // INT64_MAX + 1
+    auto result = parse_str(R"({"v":9223372036854775808})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_int("v").has_value());
+}
+
+// ---------------------------------------------------------------------------
+// Double edge cases
+// ---------------------------------------------------------------------------
+
+TEST(JsonParser, DoubleScientificNotation) {
+    auto result = parse_str(R"({"a":1.5e3,"b":2E-2,"c":3.14e+0})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_DOUBLE_EQ(*result->get_double("a"), 1500.0);
+    EXPECT_DOUBLE_EQ(*result->get_double("b"), 0.02);
+    EXPECT_DOUBLE_EQ(*result->get_double("c"), 3.14);
+}
+
+// ---------------------------------------------------------------------------
+// field_at bounds check
+// ---------------------------------------------------------------------------
+
+TEST(JsonParser, FieldAtOutOfBounds) {
+    auto result = parse_str(R"({"a":1})");
+    ASSERT_TRUE(result.has_value());
+    // In-bounds
+    EXPECT_EQ(result->field_at(0).key, "a");
+    // Out of bounds returns empty field
+    EXPECT_TRUE(result->field_at(99).key.empty());
+}
+
+// ---------------------------------------------------------------------------
 // ParseError formatting
 // ---------------------------------------------------------------------------
 
