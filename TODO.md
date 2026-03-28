@@ -9,7 +9,7 @@
 ## 中功能
 
 - [x] **MetricsSink concept** — MetricsSink concept + NullSink + ConsoleSink + 18 tests。
-- [ ] **eph-audit 审计日志骨架** — 基于 mmap ring buffer 的结构化审计日志，监管合规基础（MiFID II / Reg NMS）。2-3h。
+- [x] **eph-audit 审计日志骨架** — AuditLog: ring buffer 审计日志 + 14 event types + 文件持久化 + 14 tests。
 - [x] **Crash handler + kill switch** — KillSwitch: 协调多 Transport 紧急关闭 + 信号处理 + 15 tests。
 
 ## 小改进
