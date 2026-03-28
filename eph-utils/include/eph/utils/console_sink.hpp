@@ -48,7 +48,7 @@ public:
 
 private:
     /// Format tags as " {key1=val1, key2=val2}" or " {}" if empty.
-    static std::string format_tags(std::span<const core::MetricTag> tags) noexcept {
+    static std::string format_tags(std::span<const core::MetricTag> tags) {
         if (tags.empty()) return " {}";
         std::string result = " {";
         for (size_t i = 0; i < tags.size(); ++i) {

@@ -113,11 +113,18 @@ public:
         if (shutdown_done_.exchange(true, std::memory_order_acq_rel)) return;
         shutdown_requested_.store(true, std::memory_order_release);
 
-        size_t n = count_.load(std::memory_order_acquire);
+        // Take a snapshot of handles under lock to prevent concurrent
+        // unregister from invalidating pointers during iteration.
+        spin_lock();
+        size_t n = count_.load(std::memory_order_relaxed);
+        std::array<TransportHandle, kKillSwitchMaxTransports> snapshot{};
+        for (size_t i = 0; i < n; ++i) snapshot[i] = handles_[i];
+        spin_unlock();
+
         SPDLOG_INFO("KillSwitch: shutting down {} transports", n);
 
         for (size_t i = 0; i < n; ++i) {
-            auto& h = handles_[i];
+            auto& h = snapshot[i];
             if (h.ptr && h.is_running_fn && h.is_running_fn(h.ptr)) {
                 SPDLOG_INFO("KillSwitch: stopping transport {}/{}", i + 1, n);
                 h.stop_fn(h.ptr);
@@ -141,7 +148,7 @@ public:
     /// Install SIGINT and SIGTERM handlers that trigger shutdown.
     /// Must be called from main thread before spawning other threads.
     void install_signal_handlers() noexcept {
-        s_instance_ = this;
+        s_instance_.store(this, std::memory_order_release);
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
         SPDLOG_DEBUG("KillSwitch: signal handlers installed (SIGINT, SIGTERM)");
@@ -198,8 +205,9 @@ private:
 
     // Signal handler — must be async-signal-safe (only atomics).
     static void signal_handler(int sig) noexcept {
-        if (s_instance_) {
-            s_instance_->request_shutdown();
+        auto* ks = s_instance_.load(std::memory_order_acquire);
+        if (ks) {
+            ks->request_shutdown();
         }
         // Re-register for SIGINT to allow double-ctrl-C for hard kill
         if (sig == SIGINT) {
@@ -208,7 +216,8 @@ private:
     }
 
     // Global instance pointer for signal handler (only one KillSwitch per process).
-    static inline KillSwitch* s_instance_ = nullptr;
+    // Atomic for safe access from signal handler context.
+    static inline std::atomic<KillSwitch*> s_instance_{nullptr};
 };
 
 } // namespace eph::net
