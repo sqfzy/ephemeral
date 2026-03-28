@@ -368,6 +368,13 @@ target("itch_feed_demo")
     add_files("examples/itch_feed_demo.cpp")
     add_deps("eph-itch")
 
+target("binance_book")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/binance_book.cpp")
+    add_deps("eph-net", "eph-json", "eph-book")
+
 target("simple_hft")
     set_kind("binary")
     set_group("examples")
