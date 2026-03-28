@@ -5,3 +5,4 @@
 
 #include "eph/json/framer.hpp"
 #include "eph/json/parser.hpp"
+#include "eph/json/adapters/binance.hpp"
