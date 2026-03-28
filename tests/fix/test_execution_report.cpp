@@ -357,3 +357,56 @@ TEST(ExecutionReport, pending_states_not_terminal) {
             << "OrdStatus='" << os_char << "' should not be terminal";
     }
 }
+
+// ===========================================================================
+// try_parse_execution_report — wire-bytes convenience parser
+// ===========================================================================
+
+TEST(TryParseExecutionReport, valid_er_bytes_all_fields_accessible) {
+    auto body = make_exec_report_body('2', '2');  // Fill, Filled
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto parsed = try_parse_execution_report<256>(raw.data(), raw.size());
+    ASSERT_TRUE(parsed.has_value());
+
+    // Verify all key fields are accessible through the view
+    EXPECT_EQ(parsed->view.cl_ord_id(), "ORD001");
+    EXPECT_EQ(parsed->view.order_id(), "EXCH123");
+    EXPECT_EQ(parsed->view.exec_id(), "EXEC456");
+    EXPECT_EQ(parsed->view.exec_type(), ExecType::Fill);
+    EXPECT_EQ(parsed->view.ord_status(), OrdStatus::Filled);
+    EXPECT_EQ(parsed->view.symbol(), "AAPL");
+    EXPECT_EQ(parsed->view.side(), '1');
+    ASSERT_TRUE(parsed->view.last_px().has_value());
+    EXPECT_DOUBLE_EQ(*parsed->view.last_px(), 150.25);
+    EXPECT_EQ(parsed->view.last_qty(), 100);
+    EXPECT_TRUE(parsed->view.is_fill());
+    EXPECT_TRUE(parsed->view.is_terminal());
+}
+
+TEST(TryParseExecutionReport, non_er_fix_message_returns_nullopt) {
+    // Build a Logon message (MsgType=A) instead of ExecutionReport
+    std::string body = "35=A\x01"      // MsgType = Logon
+                       "49=SENDER\x01"
+                       "56=TARGET\x01"
+                       "34=1\x01"
+                       "98=0\x01"       // EncryptMethod
+                       "108=30\x01";    // HeartBtInt
+    auto raw = make_fix_msg("FIX.4.4", body);
+
+    auto parsed = try_parse_execution_report<256>(raw.data(), raw.size());
+    EXPECT_FALSE(parsed.has_value());
+}
+
+TEST(TryParseExecutionReport, malformed_bytes_returns_nullopt) {
+    // Garbage bytes that are not valid FIX at all
+    std::vector<uint8_t> garbage = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03};
+
+    auto parsed = try_parse_execution_report<256>(garbage.data(), garbage.size());
+    EXPECT_FALSE(parsed.has_value());
+}
+
+TEST(TryParseExecutionReport, empty_input_returns_nullopt) {
+    auto parsed = try_parse_execution_report<256>(nullptr, 0);
+    EXPECT_FALSE(parsed.has_value());
+}

@@ -230,4 +230,61 @@ private:
     const BasicMessageView<MaxFields>& msg_;
 };
 
+// ---------------------------------------------------------------------------
+// Wire-bytes convenience parser
+// ---------------------------------------------------------------------------
+
+/// Owns a parsed BasicMessageView together with its ExecutionReportView.
+///
+/// ExecutionReportView stores a const-reference to BasicMessageView, so
+/// both must live together.  This struct bundles them with correct lifetime
+/// semantics and disables copy/move-assignment to prevent dangling references.
+template <size_t MaxFields = 256>
+struct ParsedExecutionReport {
+    BasicMessageView<MaxFields>       msg;
+    ExecutionReportView<MaxFields>    view;
+
+    explicit ParsedExecutionReport(BasicMessageView<MaxFields> m) noexcept
+        : msg(std::move(m)), view(msg) {}
+
+    // Movable (view will reference the new msg after move-construction).
+    ParsedExecutionReport(ParsedExecutionReport&& o) noexcept
+        : msg(std::move(o.msg)), view(msg) {}
+
+    ParsedExecutionReport& operator=(ParsedExecutionReport&&) = delete;
+    ParsedExecutionReport(const ParsedExecutionReport&)            = delete;
+    ParsedExecutionReport& operator=(const ParsedExecutionReport&) = delete;
+};
+
+/// Parse raw FIX bytes and return a ParsedExecutionReport if MsgType=8.
+///
+/// Combines parse() + MsgType check + view creation in one call, which is
+/// the common hot-path when processing wire bytes in a trading gateway.
+///
+/// @param data  Pointer to raw FIX wire bytes
+/// @param len   Number of available bytes
+/// @return ParsedExecutionReport on success, nullopt if parse fails or
+///         the message is not an ExecutionReport (MsgType != '8').
+template <size_t MaxFields = 256>
+[[nodiscard]] inline std::optional<ParsedExecutionReport<MaxFields>>
+try_parse_execution_report(const uint8_t* data, size_t len) noexcept {
+    auto result = parse<MaxFields>(data, len);
+    if (!result.has_value()) {
+        SPDLOG_LOGGER_DEBUG(detail::fix_execrpt_logger(),
+            "try_parse_execution_report: parse failed, len={}", len);
+        return std::nullopt;
+    }
+
+    // Check MsgType (tag 35) == '8' (ExecutionReport)
+    auto msg_type = result->get(tag::MsgType);
+    if (!msg_type || *msg_type != "8") {
+        SPDLOG_LOGGER_DEBUG(detail::fix_execrpt_logger(),
+            "try_parse_execution_report: MsgType is '{}', expected '8'",
+            msg_type.value_or("(absent)"));
+        return std::nullopt;
+    }
+
+    return ParsedExecutionReport<MaxFields>{std::move(*result)};
+}
+
 } // namespace eph::fix
