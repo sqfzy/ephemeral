@@ -289,6 +289,15 @@ target("test_metrics_concept")
     add_packages("gtest")
     add_defines("SPDLOG_NO_EXCEPTIONS")
 
+target("test_kill_switch")
+    set_kind("binary")
+    set_group("tests")
+    set_default(false)
+    add_files("tests/net/test_kill_switch.cpp")
+    add_deps("eph-net")
+    add_packages("gtest")
+    add_defines("SPDLOG_NO_EXCEPTIONS")
+
 -- ===========================================================================
 -- examples
 -- ===========================================================================
