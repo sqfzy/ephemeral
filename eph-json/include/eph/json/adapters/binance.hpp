@@ -17,6 +17,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <string>
 #include <string_view>
 
 #include <spdlog/spdlog.h>
@@ -210,5 +212,90 @@ struct CombinedStream {
         return cs;
     }
 };
+
+// ---------------------------------------------------------------------------
+// WebSocket subscription helpers
+// ---------------------------------------------------------------------------
+
+/// Build a WebSocket path for a single stream.
+/// e.g., ws_path("btcusdt", "bookTicker") -> "/ws/btcusdt@bookTicker"
+[[nodiscard]] inline std::string
+ws_path(std::string_view symbol, std::string_view stream_type) noexcept {
+    std::string result;
+    result.reserve(4 + symbol.size() + 1 + stream_type.size());
+    result.append("/ws/");
+    result.append(symbol);
+    result.push_back('@');
+    result.append(stream_type);
+    SPDLOG_DEBUG("ws_path: built path=\"{}\"", result);
+    return result;
+}
+
+/// Build a combined stream WebSocket path for multiple symbols.
+/// e.g., combined_ws_path({"btcusdt","ethusdt"}, "bookTicker")
+///   -> "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"
+/// Returns "/stream?streams=" for an empty symbols list.
+[[nodiscard]] inline std::string
+combined_ws_path(std::span<const std::string_view> symbols,
+                 std::string_view stream_type) noexcept {
+    std::string result = "/stream?streams=";
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        if (i > 0) result.push_back('/');
+        result.append(symbols[i]);
+        result.push_back('@');
+        result.append(stream_type);
+    }
+    SPDLOG_DEBUG("combined_ws_path: built path=\"{}\" for {} symbols",
+                 result, symbols.size());
+    return result;
+}
+
+/// Build a SUBSCRIBE JSON message (sent after WebSocket connection).
+/// Returns: {"method":"SUBSCRIBE","params":["sym@stream",...],"id":N}
+/// Returns a message with empty params array for an empty symbols list.
+[[nodiscard]] inline std::string
+subscribe_message(std::span<const std::string_view> symbols,
+                  std::string_view stream_type,
+                  int id = 1) noexcept {
+    std::string result = R"({"method":"SUBSCRIBE","params":[)";
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        if (i > 0) result.push_back(',');
+        result.push_back('"');
+        result.append(symbols[i]);
+        result.push_back('@');
+        result.append(stream_type);
+        result.push_back('"');
+    }
+    result.append(R"(],"id":)");
+    result.append(std::to_string(id));
+    result.push_back('}');
+    SPDLOG_DEBUG("subscribe_message: built msg for {} symbols, id={}",
+                 symbols.size(), id);
+    return result;
+}
+
+/// Build an UNSUBSCRIBE JSON message.
+/// Returns: {"method":"UNSUBSCRIBE","params":["sym@stream",...],"id":N}
+/// Returns a message with empty params array for an empty symbols list.
+[[nodiscard]] inline std::string
+unsubscribe_message(std::span<const std::string_view> symbols,
+                    std::string_view stream_type,
+                    int id = 2) noexcept {
+    std::string result = R"({"method":"UNSUBSCRIBE","params":[)";
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        if (i > 0) result.push_back(',');
+        result.push_back('"');
+        result.append(symbols[i]);
+        result.push_back('@');
+        result.append(stream_type);
+        result.push_back('"');
+    }
+    result.append(R"(],"id":)");
+    result.append(std::to_string(id));
+    result.push_back('}');
+    SPDLOG_DEBUG("unsubscribe_message: built msg for {} symbols, id={}",
+                 symbols.size(), id);
+    return result;
+}
 
 } // namespace eph::json::binance

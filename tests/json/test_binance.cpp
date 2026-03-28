@@ -1,6 +1,8 @@
 /// @file test_binance.cpp
-/// Unit tests for Binance JSON adapters (BookTicker, CombinedStream, symbol_hash).
+/// Unit tests for Binance JSON adapters (BookTicker, CombinedStream, symbol_hash,
+/// WebSocket subscription helpers).
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -193,4 +195,135 @@ TEST(BinanceCombinedStream, MissingDataReturnsNullopt) {
     auto json = parse_str(R"({"stream":"btcusdt@bookTicker"})");
     ASSERT_TRUE(json.has_value());
     EXPECT_FALSE(CombinedStream::from(*json).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// ws_path
+// ---------------------------------------------------------------------------
+
+TEST(BinanceWsPath, SingleStream) {
+    EXPECT_EQ(ws_path("btcusdt", "bookTicker"), "/ws/btcusdt@bookTicker");
+}
+
+TEST(BinanceWsPath, TradeStream) {
+    EXPECT_EQ(ws_path("ethusdt", "trade"), "/ws/ethusdt@trade");
+}
+
+TEST(BinanceWsPath, DepthStream) {
+    EXPECT_EQ(ws_path("solusdt", "depth@100ms"), "/ws/solusdt@depth@100ms");
+}
+
+// ---------------------------------------------------------------------------
+// combined_ws_path
+// ---------------------------------------------------------------------------
+
+TEST(BinanceCombinedWsPath, SingleSymbol) {
+    std::array<std::string_view, 1> syms = {"btcusdt"};
+    EXPECT_EQ(combined_ws_path(syms, "bookTicker"),
+              "/stream?streams=btcusdt@bookTicker");
+}
+
+TEST(BinanceCombinedWsPath, TwoSymbols) {
+    std::array<std::string_view, 2> syms = {"btcusdt", "ethusdt"};
+    EXPECT_EQ(combined_ws_path(syms, "bookTicker"),
+              "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker");
+}
+
+TEST(BinanceCombinedWsPath, ThreeSymbols) {
+    std::array<std::string_view, 3> syms = {"btcusdt", "ethusdt", "solusdt"};
+    EXPECT_EQ(combined_ws_path(syms, "trade"),
+              "/stream?streams=btcusdt@trade/ethusdt@trade/solusdt@trade");
+}
+
+TEST(BinanceCombinedWsPath, EmptySymbolsList) {
+    std::span<const std::string_view> empty;
+    EXPECT_EQ(combined_ws_path(empty, "bookTicker"), "/stream?streams=");
+}
+
+// ---------------------------------------------------------------------------
+// subscribe_message
+// ---------------------------------------------------------------------------
+
+TEST(BinanceSubscribe, SingleSymbol) {
+    std::array<std::string_view, 1> syms = {"btcusdt"};
+    auto msg = subscribe_message(syms, "bookTicker", 1);
+
+    // Parse back to verify it's valid JSON
+    auto json = parse_str(msg);
+    ASSERT_TRUE(json.has_value()) << "subscribe_message produced invalid JSON: " << msg;
+
+    auto method = json->get_string("method");
+    ASSERT_TRUE(method.has_value());
+    EXPECT_EQ(*method, "SUBSCRIBE");
+
+    auto id = json->get_int("id");
+    ASSERT_TRUE(id.has_value());
+    EXPECT_EQ(*id, 1);
+}
+
+TEST(BinanceSubscribe, MultipleSymbols) {
+    std::array<std::string_view, 2> syms = {"btcusdt", "ethusdt"};
+    auto msg = subscribe_message(syms, "bookTicker", 42);
+
+    auto json = parse_str(msg);
+    ASSERT_TRUE(json.has_value()) << "subscribe_message produced invalid JSON: " << msg;
+
+    auto id = json->get_int("id");
+    ASSERT_TRUE(id.has_value());
+    EXPECT_EQ(*id, 42);
+
+    // Verify the params array contains the expected streams by checking raw content
+    // (our parser doesn't expose array iteration, but we can check the raw string)
+    EXPECT_NE(msg.find("btcusdt@bookTicker"), std::string::npos);
+    EXPECT_NE(msg.find("ethusdt@bookTicker"), std::string::npos);
+}
+
+TEST(BinanceSubscribe, EmptySymbolsList) {
+    std::span<const std::string_view> empty;
+    auto msg = subscribe_message(empty, "bookTicker", 1);
+
+    auto json = parse_str(msg);
+    ASSERT_TRUE(json.has_value()) << "subscribe_message with empty symbols produced invalid JSON: " << msg;
+
+    auto method = json->get_string("method");
+    ASSERT_TRUE(method.has_value());
+    EXPECT_EQ(*method, "SUBSCRIBE");
+}
+
+// ---------------------------------------------------------------------------
+// unsubscribe_message
+// ---------------------------------------------------------------------------
+
+TEST(BinanceUnsubscribe, SingleSymbol) {
+    std::array<std::string_view, 1> syms = {"btcusdt"};
+    auto msg = unsubscribe_message(syms, "bookTicker", 2);
+
+    auto json = parse_str(msg);
+    ASSERT_TRUE(json.has_value()) << "unsubscribe_message produced invalid JSON: " << msg;
+
+    auto method = json->get_string("method");
+    ASSERT_TRUE(method.has_value());
+    EXPECT_EQ(*method, "UNSUBSCRIBE");
+
+    auto id = json->get_int("id");
+    ASSERT_TRUE(id.has_value());
+    EXPECT_EQ(*id, 2);
+
+    EXPECT_NE(msg.find("btcusdt@bookTicker"), std::string::npos);
+}
+
+TEST(BinanceUnsubscribe, EmptySymbolsList) {
+    std::span<const std::string_view> empty;
+    auto msg = unsubscribe_message(empty, "trade", 99);
+
+    auto json = parse_str(msg);
+    ASSERT_TRUE(json.has_value()) << "unsubscribe_message with empty symbols produced invalid JSON: " << msg;
+
+    auto method = json->get_string("method");
+    ASSERT_TRUE(method.has_value());
+    EXPECT_EQ(*method, "UNSUBSCRIBE");
+
+    auto id = json->get_int("id");
+    ASSERT_TRUE(id.has_value());
+    EXPECT_EQ(*id, 99);
 }
