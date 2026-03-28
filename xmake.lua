@@ -108,6 +108,15 @@ target("eph-fix")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
+target("eph-json")
+    set_kind("headeronly")
+    add_includedirs("eph-json/include", { public = true })
+    add_headerfiles("eph-json/include/(eph/json/**.hpp)")
+    add_headerfiles("eph-json/include/(eph/json.hpp)")
+    add_deps("eph-core", { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
+
 target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
@@ -199,6 +208,7 @@ local test_module_deps = {
     net        = "eph-net",
     itch       = "eph-itch",
     fix        = "eph-fix",
+    json       = "eph-json",
     dpdk       = "eph-dpdk",
 }
 
