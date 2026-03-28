@@ -78,13 +78,9 @@ inline spdlog::logger* arp_logger() {
     return l.get();
 }
 
-/// Format a MAC address as "xx:xx:xx:xx:xx:xx".
+/// Format a MAC address — delegates to net::format_mac (net_header.hpp).
 inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
-    std::array<char, 18> buf{};
-    snprintf(buf.data(), buf.size(), "%02x:%02x:%02x:%02x:%02x:%02x",
-             mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
-             mac.addr_bytes[3], mac.addr_bytes[4], mac.addr_bytes[5]);
-    return buf;
+    return net::format_mac(mac);
 }
 
 } // namespace detail

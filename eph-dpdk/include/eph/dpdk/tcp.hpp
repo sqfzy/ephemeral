@@ -93,9 +93,8 @@ struct TcpConfig {
 
     /// Format a MAC address as "xx:xx:xx:xx:xx:xx".
     [[nodiscard]] static std::string format_mac(const rte_ether_addr& m) {
-        return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            m.addr_bytes[0], m.addr_bytes[1], m.addr_bytes[2],
-            m.addr_bytes[3], m.addr_bytes[4], m.addr_bytes[5]);
+        auto buf = net::format_mac(m);
+        return std::string(buf.data());
     }
 
     /// Multi-line formatted dump for logging/debugging.

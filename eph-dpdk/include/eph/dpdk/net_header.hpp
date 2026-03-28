@@ -557,4 +557,13 @@ inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
     return buf;
 }
 
+/// Format a MAC address as "xx:xx:xx:xx:xx:xx".
+inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
+    std::array<char, 18> buf{};
+    snprintf(buf.data(), buf.size(), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
+             mac.addr_bytes[3], mac.addr_bytes[4], mac.addr_bytes[5]);
+    return buf;
+}
+
 } // namespace eph::dpdk::net
