@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -108,7 +109,7 @@ class EvictingQueueBytes {
         }
 
         queue_.produce([&](DataWrap& slot) {
-            slot.id = ++push_count_;
+            slot.id = push_count_.fetch_add(1, std::memory_order_relaxed) + 1;
             slot.ts = ts;
             slot.len = static_cast<uint32_t>(payload.size());
             std::memcpy(slot.data.data(), payload.data(), payload.size());
@@ -139,7 +140,7 @@ class EvictingQueueBytes {
             if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
         }
         queue_.produce_n(count, [&](DataWrap& slot, size_t i) {
-            slot.id = ++push_count_;
+            slot.id = push_count_.fetch_add(1, std::memory_order_relaxed) + 1;
             slot.ts = timestamps[i];
             slot.len = static_cast<uint32_t>(payloads[i].size());
             std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
@@ -156,7 +157,7 @@ class EvictingQueueBytes {
             if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
         }
         queue_.produce_n(count, [&](DataWrap& slot, size_t i) {
-            slot.id = ++push_count_;
+            slot.id = push_count_.fetch_add(1, std::memory_order_relaxed) + 1;
             slot.ts = 0;
             slot.len = static_cast<uint32_t>(payloads[i].size());
             std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
@@ -188,7 +189,7 @@ class EvictingQueueBytes {
         });
 
         if (success) {
-            last_pop_id_ = read_id;
+            last_pop_id_.store(read_id, std::memory_order_relaxed);
             return copy_len;
         }
 
@@ -236,7 +237,7 @@ class EvictingQueueBytes {
         });
 
         if (success) {
-            last_pop_id_ = read_id;
+            last_pop_id_.store(read_id, std::memory_order_relaxed);
             return true;
         }
 
@@ -256,9 +257,10 @@ class EvictingQueueBytes {
             read_id = msg.id;
 
             // 计算被 SeqLock 覆盖丢弃的包数量
-            discarded = (last_pop_id_ == 0)
+            auto prev_pop = last_pop_id_.load(std::memory_order_relaxed);
+            discarded = (prev_pop == 0)
                             ? 0
-                            : static_cast<uint32_t>(read_id - last_pop_id_ - 1);
+                            : static_cast<uint32_t>(read_id - prev_pop - 1);
 
             uint32_t safe_len =
                 std::min(msg.len, static_cast<uint32_t>(MaxDataSize));
@@ -269,7 +271,7 @@ class EvictingQueueBytes {
         });
 
         if (success) {
-            last_pop_id_ = read_id;
+            last_pop_id_.store(read_id, std::memory_order_relaxed);
             return true;
         }
 
@@ -527,7 +529,8 @@ class EvictingQueueBytes {
         queue_.clear();
         // 同步 reader 的 last_pop_id_ 到 writer 的 push_count_，
         // 使后续丢包计数从 0 开始。
-        last_pop_id_ = push_count_;
+        last_pop_id_.store(push_count_.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
     }
 
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
@@ -535,7 +538,9 @@ class EvictingQueueBytes {
     /// Total number of messages successfully pushed (writer-side counter).
     /// Useful for monitoring throughput and computing discard rates.
     /// @note Only accurate when called from the writer thread.
-    [[nodiscard]] uint64_t total_pushed() const noexcept { return push_count_; }
+    [[nodiscard]] uint64_t total_pushed() const noexcept {
+        return push_count_.load(std::memory_order_relaxed);
+    }
 
     /// Approximate number of unread entries (for monitoring/debugging only).
     [[nodiscard]] size_t size_approx() const noexcept { return queue_.size_approx(); }
@@ -554,8 +559,8 @@ class EvictingQueueBytes {
     [[nodiscard]] Stats stats() const noexcept {
         auto q_stats = queue_.stats();
         return Stats{
-            .total_pushed      = push_count_,
-            .last_pop_id       = last_pop_id_,
+            .total_pushed      = push_count_.load(std::memory_order_relaxed),
+            .last_pop_id       = last_pop_id_.load(std::memory_order_relaxed),
             .current_size      = q_stats.current_size,
             .capacity          = Capacity,
             .total_overwritten = q_stats.overwritten,
@@ -568,12 +573,12 @@ class EvictingQueueBytes {
     // ---------------------------------------------------------------------------
     // Writer 独占区
     // ---------------------------------------------------------------------------
-    alignas(CACHE_LINE_SIZE) uint64_t push_count_{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<uint64_t> push_count_{0};
 
     // ---------------------------------------------------------------------------
     // Reader 独占区
     // ---------------------------------------------------------------------------
-    alignas(CACHE_LINE_SIZE) uint64_t last_pop_id_{0};
+    alignas(CACHE_LINE_SIZE) std::atomic<uint64_t> last_pop_id_{0};
 };
 
 }  // namespace eph::containers

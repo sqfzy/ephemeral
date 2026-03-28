@@ -145,7 +145,8 @@ public:
     using SendFn = std::function<bool(const uint8_t* data, size_t len)>;
 
     FixSession(SendFn send_fn, FixSessionConfig cfg)
-        : send_(std::move(send_fn)), cfg_(std::move(cfg)) {
+        : send_(std::move(send_fn)), cfg_(std::move(cfg)),
+          heartbeat_interval_sec_(cfg_.heartbeat_interval_sec) {
         SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
             "FixSession created: {} → {}, HeartBtInt={}s, ResetSeq={}",
             cfg_.sender_comp_id, cfg_.target_comp_id,
@@ -191,7 +192,8 @@ public:
         }
 
         SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
-            "Session active (HeartBtInt={}s)", cfg_.heartbeat_interval_sec);
+            "Session active (HeartBtInt={}s)",
+            heartbeat_interval_sec_.load(std::memory_order_relaxed));
         auto now = std::chrono::steady_clock::now();
         last_sent_time_.store(now.time_since_epoch().count(), std::memory_order_release);
         last_recv_time_.store(now.time_since_epoch().count(), std::memory_order_release);
@@ -251,9 +253,9 @@ public:
         auto result = parse(data, len);
         if (!result) {
             SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
-                "on_rx: parse failed ({} bytes): {}",
+                "on_rx: parse failed ({} bytes): {} — dropping message",
                 len, parse_error_name(result.error()));
-            return false;
+            return true;
         }
 
         auto& msg = *result;
@@ -304,11 +306,13 @@ public:
         if (type == std::string_view(&tag::msg_type::Logon, 1)) {
             // Override HeartBtInt if server specifies a different value
             if (auto server_hb = msg.get_int(tag::HeartBtInt); server_hb && *server_hb > 0) {
-                if (*server_hb != cfg_.heartbeat_interval_sec) {
+                int prev = heartbeat_interval_sec_.load(std::memory_order_relaxed);
+                if (*server_hb != prev) {
                     SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
                         "Server HeartBtInt={} overrides client value={}",
-                        *server_hb, cfg_.heartbeat_interval_sec);
-                    cfg_.heartbeat_interval_sec = static_cast<int>(*server_hb);
+                        *server_hb, prev);
+                    heartbeat_interval_sec_.store(
+                        static_cast<int>(*server_hb), std::memory_order_release);
                 }
             }
             SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
@@ -361,7 +365,14 @@ public:
             if (new_seq) {
                 uint32_t ns = static_cast<uint32_t>(*new_seq);
                 if (gap_fill && *gap_fill == "Y") {
-                    // GapFill mode: advance expected sequence
+                    // GapFill mode: advance expected sequence (must not go backward)
+                    uint32_t expected = expected_inbound_seq_.load(std::memory_order_relaxed);
+                    if (ns <= expected) {
+                        SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                            "GapFill rejected: NewSeqNo={} <= expected_inbound_seq_={} "
+                            "(backward reset not allowed in GapFill mode)", ns, expected);
+                        return true;
+                    }
                     SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
                         "GapFill: advancing expected sequence to {}", ns);
                 } else {
@@ -408,7 +419,7 @@ public:
         if (state_.load(std::memory_order_relaxed) != SessionState::kActive) return true;
 
         auto now = std::chrono::steady_clock::now();
-        auto hb_sec = cfg_.heartbeat_interval_sec;
+        auto hb_sec = heartbeat_interval_sec_.load(std::memory_order_acquire);
 
         // Check if we need to send a heartbeat
         maybe_send_heartbeat();
@@ -639,7 +650,7 @@ private:
         auto last_sent = time_point_from_atomic(last_sent_time_);
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - last_sent).count();
-        if (elapsed >= cfg_.heartbeat_interval_sec) {
+        if (elapsed >= heartbeat_interval_sec_.load(std::memory_order_acquire)) {
             send_heartbeat();
         }
     }
@@ -649,9 +660,13 @@ private:
     // ─────────────────────────────────────────────────────────────────────
 
     SendFn send_;
-    FixSessionConfig cfg_;  // HeartBtInt may be modified by server Logon response
+    FixSessionConfig cfg_;
 
     std::atomic<SessionState> state_{SessionState::kDisconnected};
+
+    /// Runtime heartbeat interval — initialized from cfg_, updated atomically
+    /// by RX thread (Logon response) and read by timer thread (tick/maybe_send_heartbeat).
+    std::atomic<int> heartbeat_interval_sec_;
 
     // Sequence numbers: outbound written by app thread, inbound by RX thread
     std::atomic<uint32_t> outbound_seq_{1};
