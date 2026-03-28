@@ -117,6 +117,16 @@ target("eph-json")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
+target("eph-book")
+    set_kind("headeronly")
+    add_includedirs("eph-book/include", { public = true })
+    add_headerfiles("eph-book/include/(eph/book/**.hpp)")
+    add_headerfiles("eph-book/include/(eph/book.hpp)")
+    add_packages("spdlog", { public = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
+
 target("eph-dpdk")
     set_kind("headeronly")
     add_includedirs("eph-dpdk/include", { public = true })
@@ -210,6 +220,7 @@ local test_module_deps = {
     itch       = "eph-itch",
     fix        = "eph-fix",
     json       = "eph-json",
+    book       = "eph-book",
     dpdk       = "eph-dpdk",
 }
 
