@@ -62,11 +62,20 @@ target("eph-containers")
 
 local net_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
 
+target("eph-core")
+    set_kind("headeronly")
+    add_includedirs("eph-core/include", { public = true })
+    add_headerfiles("eph-core/include/(eph/core/**.hpp)")
+    add_packages("spdlog", { public = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
+
 target("eph-net")
     set_kind("headeronly")
     add_includedirs("eph-net/include", { public = true })
     add_headerfiles("eph-net/include/(eph/net/**.hpp)")
-    add_deps("eph-utils", "eph-containers", { public = true })
+    add_deps("eph-core", "eph-utils", "eph-containers", { public = true })
     add_packages("spdlog", "aws-lc", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
@@ -77,8 +86,7 @@ target("eph-itch")
     add_includedirs("eph-itch/include", { public = true })
     add_headerfiles("eph-itch/include/(eph/itch/**.hpp)")
     add_headerfiles("eph-itch/include/(eph/itch.hpp)")
-    -- Same as eph-fix: only needs framer_concept.hpp, not full eph-net.
-    add_includedirs("eph-net/include", { public = true })
+    add_deps("eph-core", { public = true })
     add_packages("spdlog", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
@@ -89,11 +97,11 @@ target("eph-fix")
     add_includedirs("eph-fix/include", { public = true })
     add_headerfiles("eph-fix/include/(eph/fix/**.hpp)")
     add_headerfiles("eph-fix/include/(eph/fix.hpp)")
-    -- eph-fix only needs framer_concept.hpp from eph-net (pure stdlib, no aws-lc).
-    -- Using add_includedirs instead of add_deps("eph-net") avoids inheriting
+    -- eph-fix only needs framer_concept.hpp from eph-core (pure stdlib, no aws-lc).
+    -- Using add_deps("eph-core") instead of add_deps("eph-net") avoids inheriting
     -- aws-lc package dependency, preventing OpenSSL header conflicts when
     -- eph-fix and eph-dpdk (which brings vcpkg OpenSSL via DPDK) coexist.
-    add_includedirs("eph-net/include", { public = true })
+    add_deps("eph-core", { public = true })
     add_packages("spdlog", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
@@ -104,11 +112,11 @@ target("eph-dpdk")
     add_includedirs("eph-dpdk/include", { public = true })
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
     add_headerfiles("eph-dpdk/include/(eph/dpdk.hpp)")
-    -- DPDK backend only needs the TcpTransport concept and public types from
-    -- eph-net (tcp_concept.hpp, transport_types.hpp), not TLS/WS internals.
-    -- We add eph-net's include path directly and depend on eph-utils/containers
+    -- DPDK backend needs TcpTransport concept and public types from eph-core
+    -- (tcp_concept.hpp, transport_errors.hpp), plus eph-net headers for
+    -- Transport type aliases in types.hpp. We include eph-net's path directly
     -- to avoid inheriting eph-net's aws-lc package dependency.
-    add_deps("eph-utils", "eph-containers", { public = true })
+    add_deps("eph-core", "eph-utils", "eph-containers", { public = true })
     add_includedirs("eph-net/include", { public = true })
     add_packages("spdlog", { public = true })
     -- aws-lc is optional: only needed when using Transport<TcpSession> aliases

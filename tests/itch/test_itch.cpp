@@ -12,8 +12,8 @@
 #include "eph/itch/framer.hpp"
 #include "eph/itch/messages.hpp"
 #include "eph/itch/parser.hpp"
-#include "eph/net/framer_concept.hpp"
-#include "eph/net/length_prefix_framer.hpp"
+#include "eph/core/framer_concept.hpp"
+#include "eph/core/length_prefix_framer.hpp"
 
 using namespace eph::itch;
 
@@ -449,7 +449,7 @@ TEST(ItchFramer, LengthPrefixRoundtrip) {
     EXPECT_EQ(encoded[1], 0x0B);
 
     // Decode back
-    auto result = eph::itch::ItchFramer::decode(encoded, written);
+    auto result = eph::itch::ItchFramer{}.decode(encoded, written);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 11u);
     EXPECT_EQ(result->msg_type, 'S');

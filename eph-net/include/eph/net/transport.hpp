@@ -1425,6 +1425,7 @@ private:
 
     TxQueue                                tx_queue_{};
     RxQueue                                rx_queue_{};
+    Framer                                 rx_framer_{};  // RX-side framer instance (stateless framers: zero overhead)
 
     std::atomic<bool>                      running_{false};
     // RX sets reconnecting_=true before modifying crypto_/tcp_;
@@ -2720,7 +2721,7 @@ private:
         size_t offset = 0;
 
         while (offset < len) {
-            auto frame = Framer::decode(data + offset, len - offset);
+            auto frame = rx_framer_.decode(data + offset, len - offset);
             if (!frame) {
                 if (frame.error() == FrameError::kIncomplete) break;
                 SPDLOG_LOGGER_WARN(log, "Frame decode error: {}",

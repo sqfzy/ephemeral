@@ -244,7 +244,7 @@ static void BM_FixFramerDecode(benchmark::State& state) {
     auto msg = build_new_order();
 
     for (auto _ : state) {
-        auto result = FixFramer::decode(msg.data(), msg.size());
+        auto result = FixFramer{}.decode(msg.data(), msg.size());
         benchmark::DoNotOptimize(result);
     }
     state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(msg.size()));

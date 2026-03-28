@@ -38,7 +38,7 @@ public:
     /// @param data  Input buffer (may contain partial or multiple frames)
     /// @param len   Available bytes in input buffer
     /// @return Decoded frame on success, FrameError on failure
-    [[nodiscard]] static std::expected<DecodedFrame, FrameError>
+    [[nodiscard]] std::expected<DecodedFrame, FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         auto result = ws::decode_frame(data, len);
         if (!result) {

@@ -77,7 +77,7 @@ static void demo_framer(std::string_view name, Framer& framer) {
     spdlog::info("  Wire hex: {}", hex_dump(wire.data(), encoded_len));
 
     // Decode
-    auto decoded = Framer::decode(wire.data(), encoded_len);
+    auto decoded = framer.decode(wire.data(), encoded_len);
     if (!decoded) {
         spdlog::error("  Decode failed: {}",
                       eph::net::frame_error_name(decoded.error()));

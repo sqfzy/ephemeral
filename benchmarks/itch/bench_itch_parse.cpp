@@ -180,7 +180,7 @@ static void BM_ItchFramerDecode(benchmark::State& state) {
     fill_add_order(framed.data() + 2);
 
     for (auto _ : state) {
-        auto result = eph::net::LengthPrefixFramer::decode(framed.data(), framed.size());
+        auto result = eph::net::LengthPrefixFramer{}.decode(framed.data(), framed.size());
         benchmark::DoNotOptimize(result);
     }
     state.SetItemsProcessed(state.iterations());

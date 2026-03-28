@@ -895,7 +895,7 @@ TEST(FixFramer, decode_valid_message) {
     std::string body = "35=D\x01" "55=AAPL\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
 
-    auto result = FixFramer::decode(raw.data(), raw.size());
+    auto result = FixFramer{}.decode(raw.data(), raw.size());
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->total_len, raw.size());
     EXPECT_EQ(result->payload_len, raw.size());
@@ -905,7 +905,7 @@ TEST(FixFramer, decode_valid_message) {
 
 TEST(FixFramer, decode_incomplete) {
     std::string partial = "8=FIX.4.4\x019=10\x01";
-    auto result = FixFramer::decode(
+    auto result = FixFramer{}.decode(
         reinterpret_cast<const uint8_t*>(partial.data()), partial.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), eph::net::FrameError::kIncomplete);
@@ -913,7 +913,7 @@ TEST(FixFramer, decode_incomplete) {
 
 TEST(FixFramer, decode_bad_start) {
     std::string bad = "X=FIX.4.4\x01";
-    auto result = FixFramer::decode(
+    auto result = FixFramer{}.decode(
         reinterpret_cast<const uint8_t*>(bad.data()), bad.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
@@ -927,7 +927,7 @@ TEST(FixFramer, decode_checksum_mismatch) {
     for (size_t i = 0; i < raw.size(); ++i) {
         if (raw[i] == 'A') { raw[i] = 'Z'; break; }
     }
-    auto result = FixFramer::decode(raw.data(), raw.size());
+    auto result = FixFramer{}.decode(raw.data(), raw.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
 }
@@ -2365,7 +2365,7 @@ TEST(FixMaxBodyLength, framer_rejects_oversized_body_length) {
     // Pad enough data to make the framer consider the length (not just incomplete)
     msg.append(kMaxBodyLength + 100, 'X');
 
-    auto result = FixFramer::decode(
+    auto result = FixFramer{}.decode(
         reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
@@ -2380,7 +2380,7 @@ TEST(FixMaxBodyLength, framer_accepts_max_body_length) {
     // Don't provide enough data for the full message
     msg.append(100, 'X');
 
-    auto result = FixFramer::decode(
+    auto result = FixFramer{}.decode(
         reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
     ASSERT_FALSE(result.has_value());
     // Should be incomplete (not enough data), not invalid format (rejected by limit)
@@ -2392,7 +2392,7 @@ TEST(FixMaxBodyLength, framer_rejects_overflow_body_length) {
     std::string msg = "8=FIX.4.4\x01" "9=99999999999999999999\x01";
     msg.append(100, 'X');
 
-    auto result = FixFramer::decode(
+    auto result = FixFramer{}.decode(
         reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
@@ -4288,11 +4288,11 @@ TEST(FixFramer, custom_max_body_length_rejects_large_message) {
     ASSERT_GT(body.size(), 32u);
 
     // Default framer should accept
-    auto ok = eph::fix::FixFramer::decode(raw.data(), raw.size());
+    auto ok = eph::fix::FixFramer{}.decode(raw.data(), raw.size());
     EXPECT_TRUE(ok.has_value());
 
     // Custom framer with small limit should reject
-    auto fail = eph::fix::BasicFixFramer<32>::decode(raw.data(), raw.size());
+    auto fail = eph::fix::BasicFixFramer<32>{}.decode(raw.data(), raw.size());
     EXPECT_FALSE(fail.has_value());
     EXPECT_EQ(fail.error(), eph::net::FrameError::kInvalidFormat);
 }
@@ -4301,7 +4301,7 @@ TEST(FixFramer, custom_max_body_length_accepts_within_limit) {
     std::string body = "35=D\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
 
-    auto result = eph::fix::BasicFixFramer<1024>::decode(raw.data(), raw.size());
+    auto result = eph::fix::BasicFixFramer<1024>{}.decode(raw.data(), raw.size());
     EXPECT_TRUE(result.has_value());
 }
 

@@ -14,7 +14,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/fix/parser.hpp"
-#include "eph/net/framer_concept.hpp"
+#include "eph/core/framer_concept.hpp"
 
 namespace eph::fix {
 
@@ -60,7 +60,7 @@ public:
     /// length from BodyLength, and verifies that "10=XXX\x01" is present.
     /// The msg_type byte in DecodedFrame is set to the FIX MsgType char
     /// if tag 35 is found in the body, otherwise 0.
-    [[nodiscard]] static std::expected<eph::net::DecodedFrame, eph::net::FrameError>
+    [[nodiscard]] std::expected<eph::net::DecodedFrame, eph::net::FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len < 2) return std::unexpected(eph::net::FrameError::kIncomplete);
 

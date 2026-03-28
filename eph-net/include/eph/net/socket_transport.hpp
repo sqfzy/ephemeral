@@ -1038,21 +1038,45 @@ static_assert(TcpTransport<SocketTransport>,
 // to break the circular dependency with TlsSession<SocketTransport>)
 // ─────────────────────────────────────────────────────────────────────────────
 
+#include "eph/net/raw_framer.hpp"
 #include "eph/net/transport.hpp"
 
 namespace eph::net {
+
+// ---------------------------------------------------------------------------
+// Type aliases — socket backend
+// ---------------------------------------------------------------------------
+// Naming convention:
+//   Socket{Wss|Ws}{Small|Large|Evict}Transport
+//   - Wss = WebSocket over TLS (default), Ws = plain WebSocket (use_tls=false)
+//   - Small = 64B payload / 256 depth (compact single-symbol)
+//   - Large = 4KB payload / 512 depth (JSON market data)
+//   - Evict = EvictingQueue RX (drop stale, market data streams)
+//   - (none) = 512B payload / 1024 depth (default)
 
 /// Standard WSS (TLS) WebSocket transport using kernel sockets.
 /// 512-byte max payload, 1024-deep SPSC queues.
 using SocketWssTransport = Transport<SocketTransport, WsFramer, 512, 1024>;
 
+/// Small-payload WSS variant (64B messages, single-symbol feeds).
+using SocketWssSmallTransport = Transport<SocketTransport, WsFramer, 64, 256>;
+
 /// Large-payload WSS variant (4KB messages, e.g. JSON market data).
 using SocketWssLargeTransport = Transport<SocketTransport, WsFramer, 4096, 512>;
+
+/// Evicting WSS variant — drops stale messages when RX queue is full.
+/// Ideal for market data streams where only the latest update matters.
+using SocketWssEvictTransport = Transport<SocketTransport, WsFramer, 512, 1024,
+                                          eph::containers::EvictingQueue>;
 
 /// Standard plain WS (no TLS) transport using kernel sockets.
 /// Same as SocketWssTransport but configured with use_tls=false.
 /// Use for internal/test services where TLS is not needed.
 using SocketWsTransport = Transport<SocketTransport, WsFramer, 512, 1024>;
+
+/// Raw TCP transport (no WebSocket framing). For FIX or custom protocols
+/// that handle their own message boundaries.
+using SocketRawTransport = Transport<SocketTransport, RawFramer, 512, 1024>;
 
 /// Convenience factory: creates a fully connected SocketWssTransport
 /// from just a TransportConfig, eliminating the TcpFactory boilerplate.

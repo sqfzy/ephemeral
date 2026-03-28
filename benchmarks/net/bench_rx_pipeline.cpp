@@ -359,7 +359,7 @@ static void BM_RxPipeline_LengthPrefix(benchmark::State& state) {
         size_t offset = 0;
         size_t delivered = 0;
         while (offset < decrypted_len) {
-            auto frame = eph::net::LengthPrefixFramer::decode(
+            auto frame = eph::net::LengthPrefixFramer{}.decode(
                 decrypt_buf.data() + offset, decrypted_len - offset);
             if (!frame) break;
 
@@ -427,7 +427,7 @@ static void BM_RxPipeline_Raw(benchmark::State& state) {
         if (!ok) [[unlikely]] { state.SkipWithError("TLS decrypt failed"); return; }
 
         // Stage 2: RawFramer decode (passthrough)
-        auto frame = eph::net::RawFramer::decode(
+        auto frame = eph::net::RawFramer{}.decode(
             decrypt_buf.data(), decrypted_len);
 
         // Stage 3: Deliver

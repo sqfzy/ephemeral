@@ -7,7 +7,7 @@
 /// LengthPrefixFramer already implements exactly that wire format, so ItchFramer
 /// is a direct type alias.
 
-#include "eph/net/length_prefix_framer.hpp"
+#include "eph/core/length_prefix_framer.hpp"
 
 namespace eph::itch {
 

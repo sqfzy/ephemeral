@@ -65,7 +65,7 @@ TEST(RawFramer, MaxOverheadIsZero) {
 
 TEST(RawFramer, DecodeReturnsEntireBuffer) {
     const uint8_t data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
-    auto result = RawFramer::decode(data, sizeof(data));
+    auto result = RawFramer{}.decode(data, sizeof(data));
 
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload, data);
@@ -80,7 +80,7 @@ TEST(RawFramer, DecodeReturnsEntireBuffer) {
 // ---------------------------------------------------------------------------
 
 TEST(RawFramer, DecodeEmptyReturnsIncomplete) {
-    auto result = RawFramer::decode(nullptr, 0);
+    auto result = RawFramer{}.decode(nullptr, 0);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
@@ -143,7 +143,7 @@ TEST(LengthPrefixFramer, MaxOverheadIsTwo) {
 TEST(LengthPrefixFramer, DecodeHappyPath) {
     // Construct a framed message: length=3, payload={0xAA, 0xBB, 0xCC}
     const uint8_t data[] = {0x00, 0x03, 0xAA, 0xBB, 0xCC};
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
 
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload, data + 2);
@@ -158,14 +158,14 @@ TEST(LengthPrefixFramer, DecodeHappyPath) {
 // ---------------------------------------------------------------------------
 
 TEST(LengthPrefixFramer, DecodeIncompleteHeaderZeroBytes) {
-    auto result = LengthPrefixFramer::decode(nullptr, 0);
+    auto result = LengthPrefixFramer{}.decode(nullptr, 0);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
 
 TEST(LengthPrefixFramer, DecodeIncompleteHeaderOneByte) {
     const uint8_t data[] = {0x00};
-    auto result = LengthPrefixFramer::decode(data, 1);
+    auto result = LengthPrefixFramer{}.decode(data, 1);
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
@@ -180,7 +180,7 @@ TEST(LengthPrefixFramer, DecodeIncompletePayload) {
     data[0] = 0x00;
     data[1] = 0x64; // length = 100
 
-    auto result = LengthPrefixFramer::decode(data.data(), data.size());
+    auto result = LengthPrefixFramer{}.decode(data.data(), data.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
@@ -191,7 +191,7 @@ TEST(LengthPrefixFramer, DecodeIncompletePayloadByOneByte) {
     data[0] = 0x00;
     data[1] = 0x0A; // length = 10
 
-    auto result = LengthPrefixFramer::decode(data.data(), data.size());
+    auto result = LengthPrefixFramer{}.decode(data.data(), data.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
@@ -202,7 +202,7 @@ TEST(LengthPrefixFramer, DecodeIncompletePayloadByOneByte) {
 
 TEST(LengthPrefixFramer, DecodeZeroLengthReturnsInvalidFormat) {
     const uint8_t data[] = {0x00, 0x00, 0xAA}; // length=0
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kInvalidFormat);
 }
@@ -219,7 +219,7 @@ TEST(LengthPrefixFramer, Roundtrip) {
     size_t written = framer.encode(encoded, payload, sizeof(payload), 0);
     ASSERT_EQ(written, 9u);
 
-    auto result = LengthPrefixFramer::decode(encoded, written);
+    auto result = LengthPrefixFramer{}.decode(encoded, written);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, sizeof(payload));
     EXPECT_EQ(result->total_len, written);
@@ -234,7 +234,7 @@ TEST(LengthPrefixFramer, RoundtripSingleByte) {
     size_t written = framer.encode(encoded, payload, 1, 0);
     ASSERT_EQ(written, 3u);
 
-    auto result = LengthPrefixFramer::decode(encoded, written);
+    auto result = LengthPrefixFramer{}.decode(encoded, written);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 1u);
     EXPECT_EQ(result->payload[0], 0x42);
@@ -247,7 +247,7 @@ TEST(LengthPrefixFramer, RoundtripSingleByte) {
 TEST(LengthPrefixFramer, MsgTypeIsFirstPayloadByte) {
     // First payload byte = 'A' (0x41)
     const uint8_t data[] = {0x00, 0x04, 'A', 0x01, 0x02, 0x03};
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->msg_type, 'A');
 }
@@ -255,7 +255,7 @@ TEST(LengthPrefixFramer, MsgTypeIsFirstPayloadByte) {
 TEST(LengthPrefixFramer, MsgTypeWithDifferentTypes) {
     // Test with 'E' (OrderExecuted)
     const uint8_t data[] = {0x00, 0x02, 'E', 0xFF};
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->msg_type, 'E');
 }
@@ -407,7 +407,7 @@ TEST(LengthPrefixFramerEncode, null_both_returns_zero) {
 TEST(LengthPrefixFramer, DecodeIgnoresTrailingData) {
     // Buffer contains a 3-byte payload frame followed by extra bytes
     const uint8_t data[] = {0x00, 0x03, 0xAA, 0xBB, 0xCC, 0x00, 0x02, 0xDD, 0xEE};
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 3u);
     EXPECT_EQ(result->total_len, 5u);  // Only first frame consumed
@@ -418,7 +418,7 @@ TEST(LengthPrefixFramer, DecodeMaxPayloadLength) {
     std::vector<uint8_t> data(2 + 65535, 0x42);
     data[0] = 0xFF;
     data[1] = 0xFF;
-    auto result = LengthPrefixFramer::decode(data.data(), data.size());
+    auto result = LengthPrefixFramer{}.decode(data.data(), data.size());
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 65535u);
     EXPECT_EQ(result->total_len, 65537u);
@@ -430,7 +430,7 @@ TEST(LengthPrefixFramer, DecodeMaxPayloadLengthIncomplete) {
     std::vector<uint8_t> data(2 + 65534, 0x42);
     data[0] = 0xFF;
     data[1] = 0xFF;
-    auto result = LengthPrefixFramer::decode(data.data(), data.size());
+    auto result = LengthPrefixFramer{}.decode(data.data(), data.size());
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
@@ -438,7 +438,7 @@ TEST(LengthPrefixFramer, DecodeMaxPayloadLengthIncomplete) {
 TEST(LengthPrefixFramer, DecodeExactFit) {
     // Buffer is exactly header(2) + payload(5) — no extra, no shortage
     const uint8_t data[] = {0x00, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05};
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 5u);
     EXPECT_EQ(result->total_len, 7u);
@@ -447,7 +447,7 @@ TEST(LengthPrefixFramer, DecodeExactFit) {
 TEST(LengthPrefixFramer, DecodeHeaderOnlyNoPayloadBytes) {
     // Header says 1 byte of payload, but buffer only has the 2-byte header
     const uint8_t data[] = {0x00, 0x01};
-    auto result = LengthPrefixFramer::decode(data, sizeof(data));
+    auto result = LengthPrefixFramer{}.decode(data, sizeof(data));
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error(), FrameError::kIncomplete);
 }
