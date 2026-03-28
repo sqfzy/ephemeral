@@ -100,14 +100,14 @@ struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
     uint64_t tsc = 0;  // arrival-time TSC (unused when kEnableTimestamps=false)
 };
 
-inline std::shared_ptr<spdlog::logger> transport_logger() {
+inline spdlog::logger* transport_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.transport");
         if (!lg) lg = spdlog::stdout_color_mt("net.transport");
         // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 } // namespace detail
@@ -283,7 +283,7 @@ public:
     /// @param len      Payload length (must be <= MaxPayload)
     /// @param opcode   WebSocket opcode (default: binary)
     /// @return SendError::kOk on enqueue success, or a specific error code
-    SendError send(const void* data, size_t len,
+    [[nodiscard]] SendError send(const void* data, size_t len,
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
@@ -295,13 +295,13 @@ public:
     }
 
     /// Send data from a span (convenience overload).
-    SendError send(std::span<const uint8_t> data,
+    [[nodiscard]] SendError send(std::span<const uint8_t> data,
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         return send(data.data(), data.size(), opcode);
     }
 
     /// Send data as a WebSocket binary frame (convenience, explicit intent).
-    SendError send_binary(const void* data, size_t len) noexcept {
+    [[nodiscard]] SendError send_binary(const void* data, size_t len) noexcept {
         return send(data, len, ws::opcode::kBinary);
     }
 
@@ -309,7 +309,7 @@ public:
     /// Validates UTF-8 encoding per RFC 6455 §5.6 unless
     /// TransportConfig::skip_utf8_validation is true. Returns kInvalidUtf8
     /// if validation is enabled and the payload is not valid UTF-8.
-    SendError send_text(const void* data, size_t len) noexcept {
+    [[nodiscard]] SendError send_text(const void* data, size_t len) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (!config_.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
@@ -321,7 +321,7 @@ public:
     /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
     /// Validates UTF-8 encoding per RFC 6455 §5.6 unless
     /// TransportConfig::skip_utf8_validation is true.
-    SendError send_text(std::string_view sv) noexcept {
+    [[nodiscard]] SendError send_text(std::string_view sv) noexcept {
         if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
@@ -1033,7 +1033,7 @@ public:
     ///
     /// @return true if the reconnect was signaled, false if the transport
     ///         is not running or auto-reconnect is disabled.
-    bool reconnect_now() noexcept {
+    [[nodiscard]] bool reconnect_now() noexcept {
         if (!running_.load(std::memory_order_acquire)) return false;
         if (config_.max_reconnect_attempts <= 0) {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
