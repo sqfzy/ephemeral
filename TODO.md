@@ -15,10 +15,10 @@
 ## 小改进
 
 ### 代码质量
-- [ ] MapBook `double` key 与 ArrayBook `epsilon` 语义不一致 — 考虑统一为 integer ticks 或在 MapBook 中加 epsilon 合并
-- [ ] `RateLimiter::available()` 中 `const_cast` — 改为非 const 方法或拆分 refill 逻辑
-- [ ] `format_mac` 在 `arp.hpp` 和 `tcp.hpp` 中重复 — 合并到 `net_header.hpp`
-- [ ] 删除 `SharedRxDispatcher`（`shared_rx.hpp`）— Reactor 已完全替代，当前仅标记 deprecated
+- [x] MapBook `double` key 与 ArrayBook `epsilon` 语义不一致 — MapBook 已加 epsilon-tolerant find_approx
+- [x] `RateLimiter::available()` 中 `const_cast` — 改为非 const 方法
+- [x] `format_mac` 在 `arp.hpp` 和 `tcp.hpp` 中重复 — 合并到 `net_header.hpp`
+- [x] 删除 `SharedRxDispatcher`（`shared_rx.hpp`）— 已删除，benchmark 迁移到 Reactor
 
 ### 文档
 - [ ] `summary.md` 更新 — 反映新模块（eph-core、eph-json、eph-book）和新架构（Reactor、flow_steering）
