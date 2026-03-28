@@ -63,7 +63,7 @@ static void BM_BoundedQueue_ZeroCopy_PushPop(benchmark::State& state) {
                 slot.data[0] = 1;
         });
 
-        q.consume([](T& slot) {
+        q.consume([](const T& slot) {
             if constexpr (PayloadSize == 8)
                 benchmark::DoNotOptimize(slot.v);
             else

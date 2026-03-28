@@ -106,7 +106,7 @@ static void BM_BoundedQueue_ZeroCopy_PingPong(benchmark::State& state) {
             slot.data[0] = 1;
     };
     // 辅助 Lambda：模拟最小化读取
-    auto reader = [](T& slot) {
+    auto reader = [](const T& slot) {
         if constexpr (PayloadSize == 8)
             benchmark::DoNotOptimize(slot.v);
         else

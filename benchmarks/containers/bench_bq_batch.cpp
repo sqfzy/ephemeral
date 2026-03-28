@@ -84,7 +84,7 @@ static void BM_BQ_Batch_PushN_ConsumeN(benchmark::State& state) {
         size_t consumed = 0;
         while (consumed < batch_n) {
             consumed += q.try_consume_n(batch_n - consumed,
-                [](T& slot, [[maybe_unused]] size_t idx) {
+                [](const T& slot, [[maybe_unused]] size_t idx) {
                     benchmark::DoNotOptimize(slot);
                 });
         }
@@ -118,7 +118,7 @@ static void BM_BQ_Batch_ProduceN_ConsumeN(benchmark::State& state) {
         size_t consumed = 0;
         while (consumed < batch_n) {
             consumed += q.try_consume_n(batch_n - consumed,
-                [](T& slot, [[maybe_unused]] size_t idx) {
+                [](const T& slot, [[maybe_unused]] size_t idx) {
                     benchmark::DoNotOptimize(slot);
                 });
         }
