@@ -1,0 +1,192 @@
+#pragma once
+
+/// @file position.hpp
+/// Per-symbol position tracker for pre-trade risk management.
+///
+/// Tracks quantity, volume-weighted average entry price, realized PnL,
+/// and notional exposure per symbol.  Computes realized PnL on reducing
+/// fills using the average-cost method.  Header-only, no allocations on
+/// the hot path after warm-up.
+
+#include <cmath>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+
+#include <spdlog/spdlog.h>
+
+namespace eph::fix {
+
+/// Snapshot of a single symbol's position state.
+struct Position {
+    double   qty          = 0.0;  ///< Signed quantity: positive = long, negative = short.
+    double   avg_price    = 0.0;  ///< Volume-weighted average entry price.
+    double   realized_pnl = 0.0;  ///< Cumulative realized PnL from closed portions.
+    double   notional     = 0.0;  ///< abs(qty) * avg_price.
+    uint64_t trade_count  = 0;    ///< Number of fills processed.
+};
+
+/// Tracks per-symbol positions and computes PnL.
+///
+/// Thread-safety: none -- callers must serialize access externally.
+/// This is intentional: the expected use-case is single-threaded
+/// order-event processing where external locking would add latency.
+class PositionTracker {
+public:
+    /// Record a fill.
+    ///
+    /// @param symbol  Instrument identifier.
+    /// @param side    FIX Side: '1' = Buy, '2' = Sell.
+    /// @param qty     Fill quantity (must be > 0).
+    /// @param price   Fill price   (must be > 0).
+    ///
+    /// On a reducing fill (e.g. sell when long), realized PnL is computed as:
+    ///   longs:  (price - avg_price) * reduced_qty
+    ///   shorts: (avg_price - price) * reduced_qty
+    /// When a fill crosses zero (e.g. long 5, sell 8), the closing and
+    /// opening portions are handled separately.
+    void on_fill(std::string_view symbol, char side,
+                 double qty, double price) noexcept
+    {
+        // Validate inputs -- reject nonsensical fills.
+        if (qty <= 0.0 || price <= 0.0) {
+            SPDLOG_WARN("on_fill: ignoring invalid fill symbol={} side={} qty={} price={}",
+                        symbol, side, qty, price);
+            return;
+        }
+        if (side != '1' && side != '2') {
+            SPDLOG_WARN("on_fill: ignoring unknown side={} for symbol={}", side, symbol);
+            return;
+        }
+
+        // Signed fill qty: positive for buys, negative for sells.
+        const double signed_qty = (side == '1') ? qty : -qty;
+
+        auto& pos = positions_[std::string(symbol)];
+        ++pos.trade_count;
+
+        const double old_qty = pos.qty;
+        const double new_qty = old_qty + signed_qty;
+
+        // Determine if this fill reduces the existing position.
+        // A fill reduces when it has the opposite sign of the current position.
+        const bool is_reducing = (old_qty != 0.0) &&
+                                 ((old_qty > 0.0) != (signed_qty > 0.0));
+
+        if (!is_reducing) {
+            // Pure increase (or first fill): update average price.
+            // avg_price = (old_qty * old_avg + fill_qty * price) / new_qty
+            // When old_qty == 0 this simplifies to avg_price = price.
+            if (new_qty != 0.0) {
+                pos.avg_price = (std::abs(old_qty) * pos.avg_price +
+                                 std::abs(signed_qty) * price) /
+                                std::abs(new_qty);
+            }
+        } else {
+            // Reducing fill -- may partially or fully close, or cross zero.
+            const double close_qty = std::min(std::abs(signed_qty), std::abs(old_qty));
+
+            // Realized PnL on the closed portion.
+            if (old_qty > 0.0) {
+                // Was long: profit = (sell_price - avg) * close_qty
+                pos.realized_pnl += (price - pos.avg_price) * close_qty;
+            } else {
+                // Was short: profit = (avg - buy_price) * close_qty
+                pos.realized_pnl += (pos.avg_price - price) * close_qty;
+            }
+
+            SPDLOG_DEBUG("on_fill: symbol={} closed qty={} realized_pnl={}",
+                         symbol, close_qty, pos.realized_pnl);
+
+            // If the fill crosses zero, the remainder opens a new position
+            // at the fill price.
+            if (std::abs(signed_qty) > std::abs(old_qty)) {
+                pos.avg_price = price;
+            }
+            // If exactly flat or partially closed, avg_price stays the same.
+        }
+
+        pos.qty      = new_qty;
+        pos.notional = std::abs(new_qty) * pos.avg_price;
+
+        SPDLOG_DEBUG("on_fill: symbol={} side={} fill_qty={} price={} "
+                     "pos_qty={} avg_price={} notional={} realized_pnl={}",
+                     symbol, side, qty, price,
+                     pos.qty, pos.avg_price, pos.notional, pos.realized_pnl);
+    }
+
+    /// Get position for a symbol.  Returns a static zero-initialized
+    /// Position if the symbol has never been seen.
+    [[nodiscard]] const Position& get(std::string_view symbol) const noexcept
+    {
+        static const Position zero{};
+        auto it = positions_.find(std::string(symbol));
+        if (it == positions_.end()) return zero;
+        return it->second;
+    }
+
+    /// Check if a symbol has an open (non-zero) position.
+    [[nodiscard]] bool has_position(std::string_view symbol) const noexcept
+    {
+        auto it = positions_.find(std::string(symbol));
+        return it != positions_.end() && it->second.qty != 0.0;
+    }
+
+    /// Access the full position map.
+    [[nodiscard]] const std::unordered_map<std::string, Position>&
+    positions() const noexcept { return positions_; }
+
+    /// Total unrealized PnL across all positions given current market prices.
+    ///
+    /// For longs:  (market_price - avg_price) * qty
+    /// For shorts: (avg_price - market_price) * abs(qty)
+    [[nodiscard]] double total_unrealized_pnl(
+        const std::unordered_map<std::string, double>& market_prices) const noexcept
+    {
+        double total = 0.0;
+        for (const auto& [sym, pos] : positions_) {
+            if (pos.qty == 0.0) continue;
+            auto it = market_prices.find(sym);
+            if (it == market_prices.end()) {
+                SPDLOG_WARN("total_unrealized_pnl: no market price for symbol={}", sym);
+                continue;
+            }
+            // Unrealized = (market - avg) * qty  (works for both signs).
+            total += (it->second - pos.avg_price) * pos.qty;
+        }
+        return total;
+    }
+
+    /// Sum of realized PnL across all symbols.
+    [[nodiscard]] double total_realized_pnl() const noexcept
+    {
+        double total = 0.0;
+        for (const auto& [_, pos] : positions_) {
+            total += pos.realized_pnl;
+        }
+        return total;
+    }
+
+    /// Gross notional exposure: sum of abs(notional) across all positions.
+    [[nodiscard]] double net_exposure() const noexcept
+    {
+        double total = 0.0;
+        for (const auto& [_, pos] : positions_) {
+            total += pos.notional;  // notional is already abs(qty) * avg_price
+        }
+        return total;
+    }
+
+    /// Reset all tracked positions.
+    void clear() noexcept
+    {
+        positions_.clear();
+        SPDLOG_DEBUG("PositionTracker::clear: all positions reset");
+    }
+
+private:
+    std::unordered_map<std::string, Position> positions_;
+};
+
+}  // namespace eph::fix

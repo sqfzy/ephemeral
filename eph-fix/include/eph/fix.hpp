@@ -13,3 +13,4 @@
 #include "eph/fix/orders.hpp"
 #include "eph/fix/execution_report.hpp"
 #include "eph/fix/session.hpp"
+#include "eph/fix/position.hpp"
