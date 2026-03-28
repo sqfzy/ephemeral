@@ -19,13 +19,13 @@ using namespace eph::net;
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(SendError, NameCoversAllVariants) {
-    EXPECT_STREQ(send_error_name(SendError::kOk), "OK");
-    EXPECT_STREQ(send_error_name(SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
-    EXPECT_STREQ(send_error_name(SendError::kNotConnected), "NOT_CONNECTED");
-    EXPECT_STREQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
-    EXPECT_STREQ(send_error_name(SendError::kInvalidUtf8), "INVALID_UTF8");
-    EXPECT_STREQ(send_error_name(SendError::kInvalidCloseCode), "INVALID_CLOSE_CODE");
-    EXPECT_STREQ(send_error_name(SendError::kNullData), "NULL_DATA");
+    EXPECT_EQ(send_error_name(SendError::kOk), "OK");
+    EXPECT_EQ(send_error_name(SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
+    EXPECT_EQ(send_error_name(SendError::kNotConnected), "NOT_CONNECTED");
+    EXPECT_EQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
+    EXPECT_EQ(send_error_name(SendError::kInvalidUtf8), "INVALID_UTF8");
+    EXPECT_EQ(send_error_name(SendError::kInvalidCloseCode), "INVALID_CLOSE_CODE");
+    EXPECT_EQ(send_error_name(SendError::kNullData), "NULL_DATA");
 }
 
 TEST(SendError, BangOperatorReturnsTrueOnFailure) {
@@ -229,15 +229,15 @@ TEST_F(TransportConfigValidateTest, MtlsRequiresTls) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(ConnectionErrorTest, NameFormatting) {
-    EXPECT_STREQ(connection_error_name(ConnectionError::kInvalidConfig), "INVALID_CONFIG");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kFactoryFailed), "FACTORY_FAILED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kTcpNotEstablished), "TCP_NOT_ESTABLISHED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kTlsSessionFailed), "TLS_SESSION_FAILED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kTlsHandshakeFailed), "TLS_HANDSHAKE_FAILED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kTlsKeyExportFailed), "TLS_KEY_EXPORT_FAILED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kWsUpgradeFailed), "WS_UPGRADE_FAILED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kWsUpgradeRejected), "WS_UPGRADE_REJECTED");
-    EXPECT_STREQ(connection_error_name(ConnectionError::kWsAcceptInvalid), "WS_ACCEPT_INVALID");
+    EXPECT_EQ(connection_error_name(ConnectionError::kInvalidConfig), "INVALID_CONFIG");
+    EXPECT_EQ(connection_error_name(ConnectionError::kFactoryFailed), "FACTORY_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kTcpNotEstablished), "TCP_NOT_ESTABLISHED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kTlsSessionFailed), "TLS_SESSION_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kTlsHandshakeFailed), "TLS_HANDSHAKE_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kTlsKeyExportFailed), "TLS_KEY_EXPORT_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kWsUpgradeFailed), "WS_UPGRADE_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kWsUpgradeRejected), "WS_UPGRADE_REJECTED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kWsAcceptInvalid), "WS_ACCEPT_INVALID");
 }
 
 TEST(ConnectionErrorTest, InfoMessage) {
@@ -2026,16 +2026,16 @@ TEST(ConnectionErrorInfo, EqualityDiffersOnCodeOnly) {
 // ============================================================================
 
 TEST(TransportEventName, ReturnsHumanReadableStrings) {
-    EXPECT_STREQ(transport_event_name(TransportEvent::kConnected), "CONNECTED");
-    EXPECT_STREQ(transport_event_name(TransportEvent::kDisconnected), "DISCONNECTED");
-    EXPECT_STREQ(transport_event_name(TransportEvent::kReconnecting), "RECONNECTING");
-    EXPECT_STREQ(transport_event_name(TransportEvent::kStopped), "STOPPED");
+    EXPECT_EQ(transport_event_name(TransportEvent::kConnected), "CONNECTED");
+    EXPECT_EQ(transport_event_name(TransportEvent::kDisconnected), "DISCONNECTED");
+    EXPECT_EQ(transport_event_name(TransportEvent::kReconnecting), "RECONNECTING");
+    EXPECT_EQ(transport_event_name(TransportEvent::kStopped), "STOPPED");
 }
 
 TEST(TransportStateName, ReturnsHumanReadableStrings) {
-    EXPECT_STREQ(transport_state_name(TransportState::kConnected), "CONNECTED");
-    EXPECT_STREQ(transport_state_name(TransportState::kReconnecting), "RECONNECTING");
-    EXPECT_STREQ(transport_state_name(TransportState::kStopped), "STOPPED");
+    EXPECT_EQ(transport_state_name(TransportState::kConnected), "CONNECTED");
+    EXPECT_EQ(transport_state_name(TransportState::kReconnecting), "RECONNECTING");
+    EXPECT_EQ(transport_state_name(TransportState::kStopped), "STOPPED");
 }
 
 // ============================================================================

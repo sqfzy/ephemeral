@@ -426,11 +426,11 @@ TEST(TransportConfigValidation, ZeroPingIntervalPasses) {
 // ===========================================================================
 
 TEST(SendErrorTest, NameFormatting) {
-    EXPECT_STREQ(send_error_name(SendError::kOk), "OK");
-    EXPECT_STREQ(send_error_name(SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
-    EXPECT_STREQ(send_error_name(SendError::kNotConnected), "NOT_CONNECTED");
-    EXPECT_STREQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
-    EXPECT_STREQ(send_error_name(SendError::kInvalidUtf8), "INVALID_UTF8");
+    EXPECT_EQ(send_error_name(SendError::kOk), "OK");
+    EXPECT_EQ(send_error_name(SendError::kMessageTooLarge), "MESSAGE_TOO_LARGE");
+    EXPECT_EQ(send_error_name(SendError::kNotConnected), "NOT_CONNECTED");
+    EXPECT_EQ(send_error_name(SendError::kQueueFull), "QUEUE_FULL");
+    EXPECT_EQ(send_error_name(SendError::kInvalidUtf8), "INVALID_UTF8");
 }
 
 TEST(SendErrorTest, BooleanSemantics) {
