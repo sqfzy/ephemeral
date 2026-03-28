@@ -6,15 +6,18 @@ Dual networking backends — POSIX sockets and DPDK kernel-bypass — behind a s
 
 ## Performance
 
-Measured on AWS Graviton (ARM64), 64-byte payload:
+Measured on AWS Graviton (ARM64), 6-round average ± σ:
 
-| Metric | Socket | DPDK |
-|--------|--------|------|
-| TX latency | ~350 ns | ~164 ns |
-| RX latency | ~300 ns | ~139 ns |
-| WS decode | 1.8 ns | 1.8 ns |
-| ITCH parse | 1.4 ns | 1.4 ns |
-| FIX parse (NewOrder) | 222 ns | 222 ns |
+| Metric | Socket | DPDK | Speedup |
+|--------|--------|------|---------|
+| TX queue (p50) | 2,544 ± 431 ns | 360 ± 14 ns | **7.1×** |
+| RX pipeline (p50) | 3,369 ± 130 ns | 423 ± 12 ns | **8.0×** |
+| Handshake | 47.4 ± 1.2 ms | 13.5 ± 1.6 ms | **3.5×** |
+| JSON parse (bookTicker) | 104 ns | — | — |
+| JSON → Book → BBO | 163 ns | — | — |
+| FIX parse (NewOrder) | 22.5 ns | — | — |
+| ITCH parse | 1.4 ns | — | — |
+| Book update | 2.9 ns | — | — |
 
 ## Quick Start
 
@@ -106,12 +109,15 @@ See [`examples/`](examples/) for more — from minimal clients to production HFT
 
 | Module | Description |
 |--------|-------------|
+| **eph-core** | Shared concepts (`TcpTransport`, `MessageFramer`), error types, `ErrorEnum` trait |
 | **eph-utils** | TSC timing, CPU topology, HdrHistogram, hugepage allocator |
 | **eph-containers** | Lock-free SPSC queues: `BoundedQueue` (backpressure), `EvictingQueue` (drop-old) |
-| **eph-net** | WebSocket/TLS transport over POSIX sockets |
+| **eph-net** | WebSocket/TLS transport, HTTP client, HMAC signing, rate limiter |
 | **eph-dpdk** | DPDK kernel-bypass TCP backend (same Transport API) |
-| **eph-fix** | FIX 4.4 zero-copy parser, builder, framer |
+| **eph-fix** | FIX 4.4 zero-copy parser, builder, session, typed order helpers |
 | **eph-itch** | ITCH 5.0 zero-copy parser, framer |
+| **eph-json** | Zero-copy JSON parser, Binance bookTicker/REST adapters |
+| **eph-book** | L2 order book (ArrayBook), ITCH + Binance adapters |
 
 ## Integration
 
@@ -140,6 +146,7 @@ add_deps("eph-net")  -- pulls in eph-utils, eph-containers transitively
 
 | Example | Backend | Description |
 |---------|---------|-------------|
+| `binance_book` | Socket | **JSON → BookTicker → ArrayBook → BBO** (full pipeline) |
 | `minimal_ws_client` | Socket | Simplest possible WebSocket client |
 | `production_client` | Socket | Reconnection, latency histogram, CPU pinning |
 | `simple_hft` | Socket | Binance market data with nanosecond timing |
