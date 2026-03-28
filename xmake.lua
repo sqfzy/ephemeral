@@ -262,6 +262,15 @@ target("test_itch_adapter")
     add_packages("gtest")
     add_defines("SPDLOG_NO_EXCEPTIONS")
 
+target("test_binance_adapter")
+    set_kind("binary")
+    set_group("tests")
+    set_default(false)
+    add_files("tests/book/test_binance_adapter.cpp")
+    add_deps("eph-book", "eph-json")
+    add_packages("gtest")
+    add_defines("SPDLOG_NO_EXCEPTIONS")
+
 -- ===========================================================================
 -- examples
 -- ===========================================================================
