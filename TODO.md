@@ -10,7 +10,7 @@
 
 - [x] **MetricsSink concept** — MetricsSink concept + NullSink + ConsoleSink + 18 tests。
 - [ ] **eph-audit 审计日志骨架** — 基于 mmap ring buffer 的结构化审计日志，监管合规基础（MiFID II / Reg NMS）。2-3h。
-- [ ] **Crash handler + kill switch** — 崩溃时撤销未成交订单、dump 状态、通知监控。一键断开所有连接。1-2h。
+- [x] **Crash handler + kill switch** — KillSwitch: 协调多 Transport 紧急关闭 + 信号处理 + 15 tests。
 
 ## 小改进
 
