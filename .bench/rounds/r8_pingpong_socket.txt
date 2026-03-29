@@ -1,0 +1,63 @@
+[2026-03-29 03:58:50.649] [utils.cpu] [info] [cpu.hpp:259] main pinned to cpu_id=10
+[2026-03-29 03:58:50.649] [info] Calibrating TSC...
+[2026-03-29 03:58:50.649] [utils.tsc] [info] [time.hpp:242] Calibrating TSC...
+[2026-03-29 03:58:51.669] [utils.tsc] [info] [time.hpp:324] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-03-29 03:58:51.669] [info] TSC: 1.0000 ns/cycle
+[2026-03-29 03:58:51.669] [info] Connecting to wss://172.31.21.173:9080/ws (ping-only, no subscription)
+[2026-03-29 03:58:51.669] [net.transport] [warning] [transport.hpp:209] Config warning: skip_utf8_validation=true — text frames will NOT be validated for UTF-8 conformance (RFC 6455 §5.6); caller assumes responsibility for payload validity
+[2026-03-29 03:58:51.669] [net.transport] [info] [transport.hpp:212] Creating transport: 172.31.21.173:9080/ws
+[2026-03-29 03:58:51.670] [net.socket] [info] [socket_transport.hpp:552] Connected to 172.31.21.173 (172.31.21.173:9080, mss=32741, dns: 0.2ms, total: 0.3ms)
+[2026-03-29 03:58:51.703] [net.transport] [info] [transport.hpp:1999] WebSocket upgrade successful
+[2026-03-29 03:58:51.703] [net.transport] [info] [transport.hpp:1701] Connected: 172.31.21.173 (plain WS, handshake: 32.5ms)
+[2026-03-29 03:58:51.703] [net.transport] [info] [transport.hpp:1556] Transport state: CONNECTED — 172.31.21.173 [172.31.21.173:9080]
+[2026-03-29 03:58:51.703] [info] [STATE] CONNECTED — 172.31.21.173
+[2026-03-29 03:58:51.703] [net.transport] [info] [transport.hpp:256] Transport ready: 172.31.21.173
+[2026-03-29 03:58:51.703] [info] Connected (handshake 32.53 ms)
+[2026-03-29 03:58:51.718] [utils.cpu] [info] [cpu.hpp:259] RX pinned to cpu_id=12
+[2026-03-29 03:58:51.718] [utils.cpu] [info] [cpu.hpp:259] TX pinned to cpu_id=11
+[2026-03-29 04:01:22.203] [info] All 300 pings sent, waiting for final pongs...
+[2026-03-29 04:01:22.703] [net.transport] [info] [transport.hpp:945] Stopping transport
+[2026-03-29 04:01:22.703] [net.transport] [info] [transport.hpp:1551] Transport state: STOPPED [172.31.21.173:9080]
+[2026-03-29 04:01:22.703] [info] [STATE] STOPPED — 
+[2026-03-29 04:01:22.703] [net.transport] [info] [transport.hpp:996] Transport stopped
+[2026-03-29 04:01:22.703] [info] === Ping/Pong Benchmark (Socket) ===
+[2026-03-29 04:01:22.703] [info] Duration: 151.0s | Pings sent: 300
+[2026-03-29 04:01:22.703] [info] Transport stats:
+TransportStats (uptime: 151.0s, remote: 172.31.21.173):
+  TX: 307 packets (2/s), 28 bytes (0 B/s), text: 0 pkts/0 B, 0 dropped, 0 encrypt errors
+  RX: 307 packets (2/s), 0 bytes (0 B/s), text: 0 pkts/0 B, 0 dropped, 0 decrypt errors
+  Queue full: 0, TX HWM: 0, RX HWM: 0
+  WebSocket: 7 pings received, 7 pongs sent, 0 pong timeouts
+  Reconnections: 0, handshake: 32.5ms (tcp: 0.4ms, tls: 0.0ms, ws: 32.2ms)
+  TLS seq: write=0/0 (0.0%), read=0/0 (0.0%)
+  RTT: RttStats (300 samples):
+  min: 37.2us, p50: 152.0us, p99: 229.3us, p999: 237.1us, max: 237.1us, mean: 143.6us
+  TX latency: RttStats (300 samples):
+  min: 1.6us, p50: 2.0us, p99: 3.7us, p999: 14.3us, max: 14.3us, mean: 2.1us
+    queue_wait: RttStats (300 samples):
+  min: 0.2us, p50: 0.4us, p99: 0.6us, p999: 0.7us, max: 0.7us, mean: 0.4us
+    encode:     RttStats (300 samples):
+  min: 0.0us, p50: 0.0us, p99: 0.1us, p999: 7.9us, max: 7.9us, mean: 0.1us
+  RX latency: RttStats: no samples
+    decrypt:    RttStats: no samples
+    decode:     RttStats: no samples
+[2026-03-29 04:01:22.703] [info] --- Metric 1: TX Queue (ping enqueue → flush) ---
+[2026-03-29 04:01:22.703] [info]   samples: 300
+[2026-03-29 04:01:22.703] [info]   min:     1571 ns
+[2026-03-29 04:01:22.703] [info]   p50:     1972 ns
+[2026-03-29 04:01:22.703] [info]   p99:     3700 ns
+[2026-03-29 04:01:22.703] [info]   p99.9:   14324 ns
+[2026-03-29 04:01:22.703] [info]   max:     14320 ns
+[2026-03-29 04:01:22.703] [info] --- Metric 2: RX Pong Pipeline (rx_burst → pong decoded) ---
+[2026-03-29 04:01:22.703] [info]   (no samples)
+[2026-03-29 04:01:22.703] [info] --- Metric 3: RTT (ping flush → pong arrive) ---
+[2026-03-29 04:01:22.703] [info]   samples: 300
+[2026-03-29 04:01:22.703] [info]   min:     37220 ns
+[2026-03-29 04:01:22.703] [info]   p50:     152000 ns
+[2026-03-29 04:01:22.703] [info]   p99:     229312 ns
+[2026-03-29 04:01:22.703] [info]   p99.9:   237120 ns
+[2026-03-29 04:01:22.703] [info]   max:     237057 ns
+[2026-03-29 04:01:22.703] [net.transport] [info] [transport.hpp:945] Stopping transport
+[2026-03-29 04:01:22.703] [net.transport] [info] [transport.hpp:1551] Transport state: STOPPED [172.31.21.173:9080]
+[2026-03-29 04:01:22.703] [info] [STATE] STOPPED — 
+[2026-03-29 04:01:22.703] [net.transport] [info] [transport.hpp:996] Transport stopped

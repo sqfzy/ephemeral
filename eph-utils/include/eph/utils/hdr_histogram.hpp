@@ -118,12 +118,19 @@ class HdrHistogram {
         unit_magnitude_ =
             static_cast<int>(std::floor(std::log2(lowest_trackable_value)));
 
-        sub_bucket_count_ = static_cast<int64_t>(1)
+        sub_bucket_count_ = static_cast<uint64_t>(1)
                             << sub_bucket_count_magnitude_;
         sub_bucket_half_count_ = sub_bucket_count_ >> 1;
         sub_bucket_mask_ = (sub_bucket_count_ - 1) << unit_magnitude_;
 
         establish_size(highest_trackable_value);
+
+        if (counts_len_ > 10'000'000) {
+            // Unreasonable histogram size — reject to prevent OOM
+            counts_len_ = 0;
+            return;
+        }
+
         counts_.resize(counts_len_, 0);
     }
 
@@ -900,9 +907,9 @@ class HdrHistogram {
     int unit_magnitude_ = 0;
     int sub_bucket_count_magnitude_ = 0;
     int sub_bucket_half_count_magnitude_ = 0;
-    int64_t sub_bucket_count_ = 0;
-    int64_t sub_bucket_half_count_ = 0;
-    int64_t sub_bucket_mask_ = 0;
+    uint64_t sub_bucket_count_ = 0;
+    uint64_t sub_bucket_half_count_ = 0;
+    uint64_t sub_bucket_mask_ = 0;
     int32_t bucket_count_ = 0;
     int32_t counts_len_ = 0;
 
@@ -915,12 +922,12 @@ class HdrHistogram {
     void establish_size(uint64_t max_value) {
         int32_t buckets_needed = get_buckets_needed_to_cover_value(max_value);
         bucket_count_ = buckets_needed;
-        counts_len_ = ((buckets_needed + 1) * (sub_bucket_count_ / 2));
+        counts_len_ = static_cast<int32_t>((buckets_needed + 1) * static_cast<int64_t>(sub_bucket_count_ / 2));
     }
 
     [[nodiscard]] int32_t get_buckets_needed_to_cover_value(
         uint64_t value) const noexcept {
-        int64_t smallest_untrackable_value = sub_bucket_count_
+        int64_t smallest_untrackable_value = static_cast<int64_t>(sub_bucket_count_)
                                              << unit_magnitude_;
         int32_t buckets_needed = 1;
 
@@ -956,17 +963,17 @@ class HdrHistogram {
                                        int32_t sub_bucket_idx) const noexcept {
         int32_t bucket_base_idx = (bucket_idx + 1)
                                   << sub_bucket_half_count_magnitude_;
-        int32_t offset_in_bucket = sub_bucket_idx - sub_bucket_half_count_;
+        int32_t offset_in_bucket = sub_bucket_idx - static_cast<int32_t>(sub_bucket_half_count_);
         return bucket_base_idx + offset_in_bucket;
     }
 
     [[nodiscard]] uint64_t value_from_index(int32_t index) const noexcept {
         int32_t bucket_idx = (index >> sub_bucket_half_count_magnitude_) - 1;
         int32_t sub_bucket_idx =
-            (index & (sub_bucket_half_count_ - 1)) + sub_bucket_half_count_;
+            (index & static_cast<int32_t>(sub_bucket_half_count_ - 1)) + static_cast<int32_t>(sub_bucket_half_count_);
 
         if (bucket_idx < 0) {
-            sub_bucket_idx -= sub_bucket_half_count_;
+            sub_bucket_idx -= static_cast<int32_t>(sub_bucket_half_count_);
             bucket_idx = 0;
         }
 

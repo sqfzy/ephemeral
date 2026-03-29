@@ -1,0 +1,16 @@
+[2026-03-29 15:18:50.851] [utils.cpu] [info] [cpu.hpp:259] main pinned to cpu_id=4
+[2026-03-29 15:18:50.851] [info] Calibrating TSC...
+[2026-03-29 15:18:50.851] [utils.tsc] [info] [time.hpp:239] Calibrating TSC...
+[2026-03-29 15:18:51.871] [utils.tsc] [info] [time.hpp:321] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-03-29 15:18:51.871] [info] TSC: 1.0000 ns/cycle
+[2026-03-29 15:18:51.871] [info] Connecting to wss://172.31.27.208:9443/ws/btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker (3 symbols + orders)
+[2026-03-29 15:18:51.871] [info]   orders: every 500ms
+[2026-03-29 15:18:51.871] [net.transport] [warning] [transport.hpp:209] Config warning: skip_utf8_validation=true — text frames will NOT be validated for UTF-8 conformance (RFC 6455 §5.6); caller assumes responsibility for payload validity
+[2026-03-29 15:18:51.871] [net.transport] [info] [transport.hpp:212] Creating transport: 172.31.27.208:9443/ws/btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker
+[2026-03-29 15:18:51.880] [net.socket] [error] [socket_transport.hpp:541] Connection failed: Connection refused
+[2026-03-29 15:18:51.880] [net.transport] [error] [transport.hpp:222] Initial connect failed: [FACTORY_FAILED] TCP factory failed: Connection failed: Connection refused
+[2026-03-29 15:18:51.880] [net.transport] [info] [transport.hpp:967] Stopping transport
+[2026-03-29 15:18:51.880] [net.transport] [info] [transport.hpp:1576] Transport state: STOPPED [172.31.27.208:9443]
+[2026-03-29 15:18:51.880] [info] [STATE] STOPPED — 
+[2026-03-29 15:18:51.880] [net.transport] [info] [transport.hpp:1018] Transport stopped
+[2026-03-29 15:18:51.883] [error] Connect failed: [FACTORY_FAILED] TCP factory failed: Connection failed: Connection refused

@@ -1,0 +1,488 @@
+2026-03-29T15:16:15+00:00
+Running build/linux/arm64/release/bench_bq_throughput
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.98, 1.18, 1.04
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.326] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.326] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.328] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.328] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.348] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.348] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.554] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.554] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+------------------------------------------------------------------------------------------------------------------------------
+Benchmark                                                                    Time             CPU   Iterations UserCounters...
+------------------------------------------------------------------------------------------------------------------------------
+BM_BoundedQueue_Throughput/P:8/B:1/real_time/threads:2                     206 ns          206 ns      3401058 items_per_second=9.73016M/s
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.904] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.907] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.907] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:15.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:15.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:8/B:8/real_time/threads:2                    27.1 ns         27.1 ns     25980606 items_per_second=73.7085M/s
+[2026-03-29 15:16:16.286] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:16.286] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:16.286] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.286] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.287] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.290] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.290] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:8/B:64/real_time/threads:2                   36.7 ns         36.7 ns     20443370 items_per_second=54.5022M/s
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.700] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.702] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.702] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.723] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.723] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:16.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:16.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:8/B:512/real_time/threads:2                  20.9 ns         20.9 ns     31718506 items_per_second=95.6115M/s
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.275] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.276] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.276] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.278] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.278] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.299] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.299] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.510] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.510] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:64/B:1/real_time/threads:2                    212 ns          212 ns      3317910 items_per_second=9.44959M/s
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.861] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.862] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.862] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.866] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.866] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:17.910] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:17.910] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:64/B:8/real_time/threads:2                   43.5 ns         43.5 ns     16095402 items_per_second=45.9991M/s
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.260] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.274] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.274] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.396] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.396] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:64/B:64/real_time/threads:2                  12.3 ns         12.3 ns     57154196 items_per_second=163.125M/s
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.747] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.753] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.753] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:18.812] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:18.812] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:64/B:512/real_time/threads:2                 5.83 ns         5.83 ns    120131820 items_per_second=343.221M/s
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.162] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.165] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.165] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.192] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.192] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:512/B:1/real_time/threads:2                   273 ns          273 ns      2560398 items_per_second=7.3336M/s
+[2026-03-29 15:16:19.541] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:19.541] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:19.541] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.541] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.542] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.549] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.549] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.612] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.612] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:512/B:8/real_time/threads:2                  62.9 ns         62.9 ns     11123556 items_per_second=31.7882M/s
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.962] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:19.967] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:19.967] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.012] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.012] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:512/B:64/real_time/threads:2                 44.9 ns         44.9 ns     15619566 items_per_second=44.5648M/s
+[2026-03-29 15:16:20.362] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:20.362] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:20.362] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.362] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.362] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.363] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.368] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.368] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.416] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.416] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_Throughput/P:512/B:512/real_time/threads:2                47.9 ns         47.9 ns     14636684 items_per_second=41.7672M/s
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.766] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.767] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.767] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.769] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.769] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.787] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.787] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:20.972] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:20.972] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:8/B:1/real_time/threads:2            185 ns          185 ns      3774918 items_per_second=10.7941M/s
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.322] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.323] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.323] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.325] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.350] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.350] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.594] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.594] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:8/B:8/real_time/threads:2           24.4 ns         24.4 ns     28665986 items_per_second=81.9628M/s
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.944] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.945] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.945] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:21.953] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:21.953] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.031] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.031] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:8/B:64/real_time/threads:2          7.84 ns         7.84 ns     89431204 items_per_second=254.955M/s
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.383] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.383] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.390] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.390] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.461] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.461] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:8/B:512/real_time/threads:2         7.11 ns         7.11 ns     98408462 items_per_second=281.316M/s
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.811] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.813] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.813] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:22.831] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:22.831] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.002] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.002] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:64/B:1/real_time/threads:2           173 ns          173 ns      4094364 items_per_second=11.5545M/s
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.356] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.357] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.357] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.359] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.359] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.379] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.379] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.584] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.584] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:64/B:8/real_time/threads:2          20.4 ns         20.4 ns     34200776 items_per_second=97.8378M/s
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.933] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.934] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.939] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.939] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:23.986] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:23.986] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:64/B:64/real_time/threads:2         4.77 ns         4.77 ns    147084238 items_per_second=419.378M/s
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.337] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.338] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.338] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.341] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.341] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.375] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.375] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:64/B:512/real_time/threads:2        3.34 ns         3.34 ns    209297088 items_per_second=598.971M/s
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.724] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.725] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.725] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.726] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.726] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.744] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.744] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:24.919] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:24.919] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:512/B:1/real_time/threads:2          171 ns          171 ns      3999884 items_per_second=11.7155M/s
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.261] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.264] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.264] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.289] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.289] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:512/B:8/real_time/threads:2         25.0 ns         25.0 ns     27955364 items_per_second=79.9679M/s
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.639] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.645] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.645] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:25.696] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:25.696] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:512/B:64/real_time/threads:2        5.04 ns         5.04 ns    136956976 items_per_second=396.688M/s
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.041] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.045] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.045] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.082] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.082] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+BM_BoundedQueue_ZeroCopy_Throughput/P:512/B:512/real_time/threads:2       3.64 ns         3.64 ns    191785938 items_per_second=549.206M/s

@@ -56,6 +56,12 @@
 #include "eph/fix/parser.hpp"
 #include "eph/fix/tags.hpp"
 
+// CPU spin-wait hint — included directly to avoid pulling in eph-utils
+// (which would add eph-utils as a dependency and risk pulling in aws-lc).
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#  include <immintrin.h>
+#endif
+
 namespace eph::fix {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,7 +192,15 @@ public:
                 set_state(SessionState::kDisconnected);
                 return std::unexpected("logon: timeout waiting for server Logon response");
             }
+            // Spin-wait pause hint: reduces power usage and avoids pipeline stalls
+            // on x86 (PAUSE) and ARM64 (YIELD) versus a bare spin loop.
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+            _mm_pause();
+#elif defined(__aarch64__)
+            asm volatile("yield");
+#else
             std::this_thread::yield();
+#endif
         }
 
         if (state_.load(std::memory_order_acquire) != SessionState::kActive) {
@@ -224,7 +238,15 @@ public:
                     "Logout timeout — forcing disconnect");
                 return {};
             }
+            // Spin-wait pause hint: reduces power usage and avoids pipeline stalls
+            // on x86 (PAUSE) and ARM64 (YIELD) versus a bare spin loop.
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+            _mm_pause();
+#elif defined(__aarch64__)
+            asm volatile("yield");
+#else
             std::this_thread::yield();
+#endif
         }
 
         SPDLOG_LOGGER_INFO(detail::fix_session_logger(), "Logout complete");
@@ -271,6 +293,11 @@ public:
         // ── Sequence number tracking and gap detection ──
         auto received_seq = msg.get_int(tag::MsgSeqNum);
         if (received_seq) {
+            if (*received_seq < 1) {
+                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                    "Invalid MsgSeqNum={} (must be >= 1), ignoring", *received_seq);
+                return true;
+            }
             uint32_t recv = static_cast<uint32_t>(*received_seq);
             uint32_t expected = expected_inbound_seq_.load(std::memory_order_relaxed);
             last_inbound_seq_.store(recv, std::memory_order_release);
@@ -307,14 +334,20 @@ public:
         // ── Logon response ──
         if (type == std::string_view(&tag::msg_type::Logon, 1)) {
             // Override HeartBtInt if server specifies a different value
-            if (auto server_hb = msg.get_int(tag::HeartBtInt); server_hb && *server_hb > 0) {
-                int prev = heartbeat_interval_sec_.load(std::memory_order_relaxed);
-                if (*server_hb != prev) {
-                    SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
-                        "Server HeartBtInt={} overrides client value={}",
-                        *server_hb, prev);
-                    heartbeat_interval_sec_.store(
-                        static_cast<int>(*server_hb), std::memory_order_release);
+            constexpr int64_t kMaxHeartbeatSec = 3600;
+            if (auto server_hb = msg.get_int(tag::HeartBtInt); server_hb) {
+                if (*server_hb > 0 && *server_hb <= kMaxHeartbeatSec) {
+                    int prev = heartbeat_interval_sec_.load(std::memory_order_relaxed);
+                    if (*server_hb != prev) {
+                        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+                            "Server HeartBtInt={} overrides client value={}",
+                            *server_hb, prev);
+                        heartbeat_interval_sec_.store(
+                            static_cast<int>(*server_hb), std::memory_order_release);
+                    }
+                } else {
+                    SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                        "Ignoring unreasonable HeartBtInt={}", *server_hb);
                 }
             }
             SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
@@ -365,6 +398,11 @@ public:
             auto gap_fill = msg.get(tag::GapFillFlag);
             auto new_seq = msg.get_int(tag::NewSeqNo);
             if (new_seq) {
+                if (*new_seq < 1) {
+                    SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                        "Invalid NewSeqNo={} in SequenceReset (must be >= 1), ignoring", *new_seq);
+                    return true;
+                }
                 uint32_t ns = static_cast<uint32_t>(*new_seq);
                 if (gap_fill && *gap_fill == "Y") {
                     // GapFill mode: advance expected sequence (must not go backward)

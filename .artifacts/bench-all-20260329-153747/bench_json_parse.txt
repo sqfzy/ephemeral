@@ -1,0 +1,15 @@
+2026-03-29T15:38:06+00:00
+Running build/linux/arm64/release/bench_json_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.34, 0.78, 0.98
+---------------------------------------------------------------------------------
+Benchmark                       Time             CPU   Iterations UserCounters...
+---------------------------------------------------------------------------------
+BM_JsonParse                  104 ns          104 ns      6708077 bytes_per_second=1.22373Gi/s items_per_second=9.59106M/s
+BM_JsonParseAndExtract        172 ns          172 ns      4221538 items_per_second=5.81193M/s
+BM_SymbolHash                24.2 ns         24.2 ns     28894629 items_per_second=41.3106M/s

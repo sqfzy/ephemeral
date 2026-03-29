@@ -203,6 +203,8 @@ class alignas(Align<T>) EvictingQueue {
      * @tparam F 回调类型，签名应为 void(T& data)
      * @param writer_func 用于在 Slot 原位初始化或修改数据的回调函数
      */
+    // global_index_ starts at 0 (sentinel: "no data written").
+    // First write uses index 1. Reader checks idx > last_read.
     template <typename F>
         requires std::invocable<F, T&>
     void produce(F&& writer_func) noexcept {
@@ -424,6 +426,10 @@ class alignas(Align<T>) EvictingQueue {
      * @param timeout 最大等待时间
      * @return true 读取成功; false 超时
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_peek_latest_for(
@@ -495,6 +501,10 @@ class alignas(Align<T>) EvictingQueue {
      * @param timeout 最大等待时间
      * @return true 读取成功; false 超时
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume_latest_for(

@@ -7,6 +7,7 @@
 /// array of Field views. All string_view values point into the original buffer
 /// -- no allocations, no copies.
 
+#include <cmath>
 #include <concepts>
 #include <cstdint>
 #include <cstring>
@@ -141,8 +142,10 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
         }
         val += frac / divisor;
     }
-    if (val == std::numeric_limits<double>::infinity()) return std::nullopt;
-    return neg ? -val : val;
+    double result = neg ? -val : val;
+    // Check after negation: catches both +inf and -inf from very large inputs.
+    if (!std::isfinite(result)) return std::nullopt;
+    return result;
 }
 
 /// Parse a FIX boolean (Y/N).
@@ -620,6 +623,10 @@ using MessageView = BasicMessageView<>;
 /// Advances `p` past the '=' delimiter. Returns 0 on failure.
 /// FIX tag numbers are small (1–99999 in practice), but we guard against
 /// overflow from malformed input to avoid silent wraparound.
+///
+/// @note Tag 0 is used as the parse-failure sentinel. FIX spec reserves tag 0
+///       as undefined, so this is safe. A field "0=value" will be rejected as
+///       kInvalidFormat, which is the correct behavior.
 inline uint32_t parse_tag_number(const char*& p, const char* end) noexcept {
     constexpr uint32_t kMaxTag = UINT32_MAX / 10;
     uint32_t num = 0;

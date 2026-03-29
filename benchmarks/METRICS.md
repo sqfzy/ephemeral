@@ -93,6 +93,8 @@ Binance server generates event (E timestamp)
 | `bench_market_dpdk` | - | Y | - | Y | DPDK 后端，同上 |
 | `bench_market_multi` | - | Y | - | Y | 多 symbol，支持 `--mode twophase` frame filter |
 | `bench_market_multi_dpdk` | - | Y | - | Y | DPDK 后端，同上 |
+| `bench_market_pingpong` | Y | Y | Y* | Y | 行情 + 订单模拟，Order RTT (echo) |
+| `bench_market_pingpong_dpdk` | Y | Y | Y* | Y | DPDK 后端，同上 |
 
 ## 时间源
 

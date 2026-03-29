@@ -1,0 +1,27 @@
+2026-03-29T15:27:58+00:00
+Running build/linux/arm64/release/bench_tcp_header
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 1.17, 1.07, 1.08
+---------------------------------------------------------------------------------
+Benchmark                       Time             CPU   Iterations UserCounters...
+---------------------------------------------------------------------------------
+BM_Checksum/64               2.61 ns         2.61 ns    267864004 bytes_per_second=22.8521Gi/s
+BM_Checksum/128              4.05 ns         4.05 ns    173458900 bytes_per_second=29.421Gi/s
+BM_Checksum/256              6.94 ns         6.94 ns    100840920 bytes_per_second=34.3642Gi/s
+BM_Checksum/512              12.6 ns         12.6 ns     55401026 bytes_per_second=37.7518Gi/s
+BM_Checksum/1024             24.2 ns         24.2 ns     28968714 bytes_per_second=39.4582Gi/s
+BM_TcpHeaderBuild/64         27.0 ns         27.0 ns     25881286
+BM_TcpHeaderBuild/128        29.7 ns         29.7 ns     23561770
+BM_TcpHeaderBuild/256        32.3 ns         32.3 ns     21655960
+BM_TcpHeaderBuild/512        39.0 ns         39.0 ns     17930194
+BM_TcpHeaderBuild/1024       51.2 ns         51.2 ns     13669969
+BM_TcpHeaderParse/64        0.940 ns        0.940 ns    744899392
+BM_TcpHeaderParse/128       0.940 ns        0.940 ns    744913240
+BM_TcpHeaderParse/256       0.940 ns        0.940 ns    744941089
+BM_TcpHeaderParse/512       0.940 ns        0.940 ns    744919217
+BM_TcpHeaderParse/1024      0.940 ns        0.940 ns    744910371

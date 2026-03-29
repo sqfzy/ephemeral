@@ -132,11 +132,8 @@ public:
    */
   static bool
   init(std::chrono::milliseconds duration = std::chrono::milliseconds(200)) {
-    bool result = false;
-    std::call_once(init_flag_, [&] { result = do_init_(duration); });
-    // If call_once already fired, return the stored result.
-    if (!result) result = initialized_.load(std::memory_order_acquire);
-    return result;
+    std::call_once(init_flag_, [&] { do_init_(duration); });
+    return initialized_.load(std::memory_order_acquire);
   }
 
   /**

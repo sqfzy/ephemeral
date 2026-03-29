@@ -34,6 +34,17 @@ struct Position {
 /// order-event processing where external locking would add latency.
 class PositionTracker {
 public:
+    /// Transparent hash for heterogeneous lookup (string_view key without allocation).
+    struct StringHash {
+        using is_transparent = void;
+        size_t operator()(std::string_view sv) const noexcept {
+            return std::hash<std::string_view>{}(sv);
+        }
+        size_t operator()(const std::string& s) const noexcept {
+            return std::hash<std::string_view>{}(s);
+        }
+    };
+
     /// Record a fill.
     ///
     /// @param symbol  Instrument identifier.
@@ -63,7 +74,14 @@ public:
         // Signed fill qty: positive for buys, negative for sells.
         const double signed_qty = (side == '1') ? qty : -qty;
 
-        auto& pos = positions_[std::string(symbol)];
+        // Heterogeneous lookup: no string allocation when symbol already exists.
+        // operator[] requires the key type to be constructible from string_view,
+        // so we use find + emplace for the insert path.
+        auto it = positions_.find(symbol);
+        if (it == positions_.end()) {
+            it = positions_.emplace(std::string(symbol), Position{}).first;
+        }
+        auto& pos = it->second;
         ++pos.trade_count;
 
         const double old_qty = pos.qty;
@@ -121,7 +139,7 @@ public:
     [[nodiscard]] const Position& get(std::string_view symbol) const noexcept
     {
         static const Position zero{};
-        auto it = positions_.find(std::string(symbol));
+        auto it = positions_.find(symbol);  // heterogeneous lookup — no allocation
         if (it == positions_.end()) return zero;
         return it->second;
     }
@@ -129,12 +147,12 @@ public:
     /// Check if a symbol has an open (non-zero) position.
     [[nodiscard]] bool has_position(std::string_view symbol) const noexcept
     {
-        auto it = positions_.find(std::string(symbol));
+        auto it = positions_.find(symbol);  // heterogeneous lookup — no allocation
         return it != positions_.end() && it->second.qty != 0.0;
     }
 
     /// Access the full position map.
-    [[nodiscard]] const std::unordered_map<std::string, Position>&
+    [[nodiscard]] const std::unordered_map<std::string, Position, StringHash, std::equal_to<>>&
     positions() const noexcept { return positions_; }
 
     /// Total unrealized PnL across all positions given current market prices.
@@ -186,7 +204,7 @@ public:
     }
 
 private:
-    std::unordered_map<std::string, Position> positions_;
+    std::unordered_map<std::string, Position, StringHash, std::equal_to<>> positions_;
 };
 
 }  // namespace eph::fix

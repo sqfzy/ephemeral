@@ -1,0 +1,1296 @@
+2026-03-29T15:16:26+00:00
+Running build/linux/arm64/release/bench_eq_throughput
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 1.21, 1.22, 1.06
+[2026-03-29 15:16:26.434] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.434] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.435] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.436] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.436] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.436] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.436] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.436] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.436] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.443] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.443] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.443] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.443] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.443] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.443] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:26.512] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.512] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.512] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:26.512] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:26.512] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:26.512] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+-----------------------------------------------------------------------------------------------------
+Benchmark                                           Time             CPU   Iterations UserCounters...
+-----------------------------------------------------------------------------------------------------
+Throughput/P:8/B:1/real_time/threads:2           3.98 ns         3.98 ns    167518524 ActualPops=0/s Delivery%=0 Pushes=251.472M/s
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.068] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.069] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.070] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.070] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.070] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.070] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.070] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.070] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.078] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.078] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.078] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.078] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.078] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.078] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.163] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.163] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.163] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.163] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.163] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.163] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:8/B:8/real_time/threads:2           81.4 ns         81.4 ns      8298674 ActualPops=0/s Delivery%=0 Pushes=12.282M/s
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.504] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.505] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.505] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.505] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.505] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.505] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.505] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.514] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.514] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.514] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.514] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.514] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.514] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:27.581] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.581] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.581] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:27.581] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:27.581] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:27.581] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:8/B:64/real_time/threads:2          85.4 ns         85.4 ns     10562522 ActualPops=0/s Delivery%=0 Pushes=11.7056M/s
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.035] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.036] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.037] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.037] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.037] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.043] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.043] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.043] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.043] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.043] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.043] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.118] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.118] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.118] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.118] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.118] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.118] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:8/B:512/real_time/threads:2         70.5 ns         70.5 ns      9512760 ActualPops=0/s Delivery%=0 Pushes=14.1934M/s
+[2026-03-29 15:16:28.456] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.456] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.456] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.456] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.456] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.456] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.457] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.458] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.458] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.458] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.458] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.458] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.458] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.465] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.465] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.465] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.465] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.465] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.465] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:28.536] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.536] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.536] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:28.536] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:28.536] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:28.536] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:64/B:1/real_time/threads:2          4.21 ns         4.21 ns    165738458 ActualPops=0/s Delivery%=0 Pushes=237.378M/s
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.126] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.127] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.137] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.137] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.137] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.137] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.137] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.137] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:29.166] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.166] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.166] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:29.166] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:29.166] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:29.166] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:64/B:8/real_time/threads:2          77.2 ns         77.2 ns     26375422 ActualPops=0/s Delivery%=0 Pushes=12.9493M/s
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.190] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.191] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.199] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.199] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.199] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.199] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.199] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.199] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.294] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.294] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.294] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.294] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.294] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.294] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:30.543] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.543] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.543] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:30.544] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:30.544] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:30.544] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:64/B:64/real_time/threads:2         90.6 ns         90.6 ns     10617292 ActualPops=0/s Delivery%=0 Pushes=11.0431M/s
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.026] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.027] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.027] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.027] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.027] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.027] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.027] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.030] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.030] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.030] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.030] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.030] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.030] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.110] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.110] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.110] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.110] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.110] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.110] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:31.222] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.222] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.222] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:31.222] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:31.222] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:31.222] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:64/B:512/real_time/threads:2        77.1 ns         77.1 ns     31369196 ActualPops=0/s Delivery%=0 Pushes=12.9634M/s
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.438] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.439] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.440] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.440] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.440] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.440] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.440] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.440] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.454] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.454] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.454] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.454] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.454] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.454] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:32.589] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.589] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.589] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:32.589] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:32.589] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:32.589] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:512/B:1/real_time/threads:2         7.62 ns         7.62 ns     95257436 ActualPops=0/s Delivery%=0 Pushes=131.28M/s
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.256] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.257] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.257] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.257] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.257] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.257] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.257] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.265] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.265] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.265] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.265] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.265] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.265] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.373] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.373] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.373] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.373] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.373] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.373] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:33.596] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.596] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.596] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:33.596] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:33.596] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:33.596] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:512/B:8/real_time/threads:2          107 ns          107 ns     10374642 ActualPops=0/s Delivery%=0 Pushes=9.32872M/s
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.155] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.156] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.158] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.158] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.158] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.158] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.158] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.158] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.193] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.193] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.193] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.193] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.193] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.193] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:512/B:64/real_time/threads:2        33.6 ns         33.6 ns     24235580 ActualPops=0/s Delivery%=0 Pushes=29.7534M/s
+[2026-03-29 15:16:34.658] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.658] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.659] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.660] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.660] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.660] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.660] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.660] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.660] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.665] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.665] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.665] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.665] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.665] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.665] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:34.721] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.721] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.721] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:34.721] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:34.721] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:34.721] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+Throughput/P:512/B:512/real_time/threads:2       41.9 ns         41.9 ns     13670044 ActualPops=0/s Delivery%=0 Pushes=23.8808M/s
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.042] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.043] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.051] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.051] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.051] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.051] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.051] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.051] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.121] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.121] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.121] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.121] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.121] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.121] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:8/B:1/real_time/threads:2             4.14 ns         4.14 ns    168897658 ActualPops=0/s Delivery%=0 Pushes=241.36M/s
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.717] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.718] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.718] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.718] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.718] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.718] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.718] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.719] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.719] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.719] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.719] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.719] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.719] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.731] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.731] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.731] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.731] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.731] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.731] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:35.838] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.838] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.838] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:35.838] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:35.838] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:35.838] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:8/B:8/real_time/threads:2             7.00 ns         6.99 ns     93015416 ActualPops=0/s Delivery%=0 Pushes=142.92M/s
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.313] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.314] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.315] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.315] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.315] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.315] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.315] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.315] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.326] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.326] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.326] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.326] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.326] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.326] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.428] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.428] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.428] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.428] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.428] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.428] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:8/B:64/real_time/threads:2            7.69 ns         7.68 ns    100263824 ActualPops=0/s Delivery%=0 Pushes=130.114M/s
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.974] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.975] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.975] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.975] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.975] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.975] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.975] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.976] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.976] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.976] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.976] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.976] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.976] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:36.991] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.991] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.991] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:36.991] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:36.991] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:36.991] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.119] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.119] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.119] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.119] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.119] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.119] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:8/B:512/real_time/threads:2           12.7 ns         12.7 ns     72838586 ActualPops=0/s Delivery%=0 Pushes=78.4565M/s
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.693] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.694] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.695] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.695] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.695] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.695] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.695] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.695] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.702] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.702] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.702] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.702] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.702] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.702] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:37.773] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.773] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.773] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:37.773] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:37.773] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:37.773] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:64/B:1/real_time/threads:2            4.26 ns         4.26 ns    169839608 ActualPops=0/s Delivery%=0 Pushes=234.687M/s
+[2026-03-29 15:16:38.379] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.379] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.380] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.381] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.381] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.381] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.382] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.382] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.382] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.392] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.392] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.392] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.392] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.392] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.392] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:38.492] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.492] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.492] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:38.492] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:38.492] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:38.492] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:64/B:8/real_time/threads:2            6.97 ns         6.97 ns    103097976 ActualPops=0/s Delivery%=0 Pushes=143.519M/s
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.016] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.017] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.018] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.018] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.018] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.018] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.018] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.018] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.029] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.029] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.029] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.029] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.029] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.029] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.137] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.137] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.137] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.137] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.137] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.137] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:64/B:64/real_time/threads:2           7.21 ns         7.21 ns     92559338 ActualPops=0/s Delivery%=0 Pushes=138.723M/s
+[2026-03-29 15:16:39.620] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.620] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.620] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.620] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.620] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.620] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.621] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.623] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.623] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.623] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.623] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.623] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.623] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.634] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.634] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.634] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.634] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.634] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.634] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:39.821] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.821] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.821] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:39.821] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:39.821] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:39.821] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:64/B:512/real_time/threads:2          75.0 ns         75.0 ns     44382788 ActualPops=0/s Delivery%=0 Pushes=13.3333M/s
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.497] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.498] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.498] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.498] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.498] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.498] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.498] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.505] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.505] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.505] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.505] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.505] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.506] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:41.577] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.577] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.577] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:41.577] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:41.577] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:41.577] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:512/B:1/real_time/threads:2           4.17 ns         4.17 ns    164236104 ActualPops=0/s Delivery%=0 Pushes=239.669M/s
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.159] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.160] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.161] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.161] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.161] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.161] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.161] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.161] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.171] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.171] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.171] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.171] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.171] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.171] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.267] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.267] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.267] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.267] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.267] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.267] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:512/B:8/real_time/threads:2           7.06 ns         7.06 ns    111133084 ActualPops=0/s Delivery%=0 Pushes=141.609M/s
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.840] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.841] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.841] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.841] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.841] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.841] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.841] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.842] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.842] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.842] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.842] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.842] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.842] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.852] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.852] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.852] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.852] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.852] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.852] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:42.953] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.953] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.953] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:42.953] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:42.953] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:42.953] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:512/B:64/real_time/threads:2          6.71 ns         6.71 ns    103089842 ActualPops=0/s Delivery%=0 Pushes=148.925M/s
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.469] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.470] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.471] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.471] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.471] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.471] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.471] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.471] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.483] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.483] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.483] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.483] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.483] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.483] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+[2026-03-29 15:16:43.589] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.589] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.589] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=0
+[2026-03-29 15:16:43.590] [utils.cpu] [info] [cpu.hpp:184] physical id/core id not found in /proc/cpuinfo, using simplified topology (16 processors)
+[2026-03-29 15:16:43.590] [utils.cpu] [info] [cpu.hpp:217] Detected 16 CPUs
+[2026-03-29 15:16:43.590] [utils.cpu] [info] [cpu.hpp:259] thread pinned to cpu_id=1
+ZeroCopy/P:512/B:512/real_time/threads:2         7.72 ns         7.72 ns     96424828 ActualPops=0/s Delivery%=0 Pushes=129.564M/s

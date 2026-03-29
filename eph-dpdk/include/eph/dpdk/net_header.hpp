@@ -90,6 +90,7 @@ constexpr uint32_t ntoh32(uint32_t n) noexcept { return hton32(n); }
 /// Internet checksum (RFC 1071) over arbitrary data.
 /// Operates on host byte order internally, returns network byte order result.
 inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
+    if (len == 0) return 0xFFFF;
     uint32_t sum = 0;
     auto ptr = static_cast<const uint8_t*>(data);
 
@@ -219,7 +220,11 @@ struct PacketTemplate {
     rte_ether_addr src_mac{};
     rte_ether_addr dst_mac{};
     ConnectionTuple tuple{};
-    uint16_t ip_id = 0; // Incremented per packet
+    /// IP identification field, incremented per packet.
+    /// @warning Not thread-safe — PacketTemplate must be used from a single
+    ///          TX thread per session. Use separate PacketTemplate instances
+    ///          for multi-threaded TX.
+    uint16_t ip_id = 0;
     uint16_t mss = kDefaultMss; // MSS advertised in SYN options
 
     /// [P2] Enable NIC TX checksum offload (IP + TCP).
@@ -326,14 +331,20 @@ struct PacketTemplate {
     /// Build a packet directly into an existing mbuf (for hot path, avoids alloc).
     /// The mbuf must have at least kAllHeadersLen + payload_len bytes of space.
     /// Returns number of bytes written, or 0 on failure.
+    ///
+    /// @note The header construction mirrors build_packet() but operates on a
+    ///       pre-allocated mbuf without SYN option handling. Changes to header
+    ///       fields must be synchronized across both methods.
     uint16_t fill_packet(rte_mbuf* mbuf,
                          uint32_t seq, uint32_t ack,
                          uint8_t flags, uint16_t window,
                          const void* payload = nullptr,
                          uint16_t payload_len = 0) noexcept {
+        if (!mbuf) [[unlikely]] return 0;
+
         // SYN requires TCP options (MSS, SACK, WScale) — use build_packet() instead.
         if (flags & kTcpSyn) [[unlikely]] {
-            SPDLOG_WARN("fill_packet() called with SYN flag; use build_packet() for SYN");
+            // Programming error: use build_packet() for SYN segments
             return 0;
         }
 
@@ -353,12 +364,12 @@ struct PacketTemplate {
 
         // IPv4
         auto* ip = reinterpret_cast<rte_ipv4_hdr*>(pkt + kEtherHeaderLen);
-        ip->version_ihl     = 0x45;
+        ip->version_ihl     = kIpv4VersionIhl5;
         ip->type_of_service  = 0;
         ip->total_length     = hton16(kIpv4HeaderLen + kTcpHeaderLen + payload_len);
         ip->packet_id        = hton16(ip_id++);
-        ip->fragment_offset  = hton16(0x4000);
-        ip->time_to_live     = 64;
+        ip->fragment_offset  = hton16(kIpDontFragment);
+        ip->time_to_live     = kDefaultTtl;
         ip->next_proto_id    = kIpProtoTcp;
         ip->hdr_checksum     = 0;
         ip->src_addr         = hton32(tuple.src_ip);
@@ -503,6 +514,11 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     uint16_t tcp_start = ihl;                          // offset from IP header to TCP
     uint16_t data_start = tcp_start + tcp_doff;        // offset from IP header to payload
 
+    // Reject if TCP data offset overshoots the IP total length.
+    // Without this check, ip_total - data_start would wrap to a huge uint16_t
+    // and the subsequent payload_len would be bogus.
+    if (data_start > ip_total) return {};
+
     // Reject if IP advertises more data than the mbuf actually contains.
     // A corrupted IP header could point payload past the end of the buffer.
     if (kEtherHeaderLen + ip_total > pkt_len) return {};
@@ -549,6 +565,9 @@ inline uint32_t parse_ipv4(const char* str) noexcept {
 }
 
 /// Format an IPv4 address from host-order uint32_t to "a.b.c.d".
+// format_ipv4() returns std::array<char,16> by value; .data() is safe
+// within the full expression (temporary lifetime extends through the
+// enclosing spdlog::info call).
 inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
     std::array<char, 16> buf{};
     snprintf(buf.data(), buf.size(), "%u.%u.%u.%u",

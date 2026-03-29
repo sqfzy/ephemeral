@@ -39,6 +39,11 @@ namespace eph::book {
 /// Deep order book for L3 feeds (1000+ levels).
 /// Uses std::map for guaranteed sorted order and O(log n) operations.
 /// More memory-hungry than ArrayBook but scales to arbitrary depth.
+///
+/// @warning Uses `double` as price key with exact floating-point equality.
+///          Prices must be pre-rounded to canonical form (e.g., from
+///          integer ticks) to avoid rounding-induced key duplication.
+///          Use ArrayBook for epsilon-based price comparison.
 class MapBook {
 public:
     // -- Price-level updates (crypto exchange style) -------------------------

@@ -1,0 +1,27 @@
+2026-03-29T15:07:11+00:00
+Running build/linux/arm64/release/bench_ws
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 1.27, 0.77, 0.67
+----------------------------------------------------------------------------
+Benchmark                  Time             CPU   Iterations UserCounters...
+----------------------------------------------------------------------------
+BM_WsMasking/64         2.91 ns         2.91 ns    240498426 bytes_per_second=20.4907Gi/s
+BM_WsMasking/128        4.08 ns         4.08 ns    171687866 bytes_per_second=29.2212Gi/s
+BM_WsMasking/256        8.67 ns         8.67 ns     80629726 bytes_per_second=27.4928Gi/s
+BM_WsMasking/512        22.9 ns         22.9 ns     30556052 bytes_per_second=20.8044Gi/s
+BM_WsMasking/1024       56.9 ns         56.9 ns     12289007 bytes_per_second=16.7525Gi/s
+BM_WsEncode/64          6.50 ns         6.50 ns    107774226 bytes_per_second=9.17642Gi/s
+BM_WsEncode/128         10.4 ns         10.4 ns     67150337 bytes_per_second=11.4363Gi/s
+BM_WsEncode/256         10.3 ns         10.3 ns     67864765 bytes_per_second=23.1159Gi/s
+BM_WsEncode/512         19.9 ns         19.9 ns     35090033 bytes_per_second=23.9401Gi/s
+BM_WsEncode/1024        48.0 ns         48.0 ns     14570539 bytes_per_second=19.8497Gi/s
+BM_WsDecode/64          1.81 ns         1.81 ns    386548234
+BM_WsDecode/128         2.50 ns         2.50 ns    279713166
+BM_WsDecode/256         2.50 ns         2.50 ns    279560861
+BM_WsDecode/512         2.50 ns         2.50 ns    279651294
+BM_WsDecode/1024        2.50 ns         2.50 ns    279711701

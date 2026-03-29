@@ -1,0 +1,30 @@
+[2026-03-29 15:19:22.091] [utils.cpu] [info] [cpu.hpp:259] main pinned to cpu_id=7
+[2026-03-29 15:19:22.091] [info] Calibrating TSC...
+[2026-03-29 15:19:22.091] [utils.tsc] [info] [time.hpp:239] Calibrating TSC...
+[2026-03-29 15:19:23.111] [utils.tsc] [info] [time.hpp:321] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-03-29 15:19:23.111] [info] Initializing DPDK EAL...
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-03-29 15:19:23.562] [info] Connecting via DPDK to wss://172.31.27.208:9443/ws/btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker (3 symbols + orders)
+[2026-03-29 15:19:23.562] [info]   orders: every 500ms
+[2026-03-29 15:19:23.562] [dpdk.platform] [info] [platform.hpp:277] Available DPDK ports: 1
+[2026-03-29 15:19:23.564] [dpdk.platform] [info] [platform.hpp:458] port=0 link up: 0 Mbps full-duplex
+[2026-03-29 15:19:23.564] [dpdk.platform] [info] [platform.hpp:549] Platform ready (port=0)
+[2026-03-29 15:19:23.564] [dpdk.arp] [info] [arp.hpp:269] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-03-29 15:19:23.596] [net.transport] [warning] [transport.hpp:209] Config warning: skip_utf8_validation=true — text frames will NOT be validated for UTF-8 conformance (RFC 6455 §5.6); caller assumes responsibility for payload validity
+[2026-03-29 15:19:23.596] [net.transport] [info] [transport.hpp:212] Creating transport: 172.31.27.208:9443/ws/btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker
+[2026-03-29 15:19:23.605] [dpdk.tcp] [error] [tcp.hpp:475] Received RST during handshake
+[2026-03-29 15:19:23.605] [net.transport] [error] [transport.hpp:222] Initial connect failed: [FACTORY_FAILED] TCP factory failed: Connection refused (RST)
+[2026-03-29 15:19:23.605] [net.transport] [info] [transport.hpp:967] Stopping transport
+[2026-03-29 15:19:23.605] [net.transport] [info] [transport.hpp:1576] Transport state: STOPPED [172.31.27.208:9443]
+[2026-03-29 15:19:23.605] [info] [STATE] STOPPED — 
+[2026-03-29 15:19:23.605] [net.transport] [info] [transport.hpp:1018] Transport stopped
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released
+[2026-03-29 15:19:23.610] [error] DPDK connect failed: Transport creation failed: [FACTORY_FAILED] TCP factory failed: Connection refused (RST)

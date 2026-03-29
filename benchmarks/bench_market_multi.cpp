@@ -23,13 +23,10 @@
 ///       --proxy socks5://127.0.0.1:7890
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdlib>
 #include <format>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -37,19 +34,21 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/containers/evicting_queue.hpp"
+#include "eph/containers/bounded_queue.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
 
+#include "bench_common.hpp"
+
 // Multi-symbol: larger payload for combined stream wrapper, deliver all frames.
 using BenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
     16384, 1024,
-    eph::containers::EvictingQueue,
+    eph::containers::BoundedQueue,
     false  // LastOnlyDeliver — every symbol's update matters
 >;
 
@@ -57,7 +56,7 @@ using BenchTransport = eph::net::Transport<
 /// Format: {"stream":"<symbol>@<channel>","data":{...}}
 /// Scans the first ~64 bytes for "stream":" prefix, hashes until '@'.
 /// Returns 0 on parse failure (payload delivered unconditionally).
-static uint32_t binance_symbol_hash(const uint8_t* data, size_t len) {
+static uint32_t binance_symbol_hash_multi(const uint8_t* data, size_t len) {
     constexpr size_t kPrefixLen = 11;  // {"stream":"
     if (len < kPrefixLen + 2) return 0;
 
@@ -72,33 +71,6 @@ static uint32_t binance_symbol_hash(const uint8_t* data, size_t len) {
         ++p;
     }
     return (p > data + kPrefixLen) ? hash : 0;
-}
-
-/// Extract Binance event timestamp from combined stream JSON.
-/// Scans for "E": in the outer data object and parses the integer.
-/// Returns nanoseconds when connecting to mock server (time.time_ns()),
-/// or milliseconds when connecting to real Binance (epoch ms).
-/// Returns 0 on parse failure.
-static int64_t binance_event_time(const uint8_t* data, size_t len) {
-    // Combined stream: {"stream":"...","data":{"e":"bookTicker","E":1234567890123,...}}
-    // Scan for "E": pattern — the event time field.
-    std::string_view json(reinterpret_cast<const char*>(data), len);
-    auto pos = json.find("\"E\":");
-    if (pos == std::string_view::npos) return 0;
-    pos += 4;  // skip "E":
-    while (pos < len && json[pos] == ' ') ++pos;
-    int64_t val = 0;
-    while (pos < len && json[pos] >= '0' && json[pos] <= '9') {
-        val = val * 10 + (json[pos] - '0');
-        ++pos;
-    }
-    return val;
-}
-
-/// Detect whether a timestamp is in nanoseconds or milliseconds.
-/// Nanosecond epoch values (2020+) are > 1.5e18; millisecond values are ~1.7e12.
-static bool is_nanosecond_timestamp(int64_t ts) {
-    return ts > 1'500'000'000'000'000'000LL;  // > 2017 in ns
 }
 
 struct Config {
@@ -116,33 +88,6 @@ struct Config {
     bool use_twophase   = false;
 };
 
-/// Convert HdrHistogram to RttStats (standalone version of Transport's private helper).
-static eph::net::RttStats hdr_to_stats(const eph::utils::HdrHistogram& h) noexcept {
-    if (h.get_total_count() == 0) return {};
-    return {
-        .count   = h.get_total_count(),
-        .min_ns  = h.get_min_value(),
-        .max_ns  = h.get_max_value(),
-        .mean_ns = h.get_mean(),
-        .p50_ns  = h.get_value_at_percentile(50.0),
-        .p99_ns  = h.get_value_at_percentile(99.0),
-        .p999_ns = h.get_value_at_percentile(99.9),
-    };
-}
-
-
-static std::atomic<bool> g_running{true};
-static void sig(int) { g_running.store(false, std::memory_order_release); }
-
-static std::vector<std::string> split(const std::string& s, char delim) {
-    std::vector<std::string> tokens;
-    std::istringstream ss(s);
-    std::string token;
-    while (std::getline(ss, token, delim))
-        if (!token.empty()) tokens.push_back(token);
-    return tokens;
-}
-
 static Config parse_args(int argc, char** argv) {
     Config c;
     for (int i = 1; i < argc; ++i) {
@@ -153,7 +98,7 @@ static Config parse_args(int argc, char** argv) {
         };
         if      (a == "--host")      c.host      = next(a);
         else if (a == "--port")      c.port      = static_cast<uint16_t>(std::atoi(next(a)));
-        else if (a == "--symbols")   c.symbols   = split(next(a), ',');
+        else if (a == "--symbols")   c.symbols   = bench::split(next(a), ',');
         else if (a == "--proxy")     c.proxy_url = next(a);
         else if (a == "--duration")  c.duration  = std::atoi(next(a));
         else if (a == "--no-tls")    c.use_tls   = false;
@@ -214,7 +159,7 @@ int main(int argc, char** argv) {
             spdlog::info("[STATE] {} — {}", eph::net::transport_event_name(e), d);
         },
         .on_frame_filter = cfg.use_twophase
-            ? eph::net::make_twophase_filter(binance_symbol_hash)
+            ? eph::net::make_twophase_filter(binance_symbol_hash_multi)
             : eph::net::FrameFilterFn{},
     };
 
@@ -283,21 +228,7 @@ int main(int argc, char** argv) {
             bool got = tp.recv([&](const uint8_t* data, size_t len) {
                 ++msgs;
                 // Feed latency: server send timestamp vs local wall clock
-                auto event_ts = binance_event_time(data, len);
-                if (event_ts > 0) {
-                    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count();
-                    int64_t delta_ns;
-                    if (is_nanosecond_timestamp(event_ts)) {
-                        delta_ns = now_ns - event_ts;
-                    } else {
-                        // Legacy ms timestamps (real Binance)
-                        delta_ns = now_ns - event_ts * 1'000'000;
-                    }
-                    if (delta_ns > 0 && delta_ns < 60'000'000'000LL) {
-                        feed_hist.record(static_cast<uint64_t>(delta_ns));
-                    }
-                }
+                bench::record_feed_latency(data, len, feed_hist);
                 if ((msgs & 0xFF) == 1) {
                     std::string_view json(reinterpret_cast<const char*>(data), len);
                     spdlog::debug("[MKT #{:>6}] {:.80}", msgs, json);
@@ -313,7 +244,7 @@ int main(int argc, char** argv) {
             auto curr_hist = tp.rx_latency_histogram_snapshot();
             auto delta = curr_hist;
             (void)delta.subtract(prev_hist);
-            auto ws = hdr_to_stats(delta);
+            auto ws = bench::hdr_to_stats(delta);
 
             uint64_t delta_msgs = msgs - prev_msgs;
             double elapsed_s = std::chrono::duration<double>(snap_time - window_start).count();
@@ -335,8 +266,6 @@ int main(int argc, char** argv) {
 
     auto stats = tp.stats();
     auto& rx = stats.rx_latency;
-    double avg_bytes_per_burst = rx.count > 0
-        ? static_cast<double>(stats.rx_bytes) / rx.count : 0.0;
 
     spdlog::info("=== Multi-Symbol Market Data Benchmark (Socket) ===");
     spdlog::info("Symbols: {} | Duration: {:.1f}s | Messages: {} | Mode: {}",
@@ -352,31 +281,9 @@ int main(int argc, char** argv) {
                      static_cast<double>(stats.tcp_rx_packets) / stats.tcp_rx_bursts);
     }
     spdlog::info("Transport stats:\n{}", stats.dump());
-    spdlog::info("--- RX Pipeline (rx_burst → data decoded) ---");
-    if (rx.count > 0) {
-        spdlog::info("  samples: {}", rx.count);
-        spdlog::info("  min:     {:.0f} ns", static_cast<double>(rx.min_ns));
-        spdlog::info("  p50:     {:.0f} ns", static_cast<double>(rx.p50_ns));
-        spdlog::info("  p99:     {:.0f} ns", static_cast<double>(rx.p99_ns));
-        spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(rx.p999_ns));
-        spdlog::info("  max:     {:.0f} ns", static_cast<double>(rx.max_ns));
-    } else {
-        spdlog::info("  (no samples)");
-    }
 
-    // Feed latency report
-    auto fl = hdr_to_stats(feed_hist);
-    spdlog::info("--- Feed Latency (server send → App recv) ---");
-    if (fl.count > 0) {
-        spdlog::info("  samples: {}", fl.count);
-        spdlog::info("  min:     {:.0f} ns", static_cast<double>(fl.min_ns));
-        spdlog::info("  p50:     {:.0f} ns", static_cast<double>(fl.p50_ns));
-        spdlog::info("  p99:     {:.0f} ns", static_cast<double>(fl.p99_ns));
-        spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(fl.p999_ns));
-        spdlog::info("  max:     {:.0f} ns", static_cast<double>(fl.max_ns));
-    } else {
-        spdlog::info("  (no samples — check clock sync)");
-    }
+    bench::print_latency("RX Pipeline (rx_burst → data decoded)", stats.rx_latency);
+    bench::print_latency("Feed Latency (server send → app recv)", bench::hdr_to_stats(feed_hist));
 
     return 0;
 }

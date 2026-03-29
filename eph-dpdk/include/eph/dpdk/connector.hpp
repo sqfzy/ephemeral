@@ -76,6 +76,10 @@ struct DpdkEndpoint {
     std::string gateway_ip;  ///< Gateway IPv4 for ARP resolution
 
     /// Validate endpoint, returning error description or empty on success.
+    ///
+    /// @return empty string_view if valid; otherwise a diagnostic pointing to
+    ///         a string literal (safe to store — all returned views have static
+    ///         storage duration).
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (local_ip.empty())   return "local_ip must not be empty";
         if (gateway_ip.empty()) return "gateway_ip must not be empty";
@@ -122,6 +126,10 @@ struct ConnectorOptions {
     dns::DnsConfig dns{};  ///< DNS config for DPDK DNS fallback (default: 8.8.8.8)
 
     /// Validate options, returning error description or empty on success.
+    ///
+    /// @return empty string_view if valid; otherwise a diagnostic pointing to
+    ///         a string literal (safe to store — all returned views have static
+    ///         storage duration).
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (auto err = validate_config(platform); !err.empty()) return err;
         if (arp_timeout.count() <= 0)
@@ -209,6 +217,12 @@ struct ConnectResult {
 resolve_hostname(const std::string& host) {
     SPDLOG_DEBUG("Resolving hostname: '{}'", host);
 
+    // RFC 1035 §3.1: total name length must not exceed 253 characters.
+    if (host.size() > 253) {
+        return std::unexpected(
+            std::format("Hostname too long ({} > 253 chars)", host.size()));
+    }
+
     // Fast path: dotted-decimal IPv4
     uint32_t ip = net::parse_ipv4(host.c_str());
     if (ip != 0) return ip;
@@ -241,6 +255,22 @@ resolve_hostname(const std::string& host) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace detail {
+
+/// Generate a random ephemeral port in [49152, 65535].
+/// Returns 0 on CSPRNG failure.
+///
+/// Uses RAND_bytes so the port is unpredictable, reducing the chance of
+/// mid-air collisions when multiple connections are established rapidly.
+inline uint16_t random_ephemeral_port() noexcept {
+    // kEphemeralPortRange must be a power of 2 so the modulo is unbiased
+    // (no off-by-one over-representation of the low values).
+    static_assert((kEphemeralPortRange & (kEphemeralPortRange - 1)) == 0,
+                  "kEphemeralPortRange must be a power of 2 for unbiased modulo");
+    uint16_t rnd;
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&rnd), sizeof(rnd)) != 1)
+        return 0;
+    return kEphemeralPortMin + (rnd % kEphemeralPortRange);
+}
 
 /// Intermediate products from prepare_connection(), consumed by connect()
 /// to create the Transport and (optionally) return MAC addresses.
@@ -304,11 +334,10 @@ prepare_connection(const DpdkEndpoint& ep,
     // Ephemeral source port
     uint16_t src_port = opts.local_port;
     if (src_port == 0) {
-        uint16_t rnd;
-        if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
+        src_port = detail::random_ephemeral_port();
+        if (src_port == 0) {
             return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
         }
-        src_port = kEphemeralPortMin + (rnd % kEphemeralPortRange);
         SPDLOG_DEBUG("dpdk::connect: ephemeral port {}", src_port);
     }
 
@@ -480,53 +509,23 @@ connect(const DpdkEndpoint& ep,
             ip.error(), dpdk_ip.error()));
     }
 
-    // Build TCP connection reusing the gateway MAC we already resolved.
-    // prepare_connection() would ARP again internally, so we construct
-    // the TcpConfig directly to avoid the redundant ARP.
-    uint16_t src_port = opts.local_port;
-    if (src_port == 0) {
-        uint16_t rnd;
-        if (RAND_bytes(reinterpret_cast<uint8_t*>(&rnd), sizeof(rnd)) != 1) {
-            return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
-        }
-        src_port = kEphemeralPortMin + (rnd % kEphemeralPortRange);
-    }
+    // Reuse the already-created Platform for the full connection setup.
+    // Pass the resolved gateway MAC via opts so prepare_connection() skips
+    // ARP — we already have the MAC from the DNS-fallback ARP above.
+    ConnectorOptions opts_with_mac = opts;
+    opts_with_mac.gateway_mac = *gw_mac;
 
-    TcpConfig tcp_cfg{
-        .tuple = {
-            .src_ip   = local_ip,
-            .dst_ip   = *dpdk_ip,
-            .src_port = src_port,
-            .dst_port = transport_cfg.remote_port,
-        },
-        .src_mac     = src_mac,
-        .dst_mac     = *gw_mac,
-        .port_id     = opts.platform.port_id,
-        .tx_queue_id = opts.tx_queue_id,
-        .rx_queue_id = opts.rx_queue_id,
-    };
-
-    auto connect_timeout = opts.connect_timeout;
-    auto tcp_factory = [tcp_cfg, mempool = platform->mempool(), connect_timeout]()
-        -> std::expected<std::unique_ptr<TcpSession<>>, std::string> {
-        auto tcp = std::make_unique<TcpSession<>>(tcp_cfg, mempool);
-        auto r = tcp->connect(connect_timeout);
-        if (!r) return std::unexpected(r.error());
-        return tcp;
-    };
-
-    auto transport = TransportType::create(
-        std::move(tcp_factory), transport_cfg);
-    if (!transport) {
-        return std::unexpected(
-            std::format("Transport creation failed: {}", transport.error().message()));
+    auto transport_result = connect<TransportType>(
+        *platform, ep, transport_cfg, *dpdk_ip, opts_with_mac);
+    if (!transport_result) {
+        return std::unexpected(transport_result.error());
     }
 
     SPDLOG_DEBUG("dpdk::connect: connection established (via DPDK DNS)");
 
     return ConnectResult<TransportType>{
         .platform    = std::move(*platform),
-        .transport   = std::move(*transport),
+        .transport   = std::move(*transport_result),
         .local_mac   = src_mac,
         .gateway_mac = *gw_mac,
     };
@@ -568,11 +567,17 @@ connect(Platform& platform,
 
     auto setup = detail::prepare_connection(
         ep, opts, transport_cfg, server_ip, platform.mempool());
-    if (!setup) return std::unexpected(setup.error());
+    if (!setup) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): prepare_connection failed: {}",
+                     setup.error());
+        return std::unexpected(setup.error());
+    }
 
     auto transport = TransportType::create(
         std::move(setup->tcp_factory), transport_cfg);
     if (!transport) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): Transport creation failed: {}",
+                     transport.error().message());
         return std::unexpected(
             std::format("Transport creation failed: {}", transport.error().message()));
     }
@@ -589,6 +594,7 @@ connect(Platform& platform,
         const TransportConfig& transport_cfg,
         const ConnectorOptions& opts = {}) {
     if (transport_cfg.remote_host.empty()) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): remote_host is empty");
         return std::unexpected(
             "TransportConfig: remote_host is required for hostname-based connect");
     }
@@ -600,23 +606,39 @@ connect(Platform& platform,
     }
 
     // Fall back to DPDK DNS
-    SPDLOG_DEBUG("dpdk::connect(platform&): kernel DNS failed, trying DPDK DNS");
+    SPDLOG_DEBUG("dpdk::connect(platform&): kernel DNS failed ({}), trying DPDK DNS",
+                 ip.error());
 
     uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
     uint32_t gateway_ip = net::parse_ipv4(ep.gateway_ip.c_str());
-    if (local_ip == 0 || gateway_ip == 0) {
-        return std::unexpected("Invalid local_ip or gateway_ip for DPDK DNS fallback");
+    if (local_ip == 0) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): local_ip parse failed: '{}'",
+                     ep.local_ip);
+        return std::unexpected(
+            std::format("Invalid local_ip: '{}' failed to parse", ep.local_ip));
+    }
+    if (gateway_ip == 0) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): gateway_ip parse failed: '{}'",
+                     ep.gateway_ip);
+        return std::unexpected(
+            std::format("Invalid gateway_ip: '{}' failed to parse", ep.gateway_ip));
     }
 
     rte_ether_addr src_mac{};
     if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
-        return std::unexpected("Failed to get MAC for DPDK DNS fallback");
+        SPDLOG_DEBUG("dpdk::connect(platform&): MAC get failed for port {}",
+                     opts.platform.port_id);
+        return std::unexpected(std::format(
+            "Failed to get MAC for DPDK DNS fallback (port={})",
+            opts.platform.port_id));
     }
 
     auto gw_mac = arp::resolve(
         opts.platform.port_id, opts.rx_queue_id, platform.mempool(),
         src_mac, local_ip, gateway_ip, opts.arp_timeout);
     if (!gw_mac) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): ARP for gateway {} failed: {}",
+                     ep.gateway_ip, gw_mac.error());
         return std::unexpected(std::format(
             "DNS fallback: ARP for gateway failed: {}", gw_mac.error()));
     }
@@ -626,6 +648,7 @@ connect(Platform& platform,
         src_mac, *gw_mac, local_ip,
         transport_cfg.remote_host, opts.dns);
     if (!dpdk_ip) {
+        SPDLOG_DEBUG("dpdk::connect(platform&): DPDK DNS failed: {}", dpdk_ip.error());
         return std::unexpected(std::format(
             "DNS failed (kernel: {}, DPDK: {})", ip.error(), dpdk_ip.error()));
     }

@@ -1,0 +1,140 @@
+# Benchmark Raw Data — 2026-03-29 05:45–08:38 UTC (Real Binance, 3-hour run)
+# Commit: ac225dd (dev, worktree dirty — pending record_rx_latency fix)
+# OS: Linux 6.1.163-186.299.amzn2023.aarch64
+# CPU: 16 cores (aarch64, 1 thread/core)
+# RAM: 30Gi
+# Compiler: g++ 11.5.0
+# Server: fstream.binance.com:443 (real production, Tokyo region)
+# Total duration: 2h53m
+#
+# Reproduce:
+#   build/linux/arm64/release/bench_pingpong --count 5000 --ping-interval 500 --tx-cpu 2 --rx-cpu 3 --main-cpu 4
+#   sudo build/linux/arm64/release/bench_pingpong_dpdk -a 0000:28:00.0 -l 4-7 -- --count 5000 --ping-interval 500 --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 --tx-cpu 5 --rx-cpu 6 --main-cpu 7
+#   build/linux/arm64/release/bench_market_multi --duration 2700 --tx-cpu 2 --rx-cpu 3 --main-cpu 4
+#   sudo build/linux/arm64/release/bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- --duration 2700 --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 --tx-cpu 5 --rx-cpu 6 --main-cpu 7
+
+================================================================================
+[1/4] bench_pingpong (kernel) — 05:45:15–06:26:57 (42min)
+================================================================================
+Pings: 5000, Interval: 500ms
+Remote: 35.76.235.228 (fstream.binance.com)
+Handshake: 50.9ms (tcp: 4.1ms, tls: 39.1ms, ws: 7.7ms)
+TLS: TLSv1.3, TLS_AES_128_GCM_SHA256
+
+TX Pipeline (enqueue → tx_burst):
+  samples: 5000
+  min:     1987 ns
+  p50:     2316 ns
+  p99:     2940 ns
+  p99.9:   6764 ns
+  max:     14063 ns
+
+RX Pipeline (rx_burst → pong decoded):
+  samples: 5000
+  min:     3329 ns
+  p50:     5756 ns
+  p99:     20248 ns
+  p99.9:   21528 ns
+  max:     22693 ns
+    decrypt: p50=900ns  p99=1200ns  p99.9=1300ns
+    decode:  p50=100ns  p99=100ns   p99.9=100ns
+
+RTT (tx_burst → rx_burst):
+  samples: 5000
+  min:     2094224 ns  (2.1ms)
+  p50:     52543488 ns (52.5ms)
+  p99:     101285888 ns (101.3ms)
+  p99.9:   102137856 ns (102.1ms)
+  max:     102383251 ns (102.4ms)
+  mean:    52414.3us
+
+================================================================================
+[2/4] bench_pingpong (dpdk) — 06:26:57–07:08:39 (42min)
+================================================================================
+Pings: 5000, Interval: 500ms
+Remote: fstream.binance.com (via DPDK)
+Handshake: 12.2ms (tcp: 2.0ms, tls: 6.8ms, ws: 3.4ms)
+TLS: TLSv1.3, TLS_AES_128_GCM_SHA256
+
+TX Pipeline (enqueue → tx_burst):
+  samples: 5000
+  min:     216 ns
+  p50:     324 ns
+  p99:     636 ns
+  p99.9:   4612 ns
+  max:     9187 ns
+
+RX Pipeline (rx_burst → pong decoded):
+  samples: 5000
+  min:     208 ns
+  p50:     340 ns
+  p99:     548 ns
+  p99.9:   660 ns
+  max:     2925 ns
+    decrypt: p50=300ns  p99=500ns  p99.9=600ns
+    decode:  p50=0ns    p99=100ns  p99.9=100ns
+
+RTT (tx_burst → rx_burst):
+  samples: 5000
+  min:     1972646 ns  (2.0ms)
+  p50:     51036160 ns (51.0ms)
+  p99:     101089280 ns (101.1ms)
+  p99.9:   102137856 ns (102.1ms)
+  max:     105497137 ns (105.5ms)
+  mean:    51768.2us
+
+================================================================================
+[3/4] bench_market_multi (kernel) — 07:08:39–07:53:40 (45min)
+================================================================================
+Symbols: 3 (btcusdt, ethusdt, solusdt)
+Messages: 598708, WS frames: 1024740, TLS records: 396947
+Remote: fstream.binance.com
+Handshake: 47.2ms (tcp: 4.4ms, tls: 39.1ms, ws: 3.7ms)
+RX: 185058767 bytes (68.5 KB/s avg)
+
+RX Pipeline (rx_burst → data decoded):
+  samples: 396947
+  min:     2172 ns
+  p50:     3460 ns
+  p99:     9796 ns
+  p99.9:   16472 ns
+  max:     32008 ns
+    decrypt: p50=500ns  p99=1700ns  p99.9=3200ns
+    decode:  p50=100ns  p99=3000ns  p99.9=6300ns
+
+Feed Latency (server send → app recv):
+  samples: 598708
+  min:     1188161 ns  (1.2ms)
+  p50:     2399232 ns  (2.4ms)
+  p99:     3523584 ns  (3.5ms)
+  p99.9:   9310208 ns  (9.3ms)
+  max:     38959058 ns (39.0ms)
+
+================================================================================
+[4/4] bench_market_multi (dpdk) — 07:53:40–08:38:42 (45min)
+================================================================================
+Symbols: 3 (btcusdt, ethusdt, solusdt)
+Messages: 579746, WS frames: 976020, TLS records: 391027
+TCP pkts: 434293, bursts: 421523
+Per rx_burst: 418 bytes, 2.3 WS frames, 0.9 TLS records, 1.0 TCP pkts
+Remote: fstream.binance.com (via DPDK)
+Handshake: 11.9ms (tcp: 1.9ms, tls: 6.9ms, ws: 3.0ms)
+RX: 176291240 bytes (65.3 KB/s avg)
+
+RX Pipeline (rx_burst → data decoded):
+  samples: 391027
+  min:     278 ns
+  p50:     452 ns
+  p99:     4708 ns
+  p99.9:   10148 ns
+  max:     18996 ns
+    decrypt: p50=300ns  p99=1700ns  p99.9=3600ns
+    decode:  p50=100ns  p99=3100ns  p99.9=6900ns
+
+Feed Latency (server send → app recv):
+  samples: 579746
+  min:     1202336 ns  (1.2ms)
+  p50:     2403328 ns  (2.4ms)
+  p99:     46710784 ns (46.7ms)
+  p99.9:   217382912 ns (217.4ms)
+  max:     305243838 ns (305.2ms)

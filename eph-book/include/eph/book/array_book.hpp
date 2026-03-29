@@ -118,12 +118,20 @@ public:
         SPDLOG_DEBUG("ArrayBook cleared");
     }
 
-    /// True if the book is crossed (best_bid >= best_ask).
-    /// This indicates a market anomaly or a stale book.  Returns false when
-    /// either side is empty.
+    /// True if best bid strictly exceeds best ask (anomalous).
+    /// Excludes the locked case (bid == ask within epsilon).
+    /// Returns false when either side is empty.
     [[nodiscard]] bool is_crossed() const noexcept {
         if (bid_count_ == 0 || ask_count_ == 0) return false;
-        return bids_[0].price >= asks_[0].price - kEps;
+        return bids_[0].price > asks_[0].price + kEps;
+    }
+
+    /// True if best bid equals best ask within epsilon (locked market).
+    /// A locked market is distinct from crossed: prices are equal rather
+    /// than inverted.  Returns false when either side is empty.
+    [[nodiscard]] bool is_locked() const noexcept {
+        if (bid_count_ == 0 || ask_count_ == 0) return false;
+        return std::abs(bids_[0].price - asks_[0].price) < kEps;
     }
 
     /// Sum of quantities across all bid levels.

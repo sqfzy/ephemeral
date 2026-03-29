@@ -204,6 +204,11 @@ parse(const uint8_t* data, size_t len) noexcept {
 /// @param callback Called with (MessageView) for each parsed message.
 ///                 Return true to continue, false to stop early.
 /// @return Number of bytes successfully consumed (sum of parsed message lengths)
+///
+/// @note When callback returns false, processing stops. The returned
+///       offset points past the last delivered message (including the
+///       one that triggered the stop). To re-process from the stopping
+///       message, subtract its length from the returned offset.
 template <typename Fn>
     requires std::invocable<Fn, const MessageView&>
 size_t parse_all(const uint8_t* data, size_t len, Fn&& callback) noexcept(

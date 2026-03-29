@@ -71,11 +71,15 @@ struct ConnectionErrorInfo {
 
     /// JSON-formatted error info for monitoring system integration.
     [[nodiscard]] std::string to_json() const {
+        // Only include http_status when it's meaningful
+        auto http_str = http_status.has_value()
+            ? std::format(",\"http_status\":{}", *http_status)
+            : std::string{};
         return std::format(
-            "{{\"code\":\"{}\",\"detail\":\"{}\",\"http_status\":{}}}",
+            "{{\"code\":\"{}\",\"detail\":\"{}\"{}}}",
             eph::core::detail::json_escape(connection_error_name(code)),
             eph::core::detail::json_escape(detail),
-            http_status.value_or(0));
+            http_str);
     }
 
     /// HTTP status code from server rejection.

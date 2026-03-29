@@ -1,0 +1,16 @@
+2026-03-29T15:05:48+00:00
+Running build/linux/arm64/release/bench_array_book
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.67, 0.57, 0.60
+---------------------------------------------------------------------------
+Benchmark                 Time             CPU   Iterations UserCounters...
+---------------------------------------------------------------------------
+BM_BookUpdate          3.23 ns         3.23 ns    216354786 items_per_second=309.301M/s
+BM_BookBBO            0.955 ns        0.955 ns    733587648 items_per_second=1.04755G/s
+BM_BookMidPrice       0.715 ns        0.715 ns    978797416 items_per_second=1.39823G/s
+BM_BookFullCycle        158 ns          158 ns      4315213 bytes_per_second=827.768Mi/s items_per_second=6.33561M/s

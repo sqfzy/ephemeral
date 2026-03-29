@@ -18,6 +18,7 @@
 ///   }
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -55,6 +56,11 @@ inline const char* skip_ws(const char* p, const char* end) noexcept {
 /// Returns pointer TO the closing '"', or end if not found.
 /// Byte-at-a-time is optimal for the short strings (1-10 chars) typical
 /// in exchange JSON — memchr's call overhead exceeds its SIMD benefit here.
+///
+/// @note Does not validate escape sequences (e.g., \x is accepted).
+///       This is a deliberate zero-copy trade-off: field.value contains
+///       raw text including backslash sequences. Callers must re-validate
+///       if strict RFC 8259 compliance is required.
 inline const char* scan_string(const char* p, const char* end) noexcept {
     while (p < end) {
         if (*p == '"') return p;
@@ -127,6 +133,8 @@ public:
     static constexpr size_t kMaxFields = 32;
 
     /// Get raw value for a key. Returns empty string_view if not found.
+    /// @note Returns empty string_view for BOTH missing keys and keys with
+    ///       empty string values. Use get_string() to distinguish these cases.
     [[nodiscard]] std::string_view get(std::string_view key) const noexcept {
         auto* f = find_field(key);
         return f ? f->value : std::string_view{};
@@ -188,8 +196,9 @@ private:
     /// char and length before the full comparison eliminates most mismatches
     /// with a single comparison (packed into one branch).
     [[nodiscard]] const Field* find_field(std::string_view key) const noexcept {
+        if (key.empty()) return nullptr;
         const auto len = key.size();
-        const auto c0  = key[0]; // caller never passes empty key
+        const auto c0  = key[0];
         for (size_t i = 0; i < count_; ++i) {
             const auto& k = fields_[i].key;
             if (k.size() == len && k[0] == c0 &&
@@ -273,11 +282,16 @@ private:
                 char c = sv[pos];
                 if (c < '0' || c > '9') return std::nullopt;
                 exp = exp * 10 + (c - '0');
+                // Guard against exponent overflow: IEEE 754 double max exponent is 308.
+                // Values beyond this will produce inf/zero, which we reject below.
+                if (exp > 308) return std::nullopt;
             }
             double factor = 1.0;
             for (int i = 0; i < exp; ++i) factor *= 10.0;
             result = exp_neg ? result / factor : result * factor;
         }
+        // Reject infinity or NaN produced by extreme values.
+        if (!std::isfinite(negative ? -result : result)) return std::nullopt;
         return negative ? -result : result;
     }
 };

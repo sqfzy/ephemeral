@@ -1,0 +1,36 @@
+2026-03-29T15:20:09+00:00
+Running build/linux/arm64/release/bench_bq_pushpop
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.97, 1.28, 1.13
+-------------------------------------------------------------------------------------------------------
+Benchmark                                             Time             CPU   Iterations UserCounters...
+-------------------------------------------------------------------------------------------------------
+BM_BoundedQueue_PushPop/P:8/B:1                    12.6 ns         12.6 ns     55546484 items_per_second=158.925M/s
+BM_BoundedQueue_PushPop/P:8/B:8                    8.42 ns         8.42 ns     83140921 items_per_second=237.553M/s
+BM_BoundedQueue_PushPop/P:8/B:64                   7.86 ns         7.86 ns     89078874 items_per_second=254.45M/s
+BM_BoundedQueue_PushPop/P:8/B:512                  7.79 ns         7.79 ns     89851320 items_per_second=256.71M/s
+BM_BoundedQueue_PushPop/P:64/B:1                   16.3 ns         16.3 ns     42822405 items_per_second=122.344M/s
+BM_BoundedQueue_PushPop/P:64/B:8                   12.2 ns         12.2 ns     57571746 items_per_second=164.51M/s
+BM_BoundedQueue_PushPop/P:64/B:64                  11.6 ns         11.6 ns     60524278 items_per_second=173.09M/s
+BM_BoundedQueue_PushPop/P:64/B:512                 11.4 ns         11.4 ns     61159186 items_per_second=174.751M/s
+BM_BoundedQueue_PushPop/P:512/B:1                  35.8 ns         35.8 ns     19589345 items_per_second=55.9391M/s
+BM_BoundedQueue_PushPop/P:512/B:8                  25.6 ns         25.6 ns     27395639 items_per_second=78.2735M/s
+BM_BoundedQueue_PushPop/P:512/B:64                 24.4 ns         24.4 ns     28642166 items_per_second=81.8206M/s
+BM_BoundedQueue_PushPop/P:512/B:512                26.5 ns         26.5 ns     26399302 items_per_second=75.4253M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:8/B:1           12.6 ns         12.6 ns     55756094 items_per_second=159.136M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:8/B:8           8.42 ns         8.42 ns     83228492 items_per_second=237.624M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:8/B:64          7.85 ns         7.85 ns     89184250 items_per_second=254.735M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:8/B:512         7.78 ns         7.78 ns     89904293 items_per_second=256.909M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:64/B:1          14.6 ns         14.6 ns     47925085 items_per_second=136.941M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:64/B:8          9.55 ns         9.54 ns     73355764 items_per_second=209.536M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:64/B:64         8.94 ns         8.94 ns     78173896 items_per_second=223.793M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:64/B:512        8.84 ns         8.84 ns     79141410 items_per_second=226.205M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:512/B:1         14.6 ns         14.6 ns     47841730 items_per_second=136.712M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:512/B:8         10.0 ns         10.0 ns     69727069 items_per_second=199.239M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:512/B:64        9.54 ns         9.54 ns     73352962 items_per_second=209.654M/s
+BM_BoundedQueue_ZeroCopy_PushPop/P:512/B:512       9.41 ns         9.40 ns     74438459 items_per_second=212.696M/s

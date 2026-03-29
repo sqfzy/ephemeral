@@ -12,9 +12,7 @@
 ///       -- --local-ip 172.31.23.112 --gateway-ip 172.31.16.1
 ///       --rx-cpu 8 --tx-cpu 9 --main-cpu 10 --duration 30
 
-#include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <format>
@@ -23,18 +21,20 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/containers/evicting_queue.hpp"
+#include "eph/containers/bounded_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
+
+#include "bench_common.hpp"
 
 // Single-symbol: last-only deliver (only latest bookTicker matters)
 using BenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
     eph::net::WsFramer,
     512, 1024,
-    eph::containers::EvictingQueue,
+    eph::containers::BoundedQueue,
     true  // LastOnlyDeliver
 >;
 
@@ -53,9 +53,6 @@ struct Config {
     int  rx_cpu            = -1;
     int  main_cpu        = -1;
 };
-
-static std::atomic<bool> g_running{true};
-static void sig(int) { g_running.store(false, std::memory_order_release); }
 
 static Config parse_args(int argc, char** argv) {
     Config c;

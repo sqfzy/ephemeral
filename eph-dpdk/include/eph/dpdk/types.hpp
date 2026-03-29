@@ -34,7 +34,9 @@ using DpdkSmallTransport = eph::net::Transport<TcpSession<>, eph::net::WsFramer,
 /// Large DPDK transport for bulk data.
 using DpdkLargeTransport = eph::net::Transport<TcpSession<>, eph::net::WsFramer, 4096, 512>;
 
-/// Evicting DPDK variant — drops stale messages when RX queue is full.
+/// Latest-value transport — under backpressure, drops older messages
+/// to deliver only the most recent. Same queue depth as DpdkTransport;
+/// adjust if staleness-sensitive workloads need shallower queues.
 using DpdkEvictTransport = eph::net::Transport<TcpSession<>, eph::net::WsFramer, 512, 1024,
                                                 eph::containers::EvictingQueue>;
 

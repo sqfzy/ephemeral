@@ -15,13 +15,14 @@
 
 namespace eph::net {
 
-/// States a TCP transport can be in.
+/// Client-side TCP states (RFC 793 active-open path).
 enum class TcpState : uint8_t {
     Closed,
     SynSent,
     Established,
     FinWait1,
     FinWait2,
+    Closing,   ///< RFC 793: simultaneous close — both sides sent FIN before receiving peer's FIN
     TimeWait,
     CloseWait,
     LastAck,
@@ -34,6 +35,7 @@ constexpr const char* tcp_state_name(TcpState s) noexcept {
         case TcpState::Established: return "ESTABLISHED";
         case TcpState::FinWait1:    return "FIN_WAIT_1";
         case TcpState::FinWait2:    return "FIN_WAIT_2";
+        case TcpState::Closing:     return "CLOSING";
         case TcpState::TimeWait:    return "TIME_WAIT";
         case TcpState::CloseWait:   return "CLOSE_WAIT";
         case TcpState::LastAck:     return "LAST_ACK";
@@ -74,6 +76,8 @@ concept TcpTransport = requires(T& t,
     { t.last_rx_burst_tsc() } -> std::convertible_to<uint64_t>;
 
     // State queries
+    /// mss() returns 0 before connection is established, and a positive
+    /// value (typically 1460 for standard Ethernet) after connect() succeeds.
     { t.mss() }            -> std::convertible_to<uint16_t>;
     { t.state() }          -> std::same_as<TcpState>;
     { t.is_established() } -> std::same_as<bool>;

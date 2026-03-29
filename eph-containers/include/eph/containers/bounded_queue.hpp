@@ -121,6 +121,9 @@ class BoundedQueue {
     // ---------------------------------------------------------------------------
     // Writer Hot Data
     // ---------------------------------------------------------------------------
+    // alignas on WriterLine/ReaderLine causes sizeof to be padded to
+    // Align<T> (≥ CACHE_LINE_SIZE), guaranteeing the next member starts
+    // on a fresh cache line. No manual padding is needed.
     struct alignas(Align<T>) WriterLine {
         /// 全局写入索引 (Tail Pointer)
         std::atomic<size_t> tail_{0};
@@ -366,6 +369,10 @@ class BoundedQueue {
      * @param timeout     最大等待时间
      * @return true 写入成功; false 超时
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, T&>
     [[nodiscard]] bool try_produce_for(F&& writer_func,
@@ -413,6 +420,10 @@ class BoundedQueue {
      * @param timeout 最大等待时间
      * @return true 全部写入成功; false 超时，无任何写入
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_push_n_for(std::span<const T> data,
                                        std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -436,6 +447,10 @@ class BoundedQueue {
      * @param timeout 最大等待时间
      * @return true 全部写入成功; false 超时，无任何写入
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, T&, size_t>
     [[nodiscard]] bool try_produce_n_for(size_t n, F&& writer,
@@ -474,6 +489,10 @@ class BoundedQueue {
             }
         }
 
+        // Shadow tail optimization: the cached shadow_tail_ was set by a
+        // prior acquire load of writer_.tail_, which established happens-before
+        // for all slots in [head, shadow_tail_). No fresh acquire is needed
+        // for reads within this range — they are already visible.
         std::invoke(std::forward<F>(visitor), std::as_const(buffer_[head & mask_]));
 
         reader_.head_.store(head + 1, std::memory_order_release);
@@ -696,6 +715,10 @@ class BoundedQueue {
      * @param timeout 最大等待时间
      * @return true 消费成功; false 超时
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume_for(F&& visitor,
@@ -741,6 +764,10 @@ class BoundedQueue {
      * @param timeout 最大等待时间
      * @return 实际读取的元素数量（0 表示超时且队列为空）
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename Rep, typename Period>
     [[nodiscard]] size_t try_pop_n_for(std::span<T> out,
                                         std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -766,6 +793,10 @@ class BoundedQueue {
      * @param timeout 最大等待时间
      * @return 实际消费的元素数量（0 表示超时且队列为空）
      */
+    // noexcept: steady_clock::now() is guaranteed not to throw on
+    // Linux/macOS/Windows. If this assumption breaks on an exotic
+    // platform, std::terminate will be called — preferable to
+    // exception-based unwinding in a lock-free hot path.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const T&, size_t>
     [[nodiscard]] size_t try_consume_n_for(size_t n, F&& visitor,

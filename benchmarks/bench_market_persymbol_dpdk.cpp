@@ -30,7 +30,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/containers/evicting_queue.hpp"
+#include "eph/containers/bounded_queue.hpp"
 #include "eph/dpdk/connector.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/reactor.hpp"
@@ -43,7 +43,7 @@ using BenchTransport = eph::net::Transport<
     eph::dpdk::TcpSession<>,
     eph::net::WsFramer,
     16384, 1024,
-    eph::containers::EvictingQueue,
+    eph::containers::BoundedQueue,
     true   // LastOnlyDeliver — only latest snapshot per symbol
 >;
 

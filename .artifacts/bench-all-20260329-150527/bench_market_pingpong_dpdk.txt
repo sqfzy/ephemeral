@@ -1,0 +1,140 @@
+[2026-03-29 15:11:02.737] [utils.cpu] [info] [cpu.hpp:259] main pinned to cpu_id=7
+[2026-03-29 15:11:02.737] [info] Calibrating TSC...
+[2026-03-29 15:11:02.737] [utils.tsc] [info] [time.hpp:239] Calibrating TSC...
+[2026-03-29 15:11:03.757] [utils.tsc] [info] [time.hpp:321] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-03-29 15:11:03.757] [info] Initializing DPDK EAL...
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-03-29 15:11:04.212] [info] Connecting via DPDK to wss://172.31.27.208:9443/ws/btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker (3 symbols + orders)
+[2026-03-29 15:11:04.212] [info]   orders: every 500ms
+[2026-03-29 15:11:04.212] [dpdk.platform] [info] [platform.hpp:277] Available DPDK ports: 1
+[2026-03-29 15:11:04.214] [dpdk.platform] [info] [platform.hpp:458] port=0 link up: 0 Mbps full-duplex
+[2026-03-29 15:11:04.214] [dpdk.platform] [info] [platform.hpp:549] Platform ready (port=0)
+[2026-03-29 15:11:04.214] [dpdk.arp] [info] [arp.hpp:269] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-03-29 15:11:04.246] [net.transport] [warning] [transport.hpp:209] Config warning: skip_utf8_validation=true — text frames will NOT be validated for UTF-8 conformance (RFC 6455 §5.6); caller assumes responsibility for payload validity
+[2026-03-29 15:11:04.246] [net.transport] [info] [transport.hpp:212] Creating transport: 172.31.27.208:9443/ws/btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker
+[2026-03-29 15:11:04.255] [dpdk.tcp] [info] [tcp.hpp:508] TCP connection established: 172.31.23.112:63858 -> 172.31.27.208:9443
+[2026-03-29 15:11:04.259] [net.tls] [info] [tls_session.hpp:602] Starting TLS 1.3 handshake with 172.31.27.208
+[2026-03-29 15:11:04.260] [net.tls] [info] [tls_session.hpp:615] TLS handshake complete: version=TLSv1.3, cipher=TLS_AES_256_GCM_SHA384
+[2026-03-29 15:11:04.261] [net.transport] [info] [transport.hpp:2024] WebSocket upgrade successful
+[2026-03-29 15:11:04.261] [net.tls] [info] [tls_session.hpp:747] TLS traffic keys extracted: cipher=TLS_AES_256_GCM_SHA384, key_len=32, write_seq=1, read_seq=3
+[2026-03-29 15:11:04.261] [net.transport] [info] [transport.hpp:1726] Connected: 172.31.27.208 (TLS: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, handshake: 6.0ms)
+[2026-03-29 15:11:04.261] [net.transport] [info] [transport.hpp:1581] Transport state: CONNECTED — 172.31.27.208 [172.31.27.208:9443]
+[2026-03-29 15:11:04.261] [info] [STATE] CONNECTED — 172.31.27.208
+[2026-03-29 15:11:04.261] [net.transport] [info] [transport.hpp:256] Transport ready: 172.31.27.208
+[2026-03-29 15:11:04.261] [info] Connected via DPDK (3 symbols + orders)!
+[2026-03-29 15:11:04.261] [info]     time      msg/s    p50(ns)    p99(ns)    p99.9(ns)   orders
+[2026-03-29 15:11:04.278] [utils.cpu] [info] [cpu.hpp:259] RX pinned to cpu_id=6
+[2026-03-29 15:11:04.278] [utils.cpu] [info] [cpu.hpp:259] TX pinned to cpu_id=5
+[2026-03-29 15:11:05.261] [info] [T+  1s]       48        988      12372        12372        1
+[2026-03-29 15:11:06.261] [info] [T+  2s]       87        956       1196         1196        3
+[2026-03-29 15:11:07.261] [info] [T+  3s]       93        948       1108         1108        5
+[2026-03-29 15:11:08.261] [info] [T+  4s]       93        956       1116         1116        7
+[2026-03-29 15:11:09.261] [info] [T+  5s]       93        972       1196         1196        9
+[2026-03-29 15:11:10.261] [info] [T+  6s]       96        964       1772         1772       11
+[2026-03-29 15:11:11.261] [info] [T+  7s]       99        948       1124         1140       13
+[2026-03-29 15:11:12.261] [info] [T+  8s]       96        964       1220         1220       15
+[2026-03-29 15:11:13.261] [info] [T+  9s]      102        964       1196         1204       17
+[2026-03-29 15:11:14.261] [info] [T+ 10s]      102        964       1188         1204       19
+[2026-03-29 15:11:15.261] [info] [T+ 11s]      105        980       1276         1860       21
+[2026-03-29 15:11:16.261] [info] [T+ 12s]      105        908       1148         1228       23
+[2026-03-29 15:11:17.261] [info] [T+ 13s]      105        908       1140         1300       25
+[2026-03-29 15:11:18.261] [info] [T+ 14s]      108        900       1164         1332       27
+[2026-03-29 15:11:19.261] [info] [T+ 15s]      111        900       1076         1084       29
+[2026-03-29 15:11:20.261] [info] [T+ 16s]      108        900       1060         1124       31
+[2026-03-29 15:11:21.261] [info] [T+ 17s]      108        916       1132         1148       33
+[2026-03-29 15:11:22.261] [info] [T+ 18s]      111        908       1108         1124       35
+[2026-03-29 15:11:23.261] [info] [T+ 19s]      117        900       1100         1140       37
+[2026-03-29 15:11:24.261] [info] [T+ 20s]      117        908       1100         1116       39
+[2026-03-29 15:11:25.261] [info] [T+ 21s]      117        892       1092         1132       41
+[2026-03-29 15:11:26.261] [info] [T+ 22s]      123        908       1052         1116       43
+[2026-03-29 15:11:27.261] [info] [T+ 23s]      123        900       1076         1140       45
+[2026-03-29 15:11:28.261] [info] [T+ 24s]      120        892       1100         1108       47
+[2026-03-29 15:11:29.261] [info] [T+ 25s]      126        900       1044         1108       49
+[2026-03-29 15:11:30.261] [info] [T+ 26s]      129        892       1092         1124       51
+[2026-03-29 15:11:31.261] [info] [T+ 27s]      126        916       1228         1916       53
+[2026-03-29 15:11:32.261] [info] [T+ 28s]      129        900       1060         1156       55
+[2026-03-29 15:11:33.261] [info] [T+ 29s]      132        908       1116         1124       57
+[2026-03-29 15:11:34.261] [net.transport] [info] [transport.hpp:967] Stopping transport
+[2026-03-29 15:11:34.261] [net.transport] [info] [transport.hpp:1576] Transport state: STOPPED [172.31.27.208:9443]
+[2026-03-29 15:11:34.261] [info] [STATE] STOPPED — 
+[2026-03-29 15:11:34.261] [net.transport] [info] [transport.hpp:1018] Transport stopped
+[2026-03-29 15:11:34.261] [info] === Market Data + Order Simulation Benchmark (DPDK) ===
+[2026-03-29 15:11:34.261] [info] Symbols: 3 | Duration: 30.0s | Messages: 3264 | Orders: 59/59
+[2026-03-29 15:11:34.261] [info] RX totals: 617538 bytes, 3323 WS frames, 3323 TLS records, 3329 TCP pkts, 3332 bursts
+[2026-03-29 15:11:34.261] [info] Per rx_burst: 185 bytes, 1.0 WS frames, 1.0 TLS records, 1.0 TCP pkts
+[2026-03-29 15:11:34.261] [info] Transport stats:
+TransportStats (uptime: 30.0s, remote: unknown):
+  TX: 60 packets (2/s), 7901 bytes (263 B/s), text: 59 pkts/7897 B, 0 dropped, 0 encrypt errors
+  RX: 3323 packets (111/s), 617538 bytes (20584 B/s), text: 3323 pkts/617538 B, 0 dropped, 0 decrypt errors
+  Queue full: 0, TX HWM: 0, RX HWM: 1
+  WebSocket: 1 pings received, 1 pongs sent, 0 pong timeouts
+  Reconnections: 0, handshake: 6.0ms (tcp: 0.2ms, tls: 5.0ms, ws: 0.7ms)
+  TLS seq: write=62/16777216 (0.0%), read=3327/16777216 (0.0%)
+  RTT: RttStats: no samples
+  TX latency: RttStats (59 samples):
+  min: 0.8us, p50: 1.0us, p99: 11.9us, p999: 11.9us, max: 11.9us, mean: 1.2us
+    queue_wait: RttStats (59 samples):
+  min: 0.8us, p50: 0.9us, p99: 1.5us, p999: 1.5us, max: 1.5us, mean: 1.0us
+    encode:     RttStats (59 samples):
+  min: 0.0us, p50: 0.1us, p99: 10.4us, p999: 10.4us, max: 10.4us, mean: 0.2us
+  RX latency: RttStats (3323 samples):
+  min: 0.7us, p50: 0.9us, p99: 1.2us, p999: 1.9us, max: 12.4us, mean: 0.9us
+    decrypt:    RttStats (3323 samples):
+  min: 0.2us, p50: 0.3us, p99: 0.5us, p999: 1.1us, max: 11.6us, mean: 0.3us
+    decode:     RttStats (3323 samples):
+  min: 0.5us, p50: 0.6us, p99: 0.8us, p999: 0.8us, max: 6.1us, mean: 0.6us
+[2026-03-29 15:11:34.261] [info] --- RX Pipeline (rx_burst → data decoded) ---
+[2026-03-29 15:11:34.261] [info]   samples: 3323
+[2026-03-29 15:11:34.261] [info]   min:     739 ns
+[2026-03-29 15:11:34.261] [info]   p50:     916 ns
+[2026-03-29 15:11:34.261] [info]   p99:     1172 ns
+[2026-03-29 15:11:34.261] [info]   p99.9:   1916 ns
+[2026-03-29 15:11:34.261] [info]   max:     12375 ns
+[2026-03-29 15:11:34.261] [info] --- Market RX (rx_burst → app) ---
+[2026-03-29 15:11:34.261] [info]   samples: 3264
+[2026-03-29 15:11:34.261] [info]   min:     885 ns
+[2026-03-29 15:11:34.261] [info]   p50:     1184 ns
+[2026-03-29 15:11:34.261] [info]   p99:     1440 ns
+[2026-03-29 15:11:34.261] [info]   p99.9:   2208 ns
+[2026-03-29 15:11:34.261] [info]   max:     12674 ns
+[2026-03-29 15:11:34.261] [info] --- Order RX (rx_burst → app) ---
+[2026-03-29 15:11:34.261] [info]   samples: 59
+[2026-03-29 15:11:34.261] [info]   min:     1048 ns
+[2026-03-29 15:11:34.261] [info]   p50:     1184 ns
+[2026-03-29 15:11:34.261] [info]   p99:     1504 ns
+[2026-03-29 15:11:34.261] [info]   p99.9:   1504 ns
+[2026-03-29 15:11:34.261] [info]   max:     1494 ns
+[2026-03-29 15:11:34.261] [info] --- TX Pipeline (enqueue → tx_burst) ---
+[2026-03-29 15:11:34.261] [info]   samples: 59
+[2026-03-29 15:11:34.261] [info]   min:     839 ns
+[2026-03-29 15:11:34.261] [info]   p50:     996 ns
+[2026-03-29 15:11:34.261] [info]   p99:     11924 ns
+[2026-03-29 15:11:34.261] [info]   p99.9:   11924 ns
+[2026-03-29 15:11:34.261] [info]   max:     11923 ns
+[2026-03-29 15:11:34.261] [info] --- Order RTT (send → response received) ---
+[2026-03-29 15:11:34.261] [info]   samples: 59
+[2026-03-29 15:11:34.261] [info]   min:     287821 ns
+[2026-03-29 15:11:34.261] [info]   p50:     433792 ns
+[2026-03-29 15:11:34.261] [info]   p99:     23339008 ns
+[2026-03-29 15:11:34.261] [info]   p99.9:   23339008 ns
+[2026-03-29 15:11:34.261] [info]   max:     23336906 ns
+[2026-03-29 15:11:34.261] [info] --- Feed Latency (server send → app recv) ---
+[2026-03-29 15:11:34.261] [info]   samples: 3264
+[2026-03-29 15:11:34.261] [info]   min:     102234 ns
+[2026-03-29 15:11:34.261] [info]   p50:     130816 ns
+[2026-03-29 15:11:34.261] [info]   p99:     280832 ns
+[2026-03-29 15:11:34.261] [info]   p99.9:   16453632 ns
+[2026-03-29 15:11:34.261] [info]   max:     488048287 ns
+[2026-03-29 15:11:34.261] [net.transport] [info] [transport.hpp:967] Stopping transport
+[2026-03-29 15:11:34.261] [net.transport] [info] [transport.hpp:1576] Transport state: STOPPED [172.31.27.208:9443]
+[2026-03-29 15:11:34.261] [info] [STATE] STOPPED — 
+[2026-03-29 15:11:34.261] [net.transport] [info] [transport.hpp:1018] Transport stopped
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

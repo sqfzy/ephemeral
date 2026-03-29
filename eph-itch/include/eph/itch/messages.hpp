@@ -54,10 +54,12 @@ inline uint64_t read_be64(const uint8_t* p) noexcept {
 
 /// Read a 6-byte big-endian timestamp (nanoseconds since midnight) into a
 /// uint64_t.  The value occupies the low 48 bits.
+/// Uses explicit shifts for portability — avoids assumptions about internal
+/// representation of uint64_t when overlapping with byteswap on partial buffers.
 inline uint64_t read_be48(const uint8_t* p) noexcept {
-    uint64_t v = 0;
-    std::memcpy(reinterpret_cast<uint8_t*>(&v) + 2, p, 6);
-    return std::byteswap(v);
+    return (static_cast<uint64_t>(p[0]) << 40) | (static_cast<uint64_t>(p[1]) << 32) |
+           (static_cast<uint64_t>(p[2]) << 24) | (static_cast<uint64_t>(p[3]) << 16) |
+           (static_cast<uint64_t>(p[4]) <<  8) |  static_cast<uint64_t>(p[5]);
 }
 
 // ---------------------------------------------------------------------------

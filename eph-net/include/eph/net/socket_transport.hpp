@@ -888,6 +888,10 @@ private:
     // TX: kernel send-to-wire latency (CLOCK_REALTIME domain, via error queue).
     eph::utils::HdrHistogram rx_stack_histogram_{10, 1'000'000'000ULL, 3};
     eph::utils::HdrHistogram tx_stack_histogram_{10, 1'000'000'000ULL, 3};
+    // NOTE: In burst-mode TX (multiple send() calls before an error-queue read),
+    // last_send_realtime_ns_ reflects the timestamp of the FIRST send in the burst.
+    // Subsequent sends in the same burst share this timestamp, so error-queue
+    // matching may attribute the wrong packet's kernel TX delay to later sends.
     std::atomic<int64_t> last_send_realtime_ns_{0};  // TX thread writes, RX thread reads
 
     // TSC captured right after recvmsg/recv returns data.

@@ -22,6 +22,7 @@
 
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -44,10 +45,14 @@ namespace eph::dpdk {
 
 namespace detail {
 inline spdlog::logger* reactor_logger() {
+    // try/catch handles the race between concurrent first callers:
+    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        auto lg = spdlog::get("dpdk.reactor");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.reactor");
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("dpdk.reactor");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.reactor");
+        }
     }();
     return l.get();
 }
@@ -69,7 +74,7 @@ struct ReactorEntry {
     TcpSession<>* session = nullptr;
     net::ConnectionTuple tuple{};
     ReactorDataCallback on_data{};
-    bool connected = false;
+    std::atomic<bool> connected{false};
 
     /// FNV-1a hash of the 4-tuple for fast rejection in linear scan.
     [[nodiscard]] static uint64_t hash_tuple(const net::ConnectionTuple& t) noexcept {
@@ -109,30 +114,35 @@ public:
     Reactor& operator=(Reactor&&) = delete;
 
     /// Add a connection. Session must be already connected.
+    /// Must be called BEFORE start() — modifying entries_ while the RX loop
+    /// is running is not safe (no lock on the hot path by design).
     /// Returns connection index (0-based) or error string.
     [[nodiscard]] std::expected<size_t, std::string>
     add_connection(TcpSession<>* session, ReactorDataCallback on_data) {
+        assert(!running_.load(std::memory_order_acquire) &&
+               "add_connection() must be called before start()");
         if (!session) return std::unexpected("session is null");
-        if (count_ >= kReactorMaxConnections) {
+        size_t idx = count_.load(std::memory_order_relaxed);
+        if (idx >= kReactorMaxConnections) {
             return std::unexpected(std::format(
                 "reactor full ({}/{} connections)",
-                count_, kReactorMaxConnections));
+                idx, kReactorMaxConnections));
         }
-
-        auto& e = entries_[count_];
+        auto& e = entries_[idx];
         e.session = session;
         e.tuple = session->connection_tuple();
         e.on_data = std::move(on_data);
-        e.connected = session->is_established();
-        hashes_[count_] = ReactorEntry::hash_tuple(e.tuple);
+        e.connected.store(session->is_established(), std::memory_order_relaxed);
+        hashes_[idx] = ReactorEntry::hash_tuple(e.tuple);
 
         SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
             "Added connection {}: {}:{} -> {}:{}",
-            count_,
+            idx,
             net::format_ipv4(e.tuple.src_ip).data(), e.tuple.src_port,
             net::format_ipv4(e.tuple.dst_ip).data(), e.tuple.dst_port);
 
-        return count_++;
+        count_.store(idx + 1, std::memory_order_release);
+        return idx;
     }
 
     /// Start the reactor RX thread.
@@ -150,22 +160,34 @@ public:
     }
 
     /// Mark a connection as disconnected (skip processing until reconnected).
+    /// Safe to call while the reactor is running.
     void mark_disconnected(size_t conn_id) noexcept {
-        if (conn_id < count_) entries_[conn_id].connected = false;
+        if (conn_id < count_.load(std::memory_order_acquire))
+            entries_[conn_id].connected.store(false, std::memory_order_release);
     }
 
     /// Mark a connection as reconnected (resume processing).
+    /// Safe to call while the reactor is running for the connected flag.
+    /// NOTE: The session pointer and tuple swap are NOT atomic with respect to
+    /// the RX loop. Callers must ensure the old session is no longer being
+    /// accessed by the RX loop (e.g., by briefly setting connected=false,
+    /// then swapping session/tuple, then setting connected=true).
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
         if (!new_session) return;
-        if (conn_id < count_) {
+        if (conn_id < count_.load(std::memory_order_acquire)) {
+            // Disable first so the RX loop does not touch the session
+            // while we swap the pointer and tuple.
+            entries_[conn_id].connected.store(false, std::memory_order_release);
             entries_[conn_id].session = new_session;
             entries_[conn_id].tuple = new_session->connection_tuple();
-            entries_[conn_id].connected = true;
             hashes_[conn_id] = ReactorEntry::hash_tuple(entries_[conn_id].tuple);
+            entries_[conn_id].connected.store(true, std::memory_order_release);
         }
     }
 
-    [[nodiscard]] size_t connection_count() const noexcept { return count_; }
+    [[nodiscard]] size_t connection_count() const noexcept {
+        return count_.load(std::memory_order_acquire);
+    }
     [[nodiscard]] bool is_running() const noexcept {
         return running_.load(std::memory_order_acquire);
     }
@@ -173,7 +195,7 @@ public:
     /// Access entry by index (for stats, diagnostics).
     /// Returns a static empty entry if index is out of bounds.
     [[nodiscard]] const ReactorEntry& entry(size_t i) const noexcept {
-        if (i >= count_) [[unlikely]] {
+        if (i >= count_.load(std::memory_order_acquire)) [[unlikely]] {
             static const ReactorEntry empty{};
             return empty;
         }
@@ -189,7 +211,7 @@ private:
         auto* log = detail::reactor_logger();
         SPDLOG_LOGGER_INFO(log,
             "Reactor RX loop started: {} connections, port={}, queue={}, cpu={}",
-            count_, config_.port_id, config_.rx_queue_id, config_.rx_cpu);
+            count_.load(std::memory_order_acquire), config_.port_id, config_.rx_queue_id, config_.rx_cpu);
 
         rte_mbuf* pkts[32];
 
@@ -218,12 +240,13 @@ private:
 
                 // Linear scan with hash pre-filter (≤16 entries, cache-friendly)
                 bool matched = false;
-                for (size_t j = 0; j < count_; ++j) {
+                const size_t n = count_.load(std::memory_order_acquire);
+                for (size_t j = 0; j < n; ++j) {
                     if (hashes_[j] != pkt_hash) continue;  // Fast reject
                     if (!parsed.matches(entries_[j].tuple)) continue;  // Collision check
 
                     auto& entry = entries_[j];
-                    if (!entry.connected) {
+                    if (!entry.connected.load(std::memory_order_acquire)) {
                         rte_pktmbuf_free(pkts[i]);
                         matched = true;
                         break;
@@ -248,7 +271,7 @@ private:
                         SPDLOG_LOGGER_WARN(log,
                             "Connection {} process_rx error: {}",
                             j, result.error());
-                        entry.connected = false;
+                        entry.connected.store(false, std::memory_order_release);
                     }
 
                     entry.session->flush_pending_ack();
@@ -268,7 +291,7 @@ private:
     Config config_;
     std::array<ReactorEntry, kReactorMaxConnections> entries_{};
     std::array<uint64_t, kReactorMaxConnections> hashes_{};
-    size_t count_ = 0;
+    std::atomic<size_t> count_{0};
     std::atomic<bool> running_{false};
     std::thread thread_;
 };

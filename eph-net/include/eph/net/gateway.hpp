@@ -38,7 +38,7 @@ namespace eph::net {
 /// Connection health status.
 enum class ConnHealth : uint8_t {
     Healthy,      ///< Connected and receiving data
-    Degraded,     ///< Connected but no data received recently
+    Degraded,     ///< Connected but no data received recently (not yet implemented — reserved for future use)
     Disconnected, ///< Not connected
     Stopped,      ///< Intentionally stopped
 };
@@ -87,6 +87,7 @@ public:
         /// How often to check connection health (0 = no monitoring).
         std::chrono::milliseconds health_check_interval{5000};
         /// Mark connection as degraded if no activity for this duration.
+        // TODO: degraded detection not yet implemented; Degraded state is reserved for future use.
         std::chrono::milliseconds degraded_threshold{30000};
         /// Optional callback when health changes.
         std::function<void(std::string_view tag, ConnHealth old_h, ConnHealth new_h)>
@@ -165,8 +166,14 @@ public:
         for (size_t i = 0; i < connections_.size(); ++i) {
             auto& c = connections_[i];
             if (c.health == ConnHealth::Stopped && c.start_threads_fn) {
-                SPDLOG_INFO("Gateway: starting [{}] '{}'", i, c.tag);
-                c.start_threads_fn(c.transport_ptr);
+                // Guard against spawning duplicate threads if the transport
+                // is somehow already running (e.g. started externally).
+                if (!c.is_running_fn(c.transport_ptr)) {
+                    SPDLOG_INFO("Gateway: starting [{}] '{}'", i, c.tag);
+                    c.start_threads_fn(c.transport_ptr);
+                } else {
+                    SPDLOG_INFO("Gateway: [{}] '{}' already running, skipping start", i, c.tag);
+                }
                 c.health = ConnHealth::Healthy;
             }
         }

@@ -82,6 +82,9 @@ public:
         other.initialized_ = false;
     }
 
+    /// @warning Move-assign calls eal_cleanup() on the target before
+    ///          transferring ownership. Only safe when no DPDK lcores are
+    ///          running on the target guard.
     EalGuard& operator=(EalGuard&& other) noexcept {
         if (this != &other) {
             if (initialized_) eal_cleanup();
@@ -97,6 +100,9 @@ public:
 
     /// Number of argv entries consumed by EAL during initialization.
     [[nodiscard]] int args_consumed() const noexcept { return args_consumed_; }
+
+    /// Check whether this guard holds an initialized EAL instance.
+    [[nodiscard]] bool initialized() const noexcept { return initialized_; }
 
 private:
     explicit EalGuard(int args_consumed) noexcept

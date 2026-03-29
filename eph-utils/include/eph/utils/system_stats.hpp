@@ -198,8 +198,10 @@ class SystemStats {
         // Skip first field (size), read second (resident)
         if (std::fscanf(f, "%*ld %ld", &pages) != 1) pages = 0;
         std::fclose(f);
-        // Convert pages to KB (page size is typically 4096)
-        long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+        // Convert pages to KB
+        long ps = sysconf(_SC_PAGESIZE);
+        if (ps <= 0) return 0;
+        long page_kb = ps / 1024;
         return pages * page_kb;
 #else
         return 0;

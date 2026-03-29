@@ -485,6 +485,13 @@ decode_frame(const uint8_t* data, size_t len) {
     // Byte 0: FIN + opcode
     frame.fin = (data[pos] & kFinBit) != 0;
     frame.opcode = data[pos] & 0x0F;
+
+    // RFC 6455 §5.2: RSV1-3 must be 0 unless an extension is negotiated.
+    // Check here — before any length parsing — so malformed frames are
+    // rejected early without consuming variable-length fields.
+    if (data[pos] & 0x70) {
+        return std::unexpected(DecodeError::kReservedBits);
+    }
     pos++;
 
     // Byte 1: MASK + payload length
@@ -519,11 +526,6 @@ decode_frame(const uint8_t* data, size_t len) {
     // Payload — use subtraction to prevent integer overflow on huge payload_len
     if (frame.payload_len > len || pos > len - frame.payload_len) {
         return std::unexpected(DecodeError::kIncomplete);
-    }
-
-    // RFC 6455 §5.2: RSV1-3 must be 0 unless an extension is negotiated
-    if (data[0] & 0x70) {
-        return std::unexpected(DecodeError::kReservedBits);
     }
 
     // RFC 6455 §5.2: opcodes 0x3-0x7 (data) and 0xB-0xF (control) are reserved

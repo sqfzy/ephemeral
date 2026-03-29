@@ -136,11 +136,14 @@ struct TcpConfig {
 namespace detail {
 
 inline spdlog::logger* tcp_logger() {
+    // try/catch handles the race between concurrent first callers:
+    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        auto lg = spdlog::get("dpdk.tcp");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.tcp");
-        // Inherit level from spdlog global default
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("dpdk.tcp");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.tcp");
+        }
     }();
     return l.get();
 }
@@ -192,6 +195,7 @@ public:
                 "TcpSession::Stats:\n"
                 "  tx_packets: {}\n"
                 "  rx_packets: {}\n"
+                "  rx_bursts: {}\n"
                 "  tx_bytes: {}\n"
                 "  rx_bytes: {}\n"
                 "  acks_sent: {}\n"
@@ -200,7 +204,7 @@ public:
                 "  reorder_hits: {}\n"
                 "  reorder_overflows: {}\n"
                 "  max_gap_size: {}",
-                tx_packets, rx_packets, tx_bytes, rx_bytes,
+                tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
                 reorder_hits, reorder_overflows, max_gap_size);
 
@@ -217,11 +221,11 @@ public:
         /// JSON-formatted stats for monitoring system integration.
         [[nodiscard]] std::string to_json() const {
             auto s = std::format(
-                "{{\"tx_packets\":{},\"rx_packets\":{},\"tx_bytes\":{},"
-                "\"rx_bytes\":{},\"acks_sent\":{},\"out_of_order\":{},"
-                "\"resets_received\":{},\"reorder_hits\":{},"
+                "{{\"tx_packets\":{},\"rx_packets\":{},\"rx_bursts\":{},"
+                "\"tx_bytes\":{},\"rx_bytes\":{},\"acks_sent\":{},"
+                "\"out_of_order\":{},\"resets_received\":{},\"reorder_hits\":{},"
                 "\"reorder_overflows\":{},\"max_gap_size\":{}",
-                tx_packets, rx_packets, tx_bytes, rx_bytes,
+                tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
                 reorder_hits, reorder_overflows, max_gap_size);
 
@@ -244,6 +248,7 @@ public:
             Stats result{
                 .tx_packets        = lhs.tx_packets        - rhs.tx_packets,
                 .rx_packets        = lhs.rx_packets        - rhs.rx_packets,
+                .rx_bursts         = lhs.rx_bursts         - rhs.rx_bursts,
                 .tx_bytes          = lhs.tx_bytes          - rhs.tx_bytes,
                 .rx_bytes          = lhs.rx_bytes          - rhs.rx_bytes,
                 .acks_sent         = lhs.acks_sent         - rhs.acks_sent,
@@ -268,7 +273,7 @@ public:
         : config_(config)
         , pool_(pool)
         , state_(TcpState::Closed)
-        , snd_nxt_(generate_isn())
+        , snd_nxt_(generate_isn().value_or(1))
         , snd_una_(snd_nxt_)
         , rcv_nxt_(0)
         , rcv_wnd_(config.recv_window)
@@ -324,9 +329,11 @@ public:
         , reorder_count_(other.reorder_count_)
         , stats_(other.stats_)
         , ack_pending_(other.ack_pending_)
+        , time_wait_deadline_(other.time_wait_deadline_)
         , last_rx_burst_tsc_(other.last_rx_burst_tsc_.load(std::memory_order_relaxed))
 {
-        // Copy pending reorder entries before invalidating source
+        // reorder_count_ is initialized from other.reorder_count_ in the
+        // member initializer list above, so the loop bound is correct.
         for (uint8_t i = 0; i < reorder_count_; ++i)
             reorder_buf_[i] = other.reorder_buf_[i];
         other.pool_ = nullptr;
@@ -349,6 +356,7 @@ public:
             reorder_count_ = other.reorder_count_;
             stats_ = other.stats_;
             ack_pending_ = other.ack_pending_;
+            time_wait_deadline_ = other.time_wait_deadline_;
             last_rx_burst_tsc_.store(other.last_rx_burst_tsc_.load(std::memory_order_relaxed), std::memory_order_relaxed);
             for (uint8_t i = 0; i < reorder_count_; ++i)
                 reorder_buf_[i] = other.reorder_buf_[i];
@@ -371,19 +379,37 @@ public:
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
         auto log = detail::tcp_logger();
 
+        if (state_ == TcpState::TimeWait) {
+            // Allow reconnection once the 2MSL timer has expired (RFC 793 §3.5).
+            if (std::chrono::steady_clock::now() >= time_wait_deadline_) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "TIME_WAIT 2MSL expired — allowing reconnect");
+                state_ = TcpState::Closed;
+            } else {
+                return std::unexpected(std::format(
+                    "Cannot connect: session in TIME_WAIT (2MSL not yet expired)"));
+            }
+        }
+
         if (state_ != TcpState::Closed) {
             return std::unexpected(std::format(
                 "Cannot connect: session in state {}", tcp_state_name(state_)));
         }
 
-        // Clear residual state from any previous failed connection attempt
+        // Always regenerate ISN on each connect attempt.
+        // This ensures stale snd_nxt_/snd_una_ from a timed-out handshake
+        // (where state_ was reset to Closed but sequence numbers were already
+        // incremented) do not bleed into the new connection.
+        auto isn_result = generate_isn();
+        if (!isn_result) {
+            SPDLOG_LOGGER_ERROR(log, "ISN generation failed — CSPRNG unavailable");
+            return std::unexpected(std::format("ISN generation failed: {}", isn_result.error()));
+        }
+        snd_nxt_ = *isn_result;
+        snd_una_ = *isn_result;
+        rcv_nxt_ = 0;
         reorder_count_ = 0;
         ack_pending_ = false;
-
-        if (snd_nxt_ == 0 && snd_una_ == 0) {
-            SPDLOG_LOGGER_ERROR(log, "ISN generation failed — CSPRNG unavailable");
-            return std::unexpected("ISN generation failed: CSPRNG unavailable");
-        }
 
         // Send SYN
         SPDLOG_LOGGER_DEBUG(log, "Sending SYN, isn={}", snd_nxt_);
@@ -532,6 +558,8 @@ public:
             config_.port_id, config_.tx_queue_id, &mbuf, 1);
         if (sent != 1) {
             rte_pktmbuf_free(mbuf);
+            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+                "tx_burst failed in send: len={}, snd_nxt_={}", len, snd_nxt_);
             return std::unexpected("tx_burst failed");
         }
 
@@ -555,6 +583,8 @@ public:
         if (written == 0) return nullptr;
 
         snd_nxt_ += len;
+        stats_.tx_packets++;
+        stats_.tx_bytes += len;
         return mbuf;
     }
 
@@ -595,13 +625,15 @@ public:
 
             // RST — immediate close
             if (parsed.has_flag(net::kTcpRst)) {
-                SPDLOG_LOGGER_WARN(log, "Received RST, closing connection");
+                SPDLOG_LOGGER_WARN(log,
+                    "Received RST, closing connection: {}:{} -> {}:{}",
+                    net::format_ipv4(config_.tuple.src_ip).data(),
+                    config_.tuple.src_port,
+                    net::format_ipv4(config_.tuple.dst_ip).data(),
+                    config_.tuple.dst_port);
                 state_ = TcpState::Closed;
                 stats_.resets_received++;
-                free_list[free_count++] = pkts[i];
-                // Free remaining + batched list
-                free_remaining(pkts, i + 1, nb_pkts);
-                rte_pktmbuf_free_bulk(free_list, free_count);
+                abort_rx_cleanup(pkts, i, nb_pkts, free_list, free_count);
                 return std::unexpected("Connection reset by peer");
             }
 
@@ -614,12 +646,20 @@ public:
                     snd_una_ = peer_ack;
                 }
                 snd_wnd_ = parsed.window();
+
+                // RFC 793 §3.5: In CLOSING state, receiving the ACK of our FIN
+                // (i.e. snd_una_ has now caught up to snd_nxt_) moves us to TIME_WAIT.
+                if (state_ == TcpState::Closing && snd_una_ == snd_nxt_) {
+                    SPDLOG_LOGGER_DEBUG(log, "CLOSING: received ACK of FIN -> TIME_WAIT");
+                    enter_time_wait();
+                }
             }
 
             // Check sequence number ordering
             if (state_ == TcpState::Established ||
                 state_ == TcpState::FinWait1 ||
-                state_ == TcpState::FinWait2) {
+                state_ == TcpState::FinWait2 ||
+                state_ == TcpState::Closing) {
 
                 uint32_t seg_seq = parsed.seq();
 
@@ -633,6 +673,18 @@ public:
                         uint32_t gap = seg_seq - rcv_nxt_;
                         if (gap > stats_.max_gap_size) stats_.max_gap_size = gap;
                         stats_.gap_histogram[Stats::gap_bucket(gap)]++;
+                    }
+
+                    if (parsed.payload_len > net::kDefaultMss) {
+                        // Segment exceeds ReorderEntry buffer capacity.
+                        // Jumbo-frame out-of-order segments cannot be buffered —
+                        // drop and let the caller handle reconnect via loss detection.
+                        SPDLOG_LOGGER_WARN(log,
+                            "Reorder buffer: segment too large ({} > {}), "
+                            "delivering in-order only",
+                            parsed.payload_len, net::kDefaultMss);
+                        free_list[free_count++] = pkts[i];
+                        continue;
                     }
 
                     if (seq_after(seg_seq, rcv_nxt_) &&
@@ -657,9 +709,7 @@ public:
                         SPDLOG_LOGGER_WARN(log,
                             "Reorder buffer full ({} slots): expected={}, got={}",
                             ReorderSlots, rcv_nxt_, seg_seq);
-                        free_list[free_count++] = pkts[i];
-                        free_remaining(pkts, i + 1, nb_pkts);
-                        rte_pktmbuf_free_bulk(free_list, free_count);
+                        abort_rx_cleanup(pkts, i, nb_pkts, free_list, free_count);
                         return std::unexpected(std::format(
                             "Packet loss detected (reorder buffer full): expected seq {}, got {}",
                             rcv_nxt_, seg_seq));
@@ -683,31 +733,53 @@ public:
                 }
             }
 
-            // FIN handling
+            // FIN handling — only process in-order FINs (seq == rcv_nxt_).
+            // An out-of-order FIN with zero payload bypasses the reorder path
+            // above (which guards on payload_len > 0), so the explicit sequence
+            // check here prevents a premature state transition. The sender will
+            // retransmit the FIN once the gap is filled and rcv_nxt_ advances.
             if (parsed.has_flag(net::kTcpFin)) {
-                rcv_nxt_++; // FIN consumes one sequence number
-                need_ack = true;
+                if (parsed.seq() == rcv_nxt_) {
+                    rcv_nxt_++; // FIN consumes one sequence number
+                    need_ack = true;
 
-                switch (state_) {
-                    case TcpState::Established:
-                        SPDLOG_LOGGER_DEBUG(log, "Received FIN in ESTABLISHED");
-                        state_ = TcpState::CloseWait;
-                        break;
-                    case TcpState::FinWait1:
-                        if (parsed.has_flag(net::kTcpAck)) {
-                            SPDLOG_LOGGER_DEBUG(log, "Received FIN+ACK in FIN_WAIT_1");
-                            state_ = TcpState::TimeWait;
-                        } else {
-                            SPDLOG_LOGGER_DEBUG(log, "Simultaneous close");
-                            state_ = TcpState::TimeWait;
-                        }
-                        break;
-                    case TcpState::FinWait2:
-                        SPDLOG_LOGGER_DEBUG(log, "Received FIN in FIN_WAIT_2");
-                        state_ = TcpState::TimeWait;
-                        break;
-                    default:
-                        break;
+                    switch (state_) {
+                        case TcpState::Established:
+                            SPDLOG_LOGGER_DEBUG(log, "Received FIN in ESTABLISHED");
+                            state_ = TcpState::CloseWait;
+                            break;
+                        case TcpState::FinWait1:
+                            if (parsed.has_flag(net::kTcpAck)) {
+                                // FIN+ACK: peer acknowledged our FIN and sent its own.
+                                // Simultaneous close completes — RFC 793 §3.5 FIN_WAIT_1 → TIME_WAIT.
+                                SPDLOG_LOGGER_DEBUG(log, "Received FIN+ACK in FIN_WAIT_1 -> TIME_WAIT");
+                                enter_time_wait();
+                            } else {
+                                // FIN without ACK: simultaneous close — peer sent FIN but hasn't
+                                // ACK'd ours yet. RFC 793 §3.5: FIN_WAIT_1 → CLOSING (not TIME_WAIT).
+                                // We'll move to TIME_WAIT when the peer's ACK arrives in CLOSING.
+                                SPDLOG_LOGGER_DEBUG(log, "Simultaneous close: FIN_WAIT_1 -> CLOSING");
+                                state_ = TcpState::Closing;
+                            }
+                            break;
+                        case TcpState::Closing:
+                            // ACK of our FIN arrives while in CLOSING — RFC 793: CLOSING → TIME_WAIT.
+                            // (The ACK flag is checked via the snd_una_ update above; reaching here
+                            //  means the FIN sequence was in-order, which completes the exchange.)
+                            SPDLOG_LOGGER_DEBUG(log, "Received ACK in CLOSING -> TIME_WAIT");
+                            enter_time_wait();
+                            break;
+                        case TcpState::FinWait2:
+                            SPDLOG_LOGGER_DEBUG(log, "Received FIN in FIN_WAIT_2 -> TIME_WAIT");
+                            enter_time_wait();
+                            break;
+                        default:
+                            break;
+                    }
+                } else {
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "Out-of-order FIN dropped: seq={}, rcv_nxt_={}",
+                        parsed.seq(), rcv_nxt_);
                 }
             }
 
@@ -816,6 +888,7 @@ public:
             config_.port_id, config_.tx_queue_id, &fin, 1);
         if (sent != 1) {
             rte_pktmbuf_free(fin);
+            SPDLOG_LOGGER_ERROR(log, "tx_burst failed for FIN");
             return std::unexpected("tx_burst failed for FIN");
         }
 
@@ -869,8 +942,15 @@ public:
         return state_ == TcpState::Established;
     }
 
-    /// Get the packet template (for hot path direct mbuf construction).
+    /// Get the packet template for hot-path direct mbuf construction.
+    /// Non-const overload: use only when writing headers directly into a
+    /// pre-allocated mbuf via fill_packet() — not for general inspection.
     [[nodiscard]] net::PacketTemplate& packet_template() noexcept {
+        return pkt_template_;
+    }
+
+    /// Const overload for read-only inspection of the packet template.
+    [[nodiscard]] const net::PacketTemplate& packet_template() const noexcept {
         return pkt_template_;
     }
 
@@ -882,11 +962,21 @@ private:
     struct ReorderEntry {
         uint32_t seq = 0;
         uint16_t len = 0;
+        // Fixed-size buffer capped at kDefaultMss (1460 bytes).
+        // Jumbo-frame sessions (config_.mss > kDefaultMss) cannot buffer
+        // oversized reordered segments here — they are delivered in-order only
+        // or dropped if out-of-order. A runtime guard in process_rx enforces this.
         uint8_t  data[net::kDefaultMss]{};
     };
 
     /// Try to deliver buffered segments that are now in-order.
     /// @return Number of segments delivered
+    ///
+    /// Complexity: O(N²) in the number of buffered segments (N = reorder_count_).
+    /// Each delivery restarts the linear scan from index 0 (indices shift after
+    /// swap-with-last removal). The worst-case bound is ReorderSlots² = 64² = 4096
+    /// comparisons per drain call, which is negligible on the trading hot path and
+    /// far cheaper than the alternative (sorted insertion or skip-list overhead).
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     uint16_t drain_reorder_buf(F&& cb) {
@@ -932,21 +1022,39 @@ private:
     // Keeps rte_eth_tx_burst off the RX latency-critical path.
     bool ack_pending_ = false;
 
+    // 2MSL timer for TIME_WAIT state (RFC 793 §3.5).
+    // MSL = 60s (common implementation default). Deadline is set when entering
+    // TIME_WAIT; connect() checks it to allow re-use after expiry.
+    std::chrono::steady_clock::time_point time_wait_deadline_{};
+
     // TSC captured right after rte_eth_rx_burst returns data.
     // Used by Transport as the true RX arrival baseline.
-    std::atomic<uint64_t> last_rx_burst_tsc_{0};
+    // alignas(64): placed on its own cache line to avoid false sharing with
+    // stats_ (written by the RX path) when a separate thread reads the TSC.
+    alignas(64) std::atomic<uint64_t> last_rx_burst_tsc_{0};
+
+    /// Enter TIME_WAIT state and start the 2MSL timer (RFC 793 §3.5).
+    /// MSL = 60s; 2MSL = 120s. This prevents old duplicate segments from
+    /// confusing a new connection on the same 4-tuple.
+    void enter_time_wait() noexcept {
+        static constexpr auto kMsl = std::chrono::seconds(60);
+        state_ = TcpState::TimeWait;
+        time_wait_deadline_ = std::chrono::steady_clock::now() + 2 * kMsl;
+        SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            "Entered TIME_WAIT, 2MSL deadline in 120s");
+    }
 
     /// Generate initial sequence number using CSPRNG.
-    /// Returns 0 on CSPRNG failure — caller must treat ISN=0 as connection error.
-    static uint32_t generate_isn() noexcept {
+    /// Returns an error if RAND_bytes fails — propagate to caller rather than
+    /// masking failure with a sentinel value like 0 or 1.
+    static std::expected<uint32_t, std::string> generate_isn() noexcept {
         uint32_t isn = 0;
         if (RAND_bytes(reinterpret_cast<uint8_t*>(&isn), sizeof(isn)) != 1) {
             SPDLOG_LOGGER_CRITICAL(detail::tcp_logger(),
                 "RAND_bytes failed for ISN generation — cannot establish "
                 "secure TCP connection");
-            return 0;
+            return std::unexpected("CSPRNG failed");
         }
-        if (isn == 0) isn = 1;  // Avoid ambiguity with failure return value
         return isn;
     }
 
@@ -986,6 +1094,19 @@ private:
             rte_pktmbuf_free(pkts[j]);
         }
     }
+
+    /// Unified cleanup for early-return paths inside process_rx().
+    /// Adds pkts[current_idx] to free_list, frees the tail of pkts[], then
+    /// batch-frees the accumulated free_list — ensuring no mbuf is leaked
+    /// regardless of which early-exit path is taken.
+    static void abort_rx_cleanup(rte_mbuf** pkts, uint16_t current_idx,
+                                  uint16_t nb_pkts, rte_mbuf** free_list,
+                                  uint16_t free_count) noexcept {
+        free_list[free_count++] = pkts[current_idx];
+        for (uint16_t j = current_idx + 1; j < nb_pkts; ++j)
+            rte_pktmbuf_free(pkts[j]);
+        rte_pktmbuf_free_bulk(free_list, free_count);
+    }
 };
 
 static_assert(eph::net::TcpTransport<TcpSession<>>,
@@ -1006,7 +1127,7 @@ struct std::formatter<eph::dpdk::TcpConfig> : std::formatter<std::string> {
     }
 };
 
-// std::formatter specialization for TcpSession<>::Stats (default ReorderSlots=8).
+// std::formatter specialization for TcpSession<>::Stats (default ReorderSlots=64).
 // Non-default instantiations share the same Stats layout; call dump() directly.
 template <>
 struct std::formatter<eph::dpdk::TcpSession<>::Stats> : std::formatter<std::string> {

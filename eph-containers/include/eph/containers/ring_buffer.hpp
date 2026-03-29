@@ -24,6 +24,10 @@ namespace eph::containers {
 /// Single-writer, any-reader (no mutex). T must be trivially copyable.
 /// Capacity must be a power of two so index masking replaces modulo.
 ///
+/// @warning NOT thread-safe for concurrent readers. `head_` and `count_`
+///          are non-atomic. Use external synchronization if reading from
+///          a different thread than the writer.
+///
 /// @tparam T        Element type (must be trivially copyable).
 /// @tparam Capacity Buffer size — must be a power of two.
 template <typename T, std::size_t Capacity>

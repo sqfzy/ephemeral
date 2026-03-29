@@ -142,6 +142,17 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
         return 0;
     }
 
+    // Guard against sequence number wrap-around: hdr.sequence_number + i must
+    // not overflow uint64_t.  With message_count <= 65534, the worst case
+    // addition is UINT64_MAX - 65533, so this check is almost never triggered
+    // in practice but prevents silent wraparound on malformed packets.
+    if (hdr.sequence_number > UINT64_MAX - hdr.message_count) {
+        SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
+            "MoldUDP64: sequence number near overflow ({} + {}), dropping packet",
+            hdr.sequence_number, hdr.message_count);
+        return 0;
+    }
+
     size_t offset = moldudp64::kHeaderLen;
     size_t delivered = 0;
 

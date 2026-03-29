@@ -1,0 +1,18 @@
+2026-03-29T15:19:58+00:00
+Running build/linux/arm64/release/bench_itch_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.96, 1.30, 1.13
+-------------------------------------------------------------------------------------
+Benchmark                           Time             CPU   Iterations UserCounters...
+-------------------------------------------------------------------------------------
+BM_ItchParseAddOrder             3.21 ns         3.21 ns    217649217 items_per_second=311.082M/s
+BM_ItchParseOrderDelete          1.43 ns         1.43 ns    489481483 items_per_second=699.038M/s
+BM_ItchParseSystemEvent          1.43 ns         1.43 ns    487999214 items_per_second=697.593M/s
+BM_ItchAddOrderFieldAccess       1.43 ns         1.43 ns    488920912 items_per_second=698.445M/s
+BM_ItchParseBatch                4186 ns         4186 ns       167211 items_per_second=244.596M/s
+BM_ItchFramerDecode              1.11 ns         1.11 ns    632322029 items_per_second=903.306M/s

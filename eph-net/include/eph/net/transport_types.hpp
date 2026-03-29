@@ -57,12 +57,19 @@ inline constexpr size_t kFilterSlots = 256;
 /// Maximum frames processed per batch (bounded by stack allocation).
 inline constexpr size_t kMaxFramesPerBatch = 128;
 
+/// Sentinel value for empty hash table slots. UINT32_MAX is used instead
+/// of 0 to allow extractor functions to legitimately return 0 for any
+/// recognized symbol — 0 as sentinel would collide if a hash value is 0.
+inline constexpr uint32_t kEmptySlotHash = UINT32_MAX;
+
 /// Core two-phase filter logic, shared between std::function and function pointer overloads.
 /// ExtractorFn must be callable as uint32_t(const uint8_t*, size_t).
 template <typename ExtractorFn>
 void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
-    struct Slot { uint32_t hash = 0; size_t last_idx = 0; };
-    Slot slots[kFilterSlots] = {};
+    struct Slot { uint32_t hash = kEmptySlotHash; size_t last_idx = 0; };
+    Slot slots[kFilterSlots];
+    // Initialize all slots to the empty sentinel.
+    for (auto& s : slots) s = {kEmptySlotHash, 0};
 
     // Compute hashes once, cache for reuse in pass 2.
     uint32_t hashes[kMaxFramesPerBatch];
@@ -73,11 +80,11 @@ void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
         auto& f = frames[i];
         uint32_t h = ext(f.payload, f.payload_len);
         hashes[i] = h;
-        if (h == 0) continue;  // unrecognized: deliver unconditionally
+        if (h == kEmptySlotHash) continue;  // unrecognized: deliver unconditionally
         size_t slot = h & (kFilterSlots - 1);
         for (size_t j = 0; j < kFilterSlots; ++j) {
             size_t s = (slot + j) & (kFilterSlots - 1);
-            if (slots[s].hash == 0) {
+            if (slots[s].hash == kEmptySlotHash) {
                 slots[s] = {h, i};
                 break;
             }
@@ -90,11 +97,11 @@ void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
 
     // Pass 2: mark non-latest as skip using cached hashes.
     for (size_t i = 0; i < n; ++i) {
-        if (hashes[i] != 0) frames[i].deliver = false;
+        if (hashes[i] != kEmptySlotHash) frames[i].deliver = false;
     }
     // Restore latest per symbol.
     for (auto& s : slots) {
-        if (s.hash != 0) {
+        if (s.hash != kEmptySlotHash) {
             frames[s.last_idx].deliver = true;
         }
     }

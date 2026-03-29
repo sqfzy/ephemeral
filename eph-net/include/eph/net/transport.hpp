@@ -640,6 +640,26 @@ public:
         return consumed;
     }
 
+    /// Try to receive a message with opcode and arrival timestamp (non-blocking).
+    /// @param callback  Called with (data_ptr, len, opcode, arrival_tsc).
+    ///                  arrival_tsc is the raw TSC cycle count captured at
+    ///                  rx_burst time (RX thread). Use TSC::to_ns(now - tsc)
+    ///                  in the callback to compute per-frame RX latency.
+    ///                  Zero when EPH_ENABLE_TIMESTAMPS is disabled.
+    /// @return true if a message was consumed, false if queue empty.
+    template <typename F>
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t, uint64_t>
+    [[nodiscard]] bool recv(F&& callback) {
+        bool consumed = rx_consume([&](const RxMsg& msg) {
+            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+                "RX dequeue: len={}, opcode={}, tsc={}", msg.len, msg.opcode, msg.tsc);
+            std::invoke(std::forward<F>(callback),
+                        static_cast<const uint8_t*>(msg.data),
+                        static_cast<size_t>(msg.len), msg.opcode, msg.tsc);
+        });
+        return consumed;
+    }
+
     /// Try to receive a message as a copied byte vector (non-blocking).
     /// Returns the payload bytes, or nullopt if the queue is empty.
     /// Prefer the callback variant for zero-copy hot paths.
@@ -890,6 +910,8 @@ public:
             uint16_t status_code = ws::close_code::kNormal,
             std::string_view reason = "client shutdown",
             std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) noexcept {
+        // Bail early if the transport is not running — nothing to close.
+        if (!running_.load(std::memory_order_acquire)) return false;
         // Store close code/reason so stop() can propagate them in the
         // final Close frame instead of using a hardcoded default.
         // Write code/reason BEFORE setting close_requested_ (release)
@@ -1419,6 +1441,9 @@ private:
     TransportConfig                        config_;
     TcpFactory                             tcp_factory_;
     uint64_t                               current_arrival_tsc_{0};
+    // NOTE: current_decrypt_done_tsc_ is set once per TLS record, not per WS frame.
+    // A single TLS record may contain multiple WS frames; the decrypt histogram
+    // therefore reflects per-TLS-record decryption latency, not per-WS-frame.
     uint64_t                               current_decrypt_done_tsc_{0};
     double                                 ns_per_cycle_{0.0};  // cached at rx_loop entry
     std::unique_ptr<TcpImpl>               tcp_;
@@ -2068,8 +2093,12 @@ private:
             if (config_.use_tls) [[unlikely]] {
                 // Guard against null crypto_ during reconnect window —
                 // the RX thread may reset crypto_ between the reconnecting_
-                // flag check above and this dereference (M8).
+                // flag check above and this dereference.
                 if (!crypto_) continue;
+                // Double-check reconnecting_ after crypto_ null-check to minimize
+                // the TOCTOU window. The sequence warning is non-critical stats —
+                // a rare missed check is acceptable vs. adding a mutex on the hot path.
+                if (reconnecting_.load(std::memory_order_acquire)) continue;
                 uint64_t seq = crypto_->write_seq();
 
                 if (!seq_warning_logged_ && seq >= tls_record::kSequenceWarnThreshold) {
@@ -2503,11 +2532,31 @@ private:
             // No data received this poll iteration
             if (*rx_result == 0) continue;
 
-            // Use the TCP backend's rx_burst TSC (captured right after
-            // rte_eth_rx_burst / recvmsg) so that TCP parsing + reorder +
-            // memcpy cost inside poll_rx is included in rx_latency.
+            // Set arrival TSC to NIC-arrival time.  Start from the
+            // rx_burst TSC (captured right after recvmsg / rte_eth_rx_burst),
+            // then back-date by kernel stack delay (SO_TIMESTAMPING) so
+            // that all downstream consumers — record_rx_latency(),
+            // RxMsg.tsc, app-layer recv(data,len,opcode,tsc) — measure
+            // from the same NIC-arrival baseline.
+            // DPDK has no kernel delay; the `requires` guard compiles away.
             if constexpr (kEnableTimestamps) {
                 current_arrival_tsc_ = tcp_->last_rx_burst_tsc();
+                if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
+                    uint64_t delay_ns = tcp_->last_kernel_rx_delay_ns();
+                    if (delay_ns > 0 && ns_per_cycle_ > 0) {
+                        uint64_t delay_cycles = static_cast<uint64_t>(
+                            delay_ns / ns_per_cycle_);
+                        if (delay_cycles >= current_arrival_tsc_) {
+                            // Kernel delay is larger than the burst TSC value,
+                            // which indicates a stale or invalid timestamp.
+                            // Zero out rather than wrap-around to avoid stale
+                            // burst TSC propagating to downstream latency calcs.
+                            current_arrival_tsc_ = 0;
+                        } else {
+                            current_arrival_tsc_ -= delay_cycles;
+                        }
+                    }
+                }
             }
 
             // Plain mode: process framed data directly from TCP
@@ -2710,25 +2759,23 @@ private:
     }
 
     /// Record per-message RX latency breakdown:
-    ///   total:   arrival → decoded (+ kernel RX if available)
-    ///   decrypt: arrival → decrypt_done (TLS decryption)
+    ///   total:   NIC arrival → decoded
+    ///   decrypt: NIC arrival → decrypt_done (TLS decryption)
     ///   decode:  decrypt_done → decoded (WS frame parsing)
-    /// Called once per decoded frame in both WS and generic framers.
+    ///
+    /// current_arrival_tsc_ is already back-dated to NIC arrival time
+    /// (kernel stack delay subtracted at poll_rx), so no additional
+    /// kernel delay adjustment is needed here.
     void record_rx_latency() noexcept {
         if constexpr (kEnableTimestamps) {
             uint64_t now_tsc = eph::utils::TSC::now();
             if (current_arrival_tsc_ > 0 && now_tsc > current_arrival_tsc_) {
-                // Use cached ns_per_cycle_ (set once at rx_loop entry) to
-                // avoid per-frame acquire loads on TSC::initialized_.
                 auto cycles_to_ns = [this](uint64_t c) -> uint64_t {
                     return static_cast<uint64_t>(static_cast<double>(c) * ns_per_cycle_);
                 };
 
-                // Total: arrival → decoded + kernel RX
+                // Total: NIC arrival → decoded
                 uint64_t total = cycles_to_ns(now_tsc - current_arrival_tsc_);
-                if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); }) {
-                    total += tcp_->last_kernel_rx_delay_ns();
-                }
                 rx_latency_histogram_.record(total);
 
                 // Decrypt: arrival → decrypt_done (TLS only)
@@ -2881,6 +2928,7 @@ private:
 
             if (frame->is_pong()) [[unlikely]] {
                 rx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+                record_rx_latency();
                 // Record pong arrival for timeout detection (TX thread reads this).
                 last_pong_ns_.store(
                     std::chrono::steady_clock::now().time_since_epoch().count(),
@@ -2959,6 +3007,12 @@ private:
                     // chain when conditions allow direct enqueue.
                     // Server frames are unmasked; skip_utf8 is checked once;
                     // on_message is checked once; defer_stats is always true here.
+                    //
+                    // Per-frame record_rx_latency: capture TSC at decode
+                    // completion (before enqueue) so each frame measures
+                    // NIC arrival → its own decode, not the cumulative
+                    // cost of all frames in the batch.
+                    record_rx_latency();
                     if (fast_deliver && !frame->masked && frame->payload_len > 0)
                         [[likely]] {
                         (void)rx_enqueue(frame->payload,
@@ -3033,9 +3087,15 @@ private:
 
         // Batch stats + latency for all data frames decoded in this call.
         if (data_frame_count > 0) {
+            // For LastOnlyDeliver=true, record latency once per batch
+            // (all frames decoded, deliver only the last one).
+            // For LastOnlyDeliver=false, per-frame record_rx_latency
+            // was already called in the decode loop above.
+            if constexpr (kLastOnlyDeliver) {
+                record_rx_latency();
+            }
             rx_stats_.packets.fetch_add(data_frame_count,
                                         std::memory_order_relaxed);
-            // Flush accumulated byte-level stats (batched from per-frame).
             if (batch_bytes > 0) {
                 rx_stats_.bytes.fetch_add(batch_bytes, std::memory_order_relaxed);
             }
@@ -3045,7 +3105,6 @@ private:
                 rx_stats_.text_bytes.fetch_add(batch_text_bytes,
                                                std::memory_order_relaxed);
             }
-            record_rx_latency();
             if constexpr (kLastOnlyDeliver) {
                 if (last_data_frame) {
                     deliver_data_frame(*last_data_frame);

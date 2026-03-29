@@ -33,10 +33,14 @@ namespace eph::dpdk {
 
 namespace detail {
 inline spdlog::logger* flow_logger() {
+    // try/catch handles the race between concurrent first callers:
+    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        auto lg = spdlog::get("dpdk.flow");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.flow");
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("dpdk.flow");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.flow");
+        }
     }();
     return l.get();
 }
@@ -203,6 +207,9 @@ configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
     rte_eth_rss_reta_entry64 reta[RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE]{};
     uint16_t reta_size = dev_info.reta_size;
     if (reta_size == 0) reta_size = 128;  // Common default
+    // Cap to array capacity: reta[] has RTE_ETH_RSS_RETA_SIZE_512/RTE_ETH_RETA_GROUP_SIZE
+    // entries (8 at 64 bits each). A driver reporting reta_size > 512 would cause OOB write.
+    reta_size = std::min(reta_size, static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
 
     for (uint16_t i = 0; i < reta_size; ++i) {
         uint16_t group = i / RTE_ETH_RETA_GROUP_SIZE;
@@ -338,13 +345,10 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     }
 
     SPDLOG_LOGGER_INFO(log,
-        "Flow rule installed: port={}, queue={}, "
-        "{}:{} -> {}:{} (NIC perspective: {}:{} -> {}:{})",
-        port_id, queue_id,
+        "Flow rule installed: {}:{} -> {}:{} queue={} (NIC src/dst swapped)",
+        net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
         net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
-        net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
-        net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
-        net::format_ipv4(tuple.src_ip).data(), tuple.src_port);
+        queue_id);
 
     FlowRule rule;
     rule.port_id = port_id;

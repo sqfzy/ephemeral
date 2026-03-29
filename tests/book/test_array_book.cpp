@@ -389,10 +389,35 @@ TEST(ArrayBookTest, IsCrossedReturnsFalseForNormalBook) {
     EXPECT_FALSE(book.is_crossed());
 }
 
-TEST(ArrayBookTest, IsCrossedReturnsTrueWhenBidEqualsAsk) {
+// bid == ask is a "locked" market, not strictly crossed.
+// is_crossed() now only returns true for bid > ask; use is_locked() for bid == ask.
+TEST(ArrayBookTest, IsCrossedReturnsFalseWhenBidEqualsAsk) {
     ArrayBook<5> book;
     book.update_bid(100.0, 1.0);
     book.update_ask(100.0, 1.0);
+    EXPECT_FALSE(book.is_crossed());
+    EXPECT_TRUE(book.is_locked());
+}
+
+TEST(ArrayBookTest, IsLockedReturnsTrueWhenBidEqualsAsk) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 1.0);
+    book.update_ask(100.0, 1.0);
+    EXPECT_TRUE(book.is_locked());
+}
+
+TEST(ArrayBookTest, IsLockedReturnsFalseForNormalBook) {
+    ArrayBook<5> book;
+    book.update_bid(99.0, 1.0);
+    book.update_ask(101.0, 1.0);
+    EXPECT_FALSE(book.is_locked());
+}
+
+TEST(ArrayBookTest, IsLockedReturnsFalseWhenCrossed) {
+    ArrayBook<5> book;
+    book.update_bid(102.0, 1.0);
+    book.update_ask(100.0, 1.0);
+    EXPECT_FALSE(book.is_locked());
     EXPECT_TRUE(book.is_crossed());
 }
 

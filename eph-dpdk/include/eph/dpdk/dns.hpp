@@ -124,12 +124,36 @@ struct DnsConfig {
 namespace detail {
 
 inline spdlog::logger* dns_logger() {
+    // try/catch handles the race between concurrent first callers:
+    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        auto lg = spdlog::get("dpdk.dns");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.dns");
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("dpdk.dns");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.dns");
+        }
     }();
     return l.get();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ephemeral port helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Generate a random ephemeral port in [49152, 65535].
+/// Returns 0 on CSPRNG failure.
+///
+/// Range is a power of 2 so the modulo distributes uniformly — no low-value
+/// bias from the truncation.
+inline uint16_t random_ephemeral_port() noexcept {
+    static constexpr uint16_t kMin   = 49152;
+    static constexpr uint16_t kRange = 16384;  // 65536 - 49152, must be 2^n
+    static_assert((kRange & (kRange - 1)) == 0,
+                  "kRange must be a power of 2 for unbiased modulo");
+    uint16_t rnd;
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&rnd), sizeof(rnd)) != 1)
+        return 0;
+    return kMin + (rnd % kRange);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,6 +262,9 @@ inline size_t skip_dns_name(const uint8_t* data, size_t offset, size_t len) noex
         }
 
         if (label_len > 63) return 0;
+        // Bounds-check before advancing: a truncated packet must not
+        // cause us to read or report an offset beyond the message.
+        if (offset + 1 + label_len > len) return 0;
         offset += 1 + label_len;
     }
 
@@ -276,6 +303,7 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     }
 
     uint16_t qd_count = net::ntoh16(hdr->qd_count);
+    if (qd_count > 16) return std::unexpected("DNS response: unreasonable question count");  // Reject malformed/malicious packet
     uint16_t an_count = net::ntoh16(hdr->an_count);
 
     if (an_count == 0) {
@@ -501,11 +529,10 @@ resolve(uint16_t port_id,
     if (RAND_bytes(reinterpret_cast<uint8_t*>(&tx_id), sizeof(tx_id)) != 1) {
         return std::unexpected("DNS resolve: CSPRNG failure for transaction ID");
     }
-    uint16_t src_port;
-    if (RAND_bytes(reinterpret_cast<uint8_t*>(&src_port), sizeof(src_port)) != 1) {
+    uint16_t src_port = detail::random_ephemeral_port();
+    if (src_port == 0) {
         return std::unexpected("DNS resolve: CSPRNG failure for ephemeral port");
     }
-    src_port = 49152 + (src_port % 16384);  // Ephemeral range
 
     // Build DNS query payload
     uint8_t dns_buf[kMaxDnsPacketLen];

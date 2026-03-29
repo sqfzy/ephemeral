@@ -1,0 +1,78 @@
+[2026-03-29 04:05:01.037] [utils.cpu] [info] [cpu.hpp:259] main pinned to cpu_id=7
+[2026-03-29 04:05:01.037] [info] Calibrating TSC...
+[2026-03-29 04:05:01.037] [utils.tsc] [info] [time.hpp:242] Calibrating TSC...
+[2026-03-29 04:05:02.057] [utils.tsc] [info] [time.hpp:324] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-03-29 04:05:02.057] [info] TSC: 1.0000 ns/cycle
+[2026-03-29 04:05:02.057] [info] Initializing DPDK EAL...
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-03-29 04:05:02.512] [info] Connecting via DPDK to wss://172.31.21.173:9080/ws (ping-only)
+[2026-03-29 04:05:02.512] [dpdk.platform] [info] [platform.hpp:271] Available DPDK ports: 1
+[2026-03-29 04:05:02.514] [dpdk.platform] [info] [platform.hpp:462] port=0 link up: 0 Mbps full-duplex
+[2026-03-29 04:05:02.514] [dpdk.platform] [info] [platform.hpp:538] Platform ready (port=0)
+[2026-03-29 04:05:02.514] [dpdk.arp] [info] [arp.hpp:258] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-03-29 04:05:02.546] [net.transport] [warning] [transport.hpp:209] Config warning: skip_utf8_validation=true — text frames will NOT be validated for UTF-8 conformance (RFC 6455 §5.6); caller assumes responsibility for payload validity
+[2026-03-29 04:05:02.546] [net.transport] [info] [transport.hpp:212] Creating transport: 172.31.21.173:9080/ws
+[2026-03-29 04:05:02.547] [dpdk.tcp] [info] [tcp.hpp:482] TCP connection established: 172.31.23.112:60834 -> 172.31.21.173:9080
+[2026-03-29 04:05:02.547] [net.transport] [info] [transport.hpp:1999] WebSocket upgrade successful
+[2026-03-29 04:05:02.547] [net.transport] [info] [transport.hpp:1701] Connected: 172.31.21.173 (plain WS, handshake: 1.1ms)
+[2026-03-29 04:05:02.547] [net.transport] [info] [transport.hpp:1556] Transport state: CONNECTED — 172.31.21.173 [172.31.21.173:9080]
+[2026-03-29 04:05:02.547] [info] [STATE] CONNECTED — 172.31.21.173
+[2026-03-29 04:05:02.547] [net.transport] [info] [transport.hpp:256] Transport ready: 172.31.21.173
+[2026-03-29 04:05:02.547] [info] Connected via DPDK!
+[2026-03-29 04:05:02.558] [utils.cpu] [info] [cpu.hpp:259] RX pinned to cpu_id=6
+[2026-03-29 04:05:02.578] [utils.cpu] [info] [cpu.hpp:259] TX pinned to cpu_id=5
+[2026-03-29 04:07:33.047] [info] All 300 pings sent, waiting for final pongs...
+[2026-03-29 04:07:33.548] [net.transport] [info] [transport.hpp:945] Stopping transport
+[2026-03-29 04:07:33.548] [net.transport] [info] [transport.hpp:1551] Transport state: STOPPED [172.31.21.173:9080]
+[2026-03-29 04:07:33.548] [info] [STATE] STOPPED — 
+[2026-03-29 04:07:33.548] [net.transport] [info] [transport.hpp:996] Transport stopped
+[2026-03-29 04:07:33.548] [info] === Ping/Pong Benchmark (DPDK) ===
+[2026-03-29 04:07:33.548] [info] Duration: 151.0s | Pings sent: 300
+[2026-03-29 04:07:33.548] [info] Transport stats:
+TransportStats (uptime: 151.0s, remote: unknown):
+  TX: 307 packets (2/s), 28 bytes (0 B/s), text: 0 pkts/0 B, 0 dropped, 0 encrypt errors
+  RX: 307 packets (2/s), 0 bytes (0 B/s), text: 0 pkts/0 B, 0 dropped, 0 decrypt errors
+  Queue full: 0, TX HWM: 0, RX HWM: 0
+  WebSocket: 7 pings received, 7 pongs sent, 0 pong timeouts
+  Reconnections: 0, handshake: 1.1ms (tcp: 0.2ms, tls: 0.0ms, ws: 0.9ms)
+  TLS seq: write=0/0 (0.0%), read=0/0 (0.0%)
+  RTT: RttStats (300 samples):
+  min: 45.9us, p50: 181.7us, p99: 234.8us, p999: 464.0us, max: 464.1us, mean: 149.7us
+  TX latency: RttStats (300 samples):
+  min: 0.2us, p50: 0.4us, p99: 0.7us, p999: 9.5us, max: 9.5us, mean: 0.5us
+    queue_wait: RttStats (300 samples):
+  min: 0.2us, p50: 0.4us, p99: 0.6us, p999: 2.8us, max: 2.8us, mean: 0.4us
+    encode:     RttStats (300 samples):
+  min: 0.0us, p50: 0.0us, p99: 0.2us, p999: 9.2us, max: 9.2us, mean: 0.1us
+  RX latency: RttStats: no samples
+    decrypt:    RttStats: no samples
+    decode:     RttStats: no samples
+[2026-03-29 04:07:33.548] [info] --- Metric 1: TX Queue (ping enqueue → flush) ---
+[2026-03-29 04:07:33.548] [info]   samples: 300
+[2026-03-29 04:07:33.548] [info]   min:     231 ns
+[2026-03-29 04:07:33.548] [info]   p50:     412 ns
+[2026-03-29 04:07:33.548] [info]   p99:     748 ns
+[2026-03-29 04:07:33.548] [info]   p99.9:   9524 ns
+[2026-03-29 04:07:33.548] [info]   max:     9520 ns
+[2026-03-29 04:07:33.548] [info] --- Metric 2: RX Pong Pipeline (rx_burst → pong decoded) ---
+[2026-03-29 04:07:33.548] [info]   (no samples)
+[2026-03-29 04:07:33.548] [info] --- Metric 3: RTT (ping flush → pong arrive) ---
+[2026-03-29 04:07:33.548] [info]   samples: 300
+[2026-03-29 04:07:33.548] [info]   min:     45942 ns
+[2026-03-29 04:07:33.548] [info]   p50:     181696 ns
+[2026-03-29 04:07:33.548] [info]   p99:     234816 ns
+[2026-03-29 04:07:33.548] [info]   p99.9:   464000 ns
+[2026-03-29 04:07:33.548] [info]   max:     464110 ns
+[2026-03-29 04:07:33.548] [net.transport] [info] [transport.hpp:945] Stopping transport
+[2026-03-29 04:07:33.548] [net.transport] [info] [transport.hpp:1551] Transport state: STOPPED [172.31.21.173:9080]
+[2026-03-29 04:07:33.548] [info] [STATE] STOPPED — 
+[2026-03-29 04:07:33.548] [net.transport] [info] [transport.hpp:996] Transport stopped
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

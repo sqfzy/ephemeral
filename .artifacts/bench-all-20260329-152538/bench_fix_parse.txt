@@ -1,0 +1,26 @@
+2026-03-29T15:25:38+00:00
+Running build/linux/arm64/release/bench_fix_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.30, 0.95, 1.05
+------------------------------------------------------------------------------------
+Benchmark                          Time             CPU   Iterations UserCounters...
+------------------------------------------------------------------------------------
+BM_FixParseNewOrder              224 ns          224 ns      3120019 bytes_per_second=567.276Mi/s items_per_second=4.47242M/s
+BM_FixParseMarketData            369 ns          369 ns      1899411 bytes_per_second=613.308Mi/s items_per_second=2.7135M/s
+BM_FixParseFieldCount/0          223 ns          223 ns      3137062 bytes_per_second=568.573Mi/s items_per_second=4.48265M/s
+BM_FixParseFieldCount/10         348 ns          348 ns      2012549 bytes_per_second=606.032Mi/s items_per_second=2.87543M/s
+BM_FixParseFieldCount/50         920 ns          920 ns       760843 bytes_per_second=643.749Mi/s items_per_second=1.08699M/s
+BM_FixParseFieldCount/100       1617 ns         1617 ns       433136 bytes_per_second=661.85Mi/s items_per_second=618.539k/s
+BM_FixFieldLookup               21.9 ns         21.9 ns     31919987 items_per_second=45.6167M/s
+BM_FixBuildNewOrder              163 ns          163 ns      4293517 items_per_second=6.13722M/s
+BM_FixBuildWithTimestamp         151 ns          151 ns      4641569 items_per_second=6.63491M/s
+BM_FixBuildMarketData            260 ns          260 ns      2687258 items_per_second=3.84049M/s
+BM_FixBuildResetReuse           50.1 ns         50.1 ns     13959772 items_per_second=19.9419M/s
+BM_FixFramerDecode              22.5 ns         22.5 ns     31086904 bytes_per_second=5.50334Gi/s items_per_second=44.4299M/s
+BM_FixChecksum                  16.8 ns         16.8 ns     41748113 bytes_per_second=7.39205Gi/s
+BM_FixBuildParseRoundtrip        219 ns          219 ns      3204285 items_per_second=4.57454M/s

@@ -3,11 +3,9 @@
 ///
 /// Connects to Binance WITHOUT subscribing to any stream, then sends
 /// periodic WebSocket pings. Measures three metrics:
-///   1) TX Queue:  ping enqueue → tx_burst (SPSC transit + encode + encrypt)
-///   2) RX Pong:   rx_burst → pong frame decoded (TLS decrypt + WS decode)
-///   3) RTT:       ping tx_burst → pong rx_burst (end-to-end round-trip)
-///
-/// No market data is subscribed — all rx_latency samples are pure pong frames.
+///   1) TX Pipeline:  ping enqueue → tx_burst (SPSC transit + encode + encrypt)
+///   2) RX Pipeline:  rx_burst → pong decoded (TLS decrypt + WS decode)
+///   3) RTT:          ping tx_burst → pong rx_burst (end-to-end round-trip)
 ///
 /// Usage (all threads on isolated, non-overlapping cores):
 ///   ./bench_pingpong --rx-cpu 0 --tx-cpu 1 --main-cpu 2
@@ -15,9 +13,7 @@
 ///   ./bench_pingpong --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --proxy socks5://127.0.0.1:7890
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdlib>
 #include <format>
 #include <iostream>
@@ -26,17 +22,19 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/containers/evicting_queue.hpp"
+#include "eph/containers/bounded_queue.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
 
+#include "bench_common.hpp"
+
 using BenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
     512, 1024,
-    eph::containers::EvictingQueue,
+    eph::containers::BoundedQueue,
     true  // LastOnlyDeliver
 >;
 
@@ -53,9 +51,6 @@ struct Config {
     int  rx_cpu               = -1;
     int  main_cpu        = -1;
 };
-
-static std::atomic<bool> g_running{true};
-static void sig(int) { g_running.store(false, std::memory_order_release); }
 
 static Config parse_args(int argc, char** argv) {
     Config c;
@@ -197,23 +192,9 @@ int main(int argc, char** argv) {
     spdlog::info("Duration: {:.1f}s | Pings sent: {}", elapsed_ms / 1000.0, pings_sent);
     spdlog::info("Transport stats:\n{}", stats.dump());
 
-    auto print_latency = [](std::string_view label, const eph::net::RttStats& s) {
-        spdlog::info("--- {} ---", label);
-        if (s.count > 0) {
-            spdlog::info("  samples: {}", s.count);
-            spdlog::info("  min:     {:.0f} ns", static_cast<double>(s.min_ns));
-            spdlog::info("  p50:     {:.0f} ns", static_cast<double>(s.p50_ns));
-            spdlog::info("  p99:     {:.0f} ns", static_cast<double>(s.p99_ns));
-            spdlog::info("  p99.9:   {:.0f} ns", static_cast<double>(s.p999_ns));
-            spdlog::info("  max:     {:.0f} ns", static_cast<double>(s.max_ns));
-        } else {
-            spdlog::info("  (no samples)");
-        }
-    };
-
-    print_latency("Metric 1: TX Queue (ping enqueue → flush)", stats.tx_latency);
-    print_latency("Metric 2: RX Pong Pipeline (rx_burst → pong decoded)", stats.rx_latency);
-    print_latency("Metric 3: RTT (ping flush → pong arrive)", stats.rtt);
+    bench::print_latency("TX Pipeline (enqueue → tx_burst)", stats.tx_latency);
+    bench::print_latency("RX Pipeline (rx_burst → pong decoded)", stats.rx_latency);
+    bench::print_latency("RTT (tx_burst → rx_burst)", stats.rtt);
 
     return 0;
 }

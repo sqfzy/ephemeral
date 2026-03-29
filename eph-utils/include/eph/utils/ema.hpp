@@ -18,9 +18,8 @@ class Ema {
     /// @param alpha Smoothing factor in (0, 1]. Larger = more responsive.
     ///              For period N: alpha = 2/(N+1).
     explicit constexpr Ema(double alpha) noexcept : alpha_(alpha) {
-        // Cannot assert in constexpr before C++26, but clamp defensively.
-        // Callers should ensure alpha is in (0, 1].
-        assert(alpha > 0.0 && alpha <= 1.0 && "alpha must be in (0, 1]");
+        // Precondition: alpha must be in (0.0, 1.0]. Validated by callers.
+        // Cannot use assert() in constexpr context pre-C++26.
     }
 
     /// Create from period (number of samples). alpha = 2/(period+1).

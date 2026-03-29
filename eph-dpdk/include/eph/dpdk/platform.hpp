@@ -85,11 +85,14 @@ inline uint16_t clamp_desc(uint16_t requested,
 }
 
 inline spdlog::logger* platform_logger() {
+    // try/catch handles the race between concurrent first callers:
+    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        auto lg = spdlog::get("dpdk.platform");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.platform");
-        // Inherit level from spdlog global default
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("dpdk.platform");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.platform");
+        }
     }();
     return l.get();
 }
@@ -235,9 +238,11 @@ public:
     Platform(Platform&&) noexcept;
     Platform& operator=(Platform&&) noexcept;
 
-    [[nodiscard]] rte_mempool* mempool()    const noexcept;
-    [[nodiscard]] uint16_t     port_id()    const noexcept;
-    [[nodiscard]] bool         is_running() const noexcept;
+    [[nodiscard]] rte_mempool* mempool()          const noexcept;
+    [[nodiscard]] uint16_t     port_id()          const noexcept;
+    [[nodiscard]] bool         is_running()       const noexcept;
+    /// Returns true if promiscuous mode was requested AND successfully enabled.
+    [[nodiscard]] bool         is_promiscuous()   const noexcept;
 
     [[nodiscard]] Stats collect_stats() const;
 
@@ -255,6 +260,7 @@ struct Platform::Impl {
     PlatformConfig config;
     rte_mempool*   mempool{nullptr};
     bool           port_started{false};
+    bool           promiscuous_active{false};
 
     ~Impl() { cleanup(); }
 
@@ -288,8 +294,11 @@ struct Platform::Impl {
             config.mbuf_pool_size, config.mbuf_cache_size,
             RTE_MBUF_DEFAULT_BUF_SIZE);
 
+        // Use a per-port pool name so that multiple Platform instances (one per
+        // port) can coexist without EEXIST failure from rte_pktmbuf_pool_create.
+        auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
         mempool = rte_pktmbuf_pool_create(
-            "mbuf_pool", config.mbuf_pool_size, config.mbuf_cache_size,
+            pool_name.c_str(), config.mbuf_pool_size, config.mbuf_cache_size,
             0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
 
         if (mempool == nullptr) {
@@ -305,21 +314,10 @@ struct Platform::Impl {
         return {};
     }
 
-    [[nodiscard]] std::expected<void, std::string> configure_port() {
+    [[nodiscard]] std::expected<void, std::string>
+    configure_port(const rte_eth_dev_info& dev_info) {
         auto log = detail::platform_logger();
 
-        // Query NIC capabilities — offload flags MUST be intersected with
-        // device caps; hard-coding flags is the most common portability bug.
-        rte_eth_dev_info dev_info{};
-        int ret = rte_eth_dev_info_get(config.port_id, &dev_info);
-        if (ret != 0) {
-            SPDLOG_LOGGER_ERROR(log,
-                "rte_eth_dev_info_get(port={}) failed: ret={}",
-                config.port_id, ret);
-            return std::unexpected(std::format(
-                "eth_dev_info_get failed for port {} (ret={})",
-                config.port_id, ret));
-        }
         SPDLOG_LOGGER_DEBUG(log,
             "port={} driver={} max_rx_q={} max_tx_q={} "
             "rx_offload_capa={:#x} tx_offload_capa={:#x}",
@@ -328,26 +326,27 @@ struct Platform::Impl {
             dev_info.max_rx_queues, dev_info.max_tx_queues,
             dev_info.rx_offload_capa, dev_info.tx_offload_capa);
 
-        if (config.nb_rx_queues > dev_info.max_rx_queues)
+        // Clamp queue counts to NIC capabilities — passing a value that exceeds
+        // max_rx/tx_queues causes rte_eth_dev_configure to fail with EINVAL.
+        uint16_t nb_rx = std::min(config.nb_rx_queues, dev_info.max_rx_queues);
+        uint16_t nb_tx = std::min(config.nb_tx_queues, dev_info.max_tx_queues);
+        if (nb_rx != config.nb_rx_queues)
             SPDLOG_LOGGER_WARN(log,
-                "nb_rx_queues={} exceeds NIC max={}; clamping",
-                config.nb_rx_queues, dev_info.max_rx_queues);
-        if (config.nb_tx_queues > dev_info.max_tx_queues)
+                "nb_rx_queues={} exceeds NIC max={}; clamped to {}",
+                config.nb_rx_queues, dev_info.max_rx_queues, nb_rx);
+        if (nb_tx != config.nb_tx_queues)
             SPDLOG_LOGGER_WARN(log,
-                "nb_tx_queues={} exceeds NIC max={}; clamping",
-                config.nb_tx_queues, dev_info.max_tx_queues);
+                "nb_tx_queues={} exceeds NIC max={}; clamped to {}",
+                config.nb_tx_queues, dev_info.max_tx_queues, nb_tx);
 
         rte_eth_conf eth_conf{};
-        std::memset(&eth_conf, 0, sizeof(eth_conf));
         // No offloads requested — conservative default for minimal setup.
+        // Value-initialization above already zero-initializes all fields.
         // Checksum offload is handled per-packet via PacketTemplate::hw_cksum.
         eth_conf.rxmode.offloads = 0;
         eth_conf.txmode.offloads = 0;
 
-        ret = rte_eth_dev_configure(config.port_id,
-                                    config.nb_rx_queues,
-                                    config.nb_tx_queues,
-                                    &eth_conf);
+        int ret = rte_eth_dev_configure(config.port_id, nb_rx, nb_tx, &eth_conf);
         if (ret != 0) {
             SPDLOG_LOGGER_ERROR(log,
                 "rte_eth_dev_configure(port={}) failed: ret={}: {}",
@@ -360,18 +359,9 @@ struct Platform::Impl {
         return {};
     }
 
-    [[nodiscard]] std::expected<void, std::string> setup_queues() {
+    [[nodiscard]] std::expected<void, std::string>
+    setup_queues(const rte_eth_dev_info& dev_info) {
         auto log = detail::platform_logger();
-
-        rte_eth_dev_info dev_info{};
-        if (int ret = rte_eth_dev_info_get(config.port_id, &dev_info); ret != 0) {
-            SPDLOG_LOGGER_ERROR(log,
-                "rte_eth_dev_info_get(port={}) failed in setup_queues: ret={}",
-                config.port_id, ret);
-            return std::unexpected(std::format(
-                "eth_dev_info_get failed for port {} (ret={})",
-                config.port_id, ret));
-        }
 
         uint16_t rx_desc = detail::clamp_desc(config.nb_rx_desc,
                                                dev_info.rx_desc_lim);
@@ -429,10 +419,16 @@ struct Platform::Impl {
 
         if (config.enable_promiscuous) {
             int ret = rte_eth_promiscuous_enable(config.port_id);
-            if (ret != 0)
+            if (ret != 0) {
                 SPDLOG_LOGGER_WARN(log,
-                    "eth_promiscuous_enable(port={}) failed: ret={} (non-fatal)",
+                    "eth_promiscuous_enable(port={}) failed: ret={} "
+                    "(promiscuous mode will be inactive)",
                     config.port_id, ret);
+            } else {
+                promiscuous_active = true;
+                SPDLOG_LOGGER_DEBUG(log,
+                    "port={} promiscuous mode enabled", config.port_id);
+            }
         }
 
         int ret = rte_eth_dev_start(config.port_id);
@@ -528,28 +524,51 @@ Platform::create(const PlatformConfig& config) {
     auto impl    = std::make_unique<Impl>();
     impl->config = config;
 
-    if (auto r = impl->enumerate_ports();  !r) return std::unexpected(r.error());
-    if (auto r = impl->create_mempool();   !r) return std::unexpected(r.error());
-    if (auto r = impl->configure_port();   !r) return std::unexpected(r.error());
-    if (auto r = impl->setup_queues();     !r) return std::unexpected(r.error());
-    if (auto r = impl->start_port();       !r) return std::unexpected(r.error());
+    if (auto r = impl->enumerate_ports(); !r) return std::unexpected(r.error());
+    if (auto r = impl->create_mempool();  !r) return std::unexpected(r.error());
+
+    // Query NIC capabilities once — offload flags MUST be intersected with
+    // device caps; hard-coding flags is the most common portability bug.
+    // Shared between configure_port() and setup_queues() to avoid redundant
+    // DPDK syscalls.
+    rte_eth_dev_info dev_info{};
+    if (int ret = rte_eth_dev_info_get(config.port_id, &dev_info); ret != 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "rte_eth_dev_info_get(port={}) failed: ret={}",
+            config.port_id, ret);
+        return std::unexpected(std::format(
+            "eth_dev_info_get failed for port {} (ret={})",
+            config.port_id, ret));
+    }
+
+    if (auto r = impl->configure_port(dev_info); !r) return std::unexpected(r.error());
+    if (auto r = impl->setup_queues(dev_info);   !r) return std::unexpected(r.error());
+    if (auto r = impl->start_port();             !r) return std::unexpected(r.error());
     impl->wait_link_up();
 
     SPDLOG_LOGGER_INFO(log, "Platform ready (port={})", config.port_id);
     return Platform(std::move(impl));
 }
 
-inline rte_mempool* Platform::mempool()    const noexcept { return impl_->mempool; }
-inline uint16_t     Platform::port_id()    const noexcept { return impl_->config.port_id; }
-inline bool         Platform::is_running() const noexcept { return impl_->port_started; }
+// Null guards on all impl_-accessing methods protect against use on a
+// moved-from Platform (move leaves impl_ == nullptr).
+inline rte_mempool* Platform::mempool()          const noexcept { return impl_ ? impl_->mempool              : nullptr; }
+inline uint16_t     Platform::port_id()          const noexcept { return impl_ ? impl_->config.port_id       : 0; }
+inline bool         Platform::is_running()       const noexcept { return impl_ && impl_->port_started; }
+inline bool         Platform::is_promiscuous()   const noexcept { return impl_ && impl_->promiscuous_active; }
 
 inline Platform::Stats Platform::collect_stats() const {
     auto log = detail::platform_logger();
+    if (!impl_) {
+        SPDLOG_LOGGER_WARN(log,
+            "collect_stats() called on moved-from Platform; returning empty stats");
+        return {};
+    }
     rte_eth_stats raw{};
     int ret = rte_eth_stats_get(impl_->config.port_id, &raw);
     if (ret != 0) {
-        SPDLOG_LOGGER_WARN(log,
-            "eth_stats_get(port={}) failed: ret={}",
+        SPDLOG_LOGGER_ERROR(log,
+            "eth_stats_get(port={}) failed: ret={}; returning zeroed stats",
             impl_->config.port_id, ret);
         return {};
     }

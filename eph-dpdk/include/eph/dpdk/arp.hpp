@@ -69,11 +69,14 @@ static_assert(sizeof(ArpPacket) == kArpPacketLen,
 namespace detail {
 
 inline spdlog::logger* arp_logger() {
+    // try/catch handles the race between concurrent first callers:
+    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        auto lg = spdlog::get("dpdk.arp");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.arp");
-        // Inherit level from spdlog global default
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("dpdk.arp");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.arp");
+        }
     }();
     return l.get();
 }
@@ -184,6 +187,11 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
 /// Must be called BEFORE TCP connection establishment — this function will
 /// discard any non-ARP packets received during the poll.
 ///
+/// @warning Accepts the first ARP reply with matching sender IP. No
+///          protection against ARP spoofing. In untrusted networks,
+///          cross-validate the returned MAC against a known-good value
+///          (e.g., via ConnectorOptions::gateway_mac).
+///
 /// @param port_id    DPDK port to send/receive on
 /// @param queue_id   TX/RX queue to use (default 0)
 /// @param pool       Mempool for mbuf allocation
@@ -214,7 +222,10 @@ resolve(uint16_t port_id,
 
     auto deadline = std::chrono::steady_clock::now() + timeout;
 
-    // Retry interval: send ARP request up to 3 times, evenly spaced
+    // Retry interval: send ARP request up to 3 times, evenly spaced.
+    // ARP is a LAN protocol — shorter retry is safe since replies
+    // are expected within microseconds. DNS crosses routers and
+    // requires a higher floor (100ms in dns.hpp).
     auto retry_interval = timeout / 3;
     if (retry_interval < std::chrono::milliseconds{50}) {
         retry_interval = std::chrono::milliseconds{50};

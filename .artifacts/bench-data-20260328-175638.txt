@@ -1,0 +1,1114 @@
+=== bench_fix_parse ===
+{
+  "context": {
+    "date": "2026-03-28T17:56:38+00:00",
+    "host_name": "ip-172-31-21-173.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_fix_parse",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [2.67,4.56,2.42],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_FixParseNewOrder",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixParseNewOrder",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3123295,
+      "real_time": 2.2382709862790284e+02,
+      "cpu_time": 2.2382899149776122e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 5.9420363336324239e+08,
+      "items_per_second": 4.4676964914529501e+06
+    },
+    {
+      "name": "BM_FixParseMarketData",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixParseMarketData",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1861685,
+      "real_time": 3.6932870384182547e+02,
+      "cpu_time": 3.6933225706819354e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 6.4169862086062062e+08,
+      "items_per_second": 2.7075891175553612e+06
+    },
+    {
+      "name": "BM_FixParseFieldCount/0",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixParseFieldCount/0",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3133812,
+      "real_time": 2.2328399055330917e+02,
+      "cpu_time": 2.2328356423422971e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 5.9565512784666896e+08,
+      "items_per_second": 4.4786099838095410e+06
+    },
+    {
+      "name": "BM_FixParseFieldCount/10",
+      "family_index": 2,
+      "per_family_instance_index": 1,
+      "run_name": "BM_FixParseFieldCount/10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2010941,
+      "real_time": 3.4809491178743986e+02,
+      "cpu_time": 3.4810099600137465e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 6.3487321937776721e+08,
+      "items_per_second": 2.8727294994469103e+06
+    },
+    {
+      "name": "BM_FixParseFieldCount/50",
+      "family_index": 2,
+      "per_family_instance_index": 2,
+      "run_name": "BM_FixParseFieldCount/50",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 759820,
+      "real_time": 9.2132935431443150e+02,
+      "cpu_time": 9.2135106340975449e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 6.7401018424159718e+08,
+      "items_per_second": 1.0853626155259213e+06
+    },
+    {
+      "name": "BM_FixParseFieldCount/100",
+      "family_index": 2,
+      "per_family_instance_index": 3,
+      "run_name": "BM_FixParseFieldCount/100",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 432527,
+      "real_time": 1.6179746258445075e+03,
+      "cpu_time": 1.6180047326525275e+03,
+      "time_unit": "ns",
+      "bytes_per_second": 6.9344667376875567e+08,
+      "items_per_second": 6.1804516378676973e+05
+    },
+    {
+      "name": "BM_FixFieldLookup",
+      "family_index": 3,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixFieldLookup",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 32594811,
+      "real_time": 2.1475986376895193e+01,
+      "cpu_time": 2.1476626816458619e+01,
+      "time_unit": "ns",
+      "items_per_second": 4.6562246881044172e+07
+    },
+    {
+      "name": "BM_FixBuildNewOrder",
+      "family_index": 4,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixBuildNewOrder",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4245630,
+      "real_time": 1.6482026836859598e+02,
+      "cpu_time": 1.6482393213728017e+02,
+      "time_unit": "ns",
+      "items_per_second": 6.0670801080459012e+06
+    },
+    {
+      "name": "BM_FixBuildWithTimestamp",
+      "family_index": 5,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixBuildWithTimestamp",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4695224,
+      "real_time": 1.4909670699530469e+02,
+      "cpu_time": 1.4910014005721561e+02,
+      "time_unit": "ns",
+      "items_per_second": 6.7069018152247239e+06
+    },
+    {
+      "name": "BM_FixBuildMarketData",
+      "family_index": 6,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixBuildMarketData",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2713279,
+      "real_time": 2.5793247285937105e+02,
+      "cpu_time": 2.5793537081885114e+02,
+      "time_unit": "ns",
+      "items_per_second": 3.8769401684823725e+06
+    },
+    {
+      "name": "BM_FixBuildResetReuse",
+      "family_index": 7,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixBuildResetReuse",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 13816692,
+      "real_time": 5.0670072548539999e+01,
+      "cpu_time": 5.0670709964440071e+01,
+      "time_unit": "ns",
+      "items_per_second": 1.9735267192857269e+07
+    },
+    {
+      "name": "BM_FixFramerDecode",
+      "family_index": 8,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixFramerDecode",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 30508142,
+      "real_time": 2.2917057191023023e+01,
+      "cpu_time": 2.2917435057172611e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 5.8034417755827427e+09,
+      "items_per_second": 4.3634900568291299e+07
+    },
+    {
+      "name": "BM_FixChecksum",
+      "family_index": 9,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixChecksum",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 41555348,
+      "real_time": 1.6846253002715148e+01,
+      "cpu_time": 1.6846696892058254e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 7.8947226778145390e+09
+    },
+    {
+      "name": "BM_FixBuildParseRoundtrip",
+      "family_index": 10,
+      "per_family_instance_index": 0,
+      "run_name": "BM_FixBuildParseRoundtrip",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3172474,
+      "real_time": 2.2092233695140573e+02,
+      "cpu_time": 2.2092670861920396e+02,
+      "time_unit": "ns",
+      "items_per_second": 4.5263879874462374e+06
+    }
+  ]
+}
+
+=== bench_json_parse ===
+{
+  "context": {
+    "date": "2026-03-28T17:56:52+00:00",
+    "host_name": "ip-172-31-21-173.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_json_parse",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [2.3,4.39,2.4],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_JsonParse",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_JsonParse",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 6705831,
+      "real_time": 1.0443110287355681e+02,
+      "cpu_time": 1.0443278006857017e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 1.3118486351703584e+09,
+      "items_per_second": 9.5755374829953164e+06
+    },
+    {
+      "name": "BM_JsonParseAndExtract",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_JsonParseAndExtract",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4234309,
+      "real_time": 1.6532880122939974e+02,
+      "cpu_time": 1.6533372694340446e+02,
+      "time_unit": "ns",
+      "items_per_second": 6.0483726973765660e+06
+    },
+    {
+      "name": "BM_SymbolHash",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SymbolHash",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 33040551,
+      "real_time": 2.1229387094473257e+01,
+      "cpu_time": 2.1229775950164992e+01,
+      "time_unit": "ns",
+      "items_per_second": 4.7103653017696038e+07
+    }
+  ]
+}
+
+=== bench_itch_parse ===
+{
+  "context": {
+    "date": "2026-03-28T17:56:55+00:00",
+    "host_name": "ip-172-31-21-173.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_itch_parse",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [2.3,4.39,2.4],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_ItchParseAddOrder",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_ItchParseAddOrder",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 217371914,
+      "real_time": 3.2202014331829290e+00,
+      "cpu_time": 3.2202986996746961e+00,
+      "time_unit": "ns",
+      "items_per_second": 3.1053020022677296e+08
+    },
+    {
+      "name": "BM_ItchParseOrderDelete",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_ItchParseOrderDelete",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 325766112,
+      "real_time": 2.1490610539837691e+00,
+      "cpu_time": 2.1491053495459953e+00,
+      "time_unit": "ns",
+      "items_per_second": 4.6530990219313949e+08
+    },
+    {
+      "name": "BM_ItchParseSystemEvent",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_ItchParseSystemEvent",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 325732100,
+      "real_time": 2.1466721947671603e+00,
+      "cpu_time": 2.1467282223643300e+00,
+      "time_unit": "ns",
+      "items_per_second": 4.6582515177381688e+08
+    },
+    {
+      "name": "BM_ItchAddOrderFieldAccess",
+      "family_index": 3,
+      "per_family_instance_index": 0,
+      "run_name": "BM_ItchAddOrderFieldAccess",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 139545406,
+      "real_time": 5.0140176524452666e+00,
+      "cpu_time": 5.0141282687586282e+00,
+      "time_unit": "ns",
+      "items_per_second": 1.9943646161400950e+08
+    },
+    {
+      "name": "BM_ItchParseBatch",
+      "family_index": 4,
+      "per_family_instance_index": 0,
+      "run_name": "BM_ItchParseBatch",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 167147,
+      "real_time": 4.1879470106606323e+03,
+      "cpu_time": 4.1879908403979707e+03,
+      "time_unit": "ns",
+      "items_per_second": 2.4450865320008501e+08
+    },
+    {
+      "name": "BM_ItchFramerDecode",
+      "family_index": 5,
+      "per_family_instance_index": 0,
+      "run_name": "BM_ItchFramerDecode",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 629064979,
+      "real_time": 1.0697470555179323e+00,
+      "cpu_time": 1.0697428889933478e+00,
+      "time_unit": "ns",
+      "items_per_second": 9.3480406393822598e+08
+    }
+  ]
+}
+
+=== bench_array_book ===
+{
+  "context": {
+    "date": "2026-03-28T17:57:01+00:00",
+    "host_name": "ip-172-31-21-173.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_array_book",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [2.17,4.29,2.39],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_BookUpdate",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BookUpdate",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 244672440,
+      "real_time": 2.8606902231159390e+00,
+      "cpu_time": 2.8606950705195895e+00,
+      "time_unit": "ns",
+      "items_per_second": 3.4956539419574332e+08
+    },
+    {
+      "name": "BM_BookBBO",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BookBBO",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 733943053,
+      "real_time": 9.5551289997646183e-01,
+      "cpu_time": 9.5553547803660444e-01,
+      "time_unit": "ns",
+      "items_per_second": 1.0465336169984598e+09
+    },
+    {
+      "name": "BM_BookMidPrice",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BookMidPrice",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 978781759,
+      "real_time": 7.1515618220587795e-01,
+      "cpu_time": 7.1517141340595825e-01,
+      "time_unit": "ns",
+      "items_per_second": 1.3982661796247754e+09
+    },
+    {
+      "name": "BM_BookFullCycle",
+      "family_index": 3,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BookFullCycle",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4438880,
+      "real_time": 1.5772145586624239e+02,
+      "cpu_time": 1.5772441967343110e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 8.6860360801237321e+08,
+      "items_per_second": 6.3401723212581985e+06
+    }
+  ]
+}
+
+=== bench_ws ===
+{
+  "context": {
+    "date": "2026-03-28T17:57:04+00:00",
+    "host_name": "ip-172-31-21-173.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_ws",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [2.17,4.29,2.39],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_WsMasking/64",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_WsMasking/64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 242563013,
+      "real_time": 2.8861495383225195e+00,
+      "cpu_time": 2.8862346750285464e+00,
+      "time_unit": "ns",
+      "bytes_per_second": 2.2174219079869865e+10
+    },
+    {
+      "name": "BM_WsMasking/128",
+      "family_index": 0,
+      "per_family_instance_index": 1,
+      "run_name": "BM_WsMasking/128",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 171907748,
+      "real_time": 4.0724158982767307e+00,
+      "cpu_time": 4.0725355322553591e+00,
+      "time_unit": "ns",
+      "bytes_per_second": 3.1430051128151596e+10
+    },
+    {
+      "name": "BM_WsMasking/256",
+      "family_index": 0,
+      "per_family_instance_index": 2,
+      "run_name": "BM_WsMasking/256",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 80661855,
+      "real_time": 8.6482195454645598e+00,
+      "cpu_time": 8.6483142372562618e+00,
+      "time_unit": "ns",
+      "bytes_per_second": 2.9601144567246643e+10
+    },
+    {
+      "name": "BM_WsMasking/512",
+      "family_index": 0,
+      "per_family_instance_index": 3,
+      "run_name": "BM_WsMasking/512",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 30606428,
+      "real_time": 2.2885818953529263e+01,
+      "cpu_time": 2.2886389780604269e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 2.2371374642666847e+10
+    },
+    {
+      "name": "BM_WsMasking/1024",
+      "family_index": 0,
+      "per_family_instance_index": 4,
+      "run_name": "BM_WsMasking/1024",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 12294959,
+      "real_time": 5.6923624714381369e+01,
+      "cpu_time": 5.6924201780583410e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 1.7988833711661842e+10
+    },
+    {
+      "name": "BM_WsEncode/64",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_WsEncode/64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 107723408,
+      "real_time": 6.4722999760505191e+00,
+      "cpu_time": 6.4724038344572259e+00,
+      "time_unit": "ns",
+      "bytes_per_second": 9.8881345535459805e+09
+    },
+    {
+      "name": "BM_WsEncode/128",
+      "family_index": 1,
+      "per_family_instance_index": 1,
+      "run_name": "BM_WsEncode/128",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 69670648,
+      "real_time": 1.0045993371388835e+01,
+      "cpu_time": 1.0046123167965945e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 1.2741233395201979e+10
+    },
+    {
+      "name": "BM_WsEncode/256",
+      "family_index": 1,
+      "per_family_instance_index": 2,
+      "run_name": "BM_WsEncode/256",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 67995936,
+      "real_time": 1.0288445606303926e+01,
+      "cpu_time": 1.0288521596349533e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 2.4882097743842155e+10
+    },
+    {
+      "name": "BM_WsEncode/512",
+      "family_index": 1,
+      "per_family_instance_index": 3,
+      "run_name": "BM_WsEncode/512",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 35018179,
+      "real_time": 1.9884660307399894e+01,
+      "cpu_time": 1.9885185349015455e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 2.5747811298392040e+10
+    },
+    {
+      "name": "BM_WsEncode/1024",
+      "family_index": 1,
+      "per_family_instance_index": 4,
+      "run_name": "BM_WsEncode/1024",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 14584305,
+      "real_time": 4.7999975111801390e+01,
+      "cpu_time": 4.8000518159761469e+01,
+      "time_unit": "ns",
+      "bytes_per_second": 2.1333103042591999e+10
+    },
+    {
+      "name": "BM_WsDecode/64",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_WsDecode/64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 388665070,
+      "real_time": 1.8011660708467299e+00,
+      "cpu_time": 1.8012108111490450e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_WsDecode/128",
+      "family_index": 2,
+      "per_family_instance_index": 1,
+      "run_name": "BM_WsDecode/128",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 279487839,
+      "real_time": 2.5031715100595022e+00,
+      "cpu_time": 2.5032228468445146e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_WsDecode/256",
+      "family_index": 2,
+      "per_family_instance_index": 2,
+      "run_name": "BM_WsDecode/256",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 279680265,
+      "real_time": 2.5046714218436517e+00,
+      "cpu_time": 2.5047307717618184e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_WsDecode/512",
+      "family_index": 2,
+      "per_family_instance_index": 3,
+      "run_name": "BM_WsDecode/512",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 279704967,
+      "real_time": 2.5025987007519452e+00,
+      "cpu_time": 2.5026360829695280e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_WsDecode/1024",
+      "family_index": 2,
+      "per_family_instance_index": 4,
+      "run_name": "BM_WsDecode/1024",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 279570063,
+      "real_time": 2.5040292707626479e+00,
+      "cpu_time": 2.5041033989393942e+00,
+      "time_unit": "ns"
+    }
+  ]
+}
+
+=== bench_tls ===
+{
+  "context": {
+    "date": "2026-03-28T17:57:19+00:00",
+    "host_name": "ip-172-31-21-173.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_tls",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [1.91,4.13,2.36],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_TlsEncrypt/64",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_TlsEncrypt/64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 6089672,
+      "real_time": 1.1404657820469605e+02,
+      "cpu_time": 1.1404872938969457e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 5.6116363893294752e+08
+    },
+    {
+      "name": "BM_TlsEncrypt/128",
+      "family_index": 0,
+      "per_family_instance_index": 1,
+      "run_name": "BM_TlsEncrypt/128",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 5588611,
+      "real_time": 1.2529137258152033e+02,
+      "cpu_time": 1.2529418383208277e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 1.0215957044865190e+09
+    },
+    {
+      "name": "BM_TlsEncrypt/256",
+      "family_index": 0,
+      "per_family_instance_index": 2,
+      "run_name": "BM_TlsEncrypt/256",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4738857,
+      "real_time": 1.4772477075942339e+02,
+      "cpu_time": 1.4772855310890364e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 1.7329080574645581e+09
+    },
+    {
+      "name": "BM_TlsEncrypt/512",
+      "family_index": 0,
+      "per_family_instance_index": 3,
+      "run_name": "BM_TlsEncrypt/512",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3552129,
+      "real_time": 1.9875198901713156e+02,
+      "cpu_time": 1.9875786943548493e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 2.5759986331821227e+09
+    },
+    {
+      "name": "BM_TlsEncrypt/1024",
+      "family_index": 0,
+      "per_family_instance_index": 4,
+      "run_name": "BM_TlsEncrypt/1024",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2603508,
+      "real_time": 2.6886310316317469e+02,
+      "cpu_time": 2.6886904591804608e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 3.8085455188922167e+09
+    },
+    {
+      "name": "BM_TlsEncrypt/2048",
+      "family_index": 0,
+      "per_family_instance_index": 5,
+      "run_name": "BM_TlsEncrypt/2048",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1630561,
+      "real_time": 4.2929794591813038e+02,
+      "cpu_time": 4.2929990046370534e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 4.7705578263304195e+09
+    },
+    {
+      "name": "BM_TlsEncrypt/4096",
+      "family_index": 0,
+      "per_family_instance_index": 6,
+      "run_name": "BM_TlsEncrypt/4096",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 935224,
+      "real_time": 7.4841667450851435e+02,
+      "cpu_time": 7.4843118867779344e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 5.4727810144258509e+09
+    },
+    {
+      "name": "BM_TlsDecrypt/64",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_TlsDecrypt/64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 5756324,
+      "real_time": 1.2167449695207210e+02,
+      "cpu_time": 1.2166153121332293e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 5.2604960139603662e+08
+    },
+    {
+      "name": "BM_TlsDecrypt/128",
+      "family_index": 1,
+      "per_family_instance_index": 1,
+      "run_name": "BM_TlsDecrypt/128",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 5188020,
+      "real_time": 1.3510498533309777e+02,
+      "cpu_time": 1.3510551096564782e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 9.4740768962818635e+08
+    },
+    {
+      "name": "BM_TlsDecrypt/256",
+      "family_index": 1,
+      "per_family_instance_index": 2,
+      "run_name": "BM_TlsDecrypt/256",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4509989,
+      "real_time": 1.5533876845257080e+02,
+      "cpu_time": 1.5533773962641601e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 1.6480219205949218e+09
+    },
+    {
+      "name": "BM_TlsDecrypt/512",
+      "family_index": 1,
+      "per_family_instance_index": 3,
+      "run_name": "BM_TlsDecrypt/512",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3561998,
+      "real_time": 1.9665145797318496e+02,
+      "cpu_time": 1.9665049840005486e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 2.6036038767540555e+09
+    },
+    {
+      "name": "BM_TlsDecrypt/1024",
+      "family_index": 1,
+      "per_family_instance_index": 4,
+      "run_name": "BM_TlsDecrypt/1024",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2550668,
+      "real_time": 2.7414614602890026e+02,
+      "cpu_time": 2.7414831408870174e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 3.7352044399903946e+09
+    },
+    {
+      "name": "BM_TlsDecrypt/2048",
+      "family_index": 1,
+      "per_family_instance_index": 5,
+      "run_name": "BM_TlsDecrypt/2048",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1619484,
+      "real_time": 4.3236332559317111e+02,
+      "cpu_time": 4.3235748053083580e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 4.7368210155298481e+09
+    },
+    {
+      "name": "BM_TlsDecrypt/4096",
+      "family_index": 1,
+      "per_family_instance_index": 6,
+      "run_name": "BM_TlsDecrypt/4096",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 937935,
+      "real_time": 7.4514428824764025e+02,
+      "cpu_time": 7.4513339836982163e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 5.4970022937652426e+09
+    }
+  ]
+}
+

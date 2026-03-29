@@ -11,9 +11,7 @@
 ///   ./bench_market --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --symbol ethusdt
 ///   ./bench_market --rx-cpu 0 --tx-cpu 1 --main-cpu 2 --proxy socks5://127.0.0.1:7890
 
-#include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdlib>
 #include <format>
 #include <iostream>
@@ -22,18 +20,20 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/containers/evicting_queue.hpp"
+#include "eph/containers/bounded_queue.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
+
+#include "bench_common.hpp"
 
 // Single-symbol: last-only deliver (only latest bookTicker matters)
 using BenchTransport = eph::net::Transport<
     eph::net::SocketTransport,
     eph::net::WsFramer,
     512, 1024,
-    eph::containers::EvictingQueue,
+    eph::containers::BoundedQueue,
     true  // LastOnlyDeliver
 >;
 
@@ -49,9 +49,6 @@ struct Config {
     int  rx_cpu        = -1;
     int  main_cpu        = -1;
 };
-
-static std::atomic<bool> g_running{true};
-static void sig(int) { g_running.store(false, std::memory_order_release); }
 
 static Config parse_args(int argc, char** argv) {
     Config c;

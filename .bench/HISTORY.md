@@ -304,3 +304,33 @@
 | 2026-03-27 15:36 | /bench optimize | bench_market_multi RX p50 (batch=30) | 3828 ns | -50.8% (was 7788) | 2db53d7 | 20260327-153615.txt |
 | 2026-03-27 15:50 | /bench optimize | bench_market_multi decode p50 (batch=30) | 2400 ns | -4.0% (was 2500) | 953f20b | 20260327-155009.txt |
 | 2026-03-27 16:14 | /bench optimize | bench_market_multi_dpdk RX p99.9 (batch=30) | 5700 ns | -33.4% (was 8564) | 182895b | 20260327-161423.txt |
+| 2026-03-29 04:37 | /bench baseline | pingpong kernel TX p50 | 2364 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:37 | /bench baseline | pingpong kernel RTT p50 | 457600 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:37 | /bench baseline | pingpong kernel RTT p99 | 1123840 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:38 | /bench baseline | pingpong dpdk TX p50 | 404 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:38 | /bench baseline | pingpong dpdk RTT p50 | 435072 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:38 | /bench baseline | pingpong dpdk RTT p99 | 469120 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:39 | /bench baseline | market_multi kernel RX p50 | 2596 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:39 | /bench baseline | market_multi kernel RX p99 | 4196 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:40 | /bench baseline | market_multi dpdk RX p50 | 436 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 04:40 | /bench baseline | market_multi dpdk RX p99 | 652 ns | — | ac225dd | bench-data-20260329-044135.txt |
+| 2026-03-29 05:32 | /bench baseline (binance) | pingpong kernel TX p50 | 2708 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:32 | /bench baseline (binance) | pingpong kernel RX p50 | 7644 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:32 | /bench baseline (binance) | pingpong kernel RTT p50 | 28368896 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:33 | /bench baseline (binance) | pingpong dpdk TX p50 | 340 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:33 | /bench baseline (binance) | pingpong dpdk RX p50 | 340 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:33 | /bench baseline (binance) | pingpong dpdk RTT p50 | 27336704 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:34 | /bench baseline (binance) | market_multi kernel RX p50 | 3084 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:34 | /bench baseline (binance) | market_multi kernel Feed p50 | 2262016 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:35 | /bench baseline (binance) | market_multi dpdk RX p50 | 476 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:35 | /bench baseline (binance) | market_multi dpdk Feed p50 | 2436096 ns | — | ac225dd | bench-data-20260329-053249.txt |
+| 2026-03-29 05:45 | /bench baseline (binance 3h) | pingpong kernel TX p50 | 2316 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 05:45 | /bench baseline (binance 3h) | pingpong kernel RX p50 | 5756 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 05:45 | /bench baseline (binance 3h) | pingpong kernel RTT p50 | 52543488 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 06:26 | /bench baseline (binance 3h) | pingpong dpdk TX p50 | 324 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 06:26 | /bench baseline (binance 3h) | pingpong dpdk RX p50 | 340 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 06:26 | /bench baseline (binance 3h) | pingpong dpdk RTT p50 | 51036160 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 07:08 | /bench baseline (binance 3h) | market_multi kernel RX p50 | 3460 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 07:08 | /bench baseline (binance 3h) | market_multi kernel Feed p50 | 2399232 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 07:53 | /bench baseline (binance 3h) | market_multi dpdk RX p50 | 452 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-03-29 07:53 | /bench baseline (binance 3h) | market_multi dpdk Feed p50 | 2403328 ns | — | ac225dd | bench-data-20260329-054515.txt |

@@ -90,9 +90,12 @@ private:
         return std::fabs(a - b) < kEps;
     }
 
-    // -- Recalculate total qty at a price level by scanning all orders --------
-    // O(n) over the order map, but correct.  For L2 books with ~20 levels and
-    // moderate order counts this is acceptable.
+    /// Recalculate total qty at a price level by scanning all orders.
+    ///
+    /// @note O(n) scan over all orders. Acceptable for L2 books with
+    ///       moderate order counts (~10k). For high-density books (100k+
+    ///       orders), maintain a separate per-price quantity map for O(1)
+    ///       incremental updates.
     void recalculate_level(double price, char side) noexcept {
         double total_qty = 0.0;
         for (const auto& [ref, ord] : orders_) {

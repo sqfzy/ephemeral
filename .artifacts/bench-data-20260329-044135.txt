@@ -1,0 +1,113 @@
+# Benchmark Raw Data — 2026-03-29 04:37–04:41 UTC
+# Commit: ac225dd (dev, worktree clean)
+# OS: Linux 6.1.163-186.299.amzn2023.aarch64
+# CPU: 16 cores (aarch64, 1 thread/core)
+# RAM: 30Gi
+# Compiler: g++ 11.5.0
+# Mock server: 172.31.27.208:9443, TLS, stress mode (400s cycle)
+#
+# Reproduce:
+#   # bench_pingpong kernel
+#   build/linux/arm64/release/bench_pingpong --host 172.31.27.208 --port 9443 --count 100 --ping-interval 500 --tx-cpu 2 --rx-cpu 3 --main-cpu 4
+#   # bench_pingpong dpdk
+#   sudo build/linux/arm64/release/bench_pingpong_dpdk -a 0000:28:00.0 -l 4-7 -- --host 172.31.27.208 --port 9443 --count 100 --ping-interval 500 --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 --tx-cpu 5 --rx-cpu 6 --main-cpu 7
+#   # bench_market_multi kernel
+#   build/linux/arm64/release/bench_market_multi --host 172.31.27.208 --port 9443 --duration 60 --tx-cpu 2 --rx-cpu 3 --main-cpu 4
+#   # bench_market_multi dpdk
+#   sudo build/linux/arm64/release/bench_market_multi_dpdk -a 0000:28:00.0 -l 4-7 -- --host 172.31.27.208 --port 9443 --duration 60 --local-ip 172.31.23.112 --gateway-ip 172.31.16.1 --tx-cpu 5 --rx-cpu 6 --main-cpu 7
+
+================================================================================
+[1/4] bench_pingpong (kernel) — 04:37:25–04:38:18 (51s)
+================================================================================
+Pings: 100, Interval: 500ms
+Handshake: 1095.3ms (tcp: 0.6ms, tls: 933.3ms, ws: 161.4ms)
+
+TX Queue (enqueue → flush):
+  samples: 100
+  min:     2153 ns
+  p50:     2364 ns
+  p99:     10620 ns
+  p99.9:   12252 ns
+  max:     12254 ns
+
+RTT (ping flush → pong arrive):
+  samples: 100
+  min:     422510 ns
+  p50:     457600 ns
+  p99:     1123840 ns
+  p99.9:   55033856 ns
+  max:     55022491 ns
+
+================================================================================
+[2/4] bench_pingpong (dpdk) — 04:38:25–04:39:18 (51s)
+================================================================================
+Pings: 100, Interval: 500ms
+Handshake: 50.0ms (tcp: 0.3ms, tls: 4.9ms, ws: 44.7ms)
+
+TX Queue (enqueue → flush):
+  samples: 100
+  min:     258 ns
+  p50:     404 ns
+  p99:     668 ns
+  p99.9:   8964 ns
+  max:     8963 ns
+
+RTT (ping flush → pong arrive):
+  samples: 100
+  min:     389555 ns
+  p50:     435072 ns
+  p99:     469120 ns
+  p99.9:   470656 ns
+  max:     470624 ns
+
+================================================================================
+[3/4] bench_market_multi (kernel) — 04:39:22–04:40:23 (60s)
+================================================================================
+Symbols: 3, Messages: 9192, Throughput: 153 msg/s
+Handshake: 38.5ms (tcp: 0.8ms, tls: 37.0ms, ws: 0.7ms)
+RX: 1606545 bytes (26776 B/s)
+
+RX Pipeline (rx_burst → data decoded):
+  samples: 9192
+  min:     1790 ns
+  p50:     2596 ns
+  p99:     4196 ns
+  p99.9:   5524 ns
+  max:     12811 ns
+
+  decrypt: p50=500ns  p99=700ns  p99.9=900ns
+  decode:  p50=100ns  p99=200ns  p99.9=300ns
+
+Feed Latency (server send → app recv):
+  samples: 9192
+  min:     95099 ns
+  p50:     644352 ns
+  p99:     1170944 ns
+  p99.9:   1236480 ns
+  max:     466958956 ns
+
+================================================================================
+[4/4] bench_market_multi (dpdk) — 04:40:30–04:41:31 (60s)
+================================================================================
+Symbols: 3, Messages: 9255, Throughput: 154 msg/s
+Handshake: 6.1ms (tcp: 0.2ms, tls: 5.1ms, ws: 0.8ms)
+RX: 1617579 bytes (26960 B/s)
+
+RX Pipeline (rx_burst → data decoded):
+  samples: 9255
+  min:     303 ns
+  p50:     436 ns
+  p99:     652 ns
+  p99.9:   1596 ns
+  max:     6329 ns
+
+  decrypt: p50=300ns  p99=500ns  p99.9=1000ns
+  decode:  p50=100ns  p99=200ns  p99.9=300ns
+
+Feed Latency (server send → app recv):
+  samples: 9255
+  min:     98981 ns
+  p50:     651520 ns
+  p99:     1189376 ns
+  p99.9:   1242624 ns
+  max:     17402948 ns
