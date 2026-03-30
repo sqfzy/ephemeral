@@ -23,16 +23,32 @@ DPDK 的核心价值在于**消除 kernel 网络栈的 3-4us 固有开销**（�
 
 > 3 轮平均值（Round 1/3/4，排除 Round 2 因 DPDK reassembly buffer overflow 断连）。
 
+### 吞吐量与流量统计
+
+| 指标 | Kernel (R3) | DPDK (R3) |
+|------|------------|-----------|
+| 消息数 | 2,020,381 | 2,022,743 |
+| 总字节数 | 365.2 MB | 365.2 MB |
+| WS Frames | 2,023,577 | 2,023,640 |
+| TLS Records | 2,023,567 | 2,023,630 |
+| TCP Packets | — (kernel 不追踪) | 657,643 |
+| RX Bursts | — | 614,304 |
+| **avg msg/s** | **1,122** | **1,124** |
+| **avg bytes/s** | **202.9 KB/s** | **202.9 KB/s** |
+| **avg msg size** | **181 B** | **181 B** |
+| **Per rx_burst** | — | **595 B, 3.3 frames, 1.1 TCP pkts** |
+
 ### 各轮数据一致性
 
-| 轮次 | 时段 (UTC) | Kernel msgs | DPDK msgs | DPDK p50 | DPDK p99 |
-|------|-----------|-------------|-----------|----------|----------|
-| R1 | 06:39-07:09 | 1,209,469 | 1,209,580 | 1188 ns | 9140 ns |
-| R3 | 07:39-08:09 | 2,020,381 | 2,022,743 | 1188 ns | 8452 ns |
-| R4 | 08:09-08:39 | 1,792,515 | 1,793,972 | 1268 ns | 8676 ns |
+| 轮次 | 时段 (UTC) | Kernel msgs | DPDK msgs | bytes (kern) | DPDK p50 | DPDK p99 |
+|------|-----------|-------------|-----------|-------------|----------|----------|
+| R1 | 06:39-07:09 | 1,209,469 | 1,209,580 | 218.4 MB | 1188 ns | 9140 ns |
+| R3 | 07:39-08:09 | 2,020,381 | 2,022,743 | 365.2 MB | 1188 ns | 8452 ns |
+| R4 | 08:09-08:39 | 1,792,515 | 1,793,972 | 323.5 MB | 1268 ns | 8676 ns |
 
 - 消息数差异 < 0.1%——证实同时运行的对照完全公平
 - DPDK p50 在三轮间波动 < 7%——结果稳定可复现
+- R3 流量最高（2M msgs / 365 MB）——对应亚洲开盘活跃时段
 
 ### 延迟差距根因分解
 
@@ -51,7 +67,16 @@ DPDK 的核心价值在于**消除 kernel 网络栈的 3-4us 固有开销**（�
 
 ## 2. 订单发送与响应延迟 — Mock Server 模拟（同时运行）
 
-使用校准过的 mock server（匹配真实 Binance 流量特征：avg 1100 msg/s, burst 14000 msg/s, 3.4 frames/TCP segment），kernel 和 DPDK 同时运行。
+使用校准过的 mock server（匹配真实 Binance 流量特征：avg 1100 msg/s, burst 14000 msg/s, 3.4 frames/TCP segment），kernel 和 DPDK 同时运行。30s duration，kernel 75835 msgs / DPDK 77751 msgs。
+
+### 流量统计（Mock Server 同时运行）
+
+| 指标 | Kernel | DPDK |
+|------|--------|------|
+| 消息数 | 75,835 | 77,751 |
+| 总字节数 | 14.0 MB | 14.4 MB |
+| Orders 完成 | 59/59 | 59/59 |
+| Per rx_burst | — | 1.3 WS frames, 234 B, 1.0 TCP pkts |
 
 ### TX Pipeline 延迟（应用层 enqueue → NIC tx_burst）
 
@@ -80,7 +105,7 @@ DPDK 的核心价值在于**消除 kernel 网络栈的 3-4us 固有开销**（�
 
 ## 3. Ping/Pong 延迟 — Mock Server 模拟（同时运行）
 
-纯 WebSocket ping/pong，无行情数据，200 次采样。
+纯 WebSocket ping/pong，无行情数据，200 次采样。kernel 和 DPDK 同时运行，各发送 200 pings，间隔 200ms，总时长 ~41s。
 
 | 指标 | Kernel | DPDK | DPDK 优势 |
 |------|--------|------|-----------|
