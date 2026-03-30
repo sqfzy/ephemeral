@@ -34,10 +34,14 @@ public:
         // Guard: payload must fit in a uint16_t length field.
         // Silently truncating would corrupt the wire format, so return 0
         // to signal failure (caller already checks return value > 0).
+        // Zero-length payloads are rejected in both encode and decode because
+        // the framer uses the first payload byte as msg_type — a zero-length
+        // frame would require reading past the payload. Protocols needing
+        // heartbeats should use a 1-byte sentinel message instead.
         if (len > kMaxPayloadLen || len == 0 || !data || !out) [[unlikely]] {
-            SPDLOG_DEBUG("LengthPrefixFramer::encode: invalid args len={} "
-                         "data={} out={} (max={}, min=1)",
-                         len, fmt::ptr(data), fmt::ptr(out), kMaxPayloadLen);
+            SPDLOG_WARN("LengthPrefixFramer::encode: invalid args len={} "
+                        "data={} out={} (max={}, min=1) — caller bug",
+                        len, fmt::ptr(data), fmt::ptr(out), kMaxPayloadLen);
             return 0;
         }
 
@@ -59,6 +63,8 @@ public:
         uint16_t msg_len = static_cast<uint16_t>(
             (static_cast<uint16_t>(data[0]) << 8) | data[1]);
 
+        // Zero-length payloads are rejected: msg_type is derived from payload[0],
+        // so a zero-length frame has no valid msg_type. See encode() comment.
         if (msg_len == 0) {
             SPDLOG_WARN("LengthPrefixFramer::decode: zero-length payload "
                         "(invalid format)");

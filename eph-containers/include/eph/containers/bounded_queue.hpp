@@ -176,6 +176,10 @@ class BoundedQueue {
     [[nodiscard]] bool try_produce(F&& writer_func) noexcept {
         const size_t tail = writer_.tail_.load(std::memory_order_relaxed);
 
+        // SPSC invariant: shadow_head_ is only accessed by the single writer
+        // thread, so it needs no atomic protection. It caches the last observed
+        // value of head_ to avoid an expensive cross-core acquire load on the
+        // fast path. We only reload head_ when the cached value indicates full.
         if (tail - writer_.shadow_head_ >= Capacity) {
             const size_t head = reader_.head_.load(std::memory_order_acquire);
             writer_.shadow_head_ = head;

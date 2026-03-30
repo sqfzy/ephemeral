@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -126,9 +127,8 @@ class HdrHistogram {
         establish_size(highest_trackable_value);
 
         if (counts_len_ > 10'000'000) {
-            // Unreasonable histogram size — reject to prevent OOM
-            counts_len_ = 0;
-            return;
+            throw std::invalid_argument(
+                "Histogram too large: counts_len exceeds 10M");
         }
 
         counts_.resize(counts_len_, 0);

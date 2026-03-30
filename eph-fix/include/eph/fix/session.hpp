@@ -260,6 +260,7 @@ public:
         expected_inbound_seq_.store(1, std::memory_order_relaxed);
         last_inbound_seq_.store(0, std::memory_order_relaxed);
         test_request_pending_.store(false, std::memory_order_relaxed);
+        heartbeat_interval_sec_.store(cfg_.heartbeat_interval_sec, std::memory_order_relaxed);
         SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(), "Session reset");
     }
 

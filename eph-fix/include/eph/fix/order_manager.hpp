@@ -157,12 +157,19 @@ public:
         case ExecType::PartialFill:
         case ExecType::Trade: {
             // Update fill quantities from the report.
+            // NOTE: int64_t → double conversion loses precision for quantities
+            // exceeding 2^53 (≈9.007e15). Acceptable for all practical fill sizes.
             auto last_qty = report.last_qty();
             auto last_px  = report.last_px();
 
             if (last_qty && last_px) {
                 double fill_qty   = static_cast<double>(*last_qty);
                 double fill_price = *last_px;
+
+                if (*last_qty > (1LL << 53)) {
+                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                        "fill quantity {} exceeds double precision limit (2^53)", *last_qty);
+                }
 
                 // Compute new running average fill price.
                 double old_total = order.avg_fill_price * order.filled_qty;
@@ -191,12 +198,19 @@ public:
         }
 
         case ExecType::Fill: {
+            // NOTE: int64_t → double conversion loses precision for quantities
+            // exceeding 2^53 (≈9.007e15). Acceptable for all practical fill sizes.
             auto last_qty = report.last_qty();
             auto last_px  = report.last_px();
 
             if (last_qty && last_px) {
                 double fill_qty   = static_cast<double>(*last_qty);
                 double fill_price = *last_px;
+
+                if (*last_qty > (1LL << 53)) {
+                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                        "fill quantity {} exceeds double precision limit (2^53)", *last_qty);
+                }
 
                 double old_total = order.avg_fill_price * order.filled_qty;
                 order.filled_qty += fill_qty;

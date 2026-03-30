@@ -11,7 +11,6 @@
 ///   [ContentType(1)] [Legacy version(2)] [Length(2)] [Encrypted data] [Auth tag(16)]
 
 #include <bit>
-#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -254,7 +253,13 @@ public:
     /// @return Total bytes written to out, or 0 on error
     uint16_t encrypt(uint8_t* plaintext, uint16_t plaintext_len,
                      uint8_t* out) noexcept {
-        if (plaintext_len > tls_const::kMaxRecordPayload) return 0;
+        if (plaintext_len > tls_const::kMaxRecordPayload) {
+            SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
+                "encrypt: plaintext_len={} exceeds kMaxRecordPayload={}, "
+                "dropping record",
+                plaintext_len, tls_const::kMaxRecordPayload);
+            return 0;
+        }
 
         if (write_seq_ >= tls_record::kMaxSequenceNumber) {
             SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
@@ -277,8 +282,15 @@ public:
         // Temporarily append TLS 1.3 inner content type byte after payload.
         // Caller guarantees 1 byte of writable space past plaintext_len.
         // Guard: plaintext may be nullptr when plaintext_len == 0 (valid TLS padding).
-        assert((plaintext != nullptr || plaintext_len == 0) &&
-               "encrypt: plaintext must be non-null when plaintext_len > 0");
+        // Runtime guard: plaintext must be non-null when plaintext_len > 0.
+        // The caller must also provide 1 byte of writable space past plaintext_len
+        // for the TLS 1.3 inner content type byte. We cannot verify the extra byte
+        // here (no buffer size), but we can reject obviously invalid inputs.
+        if (plaintext == nullptr && plaintext_len > 0) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "encrypt: plaintext is null but plaintext_len={}", plaintext_len);
+            return 0;
+        }
         uint8_t saved = 0;
         if (plaintext) {
             saved = plaintext[plaintext_len];
@@ -310,8 +322,16 @@ public:
 
         write_seq_++;
 
+        // Hard limit: sequence number has reached the maximum — next encrypt()
+        // call will be rejected. Log at ERROR so operators notice immediately.
+        if (write_seq_ >= tls_record::kMaxSequenceNumber) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "TLS write sequence exhausted ({}/{}): next encrypt() will fail, "
+                "must reconnect immediately",
+                write_seq_, tls_record::kMaxSequenceNumber);
+        }
         // Advance warning: approaching sequence exhaustion
-        if (write_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
+        else if (write_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
                 "TLS write sequence at {}% of limit ({}/{}), "
                 "consider reconnecting soon to avoid forced disconnect",
@@ -360,6 +380,10 @@ public:
         uint8_t content_type;
         uint16_t payload_len;
         if (!tls_record::parse_record_header(record, content_type, payload_len)) {
+            SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
+                "decrypt: invalid record header — content_type=0x{:02X}, "
+                "payload_len={}, record_len={}",
+                content_type, payload_len, record_len);
             return false;
         }
 
@@ -406,8 +430,16 @@ public:
         out_len = static_cast<uint16_t>(plaintext_len);
         read_seq_++;
 
+        // Hard limit: sequence number has reached the maximum — next decrypt()
+        // call will be rejected. Log at ERROR so operators notice immediately.
+        if (read_seq_ >= tls_record::kMaxSequenceNumber) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
+                "TLS read sequence exhausted ({}/{}): next decrypt() will fail, "
+                "must reconnect immediately",
+                read_seq_, tls_record::kMaxSequenceNumber);
+        }
         // Advance warning: approaching sequence exhaustion
-        if (read_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
+        else if (read_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
                 "TLS read sequence at {}% of limit ({}/{}), "
                 "consider reconnecting soon to avoid forced disconnect",

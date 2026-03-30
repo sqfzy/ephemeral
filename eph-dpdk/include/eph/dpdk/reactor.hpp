@@ -119,8 +119,9 @@ public:
     /// Returns connection index (0-based) or error string.
     [[nodiscard]] std::expected<size_t, std::string>
     add_connection(TcpSession<>* session, ReactorDataCallback on_data) {
-        assert(!running_.load(std::memory_order_acquire) &&
-               "add_connection() must be called before start()");
+        if (running_.load(std::memory_order_acquire)) {
+            return std::unexpected("add_connection() must be called before start()");
+        }
         if (!session) return std::unexpected("session is null");
         size_t idx = count_.load(std::memory_order_relaxed);
         if (idx >= kReactorMaxConnections) {

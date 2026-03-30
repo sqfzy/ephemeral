@@ -94,12 +94,18 @@ public:
 
         if (!is_reducing) {
             // Pure increase (or first fill): update average price.
-            // avg_price = (old_qty * old_avg + fill_qty * price) / new_qty
+            // Use incremental formula to avoid catastrophic cancellation:
+            //   avg_price += (price - avg_price) * (|signed_qty| / |new_qty|)
             // When old_qty == 0 this simplifies to avg_price = price.
             if (new_qty != 0.0) {
-                pos.avg_price = (std::abs(old_qty) * pos.avg_price +
-                                 std::abs(signed_qty) * price) /
-                                std::abs(new_qty);
+                const double delta = price - pos.avg_price;
+                pos.avg_price += delta * (std::abs(signed_qty) / std::abs(new_qty));
+            }
+            // Guard against non-finite results from degenerate inputs.
+            if (!std::isfinite(pos.avg_price)) {
+                SPDLOG_WARN("on_fill: symbol={} avg_price became non-finite, "
+                            "resetting to fill price={}", symbol, price);
+                pos.avg_price = price;
             }
         } else {
             // Reducing fill -- may partially or fully close, or cross zero.
@@ -123,6 +129,13 @@ public:
                 pos.avg_price = price;
             }
             // If exactly flat or partially closed, avg_price stays the same.
+
+            // Guard against non-finite results from degenerate inputs.
+            if (!std::isfinite(pos.avg_price)) {
+                SPDLOG_WARN("on_fill: symbol={} avg_price became non-finite after "
+                            "reducing fill, resetting to fill price={}", symbol, price);
+                pos.avg_price = price;
+            }
         }
 
         pos.qty      = new_qty;

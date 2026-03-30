@@ -239,6 +239,9 @@ class TlsSession {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// BIO context: holds pointer to TcpImpl and intermediate buffers.
+    /// @warning Not thread-safe. TlsSession must be used from a single thread.
+    /// BIO callbacks access this struct without synchronization; concurrent
+    /// use from multiple threads is undefined behavior.
     struct BioContext {
         TcpImpl*             tcp = nullptr;
         std::vector<uint8_t> read_buf;   // Buffered data from TCP rx
@@ -627,7 +630,9 @@ public:
                     SPDLOG_LOGGER_ERROR(log,
                         "TLS handshake timeout ({}ms)",
                         config_.handshake_timeout.count());
-                    return std::unexpected("TLS handshake timeout");
+                    return std::unexpected(std::format(
+                        "tls_timeout: handshake exceeded {}ms",
+                        config_.handshake_timeout.count()));
                 }
                 continue;
             }
@@ -637,8 +642,13 @@ public:
             SPDLOG_LOGGER_ERROR(log,
                 "TLS handshake failed: ssl_error={}, detail={}",
                 err, ssl_err);
+            // Classify error for callers: certificate/auth failures vs other
+            const char* prefix = (err == SSL_ERROR_SSL &&
+                (ssl_err.find("certificate") != std::string::npos ||
+                 ssl_err.find("alert") != std::string::npos))
+                ? "tls_rejected" : "tls_error";
             return std::unexpected(std::format(
-                "TLS handshake failed (err={}): {}", err, ssl_err));
+                "{}: handshake failed (err={}): {}", prefix, err, ssl_err));
         }
     }
 

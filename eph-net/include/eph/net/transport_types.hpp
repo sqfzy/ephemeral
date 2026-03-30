@@ -58,9 +58,13 @@ inline constexpr size_t kFilterSlots = 256;
 inline constexpr size_t kMaxFramesPerBatch = 128;
 
 /// Sentinel value for empty hash table slots. UINT32_MAX is used instead
-/// of 0 to allow extractor functions to legitimately return 0 for any
-/// recognized symbol — 0 as sentinel would collide if a hash value is 0.
+/// of 0 so that 0 can serve as the "unrecognized payload" return value
+/// from extractor functions (always delivered, never deduplicated).
 inline constexpr uint32_t kEmptySlotHash = UINT32_MAX;
+
+/// Hash value that extractors return for unrecognized payloads.
+/// Frames with this hash are always delivered (never deduplicated).
+inline constexpr uint32_t kUnrecognizedHash = 0;
 
 /// Core two-phase filter logic, shared between std::function and function pointer overloads.
 /// ExtractorFn must be callable as uint32_t(const uint8_t*, size_t).
@@ -80,7 +84,9 @@ void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
         auto& f = frames[i];
         uint32_t h = ext(f.payload, f.payload_len);
         hashes[i] = h;
-        if (h == kEmptySlotHash) continue;  // unrecognized: deliver unconditionally
+        // Hash 0 = unrecognized payload, UINT32_MAX = empty slot sentinel.
+        // Both bypass dedup — frame is always delivered.
+        if (h == kUnrecognizedHash || h == kEmptySlotHash) continue;
         size_t slot = h & (kFilterSlots - 1);
         for (size_t j = 0; j < kFilterSlots; ++j) {
             size_t s = (slot + j) & (kFilterSlots - 1);
@@ -97,7 +103,8 @@ void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
 
     // Pass 2: mark non-latest as skip using cached hashes.
     for (size_t i = 0; i < n; ++i) {
-        if (hashes[i] != kEmptySlotHash) frames[i].deliver = false;
+        if (hashes[i] != kEmptySlotHash && hashes[i] != kUnrecognizedHash)
+            frames[i].deliver = false;
     }
     // Restore latest per symbol.
     for (auto& s : slots) {

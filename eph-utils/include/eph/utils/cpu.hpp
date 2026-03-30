@@ -121,6 +121,7 @@ get_cpu_topology() {
     // Skip whitespace after colon
     auto val_start = colon + 1;
     while (val_start < line.size() && line[val_start] == ' ') ++val_start;
+    if (val_start >= line.size()) return {false, 0};
 
     unsigned value = 0;
     auto [ptr, ec] = std::from_chars(

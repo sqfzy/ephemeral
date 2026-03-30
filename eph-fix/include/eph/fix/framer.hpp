@@ -102,6 +102,11 @@ public:
                     "FIX frame BodyLength contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
                 return std::unexpected(eph::net::FrameError::kInvalidFormat);
             }
+            if (body_length > MaxBodyLength / 10) {
+                SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
+                    "FIX frame BodyLength overflow before multiply, body_length={}", body_length);
+                return std::unexpected(eph::net::FrameError::kInvalidFormat);
+            }
             body_length = body_length * 10 + static_cast<size_t>(c - '0');
             if (body_length > MaxBodyLength) {
                 SPDLOG_LOGGER_WARN(detail::fix_framer_logger(),
@@ -115,9 +120,13 @@ public:
 
         // Body starts here. Total = header + body + checksum ("10=XXX\x01" = 7 bytes)
         size_t header_len = static_cast<size_t>(p - msg);
-        size_t total = header_len + body_length + 7;
 
-        if (len < total) return std::unexpected(eph::net::FrameError::kIncomplete);
+        // Overflow-safe bounds check: verify len >= header_len + body_length + 7
+        // without computing a sum that could wrap.
+        if (body_length > len || header_len > len - body_length || header_len + body_length > len - 7)
+            return std::unexpected(eph::net::FrameError::kIncomplete);
+
+        size_t total = header_len + body_length + 7;
 
         // Verify CheckSum field presence and value
         const char* cs = msg + header_len + body_length;

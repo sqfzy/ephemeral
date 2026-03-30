@@ -12,6 +12,7 @@
 /// hot path.
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <optional>
@@ -24,9 +25,11 @@ namespace eph::containers {
 /// Single-writer, any-reader (no mutex). T must be trivially copyable.
 /// Capacity must be a power of two so index masking replaces modulo.
 ///
-/// @warning NOT thread-safe for concurrent readers. `head_` and `count_`
-///          are non-atomic. Use external synchronization if reading from
-///          a different thread than the writer.
+/// Thread safety: one writer may call push() concurrently with any number
+/// of readers calling at()/front()/back()/count()/full()/empty().
+/// `head_` and `count_` are atomic to support this pattern.
+/// Writers use relaxed stores; readers use acquire loads to observe a
+/// consistent count relative to the data already written.
 ///
 /// @tparam T        Element type (must be trivially copyable).
 /// @tparam Capacity Buffer size — must be a power of two.
@@ -37,11 +40,16 @@ public:
     static constexpr std::size_t capacity = Capacity;
 
     /// Push a new element, overwriting the oldest when full.
+    /// @note Writer-side only. Exactly one thread may call push().
     void push(const T& item) noexcept {
-        data_[head_ & kMask] = item;
-        ++head_;
-        if (count_ < Capacity) {
-            ++count_;
+        const std::size_t h = head_.load(std::memory_order_relaxed);
+        data_[h & kMask] = item;
+        // Release store on head_ so that readers who acquire-load head_
+        // are guaranteed to see the data written above.
+        head_.store(h + 1, std::memory_order_release);
+        const std::size_t c = count_.load(std::memory_order_relaxed);
+        if (c < Capacity) {
+            count_.store(c + 1, std::memory_order_release);
         }
     }
 
@@ -49,12 +57,14 @@ public:
     ///   0 = most recent, 1 = second most recent, etc.
     /// Returns std::nullopt if offset >= count().
     [[nodiscard]] std::optional<T> at(std::size_t offset) const noexcept {
-        if (offset >= count_) {
+        const std::size_t c = count_.load(std::memory_order_acquire);
+        if (offset >= c) {
             return std::nullopt;
         }
         // head_ points one past the last written slot.
         // Most recent element is at (head_ - 1), so offset 0 maps there.
-        const std::size_t idx = (head_ - 1 - offset) & kMask;
+        const std::size_t h = head_.load(std::memory_order_acquire);
+        const std::size_t idx = (h - 1 - offset) & kMask;
         return data_[idx];
     }
 
@@ -65,39 +75,41 @@ public:
 
     /// Oldest element in the buffer.
     [[nodiscard]] std::optional<T> back() const noexcept {
-        if (count_ == 0) {
+        const std::size_t c = count_.load(std::memory_order_acquire);
+        if (c == 0) {
             return std::nullopt;
         }
-        return at(count_ - 1);
+        return at(c - 1);
     }
 
     /// Number of elements currently stored (up to Capacity).
     [[nodiscard]] std::size_t count() const noexcept {
-        return count_;
+        return count_.load(std::memory_order_acquire);
     }
 
     /// Whether the buffer has reached its fixed capacity.
     [[nodiscard]] bool full() const noexcept {
-        return count_ == Capacity;
+        return count_.load(std::memory_order_acquire) == Capacity;
     }
 
     /// Whether the buffer contains no elements.
     [[nodiscard]] bool empty() const noexcept {
-        return count_ == 0;
+        return count_.load(std::memory_order_acquire) == 0;
     }
 
     /// Remove all elements and reset write position.
+    /// @warning Not thread-safe. Call only when no concurrent readers/writers.
     void clear() noexcept {
-        head_  = 0;
-        count_ = 0;
+        head_.store(0, std::memory_order_relaxed);
+        count_.store(0, std::memory_order_relaxed);
     }
 
 private:
     static constexpr std::size_t kMask = Capacity - 1;
 
     std::array<T, Capacity> data_{};
-    std::size_t head_  = 0;   ///< Next write position (monotonically increasing).
-    std::size_t count_ = 0;   ///< Elements currently in the buffer.
+    std::atomic<std::size_t> head_{0};   ///< Next write position (monotonically increasing).
+    std::atomic<std::size_t> count_{0};  ///< Elements currently in the buffer.
 };
 
 } // namespace eph::containers

@@ -260,10 +260,10 @@ class EvictingQueueBytes {
             read_id = msg.id;
 
             // 计算被 SeqLock 覆盖丢弃的包数量
+            // IDs are 1-based (first pushed message has id=1).
+            // On first read (prev_pop==0), messages 1..read_id-1 were skipped.
             auto prev_pop = last_pop_id_.load(std::memory_order_relaxed);
-            discarded = (prev_pop == 0)
-                            ? 0
-                            : static_cast<uint32_t>(read_id - prev_pop - 1);
+            discarded = static_cast<uint32_t>(read_id - prev_pop - 1);
 
             uint32_t safe_len =
                 std::min(msg.len, static_cast<uint32_t>(MaxDataSize));

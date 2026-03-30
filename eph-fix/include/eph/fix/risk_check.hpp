@@ -131,15 +131,25 @@ public:
             }
         }
 
-        // 5. Total exposure check (current exposure + this order's notional contribution).
+        // 5. Total exposure check: compute projected post-trade exposure.
+        //    A sell against a long (or buy against a short) reduces exposure,
+        //    so we project the symbol's new notional rather than blindly adding.
         if (limits_.max_total_exposure > 0.0) {
             const double current_exposure = positions.net_exposure();
-            // Conservative: add order notional to current exposure.
-            // A reducing order may lower exposure, but we use worst-case for safety.
-            if (current_exposure + notional > limits_.max_total_exposure) {
-                SPDLOG_WARN("risk reject: total exposure {} + order notional {} "
-                            "exceeds limit {}",
-                            current_exposure, notional, limits_.max_total_exposure);
+            const auto&  pos              = positions.get(symbol);
+            const double signed_qty       = (side == '1') ? qty : -qty;
+            const double projected_abs_qty = std::abs(pos.qty + signed_qty);
+            // Use order price as best estimate for projected notional.
+            const double projected_symbol_notional = projected_abs_qty * price;
+            // Replace this symbol's current notional with its projected notional.
+            const double projected_exposure =
+                current_exposure - pos.notional + projected_symbol_notional;
+            if (projected_exposure > limits_.max_total_exposure) {
+                SPDLOG_WARN("risk reject: projected total exposure {} "
+                            "(current={}, symbol {} notional {} -> {}) exceeds limit {}",
+                            projected_exposure, current_exposure, symbol,
+                            pos.notional, projected_symbol_notional,
+                            limits_.max_total_exposure);
                 return RiskRejectReason::kTotalExposureExceeded;
             }
         }

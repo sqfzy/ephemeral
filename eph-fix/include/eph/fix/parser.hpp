@@ -763,6 +763,11 @@ parse(const uint8_t* data, size_t len) noexcept {
                 "FIX parse: BodyLength contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
             return std::unexpected(ParseError::kInvalidFormat);
         }
+        if (body_length > MaxBodyLength / 10) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "FIX parse: BodyLength overflow before multiply, body_length={}", body_length);
+            return std::unexpected(ParseError::kInvalidFormat);
+        }
         body_length = body_length * 10 + static_cast<size_t>(c - '0');
         if (body_length > MaxBodyLength) {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
@@ -776,9 +781,13 @@ parse(const uint8_t* data, size_t len) noexcept {
     // CheckSum "10=XXX\x01" (7 bytes) follows the body.
     const char* body_start = p;
     size_t header_len = static_cast<size_t>(body_start - msg);
-    size_t total_needed = header_len + body_length + 7; // 7 = "10=XXX\x01"
 
-    if (len < total_needed) return std::unexpected(ParseError::kIncomplete);
+    // Overflow-safe bounds check: verify len >= header_len + body_length + 7
+    // without computing a sum that could wrap.
+    if (len < header_len + 7 || body_length > len - header_len - 7)
+        return std::unexpected(ParseError::kIncomplete);
+
+    size_t total_needed = header_len + body_length + 7; // 7 = "10=XXX\x01"
 
     // Verify the checksum
     const char* cs_field = body_start + body_length;

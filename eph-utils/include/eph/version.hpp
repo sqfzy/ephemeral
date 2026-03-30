@@ -5,8 +5,11 @@
 ///
 /// Version components are derived from the project-level xmake.lua
 /// set_version() declaration. Keep them in sync when bumping versions.
-/// When bumping: update kVersionMajor/Minor/Patch AND kVersionString.
+/// When bumping: update kVersionMajor/Minor/Patch only — strings are
+/// generated automatically.
 
+#include <array>
+#include <cstddef>
 #include <string_view>
 
 namespace eph {
@@ -25,13 +28,70 @@ static_assert(kVersionMinor < 100 && kVersionPatch < 100,
 inline constexpr int kVersion =
     kVersionMajor * 10000 + kVersionMinor * 100 + kVersionPatch;
 
-/// Human-readable version string — MUST match kVersionMajor.kVersionMinor.kVersionPatch.
-inline constexpr std::string_view kVersionString = "1.0.0";
+namespace detail {
 
-/// Runtime version string combining library name and version.
-/// Returns "ephemeral/1.0.0" — suitable for User-Agent headers,
+// constexpr helper: write a non-negative int into a char buffer, return chars written.
+constexpr std::size_t write_int(char* buf, int value) {
+    if (value == 0) {
+        buf[0] = '0';
+        return 1;
+    }
+    // Max digits for a 32-bit int is 10.
+    char tmp[10]{};
+    std::size_t len = 0;
+    int v = value;
+    while (v > 0) {
+        tmp[len++] = static_cast<char>('0' + v % 10);
+        v /= 10;
+    }
+    // Reverse into buf.
+    for (std::size_t i = 0; i < len; ++i) {
+        buf[i] = tmp[len - 1 - i];
+    }
+    return len;
+}
+
+// Build "M.m.p" at compile time. 32 chars is more than enough.
+constexpr auto make_version_string() {
+    std::array<char, 32> buf{};
+    std::size_t pos = 0;
+    pos += write_int(buf.data() + pos, kVersionMajor);
+    buf[pos++] = '.';
+    pos += write_int(buf.data() + pos, kVersionMinor);
+    buf[pos++] = '.';
+    pos += write_int(buf.data() + pos, kVersionPatch);
+    return std::pair{buf, pos};
+}
+
+// Build "ephemeral/M.m.p" at compile time.
+constexpr auto make_version_full() {
+    constexpr std::string_view prefix = "ephemeral/";
+    std::array<char, 64> buf{};
+    std::size_t pos = 0;
+    for (char c : prefix) buf[pos++] = c;
+    pos += write_int(buf.data() + pos, kVersionMajor);
+    buf[pos++] = '.';
+    pos += write_int(buf.data() + pos, kVersionMinor);
+    buf[pos++] = '.';
+    pos += write_int(buf.data() + pos, kVersionPatch);
+    return std::pair{buf, pos};
+}
+
+inline constexpr auto kVersionStringData = make_version_string();
+inline constexpr auto kVersionFullData   = make_version_full();
+
+} // namespace detail
+
+/// Human-readable version string, generated from kVersionMajor/Minor/Patch.
+inline constexpr std::string_view kVersionString{
+    detail::kVersionStringData.first.data(),
+    detail::kVersionStringData.second};
+
+/// Runtime version string: "ephemeral/M.m.p" — suitable for User-Agent headers,
 /// log preambles, and CLI --version output.
-inline constexpr std::string_view kVersionFull = "ephemeral/1.0.0";
+inline constexpr std::string_view kVersionFull{
+    detail::kVersionFullData.first.data(),
+    detail::kVersionFullData.second};
 
 /// Check at compile time whether the library version is at least (major, minor, patch).
 /// Useful for feature-gating in downstream code:

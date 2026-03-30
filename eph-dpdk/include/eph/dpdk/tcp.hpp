@@ -353,11 +353,15 @@ public:
             rcv_nxt_ = other.rcv_nxt_;
             rcv_wnd_ = other.rcv_wnd_;
             snd_wnd_ = other.snd_wnd_;
+            // Clear destination's old reorder state before overwriting
+            for (uint8_t i = 0; i < reorder_count_; ++i)
+                reorder_buf_[i] = {};
             reorder_count_ = other.reorder_count_;
             stats_ = other.stats_;
             ack_pending_ = other.ack_pending_;
             time_wait_deadline_ = other.time_wait_deadline_;
             last_rx_burst_tsc_.store(other.last_rx_burst_tsc_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            // Copy new reorder state
             for (uint8_t i = 0; i < reorder_count_; ++i)
                 reorder_buf_[i] = other.reorder_buf_[i];
             other.pool_ = nullptr;

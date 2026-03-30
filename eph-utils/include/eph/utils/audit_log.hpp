@@ -127,6 +127,8 @@ public:
     AuditLog() noexcept = default;
 
     /// Record an audit event (single-writer, no synchronization).
+    /// @note NOT thread-safe. Must be called from a single writer thread only.
+    ///       For concurrent writes, use record_mt() instead.
     void record(AuditEvent event, uint64_t order_id,
                 double price, double quantity,
                 Side side, uint8_t venue_id,
@@ -179,9 +181,11 @@ public:
     /// Access entry at offset from newest (0 = most recent).
     /// Returns nullptr if offset >= count().
     [[nodiscard]] const AuditEntry* at(size_t offset) const noexcept {
-        size_t n = count();
+        // Load head_ once to avoid TOCTOU race between count check and index calc.
+        size_t head = head_.load(std::memory_order_acquire);
+        size_t n = head < Capacity ? head : Capacity;
         if (offset >= n) return nullptr;
-        size_t idx = (head_.load(std::memory_order_acquire) - 1 - offset) & kMask;
+        size_t idx = (head - 1 - offset) & kMask;
         return &entries_[idx];
     }
 

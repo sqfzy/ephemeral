@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 
 #include <spdlog/spdlog.h>
 
@@ -17,15 +18,18 @@ class Ema {
   public:
     /// @param alpha Smoothing factor in (0, 1]. Larger = more responsive.
     ///              For period N: alpha = 2/(N+1).
-    explicit constexpr Ema(double alpha) noexcept : alpha_(alpha) {
-        // Precondition: alpha must be in (0.0, 1.0]. Validated by callers.
-        // Cannot use assert() in constexpr context pre-C++26.
+    explicit Ema(double alpha) : alpha_(alpha) {
+        if (alpha <= 0.0 || alpha > 1.0) {
+            throw std::invalid_argument("EMA alpha must be in (0.0, 1.0]");
+        }
     }
 
     /// Create from period (number of samples). alpha = 2/(period+1).
     /// @param period Must be >= 1.
-    [[nodiscard]] static constexpr Ema from_period(std::size_t period) noexcept {
-        assert(period >= 1 && "period must be >= 1");
+    [[nodiscard]] static Ema from_period(std::size_t period) {
+        if (period < 1) {
+            throw std::invalid_argument("EMA period must be >= 1");
+        }
         return Ema(2.0 / static_cast<double>(period + 1));
     }
 
@@ -81,11 +85,13 @@ class EmaCrossover {
 
     /// @param fast_period Period for the fast (responsive) EMA. Must be >= 1.
     /// @param slow_period Period for the slow (smooth) EMA. Must be >= fast_period.
-    EmaCrossover(std::size_t fast_period, std::size_t slow_period) noexcept
+    EmaCrossover(std::size_t fast_period, std::size_t slow_period)
         : fast_(Ema::from_period(fast_period)),
           slow_(Ema::from_period(slow_period)) {
-        assert(fast_period <= slow_period &&
-               "fast_period should be <= slow_period");
+        if (fast_period > slow_period) {
+            throw std::invalid_argument(
+                "fast_period should be <= slow_period");
+        }
         SPDLOG_DEBUG(
             "EmaCrossover created: fast_period={}, slow_period={}, "
             "fast_alpha={:.4f}, slow_alpha={:.4f}",

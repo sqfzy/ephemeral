@@ -75,7 +75,11 @@ inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
     int64_t result = 0;
     for (char c : sv) {
         if (c < '0' || c > '9') return std::nullopt;
-        result = result * 10 + (c - '0');
+        if (result > INT64_MAX / 10) return std::nullopt;
+        result = result * 10;
+        int digit = c - '0';
+        if (result > INT64_MAX - digit) return std::nullopt;
+        result += digit;
     }
     return result;
 }

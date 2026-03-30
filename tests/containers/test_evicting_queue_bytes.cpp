@@ -576,9 +576,9 @@ TEST(EvictingQueueBytesPeek, TryPeekLatest_EvictionDoesNotAffectDiscardCounter) 
     auto len = queue.try_pop_latest_wts(out2, ts, discarded);
     ASSERT_TRUE(len.has_value());
     EXPECT_EQ(ts, 300u);
-    // First consume after push: last_pop_id_ was 0, so discarded = 0
-    // (first read always reports 0 discards per the implementation)
-    EXPECT_EQ(discarded, 0u);
+    // First consume: last_pop_id_ == 0, read_id == 3 (IDs are 1-based).
+    // Messages 1 and 2 were never consumed, so discarded = 3 - 0 - 1 = 2.
+    EXPECT_EQ(discarded, 2u);
 }
 
 // ===========================================================================

@@ -217,6 +217,16 @@ parse_upgrade_response(const char* data, size_t len) {
             value.remove_suffix(1);
         }
 
+        // Reject header values containing bare CR or LF (header injection defense)
+        if (name.find('\r') != std::string_view::npos ||
+            name.find('\n') != std::string_view::npos ||
+            value.find('\r') != std::string_view::npos ||
+            value.find('\n') != std::string_view::npos) {
+            SPDLOG_LOGGER_WARN(log,
+                "Header injection attempt detected: header name or value contains embedded CR/LF");
+            continue;
+        }
+
         if (detail::iequals(name, "Upgrade")) {
             result.has_upgrade = detail::iequals(value, "websocket");
         } else if (detail::iequals(name, "Connection")) {

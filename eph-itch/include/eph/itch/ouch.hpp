@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
@@ -114,6 +115,8 @@ struct EnterOrder {
                         uint32_t price,
                         uint32_t time_in_force,
                         std::string_view firm) noexcept {
+        assert(buf != nullptr && "buffer must not be null");
+        // Caller must ensure buf has at least kSize (49) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_DEBUG("EnterOrder::build: null buffer");
             return 0;
@@ -171,6 +174,8 @@ struct ReplaceOrder {
                         uint32_t shares,
                         uint32_t price,
                         uint32_t time_in_force) noexcept {
+        assert(buf != nullptr && "buffer must not be null");
+        // Caller must ensure buf has at least kSize (47) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_DEBUG("ReplaceOrder::build: null buffer");
             return 0;
@@ -214,6 +219,8 @@ struct CancelOrder {
     static size_t build(uint8_t* buf,
                         std::string_view token,
                         uint32_t shares) noexcept {
+        assert(buf != nullptr && "buffer must not be null");
+        // Caller must ensure buf has at least kSize (19) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_DEBUG("CancelOrder::build: null buffer");
             return 0;
@@ -255,31 +262,35 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
 
-    [[nodiscard]] uint8_t  msg_type()  const noexcept { return data_[0]; }
-    [[nodiscard]] uint64_t timestamp() const noexcept { return read_be64(data_ + 1); }
+    // All accessors assert valid() in debug builds to catch misuse early.
+    [[nodiscard]] uint8_t  msg_type()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return data_[0]; }
+    [[nodiscard]] uint64_t timestamp() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 1); }
 
     [[nodiscard]] std::string_view token() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 9), 14};
     }
 
-    [[nodiscard]] char     side()   const noexcept { return static_cast<char>(data_[23]); }
-    [[nodiscard]] uint32_t shares() const noexcept { return read_be32(data_ + 24); }
+    [[nodiscard]] char     side()   const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[23]); }
+    [[nodiscard]] uint32_t shares() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 24); }
 
     [[nodiscard]] std::string_view symbol() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 28), 8};
     }
 
-    [[nodiscard]] uint32_t price()         const noexcept { return read_be32(data_ + 36); }
-    [[nodiscard]] uint32_t time_in_force() const noexcept { return read_be32(data_ + 40); }
+    [[nodiscard]] uint32_t price()         const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 36); }
+    [[nodiscard]] uint32_t time_in_force() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 40); }
 
     [[nodiscard]] std::string_view firm() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 44), 4};
     }
 
-    [[nodiscard]] char     display()        const noexcept { return static_cast<char>(data_[48]); }
-    [[nodiscard]] uint64_t order_reference() const noexcept { return read_be64(data_ + 49); }
-    [[nodiscard]] char     capacity()       const noexcept { return static_cast<char>(data_[57]); }
-    [[nodiscard]] char     order_state()    const noexcept { return static_cast<char>(data_[60]); }
+    [[nodiscard]] char     display()        const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[48]); }
+    [[nodiscard]] uint64_t order_reference() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 49); }
+    [[nodiscard]] char     capacity()       const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[57]); }
+    [[nodiscard]] char     order_state()    const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[60]); }
 
 private:
     const uint8_t* data_ = nullptr;
@@ -306,17 +317,19 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
 
-    [[nodiscard]] uint8_t  msg_type()  const noexcept { return data_[0]; }
-    [[nodiscard]] uint64_t timestamp() const noexcept { return read_be64(data_ + 1); }
+    // All accessors assert valid() in debug builds to catch misuse early.
+    [[nodiscard]] uint8_t  msg_type()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return data_[0]; }
+    [[nodiscard]] uint64_t timestamp() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 1); }
 
     [[nodiscard]] std::string_view token() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 9), 14};
     }
 
-    [[nodiscard]] uint32_t executed_shares()  const noexcept { return read_be32(data_ + 23); }
-    [[nodiscard]] uint32_t execution_price()  const noexcept { return read_be32(data_ + 27); }
-    [[nodiscard]] char     liquidity_flag()   const noexcept { return static_cast<char>(data_[31]); }
-    [[nodiscard]] uint64_t match_number()     const noexcept { return read_be64(data_ + 32); }
+    [[nodiscard]] uint32_t executed_shares()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 23); }
+    [[nodiscard]] uint32_t execution_price()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 27); }
+    [[nodiscard]] char     liquidity_flag()   const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[31]); }
+    [[nodiscard]] uint64_t match_number()     const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 32); }
 
 private:
     const uint8_t* data_ = nullptr;
@@ -342,15 +355,17 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
 
-    [[nodiscard]] uint8_t  msg_type()  const noexcept { return data_[0]; }
-    [[nodiscard]] uint64_t timestamp() const noexcept { return read_be64(data_ + 1); }
+    // All accessors assert valid() in debug builds to catch misuse early.
+    [[nodiscard]] uint8_t  msg_type()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return data_[0]; }
+    [[nodiscard]] uint64_t timestamp() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 1); }
 
     [[nodiscard]] std::string_view token() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 9), 14};
     }
 
-    [[nodiscard]] uint32_t decrement_shares() const noexcept { return read_be32(data_ + 23); }
-    [[nodiscard]] char     reason()           const noexcept { return static_cast<char>(data_[27]); }
+    [[nodiscard]] uint32_t decrement_shares() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 23); }
+    [[nodiscard]] char     reason()           const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[27]); }
 
 private:
     const uint8_t* data_ = nullptr;
@@ -379,24 +394,28 @@ public:
 
     [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
 
-    [[nodiscard]] uint8_t  msg_type()  const noexcept { return data_[0]; }
-    [[nodiscard]] uint64_t timestamp() const noexcept { return read_be64(data_ + 1); }
+    // All accessors assert valid() in debug builds to catch misuse early.
+    [[nodiscard]] uint8_t  msg_type()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return data_[0]; }
+    [[nodiscard]] uint64_t timestamp() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 1); }
 
     [[nodiscard]] std::string_view replacement_token() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 9), 14};
     }
 
-    [[nodiscard]] char     side()   const noexcept { return static_cast<char>(data_[23]); }
-    [[nodiscard]] uint32_t shares() const noexcept { return read_be32(data_ + 24); }
+    [[nodiscard]] char     side()   const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[23]); }
+    [[nodiscard]] uint32_t shares() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 24); }
 
     [[nodiscard]] std::string_view symbol() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 28), 8};
     }
 
-    [[nodiscard]] uint32_t price()          const noexcept { return read_be32(data_ + 36); }
-    [[nodiscard]] uint64_t order_reference() const noexcept { return read_be64(data_ + 49); }
+    [[nodiscard]] uint32_t price()          const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 36); }
+    [[nodiscard]] uint64_t order_reference() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 49); }
 
     [[nodiscard]] std::string_view previous_token() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
         return {reinterpret_cast<const char*>(data_ + 61), 14};
     }
 

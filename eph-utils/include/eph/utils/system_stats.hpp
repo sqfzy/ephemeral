@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -192,12 +193,12 @@ class SystemStats {
     static long read_current_rss_kb() noexcept {
 #if defined(__linux__)
         // /proc/self/statm fields: size resident shared text lib data dt (in pages)
-        FILE* f = std::fopen("/proc/self/statm", "r");
-        if (!f) return 0;
+        auto closer = [](FILE* f) { if (f) std::fclose(f); };
+        std::unique_ptr<FILE, decltype(closer)> fp(std::fopen("/proc/self/statm", "r"), closer);
+        if (!fp) return 0;
         long pages = 0;
         // Skip first field (size), read second (resident)
-        if (std::fscanf(f, "%*ld %ld", &pages) != 1) pages = 0;
-        std::fclose(f);
+        if (std::fscanf(fp.get(), "%*ld %ld", &pages) != 1) pages = 0;
         // Convert pages to KB
         long ps = sysconf(_SC_PAGESIZE);
         if (ps <= 0) return 0;
@@ -211,14 +212,14 @@ class SystemStats {
     /// Read thread count from /proc/self/status (Linux). Returns 0 on failure.
     static int read_thread_count() noexcept {
 #if defined(__linux__)
-        FILE* f = std::fopen("/proc/self/status", "r");
-        if (!f) return 0;
+        auto closer = [](FILE* f) { if (f) std::fclose(f); };
+        std::unique_ptr<FILE, decltype(closer)> fp(std::fopen("/proc/self/status", "r"), closer);
+        if (!fp) return 0;
         char line[256];
         int threads = 0;
-        while (std::fgets(line, sizeof(line), f)) {
+        while (std::fgets(line, sizeof(line), fp.get())) {
             if (std::sscanf(line, "Threads: %d", &threads) == 1) break;
         }
-        std::fclose(f);
         return threads;
 #else
         return 0;
@@ -228,7 +229,8 @@ class SystemStats {
     [[nodiscard]] SystemResourceStats compute_delta(
         const rusage& current) const noexcept {
         auto time_diff = [](const timeval& t1, const timeval& t2) {
-            return (t2.tv_sec - t1.tv_sec) + (t2.tv_usec - t1.tv_usec) / 1e6;
+            return static_cast<double>(t2.tv_sec - t1.tv_sec) +
+                   static_cast<double>(t2.tv_usec - t1.tv_usec) / 1e6;
         };
 
         double utime_s =

@@ -145,7 +145,12 @@ public:
       // Round up allocated size to hugepage boundary (2MB) so that
       // munmap receives the correct length matching the kernel's mapping.
       static constexpr size_t kHugePageSize = 2UL * 1024 * 1024;
-      out_allocated_size = (actual_size + kHugePageSize - 1) & ~(kHugePageSize - 1);
+      if (actual_size > SIZE_MAX - kHugePageSize + 1) {
+          // Overflow would occur in rounding, use actual_size as-is
+          out_allocated_size = actual_size;
+      } else {
+          out_allocated_size = (actual_size + kHugePageSize - 1) & ~(kHugePageSize - 1);
+      }
       return ptr;
     }
 

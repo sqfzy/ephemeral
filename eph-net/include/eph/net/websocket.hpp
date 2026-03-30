@@ -378,8 +378,11 @@ constexpr size_t frame_header_size(uint64_t payload_len) noexcept {
 }
 
 /// Compute total frame size (header + payload).
+/// Returns SIZE_MAX on overflow (payload_len too large to represent).
 constexpr size_t total_frame_size(uint64_t payload_len) noexcept {
-    return frame_header_size(payload_len) + payload_len;
+    auto header = frame_header_size(payload_len);
+    if (payload_len > SIZE_MAX - header) return SIZE_MAX;
+    return header + static_cast<size_t>(payload_len);
 }
 
 /// Encode a complete WebSocket frame (header + masked payload) into a buffer.
@@ -490,6 +493,10 @@ decode_frame(const uint8_t* data, size_t len) {
     // Check here — before any length parsing — so malformed frames are
     // rejected early without consuming variable-length fields.
     if (data[pos] & 0x70) {
+        SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            "decode_frame: non-zero RSV bits 0x{:02X} in byte0=0x{:02X} "
+            "(no extensions negotiated)",
+            data[pos] & 0x70, data[pos]);
         return std::unexpected(DecodeError::kReservedBits);
     }
     pos++;
@@ -531,15 +538,27 @@ decode_frame(const uint8_t* data, size_t len) {
     // RFC 6455 §5.2: opcodes 0x3-0x7 (data) and 0xB-0xF (control) are reserved
     if ((frame.opcode >= 0x3 && frame.opcode <= 0x7) ||
         (frame.opcode >= 0xB && frame.opcode <= 0xF)) {
+        SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            "decode_frame: reserved opcode 0x{:02X} (RFC 6455 §5.2), "
+            "payload_len={}",
+            frame.opcode, frame.payload_len);
         return std::unexpected(DecodeError::kInvalidOpcode);
     }
 
     // RFC 6455 §5.5: control frames MUST have FIN=1 and payload <= 125
     if (frame.opcode & 0x08) {
         if (!frame.fin) {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: fragmented control frame opcode=0x{:02X} "
+                "(FIN=0, RFC 6455 §5.5)",
+                frame.opcode);
             return std::unexpected(DecodeError::kFragmentedControl);
         }
         if (frame.payload_len > 125) {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: control frame opcode=0x{:02X} payload_len={} "
+                "exceeds 125-byte limit (RFC 6455 §5.5)",
+                frame.opcode, frame.payload_len);
             return std::unexpected(DecodeError::kControlPayloadTooLarge);
         }
     }
