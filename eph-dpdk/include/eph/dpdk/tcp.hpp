@@ -56,6 +56,11 @@ struct TcpConfig {
     uint16_t             tx_queue_id  = 0;
     uint16_t             rx_queue_id  = 0;
 
+    /// Maximum packets per rte_eth_rx_burst call. 0 = auto-calculate from
+    /// kDefaultRxBudgetBytes / mss (22 for standard MTU, 3 for jumbo).
+    /// Non-zero overrides the auto value (clamped to [1, 32]).
+    uint16_t             max_rx_burst = 0;
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before TcpSession construction to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
@@ -75,6 +80,8 @@ struct TcpConfig {
             return "recv_window must be > 0";
         if (recv_window > 65535)
             return "recv_window exceeds 65535 (window scaling not implemented)";
+        if (max_rx_burst > 32)
+            return "max_rx_burst must be in [0, 32] (0 = auto)";
         return {};
     }
 
@@ -88,8 +95,14 @@ struct TcpConfig {
             && a.recv_window  == b.recv_window
             && a.port_id      == b.port_id
             && a.tx_queue_id  == b.tx_queue_id
-            && a.rx_queue_id  == b.rx_queue_id;
+            && a.rx_queue_id  == b.rx_queue_id
+            && a.max_rx_burst == b.max_rx_burst;
     }
+
+    /// Default RX budget per poll_rx call (bytes). Used to auto-calculate
+    /// max_rx_burst when max_rx_burst == 0: burst = kDefaultRxBudgetBytes / mss.
+    /// 32KB provides ~2 TLS records of headroom in the Transport reassembly buffer.
+    static constexpr uint32_t kDefaultRxBudgetBytes = 32768;
 
     /// Format a MAC address as "xx:xx:xx:xx:xx:xx".
     [[nodiscard]] static std::string format_mac(const rte_ether_addr& m) {
@@ -835,8 +848,15 @@ public:
     [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
         rte_mbuf* pkts[32];
 
+        // Limit burst size to prevent upstream reassembly buffer overflow.
+        // Auto-calculate from MSS when max_rx_burst == 0.
+        const uint16_t burst_limit = config_.max_rx_burst > 0
+            ? config_.max_rx_burst
+            : std::min(uint16_t{32},
+                       static_cast<uint16_t>(TcpConfig::kDefaultRxBudgetBytes / config_.mss));
+
         uint16_t nb_rx = rte_eth_rx_burst(
-            config_.port_id, config_.rx_queue_id, pkts, 32);
+            config_.port_id, config_.rx_queue_id, pkts, burst_limit);
 
         if (nb_rx == 0) return uint16_t{0};
         ++stats_.rx_bursts;

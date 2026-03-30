@@ -2435,9 +2435,11 @@ private:
 
         // Fixed-size RX buffers -- no heap allocation on hot path.
         // TLS reassembly: accumulates raw TCP bytes until complete TLS records form.
-        // Sized for 2x max TLS record to handle partial records at boundary.
+        // Sized for 4x max TLS record to handle burst TCP delivery under high load.
+        // Previous 2x sizing caused overflow when multiple segments arrived between
+        // processing cycles (e.g., 31661 + 1460 > 32812 with MSS=1460).
         static constexpr size_t kReassemblyBufSize =
-            2 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
+            4 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
                  tls_record::kAuthTagLen + 1);
         auto decrypt_buf = std::make_unique<uint8_t[]>(
             tls_const::kMaxRecordPayload + 256);
