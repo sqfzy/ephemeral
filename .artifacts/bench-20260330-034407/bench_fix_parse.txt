@@ -1,0 +1,21 @@
+2026-03-30T03:44:07+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_fix_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 3.05, 2.04, 0.85
+------------------------------------------------------------------------------------
+Benchmark                          Time             CPU   Iterations UserCounters...
+------------------------------------------------------------------------------------
+BM_FixParseNewOrder              223 ns          223 ns      3128854 bytes_per_second=568.183Mi/s items_per_second=4.47957M/s
+BM_FixParseMarketData            369 ns          369 ns      1896895 bytes_per_second=612.623Mi/s items_per_second=2.71047M/s
+BM_FixParseFieldCount/0          224 ns          224 ns      3125489 bytes_per_second=566.058Mi/s items_per_second=4.46282M/s
+BM_FixParseFieldCount/10         349 ns          349 ns      2007678 bytes_per_second=604.576Mi/s items_per_second=2.86853M/s
+BM_FixParseFieldCount/50         918 ns          918 ns       763254 bytes_per_second=645.26Mi/s items_per_second=1.08954M/s
+BM_FixParseFieldCount/100       1612 ns         1612 ns       434785 bytes_per_second=663.68Mi/s items_per_second=620.249k/s
+BM_FixFieldLookup               21.9 ns         21.9 ns     31935808 items_per_second=45.5978M/s
+BM_FixBuildNewOrder              163 ns          163 ns      4295200 items_per_second=6.13684M/s
+BM_FixBuildWithTimestamp         151 ns          151 ns      4642159 items_per_second=6.62442M/s

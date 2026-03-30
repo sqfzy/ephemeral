@@ -1,0 +1,15 @@
+2026-03-30T03:39:59+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_json_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.51, 0.21, 0.07
+---------------------------------------------------------------------------------
+Benchmark                       Time             CPU   Iterations UserCounters...
+---------------------------------------------------------------------------------
+BM_JsonParse                  104 ns          104 ns      6704468 bytes_per_second=1.22213Gi/s items_per_second=9.57849M/s
+BM_JsonParseAndExtract        166 ns          166 ns      4224015 items_per_second=6.03748M/s
+BM_SymbolHash                21.3 ns         21.3 ns     32909416 items_per_second=46.9292M/s

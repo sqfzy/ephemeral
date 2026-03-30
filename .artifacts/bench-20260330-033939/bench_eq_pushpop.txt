@@ -1,0 +1,48 @@
+2026-03-30T03:40:25+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_eq_pushpop
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.90, 0.33, 0.12
+--------------------------------------------------------------------------------------------------------
+Benchmark                                              Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------------------------
+BM_EvictingQueue_Push/P:8/B:1                       5.66 ns         5.66 ns    123673955 items_per_second=176.589M/s
+BM_EvictingQueue_Push/P:8/B:8                       5.97 ns         5.97 ns    117411675 items_per_second=167.575M/s
+BM_EvictingQueue_Push/P:8/B:64                      6.17 ns         6.17 ns    113368097 items_per_second=161.977M/s
+BM_EvictingQueue_Push/P:8/B:512                     6.16 ns         6.16 ns    113842920 items_per_second=162.454M/s
+BM_EvictingQueue_Push/P:64/B:1                      6.09 ns         6.09 ns    115046946 items_per_second=164.324M/s
+BM_EvictingQueue_Push/P:64/B:8                      7.48 ns         7.48 ns     93549570 items_per_second=133.721M/s
+BM_EvictingQueue_Push/P:64/B:64                     7.46 ns         7.46 ns     93747275 items_per_second=134.077M/s
+BM_EvictingQueue_Push/P:64/B:512                    7.54 ns         7.54 ns     93116411 items_per_second=132.554M/s
+BM_EvictingQueue_Push/P:512/B:1                     12.4 ns         12.5 ns     56229560 items_per_second=80.3208M/s
+BM_EvictingQueue_Push/P:512/B:8                     13.8 ns         13.8 ns     50771207 items_per_second=72.4727M/s
+BM_EvictingQueue_Push/P:512/B:64                    13.8 ns         13.8 ns     50811152 items_per_second=72.5723M/s
+BM_EvictingQueue_Push/P:512/B:512                   16.7 ns         16.7 ns     41814128 items_per_second=59.7452M/s
+BM_EvictingQueue_PushPop/P:8/B:1                    14.1 ns         14.1 ns     49513123 items_per_second=141.455M/s
+BM_EvictingQueue_PushPop/P:8/B:8                    15.9 ns         15.9 ns     43891260 items_per_second=125.594M/s
+BM_EvictingQueue_PushPop/P:8/B:64                   15.9 ns         15.9 ns     43737941 items_per_second=125.506M/s
+BM_EvictingQueue_PushPop/P:8/B:512                  15.9 ns         15.9 ns     44071391 items_per_second=125.601M/s
+BM_EvictingQueue_PushPop/P:64/B:1                   16.8 ns         16.8 ns     41766467 items_per_second=119.291M/s
+BM_EvictingQueue_PushPop/P:64/B:8                   19.2 ns         19.2 ns     36392900 items_per_second=104.174M/s
+BM_EvictingQueue_PushPop/P:64/B:64                  19.2 ns         19.2 ns     36412788 items_per_second=103.937M/s
+BM_EvictingQueue_PushPop/P:64/B:512                 19.3 ns         19.3 ns     36322950 items_per_second=103.619M/s
+BM_EvictingQueue_PushPop/P:512/B:1                  37.7 ns         37.7 ns     18544013 items_per_second=52.9989M/s
+BM_EvictingQueue_PushPop/P:512/B:8                  31.8 ns         31.8 ns     22004286 items_per_second=62.8624M/s
+BM_EvictingQueue_PushPop/P:512/B:64                 32.1 ns         32.1 ns     21721697 items_per_second=62.2087M/s
+BM_EvictingQueue_PushPop/P:512/B:512                33.7 ns         33.7 ns     20805062 items_per_second=59.4239M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:8/B:1           14.2 ns         14.2 ns     49321426 items_per_second=140.943M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:8/B:8           15.8 ns         15.8 ns     44208524 items_per_second=126.559M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:8/B:64          15.8 ns         15.8 ns     44250064 items_per_second=126.233M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:8/B:512         15.9 ns         15.9 ns     44210808 items_per_second=126.148M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:64/B:1          15.7 ns         15.7 ns     44583110 items_per_second=127.403M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:64/B:8          16.5 ns         16.5 ns     42477257 items_per_second=121.372M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:64/B:64         16.5 ns         16.5 ns     42464948 items_per_second=121.262M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:64/B:512        16.5 ns         16.5 ns     42450736 items_per_second=121.238M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:512/B:1         15.8 ns         15.8 ns     44316849 items_per_second=126.505M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:512/B:8         16.5 ns         16.5 ns     42403612 items_per_second=121.28M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:512/B:64        16.5 ns         16.5 ns     42445069 items_per_second=121.177M/s
+BM_EvictingQueue_ZeroCopy_PushPop/P:512/B:512       16.5 ns         16.5 ns     42438533 items_per_second=121.225M/s

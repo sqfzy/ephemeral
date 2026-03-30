@@ -1,0 +1,26 @@
+2026-03-30T03:39:39+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_fix_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.32, 0.16, 0.05
+------------------------------------------------------------------------------------
+Benchmark                          Time             CPU   Iterations UserCounters...
+------------------------------------------------------------------------------------
+BM_FixParseNewOrder              223 ns          223 ns      3133846 bytes_per_second=568.471Mi/s items_per_second=4.48184M/s
+BM_FixParseMarketData            376 ns          376 ns      1861481 bytes_per_second=601.212Mi/s items_per_second=2.65998M/s
+BM_FixParseFieldCount/0          224 ns          224 ns      3124791 bytes_per_second=566.238Mi/s items_per_second=4.46424M/s
+BM_FixParseFieldCount/10         354 ns          354 ns      1974055 bytes_per_second=594.537Mi/s items_per_second=2.82089M/s
+BM_FixParseFieldCount/50         921 ns          921 ns       759762 bytes_per_second=642.701Mi/s items_per_second=1.08522M/s
+BM_FixParseFieldCount/100       1618 ns         1618 ns       432854 bytes_per_second=661.435Mi/s items_per_second=618.15k/s
+BM_FixFieldLookup               21.9 ns         21.9 ns     31911388 items_per_second=45.6006M/s
+BM_FixBuildNewOrder              163 ns          163 ns      4295408 items_per_second=6.13601M/s
+BM_FixBuildWithTimestamp         151 ns          151 ns      4643727 items_per_second=6.63302M/s
+BM_FixBuildMarketData            260 ns          260 ns      2692444 items_per_second=3.84583M/s
+BM_FixBuildResetReuse           49.5 ns         49.5 ns     14135078 items_per_second=20.1881M/s
+BM_FixFramerDecode              22.8 ns         22.8 ns     31081104 bytes_per_second=5.44205Gi/s items_per_second=43.935M/s
+BM_FixChecksum                  16.8 ns         16.8 ns     41706624 bytes_per_second=7.36929Gi/s
+BM_FixBuildParseRoundtrip        220 ns          220 ns      3191085 items_per_second=4.55326M/s

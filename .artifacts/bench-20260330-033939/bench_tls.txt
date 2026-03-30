@@ -1,0 +1,26 @@
+2026-03-30T03:41:12+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_tls
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.95, 0.42, 0.16
+-----------------------------------------------------------------------------
+Benchmark                   Time             CPU   Iterations UserCounters...
+-----------------------------------------------------------------------------
+BM_TlsEncrypt/64          117 ns          117 ns      5986934 bytes_per_second=519.581Mi/s
+BM_TlsEncrypt/128         128 ns          128 ns      5468227 bytes_per_second=953.255Mi/s
+BM_TlsEncrypt/256         151 ns          151 ns      4657212 bytes_per_second=1.58353Gi/s
+BM_TlsEncrypt/512         200 ns          200 ns      3496983 bytes_per_second=2.38851Gi/s
+BM_TlsEncrypt/1024        270 ns          270 ns      2587781 bytes_per_second=3.52608Gi/s
+BM_TlsEncrypt/2048        431 ns          431 ns      1624895 bytes_per_second=4.42793Gi/s
+BM_TlsEncrypt/4096        750 ns          750 ns       933314 bytes_per_second=5.08687Gi/s
+BM_TlsDecrypt/64          123 ns          123 ns      5683864 bytes_per_second=496.329Mi/s
+BM_TlsDecrypt/128         136 ns          136 ns      5136954 bytes_per_second=896.304Mi/s
+BM_TlsDecrypt/256         157 ns          157 ns      4467596 bytes_per_second=1.51819Gi/s
+BM_TlsDecrypt/512         198 ns          198 ns      3512304 bytes_per_second=2.40349Gi/s
+BM_TlsDecrypt/1024        277 ns          277 ns      2532945 bytes_per_second=3.44896Gi/s
+BM_TlsDecrypt/2048        434 ns          434 ns      1612421 bytes_per_second=4.39438Gi/s
+BM_TlsDecrypt/4096        748 ns          748 ns       935399 bytes_per_second=5.10213Gi/s

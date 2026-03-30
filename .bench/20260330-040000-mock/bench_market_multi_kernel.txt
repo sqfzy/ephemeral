@@ -1,0 +1,93 @@
+[2026-03-30 04:00:50.873] [utils.cpu] [info] [cpu.hpp:259] main pinned to cpu_id=4
+[2026-03-30 04:00:50.873] [info] Calibrating TSC...
+[2026-03-30 04:00:50.873] [utils.tsc] [info] [time.hpp:239] Calibrating TSC...
+[2026-03-30 04:00:51.893] [utils.tsc] [info] [time.hpp:321] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-03-30 04:00:51.893] [info] TSC: 1.0000 ns/cycle
+[2026-03-30 04:00:51.893] [info] Connecting to wss://172.31.27.208:9443/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker (3 symbols, mode=all)
+[2026-03-30 04:00:51.893] [net.transport] [warning] [transport.hpp:209] Config warning: skip_utf8_validation=true — text frames will NOT be validated for UTF-8 conformance (RFC 6455 §5.6); caller assumes responsibility for payload validity
+[2026-03-30 04:00:51.893] [net.transport] [info] [transport.hpp:212] Creating transport: 172.31.27.208:9443/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker
+[2026-03-30 04:00:51.903] [net.socket] [info] [socket_transport.hpp:552] Connected to 172.31.27.208 (172.31.27.208:9443, mss=8949, dns: 0.2ms, total: 0.5ms)
+[2026-03-30 04:00:51.939] [net.tls] [info] [tls_session.hpp:602] Starting TLS 1.3 handshake with 172.31.27.208
+[2026-03-30 04:00:52.046] [net.tls] [info] [tls_session.hpp:615] TLS handshake complete: version=TLSv1.3, cipher=TLS_AES_256_GCM_SHA384
+[2026-03-30 04:00:52.133] [net.transport] [info] [transport.hpp:2024] WebSocket upgrade successful
+[2026-03-30 04:00:52.133] [net.tls] [info] [tls_session.hpp:747] TLS traffic keys extracted: cipher=TLS_AES_256_GCM_SHA384, key_len=32, write_seq=1, read_seq=3
+[2026-03-30 04:00:52.133] [net.transport] [info] [transport.hpp:1726] Connected: 172.31.27.208 (TLS: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, handshake: 230.5ms)
+[2026-03-30 04:00:52.133] [net.transport] [info] [transport.hpp:1581] Transport state: CONNECTED — 172.31.27.208 [172.31.27.208:9443]
+[2026-03-30 04:00:52.133] [info] [STATE] CONNECTED — 172.31.27.208
+[2026-03-30 04:00:52.133] [net.transport] [info] [transport.hpp:256] Transport ready: 172.31.27.208
+[2026-03-30 04:00:52.133] [info] Connected (handshake 230.50 ms)
+[2026-03-30 04:00:52.133] [info]     time      msg/s    p50(ns)    p99(ns)    p99.9(ns)
+[2026-03-30 04:00:52.148] [utils.cpu] [info] [cpu.hpp:259] RX pinned to cpu_id=3
+[2026-03-30 04:00:52.148] [utils.cpu] [info] [cpu.hpp:259] TX pinned to cpu_id=2
+[2026-03-30 04:00:53.138] [info] [T+  1s]      102       2916    4035584      4035584
+[2026-03-30 04:00:54.138] [info] [T+  2s]      135       2660       3996         4028
+[2026-03-30 04:00:55.138] [info] [T+  3s]      159       2748       4556         4604
+[2026-03-30 04:00:56.138] [info] [T+  4s]      181       2692       5588         6916
+[2026-03-30 04:00:57.138] [info] [T+  5s]      380       2636       5172         5948
+[2026-03-30 04:00:58.138] [info] [T+  6s]      702       2588       3756        10420
+[2026-03-30 04:00:59.138] [info] [T+  7s]      818       2524       4588         6468
+[2026-03-30 04:01:00.138] [info] [T+  8s]     1444       2532       3932         5660
+[2026-03-30 04:01:01.158] [info] [T+  9s]     1889       2564       4460         7036
+[2026-03-30 04:01:02.178] [info] [T+ 10s]     3502       2540       4556         5908
+[2026-03-30 04:01:03.178] [info] [T+ 11s]     1108       3124       5396         8748
+[2026-03-30 04:01:04.178] [info] [T+ 12s]     1162       2660       3860         5508
+[2026-03-30 04:01:05.178] [info] [T+ 13s]     1817       2500       3724         5188
+[2026-03-30 04:01:06.178] [info] [T+ 14s]     1857       2484       3700         5516
+[2026-03-30 04:01:07.178] [info] [T+ 15s]     2036       2500       3740         5772
+[2026-03-30 04:01:08.178] [info] [T+ 16s]     1922       2484       4276         4788
+[2026-03-30 04:01:09.178] [info] [T+ 17s]     1818       2492       3788         5052
+[2026-03-30 04:01:10.178] [info] [T+ 18s]     1785       2492       3860         6324
+[2026-03-30 04:01:11.178] [info] [T+ 19s]     1648       2484       3572         6172
+[2026-03-30 04:01:12.178] [info] [T+ 20s]      282       2588       5092         6364
+[2026-03-30 04:01:13.178] [info] [T+ 21s]      342       2500       4644         5668
+[2026-03-30 04:01:14.178] [info] [T+ 22s]      393       2388       3900         5556
+[2026-03-30 04:01:15.178] [info] [T+ 23s]      432       2348       3004         5812
+[2026-03-30 04:01:16.178] [info] [T+ 24s]      441       2348       4292         4868
+[2026-03-30 04:01:17.198] [info] [T+ 25s]      500       2372       3916         6276
+[2026-03-30 04:01:18.198] [info] [T+ 26s]      520       2356       3036         6868
+[2026-03-30 04:01:19.198] [info] [T+ 27s]      552       2340       4116         4900
+[2026-03-30 04:01:20.198] [info] [T+ 28s]      657       2316       3004         5564
+[2026-03-30 04:01:21.198] [info] [T+ 29s]      660       2348       4108         5164
+[2026-03-30 04:01:22.133] [net.transport] [info] [transport.hpp:967] Stopping transport
+[2026-03-30 04:01:22.148] [net.transport] [info] [transport.hpp:1576] Transport state: STOPPED [172.31.27.208:9443]
+[2026-03-30 04:01:22.148] [info] [STATE] STOPPED — 
+[2026-03-30 04:01:22.148] [net.transport] [info] [transport.hpp:1018] Transport stopped
+[2026-03-30 04:01:22.148] [info] === Multi-Symbol Market Data Benchmark (Socket) ===
+[2026-03-30 04:01:22.148] [info] Symbols: 3 | Duration: 30.0s | Messages: 29985 | Mode: all
+[2026-03-30 04:01:22.148] [info] RX totals: 5558943 bytes, 29986 WS frames, 29985 TLS records, 0 TCP pkts, 0 bursts
+[2026-03-30 04:01:22.148] [info] Transport stats:
+TransportStats (uptime: 30.0s, remote: 172.31.27.208):
+  TX: 1 packets (0/s), 4 bytes (0 B/s), text: 0 pkts/0 B, 0 dropped, 0 encrypt errors
+  RX: 29986 packets (999/s), 5558943 bytes (185206 B/s), text: 29985 pkts/5558943 B, 0 dropped, 0 decrypt errors
+  Queue full: 0, TX HWM: 0, RX HWM: 0
+  WebSocket: 1 pings received, 1 pongs sent, 0 pong timeouts
+  Reconnections: 0, handshake: 230.5ms (tcp: 0.6ms, tls: 142.7ms, ws: 87.2ms)
+  TLS seq: write=3/16777216 (0.0%), read=29989/16777216 (0.2%)
+  RTT: RttStats: no samples
+  TX latency: RttStats: no samples
+    queue_wait: RttStats: no samples
+    encode:     RttStats: no samples
+  RX latency: RttStats (29985 samples):
+  min: 1.7us, p50: 2.5us, p99: 4.3us, p999: 6.1us, max: 4036.4us, mean: 3.0us
+    decrypt:    RttStats (29985 samples):
+  min: 1.7us, p50: 2.5us, p99: 4.3us, p999: 6.1us, max: 4036.4us, mean: 3.0us
+    decode:     RttStats (29985 samples):
+  min: 0.0us, p50: 0.0us, p99: 0.0us, p999: 0.0us, max: 0.9us, mean: 0.0us
+[2026-03-30 04:01:22.148] [info] --- RX Pipeline (rx_burst → data decoded) ---
+[2026-03-30 04:01:22.148] [info]   samples: 29985
+[2026-03-30 04:01:22.148] [info]   min:     1698 ns
+[2026-03-30 04:01:22.148] [info]   p50:     2516 ns
+[2026-03-30 04:01:22.148] [info]   p99:     4300 ns
+[2026-03-30 04:01:22.148] [info]   p99.9:   6124 ns
+[2026-03-30 04:01:22.148] [info]   max:     4036441 ns
+[2026-03-30 04:01:22.148] [info] --- Feed Latency (server send → app recv) ---
+[2026-03-30 04:01:22.148] [info]   samples: 29985
+[2026-03-30 04:01:22.148] [info]   min:     88137 ns
+[2026-03-30 04:01:22.148] [info]   p50:     366848 ns
+[2026-03-30 04:01:22.148] [info]   p99:     19750912 ns
+[2026-03-30 04:01:22.148] [info]   p99.9:   24158208 ns
+[2026-03-30 04:01:22.148] [info]   max:     87188155 ns
+[2026-03-30 04:01:22.148] [net.transport] [info] [transport.hpp:967] Stopping transport
+[2026-03-30 04:01:22.148] [net.transport] [info] [transport.hpp:1576] Transport state: STOPPED [172.31.27.208:9443]
+[2026-03-30 04:01:22.148] [info] [STATE] STOPPED — 
+[2026-03-30 04:01:22.148] [net.transport] [info] [transport.hpp:1018] Transport stopped
