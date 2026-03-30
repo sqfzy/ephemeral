@@ -1,63 +1,123 @@
 # ephemeral
 
-Header-only C++23 ultra-low-latency WebSocket/TLS client library for high-frequency trading.
+Header-only C++23 ultra-low-latency library for high-frequency trading.
 
-Dual networking backends — POSIX sockets and DPDK kernel-bypass — behind a single `Transport<TcpImpl>` template. Same application code, compile-time backend selection, zero virtual dispatch.
+Dual networking backends -- POSIX sockets and DPDK kernel-bypass -- behind a single `Transport<TcpImpl>` template. Same application code, compile-time backend selection, zero virtual dispatch.
+
+## Why ephemeral
+
+- **Zero-copy everywhere** -- FIX, ITCH, and JSON parsers operate directly on receive buffers with no intermediate allocations.
+- **Compile-time polymorphism** -- Concepts and templates replace virtual dispatch. The `TcpTransport` concept lets you swap Socket/DPDK backends without touching application logic.
+- **Production building blocks** -- Circuit breakers, kill switches, rate limiters, HMAC signing, audit logs, and risk checks are included, not bolted on.
+- **Single-header modules** -- Each module is header-only with clean dependency edges. Use only what you need.
 
 ## Performance
 
-Measured on AWS Graviton (ARM64), 6-round average ± σ:
+Measured on AWS Graviton (ARM64), 6-round average +/- sigma:
 
 | Metric | Socket | DPDK | Speedup |
 |--------|--------|------|---------|
-| TX queue (p50) | 2,544 ± 431 ns | 360 ± 14 ns | **7.1×** |
-| RX pipeline (p50) | 3,369 ± 130 ns | 423 ± 12 ns | **8.0×** |
-| Handshake | 47.4 ± 1.2 ms | 13.5 ± 1.6 ms | **3.5×** |
-| JSON parse (bookTicker) | 104 ns | — | — |
-| JSON → Book → BBO | 163 ns | — | — |
-| FIX parse (NewOrder) | 22.5 ns | — | — |
-| ITCH parse | 1.4 ns | — | — |
-| Book update | 2.9 ns | — | — |
+| TX queue (p50) | 2,544 +/- 431 ns | 360 +/- 14 ns | **7.1x** |
+| RX pipeline (p50) | 3,369 +/- 130 ns | 423 +/- 12 ns | **8.0x** |
+| Handshake | 47.4 +/- 1.2 ms | 13.5 +/- 1.6 ms | **3.5x** |
+| JSON parse (bookTicker) | 104 ns | -- | -- |
+| JSON -> Book -> BBO | 163 ns | -- | -- |
+| FIX parse (NewOrder) | 22.5 ns | -- | -- |
+| ITCH parse | 1.4 ns | -- | -- |
+| Book update | 2.9 ns | -- | -- |
 
 ## Quick Start
 
-### Requirements
+### Prerequisites
 
-- GCC >= 13 or Clang >= 17 (C++23: `std::expected`, `std::format`)
+- **GCC >= 13** or **Clang >= 17** (C++23: `std::expected`, `std::format`)
 - [xmake](https://xmake.io) build system
-- Optional: DPDK (via vcpkg) for kernel-bypass backend
+- **Optional:** DPDK (via vcpkg) for kernel-bypass backend
+- **Optional:** aws-lc for TLS support
+- **Optional:** numactl for NUMA-aware allocation
 
 ### Build
 
 ```bash
-# Clone
 git clone https://github.com/sqfzy/ephemeral.git
 cd ephemeral
 
-# Build (release mode)
+# Release build
 xmake -m release
 
-# Build and run tests
+# Debug build
+xmake -m debug
+```
+
+### Run Tests
+
+```bash
 xmake build -g tests
 xmake run test_fix
 xmake run test_websocket
-# ... or run all non-DPDK tests:
+
+# Run all non-DPDK tests:
 for t in test_alignment test_bounded_queue test_bounded_queue_bytes \
          test_cpu test_evicting_queue test_evicting_queue_bytes \
          test_fix test_framer test_hdr_histogram test_http test_itch \
          test_proxy test_record test_recorder test_socket_transport \
          test_system_stats test_tcp_concept test_time test_tls_record \
          test_transport test_transport_types test_version test_websocket \
-         test_hugepage; do
+         test_hugepage test_audit_log test_gateway test_kill_switch \
+         test_metrics_concept test_itch_adapter test_binance_adapter; do
   xmake run $t
 done
-
-# Build and run benchmarks
-xmake build bench_fix_parse
-xmake run bench_fix_parse
 ```
 
-### Minimal Example
+### Run Benchmarks
+
+```bash
+xmake build -g benchmarks
+xmake run bench_fix_parse
+xmake run bench_itch_parse
+xmake run bench_json_parse
+xmake run bench_array_book
+xmake run bench_market_pingpong       # Socket end-to-end latency
+xmake run bench_market_pingpong_dpdk  # DPDK end-to-end latency
+```
+
+## Modules
+
+| Module | Headers | Description |
+|--------|---------|-------------|
+| **eph-core** | `tcp_concept`, `framer_concept`, `metrics_concept`, `error_traits`, `transport_errors` | Shared concepts and traits -- `TcpTransport`, `MessageFramer`, `ErrorEnum` |
+| **eph-utils** | `time`, `cpu`, `hugepage`, `hdr_histogram`, `audit_log`, `recorder`, `system_stats`, `ema`, `alignment` | TSC timing, CPU pinning, hugepage allocator, histogram, audit logging |
+| **eph-containers** | `bounded_queue`, `evicting_queue`, `ring_buffer`, `*_bytes` variants | Lock-free SPSC queues: `BoundedQueue` (backpressure), `EvictingQueue` (drop-oldest) |
+| **eph-net** | `transport`, `socket_transport`, `tls_session`, `websocket`, `http_client`, `gateway`, `circuit_breaker`, `kill_switch`, `rate_limiter`, `proxy` | WebSocket/TLS transport, HTTP client, HMAC signing, connection lifecycle management |
+| **eph-dpdk** | `tcp`, `arp`, `dns`, `reactor`, `flow_steering`, `eal`, `connector` | DPDK kernel-bypass TCP backend (same Transport API) |
+| **eph-fix** | `parser`, `builder`, `framer`, `session`, `orders`, `order_manager`, `risk_check`, `position`, `execution_report`, `tags` | FIX 4.4 zero-copy parser/builder, session management, order helpers, risk checks |
+| **eph-itch** | `parser`, `framer`, `messages`, `moldudp64`, `soupbintcp`, `ouch` | ITCH 5.0 / OUCH zero-copy parser, MoldUDP64 and SoupBinTCP framers |
+| **eph-json** | `parser`, `framer`, adapters: `binance`, `bybit`, `okx` | Zero-copy JSON parser with exchange-specific adapters |
+| **eph-book** | `array_book`, `map_book`, `binance_adapter`, `itch_adapter`, `signals` | L2 order book (array and map variants), exchange adapters |
+
+### Dependency Graph
+
+```
+eph-core  (concepts, error traits)
+  |
+  +-- eph-utils  (time, cpu, hugepage, histogram, audit)
+  |     |
+  |     +-- eph-containers  (SPSC queues, ring buffer)
+  |           |
+  |           +-- eph-net  (transport, TLS, WebSocket, HTTP, gateway)
+  |           |
+  |           +-- eph-dpdk  (DPDK kernel-bypass backend)
+  |
+  +-- eph-fix  (FIX protocol)
+  +-- eph-itch  (ITCH/OUCH protocol)
+  +-- eph-json  (JSON parser, exchange adapters)
+
+eph-book  (order book -- standalone, integrates with eph-json and eph-itch)
+```
+
+## Usage Examples
+
+### Minimal WebSocket Client
 
 Connect to a WebSocket server, send a message, receive the echo:
 
@@ -65,7 +125,7 @@ Connect to a WebSocket server, send a message, receive the echo:
 #include "eph/net/socket_transport.hpp"
 
 int main() {
-    // Configure
+    // 1. Configure
     eph::net::SocketConfig sock_cfg{
         .host = "echo.websocket.org", .port = 443, .tcp_nodelay = true};
     eph::net::TransportConfig transport_cfg{
@@ -74,8 +134,8 @@ int main() {
         .use_tls     = true,
     };
 
-    // TCP factory
-    auto tcp_factory = [&]()
+    // 2. TCP factory
+    auto tcp_factory = [&sock_cfg]()
         -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
         auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
         auto result = tcp->connect(std::chrono::milliseconds{5000});
@@ -83,17 +143,15 @@ int main() {
         return tcp;
     };
 
-    // Connect (TCP -> TLS -> WebSocket upgrade)
+    // 3. Connect (TCP -> TLS handshake -> WebSocket upgrade)
     auto result = eph::net::Transport<eph::net::SocketTransport>::create(
         std::move(tcp_factory), transport_cfg);
     if (!result) return 1;
     auto& tp = **result;
 
-    // Send
+    // 4. Send and receive
     std::string msg = "hello ephemeral";
     tp.send_text(msg.data(), msg.size());
-
-    // Receive
     tp.recv([](const uint8_t* data, size_t len) {
         spdlog::info("Received: {}", std::string_view(
             reinterpret_cast<const char*>(data), len));
@@ -103,21 +161,58 @@ int main() {
 }
 ```
 
-See [`examples/`](examples/) for more — from minimal clients to production HFT setups with DPDK.
+### Binance Order Book (WebSocket -> JSON -> Book -> BBO)
 
-## Modules
+```cpp
+#include "eph/net/socket_transport.hpp"
+#include "eph/json/parser.hpp"
+#include "eph/json/adapters/binance.hpp"
+#include "eph/book/binance_adapter.hpp"
 
-| Module | Description |
-|--------|-------------|
-| **eph-core** | Shared concepts (`TcpTransport`, `MessageFramer`), error types, `ErrorEnum` trait |
-| **eph-utils** | TSC timing, CPU topology, HdrHistogram, hugepage allocator |
-| **eph-containers** | Lock-free SPSC queues: `BoundedQueue` (backpressure), `EvictingQueue` (drop-old) |
-| **eph-net** | WebSocket/TLS transport, HTTP client, HMAC signing, rate limiter |
-| **eph-dpdk** | DPDK kernel-bypass TCP backend (same Transport API) |
-| **eph-fix** | FIX 4.4 zero-copy parser, builder, session, typed order helpers |
-| **eph-itch** | ITCH 5.0 zero-copy parser, framer |
-| **eph-json** | Zero-copy JSON parser, Binance bookTicker/REST adapters |
-| **eph-book** | L2 order book (ArrayBook), ITCH + Binance adapters |
+// ... transport setup same as above, connecting to fstream.binance.com ...
+
+eph::book::BinanceBookAdapter<5> adapter;
+
+tp.recv([&](const uint8_t* data, size_t len) {
+    auto json   = eph::json::parse(data, len);
+    auto ticker = eph::json::binance::BookTicker::from(json.value());
+    if (!ticker) return;
+
+    adapter.update_from_ticker(*ticker);
+
+    const auto& book = adapter.book();
+    auto mid    = book.mid_price();
+    auto spread = book.spread();
+    // mid and spread are std::optional<double>
+});
+```
+
+## Examples
+
+| Example | Backend | Description |
+|---------|---------|-------------|
+| `minimal_ws_client` | Socket | Simplest possible WebSocket client |
+| `binance_book` | Socket | JSON -> BookTicker -> ArrayBook -> BBO (full pipeline) |
+| `production_client` | Socket | Reconnection, latency histogram, CPU pinning |
+| `simple_hft` | Socket | Binance market data with nanosecond timing |
+| `simple_hft_dpdk` | DPDK | Same as above, kernel-bypass |
+| `fix_trading_demo` | -- | FIX session, order management, risk checks |
+| `itch_feed_demo` | -- | ITCH 5.0 message parsing |
+| `ws_echo_client` | Socket | Full-featured echo client with CLI |
+| `ws_echo_client_dpdk` | DPDK | DPDK variant of echo client |
+| `dpdk_quickstart` | DPDK | DPDK connection helper with DNS resolution |
+| `ws_via_proxy` | Socket | WebSocket through HTTP proxy |
+| `spsc_queue_demo` | -- | BoundedQueue + EvictingQueue usage |
+| `framer_showcase` | -- | WsFramer, RawFramer, LengthPrefixFramer |
+| `perf_tuning_basics` | -- | TSC calibration, CPU affinity, hugepages |
+
+Build and run any example:
+
+```bash
+xmake build minimal_ws_client
+xmake run minimal_ws_client
+xmake run minimal_ws_client --host myserver.com --port 8080 --no-tls
+```
 
 ## Integration
 
@@ -130,38 +225,36 @@ target("my_app")
     set_kind("binary")
     add_files("src/*.cpp")
     add_includedirs(
+        "path/to/ephemeral/eph-core/include",
         "path/to/ephemeral/eph-utils/include",
         "path/to/ephemeral/eph-containers/include",
         "path/to/ephemeral/eph-net/include")
     add_packages("spdlog", "aws-lc")
 ```
 
-Or use xmake's dependency mechanism:
+Or use xmake's dependency mechanism within a monorepo:
 
 ```lua
-add_deps("eph-net")  -- pulls in eph-utils, eph-containers transitively
+add_deps("eph-net")  -- pulls in eph-core, eph-utils, eph-containers transitively
 ```
 
-## Examples
+## Benchmarks
 
-| Example | Backend | Description |
-|---------|---------|-------------|
-| `binance_book` | Socket | **JSON → BookTicker → ArrayBook → BBO** (full pipeline) |
-| `minimal_ws_client` | Socket | Simplest possible WebSocket client |
-| `production_client` | Socket | Reconnection, latency histogram, CPU pinning |
-| `simple_hft` | Socket | Binance market data with nanosecond timing |
-| `simple_hft_dpdk` | DPDK | Same as above, kernel-bypass |
-| `dpdk_quickstart` | DPDK | DPDK connection helper with DNS resolution |
-| `ws_echo_client` | Socket | Full-featured echo client with CLI |
-| `ws_echo_client_dpdk` | DPDK | DPDK variant of echo client |
-| `spsc_queue_demo` | — | BoundedQueue + EvictingQueue usage |
-| `framer_showcase` | — | WsFramer, RawFramer, LengthPrefixFramer |
-| `perf_tuning_basics` | — | TSC calibration, CPU affinity, hugepages |
+Microbenchmarks live in `benchmarks/` and use Google Benchmark. End-to-end latency benchmarks (Socket vs DPDK) use a custom ping-pong harness with TSC timestamps.
+
+See [`benchmarks/METRICS.md`](benchmarks/METRICS.md) for the measurement methodology covering TX latency, RX latency, RTT, and feed latency.
 
 ## Documentation
 
-- [`summary.md`](summary.md) — Architecture overview, module map, data flow
-- [`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md) — Socket vs DPDK benchmark methodology
+- [`summary.md`](summary.md) -- Architecture overview, module map, data flow
+- [`docs/dpdk-setup.md`](docs/dpdk-setup.md) -- DPDK environment setup
+- [`docs/production-config.md`](docs/production-config.md) -- Production deployment configuration
+- [`docs/operations-runbook.md`](docs/operations-runbook.md) -- Operations runbook
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) -- Troubleshooting guide
+- [`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md) -- Socket vs DPDK benchmark methodology
+- [`docs/multi-connection.md`](docs/multi-connection.md) -- Multi-connection patterns
+- [`docs/custom-framer.md`](docs/custom-framer.md) -- Writing custom message framers
+- [`docs/binance-protocols.md`](docs/binance-protocols.md) -- Binance protocol details
 
 ## License
 
