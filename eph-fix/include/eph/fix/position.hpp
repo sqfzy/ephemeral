@@ -112,7 +112,11 @@ public:
             const double close_qty = std::min(std::abs(signed_qty), std::abs(old_qty));
 
             // Realized PnL on the closed portion.
-            if (old_qty > 0.0) {
+            if (!std::isfinite(pos.avg_price)) {
+                SPDLOG_WARN("on_fill: avg_price non-finite for symbol={}, "
+                            "resetting to fill price and skipping PnL calc", symbol);
+                pos.avg_price = price;
+            } else if (old_qty > 0.0) {
                 // Was long: profit = (sell_price - avg) * close_qty
                 pos.realized_pnl += (price - pos.avg_price) * close_qty;
             } else {

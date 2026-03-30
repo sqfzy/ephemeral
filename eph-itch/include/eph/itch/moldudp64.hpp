@@ -153,6 +153,15 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
         return 0;
     }
 
+    // Early reject: each message needs at least a 2-byte length prefix,
+    // so the buffer must hold the header plus 2 * message_count bytes minimum.
+    if (len < moldudp64::kHeaderLen + hdr.message_count * size_t{2}) {
+        SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
+            "MoldUDP64: buffer too small for {} messages (need >= {} bytes, have {})",
+            hdr.message_count, moldudp64::kHeaderLen + hdr.message_count * size_t{2}, len);
+        return 0;
+    }
+
     size_t offset = moldudp64::kHeaderLen;
     size_t delivered = 0;
 

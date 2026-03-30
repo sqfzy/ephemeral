@@ -7,6 +7,7 @@
 /// integration with PositionTracker for automatic position updates on fills.
 /// Header-only, single-threaded (callers serialize externally).
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -178,6 +179,12 @@ public:
                     order.avg_fill_price =
                         (old_total + fill_price * fill_qty) / order.filled_qty;
                 }
+                if (!std::isfinite(order.avg_fill_price)) {
+                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                        "avg_fill_price became non-finite for cl_ord_id={}, "
+                        "resetting to last fill_price={}", order.cl_ord_id, fill_price);
+                    order.avg_fill_price = fill_price;
+                }
                 order.leaves_qty = order.orig_qty - order.filled_qty;
 
                 // Forward fill to position tracker if provided.
@@ -217,6 +224,12 @@ public:
                 if (order.filled_qty > 0.0) {
                     order.avg_fill_price =
                         (old_total + fill_price * fill_qty) / order.filled_qty;
+                }
+                if (!std::isfinite(order.avg_fill_price)) {
+                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                        "avg_fill_price became non-finite for cl_ord_id={}, "
+                        "resetting to last fill_price={}", order.cl_ord_id, fill_price);
+                    order.avg_fill_price = fill_price;
                 }
                 order.leaves_qty = 0.0;
 
@@ -292,7 +305,7 @@ public:
     /// Remove all terminal orders (filled/canceled/rejected).
     void purge_terminal() noexcept
     {
-        size_t removed = 0;
+        [[maybe_unused]] size_t removed = 0;
         for (auto it = orders_.begin(); it != orders_.end(); ) {
             if (is_terminal(it->second.state)) {
                 it = orders_.erase(it);

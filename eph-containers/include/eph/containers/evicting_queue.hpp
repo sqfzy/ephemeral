@@ -610,12 +610,22 @@ class alignas(Align<T>) EvictingQueue {
     using Stats = EvictingQueueStats;
 
     /// Take a point-in-time statistics snapshot.
+    /// Uses acquire loads to produce a more consistent cross-field snapshot
+    /// than calling each accessor independently with relaxed ordering.
     [[nodiscard]] Stats stats() const noexcept {
+        // Acquire ordering ensures we see a consistent view of both counters.
+        uint64_t written = global_index_.load(std::memory_order_acquire);
+        uint64_t read    = reader_.last_global_index_.load(std::memory_order_acquire);
+        uint64_t pending = (written >= read) ? (written - read) : 0;
+        size_t   cur_sz  = static_cast<size_t>(
+            std::min(pending, static_cast<uint64_t>(Capacity)));
+        uint64_t overwritten = (written > read + Capacity)
+                                   ? (written - read - Capacity) : 0;
         return Stats{
-            .total_pushed = write_count(),
-            .total_popped = read_count(),
-            .overwritten  = overwrite_count_approx(),
-            .current_size = size_approx(),
+            .total_pushed = written,
+            .total_popped = read,
+            .overwritten  = overwritten,
+            .current_size = cur_sz,
             .capacity     = Capacity,
         };
     }

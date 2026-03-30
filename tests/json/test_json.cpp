@@ -308,3 +308,52 @@ TEST(JsonParseError, FormatWorks) {
     auto s = std::format("{}", ParseError::kInvalidFormat);
     EXPECT_EQ(s, "invalid format");
 }
+
+// ---------------------------------------------------------------------------
+// Number parsing RFC compliance: reject malformed numeric literals
+// ---------------------------------------------------------------------------
+
+TEST(JsonParser, RejectBareDecimalPoint) {
+    // "." alone is not a valid number — must have digits.
+    auto result = parse_str(R"({"v":.})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double("v").has_value());
+}
+
+TEST(JsonParser, RejectTrailingDot) {
+    // "1." is not RFC-compliant — fraction part requires at least one digit.
+    auto result = parse_str(R"({"v":1.})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double("v").has_value());
+}
+
+TEST(JsonParser, RejectBareExponent) {
+    // "1e" has no exponent digits — must be rejected.
+    auto result = parse_str(R"({"v":1e})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double("v").has_value());
+}
+
+TEST(JsonParser, RejectExponentWithSignOnly) {
+    // "1e+" has a sign but no exponent digits — must be rejected.
+    auto result = parse_str(R"({"v":1e+})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double("v").has_value());
+}
+
+TEST(JsonParser, RejectExponentWithMinusSignOnly) {
+    // "1e-" has a sign but no exponent digits — must be rejected.
+    auto result = parse_str(R"({"v":1e-})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->get_double("v").has_value());
+}
+
+TEST(JsonParser, ValidDecimalsStillWork) {
+    auto result = parse_str(R"({"a":1.0,"b":0.5,"c":-3.14,"d":1e2,"e":2.5e-1})");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_DOUBLE_EQ(*result->get_double("a"), 1.0);
+    EXPECT_DOUBLE_EQ(*result->get_double("b"), 0.5);
+    EXPECT_DOUBLE_EQ(*result->get_double("c"), -3.14);
+    EXPECT_DOUBLE_EQ(*result->get_double("d"), 100.0);
+    EXPECT_DOUBLE_EQ(*result->get_double("e"), 0.25);
+}

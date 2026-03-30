@@ -141,9 +141,14 @@ public:
             const double projected_abs_qty = std::abs(pos.qty + signed_qty);
             // Use order price as best estimate for projected notional.
             const double projected_symbol_notional = projected_abs_qty * price;
+            // Recompute current symbol notional from live qty/avg_price to
+            // avoid relying on pos.notional which may be stale.
+            const double current_notional = std::isfinite(pos.avg_price)
+                ? std::abs(pos.qty) * pos.avg_price
+                : pos.notional;  // Fallback to cached value if avg_price corrupt
             // Replace this symbol's current notional with its projected notional.
             const double projected_exposure =
-                current_exposure - pos.notional + projected_symbol_notional;
+                current_exposure - current_notional + projected_symbol_notional;
             if (projected_exposure > limits_.max_total_exposure) {
                 SPDLOG_WARN("risk reject: projected total exposure {} "
                             "(current={}, symbol {} notional {} -> {}) exceeds limit {}",

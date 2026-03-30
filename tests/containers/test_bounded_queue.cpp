@@ -1377,3 +1377,36 @@ TEST(BoundedQueueConsumeAll, capacity_one_queue) {
     EXPECT_EQ(consumed[0], 42u);
     EXPECT_TRUE(queue.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Stats safety: current_size never exceeds capacity
+// ---------------------------------------------------------------------------
+TEST(BoundedQueueStats, current_size_never_exceeds_capacity) {
+    constexpr size_t kCap = 4;
+    BoundedQueue<BoundedTestData, kCap> q;
+
+    // Empty
+    EXPECT_LE(q.stats().current_size, kCap);
+
+    // Fill completely
+    for (size_t i = 0; i < kCap; ++i) {
+        (void)q.try_push(BoundedTestData{.seq = static_cast<uint32_t>(i)});
+        auto s = q.stats();
+        EXPECT_LE(s.current_size, s.capacity);
+    }
+
+    // Overfill attempt (should fail, but stats must still be sane)
+    EXPECT_FALSE(q.try_push(BoundedTestData{.seq = 99}));
+    auto s = q.stats();
+    EXPECT_LE(s.current_size, s.capacity);
+    EXPECT_EQ(s.current_size, kCap);
+
+    // Drain and verify at each step
+    for (size_t i = 0; i < kCap; ++i) {
+        BoundedTestData out;
+        (void)q.try_pop(out);
+        auto s2 = q.stats();
+        EXPECT_LE(s2.current_size, s2.capacity);
+    }
+    EXPECT_EQ(q.stats().current_size, 0u);
+}

@@ -893,12 +893,15 @@ class BoundedQueue {
     /// Take a point-in-time statistics snapshot.
     /// Zero overhead — derived from existing atomic indices, no extra counters.
     [[nodiscard]] Stats stats() const noexcept {
-        auto tail = writer_.tail_.load(std::memory_order_relaxed);
-        auto head = reader_.head_.load(std::memory_order_relaxed);
+        auto tail = writer_.tail_.load(std::memory_order_acquire);
+        auto head = reader_.head_.load(std::memory_order_acquire);
+        // Clamp to avoid unsigned underflow from stale relaxed reads
+        // where head might appear > tail due to memory ordering.
+        size_t size = (tail >= head) ? (tail - head) : 0;
         return Stats{
             .total_pushed = tail,
             .total_popped = head,
-            .current_size = tail - head,
+            .current_size = std::min(size, Capacity),
             .capacity     = Capacity,
         };
     }

@@ -87,7 +87,10 @@ public:
         /// How often to check connection health (0 = no monitoring).
         std::chrono::milliseconds health_check_interval{5000};
         /// Mark connection as degraded if no activity for this duration.
-        // TODO: degraded detection not yet implemented; Degraded state is reserved for future use.
+        /// Not yet implemented — requires per-connection last-activity timestamps
+        /// tracked via a callback from Transport::on_data(). When implemented,
+        /// check_health() will compare now - last_activity against this threshold
+        /// and transition Healthy → Degraded accordingly.
         std::chrono::milliseconds degraded_threshold{30000};
         /// Optional callback when health changes.
         std::function<void(std::string_view tag, ConnHealth old_h, ConnHealth new_h)>

@@ -368,7 +368,10 @@ public:
             if (cur_state == SessionState::kLogoutSent) {
                 set_state(SessionState::kDisconnected);
             } else if (cur_state == SessionState::kActive) {
-                send_logout();
+                if (!send_logout()) {
+                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                        "Failed to send Logout response to server-initiated Logout");
+                }
                 set_state(SessionState::kDisconnected);
             }
             return true;
@@ -408,10 +411,15 @@ public:
                 if (gap_fill && *gap_fill == "Y") {
                     // GapFill mode: advance expected sequence (must not go backward)
                     uint32_t expected = expected_inbound_seq_.load(std::memory_order_relaxed);
-                    if (ns <= expected) {
+                    if (ns < expected) {
                         SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
-                            "GapFill rejected: NewSeqNo={} <= expected_inbound_seq_={} "
+                            "GapFill rejected: NewSeqNo={} < expected_inbound_seq_={} "
                             "(backward reset not allowed in GapFill mode)", ns, expected);
+                        return true;
+                    }
+                    if (ns == expected) {
+                        SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+                            "GapFill no-op: NewSeqNo={} == expected_inbound_seq_={}", ns, expected);
                         return true;
                     }
                     SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
@@ -470,7 +478,7 @@ public:
         auto recv_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - last_recv).count();
 
-        if (recv_elapsed >= static_cast<int64_t>(hb_sec * cfg_.heartbeat_timeout_factor)) {
+        if (recv_elapsed >= static_cast<int64_t>(static_cast<double>(hb_sec) * cfg_.heartbeat_timeout_factor)) {
             // Server dead — no response even after TestRequest
             if (test_request_pending_.load(std::memory_order_relaxed)) {
                 SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
@@ -591,8 +599,12 @@ private:
     void fill_session_header(MessageBuilder& b) noexcept {
         b.set(tag::SenderCompID, cfg_.sender_comp_id);
         b.set(tag::TargetCompID, cfg_.target_comp_id);
-        b.set_int(tag::MsgSeqNum,
-                  static_cast<int64_t>(outbound_seq_.fetch_add(1, std::memory_order_relaxed)));
+        uint32_t seq = outbound_seq_.fetch_add(1, std::memory_order_relaxed);
+        if (seq == UINT32_MAX) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                "Outbound sequence number overflow: seq={} wrapped to 0", seq);
+        }
+        b.set_int(tag::MsgSeqNum, static_cast<int64_t>(seq));
 
         uint64_t now_ns = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(

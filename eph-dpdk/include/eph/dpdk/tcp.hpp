@@ -912,7 +912,7 @@ public:
 
     /// Force-close the connection (send RST).
     void reset() noexcept {
-        auto log = detail::tcp_logger();
+        [[maybe_unused]] auto log = detail::tcp_logger();
         SPDLOG_LOGGER_DEBUG(log, "Sending RST");
 
         auto* rst = pkt_template_.build_packet(
@@ -1010,7 +1010,10 @@ private:
     TcpState            state_;
     net::PacketTemplate pkt_template_;
 
-    // TCP sequence tracking
+    // TCP sequence tracking — non-atomic by design.
+    // All send/receive paths run on a single DPDK poll-mode lcore;
+    // concurrent access from multiple threads is not supported.
+    // If multi-threaded access is ever needed, these must become atomic.
     uint32_t snd_nxt_;    // SND.NXT: next sequence number to send
     uint32_t snd_una_;    // SND.UNA: oldest unacknowledged sequence number
     uint32_t rcv_nxt_;    // RCV.NXT: next expected sequence number from peer

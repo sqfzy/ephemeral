@@ -229,3 +229,66 @@ TEST(PositionTracker, InvalidFillsRejected)
     tracker.on_fill("AAPL", 'X', 10.0, 50.0);
     EXPECT_FALSE(tracker.has_position("AAPL"));
 }
+
+// ---------------------------------------------------------------------------
+// NaN guard: fill that crosses zero exactly (division by zero scenario)
+// ---------------------------------------------------------------------------
+TEST(PositionTracker, FillCrossesZeroExactlyNoNaN)
+{
+    PositionTracker tracker;
+
+    // Buy 100 @ 50, then sell exactly 100 @ 55 — position goes to zero.
+    // The avg_price update path must not divide by zero (new_qty == 0).
+    tracker.on_fill("SYM", '1', 100.0, 50.0);
+    tracker.on_fill("SYM", '2', 100.0, 55.0);
+
+    const auto& pos = tracker.get("SYM");
+    EXPECT_NEAR(pos.qty, 0.0, kEps);
+    EXPECT_NEAR(pos.realized_pnl, 500.0, kEps);
+    EXPECT_FALSE(std::isnan(pos.avg_price));
+    EXPECT_FALSE(std::isnan(pos.realized_pnl));
+    EXPECT_FALSE(std::isnan(pos.notional));
+}
+
+// ---------------------------------------------------------------------------
+// NaN guard: very small remainder after reducing fill (catastrophic cancellation)
+// ---------------------------------------------------------------------------
+TEST(PositionTracker, SmallRemainderAfterReducingFillNoNaN)
+{
+    PositionTracker tracker;
+
+    // Build a long position, then sell almost all of it, leaving a tiny remainder.
+    // This exercises the path where abs(old_qty) and abs(signed_qty) are very close
+    // but don't exactly cancel, potentially causing catastrophic cancellation.
+    tracker.on_fill("SYM", '1', 1000000.0, 100.0);
+    tracker.on_fill("SYM", '2', 999999.0, 105.0);
+
+    const auto& pos = tracker.get("SYM");
+    EXPECT_NEAR(pos.qty, 1.0, kEps);
+    EXPECT_FALSE(std::isnan(pos.avg_price));
+    EXPECT_FALSE(std::isnan(pos.realized_pnl));
+    EXPECT_FALSE(std::isnan(pos.notional));
+    // avg_price should remain at 100.0 (partial close preserves avg_price)
+    EXPECT_NEAR(pos.avg_price, 100.0, kEps);
+    // realized_pnl = (105 - 100) * 999999 = 4999995
+    EXPECT_NEAR(pos.realized_pnl, 4999995.0, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// NaN guard: short position crosses zero exactly
+// ---------------------------------------------------------------------------
+TEST(PositionTracker, ShortCrossesZeroExactlyNoNaN)
+{
+    PositionTracker tracker;
+
+    // Sell 50 @ 200 (open short), buy 50 @ 190 (close exactly).
+    tracker.on_fill("SYM", '2', 50.0, 200.0);
+    tracker.on_fill("SYM", '1', 50.0, 190.0);
+
+    const auto& pos = tracker.get("SYM");
+    EXPECT_NEAR(pos.qty, 0.0, kEps);
+    EXPECT_NEAR(pos.realized_pnl, 500.0, kEps);
+    EXPECT_FALSE(std::isnan(pos.avg_price));
+    EXPECT_FALSE(std::isnan(pos.realized_pnl));
+    EXPECT_FALSE(std::isnan(pos.notional));
+}

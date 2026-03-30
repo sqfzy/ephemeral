@@ -215,3 +215,77 @@ TEST(RiskChecker, SetLimitsUpdatesAtRuntime)
     // Verify accessor.
     EXPECT_DOUBLE_EQ(checker.limits().max_order_qty, 500.0);
 }
+
+// ---------------------------------------------------------------------------
+// Reducing order: sell when long should reduce exposure, not be rejected
+// ---------------------------------------------------------------------------
+TEST(RiskChecker, SellWhenLongReducesExposure)
+{
+    RiskLimits limits;
+    limits.max_position_qty      = 500.0;
+    limits.max_total_exposure    = 100000.0;
+
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    // Long 400 @ 150 -> notional = 60000
+    positions.on_fill("AAPL", '1', 400.0, 150.0);
+
+    // Selling 200 when long 400 -> projected_qty = abs(400 - 200) = 200
+    // This REDUCES the position and should pass, even though
+    // the order qty (200) + current qty (400) = 600 > 500 if naively summed.
+    EXPECT_EQ(checker.check_order("AAPL", '2', 200.0, 150.0, positions),
+              RiskRejectReason::kOk);
+
+    // Projected position notional = 200 * 150 = 30000 (less than current 60000).
+    // Projected total exposure = 60000 - 60000 + 30000 = 30000 -> well within 100000.
+}
+
+// ---------------------------------------------------------------------------
+// Reducing order: buy when short should reduce exposure, not be rejected
+// ---------------------------------------------------------------------------
+TEST(RiskChecker, BuyWhenShortReducesExposure)
+{
+    RiskLimits limits;
+    limits.max_position_qty      = 500.0;
+    limits.max_total_exposure    = 100000.0;
+
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    // Short 400 @ 200 -> notional = 80000
+    positions.on_fill("AAPL", '2', 400.0, 200.0);
+
+    // Buying 300 when short 400 -> projected_qty = abs(-400 + 300) = 100
+    // This REDUCES the position and should pass.
+    EXPECT_EQ(checker.check_order("AAPL", '1', 300.0, 200.0, positions),
+              RiskRejectReason::kOk);
+}
+
+// ---------------------------------------------------------------------------
+// Projected exposure calculation correctness with reducing order
+// ---------------------------------------------------------------------------
+TEST(RiskChecker, ProjectedExposureCorrectWithReducingOrder)
+{
+    RiskLimits limits;
+    limits.max_total_exposure = 100000.0;
+
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    // Long 500 AAPL @ 150 -> notional = 75000
+    positions.on_fill("AAPL", '1', 500.0, 150.0);
+    // Long 100 TSLA @ 200 -> notional = 20000
+    positions.on_fill("TSLA", '1', 100.0, 200.0);
+    // Total exposure = 95000
+
+    // Selling 300 AAPL @ 150 -> projected AAPL qty = 200, notional = 30000
+    // Projected total = 95000 - 75000 + 30000 = 50000 -> passes
+    EXPECT_EQ(checker.check_order("AAPL", '2', 300.0, 150.0, positions),
+              RiskRejectReason::kOk);
+
+    // Buying 200 more TSLA @ 200 -> projected TSLA qty = 300, notional = 60000
+    // Projected total = 95000 - 20000 + 60000 = 135000 -> exceeds 100000
+    EXPECT_EQ(checker.check_order("TSLA", '1', 200.0, 200.0, positions),
+              RiskRejectReason::kTotalExposureExceeded);
+}

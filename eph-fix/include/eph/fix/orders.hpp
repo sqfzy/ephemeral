@@ -112,7 +112,16 @@ enum class TimeInForce : char {
 
     // Price only for Limit orders — Market orders must not include tag 44
     if (ord_type == OrdType::Limit) {
+        if (price <= 0.0) {
+            SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+                "build_new_order: Limit order with non-positive price={}, cl_ord_id={}",
+                price, cl_ord_id);
+        }
         b.set_double(tag::Price, price);
+    } else if (ord_type == OrdType::Market && price != 0.0) {
+        SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+            "build_new_order: Market order ignoring price={}, cl_ord_id={}",
+            price, cl_ord_id);
     }
 
     size_t len = b.finish();
@@ -229,7 +238,16 @@ enum class TimeInForce : char {
     b.set_char(tag::TimeInForce, static_cast<char>(tif));
 
     if (ord_type == OrdType::Limit) {
+        if (price <= 0.0) {
+            SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+                "build_replace_order: Limit order with non-positive price={}, cl_ord_id={}",
+                price, cl_ord_id);
+        }
         b.set_double(tag::Price, price);
+    } else if (ord_type == OrdType::Market && price != 0.0) {
+        SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+            "build_replace_order: Market order ignoring price={}, cl_ord_id={}",
+            price, cl_ord_id);
     }
 
     size_t len = b.finish();

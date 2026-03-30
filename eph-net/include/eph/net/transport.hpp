@@ -2099,6 +2099,9 @@ private:
                 // the TOCTOU window. The sequence warning is non-critical stats —
                 // a rare missed check is acceptable vs. adding a mutex on the hot path.
                 if (reconnecting_.load(std::memory_order_acquire)) continue;
+                // Recheck after reconnecting_ check: the RX thread may have
+                // reset crypto_ between the first null-check and this point.
+                if (!crypto_) continue;
                 uint64_t seq = crypto_->write_seq();
 
                 if (!seq_warning_logged_ && seq >= tls_record::kSequenceWarnThreshold) {
@@ -2114,6 +2117,7 @@ private:
                         "TLS write sequence at {}/{} (95%%), "
                         "triggering preemptive reconnect for key refresh",
                         seq, tls_record::kMaxSequenceNumber);
+                    reconnecting_.store(true, std::memory_order_release);
                     tcp_->reset();
                     continue;
                 }
@@ -2141,6 +2145,7 @@ private:
                                 config_.pong_timeout.count());
                             // Signal RX thread to reconnect by resetting TCP.
                             // RX will detect the broken connection and handle reconnect.
+                            reconnecting_.store(true, std::memory_order_release);
                             tcp_->reset();
                             ping_awaiting_pong_ = false;
                             continue;
@@ -2279,6 +2284,7 @@ private:
                             SPDLOG_LOGGER_ERROR(log,
                                 "TLS write sequence exhausted ({}), "
                                 "triggering reconnect for fresh keys", wseq);
+                            reconnecting_.store(true, std::memory_order_release);
                             tcp_->reset();
                             break;
                         }
@@ -2687,6 +2693,10 @@ private:
 
                 consumed += record_total;
             }
+
+            // After decrypt failure + failed reconnect, running_ is false.
+            // Break immediately to avoid flush/compact on dead connection.
+            if (!running_.load(std::memory_order_acquire)) break;
 
             // Flush deferred ACK after TLS decrypt completes, keeping
             // the ACK's rte_eth_tx_burst off the RX latency measurement path.
@@ -3287,7 +3297,8 @@ private:
             deliver[view_to_frame[vi]] = views[vi].deliver;
         }
 
-        uint64_t data_total = 0, data_delivered = 0;
+        uint64_t data_total = 0;
+        [[maybe_unused]] uint64_t data_delivered = 0;
 
         for (size_t i = 0; i < num_frames; ++i) {
             auto& entry = index[i];
