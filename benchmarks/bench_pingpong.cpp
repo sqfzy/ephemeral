@@ -67,15 +67,15 @@ static Config parse_args(int argc, char** argv) {
         else if (a == "--ping-interval") c.ping_interval = std::atoi(next(a));
         else if (a == "--payload-size")  c.payload_size  = std::clamp(std::atoi(next(a)), 0, 125);
         else if (a == "--no-tls")        c.use_tls       = false;
-        else if (a == "--no-verify")     c.verify        = false;
+        else if (a == "--verify")        c.verify        = true;
         else if (a == "--tx-cpu")        c.tx_cpu        = std::atoi(next(a));
         else if (a == "--rx-cpu")        c.rx_cpu        = std::atoi(next(a));
         else if (a == "--main-cpu") c.main_cpu = std::atoi(next(a));
         else if (a == "--help") {
             std::cerr << std::format(
                 "Usage: {} [--host H] [--port P] [--proxy URL] [--count N]\n"
-                "       [--ping-interval MS] [--payload-size BYTES] [--no-tls] [--no-verify]\n"
-                "       [--tx-cpu N] [--rx-cpu N]\n", argv[0]);
+                "       [--ping-interval MS] [--payload-size BYTES] [--no-tls] [--verify]\n"
+                "       [--tx-cpu N] [--rx-cpu N] [--main-cpu N]\n", argv[0]);
             std::exit(0);
         }
         else { std::cerr << std::format("Unknown: {}\n", a); std::exit(1); }

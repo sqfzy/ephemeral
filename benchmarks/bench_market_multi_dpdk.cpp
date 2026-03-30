@@ -187,8 +187,9 @@ int main(int argc, char** argv) {
     // on_message bypasses RX queue — callback runs in RX thread
     static volatile uint64_t on_msg_sink = 0;
     if (cfg.use_on_message) {
-        tc.on_message = [](const uint8_t* data, [[maybe_unused]] uint16_t len, uint8_t) {
-            on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
+        tc.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+            if (len >= 8) [[likely]]
+                on_msg_sink = *reinterpret_cast<const uint64_t*>(data);
         };
     }
     (void)on_msg_sink;  // read to suppress -Wunused-but-set-variable
