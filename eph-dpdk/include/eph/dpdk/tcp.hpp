@@ -855,18 +855,14 @@ public:
             : std::min(uint16_t{32},
                        static_cast<uint16_t>(TcpConfig::kDefaultRxBudgetBytes / config_.mss));
 
-        // Capture TSC BEFORE rx_burst so the measurement includes
-        // PMD poll + DMA completion + mbuf allocation overhead.
-        // Previously this was taken AFTER rx_burst, missing ~50-200ns
-        // of NIC-level work.
-        uint64_t pre_burst_tsc = eph::utils::TSC::now();
-
         uint16_t nb_rx = rte_eth_rx_burst(
             config_.port_id, config_.rx_queue_id, pkts, burst_limit);
 
         if (nb_rx == 0) return uint16_t{0};
         ++stats_.rx_bursts;
-        last_rx_burst_tsc_.store(pre_burst_tsc, std::memory_order_relaxed);
+        // Capture TSC right after rx_burst — matches SocketTransport's
+        // post-recvmsg() timing for fair cross-backend latency comparison.
+        last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }
 
