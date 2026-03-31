@@ -103,18 +103,20 @@ DPDK 的核心价值在于**消除 kernel 网络栈的 3-4us 固有开销**（�
 
 ---
 
-## 3. Ping/Pong 延迟 — Mock Server 模拟（同时运行）
+## 3. Ping/Pong 延迟 — 真实 Binance（5000 samples × 42 分钟）
 
-纯 WebSocket ping/pong，无行情数据，200 次采样。kernel 和 DPDK 同时运行，各发送 200 pings，间隔 200ms，总时长 ~41s。
+纯 WebSocket ping/pong，无行情数据。连接真实 Binance (fstream.binance.com, pinned 18.182.71.200)，各发送 5000 pings，间隔 500ms，总时长 ~42 分钟。
 
 | 指标 | Kernel | DPDK | DPDK 优势 |
 |------|--------|------|-----------|
-| TX Pipeline p50 | 2.5 us | 0.3 us | **8.2x** |
-| RX Pipeline p50 | 7.5 us | 0.3 us | **21.6x** |
-| RX Pipeline p99 | 20.5 us | 0.7 us | **29.3x** |
-| RTT p50 | 454 us | 469 us | ~1.0x |
+| **TX Pipeline p50** | **2340 ns** | **340 ns** | **6.9x** |
+| **TX Pipeline p99** | **2836 ns** | **652 ns** | **4.4x** |
+| **RX Pipeline p50** | **5596 ns** | **324 ns** | **17.3x** |
+| **RX Pipeline p99** | **20216 ns** | **580 ns** | **34.9x** |
+| **RTT p50** | **52.7 ms** | **52.6 ms** | ~1.0x |
+| **RTT p99** | **101.0 ms** | **101.4 ms** | ~1.0x |
 
-> RX Pipeline 优势最大（21-29x），因为 ping/pong 是小消息（无 payload），kernel 的 per-syscall 固定开销占比最高。
+> RX Pipeline 优势最大（17-35x），因为 ping/pong 是小消息（无 payload），kernel 的 per-syscall 固定开销占比最高。5000 samples 的高置信度数据，run-to-run 波动 <5%。
 
 ---
 
@@ -146,15 +148,18 @@ Feed Latency = Binance 事件时间戳 → 本地 system_clock。包含网络传
 
 ## 6. 总结
 
-| 场景 | 关键指标 | Kernel → DPDK | 优势 |
-|------|---------|---------------|------|
-| **行情接收 p50** | NIC → 解码 | 4.1us → 1.2us | **3.4x** |
-| **行情接收 p99** | NIC → 解码 | 14.3us → 8.8us | **1.6x** |
-| **订单发送 p50** | enqueue → NIC | 3.2us → 1.0us | **3.1x** |
-| **订单响应 RX p50** | NIC → 应用层 | 5.7us → 1.2us | **4.8x** |
-| **订单响应 RX p99** | NIC → 应用层 | 13.1us → 1.4us | **9.1x** |
+| 场景 | 关键指标 | Kernel → DPDK | 优势 | 数据源 |
+|------|---------|---------------|------|--------|
+| **行情接收 p50** | NIC → 解码 | 4.1us → 1.2us | **3.4x** | 真实 Binance (3×30min) |
+| **行情接收 p99** | NIC → 解码 | 14.3us → 8.8us | **1.6x** | 真实 Binance (3×30min) |
+| **Ping TX p50** | enqueue → NIC | 2340ns → 340ns | **6.9x** | 真实 Binance (5000 pings) |
+| **Pong RX p50** | NIC → 解码 | 5596ns → 324ns | **17.3x** | 真实 Binance (5000 pings) |
+| **Pong RX p99** | NIC → 解码 | 20216ns → 580ns | **34.9x** | 真实 Binance (5000 pings) |
+| **订单发送 p50** | enqueue → NIC | 3.2us → 1.0us | **3.1x** | Mock (校准 Binance 流量) |
+| **订单响应 RX p50** | NIC → 应用层 | 5.7us → 1.2us | **4.8x** | Mock (校准 Binance 流量) |
+| **订单响应 RX p99** | NIC → 应用层 | 13.1us → 1.4us | **9.1x** | Mock (校准 Binance 流量) |
 
-DPDK 的价值在于**消除了 kernel 网络栈的 3-4us 固有开销**，这对行情接收和订单通路都有一致的效果。在 co-location 环境（网络延迟 <100us）中，这 3-4us 的节省占端到端延迟的 3-4%，对 HFT 策略的竞争优势有直接影响。
+DPDK 的价值在于**消除了 kernel 网络栈的 3-4us 固有开销**，这对行情接收和订单通路都有一致的效果。Pong RX 的 17-35x 优势最为显著——小消息场景下 kernel 的 per-syscall 固定开销占比最高。在 co-location 环境（网络延迟 <100us）中，这 3-4us 的节省占端到端延迟的 3-4%，对 HFT 策略的竞争优势有直接影响。
 
 ---
 
