@@ -490,6 +490,12 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 /// @param hostname   Hostname to resolve (e.g. "example.com")
 /// @param cfg        DNS configuration (nameserver, port, timeout)
 /// @return Resolved IPv4 address in host byte order, or error string
+///
+/// @note Security: DNS transaction IDs are 16-bit per protocol spec, making them
+///       theoretically vulnerable to birthday attacks (~256 queries for 50% collision).
+///       CSPRNG is used for tx_id generation to prevent prediction. For production use,
+///       consider DNS-over-TLS or pre-resolved IPs to eliminate DNS attack surface entirely.
+///       The response is validated against both tx_id and expected nameserver IP.
 [[nodiscard]] inline std::expected<uint32_t, std::string>
 resolve(uint16_t port_id,
         uint16_t queue_id,

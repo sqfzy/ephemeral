@@ -25,8 +25,14 @@ namespace eph::containers {
 /// Single-writer, any-reader (no mutex). T must be trivially copyable.
 /// Capacity must be a power of two so index masking replaces modulo.
 ///
-/// Thread safety: one writer may call push() concurrently with any number
-/// of readers calling at()/front()/back()/count()/full()/empty().
+/// Thread safety: SPSC (single-producer, single-consumer) with acquire/release semantics.
+/// The happens-before chain is: producer store(release) → consumer load(acquire).
+/// This ensures the consumer sees all writes made by the producer before the index update.
+/// No additional synchronization is needed for SPSC use; for MPSC/SPMC, external locking
+/// is required.
+///
+/// One writer may call push() concurrently with any number of readers calling
+/// at()/front()/back()/count()/full()/empty().
 /// `head_` and `count_` are atomic to support this pattern.
 /// Writers use relaxed stores; readers use acquire loads to observe a
 /// consistent count relative to the data already written.

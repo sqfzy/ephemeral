@@ -127,13 +127,21 @@ public:
     AuditLog() noexcept = default;
 
     /// Record an audit event (single-writer, no synchronization).
+    /// @return true if recorded without overwriting old data, false if the ring
+    ///         buffer wrapped around (oldest entry was overwritten).
     /// @note NOT thread-safe. Must be called from a single writer thread only.
     ///       For concurrent writes, use record_mt() instead.
-    void record(AuditEvent event, uint64_t order_id,
+    bool record(AuditEvent event, uint64_t order_id,
                 double price, double quantity,
                 Side side, uint8_t venue_id,
                 double fill_price = 0.0, double fill_qty = 0.0) noexcept {
         size_t idx = head_.load(std::memory_order_relaxed);
+        bool overflowed = idx >= Capacity;
+        if (overflowed) {
+            SPDLOG_WARN("AuditLog: ring buffer overflow at index={}, "
+                        "overwriting oldest entry (capacity={})",
+                        idx, Capacity);
+        }
         auto& entry = entries_[idx & kMask];
         entry.tsc = TSC::now();
         entry.order_id = order_id;
@@ -146,14 +154,23 @@ public:
         entry.venue_id = venue_id;
         std::memset(entry.padding_, 0, sizeof(entry.padding_));
         head_.store(idx + 1, std::memory_order_release);
+        return !overflowed;
     }
 
     /// Record an audit event (multi-writer safe via CAS spinloop).
-    void record_mt(AuditEvent event, uint64_t order_id,
+    /// @return true if recorded without overwriting old data, false if the ring
+    ///         buffer wrapped around (oldest entry was overwritten).
+    bool record_mt(AuditEvent event, uint64_t order_id,
                    double price, double quantity,
                    Side side, uint8_t venue_id,
                    double fill_price = 0.0, double fill_qty = 0.0) noexcept {
         size_t idx = head_.fetch_add(1, std::memory_order_acq_rel);
+        bool overflowed = idx >= Capacity;
+        if (overflowed) {
+            SPDLOG_WARN("AuditLog: ring buffer overflow at index={}, "
+                        "overwriting oldest entry (capacity={})",
+                        idx, Capacity);
+        }
         auto& entry = entries_[idx & kMask];
         entry.tsc = TSC::now();
         entry.order_id = order_id;
@@ -165,6 +182,7 @@ public:
         entry.side = side;
         entry.venue_id = venue_id;
         std::memset(entry.padding_, 0, sizeof(entry.padding_));
+        return !overflowed;
     }
 
     /// Number of entries recorded (may exceed Capacity — wraps around).

@@ -145,6 +145,11 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
     return mbuf;
 }
 
+/// @note Security: ARP has no built-in authentication. In production DPDK deployments,
+///       gateway_mac is typically pre-configured (bypassing ARP) or validated against
+///       a known MAC allowlist. This function only validates opcode, hw/proto types,
+///       and target IP — it does NOT detect ARP spoofing.
+///
 /// Parse an ARP reply from a received mbuf.
 /// Returns the sender MAC if the packet is a valid ARP reply for target_ip.
 ///

@@ -781,6 +781,15 @@ public:
             content_length);
         if (ec != std::errc{}) return false;
 
+        // Reject absurdly large Content-Length to prevent OOM (256 MiB limit for REST responses)
+        constexpr size_t kMaxContentLength = 256 * 1024 * 1024;
+        if (content_length > kMaxContentLength) {
+            SPDLOG_LOGGER_WARN(detail::http_client_logger(),
+                "Content-Length {} exceeds maximum allowed {} bytes",
+                content_length, kMaxContentLength);
+            return false;
+        }
+
         return body_len >= content_length;
     }
 

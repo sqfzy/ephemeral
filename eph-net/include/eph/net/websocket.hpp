@@ -15,6 +15,7 @@
 ///   - [126, 65535]:  2 + 2 bytes + 4 bytes mask = 8 bytes
 ///   - [65536+]:      2 + 8 bytes + 4 bytes mask = 14 bytes
 
+#include <cassert>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
@@ -271,20 +272,24 @@ private:
         if (RAND_bytes(pool_, sizeof(pool_)) != 1) {
             SPDLOG_LOGGER_ERROR(detail::ws_logger(),
                 "RAND_bytes failed for mask key cache, using fallback");
-            // Fallback: XOR with TSC for minimal entropy (not crypto-secure,
-            // but masking is only an anti-cache-poisoning measure per RFC 6455)
+            // Fallback: use a seeded LCG with TSC entropy (not crypto-secure,
+            // but masking is only an anti-cache-poisoning measure per RFC 6455 §5.3)
 #if defined(__x86_64__) || defined(_M_X64)
-            uint64_t tsc = __builtin_ia32_rdtsc();
+            uint64_t seed = __builtin_ia32_rdtsc();
 #elif defined(__aarch64__)
-            uint64_t tsc; asm volatile("mrs %0, cntvct_el0" : "=r"(tsc));
+            uint64_t seed; asm volatile("mrs %0, cntvct_el0" : "=r"(seed));
 #else
-            uint64_t tsc = static_cast<uint64_t>(time(nullptr));
+            uint64_t seed = static_cast<uint64_t>(time(nullptr));
 #endif
+            // SplitMix64 — well-distributed, passes BigCrush statistical tests
             for (size_t i = 0; i < sizeof(pool_); i += 8) {
-                uint64_t val = tsc ^ (tsc << (i & 0x3F));
+                seed += 0x9e3779b97f4a7c15ULL;
+                uint64_t z = seed;
+                z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+                z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+                z = z ^ (z >> 31);
                 size_t n = std::min(sizeof(pool_) - i, size_t{8});
-                std::memcpy(pool_ + i, &val, n);
-                tsc = val * 6364136223846793005ULL + 1;
+                std::memcpy(pool_ + i, &z, n);
             }
         }
         pos_ = 0;
@@ -606,8 +611,9 @@ inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
 /// Build a Pong response frame (echo back the ping payload).
 inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
                                 uint64_t payload_len) noexcept {
-    // Null payload with non-zero length would produce a frame with garbage content.
-    if (!ping_payload) payload_len = 0;
+    // ping_payload should never be null with non-zero length in practice —
+    // the WebSocket decoder always provides a valid pointer for control frames.
+    assert(ping_payload || payload_len == 0);
     return encode_frame(out, opcode::kPong, ping_payload, payload_len);
 }
 
@@ -615,7 +621,7 @@ inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
 inline size_t build_ping_frame(uint8_t* out,
                                 const uint8_t* payload = nullptr,
                                 uint64_t payload_len = 0) noexcept {
-    if (!payload) payload_len = 0;
+    assert(payload || payload_len == 0);
     return encode_frame(out, opcode::kPing, payload, payload_len);
 }
 

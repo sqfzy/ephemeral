@@ -18,6 +18,8 @@
 ///       for (auto& bid : depth->bids) { ... }
 ///   }
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <chrono>
 #include <expected>
@@ -310,6 +312,9 @@ public:
             config.host, config.port, config.timeout.count());
     }
 
+    /// Binance accepts only specific depth limit values.
+    static constexpr std::array<int, 8> kValidDepthLimits = {5, 10, 20, 50, 100, 500, 1000, 5000};
+
     /// Get orderbook depth snapshot.
     ///
     /// Calls GET /api/v3/depth?symbol=<symbol>&limit=<limit>.
@@ -321,6 +326,17 @@ public:
     [[nodiscard]] std::expected<DepthSnapshot, std::string>
     get_depth(std::string_view symbol, int limit = 20) noexcept {
         auto* log = detail::binance_rest_logger();
+
+        // Validate limit against Binance's accepted values
+        if (std::ranges::find(kValidDepthLimits, limit) == kValidDepthLimits.end()) {
+            SPDLOG_LOGGER_WARN(log,
+                "get_depth: invalid limit={} for symbol={}. "
+                "Binance accepts: 5, 10, 20, 50, 100, 500, 1000, 5000",
+                limit, symbol);
+            return std::unexpected(std::format(
+                "Invalid depth limit {}. Binance accepts: 5, 10, 20, 50, 100, 500, 1000, 5000",
+                limit));
+        }
 
         SPDLOG_LOGGER_DEBUG(log, "get_depth: symbol={}, limit={}", symbol, limit);
 

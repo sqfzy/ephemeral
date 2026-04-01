@@ -92,9 +92,9 @@ static void demo_cpu_topology() {
     }
 
     // Show CPU base frequency if available
-    double freq = eph::utils::get_cpu_base_frequency();
-    if (freq > 0) {
-        spdlog::info("Base frequency: {:.0f} MHz", freq);
+    auto freq = eph::utils::get_cpu_base_frequency();
+    if (freq) {
+        spdlog::info("Base frequency: {:.0f} MHz", *freq);
     }
 }
 

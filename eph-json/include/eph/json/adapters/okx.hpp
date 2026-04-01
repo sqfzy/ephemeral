@@ -307,6 +307,8 @@ inst_id_hash(const uint8_t* data, size_t len) noexcept {
 ///
 /// OKX subscribe format:
 ///   {"op":"subscribe","args":[{"channel":"bbo-tbt","instId":"BTC-USDT"},...],"id":"N"}
+// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
+// but JSON payload format differs per exchange, making a shared abstraction impractical.
 ///
 /// @param channel   Channel name (e.g., "bbo-tbt", "trades", "books5")
 /// @param inst_ids  Instruments to subscribe (e.g., "BTC-USDT", "ETH-USDT")

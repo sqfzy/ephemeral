@@ -76,6 +76,17 @@ constexpr std::string_view trim(std::string_view s) noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// Price scaling constants
+// ---------------------------------------------------------------------------
+
+/// ITCH 5.0 prices are fixed-point with 4 implied decimal places (10^4).
+/// Divide raw uint32_t price fields by this to get dollars.
+inline constexpr double kItchPriceDivisor = 10'000.0;
+
+/// LULD auction collar messages use 8 implied decimal places (10^8).
+inline constexpr double kLuldPriceDivisor = 100'000'000.0;
+
+// ---------------------------------------------------------------------------
 // Common header accessors  (all ITCH messages share this layout)
 //
 //   Offset 0:  message_type  (1 byte)  — stripped before these are called
@@ -461,7 +472,7 @@ inline uint32_t price_raw(const uint8_t* msg) noexcept {
 
 /// Price in dollars (ITCH prices have 4 implied decimal places).
 inline double price(const uint8_t* msg) noexcept {
-    return price_raw(msg) / 10000.0;
+    return price_raw(msg) / kItchPriceDivisor;
 }
 
 } // namespace add_order
@@ -499,7 +510,7 @@ inline uint32_t price_raw(const uint8_t* msg) noexcept {
 }
 
 inline double price(const uint8_t* msg) noexcept {
-    return price_raw(msg) / 10000.0;
+    return price_raw(msg) / kItchPriceDivisor;
 }
 
 /// 4-character MPID attribution (right-padded with spaces).
@@ -563,7 +574,7 @@ inline uint32_t execution_price_raw(const uint8_t* msg) noexcept {
 }
 
 inline double execution_price(const uint8_t* msg) noexcept {
-    return execution_price_raw(msg) / 10000.0;
+    return execution_price_raw(msg) / kItchPriceDivisor;
 }
 
 } // namespace order_executed_price
@@ -618,7 +629,7 @@ inline uint32_t price_raw(const uint8_t* msg) noexcept {
 }
 
 inline double price(const uint8_t* msg) noexcept {
-    return price_raw(msg) / 10000.0;
+    return price_raw(msg) / kItchPriceDivisor;
 }
 
 } // namespace order_replace
@@ -655,7 +666,7 @@ inline uint32_t price_raw(const uint8_t* msg) noexcept {
 }
 
 inline double price(const uint8_t* msg) noexcept {
-    return price_raw(msg) / 10000.0;
+    return price_raw(msg) / kItchPriceDivisor;
 }
 
 inline uint64_t match_number(const uint8_t* msg) noexcept {
@@ -688,7 +699,7 @@ inline uint32_t cross_price_raw(const uint8_t* msg) noexcept {
 }
 
 inline double cross_price(const uint8_t* msg) noexcept {
-    return cross_price_raw(msg) / 10000.0;
+    return cross_price_raw(msg) / kItchPriceDivisor;
 }
 
 inline uint64_t match_number(const uint8_t* msg) noexcept {
@@ -815,7 +826,7 @@ inline uint64_t level1_raw(const uint8_t* msg) noexcept {
 
 /// Level 1 MWCB value in dollars (price8: 8 implied decimal places).
 inline double level1(const uint8_t* msg) noexcept {
-    return level1_raw(msg) / 100000000.0;
+    return level1_raw(msg) / kLuldPriceDivisor;
 }
 
 /// Level 2 MWCB value (raw, 8 bytes big-endian at offset 19).
@@ -825,7 +836,7 @@ inline uint64_t level2_raw(const uint8_t* msg) noexcept {
 
 /// Level 2 MWCB value in dollars (price8: 8 implied decimal places).
 inline double level2(const uint8_t* msg) noexcept {
-    return level2_raw(msg) / 100000000.0;
+    return level2_raw(msg) / kLuldPriceDivisor;
 }
 
 /// Level 3 MWCB value (raw, 8 bytes big-endian at offset 27).
@@ -835,7 +846,7 @@ inline uint64_t level3_raw(const uint8_t* msg) noexcept {
 
 /// Level 3 MWCB value in dollars (price8: 8 implied decimal places).
 inline double level3(const uint8_t* msg) noexcept {
-    return level3_raw(msg) / 100000000.0;
+    return level3_raw(msg) / kLuldPriceDivisor;
 }
 
 } // namespace mwcb_decline_level
@@ -887,7 +898,7 @@ inline uint32_t ipo_price_raw(const uint8_t* msg) noexcept {
 
 /// IPO price in dollars (4 implied decimal places).
 inline double ipo_price(const uint8_t* msg) noexcept {
-    return ipo_price_raw(msg) / 10000.0;
+    return ipo_price_raw(msg) / kItchPriceDivisor;
 }
 
 } // namespace ipo_quoting_period
@@ -917,7 +928,7 @@ inline uint32_t auction_collar_reference_price_raw(const uint8_t* msg) noexcept 
 
 /// Auction collar reference price in dollars (4 implied decimal places).
 inline double auction_collar_reference_price(const uint8_t* msg) noexcept {
-    return auction_collar_reference_price_raw(msg) / 10000.0;
+    return auction_collar_reference_price_raw(msg) / kItchPriceDivisor;
 }
 
 /// Upper auction collar price (raw, 4 bytes BE at offset 23).
@@ -927,7 +938,7 @@ inline uint32_t upper_auction_collar_price_raw(const uint8_t* msg) noexcept {
 
 /// Upper auction collar price in dollars (4 implied decimal places).
 inline double upper_auction_collar_price(const uint8_t* msg) noexcept {
-    return upper_auction_collar_price_raw(msg) / 10000.0;
+    return upper_auction_collar_price_raw(msg) / kItchPriceDivisor;
 }
 
 /// Lower auction collar price (raw, 4 bytes BE at offset 27).
@@ -937,7 +948,7 @@ inline uint32_t lower_auction_collar_price_raw(const uint8_t* msg) noexcept {
 
 /// Lower auction collar price in dollars (4 implied decimal places).
 inline double lower_auction_collar_price(const uint8_t* msg) noexcept {
-    return lower_auction_collar_price_raw(msg) / 10000.0;
+    return lower_auction_collar_price_raw(msg) / kItchPriceDivisor;
 }
 
 /// Auction collar extension (4 bytes BE at offset 31).
@@ -1027,7 +1038,7 @@ inline uint32_t far_price_raw(const uint8_t* msg) noexcept {
 
 /// Far price in dollars (4 implied decimal places).
 inline double far_price(const uint8_t* msg) noexcept {
-    return far_price_raw(msg) / 10000.0;
+    return far_price_raw(msg) / kItchPriceDivisor;
 }
 
 /// Near price (raw, 4 bytes BE at offset 40).
@@ -1037,7 +1048,7 @@ inline uint32_t near_price_raw(const uint8_t* msg) noexcept {
 
 /// Near price in dollars (4 implied decimal places).
 inline double near_price(const uint8_t* msg) noexcept {
-    return near_price_raw(msg) / 10000.0;
+    return near_price_raw(msg) / kItchPriceDivisor;
 }
 
 /// Current reference price (raw, 4 bytes BE at offset 44).
@@ -1047,7 +1058,7 @@ inline uint32_t current_reference_price_raw(const uint8_t* msg) noexcept {
 
 /// Current reference price in dollars (4 implied decimal places).
 inline double current_reference_price(const uint8_t* msg) noexcept {
-    return current_reference_price_raw(msg) / 10000.0;
+    return current_reference_price_raw(msg) / kItchPriceDivisor;
 }
 
 /// Cross type: 'O'=opening, 'C'=closing, 'H'=halted/IPO.

@@ -232,17 +232,18 @@ socks5_handshake(SocketTransport& tcp,
             return std::unexpected("SOCKS5: username/password exceeds 255 bytes");
         }
         // RFC 1929: VER(1) ULEN(1) UNAME(ULEN) PLEN(1) PASSWD(PLEN)
+        // Max: 1 + 1 + 255 + 1 + 255 = 513 bytes — fits comfortably on the stack.
         size_t auth_len = 3 + cfg.username.size() + cfg.password.size();
-        auto auth_buf = std::make_unique<uint8_t[]>(auth_len);
+        uint8_t auth_buf[513];
         size_t off = 0;
         auth_buf[off++] = 0x01;
         auth_buf[off++] = static_cast<uint8_t>(cfg.username.size());
-        std::memcpy(auth_buf.get() + off, cfg.username.data(), cfg.username.size());
+        std::memcpy(auth_buf + off, cfg.username.data(), cfg.username.size());
         off += cfg.username.size();
         auth_buf[off++] = static_cast<uint8_t>(cfg.password.size());
-        std::memcpy(auth_buf.get() + off, cfg.password.data(), cfg.password.size());
+        std::memcpy(auth_buf + off, cfg.password.data(), cfg.password.size());
 
-        if (auto r = io.send_all(auth_buf.get(), auth_len); !r) return std::unexpected(r.error());
+        if (auto r = io.send_all(auth_buf, auth_len); !r) return std::unexpected(r.error());
 
         uint8_t auth_resp[2];
         if (auto r = io.read_exact(auth_resp, 2, cfg.timeout); !r) return std::unexpected(r.error());
@@ -262,9 +263,10 @@ socks5_handshake(SocketTransport& tcp,
 
     // ── Phase 3: Connect request ──────────────────────────────────────────
     // VER(1) CMD(1) RSV(1) ATYP(1) DST.ADDR(variable) DST.PORT(2)
+    // Max: 4 + 1 + 255 + 2 = 262 bytes — stack-allocated to avoid heap overhead.
     size_t host_len = target_host.size();
     size_t req_len = 4 + 1 + host_len + 2;
-    auto req_buf = std::make_unique<uint8_t[]>(req_len);
+    uint8_t req_buf[262];
     {
         size_t off = 0;
         req_buf[off++] = 0x05;  // VER
@@ -272,13 +274,13 @@ socks5_handshake(SocketTransport& tcp,
         req_buf[off++] = 0x00;  // RSV
         req_buf[off++] = 0x03;  // ATYP: domain name (remote DNS — no leak)
         req_buf[off++] = static_cast<uint8_t>(host_len);
-        std::memcpy(req_buf.get() + off, target_host.data(), host_len);
+        std::memcpy(req_buf + off, target_host.data(), host_len);
         off += host_len;
         req_buf[off++] = static_cast<uint8_t>(target_port >> 8);
         req_buf[off++] = static_cast<uint8_t>(target_port & 0xFF);
     }
 
-    if (auto r = io.send_all(req_buf.get(), req_len); !r) return std::unexpected(r.error());
+    if (auto r = io.send_all(req_buf, req_len); !r) return std::unexpected(r.error());
 
     // Server responds: VER(1) REP(1) RSV(1) ATYP(1) BND.ADDR(variable) BND.PORT(2)
     uint8_t resp_header[4];
@@ -318,8 +320,9 @@ socks5_handshake(SocketTransport& tcp,
                 "SOCKS5: unknown ATYP 0x{:02x}", resp_header[3]));
     }
 
-    auto drain_buf = std::make_unique<uint8_t[]>(drain_len);
-    if (auto r = io.read_exact(drain_buf.get(), drain_len, cfg.timeout); !r)
+    // Max drain: IPv6(16) + port(2) = 18 bytes — stack buffer suffices.
+    uint8_t drain_buf[18];
+    if (auto r = io.read_exact(drain_buf, drain_len, cfg.timeout); !r)
         return std::unexpected(r.error());
 
     SPDLOG_LOGGER_INFO(log, "SOCKS5 tunnel established to {}:{}", target_host, target_port);

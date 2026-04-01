@@ -55,11 +55,15 @@ TEST(CpuTest, SetThreadAffinityAtHwcBoundary) {
 }
 
 TEST(CpuTest, GetCpuBaseFrequency) {
-  double freq = get_cpu_base_frequency();
-  
-  // 频率应该在合理范围内（0.5 - 10 GHz）
-  EXPECT_GT(freq, 0.5);
-  EXPECT_LT(freq, 10.0);
+  auto freq = get_cpu_base_frequency();
+
+  // On Linux with /proc/cpuinfo available, expect a valid frequency.
+  // On other platforms or minimal environments, nullopt is acceptable.
+  if (freq) {
+    // 频率应该在合理范围内（0.5 - 10 GHz）
+    EXPECT_GT(*freq, 0.5);
+    EXPECT_LT(*freq, 10.0);
+  }
 }
 
 TEST(CpuTest, CpuRelax) {

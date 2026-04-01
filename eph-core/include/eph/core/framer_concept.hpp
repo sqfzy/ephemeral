@@ -40,11 +40,20 @@ constexpr std::string_view error_name(FrameError e) noexcept {
 }
 
 /// Decoded frame — zero-copy view into the receive buffer.
+///
+/// @note Lifetime: `payload` points into the original receive buffer (zero-copy view).
+///       The pointer is valid only until the next call to `decode()` or until the
+///       underlying buffer is reused/freed. Callers must copy the data if they need
+///       it to outlive the current decode cycle.
 struct DecodedFrame {
     const uint8_t* payload;      ///< Pointer to payload data (within input buffer)
     size_t         payload_len;  ///< Payload length in bytes
-    uint8_t        msg_type;     ///< Protocol-specific message type
-                                 ///< (WS opcode / ITCH msg type byte / FIX MsgType char)
+    /// Message type identifier — semantics vary by protocol:
+    ///   - WebSocket: opcode (1=text, 2=binary, 8=close, 9=ping, 10=pong)
+    ///   - ITCH: message type character (e.g., 'A'=AddOrder, 'S'=SystemEvent)
+    ///   - FIX: MsgType tag 35 value mapped to uint16_t
+    ///   - JSON/Raw: 0 (unused)
+    uint8_t        msg_type;
     bool           is_control;   ///< Control frame (WS ping/pong/close). Data framers always false.
     size_t         total_len;    ///< Total consumed bytes including frame header
 };
@@ -66,6 +75,11 @@ template <typename F>
 concept MessageFramer = requires(F f, uint8_t* out, const uint8_t* in,
                                   size_t len, uint8_t msg_type) {
     /// Encode a payload into framed wire format.
+    /// @pre `buf` must have sufficient capacity for the framed message.
+    ///      Required size depends on the framer: length-prefix adds 2 bytes,
+    ///      FIX adds checksum/body-length tags, WebSocket adds 2-14 byte header.
+    ///      Callers should use `max_frame_overhead()` if available, or allocate
+    ///      conservatively (payload_size + 64 bytes covers all built-in framers).
     /// @param out       Output buffer (must have at least len + max_overhead() bytes)
     /// @param in        Input payload data
     /// @param len       Input payload length

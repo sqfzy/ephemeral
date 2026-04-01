@@ -115,7 +115,6 @@ struct EnterOrder {
                         uint32_t price,
                         uint32_t time_in_force,
                         std::string_view firm) noexcept {
-        assert(buf != nullptr && "buffer must not be null");
         // Caller must ensure buf has at least kSize (49) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_DEBUG("EnterOrder::build: null buffer");
@@ -174,7 +173,6 @@ struct ReplaceOrder {
                         uint32_t shares,
                         uint32_t price,
                         uint32_t time_in_force) noexcept {
-        assert(buf != nullptr && "buffer must not be null");
         // Caller must ensure buf has at least kSize (47) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_DEBUG("ReplaceOrder::build: null buffer");
@@ -219,7 +217,6 @@ struct CancelOrder {
     static size_t build(uint8_t* buf,
                         std::string_view token,
                         uint32_t shares) noexcept {
-        assert(buf != nullptr && "buffer must not be null");
         // Caller must ensure buf has at least kSize (19) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_DEBUG("CancelOrder::build: null buffer");

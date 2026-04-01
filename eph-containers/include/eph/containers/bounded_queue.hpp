@@ -11,6 +11,8 @@
 #include <span>
 #include <string>
 
+#include <spdlog/spdlog.h>
+
 #include "eph/containers/concepts.hpp"
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/cpu.hpp"
@@ -898,6 +900,10 @@ class BoundedQueue {
         // Clamp to avoid unsigned underflow from stale relaxed reads
         // where head might appear > tail due to memory ordering.
         size_t size = (tail >= head) ? (tail - head) : 0;
+        if (tail < head || size > Capacity) {
+            SPDLOG_DEBUG("bounded_queue stats clamping: raw value out of expected range "
+                         "(tail={}, head={}, raw_size={})", tail, head, size);
+        }
         return Stats{
             .total_pushed = tail,
             .total_popped = head,

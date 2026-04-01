@@ -5,6 +5,7 @@
 #include <expected>
 #include <format>
 #include <fstream>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -386,13 +387,13 @@ set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
  *
  * 从系统信息中读取 CPU 的标称频率（非实时频率）。
  * 
- * @return double CPU 频率（GHz）
- * 
+ * @return std::optional<double> CPU frequency in GHz, or nullopt if detection failed
+ *
  * @note Linux: 解析 /proc/cpuinfo 中的 "model name"
- * @note 其他平台: 返回 1.0 GHz（回退值）
+ * @note 其他平台: 返回 nullopt（无法检测）
  * @note 实际频率可能因睿频/节能而变化，建议使用 TSC 校准
  */
-inline double get_cpu_base_frequency() {
+[[nodiscard]] inline std::optional<double> get_cpu_base_frequency() {
   auto log = detail::cpu_logger();
 #if defined(__linux__)
   // Parse "model name" line, looking for "@ X.XX GHz" pattern.
@@ -400,8 +401,8 @@ inline double get_cpu_base_frequency() {
   std::ifstream cpuinfo("/proc/cpuinfo");
   if (!cpuinfo) {
     SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
-                             "using fallback frequency 1.0 GHz");
-    return 1.0;
+                             "cannot detect CPU frequency");
+    return std::nullopt;
   }
   for (std::string line; getline(cpuinfo, line);) {
     if (line.find("model name") == std::string::npos) continue;
@@ -428,12 +429,12 @@ inline double get_cpu_base_frequency() {
     }
   }
   SPDLOG_LOGGER_WARN(log,
-      "Could not parse CPU frequency from /proc/cpuinfo, using fallback");
+      "Could not parse CPU frequency from /proc/cpuinfo");
 #else
   SPDLOG_LOGGER_DEBUG(log,
       "CPU frequency detection not available on this platform");
 #endif
-  return 1.0; // 回退值
+  return std::nullopt;
 }
 
 /**

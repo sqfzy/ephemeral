@@ -36,6 +36,7 @@ enum class RiskRejectReason : uint8_t {
     kPositionNotionalExceeded,
     kTotalExposureExceeded,
     kRateLimitExceeded,
+    kInvalidInput,
 };
 
 /// Human-readable name for a reject reason.
@@ -49,6 +50,7 @@ constexpr std::string_view risk_reject_name(RiskRejectReason r) noexcept
         case RiskRejectReason::kPositionNotionalExceeded: return "PositionNotionalExceeded";
         case RiskRejectReason::kTotalExposureExceeded:    return "TotalExposureExceeded";
         case RiskRejectReason::kRateLimitExceeded:        return "RateLimitExceeded";
+        case RiskRejectReason::kInvalidInput:             return "InvalidInput";
     }
     return "Unknown";
 }
@@ -87,6 +89,13 @@ public:
     {
         SPDLOG_DEBUG("check_order: symbol={} side={} qty={} price={}",
                      symbol, side, qty, price);
+
+        // Reject non-finite inputs — NaN/Inf would bypass all comparisons.
+        if (!std::isfinite(qty) || !std::isfinite(price) || qty <= 0.0 || price <= 0.0) {
+            SPDLOG_WARN("risk reject: invalid qty={} or price={} for symbol={}",
+                        qty, price, symbol);
+            return RiskRejectReason::kInvalidInput;
+        }
 
         const double notional = qty * price;
 

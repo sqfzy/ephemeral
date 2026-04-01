@@ -294,6 +294,55 @@ public:
         return true;
     }
 
+    /// Handle an OrderCancelReject (MsgType=9).
+    ///
+    /// When the exchange rejects a cancel/replace request, the order remains
+    /// in its previous state (reverted from PendingCancel back to its prior
+    /// active state). This prevents the order from being stuck in PendingCancel
+    /// indefinitely.
+    ///
+    /// @param cl_ord_id    ClOrdID of the rejected cancel request
+    /// @param cxl_rej_reason  CxlRejReason (tag 102) value, or -1 if absent
+    /// @return true if order was found and updated, false otherwise
+    bool on_cancel_reject(std::string_view cl_ord_id,
+                          int cxl_rej_reason = -1) noexcept
+    {
+        if (cl_ord_id.empty()) {
+            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                "on_cancel_reject: missing cl_ord_id, ignoring");
+            return false;
+        }
+
+        auto it = orders_.find(cl_ord_id);
+        if (it == orders_.end()) {
+            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                "on_cancel_reject: unknown cl_ord_id={}", cl_ord_id);
+            return false;
+        }
+
+        auto& order = it->second;
+
+        // Only revert PendingCancel — if already terminal or in another state,
+        // the reject is informational only.
+        if (order.state == OrderState::PendingCancel) {
+            // Revert to appropriate active state based on fill status.
+            order.state = (order.filled_qty > 0.0)
+                ? OrderState::PartiallyFilled
+                : OrderState::New;
+            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                "on_cancel_reject: cl_ord_id={} cancel rejected (reason={}), "
+                "reverting from PendingCancel to {}",
+                cl_ord_id, cxl_rej_reason, static_cast<int>(order.state));
+        } else {
+            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+                "on_cancel_reject: cl_ord_id={} cancel rejected (reason={}) "
+                "but order not in PendingCancel state (state={}), no state change",
+                cl_ord_id, cxl_rej_reason, static_cast<int>(order.state));
+        }
+
+        return true;
+    }
+
     /// Get order by cl_ord_id. Returns nullptr if not found.
     [[nodiscard]] const ManagedOrder* get(std::string_view cl_ord_id) const noexcept
     {

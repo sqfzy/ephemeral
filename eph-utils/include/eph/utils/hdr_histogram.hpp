@@ -126,7 +126,10 @@ class HdrHistogram {
 
         establish_size(highest_trackable_value);
 
-        if (counts_len_ > 10'000'000) {
+        /// Maximum allowed counts array length to prevent accidental huge allocations.
+        static constexpr int32_t kMaxCountsLen = 10'000'000;
+
+        if (counts_len_ > kMaxCountsLen) {
             throw std::invalid_argument(
                 "Histogram too large: counts_len exceeds 10M");
         }

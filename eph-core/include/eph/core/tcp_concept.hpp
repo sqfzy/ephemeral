@@ -15,7 +15,8 @@
 
 namespace eph::net {
 
-/// Client-side TCP states (RFC 793 active-open path).
+/// TCP connection states (client-side only — this library does not implement server accept).
+/// Follows the RFC 793 active-open path.
 enum class TcpState : uint8_t {
     Closed,
     SynSent,
@@ -83,6 +84,10 @@ concept TcpTransport = requires(T& t,
     { t.is_established() } -> std::same_as<bool>;
 } && requires(T& t) {
     // poll_rx must accept a callback with signature void(const uint8_t*, uint16_t)
+    /// @note The uint16_t length parameter supports payloads up to 65535 bytes.
+    ///       Standard Ethernet MTU (1500) and typical jumbo frames (9000) fit comfortably.
+    ///       For unusual configurations with >64KB payload reassembly, this would need
+    ///       to be widened to uint32_t (breaking API change).
     { t.poll_rx([](const uint8_t*, uint16_t) {}) }
         -> std::same_as<std::expected<uint16_t, std::string>>;
 };

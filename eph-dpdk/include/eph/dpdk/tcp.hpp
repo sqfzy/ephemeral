@@ -1003,6 +1003,10 @@ private:
     /// swap-with-last removal). The worst-case bound is ReorderSlots² = 64² = 4096
     /// comparisons per drain call, which is negligible on the trading hot path and
     /// far cheaper than the alternative (sorted insertion or skip-list overhead).
+    // PERF: drain_reorder_buffer scans slots linearly. With default ReorderSlots=64,
+    // worst-case is O(64²) = 4096 iterations per drain — acceptable for typical use.
+    // If profiling shows this as a hotspot with large ReorderSlots, consider a sorted
+    // index or bitmap to track filled slots.
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     uint16_t drain_reorder_buf(F&& cb) {

@@ -256,6 +256,11 @@ private:
                 pkt_tuple.dst_port = parsed.dst_port();
                 const uint64_t pkt_hash = ReactorEntry::hash_tuple(pkt_tuple);
 
+                // PERF: Connection dispatch uses linear scan over registered connections.
+                // For typical HFT deployments (2-4 connections), this is optimal (no indirection overhead).
+                // For >8 connections, consider a hash map lookup by {src_ip, src_port, dst_ip, dst_port}
+                // tuple. Benchmark before optimizing — cache-friendly linear scan often beats hash lookup
+                // for small N.
                 // Linear scan with hash pre-filter (≤16 entries, cache-friendly)
                 bool matched = false;
                 const size_t n = count_.load(std::memory_order_acquire);

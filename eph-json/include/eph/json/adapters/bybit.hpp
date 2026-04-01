@@ -242,6 +242,8 @@ symbol_hash(const uint8_t* data, size_t len) noexcept {
 ///
 /// Bybit subscribe format:
 ///   {"op":"subscribe","args":["tickers.BTCUSDT","tickers.ETHUSDT"],"req_id":"1"}
+// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
+// but JSON payload format differs per exchange, making a shared abstraction impractical.
 ///
 /// @param channel  Channel prefix (e.g., "tickers", "orderbook.1", "publicTrade")
 /// @param symbols  Symbols to subscribe (e.g., "BTCUSDT", "ETHUSDT")

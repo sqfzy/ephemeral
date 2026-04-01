@@ -109,6 +109,11 @@ struct BookTicker {
     int64_t event_time = 0;      ///< Event time (milliseconds since epoch)
     int64_t txn_time = 0;        ///< Transaction time (milliseconds since epoch)
 
+    // Cached parsed prices — populated once during from() to avoid re-parsing
+    // in mid_price()/spread() on every call.
+    std::optional<double> cached_bid{};  ///< Cached parsed bid price
+    std::optional<double> cached_ask{};  ///< Cached parsed ask price
+
     /// Extract BookTicker from a parsed JsonView.
     /// Returns nullopt if the required fields are missing or invalid.
     [[nodiscard]] static std::optional<BookTicker>
@@ -138,23 +143,30 @@ struct BookTicker {
         if (auto E = json.get_int("E")) t.event_time = *E;
         if (auto T = json.get_int("T")) t.txn_time = *T;
 
+        // Pre-parse prices once to avoid repeated string→double conversion
+        // in mid_price()/spread().
+        t.cached_bid = parse_number(t.bid_price);
+        t.cached_ask = parse_number(t.ask_price);
+
         return t;
     }
 
     /// Compute mid price as double. Returns nullopt if prices are not valid numbers.
+    /// Uses cached parsed values when available (populated by from()), falls back
+    /// to on-demand parsing for manually constructed instances.
     [[nodiscard]] std::optional<double> mid_price() const noexcept {
-        // Reuse JsonView's parse for string→double. Create a temporary
-        // single-field view to access the private parse_double helper.
-        auto bid = parse_number(bid_price);
-        auto ask = parse_number(ask_price);
+        auto bid = cached_bid ? cached_bid : parse_number(bid_price);
+        auto ask = cached_ask ? cached_ask : parse_number(ask_price);
         if (!bid || !ask) return std::nullopt;
         return (*bid + *ask) / 2.0;
     }
 
     /// Compute spread as double. Returns nullopt if prices are not valid numbers.
+    /// Uses cached parsed values when available (populated by from()), falls back
+    /// to on-demand parsing for manually constructed instances.
     [[nodiscard]] std::optional<double> spread() const noexcept {
-        auto bid = parse_number(bid_price);
-        auto ask = parse_number(ask_price);
+        auto bid = cached_bid ? cached_bid : parse_number(bid_price);
+        auto ask = cached_ask ? cached_ask : parse_number(ask_price);
         if (!bid || !ask) return std::nullopt;
         return *ask - *bid;
     }
@@ -235,6 +247,8 @@ combined_ws_path(std::span<const std::string_view> symbols,
 /// Build a SUBSCRIBE JSON message (sent after WebSocket connection).
 /// Returns: {"method":"SUBSCRIBE","params":["sym@stream",...],"id":N}
 /// Returns a message with empty params array for an empty symbols list.
+// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
+// but JSON payload format differs per exchange, making a shared abstraction impractical.
 [[nodiscard]] inline std::string
 subscribe_message(std::span<const std::string_view> symbols,
                   std::string_view stream_type,

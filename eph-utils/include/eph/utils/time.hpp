@@ -219,6 +219,21 @@ public:
     return ns_per_cycle_;
   }
 
+  /**
+   * @brief 获取校准的变异系数（coefficient of variation）
+   *
+   * Returns the CV from the calibration sampling. A value > 0.01 (1%)
+   * indicates the TSC may be unstable (frequency scaling, VM, etc.).
+   *
+   * @return std::optional<double> CV value if initialized, nullopt otherwise
+   */
+  [[nodiscard]] static std::optional<double> get_calibration_cv() noexcept {
+    if (!initialized_.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+    return calibration_cv_;
+  }
+
 private:
   // ns_per_cycle_ is written exactly once by init() before initialized_ is
   // set to true.  The release store on initialized_ in init() and the acquire
@@ -227,6 +242,8 @@ private:
   // the fully-written ns_per_cycle_ value.  This makes concurrent reads from
   // worker threads safe without requiring ns_per_cycle_ itself to be atomic.
   static inline double ns_per_cycle_ = 0.0;
+  /// Coefficient of variation from calibration sampling (0.0 until calibrated).
+  static inline double calibration_cv_ = 0.0;
   static inline std::atomic<bool> initialized_{false};
   static inline std::once_flag init_flag_;
 
@@ -306,6 +323,9 @@ private:
     }
     double stddev = std::sqrt(variance / num_samples);
     double cv = stddev / mean; // 变异系数
+
+    // Store calibration CV so callers can query it via get_calibration_cv().
+    calibration_cv_ = cv;
 
     if (cv > 0.01) { // 超过 1% 的变异被认为不稳定
       SPDLOG_LOGGER_ERROR(log,

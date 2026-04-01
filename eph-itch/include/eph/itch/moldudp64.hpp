@@ -45,13 +45,13 @@ inline constexpr uint16_t kEndOfSession  = 0xFFFF;
 // ---------------------------------------------------------------------------
 
 namespace detail {
-inline spdlog::logger* moldudp64_logger() {
+inline const std::shared_ptr<spdlog::logger>& moldudp64_logger() {
     static auto l = [] {
         auto lg = spdlog::get("itch.moldudp64");
         if (!lg) lg = spdlog::stdout_color_mt("itch.moldudp64");
         return lg;
     }();
-    return l.get();
+    return l;
 }
 }  // namespace detail
 

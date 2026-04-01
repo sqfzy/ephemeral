@@ -138,7 +138,9 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
     uint32_t minute = static_cast<uint32_t>(n1 * 10 + n0);
     uint32_t second = static_cast<uint32_t>(s1 * 10 + s0);
 
-    if (hour > 23 || minute > 59 || second > 60) return std::nullopt;
+    // Leap seconds (second=60) are not supported — FIX 4.4 spec uses UTC timestamps
+    // without leap second handling. Accepting second=60 for arbitrary dates was incorrect.
+    if (hour > 23 || minute > 59 || second > 59) return std::nullopt;
 
     uint64_t frac_ns = 0;
     if (sv.size() > 17) {
@@ -478,9 +480,21 @@ public:
             }
         }
 
+        // Warn if we hit the caller-provided buffer limit before scanning all entries
+        if (found == max_entries && found < expected) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "get_group: repeating group truncated — found {} entries but "
+                "expected {} (max_entries buffer={})", found, expected, max_entries);
+        }
+
         // Clamp to declared count (don't return more entries than the
         // count tag promised, even if extra delimiter tags exist)
-        if (found > expected) found = expected;
+        if (found > expected) {
+            SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
+                "get_group: found {} delimiter tags but count tag declared {}, "
+                "clamping to declared count", found, expected);
+            found = expected;
+        }
 
         return {out_entries, found};
     }

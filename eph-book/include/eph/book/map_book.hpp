@@ -91,6 +91,30 @@ public:
 
     // -- Depth queries -------------------------------------------------------
 
+    /// Return a vector of active bid levels (descending by price).
+    /// Unlike ArrayBook::bids() which returns a span over a contiguous array,
+    /// MapBook must copy into a vector since std::map is node-based.
+    /// Suitable for use with signals::vwap() and similar span-accepting APIs.
+    [[nodiscard]] std::vector<PriceLevel> bids() const {
+        std::vector<PriceLevel> result;
+        result.reserve(bids_.size());
+        for (const auto& [price, qty] : bids_) {
+            result.push_back({price, qty});
+        }
+        return result;
+    }
+
+    /// Return a vector of active ask levels (ascending by price).
+    /// See bids() for rationale on returning a vector instead of a span.
+    [[nodiscard]] std::vector<PriceLevel> asks() const {
+        std::vector<PriceLevel> result;
+        result.reserve(asks_.size());
+        for (const auto& [price, qty] : asks_) {
+            result.push_back({price, qty});
+        }
+        return result;
+    }
+
     /// Number of active bid levels.
     [[nodiscard]] std::size_t bid_depth() const noexcept { return bids_.size(); }
 

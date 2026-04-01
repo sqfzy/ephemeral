@@ -147,6 +147,13 @@ inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
 // FixSession
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Thread model:
+///   - `state_`, `expected_inbound_seq_`, `last_inbound_seq_`, `outbound_seq_`:
+///     accessed from both TX (caller) and RX (poll) threads via atomics.
+///   - `state_` uses acquire/release ordering as the primary synchronization point.
+///   - Sequence counters use relaxed ordering where sequenced after a state_ check,
+///     or release/acquire at boundaries visible to the other thread.
+///   - Configuration (`cfg_`) is immutable after construction — no synchronization needed.
 class FixSession {
 public:
     /// Send callback: returns true if the message was sent successfully.
@@ -303,7 +310,11 @@ public:
             uint32_t expected = expected_inbound_seq_.load(std::memory_order_relaxed);
             last_inbound_seq_.store(recv, std::memory_order_release);
 
-            // Check PossDupFlag
+            // PossDupFlag handling: per FIX 4.4 spec (Vol 2, §4), messages with
+            // PossDupFlag=Y are possible retransmissions. This session layer logs them
+            // and skips sequence number advancement, but does NOT filter them from the
+            // application callback. Callers must implement their own idempotency logic
+            // (e.g., dedup by ClOrdID/ExecID) to handle duplicate execution reports.
             auto poss_dup = msg.get(tag::PossDupFlag);
             bool is_dup = poss_dup && *poss_dup == "Y";
 

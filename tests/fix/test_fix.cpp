@@ -2046,14 +2046,16 @@ TEST(FixBuilder, remaining_capacity_zero_after_overflow) {
 // Additional coverage: edge cases for timestamp and builder
 // ===========================================================================
 
-TEST(FixParser, get_timestamp_leap_second_accepted) {
-    // Second=60 is valid (leap second) per FIX spec
+TEST(FixParser, get_timestamp_leap_second_rejected) {
+    // Second=60 (leap second) is now rejected — FIX 4.4 timestamps use UTC
+    // without leap second handling, and accepting second=60 for arbitrary
+    // dates was incorrect (previously accepted for any date).
     std::string body = "35=D\x01" "52=20161231-23:59:60\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
     auto result = parse(raw.data(), raw.size());
     ASSERT_TRUE(result.has_value());
     auto ts = result->get_timestamp(tag::SendingTime);
-    ASSERT_TRUE(ts.has_value());
+    EXPECT_FALSE(ts.has_value());
 }
 
 TEST(FixParser, get_timestamp_second_61_rejected) {
