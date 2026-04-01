@@ -32,10 +32,24 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/utils/time.hpp"
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* audit_log_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("utils.audit_log");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("utils.audit_log");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Audit event types covering the full order lifecycle.
 enum class AuditEvent : uint8_t {
@@ -138,7 +152,7 @@ public:
         size_t idx = head_.load(std::memory_order_relaxed);
         bool overflowed = idx >= Capacity;
         if (overflowed) {
-            SPDLOG_WARN("AuditLog: ring buffer overflow at index={}, "
+            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),"AuditLog: ring buffer overflow at index={}, "
                         "overwriting oldest entry (capacity={})",
                         idx, Capacity);
         }
@@ -167,7 +181,7 @@ public:
         size_t idx = head_.fetch_add(1, std::memory_order_acq_rel);
         bool overflowed = idx >= Capacity;
         if (overflowed) {
-            SPDLOG_WARN("AuditLog: ring buffer overflow at index={}, "
+            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),"AuditLog: ring buffer overflow at index={}, "
                         "overwriting oldest entry (capacity={})",
                         idx, Capacity);
         }
@@ -217,7 +231,7 @@ public:
     [[nodiscard]] size_t flush_to_file(std::string_view path) const noexcept {
         FILE* f = std::fopen(std::string(path).c_str(), "wb");
         if (!f) {
-            SPDLOG_ERROR("AuditLog: failed to open '{}' for writing", path);
+            SPDLOG_LOGGER_ERROR(detail::audit_log_logger(),"AuditLog: failed to open '{}' for writing", path);
             return 0;
         }
 
@@ -231,7 +245,7 @@ public:
         }
 
         std::fclose(f);
-        SPDLOG_INFO("AuditLog: flushed {} entries to '{}'", written, path);
+        SPDLOG_LOGGER_INFO(detail::audit_log_logger(),"AuditLog: flushed {} entries to '{}'", written, path);
         return written;
     }
 

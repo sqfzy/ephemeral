@@ -33,11 +33,25 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/core/parse_number.hpp"
 #include "eph/json/parser.hpp"
 
 namespace eph::json::okx {
+
+namespace detail {
+inline spdlog::logger* okx_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("json.okx");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("json.okx");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -125,7 +139,7 @@ struct OkxPushMessage {
         auto data = json.get("data");
 
         if (arg_raw.empty() || data.empty()) {
-            SPDLOG_DEBUG("OkxPushMessage::from: missing arg or data field "
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxPushMessage::from: missing arg or data field "
                          "(arg_empty={} data_empty={})",
                          arg_raw.empty(), data.empty());
             return std::nullopt;
@@ -136,14 +150,14 @@ struct OkxPushMessage {
             reinterpret_cast<const uint8_t*>(arg_raw.data()),
             arg_raw.size());
         if (!arg) {
-            SPDLOG_DEBUG("OkxPushMessage::from: failed to parse arg object");
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxPushMessage::from: failed to parse arg object");
             return std::nullopt;
         }
 
         auto ch = arg->get_string("channel");
         auto inst = arg->get_string("instId");
         if (!ch || !inst) {
-            SPDLOG_DEBUG("OkxPushMessage::from: missing channel or instId in arg "
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxPushMessage::from: missing channel or instId in arg "
                          "(channel={} instId={})",
                          ch.has_value(), inst.has_value());
             return std::nullopt;
@@ -182,14 +196,14 @@ struct OkxBookTicker {
     from(const JsonView& json) noexcept {
         auto data_raw = json.get("data");
         if (data_raw.empty()) {
-            SPDLOG_DEBUG("OkxBookTicker::from: no data field in outer message");
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxBookTicker::from: no data field in outer message");
             return std::nullopt;
         }
 
         // Extract first element from the data array
         auto elem = detail::first_array_element(data_raw);
         if (elem.empty()) {
-            SPDLOG_DEBUG("OkxBookTicker::from: data array empty or malformed");
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxBookTicker::from: data array empty or malformed");
             return std::nullopt;
         }
 
@@ -198,7 +212,7 @@ struct OkxBookTicker {
             reinterpret_cast<const uint8_t*>(elem.data()),
             elem.size());
         if (!inner) {
-            SPDLOG_DEBUG("OkxBookTicker::from: failed to parse data element");
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxBookTicker::from: failed to parse data element");
             return std::nullopt;
         }
 
@@ -209,7 +223,7 @@ struct OkxBookTicker {
         auto as   = inner->get_string("askSz");
 
         if (!inst || !bp || !bs || !ap || !as) {
-            SPDLOG_DEBUG("OkxBookTicker::from: missing required field "
+            SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"OkxBookTicker::from: missing required field "
                          "(instId={} bidPx={} bidSz={} askPx={} askSz={})",
                          inst.has_value(), bp.has_value(), bs.has_value(),
                          ap.has_value(), as.has_value());
@@ -330,7 +344,7 @@ subscribe_message(std::string_view channel,
     result.append(R"(],"id":")");
     result.append(std::to_string(id));
     result.append(R"("})");
-    SPDLOG_DEBUG("okx::subscribe_message: channel=\"{}\" inst_ids={} id={}",
+    SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"okx::subscribe_message: channel=\"{}\" inst_ids={} id={}",
                  channel, inst_ids.size(), id);
     return result;
 }
@@ -357,7 +371,7 @@ unsubscribe_message(std::string_view channel,
     result.append(R"(],"id":")");
     result.append(std::to_string(id));
     result.append(R"("})");
-    SPDLOG_DEBUG("okx::unsubscribe_message: channel=\"{}\" inst_ids={} id={}",
+    SPDLOG_LOGGER_DEBUG(detail::okx_logger(),"okx::unsubscribe_message: channel=\"{}\" inst_ids={} id={}",
                  channel, inst_ids.size(), id);
     return result;
 }

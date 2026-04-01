@@ -11,10 +11,24 @@
 #include <cstring>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/core/framer_concept.hpp"
 
 namespace eph::itch {
+
+namespace detail {
+inline spdlog::logger* soupbintcp_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("itch.soupbintcp");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("itch.soupbintcp");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // -------------------------------------------------------------------------
 // SoupBinTCP packet type constants
@@ -66,16 +80,16 @@ public:
     [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t msg_type) noexcept {
         if (!out) [[unlikely]] {
-            SPDLOG_DEBUG("SoupBinTcpFramer::encode: null output buffer");
+            SPDLOG_LOGGER_DEBUG(detail::soupbintcp_logger(),"SoupBinTcpFramer::encode: null output buffer");
             return 0;
         }
         if (len > kMaxPayloadLen) [[unlikely]] {
-            SPDLOG_DEBUG("SoupBinTcpFramer::encode: payload too large len={} max={}",
+            SPDLOG_LOGGER_DEBUG(detail::soupbintcp_logger(),"SoupBinTcpFramer::encode: payload too large len={} max={}",
                          len, kMaxPayloadLen);
             return 0;
         }
         if (len > 0 && !data) [[unlikely]] {
-            SPDLOG_DEBUG("SoupBinTcpFramer::encode: null data with non-zero len={}", len);
+            SPDLOG_LOGGER_DEBUG(detail::soupbintcp_logger(),"SoupBinTcpFramer::encode: null data with non-zero len={}", len);
             return 0;
         }
 
@@ -89,7 +103,7 @@ public:
             std::memcpy(out + 3, data, len);
         }
 
-        SPDLOG_TRACE("SoupBinTcpFramer::encode: type=0x{:02X} payload_len={} "
+        SPDLOG_LOGGER_TRACE(detail::soupbintcp_logger(),"SoupBinTcpFramer::encode: type=0x{:02X} payload_len={} "
                      "wire_len={}", msg_type, len, 3 + len);
         return 3 + len;
     }
@@ -106,7 +120,7 @@ public:
 
         // Need at least the 2-byte length header
         if (len < 2) {
-            SPDLOG_DEBUG("SoupBinTcpFramer::decode: incomplete header, "
+            SPDLOG_LOGGER_DEBUG(detail::soupbintcp_logger(),"SoupBinTcpFramer::decode: incomplete header, "
                          "need 2 bytes but have {}", len);
             return std::unexpected(FrameError::kIncomplete);
         }
@@ -117,7 +131,7 @@ public:
 
         // Length must be >= 1 (at minimum the type byte)
         if (msg_len < 1) {
-            SPDLOG_WARN("SoupBinTcpFramer::decode: zero-length field "
+            SPDLOG_LOGGER_WARN(detail::soupbintcp_logger(),"SoupBinTcpFramer::decode: zero-length field "
                         "(must include type byte)");
             return std::unexpected(FrameError::kInvalidFormat);
         }
@@ -125,7 +139,7 @@ public:
         // Check if the full packet is available
         const size_t total = 2u + msg_len;
         if (len < total) {
-            SPDLOG_DEBUG("SoupBinTcpFramer::decode: incomplete packet, "
+            SPDLOG_LOGGER_DEBUG(detail::soupbintcp_logger(),"SoupBinTcpFramer::decode: incomplete packet, "
                          "need {} bytes but have {}", total, len);
             return std::unexpected(FrameError::kIncomplete);
         }
@@ -134,7 +148,7 @@ public:
         const uint8_t type = data[2];
         const size_t payload_len = msg_len - 1;  // subtract type byte
 
-        SPDLOG_TRACE("SoupBinTcpFramer::decode: type=0x{:02X} payload_len={} "
+        SPDLOG_LOGGER_TRACE(detail::soupbintcp_logger(),"SoupBinTcpFramer::decode: type=0x{:02X} payload_len={} "
                      "total_len={}", type, payload_len, total);
 
         return DecodedFrame{

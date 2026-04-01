@@ -12,10 +12,24 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/fix/position.hpp"
 
 namespace eph::fix {
+
+namespace detail {
+inline spdlog::logger* risk_check_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("fix.risk_check");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("fix.risk_check");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Configurable risk thresholds.  A value of 0.0 (or 0) disables the check.
 struct RiskLimits {
@@ -64,7 +78,7 @@ public:
     explicit RiskChecker(RiskLimits limits) noexcept
         : limits_(limits)
     {
-        SPDLOG_DEBUG("RiskChecker created: max_order_qty={} max_order_notional={} "
+        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "RiskChecker created: max_order_qty={} max_order_notional={} "
                      "max_position_qty={} max_position_notional={} "
                      "max_total_exposure={} max_orders_per_second={}",
                      limits_.max_order_qty, limits_.max_order_notional,
@@ -87,12 +101,12 @@ public:
         double price,
         const PositionTracker& positions) const noexcept
     {
-        SPDLOG_DEBUG("check_order: symbol={} side={} qty={} price={}",
+        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "check_order: symbol={} side={} qty={} price={}",
                      symbol, side, qty, price);
 
         // Reject non-finite inputs — NaN/Inf would bypass all comparisons.
         if (!std::isfinite(qty) || !std::isfinite(price) || qty <= 0.0 || price <= 0.0) {
-            SPDLOG_WARN("risk reject: invalid qty={} or price={} for symbol={}",
+            SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: invalid qty={} or price={} for symbol={}",
                         qty, price, symbol);
             return RiskRejectReason::kInvalidInput;
         }
@@ -101,14 +115,14 @@ public:
 
         // 1. Single order quantity check.
         if (limits_.max_order_qty > 0.0 && qty > limits_.max_order_qty) {
-            SPDLOG_WARN("risk reject: order qty {} exceeds limit {} for symbol={}",
+            SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: order qty {} exceeds limit {} for symbol={}",
                         qty, limits_.max_order_qty, symbol);
             return RiskRejectReason::kOrderQtyExceeded;
         }
 
         // 2. Single order notional check.
         if (limits_.max_order_notional > 0.0 && notional > limits_.max_order_notional) {
-            SPDLOG_WARN("risk reject: order notional {} exceeds limit {} for symbol={}",
+            SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: order notional {} exceeds limit {} for symbol={}",
                         notional, limits_.max_order_notional, symbol);
             return RiskRejectReason::kOrderNotionalExceeded;
         }
@@ -119,7 +133,7 @@ public:
             const double signed_qty = (side == '1') ? qty : -qty;
             const double projected_qty = std::abs(pos.qty + signed_qty);
             if (projected_qty > limits_.max_position_qty) {
-                SPDLOG_WARN("risk reject: projected position qty {} exceeds limit {} "
+                SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position qty {} exceeds limit {} "
                             "for symbol={}", projected_qty, limits_.max_position_qty, symbol);
                 return RiskRejectReason::kPositionQtyExceeded;
             }
@@ -133,7 +147,7 @@ public:
             // Use order price as best estimate for projected notional.
             const double projected_notional = projected_qty * price;
             if (projected_notional > limits_.max_position_notional) {
-                SPDLOG_WARN("risk reject: projected position notional {} exceeds limit {} "
+                SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position notional {} exceeds limit {} "
                             "for symbol={}", projected_notional, limits_.max_position_notional,
                             symbol);
                 return RiskRejectReason::kPositionNotionalExceeded;
@@ -159,7 +173,7 @@ public:
             const double projected_exposure =
                 current_exposure - current_notional + projected_symbol_notional;
             if (projected_exposure > limits_.max_total_exposure) {
-                SPDLOG_WARN("risk reject: projected total exposure {} "
+                SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected total exposure {} "
                             "(current={}, symbol {} notional {} -> {}) exceeds limit {}",
                             projected_exposure, current_exposure, symbol,
                             pos.notional, projected_symbol_notional,
@@ -173,7 +187,7 @@ public:
         //    validates the threshold field is available for external use.
         //    (A stateful rate limiter would require clock injection for testability.)
 
-        SPDLOG_DEBUG("check_order: symbol={} passed all risk checks", symbol);
+        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "check_order: symbol={} passed all risk checks", symbol);
         return RiskRejectReason::kOk;
     }
 
@@ -181,7 +195,7 @@ public:
     void set_limits(RiskLimits limits) noexcept
     {
         limits_ = limits;
-        SPDLOG_DEBUG("RiskChecker::set_limits updated");
+        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "RiskChecker::set_limits updated");
     }
 
     [[nodiscard]] const RiskLimits& limits() const noexcept { return limits_; }

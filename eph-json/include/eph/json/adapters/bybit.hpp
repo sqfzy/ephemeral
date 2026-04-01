@@ -32,11 +32,25 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/core/parse_number.hpp"
 #include "eph/json/parser.hpp"
 
 namespace eph::json::bybit {
+
+namespace detail {
+inline spdlog::logger* bybit_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("json.bybit");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("json.bybit");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // Internal helpers (reused parsing utilities)
@@ -81,7 +95,7 @@ struct BybitPushMessage {
         auto data = json.get("data");
 
         if (!topic_val || !type_val || data.empty()) {
-            SPDLOG_DEBUG("BybitPushMessage::from: missing required field "
+            SPDLOG_LOGGER_DEBUG(detail::bybit_logger(),"BybitPushMessage::from: missing required field "
                          "(topic={} type={} data_empty={})",
                          topic_val.has_value(), type_val.has_value(),
                          data.empty());
@@ -123,7 +137,7 @@ struct BybitBookTicker {
     from(const JsonView& json) noexcept {
         auto data_raw = json.get("data");
         if (data_raw.empty()) {
-            SPDLOG_DEBUG("BybitBookTicker::from: no data field in outer message");
+            SPDLOG_LOGGER_DEBUG(detail::bybit_logger(),"BybitBookTicker::from: no data field in outer message");
             return std::nullopt;
         }
 
@@ -132,7 +146,7 @@ struct BybitBookTicker {
             reinterpret_cast<const uint8_t*>(data_raw.data()),
             data_raw.size());
         if (!inner) {
-            SPDLOG_DEBUG("BybitBookTicker::from: failed to parse data object");
+            SPDLOG_LOGGER_DEBUG(detail::bybit_logger(),"BybitBookTicker::from: failed to parse data object");
             return std::nullopt;
         }
 
@@ -143,7 +157,7 @@ struct BybitBookTicker {
         auto as  = inner->get_string("ask1Size");
 
         if (!sym || !bp || !bs || !ap || !as) {
-            SPDLOG_DEBUG("BybitBookTicker::from: missing required field "
+            SPDLOG_LOGGER_DEBUG(detail::bybit_logger(),"BybitBookTicker::from: missing required field "
                          "(symbol={} bid1Price={} bid1Size={} ask1Price={} ask1Size={})",
                          sym.has_value(), bp.has_value(), bs.has_value(),
                          ap.has_value(), as.has_value());
@@ -265,7 +279,7 @@ subscribe_message(std::string_view channel,
     result.append(R"(],"req_id":")");
     result.append(std::to_string(req_id));
     result.append(R"("})");
-    SPDLOG_DEBUG("bybit::subscribe_message: channel=\"{}\" symbols={} req_id={}",
+    SPDLOG_LOGGER_DEBUG(detail::bybit_logger(),"bybit::subscribe_message: channel=\"{}\" symbols={} req_id={}",
                  channel, symbols.size(), req_id);
     return result;
 }
@@ -292,7 +306,7 @@ unsubscribe_message(std::string_view channel,
     result.append(R"(],"req_id":")");
     result.append(std::to_string(req_id));
     result.append(R"("})");
-    SPDLOG_DEBUG("bybit::unsubscribe_message: channel=\"{}\" symbols={} req_id={}",
+    SPDLOG_LOGGER_DEBUG(detail::bybit_logger(),"bybit::unsubscribe_message: channel=\"{}\" symbols={} req_id={}",
                  channel, symbols.size(), req_id);
     return result;
 }

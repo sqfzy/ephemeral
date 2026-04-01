@@ -26,13 +26,15 @@
 namespace eph::utils {
 
 namespace detail {
-inline const std::shared_ptr<spdlog::logger>& system_stats_logger() {
+inline spdlog::logger* system_stats_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("utils.system_stats");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.system_stats");
-        return lg;
+        try {
+            return spdlog::stdout_color_mt("utils.system_stats");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("utils.system_stats");
+        }
     }();
-    return l;
+    return l.get();
 }
 } // namespace detail
 

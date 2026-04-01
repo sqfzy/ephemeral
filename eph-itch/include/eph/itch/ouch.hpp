@@ -32,10 +32,24 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/itch/messages.hpp"  // reuse read_be16/32/64, trim
 
 namespace eph::itch::ouch {
+
+namespace detail {
+inline spdlog::logger* ouch_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("itch.ouch");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("itch.ouch");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // -------------------------------------------------------------------------
 // Wire encoding helpers (big-endian writers)
@@ -117,11 +131,11 @@ struct EnterOrder {
                         std::string_view firm) noexcept {
         // Caller must ensure buf has at least kSize (49) bytes available
         if (!buf) [[unlikely]] {
-            SPDLOG_DEBUG("EnterOrder::build: null buffer");
+            SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"EnterOrder::build: null buffer");
             return 0;
         }
         if (side != 'B' && side != 'S') [[unlikely]] {
-            SPDLOG_WARN("EnterOrder::build: invalid side='{}', expected 'B' or 'S'", side);
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: invalid side='{}', expected 'B' or 'S'", side);
             return 0;
         }
 
@@ -143,7 +157,7 @@ struct EnterOrder {
         buf[off] = ' ';                                   off += 1;   // 44  customer type
         // 45..48: reserved (4 bytes, already set to spaces)
 
-        SPDLOG_DEBUG("EnterOrder::build: token='{}' side={} shares={} symbol='{}' "
+        SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"EnterOrder::build: token='{}' side={} shares={} symbol='{}' "
                      "price={} tif={}",
                      token, side, shares, symbol, price, time_in_force);
         return kSize;
@@ -175,7 +189,7 @@ struct ReplaceOrder {
                         uint32_t time_in_force) noexcept {
         // Caller must ensure buf has at least kSize (47) bytes available
         if (!buf) [[unlikely]] {
-            SPDLOG_DEBUG("ReplaceOrder::build: null buffer");
+            SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: null buffer");
             return 0;
         }
 
@@ -193,7 +207,7 @@ struct ReplaceOrder {
         buf[off] = ' ';                                        off += 1;   // 43  customer type
         // 44..46: reserved (3 bytes, already set to spaces)
 
-        SPDLOG_DEBUG("ReplaceOrder::build: existing='{}' replacement='{}' "
+        SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: existing='{}' replacement='{}' "
                      "shares={} price={} tif={}",
                      existing_token, replacement_token, shares, price,
                      time_in_force);
@@ -219,7 +233,7 @@ struct CancelOrder {
                         uint32_t shares) noexcept {
         // Caller must ensure buf has at least kSize (19) bytes available
         if (!buf) [[unlikely]] {
-            SPDLOG_DEBUG("CancelOrder::build: null buffer");
+            SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"CancelOrder::build: null buffer");
             return 0;
         }
 
@@ -228,7 +242,7 @@ struct CancelOrder {
         write_padded(buf + off, token, 14);      off += 14;  // 1..14
         write_be32(buf + off, shares);           off += 4;   // 15..18
 
-        SPDLOG_DEBUG("CancelOrder::build: token='{}' shares={}", token, shares);
+        SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"CancelOrder::build: token='{}' shares={}", token, shares);
         return kSize;
     }
 };
@@ -253,7 +267,7 @@ public:
     explicit AcceptedView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_WARN("AcceptedView: buffer too small, need {} but got {}", kSize, len);
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"AcceptedView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 
@@ -308,7 +322,7 @@ public:
     explicit ExecutedView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_WARN("ExecutedView: buffer too small, need {} but got {}", kSize, len);
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ExecutedView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 
@@ -346,7 +360,7 @@ public:
     explicit CanceledView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_WARN("CanceledView: buffer too small, need {} but got {}", kSize, len);
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"CanceledView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 
@@ -385,7 +399,7 @@ public:
     explicit ReplacedView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_WARN("ReplacedView: buffer too small, need {} but got {}", kSize, len);
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ReplacedView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 

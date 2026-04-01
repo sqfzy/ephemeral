@@ -6,8 +6,22 @@
 #include <stdexcept>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* ema_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("utils.ema");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("utils.ema");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Exponential Moving Average — O(1) per update, zero allocation.
 /// Used for smoothing noisy HFT signals (prices, imbalances, latencies).
@@ -39,11 +53,11 @@ class Ema {
         if (!initialized_) [[unlikely]] {
             value_ = value;
             initialized_ = true;
-            SPDLOG_DEBUG("EMA initialized with seed value={:.6f}, alpha={:.4f}",
+            SPDLOG_LOGGER_DEBUG(detail::ema_logger(),"EMA initialized with seed value={:.6f}, alpha={:.4f}",
                          value, alpha_);
         } else {
             value_ = alpha_ * value + (1.0 - alpha_) * value_;
-            SPDLOG_TRACE("EMA update: input={:.6f}, ema={:.6f}", value, value_);
+            SPDLOG_LOGGER_TRACE(detail::ema_logger(),"EMA update: input={:.6f}, ema={:.6f}", value, value_);
         }
         return value_;
     }
@@ -61,7 +75,7 @@ class Ema {
     void reset() noexcept {
         value_ = 0.0;
         initialized_ = false;
-        SPDLOG_DEBUG("EMA reset (alpha={:.4f})", alpha_);
+        SPDLOG_LOGGER_DEBUG(detail::ema_logger(),"EMA reset (alpha={:.4f})", alpha_);
     }
 
   private:
@@ -92,7 +106,7 @@ class EmaCrossover {
             throw std::invalid_argument(
                 "fast_period should be <= slow_period");
         }
-        SPDLOG_DEBUG(
+        SPDLOG_LOGGER_DEBUG(detail::ema_logger(),
             "EmaCrossover created: fast_period={}, slow_period={}, "
             "fast_alpha={:.4f}, slow_alpha={:.4f}",
             fast_period, slow_period, fast_.alpha(), slow_.alpha());
@@ -111,7 +125,7 @@ class EmaCrossover {
         (void)slow_.update(price);
 
         if (!was_initialized) [[unlikely]] {
-            SPDLOG_DEBUG("EmaCrossover: seeded with price={:.6f}", price);
+            SPDLOG_LOGGER_DEBUG(detail::ema_logger(),"EmaCrossover: seeded with price={:.6f}", price);
             return Signal::None;
         }
 
@@ -120,14 +134,14 @@ class EmaCrossover {
         const bool now_above = fast_.value() >= slow_.value();
 
         if (was_above && !now_above) {
-            SPDLOG_DEBUG(
+            SPDLOG_LOGGER_DEBUG(detail::ema_logger(),
                 "EmaCrossover: bearish cross at price={:.6f} "
                 "(fast={:.6f}, slow={:.6f})",
                 price, fast_.value(), slow_.value());
             return Signal::BearishCross;
         }
         if (!was_above && now_above) {
-            SPDLOG_DEBUG(
+            SPDLOG_LOGGER_DEBUG(detail::ema_logger(),
                 "EmaCrossover: bullish cross at price={:.6f} "
                 "(fast={:.6f}, slow={:.6f})",
                 price, fast_.value(), slow_.value());

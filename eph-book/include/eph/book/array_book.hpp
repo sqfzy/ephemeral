@@ -27,8 +27,22 @@
 #include <span>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 namespace eph::book {
+
+namespace detail {
+inline spdlog::logger* array_book_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("book.array_book");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("book.array_book");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // ============================================================================
 // PriceLevel — a single (price, qty) pair on one side of the book
@@ -53,13 +67,13 @@ public:
 
     /// Insert or update a bid level.  If @p qty == 0 the level is removed.
     void update_bid(double price, double qty) noexcept {
-        SPDLOG_TRACE("update_bid price={} qty={}", price, qty);
+        SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "update_bid price={} qty={}", price, qty);
         update_side(bids_, bid_count_, price, qty, /*descending=*/true);
     }
 
     /// Insert or update an ask level.  If @p qty == 0 the level is removed.
     void update_ask(double price, double qty) noexcept {
-        SPDLOG_TRACE("update_ask price={} qty={}", price, qty);
+        SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "update_ask price={} qty={}", price, qty);
         update_side(asks_, ask_count_, price, qty, /*descending=*/false);
     }
 
@@ -115,7 +129,7 @@ public:
     void clear() noexcept {
         bid_count_ = 0;
         ask_count_ = 0;
-        SPDLOG_DEBUG("ArrayBook cleared");
+        SPDLOG_LOGGER_DEBUG(detail::array_book_logger(), "ArrayBook cleared");
     }
 
     /// True if best bid strictly exceeds best ask (anomalous).
@@ -192,7 +206,7 @@ private:
 
         // -- Reject NaN prices — they would corrupt sort order ---------------
         if (std::isnan(price)) {
-            SPDLOG_WARN("update_side ignoring NaN price");
+            SPDLOG_LOGGER_WARN(detail::array_book_logger(), "update_side ignoring NaN price");
             return;
         }
 
@@ -200,7 +214,7 @@ private:
         // Intentional: clamp to 0 so downstream removal logic doesn't need
         // to distinguish negative from zero — both mean "remove this level".
         if (qty < 0.0) [[unlikely]] {
-            SPDLOG_WARN("update_side: negative qty={} at price={} clamped to 0 "
+            SPDLOG_LOGGER_WARN(detail::array_book_logger(), "update_side: negative qty={} at price={} clamped to 0 "
                          "(treated as removal) — caller should use qty=0",
                          qty, price);
             qty = 0.0;
@@ -211,7 +225,7 @@ private:
             if (price_eq(levels[i].price, price)) {
                 if (qty <= 0.0) {
                     // Remove: shift remaining levels down by one.
-                    SPDLOG_TRACE("remove level price={} idx={}", price, i);
+                    SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "remove level price={} idx={}", price, i);
                     if (i + 1 < count) {
                         std::memmove(&levels[i], &levels[i + 1],
                                      (count - i - 1) * sizeof(PriceLevel));
@@ -219,7 +233,7 @@ private:
                     --count;
                 } else {
                     // Update in-place.
-                    SPDLOG_TRACE("update level price={} old_qty={} new_qty={}",
+                    SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "update level price={} old_qty={} new_qty={}",
                                  price, levels[i].qty, qty);
                     levels[i].qty = qty;
                 }
@@ -229,7 +243,7 @@ private:
 
         // -- Price not found: nothing to remove ------------------------------
         if (qty <= 0.0) {
-            SPDLOG_TRACE("remove non-existent price={} — no-op", price);
+            SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "remove non-existent price={} — no-op", price);
             return;
         }
 
@@ -253,7 +267,7 @@ private:
         if (count >= MaxLevels) {
             if (pos >= MaxLevels) {
                 // New price is worse than everything we track — drop it.
-                SPDLOG_TRACE("book full, dropping worse price={}", price);
+                SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "book full, dropping worse price={}", price);
                 return;
             }
             // We will insert at `pos` and the last level falls off.
@@ -264,7 +278,7 @@ private:
             }
             levels[pos] = {price, qty};
             // count stays at MaxLevels (last level evicted).
-            SPDLOG_DEBUG("inserted price={} qty={} at idx={} (evicted worst)",
+            SPDLOG_LOGGER_DEBUG(detail::array_book_logger(), "inserted price={} qty={} at idx={} (evicted worst)",
                          price, qty, pos);
             return;
         }
@@ -276,7 +290,7 @@ private:
         }
         levels[pos] = {price, qty};
         ++count;
-        SPDLOG_DEBUG("inserted price={} qty={} at idx={} (depth={})",
+        SPDLOG_LOGGER_DEBUG(detail::array_book_logger(), "inserted price={} qty={} at idx={} (depth={})",
                      price, qty, pos, count);
     }
 };

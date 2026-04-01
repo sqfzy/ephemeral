@@ -22,11 +22,25 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/core/parse_number.hpp"
 #include "eph/json/parser.hpp"
 
 namespace eph::json::binance {
+
+namespace detail {
+inline spdlog::logger* binance_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("json.binance");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("json.binance");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // Symbol extraction helpers
@@ -125,7 +139,7 @@ struct BookTicker {
         auto A = json.get_string("A");
 
         if (!s || !b || !B || !a || !A) {
-            SPDLOG_DEBUG("BookTicker::from: missing required field "
+            SPDLOG_LOGGER_DEBUG(detail::binance_logger(),"BookTicker::from: missing required field "
                          "(s={} b={} B={} a={} A={})",
                          s.has_value(), b.has_value(), B.has_value(),
                          a.has_value(), A.has_value());
@@ -221,7 +235,7 @@ ws_path(std::string_view symbol, std::string_view stream_type) noexcept {
     result.append(symbol);
     result.push_back('@');
     result.append(stream_type);
-    SPDLOG_DEBUG("ws_path: built path=\"{}\"", result);
+    SPDLOG_LOGGER_DEBUG(detail::binance_logger(),"ws_path: built path=\"{}\"", result);
     return result;
 }
 
@@ -239,7 +253,7 @@ combined_ws_path(std::span<const std::string_view> symbols,
         result.push_back('@');
         result.append(stream_type);
     }
-    SPDLOG_DEBUG("combined_ws_path: built path=\"{}\" for {} symbols",
+    SPDLOG_LOGGER_DEBUG(detail::binance_logger(),"combined_ws_path: built path=\"{}\" for {} symbols",
                  result, symbols.size());
     return result;
 }
@@ -265,7 +279,7 @@ subscribe_message(std::span<const std::string_view> symbols,
     result.append(R"(],"id":)");
     result.append(std::to_string(id));
     result.push_back('}');
-    SPDLOG_DEBUG("subscribe_message: built msg for {} symbols, id={}",
+    SPDLOG_LOGGER_DEBUG(detail::binance_logger(),"subscribe_message: built msg for {} symbols, id={}",
                  symbols.size(), id);
     return result;
 }
@@ -289,7 +303,7 @@ unsubscribe_message(std::span<const std::string_view> symbols,
     result.append(R"(],"id":)");
     result.append(std::to_string(id));
     result.push_back('}');
-    SPDLOG_DEBUG("unsubscribe_message: built msg for {} symbols, id={}",
+    SPDLOG_LOGGER_DEBUG(detail::binance_logger(),"unsubscribe_message: built msg for {} symbols, id={}",
                  symbols.size(), id);
     return result;
 }

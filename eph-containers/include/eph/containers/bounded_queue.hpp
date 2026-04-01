@@ -12,12 +12,26 @@
 #include <string>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/containers/concepts.hpp"
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/cpu.hpp"
 
 namespace eph::containers {
+
+namespace detail {
+inline spdlog::logger* bounded_queue_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("containers.bounded_queue");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("containers.bounded_queue");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 using eph::utils::Align;
 using eph::utils::cpu_relax;
@@ -901,7 +915,7 @@ class BoundedQueue {
         // where head might appear > tail due to memory ordering.
         size_t size = (tail >= head) ? (tail - head) : 0;
         if (tail < head || size > Capacity) {
-            SPDLOG_DEBUG("bounded_queue stats clamping: raw value out of expected range "
+            SPDLOG_LOGGER_DEBUG(detail::bounded_queue_logger(),"bounded_queue stats clamping: raw value out of expected range "
                          "(tail={}, head={}, raw_size={})", tail, head, size);
         }
         return Stats{

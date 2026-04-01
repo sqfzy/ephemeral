@@ -16,10 +16,24 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/core/metrics_concept.hpp"
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* console_sink_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("utils.console_sink");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("utils.console_sink");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Metrics sink that logs to spdlog at INFO level.
 /// Useful for development, debugging, and integration testing.
@@ -29,17 +43,17 @@ class ConsoleSink {
 public:
     void push_counter(std::string_view name, int64_t value,
                       std::span<const core::MetricTag> tags = {}) noexcept {
-        SPDLOG_INFO("[COUNTER] {} = {}{}", name, value, format_tags(tags));
+        SPDLOG_LOGGER_INFO(detail::console_sink_logger(),"[COUNTER] {} = {}{}", name, value, format_tags(tags));
     }
 
     void push_gauge(std::string_view name, double value,
                     std::span<const core::MetricTag> tags = {}) noexcept {
-        SPDLOG_INFO("[GAUGE]   {} = {:.2f}{}", name, value, format_tags(tags));
+        SPDLOG_LOGGER_INFO(detail::console_sink_logger(),"[GAUGE]   {} = {:.2f}{}", name, value, format_tags(tags));
     }
 
     void push_histogram(std::string_view name, double value,
                         std::span<const core::MetricTag> tags = {}) noexcept {
-        SPDLOG_INFO("[HISTO]   {} = {:.2f}{}", name, value, format_tags(tags));
+        SPDLOG_LOGGER_INFO(detail::console_sink_logger(),"[HISTO]   {} = {:.2f}{}", name, value, format_tags(tags));
     }
 
     void flush() noexcept {
