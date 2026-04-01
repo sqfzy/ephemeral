@@ -845,19 +845,21 @@ public:
         return last_rx_burst_tsc_;
     }
 
+#if EPH_ENABLE_TIMESTAMPS
     /// Most recent kernel RX stack delay (ns) from the last poll_rx() call.
     /// Transport reads this to compute full-path RX latency (kernel + pipeline).
-    /// Returns 0 when kEnableSocketTimestamps=false or no timestamp available.
+    /// Only available when compiled with -DEPH_ENABLE_TIMESTAMPS=1.
     [[nodiscard]] uint64_t last_kernel_rx_delay_ns() const noexcept {
         return last_kernel_rx_delay_ns_;
     }
 
     /// Most recent kernel TX stack delay (ns) from the error queue.
     /// Transport reads this to compute full-path TX latency (pipeline + kernel).
-    /// Returns 0 when kEnableSocketTimestamps=false or no timestamp available.
+    /// Only available when compiled with -DEPH_ENABLE_TIMESTAMPS=1.
     [[nodiscard]] uint64_t last_kernel_tx_delay_ns() const noexcept {
         return last_kernel_tx_delay_ns_;
     }
+#endif
 
     /// Local port number of the connected socket.
     /// Zero if not connected.

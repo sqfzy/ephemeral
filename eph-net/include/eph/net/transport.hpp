@@ -645,11 +645,13 @@ public:
     ///                  arrival_tsc is the raw TSC cycle count captured at
     ///                  rx_burst time (RX thread). Use TSC::to_ns(now - tsc)
     ///                  in the callback to compute per-frame RX latency.
-    ///                  Zero when EPH_ENABLE_TIMESTAMPS is disabled.
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
         requires std::invocable<F, const uint8_t*, size_t, uint8_t, uint64_t>
     [[nodiscard]] bool recv(F&& callback) {
+        static_assert(kEnableTimestamps,
+            "recv() with TSC callback requires -DEPH_ENABLE_TIMESTAMPS=1");
         bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}, tsc={}", msg.len, msg.opcode, msg.tsc);
@@ -1178,33 +1180,51 @@ public:
         return histogram_to_stats(rtt_histogram_);
     }
 
-    /// TX queue latency stats (enqueue → flush). Empty when kEnableTimestamps=false.
+    /// TX queue latency stats (enqueue → flush).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_latency_stats() const noexcept {
+        static_assert(kEnableTimestamps,
+            "tx_latency_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(tx_latency_histogram_);
     }
 
-    /// TX queue wait stats (enqueue → drain). Empty when kEnableTimestamps=false.
+    /// TX queue wait stats (enqueue → drain).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_queue_wait_stats() const noexcept {
+        static_assert(kEnableTimestamps,
+            "tx_queue_wait_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(tx_queue_wait_histogram_);
     }
 
-    /// TX encode+encrypt stats (drain → flush). Empty when kEnableTimestamps=false.
+    /// TX encode+encrypt stats (drain → flush).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_encode_stats() const noexcept {
+        static_assert(kEnableTimestamps,
+            "tx_encode_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(tx_encode_histogram_);
     }
 
-    /// RX pipeline latency stats (arrival → deliver). Empty when kEnableTimestamps=false.
+    /// RX pipeline latency stats (arrival → deliver).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_latency_stats() const noexcept {
+        static_assert(kEnableTimestamps,
+            "rx_latency_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(rx_latency_histogram_);
     }
 
-    /// RX decrypt stats (arrival → decrypt done). Empty when kEnableTimestamps=false.
+    /// RX decrypt stats (arrival → decrypt done).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_decrypt_stats() const noexcept {
+        static_assert(kEnableTimestamps,
+            "rx_decrypt_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(rx_decrypt_histogram_);
     }
 
-    /// RX decode stats (decrypt done → frame decoded). Empty when kEnableTimestamps=false.
+    /// RX decode stats (decrypt done → frame decoded).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_decode_stats() const noexcept {
+        static_assert(kEnableTimestamps,
+            "rx_decode_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(rx_decode_histogram_);
     }
 
@@ -1215,7 +1235,10 @@ public:
     ///   auto h2 = tp.rx_latency_histogram_snapshot();
     ///   h2.subtract(h1);  // h2 now contains only the window's samples
     /// @warning Brief race with RX thread — acceptable for monitoring.
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] eph::utils::HdrHistogram rx_latency_histogram_snapshot() const noexcept {
+        static_assert(kEnableTimestamps,
+            "rx_latency_histogram_snapshot() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return rx_latency_histogram_;
     }
 

@@ -19,3 +19,5 @@
 | 2026-03-28 12:46 | /ship | 5 Gate 全过：1,787 tests, bench 无退化, 10 commits pushed | b95ca51 | ship-20260328-124629.md |
 | 2026-03-28 15:58 | /discuss 多连接 RSS | 三步优化：hash table→RSS多queue→rte_flow硬件分发；Step 1立即做 | a0fa3ac | discuss-20260328-155821.md |
 | 2026-03-28 16:23 | /discuss Reactor 实现细节 | 10个不确定点全解决：epoll模型Reactor替代SharedRxDispatcher | a0fa3ac | discuss-20260328-162334.md |
+| 2026-03-30 15:49 | /discuss 自研队列 vs rte_ring | 5角色4轮：自研队列在语义/性能/架构三维度优于rte_ring；EvictingQueue语义不可替代 | 7dd6cbb | discuss-20260330-154959.md |
+| 2026-04-01 19:26 | /cleanup eph-dpdk eph-net | 日志100%统一命名logger、TcpSession move优化、Platform bool、ai_addr null guard、spinlock pause | — | cleanup-20260401-192600.md |
