@@ -530,8 +530,8 @@ decode_frame(const uint8_t* data, size_t len) {
         pos += 4;
     }
 
-    // Payload — use subtraction to prevent integer overflow on huge payload_len
-    if (frame.payload_len > len || pos > len - frame.payload_len) {
+    // Payload — check pos first, then use subtraction which is safe when pos <= len
+    if (pos > len || frame.payload_len > len - pos) {
         return std::unexpected(DecodeError::kIncomplete);
     }
 

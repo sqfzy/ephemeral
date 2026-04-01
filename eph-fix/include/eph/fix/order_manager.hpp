@@ -76,6 +76,16 @@ inline spdlog::logger* fix_ordmgr_logger() noexcept {
 /// Designed for single-threaded event processing pipelines.
 class OrderManager {
 public:
+    /// Transparent hash for heterogeneous lookup (string_view key without allocation).
+    struct StringHash {
+        using is_transparent = void;
+        size_t operator()(std::string_view sv) const noexcept {
+            return std::hash<std::string_view>{}(sv);
+        }
+        size_t operator()(const std::string& s) const noexcept {
+            return std::hash<std::string_view>{}(s);
+        }
+    };
     /// Register a new order (call after send).
     /// Returns false if cl_ord_id already exists.
     bool submit(std::string cl_ord_id, std::string symbol,
@@ -125,7 +135,7 @@ public:
             return false;
         }
 
-        auto it = orders_.find(std::string(*cl_id));
+        auto it = orders_.find(*cl_id);
         if (it == orders_.end()) {
             SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: unknown cl_ord_id={}", *cl_id);
@@ -168,8 +178,10 @@ public:
                 double fill_price = *last_px;
 
                 if (*last_qty > (1LL << 53)) {
-                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
-                        "fill quantity {} exceeds double precision limit (2^53)", *last_qty);
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "fill quantity {} exceeds double precision limit (2^53), "
+                        "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
+                    return false;
                 }
 
                 // Compute new running average fill price.
@@ -215,8 +227,10 @@ public:
                 double fill_price = *last_px;
 
                 if (*last_qty > (1LL << 53)) {
-                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
-                        "fill quantity {} exceeds double precision limit (2^53)", *last_qty);
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "fill quantity {} exceeds double precision limit (2^53), "
+                        "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
+                    return false;
                 }
 
                 double old_total = order.avg_fill_price * order.filled_qty;
@@ -283,7 +297,7 @@ public:
     /// Get order by cl_ord_id. Returns nullptr if not found.
     [[nodiscard]] const ManagedOrder* get(std::string_view cl_ord_id) const noexcept
     {
-        auto it = orders_.find(std::string(cl_ord_id));
+        auto it = orders_.find(cl_ord_id);
         if (it == orders_.end()) return nullptr;
         return &it->second;
     }
@@ -299,7 +313,7 @@ public:
     }
 
     /// All orders.
-    [[nodiscard]] const std::unordered_map<std::string, ManagedOrder>&
+    [[nodiscard]] const std::unordered_map<std::string, ManagedOrder, StringHash, std::equal_to<>>&
     orders() const noexcept { return orders_; }
 
     /// Remove all terminal orders (filled/canceled/rejected).
@@ -323,7 +337,7 @@ public:
     /// already terminal.
     bool mark_pending_cancel(std::string_view cl_ord_id) noexcept
     {
-        auto it = orders_.find(std::string(cl_ord_id));
+        auto it = orders_.find(cl_ord_id);
         if (it == orders_.end()) {
             SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
                 "mark_pending_cancel: unknown cl_ord_id={}", cl_ord_id);
@@ -345,7 +359,7 @@ public:
     }
 
 private:
-    std::unordered_map<std::string, ManagedOrder> orders_;
+    std::unordered_map<std::string, ManagedOrder, StringHash, std::equal_to<>> orders_;
 };
 
 } // namespace eph::fix

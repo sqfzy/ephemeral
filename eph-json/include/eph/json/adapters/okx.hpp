@@ -73,7 +73,7 @@ inline std::string_view first_array_element(std::string_view arr) noexcept {
         if (*p == '"') {
             ++p;
             while (p < end && *p != '"') {
-                if (*p == '\\') ++p;
+                if (*p == '\\' && p + 1 < end) ++p;
                 if (p < end) ++p;
             }
             if (p < end) ++p; // skip closing quote
@@ -266,6 +266,8 @@ struct OkxBookTicker {
 /// @return FNV-1a hash of the instId, or 0 if not found
 [[nodiscard]] inline uint32_t
 inst_id_hash(const uint8_t* data, size_t len) noexcept {
+    if (!data || len == 0) return 0;
+
     // Fast scan for "instId":" pattern in the data array section.
     // OKX data objects contain instId: {"instId":"BTC-USDT","bidPx":...}
     // We scan for the pattern inside "data":[...] to avoid matching the

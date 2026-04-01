@@ -49,11 +49,17 @@ namespace eph::core::detail {
                 out += std::format("\\u{:04x}", uc);
             } else if (uc >= 0x80) {
                 // Valid UTF-8 lead byte: pass through the full sequence
-                if ((uc & 0xE0) == 0xC0 && i + 1 < sv.size()) {
+                if ((uc & 0xE0) == 0xC0 && i + 1 < sv.size()
+                    && (static_cast<unsigned char>(sv[i + 1]) & 0xC0) == 0x80) {
                     out += sv[i]; out += sv[++i];
-                } else if ((uc & 0xF0) == 0xE0 && i + 2 < sv.size()) {
+                } else if ((uc & 0xF0) == 0xE0 && i + 2 < sv.size()
+                    && (static_cast<unsigned char>(sv[i + 1]) & 0xC0) == 0x80
+                    && (static_cast<unsigned char>(sv[i + 2]) & 0xC0) == 0x80) {
                     out += sv[i]; out += sv[++i]; out += sv[++i];
-                } else if ((uc & 0xF8) == 0xF0 && i + 3 < sv.size()) {
+                } else if ((uc & 0xF8) == 0xF0 && i + 3 < sv.size()
+                    && (static_cast<unsigned char>(sv[i + 1]) & 0xC0) == 0x80
+                    && (static_cast<unsigned char>(sv[i + 2]) & 0xC0) == 0x80
+                    && (static_cast<unsigned char>(sv[i + 3]) & 0xC0) == 0x80) {
                     out += sv[i]; out += sv[++i]; out += sv[++i]; out += sv[++i];
                 } else {
                     // Invalid/orphan continuation byte — escape it

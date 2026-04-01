@@ -230,6 +230,10 @@ struct PacketTemplate {
     /// [P2] Enable NIC TX checksum offload (IP + TCP).
     /// When true, sets ol_flags and computes pseudo-header checksum only.
     /// When false, falls back to software checksum (default).
+    /// NOTE: Callers must verify NIC TX checksum offload capability via
+    /// Platform::dev_info (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM / TCP_CKSUM)
+    /// before enabling this flag; setting it on unsupported NICs produces
+    /// silently corrupt packets.
     bool hw_cksum = false;
 
     /// Build a complete TCP packet in an mbuf.

@@ -169,19 +169,36 @@ public:
 
     /// Mark a connection as reconnected (resume processing).
     /// Safe to call while the reactor is running for the connected flag.
-    /// NOTE: The session pointer and tuple swap are NOT atomic with respect to
-    /// the RX loop. Callers must ensure the old session is no longer being
-    /// accessed by the RX loop (e.g., by briefly setting connected=false,
-    /// then swapping session/tuple, then setting connected=true).
+    ///
+    /// Synchronization protocol (disable → fence → swap → enable):
+    ///  1. Set connected=false with release semantics so the RX loop's
+    ///     next acquire-load sees the disconnected state.
+    ///  2. Issue a seq_cst fence to ensure the RX loop has observed the
+    ///     disabled flag before we mutate session/tuple.  Without this
+    ///     fence, the RX loop could have already loaded connected=true
+    ///     (from the previous state) and proceed to dereference the
+    ///     session pointer while we are swapping it.
+    ///  3. Swap session pointer, tuple, and hash while the RX loop is
+    ///     guaranteed to skip this entry.
+    ///  4. Set connected=true with release semantics to re-enable the entry.
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
         if (!new_session) return;
         if (conn_id < count_.load(std::memory_order_acquire)) {
-            // Disable first so the RX loop does not touch the session
-            // while we swap the pointer and tuple.
+            // Step 1: Disable so the RX loop skips this entry.
             entries_[conn_id].connected.store(false, std::memory_order_release);
+
+            // Step 2: Fence ensures any RX loop iteration that loaded
+            // connected=true (old value) has fully completed before we
+            // touch the session pointer.  The RX loop's acquire-load
+            // pairs with this fence to establish happens-before.
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+
+            // Step 3: Safe to swap — RX loop will skip this entry.
             entries_[conn_id].session = new_session;
             entries_[conn_id].tuple = new_session->connection_tuple();
             hashes_[conn_id] = ReactorEntry::hash_tuple(entries_[conn_id].tuple);
+
+            // Step 4: Re-enable the entry for the RX loop.
             entries_[conn_id].connected.store(true, std::memory_order_release);
         }
     }

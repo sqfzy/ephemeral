@@ -197,10 +197,13 @@ private:
         }
 
         // -- Warn on negative qty (caller likely has a bug) ------------------
+        // Intentional: clamp to 0 so downstream removal logic doesn't need
+        // to distinguish negative from zero — both mean "remove this level".
         if (qty < 0.0) [[unlikely]] {
-            SPDLOG_WARN("update_side: negative qty={} at price={} treated as "
-                         "removal — caller should use qty=0 for explicit removal",
+            SPDLOG_WARN("update_side: negative qty={} at price={} clamped to 0 "
+                         "(treated as removal) — caller should use qty=0",
                          qty, price);
+            qty = 0.0;
         }
 
         // -- Search for an existing level at this price ----------------------

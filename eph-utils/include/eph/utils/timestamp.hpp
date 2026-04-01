@@ -11,8 +11,10 @@
 /// This header provides constexpr conversion functions between them,
 /// plus wall-clock helpers for latency measurement and logging.
 
+#include <cassert>
 #include <cstdint>
 #include <ctime>
+#include <format>
 #include <string>
 
 namespace eph::utils {
@@ -23,6 +25,7 @@ namespace eph::utils {
 
 /// Convert milliseconds since Unix epoch to nanoseconds.
 constexpr uint64_t ms_to_ns(int64_t ms) noexcept {
+    assert(ms >= 0 && "ms_to_ns: negative millisecond input would wrap on cast to uint64_t");
     return static_cast<uint64_t>(ms) * 1'000'000;
 }
 
@@ -33,6 +36,7 @@ constexpr int64_t ns_to_ms(uint64_t ns) noexcept {
 
 /// Convert microseconds to nanoseconds.
 constexpr uint64_t us_to_ns(int64_t us) noexcept {
+    assert(us >= 0 && "us_to_ns: negative microsecond input would wrap on cast to uint64_t");
     return static_cast<uint64_t>(us) * 1'000;
 }
 
@@ -51,7 +55,9 @@ constexpr uint64_t itch_ts_to_epoch_ns(uint64_t ns_since_midnight,
 /// Get current time as nanoseconds since Unix epoch.
 inline uint64_t now_ns() noexcept {
     struct timespec ts{};
-    clock_gettime(CLOCK_REALTIME, &ts);
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        return 0;
+    }
     return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL
          + static_cast<uint64_t>(ts.tv_nsec);
 }
@@ -78,37 +84,38 @@ inline int64_t feed_latency_ns_from_ms(int64_t exchange_ts_ms) noexcept {
 
 /// Format nanosecond epoch timestamp as ISO 8601 string.
 /// e.g., "2026-03-28T14:30:00.123456789Z"
-inline std::string format_timestamp_ns(uint64_t epoch_ns) noexcept {
+inline std::string format_timestamp_ns(uint64_t epoch_ns) {
+    // M13: time_t must be 64-bit to avoid Y2K38 overflow on large epoch values.
+    static_assert(sizeof(time_t) >= 8,
+                  "time_t must be at least 64-bit to avoid Y2K38 overflow");
+
     auto secs  = static_cast<time_t>(epoch_ns / 1'000'000'000ULL);
     auto nanos = static_cast<uint32_t>(epoch_ns % 1'000'000'000ULL);
 
     struct tm utc{};
     gmtime_r(&secs, &utc);
 
-    // "YYYY-MM-DDThh:mm:ss.nnnnnnnnnZ" = 30 chars + NUL
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &utc);
-
-    char result[64];
-    std::snprintf(result, sizeof(result), "%s.%09uZ", buf, nanos);
-    return result;
+    return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:09d}Z",
+                       utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                       utc.tm_hour, utc.tm_min, utc.tm_sec, nanos);
 }
 
 /// Format millisecond epoch timestamp as ISO 8601 string.
 /// e.g., "2026-03-28T14:30:00.123Z"
-inline std::string format_timestamp_ms(int64_t epoch_ms) noexcept {
+inline std::string format_timestamp_ms(int64_t epoch_ms) {
+    // M13: time_t must be 64-bit to avoid Y2K38 overflow on large epoch values.
+    static_assert(sizeof(time_t) >= 8,
+                  "time_t must be at least 64-bit to avoid Y2K38 overflow");
+
     auto secs = static_cast<time_t>(epoch_ms / 1'000);
     auto ms   = static_cast<uint32_t>(epoch_ms % 1'000);
 
     struct tm utc{};
     gmtime_r(&secs, &utc);
 
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &utc);
-
-    char result[48];
-    std::snprintf(result, sizeof(result), "%s.%03uZ", buf, ms);
-    return result;
+    return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:03d}Z",
+                       utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+                       utc.tm_hour, utc.tm_min, utc.tm_sec, ms);
 }
 
 } // namespace eph::utils

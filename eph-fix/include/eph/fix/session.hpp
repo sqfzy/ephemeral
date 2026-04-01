@@ -338,7 +338,7 @@ public:
             constexpr int64_t kMaxHeartbeatSec = 3600;
             if (auto server_hb = msg.get_int(tag::HeartBtInt); server_hb) {
                 if (*server_hb > 0 && *server_hb <= kMaxHeartbeatSec) {
-                    int prev = heartbeat_interval_sec_.load(std::memory_order_relaxed);
+                    int prev = heartbeat_interval_sec_.load(std::memory_order_acquire);
                     if (*server_hb != prev) {
                         SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
                             "Server HeartBtInt={} overrides client value={}",
@@ -597,6 +597,18 @@ private:
     // ─────────────────────────────────────────────────────────────────────
 
     /// @return false if sequence number is exhausted (session must be reset).
+    ///
+    /// Design limitation — sequence number space:
+    ///   FIX MsgSeqNum is a uint32, giving ~4.29 billion messages per session.
+    ///   At sustained 1M msg/s this is ~71 minutes; at 10K msg/s it is ~5 days.
+    ///   There is no automatic wrap-around because the FIX protocol requires
+    ///   monotonically increasing sequence numbers within a session.
+    ///
+    ///   Operators MUST monitor sequence numbers and proactively initiate a
+    ///   Logoff followed by a Logon with ResetSeqNumFlag=Y (tag 141) before
+    ///   exhaustion.  A WARN is emitted at 90% capacity (~3.86B) to give
+    ///   advance notice.  Once UINT32_MAX is reached, the session refuses
+    ///   to send and must be torn down and re-established.
     [[nodiscard]] bool fill_session_header(MessageBuilder& b) noexcept {
         b.set(tag::SenderCompID, cfg_.sender_comp_id);
         b.set(tag::TargetCompID, cfg_.target_comp_id);
@@ -607,6 +619,20 @@ private:
                 "must reset session", seq);
             return false;
         }
+
+        // Warn at 90% capacity so operators can schedule a session reset.
+        constexpr uint32_t warn_threshold =
+            static_cast<uint32_t>(static_cast<uint64_t>(UINT32_MAX) * 9 / 10);
+        if (seq >= warn_threshold) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                "Outbound sequence number at {}% capacity (seq={}): "
+                "schedule session reset (Logoff + Logon with ResetSeqNumFlag=Y) "
+                "before exhaustion",
+                static_cast<unsigned>(
+                    static_cast<uint64_t>(seq) * 100 / UINT32_MAX),
+                seq);
+        }
+
         outbound_seq_.store(seq + 1, std::memory_order_relaxed);
         b.set_int(tag::MsgSeqNum, static_cast<int64_t>(seq));
 

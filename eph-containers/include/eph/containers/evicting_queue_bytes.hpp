@@ -143,7 +143,7 @@ class EvictingQueueBytes {
             if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
         }
         queue_.produce_n(count, [&](DataWrap& slot, size_t i) {
-            slot.id = push_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+            slot.id = push_count_.fetch_add(1, std::memory_order_release) + 1;
             slot.ts = timestamps[i];
             slot.len = static_cast<uint32_t>(payloads[i].size());
             std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
@@ -160,7 +160,7 @@ class EvictingQueueBytes {
             if (payloads[i].size() > MaxDataSize) [[unlikely]] return false;
         }
         queue_.produce_n(count, [&](DataWrap& slot, size_t i) {
-            slot.id = push_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+            slot.id = push_count_.fetch_add(1, std::memory_order_release) + 1;
             slot.ts = 0;
             slot.len = static_cast<uint32_t>(payloads[i].size());
             std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
@@ -263,7 +263,9 @@ class EvictingQueueBytes {
             // IDs are 1-based (first pushed message has id=1).
             // On first read (prev_pop==0), messages 1..read_id-1 were skipped.
             auto prev_pop = last_pop_id_.load(std::memory_order_relaxed);
-            discarded = static_cast<uint32_t>(read_id - prev_pop - 1);
+            discarded = (read_id > prev_pop + 1)
+                ? static_cast<uint32_t>(std::min(read_id - prev_pop - 1, uint64_t(UINT32_MAX)))
+                : 0;
 
             uint32_t safe_len =
                 std::min(msg.len, static_cast<uint32_t>(MaxDataSize));

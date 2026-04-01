@@ -19,6 +19,7 @@
 ///   - ProxyConfig::password is never included in log output or error messages.
 ///   - Proxy type must be explicitly specified; no port-based guessing.
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -226,8 +227,8 @@ socks5_handshake(SocketTransport& tcp,
     if (chosen_method == 0x02) {
         if (cfg.username.size() > 255 || cfg.password.size() > 255) {
             SPDLOG_LOGGER_WARN(log,
-                "SOCKS5: username/password exceeds 255 bytes (user={}, pass=<{}>)",
-                cfg.username.size(), cfg.password.size());
+                "SOCKS5: username/password exceeds 255 bytes (user={}, pass=<redacted>)",
+                cfg.username.size());
             return std::unexpected("SOCKS5: username/password exceeds 255 bytes");
         }
         // RFC 1929: VER(1) ULEN(1) UNAME(ULEN) PLEN(1) PASSWD(PLEN)
@@ -400,11 +401,11 @@ http_connect_handshake(SocketTransport& tcp,
             break;
         }
 
-        if (response.size() > 65536) {
+        if (response.size() > 8192) {
             SPDLOG_LOGGER_WARN(log,
-                "HTTP CONNECT: response too large ({}B > 64KB) from {}:{}",
+                "HTTP CONNECT: response too large ({}B > 8KB) from {}:{}",
                 response.size(), target_host, target_port);
-            return std::unexpected("HTTP CONNECT: response too large (>64KB)");
+            return std::unexpected("HTTP CONNECT: response too large (>8KB)");
         }
     }
 
@@ -424,12 +425,11 @@ http_connect_handshake(SocketTransport& tcp,
 
     int status_code = 0;
     auto status_str = response.substr(first_space + 1, 3);
-    for (char c : status_str) {
-        if (c < '0' || c > '9') {
-            return std::unexpected(std::format(
-                "HTTP CONNECT: invalid status code: {}", status_str));
-        }
-        status_code = status_code * 10 + (c - '0');
+    auto [ptr, ec] = std::from_chars(
+        status_str.data(), status_str.data() + status_str.size(), status_code);
+    if (ec != std::errc{} || ptr != status_str.data() + status_str.size()) {
+        return std::unexpected(std::format(
+            "HTTP CONNECT: invalid status code: {}", status_str));
     }
 
     if (status_code != 200) {

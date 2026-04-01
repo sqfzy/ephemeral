@@ -226,6 +226,9 @@ public:
             read_seq_ = other.read_seq_;
             std::memcpy(write_iv_, other.write_iv_, tls_const::kTls13NonceLen);
             std::memcpy(read_iv_,  other.read_iv_,  tls_const::kTls13NonceLen);
+            // Zero moved-from AEAD contexts to prevent double-cleanup on destruction
+            std::memset(&other.enc_ctx_, 0, sizeof(other.enc_ctx_));
+            std::memset(&other.dec_ctx_, 0, sizeof(other.dec_ctx_));
             other.enc_init_ = false;
             other.dec_init_ = false;
             OPENSSL_cleanse(other.write_iv_, sizeof(other.write_iv_));
@@ -322,9 +325,8 @@ public:
         // Advance warning: approaching sequence exhaustion
         else if (write_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
-                "TLS write sequence at {}% of limit ({}/{}), "
+                "TLS write sequence approaching limit ({}/{}), "
                 "consider reconnecting soon to avoid forced disconnect",
-                write_seq_ * 100 / tls_record::kMaxSequenceNumber,
                 write_seq_, tls_record::kMaxSequenceNumber);
         }
 
@@ -359,6 +361,12 @@ public:
             return false;
         }
 
+        // Intentionally checked before decryption: read_seq_ is only advanced
+        // after a successful AEAD open (line ~420), so a failed decryption does
+        // not increment the counter. This is safe because a failed AEAD
+        // authentication means the record is rejected and the caller should
+        // close the connection — retrying with the same sequence number cannot
+        // cause nonce reuse.
         if (read_seq_ >= tls_record::kMaxSequenceNumber) {
             SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
                 "TLS read sequence limit reached ({}): nonce reuse risk, "
@@ -430,9 +438,8 @@ public:
         // Advance warning: approaching sequence exhaustion
         else if (read_seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
-                "TLS read sequence at {}% of limit ({}/{}), "
+                "TLS read sequence approaching limit ({}/{}), "
                 "consider reconnecting soon to avoid forced disconnect",
-                read_seq_ * 100 / tls_record::kMaxSequenceNumber,
                 read_seq_, tls_record::kMaxSequenceNumber);
         }
 

@@ -61,6 +61,11 @@ public:
                  double qty, double price) noexcept
     {
         // Validate inputs -- reject nonsensical fills.
+        if (!std::isfinite(price)) {
+            SPDLOG_WARN("on_fill: non-finite price rejected symbol={} side={} qty={} price={}",
+                        symbol, side, qty, price);
+            return;
+        }
         if (qty <= 0.0 || price <= 0.0) {
             SPDLOG_WARN("on_fill: ignoring invalid fill symbol={} side={} qty={} price={}",
                         symbol, side, qty, price);

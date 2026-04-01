@@ -242,7 +242,7 @@ class BoundedQueueBytes {
     [[nodiscard]] std::optional<uint32_t> try_peek(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         bool success = try_peek_visit([&](std::span<const uint8_t> data) {
-            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            copy_len = static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
             std::memcpy(out_buf.data(), data.data(), copy_len);
         });
         return success ? std::make_optional(copy_len) : std::nullopt;
@@ -259,7 +259,7 @@ class BoundedQueueBytes {
                                                         uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
         bool success = try_peek_visit_wts([&](std::span<const uint8_t> data, uint64_t ts) {
-            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            copy_len = static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
             std::memcpy(out_buf.data(), data.data(), copy_len);
             out_ts = ts;
         });
@@ -339,7 +339,7 @@ class BoundedQueueBytes {
         uint32_t copy_len = 0;
         bool success = try_consume([&](std::span<const uint8_t> data) {
             copy_len =
-                static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+                static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
             std::memcpy(out_buf.data(), data.data(), copy_len);
         });
 
@@ -355,7 +355,7 @@ class BoundedQueueBytes {
         bool success =
             try_consume_wts([&](std::span<const uint8_t> data, uint64_t ts) {
                 copy_len = static_cast<uint32_t>(
-                    std::min(data.size(), out_buf.size()));
+                    std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
                 std::memcpy(out_buf.data(), data.data(), copy_len);
                 out_ts = ts;
             });
@@ -403,7 +403,7 @@ class BoundedQueueBytes {
     uint32_t pop(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         consume([&](std::span<const uint8_t> data) {
-            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            copy_len = static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
             std::memcpy(out_buf.data(), data.data(), copy_len);
         });
         return copy_len;
@@ -415,7 +415,7 @@ class BoundedQueueBytes {
     uint32_t pop_wts(std::span<uint8_t> out_buf, uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
         consume_wts([&](std::span<const uint8_t> data, uint64_t ts) {
-            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            copy_len = static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
             std::memcpy(out_buf.data(), data.data(), copy_len);
             out_ts = ts;
         });
@@ -524,7 +524,7 @@ class BoundedQueueBytes {
         std::chrono::duration<Rep, Period> timeout) noexcept {
         uint32_t copy_len = 0;
         bool ok = try_consume_for([&](std::span<const uint8_t> data) {
-            copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+            copy_len = static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
             std::memcpy(out_buf.data(), data.data(), copy_len);
         }, timeout);
         return ok ? std::make_optional(copy_len) : std::nullopt;
@@ -540,7 +540,7 @@ class BoundedQueueBytes {
         uint32_t copy_len = 0;
         bool ok = try_consume_wts_for(
             [&](std::span<const uint8_t> data, uint64_t ts) {
-                copy_len = static_cast<uint32_t>(std::min(data.size(), out_buf.size()));
+                copy_len = static_cast<uint32_t>(std::min({data.size(), out_buf.size(), size_t(UINT32_MAX)}));
                 std::memcpy(out_buf.data(), data.data(), copy_len);
                 out_ts = ts;
             }, timeout);

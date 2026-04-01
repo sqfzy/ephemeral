@@ -54,6 +54,8 @@ extract_symbol(std::string_view stream) noexcept {
 /// @return FNV-1a hash of the symbol, or 0 if "s" field not found
 [[nodiscard]] inline uint32_t
 symbol_hash(const uint8_t* data, size_t len) noexcept {
+    if (!data || len == 0) return 0;
+
     // Fast scan for "s":" pattern (avoids full JSON parse on hot path)
     // Binance bookTicker: {"e":"bookTicker","u":...,"s":"BTCUSDT",...}
     // The "s" field is typically within the first 80 bytes.

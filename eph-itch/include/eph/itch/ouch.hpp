@@ -412,7 +412,19 @@ public:
     }
 
     [[nodiscard]] uint32_t price()          const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 36); }
+    [[nodiscard]] uint32_t time_in_force()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be32(data_ + 40); }
+
+    [[nodiscard]] std::string_view firm() const noexcept {
+        assert(valid() && "must check valid() before accessing fields");
+        return {reinterpret_cast<const char*>(data_ + 44), 4};
+    }
+
+    [[nodiscard]] char     display()        const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[48]); }
     [[nodiscard]] uint64_t order_reference() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 49); }
+    [[nodiscard]] char     capacity()       const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[57]); }
+    [[nodiscard]] char     int_mkt_sweep()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[58]); }
+    [[nodiscard]] char     cross_type()     const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[59]); }
+    [[nodiscard]] char     order_state()    const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[60]); }
 
     [[nodiscard]] std::string_view previous_token() const noexcept {
         assert(valid() && "must check valid() before accessing fields");

@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <unordered_map>
 
 #include <spdlog/spdlog.h>
@@ -87,8 +88,8 @@ private:
 
     /// Per-price aggregated quantity for O(1) incremental updates.
     /// Key: price (quantized via quantize()), Value: total qty at that level.
-    std::unordered_map<double, double> bid_qty_;
-    std::unordered_map<double, double> ask_qty_;
+    std::map<double, double> bid_qty_;
+    std::map<double, double> ask_qty_;
 
     // -- Epsilon for floating-point price comparison --------------------------
     static constexpr double kEps = 1e-12;
