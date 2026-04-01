@@ -15,7 +15,7 @@ namespace eph::utils {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> hugepage_logger() {
+inline const std::shared_ptr<spdlog::logger>& hugepage_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.hugepage");
         if (!lg) lg = spdlog::stdout_color_mt("utils.hugepage");
