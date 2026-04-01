@@ -1,0 +1,787 @@
+#pragma once
+
+/// @file multicast.hpp
+/// UDP multicast receiver for equity market data feeds.
+///
+/// Supports CME MDP3.0 and Nasdaq TotalView (via MoldUDP64) style multicast
+/// feeds over DPDK user-space networking. Joins multicast groups via DPDK
+/// MAC filter management (RFC 1112 multicast MAC derivation) and delivers
+/// raw UDP payloads to user callbacks with zero-copy from NIC RX.
+///
+/// Usage:
+///   MulticastConfig cfg{.port_id = 0, .rx_queue_id = 0};
+///   MulticastReceiver receiver(cfg);
+///   receiver.join_group({.group_ip = net::parse_ipv4("233.54.12.111"),
+///                        .group_port = 26477});
+///   receiver.on_packet([](const uint8_t* data, size_t len) { ... });
+///   receiver.start();
+///   // ... receiver delivers UDP payloads via callback ...
+///   receiver.stop();
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <expected>
+#include <format>
+#include <functional>
+#include <string>
+#include <thread>
+
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
+#include <rte_ethdev.h>
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_mbuf.h>
+
+#include "eph/dpdk/net_header.hpp"
+#include "eph/utils/cpu.hpp"
+
+namespace eph::dpdk {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logger
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+inline spdlog::logger* multicast_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("dpdk.multicast");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.multicast");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum multicast groups a single MulticastReceiver can manage.
+/// Fixed array avoids heap allocation on the hot path.
+inline constexpr size_t kMaxMulticastGroups = 8;
+
+/// UDP header length (RFC 768).
+inline constexpr uint16_t kUdpHeaderLen = 8;
+
+/// Minimum Ethernet + IPv4 + UDP header length for a valid multicast packet.
+inline constexpr uint16_t kMinUdpPacketLen =
+    net::kEtherHeaderLen + net::kIpv4HeaderLen + kUdpHeaderLen;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UDP header (packed, wire format)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// UDP header structure matching the wire format (network byte order).
+struct UdpHeader {
+    uint16_t src_port;   ///< Source port (network byte order)
+    uint16_t dst_port;   ///< Destination port (network byte order)
+    uint16_t length;     ///< UDP header + payload length (network byte order)
+    uint16_t checksum;   ///< Checksum (0 = disabled for IPv4)
+} __attribute__((packed));
+
+static_assert(sizeof(UdpHeader) == kUdpHeaderLen);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multicast MAC computation (RFC 1112)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Derive the multicast Ethernet MAC address from an IPv4 multicast group IP.
+///
+/// Per RFC 1112, the multicast MAC is formed by placing the low 23 bits of
+/// the IPv4 group address into 01:00:5e:XX:XX:XX. The high 9 bits of the IP
+/// are discarded, which means multiple IPs can map to the same MAC — the IP
+/// layer filters the rest.
+///
+/// @param group_ip  IPv4 multicast group address in host byte order
+/// @return Multicast Ethernet MAC address
+[[nodiscard]] constexpr rte_ether_addr multicast_mac_from_ip(uint32_t group_ip) noexcept {
+    rte_ether_addr mac{};
+    mac.addr_bytes[0] = 0x01;
+    mac.addr_bytes[1] = 0x00;
+    mac.addr_bytes[2] = 0x5e;
+    mac.addr_bytes[3] = static_cast<uint8_t>((group_ip >> 16) & 0x7F); // bit 22..16, mask high bit
+    mac.addr_bytes[4] = static_cast<uint8_t>((group_ip >> 8) & 0xFF);  // bits 15..8
+    mac.addr_bytes[5] = static_cast<uint8_t>(group_ip & 0xFF);         // bits 7..0
+    return mac;
+}
+
+/// Check whether an IPv4 address is a valid multicast address (224.0.0.0/4).
+/// @param ip  IPv4 address in host byte order
+[[nodiscard]] constexpr bool is_multicast_ip(uint32_t ip) noexcept {
+    // Multicast range: 224.0.0.0 to 239.255.255.255 (high nibble == 0xE)
+    return (ip >> 28) == 0x0E;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parsed UDP packet view
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Zero-copy view into a parsed UDP/IPv4/Ethernet packet.
+struct ParsedUdpPacket {
+    const rte_ether_hdr* eth     = nullptr;
+    const rte_ipv4_hdr*  ip      = nullptr;
+    const UdpHeader*     udp     = nullptr;
+    const uint8_t*       payload = nullptr;
+    uint16_t             payload_len = 0;
+
+    /// Extract source IP (host byte order).
+    [[nodiscard]] uint32_t src_ip() const noexcept {
+        return ip ? net::ntoh32(ip->src_addr) : 0;
+    }
+
+    /// Extract destination IP (host byte order).
+    [[nodiscard]] uint32_t dst_ip() const noexcept {
+        return ip ? net::ntoh32(ip->dst_addr) : 0;
+    }
+
+    /// Extract source port (host byte order).
+    [[nodiscard]] uint16_t src_port() const noexcept {
+        return udp ? net::ntoh16(udp->src_port) : 0;
+    }
+
+    /// Extract destination port (host byte order).
+    [[nodiscard]] uint16_t dst_port() const noexcept {
+        return udp ? net::ntoh16(udp->dst_port) : 0;
+    }
+
+    /// Check if the packet is valid (all headers parsed successfully).
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return eth != nullptr && ip != nullptr && udp != nullptr;
+    }
+};
+
+/// Parse a UDP/IPv4/Ethernet packet from an mbuf.
+///
+/// Returns an empty ParsedUdpPacket (all nullptrs) if the packet is not a
+/// valid IPv4/UDP packet or is too short.
+[[nodiscard]] inline ParsedUdpPacket parse_udp_packet(const rte_mbuf* mbuf) noexcept {
+    if (!mbuf) [[unlikely]] return {};
+    const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
+    if (pkt_len < kMinUdpPacketLen) return {};
+
+    const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
+
+    // Ethernet header
+    auto* eth = reinterpret_cast<const rte_ether_hdr*>(data);
+    if (net::ntoh16(eth->ether_type) != net::kEtherTypeIpv4) return {};
+
+    // IPv4 header
+    auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + net::kEtherHeaderLen);
+    if ((ip->version_ihl >> 4) != 4) return {};
+    uint8_t ihl = (ip->version_ihl & 0x0F) << 2; // IHL * 4
+    if (ihl < net::kIpv4HeaderLen) return {};
+    if (ip->next_proto_id != net::kIpProtoUdp) return {};
+
+    // UDP header
+    uint16_t udp_offset = net::kEtherHeaderLen + ihl;
+    if (pkt_len < udp_offset + kUdpHeaderLen) return {};
+
+    auto* udp = reinterpret_cast<const UdpHeader*>(data + udp_offset);
+    uint16_t udp_len = net::ntoh16(udp->length);
+    if (udp_len < kUdpHeaderLen) return {};
+
+    // Verify buffer has enough data for the claimed UDP length
+    if (udp_offset + udp_len > pkt_len) return {};
+
+    ParsedUdpPacket result;
+    result.eth = eth;
+    result.ip  = ip;
+    result.udp = udp;
+
+    uint16_t payload_offset = udp_offset + kUdpHeaderLen;
+    result.payload_len = udp_len - kUdpHeaderLen;
+    if (result.payload_len > 0) {
+        result.payload = data + payload_offset;
+    }
+
+    return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multicast group descriptor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Describes a single multicast group to join.
+struct MulticastGroup {
+    uint32_t group_ip   = 0;   ///< Multicast group IPv4 (host byte order)
+    uint16_t group_port = 0;   ///< UDP port to listen on (host byte order)
+    uint32_t source_ip  = 0;   ///< Source-specific filter (0 = any, for SSM)
+
+    bool operator==(const MulticastGroup&) const = default;
+
+    /// Validate that the group IP is in the multicast range.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (group_ip == 0) return "group_ip must not be zero";
+        if (!is_multicast_ip(group_ip)) return "group_ip is not in multicast range (224.0.0.0/4)";
+        if (group_port == 0) return "group_port must not be zero";
+        return {};
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastConfig
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Configuration for the MulticastReceiver.
+struct MulticastConfig {
+    uint16_t port_id      = 0;       ///< DPDK port ID
+    uint16_t rx_queue_id  = 0;       ///< RX queue to poll
+    int      rx_cpu       = -1;      ///< CPU affinity for RX thread (-1 = no pin)
+    uint16_t rx_burst     = 32;      ///< RX burst size (packets per poll)
+
+    /// Validate configuration parameters.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (rx_burst == 0) return "rx_burst must not be zero";
+        if (rx_burst > 512) return "rx_burst too large (max 512)";
+        return {};
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multicast group entry (internal tracking)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// Internal state for a joined multicast group.
+struct MulticastGroupEntry {
+    MulticastGroup group{};
+    rte_ether_addr mcast_mac{};   ///< Derived multicast MAC for NIC filter
+    bool           active = false;
+
+    /// Packet counter for diagnostics.
+    uint64_t rx_packets = 0;
+};
+
+} // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Packet callback type
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Callback invoked for each received UDP multicast payload.
+/// @param data  Pointer to UDP payload (valid only during callback)
+/// @param len   Payload length in bytes
+using MulticastPacketCallback = std::function<void(const uint8_t* data, size_t len)>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastReceiver
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// UDP multicast receiver using DPDK for zero-copy packet capture.
+///
+/// Manages multicast group membership via DPDK NIC MAC address filters
+/// and delivers UDP payloads to a user callback. Designed for market data
+/// feeds (CME MDP3.0, Nasdaq TotalView/MoldUDP64).
+///
+/// Threading model:
+///   - One RX thread (owned by MulticastReceiver) polls the NIC
+///   - Payload delivery via callback in the RX thread context
+///   - Group join/leave must be called before start() (no hot-path locking)
+///
+/// Example:
+/// @code
+///   MulticastConfig cfg{.port_id = 0, .rx_queue_id = 0};
+///   MulticastReceiver receiver(cfg);
+///   receiver.join_group({.group_ip = net::parse_ipv4("233.54.12.111"),
+///                        .group_port = 26477});
+///   receiver.on_packet([](const uint8_t* data, size_t len) {
+///       auto hdr = eph::itch::parse_moldudp64_header(data, len);
+///       // process ...
+///   });
+///   receiver.start();
+/// @endcode
+class MulticastReceiver {
+public:
+    explicit MulticastReceiver(MulticastConfig config) noexcept
+        : config_(config) {
+        SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+            "MulticastReceiver created: port={}, queue={}, rx_burst={}",
+            config_.port_id, config_.rx_queue_id, config_.rx_burst);
+    }
+
+    ~MulticastReceiver() {
+        stop();
+        // Leave all joined groups to clean up NIC MAC filters
+        leave_all_groups();
+    }
+
+    MulticastReceiver(const MulticastReceiver&) = delete;
+    MulticastReceiver& operator=(const MulticastReceiver&) = delete;
+    MulticastReceiver(MulticastReceiver&&) = delete;
+    MulticastReceiver& operator=(MulticastReceiver&&) = delete;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Group management
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Join a multicast group. Adds the derived multicast MAC to the NIC
+    /// filter so matching packets are delivered to the RX queue.
+    ///
+    /// Must be called BEFORE start() — modifying group state while the RX
+    /// loop is running is not safe (no lock on the hot path by design).
+    ///
+    /// @param group  Multicast group descriptor
+    /// @return Group index on success, or error description
+    [[nodiscard]] std::expected<size_t, std::string>
+    join_group(const MulticastGroup& group) {
+        if (running_.load(std::memory_order_acquire)) {
+            return std::unexpected("join_group() must be called before start()");
+        }
+
+        // Validate group parameters
+        if (auto err = group.validate(); !err.empty()) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "Invalid multicast group: {}", err);
+            return std::unexpected(std::format("Invalid group: {}", err));
+        }
+
+        // Check for duplicate
+        for (size_t i = 0; i < group_count_; ++i) {
+            if (groups_[i].active && groups_[i].group == group) {
+                SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                    "Group {}:{} already joined at index {}",
+                    net::format_ipv4(group.group_ip).data(),
+                    group.group_port, i);
+                return i; // Idempotent — return existing index
+            }
+        }
+
+        // Find a free slot (may reuse a previously left slot)
+        size_t idx = group_count_;
+        for (size_t i = 0; i < group_count_; ++i) {
+            if (!groups_[i].active) {
+                idx = i;
+                break;
+            }
+        }
+
+        if (idx >= kMaxMulticastGroups) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "Cannot join group: receiver full ({}/{} groups)",
+                group_count_, kMaxMulticastGroups);
+            return std::unexpected(std::format(
+                "receiver full ({}/{} groups)", group_count_, kMaxMulticastGroups));
+        }
+
+        // Derive multicast MAC from group IP (RFC 1112)
+        rte_ether_addr mcast_mac = multicast_mac_from_ip(group.group_ip);
+
+        // Add multicast MAC to NIC filter via DPDK
+        // rte_eth_dev_mac_addr_add with RTE_ETH_DEV_NCAST flag would work
+        // but rte_eth_dev_set_mc_addr_list is the standard multicast API.
+        // We rebuild the full MC addr list each time a group is added.
+        auto& entry = groups_[idx];
+        entry.group     = group;
+        entry.mcast_mac = mcast_mac;
+        entry.active    = true;
+        entry.rx_packets = 0;
+
+        if (idx >= group_count_) {
+            group_count_ = idx + 1;
+        }
+
+        // Apply the updated multicast MAC list to the NIC
+        auto result = apply_mc_addr_list();
+        if (!result) {
+            // Rollback
+            entry.active = false;
+            return std::unexpected(result.error());
+        }
+
+        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+            "Joined multicast group {}: {}:{} -> MAC {} (source_filter={})",
+            idx,
+            net::format_ipv4(group.group_ip).data(),
+            group.group_port,
+            net::format_mac(mcast_mac).data(),
+            group.source_ip == 0 ? "any" :
+                std::string(net::format_ipv4(group.source_ip).data()));
+
+        return idx;
+    }
+
+    /// Leave a multicast group by index. Removes the MAC filter from the NIC.
+    ///
+    /// Must be called BEFORE start() — modifying group state while the RX
+    /// loop is running is not safe.
+    ///
+    /// @param group_idx  Group index returned by join_group()
+    /// @return Success or error description
+    [[nodiscard]] std::expected<void, std::string>
+    leave_group(size_t group_idx) {
+        if (running_.load(std::memory_order_acquire)) {
+            return std::unexpected("leave_group() must be called before start()");
+        }
+
+        if (group_idx >= group_count_ || !groups_[group_idx].active) {
+            return std::unexpected(std::format(
+                "Invalid group index {} (count={})", group_idx, group_count_));
+        }
+
+        auto& entry = groups_[group_idx];
+        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+            "Leaving multicast group {}: {}:{} (rx_packets={})",
+            group_idx,
+            net::format_ipv4(entry.group.group_ip).data(),
+            entry.group.group_port,
+            entry.rx_packets);
+
+        entry.active = false;
+
+        // Rebuild the MC addr list without this group's MAC
+        auto result = apply_mc_addr_list();
+        if (!result) {
+            // Re-enable on failure to keep state consistent
+            entry.active = true;
+            return std::unexpected(result.error());
+        }
+
+        return {};
+    }
+
+    /// Leave a multicast group by group descriptor.
+    [[nodiscard]] std::expected<void, std::string>
+    leave_group(const MulticastGroup& group) {
+        for (size_t i = 0; i < group_count_; ++i) {
+            if (groups_[i].active && groups_[i].group == group) {
+                return leave_group(i);
+            }
+        }
+        return std::unexpected("Group not found");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Callback registration
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Register the packet callback. Must be set before start().
+    /// @param cb  Callback invoked with (payload_ptr, payload_len) for each
+    ///            received UDP multicast datagram.
+    void on_packet(MulticastPacketCallback cb) {
+        callback_ = std::move(cb);
+        SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+            "Packet callback registered");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Start / Stop
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Start the multicast receiver RX thread.
+    /// Requires at least one joined group and a registered callback.
+    [[nodiscard]] std::expected<void, std::string> start() {
+        if (running_.load(std::memory_order_relaxed)) {
+            return std::unexpected("Already running");
+        }
+
+        // Validate config
+        if (auto err = config_.validate(); !err.empty()) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "Invalid config: {}", err);
+            return std::unexpected(std::format("Invalid config: {}", err));
+        }
+
+        if (active_group_count() == 0) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "Cannot start: no multicast groups joined");
+            return std::unexpected("No multicast groups joined");
+        }
+
+        if (!callback_) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "Cannot start: no packet callback registered");
+            return std::unexpected("No packet callback registered");
+        }
+
+        running_.store(true, std::memory_order_release);
+        thread_ = std::thread([this] { rx_loop(); });
+
+        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+            "MulticastReceiver started: {} active groups, port={}, queue={}",
+            active_group_count(), config_.port_id, config_.rx_queue_id);
+
+        return {};
+    }
+
+    /// Stop the multicast receiver RX thread (blocks until joined).
+    void stop() {
+        if (!running_.exchange(false, std::memory_order_acq_rel)) return;
+        if (thread_.joinable()) thread_.join();
+        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+            "MulticastReceiver stopped (total_rx={})", total_rx_packets_);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Accessors
+    // ─────────────────────────────────────────────────────────────────────
+
+    [[nodiscard]] bool is_running() const noexcept {
+        return running_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] size_t group_count() const noexcept {
+        return group_count_;
+    }
+
+    /// Number of currently active (joined) groups.
+    [[nodiscard]] size_t active_group_count() const noexcept {
+        size_t count = 0;
+        for (size_t i = 0; i < group_count_; ++i) {
+            if (groups_[i].active) ++count;
+        }
+        return count;
+    }
+
+    /// Access a group entry by index (for stats, diagnostics).
+    [[nodiscard]] const detail::MulticastGroupEntry& group_entry(size_t i) const noexcept {
+        if (i >= group_count_) [[unlikely]] {
+            static const detail::MulticastGroupEntry empty{};
+            return empty;
+        }
+        return groups_[i];
+    }
+
+    [[nodiscard]] uint64_t total_rx_packets() const noexcept {
+        return total_rx_packets_;
+    }
+
+    [[nodiscard]] const MulticastConfig& config() const noexcept {
+        return config_;
+    }
+
+private:
+    // ─────────────────────────────────────────────────────────────────────
+    // NIC multicast MAC management
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Rebuild and apply the multicast MAC address list to the NIC.
+    /// Called after every join/leave to keep the NIC filter in sync.
+    [[nodiscard]] std::expected<void, std::string> apply_mc_addr_list() {
+        // Collect active multicast MACs (deduplicated — multiple IPs can
+        // map to the same MAC due to the 23-bit truncation in RFC 1112)
+        rte_ether_addr mc_list[kMaxMulticastGroups]{};
+        uint32_t mc_count = 0;
+
+        for (size_t i = 0; i < group_count_; ++i) {
+            if (!groups_[i].active) continue;
+
+            // Deduplicate: check if this MAC is already in the list.
+            // Multiple group IPs can hash to the same MAC (RFC 1112 collision).
+            bool dup = false;
+            for (uint32_t j = 0; j < mc_count; ++j) {
+                if (std::memcmp(&mc_list[j], &groups_[i].mcast_mac,
+                                sizeof(rte_ether_addr)) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                mc_list[mc_count++] = groups_[i].mcast_mac;
+            }
+        }
+
+        SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+            "Applying MC addr list: {} unique MACs on port {}",
+            mc_count, config_.port_id);
+
+        int ret = rte_eth_dev_set_mc_addr_list(
+            config_.port_id, mc_count > 0 ? mc_list : nullptr, mc_count);
+        if (ret != 0) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "rte_eth_dev_set_mc_addr_list failed: ret={} on port {}",
+                ret, config_.port_id);
+            return std::unexpected(std::format(
+                "rte_eth_dev_set_mc_addr_list failed: ret={}", ret));
+        }
+
+        return {};
+    }
+
+    /// Leave all active groups (called from destructor).
+    void leave_all_groups() {
+        bool had_active = false;
+        for (size_t i = 0; i < group_count_; ++i) {
+            if (groups_[i].active) {
+                SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+                    "Auto-leaving group {}: {}:{}",
+                    i,
+                    net::format_ipv4(groups_[i].group.group_ip).data(),
+                    groups_[i].group.group_port);
+                groups_[i].active = false;
+                had_active = true;
+            }
+        }
+
+        if (had_active) {
+            // Clear the NIC MC list (ignore errors in destructor)
+            int ret = rte_eth_dev_set_mc_addr_list(config_.port_id, nullptr, 0);
+            if (ret != 0) {
+                SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                    "Failed to clear MC addr list on cleanup: ret={}", ret);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // RX loop
+    // ─────────────────────────────────────────────────────────────────────
+
+    void rx_loop() {
+        if (config_.rx_cpu >= 0) {
+            (void)eph::utils::set_thread_affinity(config_.rx_cpu, "multicast_rx");
+        }
+
+        auto* log = detail::multicast_logger();
+        SPDLOG_LOGGER_INFO(log,
+            "Multicast RX loop started: {} active groups, port={}, queue={}, cpu={}",
+            active_group_count(), config_.port_id, config_.rx_queue_id, config_.rx_cpu);
+
+        // Allocate burst array on stack (size known at construction)
+        // Cap at 512 to keep stack usage reasonable
+        rte_mbuf* pkts[512];
+        const uint16_t burst_size = config_.rx_burst;
+
+        while (running_.load(std::memory_order_acquire)) {
+            uint16_t nb_rx = rte_eth_rx_burst(
+                config_.port_id, config_.rx_queue_id, pkts, burst_size);
+
+            if (nb_rx == 0) continue;
+
+            for (uint16_t i = 0; i < nb_rx; ++i) {
+                process_packet(pkts[i]);
+                rte_pktmbuf_free(pkts[i]);
+            }
+        }
+
+        SPDLOG_LOGGER_DEBUG(log, "Multicast RX loop exited");
+    }
+
+    /// Process a single received packet: parse, match against joined groups,
+    /// and deliver payload via callback.
+    void process_packet(const rte_mbuf* mbuf) noexcept {
+        auto parsed = parse_udp_packet(mbuf);
+        if (!parsed) return; // Not a valid UDP/IPv4 packet
+
+        const uint32_t dst_ip   = parsed.dst_ip();
+        const uint16_t dst_port = parsed.dst_port();
+        const uint32_t src_ip   = parsed.src_ip();
+
+        // Quick reject: not a multicast destination
+        if (!is_multicast_ip(dst_ip)) return;
+
+        // Match against joined groups (linear scan, <= 8 entries)
+        for (size_t i = 0; i < group_count_; ++i) {
+            auto& entry = groups_[i];
+            if (!entry.active) continue;
+            if (entry.group.group_ip != dst_ip) continue;
+            if (entry.group.group_port != dst_port) continue;
+
+            // Source-specific multicast filter (SSM): if source_ip is set,
+            // only accept packets from that specific source.
+            if (entry.group.source_ip != 0 && entry.group.source_ip != src_ip) {
+                SPDLOG_LOGGER_TRACE(detail::multicast_logger(),
+                    "SSM filter: dropping packet from {} (expected {})",
+                    net::format_ipv4(src_ip).data(),
+                    net::format_ipv4(entry.group.source_ip).data());
+                continue;
+            }
+
+            // Match found — deliver payload
+            ++entry.rx_packets;
+            ++total_rx_packets_;
+
+            if (parsed.payload && parsed.payload_len > 0) {
+                SPDLOG_LOGGER_TRACE(detail::multicast_logger(),
+                    "Delivering packet: group={} src={}:{} len={}",
+                    i, net::format_ipv4(src_ip).data(),
+                    parsed.src_port(), parsed.payload_len);
+
+                callback_(parsed.payload, parsed.payload_len);
+            }
+            return; // A packet matches at most one group
+        }
+
+        // No group matched — packet may have been received due to MAC hash
+        // collision (RFC 1112: multiple IPs map to same MAC). This is normal.
+    }
+
+    MulticastConfig config_;
+    std::array<detail::MulticastGroupEntry, kMaxMulticastGroups> groups_{};
+    size_t group_count_ = 0;
+    MulticastPacketCallback callback_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+    uint64_t total_rx_packets_ = 0;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic payload adapter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Create a MulticastPacketCallback that applies a parser/dispatcher to each
+/// received UDP payload. This is the generic building block for protocol-
+/// specific adapters (MoldUDP64, CME MDP3.0, etc.).
+///
+/// @tparam Parser  Callable with signature (const uint8_t* data, size_t len)
+/// @param parser   The parser/dispatcher to invoke on each UDP payload
+/// @return MulticastPacketCallback suitable for MulticastReceiver::on_packet()
+template <typename Parser>
+    requires std::invocable<Parser, const uint8_t*, size_t>
+[[nodiscard]] MulticastPacketCallback make_payload_adapter(Parser&& parser) {
+    return MulticastPacketCallback(std::forward<Parser>(parser));
+}
+
+/// Create a MulticastPacketCallback that parses MoldUDP64 packets and
+/// delivers individual messages to the inner callback.
+///
+/// This bridges the MulticastReceiver (which delivers raw UDP payloads)
+/// with any MoldUDP64 parser. The caller supplies the parse function
+/// to avoid a hard dependency on eph-itch.
+///
+/// Usage with eph-itch:
+/// @code
+///   #include "eph/itch/moldudp64.hpp"
+///
+///   receiver.on_packet(make_moldudp64_adapter(
+///       eph::itch::parse_moldudp64<decltype(my_cb)>,
+///       [](const uint8_t* msg, uint16_t len, uint64_t seq) {
+///           // Process individual ITCH message
+///       }));
+/// @endcode
+///
+/// Or more concisely:
+/// @code
+///   receiver.on_packet(make_moldudp64_adapter(
+///       [](const uint8_t* data, size_t len, auto& cb) {
+///           eph::itch::parse_moldudp64(data, len, cb);
+///       },
+///       [](const uint8_t* msg, uint16_t msg_len, uint64_t seq) {
+///           // Process individual ITCH message
+///       }));
+/// @endcode
+///
+/// @tparam ParseFn    Callable with signature (const uint8_t*, size_t, MsgCb&)
+/// @tparam MsgCb      Per-message callback type
+/// @param parse_fn    MoldUDP64 parse function
+/// @param msg_callback  Per-message callback
+/// @return MulticastPacketCallback suitable for MulticastReceiver::on_packet()
+template <typename ParseFn, typename MsgCb>
+    requires std::invocable<ParseFn, const uint8_t*, size_t, MsgCb&>
+[[nodiscard]] MulticastPacketCallback
+make_moldudp64_adapter(ParseFn&& parse_fn, MsgCb&& msg_callback) {
+    auto parser = std::forward<ParseFn>(parse_fn);
+    auto cb     = std::forward<MsgCb>(msg_callback);
+    return [parser = std::move(parser),
+            cb     = std::move(cb)](const uint8_t* data, size_t len) mutable {
+        parser(data, len, cb);
+    };
+}
+
+} // namespace eph::dpdk
