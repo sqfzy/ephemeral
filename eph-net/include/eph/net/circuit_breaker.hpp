@@ -19,9 +19,23 @@
 #include <cstdint>
 #include <mutex>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* circuit_breaker_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("net.circuit_breaker");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("net.circuit_breaker");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Circuit breaker state.
 enum class CircuitState : uint8_t {
@@ -59,7 +73,8 @@ public:
         , half_open_calls_{0}
         , opened_at_{}
     {
-        SPDLOG_DEBUG("CircuitBreaker created: threshold={} open_duration={}s half_open_max={}",
+        SPDLOG_LOGGER_DEBUG(detail::circuit_breaker_logger(),
+                     "CircuitBreaker created: threshold={} open_duration={}s half_open_max={}",
                      config_.failure_threshold, config_.open_duration.count(),
                      config_.half_open_max_calls);
     }
@@ -87,7 +102,8 @@ public:
         case CircuitState::Closed:
             // Reset failure count — endpoint is healthy.
             if (failure_count_ > 0) {
-                SPDLOG_DEBUG("CircuitBreaker: success in Closed, resetting failure_count from {}",
+                SPDLOG_LOGGER_DEBUG(detail::circuit_breaker_logger(),
+                             "CircuitBreaker: success in Closed, resetting failure_count from {}",
                              failure_count_);
                 failure_count_ = 0;
             }
@@ -95,7 +111,8 @@ public:
 
         case CircuitState::HalfOpen:
             // Probe succeeded — endpoint has recovered, close the circuit.
-            SPDLOG_INFO("CircuitBreaker: success in HalfOpen, transitioning to Closed");
+            SPDLOG_LOGGER_INFO(detail::circuit_breaker_logger(),
+                        "CircuitBreaker: success in HalfOpen, transitioning to Closed");
             state_ = CircuitState::Closed;
             failure_count_ = 0;
             half_open_calls_ = 0;
@@ -104,7 +121,8 @@ public:
         case CircuitState::Open:
             // Shouldn't normally happen (calls are blocked in Open), but
             // handle gracefully — ignore.
-            SPDLOG_WARN("CircuitBreaker: record_success called in Open state (unexpected)");
+            SPDLOG_LOGGER_WARN(detail::circuit_breaker_logger(),
+                        "CircuitBreaker: record_success called in Open state (unexpected)");
             break;
         }
     }
@@ -120,7 +138,8 @@ public:
         switch (state_) {
         case CircuitState::Closed:
             ++failure_count_;
-            SPDLOG_DEBUG("CircuitBreaker: failure in Closed, count={}/{}", failure_count_,
+            SPDLOG_LOGGER_DEBUG(detail::circuit_breaker_logger(),
+                        "CircuitBreaker: failure in Closed, count={}/{}", failure_count_,
                          config_.failure_threshold);
 
             if (failure_count_ >= config_.failure_threshold) {
@@ -130,13 +149,15 @@ public:
 
         case CircuitState::HalfOpen:
             // Probe failed — endpoint is still broken, re-open with fresh timer.
-            SPDLOG_WARN("CircuitBreaker: failure in HalfOpen, re-opening circuit");
+            SPDLOG_LOGGER_WARN(detail::circuit_breaker_logger(),
+                        "CircuitBreaker: failure in HalfOpen, re-opening circuit");
             trip_locked();
             break;
 
         case CircuitState::Open:
             // Shouldn't normally happen (calls are blocked), handle gracefully.
-            SPDLOG_WARN("CircuitBreaker: record_failure called in Open state (unexpected)");
+            SPDLOG_LOGGER_WARN(detail::circuit_breaker_logger(),
+                        "CircuitBreaker: record_failure called in Open state (unexpected)");
             break;
         }
     }
@@ -165,7 +186,8 @@ public:
     /// Clears failure count and half-open call tracking.
     void reset() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
-        SPDLOG_INFO("CircuitBreaker: manual reset to Closed (was state={}, failures={})",
+        SPDLOG_LOGGER_INFO(detail::circuit_breaker_logger(),
+                    "CircuitBreaker: manual reset to Closed (was state={}, failures={})",
                     static_cast<int>(state_), failure_count_);
         state_ = CircuitState::Closed;
         failure_count_ = 0;
@@ -188,7 +210,8 @@ private:
         state_ = CircuitState::Open;
         opened_at_ = Clock::now();
         half_open_calls_ = 0;
-        SPDLOG_WARN("CircuitBreaker: tripped to Open, failures={}, cooldown={}s",
+        SPDLOG_LOGGER_WARN(detail::circuit_breaker_logger(),
+                    "CircuitBreaker: tripped to Open, failures={}, cooldown={}s",
                     failure_count_, config_.open_duration.count());
     }
 
@@ -201,22 +224,26 @@ private:
         case CircuitState::Open:
             if (open_duration_elapsed_locked()) {
                 // Transition to HalfOpen — allow limited probe calls.
-                SPDLOG_INFO("CircuitBreaker: open_duration elapsed, transitioning to HalfOpen");
+                SPDLOG_LOGGER_INFO(detail::circuit_breaker_logger(),
+                            "CircuitBreaker: open_duration elapsed, transitioning to HalfOpen");
                 state_ = CircuitState::HalfOpen;
                 half_open_calls_ = 1;
                 return true;
             }
-            SPDLOG_TRACE("CircuitBreaker: call blocked (Open)");
+            SPDLOG_LOGGER_TRACE(detail::circuit_breaker_logger(),
+                         "CircuitBreaker: call blocked (Open)");
             return false;
 
         case CircuitState::HalfOpen:
             if (half_open_calls_ < config_.half_open_max_calls) {
                 ++half_open_calls_;
-                SPDLOG_TRACE("CircuitBreaker: allowing HalfOpen call {}/{}",
+                SPDLOG_LOGGER_TRACE(detail::circuit_breaker_logger(),
+                             "CircuitBreaker: allowing HalfOpen call {}/{}",
                              half_open_calls_, config_.half_open_max_calls);
                 return true;
             }
-            SPDLOG_TRACE("CircuitBreaker: call blocked (HalfOpen, max test calls reached)");
+            SPDLOG_LOGGER_TRACE(detail::circuit_breaker_logger(),
+                         "CircuitBreaker: call blocked (HalfOpen, max test calls reached)");
             return false;
         }
 

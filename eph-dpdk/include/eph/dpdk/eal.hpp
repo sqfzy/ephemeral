@@ -14,16 +14,31 @@
 #include <rte_eal.h>
 #include <rte_errno.h>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 namespace eph::dpdk {
+
+namespace detail {
+inline spdlog::logger* eal_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("dpdk.eal");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.eal");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Initialize DPDK EAL.  Must be called exactly once per process,
 /// before any other rte_* API.
 ///
 /// @return Number of argv entries consumed by EAL on success.
 [[nodiscard]] inline std::expected<int, std::string> eal_init(int argc, char** argv) {
-    SPDLOG_TRACE("Calling rte_eal_init (argc={})", argc);
+    auto log = detail::eal_logger();
+    SPDLOG_LOGGER_TRACE(log, "Calling rte_eal_init (argc={})", argc);
 
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) {
@@ -32,16 +47,17 @@ namespace eph::dpdk {
             ret, rte_errno, rte_strerror(rte_errno)));
     }
 
-    SPDLOG_DEBUG("EAL initialized, {} args consumed", ret);
+    SPDLOG_LOGGER_DEBUG(log, "EAL initialized, {} args consumed", ret);
     return ret;
 }
 
 /// Clean up EAL resources.  Call once, after all ports are closed.
 inline void eal_cleanup() noexcept {
-    SPDLOG_DEBUG("Calling rte_eal_cleanup");
+    auto log = detail::eal_logger();
+    SPDLOG_LOGGER_DEBUG(log, "Calling rte_eal_cleanup");
     int ret = rte_eal_cleanup();
     if (ret != 0) [[unlikely]] {
-        SPDLOG_ERROR("rte_eal_cleanup failed (ret={}, rte_errno={}): {}",
+        SPDLOG_LOGGER_ERROR(log, "rte_eal_cleanup failed (ret={}, rte_errno={}): {}",
                      ret, rte_errno, rte_strerror(rte_errno));
     }
 }
@@ -65,13 +81,13 @@ public:
     [[nodiscard]] static std::expected<EalGuard, std::string> init(int argc, char** argv) {
         auto result = eal_init(argc, argv);
         if (!result) return std::unexpected(result.error());
-        SPDLOG_DEBUG("EalGuard created ({} args consumed)", *result);
+        SPDLOG_LOGGER_DEBUG(detail::eal_logger(), "EalGuard created ({} args consumed)", *result);
         return EalGuard{*result};
     }
 
     ~EalGuard() {
         if (initialized_) {
-            SPDLOG_DEBUG("EalGuard destroying, calling eal_cleanup");
+            SPDLOG_LOGGER_DEBUG(detail::eal_logger(), "EalGuard destroying, calling eal_cleanup");
             eal_cleanup();
         }
     }

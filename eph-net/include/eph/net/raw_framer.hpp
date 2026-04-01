@@ -8,11 +8,25 @@
 
 #include <cstring>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include "eph/net/framer_concept.hpp"
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* raw_framer_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("net.raw_framer");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("net.raw_framer");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Pass-through framer: no framing header, raw byte delivery.
 ///
@@ -28,7 +42,8 @@ public:
     [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         if (len == 0 || !data || !out) [[unlikely]] {
-            SPDLOG_WARN("RawFramer::encode: invalid args len={} data={} out={} "
+            SPDLOG_LOGGER_WARN(detail::raw_framer_logger(),
+                        "RawFramer::encode: invalid args len={} data={} out={} "
                         "(caller bug: null pointer or zero length)",
                         len, fmt::ptr(data), fmt::ptr(out));
             return 0;

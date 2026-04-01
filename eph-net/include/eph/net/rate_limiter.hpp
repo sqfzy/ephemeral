@@ -19,9 +19,23 @@
 #include <mutex>
 #include <thread>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* rate_limiter_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("net.rate_limiter");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("net.rate_limiter");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Thread-safe token bucket rate limiter.
 ///
@@ -40,7 +54,8 @@ public:
         , tokens_{static_cast<double>(burst)}
         , last_refill_{std::chrono::steady_clock::now()}
     {
-        SPDLOG_DEBUG("RateLimiter created: rate={:.2f}/s burst={} rate_per_ns={:.12f}",
+        SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(),
+                     "RateLimiter created: rate={:.2f}/s burst={} rate_per_ns={:.12f}",
                      rate_per_sec, burst, rate_per_ns_);
     }
 
@@ -53,11 +68,13 @@ public:
         const auto need = static_cast<double>(n);
         if (tokens_ >= need) {
             tokens_ -= need;
-            SPDLOG_TRACE("try_acquire({}) succeeded, tokens_remaining={:.2f}", n, tokens_);
+            SPDLOG_LOGGER_TRACE(detail::rate_limiter_logger(),
+                         "try_acquire({}) succeeded, tokens_remaining={:.2f}", n, tokens_);
             return true;
         }
 
-        SPDLOG_TRACE("try_acquire({}) failed, tokens_available={:.2f}", n, tokens_);
+        SPDLOG_LOGGER_TRACE(detail::rate_limiter_logger(),
+                     "try_acquire({}) failed, tokens_available={:.2f}", n, tokens_);
         return false;
     }
 
@@ -66,11 +83,12 @@ public:
     /// Intended for convenience paths where callers prefer blocking over
     /// retry logic. Uses yield() to avoid busy-spinning.
     void acquire(std::size_t n = 1) noexcept {
-        SPDLOG_DEBUG("acquire({}) blocking until tokens available", n);
+        SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(),
+                     "acquire({}) blocking until tokens available", n);
         while (!try_acquire(n)) {
             std::this_thread::yield();
         }
-        SPDLOG_DEBUG("acquire({}) completed", n);
+        SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(), "acquire({}) completed", n);
     }
 
     /// Approximate number of currently available tokens.
@@ -89,7 +107,7 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         tokens_ = burst_;
         last_refill_ = std::chrono::steady_clock::now();
-        SPDLOG_DEBUG("RateLimiter reset to burst={:.0f}", burst_);
+        SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(), "RateLimiter reset to burst={:.0f}", burst_);
     }
 
 private:

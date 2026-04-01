@@ -31,9 +31,23 @@
 #include <thread>
 #include <vector>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* gateway_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("net.gateway");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("net.gateway");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Connection health status.
 enum class ConnHealth : uint8_t {
@@ -119,7 +133,7 @@ public:
     template <typename Transport>
     size_t add(std::string tag, Transport* tp, uint8_t priority = 128) {
         if (!tp) {
-            SPDLOG_ERROR("Gateway::add: null transport for tag '{}'", tag);
+            SPDLOG_LOGGER_ERROR(detail::gateway_logger(), "Gateway::add: null transport for tag '{}'", tag);
             return SIZE_MAX;
         }
 
@@ -136,7 +150,7 @@ public:
         std::lock_guard lock(mu_);
         size_t id = connections_.size();
         connections_.push_back(std::move(conn));
-        SPDLOG_INFO("Gateway: added connection [{}] '{}' (priority={})",
+        SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: added connection [{}] '{}' (priority={})",
                      id, connections_[id].tag, priority);
         return id;
     }
@@ -172,10 +186,10 @@ public:
                 // Guard against spawning duplicate threads if the transport
                 // is somehow already running (e.g. started externally).
                 if (!c.is_running_fn(c.transport_ptr)) {
-                    SPDLOG_INFO("Gateway: starting [{}] '{}'", i, c.tag);
+                    SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: starting [{}] '{}'", i, c.tag);
                     c.start_threads_fn(c.transport_ptr);
                 } else {
-                    SPDLOG_INFO("Gateway: [{}] '{}' already running, skipping start", i, c.tag);
+                    SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: [{}] '{}' already running, skipping start", i, c.tag);
                 }
                 c.health = ConnHealth::Healthy;
             }
@@ -188,7 +202,7 @@ public:
         for (size_t i = 0; i < connections_.size(); ++i) {
             auto& c = connections_[i];
             if (c.health != ConnHealth::Stopped && c.stop_fn) {
-                SPDLOG_INFO("Gateway: stopping [{}] '{}'", i, c.tag);
+                SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping [{}] '{}'", i, c.tag);
                 c.stop_fn(c.transport_ptr);
                 c.health = ConnHealth::Stopped;
             }
@@ -201,7 +215,7 @@ public:
         if (id >= connections_.size()) return;
         auto& c = connections_[id];
         if (c.reconnect_fn) {
-            SPDLOG_INFO("Gateway: reconnecting [{}] '{}'", id, c.tag);
+            SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: reconnecting [{}] '{}'", id, c.tag);
             c.reconnect_fn(c.transport_ptr);
         }
     }
@@ -212,7 +226,7 @@ public:
     void start_monitor() noexcept {
         if (monitor_running_.exchange(true, std::memory_order_acq_rel)) return;
         monitor_thread_ = std::thread([this] { monitor_loop(); });
-        SPDLOG_INFO("Gateway: health monitor started (interval={}ms)",
+        SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: health monitor started (interval={}ms)",
                      config_.health_check_interval.count());
     }
 
@@ -220,7 +234,7 @@ public:
     void stop_monitor() noexcept {
         if (!monitor_running_.exchange(false, std::memory_order_acq_rel)) return;
         if (monitor_thread_.joinable()) monitor_thread_.join();
-        SPDLOG_INFO("Gateway: health monitor stopped");
+        SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: health monitor stopped");
     }
 
     /// Run one health check cycle (called by monitor loop or manually).
@@ -238,7 +252,7 @@ public:
             }
 
             if (old_h != c.health) {
-                SPDLOG_WARN("Gateway: [{}] '{}' health {} → {}",
+                SPDLOG_LOGGER_WARN(detail::gateway_logger(), "Gateway: [{}] '{}' health {} → {}",
                             i, c.tag, conn_health_name(old_h),
                             conn_health_name(c.health));
                 if (config_.on_health_change) {

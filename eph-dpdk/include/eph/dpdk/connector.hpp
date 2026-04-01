@@ -39,6 +39,7 @@
 
 #include <optional>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <openssl/rand.h>
@@ -56,6 +57,19 @@
 #include "eph/dpdk/types.hpp"
 
 namespace eph::dpdk {
+
+namespace detail {
+inline spdlog::logger* connector_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("dpdk.connector");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("dpdk.connector");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -215,7 +229,8 @@ struct ConnectResult {
 /// @return IPv4 address in host byte order, or error string
 [[nodiscard]] inline std::expected<uint32_t, std::string>
 resolve_hostname(const std::string& host) {
-    SPDLOG_DEBUG("Resolving hostname: '{}'", host);
+    auto log = detail::connector_logger();
+    SPDLOG_LOGGER_DEBUG(log, "Resolving hostname: '{}'", host);
 
     // RFC 1035 §3.1: total name length must not exceed 253 characters.
     if (host.size() > 253) {
@@ -242,11 +257,16 @@ resolve_hostname(const std::string& host) {
             host, gai_strerror(err)));
     }
 
+    if (!result->ai_addr) {
+        freeaddrinfo(result);
+        return std::unexpected(std::format(
+            "DNS resolution for '{}' returned null ai_addr", host));
+    }
     auto* addr = reinterpret_cast<struct sockaddr_in*>(result->ai_addr);
     ip = ntohl(addr->sin_addr.s_addr);
     freeaddrinfo(result);
 
-    SPDLOG_DEBUG("DNS resolved: {} -> {}", host, net::format_ipv4(ip).data());
+    SPDLOG_LOGGER_DEBUG(log, "DNS resolved: {} -> {}", host, net::format_ipv4(ip).data());
     return ip;
 }
 
@@ -338,7 +358,7 @@ prepare_connection(const DpdkEndpoint& ep,
         if (src_port == 0) {
             return std::unexpected("CSPRNG failure: RAND_bytes failed for ephemeral port");
         }
-        SPDLOG_DEBUG("dpdk::connect: ephemeral port {}", src_port);
+        SPDLOG_LOGGER_DEBUG(connector_logger(), "dpdk::connect: ephemeral port {}", src_port);
     }
 
     // TCP config + factory
@@ -405,7 +425,8 @@ connect(const DpdkEndpoint& ep,
         return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
     }
 
-    SPDLOG_DEBUG("dpdk::connect: local={}, gateway={}, server={}",
+    auto log = detail::connector_logger();
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect: local={}, gateway={}, server={}",
                  ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
 
@@ -426,7 +447,7 @@ connect(const DpdkEndpoint& ep,
             std::format("Transport creation failed: {}", transport.error().message()));
     }
 
-    SPDLOG_DEBUG("dpdk::connect: connection established");
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect: connection established");
 
     return ConnectResult<TransportType>{
         .platform    = std::move(*platform),
@@ -463,7 +484,8 @@ connect(const DpdkEndpoint& ep,
 
     // Kernel DNS failed — fall back to DPDK DNS.
     // Validate config before creating Platform to fail fast on bad input.
-    SPDLOG_DEBUG("dpdk::connect: kernel DNS failed ({}), trying DPDK DNS",
+    auto log = detail::connector_logger();
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect: kernel DNS failed ({}), trying DPDK DNS",
                  ip.error());
 
     uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
@@ -521,7 +543,7 @@ connect(const DpdkEndpoint& ep,
         return std::unexpected(transport_result.error());
     }
 
-    SPDLOG_DEBUG("dpdk::connect: connection established (via DPDK DNS)");
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect: connection established (via DPDK DNS)");
 
     return ConnectResult<TransportType>{
         .platform    = std::move(*platform),
@@ -561,14 +583,15 @@ connect(Platform& platform,
         uint32_t server_ip,
         const ConnectorOptions& opts = {}) {
 
-    SPDLOG_DEBUG("dpdk::connect(platform&): local={}, gateway={}, server={}",
+    auto log = detail::connector_logger();
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): local={}, gateway={}, server={}",
                  ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
 
     auto setup = detail::prepare_connection(
         ep, opts, transport_cfg, server_ip, platform.mempool());
     if (!setup) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): prepare_connection failed: {}",
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): prepare_connection failed: {}",
                      setup.error());
         return std::unexpected(setup.error());
     }
@@ -576,13 +599,13 @@ connect(Platform& platform,
     auto transport = TransportType::create(
         std::move(setup->tcp_factory), transport_cfg);
     if (!transport) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): Transport creation failed: {}",
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): Transport creation failed: {}",
                      transport.error().message());
         return std::unexpected(
             std::format("Transport creation failed: {}", transport.error().message()));
     }
 
-    SPDLOG_DEBUG("dpdk::connect(platform&): connection established");
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): connection established");
     return std::move(*transport);
 }
 
@@ -593,8 +616,9 @@ connect(Platform& platform,
         const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
         const ConnectorOptions& opts = {}) {
+    auto log = detail::connector_logger();
     if (transport_cfg.remote_host.empty()) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): remote_host is empty");
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): remote_host is empty");
         return std::unexpected(
             "TransportConfig: remote_host is required for hostname-based connect");
     }
@@ -606,19 +630,19 @@ connect(Platform& platform,
     }
 
     // Fall back to DPDK DNS
-    SPDLOG_DEBUG("dpdk::connect(platform&): kernel DNS failed ({}), trying DPDK DNS",
+    SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): kernel DNS failed ({}), trying DPDK DNS",
                  ip.error());
 
     uint32_t local_ip   = net::parse_ipv4(ep.local_ip.c_str());
     uint32_t gateway_ip = net::parse_ipv4(ep.gateway_ip.c_str());
     if (local_ip == 0) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): local_ip parse failed: '{}'",
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): local_ip parse failed: '{}'",
                      ep.local_ip);
         return std::unexpected(
             std::format("Invalid local_ip: '{}' failed to parse", ep.local_ip));
     }
     if (gateway_ip == 0) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): gateway_ip parse failed: '{}'",
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): gateway_ip parse failed: '{}'",
                      ep.gateway_ip);
         return std::unexpected(
             std::format("Invalid gateway_ip: '{}' failed to parse", ep.gateway_ip));
@@ -626,7 +650,7 @@ connect(Platform& platform,
 
     rte_ether_addr src_mac{};
     if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): MAC get failed for port {}",
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): MAC get failed for port {}",
                      opts.platform.port_id);
         return std::unexpected(std::format(
             "Failed to get MAC for DPDK DNS fallback (port={})",
@@ -637,7 +661,7 @@ connect(Platform& platform,
         opts.platform.port_id, opts.rx_queue_id, platform.mempool(),
         src_mac, local_ip, gateway_ip, opts.arp_timeout);
     if (!gw_mac) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): ARP for gateway {} failed: {}",
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): ARP for gateway {} failed: {}",
                      ep.gateway_ip, gw_mac.error());
         return std::unexpected(std::format(
             "DNS fallback: ARP for gateway failed: {}", gw_mac.error()));
@@ -648,7 +672,7 @@ connect(Platform& platform,
         src_mac, *gw_mac, local_ip,
         transport_cfg.remote_host, opts.dns);
     if (!dpdk_ip) {
-        SPDLOG_DEBUG("dpdk::connect(platform&): DPDK DNS failed: {}", dpdk_ip.error());
+        SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): DPDK DNS failed: {}", dpdk_ip.error());
         return std::unexpected(std::format(
             "DNS failed (kernel: {}, DPDK: {})", ip.error(), dpdk_ip.error()));
     }

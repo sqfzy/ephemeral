@@ -238,6 +238,10 @@ public:
     Platform(Platform&&) noexcept;
     Platform& operator=(Platform&&) noexcept;
 
+    /// True if this Platform is in a valid (non-moved-from) state.
+    /// Use before calling other accessors when the Platform may have been moved.
+    [[nodiscard]] explicit operator bool() const noexcept { return impl_ != nullptr; }
+
     [[nodiscard]] rte_mempool* mempool()          const noexcept;
     [[nodiscard]] uint16_t     port_id()          const noexcept;
     [[nodiscard]] bool         is_running()       const noexcept;

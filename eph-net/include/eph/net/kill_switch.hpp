@@ -33,9 +33,23 @@
 #include <cstdio>
 #include <cstring>
 
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* kill_switch_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("net.kill_switch");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("net.kill_switch");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 /// Maximum number of transports that can be registered with a KillSwitch.
 /// Fixed array avoids heap allocation — safe for signal handler context.
@@ -121,17 +135,17 @@ public:
         for (size_t i = 0; i < n; ++i) snapshot[i] = handles_[i];
         spin_unlock();
 
-        SPDLOG_INFO("KillSwitch: shutting down {} transports", n);
+        SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: shutting down {} transports", n);
 
         for (size_t i = 0; i < n; ++i) {
             auto& h = snapshot[i];
             if (h.ptr && h.is_running_fn && h.is_running_fn(h.ptr)) {
-                SPDLOG_INFO("KillSwitch: stopping transport {}/{}", i + 1, n);
+                SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: stopping transport {}/{}", i + 1, n);
                 h.stop_fn(h.ptr);
             }
         }
 
-        SPDLOG_INFO("KillSwitch: all transports stopped");
+        SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: all transports stopped");
     }
 
     /// Emergency kill: request shutdown without blocking.
@@ -151,7 +165,7 @@ public:
         s_instance_.store(this, std::memory_order_release);
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
-        SPDLOG_DEBUG("KillSwitch: signal handlers installed (SIGINT, SIGTERM)");
+        SPDLOG_LOGGER_DEBUG(detail::kill_switch_logger(), "KillSwitch: signal handlers installed (SIGINT, SIGTERM)");
     }
 
 private:
@@ -165,7 +179,13 @@ private:
 
     void spin_lock() noexcept {
         while (lock_.exchange(true, std::memory_order_acquire)) {
-            while (lock_.load(std::memory_order_relaxed)) {}
+            while (lock_.load(std::memory_order_relaxed)) {
+#if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+#elif defined(__aarch64__)
+                asm volatile("yield");
+#endif
+            }
         }
     }
     void spin_unlock() noexcept {
@@ -177,13 +197,13 @@ private:
         size_t n = count_.load(std::memory_order_relaxed);
         if (n >= kKillSwitchMaxTransports) {
             spin_unlock();
-            SPDLOG_ERROR("KillSwitch: max transports ({}) reached", kKillSwitchMaxTransports);
+            SPDLOG_LOGGER_ERROR(detail::kill_switch_logger(), "KillSwitch: max transports ({}) reached", kKillSwitchMaxTransports);
             return false;
         }
         handles_[n] = h;
         count_.store(n + 1, std::memory_order_release);
         spin_unlock();
-        SPDLOG_DEBUG("KillSwitch: registered transport ({}/{})", n + 1, kKillSwitchMaxTransports);
+        SPDLOG_LOGGER_DEBUG(detail::kill_switch_logger(), "KillSwitch: registered transport ({}/{})", n + 1, kKillSwitchMaxTransports);
         return true;
     }
 
@@ -196,7 +216,7 @@ private:
                 handles_[i] = handles_[n - 1];
                 handles_[n - 1] = {};
                 count_.store(n - 1, std::memory_order_release);
-                SPDLOG_DEBUG("KillSwitch: unregistered transport");
+                SPDLOG_LOGGER_DEBUG(detail::kill_switch_logger(), "KillSwitch: unregistered transport");
                 break;
             }
         }
