@@ -22,15 +22,15 @@
 
 ephemeral is a C++23 networking library designed for ultra-low-latency financial market data and order entry systems. The project is entirely header-only and organized into nine independent modules:
 
-- **eph-core** -- shared concepts, error types, and framing interfaces
-- **eph-utils** -- TSC timing, histograms, audit logging, CPU affinity
-- **eph-containers** -- lock-free SPSC queues and ring buffers
-- **eph-net** -- POSIX socket WebSocket/TLS transport, Gateway, KillSwitch
-- **eph-dpdk** -- DPDK user-space TCP, flow steering, Reactor
-- **eph-fix** -- FIX 4.4 protocol (session, orders, risk, positions)
-- **eph-itch** -- ITCH 5.0 / SoupBinTCP / MoldUDP64 / OUCH 5.0
-- **eph-json** -- zero-copy JSON parser with exchange-specific adapters
-- **eph-book** -- L2/L3 order books with exchange adapters and market signals
+- **eph-core** -- shared concepts (`TcpTransport`, `MessageFramer`, `MetricsSink`), error types, length-prefix framer
+- **eph-utils** -- TSC timing, CPU topology, hugepage allocator, HDR histogram, audit log (MiFID II / Reg NMS), EMA
+- **eph-containers** -- SPSC bounded queue, evicting queue, ring buffer
+- **eph-net** -- POSIX socket transport, TLS 1.3, WebSocket, HTTP/REST client, Gateway, KillSwitch, CircuitBreaker, rate limiter, proxy (SOCKS5/HTTP CONNECT)
+- **eph-dpdk** -- DPDK EAL, user-space TCP, ARP/DNS, flow steering (RSS + rte_flow), Reactor (muxed RX), connector
+- **eph-fix** -- FIX 4.4 parser/builder/session, orders, execution reports, position tracker, risk checks, order manager
+- **eph-itch** -- ITCH 5.0 messages/parser, SoupBinTCP, MoldUDP64, OUCH 5.0
+- **eph-json** -- zero-copy JSON parser/framer, Binance/OKX/Bybit adapters (WebSocket + REST)
+- **eph-book** -- ArrayBook, MapBook (L2/L3), market signals, Binance/ITCH adapters
 
 The core design achieves zero-overhead transport abstraction through C++20 concepts (`TcpTransport`, `MessageFramer`, `MetricsSink`). A single `Transport<TcpImpl, Framer>` template works identically over POSIX sockets and DPDK user-space TCP, with the framing layer (WebSocket, FIX length-prefix, raw passthrough) also pluggable at compile time.
 
@@ -66,8 +66,9 @@ Layered pipeline architecture: modules compose bottom-up, decoupled through C++ 
 │                     eph-net  /  eph-dpdk                        │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  Transport<TcpImpl, Framer, MaxPayload, QueueDepth>      │   │
-│  │  Gateway (multi-connection lifecycle)                     │   │
+│  │  Gateway (multi-connection lifecycle + health monitoring) │   │
 │  │  KillSwitch (emergency shutdown coordinator)              │   │
+│  │  CircuitBreaker (three-state endpoint protection)         │   │
 │  └──────────┬────────────────────────────┬──────────────────┘   │
 │  ┌──────────▼──────────┐  ┌──────────────▼──────────────────┐   │
 │  │ Socket path         │  │ DPDK path                       │   │
@@ -453,7 +454,7 @@ eph-net  ───► eph-core
 eph-fix  ───► eph-core
 eph-itch ───► eph-core
 eph-json ───► eph-core
-eph-book ───► (no module deps; spdlog only)
+eph-book ───► eph-core
 
 eph-containers ───► eph-utils
 eph-utils      ───► eph-core

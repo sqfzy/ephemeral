@@ -21,9 +21,9 @@
 - [x] 删除 `SharedRxDispatcher`（`shared_rx.hpp`）— 已删除，benchmark 迁移到 Reactor
 
 ### 文档
-- [ ] `summary.md` 更新 — 反映新模块（eph-core、eph-json、eph-book）和新架构（Reactor、flow_steering）
-- [ ] `docs/` 目录新增模块指南 — eph-json 使用指南、eph-book 订单簿指南、Reactor 多连接指南
-- [ ] eph-json、eph-book 模块级 README
+- [x] `summary.md` 更新 — 反映新模块（eph-core、eph-json、eph-book）和新架构（Reactor、flow_steering）
+- [x] `docs/` 目录新增模块指南 — json-guide.md、orderbook-guide.md、reactor-guide.md
+- [x] eph-json、eph-book 模块级 README
 
 ### 测试
 - [ ] DPDK TCP 状态机行为测试 — 需要 mock 环境模拟 SYN/ACK/FIN/RST
@@ -34,42 +34,42 @@
 > Critical/Major 已全部修复。以下 Minor/Nit 项不阻塞，按优先级排列。
 
 ### Minor — 安全/正确性
-- [ ] eph-dpdk: `ip_id` 非线程安全递增 — 改 atomic 或文档约束 (net_header.hpp:277)
-- [ ] eph-dpdk: ARP 无 spoofing 防护 — 文档化 gateway_mac 缓解方案 (arp.hpp:148-180)
-- [ ] eph-dpdk: DNS 16-bit txid 可暴力 + 无 MAC 验证 (dns.hpp:493-618)
-- [ ] eph-net: WebSocket masking key fallback PRNG 有偏 (websocket.hpp:276-288)
-- [ ] eph-net: HTTP Content-Length 无范围验证 (http.hpp:185-186)
-- [ ] eph-fix: Leap second 验证不完整 — 任意日期接受 second=60 (parser.hpp:141)
-- [ ] eph-fix: Risk check 应拒绝 non-finite notional/avg_price (risk_check.hpp:144-148)
-- [ ] eph-fix: PossDupFlag 仅 log 不过滤 — 文档化调用方责任 (session.hpp:307-329)
+- [x] eph-dpdk: `ip_id` 非线程安全递增 — 文档化单线程约束 (net_header.hpp:224-227)
+- [x] eph-dpdk: ARP 无 spoofing 防护 — 文档化 gateway_mac 缓解方案 (arp.hpp)
+- [x] eph-dpdk: DNS 16-bit txid 可暴力 — 文档化 CSPRNG + 替代方案 (dns.hpp)
+- [x] eph-net: WebSocket masking key fallback PRNG 有偏 — 改用 SplitMix64 (websocket.hpp)
+- [x] eph-net: HTTP Content-Length 无范围验证 — 加 256MiB 上限 (http_client.hpp)
+- [x] eph-fix: Leap second 验证不完整 — 拒绝 second=60 (parser.hpp)
+- [x] eph-fix: Risk check 应拒绝 non-finite notional/avg_price — 加 kInvalidInput (risk_check.hpp)
+- [x] eph-fix: PossDupFlag 仅 log 不过滤 — 文档化调用方责任 (session.hpp)
 
 ### Minor — 性能
-- [ ] eph-dpdk: TCP reorder buffer drain O(N²) — profile ReorderSlots=64 (tcp.hpp:1008-1028)
-- [ ] eph-dpdk: Reactor 线性扫描 O(N)/packet — benchmark >8 连接场景 (reactor.hpp:244-281)
-- [ ] eph-json: BookTicker::mid_price()/spread() 每次重新解析 (binance.hpp:142-158)
-- [ ] eph-net: SOCKS5 handshake 堆分配可改为栈 buffer (proxy.hpp:235,266,320)
+- [x] eph-dpdk: TCP reorder buffer drain O(N²) — 文档化 ReorderSlots=64 可接受 (tcp.hpp)
+- [x] eph-dpdk: Reactor 线性扫描 O(N)/packet — 文档化 N<8 最优 (reactor.hpp)
+- [x] eph-json: BookTicker::mid_price()/spread() 每次重新解析 — 缓存 bid/ask 价格 (binance.hpp)
+- [x] eph-net: SOCKS5 handshake 堆分配改为栈 buffer (proxy.hpp)
 
 ### Minor — API/设计
-- [ ] eph-core: `DecodedFrame::payload` 指针生命周期未文档化 (framer_concept.hpp:44-49)
-- [ ] eph-core: `msg_type` 字段混淆 WS/ITCH/FIX 语义 (framer_concept.hpp:46-47)
-- [ ] eph-core: `poll_rx` callback uint16_t 对 jumbo frame 不够 (tcp_concept.hpp:84-87)
-- [ ] eph-json: binance/okx/bybit subscribe_message() 大量重复代码
-- [ ] eph-json: Binance REST get_depth() 不验证 limit 参数 (binance_rest.hpp:316-317)
-- [ ] eph-json: MapBook 缺 bids()/asks() span — 与 signals.hpp 不兼容 (map_book.hpp)
-- [ ] eph-utils: AuditLog::record() 溢出静默 — 考虑 bool 返回 (audit_log.hpp:132-149)
-- [ ] eph-utils: TSC 校准方差仅 log 不返回调用方 (time.hpp:310-315)
-- [ ] eph-utils: `get_cpu_base_frequency()` 返回 fallback 1.0GHz 而非 optional (cpu.hpp:395)
-- [ ] eph-itch: Logger 返回类型不一致：raw ptr vs shared_ptr ref (moldudp64.hpp:48-54)
-- [ ] eph-itch: Price 转换魔法常量应命名为常量 (messages.hpp)
+- [x] eph-core: `DecodedFrame::payload` 指针生命周期文档化 (framer_concept.hpp)
+- [x] eph-core: `msg_type` 字段语义文档化 (framer_concept.hpp)
+- [x] eph-core: `poll_rx` callback uint16_t 文档化容量限制 (tcp_concept.hpp)
+- [x] eph-json: binance/okx/bybit subscribe_message() — 文档化无法抽象原因
+- [x] eph-json: Binance REST get_depth() limit 参数验证 (binance_rest.hpp)
+- [x] eph-json: MapBook 加 bids()/asks() range view (map_book.hpp)
+- [x] eph-utils: AuditLog::record() 返回 bool (audit_log.hpp)
+- [x] eph-utils: TSC 校准方差可通过 get_calibration_cv() 获取 (time.hpp)
+- [x] eph-utils: `get_cpu_base_frequency()` 返回 optional (cpu.hpp)
+- [x] eph-itch: Logger 返回类型统一为 const shared_ptr& (moldudp64.hpp)
+- [x] eph-itch: Price 转换常量命名 kItchPriceDivisor/kLuldPriceDivisor (messages.hpp)
 
 ### Nit
-- [ ] eph-core: TCP state enum 应注明 "client-side only" (tcp_concept.hpp:18-29)
-- [ ] eph-core: MessageFramer encode() buffer 前置条件未强制 (framer_concept.hpp:69)
-- [ ] eph-containers: stats() clamping 可能隐藏 bug — 加 debug log (bounded_queue.hpp:900-904)
-- [ ] eph-containers: RingBuffer 线程安全注释应解释 HB chain (ring_buffer.hpp:28-32)
-- [ ] eph-net: ws::build_pong/ping_frame 多余 null guard (websocket.hpp:607-619)
-- [ ] eph-fix: Session 混合 memory ordering 策略 — 文档化线程模型
-- [ ] eph-fix: Repeating group 静默截断应 log (parser.hpp:440-486)
-- [ ] eph-fix: OrderManager 未跟踪 OrderCancelReject 状态转换
-- [ ] eph-itch: OUCH builder 中 assert + runtime null check 冗余 (ouch.hpp:118,177,222)
-- [ ] eph-utils: HdrHistogram 魔法常量 10'000'000 应命名 (hdr_histogram.hpp:129)
+- [x] eph-core: TCP state enum 注明 "client-side only" (tcp_concept.hpp)
+- [x] eph-core: MessageFramer encode() buffer 前置条件文档化 (framer_concept.hpp)
+- [x] eph-containers: stats() clamping 加 debug log (bounded_queue.hpp)
+- [x] eph-containers: RingBuffer 线程安全 HB chain 文档化 (ring_buffer.hpp)
+- [x] eph-net: ws::build_pong/ping_frame 移除多余 null guard (websocket.hpp)
+- [x] eph-fix: Session 线程模型文档化 (session.hpp)
+- [x] eph-fix: Repeating group 截断加 log (parser.hpp)
+- [x] eph-fix: OrderManager 处理 OrderCancelReject (order_manager.hpp)
+- [x] eph-itch: OUCH builder 移除冗余 assert (ouch.hpp)
+- [x] eph-utils: HdrHistogram 常量命名 kMaxCountsLen (hdr_histogram.hpp)
