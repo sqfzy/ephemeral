@@ -13,6 +13,7 @@ namespace eph::containers {
 template <typename T>
 concept TrivialData =
     std::is_trivially_copyable_v<T> &&
+    std::is_trivially_destructible_v<T> &&
     std::default_initializable<T>;
 
 } // namespace eph::containers

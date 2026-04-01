@@ -74,6 +74,8 @@ public:
     /// Clear all orders and the book.
     void clear() noexcept {
         orders_.clear();
+        bid_qty_.clear();
+        ask_qty_.clear();
         book_.clear();
         SPDLOG_DEBUG("ItchBookBuilder cleared: orders={} levels={}",
                      orders_.size(), book_.level_count());
@@ -83,31 +85,68 @@ private:
     ArrayBook<MaxLevels> book_;
     std::unordered_map<uint64_t, Order> orders_;
 
+    /// Per-price aggregated quantity for O(1) incremental updates.
+    /// Key: price (quantized via quantize()), Value: total qty at that level.
+    std::unordered_map<double, double> bid_qty_;
+    std::unordered_map<double, double> ask_qty_;
+
     // -- Epsilon for floating-point price comparison --------------------------
     static constexpr double kEps = 1e-12;
+
+    /// Quantization step for price keys (matches MapBook).
+    static constexpr double kTickQuantum = 1e-9;
 
     [[nodiscard]] static bool price_eq(double a, double b) noexcept {
         return std::fabs(a - b) < kEps;
     }
 
-    /// Recalculate total qty at a price level by scanning all orders.
-    ///
-    /// @note O(n) scan over all orders. Acceptable for L2 books with
-    ///       moderate order counts (~10k). For high-density books (100k+
-    ///       orders), maintain a separate per-price quantity map for O(1)
-    ///       incremental updates.
-    void recalculate_level(double price, char side) noexcept {
-        double total_qty = 0.0;
-        for (const auto& [ref, ord] : orders_) {
-            if (ord.side == side && price_eq(ord.price, price)) {
-                total_qty += ord.remaining_qty;
-            }
-        }
-        SPDLOG_TRACE("recalculate_level side={} price={} total_qty={}", side, price, total_qty);
+    /// Snap price to canonical representation for use as hash key.
+    [[nodiscard]] static double quantize(double p) noexcept {
+        return std::round(p / kTickQuantum) * kTickQuantum;
+    }
+
+    /// Get the per-price qty map for a side.
+    [[nodiscard]] auto& qty_map(char side) noexcept {
+        return side == 'B' ? bid_qty_ : ask_qty_;
+    }
+
+    /// Add qty to a price level and push to book. O(1).
+    void add_qty(double price, double qty, char side) noexcept {
+        double qp = quantize(price);
+        auto& m = qty_map(side);
+        double& total = m[qp];
+        total += qty;
+        SPDLOG_TRACE("add_qty side={} price={} delta={} total={}", side, price, qty, total);
         if (side == 'B') {
-            book_.update_bid(price, total_qty);
+            book_.update_bid(price, total);
         } else {
-            book_.update_ask(price, total_qty);
+            book_.update_ask(price, total);
+        }
+    }
+
+    /// Subtract qty from a price level and push to book. O(1).
+    /// Removes the level from the map if total reaches zero.
+    void sub_qty(double price, double qty, char side) noexcept {
+        double qp = quantize(price);
+        auto& m = qty_map(side);
+        auto it = m.find(qp);
+        if (it == m.end()) {
+            SPDLOG_WARN("sub_qty: price={} side={} not in qty map", price, side);
+            if (side == 'B') book_.update_bid(price, 0.0);
+            else             book_.update_ask(price, 0.0);
+            return;
+        }
+        it->second -= qty;
+        double total = it->second;
+        if (total <= 0.0) {
+            m.erase(it);
+            total = 0.0;
+        }
+        SPDLOG_TRACE("sub_qty side={} price={} delta={} total={}", side, price, qty, total);
+        if (side == 'B') {
+            book_.update_bid(price, total);
+        } else {
+            book_.update_ask(price, total);
         }
     }
 
@@ -121,7 +160,7 @@ private:
         SPDLOG_DEBUG("AddOrder ref={} side={} shares={} price={}", ref, side, shares, price);
 
         orders_[ref] = Order{price, static_cast<double>(shares), side};
-        recalculate_level(price, side);
+        add_qty(price, static_cast<double>(shares), side);
         return true;
     }
 
@@ -135,7 +174,7 @@ private:
         SPDLOG_DEBUG("AddOrderMPID ref={} side={} shares={} price={}", ref, side, shares, price);
 
         orders_[ref] = Order{price, static_cast<double>(shares), side};
-        recalculate_level(price, side);
+        add_qty(price, static_cast<double>(shares), side);
         return true;
     }
 
@@ -158,12 +197,12 @@ private:
         const double price = ord.price;
         const char side = ord.side;
 
-        // Remove fully executed orders from the map before recalculating.
+        // Remove fully executed orders from the map before updating level.
         if (ord.remaining_qty <= 0.0) {
             orders_.erase(it);
         }
 
-        recalculate_level(price, side);
+        sub_qty(price, static_cast<double>(shares), side);
         return true;
     }
 
@@ -192,7 +231,7 @@ private:
             orders_.erase(it);
         }
 
-        recalculate_level(price, side);
+        sub_qty(price, static_cast<double>(shares), side);
         return true;
     }
 
@@ -220,7 +259,7 @@ private:
             orders_.erase(it);
         }
 
-        recalculate_level(price, side);
+        sub_qty(price, static_cast<double>(shares), side);
         return true;
     }
 
@@ -238,8 +277,9 @@ private:
         const char side = it->second.side;
         SPDLOG_DEBUG("OrderDelete ref={} price={} side={}", ref, price, side);
 
+        double rem_qty = it->second.remaining_qty;
         orders_.erase(it);
-        recalculate_level(price, side);
+        sub_qty(price, rem_qty, side);
         return true;
     }
 
@@ -263,17 +303,14 @@ private:
         SPDLOG_DEBUG("OrderReplace orig_ref={} new_ref={} old_price={} new_price={} shares={}",
                      orig_ref, new_ref, old_price, new_price, shares);
 
-        // Remove the old order.
+        // Remove old order qty from old level.
+        double old_qty = it->second.remaining_qty;
         orders_.erase(it);
+        sub_qty(old_price, old_qty, side);
 
-        // Insert the new order.
+        // Insert the new order and add qty to new level.
         orders_[new_ref] = Order{new_price, static_cast<double>(shares), side};
-
-        // Recalculate both the old and new price levels.
-        recalculate_level(old_price, side);
-        if (!price_eq(old_price, new_price)) {
-            recalculate_level(new_price, side);
-        }
+        add_qty(new_price, static_cast<double>(shares), side);
 
         return true;
     }

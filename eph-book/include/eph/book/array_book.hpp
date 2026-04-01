@@ -196,6 +196,13 @@ private:
             return;
         }
 
+        // -- Warn on negative qty (caller likely has a bug) ------------------
+        if (qty < 0.0) [[unlikely]] {
+            SPDLOG_WARN("update_side: negative qty={} at price={} treated as "
+                         "removal — caller should use qty=0 for explicit removal",
+                         qty, price);
+        }
+
         // -- Search for an existing level at this price ----------------------
         for (std::size_t i = 0; i < count; ++i) {
             if (price_eq(levels[i].price, price)) {

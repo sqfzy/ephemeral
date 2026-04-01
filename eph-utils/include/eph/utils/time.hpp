@@ -308,8 +308,9 @@ private:
     double cv = stddev / mean; // 变异系数
 
     if (cv > 0.01) { // 超过 1% 的变异被认为不稳定
-      SPDLOG_LOGGER_WARN(log,
-          "High calibration variance (CV={:.2f}%), TSC may be unstable",
+      SPDLOG_LOGGER_ERROR(log,
+          "High calibration variance (CV={:.2f}%), TSC may be unstable — "
+          "timing measurements are unreliable",
           cv * 100);
     }
 

@@ -518,7 +518,7 @@ public:
             return false;
         }
 
-        fill_session_header(builder);
+        if (!fill_session_header(builder)) return false;
         size_t len = builder.finish(cfg_.begin_string);
         if (len == 0) {
             SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
@@ -596,20 +596,25 @@ private:
     // Internal message builders
     // ─────────────────────────────────────────────────────────────────────
 
-    void fill_session_header(MessageBuilder& b) noexcept {
+    /// @return false if sequence number is exhausted (session must be reset).
+    [[nodiscard]] bool fill_session_header(MessageBuilder& b) noexcept {
         b.set(tag::SenderCompID, cfg_.sender_comp_id);
         b.set(tag::TargetCompID, cfg_.target_comp_id);
-        uint32_t seq = outbound_seq_.fetch_add(1, std::memory_order_relaxed);
-        if (seq == UINT32_MAX) [[unlikely]] {
+        uint32_t seq = outbound_seq_.load(std::memory_order_relaxed);
+        if (seq >= UINT32_MAX) [[unlikely]] {
             SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
-                "Outbound sequence number overflow: seq={} wrapped to 0", seq);
+                "Outbound sequence number exhausted (seq={}): cannot send, "
+                "must reset session", seq);
+            return false;
         }
+        outbound_seq_.store(seq + 1, std::memory_order_relaxed);
         b.set_int(tag::MsgSeqNum, static_cast<int64_t>(seq));
 
         uint64_t now_ns = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
         b.set_timestamp(tag::SendingTime, now_ns);
+        return true;
     }
 
     bool send_message(MessageBuilder& b) noexcept {
@@ -625,7 +630,7 @@ private:
         uint8_t buf[512];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "A");
-        fill_session_header(b);
+        if (!fill_session_header(b)) return false;
         b.set_int(tag::EncryptMethod, 0);
         b.set_int(tag::HeartBtInt, cfg_.heartbeat_interval_sec);
         if (cfg_.reset_seq_on_logon) {
@@ -638,7 +643,7 @@ private:
         uint8_t buf[256];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "5");
-        fill_session_header(b);
+        if (!fill_session_header(b)) return false;
         return send_message(b);
     }
 
@@ -646,7 +651,7 @@ private:
         uint8_t buf[256];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "0");
-        fill_session_header(b);
+        if (!fill_session_header(b)) return false;
         if (!test_req_id.empty()) {
             b.set(tag::TestReqID, test_req_id);
         }
@@ -666,7 +671,7 @@ private:
         uint8_t buf[256];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "1");
-        fill_session_header(b);
+        if (!fill_session_header(b)) return false;
         b.set(tag::TestReqID, std::string_view(id_buf, static_cast<size_t>(n)));
         test_request_pending_.store(true, std::memory_order_release);
         SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
@@ -678,7 +683,7 @@ private:
         uint8_t buf[256];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "2");
-        fill_session_header(b);
+        if (!fill_session_header(b)) return false;
         b.set_int(tag::BeginSeqNo, static_cast<int64_t>(begin_seq));
         b.set_int(tag::EndSeqNo, static_cast<int64_t>(end_seq));
         SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
@@ -690,7 +695,7 @@ private:
         uint8_t buf[256];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "4");
-        fill_session_header(b);
+        if (!fill_session_header(b)) return false;
         b.set_bool(tag::GapFillFlag, true);
         b.set_int(tag::NewSeqNo, static_cast<int64_t>(new_seq));
         SPDLOG_LOGGER_INFO(detail::fix_session_logger(),

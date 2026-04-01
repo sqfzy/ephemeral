@@ -76,8 +76,9 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
     case 'A': case 'B': case 'C': case 'E': case 'F':
         return static_cast<ExecType>(c);
     default:
-        SPDLOG_LOGGER_DEBUG(fix_execrpt_logger(),
-            "unknown ExecType char='{}'", c);
+        SPDLOG_LOGGER_WARN(fix_execrpt_logger(),
+            "unknown ExecType char='{}' (0x{:02x})", c,
+            static_cast<unsigned char>(c));
         return std::nullopt;
     }
 }

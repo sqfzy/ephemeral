@@ -525,6 +525,11 @@ resolve(uint16_t port_id,
         port_id, queue_id);
 
     // Generate random transaction ID and ephemeral source port
+    if (RAND_status() != 1) {
+        SPDLOG_LOGGER_ERROR(log, "DNS resolve: OpenSSL CSPRNG not seeded — "
+            "entropy pool uninitialized, cannot generate secure tx_id");
+        return std::unexpected("DNS resolve: CSPRNG not seeded (call RAND_poll())");
+    }
     uint16_t tx_id;
     if (RAND_bytes(reinterpret_cast<uint8_t*>(&tx_id), sizeof(tx_id)) != 1) {
         return std::unexpected("DNS resolve: CSPRNG failure for transaction ID");

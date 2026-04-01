@@ -315,8 +315,11 @@ parse(const uint8_t* data, size_t len) noexcept {
             char close = (open == '{') ? '}' : ']';
             const char* val_start = p;
             int depth = 1;
+            constexpr int kMaxNestingDepth = 64;
             ++p;
             while (p < end && depth > 0) {
+                if (depth > kMaxNestingDepth) [[unlikely]]
+                    return std::unexpected(ParseError::kInvalidFormat);
                 if (*p == '"') {
                     // Skip string content (handles escaped quotes)
                     ++p;

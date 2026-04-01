@@ -57,13 +57,16 @@ public:
     ///   0 = most recent, 1 = second most recent, etc.
     /// Returns std::nullopt if offset >= count().
     [[nodiscard]] std::optional<T> at(std::size_t offset) const noexcept {
+        // Load head first, then count, to get a consistent snapshot.
+        // If the writer advances between the two loads, the worst case is
+        // returning a slightly stale element (never an invalid index).
+        const std::size_t h = head_.load(std::memory_order_acquire);
         const std::size_t c = count_.load(std::memory_order_acquire);
         if (offset >= c) {
             return std::nullopt;
         }
         // head_ points one past the last written slot.
         // Most recent element is at (head_ - 1), so offset 0 maps there.
-        const std::size_t h = head_.load(std::memory_order_acquire);
         const std::size_t idx = (h - 1 - offset) & kMask;
         return data_[idx];
     }
@@ -75,11 +78,14 @@ public:
 
     /// Oldest element in the buffer.
     [[nodiscard]] std::optional<T> back() const noexcept {
+        // Load head first for consistent snapshot (same order as at()).
+        const std::size_t h = head_.load(std::memory_order_acquire);
         const std::size_t c = count_.load(std::memory_order_acquire);
         if (c == 0) {
             return std::nullopt;
         }
-        return at(c - 1);
+        const std::size_t idx = (h - 1 - (c - 1)) & kMask;
+        return data_[idx];
     }
 
     /// Number of elements currently stored (up to Capacity).

@@ -251,7 +251,7 @@ public:
     /// @param out           Output buffer (must have at least encrypted_size() bytes,
     ///                      must NOT overlap with plaintext)
     /// @return Total bytes written to out, or 0 on error
-    uint16_t encrypt(uint8_t* plaintext, uint16_t plaintext_len,
+    uint16_t encrypt(const uint8_t* plaintext, uint16_t plaintext_len,
                      uint8_t* out) noexcept {
         if (plaintext_len > tls_const::kMaxRecordPayload) {
             SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
@@ -279,27 +279,19 @@ public:
         uint8_t nonce[tls_const::kTls13NonceLen];
         tls_record::build_nonce(nonce, write_iv_, write_seq_);
 
-        // Temporarily append TLS 1.3 inner content type byte after payload.
-        // Caller guarantees 1 byte of writable space past plaintext_len.
-        // Guard: plaintext may be nullptr when plaintext_len == 0 (valid TLS padding).
-        // Runtime guard: plaintext must be non-null when plaintext_len > 0.
-        // The caller must also provide 1 byte of writable space past plaintext_len
-        // for the TLS 1.3 inner content type byte. We cannot verify the extra byte
-        // here (no buffer size), but we can reject obviously invalid inputs.
+        // Build inner plaintext: [payload | content_type_byte].
+        // Use a local buffer to avoid mutating the caller's plaintext.
+        // Max TLS record payload is 16384 bytes; +1 for content type byte.
         if (plaintext == nullptr && plaintext_len > 0) [[unlikely]] {
             SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),
                 "encrypt: plaintext is null but plaintext_len={}", plaintext_len);
             return 0;
         }
-        uint8_t saved = 0;
-        if (plaintext) {
-            saved = plaintext[plaintext_len];
-            plaintext[plaintext_len] = tls_record::kContentTypeAppData;
+        alignas(64) uint8_t inner_buf[tls_const::kMaxRecordPayload + 1];
+        if (plaintext_len > 0) {
+            std::memcpy(inner_buf, plaintext, plaintext_len);
         }
-
-        // For plaintext_len == 0 with nullptr, use a local buffer for the content type byte
-        uint8_t fallback_inner = tls_record::kContentTypeAppData;
-        const uint8_t* seal_input = plaintext ? plaintext : &fallback_inner;
+        inner_buf[plaintext_len] = tls_record::kContentTypeAppData;
 
         uint8_t* ciphertext = out + tls_record::kRecordHeaderLen;
         size_t ciphertext_len = 0;
@@ -307,11 +299,8 @@ public:
         bool ok = EVP_AEAD_CTX_seal(&enc_ctx_, ciphertext, &ciphertext_len,
                                      inner_len + tls_record::kAuthTagLen,
                                      nonce, tls_const::kTls13NonceLen,
-                                     seal_input, inner_len,
+                                     inner_buf, inner_len,
                                      out, tls_record::kRecordHeaderLen);
-
-        // Restore the byte we temporarily overwrote
-        if (plaintext) plaintext[plaintext_len] = saved;
 
         if (!ok) {
             SPDLOG_LOGGER_ERROR(detail::tls_record_logger(),

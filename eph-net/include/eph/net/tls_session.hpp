@@ -428,9 +428,20 @@ public:
             }
         } else {
             if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+                if (config.verify_peer) {
+                    auto err = detail::ssl_error_string();
+                    SSL_CTX_free(ctx);
+                    SPDLOG_LOGGER_ERROR(log,
+                        "SSL_CTX_set_default_verify_paths failed with "
+                        "verify_peer=true: no CA certificates available: {}",
+                        err);
+                    return std::unexpected(std::format(
+                        "No CA certificates available: {}", err));
+                }
                 SPDLOG_LOGGER_WARN(log,
                     "SSL_CTX_set_default_verify_paths failed: "
-                    "default CA certificates may not be available");
+                    "default CA certificates may not be available "
+                    "(continuing because verify_peer=false)");
             }
         }
 

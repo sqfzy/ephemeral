@@ -40,10 +40,9 @@ namespace eph::book {
 /// Uses std::map for guaranteed sorted order and O(log n) operations.
 /// More memory-hungry than ArrayBook but scales to arbitrary depth.
 ///
-/// @warning Uses `double` as price key with exact floating-point equality.
-///          Prices must be pre-rounded to canonical form (e.g., from
-///          integer ticks) to avoid rounding-induced key duplication.
-///          Use ArrayBook for epsilon-based price comparison.
+/// Prices are quantized to multiples of 1e-9 (sub-nano precision) on
+/// insertion, preventing near-duplicate keys from different rounding
+/// paths.  This exceeds any exchange tick size.
 class MapBook {
 public:
     // -- Price-level updates (crypto exchange style) -------------------------
@@ -171,8 +170,20 @@ private:
     /// Asks sorted ascending (lowest price = best ask at begin()).
     std::map<double, double> asks_;
 
-    /// Epsilon for floating-point price comparisons.
+    /// Quantization step for price canonicalization.
+    /// 1e-9 (sub-nano) exceeds any exchange tick size precision.
+    /// Prices are snapped to multiples of this value before use as map keys,
+    /// eliminating near-duplicate keys from different rounding paths.
+    static constexpr double kTickQuantum = 1e-9;
+
+    /// Epsilon for floating-point price comparisons (matches ArrayBook).
     static constexpr double kEps = 1e-12;
+
+    /// Snap a price to the nearest multiple of kTickQuantum.
+    /// This ensures prices from different rounding paths map to the same key.
+    [[nodiscard]] static double quantize(double p) noexcept {
+        return std::round(p / kTickQuantum) * kTickQuantum;
+    }
 
     /// Epsilon-tolerant equality for floating-point prices.
     /// Matches ArrayBook::price_eq semantics.
@@ -180,29 +191,13 @@ private:
         return std::fabs(a - b) < kEps;
     }
 
-    /// Find a key within epsilon tolerance using lower_bound.
-    /// std::map::find uses exact comparison; this scans nearby keys
-    /// to match ArrayBook's epsilon-tolerant behavior.
-    template <typename Map>
-    static auto find_approx(Map& side, double price) noexcept {
-        // lower_bound finds first key >= price (ascending) or first key
-        // where !(key > price) (descending). Check the found key and its
-        // immediate neighbor for epsilon match.
-        auto it = side.lower_bound(price);
-        if (it != side.end() && price_eq(it->first, price)) return it;
-        if (it != side.begin()) {
-            auto prev = std::prev(it);
-            if (price_eq(prev->first, price)) return prev;
-        }
-        return side.end();
-    }
-
     /// Core update logic for either side.
     /// If qty > 0, insert or update the level.
     /// If qty <= 0, remove the level.
     /// NaN prices are rejected.
     ///
-    /// Uses epsilon-tolerant price matching consistent with ArrayBook.
+    /// Prices are quantized before insertion to prevent near-duplicate keys
+    /// from different floating-point rounding paths.
     template <typename Map>
     static void update_side(Map& side, double price, double qty) noexcept {
         // Reject NaN prices — they would corrupt map ordering.
@@ -211,9 +206,11 @@ private:
             return;
         }
 
+        // Canonicalize price to eliminate rounding-induced duplicates.
+        price = quantize(price);
+
         if (qty <= 0.0) {
-            // Remove the level if it exists (epsilon-tolerant lookup).
-            auto it = find_approx(side, price);
+            auto it = side.find(price);
             if (it != side.end()) {
                 SPDLOG_TRACE("MapBook remove level price={}", price);
                 side.erase(it);
@@ -224,16 +221,13 @@ private:
             return;
         }
 
-        // Check for existing level within epsilon — update in place
-        // rather than inserting a near-duplicate key.
-        auto it = find_approx(side, price);
-        if (it != side.end()) {
-            SPDLOG_TRACE("MapBook updated price={} qty={}", price, qty);
-            it->second = qty;
-        } else {
-            side.emplace(price, qty);
+        // After quantization, exact map::find is safe — no near-duplicates.
+        auto [it, inserted] = side.insert_or_assign(price, qty);
+        if (inserted) {
             SPDLOG_DEBUG("MapBook inserted price={} qty={} (depth={})",
                          price, qty, side.size());
+        } else {
+            SPDLOG_TRACE("MapBook updated price={} qty={}", price, qty);
         }
     }
 };

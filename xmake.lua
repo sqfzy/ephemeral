@@ -23,6 +23,8 @@ option("use_numa")
     set_description("Enable NUMA support")
     add_defines("USE_NUMA")
 
+local net_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
+
 target("eph-utils")
     set_kind("headeronly")
     add_includedirs("eph-utils/include", { public = true })
@@ -30,6 +32,7 @@ target("eph-utils")
     add_headerfiles("eph-utils/include/(eph/version.hpp)")
     add_deps("eph-core", { public = true })
     add_packages("spdlog", { public = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
@@ -60,8 +63,6 @@ target("eph-containers")
     add_deps("eph-utils", { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
-
-local net_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
 
 target("eph-core")
     set_kind("headeronly")
@@ -115,6 +116,8 @@ target("eph-json")
     add_headerfiles("eph-json/include/(eph/json/**.hpp)")
     add_headerfiles("eph-json/include/(eph/json.hpp)")
     add_deps("eph-core", { public = true })
+    add_packages("spdlog", { public = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
@@ -123,6 +126,7 @@ target("eph-book")
     add_includedirs("eph-book/include", { public = true })
     add_headerfiles("eph-book/include/(eph/book/**.hpp)")
     add_headerfiles("eph-book/include/(eph/book.hpp)")
+    add_deps("eph-core", { public = true })
     add_packages("spdlog", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
@@ -157,7 +161,8 @@ target("eph-dpdk")
     -- NOTE: PMD whole-archive linking is applied to binary targets, not here.
     -- Headeronly targets don't participate in linking, so add_linkgroups here
     -- would not propagate. See apply_dpdk_pmd_linkgroups() below.
-    add_cxflags("-march=native", { public = true, force = true })
+    -- NOTE: -march=native is applied to individual binary targets (not here)
+    -- to preserve binary portability across CPU generations.
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
