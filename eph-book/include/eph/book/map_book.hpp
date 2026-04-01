@@ -27,10 +27,24 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/book/array_book.hpp"  // PriceLevel
 
 namespace eph::book {
+
+namespace detail {
+inline spdlog::logger* map_book_logger() {
+    static auto l = [] {
+        try {
+            return spdlog::stdout_color_mt("book.map_book");
+        } catch (const spdlog::spdlog_ex&) {
+            return spdlog::get("book.map_book");
+        }
+    }();
+    return l.get();
+}
+} // namespace detail
 
 // ============================================================================
 // MapBook — dynamic-depth sorted order book
@@ -49,13 +63,13 @@ public:
 
     /// Insert or update a bid level.  If @p qty == 0 the level is removed.
     void update_bid(double price, double qty) noexcept {
-        SPDLOG_TRACE("MapBook::update_bid price={} qty={}", price, qty);
+        SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook::update_bid price={} qty={}", price, qty);
         update_side(bids_, price, qty);
     }
 
     /// Insert or update an ask level.  If @p qty == 0 the level is removed.
     void update_ask(double price, double qty) noexcept {
-        SPDLOG_TRACE("MapBook::update_ask price={} qty={}", price, qty);
+        SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook::update_ask price={} qty={}", price, qty);
         update_side(asks_, price, qty);
     }
 
@@ -128,12 +142,20 @@ public:
 
     // -- Housekeeping --------------------------------------------------------
 
-    /// True if the book is crossed (best_bid >= best_ask).
-    /// This indicates a market anomaly or a stale book.  Returns false when
-    /// either side is empty.
+    /// True if best bid strictly exceeds best ask (anomalous).
+    /// Excludes the locked case (bid == ask within epsilon).
+    /// Returns false when either side is empty.
     [[nodiscard]] bool is_crossed() const noexcept {
         if (bids_.empty() || asks_.empty()) return false;
-        return bids_.begin()->first >= asks_.begin()->first - kEps;
+        return bids_.begin()->first > asks_.begin()->first + kEps;
+    }
+
+    /// True if best bid equals best ask within epsilon (locked market).
+    /// A locked market is distinct from crossed: prices are equal rather
+    /// than inverted.  Returns false when either side is empty.
+    [[nodiscard]] bool is_locked() const noexcept {
+        if (bids_.empty() || asks_.empty()) return false;
+        return std::abs(bids_.begin()->first - asks_.begin()->first) <= kEps;
     }
 
     /// Sum of quantities across all bid levels.
@@ -154,7 +176,7 @@ public:
     void clear() noexcept {
         bids_.clear();
         asks_.clear();
-        SPDLOG_DEBUG("MapBook cleared");
+        SPDLOG_LOGGER_DEBUG(detail::map_book_logger(), "MapBook cleared");
     }
 
     // -- Top-N extraction (for display/logging) ------------------------------
@@ -226,7 +248,7 @@ private:
     static void update_side(Map& side, double price, double qty) noexcept {
         // Reject NaN prices — they would corrupt map ordering.
         if (std::isnan(price)) {
-            SPDLOG_WARN("MapBook::update_side ignoring NaN price");
+            SPDLOG_LOGGER_WARN(detail::map_book_logger(), "MapBook::update_side ignoring NaN price");
             return;
         }
 
@@ -236,10 +258,10 @@ private:
         if (qty <= 0.0) {
             auto it = side.find(price);
             if (it != side.end()) {
-                SPDLOG_TRACE("MapBook remove level price={}", price);
+                SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook remove level price={}", price);
                 side.erase(it);
             } else {
-                SPDLOG_TRACE("MapBook remove non-existent price={} — no-op",
+                SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook remove non-existent price={} — no-op",
                              price);
             }
             return;
@@ -248,10 +270,10 @@ private:
         // After quantization, exact map::find is safe — no near-duplicates.
         auto [it, inserted] = side.insert_or_assign(price, qty);
         if (inserted) {
-            SPDLOG_DEBUG("MapBook inserted price={} qty={} (depth={})",
+            SPDLOG_LOGGER_DEBUG(detail::map_book_logger(), "MapBook inserted price={} qty={} (depth={})",
                          price, qty, side.size());
         } else {
-            SPDLOG_TRACE("MapBook updated price={} qty={}", price, qty);
+            SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook updated price={} qty={}", price, qty);
         }
     }
 };

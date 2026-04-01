@@ -217,11 +217,20 @@ TEST(MapBookTest, IsCrossedReturnsFalseForNormalBook) {
     EXPECT_FALSE(book.is_crossed());
 }
 
-TEST(MapBookTest, IsCrossedReturnsTrueWhenBidEqualsAsk) {
+TEST(MapBookTest, IsLockedReturnsTrueWhenBidEqualsAsk) {
     MapBook book;
     book.update_bid(100.0, 1.0);
     book.update_ask(100.0, 1.0);
-    EXPECT_TRUE(book.is_crossed());
+    // bid == ask is "locked", not "crossed" — matches ArrayBook semantics
+    EXPECT_FALSE(book.is_crossed());
+    EXPECT_TRUE(book.is_locked());
+}
+
+TEST(MapBookTest, IsLockedReturnsFalseForNormalBook) {
+    MapBook book;
+    book.update_bid(99.0, 1.0);
+    book.update_ask(101.0, 1.0);
+    EXPECT_FALSE(book.is_locked());
 }
 
 TEST(MapBookTest, IsCrossedReturnsTrueWhenBidExceedsAsk) {
