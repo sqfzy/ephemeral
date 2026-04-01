@@ -155,7 +155,7 @@ struct TlsConfig {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> tls_logger() {
+inline const std::shared_ptr<spdlog::logger>& tls_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls");
         if (!lg) lg = spdlog::stdout_color_mt("net.tls");

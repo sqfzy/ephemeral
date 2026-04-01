@@ -21,7 +21,7 @@
 namespace eph::fix {
 
 namespace detail {
-inline std::shared_ptr<spdlog::logger> fix_builder_logger() {
+inline const std::shared_ptr<spdlog::logger>& fix_builder_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.builder");
         if (!lg) lg = spdlog::stdout_color_mt("fix.builder");

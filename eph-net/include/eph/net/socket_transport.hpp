@@ -257,7 +257,7 @@ struct SocketConfig {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> socket_logger() {
+inline const std::shared_ptr<spdlog::logger>& socket_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.socket");
         if (!lg) lg = spdlog::stdout_color_mt("net.socket");

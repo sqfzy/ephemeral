@@ -31,7 +31,7 @@ namespace eph::net {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> tls_record_logger() {
+inline const std::shared_ptr<spdlog::logger>& tls_record_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls_record");
         if (!lg) lg = spdlog::stdout_color_mt("net.tls_record");

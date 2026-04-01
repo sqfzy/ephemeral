@@ -82,7 +82,7 @@ struct ProxyConfig {
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> proxy_logger() {
+inline const std::shared_ptr<spdlog::logger>& proxy_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.proxy");
         if (!lg) lg = spdlog::stdout_color_mt("net.proxy");

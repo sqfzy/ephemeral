@@ -133,7 +133,7 @@ struct FixSessionConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace detail {
-inline std::shared_ptr<spdlog::logger> fix_session_logger() {
+inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.session");
         if (!lg) lg = spdlog::stdout_color_mt("fix.session");
