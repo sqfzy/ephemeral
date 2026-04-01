@@ -34,6 +34,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/core/parse_number.hpp"
 #include "eph/json/parser.hpp"
 
 namespace eph::json::okx {
@@ -100,28 +101,7 @@ inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
 
 /// Parse a string_view as double (for price/qty fields).
 inline std::optional<double> parse_number(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-    bool negative = false;
-    size_t pos = 0;
-    if (sv[0] == '-') { negative = true; pos = 1; }
-    if (pos >= sv.size()) return std::nullopt;
-    double result = 0.0;
-    for (; pos < sv.size() && sv[pos] != '.'; ++pos) {
-        char c = sv[pos];
-        if (c < '0' || c > '9') return std::nullopt;
-        result = result * 10.0 + (c - '0');
-    }
-    if (pos < sv.size() && sv[pos] == '.') {
-        ++pos;
-        double divisor = 10.0;
-        for (; pos < sv.size(); ++pos) {
-            char c = sv[pos];
-            if (c < '0' || c > '9') return std::nullopt;
-            result += (c - '0') / divisor;
-            divisor *= 10.0;
-        }
-    }
-    return negative ? -result : result;
+    return eph::core::parse_number(sv);
 }
 
 } // namespace detail

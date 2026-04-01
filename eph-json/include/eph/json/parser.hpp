@@ -18,13 +18,13 @@
 ///   }
 
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <string_view>
 
 #include "eph/core/error_traits.hpp"
+#include "eph/core/parse_number.hpp"
 
 namespace eph::json {
 
@@ -243,68 +243,9 @@ private:
         return static_cast<int64_t>(result);
     }
 
-    /// Parse a string_view as double (simple: integer + optional fraction).
+    /// Parse a string_view as double (integer + optional fraction + optional exponent).
     static std::optional<double> parse_double(std::string_view sv) noexcept {
-        if (sv.empty()) return std::nullopt;
-        bool negative = false;
-        size_t pos = 0;
-        if (sv[0] == '-') { negative = true; pos = 1; }
-        if (pos >= sv.size()) return std::nullopt;
-
-        double result = 0.0;
-        bool has_int_digit = false;
-        // Integer part
-        size_t int_start = pos;
-        for (; pos < sv.size() && sv[pos] != '.' && sv[pos] != 'e' && sv[pos] != 'E'; ++pos) {
-            char c = sv[pos];
-            if (c < '0' || c > '9') return std::nullopt;
-            result = result * 10.0 + (c - '0');
-        }
-        has_int_digit = (pos > int_start);
-        // Fractional part
-        bool has_frac_digit = false;
-        if (pos < sv.size() && sv[pos] == '.') {
-            ++pos;
-            double frac = 0.0;
-            double divisor = 10.0;
-            for (; pos < sv.size() && sv[pos] != 'e' && sv[pos] != 'E'; ++pos) {
-                char c = sv[pos];
-                if (c < '0' || c > '9') return std::nullopt;
-                frac += (c - '0') / divisor;
-                divisor *= 10.0;
-                has_frac_digit = true;
-            }
-            // Reject bare "." and trailing dot "1." — at least one digit
-            // must follow the decimal point.
-            if (!has_frac_digit) return std::nullopt;
-            result += frac;
-        }
-        // Must have at least one digit somewhere before the exponent.
-        if (!has_int_digit && !has_frac_digit) return std::nullopt;
-        // Exponent part (e.g., 1.5e10)
-        if (pos < sv.size() && (sv[pos] == 'e' || sv[pos] == 'E')) {
-            ++pos;
-            bool exp_neg = false;
-            if (pos < sv.size() && sv[pos] == '-') { exp_neg = true; ++pos; }
-            else if (pos < sv.size() && sv[pos] == '+') { ++pos; }
-            // Reject bare exponent "1e" / "1e+" with no digits after.
-            if (pos >= sv.size() || sv[pos] < '0' || sv[pos] > '9')
-                return std::nullopt;
-            int exp = 0;
-            for (; pos < sv.size(); ++pos) {
-                char c = sv[pos];
-                if (c < '0' || c > '9') return std::nullopt;
-                exp = exp * 10 + (c - '0');
-                // Guard against exponent overflow: IEEE 754 double max exponent is 308.
-                // Values beyond this will produce inf/zero, which we reject below.
-                if (exp > 308) return std::nullopt;
-            }
-            double factor = std::pow(10.0, exp);
-            result = exp_neg ? result / factor : result * factor;
-        }
-        // Reject infinity or NaN produced by extreme values.
-        if (!std::isfinite(negative ? -result : result)) return std::nullopt;
-        return negative ? -result : result;
+        return eph::core::parse_number(sv);
     }
 };
 

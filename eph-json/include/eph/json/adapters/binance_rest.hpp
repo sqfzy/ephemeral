@@ -18,7 +18,6 @@
 ///       for (auto& bid : depth->bids) { ... }
 ///   }
 
-#include <charconv>
 #include <cstdint>
 #include <chrono>
 #include <expected>
@@ -29,6 +28,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/core/parse_number.hpp"
 #include "eph/json/adapters/binance_depth_types.hpp"
 #include "eph/json/parser.hpp"
 #include "eph/net/http_client.hpp"
@@ -54,14 +54,10 @@ inline spdlog::logger* binance_rest_logger() {
 // Depth array parser
 // ---------------------------------------------------------------------------
 
-/// Parse a double from a string_view using fast charconv.
+/// Parse a double from a string_view.
 /// Returns nullopt on failure.
 inline std::optional<double> parse_double(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-    double val = 0.0;
-    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), val);
-    if (ec != std::errc{} || ptr != sv.data() + sv.size()) return std::nullopt;
-    return val;
+    return eph::core::parse_number(sv);
 }
 
 /// Parse Binance depth level arrays: [["price","qty"],["price","qty"],...].

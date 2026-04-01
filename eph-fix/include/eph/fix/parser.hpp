@@ -7,7 +7,6 @@
 /// array of Field views. All string_view values point into the original buffer
 /// -- no allocations, no copies.
 
-#include <cmath>
 #include <concepts>
 #include <cstdint>
 #include <cstring>
@@ -23,6 +22,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include "eph/core/parse_number.hpp"
 #include "eph/fix/tags.hpp"
 
 namespace eph::fix {
@@ -38,7 +38,7 @@ inline constexpr size_t kDefaultMaxBodyLength = 1 * 1024 * 1024;
 inline constexpr size_t kMaxBodyLength = kDefaultMaxBodyLength;
 
 namespace detail {
-inline std::shared_ptr<spdlog::logger> fix_parser_logger() {
+inline const std::shared_ptr<spdlog::logger>& fix_parser_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.parser");
         if (!lg) lg = spdlog::stdout_color_mt("fix.parser");
@@ -116,36 +116,7 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
 
 /// Parse a double from decimal ASCII (integer + optional fractional part).
 [[nodiscard]] inline std::optional<double> parse_double_value(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-
-    const char* p   = sv.data();
-    const char* end = p + sv.size();
-    bool neg = false;
-    if (*p == '-') { neg = true; ++p; }
-    if (p == end) return std::nullopt;
-
-    double val = 0.0;
-    while (p != end && *p != '.') {
-        char c = *p++;
-        if (c < '0' || c > '9') return std::nullopt;
-        val = val * 10.0 + (c - '0');
-    }
-    if (p != end && *p == '.') {
-        ++p;
-        double frac = 0.0;
-        double divisor = 1.0;
-        while (p != end) {
-            char c = *p++;
-            if (c < '0' || c > '9') return std::nullopt;
-            frac = frac * 10.0 + (c - '0');
-            divisor *= 10.0;
-        }
-        val += frac / divisor;
-    }
-    double result = neg ? -val : val;
-    // Check after negation: catches both +inf and -inf from very large inputs.
-    if (!std::isfinite(result)) return std::nullopt;
-    return result;
+    return eph::core::parse_number(sv);
 }
 
 /// Parse a FIX boolean (Y/N).
