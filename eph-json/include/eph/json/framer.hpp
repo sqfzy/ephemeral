@@ -23,7 +23,7 @@ class JsonFramer {
 public:
     static constexpr size_t max_overhead() noexcept { return 0; }
 
-    size_t encode(uint8_t* out, const uint8_t* data, size_t len,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         if (len == 0 || !data || !out) [[unlikely]] return 0;
         std::memcpy(out, data, len);

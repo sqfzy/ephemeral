@@ -25,7 +25,7 @@ public:
     /// @param len       Input payload length
     /// @param msg_type  WebSocket opcode (e.g. ws::opcode::kBinary)
     /// @return Total bytes written (header + masked payload)
-    size_t encode(uint8_t* out, const uint8_t* data,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data,
                   size_t len, uint8_t msg_type) noexcept {
         return ws::encode_frame(out, msg_type, data, len);
     }

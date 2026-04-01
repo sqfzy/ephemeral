@@ -63,7 +63,7 @@ public:
     /// @param len       Input payload length in bytes
     /// @param msg_type  SoupBinTCP packet type byte (e.g. soupbin::kSequencedData)
     /// @return Total bytes written to out (3 + len), or 0 on failure
-    size_t encode(uint8_t* out, const uint8_t* data, size_t len,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t msg_type) noexcept {
         if (!out) [[unlikely]] {
             SPDLOG_DEBUG("SoupBinTcpFramer::encode: null output buffer");

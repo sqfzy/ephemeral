@@ -29,7 +29,7 @@ public:
     /// Maximum payload length representable in a 2-byte big-endian header.
     static constexpr size_t kMaxPayloadLen = 65535;
 
-    size_t encode(uint8_t* out, const uint8_t* data, size_t len,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         // Guard: payload must fit in a uint16_t length field.
         // Silently truncating would corrupt the wire format, so return 0

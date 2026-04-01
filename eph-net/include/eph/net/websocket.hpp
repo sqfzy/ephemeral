@@ -177,7 +177,7 @@ inline constexpr size_t kMaxControlPayloadLen = 125;
 
 namespace detail {
 
-inline std::shared_ptr<spdlog::logger> ws_logger() {
+inline const std::shared_ptr<spdlog::logger>& ws_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.websocket");
         if (!lg) lg = spdlog::stdout_color_mt("net.websocket");
@@ -393,7 +393,7 @@ constexpr size_t total_frame_size(uint64_t payload_len) noexcept {
 /// @param payload_len  Payload length
 /// @param fin          FIN bit
 /// @return Total bytes written (header + masked payload)
-inline size_t encode_frame(uint8_t* out, uint8_t opcode_val,
+[[nodiscard]] inline size_t encode_frame(uint8_t* out, uint8_t opcode_val,
                             const uint8_t* payload, uint64_t payload_len,
                             bool fin = true) noexcept {
     uint8_t mask_key[4];
@@ -639,7 +639,7 @@ struct FrameTemplate {
     /// @param payload      Payload data
     /// @param payload_len  Actual payload length
     /// @return Total bytes written
-    size_t encode(uint8_t* out, const uint8_t* payload,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* payload,
                   uint64_t payload_len) const noexcept {
         return encode_frame(out, opcode_val, payload, payload_len, fin);
     }

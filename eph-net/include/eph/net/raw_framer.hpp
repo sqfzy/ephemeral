@@ -25,7 +25,7 @@ public:
 
     /// Encode raw bytes (pass-through copy).
     /// @pre Caller must ensure `out` points to a buffer with at least `len` bytes available.
-    size_t encode(uint8_t* out, const uint8_t* data, size_t len,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         if (len == 0 || !data || !out) [[unlikely]] {
             SPDLOG_WARN("RawFramer::encode: invalid args len={} data={} out={} "

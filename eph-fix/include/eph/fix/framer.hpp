@@ -19,7 +19,7 @@
 namespace eph::fix {
 
 namespace detail {
-inline std::shared_ptr<spdlog::logger> fix_framer_logger() {
+inline const std::shared_ptr<spdlog::logger>& fix_framer_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.framer");
         if (!lg) lg = spdlog::stdout_color_mt("fix.framer");
@@ -48,7 +48,7 @@ public:
     static constexpr size_t max_overhead() noexcept { return 0; }
 
     /// Pass-through encode: FIX messages are already self-framed.
-    size_t encode(uint8_t* out, const uint8_t* data, size_t len,
+    [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         std::memcpy(out, data, len);
         return len;
