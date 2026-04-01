@@ -382,4 +382,4 @@ parse(const uint8_t* data, size_t len) noexcept {
 // std::formatter for ParseError
 template <>
 struct std::formatter<eph::json::ParseError>
-    : eph::net::ErrorEnumFormatter<eph::json::ParseError> {};
+    : eph::core::ErrorEnumFormatter<eph::json::ParseError> {};

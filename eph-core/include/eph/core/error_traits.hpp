@@ -8,14 +8,14 @@
 /// error_name() function returning string_view.
 ///
 /// ErrorEnumFormatter eliminates per-enum std::formatter boilerplate:
-///   template <> struct std::formatter<MyError> : eph::net::ErrorEnumFormatter<MyError> {};
+///   template <> struct std::formatter<MyError> : eph::core::ErrorEnumFormatter<MyError> {};
 
 #include <concepts>
 #include <format>
 #include <string_view>
 #include <type_traits>
 
-namespace eph::net {
+namespace eph::core {
 
 /// Concept for error enums that support human-readable names.
 ///
@@ -33,7 +33,7 @@ concept ErrorEnum = std::is_enum_v<E> && requires(E e) {
 ///
 /// Usage (one-liner per enum):
 ///   template <> struct std::formatter<eph::net::FrameError>
-///       : eph::net::ErrorEnumFormatter<eph::net::FrameError> {};
+///       : eph::core::ErrorEnumFormatter<eph::net::FrameError> {};
 template <ErrorEnum E>
 struct ErrorEnumFormatter : std::formatter<std::string_view> {
     auto format(E e, auto& ctx) const {
@@ -41,4 +41,12 @@ struct ErrorEnumFormatter : std::formatter<std::string_view> {
     }
 };
 
+} // namespace eph::core
+
+// Backward-compatible aliases so existing eph::net:: references compile.
+namespace eph::net {
+template <typename E>
+concept ErrorEnum = eph::core::ErrorEnum<E>;
+template <eph::core::ErrorEnum E>
+using ErrorEnumFormatter = eph::core::ErrorEnumFormatter<E>;
 } // namespace eph::net
