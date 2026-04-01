@@ -26,8 +26,8 @@
 - [x] eph-json、eph-book 模块级 README
 
 ### 测试
-- [ ] DPDK TCP 状态机行为测试 — 需要 mock 环境模拟 SYN/ACK/FIN/RST
-- [ ] Reactor + flow_steering 集成测试 — 需要真实 RSS NIC（非 ENA）
+- [ ] DPDK TCP 状态机行为测试 — 需要 mock 环境模拟 SYN/ACK/FIN/RST **（需 DPDK 环境，暂缓）**
+- [ ] Reactor + flow_steering 集成测试 — 需要真实 RSS NIC（非 ENA）**（需硬件，暂缓）**
 
 ## 审计遗留项 (2026-04-01)
 
