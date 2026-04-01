@@ -90,13 +90,7 @@ inline std::string_view first_array_element(std::string_view arr) noexcept {
 /// Parse a string_view containing a decimal number as int64_t.
 /// Used for OKX string timestamps: "ts":"1711612345678"
 inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-    int64_t result = 0;
-    for (char c : sv) {
-        if (c < '0' || c > '9') return std::nullopt;
-        result = result * 10 + (c - '0');
-    }
-    return result;
+    return eph::core::parse_int(sv);
 }
 
 /// Parse a string_view as double (for price/qty fields).

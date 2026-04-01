@@ -212,35 +212,9 @@ private:
     size_t count_ = 0;
 
     /// Parse a string_view as int64_t with overflow protection.
-    /// Uses uint64_t accumulator to handle INT64_MIN correctly
-    /// (its absolute value exceeds INT64_MAX by 1).
+    /// Parse integer with overflow protection (handles full int64 range).
     static std::optional<int64_t> parse_int(std::string_view sv) noexcept {
-        if (sv.empty()) return std::nullopt;
-        bool negative = false;
-        size_t pos = 0;
-        if (sv[0] == '-') { negative = true; pos = 1; }
-        if (pos >= sv.size()) return std::nullopt;
-
-        uint64_t result = 0;
-        constexpr uint64_t kMaxPos = static_cast<uint64_t>(INT64_MAX);
-        // INT64_MIN has absolute value INT64_MAX + 1
-        constexpr uint64_t kMaxNeg = kMaxPos + 1;
-        uint64_t limit = negative ? kMaxNeg : kMaxPos;
-
-        for (; pos < sv.size(); ++pos) {
-            char c = sv[pos];
-            if (c < '0' || c > '9') return std::nullopt;
-            uint64_t digit = static_cast<uint64_t>(c - '0');
-            if (result > (limit - digit) / 10) return std::nullopt;
-            result = result * 10 + digit;
-        }
-
-        if (negative) {
-            // Negate as unsigned THEN cast — avoids signed overflow UB
-            // when result == INT64_MAX + 1 (i.e., parsing INT64_MIN).
-            return static_cast<int64_t>(~result + 1u);
-        }
-        return static_cast<int64_t>(result);
+        return eph::core::parse_int(sv);
     }
 
     /// Parse a string_view as double (integer + optional fraction + optional exponent).

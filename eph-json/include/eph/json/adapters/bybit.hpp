@@ -51,17 +51,7 @@ inline std::optional<double> parse_number(std::string_view sv) noexcept {
 /// Parse a string_view containing a decimal number as int64_t.
 /// Used for Bybit string timestamps in the data object: "ts":"1711612345678"
 inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-    int64_t result = 0;
-    for (char c : sv) {
-        if (c < '0' || c > '9') return std::nullopt;
-        if (result > INT64_MAX / 10) return std::nullopt;
-        result = result * 10;
-        int digit = c - '0';
-        if (result > INT64_MAX - digit) return std::nullopt;
-        result += digit;
-    }
-    return result;
+    return eph::core::parse_int(sv);
 }
 
 } // namespace detail

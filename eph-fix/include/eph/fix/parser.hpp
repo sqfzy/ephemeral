@@ -83,35 +83,7 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
 
 /// Parse a signed integer from decimal ASCII with overflow detection.
 [[nodiscard]] inline std::optional<int64_t> parse_int_value(std::string_view sv) noexcept {
-    if (sv.empty()) return std::nullopt;
-
-    const char* p   = sv.data();
-    const char* end = p + sv.size();
-    bool neg = false;
-    if (*p == '-') { neg = true; ++p; }
-    if (p == end) return std::nullopt;
-
-    constexpr uint64_t kMaxPositive = static_cast<uint64_t>(INT64_MAX);
-    constexpr uint64_t kMaxNegative = kMaxPositive + 1;
-    constexpr uint64_t kOverflowThreshold = UINT64_MAX / 10;
-
-    uint64_t val = 0;
-    while (p != end) {
-        char c = *p++;
-        if (c < '0' || c > '9') return std::nullopt;
-        uint64_t digit = static_cast<uint64_t>(c - '0');
-        if (val > kOverflowThreshold) return std::nullopt;
-        val *= 10;
-        if (val > UINT64_MAX - digit) return std::nullopt;
-        val += digit;
-    }
-
-    if (neg) {
-        if (val > kMaxNegative) return std::nullopt;
-        return static_cast<int64_t>(-val);
-    }
-    if (val > kMaxPositive) return std::nullopt;
-    return static_cast<int64_t>(val);
+    return eph::core::parse_int(sv);
 }
 
 /// Parse a double from decimal ASCII (integer + optional fractional part).

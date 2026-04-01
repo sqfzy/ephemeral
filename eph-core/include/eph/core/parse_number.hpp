@@ -1,19 +1,20 @@
 #pragma once
 
 /// @file parse_number.hpp
-/// Fast decimal-to-double parser for exchange price/quantity fields.
+/// Fast decimal string-to-number parsers for exchange price/quantity fields.
 ///
-/// Zero-allocation, branchless-friendly. Handles:
-///   - Optional sign: "-123.45"
-///   - Integer + optional fraction: "87245.30000000"
-///   - Scientific notation: "1.5e-8" (common in crypto small-cap prices)
+/// Zero-allocation. Handles:
+///   parse_number: double — sign + integer + fraction + scientific notation
+///   parse_int:    int64_t — sign + integer, overflow-safe for full int64 range
 ///
-/// Rejects: NaN, infinity, empty strings, bare dots, bare exponents.
-/// Used by eph-json, eph-fix, eph-book adapters — canonical implementation
-/// lives here to avoid duplication across modules.
+/// Rejects: NaN, infinity, empty strings, bare dots, bare exponents, overflow.
+/// Used by eph-json, eph-fix, eph-book adapters — canonical implementations
+/// live here to avoid duplication across modules.
 
+#include <climits>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 
@@ -86,6 +87,40 @@ namespace eph::core {
     double final_val = negative ? -result : result;
     if (!std::isfinite(final_val)) return std::nullopt;
     return final_val;
+}
+
+/// Parse a decimal ASCII string as int64_t.
+/// Handles optional leading '-' sign. Overflow-safe for the full int64 range
+/// including INT64_MIN. Returns std::nullopt on malformed input or overflow.
+[[nodiscard]] inline std::optional<int64_t> parse_int(std::string_view sv) noexcept {
+    if (sv.empty()) return std::nullopt;
+
+    const char* p   = sv.data();
+    const char* end = p + sv.size();
+
+    bool negative = false;
+    if (*p == '-') { negative = true; ++p; }
+    if (p == end) return std::nullopt;
+
+    constexpr uint64_t kMaxPos = static_cast<uint64_t>(INT64_MAX);
+    constexpr uint64_t kMaxNeg = kMaxPos + 1;  // |INT64_MIN| == INT64_MAX + 1
+    const uint64_t limit = negative ? kMaxNeg : kMaxPos;
+
+    uint64_t result = 0;
+    while (p != end) {
+        char c = *p++;
+        if (c < '0' || c > '9') return std::nullopt;
+        uint64_t digit = static_cast<uint64_t>(c - '0');
+        if (result > (limit - digit) / 10) return std::nullopt;
+        result = result * 10 + digit;
+    }
+
+    if (negative) {
+        // Negate as unsigned then cast — avoids signed overflow UB
+        // when result == INT64_MAX + 1 (i.e., parsing INT64_MIN).
+        return static_cast<int64_t>(~result + 1u);
+    }
+    return static_cast<int64_t>(result);
 }
 
 } // namespace eph::core
