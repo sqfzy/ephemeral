@@ -46,11 +46,19 @@ struct BenchConfig {
 };
 
 /// Parse "T" field (raw TSC cycles) from JSON.
+/// Searches for ,"T": to avoid matching "T_send" or other T-prefixed fields.
+/// Also matches {"T": at the start of JSON.
 inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
     std::string_view json(reinterpret_cast<const char*>(data), len);
-    auto pos = json.find("\"T\":");
-    if (pos == std::string_view::npos) return 0;
-    pos += 4;
+    // Search for ,"T": (mid-object) or {"T": (start of object, unlikely but safe)
+    auto pos = json.find(",\"T\":");
+    if (pos == std::string_view::npos) {
+        pos = json.find("{\"T\":");
+        if (pos == std::string_view::npos) return 0;
+        pos += 5; // skip {"T":
+    } else {
+        pos += 5; // skip ,"T":
+    }
     while (pos < len && json[pos] == ' ') ++pos;
     uint64_t val = 0;
     while (pos < len && json[pos] >= '0' && json[pos] <= '9') {
@@ -100,16 +108,10 @@ inline void stop_mock(MockHandle& h) {
     if (h.thread.joinable()) h.thread.join();
 }
 
-// ── Market Data Benchmark (pure client) ────────────────────────────────────
+// ── Shared TransportConfig builder ─────────────────────────────────────────
 
-/// Connects to an already-running mock server and measures pipeline latency.
-template <eph::net::TcpTransport TcpImpl>
-void run_market_bench(
-    std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
-    const BenchConfig& cfg)
-{
-    using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
-
+/// Build a TransportConfig for benchmark (no TLS, no pings, no reconnect).
+inline eph::net::TransportConfig make_bench_transport_config(const BenchConfig& cfg) {
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
     tc.remote_port = cfg.server_port;
@@ -118,10 +120,22 @@ void run_market_bench(
     tc.ping_interval = std::chrono::seconds{0};
     tc.max_reconnect_attempts = 0;
     tc.skip_utf8_validation = true;
+    return tc;
+}
 
+// ── Market Data Benchmark ──────────────────────────────────────────────────
+
+/// Run market bench on a transport that supports poll() (DirectTransport).
+/// The transport must already be created and connected.
+/// Caller is responsible for stopping the transport after this returns.
+template <typename TransportT>
+void run_market_poll_loop(TransportT& transport, const BenchConfig& cfg,
+                          const char* label = "Market Data Benchmark Results") {
     eph::utils::HdrHistogram latency_hist{10, 1'000'000'000ULL, 3};
     uint64_t msg_count = 0;
 
+    // Hijack on_message for latency recording (must be set before first poll)
+    auto& tc = const_cast<eph::net::TransportConfig&>(transport.config());
     tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
         uint64_t t_send = parse_tsc_field(data, len);
         if (t_send > 0) {
@@ -134,60 +148,60 @@ void run_market_bench(
         ++msg_count;
     };
 
-    auto result = Transport::create(std::move(tcp_factory), tc);
-    if (!result) {
-        spdlog::error("Transport create failed: {}", result.error().message());
-        return;
-    }
-    auto& transport = *result;
-
     pin_or_die(cfg.poll_cpu, "bench-poll");
 
     spdlog::info("Market bench started: {} symbols, duration={}s",
                  cfg.symbols.size(), cfg.duration.count());
 
     auto start = std::chrono::steady_clock::now();
-    while (g_running.load(std::memory_order_acquire) && transport->is_running()) {
-        if (std::chrono::steady_clock::now() - start >= cfg.duration) break;
-        transport->poll();
+    while (g_running.load(std::memory_order_acquire) && transport.is_running()) {
+        auto now_tp = std::chrono::steady_clock::now();
+        if (now_tp - start >= cfg.duration) break;
+        transport.poll();
     }
-
-    transport->stop();
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    spdlog::info("=== Market Data Benchmark Results ===");
+    spdlog::info("=== {} ===", label);
     spdlog::info("Duration: {}s, Messages: {}, Rate: {} msg/s",
                  duration_s, msg_count,
                  duration_s > 0 ? msg_count / static_cast<uint64_t>(duration_s) : 0);
     print_latency("Pipeline Latency (mock send -> app recv)", hdr_to_stats(latency_hist));
 }
 
-// ── Order RTT Benchmark (pure client) ──────────────────────────────────────
-
-/// Connects to an already-running mock server (--order-mode) and measures RTT.
+/// Socket market bench: create DirectTransport + run poll loop.
 template <eph::net::TcpTransport TcpImpl>
-void run_order_rtt_bench(
+void run_market_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
     using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
 
-    eph::net::TransportConfig tc;
-    tc.remote_host = cfg.server_ip;
-    tc.remote_port = cfg.server_port;
-    tc.ws_path = "/ws";
-    tc.use_tls = false;
-    tc.ping_interval = std::chrono::seconds{0};
-    tc.max_reconnect_attempts = 0;
-    tc.skip_utf8_validation = true;
+    auto tc = make_bench_transport_config(cfg);
 
+    auto result = Transport::create(std::move(tcp_factory), tc);
+    if (!result) {
+        spdlog::error("Transport create failed: {}", result.error().message());
+        return;
+    }
+
+    run_market_poll_loop(**result, cfg);
+    (*result)->stop();
+}
+
+// ── Order RTT Benchmark (pure client) ──────────────────────────────────────
+
+/// Run order RTT poll loop on an already-connected DirectTransport.
+template <typename TransportT>
+void run_order_rtt_poll_loop(TransportT& transport, const BenchConfig& cfg,
+                              const char* label = "Order RTT Benchmark Results") {
     eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
     eph::utils::HdrHistogram resp_latency_hist{10, 1'000'000'000ULL, 3};
     uint64_t last_order_tsc = 0;
     uint64_t order_count = 0, response_count = 0;
 
+    auto& tc = const_cast<eph::net::TransportConfig&>(transport.config());
     tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
         std::string_view json(reinterpret_cast<const char*>(data), len);
         if (json.find("\"e\":\"executionReport\"") != std::string_view::npos) {
@@ -210,13 +224,6 @@ void run_order_rtt_bench(
         }
     };
 
-    auto result = Transport::create(std::move(tcp_factory), tc);
-    if (!result) {
-        spdlog::error("Transport create failed: {}", result.error().message());
-        return;
-    }
-    auto& transport = *result;
-
     pin_or_die(cfg.poll_cpu, "bench-poll");
 
     spdlog::info("Order RTT bench started: interval={}us, duration={}s",
@@ -225,7 +232,7 @@ void run_order_rtt_bench(
     auto start = std::chrono::steady_clock::now();
     auto next_order = start;
 
-    while (g_running.load(std::memory_order_acquire) && transport->is_running()) {
+    while (g_running.load(std::memory_order_acquire) && transport.is_running()) {
         auto now_tp = std::chrono::steady_clock::now();
         if (now_tp - start >= cfg.duration) break;
 
@@ -237,25 +244,43 @@ void run_order_rtt_bench(
                 R"("side":"BUY","price":"50000.00",)"
                 R"("quantity":"0.001","T_send":%llu})",
                 static_cast<unsigned long long>(last_order_tsc));
-            transport->send_text(std::string_view(buf, static_cast<size_t>(n)));
+            transport.send_text(std::string_view(buf, static_cast<size_t>(n)));
             ++order_count;
             next_order += cfg.order_interval;
         }
 
-        transport->poll();
+        transport.poll();
     }
-
-    transport->stop();
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
 
-    spdlog::info("=== Order RTT Benchmark Results ===");
+    spdlog::info("=== {} ===", label);
     spdlog::info("Duration: {}s, Orders: {}, Responses: {}, Rate: {} order/s",
                  duration_s, order_count, response_count,
                  duration_s > 0 ? order_count / static_cast<uint64_t>(duration_s) : 0);
     print_latency("Order RTT (send -> response recv)", hdr_to_stats(rtt_hist));
     print_latency("Response Latency (mock send -> app recv)", hdr_to_stats(resp_latency_hist));
+}
+
+/// Socket order RTT bench: create DirectTransport + run poll loop.
+template <eph::net::TcpTransport TcpImpl>
+void run_order_rtt_bench(
+    std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
+    const BenchConfig& cfg)
+{
+    using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
+
+    auto tc = make_bench_transport_config(cfg);
+
+    auto result = Transport::create(std::move(tcp_factory), tc);
+    if (!result) {
+        spdlog::error("Transport create failed: {}", result.error().message());
+        return;
+    }
+
+    run_order_rtt_poll_loop(**result, cfg);
+    (*result)->stop();
 }
 
 } // namespace bench

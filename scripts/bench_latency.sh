@@ -270,11 +270,12 @@ run_socket_benchmarks() {
     ip netns exec bench_ns ip link set "$NIC_B" up
     ip netns exec bench_ns ip route add default via "$GATEWAY_IP" dev "$NIC_B"
 
-    # Market data bench
-    log_info "Starting mock server for market data (port 9999)..."
+    # Single mock server (order-mode serves both market data + orders,
+    # loop-accept handles sequential bench clients)
+    log_info "Starting mock server (loop-accept, order-mode)..."
     "$BUILD_DIR/bench_mock_server" \
         --bind-ip "$SERVER_IP" --port 9999 \
-        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" &
+        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" --order-mode &
     local mock_pid=$!
     sleep 1
 
@@ -282,20 +283,14 @@ run_socket_benchmarks() {
     ip netns exec bench_ns \
         "$BUILD_DIR/bench_market" "${common_args[@]}" --port 9999 2>&1
     echo
-    kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 
-    # Order RTT bench
-    log_info "Starting mock server for orders (port 9998)..."
-    "$BUILD_DIR/bench_mock_server" \
-        --bind-ip "$SERVER_IP" --port 9998 \
-        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" --order-mode &
-    mock_pid=$!
-    sleep 1
+    sleep 1  # wait for mock to re-accept
 
     log_info "Running bench_order_rtt (socket)..."
     ip netns exec bench_ns \
-        "$BUILD_DIR/bench_order_rtt" "${common_args[@]}" --port 9998 --order-interval-us 1000 2>&1
+        "$BUILD_DIR/bench_order_rtt" "${common_args[@]}" --port 9999 --order-interval-us 1000 2>&1
     echo
+
     kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 
     # Restore NIC-B

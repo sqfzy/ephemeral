@@ -54,60 +54,22 @@ int main(int argc, char** argv) {
         else if (arg == "--tick-us" && i + 1 < app_argc) cfg.tick_interval = std::chrono::microseconds{std::stoi(app_argv[++i])};
         else if (arg == "--poll-cpu" && i + 1 < app_argc) cfg.poll_cpu = std::stoi(app_argv[++i]);
         else if (arg == "--mock-cpu" && i + 1 < app_argc) cfg.mock_cpu = std::stoi(app_argv[++i]);
+        else if (arg == "--help") {
+            spdlog::info("Usage: bench_order_rtt_dpdk [EAL args] -- [app args]");
+            spdlog::info("  --server-ip IP (required) --local-ip IP (required) --gateway-ip IP (required)");
+            return 0;
+        }
     }
 
-    if (cfg.server_ip.empty()) {
-        spdlog::error("--server-ip is required (NIC-A IP where mock server binds)");
-        return 1;
-    }
-    if (local_ip.empty()) {
-        spdlog::error("--local-ip is required (NIC-B IP for DPDK)");
-        return 1;
-    }
-    if (gateway_ip.empty()) {
-        spdlog::error("--gateway-ip is required (NIC-A IP or gateway for ARP)");
-        return 1;
-    }
+    if (cfg.server_ip.empty()) { spdlog::error("--server-ip is required"); return 1; }
+    if (local_ip.empty())      { spdlog::error("--local-ip is required"); return 1; }
+    if (gateway_ip.empty())    { spdlog::error("--gateway-ip is required"); return 1; }
 
     auto mock = bench::start_mock(cfg, /*order_mode=*/true);
 
     using BenchTransport = eph::net::DirectTransport<eph::dpdk::TcpSession<>, eph::net::WsFramer, 4096>;
 
-    eph::net::TransportConfig tc;
-    tc.remote_host = cfg.server_ip;
-    tc.remote_port = cfg.server_port;
-    tc.ws_path = "/ws";
-    tc.use_tls = false;
-    tc.ping_interval = std::chrono::seconds{0};
-    tc.max_reconnect_attempts = 0;
-    tc.skip_utf8_validation = true;
-
-    eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
-    eph::utils::HdrHistogram resp_latency_hist{10, 1'000'000'000ULL, 3};
-    uint64_t last_order_tsc = 0, order_count = 0, response_count = 0;
-
-    tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
-        std::string_view json(reinterpret_cast<const char*>(data), len);
-        if (json.find("\"e\":\"executionReport\"") != std::string_view::npos) {
-            if (last_order_tsc > 0) {
-                uint64_t now = eph::utils::TSC::now();
-                if (now > last_order_tsc) {
-                    auto ns = eph::utils::TSC::to_ns(now - last_order_tsc);
-                    if (ns) rtt_hist.record(static_cast<uint64_t>(*ns));
-                }
-            }
-            uint64_t t_mock = bench::parse_tsc_field(data, len);
-            if (t_mock > 0) {
-                uint64_t now = eph::utils::TSC::now();
-                if (now > t_mock) {
-                    auto ns = eph::utils::TSC::to_ns(now - t_mock);
-                    if (ns) resp_latency_hist.record(static_cast<uint64_t>(*ns));
-                }
-            }
-            ++response_count;
-        }
-    };
-
+    auto tc = bench::make_bench_transport_config(cfg);
     eph::dpdk::DpdkEndpoint ep{.local_ip = local_ip, .gateway_ip = gateway_ip};
     eph::dpdk::ConnectorOptions opts{.platform = {.port_id = dpdk_port}, .local_port = local_port};
 
@@ -118,44 +80,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto& transport = *conn->transport;
-    bench::pin_or_die(cfg.poll_cpu, "bench-poll");
+    // Shared poll+send loop — same code as socket bench
+    bench::run_order_rtt_poll_loop(*conn->transport, cfg, "Order RTT Benchmark Results (DPDK)");
 
-    spdlog::info("Order RTT bench (DPDK) started: interval={}us, duration={}s",
-                 cfg.order_interval.count(), cfg.duration.count());
-
-    auto start = std::chrono::steady_clock::now();
-    auto next_order = start;
-
-    while (g_running.load(std::memory_order_acquire) && transport.is_running()) {
-        auto now_tp = std::chrono::steady_clock::now();
-        if (now_tp - start >= cfg.duration) break;
-        if (now_tp >= next_order) {
-            last_order_tsc = eph::utils::TSC::now();
-            char buf[256];
-            int n = std::snprintf(buf, sizeof(buf),
-                R"({"method":"order.place","symbol":"BTCUSDT",)"
-                R"("side":"BUY","price":"50000.00",)"
-                R"("quantity":"0.001","T_send":%llu})",
-                static_cast<unsigned long long>(last_order_tsc));
-            transport.send_text(std::string_view(buf, static_cast<size_t>(n)));
-            ++order_count;
-            next_order += cfg.order_interval;
-        }
-        transport.poll();
-    }
-
-    transport.stop();
+    conn->transport->stop();
     bench::stop_mock(mock);
-
-    auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::steady_clock::now() - start).count();
-
-    spdlog::info("=== Order RTT Benchmark Results (DPDK) ===");
-    spdlog::info("Duration: {}s, Orders: {}, Responses: {}, Rate: {} order/s",
-                 duration_s, order_count, response_count,
-                 duration_s > 0 ? order_count / static_cast<uint64_t>(duration_s) : 0);
-    bench::print_latency("Order RTT (send -> response recv)", bench::hdr_to_stats(rtt_hist));
-    bench::print_latency("Response Latency (mock send -> app recv)", bench::hdr_to_stats(resp_latency_hist));
     return 0;
 }

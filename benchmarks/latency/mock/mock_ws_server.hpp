@@ -6,7 +6,7 @@
 ///   - Market mode: pushes bookTicker JSON at configurable tick intervals
 ///   - Order mode: also responds to client orders with ExecutionReport
 ///
-/// Designed for 1:1 benchmarking — accepts exactly ONE client connection.
+/// Accepts clients sequentially — when one disconnects, waits for the next.
 
 #pragma once
 
@@ -37,7 +37,7 @@ namespace bench::mock {
 // ── Configuration ────────────────────────────────────────────────────────────
 
 struct MockServerConfig {
-    std::string bind_ip = "10.0.0.1";
+    std::string bind_ip;  // required — no default to prevent silent misconfiguration
     uint16_t port = 9999;
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     std::chrono::microseconds tick_interval{100}; // market data push frequency
@@ -275,14 +275,27 @@ inline void run_mock_ws_server(const MockServerConfig& config,
 
     spdlog::info("mock_ws_server: listening on {}:{}", config.bind_ip, config.port);
 
-    // ── 2. Accept ONE client (with poll for graceful shutdown) ───────────
+    // Buffers for JSON generation and WS frame encoding (reused across clients)
+    constexpr size_t kJsonBufSize = 512;
+    constexpr size_t kFrameBufSize = 1024;
+    constexpr size_t kClientBufSize = 2048;
+
+    char json_buf[kJsonBufSize];
+    uint8_t frame_buf[kFrameBufSize];
+    uint8_t client_payload[kClientBufSize];
+    uint64_t tick_count = 0;
+
+    // ── Outer loop: accept clients until shutdown ─────────────────────────
+    while (running.load(std::memory_order_acquire)) {
+
+    // ── 2. Accept next client (with poll for graceful shutdown) ──────────
     int client_fd = -1;
     while (running.load(std::memory_order_acquire) && client_fd < 0) {
         struct pollfd pfd{};
         pfd.fd = server_fd;
         pfd.events = POLLIN;
 
-        int ret = ::poll(&pfd, 1, 100); // 100ms timeout to check running flag
+        int ret = ::poll(&pfd, 1, 100);
         if (ret < 0) {
             if (errno == EINTR) continue;
             spdlog::error("mock_ws_server: poll(accept) failed: {}",
@@ -290,7 +303,7 @@ inline void run_mock_ws_server(const MockServerConfig& config,
             ::close(server_fd);
             return;
         }
-        if (ret == 0) continue; // timeout, check running flag
+        if (ret == 0) continue;
 
         struct sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
@@ -305,7 +318,6 @@ inline void run_mock_ws_server(const MockServerConfig& config,
             return;
         }
 
-        // TCP_NODELAY on client socket too
         ::setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
 
         char client_ip[INET_ADDRSTRLEN];
@@ -314,33 +326,18 @@ inline void run_mock_ws_server(const MockServerConfig& config,
                      client_ip, ntohs(client_addr.sin_port));
     }
 
-    if (client_fd < 0) {
-        spdlog::info("mock_ws_server: shutting down (no client connected)");
-        ::close(server_fd);
-        return;
-    }
+    if (client_fd < 0) break; // shutdown requested
 
     // ── 3. WebSocket handshake ───────────────────────────────────────────
     if (!handle_ws_upgrade(client_fd)) {
         spdlog::error("mock_ws_server: WebSocket handshake failed");
         ::close(client_fd);
-        ::close(server_fd);
-        return;
+        continue; // wait for next client
     }
     spdlog::info("mock_ws_server: WebSocket handshake complete");
 
     // ── 4. Main loop: push market data + (optionally) handle orders ─────
-    // Buffers for JSON generation and WS frame encoding
-    constexpr size_t kJsonBufSize = 512;
-    constexpr size_t kFrameBufSize = 1024; // header + payload
-    constexpr size_t kClientBufSize = 2048;
-
-    char json_buf[kJsonBufSize];
-    uint8_t frame_buf[kFrameBufSize];
-    uint8_t client_payload[kClientBufSize];
-
     auto last_tick = std::chrono::steady_clock::now();
-    uint64_t tick_count = 0;
 
     while (running.load(std::memory_order_acquire)) {
         auto now = std::chrono::steady_clock::now();
@@ -429,7 +426,7 @@ inline void run_mock_ws_server(const MockServerConfig& config,
                 if (!detail::send_all(client_fd, frame_buf, frame_len)) {
                     spdlog::error("mock_ws_server: failed to send bookTicker for {}",
                                   symbol);
-                    goto cleanup; // double-break out of both loops
+                    goto client_disconnect; // double-break out of both loops
                 }
             }
 
@@ -440,13 +437,14 @@ inline void run_mock_ws_server(const MockServerConfig& config,
         }
     }
 
-cleanup:
-    spdlog::info("mock_ws_server: shutting down (sent {} ticks total)", tick_count);
-
-    // ── 5. Cleanup ───────────────────────────────────────────────────────
+client_disconnect:
+    spdlog::info("mock_ws_server: client disconnected (sent {} ticks total)", tick_count);
     ::close(client_fd);
-    ::close(server_fd);
+    // Continue outer loop — wait for next client
 
+    } // end outer accept loop
+
+    ::close(server_fd);
     spdlog::info("mock_ws_server: stopped");
 }
 

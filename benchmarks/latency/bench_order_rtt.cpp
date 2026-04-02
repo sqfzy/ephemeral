@@ -30,6 +30,10 @@ int main(int argc, char** argv) {
         else if (arg == "--duration" && i + 1 < argc) cfg.duration = std::chrono::seconds{std::stoi(argv[++i])};
         else if (arg == "--order-interval-us" && i + 1 < argc) cfg.order_interval = std::chrono::microseconds{std::stoi(argv[++i])};
         else if (arg == "--poll-cpu" && i + 1 < argc) cfg.poll_cpu = std::stoi(argv[++i]);
+        else if (arg == "--help" || arg == "-h") {
+            spdlog::info("Usage: bench_order_rtt --server-ip IP [--port PORT] [--duration SEC] [--order-interval-us US] [--poll-cpu N]");
+            return 0;
+        }
     }
 
     if (cfg.server_ip.empty()) {

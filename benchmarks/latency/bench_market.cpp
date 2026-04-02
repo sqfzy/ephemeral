@@ -29,6 +29,10 @@ int main(int argc, char** argv) {
         else if (arg == "--symbols" && i + 1 < argc) cfg.symbols = bench::split(argv[++i], ',');
         else if (arg == "--duration" && i + 1 < argc) cfg.duration = std::chrono::seconds{std::stoi(argv[++i])};
         else if (arg == "--poll-cpu" && i + 1 < argc) cfg.poll_cpu = std::stoi(argv[++i]);
+        else if (arg == "--help" || arg == "-h") {
+            spdlog::info("Usage: bench_market --server-ip IP [--port PORT] [--duration SEC] [--symbols SYM,...] [--poll-cpu N]");
+            return 0;
+        }
     }
 
     if (cfg.server_ip.empty()) {
