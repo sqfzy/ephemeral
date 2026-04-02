@@ -159,6 +159,125 @@ Reactor replaces the per-connection RX thread that Transport normally runs. The 
 // 5. Application consumes data via Reactor callbacks
 ```
 
+## Code Walkthrough
+
+### Data Structures
+
+```
+entries_[16]: ReactorEntry    hashes_[16]: uint64_t
+┌─────────────────────┐       ┌──────────┐
+│ [0] session*        │       │ 0xA3F... │  ← FNV-1a(4-tuple)
+│     tuple{src,dst}  │       ├──────────┤
+│     on_data callback│       │ 0x7B2... │
+│     connected: bool │       ├──────────┤
+├─────────────────────┤       │ ...      │
+│ [1] ...             │       └──────────┘
+```
+
+- Fixed array, max 16 connections — no heap allocation on hot path
+- `hashes_[]` stored separately for cache-friendly traversal during linear scan
+
+### Registration Phase (`add_connection`)
+
+```
+add_connection(session, callback)
+  │
+  ├── Guard: running==true? → reject (hot path is lock-free by design)
+  ├── Guard: session==null? → reject
+  ├── Guard: count>=16? → reject
+  │
+  ├── entries_[idx].session = session
+  ├── entries_[idx].tuple = session->connection_tuple()  // capture 4-tuple
+  ├── entries_[idx].on_data = callback
+  ├── entries_[idx].connected = session->is_established()
+  ├── hashes_[idx] = FNV-1a(tuple)                      // precompute hash
+  │
+  └── count_.store(idx+1, release)  // publish to RX thread
+```
+
+### RX Main Loop (`rx_loop`)
+
+```
+while (running_) {
+    ┌─── rte_eth_rx_burst(port, queue, pkts, 32) ───┐
+    │                                                 │
+    │  Batch receive up to 32 packets from NIC        │
+    └─────────────────────────────────────────────────┘
+                      │
+                      │ nb_rx == 0 → continue (busy poll)
+                      ▼
+    burst_tsc = TSC::now()    ← record batch arrival timestamp
+                      │
+    ┌─── for each pkt ─────────────────────────────────┐
+    │                                                   │
+    │  1. parse_packet(pkt)                             │
+    │     └── not TCP? → free, skip                     │
+    │                                                   │
+    │  2. Extract pkt 4-tuple, compute FNV-1a hash      │
+    │     pkt_tuple = {src_ip, dst_ip, src_port, dst_port}
+    │     pkt_hash = hash_tuple(pkt_tuple)              │
+    │                                                   │
+    │  3. Linear scan entries_[0..n):                    │
+    │     ┌─── for j in 0..n ──────────────────────┐   │
+    │     │                                         │   │
+    │     │  hashes_[j] != pkt_hash?                │   │
+    │     │  └── YES → continue (fast reject)       │   │
+    │     │                                         │   │
+    │     │  !parsed.matches(tuple)?                │   │
+    │     │  └── YES → continue (hash collision)    │   │
+    │     │                                         │   │
+    │     │  !connected? (acquire load)             │   │
+    │     │  └── YES → free pkt, break (skip)       │   │
+    │     │                                         │   │
+    │     │  ✓ Match found:                         │   │
+    │     │  session->set_last_rx_burst_tsc(tsc)    │   │
+    │     │  session->process_rx(&pkt, 1, callback) │   │
+    │     │     └── TCP state machine               │   │
+    │     │     └── payload → on_data(data, len, j) │   │
+    │     │  if error → mark disconnected           │   │
+    │     │  session->flush_pending_ack()           │   │
+    │     │  break                                  │   │
+    │     └─────────────────────────────────────────┘   │
+    │                                                   │
+    │  4. No match? → free pkt                          │
+    └───────────────────────────────────────────────────┘
+}
+```
+
+### Reconnection Protocol (`mark_reconnected`)
+
+Safe session pointer swap while RX loop is running — disable → fence → swap → enable:
+
+```
+mark_reconnected(conn_id, new_session)
+  │
+  │ Step 1: connected = false (release)
+  │         ↓ RX loop's next acquire-load sees false, skips this entry
+  │
+  │ Step 2: atomic_thread_fence(seq_cst)
+  │         ↓ Guarantees any in-flight RX iteration that loaded
+  │           connected=true (old value) has fully completed before
+  │           we touch the session pointer
+  │
+  │ Step 3: Safe to swap — RX loop is guaranteed to skip this entry
+  │         session = new_session
+  │         tuple = new_session->connection_tuple()
+  │         hash = hash_tuple(tuple)
+  │
+  │ Step 4: connected = true (release)
+  │         ↓ RX loop resumes processing this entry
+```
+
+### Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Linear scan, not hash map | HFT: 2-4 connections, linear scan is cache-friendly with no indirection overhead |
+| FNV-1a hash pre-filter | O(1) fast reject avoids per-field comparison for non-matching entries |
+| Fixed array `[16]` | No heap allocation on hot path; compiler can unroll the loop |
+| Zero ring | Direct NIC → parse → dispatch → callback, no intermediate queue copy |
+| `add_connection` before start only | Lock-free hot path, traded for startup-time-only registration constraint |
+
 ## Limitations
 
 - Maximum 16 connections per Reactor (compile-time constant `kReactorMaxConnections`)
