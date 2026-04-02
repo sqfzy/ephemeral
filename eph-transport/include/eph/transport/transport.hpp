@@ -332,7 +332,7 @@ public:
     /// JSON) and want to skip the validation overhead on the hot path.
     /// If the payload is not valid UTF-8, the remote peer may close the
     /// connection per RFC 6455 §5.6 — this is the caller's responsibility.
-    SendError send_text_unchecked(const void* data, size_t len) noexcept {
+    [[nodiscard]] SendError send_text_unchecked(const void* data, size_t len) noexcept {
         if constexpr (kHasTxQueue) {
             return enqueue_tx(data, len, ws::opcode::kText);
         } else {
@@ -341,7 +341,7 @@ public:
     }
 
     /// Send a string_view as an unchecked text frame (no UTF-8 validation).
-    SendError send_text_unchecked(std::string_view sv) noexcept {
+    [[nodiscard]] SendError send_text_unchecked(std::string_view sv) noexcept {
         if constexpr (kHasTxQueue) {
             return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
         } else {
@@ -468,21 +468,43 @@ public:
 
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
 
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
-            msg.data[0] = static_cast<uint8_t>(status_code >> 8);
-            msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
-            if (reason_len > 0) {
-                std::memcpy(msg.data + 2, reason.data(), reason_len);
-            }
-            msg.len = payload_len;
-            msg.opcode = ws::opcode::kClose;
-        });
+        if constexpr (kHasTxQueue) {
+            bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+                msg.data[0] = static_cast<uint8_t>(status_code >> 8);
+                msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
+                if (reason_len > 0) {
+                    std::memcpy(msg.data + 2, reason.data(), reason_len);
+                }
+                msg.len = payload_len;
+                msg.opcode = ws::opcode::kClose;
+            });
 
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
+            if (!ok) {
+                queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+                return SendError::kQueueFull;
+            }
+            return SendError::kOk;
+        } else {
+            // Direct mode: encode close frame and send immediately
+            uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
+            size_t close_len = ws::build_close_frame(close_buf, status_code, reason);
+            if (config_.use_tls && crypto_) {
+                uint8_t tls_buf[TlsEncryptor::encrypted_size(
+                    ws::kMaxFrameHeaderLen + 125)];
+                uint16_t enc_len = crypto_->enc.encrypt(
+                    close_buf, static_cast<uint16_t>(close_len), tls_buf);
+                if (enc_len > 0) {
+                    tcp_->send(tls_buf, enc_len);
+                } else {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "send_close: encrypt failed for status_code={}", status_code);
+                    return SendError::kEncryptFailed;
+                }
+            } else {
+                tcp_->send(close_buf, close_len);
+            }
+            return SendError::kOk;
         }
-        return SendError::kOk;
     }
 
     /// Send a WebSocket Ping frame to probe connection liveness.
@@ -508,22 +530,44 @@ public:
         }
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
 
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
-            if (payload && payload_len > 0) {
-                std::memcpy(msg.data, payload, payload_len);
-            }
-            msg.len = static_cast<uint16_t>(payload_len);
-            msg.opcode = ws::opcode::kPing;
-            if constexpr (kEnableTimestamps) {
-                msg.tsc = eph::utils::TSC::now();
-            }
-        });
+        if constexpr (kHasTxQueue) {
+            bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+                if (payload && payload_len > 0) {
+                    std::memcpy(msg.data, payload, payload_len);
+                }
+                msg.len = static_cast<uint16_t>(payload_len);
+                msg.opcode = ws::opcode::kPing;
+                if constexpr (kEnableTimestamps) {
+                    msg.tsc = eph::utils::TSC::now();
+                }
+            });
 
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
+            if (!ok) {
+                queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+                return SendError::kQueueFull;
+            }
+            return SendError::kOk;
+        } else {
+            // Direct mode: encode ping frame and send immediately
+            uint8_t ping_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
+            size_t ping_len = ws::build_ping_frame(ping_buf, payload, payload_len);
+            if (config_.use_tls && crypto_) {
+                uint8_t tls_buf[TlsEncryptor::encrypted_size(
+                    ws::kMaxFrameHeaderLen + 125)];
+                uint16_t enc_len = crypto_->enc.encrypt(
+                    ping_buf, static_cast<uint16_t>(ping_len), tls_buf);
+                if (enc_len > 0) {
+                    tcp_->send(tls_buf, enc_len);
+                } else {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "send_ping: encrypt failed, payload_len={}", payload_len);
+                    return SendError::kEncryptFailed;
+                }
+            } else {
+                tcp_->send(ping_buf, ping_len);
+            }
+            return SendError::kOk;
         }
-        return SendError::kOk;
     }
 
     /// Batch-send multiple messages (all-or-nothing semantics).
@@ -550,22 +594,36 @@ public:
             }
         }
 
-        // Write directly into queue slots — no temporary array needed.
-        bool ok = tx_queue_.try_produce_n(count,
-            [&](TxMsg& slot, size_t i) {
-                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
-                slot.len = static_cast<uint16_t>(payloads[i].size());
-                slot.opcode = opcode;
-                if constexpr (kEnableTimestamps) {
-                    slot.tsc = eph::utils::TSC::now();
-                }
-            });
+        if constexpr (kHasTxQueue) {
+            // Write directly into queue slots — no temporary array needed.
+            bool ok = tx_queue_.try_produce_n(count,
+                [&](TxMsg& slot, size_t i) {
+                    std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
+                    slot.len = static_cast<uint16_t>(payloads[i].size());
+                    slot.opcode = opcode;
+                    if constexpr (kEnableTimestamps) {
+                        slot.tsc = eph::utils::TSC::now();
+                    }
+                });
 
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
+            if (!ok) {
+                queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+                return SendError::kQueueFull;
+            }
+            return SendError::kOk;
+        } else {
+            // Direct mode: send each message individually
+            for (size_t i = 0; i < count; ++i) {
+                auto err = send_direct(payloads[i].data(), payloads[i].size(), opcode);
+                if (err != SendError::kOk) {
+                    SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                        "send_n: send_direct failed at index {}/{}: {}",
+                        i, count, static_cast<int>(err));
+                    return err;
+                }
+            }
+            return SendError::kOk;
         }
-        return SendError::kOk;
     }
 
     /// Batch-send with timeout — waits up to `timeout` for queue space.
@@ -594,21 +652,35 @@ public:
             }
         }
 
-        bool ok = tx_queue_.try_produce_n_for(count,
-            [&](TxMsg& slot, size_t i) {
-                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
-                slot.len = static_cast<uint16_t>(payloads[i].size());
-                slot.opcode = opcode;
-                if constexpr (kEnableTimestamps) {
-                    slot.tsc = eph::utils::TSC::now();
-                }
-            }, timeout);
+        if constexpr (kHasTxQueue) {
+            bool ok = tx_queue_.try_produce_n_for(count,
+                [&](TxMsg& slot, size_t i) {
+                    std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
+                    slot.len = static_cast<uint16_t>(payloads[i].size());
+                    slot.opcode = opcode;
+                    if constexpr (kEnableTimestamps) {
+                        slot.tsc = eph::utils::TSC::now();
+                    }
+                }, timeout);
 
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
+            if (!ok) {
+                queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+                return SendError::kQueueFull;
+            }
+            return SendError::kOk;
+        } else {
+            // Direct mode: send each message individually (timeout irrelevant)
+            for (size_t i = 0; i < count; ++i) {
+                auto err = send_direct(payloads[i].data(), payloads[i].size(), opcode);
+                if (err != SendError::kOk) {
+                    SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                        "send_n_for: send_direct failed at index {}/{}: {}",
+                        i, count, static_cast<int>(err));
+                    return err;
+                }
+            }
+            return SendError::kOk;
         }
-        return SendError::kOk;
     }
 
     // -----------------------------------------------------------------------
@@ -633,7 +705,7 @@ public:
     ///          need it after the callback returns -- the underlying SPSC
     ///          queue slot will be reused.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t>)
     [[nodiscard]] bool recv(F&& callback) {
         bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
@@ -650,7 +722,7 @@ public:
     ///                  opcode is one of ws::opcode::kBinary, ws::opcode::kText, etc.
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t>)
     [[nodiscard]] bool recv(F&& callback) {
         bool consumed = rx_consume([&](const RxMsg& msg) {
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
@@ -670,7 +742,7 @@ public:
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t, uint8_t, uint64_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t, uint64_t>)
     [[nodiscard]] bool recv(F&& callback) {
         static_assert(kEnableTimestamps,
             "recv() with TSC callback requires -DEPH_ENABLE_TIMESTAMPS=1");
@@ -687,7 +759,9 @@ public:
     /// Try to receive a message as a copied byte vector (non-blocking).
     /// Returns the payload bytes, or nullopt if the queue is empty.
     /// Prefer the callback variant for zero-copy hot paths.
-    [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv() {
+    [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv()
+        requires (kHasRxQueue)
+    {
         std::optional<std::vector<uint8_t>> result;
         (void)rx_consume([&](const RxMsg& msg) {
             result.emplace(msg.data, msg.data + msg.len);
@@ -737,7 +811,9 @@ public:
 
     /// Try to receive a message with opcode info (non-blocking).
     /// Returns payload + opcode, or nullopt if the queue is empty.
-    [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg() {
+    [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg()
+        requires (kHasRxQueue)
+    {
         std::optional<ReceivedMessage> result;
         (void)rx_consume([&](const RxMsg& msg) {
             result.emplace(ReceivedMessage{
@@ -764,7 +840,7 @@ public:
     /// @return true if a message was peeked, false if queue empty.
     /// @warning The data pointer is only valid during the callback invocation.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t>)
     [[nodiscard]] bool recv_peek(F&& callback) {
         return rx_peek([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
@@ -777,7 +853,7 @@ public:
     /// @param callback  Called with (data_ptr, len, opcode) if a message is available.
     /// @return true if a message was peeked, false if queue empty.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t>)
     [[nodiscard]] bool recv_peek(F&& callback) {
         return rx_peek([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
@@ -789,7 +865,9 @@ public:
 
     /// Peek at the next message as a copied ReceivedMessage (non-blocking).
     /// Returns nullopt if the queue is empty.
-    [[nodiscard]] std::optional<ReceivedMessage> peek_recv_msg() {
+    [[nodiscard]] std::optional<ReceivedMessage> peek_recv_msg()
+        requires (kHasRxQueue)
+    {
         std::optional<ReceivedMessage> result;
         (void)rx_peek([&](const RxMsg& msg) {
             result.emplace(ReceivedMessage{
@@ -812,7 +890,7 @@ public:
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
@@ -831,7 +909,7 @@ public:
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires (std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
     [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
@@ -844,7 +922,7 @@ public:
     /// Equivalent to recv_n(callback, queue_depth()).
     /// @note Not available when RxQueue is EvictingQueue.
     template <typename F>
-        requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     [[nodiscard]] size_t drain_recv(F&& callback) {
         return recv_n(std::forward<F>(callback), QueueDepth);
     }
@@ -859,7 +937,7 @@ public:
     /// @param timeout   Maximum time to wait for a message
     /// @return true if a message was consumed, false on timeout or stop
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t>)
     [[nodiscard]] bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
@@ -877,7 +955,7 @@ public:
 
     /// Blocking receive with opcode and timeout.
     template <typename F>
-        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
+        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t>)
     [[nodiscard]] bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
@@ -896,7 +974,9 @@ public:
     /// Blocking receive returning a ReceivedMessage with opcode and timeout.
     /// Returns nullopt on timeout or transport stopped.
     [[nodiscard]] std::optional<ReceivedMessage> wait_recv_msg(
-            std::chrono::milliseconds timeout) {
+            std::chrono::milliseconds timeout)
+        requires (kHasRxQueue)
+    {
         std::optional<ReceivedMessage> result;
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (running_.load(std::memory_order_acquire)) {
@@ -953,21 +1033,24 @@ public:
             return false;
         }
 
-        // Wait for the server Close response (RX thread sets closing_=true)
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (running_.load(std::memory_order_acquire) &&
-               !closing_.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() >= deadline) {
-                SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                    "close_gracefully: timed out waiting for server Close "
-                    "response ({}ms)", timeout.count());
-                stop();
-                return false;
+        if constexpr (kHasRxThread) {
+            // Wait for the server Close response (RX thread sets closing_=true)
+            auto deadline = std::chrono::steady_clock::now() + timeout;
+            while (running_.load(std::memory_order_acquire) &&
+                   !closing_.load(std::memory_order_acquire)) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                        "close_gracefully: timed out waiting for server Close "
+                        "response ({}ms)", timeout.count());
+                    stop();
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
+        // else: kDirect has no RX thread; just stop immediately after sending Close.
 
-        // Server responded with Close — stop cleanly
+        // Server responded with Close (or kDirect: no wait) — stop cleanly
         stop();
         return true;
     }
@@ -1299,23 +1382,31 @@ public:
     /// Useful for detecting backpressure before send() returns -EAGAIN.
     /// @note Result is approximate — the producer and consumer may
     ///       advance between the size() read and the caller's use.
-    [[nodiscard]] size_t tx_queue_size() const noexcept {
+    [[nodiscard]] size_t tx_queue_size() const noexcept
+        requires (kHasTxQueue)
+    {
         return tx_queue_.size();
     }
 
     /// Approximate number of messages available in the RX queue.
-    [[nodiscard]] size_t rx_queue_size() const noexcept {
+    [[nodiscard]] size_t rx_queue_size() const noexcept
+        requires (kHasRxQueue)
+    {
         return rx_size();
     }
 
     /// TX queue occupancy as a fraction [0.0, 1.0].
-    [[nodiscard]] double tx_queue_fill_ratio() const noexcept {
+    [[nodiscard]] double tx_queue_fill_ratio() const noexcept
+        requires (kHasTxQueue)
+    {
         return static_cast<double>(tx_queue_.size()) /
                static_cast<double>(QueueDepth);
     }
 
     /// RX queue occupancy as a fraction [0.0, 1.0].
-    [[nodiscard]] double rx_queue_fill_ratio() const noexcept {
+    [[nodiscard]] double rx_queue_fill_ratio() const noexcept
+        requires (kHasRxQueue)
+    {
         return static_cast<double>(rx_size()) /
                static_cast<double>(QueueDepth);
     }
@@ -1555,7 +1646,9 @@ private:
     /// BoundedQueue: try_produce (backpressure — may fail).
     /// EvictingQueue: push (evicts oldest — never fails).
     bool rx_enqueue(const uint8_t* data, uint16_t len,
-                    uint8_t opcode) noexcept {
+                    uint8_t opcode) noexcept
+        requires (kHasRxQueue)
+    {
         if constexpr (kRxEvicting) {
             // Write directly into the queue slot via produce() to avoid
             // allocating a 16KB+ RxMsg on the stack and then copying the
@@ -1585,6 +1678,7 @@ private:
     /// BoundedQueue: try_consume (FIFO).
     /// EvictingQueue: try_consume_latest (latest-value).
     template <typename F>
+        requires (kHasRxQueue)
     bool rx_consume(F&& visitor) {
         if constexpr (kRxEvicting) {
             return rx_queue_.try_consume_latest(std::forward<F>(visitor));
@@ -1595,6 +1689,7 @@ private:
 
     /// Peek one message from the RX queue without consuming.
     template <typename F>
+        requires (kHasRxQueue)
     bool rx_peek(F&& visitor) {
         if constexpr (kRxEvicting) {
             return rx_queue_.try_peek_latest(std::forward<F>(visitor));
@@ -1604,7 +1699,9 @@ private:
     }
 
     /// Approximate RX queue size.
-    [[nodiscard]] size_t rx_size() const noexcept {
+    [[nodiscard]] size_t rx_size() const noexcept
+        requires (kHasRxQueue)
+    {
         if constexpr (kRxEvicting) {
             return rx_queue_.size_approx();
         } else {
@@ -1618,7 +1715,9 @@ private:
     /// Shared implementation for send() and send_text() to avoid
     /// double-validating UTF-8 on the hot path.
     SendError enqueue_tx(const void* data, size_t len,
-                         uint8_t opcode) noexcept {
+                         uint8_t opcode) noexcept
+        requires (kHasTxQueue)
+    {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (len > MaxPayload) return SendError::kMessageTooLarge;
         if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
@@ -1654,6 +1753,7 @@ private:
 
     /// Enqueue with timeout, no UTF-8 validation.
     template <typename Rep, typename Period>
+        requires (kHasTxQueue)
     SendError enqueue_tx_for(const void* data, size_t len,
                              std::chrono::duration<Rep, Period> timeout,
                              uint8_t opcode) noexcept {
@@ -1771,8 +1871,10 @@ private:
     // Uptime tracking
     std::chrono::steady_clock::time_point  created_at_{};
 
-    TxQueue                                tx_queue_{};
-    RxQueue                                rx_queue_{};
+    [[no_unique_address]]
+    std::conditional_t<kHasTxQueue, TxQueue, detail::Empty>  tx_queue_{};
+    [[no_unique_address]]
+    std::conditional_t<kHasRxQueue, RxQueue, detail::Empty>  rx_queue_{};
     Framer                                 rx_framer_{};  // RX-side framer instance (stateless framers: zero overhead)
 
     std::atomic<bool>                      running_{false};
@@ -1785,8 +1887,10 @@ private:
     // Application sets force_reconnect_=true via reconnect_now();
     // RX thread checks this and triggers do_reconnect() when set.
     std::atomic<bool>                      force_reconnect_{false};
-    std::thread                            tx_thread_;
-    std::thread                            rx_thread_;
+    [[no_unique_address]]
+    std::conditional_t<kHasTxThread, std::thread, detail::Empty>  tx_thread_{};
+    [[no_unique_address]]
+    std::conditional_t<kHasRxThread, std::thread, detail::Empty>  rx_thread_{};
 
     // Per-thread stats to avoid cross-core atomic contention
     ThreadStats                            tx_stats_{};
