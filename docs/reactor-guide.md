@@ -278,6 +278,48 @@ mark_reconnected(conn_id, new_session)
 | Zero ring | Direct NIC → parse → dispatch → callback, no intermediate queue copy |
 | `add_connection` before start only | Lock-free hot path, traded for startup-time-only registration constraint |
 
+## Reactor + Transport Integration (TLS/WebSocket)
+
+Reactor delivers raw TCP payload. To add TLS decryption and WebSocket decoding, pair Reactor with Transport in `kDirect` mode using `feed_rx()` + `process_pending()`:
+
+```cpp
+// 1. Create Transport (kDirect — no background threads)
+auto tp = DpdkDirectTransport::create(tcp_factory, config);
+
+// 2. Create Reactor
+Reactor reactor({.port_id = 0, .rx_queue_id = 0, .rx_cpu = 2});
+
+// 3. Wire: Reactor on_data → Transport feed_rx
+reactor.add_connection(session, [&tp](const uint8_t* data, uint16_t len, size_t) {
+    tp->feed_rx(data, len);   // accumulates to reassembly buffer (memcpy only)
+});
+
+// 4. Wire: burst complete → Transport process_pending
+reactor.set_on_burst_complete([&tp]() {
+    tp->process_pending();    // TLS decrypt → WS decode → on_message callback
+});
+
+// 5. Start — Reactor thread drives the full pipeline
+reactor.start();
+```
+
+**Data flow**: NIC → Reactor burst → `feed_rx` (memcpy) → `process_pending` (TLS → WS → callback).
+
+Reactor and Transport are **independent modules** (zero `#include` dependency between eph-dpdk and eph-transport). The wiring happens in user application code.
+
+For multiple connections, use one Transport per connection:
+```cpp
+std::vector<std::unique_ptr<DpdkDirectTransport>> transports;
+for (size_t i = 0; i < N; ++i) {
+    reactor.add_connection(sessions[i], [&, i](auto* d, auto l, auto) {
+        transports[i]->feed_rx(d, l);
+    });
+}
+reactor.set_on_burst_complete([&]() {
+    for (auto& tp : transports) tp->process_pending();
+});
+```
+
 ## Limitations
 
 - Maximum 16 connections per Reactor (compile-time constant `kReactorMaxConnections`)

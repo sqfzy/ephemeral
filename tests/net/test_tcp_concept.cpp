@@ -503,3 +503,24 @@ TEST(TransportMode, SocketPresetAliasesCompile) {
     static_assert(sizeof(SocketDirectTxTransport) > 0);
     static_assert(sizeof(SocketDirectTransport) > 0);
 }
+
+// ---------------------------------------------------------------------------
+// feed_rx / process_pending compile-time API availability
+// ---------------------------------------------------------------------------
+
+TEST(TransportMode, DirectHasFeedRxAndProcessPending) {
+    // kDirect mode: feed_rx and process_pending exist
+    using T = Transport<MockTcpSession, WsFramer, TransportMode::kDirect, 128, 16>;
+    // Verify the methods are callable (compile-time check)
+    static_assert(requires(T& t, const uint8_t* d, uint16_t l) {
+        t.feed_rx(d, l);
+    });
+    static_assert(requires(T& t) {
+        t.process_pending();
+    });
+}
+
+// Note: negative requires tests (kThreaded/kDirectTx should NOT have feed_rx)
+// are enforced by the requires(!kHasRxThread) constraint at definition site.
+// GCC14 does not support negative requires in static_assert expressions
+// for constrained-out member functions.

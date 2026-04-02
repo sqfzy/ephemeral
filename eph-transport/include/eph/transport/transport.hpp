@@ -1068,17 +1068,22 @@ public:
     ///
     /// Designed for single-threaded event loops: call poll() repeatedly
     /// to process incoming data. Non-blocking if no data is available.
-    [[nodiscard]] std::expected<uint16_t, std::string> poll() noexcept
-        requires (kIsDirect)
+    // -----------------------------------------------------------------------
+    // Direct RX: feed_rx / process_pending / poll (kDirect mode)
+    // -----------------------------------------------------------------------
+
+    /// Accumulate raw TCP payload into the reassembly buffer.
+    /// Only memcpy — does NOT trigger TLS decrypt or WS decode.
+    /// Call from Reactor's on_data callback or any external data source.
+    /// Must be called from a single thread (no concurrent calls).
+    void feed_rx(const uint8_t* data, uint16_t len) noexcept
+        requires (!kHasRxThread)
     {
-        if (!running_.load(std::memory_order_acquire))
-            return std::unexpected(std::string("transport not running"));
-
-        auto log = detail::transport_logger();
         auto& rx = direct_rx_;
+        auto log = detail::transport_logger();
 
-        // Initialize TSC conversion on first poll
-        if (!rx.initialized) {
+        // Lazy-init TSC conversion factor on first call
+        if (!rx.initialized) [[unlikely]] {
             if constexpr (kEnableTimestamps) {
                 auto npc = eph::utils::TSC::get_ns_per_cycle();
                 ns_per_cycle_ = npc.value_or(0.0);
@@ -1086,60 +1091,53 @@ public:
             rx.initialized = true;
         }
 
-        // Poll TCP for data
-        uint16_t total_rx = 0;
-        bool reconnect_needed = false;
-
-        auto rx_result = tcp_->poll_rx(
-            [&](const uint8_t* data, uint16_t len) {
-                total_rx = len;
-                if (config_.use_tls) {
-                    if (rx.reassembly_len + len <= kReassemblyBufSize) {
-                        std::memcpy(rx.reassembly_storage.get() + rx.reassembly_len,
-                                    data, len);
-                        rx.reassembly_len += len;
-                    } else {
-                        SPDLOG_LOGGER_ERROR(log,
-                            "poll: TLS reassembly overflow ({} + {} > {})",
-                            rx.reassembly_len, len, kReassemblyBufSize);
-                        rx.reassembly_len = 0;
-                        rx.ws_reassembly_len = 0;
-                        reconnect_needed = true;
-                    }
-                } else {
-                    if (rx.ws_reassembly_len + len <= kWsReassemblyBufSize) {
-                        std::memcpy(rx.ws_reassembly_storage.get() + rx.ws_reassembly_len,
-                                    data, len);
-                        rx.ws_reassembly_len += len;
-                    } else {
-                        SPDLOG_LOGGER_ERROR(log,
-                            "poll: WS reassembly overflow ({} + {} > {})",
-                            rx.ws_reassembly_len, len, kWsReassemblyBufSize);
-                        rx.ws_reassembly_len = 0;
-                        reconnect_needed = true;
-                    }
-                }
-            });
-
-        if (reconnect_needed) {
-            running_.store(false, std::memory_order_release);
-            return std::unexpected(std::string("reassembly buffer overflow"));
+        if (config_.use_tls) {
+            if (rx.reassembly_len + len <= kReassemblyBufSize) {
+                std::memcpy(rx.reassembly_storage.get() + rx.reassembly_len,
+                            data, len);
+                rx.reassembly_len += len;
+            } else {
+                SPDLOG_LOGGER_ERROR(log,
+                    "feed_rx: TLS reassembly overflow ({} + {} > {})",
+                    rx.reassembly_len, len, kReassemblyBufSize);
+                rx.reassembly_len = 0;
+                rx.ws_reassembly_len = 0;
+            }
+        } else {
+            if (rx.ws_reassembly_len + len <= kWsReassemblyBufSize) {
+                std::memcpy(rx.ws_reassembly_storage.get() + rx.ws_reassembly_len,
+                            data, len);
+                rx.ws_reassembly_len += len;
+            } else {
+                SPDLOG_LOGGER_ERROR(log,
+                    "feed_rx: WS reassembly overflow ({} + {} > {})",
+                    rx.ws_reassembly_len, len, kWsReassemblyBufSize);
+                rx.ws_reassembly_len = 0;
+            }
         }
+    }
 
-        if (!rx_result) {
-            running_.store(false, std::memory_order_release);
-            return std::unexpected(std::format("TCP rx error: {}", rx_result.error()));
-        }
+    /// Process all data accumulated by feed_rx().
+    /// Executes: TLS decrypt → WS decode → on_message → flush_pending_ack.
+    /// Call after one or more feed_rx() calls (e.g., after Reactor burst).
+    /// Must be called from the same thread as feed_rx().
+    void process_pending() noexcept
+        requires (!kHasRxThread)
+    {
+        auto& rx = direct_rx_;
+        auto log = detail::transport_logger();
 
-        if (*rx_result == 0) return uint16_t{0}; // no data
-
-        // Set arrival TSC
+        // Set arrival TSC for latency measurement
         if constexpr (kEnableTimestamps) {
-            current_arrival_tsc_ = tcp_->last_rx_burst_tsc();
+            if constexpr (requires { tcp_->last_rx_burst_tsc(); }) {
+                current_arrival_tsc_ = tcp_->last_rx_burst_tsc();
+            }
         }
 
-        // Plain mode: process framed data directly
+        // Plain mode: process framed data directly from WS buffer
         if (!config_.use_tls) {
+            if (rx.ws_reassembly_len == 0) return;
+
             size_t ws_consumed = process_frame_data(
                 rx.ws_reassembly_storage.get(), rx.ws_reassembly_len);
 
@@ -1155,10 +1153,12 @@ public:
             if constexpr (requires { tcp_->flush_pending_ack(); }) {
                 tcp_->flush_pending_ack();
             }
-            return total_rx;
+            return;
         }
 
-        // TLS mode: decrypt records, then process frames
+        // TLS mode: decrypt complete records, then process WS frames
+        if (rx.reassembly_len == 0) return;
+
         size_t consumed = 0;
         while (rx.reassembly_len - consumed >=
                tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
@@ -1179,8 +1179,8 @@ public:
 
             if (!ok) {
                 rx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
-                running_.store(false, std::memory_order_release);
-                return std::unexpected(std::string("TLS decrypt failed"));
+                SPDLOG_LOGGER_WARN(log, "process_pending: TLS decrypt failed");
+                break;
             }
 
             if constexpr (kEnableTimestamps) {
@@ -1228,7 +1228,7 @@ public:
             consumed += record_total;
         }
 
-        // Compact reassembly buffer
+        // Compact TLS reassembly buffer
         if (consumed > 0) {
             rx.reassembly_len -= consumed;
             if (rx.reassembly_len > 0) {
@@ -1241,8 +1241,30 @@ public:
         if constexpr (requires { tcp_->flush_pending_ack(); }) {
             tcp_->flush_pending_ack();
         }
+    }
 
-        return total_rx;
+    /// Self-driven poll: burst from TCP + feed + process in one call.
+    /// Convenience for kDirect mode without Reactor.
+    [[nodiscard]] std::expected<uint16_t, std::string> poll() noexcept
+        requires (kIsDirect)
+    {
+        if (!running_.load(std::memory_order_acquire))
+            return std::unexpected(std::string("transport not running"));
+
+        auto rx_result = tcp_->poll_rx(
+            [this](const uint8_t* data, uint16_t len) {
+                feed_rx(data, len);
+            });
+
+        if (!rx_result) {
+            running_.store(false, std::memory_order_release);
+            return std::unexpected(std::format("TCP rx error: {}", rx_result.error()));
+        }
+
+        if (*rx_result == 0) return uint16_t{0};
+
+        process_pending();
+        return *rx_result;
     }
 
     /// Stop the transport gracefully. Sends WebSocket Close frame.

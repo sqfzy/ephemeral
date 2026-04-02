@@ -69,6 +69,11 @@ inline constexpr size_t kReactorMaxConnections = 16;
 using ReactorDataCallback =
     std::function<void(const uint8_t* data, uint16_t len, size_t conn_id)>;
 
+/// Callback invoked once per burst after all packets have been dispatched.
+/// Use this to trigger batch processing (e.g., Transport::process_pending).
+/// Only called when the burst delivered at least one packet (nb_rx > 0).
+using BurstCompleteCallback = std::function<void()>;
+
 /// Per-connection entry in the Reactor.
 struct ReactorEntry {
     TcpSession<>* session = nullptr;
@@ -203,6 +208,12 @@ public:
         }
     }
 
+    /// Register a callback invoked after each NIC burst + dispatch cycle.
+    /// Must be called before start().
+    void set_on_burst_complete(BurstCompleteCallback cb) {
+        on_burst_complete_ = std::move(cb);
+    }
+
     [[nodiscard]] size_t connection_count() const noexcept {
         return count_.load(std::memory_order_acquire);
     }
@@ -306,6 +317,13 @@ private:
                     rte_pktmbuf_free(pkts[i]);
                 }
             }
+
+            // Per-burst completion callback — ideal for batch-processing
+            // accumulated data (e.g., calling Transport::process_pending()
+            // for each connection that received data in this burst).
+            if (on_burst_complete_) {
+                on_burst_complete_();
+            }
         }
 
         SPDLOG_LOGGER_DEBUG(log, "Reactor RX loop exited");
@@ -317,6 +335,7 @@ private:
     std::atomic<size_t> count_{0};
     std::atomic<bool> running_{false};
     std::thread thread_;
+    BurstCompleteCallback on_burst_complete_{};
 };
 
 } // namespace eph::dpdk
