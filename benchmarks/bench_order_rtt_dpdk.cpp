@@ -208,9 +208,10 @@ int main(int argc, char** argv) {
         .local_port = local_port,
     };
 
-    using DpdkTransport = eph::dpdk::DpdkTransport;
+    using BenchTransport = eph::net::Transport<
+        eph::dpdk::TcpSession<>, eph::net::WsFramer, 4096, 1024>;
 
-    auto conn = eph::dpdk::connect<DpdkTransport>(ep, tc, opts);
+    auto conn = eph::dpdk::connect<BenchTransport>(ep, tc, opts);
     if (!conn) {
         spdlog::error("DPDK connect failed: {}", conn.error());
         mock_running = false;

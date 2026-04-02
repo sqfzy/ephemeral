@@ -142,26 +142,7 @@ int main(int argc, char** argv) {
     if (cfg.rx_cpu >= 0) tc.rx_cpu = cfg.rx_cpu;
     if (cfg.tx_cpu >= 0) tc.tx_cpu = cfg.tx_cpu;
 
-    // ── Resolve server IP and create DPDK connection ────────────────────────
-    eph::dpdk::DpdkEndpoint ep{.local_ip = local_ip, .gateway_ip = gateway_ip};
-    eph::dpdk::ConnectorOptions opts{
-        .platform = {.port_id = dpdk_port},
-        .local_port = local_port,
-    };
-
-    // Use eph::dpdk::connect() which handles Platform, ARP, TcpSession, and
-    // Transport creation in one call.  The default TransportType is
-    // DpdkTransport = Transport<TcpSession<>, WsFramer, ...>.
-    using DpdkTransport = eph::dpdk::DpdkTransport;
-
-    auto conn = eph::dpdk::connect<DpdkTransport>(ep, tc, opts);
-    if (!conn) {
-        spdlog::error("DPDK connect failed: {}", conn.error());
-        return 1;
-    }
-    spdlog::info("Connected via DPDK to {}:{}", cfg.server_ip, cfg.server_port);
-
-    // ── Start mock WS server (kernel TCP on NIC-A, same process) ────────────
+    // ── Start mock WS server FIRST (must be listening before DPDK connect) ──
     bench::mock::MockServerConfig mock_cfg{
         .bind_ip = cfg.server_ip,
         .port = cfg.server_port,
@@ -174,8 +155,28 @@ int main(int argc, char** argv) {
         bench::mock::run_mock_ws_server(mock_cfg, mock_running);
     });
 
-    // Give mock server time to start listening
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    // Give mock server time to bind and listen
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+    // ── Resolve server IP and create DPDK connection ────────────────────────
+    eph::dpdk::DpdkEndpoint ep{.local_ip = local_ip, .gateway_ip = gateway_ip};
+    eph::dpdk::ConnectorOptions opts{
+        .platform = {.port_id = dpdk_port},
+        .local_port = local_port,
+    };
+
+    // Use larger payload (4KB) to handle multiple symbols in one TCP segment
+    using BenchTransport = eph::net::Transport<
+        eph::dpdk::TcpSession<>, eph::net::WsFramer, 4096, 1024>;
+
+    auto conn = eph::dpdk::connect<BenchTransport>(ep, tc, opts);
+    if (!conn) {
+        spdlog::error("DPDK connect failed: {}", conn.error());
+        mock_running = false;
+        mock_thread.join();
+        return 1;
+    }
+    spdlog::info("Connected via DPDK to {}:{}", cfg.server_ip, cfg.server_port);
 
     // ── Latency histogram ───────────────────────────────────────────────────
     eph::utils::HdrHistogram latency_hist{10, 1'000'000'000ULL, 3};
