@@ -323,7 +323,7 @@ private:
                         entry.connected.store(false, std::memory_order_release);
                     }
 
-                    entry.session->flush_pending_ack();
+                    sess->flush_pending_ack();
                     matched = true;
                     break;
                 }
