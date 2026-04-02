@@ -157,7 +157,7 @@ void run_market_poll_loop(TransportT& transport, const BenchConfig& cfg,
     while (g_running.load(std::memory_order_acquire) && transport.is_running()) {
         auto now_tp = std::chrono::steady_clock::now();
         if (now_tp - start >= cfg.duration) break;
-        transport.poll();
+        [[maybe_unused]] auto poll_result = transport.poll();
     }
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
@@ -244,12 +244,12 @@ void run_order_rtt_poll_loop(TransportT& transport, const BenchConfig& cfg,
                 R"("side":"BUY","price":"50000.00",)"
                 R"("quantity":"0.001","T_send":%llu})",
                 static_cast<unsigned long long>(last_order_tsc));
-            transport.send_text(std::string_view(buf, static_cast<size_t>(n)));
+            [[maybe_unused]] auto send_err = transport.send_text(std::string_view(buf, static_cast<size_t>(n)));
             ++order_count;
             next_order += cfg.order_interval;
         }
 
-        transport.poll();
+        [[maybe_unused]] auto poll_result = transport.poll();
     }
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(

@@ -26,7 +26,7 @@ namespace detail {
 
 /// RFC 6455 magic GUID appended to Sec-WebSocket-Key before hashing.
 inline constexpr std::string_view kWebSocketGUID =
-    "258EAFA5-E914-47DA-95CA-5AB5DC4AB2C8";
+    "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// Compute Sec-WebSocket-Accept value from the client's Sec-WebSocket-Key.
 /// Returns the base64-encoded SHA-1 hash of (key + GUID), or empty on failure.

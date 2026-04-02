@@ -688,7 +688,7 @@ TEST_F(TransportTest, ReceiveMultipleFrames) {
     // Receive all 5
     int count = 0;
     EXPECT_TRUE(wait_for([&] {
-        tp->recv([&](const uint8_t* data, uint16_t len) {
+        [[maybe_unused]] bool got = tp->recv([&](const uint8_t* data, uint16_t len) {
             EXPECT_EQ(len, 1);
             EXPECT_EQ(data[0], static_cast<uint8_t>(count));
             count++;
@@ -754,7 +754,7 @@ TEST_F(TransportTest, RecvPeekReturnsMessageWithoutConsuming) {
 
     // Peek should see the message
     bool peeked = false;
-    tp->recv_peek([&](const uint8_t* data, size_t len, uint8_t opcode) {
+    [[maybe_unused]] bool got_peek = tp->recv_peek([&](const uint8_t* data, size_t len, uint8_t opcode) {
         peeked = true;
         EXPECT_EQ(opcode, ws::opcode::kText);
         EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(data), len), "peek_me");
@@ -781,7 +781,7 @@ TEST_F(TransportTest, RecvPeekEmptyReturnsFalse) {
     auto& tp = *result;
 
     bool peeked = false;
-    tp->recv_peek([&](const uint8_t*, size_t) {
+    [[maybe_unused]] bool got_peek = tp->recv_peek([&](const uint8_t*, size_t) {
         peeked = true;
     });
     EXPECT_FALSE(peeked);
@@ -950,7 +950,7 @@ TEST_F(TransportTest, StatsAccumulateCorrectly) {
     // Send multiple messages
     for (int i = 0; i < 10; ++i) {
         uint8_t payload = static_cast<uint8_t>(i);
-        tp->send_binary(&payload, 1);
+        [[maybe_unused]] auto err = tp->send_binary(&payload, 1);
     }
 
     // Wait for all to be sent
@@ -959,7 +959,7 @@ TEST_F(TransportTest, StatsAccumulateCorrectly) {
     // Drain echoed messages
     int received = 0;
     EXPECT_TRUE(wait_for([&] {
-        tp->recv([&](const uint8_t*, uint16_t) { received++; });
+        [[maybe_unused]] bool got = tp->recv([&](const uint8_t*, uint16_t) { received++; });
         return received >= 10;
     }));
 
@@ -977,7 +977,7 @@ TEST_F(TransportTest, ResetStatsZeros) {
     ASSERT_TRUE(result.has_value()) << result.error().message();
     auto& tp = *result;
 
-    tp->send_binary("\x01", 1);
+    [[maybe_unused]] auto err = tp->send_binary("\x01", 1);
     EXPECT_TRUE(wait_for([&] { return tp->tx_queue_size() == 0; }));
 
     tp->reset_stats();
@@ -1141,7 +1141,7 @@ TEST_F(TransportTest, StopDrainsRemainingTxMessages) {
     // Enqueue several messages
     for (int i = 0; i < 5; ++i) {
         uint8_t payload = static_cast<uint8_t>(i);
-        tp->send_binary(&payload, 1);
+        [[maybe_unused]] auto err = tp->send_binary(&payload, 1);
     }
 
     // Stop immediately (TX thread may not have sent all yet)
@@ -2314,7 +2314,7 @@ TEST_F(TransportTest, ResetStatsClearsCounters) {
 
     // Send some data to populate stats
     uint8_t data[] = {0xAA, 0xBB};
-    tp->send(data, 2);
+    [[maybe_unused]] auto err = tp->send(data, 2);
 
     // Wait for TX to process
     EXPECT_TRUE(wait_for([&] {
@@ -2362,7 +2362,7 @@ TEST_F(TransportTest, ResetStatsClearsHwmCounters) {
 
     // Send data to produce HWM
     uint8_t data[] = {0xAA};
-    tp->send(data, 1);
+    [[maybe_unused]] auto err = tp->send(data, 1);
     EXPECT_TRUE(wait_for([&] { return tp->stats().tx_packets > 0; }));
 
     tp->reset_stats();

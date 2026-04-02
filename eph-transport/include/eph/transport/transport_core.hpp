@@ -191,7 +191,7 @@ struct TransportCore {
             return {};
         }
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         auto ws_start = std::chrono::steady_clock::now();
 
         // Build upgrade request

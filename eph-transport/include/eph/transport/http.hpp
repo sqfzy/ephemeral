@@ -266,7 +266,7 @@ parse_upgrade_response(const char* data, size_t len) {
 inline bool validate_ws_accept(std::string_view ws_key,
                                 std::string_view accept_value) {
     static constexpr std::string_view kMagicGuid =
-        "258EAFA5-E914-47DA-95CA-5AB5DC4AB2C8";
+        "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     // Concatenate key + GUID
     std::string input;
