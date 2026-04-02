@@ -144,15 +144,25 @@ public:
 
         SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: shutting down {} transports", n);
 
+        size_t stopped = 0;
         for (size_t i = 0; i < n; ++i) {
             auto& h = snapshot[i];
             if (h.ptr && h.is_running_fn && h.is_running_fn(h.ptr)) {
                 SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: stopping transport {}/{}", i + 1, n);
-                h.stop_fn(h.ptr);
+                // Continue to next transport even if stop_fn fails —
+                // a partial failure must not prevent remaining transports
+                // from being stopped.
+                try {
+                    h.stop_fn(h.ptr);
+                    ++stopped;
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::kill_switch_logger(),
+                        "KillSwitch: transport {}/{} stop_fn threw — continuing", i + 1, n);
+                }
             }
         }
 
-        SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: all transports stopped");
+        SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: {}/{} transports stopped", stopped, n);
     }
 
     /// Emergency kill: request shutdown without blocking.

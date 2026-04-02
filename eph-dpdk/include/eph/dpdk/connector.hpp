@@ -39,6 +39,8 @@
 
 #include <optional>
 
+#include <eph/core/detail/json_escape.hpp>
+
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -106,7 +108,8 @@ struct DpdkEndpoint {
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"local_ip\":\"{}\",\"gateway_ip\":\"{}\"}}",
-            local_ip, gateway_ip);
+            core::detail::json_escape(local_ip),
+            core::detail::json_escape(gateway_ip));
     }
 
     [[nodiscard]] std::string dump() const {

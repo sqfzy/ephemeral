@@ -17,6 +17,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <future>
 #include <string>
 #include <string_view>
 
@@ -304,11 +305,14 @@ public:
         bool                        use_tls = true;
         std::chrono::milliseconds   timeout{5000};
         std::string                 ca_cert_path{};  ///< empty = system default
+        size_t                      max_response_size = 8 * 1024 * 1024;  ///< 8 MiB default
 
         [[nodiscard]] std::string dump() const {
             return std::format(
-                "HttpClient::Config(host='{}', port={}, tls={}, timeout={}ms, ca='{}')",
+                "HttpClient::Config(host='{}', port={}, tls={}, timeout={}ms, "
+                "max_response={}B, ca='{}')",
                 host, port, use_tls, timeout.count(),
+                max_response_size,
                 ca_cert_path.empty() ? "(system)" : ca_cert_path);
         }
     };
@@ -416,8 +420,21 @@ private:
         auto port_str = std::to_string(config_.port);
 
         struct addrinfo* result = nullptr;
-        int gai_err = ::getaddrinfo(config_.host.c_str(), port_str.c_str(),
-                                    &hints, &result);
+        // Run getaddrinfo asynchronously with a timeout — blocking DNS
+        // resolution can hang indefinitely if the nameserver is unreachable.
+        auto dns_future = std::async(std::launch::async, [&]() {
+            return ::getaddrinfo(config_.host.c_str(), port_str.c_str(),
+                                &hints, &result);
+        });
+        auto dns_status = dns_future.wait_for(config_.timeout);
+        if (dns_status != std::future_status::ready) {
+            SPDLOG_LOGGER_ERROR(log, "DNS resolution timeout for {}:{} ({}ms)",
+                config_.host, config_.port, config_.timeout.count());
+            return std::unexpected(std::format(
+                "DNS resolution timeout for {}:{} ({}ms)",
+                config_.host, config_.port, config_.timeout.count()));
+        }
+        int gai_err = dns_future.get();
         if (gai_err != 0) {
             SPDLOG_LOGGER_ERROR(log, "getaddrinfo failed for {}:{}: {}",
                 config_.host, config_.port, gai_strerror(gai_err));
@@ -717,6 +734,12 @@ private:
             }
             buf.append(chunk, static_cast<size_t>(n));
 
+            if (buf.size() > config_.max_response_size) {
+                return std::unexpected(std::format(
+                    "Response exceeds max_response_size ({}B > {}B)",
+                    buf.size(), config_.max_response_size));
+            }
+
             // Check if we have complete response (Content-Length based)
             if (auto complete = is_response_complete(buf); complete) {
                 break;
@@ -748,6 +771,12 @@ private:
             int n = SSL_read(ssl, chunk, sizeof(chunk));
             if (n > 0) {
                 buf.append(chunk, static_cast<size_t>(n));
+
+                if (buf.size() > config_.max_response_size) {
+                    return std::unexpected(std::format(
+                        "SSL response exceeds max_response_size ({}B > {}B)",
+                        buf.size(), config_.max_response_size));
+                }
 
                 // Check if we have complete response
                 if (auto complete = is_response_complete(buf); complete) {

@@ -18,6 +18,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
@@ -144,6 +145,44 @@ hmac_sha256_hex(std::string_view key, std::string_view message) noexcept {
         return std::unexpected(digest.error());
     }
     return to_hex(*digest);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constant-time HMAC verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Verify an HMAC-SHA256 signature in constant time.
+/// Use this instead of comparing hmac_sha256() output with == or memcmp,
+/// which are vulnerable to timing side-channel attacks.
+///
+/// @param key       The HMAC secret key
+/// @param message   The message that was signed
+/// @param expected  The expected 32-byte HMAC digest to verify against
+/// @return true if the HMAC matches, false otherwise (or on computation error)
+[[nodiscard]] inline bool
+hmac_verify(std::string_view key, std::string_view message,
+            std::span<const uint8_t, 32> expected) noexcept {
+    auto computed = hmac_sha256(key, message);
+    if (!computed) return false;
+    // CRYPTO_memcmp returns 0 if equal, in constant time regardless of
+    // where the first difference occurs.
+    return CRYPTO_memcmp(computed->data(), expected.data(), 32) == 0;
+}
+
+/// Verify an HMAC-SHA256 hex signature in constant time.
+/// @param key              The HMAC secret key
+/// @param message          The message that was signed
+/// @param expected_hex     The expected hex-encoded HMAC signature
+/// @return true if the HMAC matches, false otherwise
+[[nodiscard]] inline bool
+hmac_verify_hex(std::string_view key, std::string_view message,
+                std::string_view expected_hex) noexcept {
+    auto computed = hmac_sha256_hex(key, message);
+    if (!computed) return false;
+    if (computed->size() != expected_hex.size()) return false;
+    // Constant-time comparison on the hex strings
+    return CRYPTO_memcmp(computed->data(), expected_hex.data(),
+                         computed->size()) == 0;
 }
 
 } // namespace eph::net
