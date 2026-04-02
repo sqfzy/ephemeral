@@ -1,323 +1,346 @@
-# eph-dpdk 项目摘要
+# Project: eph-dpdk
 
-## 1. 概述
+> Header-only C++23 library for ultra-low-latency networking over DPDK, providing a full user-space TCP/IP stack, ARP/DNS resolution, multicast reception, NIC flow steering, and a high-level connector API that collapses the entire NIC-to-WebSocket connection sequence into a single call.
 
-eph-dpdk 是 [ephemeral](https://github.com/user/ephemeral) 项目的 DPDK 后端子模块，提供基于 DPDK 的用户态 TCP 网络栈实现。它是一个纯头文件 (header-only) 的 C++23 库，绕过内核网络栈，通过 DPDK PMD (Poll Mode Driver) 直接与网卡通信，实现超低延迟的网络传输。
+**Language**: C++23 | **Build**: xmake | **Style**: Header-only | **Namespace**: `eph::dpdk`
 
-该库采用三层架构设计：底层 DPDK 平台初始化 (EAL/Port/Mempool)、中间层网络协议头构建与解析 (Ethernet/IPv4/TCP)、以及用户态 TCP 会话状态机。eph-dpdk 本身只负责 DPDK 特有的数据平面逻辑；上层的 TLS 1.3、WebSocket 帧编解码、HTTP Upgrade 等协议由兄弟模块 `eph-net` 以泛型方式提供，通过 C++20 concept (`TcpTransport`) 与 eph-dpdk 的 `TcpSession` 对接，实现零开销的编译期多态。
+---
 
-TCP 实现采用极简设计——仅实现 seq/ack 跟踪、窗口管理和 FIN/RST 处理，不实现重传、Nagle、拥塞控制等复杂机制。丢包策略为：检测到乱序/丢失后立即重连 (~2ms)，适用于数据中心内部几乎零丢包的场景（如交易所行情接入）。
+## Table of Contents
 
-## 2. 架构
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Module Map](#module-map)
+4. [Data Flow](#data-flow)
+5. [Key Components](#key-components)
+6. [Entry Points & APIs](#entry-points--apis)
+7. [Dependencies](#dependencies)
+8. [Testing](#testing)
 
-```
-+----------------------------------------------------------+
-|                    应用层 (用户代码)                       |
-|  DpdkTransport = Transport<TcpSession, 512, 1024>        |
-+----------------------------------------------------------+
-         |                           ^
-         | send()/send_text()        | recv(callback)
-         v                           |
-+----------------------------------------------------------+
-|              eph-net (泛型协议栈，独立模块)                |
-|  transport.hpp ── SPSC 队列, TX/RX 线程, 自动重连          |
-|  tls_session.hpp / tls_record.hpp ── TLS 1.3 握手/AEAD   |
-|  websocket.hpp ── RFC 6455 帧编解码                       |
-|  http.hpp ── HTTP/1.1 WebSocket Upgrade                  |
-+----------------------------------------------------------+
-         |                           ^
-         | TcpTransport concept      | poll_rx(callback)
-         v                           |
-+----------------------------------------------------------+
-|              eph-dpdk (本模块，DPDK 后端)                  |
-|                                                          |
-|  Layer 2: tcp.hpp ── 用户态 TCP 状态机                    |
-|    - 三次握手 / 数据传输 / FIN-RST / 乱序缓冲            |
-|    - net_header.hpp ── Eth/IPv4/TCP 头构建与解析          |
-|    - arp.hpp ── 无状态 ARP 解析                           |
-|                                                          |
-|  Layer 1: platform.hpp ── 端口/队列/Mempool 初始化        |
-|           eal.hpp ── EAL 生命周期管理                     |
-+----------------------------------------------------------+
-         |                           ^
-         | rte_eth_tx_burst()        | rte_eth_rx_burst()
-         v                           |
-+----------------------------------------------------------+
-|              DPDK PMD (af_packet / mlx5 / net_pcap)      |
-|                        网卡硬件                           |
-+----------------------------------------------------------+
-```
+## Overview
 
-## 3. 模块映射
+eph-dpdk is the DPDK backend for the eph HFT library ecosystem. It replaces kernel sockets with direct NIC I/O via DPDK poll-mode drivers, targeting the sub-microsecond latency requirements of high-frequency trading systems. The library implements a minimal user-space TCP/IP stack purposefully omitting retransmission, Nagle, delayed ACK, congestion control, and SACK -- trading general-purpose robustness for deterministic low latency in datacenter environments where packet loss is near zero.
 
-| 模块/文件 | 职责 | 关键类型/函数 | 依赖 |
-|-----------|------|---------------|------|
-| `eal.hpp` | EAL 生命周期 (每进程一次) | `EalGuard::init()`, `eal_cleanup()` | DPDK `rte_eal`, spdlog |
-| `platform.hpp` | NIC 端口/队列/Mempool 初始化 | `Platform`, `PlatformConfig`, `validate_config()` | DPDK `rte_ethdev/rte_mempool`, spdlog |
-| `net_header.hpp` | Eth/IPv4/TCP 头构建、校验和、包解析 | `PacketTemplate`, `ParsedPacket`, `ConnectionTuple`, `parse_packet()` | DPDK `rte_mbuf/rte_ether/rte_ip/rte_tcp` |
-| `arp.hpp` | 无状态 ARP 请求/应答解析 | `ArpPacket`, `resolve()`, `build_arp_request()` | `net_header.hpp`, DPDK, spdlog |
-| `dns.hpp` | DPDK UDP DNS 解析（kernel DNS fallback） | `resolve()`, `DnsConfig` | `net_header.hpp`, DPDK |
-| `tcp.hpp` | 用户态 TCP 状态机 | `TcpSession`, `TcpConfig`, `TcpSession::Stats` | `net_header.hpp`, `eph::net::TcpTransport` concept, OpenSSL/aws-lc (`RAND_bytes`), spdlog |
-| `connector.hpp` | 高层连接助手（Platform→ARP→TCP→Transport 一键建连） | `connect()` (6 重载), `ConnectorOptions`, `ConnectResult`, `DpdkEndpoint` | `platform.hpp`, `tcp.hpp`, `arp.hpp`, `dns.hpp`, eph-net |
-| `shared_rx.hpp` | 多连接共享 RX 队列分发器 | `SharedRxDispatcher`, `register_session()`, `start()/stop()` | `tcp.hpp`, `net_header.hpp`, DPDK `rte_ring` |
-| `types.hpp` | DPDK Transport 类型别名 | `DpdkTransport`, `DpdkSmallTransport`, `DpdkLargeTransport` | `tcp.hpp`, `eph::net::Transport` |
+The library serves two primary use cases: unicast TCP connections to exchange WebSocket/TLS feeds (the most common path through the `connect()` API), and UDP multicast reception for equity market data feeds such as CME MDP3.0 and Nasdaq TotalView/MoldUDP64. It provides a layered API: power users can compose `Platform`, `TcpSession`, and `Transport` directly, while the common case is a single `connect("hostname", endpoint)` call that handles EAL lifecycle, NIC initialization, ARP, DNS, TCP handshake, and TLS/WebSocket setup.
 
-## 4. 数据流
+eph-dpdk plugs into the generic `eph-transport` layer via the `TcpSessionConcept` from `eph-core`. The type aliases in `types.hpp` instantiate transport presets (from `eph-transport`) with `TcpSession<>` as the TCP backend, producing ready-to-use types like `DpdkTransport`, `DpdkRawTransport`, and `DpdkDirectTransport`. This design allows application code to swap between DPDK and kernel-socket transports without changing business logic.
 
-### 发送路径 (TX)
+## Architecture
+
+eph-dpdk follows a layered architecture with four distinct tiers, each building on the one below. All layers are header-only and live under `include/eph/dpdk/`. The design prioritizes zero-copy packet paths, compile-time configuration validation, and RAII resource management. Every component uses `spdlog` with compile-time level filtering (`SPDLOG_ACTIVE_LEVEL`) for production-grade observability without hot-path overhead.
+
+### Component Diagram
 
 ```
-应用调用 send_text(data, len)
-    |
-    v
-eph-net Transport: WS 帧编码 -> TLS AEAD 加密
-    |
-    v
-TcpSession::send(encrypted_data, len)
-    |
-    v
-PacketTemplate::build_packet(pool, seq, ack, flags, ...)
-    |  构建 Ethernet + IPv4 + TCP 头 + payload
-    |  计算 IP/TCP 校验和 (软件或硬件卸载)
-    v
-rte_eth_tx_burst(port_id, queue_id, &mbuf, 1)
-    |
-    v
-NIC 发送
++-------------------------------------------------------+
+|                   Layer 4: Multi-Conn                  |
+|  +-------------+  +---------------+  +-------------+  |
+|  |   Reactor    |  | FlowSteering  |  |  Multicast  |  |
+|  | (SW mux RX) |  | (HW rte_flow) |  | (UDP mcast) |  |
+|  +------+------+  +-------+-------+  +------+------+  |
++---------|-----------------|-----------------|---------+
+          |                 |                 |
++-------------------------------------------------------+
+|              Layer 3: Transport & Connection            |
+|  +-------------+              +---------------------+  |
+|  |  Connector  |-- builds --> |    types.hpp        |  |
+|  | (one-call)  |              | DpdkTransport, etc. |  |
+|  +------+------+              +----------+----------+  |
++---------|---------------------------------|-----------+
+          |   uses                          | wraps
++-------------------------------------------------------+
+|              Layer 2: Protocol Stack                    |
+|  +-----------+    +----------+    +-----------+        |
+|  | TcpSession|    |   ARP    |    |    DNS    |        |
+|  | (tcp.hpp) |    | (arp.hpp)|    | (dns.hpp) |        |
+|  +-----+-----+    +----+----+    +-----+-----+        |
++--------|----------------|---------------|-------------+
+         |                |               |
++-------------------------------------------------------+
+|              Layer 1: DPDK Platform                     |
+|  +----------+    +------------+    +---------------+   |
+|  |   EAL    |    |  Platform  |    |  NetHeader    |   |
+|  | (eal.hpp)|    |(platform)  |    | (net_header)  |   |
+|  +----------+    +------------+    +---------------+   |
++-------------------------------------------------------+
+         |                |               |
+    rte_eal_*       rte_ethdev_*     rte_mbuf / wire
 ```
 
-### 接收路径 (RX)
+## Module Map
+
+| Module / File | Responsibility | Key Types | Depends On |
+|---|---|---|---|
+| `eal.hpp` | EAL lifecycle (once per process) | `EalGuard`, `eal_init()`, `eal_cleanup()` | DPDK `rte_eal` |
+| `platform.hpp` | Per-port NIC init, mempool, stats | `Platform`, `PlatformConfig`, `Platform::Stats` | `rte_ethdev`, `rte_mempool` |
+| `net_header.hpp` | Wire-format headers, checksums, packet build/parse | `PacketTemplate`, `ParsedPacket`, `ConnectionTuple` | `rte_mbuf`, `rte_ether`, `rte_ip`, `rte_tcp` |
+| `tcp.hpp` | User-space TCP state machine | `TcpSession<ReorderSlots>`, `TcpConfig`, `TcpSession::Stats` | `net_header.hpp`, `eph-core/tcp_concept.hpp`, `eph-utils/time.hpp`, `aws-lc` |
+| `arp.hpp` | Stateless blocking ARP resolution | `ArpPacket`, `arp::resolve()` | `net_header.hpp`, `rte_ethdev` |
+| `dns.hpp` | User-space DNS over DPDK UDP | `DnsConfig`, `DnsHeader`, `UdpHeader`, `dns::resolve()` | `net_header.hpp`, `rte_ethdev`, `aws-lc` |
+| `types.hpp` | DPDK transport type aliases | `DpdkTransport`, `DpdkRawTransport`, `DpdkDirectTransport`, etc. (9 aliases) | `tcp.hpp`, `eph-transport/presets.hpp` |
+| `connector.hpp` | High-level one-call connection setup | `DpdkEndpoint`, `ConnectorOptions`, `ConnectResult<T>`, `connect()` overloads | `arp.hpp`, `dns.hpp`, `platform.hpp`, `tcp.hpp`, `types.hpp`, `eph-core/json_escape` |
+| `reactor.hpp` | Epoll-style multiplexed RX (up to 16 conns) | `Reactor`, `ReactorEntry`, `ReactorDataCallback` | `tcp.hpp`, `net_header.hpp`, `eph-utils/cpu.hpp` |
+| `flow_steering.hpp` | NIC hardware RX dispatch (RSS, rte_flow) | `RxDispatchMode`, `FlowRule`, `detect_rx_dispatch_mode()` | `net_header.hpp`, `rte_flow`, `rte_ethdev` |
+| `multicast.hpp` | UDP multicast receiver for market data | `MulticastReceiver`, `MulticastGroup`, `MulticastConfig`, `ParsedUdpPacket` | `net_header.hpp`, `eph-utils/cpu.hpp`, `rte_ethdev` |
+| `dpdk.hpp` | Convenience umbrella header | (re-exports) | `eal.hpp`, `platform.hpp`, `connector.hpp`, `types.hpp` |
+
+## Data Flow
+
+The primary data path for unicast TCP connections runs from NIC hardware through DPDK PMD to the user-space TCP session and up into the Transport layer. The `connect()` API orchestrates the setup sequence; once established, the hot path is a tight poll loop with zero kernel transitions and zero memory allocation.
+
+For multicast, the path is simpler: NIC MAC filter delivers matching frames to an RX queue, the `MulticastReceiver` RX thread parses UDP headers, and delivers payloads via callback.
+
+### Flow Diagram
 
 ```
-NIC 收包 -> rte_eth_rx_burst(port_id, queue_id, pkts, 32)
-    |
-    v
-TcpSession::poll_rx(callback) / process_rx(pkts, nb)
-    |  parse_packet(): 零拷贝解析 Ethernet/IPv4/TCP 头
-    |  匹配 ConnectionTuple (src/dst IP:port)
-    |  处理 RST/FIN/ACK 控制包
-    |  乱序检测 -> 缓冲 (ReorderEntry[8]) 或丢包重连
-    |  顺序数据 -> 回调 data_callback(payload, len)
-    v
-eph-net Transport: TLS AEAD 解密 -> WS 帧解码
-    |
-    v
-应用 recv(callback) 获取明文数据
+ NIC Hardware (PMD)
+       |
+       v  rte_eth_rx_burst()
+ +-----------+
+ | RX Queue  |  (descriptor ring, mbufs from mempool)
+ +-----------+
+       |
+       +--- [Unicast TCP] --------+--- [Multicast UDP] ---+
+       |                          |                        |
+       v                          v                        v
+ +-----------+             +------------+          +--------------+
+ | Reactor   |  or direct  | TcpSession |          | MulticastRx  |
+ | (4-tuple  |  poll_rx()  | process_rx |          | parse_udp    |
+ |  dispatch)|             | (seq/ack)  |          | group match  |
+ +-----------+             +-----+------+          +------+-------+
+       |                         |                        |
+       v                         v                        v
+  on_data callback         payload bytes           on_packet callback
+       |                         |                        |
+       v                         v                        v
+ +------------------------------------------+    +----------------+
+ | eph-transport (Transport<TcpSession<>>)   |    | eph-itch or    |
+ | TLS decrypt -> WS deframe -> app recv()   |    | app parser     |
+ +------------------------------------------+    +----------------+
+
+ TX Path (unicast):
+ app send() -> Transport -> TLS encrypt -> WS frame
+     -> TcpSession::send() -> PacketTemplate::fill_packet()
+     -> rte_eth_tx_burst() -> NIC
 ```
 
-### 连接建立流程
+## Key Components
 
-```
-eal_init() -> Platform::create() -> ARP resolve()
-    -> TcpSession::connect() [三次握手]
-    -> TlsSession [TLS 1.3 握手, aws-lc custom BIO]
-    -> HTTP Upgrade [WebSocket]
-    -> 数据传输就绪
-```
+### `TcpSession<ReorderSlots>` (tcp.hpp)
 
-## 5. 关键组件
-
-### 5.1 TcpSession (`include/eph/dpdk/tcp.hpp`)
-
-用户态 TCP 状态机，满足 `eph::net::TcpTransport` concept。
-
-- **状态机**: Closed -> SynSent -> Established -> FinWait1/2 -> TimeWait/Closed
-- **ISN 生成**: 使用 `RAND_bytes()` (CSPRNG, RFC 6528)
-- **乱序处理**: 8 槽 `ReorderEntry` 缓冲区，每槽最多 1460 字节；缓冲区满则判定为真实丢包，返回错误触发上层重连
-- **关键接口**: `connect()`, `send()`, `poll_rx()`, `process_rx()`, `close()`, `reset()`, `build_data_packet()` (热路径零分配)
-- **共享 RX 模式**: `set_shared_rx_source(rte_ring*)` 切换 poll_rx 从 ring 读取（用于 SharedRxDispatcher）
-- **辅助接口**: `connection_tuple()` 获取 4-tuple, `set_last_rx_burst_tsc()` 外部设置到达时间戳, `flush_pending_ack()` 发送延迟 ACK
-- **模板约束**: `static_assert(eph::net::TcpTransport<TcpSession>)` 编译期验证
-
+**File**: `eph-dpdk/include/eph/dpdk/tcp.hpp`
+**Purpose**: Minimal user-space TCP state machine for DPDK data plane. Handles three-way handshake, seq/ack tracking, ACK generation, window management, FIN/RST, out-of-order segment reordering, and TIME_WAIT.
+**Interface**:
 ```cpp
-class TcpSession {
-    std::expected<void, std::string> connect(milliseconds timeout);
-    std::expected<size_t, std::string> send(const void* data, size_t len);
-    template <typename F> std::expected<uint16_t, std::string> poll_rx(F&&);
-    rte_mbuf* build_data_packet(rte_mbuf*, const void*, uint16_t); // 热路径
-    void set_shared_rx_source(rte_ring* ring);  // 切换到共享 RX 模式
-    const net::ConnectionTuple& connection_tuple() const;
-    void flush_pending_ack();
-};
+explicit TcpSession(const TcpConfig& config, rte_mempool* pool) noexcept;
+std::expected<void, std::string> connect(std::chrono::milliseconds timeout);
+std::expected<size_t, std::string> send(const void* data, size_t len);
+std::expected<int, std::string> process_rx(rte_mbuf** pkts, uint16_t n, auto cb);
+std::expected<int, std::string> poll_rx(auto cb);
+void flush_pending_ack();
+std::expected<void, std::string> close();
+void reset();
+TcpState state() const noexcept;
+bool is_established() const noexcept;
+const net::ConnectionTuple& connection_tuple() const noexcept;
+Stats tcp_stats() const noexcept;
 ```
+**Notes**: Template parameter `ReorderSlots` (default 64, max 255) controls out-of-order buffering depth. Loss strategy is "detect gap, reconnect immediately (~2ms)" rather than retransmit. Satisfies `eph::net::TcpSessionConcept` for use with generic Transport layer. ISN generated via `RAND_bytes` (aws-lc CSPRNG). Not thread-safe -- single lcore only.
 
-### 5.2 PacketTemplate (`include/eph/dpdk/net_header.hpp`)
+### `Platform` (platform.hpp)
 
-预填充静态字段的 Ethernet/IPv4/TCP 头模板，热路径仅更新动态字段 (seq, ack, flags, payload)。
-
-- **`build_packet()`**: 从 mempool 分配 mbuf 并构建完整包，支持 SYN 选项 (MSS/SACK/WScale)
-- **`fill_packet()`**: 在已有 mbuf 上原地构建包 (零分配热路径)
-- **校验和**: 支持软件计算 (`internet_checksum()` / `tcp_checksum()`) 和 NIC 硬件卸载 (`hw_cksum` 标志)
-
-### 5.3 ParsedPacket / parse_packet() (`include/eph/dpdk/net_header.hpp`)
-
-零拷贝包解析器。指针直接指向 mbuf 数据区域，不复制任何数据。
-
-- 校验 EtherType、IP IHL、TCP data_off
-- 使用 IP `total_length` 计算 payload 长度 (避免 Ethernet 填充字节污染)
-- `matches(ConnectionTuple)` 匹配连接四元组 (自动交换 src/dst)
-
-### 5.4 Platform (`include/eph/dpdk/platform.hpp`)
-
-DPDK NIC 端口初始化封装。
-
-- **初始化链**: enumerate_ports -> create_mempool -> configure_port -> setup_queues -> start_port -> wait_link_up
-- **PlatformConfig 验证**: `validate_config()` 是 `constexpr` 函数，支持 `static_assert` 编译期验证
-- **描述符对齐**: `clamp_desc()` 将请求的描述符数量对齐到 NIC 硬件限制 (constexpr)
-- **Mempool 约束**: pool size 必须为 2^n - 1，由 `is_power_of_two_minus_one()` 验证
-
-### 5.5 EAL 管理 (`include/eph/dpdk/eal.hpp`)
-
-极简的 EAL 生命周期包装。
-
-- `eal_init()`: 包装 `rte_eal_init()`，返回 `std::expected<int, std::string>`
-- `eal_cleanup()`: 包装 `rte_eal_cleanup()`
-- 与 Platform 分离设计：EAL 是进程级单例，Platform 是端口级实例
-
-### 5.6 ARP 解析 (`include/eph/dpdk/arp.hpp`)
-
-无状态阻塞式 ARP 解析，用于连接建立前获取网关 MAC 地址。
-
-- `resolve()`: 发送 ARP 广播请求，busy-poll 等待应答，最多重试 3 次
-- 非热路径——仅在 TCP 连接建立前调用一次
-- `ArpPacket`: 28 字节 packed 结构体，`static_assert(sizeof == 28)`
-
-### 5.7 Connector (`include/eph/dpdk/connector.hpp`)
-
-高层连接助手，将 Platform→ARP→TCP→TLS→WS 的初始化序列压缩为单次 `connect()` 调用。
-
-- **6 个重载**: 从最简 `connect("host", endpoint)` 到最完整 `connect(platform, endpoint, config, server_ip, opts)`
-- **共享 Platform**: `connect(Platform&, ...)` 重载复用已有 Platform 实例（多连接场景）
-- **ConnectorOptions**: 嵌套 `PlatformConfig`，支持 `gateway_mac`（跳过 ARP）、`local_port`（0=随机）、queue ID 指定
-- **ConnectResult**: 返回 `{platform, transport, local_mac, gateway_mac}`，可复用 gateway_mac 给后续连接
-- **DNS**: 先尝试 kernel DNS，失败后 fallback 到 DPDK UDP DNS
-
+**File**: `eph-dpdk/include/eph/dpdk/platform.hpp`
+**Purpose**: DPDK NIC port manager. Encapsulates full port lifecycle: enumeration, mempool creation, port configuration with NIC capability intersection, queue setup, port start, and link-up polling.
+**Interface**:
 ```cpp
-// 最简用法
-auto result = eph::dpdk::connect("fstream.binance.com",
-    {.local_ip = "172.31.23.112", .gateway_ip = "172.31.16.1"});
-
-// 共享 Platform（多连接）
-auto t2 = eph::dpdk::connect(result.platform, ep, config,
-    {.gateway_mac = result.gateway_mac});
+static std::expected<Platform, std::string> create(const PlatformConfig& config);
+rte_mempool* mempool() const noexcept;
+uint16_t port_id() const noexcept;
+bool is_running() const noexcept;
+Stats collect_stats() const;
 ```
+**Notes**: Uses pimpl pattern (`Platform::Impl`) to isolate DPDK C struct details. Move-only; moved-from instances return safe defaults (nullptr/0/false). `PlatformConfig` supports constexpr validation via `validate_config()` / `config_ok()` for `static_assert` use. Descriptor counts are automatically clamped to NIC-reported limits via `clamp_desc()`.
 
-### 5.8 SharedRxDispatcher (`include/eph/dpdk/shared_rx.hpp`)
+### `Connector` (connector.hpp)
 
-多连接共享 RX 队列分发器。当多个 TcpSession 共享一个 NIC（ENA 不支持 flow director）时，
-由单一线程 poll rte_eth_rx_burst 并按 4-tuple 分发包到对应 session 的 rte_ring。
-
-- **架构**: dispatcher thread → rte_ring (SPSC) → session RX thread
-- **注册**: `register_session(TcpSession&)` 创建 per-session ring 并设置 `shared_rx_source`
-- **线程安全**: ring 为 SPSC（dispatcher 写，session 读），无锁
-- **生命周期**: 析构时自动 drain 残余 mbuf 并释放 ring
-
+**File**: `eph-dpdk/include/eph/dpdk/connector.hpp`
+**Purpose**: High-level connection helper that collapses Platform -> MAC -> ARP -> DNS -> TCP -> Transport into a single `connect()` call. Multiple overloads from simplest (hostname + endpoint) to full control (pre-resolved IP, existing Platform).
+**Interface**:
 ```cpp
-auto dispatcher = SharedRxDispatcher::create(port_id, 0, 3);
-dispatcher->register_session(tcp1);
-dispatcher->register_session(tcp2);
-dispatcher->start(cpu_id);  // 启动分发线程
-// ... sessions 通过 poll_rx() 从 ring 读取
-dispatcher->stop();
+// Simplest: hostname + required endpoint
+template <typename T = DpdkTransport>
+std::expected<ConnectResult<T>, std::string>
+connect(std::string_view host, const DpdkEndpoint& ep,
+        const ConnectorOptions& opts = {});
+
+// DNS-resolving: kernel first, DPDK DNS fallback
+template <typename T = DpdkTransport>
+std::expected<ConnectResult<T>, std::string>
+connect(const DpdkEndpoint& ep, const TransportConfig& cfg,
+        const ConnectorOptions& opts = {});
+
+// Pre-resolved IP, no DNS needed
+template <typename T = DpdkTransport>
+std::expected<ConnectResult<T>, std::string>
+connect(const DpdkEndpoint& ep, const TransportConfig& cfg,
+        uint32_t server_ip, const ConnectorOptions& opts = {});
+
+// Reuse existing Platform (multi-connection)
+template <typename T = DpdkTransport>
+std::expected<std::unique_ptr<T>, std::string>
+connect(Platform& platform, ...);
 ```
+**Notes**: DNS resolution tries kernel `getaddrinfo()` first, falls back to DPDK DNS (UDP over NIC) for exclusive-mode PMDs. Ephemeral source port generated via CSPRNG. `ConnectResult` exposes all intermediate products (Platform, Transport, MACs) for reuse.
 
-**已知限制**: ring 方案引入 ~200-400ns 额外延迟（ring ops + cross-core cache miss）。
-适用于需要多连接但无 flow director 的 NIC（如 AWS ENA）。
+### `Reactor` (reactor.hpp)
 
-### 5.9 类型别名 (`include/eph/dpdk/types.hpp`)
-
-将 DPDK 后端的 `TcpSession` 与 eph-net 泛型 Transport 组合：
-
+**File**: `eph-dpdk/include/eph/dpdk/reactor.hpp`
+**Purpose**: Epoll-style multiplexed RX for up to 16 DPDK connections on a single NIC queue. Single RX thread polls NIC and dispatches packets to correct TcpSession via direction-symmetric 4-tuple hash match, then inline `process_rx()`.
+**Interface**:
 ```cpp
-using DpdkTransport      = Transport<TcpSession, 512, 1024>;
-using DpdkSmallTransport = Transport<TcpSession, 64, 256>;
-using DpdkLargeTransport = Transport<TcpSession, 4096, 512>;
+explicit Reactor(Config config) noexcept;
+std::expected<size_t, std::string>
+add_connection(TcpSession<>* session, ReactorDataCallback on_data);
+void start();
+void stop();
+void mark_disconnected(size_t conn_id) noexcept;
+void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept;
+void set_on_burst_complete(BurstCompleteCallback cb);
+```
+**Notes**: Zero ring overhead -- direct inline dispatch (no `rte_ring`). Fixed-size array (`kReactorMaxConnections = 16`) avoids heap allocation on hot path. Linear scan with FNV hash pre-filter is optimal for typical HFT deployments (2-4 connections). Live reconnection supported via atomic session pointer swap with careful release/acquire ordering. Designed for NICs without RSS/Flow Director (e.g., AWS ENA).
+
+### `PacketTemplate` / `ParsedPacket` (net_header.hpp)
+
+**File**: `eph-dpdk/include/eph/dpdk/net_header.hpp`
+**Purpose**: Zero-copy packet construction and parsing for Ethernet/IPv4/TCP headers. `PacketTemplate` pre-fills static fields once at connection setup; only dynamic fields (seq, ack, flags, payload) change per packet. `ParsedPacket` provides zero-copy views into mbuf data.
+**Interface**:
+```cpp
+// PacketTemplate
+rte_mbuf* build_packet(rte_mempool* pool, uint32_t seq,
+    uint32_t ack, uint8_t flags, uint16_t window,
+    const void* payload = nullptr,
+    uint16_t payload_len = 0) noexcept;
+uint16_t fill_packet(rte_mbuf* mbuf, uint32_t seq,
+    uint32_t ack, uint8_t flags, uint16_t window,
+    const void* payload = nullptr,
+    uint16_t payload_len = 0) noexcept;
+
+// Free function
+ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept;
+```
+**Notes**: `build_packet()` allocates an mbuf and is used for SYN; `fill_packet()` reuses a pre-allocated mbuf for the hot path (no allocation). Supports both software and HW checksum offload via `hw_cksum` flag. Three safety guards in `parse_packet()` prevent buffer over-read and integer underflow. Constexpr byte-order helpers (`hton16`, `hton32`) work at compile time.
+
+### `MulticastReceiver` (multicast.hpp)
+
+**File**: `eph-dpdk/include/eph/dpdk/multicast.hpp`
+**Purpose**: UDP multicast receiver for equity market data feeds (CME MDP3.0, Nasdaq TotalView/MoldUDP64). Manages group membership via NIC MAC filters using RFC 1112 multicast MAC derivation.
+**Interface**:
+```cpp
+explicit MulticastReceiver(MulticastConfig config) noexcept;
+std::expected<size_t, std::string>
+join_group(const MulticastGroup& group);
+std::expected<void, std::string> leave_group(size_t group_idx);
+void on_packet(MulticastPacketCallback cb);
+std::expected<void, std::string> start();
+void stop();
+```
+**Notes**: Supports up to 8 groups (`kMaxMulticastGroups`). Source-specific multicast (SSM) filtering supported. `make_moldudp64_adapter()` bridges to eph-itch parsers without creating a hard dependency. NIC MAC filter list rebuilt on every join/leave. Join is idempotent. Group management must occur before `start()` (no hot-path locking).
+
+### `FlowRule` / `detect_rx_dispatch_mode()` (flow_steering.hpp)
+
+**File**: `eph-dpdk/include/eph/dpdk/flow_steering.hpp`
+**Purpose**: Runtime detection of NIC RX dispatch capabilities and hardware flow steering via rte_flow. Selects between Software (Reactor), RSS, or FlowDirector modes.
+**Interface**:
+```cpp
+RxDispatchMode detect_rx_dispatch_mode(uint16_t port_id) noexcept;
+std::expected<uint16_t, std::string>
+configure_rss(uint16_t port_id, uint16_t num_queues) noexcept;
+std::expected<FlowRule, std::string>
+install_flow_rule(uint16_t port_id, uint16_t queue_id,
+                  const net::ConnectionTuple& tuple) noexcept;
+```
+**Notes**: `FlowRule` is RAII -- auto-removes the NIC rule on destruction via `rte_flow_destroy()`. Detection probes in order: rte_flow 5-tuple validate -> RSS TCP hash -> Software fallback. RSS configuration includes RETA table setup for even distribution. `ConnectionTuple` fields are in host byte order; the functions handle the src/dst swap for the NIC ingress perspective.
+
+### `EalGuard` (eal.hpp)
+
+**File**: `eph-dpdk/include/eph/dpdk/eal.hpp`
+**Purpose**: RAII wrapper for DPDK EAL lifecycle. Ensures `eal_cleanup()` is called on destruction even on error paths.
+**Interface**:
+```cpp
+static std::expected<EalGuard, std::string>
+init(int argc, char** argv);
+int args_consumed() const noexcept;
+bool initialized() const noexcept;
+```
+**Notes**: Move-only. EAL is once-per-process global, intentionally separated from per-port Platform. Move-assignment calls `eal_cleanup()` on the target before transferring ownership.
+
+## Entry Points & APIs
+
+| Entrypoint | Type | Description |
+|---|---|---|
+| `eph::dpdk::connect(host, ep, opts)` | Free function template | Simplest one-call connection: hostname + DPDK endpoint -> connected Transport |
+| `eph::dpdk::connect(ep, cfg, ip, opts)` | Free function template | Full-control: pre-resolved IP + custom TransportConfig |
+| `eph::dpdk::connect(platform, ...)` | Free function template | Reuse existing Platform for multi-connection setups |
+| `EalGuard::init(argc, argv)` | Static factory | Initialize DPDK EAL, returns RAII guard |
+| `Platform::create(config)` | Static factory | Create and initialize a NIC port with mempool |
+| `TcpSession::connect(timeout)` | Method | Blocking TCP three-way handshake |
+| `TcpSession::send(data, len)` | Method | Send data over established TCP connection |
+| `TcpSession::poll_rx(callback)` | Method | Poll NIC RX queue and deliver payload via callback |
+| `arp::resolve(port, queue, pool, ...)` | Free function | Blocking ARP resolution (MAC from IP) |
+| `dns::resolve(port, queue, pool, ...)` | Free function | Blocking DNS A-record resolution over DPDK UDP |
+| `Reactor::add_connection(session, cb)` | Method | Register TCP session for multiplexed RX |
+| `Reactor::start()` / `stop()` | Methods | Start/stop the single RX polling thread |
+| `MulticastReceiver::join_group(group)` | Method | Subscribe to a multicast group via NIC MAC filter |
+| `MulticastReceiver::start()` / `stop()` | Methods | Start/stop multicast RX polling thread |
+| `detect_rx_dispatch_mode(port_id)` | Free function | Probe NIC for best RX dispatch strategy |
+| `install_flow_rule(port, queue, tuple)` | Free function | Install rte_flow 5-tuple rule, returns RAII FlowRule |
+| `configure_rss(port_id, num_queues)` | Free function | Set up RSS hash + RETA table |
+| `resolve_hostname(host)` | Free function | Kernel DNS resolution (getaddrinfo wrapper) |
+
+## Dependencies
+
+### Internal (module graph)
+
+```
+eph-dpdk
+  |
+  +---> eph-transport (include path only, not xmake dep)
+  |       |
+  |       +---> eph-core
+  |       +---> eph-net
+  |
+  +---> eph-core      (tcp_concept.hpp, json_escape)
+  +---> eph-utils     (time.hpp / TSC, cpu.hpp / affinity)
+  +---> eph-containers (public dep via xmake)
+  |
+  +- - -> eph-itch    (optional, for make_moldudp64_adapter)
 ```
 
-## 6. 入口点与 API
+### External
 
-| 入口点 | 文件 | 说明 |
-|--------|------|------|
-| `EalGuard::init(argc, argv)` | `eal.hpp` | 初始化 DPDK EAL (RAII, 每进程一次) |
-| `Platform::create(config)` | `platform.hpp` | 初始化 NIC 端口/队列/Mempool |
-| `connect(endpoint, config)` | `connector.hpp` | 一键建连 (Platform→ARP→TCP→TLS→WS) |
-| `connect(platform, endpoint, config)` | `connector.hpp` | 复用 Platform 建连（多连接） |
-| `TcpSession::connect(timeout)` | `tcp.hpp` | 阻塞式三次握手 |
-| `TcpSession::poll_rx(callback)` | `tcp.hpp` | 轮询收包（直接或从共享 ring） |
-| `TcpSession::set_shared_rx_source(ring)` | `tcp.hpp` | 切换到 SharedRxDispatcher 模式 |
-| `SharedRxDispatcher::create(port, queue)` | `shared_rx.hpp` | 创建多连接包分发器 |
-| `SharedRxDispatcher::register_session(session)` | `shared_rx.hpp` | 注册 session 到分发器 |
-| `arp::resolve(...)` | `arp.hpp` | 阻塞式 ARP 地址解析 |
+| Package | Version | Purpose |
+|---|---|---|
+| [DPDK](https://www.dpdk.org/) | via vcpkg | NIC PMD, mbuf, EAL, ethdev, rte_flow, rte_mempool |
+| [aws-lc](https://github.com/aws/aws-lc) | via vcpkg | CSPRNG (`RAND_bytes`) for ISN, ephemeral ports, DNS tx_id |
+| [spdlog](https://github.com/gabime/spdlog) | via vcpkg | Structured logging with `SPDLOG_ACTIVE_LEVEL` compile-time filtering |
+| [fmt](https://github.com/fmtlib/fmt) | via vcpkg DPDK | Linked to satisfy vcpkg DPDK's bundled fmt symbols |
 
-## 7. 依赖关系
+## Testing
 
-### 内部模块依赖图
-
-```
-connector.hpp (高层入口)
-    |
-    +---> platform.hpp ──→ DPDK (rte_ethdev, rte_mempool)
-    +---> arp.hpp ──→ net_header.hpp
-    +---> dns.hpp ──→ net_header.hpp
-    +---> tcp.hpp
-    |        |
-    |        +---> net_header.hpp ──→ DPDK (rte_mbuf, rte_ether, rte_ip, rte_tcp)
-    |        +---> eph::net::TcpTransport (tcp_concept.hpp)
-    |        +---> DPDK (rte_ring) ← 共享 RX 模式
-    |        +---> OpenSSL/aws-lc (RAND_bytes)
-    |
-    +---> eph::net::Transport (transport.hpp)
-
-shared_rx.hpp (多连接分发)
-    |
-    +---> tcp.hpp
-    +---> net_header.hpp (parse_packet, matches)
-    +---> DPDK (rte_ring, rte_ethdev)
-
-types.hpp
-    +---> tcp.hpp
-    +---> eph::net::Transport
-
-eal.hpp ──→ DPDK (rte_eal)
-```
-
-### 外部依赖
-
-| 包 | 用途 | 必需? |
-|----|------|-------|
-| [DPDK](https://www.dpdk.org/) | NIC PMD, mbuf, EAL, ethdev | 是 |
-| [aws-lc](https://github.com/aws/aws-lc) | CSPRNG (`RAND_bytes`), TLS 1.3 (via eph-net) | 是 (ISN 生成 + TLS) |
-| [spdlog](https://github.com/gabime/spdlog) | 结构化日志，编译期级别过滤 (`SPDLOG_ACTIVE_LEVEL`) | 是 |
-| [Google Test](https://github.com/google/googletest) | 单元测试 | 仅测试 |
-| [Google Benchmark](https://github.com/google/benchmark) | 性能基准测试 | 仅基准 |
-| eph-utils | 工具库 (通过 xmake 依赖) | 是 |
-| eph-containers | 容器库 (SPSC 队列等) | 是 |
-| eph-net | 泛型协议栈 (TLS/WS/HTTP/Transport) | 是 (types.hpp) |
-
-## 8. 测试
-
-| 测试文件 | 测试目标 | 需要 EAL? | 行数 |
-|----------|----------|-----------|------|
-| `tests/test_net_header.cpp` | 字节序、校验和、IPv4 解析/格式化、包构建/解析 | 否 | 489 |
-| `tests/test_dpdk_platform.cpp` | PlatformConfig 验证、Platform 创建/销毁 | 是 (net_null) | 81 |
-| `tests/dpdk_test_env.hpp` | GTest Environment，使用 `--no-huge --no-pci --vdev=net_null0` 启动 EAL | - | - |
-
-### 关键测试场景
-
-- **字节序**: `hton16/hton32` 往返一致性，constexpr 可用性
-- **校验和**: `internet_checksum()` RFC 1071 合规，`tcp_checksum()` 含伪头计算
-- **IPv4 解析**: 正常地址、边界值 (0.0.0.0, 255.255.255.255)、非法输入
-- **包构建**: `PacketTemplate::build_packet()` SYN/ACK/PSH+ACK 完整性
-- **包解析**: `parse_packet()` 各种畸形包拒绝 (过短、错误 EtherType、非 TCP)
-- **Platform**: 非法 pool size 返回错误，port_id 越界返回错误
-
-### 基准测试
-
-| 基准文件 | 测试内容 |
-|----------|----------|
-| `benchmarks/dpdk/bench_tcp_header.cpp` | TCP 头构建/解析性能 |
-| `benchmarks/dpdk/bench_pipeline.cpp` | DPDK 端到端 TX/RX 管线延迟 |
-| `benchmarks/bench_market_dpdk.cpp` | 单 symbol 行情延迟（Binance DPDK） |
-| `benchmarks/bench_market_multi_dpdk.cpp` | 多 symbol combined stream 延迟 + twophase filter |
-| `benchmarks/bench_market_persymbol_dpdk.cpp` | Per-symbol 独立连接 + SharedRxDispatcher |
-| `benchmarks/bench_pingpong_dpdk.cpp` | DPDK ping-pong RTT |
+| Test Suite | Location | Coverage Focus |
+|---|---|---|
+| `test_eal` | `tests/dpdk/test_eal.cpp` | EAL init/cleanup lifecycle, EalGuard RAII, move semantics |
+| `test_dpdk_platform` | `tests/dpdk/test_dpdk_platform.cpp` | PlatformConfig validation, constexpr checks, Platform::create, Stats |
+| `test_net_header` | `tests/dpdk/test_net_header.cpp` | Byte-order helpers, checksums, packet build/parse, IPv4/MAC formatting |
+| `test_tcp` | `tests/dpdk/test_tcp.cpp` | TcpSession state machine, handshake, seq/ack, reorder buffer, FIN/RST |
+| `test_arp` | `tests/dpdk/test_arp.cpp` | ARP request building, reply parsing, resolve timeout/retry |
+| `test_dns` | `tests/dpdk/test_dns.cpp` | DNS query encoding, response parsing, QNAME encoding, resolve flow |
+| `test_connector` | `tests/dpdk/test_connector.cpp` | DpdkEndpoint/ConnectorOptions validation, connect() error paths, DNS resolution |
+| `test_reactor` | `tests/dpdk/test_reactor.cpp` | Connection registration, 4-tuple dispatch, mark_disconnected/reconnected |
+| `test_flow_steering` | `tests/dpdk/test_flow_steering.cpp` | RxDispatchMode detection, RSS configuration, FlowRule RAII |
+| `test_multicast` | `tests/dpdk/test_multicast.cpp` | Multicast MAC derivation, group join/leave, SSM filter, ParsedUdpPacket |
+| `dpdk_test_env.hpp` | `tests/dpdk/dpdk_test_env.hpp` | Shared test harness/mock environment for DPDK tests (no real EAL needed) |
+| `bench_tcp_header` | `benchmarks/dpdk/bench_tcp_header.cpp` | Packet construction/parsing throughput |
+| `bench_pipeline` | `benchmarks/dpdk/bench_pipeline.cpp` | Full pipeline benchmark (RX parse -> TCP -> transport) |
+| `bench_market_dpdk` | `benchmarks/latency/bench_market_dpdk.cpp` | End-to-end market data latency over DPDK |
+| `bench_order_rtt_dpdk` | `benchmarks/latency/bench_order_rtt_dpdk.cpp` | Order round-trip time measurement over DPDK |
