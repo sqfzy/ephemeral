@@ -87,7 +87,7 @@ public:
     SocketTransport(SocketTransport&& other) noexcept
         : config_(std::move(other.config_))
         , fd_(other.fd_)
-        , state_(other.state_)
+        , state_(other.state_.load(std::memory_order_relaxed))
         , mss_(other.mss_)
         , resolved_ip_(std::move(other.resolved_ip_))
         , dns_latency_ns_(other.dns_latency_ns_)
@@ -101,7 +101,7 @@ public:
             if (fd_ >= 0) ::close(fd_);
             config_ = std::move(other.config_);
             fd_ = other.fd_;
-            state_ = other.state_;
+            state_.store(other.state_.load(std::memory_order_relaxed), std::memory_order_relaxed);
             mss_ = other.mss_;
             resolved_ip_ = std::move(other.resolved_ip_);
             dns_latency_ns_ = other.dns_latency_ns_;
@@ -672,7 +672,10 @@ public:
 private:
     SocketConfig config_;
     int          fd_    = -1;
-    TcpState     state_ = TcpState::Closed;
+    // Atomic: read by RX and TX threads concurrently, written by
+    // connect/close/error paths.  Relaxed ordering suffices — state_
+    // is only used for fast-path guards, not for synchronizing other data.
+    std::atomic<TcpState> state_ = TcpState::Closed;
     uint16_t     mss_   = 1460; // Default MSS for Ethernet
     std::string  resolved_ip_;  // Resolved IP from last connect()
     uint64_t     dns_latency_ns_ = 0;
