@@ -1,6 +1,44 @@
 // NOTE: Included inside Transport class body — do not include directly.
 
     // -----------------------------------------------------------------------
+    // RX latency recording (shared by all modes)
+    // -----------------------------------------------------------------------
+
+    /// Record per-message RX latency breakdown:
+    ///   total:   NIC arrival → decoded
+    ///   decrypt: NIC arrival → decrypt_done (TLS decryption)
+    ///   decode:  decrypt_done → decoded (WS frame parsing)
+    ///
+    /// current_arrival_tsc_ is already back-dated to NIC arrival time
+    /// (kernel stack delay subtracted at poll_rx), so no additional
+    /// kernel delay adjustment is needed here.
+    void record_rx_latency() noexcept {
+        if constexpr (kEnableTimestamps) {
+            uint64_t now_tsc = eph::utils::TSC::now();
+            if (current_arrival_tsc_ > 0 && now_tsc > current_arrival_tsc_) {
+                auto cycles_to_ns = [this](uint64_t c) -> uint64_t {
+                    return static_cast<uint64_t>(static_cast<double>(c) * ns_per_cycle_);
+                };
+
+                // Total: NIC arrival → decoded
+                uint64_t total = cycles_to_ns(now_tsc - current_arrival_tsc_);
+                rx_latency_histogram_.record(total);
+
+                // Decrypt: arrival → decrypt_done (TLS only)
+                if (current_decrypt_done_tsc_ > current_arrival_tsc_) {
+                    rx_decrypt_histogram_.record(
+                        cycles_to_ns(current_decrypt_done_tsc_ - current_arrival_tsc_));
+                }
+                // Decode: decrypt_done → now (WS frame parsing)
+                if (current_decrypt_done_tsc_ > 0 && now_tsc > current_decrypt_done_tsc_) {
+                    rx_decode_histogram_.record(
+                        cycles_to_ns(now_tsc - current_decrypt_done_tsc_));
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // WebSocket frame processing
     // -----------------------------------------------------------------------
 

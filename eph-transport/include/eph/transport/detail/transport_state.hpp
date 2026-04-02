@@ -193,7 +193,9 @@
         reconnecting_.store(true, std::memory_order_release);
 
         // Discard stale queue data and fragment buffer
-        tx_queue_.clear();
+        if constexpr (kHasTxQueue) {
+            tx_queue_.clear();
+        }
         if constexpr (kIsWebSocket) {
             ws_frag_buf_.clear();
         }

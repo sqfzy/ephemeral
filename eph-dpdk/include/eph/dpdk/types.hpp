@@ -40,11 +40,11 @@ using DpdkEvictTransport = eph::net::EvictTransport<TcpSession<>>;
 using DpdkRawTransport = eph::net::RawTransport<TcpSession<>>;
 
 // Direct TX mode: app sends directly, RX thread delivers via callback/queue.
-using DpdkDirectTxTransport = eph::net::DirectTxTransport<TcpSession<>>;
+using DpdkDirectTxTransport = eph::net::DirectTxDefaultTransport<TcpSession<>>;
 using DpdkDirectTxRawTransport = eph::net::DirectTxRawTransport<TcpSession<>>;
 
 // Full direct mode: no background threads, app calls send() + poll().
-using DpdkDirectTransport = eph::net::DirectTransport<TcpSession<>>;
+using DpdkDirectTransport = eph::net::DirectDefaultTransport<TcpSession<>>;
 using DpdkDirectRawTransport = eph::net::DirectRawTransport<TcpSession<>>;
 
 /// Re-export generic types for convenience.

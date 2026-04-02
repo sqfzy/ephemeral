@@ -465,40 +465,40 @@ TEST(SendErrorTest, DirectModeErrorCodes) {
 }
 
 // ---------------------------------------------------------------------------
-// TransportMode compile-time instantiation tests
+// Transport variant compile-time instantiation tests
 // ---------------------------------------------------------------------------
-// Verify all three modes compile correctly with MockTcpSession.
+// Verify all three Transport classes compile correctly with MockTcpSession.
 
-TEST(TransportMode, ThreadedTypeAliases) {
-    // kThreaded mode — backward compatible
-    using T = Transport<MockTcpSession, WsFramer, TransportMode::kThreaded, 128, 16>;
+TEST(TransportVariants, ThreadedTypeAliases) {
+    // Transport — TX thread + RX thread + SPSC queues (default)
+    using T = Transport<MockTcpSession, WsFramer, 128, 16>;
     static_assert(T::max_payload() == 128);
     static_assert(T::queue_depth() == 16);
 }
 
-TEST(TransportMode, DirectTxTypeAliases) {
-    // kDirectTx mode — no TX queue, app sends directly
-    using T = Transport<MockTcpSession, WsFramer, TransportMode::kDirectTx, 128, 16>;
+TEST(TransportVariants, DirectTxTypeAliases) {
+    // DirectTxTransport — no TX queue, app sends directly
+    using T = DirectTxTransport<MockTcpSession, WsFramer, 128, 16>;
     static_assert(T::max_payload() == 128);
 }
 
-TEST(TransportMode, DirectTypeAliases) {
-    // kDirect mode — no threads, no queues
-    using T = Transport<MockTcpSession, WsFramer, TransportMode::kDirect, 128, 16>;
+TEST(TransportVariants, DirectTypeAliases) {
+    // DirectTransport — no threads, no queues
+    using T = DirectTransport<MockTcpSession, WsFramer, 128>;
     static_assert(T::max_payload() == 128);
 }
 
-TEST(TransportMode, PresetAliasesCompile) {
+TEST(TransportVariants, PresetAliasesCompile) {
     // Verify preset aliases resolve correctly
     using DT  = DefaultTransport<MockTcpSession>;
-    using DTx = DirectTxTransport<MockTcpSession>;
-    using DD  = DirectTransport<MockTcpSession>;
+    using DTx = DirectTxDefaultTransport<MockTcpSession>;
+    using DD  = DirectDefaultTransport<MockTcpSession>;
     static_assert(DT::max_payload() == 512);
     static_assert(DTx::max_payload() == 512);
     static_assert(DD::max_payload() == 512);
 }
 
-TEST(TransportMode, SocketPresetAliasesCompile) {
+TEST(TransportVariants, SocketPresetAliasesCompile) {
     // Verify socket-specific aliases
     static_assert(sizeof(SocketDirectTxTransport) > 0);
     static_assert(sizeof(SocketDirectTransport) > 0);
@@ -508,9 +508,9 @@ TEST(TransportMode, SocketPresetAliasesCompile) {
 // feed_rx / process_pending compile-time API availability
 // ---------------------------------------------------------------------------
 
-TEST(TransportMode, DirectHasFeedRxAndProcessPending) {
-    // kDirect mode: feed_rx and process_pending exist
-    using T = Transport<MockTcpSession, WsFramer, TransportMode::kDirect, 128, 16>;
+TEST(TransportVariants, DirectHasFeedRxAndProcessPending) {
+    // DirectTransport: feed_rx and process_pending exist
+    using T = DirectTransport<MockTcpSession, WsFramer, 128>;
     // Verify the methods are callable (compile-time check)
     static_assert(requires(T& t, const uint8_t* d, uint16_t l) {
         t.feed_rx(d, l);
@@ -519,8 +519,3 @@ TEST(TransportMode, DirectHasFeedRxAndProcessPending) {
         t.process_pending();
     });
 }
-
-// Note: negative requires tests (kThreaded/kDirectTx should NOT have feed_rx)
-// are enforced by the requires(!kHasRxThread) constraint at definition site.
-// GCC14 does not support negative requires in static_assert expressions
-// for constrained-out member functions.

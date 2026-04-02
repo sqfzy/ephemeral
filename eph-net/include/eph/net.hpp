@@ -12,6 +12,8 @@
 #include "eph/net/socket_transport.hpp"
 #include "eph/net/socket_connect.hpp"
 #include "eph/transport/transport.hpp"
+#include "eph/transport/direct_tx_transport.hpp"
+#include "eph/transport/direct_transport.hpp"
 #include "eph/core/framer_concept.hpp"
 #include "eph/transport/ws_framer.hpp"
 #include "eph/core/length_prefix_framer.hpp"
