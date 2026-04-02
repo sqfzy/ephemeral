@@ -37,7 +37,6 @@
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "bench_common.hpp"
-#include "mock/mock_ws_server.hpp"
 
 namespace bench {
 
@@ -53,7 +52,6 @@ struct BenchConfig {
     int rx_cpu = -1;
     int tx_cpu = -1;
     int main_cpu = -1;
-    bool start_mock = true;  // false = external mock server (namespace mode)
 };
 
 // ── JSON "T" field parser ─────────────────────────────────────────────────
@@ -81,13 +79,7 @@ inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
 /// Run single-connection multi-symbol market data benchmark.
 ///
 /// Measures pipeline latency: mock server sendmsg() TSC -> app on_message TSC.
-///
-/// Steps:
-///   1. Start mock WS server in a background thread
-///   2. Create Transport<TcpImpl> and connect to mock server
-///   3. Receive market data for `duration` seconds
-///   4. For each message: read "T" field, compute TSC::now() - T, record in histogram
-///   5. Print results
+/// Requires an external bench_mock_server to be running on server_ip:port.
 ///
 /// @tparam TcpImpl  A type satisfying the TcpTransport concept.
 /// @param tcp_factory  Callable returning expected<unique_ptr<TcpImpl>, string>.
@@ -97,24 +89,6 @@ void run_market_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
-    // 1. Start mock server (skip if external mock via --no-mock)
-    std::atomic<bool> mock_running{true};
-    std::thread mock_thread;
-    if (cfg.start_mock) {
-        bench::mock::MockServerConfig mock_cfg{
-            .bind_ip = cfg.server_ip,
-            .port = cfg.server_port,
-            .symbols = cfg.symbols,
-            .tick_interval = cfg.tick_interval,
-            .order_mode = false,
-        };
-        mock_thread = std::thread([mock_cfg, &mock_running] {
-            bench::mock::run_mock_ws_server(mock_cfg, mock_running);
-        });
-        std::this_thread::sleep_for(std::chrono::milliseconds{200});
-    }
-
-    // 2. Create transport config (no TLS, no reconnect, no pings)
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
     tc.remote_port = cfg.server_port;
@@ -148,8 +122,6 @@ void run_market_bench(
     auto result = eph::net::Transport<TcpImpl>::create(std::move(tcp_factory), tc);
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
-        mock_running = false;
-        if (mock_thread.joinable()) mock_thread.join();
         return;
     }
     auto& transport = *result;
@@ -165,10 +137,7 @@ void run_market_bench(
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
 
-    // 5. Stop and report
     transport->stop();
-    mock_running = false;
-    if (mock_thread.joinable()) mock_thread.join();
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
@@ -188,12 +157,7 @@ void run_market_bench(
 ///   - Order RTT:          app send() TSC -> app recv(executionReport) TSC
 ///   - Response Latency:   mock sendmsg() TSC -> app on_message TSC
 ///
-/// Steps:
-///   1. Start mock WS server in order mode
-///   2. Create Transport, connect
-///   3. Periodically send order JSON with T_send = TSC::now()
-///   4. on_message: if executionReport, compute RTT and response latency
-///   5. Print results
+/// Requires an external bench_mock_server --order-mode to be running.
 ///
 /// @tparam TcpImpl  A type satisfying the TcpTransport concept.
 /// @param tcp_factory  Callable returning expected<unique_ptr<TcpImpl>, string>.
@@ -203,24 +167,6 @@ void run_order_rtt_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
-    // 1. Start mock server in order mode (skip if external mock via --no-mock)
-    std::atomic<bool> mock_running{true};
-    std::thread mock_thread;
-    if (cfg.start_mock) {
-        bench::mock::MockServerConfig mock_cfg{
-            .bind_ip = cfg.server_ip,
-            .port = cfg.server_port,
-            .symbols = cfg.symbols,
-            .tick_interval = cfg.tick_interval,
-            .order_mode = true,
-        };
-        mock_thread = std::thread([mock_cfg, &mock_running] {
-            bench::mock::run_mock_ws_server(mock_cfg, mock_running);
-        });
-        std::this_thread::sleep_for(std::chrono::milliseconds{200});
-    }
-
-    // 2. Transport config
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
     tc.remote_port = cfg.server_port;
@@ -270,8 +216,6 @@ void run_order_rtt_bench(
     auto result = eph::net::Transport<TcpImpl>::create(std::move(tcp_factory), tc);
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
-        mock_running = false;
-        if (mock_thread.joinable()) mock_thread.join();
         return;
     }
     auto& transport = *result;
@@ -308,10 +252,7 @@ void run_order_rtt_bench(
         std::this_thread::yield();
     }
 
-    // 5. Stop and report
     transport->stop();
-    mock_running = false;
-    if (mock_thread.joinable()) mock_thread.join();
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();

@@ -39,8 +39,6 @@ int main(int argc, char** argv) {
             cfg.tick_interval = std::chrono::microseconds{std::stoi(argv[++i])};
         } else if (arg == "--rx-cpu" && i + 1 < argc) {
             cfg.rx_cpu = std::stoi(argv[++i]);
-        } else if (arg == "--no-mock") {
-            cfg.start_mock = false;
         } else if (arg == "--tx-cpu" && i + 1 < argc) {
             cfg.tx_cpu = std::stoi(argv[++i]);
         }

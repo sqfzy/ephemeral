@@ -142,6 +142,25 @@ int main(int argc, char** argv) {
     if (cfg.rx_cpu >= 0) tc.rx_cpu = cfg.rx_cpu;
     if (cfg.tx_cpu >= 0) tc.tx_cpu = cfg.tx_cpu;
 
+    // ── Latency measurement in RX thread (on_message callback) ──────────────
+    // CRITICAL: must use on_message (not transport.recv queue pull) so the
+    // TSC measurement happens in the RX thread immediately after WS decode,
+    // matching the kernel bench exactly.
+    eph::utils::HdrHistogram latency_hist{10, 1'000'000'000ULL, 3};
+    uint64_t msg_count = 0;
+
+    tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t /*opcode*/) {
+        uint64_t t_send = bench::parse_tsc_field(data, len);
+        if (t_send > 0) {
+            uint64_t now = eph::utils::TSC::now();
+            if (now > t_send) {
+                auto ns = eph::utils::TSC::to_ns(now - t_send);
+                if (ns) latency_hist.record(static_cast<uint64_t>(*ns));
+            }
+        }
+        ++msg_count;
+    };
+
     // ── Start mock WS server FIRST (must be listening before DPDK connect) ──
     bench::mock::MockServerConfig mock_cfg{
         .bind_ip = cfg.server_ip,
@@ -178,34 +197,17 @@ int main(int argc, char** argv) {
     }
     spdlog::info("Connected via DPDK to {}:{}", cfg.server_ip, cfg.server_port);
 
-    // ── Latency histogram ───────────────────────────────────────────────────
-    eph::utils::HdrHistogram latency_hist{10, 1'000'000'000ULL, 3};
-    uint64_t msg_count = 0;
-
     auto& transport = *conn->transport;
 
-    // ── Main loop: drain market data and record latency ─────────────────────
+    // ── Main loop: wait for duration (RX thread measures via on_message) ───
     spdlog::info("Market bench (DPDK) started: {} symbols, duration={}s",
                  cfg.symbols.size(), cfg.duration.count());
 
     auto start = std::chrono::steady_clock::now();
-    auto deadline = start + cfg.duration;
-
     while (g_running.load(std::memory_order_acquire)
-           && transport.is_running()
-           && std::chrono::steady_clock::now() < deadline) {
-        bool got = transport.recv([&](const uint8_t* data, size_t len) {
-            uint64_t t_send = bench::parse_tsc_field(data, static_cast<uint16_t>(len));
-            if (t_send > 0) {
-                uint64_t now = eph::utils::TSC::now();
-                if (now > t_send) {
-                    auto ns = eph::utils::TSC::to_ns(now - t_send);
-                    if (ns) latency_hist.record(static_cast<uint64_t>(*ns));
-                }
-            }
-            ++msg_count;
-        });
-        if (!got) eph::utils::cpu_relax();
+           && transport.is_running()) {
+        if (std::chrono::steady_clock::now() - start >= cfg.duration) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
 
     // ── Stop and report ─────────────────────────────────────────────────────
