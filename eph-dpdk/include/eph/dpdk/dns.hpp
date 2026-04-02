@@ -461,6 +461,10 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
                             + kUdpHeaderLen;
     uint16_t udp_len = net::ntoh16(udp->length);
     if (udp_len < kUdpHeaderLen + kDnsHeaderLen) return std::nullopt;
+    // Guard against truncated packets: the UDP length field may claim more
+    // data than the mbuf actually contains.
+    if (net::kEtherHeaderLen + ihl + udp_len > mbuf->data_len)
+        return std::nullopt;
     size_t dns_len = udp_len - kUdpHeaderLen;
 
     auto result = detail::parse_dns_response(dns_data, dns_len, tx_id);

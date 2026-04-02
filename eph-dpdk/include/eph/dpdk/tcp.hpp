@@ -678,10 +678,14 @@ public:
                 }
             }
 
-            // Check sequence number ordering
+            // Check sequence number ordering — deliver data in all states
+            // where the receive path is still active. CloseWait is included
+            // because the peer has sent FIN but we haven't, so reordered
+            // data segments from before the FIN may still arrive.
             if (state_ == TcpState::Established ||
                 state_ == TcpState::FinWait1 ||
                 state_ == TcpState::FinWait2 ||
+                state_ == TcpState::CloseWait ||
                 state_ == TcpState::Closing) {
 
                 uint32_t seg_seq = parsed.seq();
