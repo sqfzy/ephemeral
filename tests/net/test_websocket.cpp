@@ -270,6 +270,75 @@ TEST(WsControlFrames, PongNullPayloadWithLengthTreatedAsEmpty) {
     EXPECT_EQ(frame->payload_len, 0u);
 }
 
+TEST(WsControlFrames, PingNullPayloadZeroLengthIsValidEmpty) {
+    // Explicitly passing nullptr + 0 is the canonical "empty ping" call.
+    uint8_t buf[64];
+    size_t len = build_ping_frame(buf, nullptr, 0);
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_ping());
+    EXPECT_EQ(frame->payload_len, 0u);
+}
+
+TEST(WsControlFrames, PingDefaultArgumentsProduceEmptyFrame) {
+    // No payload arguments at all (both default to nullptr/0).
+    uint8_t buf[64];
+    size_t len = build_ping_frame(buf);
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_ping());
+    EXPECT_EQ(frame->payload_len, 0u);
+}
+
+TEST(WsControlFrames, PingMaxControlPayload125Bytes) {
+    // RFC 6455 Section 5.5: control frame payload max is 125 bytes.
+    uint8_t payload[125];
+    for (int i = 0; i < 125; ++i) payload[i] = static_cast<uint8_t>(i);
+
+    uint8_t buf[256];
+    size_t len = build_ping_frame(buf, payload, 125);
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_ping());
+    EXPECT_EQ(frame->payload_len, 125u);
+    // Frame payload is masked (client frame); unmask before comparing.
+    EXPECT_TRUE(frame->masked);
+    std::vector<uint8_t> unmasked(frame->payload, frame->payload + 125);
+    apply_mask(unmasked.data(), unmasked.size(), frame->mask_key);
+    EXPECT_EQ(std::memcmp(unmasked.data(), payload, 125), 0);
+}
+
+TEST(WsControlFrames, PongPayloadRoundtrip) {
+    // Verify pong frame preserves payload content, not just opcode.
+    uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    uint8_t buf[64];
+    size_t len = build_pong_frame(buf, payload, sizeof(payload));
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_pong());
+    EXPECT_EQ(frame->payload_len, sizeof(payload));
+    // Frame payload is masked (client frame); unmask before comparing.
+    EXPECT_TRUE(frame->masked);
+    std::vector<uint8_t> unmasked(frame->payload,
+                                   frame->payload + sizeof(payload));
+    apply_mask(unmasked.data(), unmasked.size(), frame->mask_key);
+    EXPECT_EQ(std::memcmp(unmasked.data(), payload, sizeof(payload)), 0);
+}
+
+TEST(WsControlFrames, PongNullPayloadZeroLengthIsValidEmpty) {
+    uint8_t buf[64];
+    size_t len = build_pong_frame(buf, nullptr, 0);
+    ASSERT_GT(len, 0u);
+    auto frame = decode_frame(buf, len);
+    ASSERT_TRUE(frame.has_value());
+    EXPECT_TRUE(frame->is_pong());
+    EXPECT_EQ(frame->payload_len, 0u);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FrameTemplate
 // ─────────────────────────────────────────────────────────────────────────────
