@@ -1,4 +1,4 @@
-/// @file bench_market_single_dpdk.cpp
+/// @file bench_market_dpdk.cpp
 /// DPDK backend: single-connection multi-symbol market data benchmark.
 ///
 /// Connects to the in-process mock WS server via DPDK kernel-bypass TCP
@@ -6,7 +6,7 @@
 /// using HdrHistogram.
 ///
 /// Usage:
-///   bench_market_single_dpdk [EAL args] -- [app args]
+///   bench_market_dpdk [EAL args] -- [app args]
 ///
 /// App args:
 ///   --server-ip IP       Mock server IP (default: 10.0.0.1)
@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
                 "       [--local-ip IP] [--gateway-ip IP] [--dpdk-port N] [--local-port N]\n"
                 "       [--symbols SYM1,SYM2] [--duration SEC] [--tick-us US]\n"
                 "       [--rx-cpu N] [--tx-cpu N] [--main-cpu N]\n",
-                "bench_market_single_dpdk");
+                "bench_market_dpdk");
             return 0;
         }
         else {
@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    spdlog::info("bench_market_single_dpdk: server={}:{}, local={}, gateway={}, "
+    spdlog::info("bench_market_dpdk: server={}:{}, local={}, gateway={}, "
                  "symbols={}, duration={}s",
                  cfg.server_ip, cfg.server_port, local_ip, gateway_ip,
                  cfg.symbols.size(), cfg.duration.count());

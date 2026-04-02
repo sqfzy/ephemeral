@@ -490,11 +490,11 @@ target("simple_hft_dpdk")
     set_symbols("debug")
     apply_dpdk_pmd_linkgroups()
 
-target("bench_market_single")
+target("bench_market")
     set_kind("binary")
     set_group("benchmarks")
     set_default(false)
-    add_files("benchmarks/bench_market_single.cpp")
+    add_files("benchmarks/bench_market.cpp")
     add_deps("eph-net")
     add_defines("EPH_ENABLE_TIMESTAMPS=1")
     add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
@@ -510,11 +510,11 @@ target("bench_order_rtt")
     add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
     set_symbols("debug")
 
-target("bench_market_single_dpdk")
+target("bench_market_dpdk")
     set_kind("binary")
     set_group("benchmarks")
     set_default(false)
-    add_files("benchmarks/bench_market_single_dpdk.cpp")
+    add_files("benchmarks/bench_market_dpdk.cpp")
     add_includedirs("benchmarks")
     add_deps("eph-net", "eph-dpdk", "eph-fix")
     add_defines("EPH_ENABLE_TIMESTAMPS=1")
@@ -537,4 +537,4 @@ target("bench_order_rtt_dpdk")
 -- Old bench targets removed: bench_market, bench_market_dpdk, bench_market_multi,
 -- bench_market_multi_dpdk, bench_market_persymbol_dpdk, bench_market_pingpong,
 -- bench_market_pingpong_dpdk, bench_pingpong, bench_pingpong_dpdk
--- Replaced by: bench_market_single, bench_order_rtt, bench_market_single_dpdk, bench_order_rtt_dpdk
+-- Replaced by: bench_market, bench_order_rtt, bench_market_dpdk, bench_order_rtt_dpdk

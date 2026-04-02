@@ -162,7 +162,7 @@ preflight() {
     # Verify benchmark binaries exist
     local missing=false
     if [[ "$SKIP_SOCKET" == false ]]; then
-        for bin in bench_market_single bench_order_rtt; do
+        for bin in bench_market bench_order_rtt; do
             if [[ ! -x "$BUILD_DIR/$bin" ]]; then
                 log_error "Missing binary: $BUILD_DIR/$bin"
                 missing=true
@@ -170,7 +170,7 @@ preflight() {
         done
     fi
     if [[ "$SKIP_DPDK" == false ]]; then
-        for bin in bench_market_single_dpdk bench_order_rtt_dpdk; do
+        for bin in bench_market_dpdk bench_order_rtt_dpdk; do
             if [[ ! -x "$BUILD_DIR/$bin" ]]; then
                 log_error "Missing binary: $BUILD_DIR/$bin"
                 missing=true
@@ -277,8 +277,8 @@ run_socket_benchmarks() {
 
     log_phase 2 "Socket Benchmarks (kernel TCP)"
 
-    log_info "Running bench_market_single (socket)..."
-    "$BUILD_DIR/bench_market_single" \
+    log_info "Running bench_market (socket)..."
+    "$BUILD_DIR/bench_market" \
         --server-ip "$IP_A" \
         --port "$MOCK_PORT" \
         --symbols "$SYMBOLS" \
@@ -351,9 +351,9 @@ run_dpdk_benchmarks() {
         eal="$eal $EAL_ARGS"
     fi
 
-    log_info "Running bench_market_single_dpdk (DPDK)..."
+    log_info "Running bench_market_dpdk (DPDK)..."
     # shellcheck disable=SC2086
-    "$BUILD_DIR/bench_market_single_dpdk" $eal -- \
+    "$BUILD_DIR/bench_market_dpdk" $eal -- \
         --server-ip "$IP_A" \
         --port "$MOCK_PORT" \
         --local-ip "$IP_B" \

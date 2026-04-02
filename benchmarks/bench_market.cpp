@@ -1,4 +1,4 @@
-/// @file bench_market_single.cpp
+/// @file bench_market.cpp
 /// Socket backend: single-connection multi-symbol market data benchmark.
 ///
 /// Connects to the in-process mock WS server via kernel TCP and measures
@@ -6,7 +6,7 @@
 /// HdrHistogram.
 ///
 /// Usage:
-///   bench_market_single [--server-ip IP] [--port PORT] [--symbols SYM1,SYM2]
+///   bench_market [--server-ip IP] [--port PORT] [--symbols SYM1,SYM2]
 ///                       [--duration SEC] [--tick-us US]
 ///                       [--rx-cpu N] [--tx-cpu N]
 
@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    spdlog::info("bench_market_single (socket): {}:{}, symbols={}, duration={}s",
+    spdlog::info("bench_market (socket): {}:{}, symbols={}, duration={}s",
                  cfg.server_ip, cfg.server_port, cfg.symbols.size(),
                  cfg.duration.count());
 
