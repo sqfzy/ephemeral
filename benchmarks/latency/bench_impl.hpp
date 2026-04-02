@@ -2,9 +2,9 @@
 /// Shared benchmark logic parameterized by TcpTransport backend.
 ///
 /// Both scenarios use DirectTransport (no threads, no SPSC queues).
-/// Mock WS server runs as an in-process thread on NIC-A.
-/// Socket bench uses SO_BINDTODEVICE to force traffic through NIC-B
-/// (no loopback). DPDK bench uses NIC-B via DPDK PMD.
+/// The bench templates are pure clients — they connect to an already-running
+/// mock server. Callers are responsible for starting the mock server
+/// (either externally via bench_mock_server, or in-process via start_mock()).
 
 #pragma once
 
@@ -35,14 +35,14 @@
 namespace bench {
 
 struct BenchConfig {
-    std::string server_ip;  // required: NIC-A IP (mock server binds here)
+    std::string server_ip;  // required: IP of mock server
     uint16_t server_port = 9999;
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     std::chrono::seconds duration{10};
     std::chrono::microseconds tick_interval{100};
     std::chrono::microseconds order_interval{1000};
-    int poll_cpu = 2;    // CPU core for bench poll loop
-    int mock_cpu = 4;    // CPU core for mock server thread
+    int poll_cpu = 2;
+    int mock_cpu = 4;
 };
 
 /// Parse "T" field (raw TSC cycles) from JSON.
@@ -70,8 +70,8 @@ inline void pin_or_die(int cpu, const char* name) {
     spdlog::info("Pinned {} to core {}", name, cpu);
 }
 
-/// Start in-process mock WS server on a dedicated pinned thread.
-/// Returns the thread handle + running flag. Caller must join on shutdown.
+// ── In-process mock server (used by DPDK bench) ───────────────────────────
+
 struct MockHandle {
     std::thread thread;
     std::unique_ptr<std::atomic<bool>> running = std::make_unique<std::atomic<bool>>(true);
@@ -91,7 +91,6 @@ inline MockHandle start_mock(const BenchConfig& cfg, bool order_mode) {
         pin_or_die(mock_cpu, "mock-server");
         mock::run_mock_ws_server(mock_cfg, running);
     });
-    // Wait for mock to be listening
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
     return h;
 }
@@ -101,20 +100,15 @@ inline void stop_mock(MockHandle& h) {
     if (h.thread.joinable()) h.thread.join();
 }
 
-// ── Market Data Benchmark ──────────────────────────────────────────────────
+// ── Market Data Benchmark (pure client) ────────────────────────────────────
 
-/// Single-connection multi-symbol market data latency benchmark.
-/// Uses DirectTransport — app thread polls directly, no queues.
-/// Measures: mock sendmsg() TSC → app on_message TSC.
+/// Connects to an already-running mock server and measures pipeline latency.
 template <eph::net::TcpTransport TcpImpl>
 void run_market_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
     using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
-
-    // Start mock server
-    auto mock = start_mock(cfg, /*order_mode=*/false);
 
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
@@ -143,7 +137,6 @@ void run_market_bench(
     auto result = Transport::create(std::move(tcp_factory), tc);
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
-        stop_mock(mock);
         return;
     }
     auto& transport = *result;
@@ -160,7 +153,6 @@ void run_market_bench(
     }
 
     transport->stop();
-    stop_mock(mock);
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
@@ -172,18 +164,15 @@ void run_market_bench(
     print_latency("Pipeline Latency (mock send -> app recv)", hdr_to_stats(latency_hist));
 }
 
-// ── Order RTT Benchmark ────────────────────────────────────────────────────
+// ── Order RTT Benchmark (pure client) ──────────────────────────────────────
 
-/// Order send + ExecutionReport response RTT benchmark.
-/// Uses DirectTransport — app thread alternates between send and poll.
+/// Connects to an already-running mock server (--order-mode) and measures RTT.
 template <eph::net::TcpTransport TcpImpl>
 void run_order_rtt_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
     using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
-
-    auto mock = start_mock(cfg, /*order_mode=*/true);
 
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
@@ -224,7 +213,6 @@ void run_order_rtt_bench(
     auto result = Transport::create(std::move(tcp_factory), tc);
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
-        stop_mock(mock);
         return;
     }
     auto& transport = *result;
@@ -258,7 +246,6 @@ void run_order_rtt_bench(
     }
 
     transport->stop();
-    stop_mock(mock);
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();

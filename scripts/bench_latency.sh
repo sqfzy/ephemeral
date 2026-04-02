@@ -136,11 +136,15 @@ parse_args() {
     [[ -z "$NIC_B" ]]     && die "--nic-b is required (NIC-B interface for bench client)"
     [[ -z "$SERVER_IP" ]] && die "--server-ip is required (NIC-A IP where mock server binds)"
 
-    # Auto-detect LOCAL_IP from NIC-B if not specified
+    # Auto-detect LOCAL_IP and prefix from NIC-B if not specified
     if [[ -z "$LOCAL_IP" ]]; then
         LOCAL_IP=$(ip -4 addr show "$NIC_B" 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' || true)
         [[ -z "$LOCAL_IP" ]] && die "Cannot auto-detect NIC-B IP. Specify --local-ip"
     fi
+    # Detect prefix length for namespace IP configuration
+    LOCAL_PREFIX=$(ip -4 addr show "$NIC_B" 2>/dev/null | grep -oE 'inet [0-9./]+' | head -1 | awk '{print $2}' | grep -oE '/[0-9]+' || true)
+    LOCAL_PREFIX="${LOCAL_PREFIX:-/20}"
+    LOCAL_CIDR="${LOCAL_IP}${LOCAL_PREFIX}"
 
     # Default gateway to server IP
     GATEWAY_IP="${GATEWAY_IP:-$SERVER_IP}"
@@ -177,7 +181,7 @@ preflight() {
     # Check required binaries
     local missing=false
     if [[ "$SKIP_SOCKET" == false ]]; then
-        for bin in bench_market bench_order_rtt; do
+        for bin in bench_mock_server bench_market bench_order_rtt; do
             [[ -x "$BUILD_DIR/$bin" ]] || { log_error "Missing: $BUILD_DIR/$bin"; missing=true; }
         done
     fi
@@ -201,36 +205,79 @@ preflight() {
     fi
 }
 
-# ── Socket benchmarks ──────────────────────────────────────────────────────
+# ── Socket benchmarks (namespace isolation) ────────────────────────────────
+#
+# To prevent kernel loopback optimization (local routing table intercepts
+# traffic between two local IPs), socket bench runs inside a network
+# namespace with NIC-B. Mock server runs in host namespace on NIC-A.
+#
+# Flow: bench (namespace/NIC-B) → VPC → mock (host/NIC-A)
+#
 run_socket_benchmarks() {
     [[ "$SKIP_SOCKET" == true ]] && return
 
-    log_phase 1 "Socket Benchmarks (kernel TCP + SO_BINDTODEVICE)"
+    log_phase 1 "Socket Benchmarks (namespace isolation)"
 
     local common_args=(
         --server-ip "$SERVER_IP"
-        --bind-dev "$NIC_B"
         --port 9999
         --symbols "$SYMBOLS"
         --duration "$DURATION"
-        --tick-us "$TICK_US"
         --poll-cpu "$POLL_CPU"
-        --mock-cpu "$MOCK_CPU"
     )
 
     if [[ "$DRY_RUN" == true ]]; then
-        echo "[DRY RUN] $BUILD_DIR/bench_market ${common_args[*]}"
-        echo "[DRY RUN] $BUILD_DIR/bench_order_rtt ${common_args[*]}"
+        echo "[DRY RUN] bench_mock_server on host namespace"
+        echo "[DRY RUN] ip netns add bench_ns; move $NIC_B"
+        echo "[DRY RUN] ip netns exec bench_ns bench_market ..."
+        echo "[DRY RUN] ip netns exec bench_ns bench_order_rtt ..."
+        echo "[DRY RUN] restore $NIC_B"
         return
     fi
 
-    log_info "Running bench_market (socket)..."
-    "$BUILD_DIR/bench_market" "${common_args[@]}" 2>&1
+    # Start mock server in host namespace (binds NIC-A)
+    log_info "Starting mock server (host namespace, $SERVER_IP)..."
+    "$BUILD_DIR/bench_mock_server" \
+        --bind-ip "$SERVER_IP" --port 9999 \
+        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" &
+    local mock_pid=$!
+    sleep 1
+
+    # Create namespace and move NIC-B into it
+    log_info "Creating namespace bench_ns, moving $NIC_B..."
+    ip netns add bench_ns 2>/dev/null || true
+    ip link set "$NIC_B" netns bench_ns
+    ip netns exec bench_ns ip addr add "$LOCAL_CIDR" dev "$NIC_B"
+    ip netns exec bench_ns ip link set "$NIC_B" up
+    ip netns exec bench_ns ip route add default via "$GATEWAY_IP" dev "$NIC_B"
+
+    # Run socket benchmarks inside namespace
+    log_info "Running bench_market (socket, namespace)..."
+    ip netns exec bench_ns \
+        "$BUILD_DIR/bench_market" "${common_args[@]}" 2>&1
     echo
 
-    log_info "Running bench_order_rtt (socket)..."
-    "$BUILD_DIR/bench_order_rtt" "${common_args[@]}" --order-interval-us 1000 2>&1
+    log_info "Starting mock server for order mode..."
+    kill "$mock_pid" 2>/dev/null; wait "$mock_pid" 2>/dev/null
+    "$BUILD_DIR/bench_mock_server" \
+        --bind-ip "$SERVER_IP" --port 9999 \
+        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" --order-mode &
+    mock_pid=$!
+    sleep 1
+
+    log_info "Running bench_order_rtt (socket, namespace)..."
+    ip netns exec bench_ns \
+        "$BUILD_DIR/bench_order_rtt" "${common_args[@]}" --order-interval-us 1000 2>&1
     echo
+
+    # Cleanup: stop mock, restore NIC-B
+    kill "$mock_pid" 2>/dev/null; wait "$mock_pid" 2>/dev/null
+    log_info "Restoring $NIC_B to host namespace..."
+    ip netns exec bench_ns ip link set "$NIC_B" netns 1
+    ip netns del bench_ns 2>/dev/null || true
+    ip link set "$NIC_B" up
+    ip addr add "$LOCAL_CIDR" dev "$NIC_B" 2>/dev/null || true
+    log_info "Socket benchmarks complete, $NIC_B restored"
 }
 
 # ── DPDK benchmarks ────────────────────────────────────────────────────────
@@ -291,8 +338,22 @@ run_dpdk_benchmarks() {
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────
+cleanup_on_exit() {
+    # Ensure NIC-B is restored to host namespace if script is interrupted
+    if ip netns list 2>/dev/null | grep -q bench_ns; then
+        log_warn "Cleaning up: restoring $NIC_B from namespace..."
+        ip netns exec bench_ns ip link set "$NIC_B" netns 1 2>/dev/null || true
+        ip netns del bench_ns 2>/dev/null || true
+        ip link set "$NIC_B" up 2>/dev/null || true
+        ip addr add "$LOCAL_CIDR" dev "$NIC_B" 2>/dev/null || true
+    fi
+    # Kill any lingering mock server
+    pkill -f bench_mock_server 2>/dev/null || true
+}
+
 main() {
     parse_args "$@"
+    trap cleanup_on_exit EXIT
 
     separator
     echo -e "${BOLD}bench_latency.sh — Socket vs DPDK Latency Benchmark${NC}"
