@@ -33,6 +33,17 @@ inline constexpr uint16_t kLegacyVersion      = 0x0303;
 inline constexpr uint16_t kRecordHeaderLen     = 5;
 inline constexpr uint16_t kAuthTagLen          = 16;
 
+/// Maximum TLS 1.3 record sequence number before forced reconnection.
+///
+/// Set to 2^24 (~16M records) per NIST SP 800-38D §8.3 recommendation
+/// for AES-GCM with random nonces: the birthday bound at 2^32 gives a
+/// ~2^-32 collision probability, and 2^24 provides a ~2^8 safety margin.
+///
+/// At HFT rates (~100K messages/sec), this triggers reconnection every
+/// ~167 seconds. This is intentional: periodic key refresh limits the
+/// blast radius of a compromised session key. If longer sessions are
+/// needed, implement TLS 1.3 KeyUpdate (RFC 8446 §4.6.3) instead of
+/// raising this limit.
 inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 24);
 inline constexpr uint64_t kSequenceWarnThreshold = kMaxSequenceNumber * 9 / 10;
 inline constexpr uint64_t kSequenceReconnectThreshold = kMaxSequenceNumber * 95 / 100;

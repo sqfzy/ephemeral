@@ -73,6 +73,11 @@ public:
     TlsDecryptor(const TlsDecryptor&) = delete;
     TlsDecryptor& operator=(const TlsDecryptor&) = delete;
 
+    // Safety: EVP_AEAD_CTX in BoringSSL/aws-lc (AES-GCM) is a flat struct
+    // containing the aead pointer + inline key schedule arrays, with no
+    // internal heap pointers. Bitwise copy is safe for move semantics.
+    // If aws-lc changes this invariant, replace with EVP_AEAD_CTX_init
+    // from saved key material instead of direct struct copy.
     TlsDecryptor(TlsDecryptor&& other) noexcept
         : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_) {
         std::memcpy(iv_, other.iv_, tls_const::kTls13NonceLen);

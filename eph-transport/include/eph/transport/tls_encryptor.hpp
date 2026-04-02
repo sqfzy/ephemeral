@@ -73,6 +73,11 @@ public:
     TlsEncryptor(const TlsEncryptor&) = delete;
     TlsEncryptor& operator=(const TlsEncryptor&) = delete;
 
+    // Safety: EVP_AEAD_CTX in BoringSSL/aws-lc (AES-GCM) is a flat struct
+    // containing the aead pointer + inline key schedule arrays, with no
+    // internal heap pointers. Bitwise copy is safe for move semantics.
+    // If aws-lc changes this invariant, replace with EVP_AEAD_CTX_init
+    // from saved key material instead of direct struct copy.
     TlsEncryptor(TlsEncryptor&& other) noexcept
         : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_) {
         std::memcpy(iv_, other.iv_, tls_const::kTls13NonceLen);
@@ -114,6 +119,12 @@ public:
             return 0;
         }
 
+        if (plaintext == nullptr && plaintext_len > 0) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
+                "encrypt: plaintext is null but plaintext_len={}", plaintext_len);
+            return 0;
+        }
+
         uint16_t inner_len = plaintext_len + 1;
         uint16_t encrypted_len = inner_len + tls_record::kAuthTagLen;
 
@@ -122,12 +133,6 @@ public:
 
         uint8_t nonce[tls_const::kTls13NonceLen];
         tls_record::build_nonce(nonce, iv_, seq_);
-
-        if (plaintext == nullptr && plaintext_len > 0) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
-                "encrypt: plaintext is null but plaintext_len={}", plaintext_len);
-            return 0;
-        }
         alignas(64) uint8_t inner_buf[tls_const::kMaxRecordPayload + 1];
         if (plaintext_len > 0) {
             std::memcpy(inner_buf, plaintext, plaintext_len);

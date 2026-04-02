@@ -71,7 +71,8 @@ using ReactorDataCallback =
 
 /// Callback invoked once per burst after all packets have been dispatched.
 /// Use this to trigger batch processing (e.g., Transport::process_pending).
-/// Only called when the burst delivered at least one packet (nb_rx > 0).
+/// Only called when the NIC returned at least one packet (nb_rx > 0);
+/// note that not all packets may have matched a registered connection.
 using BurstCompleteCallback = std::function<void()>;
 
 /// Per-connection entry in the Reactor.

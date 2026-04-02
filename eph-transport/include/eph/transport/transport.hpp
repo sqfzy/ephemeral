@@ -1807,6 +1807,11 @@ private:
     /// Used in kDirectTx and kDirect modes — no SPSC queue involved.
     /// Called from the application thread; crypto_->enc is exclusively
     /// owned by the send caller (safe: RX thread only uses crypto_->dec).
+    ///
+    /// Thread safety: do NOT call send_direct() concurrently with stop().
+    /// In kDirectTx mode, call stop() only after the app thread has
+    /// finished all send_direct() calls (stop() may access crypto_ for
+    /// the WS Close frame).
     SendError send_direct(const void* data, size_t len, uint8_t opcode) noexcept
         requires (!kHasTxQueue)
     {
