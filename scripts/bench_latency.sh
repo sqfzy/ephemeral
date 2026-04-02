@@ -235,14 +235,6 @@ run_socket_benchmarks() {
         return
     fi
 
-    # Start mock server in host namespace (binds NIC-A)
-    log_info "Starting mock server (host namespace, $SERVER_IP)..."
-    "$BUILD_DIR/bench_mock_server" \
-        --bind-ip "$SERVER_IP" --port 9999 \
-        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" &
-    local mock_pid=$!
-    sleep 1
-
     # Create namespace and move NIC-B into it
     log_info "Creating namespace bench_ns, moving $NIC_B..."
     ip netns add bench_ns 2>/dev/null || true
@@ -251,27 +243,33 @@ run_socket_benchmarks() {
     ip netns exec bench_ns ip link set "$NIC_B" up
     ip netns exec bench_ns ip route add default via "$GATEWAY_IP" dev "$NIC_B"
 
-    # Run socket benchmarks inside namespace
-    log_info "Running bench_market (socket, namespace)..."
-    ip netns exec bench_ns \
-        "$BUILD_DIR/bench_market" "${common_args[@]}" 2>&1
-    echo
-
-    log_info "Starting mock server for order mode..."
-    kill "$mock_pid" 2>/dev/null; wait "$mock_pid" 2>/dev/null
+    # --- Market data bench (mock on port 9999) ---
+    log_info "Starting mock server for market data..."
     "$BUILD_DIR/bench_mock_server" \
         --bind-ip "$SERVER_IP" --port 9999 \
+        --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" &
+    local mock_pid=$!
+    sleep 1
+
+    log_info "Running bench_market (socket, namespace)..."
+    ip netns exec bench_ns \
+        "$BUILD_DIR/bench_market" "${common_args[@]}" --port 9999 2>&1
+    echo
+    kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
+
+    # --- Order RTT bench (mock on port 9998, order mode) ---
+    log_info "Starting mock server for orders..."
+    "$BUILD_DIR/bench_mock_server" \
+        --bind-ip "$SERVER_IP" --port 9998 \
         --symbols "$SYMBOLS" --tick-us "$TICK_US" --cpu "$MOCK_CPU" --order-mode &
     mock_pid=$!
     sleep 1
 
     log_info "Running bench_order_rtt (socket, namespace)..."
     ip netns exec bench_ns \
-        "$BUILD_DIR/bench_order_rtt" "${common_args[@]}" --order-interval-us 1000 2>&1
+        "$BUILD_DIR/bench_order_rtt" "${common_args[@]}" --port 9998 --order-interval-us 1000 2>&1
     echo
-
-    # Cleanup: stop mock, restore NIC-B
-    kill "$mock_pid" 2>/dev/null; wait "$mock_pid" 2>/dev/null
+    kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
     log_info "Restoring $NIC_B to host namespace..."
     ip netns exec bench_ns ip link set "$NIC_B" netns 1
     ip netns del bench_ns 2>/dev/null || true
