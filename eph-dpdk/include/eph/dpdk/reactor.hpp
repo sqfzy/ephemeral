@@ -192,9 +192,10 @@ public:
     ///     so it either sees the old session (still valid — caller must
     ///     keep old session alive until the next burst cycle) or the
     ///     new one.  Either way, the pointer is valid.
-    ///  3. Update tuple and hash (non-atomic, but only the hash pre-filter
-    ///     and tuple match use them — a stale value causes at most one
-    ///     missed or extra packet, not UB).
+    ///  3. Update tuple and hash (non-atomic writes, but safe because
+    ///     the RX loop checks connected (acquire) BEFORE reading these
+    ///     fields — the release/acquire pair on connected guarantees
+    ///     visibility of the new tuple/hash values).
     ///  4. Set connected=true (release) to re-enable the entry.
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
         if (!new_session) return;
@@ -282,15 +283,14 @@ private:
                 bool matched = false;
                 const size_t n = count_.load(std::memory_order_acquire);
                 for (size_t j = 0; j < n; ++j) {
-                    if (hashes_[j] != pkt_hash) continue;  // Fast reject
-                    if (!parsed.matches(entries_[j].tuple)) continue;  // Collision check
-
                     auto& entry = entries_[j];
-                    if (!entry.connected.load(std::memory_order_acquire)) {
-                        rte_pktmbuf_free(pkts[i]);
-                        matched = true;
-                        break;
-                    }
+                    // Check connected FIRST (acquire) — provides happens-before
+                    // guarantee for subsequent reads of hashes_[j] and entry.tuple,
+                    // which are written non-atomically in mark_reconnected() before
+                    // the release-store to connected=true.
+                    if (!entry.connected.load(std::memory_order_acquire)) continue;
+                    if (hashes_[j] != pkt_hash) continue;  // Fast reject
+                    if (!parsed.matches(entry.tuple)) continue;  // Collision check
 
                     // Load session pointer once into a local — safe even if
                     // mark_reconnected() atomically swaps it concurrently.

@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -103,6 +104,9 @@ hmac_sha256(std::string_view key, std::string_view message) noexcept {
                         "computing HMAC-SHA256: key_len={}, msg_len={}",
                         key.size(), message.size());
 
+    if (key.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return std::unexpected("HMAC key too large");
+    }
     const uint8_t* result = HMAC(
         EVP_sha256(),
         key.data(), static_cast<int>(key.size()),
