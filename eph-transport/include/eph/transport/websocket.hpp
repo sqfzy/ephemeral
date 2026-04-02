@@ -611,9 +611,12 @@ inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
 /// Build a Pong response frame (echo back the ping payload).
 inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
                                 uint64_t payload_len) noexcept {
-    // ping_payload should never be null with non-zero length in practice —
-    // the WebSocket decoder always provides a valid pointer for control frames.
-    assert(ping_payload || payload_len == 0);
+    // Defensively clamp length to 0 when pointer is null to prevent UB.
+    // In practice the WebSocket decoder always provides a valid pointer for
+    // control frames, but callers may pass nullptr + non-zero length by mistake.
+    if (!ping_payload) [[unlikely]] {
+        payload_len = 0;
+    }
     return encode_frame(out, opcode::kPong, ping_payload, payload_len);
 }
 
@@ -621,7 +624,10 @@ inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
 inline size_t build_ping_frame(uint8_t* out,
                                 const uint8_t* payload = nullptr,
                                 uint64_t payload_len = 0) noexcept {
-    assert(payload || payload_len == 0);
+    // Defensively clamp length to 0 when pointer is null to prevent UB.
+    if (!payload) [[unlikely]] {
+        payload_len = 0;
+    }
     return encode_frame(out, opcode::kPing, payload, payload_len);
 }
 

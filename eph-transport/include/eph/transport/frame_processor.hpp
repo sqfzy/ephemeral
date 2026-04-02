@@ -31,18 +31,7 @@
 
 namespace eph::net {
 
-// Pull in the kEnableTimestamps constant. This is normally defined in
-// transport.hpp via the EPH_ENABLE_TIMESTAMPS macro. We reference it
-// here so FrameProcessor can be used standalone without transport.hpp.
-#ifndef EPH_ENABLE_TIMESTAMPS
-#define EPH_ENABLE_TIMESTAMPS 0
-#endif
-
-// Provide kEnableTimestamps if not already defined by a prior include.
-#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
-#endif
+// kEnableTimestamps is defined once in transport_types.hpp (included above).
 
 // -----------------------------------------------------------------------
 // FrameProcessor

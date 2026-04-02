@@ -59,22 +59,7 @@
 
 namespace eph::net {
 
-// ---------------------------------------------------------------------------
-// Compile-time timestamp control (shared with SocketTransport)
-// ---------------------------------------------------------------------------
-
-/// Compile-time switch for per-message TSC timestamps in Transport.
-/// Pass -DEPH_ENABLE_TIMESTAMPS=1 via the build system to enable.
-/// Controls both Transport (message TSC, internal histograms) and
-/// SocketTransport (SO_TIMESTAMPING kernel timestamps).
-#ifndef EPH_ENABLE_TIMESTAMPS
-#define EPH_ENABLE_TIMESTAMPS 0
-#endif
-
-#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
-#endif
+// kEnableTimestamps is defined once in transport_types.hpp (included above).
 
 // ---------------------------------------------------------------------------
 // Transport -- public API (threaded variant, composed from workers)
@@ -335,7 +320,7 @@ public:
     }
 
     /// Send a string_view as a WebSocket binary frame.
-    SendError send_binary(std::string_view sv) noexcept {
+    [[nodiscard]] SendError send_binary(std::string_view sv) noexcept {
         return send(sv.data(), sv.size(), ws::opcode::kBinary);
     }
 

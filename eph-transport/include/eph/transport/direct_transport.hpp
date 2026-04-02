@@ -52,15 +52,7 @@
 
 namespace eph::net {
 
-// Ensure kEnableTimestamps is available in this translation unit.
-#ifndef EPH_ENABLE_TIMESTAMPS
-#define EPH_ENABLE_TIMESTAMPS 0
-#endif
-
-#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
-#endif
+// kEnableTimestamps is defined once in transport_types.hpp (included via transport_core.hpp).
 
 // ---------------------------------------------------------------------------
 // DirectTransport — threadless, queueless transport

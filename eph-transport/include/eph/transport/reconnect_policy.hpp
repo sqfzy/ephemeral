@@ -37,6 +37,9 @@ public:
     explicit ReconnectPolicy(const TransportConfig& config) noexcept
         : config_(config)
         , current_backoff_(config.reconnect_interval)
+        , max_backoff_(config.max_reconnect_backoff.count() > 0
+                           ? config.max_reconnect_backoff
+                           : config.reconnect_interval * 16)
     {}
 
     /// Execute one reconnection attempt with backoff.
@@ -96,9 +99,8 @@ public:
             }
         }
 
-        // Double backoff for next attempt (capped)
-        current_backoff_ = std::min(
-            current_backoff_ * 2, config_.max_reconnect_backoff);
+        // Double backoff for next attempt (capped at resolved max)
+        current_backoff_ = std::min(current_backoff_ * 2, max_backoff_);
 
         return false;
     }
@@ -140,6 +142,9 @@ private:
     int attempt_{0};
     uint64_t total_reconnects_{0};
     std::chrono::milliseconds current_backoff_;
+    /// Resolved max backoff: config value if > 0, otherwise 16x base interval.
+    /// Pre-computed at construction to avoid repeated zero-check in attempt().
+    std::chrono::milliseconds max_backoff_;
 };
 
 } // namespace eph::net

@@ -127,3 +127,30 @@ TEST_F(ReconnectPolicyTest, SuccessOnSecondAttempt) {
     EXPECT_TRUE(ok2);
     EXPECT_EQ(policy.total_reconnects(), 1);
 }
+
+TEST_F(ReconnectPolicyTest, DefaultMaxBackoffIs16xBase) {
+    // When max_reconnect_backoff is 0 (default), backoff should cap at 16x base.
+    // Before the fix, 0ms max_backoff caused std::min(backoff*2, 0ms) = 0ms,
+    // meaning backoff collapsed to zero after the first failure.
+    auto cfg = make_config(/*max_attempts=*/10,
+                           /*interval_ms=*/10,
+                           /*max_backoff_ms=*/0);  // 0 = 16x base = 160ms
+    ReconnectPolicy policy(cfg);
+
+    auto fail_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kFactoryFailed, "always fail"});
+    };
+
+    // Run several attempts to let backoff grow; measure elapsed time.
+    // With 16x cap at 160ms, attempts should take non-trivial time.
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i) {
+        (void)policy.attempt(fail_fn);
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    // With proper backoff (10ms, 20ms, 40ms + jitter), total > 50ms.
+    // With the old bug (0ms backoff), total < 5ms.
+    EXPECT_GT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 30);
+}

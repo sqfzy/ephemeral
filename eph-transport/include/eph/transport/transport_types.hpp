@@ -32,6 +32,20 @@ namespace eph::net {
 namespace detail { using eph::core::detail::json_escape; }
 
 // ---------------------------------------------------------------------------
+// Compile-time timestamp control (single definition point)
+// ---------------------------------------------------------------------------
+
+/// Compile-time switch for per-message TSC timestamps.
+/// Pass -DEPH_ENABLE_TIMESTAMPS=1 via the build system to enable.
+/// Controls both Transport (message TSC, internal histograms) and
+/// SocketTransport (SO_TIMESTAMPING kernel timestamps).
+#ifndef EPH_ENABLE_TIMESTAMPS
+#define EPH_ENABLE_TIMESTAMPS 0
+#endif
+
+inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+
+// ---------------------------------------------------------------------------
 // Batch frame filter for selective delivery
 // ---------------------------------------------------------------------------
 

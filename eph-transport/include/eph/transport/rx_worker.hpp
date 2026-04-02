@@ -43,18 +43,7 @@
 
 namespace eph::net {
 
-// kEnableTimestamps is normally defined in transport.hpp (or
-// direct_transport.hpp) from the EPH_ENABLE_TIMESTAMPS macro.
-// When rx_worker.hpp is included standalone, provide a default.
-// frame_processor.hpp already guards the macro; we guard the constant.
-#ifndef EPH_ENABLE_TIMESTAMPS
-#define EPH_ENABLE_TIMESTAMPS 0
-#endif
-
-#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
-inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
-#endif
+// kEnableTimestamps is defined once in transport_types.hpp (included above).
 
 // ---------------------------------------------------------------------------
 // RxWorkerStats — aggregate snapshot returned by RxWorker::stats()
