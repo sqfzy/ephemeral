@@ -494,6 +494,16 @@ public:
         }
 
         if (n == 0) {
+            TcpState cur = state_.load(std::memory_order_relaxed);
+            if (cur == TcpState::FinWait1 || cur == TcpState::FinWait2 ||
+                cur == TcpState::LastAck) {
+                // We initiated close — peer's FIN completes the shutdown.
+                SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
+                    "Peer FIN received in {} -> CLOSED",
+                    tcp_state_name(cur));
+                close_fd();
+                return std::unexpected("Connection closed (graceful)");
+            }
             SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
                 "Peer closed connection");
             state_ = TcpState::CloseWait;
@@ -567,8 +577,10 @@ public:
             state_ = TcpState::LastAck;
         }
 
-        // Close the fd after shutdown
-        close_fd();
+        // Do NOT close_fd() here — the fd must remain open so poll_rx()
+        // can drain remaining data and detect the peer's FIN (recv returns 0).
+        // The fd is closed when poll_rx detects n==0 in a FIN_WAIT state,
+        // or by the destructor / reset().
         return {};
     }
 
