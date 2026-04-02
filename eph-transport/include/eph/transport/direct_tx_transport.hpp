@@ -237,136 +237,70 @@ public:
         return send(sv.data(), sv.size(), ws::opcode::kBinary);
     }
 
-    /// Send data with timeout -- timeout is ignored (no queue), sends directly.
+    /// @deprecated Timeout is ignored in direct-TX mode (no queue to wait on).
+    ///   Use send() instead — it has identical behavior without the misleading
+    ///   timeout parameter that silently changes semantics vs Transport::send_for().
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send()")]]
     [[nodiscard]] SendError send_for(const void* data, size_t len,
-                       std::chrono::duration<Rep, Period> timeout,
+                       std::chrono::duration<Rep, Period> /*timeout*/,
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (opcode == ws::opcode::kText && !core_.config.skip_utf8_validation &&
-            !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
-            return SendError::kInvalidUtf8;
-        }
-        (void)timeout;
-        return send_direct_(data, len, opcode);
+        return send(data, len, opcode);
     }
 
-    /// Send data from a span with timeout (convenience overload).
+    /// @deprecated Timeout is ignored in direct-TX mode. Use send() instead.
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send()")]]
     [[nodiscard]] SendError send_for(std::span<const uint8_t> data,
-                       std::chrono::duration<Rep, Period> timeout,
+                       std::chrono::duration<Rep, Period> /*timeout*/,
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
-        return send_for(data.data(), data.size(), timeout, opcode);
+        return send(data, opcode);
     }
 
-    /// Send a WebSocket text frame with timeout (timeout ignored, sends directly).
+    /// @deprecated Timeout is ignored in direct-TX mode. Use send_text() instead.
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send_text()")]]
     [[nodiscard]] SendError send_text_for(const void* data, size_t len,
-                            std::chrono::duration<Rep, Period> timeout) noexcept {
-        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (!core_.config.skip_utf8_validation &&
-            !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
-            return SendError::kInvalidUtf8;
-        }
-        (void)timeout;
-        return send_direct_(data, len, ws::opcode::kText);
+                            std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
+        return send_text(data, len);
     }
 
-    /// Send a string_view as a WebSocket text frame with timeout.
+    /// @deprecated Timeout is ignored in direct-TX mode. Use send_text() instead.
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send_text()")]]
     [[nodiscard]] SendError send_text_for(std::string_view sv,
-                            std::chrono::duration<Rep, Period> timeout) noexcept {
-        if (!core_.config.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
-            return SendError::kInvalidUtf8;
-        }
-        (void)timeout;
-        return send_direct_(sv.data(), sv.size(), ws::opcode::kText);
+                            std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
+        return send_text(sv);
     }
 
-    /// Send a WebSocket binary frame with timeout.
+    /// @deprecated Timeout is ignored in direct-TX mode. Use send_binary() instead.
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send_binary()")]]
     [[nodiscard]] SendError send_binary_for(const void* data, size_t len,
-                              std::chrono::duration<Rep, Period> timeout) noexcept {
-        return send_for(data, len, timeout, ws::opcode::kBinary);
+                              std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
+        return send_binary(data, len);
     }
 
-    /// Send a span as a WebSocket binary frame with timeout.
+    /// @deprecated Timeout is ignored in direct-TX mode. Use send_binary() instead.
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send_binary()")]]
     [[nodiscard]] SendError send_binary_for(std::span<const uint8_t> data,
-                              std::chrono::duration<Rep, Period> timeout) noexcept {
-        return send_for(data.data(), data.size(), timeout, ws::opcode::kBinary);
+                              std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
+        return send_binary(data.data(), data.size());
     }
 
     /// Send a WebSocket Close frame with a custom status code and reason.
+    /// Delegates to TransportCore::send_close_direct() (shared with DirectTransport).
     SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
-        if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
-        if (!ws::is_valid_close_code(status_code)) return SendError::kInvalidCloseCode;
-        if (!reason.empty() && !ws::is_valid_utf8(reason)) return SendError::kInvalidUtf8;
-
-        size_t reason_len = std::min(reason.size(), size_t{123});
-        if (reason_len < reason.size()) {
-            SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Close reason truncated from {} to 123 bytes (RFC 6455 S5.5 limit)",
-                reason.size());
-        }
-        uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
-        if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
-
-        // Direct send: encode close frame and send immediately
-        uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
-        size_t close_len = ws::build_close_frame(close_buf, status_code, reason);
-        if (core_.config.use_tls && core_.crypto) {
-            uint8_t tls_buf[TlsEncryptor::encrypted_size(
-                ws::kMaxFrameHeaderLen + 125)];
-            uint16_t enc_len = core_.crypto->enc.encrypt(
-                close_buf, static_cast<uint16_t>(close_len), tls_buf);
-            if (enc_len > 0) {
-                core_.tcp->send(tls_buf, enc_len);
-            } else {
-                SPDLOG_LOGGER_ERROR(detail::transport_logger(),
-                    "send_close: encrypt failed for status_code={}", status_code);
-                return SendError::kEncryptFailed;
-            }
-        } else {
-            core_.tcp->send(close_buf, close_len);
-        }
-        return SendError::kOk;
+        return core_.send_close_direct(status_code, reason, MaxPayload);
     }
 
     /// Send a WebSocket Ping frame.
+    /// Delegates to TransportCore::send_ping_direct() (shared with DirectTransport).
     SendError send_ping(const void* payload = nullptr,
                         size_t payload_len = 0) noexcept {
-        if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
-
-        size_t original_len = payload_len;
-        payload_len = std::min(payload_len, size_t{125});
-        if (original_len > 125) {
-            SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Ping payload truncated from {} to 125 bytes (RFC 6455 S5.5 limit)",
-                original_len);
-        }
-        if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
-
-        // Direct send: encode ping frame and send immediately
-        uint8_t ping_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
-        size_t ping_len = ws::build_ping_frame(ping_buf, payload, payload_len);
-        if (core_.config.use_tls && core_.crypto) {
-            uint8_t tls_buf[TlsEncryptor::encrypted_size(
-                ws::kMaxFrameHeaderLen + 125)];
-            uint16_t enc_len = core_.crypto->enc.encrypt(
-                ping_buf, static_cast<uint16_t>(ping_len), tls_buf);
-            if (enc_len > 0) {
-                core_.tcp->send(tls_buf, enc_len);
-            } else {
-                SPDLOG_LOGGER_ERROR(detail::transport_logger(),
-                    "send_ping: encrypt failed, payload_len={}", payload_len);
-                return SendError::kEncryptFailed;
-            }
-        } else {
-            core_.tcp->send(ping_buf, ping_len);
-        }
-        return SendError::kOk;
+        return core_.send_ping_direct(payload, payload_len, MaxPayload);
     }
 
     /// Batch-send multiple messages (sends each directly).
@@ -395,12 +329,12 @@ public:
         return SendError::kOk;
     }
 
-    /// Batch-send with timeout (timeout ignored -- sends directly).
+    /// @deprecated Timeout is ignored in direct-TX mode. Use send_n() instead.
     template <typename Rep, typename Period>
+    [[deprecated("timeout ignored in direct-TX mode, use send_n()")]]
     SendError send_n_for(const std::span<const uint8_t>* payloads, size_t count,
-                         std::chrono::duration<Rep, Period> timeout,
+                         std::chrono::duration<Rep, Period> /*timeout*/,
                          uint8_t opcode = ws::opcode::kBinary) noexcept {
-        (void)timeout;
         return send_n(payloads, count, opcode);
     }
 

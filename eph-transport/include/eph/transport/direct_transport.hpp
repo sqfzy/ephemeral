@@ -287,82 +287,17 @@ public:
     }
 
     /// Send a WebSocket Close frame with a custom status code and reason.
+    /// Delegates to TransportCore::send_close_direct() (shared with DirectTxTransport).
     SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
-        if (!core_.running.load(std::memory_order_acquire))
-            return SendError::kNotConnected;
-        if (!ws::is_valid_close_code(status_code))
-            return SendError::kInvalidCloseCode;
-        // RFC 6455 section 7.1.6: close reason must be valid UTF-8
-        if (!reason.empty() && !ws::is_valid_utf8(reason))
-            return SendError::kInvalidUtf8;
-
-        size_t reason_len = std::min(reason.size(), size_t{123});
-        if (reason_len < reason.size()) {
-            SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Close reason truncated from {} to 123 bytes (RFC 6455 section 5.5 limit)",
-                reason.size());
-        }
-        uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
-
-        if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
-
-        // Direct mode: encode close frame and send immediately
-        uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
-        size_t close_len = ws::build_close_frame(close_buf, status_code, reason);
-        if (core_.config.use_tls && core_.crypto) {
-            uint8_t tls_buf[TlsEncryptor::encrypted_size(
-                ws::kMaxFrameHeaderLen + 125)];
-            uint16_t enc_len = core_.crypto->enc.encrypt(
-                close_buf, static_cast<uint16_t>(close_len), tls_buf);
-            if (enc_len > 0) {
-                core_.tcp->send(tls_buf, enc_len);
-            } else {
-                SPDLOG_LOGGER_ERROR(detail::transport_logger(),
-                    "send_close: encrypt failed for status_code={}", status_code);
-                return SendError::kEncryptFailed;
-            }
-        } else {
-            core_.tcp->send(close_buf, close_len);
-        }
-        return SendError::kOk;
+        return core_.send_close_direct(status_code, reason, MaxPayload);
     }
 
     /// Send a WebSocket Ping frame to probe connection liveness.
+    /// Delegates to TransportCore::send_ping_direct() (shared with DirectTxTransport).
     SendError send_ping(const void* payload = nullptr,
                         size_t payload_len = 0) noexcept {
-        if (!core_.running.load(std::memory_order_acquire))
-            return SendError::kNotConnected;
-
-        // RFC 6455 section 5.5: control frame payload MUST NOT exceed 125 bytes
-        size_t original_len = payload_len;
-        payload_len = std::min(payload_len, size_t{125});
-        if (original_len > 125) {
-            SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Ping payload truncated from {} to 125 bytes (RFC 6455 section 5.5 limit)",
-                original_len);
-        }
-        if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
-
-        // Direct mode: encode ping frame and send immediately
-        uint8_t ping_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
-        size_t ping_len = ws::build_ping_frame(ping_buf, payload, payload_len);
-        if (core_.config.use_tls && core_.crypto) {
-            uint8_t tls_buf[TlsEncryptor::encrypted_size(
-                ws::kMaxFrameHeaderLen + 125)];
-            uint16_t enc_len = core_.crypto->enc.encrypt(
-                ping_buf, static_cast<uint16_t>(ping_len), tls_buf);
-            if (enc_len > 0) {
-                core_.tcp->send(tls_buf, enc_len);
-            } else {
-                SPDLOG_LOGGER_ERROR(detail::transport_logger(),
-                    "send_ping: encrypt failed, payload_len={}", payload_len);
-                return SendError::kEncryptFailed;
-            }
-        } else {
-            core_.tcp->send(ping_buf, ping_len);
-        }
-        return SendError::kOk;
+        return core_.send_ping_direct(payload, payload_len, MaxPayload);
     }
 
     /// Batch-send multiple messages (all-or-nothing within reason).

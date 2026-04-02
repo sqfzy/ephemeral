@@ -22,10 +22,13 @@
 
 #include <spdlog/spdlog.h>
 
+#include <cstring>
+
 #include "eph/core/tcp_concept.hpp"
 #include "eph/core/framer_concept.hpp"
 #include "eph/transport/detail/message_types.hpp"
 #include "eph/transport/http.hpp"
+#include "eph/transport/tls_encryptor.hpp"
 #include "eph/transport/tls_record.hpp"
 #include "eph/transport/tls_session.hpp"
 #include "eph/transport/transport_types.hpp"
@@ -308,6 +311,124 @@ struct TransportCore {
             std::format("WS upgrade timeout after {}ms",
                 config.ws_timeout.count())});
     }
+
+    // -----------------------------------------------------------------------
+    // Direct-send helpers (shared by DirectTransport & DirectTxTransport)
+    //
+    // These encapsulate the "build WS control frame → TLS encrypt → TCP send"
+    // pattern, eliminating code duplication across the two Direct variants.
+    // Transport (threaded) has its own versions that enqueue to TxWorker.
+    // -----------------------------------------------------------------------
+
+    /// Send a pre-encoded frame directly: TLS encrypt (if enabled) → TCP send.
+    ///
+    /// @param frame      Encoded WS frame bytes
+    /// @param frame_len  Length of the encoded frame
+    /// @return SendError::kOk on success
+    SendError send_raw_direct(const uint8_t* frame, size_t frame_len) noexcept {
+        if (!running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
+
+        if (config.use_tls) {
+            if (!crypto) return SendError::kNotConnected;
+            // Max control frame: 14-byte WS header + 125-byte payload
+            uint8_t tls_buf[TlsEncryptor::encrypted_size(
+                ws::kMaxFrameHeaderLen + 125)];
+            uint16_t enc_len = crypto->enc.encrypt(
+                frame, static_cast<uint16_t>(frame_len), tls_buf);
+            if (enc_len == 0) return SendError::kEncryptFailed;
+            auto r = tcp->send(tls_buf, enc_len);
+            if (!r) return SendError::kTcpSendFailed;
+        } else {
+            auto r = tcp->send(frame, frame_len);
+            if (!r) return SendError::kTcpSendFailed;
+        }
+        return SendError::kOk;
+    }
+
+    /// Send a WebSocket Close frame directly (no queue).
+    ///
+    /// Validates the close code and reason, builds the WS close frame,
+    /// then delegates to send_raw_direct() for encrypt + TCP send.
+    ///
+    /// @param status_code  Close reason code (e.g., ws::close_code::kNormal)
+    /// @param reason       Optional reason string (max 123 bytes, truncated)
+    /// @param max_payload  MaxPayload of the owning transport (for size check)
+    /// @return SendError::kOk on success
+    SendError send_close_direct(uint16_t status_code,
+                                std::string_view reason,
+                                size_t max_payload) noexcept {
+        if (!running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
+        if (!ws::is_valid_close_code(status_code))
+            return SendError::kInvalidCloseCode;
+        // RFC 6455 §7.1.6: close reason must be valid UTF-8
+        if (!reason.empty() && !ws::is_valid_utf8(reason))
+            return SendError::kInvalidUtf8;
+
+        size_t reason_len = std::min(reason.size(), size_t{123});
+        if (reason_len < reason.size()) {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "Close reason truncated from {} to 123 bytes "
+                "(RFC 6455 §5.5 limit)", reason.size());
+        }
+        uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
+        if (payload_len > max_payload) return SendError::kMessageTooLarge;
+
+        uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
+        size_t close_len = ws::build_close_frame(
+            close_buf, status_code, reason);
+
+        auto err = send_raw_direct(close_buf, close_len);
+        if (err != SendError::kOk) {
+            SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                "send_close_direct: failed for status_code={}: {}",
+                status_code, static_cast<int>(err));
+        }
+        return err;
+    }
+
+    /// Send a WebSocket Ping frame directly (no queue).
+    ///
+    /// Validates and truncates payload per RFC 6455 §5.5, builds the
+    /// WS ping frame, then delegates to send_raw_direct().
+    ///
+    /// @param payload      Optional ping payload (nullptr for empty)
+    /// @param payload_len  Payload length (truncated to 125 if larger)
+    /// @param max_payload  MaxPayload of the owning transport (for size check)
+    /// @return SendError::kOk on success
+    SendError send_ping_direct(const void* payload,
+                               size_t payload_len,
+                               size_t max_payload) noexcept {
+        if (!running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
+
+        // RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
+        size_t original_len = payload_len;
+        payload_len = std::min(payload_len, size_t{125});
+        if (original_len > 125) {
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "Ping payload truncated from {} to 125 bytes "
+                "(RFC 6455 §5.5 limit)", original_len);
+        }
+        if (payload_len > max_payload) return SendError::kMessageTooLarge;
+
+        uint8_t ping_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
+        size_t ping_len = ws::build_ping_frame(
+            ping_buf, payload, payload_len);
+
+        auto err = send_raw_direct(ping_buf, ping_len);
+        if (err != SendError::kOk) {
+            SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                "send_ping_direct: failed, payload_len={}: {}",
+                payload_len, static_cast<int>(err));
+        }
+        return err;
+    }
+
+    // -----------------------------------------------------------------------
+    // State change notification
+    // -----------------------------------------------------------------------
 
     /// Notify state change callbacks safely (catches and logs exceptions).
     ///
