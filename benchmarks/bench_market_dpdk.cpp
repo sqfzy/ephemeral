@@ -61,8 +61,16 @@ int main(int argc, char** argv) {
         else if (arg == "--mock-cpu" && i + 1 < app_argc) cfg.mock_cpu = std::stoi(app_argv[++i]);
     }
 
-    if (local_ip.empty() || gateway_ip.empty()) {
-        spdlog::error("--local-ip and --gateway-ip are required");
+    if (cfg.server_ip.empty()) {
+        spdlog::error("--server-ip is required (NIC-A IP where mock server binds)");
+        return 1;
+    }
+    if (local_ip.empty()) {
+        spdlog::error("--local-ip is required (NIC-B IP for DPDK)");
+        return 1;
+    }
+    if (gateway_ip.empty()) {
+        spdlog::error("--gateway-ip is required (NIC-A IP or gateway for ARP)");
         return 1;
     }
 

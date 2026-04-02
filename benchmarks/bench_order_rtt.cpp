@@ -37,8 +37,12 @@ int main(int argc, char** argv) {
         else if (arg == "--mock-cpu" && i + 1 < argc) cfg.mock_cpu = std::stoi(argv[++i]);
     }
 
+    if (cfg.server_ip.empty()) {
+        spdlog::error("--server-ip is required (NIC-A IP where mock server binds)");
+        return 1;
+    }
     if (bind_dev.empty()) {
-        spdlog::error("--bind-dev is required (e.g. --bind-dev ens35) to avoid loopback");
+        spdlog::error("--bind-dev is required (NIC-B interface, e.g. ens35) to avoid loopback");
         return 1;
     }
 

@@ -35,7 +35,7 @@
 namespace bench {
 
 struct BenchConfig {
-    std::string server_ip = "10.0.0.1";   // NIC-A IP (mock server binds here)
+    std::string server_ip;  // required: NIC-A IP (mock server binds here)
     uint16_t server_port = 9999;
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     std::chrono::seconds duration{10};
