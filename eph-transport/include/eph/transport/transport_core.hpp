@@ -30,6 +30,7 @@
 #include "eph/transport/tls_session.hpp"
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/websocket.hpp"
+#include "eph/transport/ws_framer.hpp"
 
 namespace eph::net {
 
@@ -136,7 +137,7 @@ struct TransportCore {
             }
             tls = std::make_unique<TlsSession<TcpImpl>>(std::move(*tls_result));
 
-            auto hs_result = tls->handshake(config.tls_timeout);
+            auto hs_result = tls->handshake();
             if (!hs_result) {
                 return std::unexpected(ConnectionErrorInfo{
                     ConnectionError::kTlsHandshakeFailed, hs_result.error()});
@@ -153,8 +154,14 @@ struct TransportCore {
                     ConnectionError::kTlsKeyExportFailed, hot.error()});
             }
 
-            crypto = std::make_unique<TlsRecordCrypto>(
-                TlsRecordCrypto::create(std::move(*hot)));
+            size_t key_len = tls->cipher_key_len();
+            auto crypto_result = TlsRecordCrypto::create(*hot, key_len);
+            if (!crypto_result) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsKeyExportFailed,
+                    std::format("TLS AEAD init failed: {}", crypto_result.error())});
+            }
+            crypto = std::make_unique<TlsRecordCrypto>(std::move(*crypto_result));
 
             tls_version = tls->tls_version();
             cipher_name = tls->cipher_name();
@@ -188,11 +195,32 @@ struct TransportCore {
         auto ws_start = std::chrono::steady_clock::now();
 
         // Build upgrade request
-        auto ws_key = http::generate_ws_key();
+        auto ws_key_result = http::generate_ws_key();
+        if (!ws_key_result) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kWsUpgradeFailed, ws_key_result.error()});
+        }
+        std::string ws_key = std::move(*ws_key_result);
         std::string path = config.ws_path.empty() ? "/" : config.ws_path;
-        auto request = http::build_upgrade_request(
-            config.remote_host, config.remote_port,
-            path, ws_key, config.extra_headers, config.ws_subprotocol);
+
+        // Build Host header with port (RFC 6455 §4.1)
+        std::string host = config.remote_host;
+        uint16_t default_port = config.use_tls ? 443 : 80;
+        if (config.remote_port != default_port) {
+            host += ":" + std::to_string(config.remote_port);
+        }
+        std::string headers = config.extra_headers;
+        if (!config.ws_subprotocol.empty()) {
+            headers += std::format("Sec-WebSocket-Protocol: {}\r\n",
+                                   config.ws_subprotocol);
+        }
+        auto request_result = http::build_upgrade_request(
+            host, path, ws_key, headers);
+        if (!request_result) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kWsUpgradeFailed, request_result.error()});
+        }
+        auto request = std::move(*request_result);
 
         SPDLOG_LOGGER_DEBUG(log, "WS Upgrade: {} bytes to {}:{}{}",
             request.size(), config.remote_host, config.remote_port, path);
@@ -245,23 +273,22 @@ struct TransportCore {
 
             // Check for end of HTTP headers
             if (response_buf.find("\r\n\r\n") != std::string::npos) {
-                auto parsed = http::parse_upgrade_response(response_buf);
+                auto parsed = http::parse_upgrade_response(
+                    response_buf.data(), response_buf.size());
                 if (!parsed) {
                     return std::unexpected(ConnectionErrorInfo{
                         ConnectionError::kWsUpgradeRejected,
-                        std::format("WS upgrade parse failed: {}", parsed.error()),
-                        parsed.error().find("status") != std::string::npos
-                            ? 0 : 0});
+                        std::format("WS upgrade parse failed: {}", parsed.error())});
                 }
 
                 // Validate Sec-WebSocket-Accept
-                if (!http::validate_ws_accept(ws_key, parsed->accept_key)) {
+                if (!http::validate_ws_accept(ws_key, parsed->sec_ws_accept)) {
                     return std::unexpected(ConnectionErrorInfo{
                         ConnectionError::kWsAcceptInvalid,
                         "Sec-WebSocket-Accept mismatch"});
                 }
 
-                ws_subprotocol = parsed->subprotocol;
+                ws_subprotocol = parsed->sec_ws_protocol;
 
                 auto ws_elapsed = std::chrono::steady_clock::now() - ws_start;
                 last_ws_upgrade_ns = static_cast<uint64_t>(

@@ -28,6 +28,11 @@
 #include "eph/transport/ws_framer.hpp"
 #include "eph/transport/detail/message_types.hpp"
 #include "eph/utils/cpu.hpp"
+
+// Timestamp control — must match the definition in transport.hpp
+#ifndef EPH_ENABLE_TIMESTAMPS
+#define EPH_ENABLE_TIMESTAMPS 0
+#endif
 #include "eph/utils/hdr_histogram.hpp"
 
 namespace eph::net {
@@ -65,6 +70,7 @@ class TxWorker {
                   "QueueDepth must be power of 2");
 
     static constexpr bool kIsWebSocket = std::is_same_v<Framer, WsFramer>;
+    static constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 
 public:
     using TxMsg  = detail::TxMessage<MaxPayload>;

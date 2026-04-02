@@ -1,10 +1,11 @@
 #pragma once
 
 /// @file direct_transport.hpp
-/// Direct (threadless) WebSocket transport — the kDirect variant.
+/// Direct (threadless) WebSocket transport — composes FrameProcessor +
+/// TransportCore + ReconnectPolicy.
 ///
 /// NO threads, NO queues. The application thread does everything:
-///   send_direct() for TX, feed_rx()/process_pending()/poll() for RX.
+///   send() for TX, feed_rx()/process_pending()/poll() for RX.
 ///
 /// Designed for single-threaded event loops (Reactor pattern, io_uring,
 /// DPDK poll-mode) where the app already owns the polling thread and
@@ -23,38 +24,52 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include "eph/utils/alignment.hpp"
-#include "eph/utils/cpu.hpp"
-#include "eph/utils/hdr_histogram.hpp"
 #include "eph/core/framer_concept.hpp"
-#include "eph/transport/http.hpp"
 #include "eph/core/tcp_concept.hpp"
+#include "eph/core/transport_errors.hpp"
+#include "eph/transport/frame_processor.hpp"
+#include "eph/transport/http.hpp"
+#include "eph/transport/reconnect_policy.hpp"
 #include "eph/transport/tls_decryptor.hpp"
 #include "eph/transport/tls_encryptor.hpp"
 #include "eph/transport/tls_record.hpp"
 #include "eph/transport/tls_session.hpp"
+#include "eph/transport/transport_core.hpp"
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/websocket.hpp"
 #include "eph/transport/ws_framer.hpp"
-
-#include "eph/transport/detail/message_types.hpp"
+#include "eph/utils/hdr_histogram.hpp"
+#include "eph/utils/time.hpp"
 
 namespace eph::net {
+
+// Ensure kEnableTimestamps is available in this translation unit.
+#ifndef EPH_ENABLE_TIMESTAMPS
+#define EPH_ENABLE_TIMESTAMPS 0
+#endif
+
+#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
+#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
+inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+#endif
 
 // ---------------------------------------------------------------------------
 // DirectTransport — threadless, queueless transport
 // ---------------------------------------------------------------------------
 
 /// Threadless WebSocket transport with TLS 1.3 encryption.
+///
+/// Composes: TransportCore (connection lifecycle), FrameProcessor (RX decode),
+/// and ReconnectPolicy (reconnection with exponential backoff).
 ///
 /// Template parameters:
 ///   TcpImpl    -- a type satisfying the TcpTransport concept
@@ -84,14 +99,44 @@ class DirectTransport {
     /// close handshake, and fragmentation reassembly).
     static constexpr bool kIsWebSocket = std::is_same_v<Framer, WsFramer>;
 
-    /// No queue = no eviction possible.
-    static constexpr bool kRxEvicting = false;
-
     /// No queue = no last-only delivery (all frames delivered inline).
     static constexpr bool kLastOnlyDeliver = false;
 
     /// Placeholder for template compatibility with Transport stats API.
     static constexpr size_t QueueDepth = 1;
+
+    // -- DirectDeliver policy: calls on_message directly (no queue) --
+
+    struct DirectDeliver {
+        const TransportConfig& config;
+        ThreadStats& rx_stats;
+
+        void operator()(const uint8_t* data, uint16_t len, uint8_t opcode) noexcept {
+            if (config.on_message) {
+                try { config.on_message(data, len, opcode); } catch (...) {}
+            }
+            rx_stats.packets.fetch_add(1, std::memory_order_relaxed);
+            rx_stats.bytes.fetch_add(len, std::memory_order_relaxed);
+            if (opcode == ws::opcode::kText) {
+                rx_stats.text_packets.fetch_add(1, std::memory_order_relaxed);
+                rx_stats.text_bytes.fetch_add(len, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    // -- SendFn type: wraps send_direct_() for FrameProcessor control frames --
+
+    struct DirectSendFn {
+        DirectTransport* self;
+
+        SendError operator()(const void* data, size_t len, uint8_t opcode) noexcept {
+            return self->send_direct_(data, len, opcode);
+        }
+    };
+
+    // -- Concrete FrameProcessor type --
+    using FP = FrameProcessor<TcpImpl, Framer, DirectDeliver, DirectSendFn,
+                              MaxPayload, kLastOnlyDeliver>;
 
 public:
     /// Factory callable: creates a new, already-connected TcpImpl instance.
@@ -130,30 +175,30 @@ public:
             "Creating direct transport: {}:{}{}",
             config.remote_host, config.remote_port, config.ws_path);
 
-        auto t = std::unique_ptr<DirectTransport>(new DirectTransport());
-        t->config_      = config;
-        t->tcp_factory_ = std::move(tcp_factory);
+        auto t = std::unique_ptr<DirectTransport>(new DirectTransport(config));
+        t->core_.tcp_factory = std::move(tcp_factory);
+        t->core_.config = config;
 
-        auto conn_result = t->do_connect();
+        // Full handshake: TCP + TLS + WS upgrade (uses private methods
+        // with the proven detail-file logic, not TransportCore::do_connect
+        // which has API mismatches with the current http.hpp).
+        auto conn_result = t->do_connect_();
         if (!conn_result) {
             SPDLOG_LOGGER_ERROR(log, "Initial connect failed: {}",
                                 conn_result.error().message());
             return std::unexpected(conn_result.error());
         }
 
-        // Pre-allocate WS fragmentation buffer to avoid heap allocation
-        // on the RX hot path when reassembling multi-frame messages.
-        if constexpr (kIsWebSocket) {
-            t->ws_frag_buf_.reserve(MaxPayload);
-        }
+        // Build FrameProcessor with DirectDeliver + DirectSendFn
+        t->init_frame_processor_();
 
-        t->created_at_ = std::chrono::steady_clock::now();
-        t->running_.store(true, std::memory_order_release);
-        t->notify_state(TransportEvent::kConnected, config.remote_host);
+        t->core_.created_at = std::chrono::steady_clock::now();
+        t->core_.running.store(true, std::memory_order_release);
+        t->core_.notify_state(TransportEvent::kConnected, config.remote_host);
 
         // Flush any pending TCP ACK accumulated during handshake.
-        if constexpr (requires { t->tcp_->flush_pending_ack(); }) {
-            t->tcp_->flush_pending_ack();
+        if constexpr (requires { t->core_.tcp->flush_pending_ack(); }) {
+            t->core_.tcp->flush_pending_ack();
         }
 
         // Hook: allow caller to configure session (e.g., shared RX ring)
@@ -161,6 +206,8 @@ public:
         if (config.on_connected_before_threads) {
             config.on_connected_before_threads();
         }
+
+        t->reconnect_.reset();
 
         SPDLOG_LOGGER_INFO(log, "Direct transport ready: {}", config.remote_host);
 
@@ -187,12 +234,12 @@ public:
     [[nodiscard]] SendError send(const void* data, size_t len,
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+        // RFC 6455 section 5.6: text frames must contain valid UTF-8
+        if (opcode == ws::opcode::kText && !core_.config.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return send_direct(data, len, opcode);
+        return send_direct_(data, len, opcode);
     }
 
     /// Send data from a span (convenience overload).
@@ -214,43 +261,46 @@ public:
     /// Send data as a WebSocket text frame with UTF-8 validation.
     [[nodiscard]] SendError send_text(const void* data, size_t len) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (!config_.skip_utf8_validation &&
+        if (!core_.config.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return send_direct(data, len, ws::opcode::kText);
+        return send_direct_(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame.
     [[nodiscard]] SendError send_text(std::string_view sv) noexcept {
-        if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
+        if (!core_.config.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
-        return send_direct(sv.data(), sv.size(), ws::opcode::kText);
+        return send_direct_(sv.data(), sv.size(), ws::opcode::kText);
     }
 
     /// Send a text frame WITHOUT UTF-8 validation (unchecked).
     [[nodiscard]] SendError send_text_unchecked(const void* data, size_t len) noexcept {
-        return send_direct(data, len, ws::opcode::kText);
+        return send_direct_(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as an unchecked text frame.
     [[nodiscard]] SendError send_text_unchecked(std::string_view sv) noexcept {
-        return send_direct(sv.data(), sv.size(), ws::opcode::kText);
+        return send_direct_(sv.data(), sv.size(), ws::opcode::kText);
     }
 
     /// Send a WebSocket Close frame with a custom status code and reason.
     SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
-        if (!ws::is_valid_close_code(status_code)) return SendError::kInvalidCloseCode;
-        // RFC 6455 §7.1.6: close reason must be valid UTF-8
-        if (!reason.empty() && !ws::is_valid_utf8(reason)) return SendError::kInvalidUtf8;
+        if (!core_.running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
+        if (!ws::is_valid_close_code(status_code))
+            return SendError::kInvalidCloseCode;
+        // RFC 6455 section 7.1.6: close reason must be valid UTF-8
+        if (!reason.empty() && !ws::is_valid_utf8(reason))
+            return SendError::kInvalidUtf8;
 
         size_t reason_len = std::min(reason.size(), size_t{123});
         if (reason_len < reason.size()) {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Close reason truncated from {} to 123 bytes (RFC 6455 §5.5 limit)",
+                "Close reason truncated from {} to 123 bytes (RFC 6455 section 5.5 limit)",
                 reason.size());
         }
         uint16_t payload_len = static_cast<uint16_t>(2 + reason_len);
@@ -260,20 +310,20 @@ public:
         // Direct mode: encode close frame and send immediately
         uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
         size_t close_len = ws::build_close_frame(close_buf, status_code, reason);
-        if (config_.use_tls && crypto_) {
+        if (core_.config.use_tls && core_.crypto) {
             uint8_t tls_buf[TlsEncryptor::encrypted_size(
                 ws::kMaxFrameHeaderLen + 125)];
-            uint16_t enc_len = crypto_->enc.encrypt(
+            uint16_t enc_len = core_.crypto->enc.encrypt(
                 close_buf, static_cast<uint16_t>(close_len), tls_buf);
             if (enc_len > 0) {
-                tcp_->send(tls_buf, enc_len);
+                core_.tcp->send(tls_buf, enc_len);
             } else {
                 SPDLOG_LOGGER_ERROR(detail::transport_logger(),
                     "send_close: encrypt failed for status_code={}", status_code);
                 return SendError::kEncryptFailed;
             }
         } else {
-            tcp_->send(close_buf, close_len);
+            core_.tcp->send(close_buf, close_len);
         }
         return SendError::kOk;
     }
@@ -281,14 +331,15 @@ public:
     /// Send a WebSocket Ping frame to probe connection liveness.
     SendError send_ping(const void* payload = nullptr,
                         size_t payload_len = 0) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
 
-        // RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
+        // RFC 6455 section 5.5: control frame payload MUST NOT exceed 125 bytes
         size_t original_len = payload_len;
         payload_len = std::min(payload_len, size_t{125});
         if (original_len > 125) {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                "Ping payload truncated from {} to 125 bytes (RFC 6455 §5.5 limit)",
+                "Ping payload truncated from {} to 125 bytes (RFC 6455 section 5.5 limit)",
                 original_len);
         }
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
@@ -296,20 +347,20 @@ public:
         // Direct mode: encode ping frame and send immediately
         uint8_t ping_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
         size_t ping_len = ws::build_ping_frame(ping_buf, payload, payload_len);
-        if (config_.use_tls && crypto_) {
+        if (core_.config.use_tls && core_.crypto) {
             uint8_t tls_buf[TlsEncryptor::encrypted_size(
                 ws::kMaxFrameHeaderLen + 125)];
-            uint16_t enc_len = crypto_->enc.encrypt(
+            uint16_t enc_len = core_.crypto->enc.encrypt(
                 ping_buf, static_cast<uint16_t>(ping_len), tls_buf);
             if (enc_len > 0) {
-                tcp_->send(tls_buf, enc_len);
+                core_.tcp->send(tls_buf, enc_len);
             } else {
                 SPDLOG_LOGGER_ERROR(detail::transport_logger(),
                     "send_ping: encrypt failed, payload_len={}", payload_len);
                 return SendError::kEncryptFailed;
             }
         } else {
-            tcp_->send(ping_buf, ping_len);
+            core_.tcp->send(ping_buf, ping_len);
         }
         return SendError::kOk;
     }
@@ -317,22 +368,24 @@ public:
     /// Batch-send multiple messages (all-or-nothing within reason).
     SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
                      uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
         if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
-            if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+            if (opcode == ws::opcode::kText &&
+                !core_.config.skip_utf8_validation &&
                 !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
                 return SendError::kInvalidUtf8;
             }
         }
 
         for (size_t i = 0; i < count; ++i) {
-            auto err = send_direct(payloads[i].data(), payloads[i].size(), opcode);
+            auto err = send_direct_(payloads[i].data(), payloads[i].size(), opcode);
             if (err != SendError::kOk) {
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
-                    "send_n: send_direct failed at index {}/{}: {}",
+                    "send_n: send_direct_ failed at index {}/{}: {}",
                     i, count, static_cast<int>(err));
                 return err;
             }
@@ -356,12 +409,12 @@ public:
         if (!rx.initialized) [[unlikely]] {
             if constexpr (kEnableTimestamps) {
                 auto npc = eph::utils::TSC::get_ns_per_cycle();
-                ns_per_cycle_ = npc.value_or(0.0);
+                core_.ns_per_cycle = npc.value_or(0.0);
             }
             rx.initialized = true;
         }
 
-        if (config_.use_tls) {
+        if (core_.config.use_tls) {
             if (rx.reassembly_len + len <= kReassemblyBufSize) {
                 std::memcpy(rx.reassembly_storage.get() + rx.reassembly_len,
                             data, len);
@@ -397,16 +450,16 @@ public:
 
         // Set arrival TSC for latency measurement
         if constexpr (kEnableTimestamps) {
-            if constexpr (requires { tcp_->last_rx_burst_tsc(); }) {
-                current_arrival_tsc_ = tcp_->last_rx_burst_tsc();
+            if constexpr (requires { core_.tcp->last_rx_burst_tsc(); }) {
+                core_.current_arrival_tsc = core_.tcp->last_rx_burst_tsc();
             }
         }
 
         // Plain mode: process framed data directly from WS buffer
-        if (!config_.use_tls) {
+        if (!core_.config.use_tls) {
             if (rx.ws_reassembly_len == 0) return;
 
-            size_t ws_consumed = process_frame_data(
+            size_t ws_consumed = fp_->process(
                 rx.ws_reassembly_storage.get(), rx.ws_reassembly_len);
 
             ws_consumed = std::min(ws_consumed, rx.ws_reassembly_len);
@@ -418,8 +471,8 @@ public:
             }
             rx.ws_reassembly_len = ws_remaining;
 
-            if constexpr (requires { tcp_->flush_pending_ack(); }) {
-                tcp_->flush_pending_ack();
+            if constexpr (requires { core_.tcp->flush_pending_ack(); }) {
+                core_.tcp->flush_pending_ack();
             }
             return;
         }
@@ -441,7 +494,7 @@ public:
             if (rx.reassembly_len - consumed < record_total) break;
 
             uint16_t decrypted_len;
-            bool ok = crypto_->dec.decrypt(
+            bool ok = core_.crypto->dec.decrypt(
                 rec_ptr, static_cast<uint16_t>(record_total),
                 rx.decrypt_buf.get(), decrypted_len);
 
@@ -452,7 +505,7 @@ public:
             }
 
             if constexpr (kEnableTimestamps) {
-                current_decrypt_done_tsc_ = eph::utils::TSC::now();
+                core_.current_decrypt_done_tsc = eph::utils::TSC::now();
             }
 
             // Handle WS reassembly across TLS records
@@ -475,7 +528,7 @@ public:
                 ws_data_len = decrypted_len;
             }
 
-            size_t ws_consumed = process_frame_data(ws_data, ws_data_len);
+            size_t ws_consumed = fp_->process(ws_data, ws_data_len);
 
             ws_consumed = std::min(ws_consumed, ws_data_len);
             size_t ws_remaining = ws_data_len - ws_consumed;
@@ -506,24 +559,24 @@ public:
             }
         }
 
-        if constexpr (requires { tcp_->flush_pending_ack(); }) {
-            tcp_->flush_pending_ack();
+        if constexpr (requires { core_.tcp->flush_pending_ack(); }) {
+            core_.tcp->flush_pending_ack();
         }
     }
 
     /// Self-driven poll: burst from TCP + feed + process in one call.
     /// Convenience for direct mode without Reactor.
     [[nodiscard]] std::expected<uint16_t, std::string> poll() noexcept {
-        if (!running_.load(std::memory_order_acquire))
+        if (!core_.running.load(std::memory_order_acquire))
             return std::unexpected(std::string("transport not running"));
 
-        auto rx_result = tcp_->poll_rx(
+        auto rx_result = core_.tcp->poll_rx(
             [this](const uint8_t* data, uint16_t len) {
                 feed_rx(data, len);
             });
 
         if (!rx_result) {
-            running_.store(false, std::memory_order_release);
+            core_.running.store(false, std::memory_order_release);
             return std::unexpected(std::format("TCP rx error: {}", rx_result.error()));
         }
 
@@ -537,7 +590,7 @@ public:
     // Lifecycle
     // -----------------------------------------------------------------------
 
-    /// Initiate a graceful WebSocket close handshake (RFC 6455 §7.1.1).
+    /// Initiate a graceful WebSocket close handshake (RFC 6455 section 7.1.1).
     ///
     /// In direct mode there is no RX thread to wait for the server Close
     /// response, so this sends the Close frame and stops immediately.
@@ -546,11 +599,11 @@ public:
             std::string_view reason = "client shutdown",
             [[maybe_unused]] std::chrono::milliseconds timeout =
                 std::chrono::milliseconds{3000}) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return false;
+        if (!core_.running.load(std::memory_order_acquire)) return false;
 
-        pending_close_code_ = status_code;
-        pending_close_reason_ = std::string(reason);
-        close_requested_.store(true, std::memory_order_release);
+        core_.pending_close_code = status_code;
+        core_.pending_close_reason = std::string(reason);
+        core_.close_requested.store(true, std::memory_order_release);
 
         auto err = send_close(status_code, reason);
         if (err != SendError::kOk) {
@@ -569,61 +622,61 @@ public:
     /// Stop the transport. Sends WebSocket Close frame, closes TCP.
     /// No threads to join (this is DirectTransport).
     void stop() noexcept {
-        bool was_running = running_.exchange(false, std::memory_order_acq_rel);
+        bool was_running = core_.running.exchange(false, std::memory_order_acq_rel);
 
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping direct transport");
 
         // Send WebSocket Close frame (no thread race — single thread)
         if constexpr (kIsWebSocket) {
-            if (was_running && tcp_ && tcp_->is_established() &&
-                (config_.use_tls ? crypto_ != nullptr : true)) {
+            if (was_running && core_.tcp && core_.tcp->is_established() &&
+                (core_.config.use_tls ? core_.crypto != nullptr : true)) {
                 uint16_t close_code = ws::close_code::kNormal;
                 std::string_view close_reason = "client shutdown";
-                if (close_requested_.load(std::memory_order_acquire)) {
-                    close_code = pending_close_code_;
-                    if (!pending_close_reason_.empty())
-                        close_reason = pending_close_reason_;
+                if (core_.close_requested.load(std::memory_order_acquire)) {
+                    close_code = core_.pending_close_code;
+                    if (!core_.pending_close_reason.empty())
+                        close_reason = core_.pending_close_reason;
                 }
                 uint8_t close_buf[ws::kMaxFrameHeaderLen + 125 + 1]{};
                 size_t close_len = ws::build_close_frame(
                     close_buf, close_code, close_reason);
 
-                if (config_.use_tls) {
+                if (core_.config.use_tls) {
                     uint8_t tls_buf[TlsRecordCrypto::encrypted_size(
                         ws::kMaxFrameHeaderLen + 125)]{};
-                    uint16_t tls_len = crypto_->encrypt(
+                    uint16_t tls_len = core_.crypto->encrypt(
                         close_buf, static_cast<uint16_t>(close_len), tls_buf);
                     if (tls_len > 0) {
-                        (void)tcp_->send(tls_buf, tls_len);
+                        (void)core_.tcp->send(tls_buf, tls_len);
                     }
                 } else {
-                    (void)tcp_->send(close_buf, close_len);
+                    (void)core_.tcp->send(close_buf, close_len);
                 }
             }
         }
 
         // Close TCP connection
-        if (tcp_ && tcp_->is_established()) {
-            (void)tcp_->close();
+        if (core_.tcp && core_.tcp->is_established()) {
+            (void)core_.tcp->close();
         }
 
-        notify_state(TransportEvent::kStopped);
+        core_.notify_state(TransportEvent::kStopped);
         SPDLOG_LOGGER_INFO(log, "Direct transport stopped");
     }
 
     [[nodiscard]] bool is_running() const noexcept {
-        return running_.load(std::memory_order_acquire);
+        return core_.running.load(std::memory_order_acquire);
     }
 
     [[nodiscard]] const TransportConfig& config() const noexcept {
-        return config_;
+        return core_.config;
     }
 
     [[nodiscard]] TransportState state() const noexcept {
-        if (!running_.load(std::memory_order_acquire))
+        if (!core_.running.load(std::memory_order_acquire))
             return TransportState::kStopped;
-        if (reconnecting_.load(std::memory_order_acquire))
+        if (core_.reconnecting.load(std::memory_order_acquire))
             return TransportState::kReconnecting;
         return TransportState::kConnected;
     }
@@ -637,29 +690,29 @@ public:
     // -----------------------------------------------------------------------
 
     [[nodiscard]] std::string_view tls_version() const noexcept {
-        return tls_version_;
+        return core_.tls_version;
     }
 
     [[nodiscard]] std::string_view cipher_name() const noexcept {
-        return cipher_name_;
+        return core_.cipher_name;
     }
 
     [[nodiscard]] std::string_view ws_subprotocol() const noexcept {
-        return ws_subprotocol_;
+        return core_.ws_subprotocol;
     }
 
     [[nodiscard]] std::string_view remote_ip() const noexcept {
-        return remote_ip_;
+        return core_.remote_ip;
     }
 
     [[nodiscard]] ConnectionInfo connection_info() const {
         return ConnectionInfo{
-            .tls_version    = std::string(tls_version_),
-            .cipher_name    = std::string(cipher_name_),
-            .ws_subprotocol = std::string(ws_subprotocol_),
-            .remote_ip      = std::string(remote_ip_),
-            .remote_port    = config_.remote_port,
-            .use_tls        = config_.use_tls,
+            .tls_version    = std::string(core_.tls_version),
+            .cipher_name    = std::string(core_.cipher_name),
+            .ws_subprotocol = std::string(core_.ws_subprotocol),
+            .remote_ip      = std::string(core_.remote_ip),
+            .remote_port    = core_.config.remote_port,
+            .use_tls        = core_.config.use_tls,
         };
     }
 
@@ -712,7 +765,6 @@ public:
     void reset_stats() noexcept {
         tx_stats_.reset();
         rx_stats_.reset();
-        queue_full_count_.store(0, std::memory_order_relaxed);
         ws_pings_received_.store(0, std::memory_order_relaxed);
         ws_pongs_sent_.store(0, std::memory_order_relaxed);
         pong_timeouts_.store(0, std::memory_order_relaxed);
@@ -723,7 +775,7 @@ public:
     [[nodiscard]] TransportStats stats() const noexcept {
         auto now = std::chrono::steady_clock::now();
         auto uptime = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            now - created_at_).count();
+            now - core_.created_at).count();
         return TransportStats{
             .tx_packets        = tx_stats_.packets.load(std::memory_order_relaxed),
             .tx_bytes          = tx_stats_.bytes.load(std::memory_order_relaxed),
@@ -736,18 +788,18 @@ public:
             .rx_text_bytes     = rx_stats_.text_bytes.load(std::memory_order_relaxed),
             .rx_dropped        = rx_stats_.dropped.load(std::memory_order_relaxed),
             .tcp_rx_packets    = [this]() -> uint64_t {
-                if constexpr (requires { tcp_->tcp_stats(); })
-                    return tcp_ ? tcp_->tcp_stats().rx_packets : 0;
+                if constexpr (requires { core_.tcp->tcp_stats(); })
+                    return core_.tcp ? core_.tcp->tcp_stats().rx_packets : 0;
                 else return 0;
             }(),
             .tcp_rx_bursts     = [this]() -> uint64_t {
-                if constexpr (requires { tcp_->tcp_stats(); })
-                    return tcp_ ? tcp_->tcp_stats().rx_bursts : 0;
+                if constexpr (requires { core_.tcp->tcp_stats(); })
+                    return core_.tcp ? core_.tcp->tcp_stats().rx_bursts : 0;
                 else return 0;
             }(),
             .encrypt_errors    = tx_stats_.crypto_errors.load(std::memory_order_relaxed),
             .decrypt_errors    = rx_stats_.crypto_errors.load(std::memory_order_relaxed),
-            .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed),
+            .queue_full_count  = 0,  // no queue in direct mode
             .ws_pings_received = ws_pings_received_.load(std::memory_order_relaxed),
             .ws_pongs_sent     = ws_pongs_sent_.load(std::memory_order_relaxed),
             .pong_timeouts     = pong_timeouts_.load(std::memory_order_relaxed),
@@ -755,11 +807,11 @@ public:
             .tx_queue_hwm      = 0,  // no TX queue in direct mode
             .rx_queue_hwm      = 0,  // no RX queue in direct mode
             .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
-            .handshake_ns      = last_handshake_ns_,
-            .tcp_connect_ns    = last_tcp_connect_ns_,
-            .tls_handshake_ns  = last_tls_handshake_ns_,
-            .ws_upgrade_ns     = last_ws_upgrade_ns_,
-            .remote_ip         = remote_ip_,
+            .handshake_ns      = core_.last_handshake_ns,
+            .tcp_connect_ns    = core_.last_tcp_connect_ns,
+            .tls_handshake_ns  = core_.last_tls_handshake_ns,
+            .ws_upgrade_ns     = core_.last_ws_upgrade_ns,
+            .remote_ip         = core_.remote_ip,
             .rtt               = rtt_stats(),
             .tx_latency        = histogram_to_stats(tx_latency_histogram_),
             .tx_queue_wait     = histogram_to_stats(tx_queue_wait_histogram_),
@@ -767,14 +819,338 @@ public:
             .rx_latency        = histogram_to_stats(rx_latency_histogram_),
             .rx_decrypt        = histogram_to_stats(rx_decrypt_histogram_),
             .rx_decode         = histogram_to_stats(rx_decode_histogram_),
-            .tls_write_seq     = crypto_ ? crypto_->write_seq() : 0,
-            .tls_read_seq      = crypto_ ? crypto_->read_seq() : 0,
-            .tls_seq_limit     = config_.use_tls ? tls_record::kMaxSequenceNumber : 0,
+            .tls_write_seq     = core_.crypto ? core_.crypto->write_seq() : 0,
+            .tls_read_seq      = core_.crypto ? core_.crypto->read_seq() : 0,
+            .tls_seq_limit     = core_.config.use_tls ? tls_record::kMaxSequenceNumber : 0,
         };
     }
 
 private:
-    DirectTransport() = default;
+    // -----------------------------------------------------------------------
+    // Construction (private — use create() factory)
+    // -----------------------------------------------------------------------
+
+    explicit DirectTransport(const TransportConfig& config)
+        : reconnect_(config)
+    {}
+
+    // -----------------------------------------------------------------------
+    // FrameProcessor initialization
+    // -----------------------------------------------------------------------
+
+    /// Build the FrameProcessor after connection is established.
+    /// Called during create() and after each successful reconnect.
+    void init_frame_processor_() {
+        typename FP::Deps deps{
+            .core               = core_,
+            .deliver            = DirectDeliver{core_.config, rx_stats_},
+            .send_response      = DirectSendFn{this},
+            .rx_stats           = rx_stats_,
+            .ws_pings_received  = ws_pings_received_,
+            .ws_pongs_sent      = ws_pongs_sent_,
+            .rtt_histogram      = rtt_histogram_,
+            .rx_latency_histogram = rx_latency_histogram_,
+            .rx_decrypt_histogram = rx_decrypt_histogram_,
+            .rx_decode_histogram  = rx_decode_histogram_,
+            .rx_hwm             = rx_hwm_,
+            .rx_hwm_counter     = rx_hwm_counter_,
+        };
+        fp_ = std::make_unique<FP>(std::move(deps));
+    }
+
+    // -----------------------------------------------------------------------
+    // Connection establishment (private — reused by create() and reconnect)
+    // -----------------------------------------------------------------------
+
+    /// Full connection sequence: TCP (via factory) -> [TLS] -> [WS Upgrade] -> [key export].
+    /// TLS phases are skipped when config_.use_tls is false (plain ws://).
+    /// On success, core_.tcp (and optionally core_.tls, core_.crypto) are populated.
+    [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_connect_() {
+        auto log = detail::transport_logger();
+        auto connect_start = std::chrono::steady_clock::now();
+
+        // Phase 1: Create TCP session via factory
+        auto tcp_phase_start = std::chrono::steady_clock::now();
+        auto tcp_result = core_.tcp_factory();
+        if (!tcp_result) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kFactoryFailed,
+                std::format("TCP factory failed: {}", tcp_result.error())});
+        }
+        core_.tcp = std::move(*tcp_result);
+        core_.last_tcp_connect_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - tcp_phase_start).count());
+
+        if (!core_.tcp->is_established()) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kTcpNotEstablished,
+                "TCP factory returned non-established session"});
+        }
+
+        core_.last_tls_handshake_ns = 0;
+        if (core_.config.use_tls) {
+            // Phase 2: TLS handshake
+            auto tls_phase_start = std::chrono::steady_clock::now();
+            TlsConfig tls_cfg{
+                .hostname = core_.config.remote_host,
+                .ca_cert_path = core_.config.ca_cert_path,
+                .verify_peer = core_.config.verify_peer,
+                .handshake_timeout = core_.config.tls_timeout,
+                .client_cert_path = core_.config.client_cert_path,
+                .client_key_path = core_.config.client_key_path,
+            };
+
+            auto tls_result = TlsSession<TcpImpl>::create(*core_.tcp, tls_cfg);
+            if (!tls_result) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsSessionFailed,
+                    std::format("TLS session failed: {}", tls_result.error())});
+            }
+            core_.tls = std::make_unique<TlsSession<TcpImpl>>(std::move(*tls_result));
+
+            auto hs_result = core_.tls->handshake();
+            if (!hs_result) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsHandshakeFailed,
+                    std::format("TLS handshake failed: {}", hs_result.error())});
+            }
+            core_.last_tls_handshake_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - tls_phase_start).count());
+        }
+
+        // Phase 3: WebSocket upgrade (only for WsFramer)
+        if constexpr (kIsWebSocket) {
+            auto ws_phase_start = std::chrono::steady_clock::now();
+            auto ws_result = do_ws_upgrade_();
+            if (!ws_result) {
+                return std::unexpected(ws_result.error());
+            }
+            core_.last_ws_upgrade_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - ws_phase_start).count());
+        }
+
+        if (core_.config.use_tls) {
+            // Phase 4: Extract keys for AEAD hot path
+            auto hot_state = core_.tls->extract_hot_state();
+            if (!hot_state) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsKeyExportFailed,
+                    std::format("TLS key export failed: {}", hot_state.error())});
+            }
+
+            size_t key_len = core_.tls->cipher_key_len();
+            auto crypto = TlsRecordCrypto::create(*hot_state, key_len);
+            if (!crypto) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kTlsKeyExportFailed,
+                    std::format("TLS AEAD init failed: {}", crypto.error())});
+            }
+            core_.crypto = std::make_unique<TlsRecordCrypto>(std::move(*crypto));
+
+            core_.tls_version = core_.tls->tls_version();
+            core_.cipher_name = core_.tls->cipher_name();
+        } else {
+            core_.tls_version = "none";
+            core_.cipher_name = "none";
+        }
+
+        // Extract resolved IP if the TCP backend exposes it
+        if constexpr (requires { core_.tcp->resolved_ip(); }) {
+            core_.remote_ip = std::string(core_.tcp->resolved_ip());
+        }
+
+        // Initialize pong timestamp to "now" so pong timeout doesn't fire
+        // before the first ping/pong exchange completes.
+        if constexpr (kIsWebSocket) {
+            core_.last_pong_ns.store(
+                std::chrono::steady_clock::now().time_since_epoch().count(),
+                std::memory_order_relaxed);
+        }
+
+        // Record handshake duration
+        auto connect_end = std::chrono::steady_clock::now();
+        core_.last_handshake_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                connect_end - connect_start).count());
+
+        SPDLOG_LOGGER_INFO(log,
+            "Connected: {} ({}, handshake: {:.1f}ms)",
+            core_.config.remote_host,
+            core_.config.use_tls
+                ? std::format("TLS: {}, cipher: {}", core_.tls_version, core_.cipher_name)
+                : std::string("plain WS"),
+            static_cast<double>(core_.last_handshake_ns) / 1e6);
+        return {};
+    }
+
+    /// WebSocket HTTP Upgrade handshake (RFC 6455).
+    /// Called from do_connect_() when using WsFramer.
+    [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_ws_upgrade_() {
+        auto log = detail::transport_logger();
+
+        // Generate WebSocket key
+        auto ws_key_result = http::generate_ws_key();
+        if (!ws_key_result) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kWsUpgradeFailed, ws_key_result.error()});
+        }
+        std::string ws_key = std::move(*ws_key_result);
+
+        // Build upgrade request
+        // RFC 6455 section 4.1: Host header includes port only when non-default
+        std::string host = core_.config.remote_host;
+        uint16_t default_port = core_.config.use_tls ? 443 : 80;
+        if (core_.config.remote_port != default_port) {
+            host += ":" + std::to_string(core_.config.remote_port);
+        }
+
+        // Build extra headers including subprotocol if configured
+        std::string headers = core_.config.extra_headers;
+        if (!core_.config.ws_subprotocol.empty()) {
+            headers += std::format("Sec-WebSocket-Protocol: {}\r\n",
+                                   core_.config.ws_subprotocol);
+        }
+
+        auto request_result = http::build_upgrade_request(
+            host, core_.config.ws_path, ws_key, headers);
+        if (!request_result) [[unlikely]] {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kWsUpgradeFailed,
+                request_result.error()});
+        }
+        std::string request = std::move(*request_result);
+
+        SPDLOG_LOGGER_DEBUG(log, "Sending WebSocket upgrade request ({})",
+            core_.config.use_tls ? "TLS" : "plain TCP");
+
+        // Send upgrade request through TLS or plain TCP
+        if (core_.config.use_tls) {
+            auto write_result = core_.tls->handshake_write(request.data(),
+                                                           static_cast<int>(request.size()));
+            if (!write_result || *write_result <= 0) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kWsUpgradeFailed,
+                    "Failed to send WebSocket upgrade request"});
+            }
+        } else {
+            auto write_result = core_.tcp->send(request.data(), request.size());
+            if (!write_result) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kWsUpgradeFailed,
+                    std::format("Failed to send WebSocket upgrade request: {}",
+                                write_result.error())});
+            }
+        }
+
+        // Read upgrade response (with timeout).
+        static constexpr size_t kMaxUpgradeResponseSize = 65536;
+        std::vector<uint8_t> response_buf;
+        response_buf.reserve(4096);
+
+        auto deadline = std::chrono::steady_clock::now() + core_.config.ws_timeout;
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            uint8_t buf[4096];
+            int bytes_read = 0;
+
+            if (core_.config.use_tls) {
+                auto read_result = core_.tls->handshake_read(buf, sizeof(buf));
+                if (!read_result) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        std::format("Failed to read upgrade response: {}",
+                                    read_result.error())});
+                }
+                bytes_read = *read_result;
+            } else {
+                auto rx_result = core_.tcp->poll_rx(
+                    [&](const uint8_t* data, uint16_t len) {
+                        bytes_read = len;
+                        std::memcpy(buf, data, std::min(static_cast<size_t>(len),
+                                                         sizeof(buf)));
+                    });
+                if (!rx_result) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        std::format("Failed to read upgrade response: {}",
+                                    rx_result.error())});
+                }
+            }
+
+            if (bytes_read > 0) {
+                if (response_buf.size() + static_cast<size_t>(bytes_read) > kMaxUpgradeResponseSize) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "WebSocket upgrade response exceeds {}B limit",
+                        kMaxUpgradeResponseSize);
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        "WebSocket upgrade response too large"});
+                }
+                response_buf.insert(response_buf.end(),
+                                    buf, buf + bytes_read);
+            }
+
+            // Check if we have a complete HTTP response
+            auto response_str = std::string_view(
+                reinterpret_cast<const char*>(response_buf.data()),
+                response_buf.size());
+
+            if (response_str.find("\r\n\r\n") != std::string_view::npos) {
+                auto parsed = http::parse_upgrade_response(
+                    reinterpret_cast<const char*>(response_buf.data()),
+                    response_buf.size());
+
+                if (!parsed) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        std::format("Failed to parse upgrade response: {}",
+                                    parsed.error())});
+                }
+
+                if (parsed->status_code != 101) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "WebSocket upgrade rejected: status={}",
+                        parsed->status_code);
+                    return std::unexpected(ConnectionErrorInfo{
+                        .code = ConnectionError::kWsUpgradeRejected,
+                        .detail = std::format("WebSocket upgrade rejected (status {})",
+                                    parsed->status_code),
+                        .http_status = parsed->status_code});
+                }
+
+                if (!parsed->has_upgrade || !parsed->has_connection_upgrade) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeFailed,
+                        "Missing Upgrade/Connection headers in response"});
+                }
+
+                // Validate Sec-WebSocket-Accept
+                if (!http::validate_ws_accept(ws_key,
+                                               parsed->sec_ws_accept)) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "Sec-WebSocket-Accept validation failed");
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsAcceptInvalid,
+                        "Sec-WebSocket-Accept validation failed"});
+                }
+
+                // Store negotiated subprotocol
+                core_.ws_subprotocol = std::move(parsed->sec_ws_protocol);
+
+                SPDLOG_LOGGER_INFO(log, "WebSocket upgrade successful{}",
+                    core_.ws_subprotocol.empty() ? ""
+                        : std::format(" (subprotocol: {})", core_.ws_subprotocol));
+                return {};
+            }
+        }
+
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kWsUpgradeFailed,
+            "WebSocket upgrade response timeout"});
+    }
 
     // -----------------------------------------------------------------------
     // Direct send: WS encode -> [TLS encrypt] -> TCP send
@@ -782,9 +1158,10 @@ private:
 
     /// Direct send: frame encode -> [TLS encrypt] -> TCP send.
     /// Called from the application thread; no SPSC queue involved.
-    SendError send_direct(const void* data, size_t len, uint8_t opcode) noexcept {
+    SendError send_direct_(const void* data, size_t len, uint8_t opcode) noexcept {
         if (len > MaxPayload) return SendError::kMessageTooLarge;
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire))
+            return SendError::kNotConnected;
 
         auto log = detail::transport_logger();
 
@@ -805,30 +1182,30 @@ private:
         }
 
         // 2. TLS encrypt (if enabled) + 3. TCP send
-        if (config_.use_tls) {
-            if (!crypto_) return SendError::kNotConnected;
+        if (core_.config.use_tls) {
+            if (!core_.crypto) return SendError::kNotConnected;
             constexpr size_t kTlsBufSize =
                 TlsEncryptor::encrypted_size(
                     static_cast<uint16_t>(kFrameOverhead + MaxPayload));
             uint8_t tls_buf[kTlsBufSize];
 
-            uint16_t enc_len = crypto_->enc.encrypt(
+            uint16_t enc_len = core_.crypto->enc.encrypt(
                 ws_buf, static_cast<uint16_t>(ws_len), tls_buf);
             if (enc_len == 0) {
-                SPDLOG_LOGGER_ERROR(log, "send_direct: encrypt failed");
+                SPDLOG_LOGGER_ERROR(log, "send_direct_: encrypt failed");
                 return SendError::kEncryptFailed;
             }
 
-            auto result = tcp_->send(tls_buf, enc_len);
+            auto result = core_.tcp->send(tls_buf, enc_len);
             if (!result) {
-                SPDLOG_LOGGER_WARN(log, "send_direct: TCP send failed: {}",
+                SPDLOG_LOGGER_WARN(log, "send_direct_: TCP send failed: {}",
                     result.error());
                 return SendError::kTcpSendFailed;
             }
         } else {
-            auto result = tcp_->send(ws_buf, ws_len);
+            auto result = core_.tcp->send(ws_buf, ws_len);
             if (!result) {
-                SPDLOG_LOGGER_WARN(log, "send_direct: TCP send failed: {}",
+                SPDLOG_LOGGER_WARN(log, "send_direct_: TCP send failed: {}",
                     result.error());
                 return SendError::kTcpSendFailed;
             }
@@ -863,132 +1240,74 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    // Members
+    // Members — composed components
     // -----------------------------------------------------------------------
 
-    // Connection state
-    TransportConfig                        config_;
-    TcpFactory                             tcp_factory_;
-    std::unique_ptr<TcpImpl>               tcp_;
-    std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
-    std::unique_ptr<TlsRecordCrypto>       crypto_;
+    /// Shared connection state: TCP, TLS, config, lifecycle atomics.
+    TransportCore<TcpImpl> core_;
 
-    // Connection metadata captured after each successful handshake
-    std::string                            tls_version_{"none"};
-    std::string                            cipher_name_{"none"};
-    std::string                            ws_subprotocol_{};
-    std::string                            remote_ip_{};
+    /// Reconnection with exponential backoff + jitter.
+    ReconnectPolicy reconnect_;
 
-    // Uptime tracking
-    std::chrono::steady_clock::time_point  created_at_{};
+    /// Frame decoder/processor — handles WS decode, fragmentation, control
+    /// frames, and delivers data frames via DirectDeliver.
+    std::unique_ptr<FP> fp_;
 
-    // Stub types for detail file compatibility — referenced inside
-    // if constexpr dead branches (kHasTxQueue=false, kHasRxQueue=false).
-    // Never used at runtime.
-    using TxMsg = detail::TxMessage<MaxPayload>;
-    using RxMsg = detail::TxMessage<MaxPayload>; // reuse TxMessage shape
-    struct QueueStub_ {
-        void clear() noexcept {}
-        template<typename F> bool try_produce(F&&) noexcept { return false; }
-        template<typename F> bool try_consume(F&&) noexcept { return false; }
-        size_t size() const noexcept { return 0; }
-    };
-    [[no_unique_address]] QueueStub_       tx_queue_{};
-    [[no_unique_address]] QueueStub_       rx_queue_{};
-    std::atomic<size_t>                    tx_hwm_{0};
-    std::atomic<size_t>                    rx_hwm_{0};
-    uint64_t                               tx_hwm_counter_{0};
-    uint64_t                               rx_hwm_counter_{0};
+    // -----------------------------------------------------------------------
+    // Members — stats (single thread, no cross-core contention)
+    // -----------------------------------------------------------------------
 
-    /// Stub rx_enqueue — never called (kHasRxQueue=false), but name must exist
-    /// for if constexpr dead branch in deliver_message().
-    bool rx_enqueue(const uint8_t*, uint16_t, uint8_t) noexcept { return false; }
-    size_t rx_size() const noexcept { return 0; }
+    /// TX stats (single thread — app thread does all sends).
+    ThreadStats tx_stats_{};
 
-    /// Update a high-watermark atomically (shared helper for detail files).
-    static void update_hwm(std::atomic<size_t>& hwm, size_t current) noexcept {
-        size_t prev = hwm.load(std::memory_order_relaxed);
-        while (current > prev &&
-               !hwm.compare_exchange_weak(prev, current,
-                   std::memory_order_relaxed, std::memory_order_relaxed)) {}
-    }
+    /// RX stats (single thread — app thread does all receives).
+    ThreadStats rx_stats_{};
 
-    // Lifecycle atomics
-    std::atomic<bool>                      running_{false};
-    std::atomic<bool>                      reconnecting_{false};
-    std::atomic<bool>                      closing_{false};
-    std::atomic<bool>                      force_reconnect_{false};
+    // -----------------------------------------------------------------------
+    // Members — histograms
+    // -----------------------------------------------------------------------
 
-    // Per-thread stats (no cross-core contention — single thread in direct mode)
-    ThreadStats                            tx_stats_{};
-    ThreadStats                            rx_stats_{};
-
-    // App-thread-only counters
-    std::atomic<uint64_t>                  queue_full_count_{0};
-    std::atomic<uint64_t>                  ws_pings_received_{0};
-    std::atomic<uint64_t>                  ws_pongs_sent_{0};
-    std::atomic<uint64_t>                  reconnect_count_{0};
-    std::atomic<uint64_t>                  pong_timeouts_{0};
-
-    // Handshake timing
-    uint64_t                               last_handshake_ns_{0};
-    uint64_t                               last_tcp_connect_ns_{0};
-    uint64_t                               last_tls_handshake_ns_{0};
-    uint64_t                               last_ws_upgrade_ns_{0};
-
-    // TSC timing for latency measurement
-    uint64_t                               current_arrival_tsc_{0};
-    uint64_t                               current_decrypt_done_tsc_{0};
-    double                                 ns_per_cycle_{0.0};
-
-    // Pong timeout tracking
-    std::atomic<int64_t>                   last_pong_ns_{0};
-    std::atomic<uint64_t>                  last_ping_tsc_{0};
-
-    // Per-thread flags (single thread — no synchronization needed)
-    bool                                   ping_awaiting_pong_{false};
-    bool                                   seq_warning_logged_{false};
-    bool                                   rx_seq_warning_logged_{false};
-
-    // Close handshake
-    uint16_t                               pending_close_code_{ws::close_code::kNormal};
-    std::string                            pending_close_reason_{};
-    std::atomic<bool>                      close_requested_{false};
-
-    // Histograms: RTT
-    eph::utils::HdrHistogram               rtt_histogram_{
+    /// RTT histogram (ping -> pong round-trip).
+    eph::utils::HdrHistogram rtt_histogram_{
         100, 10'000'000'000ULL, 3
     };
 
-    // TX histograms (declared for stats() API compatibility — always empty in direct mode)
-    eph::utils::HdrHistogram               tx_latency_histogram_{
+    /// RX latency breakdown histograms.
+    eph::utils::HdrHistogram rx_latency_histogram_{
         10, 1'000'000'000ULL, 3
     };
-    eph::utils::HdrHistogram               tx_queue_wait_histogram_{
+    eph::utils::HdrHistogram rx_decrypt_histogram_{
         10, 1'000'000'000ULL, 3
     };
-    eph::utils::HdrHistogram               tx_encode_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-
-    // RX histograms
-    eph::utils::HdrHistogram               rx_latency_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-    eph::utils::HdrHistogram               rx_decrypt_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-    eph::utils::HdrHistogram               rx_decode_histogram_{
+    eph::utils::HdrHistogram rx_decode_histogram_{
         10, 1'000'000'000ULL, 3
     };
 
-    // WebSocket fragmentation reassembly buffer (single thread only)
-    std::vector<uint8_t>                   ws_frag_buf_;
-    uint8_t                                ws_frag_opcode_ = 0;
-    Framer                                 rx_framer_{};
+    /// TX histograms (declared for stats() API compatibility — always empty
+    /// in direct mode since there is no TX worker).
+    eph::utils::HdrHistogram tx_latency_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
+    eph::utils::HdrHistogram tx_queue_wait_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
+    eph::utils::HdrHistogram tx_encode_histogram_{
+        10, 1'000'000'000ULL, 3
+    };
 
     // -----------------------------------------------------------------------
-    // Direct RX state: persistent reassembly buffers for poll()
+    // Members — counters
+    // -----------------------------------------------------------------------
+
+    std::atomic<uint64_t> ws_pings_received_{0};
+    std::atomic<uint64_t> ws_pongs_sent_{0};
+    std::atomic<uint64_t> reconnect_count_{0};
+    std::atomic<uint64_t> pong_timeouts_{0};
+    std::atomic<size_t>   rx_hwm_{0};
+    uint64_t              rx_hwm_counter_{0};
+
+    // -----------------------------------------------------------------------
+    // Members — DirectRxState (persistent reassembly buffers for poll)
     // -----------------------------------------------------------------------
 
     static constexpr size_t kReassemblyBufSize =
@@ -1011,10 +1330,6 @@ private:
         bool initialized = false;
     };
     DirectRxState direct_rx_{};
-
-    // Private method implementations (shared detail files)
-#include "eph/transport/detail/transport_state.hpp"
-#include "eph/transport/detail/transport_frame.hpp"
 };
 
 } // namespace eph::net

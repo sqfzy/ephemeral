@@ -17,16 +17,23 @@
 ///   - Application thread: calls send()/recv(), non-blocking
 ///   - TX thread: busy-poll SPSC queue, build packets, send
 ///   - RX thread: busy-poll TCP rx, decrypt, parse WS frames, push to recv queue
+///
+/// Composition:
+///   Transport composes four value members:
+///     TransportCore<TcpImpl>  -- shared connection state (TCP, TLS, config)
+///     TxWorker<...>           -- TX thread, TX queue, TX stats
+///     RxWorker<...>           -- RX thread, RX queue, RX stats
+///     ReconnectPolicy         -- exponential backoff reconnect strategy
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
 #include <memory>
 #include <optional>
-#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,23 +41,18 @@
 #include <type_traits>
 #include <vector>
 
-
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include "eph/utils/alignment.hpp"
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/containers/evicting_queue.hpp"
-#include "eph/utils/cpu.hpp"
-#include "eph/utils/hdr_histogram.hpp"
 #include "eph/core/framer_concept.hpp"
-#include "eph/transport/http.hpp"
 #include "eph/core/tcp_concept.hpp"
-#include "eph/transport/tls_decryptor.hpp"
-#include "eph/transport/tls_encryptor.hpp"
-#include "eph/transport/tls_record.hpp"
-#include "eph/transport/tls_session.hpp"
+#include "eph/transport/transport_core.hpp"
 #include "eph/transport/transport_types.hpp"
+#include "eph/transport/tx_worker.hpp"
+#include "eph/transport/rx_worker.hpp"
+#include "eph/transport/reconnect_policy.hpp"
+#include "eph/transport/tls_record.hpp"
 #include "eph/transport/websocket.hpp"
 #include "eph/transport/ws_framer.hpp"
 #include "eph/transport/detail/message_types.hpp"
@@ -75,7 +77,7 @@ inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 #endif
 
 // ---------------------------------------------------------------------------
-// Transport -- public API (threaded variant)
+// Transport -- public API (threaded variant, composed from workers)
 // ---------------------------------------------------------------------------
 
 /// Generic WebSocket transport with TLS 1.3 encryption (threaded variant).
@@ -145,10 +147,12 @@ class Transport {
     static constexpr bool kHasTxQueue  = true;
     static constexpr bool kHasRxQueue  = true;
 
+    // -- Component type aliases -----------------------------------------------
+    using TxWorkerT = TxWorker<TcpImpl, Framer, MaxPayload, QueueDepth>;
+    using RxWorkerT = RxWorker<TcpImpl, Framer, MaxPayload, QueueDepth,
+                               RxQueueTmpl, LastOnlyDeliver>;
     using TxMsg = detail::TxMessage<MaxPayload>;
     using RxMsg = detail::RxMessage<MaxPayload>;
-    using TxQueue = eph::containers::BoundedQueue<TxMsg, QueueDepth>;
-    using RxQueue = RxQueueTmpl<RxMsg, QueueDepth>;
 
 public:
     /// Factory callable: creates a new, already-connected TcpImpl instance.
@@ -156,9 +160,16 @@ public:
     using TcpFactory = std::function<
         std::expected<std::unique_ptr<TcpImpl>, std::string>()>;
 
+    /// Received message with opcode metadata (delegates to RxWorker's definition).
+    using ReceivedMessage = typename RxWorkerT::ReceivedMessage;
+
     static constexpr size_t max_payload() noexcept { return MaxPayload; }
     static constexpr size_t queue_depth() noexcept { return QueueDepth; }
     static constexpr bool   timestamps_enabled() noexcept { return kEnableTimestamps; }
+
+    // =======================================================================
+    // Factory
+    // =======================================================================
 
     /// Create and connect a transport (TCP + TLS + WebSocket handshake).
     /// This is a blocking call -- performs the full handshake sequence.
@@ -185,35 +196,40 @@ public:
         }
 
         SPDLOG_LOGGER_INFO(log,
-            "Creating transport: {}:{}{}", config.remote_host,
-            config.remote_port, config.ws_path);
+            "Creating transport: {}:{}{}",
+            config.remote_host, config.remote_port, config.ws_path);
 
-        auto t = std::unique_ptr<Transport>(new Transport());
-        t->config_      = config;
-        t->tcp_factory_ = std::move(tcp_factory);
+        // Construct Transport with all components
+        auto t = std::unique_ptr<Transport>(new Transport(
+            std::move(tcp_factory), config));
 
-        auto conn_result = t->do_connect();
+        // Phase 1: TCP + TLS + WS handshake via TransportCore
+        auto conn_result = t->core_.do_connect();
         if (!conn_result) {
             SPDLOG_LOGGER_ERROR(log, "Initial connect failed: {}",
                                 conn_result.error().message());
             return std::unexpected(conn_result.error());
         }
 
-        // Pre-allocate WS fragmentation buffer to avoid heap allocation
-        // on the RX hot path when reassembling multi-frame messages.
+        // Phase 2: WebSocket upgrade (only for WsFramer)
         if constexpr (kIsWebSocket) {
-            t->ws_frag_buf_.reserve(MaxPayload);
+            auto ws_result = t->core_.template do_ws_upgrade<Framer>();
+            if (!ws_result) {
+                SPDLOG_LOGGER_ERROR(log, "WS upgrade failed: {}",
+                                    ws_result.error().message());
+                return std::unexpected(ws_result.error());
+            }
         }
 
-        t->created_at_ = std::chrono::steady_clock::now();
-        t->running_.store(true, std::memory_order_release);
-        t->notify_state(TransportEvent::kConnected, config.remote_host);
+        t->core_.created_at = std::chrono::steady_clock::now();
+        t->core_.running.store(true, std::memory_order_release);
+        t->core_.notify_state(TransportEvent::kConnected, config.remote_host);
 
         // Flush any pending TCP ACK accumulated during handshake.
         // Critical for deferred_start: without this, the server's TCP
         // window fills up and it stops sending data before RX threads start.
-        if constexpr (requires { t->tcp_->flush_pending_ack(); }) {
-            t->tcp_->flush_pending_ack();
+        if constexpr (requires { t->core_.tcp->flush_pending_ack(); }) {
+            t->core_.tcp->flush_pending_ack();
         }
 
         // Hook: allow caller to configure session (e.g., shared RX ring)
@@ -242,9 +258,9 @@ public:
     Transport(Transport&&)                 = delete;
     Transport& operator=(Transport&&)      = delete;
 
-    // -----------------------------------------------------------------------
-    // Send API (application thread)
-    // -----------------------------------------------------------------------
+    // =======================================================================
+    // Send API (application thread) -> delegates to tx_
+    // =======================================================================
 
     /// Send data as a WebSocket frame (non-blocking, best-effort).
     ///
@@ -262,11 +278,11 @@ public:
                    uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+        if (opcode == ws::opcode::kText && !core_.config.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx(data, len, opcode);
+        return tx_.enqueue(data, len, opcode);
     }
 
     /// Send data from a span (convenience overload).
@@ -286,21 +302,21 @@ public:
     /// if validation is enabled and the payload is not valid UTF-8.
     [[nodiscard]] SendError send_text(const void* data, size_t len) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (!config_.skip_utf8_validation &&
+        if (!core_.config.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx(data, len, ws::opcode::kText);
+        return tx_.enqueue(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
     /// Validates UTF-8 encoding per RFC 6455 §5.6 unless
     /// TransportConfig::skip_utf8_validation is true.
     [[nodiscard]] SendError send_text(std::string_view sv) noexcept {
-        if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
+        if (!core_.config.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+        return tx_.enqueue(sv.data(), sv.size(), ws::opcode::kText);
     }
 
     /// Send a text frame WITHOUT UTF-8 validation (unchecked).
@@ -310,12 +326,12 @@ public:
     /// If the payload is not valid UTF-8, the remote peer may close the
     /// connection per RFC 6455 §5.6 — this is the caller's responsibility.
     [[nodiscard]] SendError send_text_unchecked(const void* data, size_t len) noexcept {
-        return enqueue_tx(data, len, ws::opcode::kText);
+        return tx_.enqueue(data, len, ws::opcode::kText);
     }
 
     /// Send a string_view as an unchecked text frame (no UTF-8 validation).
     [[nodiscard]] SendError send_text_unchecked(std::string_view sv) noexcept {
-        return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+        return tx_.enqueue(sv.data(), sv.size(), ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket binary frame.
@@ -341,11 +357,11 @@ public:
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         // RFC 6455 §5.6: text frames must contain valid UTF-8
-        if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+        if (opcode == ws::opcode::kText && !core_.config.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx_for(data, len, timeout, opcode);
+        return tx_.enqueue_for(data, len, timeout, opcode);
     }
 
     /// Send data from a span with timeout (convenience overload).
@@ -363,21 +379,21 @@ public:
     SendError send_text_for(const void* data, size_t len,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (!config_.skip_utf8_validation &&
+        if (!core_.config.skip_utf8_validation &&
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx_for(data, len, timeout, ws::opcode::kText);
+        return tx_.enqueue_for(data, len, timeout, ws::opcode::kText);
     }
 
     /// Send a string_view as a WebSocket text frame with timeout.
     template <typename Rep, typename Period>
     SendError send_text_for(std::string_view sv,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
-        if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
+        if (!core_.config.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
+        return tx_.enqueue_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
     }
 
     /// Send a WebSocket binary frame with timeout (convenience, explicit intent).
@@ -405,7 +421,7 @@ public:
     /// @return SendError::kOk on success, or a specific error code
     SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (!ws::is_valid_close_code(status_code)) return SendError::kInvalidCloseCode;
         // RFC 6455 §7.1.6: close reason must be valid UTF-8
         if (!reason.empty() && !ws::is_valid_utf8(reason)) return SendError::kInvalidUtf8;
@@ -421,7 +437,8 @@ public:
 
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
 
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+        // Build close payload and enqueue via TX queue directly
+        bool ok = tx_.queue().try_produce([&](TxMsg& msg) {
             msg.data[0] = static_cast<uint8_t>(status_code >> 8);
             msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
             if (reason_len > 0) {
@@ -449,7 +466,7 @@ public:
     /// @return SendError::kOk on success, or a specific error code
     SendError send_ping(const void* payload = nullptr,
                         size_t payload_len = 0) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
         // RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
         size_t original_len = payload_len;
@@ -461,7 +478,7 @@ public:
         }
         if (payload_len > MaxPayload) return SendError::kMessageTooLarge;
 
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+        bool ok = tx_.queue().try_produce([&](TxMsg& msg) {
             if (payload && payload_len > 0) {
                 std::memcpy(msg.data, payload, payload_len);
             }
@@ -491,34 +508,19 @@ public:
     /// @return SendError::kOk on success, or a specific error code
     SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
                      uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
             // RFC 6455 §5.6: text frames must contain valid UTF-8
-            if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+            if (opcode == ws::opcode::kText && !core_.config.skip_utf8_validation &&
                 !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
                 return SendError::kInvalidUtf8;
             }
         }
 
-        // Write directly into queue slots — no temporary array needed.
-        bool ok = tx_queue_.try_produce_n(count,
-            [&](TxMsg& slot, size_t i) {
-                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
-                slot.len = static_cast<uint16_t>(payloads[i].size());
-                slot.opcode = opcode;
-                if constexpr (kEnableTimestamps) {
-                    slot.tsc = eph::utils::TSC::now();
-                }
-            });
-
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
-        }
-        return SendError::kOk;
+        return tx_.enqueue_batch(payloads, count, opcode);
     }
 
     /// Batch-send with timeout — waits up to `timeout` for queue space.
@@ -535,37 +537,23 @@ public:
     SendError send_n_for(const std::span<const uint8_t>* payloads, size_t count,
                          std::chrono::duration<Rep, Period> timeout,
                          uint8_t opcode = ws::opcode::kBinary) noexcept {
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+        if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload) return SendError::kMessageTooLarge;
             // RFC 6455 §5.6: text frames must contain valid UTF-8
-            if (opcode == ws::opcode::kText && !config_.skip_utf8_validation &&
+            if (opcode == ws::opcode::kText && !core_.config.skip_utf8_validation &&
                 !ws::is_valid_utf8(payloads[i].data(), payloads[i].size())) {
                 return SendError::kInvalidUtf8;
             }
         }
 
-        bool ok = tx_queue_.try_produce_n_for(count,
-            [&](TxMsg& slot, size_t i) {
-                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
-                slot.len = static_cast<uint16_t>(payloads[i].size());
-                slot.opcode = opcode;
-                if constexpr (kEnableTimestamps) {
-                    slot.tsc = eph::utils::TSC::now();
-                }
-            }, timeout);
-
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            return SendError::kQueueFull;
-        }
-        return SendError::kOk;
+        return tx_.enqueue_batch_for(payloads, count, timeout, opcode);
     }
 
-    // -----------------------------------------------------------------------
-    // Receive API (application thread)
+    // =======================================================================
+    // Receive API (application thread) -> delegates to rx_
     //
     // Two receive modes coexist — choose one per application:
     //   - Pull (recv/recv_n/drain_recv): application polls the RX queue.
@@ -576,7 +564,7 @@ public:
     //
     // Both modes can be active simultaneously — on_message fires first in
     // the RX thread, then the message is enqueued for recv() consumption.
-    // -----------------------------------------------------------------------
+    // =======================================================================
 
     /// Try to receive a message (non-blocking).
     /// @param callback  Called with (data_ptr, len) if a message is available.
@@ -586,16 +574,9 @@ public:
     ///          need it after the callback returns -- the underlying SPSC
     ///          queue slot will be reused.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t>)
+        requires std::invocable<F, const uint8_t*, size_t>
     [[nodiscard]] bool recv(F&& callback) {
-        bool consumed = rx_consume([&](const RxMsg& msg) {
-            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
-                "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
-            std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
-                        static_cast<size_t>(msg.len));
-        });
-        return consumed;
+        return rx_.recv(std::forward<F>(callback));
     }
 
     /// Try to receive a message with opcode (non-blocking).
@@ -603,16 +584,9 @@ public:
     ///                  opcode is one of ws::opcode::kBinary, ws::opcode::kText, etc.
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t>)
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     [[nodiscard]] bool recv(F&& callback) {
-        bool consumed = rx_consume([&](const RxMsg& msg) {
-            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
-                "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
-            std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
-                        static_cast<size_t>(msg.len), msg.opcode);
-        });
-        return consumed;
+        return rx_.recv(std::forward<F>(callback));
     }
 
     /// Try to receive a message with opcode and arrival timestamp (non-blocking).
@@ -623,86 +597,22 @@ public:
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     /// @return true if a message was consumed, false if queue empty.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t, uint64_t>)
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t, uint64_t>
     [[nodiscard]] bool recv(F&& callback) {
-        static_assert(kEnableTimestamps,
-            "recv() with TSC callback requires -DEPH_ENABLE_TIMESTAMPS=1");
-        bool consumed = rx_consume([&](const RxMsg& msg) {
-            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
-                "RX dequeue: len={}, opcode={}, tsc={}", msg.len, msg.opcode, msg.tsc);
-            std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
-                        static_cast<size_t>(msg.len), msg.opcode, msg.tsc);
-        });
-        return consumed;
+        return rx_.recv(std::forward<F>(callback));
     }
 
     /// Try to receive a message as a copied byte vector (non-blocking).
     /// Returns the payload bytes, or nullopt if the queue is empty.
     /// Prefer the callback variant for zero-copy hot paths.
-    [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv()
-        requires (kHasRxQueue)
-    {
-        std::optional<std::vector<uint8_t>> result;
-        (void)rx_consume([&](const RxMsg& msg) {
-            result.emplace(msg.data, msg.data + msg.len);
-        });
-        return result;
+    [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv() {
+        return rx_.try_recv();
     }
-
-    /// Received message with opcode metadata.
-    struct ReceivedMessage {
-        std::vector<uint8_t> data;
-        uint8_t opcode = ws::opcode::kBinary;
-
-        /// Check if this is a text message.
-        [[nodiscard]] bool is_text() const noexcept {
-            return opcode == ws::opcode::kText;
-        }
-        /// Check if this is a binary message.
-        [[nodiscard]] bool is_binary() const noexcept {
-            return opcode == ws::opcode::kBinary;
-        }
-        /// Check if this is a close frame.
-        /// Close frames are delivered to the RX queue when the server sends
-        /// a WebSocket Close frame. Use close_code() and close_reason() to
-        /// extract the status code and reason string from the payload.
-        [[nodiscard]] bool is_close() const noexcept {
-            return opcode == ws::opcode::kClose;
-        }
-        /// Return the payload as a string_view (valid only for text messages).
-        [[nodiscard]] std::string_view text() const noexcept {
-            return {reinterpret_cast<const char*>(data.data()), data.size()};
-        }
-        /// Extract the close status code from a close frame payload.
-        /// Returns 0 if the payload is too short (< 2 bytes) or not a close frame.
-        /// Common codes: 1000 (Normal), 1001 (GoingAway), 1002 (ProtocolError).
-        [[nodiscard]] uint16_t close_code() const noexcept {
-            if (opcode != ws::opcode::kClose || data.size() < 2) return 0;
-            return static_cast<uint16_t>((data[0] << 8) | data[1]);
-        }
-        /// Extract the close reason string from a close frame payload.
-        /// Returns empty string_view if not a close frame or no reason present.
-        [[nodiscard]] std::string_view close_reason() const noexcept {
-            if (opcode != ws::opcode::kClose || data.size() <= 2) return {};
-            return {reinterpret_cast<const char*>(data.data() + 2),
-                    data.size() - 2};
-        }
-    };
 
     /// Try to receive a message with opcode info (non-blocking).
     /// Returns payload + opcode, or nullopt if the queue is empty.
-    [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg()
-        requires (kHasRxQueue)
-    {
-        std::optional<ReceivedMessage> result;
-        (void)rx_consume([&](const RxMsg& msg) {
-            result.emplace(ReceivedMessage{
-                .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
-                .opcode = msg.opcode,
-            });
-        });
-        return result;
+    [[nodiscard]] std::optional<ReceivedMessage> try_recv_msg() {
+        return rx_.try_recv_msg();
     }
 
     // -----------------------------------------------------------------------
@@ -721,42 +631,24 @@ public:
     /// @return true if a message was peeked, false if queue empty.
     /// @warning The data pointer is only valid during the callback invocation.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t>)
+        requires std::invocable<F, const uint8_t*, size_t>
     [[nodiscard]] bool recv_peek(F&& callback) {
-        return rx_peek([&](const RxMsg& msg) {
-            std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
-                        static_cast<size_t>(msg.len));
-        });
+        return rx_.recv_peek(std::forward<F>(callback));
     }
 
     /// Peek at the next message with opcode without consuming (non-blocking).
     /// @param callback  Called with (data_ptr, len, opcode) if a message is available.
     /// @return true if a message was peeked, false if queue empty.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t>)
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     [[nodiscard]] bool recv_peek(F&& callback) {
-        return rx_peek([&](const RxMsg& msg) {
-            std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
-                        static_cast<size_t>(msg.len),
-                        msg.opcode);
-        });
+        return rx_.recv_peek(std::forward<F>(callback));
     }
 
     /// Peek at the next message as a copied ReceivedMessage (non-blocking).
     /// Returns nullopt if the queue is empty.
-    [[nodiscard]] std::optional<ReceivedMessage> peek_recv_msg()
-        requires (kHasRxQueue)
-    {
-        std::optional<ReceivedMessage> result;
-        (void)rx_peek([&](const RxMsg& msg) {
-            result.emplace(ReceivedMessage{
-                .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
-                .opcode = msg.opcode,
-            });
-        });
-        return result;
+    [[nodiscard]] std::optional<ReceivedMessage> peek_recv_msg() {
+        return rx_.peek_recv_msg();
     }
 
     /// Batch-receive up to max_count messages (non-blocking, best-effort).
@@ -771,12 +663,9 @@ public:
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
+        requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
-        return rx_queue_.try_consume_n(max_count,
-            [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
-                std::invoke(std::forward<F>(callback), msg.data, msg.len);
-            });
+        return rx_.recv_n(std::forward<F>(callback), max_count);
     }
 
     /// Batch-receive up to max_count messages with opcode (non-blocking).
@@ -790,22 +679,18 @@ public:
     /// @param max_count   Maximum number of messages to consume
     /// @return Number of messages actually consumed
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
+        requires (std::invocable<F, const uint8_t*, size_t, uint8_t> && !kRxEvicting)
     [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
-        return rx_queue_.try_consume_n(max_count,
-            [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
-                std::invoke(std::forward<F>(callback),
-                            msg.data, msg.len, msg.opcode);
-            });
+        return rx_.recv_n(std::forward<F>(callback), max_count);
     }
 
     /// Drain all available messages (non-blocking).
     /// Equivalent to recv_n(callback, queue_depth()).
     /// @note Not available when RxQueue is EvictingQueue.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
+        requires (std::invocable<F, const uint8_t*, size_t> && !kRxEvicting)
     [[nodiscard]] size_t drain_recv(F&& callback) {
-        return recv_n(std::forward<F>(callback), QueueDepth);
+        return rx_.drain_recv(std::forward<F>(callback));
     }
 
     /// Blocking receive with timeout — waits for a message to arrive.
@@ -818,65 +703,28 @@ public:
     /// @param timeout   Maximum time to wait for a message
     /// @return true if a message was consumed, false on timeout or stop
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t>)
+        requires std::invocable<F, const uint8_t*, size_t>
     [[nodiscard]] bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (running_.load(std::memory_order_acquire)) {
-            bool got = rx_consume([&](const RxMsg& msg) {
-                std::invoke(std::forward<F>(callback),
-                            static_cast<const uint8_t*>(msg.data),
-                            static_cast<size_t>(msg.len));
-            });
-            if (got) return true;
-            if (std::chrono::steady_clock::now() >= deadline) return false;
-            std::this_thread::yield();
-        }
-        return false;
+        return rx_.wait_recv(std::forward<F>(callback), timeout);
     }
 
     /// Blocking receive with opcode and timeout.
     template <typename F>
-        requires (kHasRxQueue && std::invocable<F, const uint8_t*, size_t, uint8_t>)
+        requires std::invocable<F, const uint8_t*, size_t, uint8_t>
     [[nodiscard]] bool wait_recv(F&& callback, std::chrono::milliseconds timeout) {
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (running_.load(std::memory_order_acquire)) {
-            bool got = rx_consume([&](const RxMsg& msg) {
-                std::invoke(std::forward<F>(callback),
-                            static_cast<const uint8_t*>(msg.data),
-                            static_cast<size_t>(msg.len), msg.opcode);
-            });
-            if (got) return true;
-            if (std::chrono::steady_clock::now() >= deadline) return false;
-            std::this_thread::yield();
-        }
-        return false;
+        return rx_.wait_recv(std::forward<F>(callback), timeout);
     }
 
     /// Blocking receive returning a ReceivedMessage with opcode and timeout.
     /// Returns nullopt on timeout or transport stopped.
     [[nodiscard]] std::optional<ReceivedMessage> wait_recv_msg(
-            std::chrono::milliseconds timeout)
-        requires (kHasRxQueue)
-    {
-        std::optional<ReceivedMessage> result;
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (running_.load(std::memory_order_acquire)) {
-            bool got = rx_consume([&](const RxMsg& msg) {
-                result.emplace(ReceivedMessage{
-                    .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
-                    .opcode = msg.opcode,
-                });
-            });
-            if (got) return result;
-            if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
-            std::this_thread::yield();
-        }
-        return std::nullopt;
+            std::chrono::milliseconds timeout) {
+        return rx_.wait_recv_msg(timeout);
     }
 
-    // -----------------------------------------------------------------------
+    // =======================================================================
     // Lifecycle
-    // -----------------------------------------------------------------------
+    // =======================================================================
 
     /// Initiate a graceful WebSocket close handshake (RFC 6455 §7.1.1).
     ///
@@ -896,14 +744,14 @@ public:
             std::string_view reason = "client shutdown",
             std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) noexcept {
         // Bail early if the transport is not running — nothing to close.
-        if (!running_.load(std::memory_order_acquire)) return false;
+        if (!core_.running.load(std::memory_order_acquire)) return false;
         // Store close code/reason so stop() can propagate them in the
         // final Close frame instead of using a hardcoded default.
         // Write code/reason BEFORE setting close_requested_ (release)
         // so that stop() sees consistent values after acquire load (M9).
-        pending_close_code_ = status_code;
-        pending_close_reason_ = std::string(reason);
-        close_requested_.store(true, std::memory_order_release);
+        core_.pending_close_code = status_code;
+        core_.pending_close_reason = std::string(reason);
+        core_.close_requested.store(true, std::memory_order_release);
 
         auto err = send_close(status_code, reason);
         if (err != SendError::kOk) {
@@ -916,8 +764,8 @@ public:
 
         // Wait for the server Close response (RX thread sets closing_=true)
         auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (running_.load(std::memory_order_acquire) &&
-               !closing_.load(std::memory_order_acquire)) {
+        while (core_.running.load(std::memory_order_acquire) &&
+               !core_.closing.load(std::memory_order_acquire)) {
             if (std::chrono::steady_clock::now() >= deadline) {
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
                     "close_gracefully: timed out waiting for server Close "
@@ -933,44 +781,43 @@ public:
         return true;
     }
 
+    /// Start RX/TX worker threads. Only needed when TransportConfig::deferred_start
+    /// is true. Must be called exactly once after create() returns.
+    void start_threads() {
+        tx_.start();
+        rx_.start();
+    }
+
     /// Stop the transport gracefully. Sends WebSocket Close frame.
     ///
     /// Thread safety: waits for TX/RX threads to exit BEFORE touching
     /// crypto_ or tcp_, avoiding data races on shared state.
-    /// Start RX/TX worker threads. Only needed when TransportConfig::deferred_start
-    /// is true. Must be called exactly once after create() returns.
-    void start_threads() {
-        auto* tp = this;
-        tx_thread_ = std::thread([tp] { tp->tx_loop(); });
-        rx_thread_ = std::thread([tp] { tp->rx_loop(); });
-    }
-
     void stop() noexcept {
-        bool was_running = running_.exchange(false, std::memory_order_acq_rel);
+        bool was_running = core_.running.exchange(false, std::memory_order_acq_rel);
 
         auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping transport");
 
         // Join worker threads FIRST — ensures no concurrent access to
-        // crypto_/tcp_ from TX/RX threads when we send the Close frame.
-        if (tx_thread_.joinable()) tx_thread_.join();
-        if (rx_thread_.joinable()) rx_thread_.join();
+        // crypto/tcp from TX/RX threads when we send the Close frame.
+        tx_.stop();
+        rx_.stop();
 
         // Send WebSocket Close frame after threads have exited (no race)
         // Only applicable when using WsFramer — other framers have no
         // close handshake at the framing layer.
         if constexpr (kIsWebSocket) {
-            if (was_running && tcp_ && tcp_->is_established() &&
-                (config_.use_tls ? crypto_ != nullptr : true)) {
-                // Acquire-load close_requested_ to synchronize with the
+            if (was_running && core_.tcp && core_.tcp->is_established() &&
+                (core_.config.use_tls ? core_.crypto != nullptr : true)) {
+                // Acquire-load close_requested to synchronize with the
                 // release-store in close_gracefully(), ensuring we see
                 // the code/reason written by the app thread (M9).
                 uint16_t close_code = ws::close_code::kNormal;
                 std::string_view close_reason = "client shutdown";
-                if (close_requested_.load(std::memory_order_acquire)) {
-                    close_code = pending_close_code_;
-                    if (!pending_close_reason_.empty())
-                        close_reason = pending_close_reason_;
+                if (core_.close_requested.load(std::memory_order_acquire)) {
+                    close_code = core_.pending_close_code;
+                    if (!core_.pending_close_reason.empty())
+                        close_reason = core_.pending_close_reason;
                 }
                 // Close frame: header (max 14) + payload (max 125) = 139 bytes,
                 // plus 1 byte for encrypt()'s temporary content type append.
@@ -978,47 +825,47 @@ public:
                 size_t close_len = ws::build_close_frame(
                     close_buf, close_code, close_reason);
 
-                if (config_.use_tls) {
+                if (core_.config.use_tls) {
                     // TLS output: record header + ciphertext + content type + auth tag
                     uint8_t tls_buf[TlsRecordCrypto::encrypted_size(
                         ws::kMaxFrameHeaderLen + 125)]{};
-                    uint16_t tls_len = crypto_->encrypt(
+                    uint16_t tls_len = core_.crypto->encrypt(
                         close_buf, static_cast<uint16_t>(close_len), tls_buf);
                     if (tls_len > 0) {
-                        (void)tcp_->send(tls_buf, tls_len);
+                        (void)core_.tcp->send(tls_buf, tls_len);
                     }
                 } else {
                     // Plain WS: send close frame directly over TCP
-                    (void)tcp_->send(close_buf, close_len);
+                    (void)core_.tcp->send(close_buf, close_len);
                 }
             }
         }
 
         // Close TCP connection
-        if (tcp_ && tcp_->is_established()) {
-            (void)tcp_->close();
+        if (core_.tcp && core_.tcp->is_established()) {
+            (void)core_.tcp->close();
         }
 
-        notify_state(TransportEvent::kStopped);
+        core_.notify_state(TransportEvent::kStopped);
         SPDLOG_LOGGER_INFO(log, "Transport stopped");
     }
 
     [[nodiscard]] bool is_running() const noexcept {
-        return running_.load(std::memory_order_acquire);
+        return core_.running.load(std::memory_order_acquire);
     }
 
     /// Read-only access to the configuration used to create this transport.
     /// Useful for logging, diagnostics, and reconnection-aware logic that
     /// needs to inspect remote_host, ping_interval, etc. at runtime.
     [[nodiscard]] const TransportConfig& config() const noexcept {
-        return config_;
+        return core_.config;
     }
 
     /// Query the current connection state (lock-free, safe from any thread).
     [[nodiscard]] TransportState state() const noexcept {
-        if (!running_.load(std::memory_order_acquire))
+        if (!core_.running.load(std::memory_order_acquire))
             return TransportState::kStopped;
-        if (reconnecting_.load(std::memory_order_acquire))
+        if (core_.reconnecting.load(std::memory_order_acquire))
             return TransportState::kReconnecting;
         return TransportState::kConnected;
     }
@@ -1041,8 +888,8 @@ public:
     /// @return true if the reconnect was signaled, false if the transport
     ///         is not running or auto-reconnect is disabled.
     [[nodiscard]] bool reconnect_now() noexcept {
-        if (!running_.load(std::memory_order_acquire)) return false;
-        if (config_.max_reconnect_attempts <= 0) {
+        if (!core_.running.load(std::memory_order_acquire)) return false;
+        if (core_.config.max_reconnect_attempts <= 0) {
             SPDLOG_LOGGER_WARN(detail::transport_logger(),
                 "reconnect_now() called but auto-reconnect is disabled "
                 "(max_reconnect_attempts=0)");
@@ -1050,97 +897,90 @@ public:
         }
         SPDLOG_LOGGER_INFO(detail::transport_logger(),
             "reconnect_now() signaled by application");
-        force_reconnect_.store(true, std::memory_order_release);
+        core_.force_reconnect.store(true, std::memory_order_release);
         return true;
     }
 
-    // -----------------------------------------------------------------------
-    // Queue occupancy (backpressure monitoring)
-    // -----------------------------------------------------------------------
+    // =======================================================================
+    // Queue occupancy (backpressure monitoring) -> delegates to workers
+    // =======================================================================
 
     /// Approximate number of messages pending in the TX queue.
     /// Useful for detecting backpressure before send() returns -EAGAIN.
     /// @note Result is approximate — the producer and consumer may
     ///       advance between the size() read and the caller's use.
-    [[nodiscard]] size_t tx_queue_size() const noexcept
-        requires (kHasTxQueue)
-    {
-        return tx_queue_.size();
+    [[nodiscard]] size_t tx_queue_size() const noexcept {
+        return tx_.queue_size();
     }
 
     /// Approximate number of messages available in the RX queue.
-    [[nodiscard]] size_t rx_queue_size() const noexcept
-        requires (kHasRxQueue)
-    {
-        return rx_size();
+    [[nodiscard]] size_t rx_queue_size() const noexcept {
+        return rx_.queue_size();
     }
 
     /// TX queue occupancy as a fraction [0.0, 1.0].
-    [[nodiscard]] double tx_queue_fill_ratio() const noexcept
-        requires (kHasTxQueue)
-    {
-        return static_cast<double>(tx_queue_.size()) /
-               static_cast<double>(QueueDepth);
+    [[nodiscard]] double tx_queue_fill_ratio() const noexcept {
+        return tx_.queue_fill_ratio();
     }
 
     /// RX queue occupancy as a fraction [0.0, 1.0].
-    [[nodiscard]] double rx_queue_fill_ratio() const noexcept
-        requires (kHasRxQueue)
-    {
-        return static_cast<double>(rx_size()) /
-               static_cast<double>(QueueDepth);
+    [[nodiscard]] double rx_queue_fill_ratio() const noexcept {
+        return rx_.queue_fill_ratio();
     }
 
     /// Peak TX queue occupancy since creation or last reset_stats().
     /// Useful for diagnosing transient backpressure spikes that
     /// instantaneous tx_queue_size() would miss.
     [[nodiscard]] size_t tx_queue_hwm() const noexcept {
-        return tx_hwm_.load(std::memory_order_relaxed);
+        return tx_.queue_hwm();
     }
 
     /// Peak RX queue occupancy since creation or last reset_stats().
     [[nodiscard]] size_t rx_queue_hwm() const noexcept {
-        return rx_hwm_.load(std::memory_order_relaxed);
+        return rx_.queue_hwm();
     }
+
+    // =======================================================================
+    // Statistics -> aggregates tx_ + rx_ + app-thread counters
+    // =======================================================================
 
     /// Reset all statistics counters to zero.
     /// Useful for windowed measurement: call stats(), then reset_stats().
     /// @warning Not thread-safe with stats() — call from one thread only
     ///          (typically the application thread between measurement windows).
     void reset_stats() noexcept {
-        tx_stats_.reset();
-        rx_stats_.reset();
+        tx_.reset_stats();
+        rx_.reset_stats();
         queue_full_count_.store(0, std::memory_order_relaxed);
-        ws_pings_received_.store(0, std::memory_order_relaxed);
-        ws_pongs_sent_.store(0, std::memory_order_relaxed);
         pong_timeouts_.store(0, std::memory_order_relaxed);
         reconnect_count_.store(0, std::memory_order_relaxed);
-        tx_hwm_.store(0, std::memory_order_relaxed);
-        rx_hwm_.store(0, std::memory_order_relaxed);
-        rtt_histogram_.reset();
     }
+
+    // -----------------------------------------------------------------------
+    // Connection metadata -> from core_
+    // -----------------------------------------------------------------------
 
     /// Negotiated TLS version string (e.g. "TLSv1.3"), or "none" if not connected.
     [[nodiscard]] std::string_view tls_version() const noexcept {
-        return tls_version_;
+        return core_.tls_version;
     }
 
     /// Negotiated cipher suite name (e.g. "TLS_AES_256_GCM_SHA384"), or "none".
     [[nodiscard]] std::string_view cipher_name() const noexcept {
-        return cipher_name_;
+        return core_.cipher_name;
     }
 
     /// Negotiated WebSocket subprotocol (from server's Sec-WebSocket-Protocol
     /// response header), or empty string if none was negotiated.
     [[nodiscard]] std::string_view ws_subprotocol() const noexcept {
-        return ws_subprotocol_;
+        return core_.ws_subprotocol;
     }
 
     /// Resolved remote IP address (e.g. "10.0.0.1") from the last connection.
     /// Available if the underlying TcpImpl exposes a resolved_ip() method.
     /// Returns empty string if not available or not yet connected.
     [[nodiscard]] std::string_view remote_ip() const noexcept {
-        return remote_ip_;
+        return core_.remote_ip;
     }
 
     /// Aggregated connection metadata snapshot.
@@ -1148,14 +988,18 @@ public:
     /// into a single struct for convenient logging and monitoring.
     [[nodiscard]] ConnectionInfo connection_info() const {
         return ConnectionInfo{
-            .tls_version    = std::string(tls_version_),
-            .cipher_name    = std::string(cipher_name_),
-            .ws_subprotocol = std::string(ws_subprotocol_),
-            .remote_ip      = std::string(remote_ip_),
-            .remote_port    = config_.remote_port,
-            .use_tls        = config_.use_tls,
+            .tls_version    = std::string(core_.tls_version),
+            .cipher_name    = std::string(core_.cipher_name),
+            .ws_subprotocol = std::string(core_.ws_subprotocol),
+            .remote_ip      = std::string(core_.remote_ip),
+            .remote_port    = core_.config.remote_port,
+            .use_tls        = core_.config.use_tls,
         };
     }
+
+    // -----------------------------------------------------------------------
+    // Latency histograms -> delegates to workers
+    // -----------------------------------------------------------------------
 
     /// Snapshot of round-trip time statistics from ping/pong measurements.
     ///
@@ -1168,55 +1012,55 @@ public:
     ///       In the worst case, a concurrent write may cause a slightly stale
     ///       read — acceptable for monitoring purposes.
     [[nodiscard]] RttStats rtt_stats() const noexcept {
-        return histogram_to_stats(rtt_histogram_);
+        return histogram_to_stats_(rx_.latency_histogram());
     }
 
-    /// TX queue latency stats (enqueue → flush).
+    /// TX queue latency stats (enqueue -> flush).
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_latency_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "tx_latency_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return histogram_to_stats(tx_latency_histogram_);
+        return histogram_to_stats_(tx_.latency_histogram());
     }
 
-    /// TX queue wait stats (enqueue → drain).
+    /// TX queue wait stats (enqueue -> drain).
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_queue_wait_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "tx_queue_wait_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return histogram_to_stats(tx_queue_wait_histogram_);
+        return histogram_to_stats_(tx_.queue_wait_histogram());
     }
 
-    /// TX encode+encrypt stats (drain → flush).
+    /// TX encode+encrypt stats (drain -> flush).
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_encode_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "tx_encode_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return histogram_to_stats(tx_encode_histogram_);
+        return histogram_to_stats_(tx_.encode_histogram());
     }
 
-    /// RX pipeline latency stats (arrival → deliver).
+    /// RX pipeline latency stats (arrival -> deliver).
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_latency_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_latency_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return histogram_to_stats(rx_latency_histogram_);
+        return histogram_to_stats_(rx_.latency_histogram());
     }
 
-    /// RX decrypt stats (arrival → decrypt done).
+    /// RX decrypt stats (arrival -> decrypt done).
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_decrypt_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_decrypt_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return histogram_to_stats(rx_decrypt_histogram_);
+        return histogram_to_stats_(rx_.decrypt_histogram());
     }
 
-    /// RX decode stats (decrypt done → frame decoded).
+    /// RX decode stats (decrypt done -> frame decoded).
     /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_decode_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_decode_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return histogram_to_stats(rx_decode_histogram_);
+        return histogram_to_stats_(rx_.decode_histogram());
     }
 
     /// Snapshot the RX pipeline latency histogram for windowed measurement.
@@ -1230,71 +1074,188 @@ public:
     [[nodiscard]] eph::utils::HdrHistogram rx_latency_histogram_snapshot() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_latency_histogram_snapshot() requires -DEPH_ENABLE_TIMESTAMPS=1");
-        return rx_latency_histogram_;
+        return rx_.latency_histogram();
     }
+
+    // -----------------------------------------------------------------------
+    // Aggregated stats snapshot
+    // -----------------------------------------------------------------------
 
     [[nodiscard]] TransportStats stats() const noexcept {
         auto now = std::chrono::steady_clock::now();
         auto uptime = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            now - created_at_).count();
+            now - core_.created_at).count();
+
+        auto tx_s = tx_.stats();
+        auto rx_s = rx_.stats();
+
         return TransportStats{
-            .tx_packets        = tx_stats_.packets.load(std::memory_order_relaxed),
-            .tx_bytes          = tx_stats_.bytes.load(std::memory_order_relaxed),
-            .tx_text_packets   = tx_stats_.text_packets.load(std::memory_order_relaxed),
-            .tx_text_bytes     = tx_stats_.text_bytes.load(std::memory_order_relaxed),
-            .tx_dropped        = tx_stats_.dropped.load(std::memory_order_relaxed),
-            .rx_packets        = rx_stats_.packets.load(std::memory_order_relaxed),
-            .rx_bytes          = rx_stats_.bytes.load(std::memory_order_relaxed),
-            .rx_text_packets   = rx_stats_.text_packets.load(std::memory_order_relaxed),
-            .rx_text_bytes     = rx_stats_.text_bytes.load(std::memory_order_relaxed),
-            .rx_dropped        = rx_stats_.dropped.load(std::memory_order_relaxed),
+            .tx_packets        = tx_s.packets,
+            .tx_bytes          = tx_s.bytes,
+            .tx_text_packets   = tx_s.text_packets,
+            .tx_text_bytes     = tx_s.text_bytes,
+            .tx_dropped        = tx_s.dropped,
+            .rx_packets        = rx_s.rx_packets,
+            .rx_bytes          = rx_s.rx_bytes,
+            .rx_text_packets   = rx_s.rx_text_packets,
+            .rx_text_bytes     = rx_s.rx_text_bytes,
+            .rx_dropped        = rx_s.rx_dropped,
             .tcp_rx_packets    = [this]() -> uint64_t {
-                if constexpr (requires { tcp_->tcp_stats(); })
-                    return tcp_ ? tcp_->tcp_stats().rx_packets : 0;
+                if constexpr (requires { core_.tcp->tcp_stats(); })
+                    return core_.tcp ? core_.tcp->tcp_stats().rx_packets : 0;
                 else return 0;
             }(),
             .tcp_rx_bursts     = [this]() -> uint64_t {
-                if constexpr (requires { tcp_->tcp_stats(); })
-                    return tcp_ ? tcp_->tcp_stats().rx_bursts : 0;
+                if constexpr (requires { core_.tcp->tcp_stats(); })
+                    return core_.tcp ? core_.tcp->tcp_stats().rx_bursts : 0;
                 else return 0;
             }(),
-            .encrypt_errors    = tx_stats_.crypto_errors.load(std::memory_order_relaxed),
-            .decrypt_errors    = rx_stats_.crypto_errors.load(std::memory_order_relaxed),
-            .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed),
-            .ws_pings_received = ws_pings_received_.load(std::memory_order_relaxed),
-            .ws_pongs_sent     = ws_pongs_sent_.load(std::memory_order_relaxed),
+            .encrypt_errors    = tx_s.crypto_errors,
+            .decrypt_errors    = rx_s.decrypt_errors,
+            .queue_full_count  = queue_full_count_.load(std::memory_order_relaxed)
+                               + tx_s.queue_full_count,
+            .ws_pings_received = rx_s.ws_pings_received,
+            .ws_pongs_sent     = rx_s.ws_pongs_sent,
             .pong_timeouts     = pong_timeouts_.load(std::memory_order_relaxed),
             .reconnect_count   = reconnect_count_.load(std::memory_order_relaxed),
-            .tx_queue_hwm      = tx_hwm_.load(std::memory_order_relaxed),
-            .rx_queue_hwm      = rx_hwm_.load(std::memory_order_relaxed),
+            .tx_queue_hwm      = tx_s.queue_hwm,
+            .rx_queue_hwm      = rx_s.rx_queue_hwm,
             .uptime_ns         = static_cast<uint64_t>(uptime > 0 ? uptime : 0),
-            .handshake_ns      = last_handshake_ns_,
-            .tcp_connect_ns    = last_tcp_connect_ns_,
-            .tls_handshake_ns  = last_tls_handshake_ns_,
-            .ws_upgrade_ns     = last_ws_upgrade_ns_,
-            .remote_ip         = remote_ip_,
+            .handshake_ns      = core_.last_handshake_ns,
+            .tcp_connect_ns    = core_.last_tcp_connect_ns,
+            .tls_handshake_ns  = core_.last_tls_handshake_ns,
+            .ws_upgrade_ns     = core_.last_ws_upgrade_ns,
+            .remote_ip         = core_.remote_ip,
             .rtt               = rtt_stats(),
-            .tx_latency        = histogram_to_stats(tx_latency_histogram_),
-            .tx_queue_wait     = histogram_to_stats(tx_queue_wait_histogram_),
-            .tx_encode         = histogram_to_stats(tx_encode_histogram_),
-            .rx_latency        = histogram_to_stats(rx_latency_histogram_),
-            .rx_decrypt        = histogram_to_stats(rx_decrypt_histogram_),
-            .rx_decode         = histogram_to_stats(rx_decode_histogram_),
-            .tls_write_seq     = crypto_ ? crypto_->write_seq() : 0,
-            .tls_read_seq      = crypto_ ? crypto_->read_seq() : 0,
-            .tls_seq_limit     = config_.use_tls ? tls_record::kMaxSequenceNumber : 0,
+            .tx_latency        = histogram_to_stats_(tx_.latency_histogram()),
+            .tx_queue_wait     = histogram_to_stats_(tx_.queue_wait_histogram()),
+            .tx_encode         = histogram_to_stats_(tx_.encode_histogram()),
+            .rx_latency        = histogram_to_stats_(rx_.latency_histogram()),
+            .rx_decrypt        = histogram_to_stats_(rx_.decrypt_histogram()),
+            .rx_decode         = histogram_to_stats_(rx_.decode_histogram()),
+            .tls_write_seq     = core_.crypto ? core_.crypto->write_seq() : 0,
+            .tls_read_seq      = core_.crypto ? core_.crypto->read_seq() : 0,
+            .tls_seq_limit     = core_.config.use_tls ? tls_record::kMaxSequenceNumber : 0,
         };
     }
 
 private:
-    Transport() = default;
+    // =======================================================================
+    // Construction (private — use create() factory)
+    // =======================================================================
 
-    // -----------------------------------------------------------------------
-    // Internal enqueue helpers (no UTF-8 validation — caller is responsible)
-    // -----------------------------------------------------------------------
+    Transport(TcpFactory tcp_factory, const TransportConfig& config)
+        : core_{}
+        , tx_(core_, pong_timeouts_)
+        , rx_(core_, reconnect_count_, typename RxWorkerT::Callbacks{
+            .do_reconnect = [this]() -> bool { return do_reconnect_(); },
+            .send_response = [this](const void* data, size_t len,
+                                    uint8_t opcode) -> SendError {
+                return tx_.enqueue(data, len, opcode);
+            },
+          })
+        , reconnect_(config)
+    {
+        core_.tcp_factory = std::move(tcp_factory);
+        core_.config = config;
+    }
+
+    // =======================================================================
+    // Reconnection logic
+    // =======================================================================
+
+    /// Attempt reconnection with exponential backoff and jitter.
+    /// Discards old SPSC queue data. Called from RX thread when disconnect
+    /// is detected. Returns true if reconnection succeeded.
+    bool do_reconnect_() {
+        auto log = detail::transport_logger();
+        int max_attempts = core_.config.max_reconnect_attempts;
+        if (max_attempts <= 0) {
+            SPDLOG_LOGGER_ERROR(log, "Auto-reconnect disabled, stopping");
+            return false;
+        }
+
+        core_.notify_state(TransportEvent::kDisconnected, core_.config.remote_host);
+
+        // Record disconnect time for downtime measurement
+        auto disconnect_time = std::chrono::steady_clock::now();
+
+        // Signal TX thread to pause: it must not touch crypto/tcp
+        // while we are reconnecting.
+        core_.reconnecting.store(true, std::memory_order_release);
+
+        // Discard stale queue data and reset worker state
+        tx_.on_reconnected();
+        rx_.on_reconnected();
+        core_.closing.store(false, std::memory_order_release);
+
+        // Reset reconnect policy for this reconnection cycle
+        reconnect_.reset();
+
+        bool success = false;
+        while (!reconnect_.exhausted()) {
+            core_.notify_state(TransportEvent::kReconnecting,
+                std::format("{}/{}", reconnect_.attempts() + 1, max_attempts));
+
+            // Clean up old connection state
+            core_.crypto.reset();
+            core_.tls.reset();
+            core_.tcp.reset();
+
+            success = reconnect_.attempt([this]()
+                -> std::expected<void, ConnectionErrorInfo>
+            {
+                auto result = core_.do_connect();
+                if (!result) return result;
+
+                if constexpr (kIsWebSocket) {
+                    return core_.template do_ws_upgrade<Framer>();
+                }
+                return {};
+            });
+
+            if (success) {
+                auto total = reconnect_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+                core_.reconnecting.store(false, std::memory_order_release);
+                core_.notify_state(TransportEvent::kConnected,
+                    std::format("reconnect attempt {}", reconnect_.attempts()));
+
+                auto downtime_ns = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - disconnect_time).count());
+
+                SPDLOG_LOGGER_INFO(log,
+                    "Reconnected successfully on attempt {} (downtime: {:.1f}ms)",
+                    reconnect_.attempts(),
+                    static_cast<double>(downtime_ns) / 1e6);
+
+                // Notify application — ideal for replaying subscriptions
+                if (core_.config.on_reconnected) {
+                    try {
+                        core_.config.on_reconnected(
+                            reconnect_.attempts(), downtime_ns,
+                            static_cast<uint64_t>(total));
+                    } catch (...) {
+                        SPDLOG_LOGGER_WARN(log,
+                            "on_reconnected callback threw an exception");
+                    }
+                }
+                return true;
+            }
+        }
+
+        core_.reconnecting.store(false, std::memory_order_release);
+        SPDLOG_LOGGER_ERROR(log,
+            "All {} reconnect attempts exhausted", max_attempts);
+        return false;
+    }
+
+    // =======================================================================
+    // Utility helpers
+    // =======================================================================
 
     /// Convert an HdrHistogram to RttStats (reused for RTT, TX latency, RX latency).
-    static RttStats histogram_to_stats(const eph::utils::HdrHistogram& h) noexcept {
+    static RttStats histogram_to_stats_(const eph::utils::HdrHistogram& h) noexcept {
         if (h.get_total_count() == 0) return {};
         return RttStats{
             .count   = h.get_total_count(),
@@ -1307,368 +1268,19 @@ private:
         };
     }
 
-    /// Update a high-watermark atomically (relaxed CAS loop).
-    /// Only stores when current size exceeds the recorded peak.
-    static void update_hwm(std::atomic<size_t>& hwm, size_t current) noexcept {
-        size_t prev = hwm.load(std::memory_order_relaxed);
-        while (current > prev &&
-               !hwm.compare_exchange_weak(prev, current,
-                   std::memory_order_relaxed, std::memory_order_relaxed)) {
-            // prev updated by CAS failure — retry
-        }
-    }
+    // =======================================================================
+    // Composed members
+    // =======================================================================
 
-    // -----------------------------------------------------------------------
-    // RxQueue dispatch helpers — abstract BoundedQueue vs EvictingQueue
-    // -----------------------------------------------------------------------
+    TransportCore<TcpImpl> core_;
+    TxWorkerT tx_;
+    RxWorkerT rx_;
+    ReconnectPolicy reconnect_;
 
-    /// Enqueue a decoded message into the RX queue.
-    /// BoundedQueue: try_produce (backpressure — may fail).
-    /// EvictingQueue: push (evicts oldest — never fails).
-    bool rx_enqueue(const uint8_t* data, uint16_t len,
-                    uint8_t opcode) noexcept
-        requires (kHasRxQueue)
-    {
-        if constexpr (kRxEvicting) {
-            // Write directly into the queue slot via produce() to avoid
-            // allocating a 16KB+ RxMsg on the stack and then copying the
-            // entire struct into the slot.  Only `len` bytes are copied.
-            rx_queue_.produce([&](RxMsg& slot) {
-                std::memcpy(slot.data, data, len);
-                slot.len = len;
-                slot.opcode = opcode;
-                if constexpr (kEnableTimestamps) {
-                    slot.tsc = current_arrival_tsc_;
-                }
-            });
-            return true;
-        } else {
-            return rx_queue_.try_produce([&](RxMsg& msg) {
-                std::memcpy(msg.data, data, len);
-                msg.len = len;
-                msg.opcode = opcode;
-                if constexpr (kEnableTimestamps) {
-                    msg.tsc = current_arrival_tsc_;
-                }
-            });
-        }
-    }
-
-    /// Consume one message from the RX queue.
-    /// BoundedQueue: try_consume (FIFO).
-    /// EvictingQueue: try_consume_latest (latest-value).
-    template <typename F>
-        requires (kHasRxQueue)
-    bool rx_consume(F&& visitor) {
-        if constexpr (kRxEvicting) {
-            return rx_queue_.try_consume_latest(std::forward<F>(visitor));
-        } else {
-            return rx_queue_.try_consume(std::forward<F>(visitor));
-        }
-    }
-
-    /// Peek one message from the RX queue without consuming.
-    template <typename F>
-        requires (kHasRxQueue)
-    bool rx_peek(F&& visitor) {
-        if constexpr (kRxEvicting) {
-            return rx_queue_.try_peek_latest(std::forward<F>(visitor));
-        } else {
-            return rx_queue_.try_peek(std::forward<F>(visitor));
-        }
-    }
-
-    /// Approximate RX queue size.
-    [[nodiscard]] size_t rx_size() const noexcept
-        requires (kHasRxQueue)
-    {
-        if constexpr (kRxEvicting) {
-            return rx_queue_.size_approx();
-        } else {
-            return rx_queue_.size();
-        }
-    }
-
-    // -----------------------------------------------------------------------
-
-    /// Enqueue a message to TX queue without UTF-8 validation.
-    /// Shared implementation for send() and send_text() to avoid
-    /// double-validating UTF-8 on the hot path.
-    SendError enqueue_tx(const void* data, size_t len,
-                         uint8_t opcode) noexcept
-        requires (kHasTxQueue)
-    {
-        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (len > MaxPayload) return SendError::kMessageTooLarge;
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
-
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
-            std::memcpy(msg.data, data, len);
-            msg.len = static_cast<uint16_t>(len);
-            msg.opcode = opcode;
-            if constexpr (kEnableTimestamps) {
-                msg.tsc = eph::utils::TSC::now();
-            }
-        });
-
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            // Queue full -> HWM is max capacity
-            update_hwm(tx_hwm_, QueueDepth);
-            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
-                "TX enqueue failed: queue full (len={}, opcode={})",
-                len, opcode);
-            return SendError::kQueueFull;
-        }
-        SPDLOG_LOGGER_TRACE(detail::transport_logger(),
-            "TX enqueue: len={}, opcode={}", len, opcode);
-        // Sample HWM every 64 enqueues to avoid cross-core size() read
-        // on every send(). size() reads both writer tail and reader head
-        // which sit on separate cache lines — expensive on every call.
-        if ((++tx_hwm_counter_ & 63) == 0) {
-            update_hwm(tx_hwm_, tx_queue_.size());
-        }
-        return SendError::kOk;
-    }
-
-    /// Enqueue with timeout, no UTF-8 validation.
-    template <typename Rep, typename Period>
-        requires (kHasTxQueue)
-    SendError enqueue_tx_for(const void* data, size_t len,
-                             std::chrono::duration<Rep, Period> timeout,
-                             uint8_t opcode) noexcept {
-        if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
-        if (len > MaxPayload) return SendError::kMessageTooLarge;
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
-
-        bool ok = tx_queue_.try_produce_for([&](TxMsg& msg) {
-            std::memcpy(msg.data, data, len);
-            msg.len = static_cast<uint16_t>(len);
-            msg.opcode = opcode;
-            if constexpr (kEnableTimestamps) {
-                msg.tsc = eph::utils::TSC::now();
-            }
-        }, timeout);
-
-        if (!ok) {
-            queue_full_count_.fetch_add(1, std::memory_order_relaxed);
-            update_hwm(tx_hwm_, QueueDepth);
-            return SendError::kQueueFull;
-        }
-        if ((++tx_hwm_counter_ & 63) == 0) {
-            update_hwm(tx_hwm_, tx_queue_.size());
-        }
-        return SendError::kOk;
-    }
-
-    /// Direct send: WS encode -> [TLS encrypt] -> TCP send.
-    /// Used by send_close() and send_ping() for control frames that
-    /// bypass the TX queue in certain code paths.
-    ///
-    /// Thread safety: do NOT call send_direct() concurrently with stop().
-    SendError send_direct(const void* data, size_t len, uint8_t opcode) noexcept {
-        if (len > MaxPayload) return SendError::kMessageTooLarge;
-        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
-
-        auto log = detail::transport_logger();
-
-        // 1. Frame encode
-        constexpr size_t kFrameOverhead = kIsWebSocket
-            ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
-        constexpr size_t kBufSize = kFrameOverhead + MaxPayload + 1;
-        uint8_t ws_buf[kBufSize];
-
-        size_t ws_len;
-        if constexpr (kIsWebSocket) {
-            ws_len = ws::encode_frame(ws_buf, opcode,
-                static_cast<const uint8_t*>(data), len);
-        } else {
-            Framer framer{};
-            ws_len = framer.encode(ws_buf,
-                static_cast<const uint8_t*>(data), len, opcode);
-        }
-
-        // 2. TLS encrypt (if enabled) + 3. TCP send
-        if (config_.use_tls) {
-            if (!crypto_) return SendError::kNotConnected;
-            constexpr size_t kTlsBufSize =
-                TlsEncryptor::encrypted_size(
-                    static_cast<uint16_t>(kFrameOverhead + MaxPayload));
-            uint8_t tls_buf[kTlsBufSize];
-
-            uint16_t enc_len = crypto_->enc.encrypt(
-                ws_buf, static_cast<uint16_t>(ws_len), tls_buf);
-            if (enc_len == 0) {
-                SPDLOG_LOGGER_ERROR(log, "send_direct: encrypt failed");
-                return SendError::kEncryptFailed;
-            }
-
-            auto result = tcp_->send(tls_buf, enc_len);
-            if (!result) {
-                SPDLOG_LOGGER_WARN(log, "send_direct: TCP send failed: {}",
-                    result.error());
-                return SendError::kTcpSendFailed;
-            }
-        } else {
-            auto result = tcp_->send(ws_buf, ws_len);
-            if (!result) {
-                SPDLOG_LOGGER_WARN(log, "send_direct: TCP send failed: {}",
-                    result.error());
-                return SendError::kTcpSendFailed;
-            }
-        }
-
-        // Stats
-        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
-        tx_stats_.bytes.fetch_add(len, std::memory_order_relaxed);
-        if (opcode == ws::opcode::kText) {
-            tx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
-            tx_stats_.text_bytes.fetch_add(len, std::memory_order_relaxed);
-        }
-
-        return SendError::kOk;
-    }
-
-    TransportConfig                        config_;
-    TcpFactory                             tcp_factory_;
-    uint64_t                               current_arrival_tsc_{0};
-    // NOTE: current_decrypt_done_tsc_ is set once per TLS record, not per WS frame.
-    // A single TLS record may contain multiple WS frames; the decrypt histogram
-    // therefore reflects per-TLS-record decryption latency, not per-WS-frame.
-    uint64_t                               current_decrypt_done_tsc_{0};
-    double                                 ns_per_cycle_{0.0};  // cached at rx_loop entry
-    std::unique_ptr<TcpImpl>               tcp_;
-    std::unique_ptr<TlsSession<TcpImpl>>   tls_;   // Only used during create(), not on hot path
-
-    // Connection metadata captured after each successful handshake
-    std::string                            tls_version_{"none"};
-    std::string                            cipher_name_{"none"};
-    std::string                            ws_subprotocol_{};
-    std::string                            remote_ip_{};
-    std::unique_ptr<TlsRecordCrypto>       crypto_;
-
-    // Uptime tracking
-    std::chrono::steady_clock::time_point  created_at_{};
-
-    TxQueue                                tx_queue_{};
-    RxQueue                                rx_queue_{};
-    Framer                                 rx_framer_{};  // RX-side framer instance (stateless framers: zero overhead)
-
-    std::atomic<bool>                      running_{false};
-    // RX sets reconnecting_=true before modifying crypto_/tcp_;
-    // TX spins while this flag is set to avoid data races.
-    std::atomic<bool>                      reconnecting_{false};
-    // RX sets closing_=true when a server Close frame is received.
-    // TX drains the queue (sending the Close response) before exiting.
-    std::atomic<bool>                      closing_{false};
-    // Application sets force_reconnect_=true via reconnect_now();
-    // RX thread checks this and triggers do_reconnect() when set.
-    std::atomic<bool>                      force_reconnect_{false};
-    std::thread                            tx_thread_{};
-    std::thread                            rx_thread_{};
-
-    // Per-thread stats to avoid cross-core atomic contention
-    ThreadStats                            tx_stats_{};
-    ThreadStats                            rx_stats_{};
-
-    // Queue high-watermark: peak occupancy since creation or last reset.
-    // Updated by enqueue (TX) and deliver (RX) paths with relaxed atomics.
-    // Sampled every 64 operations to avoid cross-core size() reads.
-    std::atomic<size_t>                    tx_hwm_{0};
-    std::atomic<size_t>                    rx_hwm_{0};
-    uint64_t                               tx_hwm_counter_{0};  // app thread only
-    uint64_t                               rx_hwm_counter_{0};  // RX thread only
-    // App-thread-only counters (no contention -- only send() writes these)
-    std::atomic<uint64_t>                  queue_full_count_{0};
-    std::atomic<uint64_t>                  ws_pings_received_{0};
-    std::atomic<uint64_t>                  ws_pongs_sent_{0};
-    std::atomic<uint64_t>                  reconnect_count_{0};
-    std::atomic<uint64_t>                  pong_timeouts_{0};
-    uint64_t                               last_handshake_ns_{0};
-    uint64_t                               last_tcp_connect_ns_{0};
-    uint64_t                               last_tls_handshake_ns_{0};
-    uint64_t                               last_ws_upgrade_ns_{0};
-
-    // Pong timeout tracking (TX thread writes ping time, RX thread writes pong time).
-    // Using atomics with relaxed ordering — occasional stale reads are acceptable
-    // since pong timeout detection is a best-effort liveness check, not a
-    // precision requirement.
-    using SteadyTimePoint = std::chrono::steady_clock::time_point;
-    std::atomic<int64_t>                   last_pong_ns_{0};      // RX writes, TX reads
-
-    // -- Per-thread variables: no synchronization needed, private to owning thread --
-    // TX-thread-only (written/read exclusively by tx_loop):
-    bool                                   ping_awaiting_pong_{false};
-    bool                                   seq_warning_logged_{false};
-    // RX-thread-only (written/read exclusively by rx_loop):
-    bool                                   rx_seq_warning_logged_{false};
-
-    // Close code/reason from close_gracefully(), propagated to stop().
-    // Written by the app thread (close_gracefully) and read by stop()
-    // after threads have joined. The close_requested_ flag provides
-    // happens-before ordering: code/reason are written BEFORE setting
-    // the flag (release), and read AFTER loading it (acquire) (M9).
-    uint16_t                               pending_close_code_{ws::close_code::kNormal};
-    std::string                            pending_close_reason_{};
-    std::atomic<bool>                      close_requested_{false};
-
-    // RTT measurement: TX thread writes TSC timestamp when sending ping,
-    // RX thread reads it when pong arrives and records the delta in the
-    // histogram.  The histogram is owned exclusively by the RX thread.
-    std::atomic<uint64_t>                  last_ping_tsc_{0};     // TX writes, RX reads
-    eph::utils::HdrHistogram               rtt_histogram_{
-        100,          // lowest: 100 ns (~0.1 us)
-        10'000'000'000ULL, // highest: 10 s (covers even slow WAN)
-        3             // 3 significant digits
-    };
-
-    // Per-message latency histograms (only recorded when kEnableTimestamps=true).
-    //
-    // TX total:       enqueue (app) -> flush (encode+encrypt done)
-    // TX queue wait:  enqueue (app) -> drain (TX thread picks up from SPSC)
-    // TX encode:      drain -> flush (WS encode + TLS encrypt)
-    //
-    // RX total:       arrival (poll_rx) -> frame decoded
-    // RX decrypt:     arrival -> TLS decrypt done
-    // RX decode:      TLS decrypt done -> WS frame decoded
-    eph::utils::HdrHistogram               tx_latency_histogram_{
-        10, 1'000'000'000ULL, 3  // 10ns-1s, 3 significant digits
-    };
-    eph::utils::HdrHistogram               tx_queue_wait_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-    eph::utils::HdrHistogram               tx_encode_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-    eph::utils::HdrHistogram               rx_latency_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-    eph::utils::HdrHistogram               rx_decrypt_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-    eph::utils::HdrHistogram               rx_decode_histogram_{
-        10, 1'000'000'000ULL, 3
-    };
-
-    // WebSocket fragmentation reassembly buffer (RX thread only).
-    // Accumulates continuation frames until FIN=1.
-    std::vector<uint8_t>                   ws_frag_buf_;
-    uint8_t                                ws_frag_opcode_ = 0;
-
-    // Reassembly buffer size constants (used by detail includes)
-    static constexpr size_t kReassemblyBufSize =
-        4 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
-             tls_record::kAuthTagLen + 1);
-    static constexpr size_t kFrameReassemblyOverhead = kIsWebSocket
-        ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
-    static constexpr size_t kWsReassemblyBufSize =
-        kFrameReassemblyOverhead + MaxPayload + 256;
-
-    // Private method implementations (split for readability)
-#include "eph/transport/detail/transport_state.hpp"
-#include "eph/transport/detail/transport_tx.hpp"
-#include "eph/transport/detail/transport_rx.hpp"
-#include "eph/transport/detail/transport_frame.hpp"
+    // App-thread counters (not owned by workers — written by send() path)
+    std::atomic<uint64_t> queue_full_count_{0};
+    std::atomic<uint64_t> reconnect_count_{0};
+    std::atomic<uint64_t> pong_timeouts_{0};
 };
 
 } // namespace eph::net

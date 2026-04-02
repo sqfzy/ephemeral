@@ -38,16 +38,11 @@ namespace eph::net {
 #define EPH_ENABLE_TIMESTAMPS 0
 #endif
 
-#ifndef EPH_FRAME_PROCESSOR_ENABLE_TIMESTAMPS_DEFINED_
-#define EPH_FRAME_PROCESSOR_ENABLE_TIMESTAMPS_DEFINED_
-// Use a namespace-scoped variable; if transport.hpp is also included,
-// the inline constexpr in that header is the canonical definition and
-// the preprocessor guard here simply avoids redefinition.
+// Provide kEnableTimestamps if not already defined by a prior include.
+#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
+#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
+inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 #endif
-
-// Forward: kEnableTimestamps is expected to be defined in the enclosing
-// namespace (eph::net) by the time this header is included. The
-// transport.hpp or direct_transport.hpp header provides it.
 
 // -----------------------------------------------------------------------
 // FrameProcessor
