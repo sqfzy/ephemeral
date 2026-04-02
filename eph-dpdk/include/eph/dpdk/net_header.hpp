@@ -60,7 +60,7 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen; // 
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Host-to-network 16-bit (constexpr-safe).
-constexpr uint16_t hton16(uint16_t h) noexcept {
+[[nodiscard]] constexpr uint16_t hton16(uint16_t h) noexcept {
     if constexpr (std::endian::native == std::endian::little) {
         return static_cast<uint16_t>((h >> 8) | (h << 8));
     } else {
@@ -69,7 +69,7 @@ constexpr uint16_t hton16(uint16_t h) noexcept {
 }
 
 /// Host-to-network 32-bit (constexpr-safe).
-constexpr uint32_t hton32(uint32_t h) noexcept {
+[[nodiscard]] constexpr uint32_t hton32(uint32_t h) noexcept {
     if constexpr (std::endian::native == std::endian::little) {
         return ((h >> 24) & 0xFF) |
                ((h >> 8)  & 0xFF00) |
@@ -80,8 +80,8 @@ constexpr uint32_t hton32(uint32_t h) noexcept {
     }
 }
 
-constexpr uint16_t ntoh16(uint16_t n) noexcept { return hton16(n); }
-constexpr uint32_t ntoh32(uint32_t n) noexcept { return hton32(n); }
+[[nodiscard]] constexpr uint16_t ntoh16(uint16_t n) noexcept { return hton16(n); }
+[[nodiscard]] constexpr uint32_t ntoh32(uint32_t n) noexcept { return hton32(n); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Checksum computation

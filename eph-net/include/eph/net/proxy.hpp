@@ -311,6 +311,20 @@ socks5_handshake(SocketTransport& tcp,
         case 0x03: {                            // Domain: length byte + domain + port
             uint8_t dlen;
             if (auto r = io.read_exact(&dlen, 1, cfg.timeout); !r) return std::unexpected(r.error());
+            if (dlen > 16) {
+                // Domain responses >16 bytes exceed our stack buffer.
+                // Read and discard in chunks to drain the remaining bytes.
+                uint8_t discard[128];
+                size_t remaining = static_cast<size_t>(dlen) + 2; // domain + port
+                while (remaining > 0) {
+                    size_t chunk = std::min(remaining, sizeof(discard));
+                    if (auto r = io.read_exact(discard, chunk, cfg.timeout); !r)
+                        return std::unexpected(r.error());
+                    remaining -= chunk;
+                }
+                SPDLOG_LOGGER_DEBUG(log, "SOCKS5 tunnel established to {}:{}", target_host, target_port);
+                return {};
+            }
             drain_len = dlen + 2;
             break;
         }

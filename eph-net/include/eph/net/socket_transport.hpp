@@ -307,6 +307,11 @@ public:
         pfd.events = POLLOUT;
 
         int poll_rc = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+        if (poll_rc < 0 && errno == EINTR) {
+            // Interrupted by signal — treat as timeout for simplicity
+            // (connect deadline should be re-checked by caller on retry)
+            SPDLOG_LOGGER_DEBUG(log, "connect poll() interrupted by signal");
+        }
         if (poll_rc <= 0) {
             SPDLOG_LOGGER_ERROR(log, "Connection timeout ({}ms) to {}:{}",
                                 timeout.count(), config_.host, config_.port);

@@ -527,6 +527,7 @@ private:
         }
 
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+        SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
 
         SSL* ssl = SSL_new(ctx);
         if (!ssl) {
@@ -575,7 +576,12 @@ private:
                 pfd.events = (err == SSL_ERROR_WANT_READ) ? POLLIN : POLLOUT;
                 auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                     deadline - std::chrono::steady_clock::now());
-                ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                int poll_rc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                if (poll_rc < 0 && errno != EINTR) {
+                    auto err_str = strerror(errno);
+                    SPDLOG_LOGGER_ERROR(log, "TLS handshake poll() failed: {}", err_str);
+                    return std::unexpected(std::format("TLS handshake poll failed: {}", err_str));
+                }
                 continue;
             }
 
@@ -648,7 +654,11 @@ private:
                 struct pollfd pfd{};
                 pfd.fd = fd;
                 pfd.events = (err == SSL_ERROR_WANT_READ) ? POLLIN : POLLOUT;
-                ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                int prc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                if (prc < 0 && errno != EINTR) {
+                    return std::unexpected(std::format(
+                        "SSL send poll failed: {}", strerror(errno)));
+                }
                 continue;
             }
 
@@ -678,6 +688,7 @@ private:
             pfd.events = POLLIN;
             int poll_ret = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
             if (poll_ret < 0) {
+                if (errno == EINTR) continue;  // Interrupted — retry
                 return std::unexpected(std::format("poll() failed: {}",
                     strerror(errno)));
             }
@@ -746,7 +757,11 @@ private:
                 struct pollfd pfd{};
                 pfd.fd = fd;
                 pfd.events = (err == SSL_ERROR_WANT_READ) ? POLLIN : POLLOUT;
-                ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                int prc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                if (prc < 0 && errno != EINTR) {
+                    return std::unexpected(std::format(
+                        "SSL recv poll failed: {}", strerror(errno)));
+                }
                 continue;
             }
 
