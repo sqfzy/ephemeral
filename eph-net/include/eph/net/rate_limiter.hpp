@@ -46,11 +46,14 @@ inline spdlog::logger* rate_limiter_logger() {
 /// precision for rate limiting (not on the hot data path).
 class RateLimiter {
 public:
+    /// @brief Construct a token bucket rate limiter.
     /// @param rate_per_sec  Sustained rate (tokens/second). Must be >= 0.
     ///                      A rate of 0 means no tokens are ever generated
     ///                      (only the initial burst is available).
     /// @param burst         Maximum burst size (tokens). Must be >= 1.
     explicit RateLimiter(double rate_per_sec, std::size_t burst) noexcept
+        /// Convert rate from per-second to per-nanosecond for sub-microsecond
+        /// token accumulation without repeated division in the refill path.
         : rate_per_ns_{rate_per_sec / 1'000'000'000.0}
         , burst_{static_cast<double>(burst)}
         , tokens_{static_cast<double>(burst)}

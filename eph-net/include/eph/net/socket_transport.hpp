@@ -489,6 +489,8 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
+        // Allow recv in Established (normal), FinWait1/FinWait2 (we initiated
+        // close but peer may still send data before its FIN arrives).
         if (state_ != TcpState::Established &&
             state_ != TcpState::FinWait1 &&
             state_ != TcpState::FinWait2) {
@@ -724,16 +726,24 @@ public:
     }
 
 #if EPH_ENABLE_TIMESTAMPS
-    /// Most recent kernel RX stack delay (ns) from the last poll_rx() call.
+    /// @brief Most recent kernel RX stack delay from the last poll_rx() call.
+    ///
+    /// Measures NIC-driver-to-recv latency via SO_TIMESTAMPING.
     /// Transport reads this to compute full-path RX latency (kernel + pipeline).
     /// Only available when compiled with -DEPH_ENABLE_TIMESTAMPS=1.
+    ///
+    /// @return Kernel RX delay in nanoseconds, or 0 if no timestamp was captured.
     [[nodiscard]] uint64_t last_kernel_rx_delay_ns() const noexcept {
         return last_kernel_rx_delay_ns_;
     }
 
-    /// Most recent kernel TX stack delay (ns) from the error queue.
+    /// @brief Most recent kernel TX stack delay from the error queue.
+    ///
+    /// Measures send-to-wire latency via SO_TIMESTAMPING error queue.
     /// Transport reads this to compute full-path TX latency (pipeline + kernel).
     /// Only available when compiled with -DEPH_ENABLE_TIMESTAMPS=1.
+    ///
+    /// @return Kernel TX delay in nanoseconds, or 0 if no timestamp was captured.
     [[nodiscard]] uint64_t last_kernel_tx_delay_ns() const noexcept {
         return last_kernel_tx_delay_ns_;
     }
@@ -799,7 +809,8 @@ private:
         state_ = TcpState::Closed;
     }
 
-    /// Extract human-readable IP from addrinfo (IPv4 and IPv6).
+    /// @brief Extract human-readable IP from addrinfo (IPv4 and IPv6).
+    /// @param ai  Resolved address info from getaddrinfo. Null clears resolved_ip_.
     void resolve_ip(const struct addrinfo* ai) noexcept {
         if (!ai) {
             resolved_ip_.clear();
@@ -817,7 +828,9 @@ private:
         resolved_ip_ = result ? buf : "";
     }
 
-    /// Convert HdrHistogram to RttStats (reuses the same stats struct).
+    /// @brief Convert HdrHistogram to RttStats (reuses the same stats struct).
+    /// @param h  Histogram containing latency samples.
+    /// @return Aggregated statistics including min, max, mean, and percentiles.
     static RttStats histogram_to_rtt_stats(const eph::utils::HdrHistogram& h) noexcept {
         if (h.get_total_count() == 0) return {};
         return RttStats{
@@ -831,14 +844,16 @@ private:
         };
     }
 
-    /// Get current CLOCK_REALTIME in nanoseconds.
+    /// @brief Get current CLOCK_REALTIME in nanoseconds.
+    /// @return Current wall-clock time as nanoseconds since epoch.
     static int64_t clock_realtime_ns() noexcept {
         struct timespec ts;
         ::clock_gettime(CLOCK_REALTIME, &ts);
         return static_cast<int64_t>(ts.tv_sec) * 1'000'000'000LL + ts.tv_nsec;
     }
 
-    /// Extract RX kernel timestamp from recvmsg cmsg and record kernel stack latency.
+    /// @brief Extract RX kernel timestamp from recvmsg cmsg and record kernel stack latency.
+    /// @param msg  Message header from recvmsg() containing control message data.
     void extract_rx_timestamp(const struct msghdr& msg) noexcept {
         last_kernel_rx_delay_ns_ = 0;  // reset per call
         int64_t now_ns = clock_realtime_ns();
@@ -865,7 +880,7 @@ private:
         }
     }
 
-    /// Poll the socket error queue for TX kernel timestamps.
+    /// @brief Poll the socket error queue for TX kernel timestamps.
     /// TX timestamps are delivered asynchronously after send() via MSG_ERRQUEUE.
     void poll_tx_error_queue() noexcept {
         alignas(struct cmsghdr) uint8_t ctrl[256];
@@ -902,6 +917,7 @@ private:
         }
     }
 
+    /// @brief Query negotiated TCP Maximum Segment Size from the kernel.
     void query_mss() noexcept {
         if (fd_ < 0) return;
         int mss_val = 0;

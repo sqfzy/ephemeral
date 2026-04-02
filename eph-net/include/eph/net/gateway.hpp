@@ -80,25 +80,30 @@ enum class ConnHealth : uint8_t {
 /// Transport operations are accessed through type-erased function pointers
 /// to avoid requiring a common base class.
 struct GatewayConnection {
-    /// Unique tag for this connection (e.g., "binance-btcusdt").
+    /// @brief Unique tag for this connection (e.g., "binance-btcusdt").
     std::string tag;
 
-    /// Type-erased transport handle.
+    /// @brief Type-erased transport handle (opaque pointer).
     void* transport_ptr = nullptr;
+    /// @brief Type-erased stop function (calls Transport::stop()).
     void (*stop_fn)(void*) = nullptr;
+    /// @brief Type-erased running check (calls Transport::is_running()).
     bool (*is_running_fn)(void*) = nullptr;
+    /// @brief Type-erased thread launcher (calls Transport::start_threads()).
     void (*start_threads_fn)(void*) = nullptr;
+    /// @brief Type-erased reconnect trigger (calls Transport::reconnect_now()).
     void (*reconnect_fn)(void*) = nullptr;
 
-    /// Health tracking.
+    /// @brief Current health status of this connection.
     ConnHealth health = ConnHealth::Stopped;
+    /// @brief Timestamp (ns) of last health check for this connection.
     uint64_t last_health_check_ns = 0;
 
-    /// Connection priority (lower = more important). Used for log ordering.
+    /// @brief Connection priority (lower = more important). Used for log ordering.
     uint8_t priority = 128;
 };
 
-/// Multi-connection lifecycle manager.
+/// @brief Multi-connection lifecycle manager.
 ///
 /// Thread-safe: all methods are mutex-protected. The monitor thread
 /// runs in background and checks health periodically.
@@ -130,6 +135,7 @@ public:
     explicit Gateway(Config config)
         : config_(std::move(config)) {}
 
+    /// @brief Destructor -- stops the health monitor and all connections.
     ~Gateway() noexcept {
         stop_monitor();
         stop_all();

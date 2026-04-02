@@ -84,6 +84,8 @@ Compile-time constant: `inline constexpr bool kEnableSocketTimestamps` (set via 
 | `rx_latency() -> RttStats` | Kernel RX stack latency histogram (timestamps mode) |
 | `tx_latency() -> RttStats` | Kernel TX stack latency histogram (timestamps mode) |
 | `last_rx_burst_tsc() -> uint64_t` | TSC captured after recvmsg returns data |
+| `last_kernel_rx_delay_ns() -> uint64_t` | Per-call kernel RX delay (timestamps mode) |
+| `last_kernel_tx_delay_ns() -> uint64_t` | Per-call kernel TX delay (timestamps mode) |
 | `local_port() -> uint16_t` | Ephemeral port number of connected socket |
 
 #### Connect Functions (`socket_connect.hpp`)
@@ -119,6 +121,8 @@ Compile-time constant: `inline constexpr bool kEnableSocketTimestamps` (set via 
 | `HttpClient(Config)` | Construct with host, port, TLS, timeout, max_response_size |
 | `HttpClient::get(path, extra_headers?) -> expected<HttpResponse, string>` | Send GET request |
 | `HttpClient::post(path, body, content_type?, extra_headers?) -> expected<HttpResponse, string>` | Send POST request |
+| `HttpClient::config() -> const Config&` | Access client configuration |
+| `HttpClient::is_response_complete(buf) -> bool` | Check if raw response has full headers + body (static, public for testing) |
 | `build_http_request(method, host, path, body?, content_type?, extra_headers?) -> expected<string, string>` | Build raw HTTP/1.1 request string |
 | `parse_http_response(data) -> expected<HttpResponse, string>` | Parse raw HTTP response bytes |
 | `find_header(headers_raw, name) -> string` | Case-insensitive header value lookup |
@@ -139,6 +143,7 @@ Compile-time constant: `inline constexpr bool kEnableSocketTimestamps` (set via 
 | Type / Method | Description |
 |--------------|-------------|
 | `CircuitState` | Enum: `Closed`, `Open`, `HalfOpen` |
+| `CircuitBreaker::Config` | Struct: `failure_threshold`, `open_duration`, `half_open_max_calls` |
 | `CircuitBreaker(Config)` | Construct with failure_threshold, open_duration, half_open_max_calls |
 | `allow() -> bool` | Check if a call is permitted |
 | `record_success()` | Record successful call (may close circuit) |
@@ -164,7 +169,8 @@ Compile-time constant: `inline constexpr bool kEnableSocketTimestamps` (set via 
 | `ConnHealth` | Enum: `Healthy`, `Degraded`, `Disconnected`, `Stopped` |
 | `conn_health_name(ConnHealth) -> string_view` | Human-readable health status |
 | `GatewayConnection` | Type-erased connection with tag, health, priority |
-| `Gateway(Config?)` | Construct with health_check_interval, degraded_threshold, on_health_change callback |
+| `Gateway::Config` | Struct: `health_check_interval`, `degraded_threshold`, `on_health_change` callback |
+| `Gateway(Config?)` | Construct with health monitoring and callback configuration |
 | `add(tag, transport*, priority?) -> size_t` | Register a transport, returns connection index |
 | `connection_count() -> size_t` | Number of managed connections |
 | `health(id) -> ConnHealth` | Query connection health by index |

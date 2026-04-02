@@ -54,12 +54,13 @@ struct ProxyConfig {
     uint16_t    port = 1080;
     ProxyType   type = ProxyType::kSocks5;
 
-    /// Optional SOCKS5 username/password auth (RFC 1929).
+    /// @brief Optional SOCKS5 username/password auth (RFC 1929).
     /// Ignored for HTTP CONNECT (use extra_headers for Proxy-Authorization).
     std::string username{};
-    std::string password{};  // ⚠ Never logged
+    /// @brief Authentication password. Never logged or included in error messages.
+    std::string password{};
 
-    /// Timeout for the proxy handshake (not the TCP connect to the proxy).
+    /// @brief Timeout for the proxy handshake (not the TCP connect to the proxy).
     std::chrono::milliseconds timeout{5000};
 
     /// @brief Validate configuration, returning an error description or empty string on success.
@@ -216,10 +217,12 @@ socks5_handshake(SocketTransport& tcp,
     uint8_t greeting[4];
     size_t greeting_len;
     if (has_auth) {
+        // Offer two methods: 0x00 = no auth, 0x02 = username/password (RFC 1929)
         greeting[0] = 0x05;  greeting[1] = 0x02;
         greeting[2] = 0x00;  greeting[3] = 0x02;
         greeting_len = 4;
     } else {
+        // Offer one method: 0x00 = no authentication required
         greeting[0] = 0x05;  greeting[1] = 0x01;  greeting[2] = 0x00;
         greeting_len = 3;
     }
@@ -269,7 +272,8 @@ socks5_handshake(SocketTransport& tcp,
         SPDLOG_LOGGER_DEBUG(log, "SOCKS5 authentication succeeded");
     } else if (chosen_method == 0x00) {
         // No auth required
-    } else if (chosen_method == 0xFF) {
+    } else if (chosen_method == 0xFF) {  // 0xFF = no acceptable methods per RFC 1928
+
         return std::unexpected("SOCKS5: server rejected all auth methods");
     } else {
         return std::unexpected(std::format(
@@ -322,8 +326,8 @@ socks5_handshake(SocketTransport& tcp,
     // Drain BND.ADDR + BND.PORT based on ATYP
     size_t drain_len = 0;
     switch (resp_header[3]) {
-        case 0x01: drain_len = 4 + 2; break;   // IPv4 + port
-        case 0x03: {                            // Domain: length byte + domain + port
+        case 0x01: drain_len = 4 + 2; break;   // ATYP 0x01: IPv4 (4 bytes) + port (2 bytes)
+        case 0x03: {                            // ATYP 0x03: Domain: length byte + domain + port
             uint8_t dlen;
             if (auto r = io.read_exact(&dlen, 1, cfg.timeout); !r) return std::unexpected(r.error());
             if (dlen > 16) {
@@ -343,7 +347,7 @@ socks5_handshake(SocketTransport& tcp,
             drain_len = dlen + 2;
             break;
         }
-        case 0x04: drain_len = 16 + 2; break;  // IPv6 + port
+        case 0x04: drain_len = 16 + 2; break;  // ATYP 0x04: IPv6 (16 bytes) + port (2 bytes)
         default:
             return std::unexpected(std::format(
                 "SOCKS5: unknown ATYP 0x{:02x}", resp_header[3]));
@@ -423,6 +427,7 @@ http_connect_handshake(SocketTransport& tcp,
             deadline - std::chrono::steady_clock::now());
         if (remaining.count() <= 0) break;
 
+        // 8 KiB cap prevents unbounded buffering from a misbehaving proxy
         constexpr size_t kMaxConnectResponse = 8192;
         auto result = tcp.poll_rx_for([&](const uint8_t* data, uint16_t len) {
             size_t take = std::min(static_cast<size_t>(len),

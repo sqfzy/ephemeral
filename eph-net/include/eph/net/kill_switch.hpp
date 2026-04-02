@@ -63,12 +63,12 @@ inline constexpr size_t kKillSwitchMaxTransports = 32;
 /// Wraps any object that has stop() and is_running() methods via
 /// function pointers, avoiding the need for a polymorphic base class.
 struct TransportHandle {
-    void* ptr = nullptr;
-    void (*stop_fn)(void*) = nullptr;
-    bool (*is_running_fn)(void*) = nullptr;
+    void* ptr = nullptr;             ///< Opaque pointer to the transport instance.
+    void (*stop_fn)(void*) = nullptr;      ///< Type-erased stop function.
+    bool (*is_running_fn)(void*) = nullptr; ///< Type-erased running status check.
 };
 
-/// Centralized emergency shutdown coordinator.
+/// @brief Centralized emergency shutdown coordinator.
 ///
 /// Thread-safe for register/unregister (guarded by atomic spinlock).
 /// Signal-safe for shutdown_requested flag (lock-free atomic).
@@ -76,7 +76,9 @@ struct TransportHandle {
 /// Not copyable/movable — designed for one per application.
 class KillSwitch {
 public:
+    /// @brief Default constructor -- no transports registered, no signal handlers installed.
     KillSwitch() noexcept = default;
+    /// @brief Destructor -- shuts down all registered transports, restores default signal handlers.
     ~KillSwitch() noexcept {
         shutdown();
         // Deregister signal handlers and null out the global instance pointer
@@ -269,7 +271,8 @@ private:
         spin_unlock();
     }
 
-    // Signal handler — must be async-signal-safe (only atomics).
+    /// Signal handler — must be async-signal-safe (only atomics, no allocations).
+    /// Re-registers SIGINT to SIG_DFL so a second ctrl-C triggers immediate hard kill.
     static void signal_handler(int sig) noexcept {
         auto* ks = s_instance_.load(std::memory_order_acquire);
         if (ks) {

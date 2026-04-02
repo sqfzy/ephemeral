@@ -44,9 +44,9 @@ namespace eph::net {
 /// Contains the status code, raw header block, and body text
 /// from a completed HTTP/1.1 response.
 struct HttpResponse {
-    int         status_code = 0;
-    std::string body;
-    std::string headers_raw;  ///< Raw header block (excluding status line) for optional parsing
+    int         status_code = 0;  ///< HTTP status code (e.g. 200, 404, 500).
+    std::string body;             ///< Response body text.
+    std::string headers_raw;      ///< Raw header block (excluding status line) for optional parsing.
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -385,6 +385,7 @@ private:
     // RAII wrappers for socket and SSL resources
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// @brief RAII deleter for SSL* -- performs TLS shutdown then frees.
     struct SslDeleter {
         void operator()(SSL* s) const noexcept {
             if (s) {
@@ -394,6 +395,7 @@ private:
         }
     };
 
+    /// @brief RAII deleter for SSL_CTX*.
     struct SslCtxDeleter {
         void operator()(SSL_CTX* c) const noexcept {
             if (c) SSL_CTX_free(c);
