@@ -239,8 +239,8 @@ run_dpdk_benchmarks() {
 
     # Get NIC-B PCI address before binding to DPDK
     local nic_b_pci
-    nic_b_pci=$(ethtool -i "$NIC_B" 2>/dev/null | awk '/bus-info:/ {print $2}')
-    [[ -z "$nic_b_pci" ]] && die "Cannot detect PCI address for NIC-B '$NIC_B'"
+    nic_b_pci=$(basename "$(readlink -f "/sys/class/net/$NIC_B/device" 2>/dev/null)" 2>/dev/null || true)
+    [[ -z "$nic_b_pci" || "$nic_b_pci" == "device" ]] && die "Cannot detect PCI address for NIC-B '$NIC_B'" "  Check: ls /sys/class/net/$NIC_B/device"
     log_info "NIC-B PCI: $nic_b_pci"
 
     log_phase 2 "Bind NIC-B to DPDK"
