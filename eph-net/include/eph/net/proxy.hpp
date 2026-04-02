@@ -410,8 +410,12 @@ http_connect_handshake(SocketTransport& tcp,
             deadline - std::chrono::steady_clock::now());
         if (remaining.count() <= 0) break;
 
+        constexpr size_t kMaxConnectResponse = 8192;
         auto result = tcp.poll_rx_for([&](const uint8_t* data, uint16_t len) {
-            response.append(reinterpret_cast<const char*>(data), len);
+            size_t take = std::min(static_cast<size_t>(len),
+                                   kMaxConnectResponse - std::min(response.size(), kMaxConnectResponse));
+            if (take > 0)
+                response.append(reinterpret_cast<const char*>(data), take);
         }, remaining);
 
         if (!result) {

@@ -537,9 +537,13 @@ private:
         }
         std::unique_ptr<SSL, SslDeleter> ssl_ptr(ssl);
 
-        // Set SNI hostname
+        // Set SNI hostname and enable hostname verification
         if (!config_.host.empty()) {
             SSL_set_tlsext_host_name(ssl, config_.host.c_str());
+            // Explicitly enable hostname verification — SNI alone only tells
+            // the server which cert to present, it does not make the client
+            // verify the certificate matches the target hostname.
+            SSL_set1_host(ssl, config_.host.c_str());
         }
 
         // Attach fd to SSL

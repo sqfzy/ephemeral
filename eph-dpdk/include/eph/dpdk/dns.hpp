@@ -305,6 +305,7 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     uint16_t qd_count = net::ntoh16(hdr->qd_count);
     if (qd_count > 16) return std::unexpected("DNS response: unreasonable question count");  // Reject malformed/malicious packet
     uint16_t an_count = net::ntoh16(hdr->an_count);
+    if (an_count > 64) return std::unexpected("DNS response: unreasonable answer count");  // Prevent CPU exhaustion from spoofed responses
 
     if (an_count == 0) {
         return std::unexpected("DNS response: no answer records");
