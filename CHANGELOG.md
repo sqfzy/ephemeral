@@ -8,6 +8,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+#### Transport (`transport`)
+- Three-class transport hierarchy: `Transport` (full-featured), `DirectTxTransport` (TX-only direct), `DirectTransport` (full direct-mode)
+- Five independent composable components: `TransportCore`, `ReconnectPolicy`, `FrameProcessor`, `TxWorker`, `RxWorker`
+- `feed_rx()`/`process_pending()` API for reactor-driven direct-mode receive
+- Reactor `on_burst_complete` callback for batched RX processing
+
+#### DPDK (`dpdk`)
+- Reactor feed integration for direct-mode transport
+
+#### Benchmarks
+- Mock WebSocket server for deterministic latency measurement (no live exchange dependency)
+- Socket and DPDK benchmark variants using `DirectTransport` for fair comparison
+- DPDK benchmark setup script with network namespace isolation
+- Standalone mock server mode (`--no-mock`) for namespace-based benchmarking
+- Built-in mock with `SO_BINDTODEVICE` for single-process benchmarking
+
+### Changed
+
+#### Transport (`transport`)
+- Extracted `eph-transport` module from `eph-net` as a standalone package
+- Eliminated `TransportMode` enum in favor of distinct transport classes
+- Replaced monolithic transport with composition of independent worker components
+- Unified benchmark design: all variants use `DirectTransport` + external mock server
+
+#### Benchmarks
+- Renamed `bench_market_single` to `bench_market`
+- Moved latency benchmarks into `benchmarks/latency/` directory
+- Renamed `bench_setup.sh` to `bench_latency.sh`
+- Removed 9 legacy Binance-dependent benchmarks in favor of mock-based approach
+- Mandatory CPU pinning with configurable defaults for reproducible results
+
+### Fixed
+
+#### Network Transport (`net`)
+- Corrected RFC 6455 WebSocket Accept GUID in `validate_ws_accept` and `mock_ws_handshake`
+- Fixed `on_message` callback delivery not triggering in push mode
+- Resolved GCC 14 linker errors in transport module
+- Made `SocketTransport::state_` atomic to prevent data race on concurrent access
+- Deferred `close_fd()` in `SocketTransport::close()` for graceful shutdown
+- DNS answer count cap to prevent buffer overread
+- TLS hostname verification enforcement
+- Proxy response buffer bounds checking
+- Reactor data race in RX dispatch loop (local session pointer fix)
+- HMAC key truncation when key exceeds block size
+- CloseWait data delivery and DNS truncation guard in DPDK stack
+- SOCKS5 buffer overflow, poll error handling, and TLS session hardening
+- Flushed pending ACK using local session pointer in Reactor RX loop
+
+#### Transport (`transport`)
+- Guarded direct-mode members and APIs with `constexpr`/`requires` to prevent misuse
+- `ReconnectPolicy` unit tests and correctness fixes
+
+#### Benchmarks
+- Validated all required benchmark arguments with fail-fast on missing values
+- Sequential mock server startup to prevent port conflicts
+- Used sysfs for PCI device detection in `bench_latency.sh` (portable across distros)
+- Fixed mock server kill errors on cleanup
+
+### Added
+
 #### Network Transport (`net`)
 - Gateway for multi-transport lifecycle management
 - KillSwitch for coordinated emergency shutdown

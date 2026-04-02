@@ -206,15 +206,33 @@ The library uses C++20/23 concepts instead of virtual dispatch for zero-overhead
 
 - **`ErrorEnum` concept** (`eph/core/error_traits.hpp`): All error enums provide ADL `error_name()` for `std::format` integration.
 
-### Thread model (Transport)
+### Transport variants
+
+The library provides three transport classes, each with a different threading model. All compose the same internal building blocks: `TransportCore` (connection + framing), `TxWorker` (send loop), `RxWorker` (receive loop), and `ReconnectPolicy`.
+
+| Class | Threads | Use case |
+|-------|---------|----------|
+| `Transport` | TX thread + RX thread (default) | General-purpose; app calls `send()`/`recv()` non-blocking |
+| `DirectTxTransport` | RX thread only | App sends directly on its thread; lower latency for TX-heavy paths |
+| `DirectTransport` | None (app polls) | Full control; app drives both TX and RX in its own event loop |
 
 ```
-Application thread:  send() / recv()  (non-blocking)
-TX thread:           busy-poll SPSC queue -> WS frame -> TLS encrypt -> TCP send
-RX thread:           busy-poll TCP rx -> TLS decrypt -> WS decode -> SPSC queue
+Transport (default):
+  Application thread:  send() / recv()  (non-blocking, via SPSC queues)
+  TX thread:           busy-poll SPSC queue -> WS frame -> TLS encrypt -> TCP send
+  RX thread:           busy-poll TCP rx -> TLS decrypt -> WS decode -> SPSC queue
+
+DirectTxTransport:
+  Application thread:  send() goes directly to wire (no TX queue)
+  RX thread:           busy-poll TCP rx -> TLS decrypt -> WS decode -> SPSC queue
+
+DirectTransport:
+  Application thread:  send() and poll_rx() both execute inline (no threads)
 ```
 
-Communication between threads uses the lock-free `BoundedQueue` from eph-containers.
+Communication between threads (where applicable) uses the lock-free `BoundedQueue` from eph-containers.
+
+Headers: `eph/transport/transport.hpp`, `eph/transport/direct_tx_transport.hpp`, `eph/transport/direct_transport.hpp`. Internal composition: `transport_core.hpp`, `tx_worker.hpp`, `rx_worker.hpp`, `reconnect_policy.hpp`.
 
 ---
 
@@ -224,7 +242,7 @@ Communication between threads uses the lock-free `BoundedQueue` from eph-contain
 
 | What you want to understand | Start here |
 |-----------------------------|-----------|
-| How connections are established | `eph/transport/transport.hpp` -- `Transport::create()` |
+| How connections are established | `eph/transport/transport.hpp` -- `Transport::create()` (also `DirectTxTransport`, `DirectTransport`) |
 | The TCP abstraction all backends implement | `eph/core/tcp_concept.hpp` -- `TcpTransport` concept |
 | POSIX socket backend | `eph/net/socket_transport.hpp` |
 | DPDK backend | `eph/dpdk/tcp.hpp` |
@@ -297,9 +315,16 @@ xmake run bench_fix_parse
 #   utils:      bench_time
 #   book:       bench_array_book
 #
-# End-to-end market benchmarks:
-#   bench_market, bench_market_multi, bench_market_pingpong, bench_pingpong
-#   (DPDK variants: bench_market_dpdk, bench_market_multi_dpdk, etc.)
+# End-to-end latency benchmarks (benchmarks/latency/):
+#   bench_market       -- mock WS server -> market data parse latency
+#   bench_order_rtt    -- mock WS server -> order round-trip latency
+#   (DPDK variants: bench_market_dpdk, bench_order_rtt_dpdk)
+#
+# These use a self-contained mock WS server (benchmarks/latency/mock/)
+# and have no external dependencies (no live exchange connection needed).
+#
+# For dual-NIC fair comparison (POSIX vs DPDK on same machine):
+#   scripts/bench_latency.sh
 ```
 
 **Important**: Before modifying performance-critical code, run the relevant benchmarks to establish a baseline. After your change, re-run and compare. See `benchmarks/METRICS.md` for baseline data.

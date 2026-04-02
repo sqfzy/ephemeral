@@ -2,12 +2,12 @@
 
 Header-only C++23 ultra-low-latency library for high-frequency trading.
 
-Dual networking backends -- POSIX sockets and DPDK kernel-bypass -- behind a single `Transport<TcpImpl>` template. Same application code, compile-time backend selection, zero virtual dispatch.
+Dual networking backends -- POSIX sockets and DPDK kernel-bypass -- behind compile-time templated transports. Three transport variants for different latency/threading tradeoffs: `Transport` (threaded TX+RX), `DirectTxTransport` (direct TX, threaded RX), and `DirectTransport` (no threads, app polls). Zero virtual dispatch.
 
 ## Why ephemeral
 
 - **Zero-copy everywhere** -- FIX, ITCH, and JSON parsers operate directly on receive buffers with no intermediate allocations.
-- **Compile-time polymorphism** -- Concepts and templates replace virtual dispatch. The `TcpTransport` concept lets you swap Socket/DPDK backends without touching application logic.
+- **Compile-time polymorphism** -- Concepts and templates replace virtual dispatch. The `TcpTransport` concept lets you swap Socket/DPDK backends without touching application logic. Three transport variants (`Transport`, `DirectTxTransport`, `DirectTransport`) let you choose the threading model that fits your latency budget.
 - **Production building blocks** -- Circuit breakers, kill switches, rate limiters, HMAC signing, audit logs, and risk checks are included, not bolted on.
 - **Single-header modules** -- Each module is header-only with clean dependency edges. Use only what you need.
 
@@ -72,13 +72,21 @@ done
 ### Run Benchmarks
 
 ```bash
+# Microbenchmarks (Google Benchmark)
 xmake build -g benchmarks
 xmake run bench_fix_parse
 xmake run bench_itch_parse
 xmake run bench_json_parse
 xmake run bench_array_book
-xmake run bench_market_pingpong       # Socket end-to-end latency
-xmake run bench_market_pingpong_dpdk  # DPDK end-to-end latency
+
+# End-to-end latency benchmarks (self-contained, no exchange dependency)
+# Uses a mock WS server in benchmarks/latency/
+xmake build bench_mock_server bench_market bench_order_rtt
+xmake build bench_market_dpdk bench_order_rtt_dpdk   # DPDK variants
+
+# Fair Socket vs DPDK comparison (dual-NIC setup, network namespace isolation)
+sudo ./scripts/bench_latency.sh --nic-a ens34 --nic-b ens35 \
+    --server-ip 172.31.21.173 --gateway-ip 172.31.16.1
 ```
 
 ## Modules
@@ -88,7 +96,8 @@ xmake run bench_market_pingpong_dpdk  # DPDK end-to-end latency
 | **eph-core** | `tcp_concept`, `framer_concept`, `metrics_concept`, `error_traits`, `transport_errors` | Shared concepts and traits -- `TcpTransport`, `MessageFramer`, `ErrorEnum` |
 | **eph-utils** | `time`, `cpu`, `hugepage`, `hdr_histogram`, `audit_log`, `recorder`, `system_stats`, `ema`, `alignment` | TSC timing, CPU pinning, hugepage allocator, histogram, audit logging |
 | **eph-containers** | `bounded_queue`, `evicting_queue`, `ring_buffer`, `*_bytes` variants | Lock-free SPSC queues: `BoundedQueue` (backpressure), `EvictingQueue` (drop-oldest) |
-| **eph-net** | `transport`, `socket_transport`, `tls_session`, `websocket`, `http_client`, `gateway`, `circuit_breaker`, `kill_switch`, `rate_limiter`, `proxy` | WebSocket/TLS transport, HTTP client, HMAC signing, connection lifecycle management |
+| **eph-transport** | `transport`, `direct_tx_transport`, `direct_transport`, `transport_core`, `tx_worker`, `rx_worker`, `frame_processor`, `reconnect_policy`, `tls_session`, `websocket`, `http`, `transport_types`, `presets` | Composable WebSocket/TLS transport with 3 threading variants, built from independent components (TransportCore, TxWorker, RxWorker, FrameProcessor, ReconnectPolicy) |
+| **eph-net** | `socket_transport`, `socket_config`, `http_client`, `gateway`, `circuit_breaker`, `kill_switch`, `rate_limiter`, `proxy`, `hmac` | Socket backend, HTTP client, HMAC signing, connection lifecycle management |
 | **eph-dpdk** | `tcp`, `arp`, `dns`, `reactor`, `flow_steering`, `eal`, `connector` | DPDK kernel-bypass TCP backend (same Transport API) |
 | **eph-fix** | `parser`, `builder`, `framer`, `session`, `orders`, `order_manager`, `risk_check`, `position`, `execution_report`, `tags` | FIX 4.4 zero-copy parser/builder, session management, order helpers, risk checks |
 | **eph-itch** | `parser`, `framer`, `messages`, `moldudp64`, `soupbintcp`, `ouch` | ITCH 5.0 / OUCH zero-copy parser, MoldUDP64 and SoupBinTCP framers |
@@ -104,9 +113,13 @@ eph-core  (concepts, error traits)
   |     |
   |     +-- eph-containers  (SPSC queues, ring buffer)
   |           |
-  |           +-- eph-net  (transport, TLS, WebSocket, HTTP, gateway)
+  |           +-- eph-transport  (Transport, DirectTxTransport, DirectTransport, TLS, WebSocket)
+  |           |     |
+  |           |     +-- eph-net  (socket backend, HTTP client, gateway)
+  |           |     |
+  |           |     +-- eph-dpdk  (DPDK kernel-bypass backend)
   |           |
-  |           +-- eph-dpdk  (DPDK kernel-bypass backend)
+  |           (eph-net and eph-dpdk provide TcpTransport implementations for eph-transport)
   |
   +-- eph-fix  (FIX protocol)
   +-- eph-itch  (ITCH/OUCH protocol)
@@ -123,12 +136,15 @@ Connect to a WebSocket server, send a message, receive the echo:
 
 ```cpp
 #include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport.hpp"
 
 int main() {
     // 1. Configure
     eph::net::SocketConfig sock_cfg{
-        .host = "echo.websocket.org", .port = 443, .tcp_nodelay = true};
-    eph::net::TransportConfig transport_cfg{
+        .host = "echo.websocket.org", .port = 443, .tcp_nodelay = true,
+        .bind_device = "",  // set to e.g. "ens35" for SO_BINDTODEVICE (NIC pinning)
+    };
+    eph::transport::TransportConfig transport_cfg{
         .remote_host = "echo.websocket.org",
         .remote_port = 443,
         .use_tls     = true,
@@ -144,7 +160,8 @@ int main() {
     };
 
     // 3. Connect (TCP -> TLS handshake -> WebSocket upgrade)
-    auto result = eph::net::Transport<eph::net::SocketTransport>::create(
+    //    Transport: threaded TX+RX (also available: DirectTxTransport, DirectTransport)
+    auto result = eph::transport::Transport<eph::net::SocketTransport>::create(
         std::move(tcp_factory), transport_cfg);
     if (!result) return 1;
     auto& tp = **result;
@@ -228,6 +245,7 @@ target("my_app")
         "path/to/ephemeral/eph-core/include",
         "path/to/ephemeral/eph-utils/include",
         "path/to/ephemeral/eph-containers/include",
+        "path/to/ephemeral/eph-transport/include",
         "path/to/ephemeral/eph-net/include")
     add_packages("spdlog", "aws-lc")
 ```
@@ -235,12 +253,18 @@ target("my_app")
 Or use xmake's dependency mechanism within a monorepo:
 
 ```lua
-add_deps("eph-net")  -- pulls in eph-core, eph-utils, eph-containers transitively
+add_deps("eph-net")  -- pulls in eph-transport, eph-core, eph-utils, eph-containers transitively
 ```
 
 ## Benchmarks
 
-Microbenchmarks live in `benchmarks/` and use Google Benchmark. End-to-end latency benchmarks (Socket vs DPDK) use a custom ping-pong harness with TSC timestamps.
+Microbenchmarks live in `benchmarks/` and use Google Benchmark. End-to-end latency benchmarks are self-contained in `benchmarks/latency/` with a built-in mock WebSocket server (no Binance or other exchange dependency required).
+
+Latency benchmarks:
+- `bench_mock_server` -- mock WS server that echoes market data
+- `bench_market` / `bench_market_dpdk` -- market data feed latency (Socket / DPDK)
+- `bench_order_rtt` / `bench_order_rtt_dpdk` -- order round-trip latency (Socket / DPDK)
+- `scripts/bench_latency.sh` -- orchestrates a fair Socket vs DPDK comparison using network namespace isolation on a dual-NIC setup
 
 See [`benchmarks/METRICS.md`](benchmarks/METRICS.md) for the measurement methodology covering TX latency, RX latency, RTT, and feed latency.
 

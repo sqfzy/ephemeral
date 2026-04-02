@@ -20,19 +20,20 @@
 
 ## Overview
 
-ephemeral is a C++23 networking library designed for ultra-low-latency financial market data and order entry systems. The project is entirely header-only and organized into nine independent modules:
+ephemeral is a C++23 networking library designed for ultra-low-latency financial market data and order entry systems. The project is entirely header-only and organized into ten independent modules:
 
 - **eph-core** -- shared concepts (`TcpTransport`, `MessageFramer`, `MetricsSink`), error types, length-prefix framer
 - **eph-utils** -- TSC timing, CPU topology, hugepage allocator, HDR histogram, audit log (MiFID II / Reg NMS), EMA
 - **eph-containers** -- SPSC bounded queue, evicting queue, ring buffer
-- **eph-net** -- POSIX socket transport, TLS 1.3, WebSocket, HTTP/REST client, Gateway, KillSwitch, CircuitBreaker, rate limiter, proxy (SOCKS5/HTTP CONNECT)
+- **eph-transport** -- Generic transport variants (threaded, direct-TX, direct), composition architecture (TransportCore + TxWorker + RxWorker + ReconnectPolicy + FrameProcessor), TLS 1.3, WebSocket, HTTP upgrade, preset aliases
+- **eph-net** -- POSIX socket transport, HTTP/REST client, Gateway, KillSwitch, CircuitBreaker, rate limiter, proxy (SOCKS5/HTTP CONNECT)
 - **eph-dpdk** -- DPDK EAL, user-space TCP, ARP/DNS, flow steering (RSS + rte_flow), Reactor (muxed RX), connector
 - **eph-fix** -- FIX 4.4 parser/builder/session, orders, execution reports, position tracker, risk checks, order manager
 - **eph-itch** -- ITCH 5.0 messages/parser, SoupBinTCP, MoldUDP64, OUCH 5.0
 - **eph-json** -- zero-copy JSON parser/framer, Binance/OKX/Bybit adapters (WebSocket + REST)
 - **eph-book** -- ArrayBook, MapBook (L2/L3), market signals, Binance/ITCH adapters
 
-The core design achieves zero-overhead transport abstraction through C++20 concepts (`TcpTransport`, `MessageFramer`, `MetricsSink`). A single `Transport<TcpImpl, Framer>` template works identically over POSIX sockets and DPDK user-space TCP, with the framing layer (WebSocket, FIX length-prefix, raw passthrough) also pluggable at compile time.
+The core design achieves zero-overhead transport abstraction through C++20 concepts (`TcpTransport`, `MessageFramer`, `MetricsSink`). Three transport variants compose from shared building blocks: `Transport` (threaded TX+RX), `DirectTxTransport` (direct TX, threaded RX), and `DirectTransport` (no threads). All compose `TransportCore` + `ReconnectPolicy` + `FrameProcessor`, with workers added per variant. Each works identically over POSIX sockets and DPDK user-space TCP, with the framing layer (WebSocket, FIX length-prefix, raw passthrough) pluggable at compile time.
 
 In the DPDK path, the entire data pipeline bypasses the kernel: Application -> SPSC queue -> TX thread (frame encode -> TLS AES-GCM encrypt -> TCP/IP header build) -> NIC PMD direct send. Measured end-to-end TX latency is ~164ns and RX ~139ns for 64-byte payloads on Intel Xeon with AES-NI.
 
@@ -63,19 +64,24 @@ Layered pipeline architecture: modules compose bottom-up, decoupled through C++ 
       └──────────────┴──────┬───────┴──────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────────────┐
-│                     eph-net  /  eph-dpdk                        │
+│                       eph-transport                             │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Transport<TcpImpl, Framer, MaxPayload, QueueDepth>      │   │
-│  │  Gateway (multi-connection lifecycle + health monitoring) │   │
-│  │  KillSwitch (emergency shutdown coordinator)              │   │
-│  │  CircuitBreaker (three-state endpoint protection)         │   │
+│  │  Transport / DirectTxTransport / DirectTransport         │   │
+│  │  ┌────────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐ │   │
+│  │  │TransportCore│ │TxWorker  │ │RxWorker  │ │Reconnect  │ │   │
+│  │  │(shared conn │ │(TX thd + │ │(RX thd + │ │Policy     │ │   │
+│  │  │ state, TLS) │ │ SPSC q)  │ │ SPSC q)  │ │(exp.backoff│ │   │
+│  │  └────────────┘ └──────────┘ └──────────┘ └───────────┘ │   │
+│  │  FrameProcessor (WS frag reassembly, control frames)     │   │
 │  └──────────┬────────────────────────────┬──────────────────┘   │
+│             │                            │                      │
 │  ┌──────────▼──────────┐  ┌──────────────▼──────────────────┐   │
-│  │ Socket path         │  │ DPDK path                       │   │
+│  │ eph-net              │  │ eph-dpdk                        │   │
 │  │ SocketTransport     │  │ TcpSession (user-space TCP)     │   │
 │  │ (POSIX/poll)        │  │ Reactor (muxed RX dispatch)     │   │
 │  │ HttpClient (REST)   │  │ FlowSteering (RSS/rte_flow)    │   │
-│  │ Proxy (SOCKS5/HTTP) │  │ Platform / EAL                 │   │
+│  │ Gateway / KillSwitch│  │ Platform / EAL                 │   │
+│  │ Proxy (SOCKS5/HTTP) │  │                                │   │
 │  └──────────┬──────────┘  └──────────────┬──────────────────┘   │
 └─────────────┼────────────────────────────┼──────────────────────┘
               │                            │
@@ -174,23 +180,35 @@ Layered pipeline architecture: modules compose bottom-up, decoupled through C++ 
 | `containers/evicting_queue.hpp` | SPSC wait-free write queue (overwrites oldest via seqlock) | `EvictingQueue<T, Capacity>` | `concepts.hpp`, `alignment.hpp`, `cpu.hpp` |
 | `containers/evicting_queue_bytes.hpp` | Variable-length byte payload wrapper (with eviction count) | `EvictingQueueBytes<MaxDataSize, Capacity>` | `evicting_queue.hpp` |
 | `containers/ring_buffer.hpp` | Fixed-size circular buffer for tick history lookback | `RingBuffer<T, Capacity>` | stdlib |
-| **eph-net** | POSIX socket transport, TLS, WebSocket, Gateway, KillSwitch | | |
+| **eph-transport** | Transport variants, TLS, WebSocket, framing, composition components | | |
+| `transport/transport.hpp` | Threaded transport (TX thread + RX thread + SPSC queues) | `Transport<TcpImpl, Framer, MaxPayload, QueueDepth>` | `transport_core.hpp`, `tx_worker.hpp`, `rx_worker.hpp`, `reconnect_policy.hpp` |
+| `transport/direct_tx_transport.hpp` | Direct TX + threaded RX (no TX thread/queue, app calls send directly) | `DirectTxTransport<TcpImpl, Framer, ...>` | `transport_core.hpp`, `rx_worker.hpp`, `reconnect_policy.hpp` |
+| `transport/direct_transport.hpp` | Fully direct transport (no threads, no queues, app owns polling) | `DirectTransport<TcpImpl, Framer, ...>` | `transport_core.hpp`, `frame_processor.hpp`, `reconnect_policy.hpp` |
+| `transport/transport_core.hpp` | Shared connection state (TCP, TLS, config, lifecycle atomics) | `TransportCore<TcpImpl>` | `tls_session.hpp`, `http.hpp`, eph-core |
+| `transport/tx_worker.hpp` | TX thread, TX SPSC queue, TX stats, ping/pong | `TxWorker<...>` | `transport_core.hpp`, eph-containers |
+| `transport/rx_worker.hpp` | RX thread, RX SPSC queue, RX stats, frame processing | `RxWorker<...>` | `transport_core.hpp`, `frame_processor.hpp`, eph-containers |
+| `transport/frame_processor.hpp` | Frame decode, WS fragmentation reassembly, control frame handling | `FrameProcessor<Framer, DeliverPolicy>` | `framer_concept.hpp`, spdlog |
+| `transport/reconnect_policy.hpp` | Exponential backoff reconnect with jitter | `ReconnectPolicy` | stdlib |
+| `transport/transport_types.hpp` | Transport config, stats, enums (re-exports core error types) | `TransportConfig`, `TransportEvent`, `TransportStats` | `tcp_concept.hpp`, `transport_errors.hpp` |
+| `transport/presets.hpp` | Canonical payload/depth/framer preset aliases | `DefaultTransport<T>`, `DirectDefaultTransport<T>`, ... | `transport.hpp`, `direct_tx_transport.hpp`, `direct_transport.hpp` |
+| `transport/tls_session.hpp` | TLS 1.3 handshake with custom BIO bridging any TCP backend | `TlsSession<TcpImpl>`, `TlsHotState`, `TlsKeyMaterial` | `tcp_concept.hpp`, aws-lc, spdlog |
+| `transport/tls_record.hpp` | TLS record layer AES-GCM AEAD encrypt/decrypt | `seal_record()`, `open_record()` | `tls_session.hpp`, aws-lc |
+| `transport/tls_encryptor.hpp` | TLS encryption component | `TlsEncryptor` | aws-lc |
+| `transport/tls_decryptor.hpp` | TLS decryption component | `TlsDecryptor` | aws-lc |
+| `transport/tls_constants.hpp` | TLS protocol constants | TLS constants | stdlib |
+| `transport/websocket.hpp` | RFC 6455 WebSocket frame encode/decode, CSPRNG mask key pool | `DecodedFrame`, `MaskKeyCache` | aws-lc (RAND), spdlog |
+| `transport/ws_framer.hpp` | WebSocket MessageFramer adapter (wraps ws encode/decode) | `WsFramer` | `websocket.hpp`, `framer_concept.hpp` |
+| `transport/raw_framer.hpp` | Pass-through framer (no framing overhead) | `RawFramer` | `framer_concept.hpp` |
+| `transport/http.hpp` | Minimal HTTP/1.1 (WebSocket Upgrade handshake only) | `UpgradeResponse` | aws-lc (EVP, RAND), spdlog |
+| **eph-net** | POSIX socket transport, HTTP/REST client, Gateway, KillSwitch | | |
 | `net/socket_transport.hpp` | POSIX socket TCP backend (non-blocking, poll I/O) | `SocketConfig`, `SocketTransport` | `tcp_concept.hpp`, spdlog, POSIX |
-| `net/tls_session.hpp` | TLS 1.3 handshake with custom BIO bridging any TCP backend | `TlsSession<TcpImpl>`, `TlsHotState`, `TlsKeyMaterial` | `tcp_concept.hpp`, aws-lc, spdlog |
-| `net/tls_record.hpp` | TLS record layer AES-GCM AEAD encrypt/decrypt | `seal_record()`, `open_record()` | `tls_session.hpp`, aws-lc |
-| `net/websocket.hpp` | RFC 6455 WebSocket frame encode/decode, CSPRNG mask key pool | `DecodedFrame`, `MaskKeyCache` | aws-lc (RAND), spdlog |
-| `net/http.hpp` | Minimal HTTP/1.1 (WebSocket Upgrade handshake only) | `UpgradeResponse` | aws-lc (EVP, RAND), spdlog |
 | `net/http_client.hpp` | Synchronous HTTP/1.1 client for REST API calls (TLS via aws-lc) | `HttpClient`, `HttpResponse` | aws-lc (SSL), spdlog, POSIX |
-| `net/transport.hpp` | Generic WebSocket transport (thread mgmt, SPSC queues, lifecycle) | `Transport<TcpImpl, Framer, MaxPayload, QueueDepth>` | all net/* modules, eph-containers, eph-utils |
-| `net/transport_types.hpp` | Transport config, stats, enums (re-exports core error types) | `TransportConfig`, `TransportEvent`, `TransportStats` | `tcp_concept.hpp`, `transport_errors.hpp` |
 | `net/gateway.hpp` | Multi-connection lifecycle manager (start/stop/reconnect/health) | `Gateway`, `GatewayConnection`, `ConnHealth` | spdlog |
 | `net/kill_switch.hpp` | Centralized emergency shutdown coordinator (signal-safe) | `KillSwitch`, `TransportHandle` | spdlog |
 | `net/circuit_breaker.hpp` | Three-state circuit breaker for endpoint protection | `CircuitBreaker`, `CircuitState` | spdlog |
 | `net/rate_limiter.hpp` | Token bucket rate limiter for exchange API throttling | `RateLimiter` | spdlog |
 | `net/proxy.hpp` | SOCKS5 and HTTP CONNECT proxy support | `ProxyConfig`, `make_proxied_factory()` | `socket_transport.hpp`, spdlog |
 | `net/hmac.hpp` | HMAC-SHA256 signing for authenticated exchange REST APIs | `hmac_sha256()`, `to_hex()`, `to_base64()` | aws-lc (HMAC), spdlog |
-| `net/ws_framer.hpp` | WebSocket MessageFramer adapter (wraps ws encode/decode) | `WsFramer` | `websocket.hpp`, `framer_concept.hpp` |
-| `net/raw_framer.hpp` | Pass-through framer (no framing overhead) | `RawFramer` | `framer_concept.hpp` |
 | **eph-dpdk** | DPDK user-space TCP, flow steering, multiplexed RX | | |
 | `dpdk/eal.hpp` | DPDK EAL lifecycle management (process-level singleton) | `EalGuard`, `eal_init()` | DPDK, spdlog |
 | `dpdk/platform.hpp` | NIC port/queue/mempool initialization | `Platform`, `PlatformConfig` | DPDK, spdlog |
@@ -303,19 +321,27 @@ The RX thread polls the TCP layer (socket: `poll()` + `recv()`; DPDK: `rte_eth_r
 
 ## Key Components
 
-### `Transport<TcpImpl, Framer, MaxPayload, QueueDepth>`
+### Transport Variants (eph-transport)
 
-**File**: `eph-net/include/eph/net/transport.hpp`
-**Purpose**: Generic transport core. Manages TX/RX threads, SPSC queues, connection lifecycle (handshake, reconnect, graceful close). The framing layer is now pluggable via the `Framer` template parameter (defaults to `WsFramer`).
-**Interface**:
+Three transport variants share a composition architecture built from independent components:
+
+| Variant | File | Threads | Use Case |
+|---|---|---|---|
+| `Transport` | `transport/transport.hpp` | TX thread + RX thread | General-purpose, app thread decoupled from I/O |
+| `DirectTxTransport` | `transport/direct_tx_transport.hpp` | RX thread only | Low-latency TX (app sends directly), background RX |
+| `DirectTransport` | `transport/direct_transport.hpp` | None | Single-threaded event loops (Reactor, DPDK poll-mode) |
+
+**Composition**: All variants compose from `TransportCore` (shared connection state: TCP, TLS, config, lifecycle) + `ReconnectPolicy` (exponential backoff). `Transport` adds `TxWorker` + `RxWorker`; `DirectTxTransport` adds `RxWorker` only; `DirectTransport` adds `FrameProcessor` inline.
+
+**Interface** (shared across variants):
 ```cpp
-static std::expected<std::unique_ptr<Transport>, ConnectionErrorInfo>
+static std::expected<std::unique_ptr<Variant>, ConnectionErrorInfo>
     create(TcpFactory factory, const TransportConfig& config);
 SendError send(const void* data, size_t len, uint8_t opcode);
 bool recv(auto&& callback);  // callback(const uint8_t* data, uint16_t len, uint8_t msg_type)
 void close_gracefully(uint16_t code, std::string_view reason, duration timeout);
 ```
-**Notes**: `TcpImpl` can be `SocketTransport` (socket path) or `TcpSession` (DPDK path). `Framer` can be `WsFramer`, `RawFramer`, `LengthPrefixFramer`, `FixFramer`, `JsonFramer`, etc. All concept-constrained at compile time.
+**Notes**: `TcpImpl` can be `SocketTransport` (socket path) or `TcpSession` (DPDK path). `Framer` can be `WsFramer`, `RawFramer`, `LengthPrefixFramer`, `FixFramer`, `JsonFramer`, etc. All concept-constrained at compile time. Preset aliases (`DefaultTransport`, `DirectDefaultTransport`, etc.) in `presets.hpp` provide canonical configurations.
 
 ### `Gateway`
 
@@ -422,7 +448,9 @@ auto rule = install_flow_rule(port_id, queue_id, tuple);
 | `examples/dpdk_quickstart.cpp` | Binary | DPDK quickstart guide |
 | `examples/spsc_queue_demo.cpp` | Binary | SPSC queue usage demo |
 | `examples/perf_tuning_basics.cpp` | Binary | Performance tuning utilities demo |
-| `Transport::create(factory, config)` | Library API | Create WebSocket transport instance |
+| `Transport::create(factory, config)` | Library API | Create threaded WebSocket transport |
+| `DirectTransport::create(factory, config)` | Library API | Create threadless transport (event-loop use) |
+| `DirectTxTransport::create(factory, config)` | Library API | Create direct-TX transport (threaded RX only) |
 | `eph::dpdk::connect<T>(cfg, tcfg)` | Library API | DPDK one-stop connection (Platform -> ARP -> TCP -> Transport) |
 | `eph::dpdk::eal_init(argc, argv)` | Library API | DPDK EAL initialization (process-level singleton) |
 | `Platform::create(config)` | Library API | DPDK NIC port initialization |
@@ -442,14 +470,17 @@ auto rule = install_flow_rule(port_id, queue_id, tuple);
 eph-book ───► eph-json (binance_adapter only, user must link both)
          ───► eph-itch (itch_adapter only, user must link both)
 
+eph-transport ───► eph-core
+              ───► eph-utils
+              ───► eph-containers
+
 eph-dpdk ───► eph-core
          ───► eph-utils
          ───► eph-containers
-         ───► eph-net (include path only, for Transport type aliases)
+         ───► eph-transport (for Transport type aliases / presets)
 
 eph-net  ───► eph-core
          ───► eph-utils
-         ───► eph-containers
 
 eph-fix  ───► eph-core
 eph-itch ───► eph-core
@@ -522,17 +553,19 @@ Key test scenarios:
 | `bench_itch_parse` | `benchmarks/itch/` | ITCH message parse throughput |
 | `bench_json_parse` | `benchmarks/json/` | JSON parse throughput |
 | `bench_array_book` | `benchmarks/book/` | ArrayBook update/query performance |
-| `bench_market` / `_dpdk` | `benchmarks/` | Single-symbol market data latency (Socket / DPDK) |
-| `bench_market_multi` / `_dpdk` | `benchmarks/` | Multi-symbol combined stream + two-phase filter |
-| `bench_market_persymbol_dpdk` | `benchmarks/` | Per-symbol independent connection + Reactor |
-| `bench_market_pingpong` / `_dpdk` | `benchmarks/` | Market ping-pong RTT (Socket / DPDK) |
-| `bench_pingpong` / `_dpdk` | `benchmarks/` | Raw ping-pong RTT (Socket / DPDK) |
+| `bench_market` / `_dpdk` | `benchmarks/latency/` | Single-symbol market data latency (Socket / DPDK), DirectTransport-based |
+| `bench_order_rtt` / `_dpdk` | `benchmarks/latency/` | Order round-trip time measurement (Socket / DPDK) |
+| `bench_mock_server` | `benchmarks/latency/` | In-process mock WS server for latency benchmarks |
+| `bench_impl.hpp` | `benchmarks/latency/` | Shared benchmark logic (DirectTransport, no threads/queues) |
+| `mock/mock_ws_server.hpp` | `benchmarks/latency/mock/` | Mock WS server (market tick + order response modes) |
+| `mock/mock_ws_handshake.hpp` | `benchmarks/latency/mock/` | WS upgrade handshake for mock server |
+| `mock/mock_data_gen.hpp` | `benchmarks/latency/mock/` | Synthetic market data generator |
 
 ### Tools
 
 | Tool | Location | Purpose |
 |------|----------|--------|
 | `mock_binance_server.py` | `tools/` | Mock Binance WebSocket server with configurable batch-size/rate/jitter |
-| `bench_binance.sh` | `scripts/` | Binance benchmark runner script |
+| `bench_latency.sh` | `scripts/` | Latency benchmark runner (network namespace, PCI detection) |
 | `dpdk-setup.sh` | `scripts/` | DPDK environment setup (hugepages, device binding) |
 | `dpdk-teardown.sh` | `scripts/` | DPDK environment teardown |
