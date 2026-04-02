@@ -53,6 +53,7 @@ struct BenchConfig {
     int rx_cpu = -1;
     int tx_cpu = -1;
     int main_cpu = -1;
+    bool start_mock = true;  // false = external mock server (namespace mode)
 };
 
 // ── JSON "T" field parser ─────────────────────────────────────────────────
@@ -96,21 +97,22 @@ void run_market_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
-    // 1. Start mock server
-    bench::mock::MockServerConfig mock_cfg{
-        .bind_ip = cfg.server_ip,
-        .port = cfg.server_port,
-        .symbols = cfg.symbols,
-        .tick_interval = cfg.tick_interval,
-        .order_mode = false,
-    };
+    // 1. Start mock server (skip if external mock via --no-mock)
     std::atomic<bool> mock_running{true};
-    std::thread mock_thread([&] {
-        bench::mock::run_mock_ws_server(mock_cfg, mock_running);
-    });
-
-    // Give mock server time to start listening
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    std::thread mock_thread;
+    if (cfg.start_mock) {
+        bench::mock::MockServerConfig mock_cfg{
+            .bind_ip = cfg.server_ip,
+            .port = cfg.server_port,
+            .symbols = cfg.symbols,
+            .tick_interval = cfg.tick_interval,
+            .order_mode = false,
+        };
+        mock_thread = std::thread([mock_cfg, &mock_running] {
+            bench::mock::run_mock_ws_server(mock_cfg, mock_running);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    }
 
     // 2. Create transport config (no TLS, no reconnect, no pings)
     eph::net::TransportConfig tc;
@@ -147,7 +149,7 @@ void run_market_bench(
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
         mock_running = false;
-        mock_thread.join();
+        if (mock_thread.joinable()) mock_thread.join();
         return;
     }
     auto& transport = *result;
@@ -166,7 +168,7 @@ void run_market_bench(
     // 5. Stop and report
     transport->stop();
     mock_running = false;
-    mock_thread.join();
+    if (mock_thread.joinable()) mock_thread.join();
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
@@ -201,20 +203,22 @@ void run_order_rtt_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
-    // 1. Start mock server in order mode
-    bench::mock::MockServerConfig mock_cfg{
-        .bind_ip = cfg.server_ip,
-        .port = cfg.server_port,
-        .symbols = cfg.symbols,
-        .tick_interval = cfg.tick_interval,
-        .order_mode = true,
-    };
+    // 1. Start mock server in order mode (skip if external mock via --no-mock)
     std::atomic<bool> mock_running{true};
-    std::thread mock_thread([&] {
-        bench::mock::run_mock_ws_server(mock_cfg, mock_running);
-    });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    std::thread mock_thread;
+    if (cfg.start_mock) {
+        bench::mock::MockServerConfig mock_cfg{
+            .bind_ip = cfg.server_ip,
+            .port = cfg.server_port,
+            .symbols = cfg.symbols,
+            .tick_interval = cfg.tick_interval,
+            .order_mode = true,
+        };
+        mock_thread = std::thread([mock_cfg, &mock_running] {
+            bench::mock::run_mock_ws_server(mock_cfg, mock_running);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    }
 
     // 2. Transport config
     eph::net::TransportConfig tc;
@@ -267,7 +271,7 @@ void run_order_rtt_bench(
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
         mock_running = false;
-        mock_thread.join();
+        if (mock_thread.joinable()) mock_thread.join();
         return;
     }
     auto& transport = *result;
@@ -307,7 +311,7 @@ void run_order_rtt_bench(
     // 5. Stop and report
     transport->stop();
     mock_running = false;
-    mock_thread.join();
+    if (mock_thread.joinable()) mock_thread.join();
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
