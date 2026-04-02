@@ -1,3 +1,10 @@
+/// @file message_types.hpp
+/// Internal SPSC queue message types and shared transport logger.
+///
+/// Defines the fixed-size, cache-line-aligned TxMessage and RxMessage structs
+/// used by the TX and RX SPSC queues. These structs satisfy the TrivialData
+/// constraint required by BoundedQueue/EvictingQueue.
+
 #pragma once
 
 #include <cstdint>
@@ -43,6 +50,11 @@ struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
     uint64_t tsc = 0;  // arrival-time TSC (unused when kEnableTimestamps=false)
 };
 
+/// Lazily-initialized shared logger for the transport subsystem.
+///
+/// @return Raw pointer to the spdlog logger instance (never null after first call).
+/// @note Thread-safe (C++ magic statics). The returned pointer remains valid for
+///       the lifetime of the process.
 inline spdlog::logger* transport_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.transport");

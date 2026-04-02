@@ -28,33 +28,41 @@ namespace detail { using eph::core::detail::json_escape; }
 // Compile-time timestamp control
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compile-time switch for SO_TIMESTAMPING support in SocketTransport.
+/// @brief Compile-time switch for SO_TIMESTAMPING support in SocketTransport.
+///
 /// Pass -DEPH_ENABLE_TIMESTAMPS=1 via the build system to enable.
 /// Any non-zero value enables; 0 or undefined disables.
 #ifndef EPH_ENABLE_TIMESTAMPS
 #define EPH_ENABLE_TIMESTAMPS 0
 #endif
 
+/// @brief Compile-time constant derived from EPH_ENABLE_TIMESTAMPS macro.
 inline constexpr bool kEnableSocketTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Configuration struct for POSIX socket TCP transport.
+///
+/// Controls connection target, Nagle algorithm, buffer sizes, keepalive,
+/// send timeout, and optional NIC binding. Use validate() before constructing
+/// a SocketTransport for early error detection.
 struct SocketConfig {
-    std::string host{};
-    uint16_t    port = 0;
-    bool        tcp_nodelay = true;   // Disable Nagle for lower latency
-    int         recv_buf_size = 0;    // 0 = OS default
-    int         send_buf_size = 0;    // 0 = OS default
-    bool        tcp_keepalive = false;   // Enable TCP keepalive probes
-    int         keepalive_idle = 60;     // Seconds before first probe (TCP_KEEPIDLE)
-    int         keepalive_interval = 10; // Seconds between probes (TCP_KEEPINTVL)
-    int         keepalive_count = 3;     // Probes before declaring dead (TCP_KEEPCNT)
-    int         send_timeout_ms = 1000;  // Timeout for individual send() poll waits (ms)
-    std::string bind_device{};  // SO_BINDTODEVICE: force traffic through this NIC (e.g. "ens35"). Requires CAP_NET_RAW.
+    std::string host{};               ///< Target hostname or IP address.
+    uint16_t    port = 0;             ///< Target port number.
+    bool        tcp_nodelay = true;   ///< Disable Nagle's algorithm for lower latency.
+    int         recv_buf_size = 0;    ///< SO_RCVBUF size in bytes (0 = OS default).
+    int         send_buf_size = 0;    ///< SO_SNDBUF size in bytes (0 = OS default).
+    bool        tcp_keepalive = false;   ///< Enable TCP keepalive probes.
+    int         keepalive_idle = 60;     ///< Seconds before first probe (TCP_KEEPIDLE).
+    int         keepalive_interval = 10; ///< Seconds between probes (TCP_KEEPINTVL).
+    int         keepalive_count = 3;     ///< Probes before declaring dead (TCP_KEEPCNT).
+    int         send_timeout_ms = 1000;  ///< Timeout for individual send() poll waits (ms).
+    std::string bind_device{};  ///< SO_BINDTODEVICE: force traffic through this NIC (e.g. "ens35"). Requires CAP_NET_RAW.
 
-    /// Multi-line formatted dump for logging/debugging.
+    /// @brief Multi-line formatted dump for logging/debugging.
+    /// @return Human-readable multi-line string describing all config fields.
     [[nodiscard]] std::string dump() const {
         return std::format(
             "SocketConfig:\n"
@@ -69,8 +77,11 @@ struct SocketConfig {
             tcp_keepalive, keepalive_idle, keepalive_interval, keepalive_count);
     }
 
-    /// JSON-formatted config for monitoring system integration.
-    /// String fields are escaped per RFC 8259 §7 to prevent malformed output.
+    /// @brief JSON-formatted config for monitoring system integration.
+    ///
+    /// String fields are escaped per RFC 8259 section 7 to prevent malformed output.
+    ///
+    /// @return Compact single-line JSON object string.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{"
@@ -86,11 +97,11 @@ struct SocketConfig {
             keepalive_count, send_timeout_ms);
     }
 
-    /// Defaulted equality — all fields must match exactly.
+    /// @brief Defaulted equality -- all fields must match exactly.
     [[nodiscard]] friend bool operator==(const SocketConfig&,
                                          const SocketConfig&) = default;
 
-    /// Parse a "host:port" or "tcp://host:port" string into a SocketConfig.
+    /// @brief Parse a "host:port" or "tcp://host:port" string into a SocketConfig.
     ///
     /// Supported URL forms:
     ///   tcp://host:port         (explicit scheme)
@@ -188,7 +199,7 @@ struct SocketConfig {
         return cfg;
     }
 
-    /// Serialize the connection target as "tcp://host:port".
+    /// @brief Serialize the connection target as "tcp://host:port".
     ///
     /// Inverse of from_url(): reconstructs a URL from host and port.
     /// IPv6 addresses are bracket-enclosed per RFC 2732.
@@ -202,8 +213,11 @@ struct SocketConfig {
         return std::format("tcp://{}:{}", host, port);
     }
 
-    /// Validate configuration, returning an error description or empty string on success.
+    /// @brief Validate configuration, returning an error description or empty string on success.
+    ///
     /// Call before constructing SocketTransport for early, actionable error messages.
+    ///
+    /// @return Empty string_view on valid config; otherwise human-readable error.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (host.empty())
             return "host must not be empty";
@@ -241,6 +255,9 @@ struct SocketConfig {
 // std::formatter specialization for SocketConfig
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief std::formatter specialization for SocketConfig.
+///
+/// Formats as "host:port nodelay=X keepalive=X" for use with std::format.
 template <>
 struct std::formatter<eph::net::SocketConfig> : std::formatter<std::string> {
     auto format(const eph::net::SocketConfig& c, auto& ctx) const {

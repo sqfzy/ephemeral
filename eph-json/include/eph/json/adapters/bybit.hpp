@@ -40,6 +40,10 @@
 namespace eph::json::bybit {
 
 namespace detail {
+/// @brief Get or create the shared spdlog logger for the Bybit adapter.
+/// @return Non-owning pointer to the "json.bybit" logger instance.
+///
+/// Thread-safe: uses Meyers-singleton initialization.
 inline spdlog::logger* bybit_logger() {
     static auto l = [] {
         try {
@@ -57,13 +61,19 @@ inline spdlog::logger* bybit_logger() {
 // ---------------------------------------------------------------------------
 namespace detail {
 
-/// Parse a string_view as double (for price/qty fields).
+/// @brief Parse a string_view as double (for price/qty fields).
+/// @param sv  String representation of a decimal number.
+/// @return Parsed double, or nullopt on invalid input.
 inline std::optional<double> parse_number(std::string_view sv) noexcept {
     return eph::core::parse_number(sv);
 }
 
-/// Parse a string_view containing a decimal number as int64_t.
-/// Used for Bybit string timestamps in the data object: "ts":"1711612345678"
+/// @brief Parse a string_view containing a decimal number as int64_t.
+///
+/// Used for Bybit string timestamps in the data object: "ts":"1711612345678".
+///
+/// @param sv  String representation of an integer.
+/// @return Parsed int64_t, or nullopt on overflow or invalid input.
 inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
     return eph::core::parse_int(sv);
 }
@@ -74,20 +84,27 @@ inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
 // Bybit push message envelope
 // ---------------------------------------------------------------------------
 
-/// Zero-copy view of a Bybit push message envelope.
+/// @brief Zero-copy view of a Bybit push message envelope.
 ///
 /// Bybit WebSocket pushes have the format:
 ///   {"topic":"tickers.BTCUSDT","type":"snapshot","data":{...},"ts":1711612345679}
 ///
 /// This struct extracts the routing info (topic, type) without parsing
 /// the data payload, enabling fast dispatch by topic.
+///
+/// @note The @c data_raw member is an opaque JSON object string that must
+///       be re-parsed (via eph::json::parse) to extract individual fields.
 struct BybitPushMessage {
     std::string_view topic;     ///< "tickers.BTCUSDT", "orderbook.1.BTCUSDT", etc.
     std::string_view type;      ///< "snapshot" or "delta"
     std::string_view data_raw;  ///< Raw data object "{...}"
 
-    /// Extract push message envelope from a parsed JsonView.
-    /// Returns nullopt if required fields are missing (not a push message).
+    /// @brief Extract push message envelope from a parsed JsonView.
+    ///
+    /// @param json  Parsed JSON view of a Bybit WebSocket message.
+    /// @return Populated BybitPushMessage, or nullopt if "topic", "type",
+    ///         or "data" fields are missing (indicating it is not a push message,
+    ///         e.g., it may be a subscription acknowledgment).
     [[nodiscard]] static std::optional<BybitPushMessage>
     from(const JsonView& json) noexcept {
         auto topic_val = json.get_string("topic");
@@ -114,13 +131,17 @@ struct BybitPushMessage {
 // Bybit bookTicker (tickers channel)
 // ---------------------------------------------------------------------------
 
-/// Zero-copy view of a Bybit tickers message (best bid/offer + last price).
+/// @brief Zero-copy view of a Bybit tickers message (best bid/offer + last price).
 ///
 /// Extracted from the data object in a Bybit push:
 ///   {"topic":"tickers.BTCUSDT","type":"snapshot",
 ///    "data":{"symbol":"BTCUSDT","bid1Price":"87000.0","bid1Size":"1.2",
 ///            "ask1Price":"87001.0","ask1Size":"0.5","lastPrice":"87000.5",
 ///            "ts":"1711612345678"},"ts":1711612345679}
+///
+/// @warning The @c from() factory re-parses the inner "data" JSON object,
+///          so the original buffer backing the outer JsonView must still be
+///          alive when from() is called.
 struct BybitBookTicker {
     std::string_view symbol;      ///< "BTCUSDT"
     std::string_view bid_price;   ///< "87000.0"
@@ -130,9 +151,15 @@ struct BybitBookTicker {
     std::string_view last_price;  ///< "87000.5"
     int64_t timestamp_ms = 0;    ///< Parsed from data "ts" string (ms since epoch)
 
-    /// Extract BybitBookTicker from a parsed JsonView of the outer push message.
+    /// @brief Extract BybitBookTicker from a parsed JsonView of the outer push message.
+    ///
     /// Navigates: outer.data -> parse inner -> extract fields.
-    /// Returns nullopt if required fields are missing or invalid.
+    /// Reads "symbol", "bid1Price", "bid1Size", "ask1Price", "ask1Size"
+    /// (required) and "lastPrice", "ts" (optional) from the inner data object.
+    ///
+    /// @param json  Parsed JSON view of the outer Bybit push message.
+    /// @return Populated BybitBookTicker, or nullopt if the data field is
+    ///         missing, unparseable, or lacks required fields.
     [[nodiscard]] static std::optional<BybitBookTicker>
     from(const JsonView& json) noexcept {
         auto data_raw = json.get("data");
@@ -186,7 +213,9 @@ struct BybitBookTicker {
         return t;
     }
 
-    /// Compute mid price as double. Returns nullopt if prices are not valid numbers.
+    /// @brief Compute mid price as (bid + ask) / 2.
+    /// @return Mid price as double, or nullopt if either price string
+    ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> mid_price() const noexcept {
         auto bid = detail::parse_number(bid_price);
         auto ask = detail::parse_number(ask_price);
@@ -194,7 +223,9 @@ struct BybitBookTicker {
         return (*bid + *ask) / 2.0;
     }
 
-    /// Compute spread as double. Returns nullopt if prices are not valid numbers.
+    /// @brief Compute spread as (ask - bid).
+    /// @return Spread as double, or nullopt if either price string
+    ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> spread() const noexcept {
         auto bid = detail::parse_number(bid_price);
         auto ask = detail::parse_number(ask_price);
@@ -252,17 +283,18 @@ symbol_hash(const uint8_t* data, size_t len) noexcept {
 // WebSocket subscription helpers
 // ---------------------------------------------------------------------------
 
-/// Build a Bybit WebSocket subscription message.
+/// @brief Build a Bybit WebSocket subscription message.
 ///
-/// Bybit subscribe format:
+/// Produces a JSON message conforming to Bybit's WebSocket API:
 ///   {"op":"subscribe","args":["tickers.BTCUSDT","tickers.ETHUSDT"],"req_id":"1"}
-// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
-// but JSON payload format differs per exchange, making a shared abstraction impractical.
 ///
 /// @param channel  Channel prefix (e.g., "tickers", "orderbook.1", "publicTrade")
 /// @param symbols  Symbols to subscribe (e.g., "BTCUSDT", "ETHUSDT")
-/// @param req_id   Request ID for correlation
-/// @return JSON subscription message string
+/// @param req_id   Request ID for matching the server's acknowledgment response
+/// @return JSON subscription message string.
+/// @note Returns a message with an empty args array for an empty symbols span.
+// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
+// but JSON payload format differs per exchange, making a shared abstraction impractical.
 [[nodiscard]] inline std::string
 subscribe_message(std::string_view channel,
                   std::span<const std::string_view> symbols,
@@ -284,12 +316,16 @@ subscribe_message(std::string_view channel,
     return result;
 }
 
-/// Build a Bybit WebSocket unsubscribe message.
+/// @brief Build a Bybit WebSocket unsubscribe message.
 ///
-/// @param channel  Channel prefix
+/// Produces a JSON message conforming to Bybit's WebSocket API:
+///   {"op":"unsubscribe","args":["tickers.BTCUSDT",...],"req_id":"2"}
+///
+/// @param channel  Channel prefix (e.g., "tickers", "orderbook.1")
 /// @param symbols  Symbols to unsubscribe
-/// @param req_id   Request ID for correlation
-/// @return JSON unsubscription message string
+/// @param req_id   Request ID for matching the server's acknowledgment response
+/// @return JSON unsubscription message string.
+/// @note Returns a message with an empty args array for an empty symbols span.
 [[nodiscard]] inline std::string
 unsubscribe_message(std::string_view channel,
                     std::span<const std::string_view> symbols,

@@ -41,6 +41,10 @@
 namespace eph::json::okx {
 
 namespace detail {
+/// @brief Get or create the shared spdlog logger for the OKX adapter.
+/// @return Non-owning pointer to the "json.okx" logger instance.
+///
+/// Thread-safe: uses Meyers-singleton initialization.
 inline spdlog::logger* okx_logger() {
     static auto l = [] {
         try {
@@ -58,9 +62,17 @@ inline spdlog::logger* okx_logger() {
 // ---------------------------------------------------------------------------
 namespace detail {
 
-/// Extract the first object from a JSON array string "[{...},...]".
-/// Returns the substring for the first element (including braces),
-/// or empty string_view if the array is empty or malformed.
+/// @brief Extract the first JSON object from an array string "[{...},...]".
+///
+/// Scans for the opening '{', then counts brace depth (respecting quoted
+/// strings and escape sequences) to find the matching '}'. Used to pull
+/// the first data element from OKX's "data":[{...}] array without a
+/// full array parser.
+///
+/// @param arr  Raw JSON array string, e.g., @c [{"bidPx":"1.0",...},...]
+/// @return Substring for the first element (including braces), or an empty
+///         string_view if the array is empty, does not start with '[', or
+///         the first element is not an object.
 inline std::string_view first_array_element(std::string_view arr) noexcept {
     // Skip leading whitespace and '['
     size_t pos = 0;
@@ -101,13 +113,19 @@ inline std::string_view first_array_element(std::string_view arr) noexcept {
     return {start, static_cast<size_t>(p - start)};
 }
 
-/// Parse a string_view containing a decimal number as int64_t.
-/// Used for OKX string timestamps: "ts":"1711612345678"
+/// @brief Parse a string_view containing a decimal number as int64_t.
+///
+/// Used for OKX string timestamps: "ts":"1711612345678".
+///
+/// @param sv  String representation of an integer.
+/// @return Parsed int64_t, or nullopt on overflow or invalid input.
 inline std::optional<int64_t> parse_string_int(std::string_view sv) noexcept {
     return eph::core::parse_int(sv);
 }
 
-/// Parse a string_view as double (for price/qty fields).
+/// @brief Parse a string_view as double (for price/qty fields).
+/// @param sv  String representation of a decimal number.
+/// @return Parsed double, or nullopt on invalid input.
 inline std::optional<double> parse_number(std::string_view sv) noexcept {
     return eph::core::parse_number(sv);
 }
@@ -118,20 +136,30 @@ inline std::optional<double> parse_number(std::string_view sv) noexcept {
 // OKX push message envelope
 // ---------------------------------------------------------------------------
 
-/// Zero-copy view of an OKX push message envelope.
+/// @brief Zero-copy view of an OKX push message envelope.
 ///
 /// OKX WebSocket pushes have the format:
 ///   {"arg":{"channel":"bbo-tbt","instId":"BTC-USDT"},"data":[{...}]}
 ///
 /// This struct extracts the channel routing info without parsing the
 /// data payload, enabling fast dispatch by channel type.
+///
+/// @warning The @c from() factory re-parses the nested "arg" JSON object,
+///          so the original buffer backing the outer JsonView must still be
+///          alive when from() is called.
 struct OkxPushMessage {
     std::string_view channel;   ///< "bbo-tbt", "trades", "books5", etc.
     std::string_view inst_id;   ///< From arg.instId, e.g., "BTC-USDT"
     std::string_view data_raw;  ///< Raw data array "[{...}]"
 
-    /// Extract push message envelope from a parsed JsonView.
-    /// Returns nullopt if required fields are missing (not a push message).
+    /// @brief Extract push message envelope from a parsed JsonView.
+    ///
+    /// Re-parses the nested "arg" object to extract "channel" and "instId".
+    ///
+    /// @param json  Parsed JSON view of an OKX WebSocket message.
+    /// @return Populated OkxPushMessage, or nullopt if "arg" or "data" fields
+    ///         are missing, or if the arg object lacks "channel"/"instId"
+    ///         (indicating it is not a data push, e.g., subscription ack).
     [[nodiscard]] static std::optional<OkxPushMessage>
     from(const JsonView& json) noexcept {
         // Get the "arg" nested object (stored as opaque string_view)
@@ -175,12 +203,15 @@ struct OkxPushMessage {
 // OKX bookTicker (bbo-tbt channel)
 // ---------------------------------------------------------------------------
 
-/// Zero-copy view of an OKX bbo-tbt (best bid/offer tick-by-tick) message.
+/// @brief Zero-copy view of an OKX bbo-tbt (best bid/offer tick-by-tick) message.
 ///
 /// Extracted from the first element of the data array in an OKX push:
 ///   {"arg":{"channel":"bbo-tbt","instId":"BTC-USDT"},
 ///    "data":[{"bidPx":"87000.0","bidSz":"1.2","askPx":"87001.0",
 ///             "askSz":"0.5","ts":"1711612345678","instId":"BTC-USDT"}]}
+///
+/// @warning The @c from() factory extracts the first element from the "data"
+///          array and re-parses it, so the original buffer must remain alive.
 struct OkxBookTicker {
     std::string_view inst_id;    ///< "BTC-USDT"
     std::string_view bid_price;  ///< "87000.0"
@@ -189,9 +220,15 @@ struct OkxBookTicker {
     std::string_view ask_qty;    ///< "0.5"
     int64_t timestamp_ms = 0;   ///< Parsed from "ts" string (ms since epoch)
 
-    /// Extract OkxBookTicker from a parsed JsonView of the outer push message.
+    /// @brief Extract OkxBookTicker from a parsed JsonView of the outer push message.
+    ///
     /// Navigates: outer.data[0] -> parse inner -> extract fields.
-    /// Returns nullopt if required fields are missing or invalid.
+    /// Reads "instId", "bidPx", "bidSz", "askPx", "askSz" (required) and
+    /// "ts" (optional) from the first element of the data array.
+    ///
+    /// @param json  Parsed JSON view of the outer OKX push message.
+    /// @return Populated OkxBookTicker, or nullopt if the data array is
+    ///         missing/empty, unparseable, or lacks required fields.
     [[nodiscard]] static std::optional<OkxBookTicker>
     from(const JsonView& json) noexcept {
         auto data_raw = json.get("data");
@@ -247,7 +284,9 @@ struct OkxBookTicker {
         return t;
     }
 
-    /// Compute mid price as double. Returns nullopt if prices are not valid numbers.
+    /// @brief Compute mid price as (bid + ask) / 2.
+    /// @return Mid price as double, or nullopt if either price string
+    ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> mid_price() const noexcept {
         auto bid = detail::parse_number(bid_price);
         auto ask = detail::parse_number(ask_price);
@@ -255,7 +294,9 @@ struct OkxBookTicker {
         return (*bid + *ask) / 2.0;
     }
 
-    /// Compute spread as double. Returns nullopt if prices are not valid numbers.
+    /// @brief Compute spread as (ask - bid).
+    /// @return Spread as double, or nullopt if either price string
+    ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> spread() const noexcept {
         auto bid = detail::parse_number(bid_price);
         auto ask = detail::parse_number(ask_price);
@@ -317,17 +358,18 @@ inst_id_hash(const uint8_t* data, size_t len) noexcept {
 // WebSocket subscription helpers
 // ---------------------------------------------------------------------------
 
-/// Build an OKX WebSocket subscription message.
+/// @brief Build an OKX WebSocket subscription message.
 ///
-/// OKX subscribe format:
+/// Produces a JSON message conforming to OKX's WebSocket API:
 ///   {"op":"subscribe","args":[{"channel":"bbo-tbt","instId":"BTC-USDT"},...],"id":"N"}
-// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
-// but JSON payload format differs per exchange, making a shared abstraction impractical.
 ///
 /// @param channel   Channel name (e.g., "bbo-tbt", "trades", "books5")
 /// @param inst_ids  Instruments to subscribe (e.g., "BTC-USDT", "ETH-USDT")
-/// @param id        Request ID for correlation
-/// @return JSON subscription message string
+/// @param id        Request ID for matching the server's acknowledgment response
+/// @return JSON subscription message string.
+/// @note Returns a message with an empty args array for an empty inst_ids span.
+// NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
+// but JSON payload format differs per exchange, making a shared abstraction impractical.
 [[nodiscard]] inline std::string
 subscribe_message(std::string_view channel,
                   std::span<const std::string_view> inst_ids,
@@ -349,12 +391,16 @@ subscribe_message(std::string_view channel,
     return result;
 }
 
-/// Build an OKX WebSocket unsubscribe message.
+/// @brief Build an OKX WebSocket unsubscribe message.
 ///
-/// @param channel   Channel name
+/// Produces a JSON message conforming to OKX's WebSocket API:
+///   {"op":"unsubscribe","args":[{"channel":"bbo-tbt","instId":"BTC-USDT"},...],"id":"N"}
+///
+/// @param channel   Channel name (e.g., "bbo-tbt", "trades", "books5")
 /// @param inst_ids  Instruments to unsubscribe
-/// @param id        Request ID for correlation
-/// @return JSON unsubscription message string
+/// @param id        Request ID for matching the server's acknowledgment response
+/// @return JSON unsubscription message string.
+/// @note Returns a message with an empty args array for an empty inst_ids span.
 [[nodiscard]] inline std::string
 unsubscribe_message(std::string_view channel,
                     std::span<const std::string_view> inst_ids,

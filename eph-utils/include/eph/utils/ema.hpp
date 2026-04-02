@@ -1,3 +1,10 @@
+/// @file ema.hpp
+/// @brief Exponential Moving Average (EMA) and dual-EMA crossover detector.
+///
+/// Provides O(1)-per-update, zero-allocation EMA computation for smoothing
+/// noisy HFT signals (prices, imbalances, latencies), plus a dual-EMA
+/// crossover detector for generating bullish/bearish trading signals.
+
 #pragma once
 
 #include <cassert>
@@ -11,6 +18,7 @@
 namespace eph::utils {
 
 namespace detail {
+/// @brief Lazily-initialized logger for EMA utilities.
 inline spdlog::logger* ema_logger() {
     static auto l = [] {
         try {

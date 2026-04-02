@@ -1,7 +1,10 @@
 #pragma once
 
 /// @file utils.hpp
-/// Convenience header — includes all eph-utils headers.
+/// @brief Convenience header that includes all eph-utils public headers.
+///
+/// Include this single header to pull in every utility in the eph-utils
+/// library. Prefer including individual headers when build times matter.
 
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/audit_log.hpp"

@@ -9,7 +9,15 @@
 #include <cstdint>
 #include <string_view>
 
+/// @brief FIX protocol tag constants, message type identifiers, and name-lookup utilities.
+///
+/// All constants are `inline constexpr` and suitable for use in switch statements,
+/// template parameters, and compile-time contexts.
 namespace eph::fix::tag {
+
+/// @name Session-level tags
+/// Tags used in the FIX session layer (Logon, Logout, Heartbeat, sequence management).
+/// @{
 
 // -- Session-level --
 inline constexpr uint32_t BeginString       = 8;
@@ -33,6 +41,13 @@ inline constexpr uint32_t ResetSeqNumFlag   = 141;
 inline constexpr uint32_t NewSeqNo          = 36;
 inline constexpr uint32_t SenderSubID       = 50;
 inline constexpr uint32_t TargetSubID       = 57;
+
+/// @}
+
+/// @name Order entry tags
+/// Tags for NewOrderSingle (D), OrderCancelRequest (F), OrderCancelReplace (G),
+/// ExecutionReport (8), and OrderCancelReject (9) messages.
+/// @{
 
 // -- Order entry --
 inline constexpr uint32_t ClOrdID           = 11;
@@ -65,6 +80,13 @@ inline constexpr uint32_t Text              = 58;
 inline constexpr uint32_t CxlRejReason      = 102;
 inline constexpr uint32_t OrdRejReason      = 103;
 
+/// @}
+
+/// @name Market data tags
+/// Tags for MarketDataRequest (V), MarketDataSnapshot (W), and
+/// MarketDataIncrementalRefresh (X) messages.
+/// @{
+
 // -- Market data --
 inline constexpr uint32_t MDReqID                = 262;
 inline constexpr uint32_t SubscriptionRequestType = 263;
@@ -78,40 +100,51 @@ inline constexpr uint32_t NoMDEntries            = 268;
 inline constexpr uint32_t MDUpdateAction         = 279;
 inline constexpr uint32_t SecurityExchange       = 207;
 
+/// @}
+
 // -- Common MsgType values --
+/// @brief Single-character and multi-character FIX MsgType (tag 35) constants.
+///
+/// Single-char values are stored as `char`; multi-character values (FIX 4.4+
+/// extensions) are stored as `std::string_view`.
 namespace msg_type {
-inline constexpr char Heartbeat            = '0';
-inline constexpr char TestRequest          = '1';
-inline constexpr char ResendRequest        = '2';
-inline constexpr char Reject               = '3';
-inline constexpr char SequenceReset        = '4';
-inline constexpr char Logon                = 'A';
-inline constexpr char Logout               = '5';
-inline constexpr char NewOrderSingle       = 'D';
-inline constexpr char OrderCancelRequest   = 'F';
-inline constexpr char OrderCancelReplace   = 'G';
-inline constexpr char ExecutionReport      = '8';
-inline constexpr char OrderCancelReject    = '9';
-inline constexpr char MarketDataRequest    = 'V';
-inline constexpr char MarketDataSnapshot   = 'W';
-inline constexpr char MarketDataIncRefresh = 'X';
+inline constexpr char Heartbeat            = '0';  ///< MsgType '0' -- Heartbeat
+inline constexpr char TestRequest          = '1';  ///< MsgType '1' -- TestRequest
+inline constexpr char ResendRequest        = '2';  ///< MsgType '2' -- ResendRequest
+inline constexpr char Reject               = '3';  ///< MsgType '3' -- Session-level Reject
+inline constexpr char SequenceReset        = '4';  ///< MsgType '4' -- SequenceReset (Reset or GapFill)
+inline constexpr char Logon                = 'A';  ///< MsgType 'A' -- Logon
+inline constexpr char Logout               = '5';  ///< MsgType '5' -- Logout
+inline constexpr char NewOrderSingle       = 'D';  ///< MsgType 'D' -- NewOrderSingle
+inline constexpr char OrderCancelRequest   = 'F';  ///< MsgType 'F' -- OrderCancelRequest
+inline constexpr char OrderCancelReplace   = 'G';  ///< MsgType 'G' -- OrderCancelReplaceRequest
+inline constexpr char ExecutionReport      = '8';  ///< MsgType '8' -- ExecutionReport
+inline constexpr char OrderCancelReject    = '9';  ///< MsgType '9' -- OrderCancelReject
+inline constexpr char MarketDataRequest    = 'V';  ///< MsgType 'V' -- MarketDataRequest
+inline constexpr char MarketDataSnapshot   = 'W';  ///< MsgType 'W' -- MarketDataSnapshot/FullRefresh
+inline constexpr char MarketDataIncRefresh = 'X';  ///< MsgType 'X' -- MarketDataIncrementalRefresh
 
-// Additional single-char MsgType values (FIX 4.4+)
-inline constexpr char SecurityDefinition       = 'd';
-inline constexpr char SecurityStatus           = 'f';
-inline constexpr char MassQuote                = 'i';
-inline constexpr char QuoteCancel              = 'Z';
-inline constexpr char SecurityList             = 'y';
-inline constexpr char SecurityListRequest      = 'x';
+/// @name Additional single-char MsgType values (FIX 4.4+)
+/// @{
+inline constexpr char SecurityDefinition       = 'd';  ///< MsgType 'd' -- SecurityDefinition
+inline constexpr char SecurityStatus           = 'f';  ///< MsgType 'f' -- SecurityStatus
+inline constexpr char MassQuote                = 'i';  ///< MsgType 'i' -- MassQuote
+inline constexpr char QuoteCancel              = 'Z';  ///< MsgType 'Z' -- QuoteCancel
+inline constexpr char SecurityList             = 'y';  ///< MsgType 'y' -- SecurityList
+inline constexpr char SecurityListRequest      = 'x';  ///< MsgType 'x' -- SecurityListRequest
+/// @}
 
-// Multi-character MsgType values (FIX 4.4+)
-inline constexpr std::string_view TradeCaptureReport       = "AE";
-inline constexpr std::string_view TradeCaptureReportAck    = "AR";
-inline constexpr std::string_view PositionReport           = "AP";
+/// @name Multi-character MsgType values (FIX 4.4+)
+/// @{
+inline constexpr std::string_view TradeCaptureReport       = "AE";  ///< MsgType "AE" -- TradeCaptureReport
+inline constexpr std::string_view TradeCaptureReportAck    = "AR";  ///< MsgType "AR" -- TradeCaptureReportAck
+inline constexpr std::string_view PositionReport           = "AP";  ///< MsgType "AP" -- PositionReport
+/// @}
 } // namespace msg_type
 
-/// Get human-readable name for a FIX tag number.
-/// Returns "Unknown" for unrecognized tags.
+/// @brief Get human-readable name for a FIX tag number.
+/// @param t  The FIX tag number to look up.
+/// @return A string_view of the canonical tag name, or "Unknown" for unrecognized tags.
 inline constexpr std::string_view tag_name(uint32_t t) noexcept {
     switch (t) {
     case Account:               return "Account";
@@ -180,8 +213,9 @@ inline constexpr std::string_view tag_name(uint32_t t) noexcept {
     }
 }
 
-/// Get human-readable name for a FIX MsgType character.
-/// Returns "Unknown" for unrecognized message types.
+/// @brief Get human-readable name for a single-character FIX MsgType value.
+/// @param mt  The MsgType character (e.g. 'D' for NewOrderSingle).
+/// @return A string_view of the message type name, or "Unknown" for unrecognized types.
 inline constexpr std::string_view msg_type_name(char mt) noexcept {
     switch (mt) {
     case msg_type::Heartbeat:            return "Heartbeat";
@@ -209,8 +243,13 @@ inline constexpr std::string_view msg_type_name(char mt) noexcept {
     }
 }
 
-/// Get human-readable name for a multi-char MsgType string.
-/// Falls back to single-char lookup for length-1 strings.
+/// @brief Get human-readable name for a multi-character MsgType string.
+///
+/// Falls back to single-char lookup for length-1 strings, enabling uniform
+/// handling of both single-char and multi-char MsgType values.
+///
+/// @param mt  The MsgType string (e.g. "AE" for TradeCaptureReport).
+/// @return A string_view of the message type name, or "Unknown" for unrecognized types.
 inline constexpr std::string_view msg_type_name(std::string_view mt) noexcept {
     if (mt.empty()) return "Unknown";
     if (mt.size() == 1) return msg_type_name(mt[0]);

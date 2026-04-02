@@ -40,12 +40,13 @@ namespace eph::net::proxy {
 // Configuration
 // ---------------------------------------------------------------------------
 
+/// @brief Proxy protocol type.
 enum class ProxyType : uint8_t {
     kSocks5,       ///< SOCKS5 (RFC 1928)
     kHttpConnect,  ///< HTTP CONNECT (RFC 7231 §4.3.6)
 };
 
-/// Proxy server configuration.
+/// @brief Proxy server configuration.
 ///
 /// @note password is never logged or included in error messages.
 struct ProxyConfig {
@@ -61,7 +62,8 @@ struct ProxyConfig {
     /// Timeout for the proxy handshake (not the TCP connect to the proxy).
     std::chrono::milliseconds timeout{5000};
 
-    /// Validate configuration, returning an error description or empty string on success.
+    /// @brief Validate configuration, returning an error description or empty string on success.
+    /// @return Empty string_view on success; otherwise a human-readable error description.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (host.empty())
             return "proxy host must not be empty";
@@ -83,6 +85,8 @@ struct ProxyConfig {
 
 namespace detail {
 
+/// @brief Lazily-initialized logger for the proxy subsystem.
+/// @return Shared pointer to the "net.proxy" spdlog logger.
 inline const std::shared_ptr<spdlog::logger>& proxy_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.proxy");
@@ -92,7 +96,7 @@ inline const std::shared_ptr<spdlog::logger>& proxy_logger() {
     return l;
 }
 
-/// Buffered I/O helper for proxy handshakes.
+/// @brief Buffered I/O helper for proxy handshakes.
 ///
 /// poll_rx() may deliver more bytes than requested in a single callback.
 /// This helper buffers excess bytes so subsequent read_exact() calls
@@ -101,9 +105,15 @@ struct HandshakeIO {
     SocketTransport& tcp;
     std::vector<uint8_t> buf;  // leftover bytes from previous poll_rx
 
+    /// @brief Construct from a connected SocketTransport.
+    /// @param t  Reference to the TCP transport (must be connected).
     explicit HandshakeIO(SocketTransport& t) : tcp(t) { buf.reserve(256); }
 
-    /// Read exactly `needed` bytes into `out`, blocking until complete or timeout.
+    /// @brief Read exactly @p needed bytes into @p out, blocking until complete or timeout.
+    /// @param out      Destination buffer (must have capacity >= needed).
+    /// @param needed   Number of bytes to read.
+    /// @param timeout  Maximum time to wait for the remaining bytes.
+    /// @return void on success, error string on timeout or I/O failure.
     std::expected<void, std::string>
     read_exact(uint8_t* out, size_t needed, std::chrono::milliseconds timeout) {
         size_t filled = 0;
@@ -145,7 +155,10 @@ struct HandshakeIO {
         return {};
     }
 
-    /// Send all bytes, blocking until complete.
+    /// @brief Send all bytes, blocking until complete.
+    /// @param data  Pointer to the bytes to send.
+    /// @param len   Number of bytes to send.
+    /// @return void on success, error string on I/O failure.
     std::expected<void, std::string>
     send_all(const uint8_t* data, size_t len) {
         size_t sent = 0;
@@ -167,7 +180,7 @@ struct HandshakeIO {
 // SOCKS5 handshake (RFC 1928 + RFC 1929)
 // ---------------------------------------------------------------------------
 
-/// Execute SOCKS5 handshake on an already-connected TCP socket.
+/// @brief Execute SOCKS5 handshake on an already-connected TCP socket.
 ///
 /// The socket must be connected to the proxy server (ProxyConfig::host:port).
 /// After successful return, the socket is tunneled to target_host:target_port
@@ -349,7 +362,7 @@ socks5_handshake(SocketTransport& tcp,
 // HTTP CONNECT handshake (RFC 7231 §4.3.6)
 // ---------------------------------------------------------------------------
 
-/// Execute HTTP CONNECT handshake on an already-connected TCP socket.
+/// @brief Execute HTTP CONNECT handshake on an already-connected TCP socket.
 ///
 /// After successful return, the socket is tunneled to target_host:target_port.
 ///
@@ -491,7 +504,7 @@ http_connect_handshake(SocketTransport& tcp,
 // Convenience factory builder
 // ---------------------------------------------------------------------------
 
-/// Build a TcpFactory that connects through a proxy.
+/// @brief Build a TcpFactory that connects through a proxy.
 ///
 /// The returned factory:
 ///   1. Creates a SocketTransport connected to proxy_cfg.host:proxy_cfg.port
@@ -568,7 +581,7 @@ make_proxied_factory(const SocketConfig& base_sock_cfg,
 // Proxy URL parser
 // ---------------------------------------------------------------------------
 
-/// Parse a proxy URL string into a ProxyConfig.
+/// @brief Parse a proxy URL string into a ProxyConfig.
 ///
 /// Supported formats:
 ///   socks5://host:port

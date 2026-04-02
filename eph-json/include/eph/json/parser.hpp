@@ -33,9 +33,13 @@ namespace eph::json {
 // ---------------------------------------------------------------------------
 namespace detail {
 
-/// 256-byte lookup table: ws_lut[c] is true for whitespace chars.
+/// @brief Build a 256-byte whitespace lookup table at compile time.
+///
+/// ws_lut[c] is true for ASCII whitespace chars (space, tab, newline, CR).
 /// Replaces repeated (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-/// chains with a single indexed load — one branch instead of four.
+/// chains with a single indexed load -- one branch instead of four.
+///
+/// @return constexpr std::array<bool, 256> whitespace lookup table
 inline constexpr auto make_ws_lut() noexcept {
     std::array<bool, 256> lut{};
     lut[' ']  = true;
@@ -44,18 +48,26 @@ inline constexpr auto make_ws_lut() noexcept {
     lut['\r'] = true;
     return lut;
 }
+/// @brief Compile-time whitespace lookup table instance.
 inline constexpr auto kWsLut = make_ws_lut();
 
-/// Skip whitespace using the LUT. Returns pointer past whitespace.
+/// @brief Skip whitespace bytes using the LUT.
+/// @param p    Current read position
+/// @param end  One-past-end of the buffer
+/// @return Pointer to the first non-whitespace byte, or @p end if none found
 inline const char* skip_ws(const char* p, const char* end) noexcept {
     while (p < end && kWsLut[static_cast<unsigned char>(*p)]) ++p;
     return p;
 }
 
-/// Scan forward to find closing quote, handling escape sequences.
-/// Returns pointer TO the closing '"', or end if not found.
+/// @brief Scan forward to find the closing double-quote, handling escapes.
+///
 /// Byte-at-a-time is optimal for the short strings (1-10 chars) typical
-/// in exchange JSON — memchr's call overhead exceeds its SIMD benefit here.
+/// in exchange JSON -- memchr's call overhead exceeds its SIMD benefit here.
+///
+/// @param p    Pointer to the first character after the opening '"'
+/// @param end  One-past-end of the buffer
+/// @return Pointer TO the closing '"', or @p end if not found
 ///
 /// @note Does not validate escape sequences (e.g., \x is accepted).
 ///       This is a deliberate zero-copy trade-off: field.value contains
@@ -73,9 +85,13 @@ inline const char* scan_string(const char* p, const char* end) noexcept {
     return end;
 }
 
-/// 256-byte LUT for value-terminating characters: comma, brace, whitespace.
-/// Used to scan unquoted values (numbers, booleans, null) without multiple
+/// @brief Build a 256-byte value-terminator lookup table at compile time.
+///
+/// Marks comma, closing brace, and whitespace as terminators. Used to
+/// scan unquoted values (numbers, booleans, null) without multiple
 /// branch conditions per byte.
+///
+/// @return constexpr std::array<bool, 256> value-terminator lookup table
 inline constexpr auto make_val_term_lut() noexcept {
     std::array<bool, 256> lut{};
     lut[',']  = true;
@@ -86,6 +102,7 @@ inline constexpr auto make_val_term_lut() noexcept {
     lut['\r'] = true;
     return lut;
 }
+/// @brief Compile-time value-terminator lookup table instance.
 inline constexpr auto kValTermLut = make_val_term_lut();
 
 } // namespace detail
@@ -94,12 +111,16 @@ inline constexpr auto kValTermLut = make_val_term_lut();
 // Parse error
 // ---------------------------------------------------------------------------
 
+/// @brief Error codes returned by the JSON parser.
 enum class ParseError : uint8_t {
     kIncomplete,      ///< No complete JSON object found (missing closing brace)
     kInvalidFormat,   ///< Malformed JSON (missing quotes, colons, etc.)
     kFieldOverflow,   ///< More fields than kMaxFields capacity
 };
 
+/// @brief Convert a ParseError to a human-readable string.
+/// @param e  The parse error code
+/// @return A string_view naming the error (e.g., "incomplete", "invalid format")
 constexpr std::string_view parse_error_name(ParseError e) noexcept {
     switch (e) {
     case ParseError::kIncomplete:    return "incomplete";
@@ -109,6 +130,9 @@ constexpr std::string_view parse_error_name(ParseError e) noexcept {
     return "unknown";
 }
 
+/// @brief ADL-discoverable alias for parse_error_name, used by ErrorEnumFormatter.
+/// @param e  The parse error code
+/// @return A string_view naming the error
 constexpr std::string_view error_name(ParseError e) noexcept {
     return parse_error_name(e);
 }
@@ -117,22 +141,32 @@ constexpr std::string_view error_name(ParseError e) noexcept {
 // JSON field and view
 // ---------------------------------------------------------------------------
 
-/// Zero-copy JSON field — string_views into the original buffer.
+/// @brief Zero-copy JSON field -- string_views point into the original buffer.
+///
+/// Represents a single key-value pair extracted during parsing. Both @c key
+/// and @c value are non-owning views, so the source buffer must outlive the Field.
 struct Field {
-    std::string_view key;    ///< Field name (without quotes)
-    std::string_view value;  ///< Raw value (without quotes for strings, raw for numbers/bools)
-    bool is_string = false;  ///< True if value was quoted (string type)
+    std::string_view key;    ///< Field name (without surrounding quotes)
+    std::string_view value;  ///< Raw value text (without quotes for strings, raw text for numbers/bools)
+    bool is_string = false;  ///< True if the value was a quoted string in the JSON source
 };
 
-/// Zero-copy view into a flat JSON object.
+/// @brief Zero-copy view into a flat JSON object.
 ///
-/// All string_views point into the original parse buffer — the caller
-/// must ensure the buffer outlives the JsonView.
+/// All string_views point into the original parse buffer -- the caller
+/// must ensure the buffer outlives the JsonView. Field lookup is O(n)
+/// linear scan, which outperforms hash maps for the 5-15 field messages
+/// typical in exchange data due to superior cache locality.
+///
+/// @warning Not thread-safe. A JsonView should be used from a single thread.
 class JsonView {
 public:
+    /// @brief Maximum number of fields the parser can store per object.
     static constexpr size_t kMaxFields = 32;
 
-    /// Get raw value for a key. Returns empty string_view if not found.
+    /// @brief Get the raw value for a key.
+    /// @param key  Field name to look up
+    /// @return The raw value text, or an empty string_view if not found
     /// @note Returns empty string_view for BOTH missing keys and keys with
     ///       empty string values. Use get_string() to distinguish these cases.
     [[nodiscard]] std::string_view get(std::string_view key) const noexcept {
@@ -140,14 +174,18 @@ public:
         return f ? f->value : std::string_view{};
     }
 
-    /// Get string value (unquoted). Returns nullopt if not found.
+    /// @brief Get a string value (unquoted), distinguishing missing from empty.
+    /// @param key  Field name to look up
+    /// @return The unquoted string value, or nullopt if the key is absent
     [[nodiscard]] std::optional<std::string_view>
     get_string(std::string_view key) const noexcept {
         auto* f = find_field(key);
         return f ? std::optional{f->value} : std::nullopt;
     }
 
-    /// Parse value as int64_t. Returns nullopt if not found or not a valid integer.
+    /// @brief Parse a field value as int64_t with overflow protection.
+    /// @param key  Field name to look up
+    /// @return Parsed integer, or nullopt if the key is absent or not a valid integer
     [[nodiscard]] std::optional<int64_t>
     get_int(std::string_view key) const noexcept {
         auto* f = find_field(key);
@@ -155,7 +193,9 @@ public:
         return parse_int(f->value);
     }
 
-    /// Parse value as double. Returns nullopt if not found or not a valid number.
+    /// @brief Parse a field value as double (integer + optional fraction + exponent).
+    /// @param key  Field name to look up
+    /// @return Parsed double, or nullopt if the key is absent or not a valid number
     [[nodiscard]] std::optional<double>
     get_double(std::string_view key) const noexcept {
         auto* f = find_field(key);
@@ -163,7 +203,9 @@ public:
         return parse_double(f->value);
     }
 
-    /// Parse value as boolean. Returns nullopt if not found or not true/false.
+    /// @brief Parse a field value as boolean ("true"/"false" literals only).
+    /// @param key  Field name to look up
+    /// @return Parsed bool, or nullopt if the key is absent or not "true"/"false"
     [[nodiscard]] std::optional<bool>
     get_bool(std::string_view key) const noexcept {
         auto* f = find_field(key);
@@ -173,15 +215,20 @@ public:
         return std::nullopt;
     }
 
-    /// Number of fields parsed.
+    /// @brief Return the number of fields successfully parsed.
+    /// @return Field count (0 to kMaxFields)
     [[nodiscard]] size_t field_count() const noexcept { return count_; }
 
-    /// Check if a key exists.
+    /// @brief Check whether a key exists in the parsed object.
+    /// @param key  Field name to look up
+    /// @return true if the key is present
     [[nodiscard]] bool has(std::string_view key) const noexcept {
         return find_field(key) != nullptr;
     }
 
-    /// Access field by index (for iteration). Returns empty field if out of bounds.
+    /// @brief Access a field by positional index (for iteration).
+    /// @param i  Zero-based field index
+    /// @return Reference to the Field, or a static empty Field if @p i is out of bounds
     [[nodiscard]] const Field& field_at(size_t i) const noexcept {
         static constexpr Field kEmpty{};
         return i < count_ ? fields_[i] : kEmpty;
@@ -191,10 +238,14 @@ private:
     friend std::expected<JsonView, ParseError>
     parse(const uint8_t* data, size_t len) noexcept;
 
-    /// Single linear scan with first-char + length pre-filter.
+    /// @brief Linear scan with first-char + length pre-filter.
+    ///
     /// Most keys in exchange messages are 1-2 chars, so checking the first
     /// char and length before the full comparison eliminates most mismatches
     /// with a single comparison (packed into one branch).
+    ///
+    /// @param key  Field name to search for
+    /// @return Pointer to the matching Field, or nullptr if not found
     [[nodiscard]] const Field* find_field(std::string_view key) const noexcept {
         if (key.empty()) return nullptr;
         const auto len = key.size();
@@ -211,13 +262,16 @@ private:
     std::array<Field, kMaxFields> fields_{};
     size_t count_ = 0;
 
-    /// Parse a string_view as int64_t with overflow protection.
-    /// Parse integer with overflow protection (handles full int64 range).
+    /// @brief Parse a string_view as int64_t with overflow protection.
+    /// @param sv  String representation of an integer
+    /// @return Parsed value, or nullopt on overflow or invalid input
     static std::optional<int64_t> parse_int(std::string_view sv) noexcept {
         return eph::core::parse_int(sv);
     }
 
-    /// Parse a string_view as double (integer + optional fraction + optional exponent).
+    /// @brief Parse a string_view as double (integer + optional fraction + exponent).
+    /// @param sv  String representation of a floating-point number
+    /// @return Parsed value, or nullopt on invalid input
     static std::optional<double> parse_double(std::string_view sv) noexcept {
         return eph::core::parse_number(sv);
     }
@@ -356,7 +410,7 @@ parse(const uint8_t* data, size_t len) noexcept {
 
 } // namespace eph::json
 
-// std::formatter for ParseError
+/// @brief std::formatter specialization for ParseError, enabling std::format("{}", err).
 template <>
 struct std::formatter<eph::json::ParseError>
     : eph::core::ErrorEnumFormatter<eph::json::ParseError> {};

@@ -1,3 +1,13 @@
+/// @file recorder.hpp
+/// @brief Single-threaded and concurrent performance recorders for latency benchmarking.
+///
+/// `Recorder` provides single-threaded latency recording with HdrHistogram
+/// storage, console reporting, and JSON/CSV export.
+///
+/// `ConcurrentRecorder` extends this to multiple threads using per-thread
+/// `thread_local` histograms with zero contention on the hot path.
+/// Data from exited threads is automatically merged into a retirement buffer.
+
 #pragma once
 
 #include <chrono>
@@ -26,12 +36,17 @@ namespace fs = std::filesystem;
 
 namespace recorder_detail {
 
+/// @brief Get the current wall-clock time as a file-safe timestamp string.
+/// @return Timestamp in `YYYY-MM-DD_HH-MM-SS` format.
 [[nodiscard]] inline std::string get_timestamp() {
     auto now = std::chrono::system_clock::now();
     return std::format("{:%Y-%m-%d_%H-%M-%S}",
                        std::chrono::floor<std::chrono::seconds>(now));
 }
 
+/// @brief Replace non-alphanumeric characters in a filename with underscores.
+/// @param name Raw name to sanitize.
+/// @return Sanitized string safe for use as a filename component.
 [[nodiscard]] inline std::string sanitize_filename(std::string name) {
     std::replace_if(
         name.begin(), name.end(),
@@ -40,6 +55,11 @@ namespace recorder_detail {
     return name;
 }
 
+/// @brief Build a timestamped output file path: `<dir>/<sanitized_name>_<timestamp><ext>`.
+/// @param name Benchmark name (will be sanitized).
+/// @param dir  Output directory.
+/// @param ext  File extension including the dot (e.g., ".json").
+/// @return Full filesystem path for the output file.
 [[nodiscard]] inline fs::path make_output_path(const std::string& name,
                                                const std::string& dir,
                                                const std::string& ext) {
@@ -47,6 +67,9 @@ namespace recorder_detail {
            (sanitize_filename(name) + "_" + get_timestamp() + ext);
 }
 
+/// @brief Create a directory (and parents) if it does not exist.
+/// @param path Directory path to ensure.
+/// @return `true` if the directory exists (or was created), `false` on error.
 [[nodiscard]] inline bool ensure_directory(const std::string& path) noexcept {
     try {
         if (!fs::exists(path)) {
@@ -65,35 +88,37 @@ namespace recorder_detail {
 // Recorder — 单线程性能记录器
 // ============================================================================
 
-/**
- * @brief 单线程性能数据记录器
- *
- * 不含系统资源采集，纯延迟统计。如需系统资源统计请配合 SystemStats 使用。
- *
- * @note 默认构造范围 1ns-10s（约 ~20KB 内存），3 位有效数字精度
- *
- * @example
- * @code
- * Recorder rec("VectorPushBack");
- * for (int i = 0; i < 100000; ++i) {
- *     uint64_t start = TSC::now();
- *     vec.push_back(i);
- *     uint64_t end = TSC::now();
- *     rec.record(end - start);
- * }
- * rec.print_report();
- * @endcode
- */
+/// @brief Single-threaded latency recorder backed by an HdrHistogram.
+///
+/// Records TSC cycle measurements, computes percentile statistics, and
+/// exports reports in console, JSON, and CSV formats. Does not collect
+/// system resource data; pair with `SystemStats` if needed.
+///
+/// @note Default range: 1 cycle to ~10 seconds (~20 KB memory), 3
+///       significant digits of precision.
+///
+/// @code
+/// Recorder rec("VectorPushBack");
+/// for (int i = 0; i < 100000; ++i) {
+///     uint64_t start = TSC::now();
+///     vec.push_back(i);
+///     uint64_t end = TSC::now();
+///     rec.record(end - start);
+/// }
+/// rec.print_report();
+/// @endcode
 class Recorder {
    public:
-    /**
-     * @brief 构造记录器
-     *
-     * @param name 基准测试名称
-     * @param lowest_cycles 最小可追踪周期数（默认 1）
-     * @param highest_cycles 最大可追踪周期数（默认 0 → 自动计算 10 秒对应周期）
-     * @param precision 直方图精度（默认 3 位有效数字）
-     */
+    /// @brief Construct a recorder.
+    ///
+    /// @param name            Benchmark / measurement name (must not be empty).
+    /// @param lowest_cycles   Minimum trackable cycle count (default 1).
+    /// @param highest_cycles  Maximum trackable cycle count. 0 (default)
+    ///                        auto-computes the equivalent of 10 seconds.
+    /// @param precision       HdrHistogram significant figures (default 3).
+    ///
+    /// @throws std::invalid_argument if `name` is empty.
+    /// @throws std::runtime_error if TSC initialization fails.
     explicit Recorder(std::string name, uint64_t lowest_cycles = 1,
                       uint64_t highest_cycles = 0, int precision = 3)
         : name_(std::move(name)) {
@@ -118,10 +143,11 @@ class Recorder {
         histogram_ = HdrHistogram(lowest_cycles, highest_cycles, precision);
     }
 
-    /**
-     * @brief 记录单次测量（周期数）
-     * @return true 记录成功，false 无效值或超出范围
-     */
+    /// @brief Record a single measurement in CPU cycles.
+    ///
+    /// @param cycles Elapsed TSC cycles (must be > 0).
+    /// @return `true` on success, `false` if the value is zero or out of
+    ///         the histogram's trackable range.
     bool record(uint64_t cycles) noexcept {
         if (cycles == 0) [[unlikely]] {
             skipped_invalid_++;
@@ -141,9 +167,11 @@ class Recorder {
         return true;
     }
 
-    /**
-     * @brief 批量记录
-     */
+    /// @brief Record the same cycle value multiple times.
+    ///
+    /// @param cycles Elapsed TSC cycles (must be > 0).
+    /// @param count  Number of times to record this value.
+    /// @return `true` on success, `false` if the value is zero or out of range.
     bool record_values(uint64_t cycles, uint64_t count) noexcept {
         if (count == 0) return true;
         if (cycles == 0) [[unlikely]] {
@@ -164,10 +192,10 @@ class Recorder {
         return true;
     }
 
-    /**
-     * @brief 合并另一个 Recorder 的数据
-     * @return true 合并成功
-     */
+    /// @brief Merge another Recorder's histogram and statistics into this one.
+    ///
+    /// @param other The recorder to merge from (must have compatible histogram config).
+    /// @return `true` on success, `false` if histograms are incompatible.
     bool merge(const Recorder& other) noexcept {
         if (!histogram_.merge(other.histogram_)) {
             return false;
@@ -183,9 +211,9 @@ class Recorder {
         return true;
     }
 
-    /**
-     * @brief 计算统计数据
-     */
+    /// @brief Compute aggregated latency statistics from the recorded data.
+    /// @return `Stats` on success, or `nullopt` if no data has been recorded
+    ///         or TSC is uncalibrated.
     [[nodiscard]] std::optional<Stats> compute_stats() const noexcept {
         if (count_ == 0) return std::nullopt;
 
@@ -212,9 +240,7 @@ class Recorder {
         };
     }
 
-    /**
-     * @brief 打印延迟报告到控制台
-     */
+    /// @brief Print a formatted latency report to stdout.
     void print_report() const {
         auto stats = compute_stats();
         if (!stats) {
@@ -251,9 +277,10 @@ class Recorder {
         print_warnings();
     }
 
-    /**
-     * @brief 导出 JSON 统计数据
-     */
+    /// @brief Export latency statistics as a JSON file.
+    ///
+    /// @param output_dir Directory for the output file (created if absent).
+    /// @return `true` on success, `false` on error (logged to stderr).
     bool export_json(const std::string& output_dir = "outputs") const {
         auto stats = compute_stats();
         if (!stats) return false;
@@ -309,9 +336,12 @@ class Recorder {
         }
     }
 
-    /**
-     * @brief 导出 CSV 分布数据
-     */
+    /// @brief Export the latency distribution as a CSV file.
+    ///
+    /// Each row contains `(latency_ns, count)` for one histogram bucket.
+    ///
+    /// @param output_dir Directory for the output file (created if absent).
+    /// @return `true` on success, `false` on error (logged to stderr).
     bool export_csv(const std::string& output_dir = "outputs") const {
         if (count_ == 0) return false;
 
@@ -351,27 +381,42 @@ class Recorder {
         }
     }
 
+    /// @brief Export both JSON summary and CSV distribution files.
+    /// @param output_dir Directory for the output files (created if absent).
+    /// @return `true` if both exports succeeded.
     bool export_all(const std::string& output_dir = "outputs") const {
         bool json_ok = export_json(output_dir);
         bool csv_ok = export_csv(output_dir);
         return json_ok && csv_ok;
     }
 
-    // ========== 查询 API ==========
+    // ========== Query API ==========
 
+    /// @brief Benchmark name provided at construction.
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
+
+    /// @brief Number of successfully recorded measurements.
     [[nodiscard]] uint64_t count() const noexcept { return count_; }
+
+    /// @brief Number of measurements skipped because the value was zero.
     [[nodiscard]] uint64_t skipped_invalid_count() const noexcept {
         return skipped_invalid_;
     }
+
+    /// @brief Number of measurements skipped because they exceeded the histogram range.
     [[nodiscard]] uint64_t skipped_overflow_count() const noexcept {
         return skipped_overflow_;
     }
+
+    /// @brief Check whether at least one measurement has been recorded.
     [[nodiscard]] bool has_data() const noexcept { return count_ > 0; }
+
+    /// @brief Direct access to the underlying HdrHistogram.
     [[nodiscard]] const HdrHistogram& histogram() const noexcept {
         return histogram_;
     }
 
+    /// @brief Reset all recorded data and counters to their initial state.
     void reset() noexcept {
         count_ = 0;
         total_cycles_ = 0;
@@ -423,31 +468,32 @@ class Recorder {
 // ConcurrentRecorder — 多线程性能记录器
 // ============================================================================
 
-/**
- * @brief 多线程性能记录器
- *
- * 每个线程通过 thread_local HdrHistogram 记录数据，零竞争。
- * report/compute_stats 时自动 merge 所有线程的数据。
- *
- * 第一次调用 record() 时自动注册当前线程的 histogram。
- * 线程退出时数据自动 merge 到退役缓冲区，不会丢失。
- *
- * 使用 shared_ptr 管理共享状态，确保 thread_local 析构器
- * 在 ConcurrentRecorder 销毁后仍能安全访问共享状态。
- *
- * @note 默认构造范围 1ns-10s（约 ~20KB/线程），3 位有效数字精度
- *
- * @example
- * @code
- * ConcurrentRecorder rec("HttpLatency");
- *
- * // 在任意线程中：
- * rec.record(end - start);
- *
- * // 在主线程中（线程 join 后）：
- * rec.print_report();  // 自动 merge 所有线程数据（含已退出线程）
- * @endcode
- */
+/// @brief Concurrent (multi-threaded) latency recorder.
+///
+/// Each thread records into a `thread_local` HdrHistogram with zero
+/// contention on the hot path. When a thread exits, its data is
+/// automatically merged into a shared retirement buffer so no samples
+/// are lost.
+///
+/// `compute_stats()` and `print_report()` merge all active and retired
+/// thread data on demand (requires the internal mutex).
+///
+/// Shared state is managed via `shared_ptr`, so `thread_local`
+/// destructors can safely access it even after the `ConcurrentRecorder`
+/// itself is destroyed.
+///
+/// @note Default range: 1 cycle to ~10 seconds (~20 KB per thread), 3
+///       significant digits.
+///
+/// @code
+/// ConcurrentRecorder rec("HttpLatency");
+///
+/// // From any thread:
+/// rec.record(end - start);
+///
+/// // From the main thread (after join):
+/// rec.print_report();  // merges all threads, including exited ones
+/// @endcode
 class ConcurrentRecorder {
    public:
     explicit ConcurrentRecorder(std::string name, uint64_t lowest_cycles = 1,
@@ -485,12 +531,14 @@ class ConcurrentRecorder {
     ConcurrentRecorder(ConcurrentRecorder&&) = delete;
     ConcurrentRecorder& operator=(ConcurrentRecorder&&) = delete;
 
-    /**
-     * @brief 记录单次测量（线程安全）
-     *
-     * 第一次调用时自动为当前线程创建 thread_local histogram 并注册。
-     * 后续调用直接写入 thread_local histogram，无竞争。
-     */
+    /// @brief Record a single measurement (thread-safe, zero contention).
+    ///
+    /// On first call from a new thread, lazily creates and registers a
+    /// `thread_local` histogram. Subsequent calls write directly to that
+    /// histogram with no synchronization.
+    ///
+    /// @param cycles Elapsed TSC cycles (must be > 0).
+    /// @return `true` on success, `false` if the value is zero or out of range.
     bool record(uint64_t cycles) noexcept {
         auto* local = get_or_create_local();
         if (!local) [[unlikely]] return false;
@@ -513,16 +561,14 @@ class ConcurrentRecorder {
         return true;
     }
 
-    /**
-     * @brief 批量记录相同值（线程安全）
-     *
-     * 等价于调用 record(cycles) count 次，但避免了重复的 min/max 比较。
-     * 与 Recorder::record_values() 对齐。
-     *
-     * @param cycles 测量值（CPU 周期数）
-     * @param count  记录次数（必须 > 0）
-     * @return true 记录成功，false 值无效或超出范围
-     */
+    /// @brief Record the same cycle value multiple times (thread-safe).
+    ///
+    /// Equivalent to calling `record(cycles)` `count` times but avoids
+    /// repeated min/max comparisons. Mirrors `Recorder::record_values()`.
+    ///
+    /// @param cycles Elapsed TSC cycles (must be > 0).
+    /// @param count  Number of times to record this value.
+    /// @return `true` on success, `false` if the value is zero or out of range.
     bool record_values(uint64_t cycles, uint64_t count) noexcept {
         if (count == 0) return true;
 
@@ -547,12 +593,12 @@ class ConcurrentRecorder {
         return true;
     }
 
-    /**
-     * @brief 计算合并后的统计数据
-     *
-     * merge 所有活跃线程和已退出线程的数据。
-     * 需要获取锁，不适合在热路径中调用。
-     */
+    /// @brief Compute merged latency statistics across all threads.
+    ///
+    /// Merges data from all active and retired threads under the internal
+    /// mutex. Not suitable for hot-path use due to lock acquisition.
+    ///
+    /// @return `Stats` on success, or `nullopt` if no data has been recorded.
     [[nodiscard]] std::optional<Stats> compute_stats() const {
         auto merged = state_->merge_all();
         if (merged.count == 0) return std::nullopt;
@@ -582,6 +628,7 @@ class ConcurrentRecorder {
         };
     }
 
+    /// @brief Print a formatted latency report to stdout, including thread counts.
     void print_report() const {
         auto stats = compute_stats();
         if (!stats) {
@@ -622,8 +669,10 @@ class ConcurrentRecorder {
         std::println("{:-^{}}\n", "", total_w);
     }
 
+    /// @brief Benchmark name provided at construction.
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
 
+    /// @brief Total number of threads that have recorded data (active + retired).
     [[nodiscard]] size_t thread_count() const {
         auto [active, retired] = state_->thread_counts();
         return active + retired;
@@ -746,7 +795,9 @@ class ConcurrentRecorder {
         }
     }
 
-    /// Export both JSON summary and CSV distribution.
+    /// @brief Export both JSON summary and CSV distribution files.
+    /// @param output_dir Directory for the output files (created if absent).
+    /// @return `true` if both exports succeeded.
     bool export_all(const std::string& output_dir = "outputs") const {
         bool json_ok = export_json(output_dir);
         bool csv_ok = export_csv(output_dir);

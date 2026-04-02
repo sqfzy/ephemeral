@@ -21,7 +21,10 @@
 
 namespace eph::fix {
 
-/// Order lifecycle state.
+/// @brief Order lifecycle state.
+///
+/// Orders progress through these states from submission to a terminal state.
+/// Terminal states (Filled, Canceled, Rejected) indicate no further transitions.
 enum class OrderState : uint8_t {
     PendingNew,      ///< Submitted, awaiting exchange ack.
     New,             ///< Exchange accepted.
@@ -32,7 +35,8 @@ enum class OrderState : uint8_t {
     Rejected,        ///< Exchange rejected (terminal).
 };
 
-/// Returns true if the state is terminal (no further transitions expected).
+/// @brief Returns true if the state is terminal (no further transitions expected).
+/// @param s  The order state to check.
 [[nodiscard]] inline constexpr bool is_terminal(OrderState s) noexcept {
     switch (s) {
     case OrderState::Filled:
@@ -44,22 +48,28 @@ enum class OrderState : uint8_t {
     }
 }
 
-/// Tracked order with full lifecycle metadata.
+/// @brief Tracked order with full lifecycle metadata.
+///
+/// Stores the complete state of an order from submission through terminal state,
+/// including fill quantities, average fill price, and timestamps.
 struct ManagedOrder {
-    std::string cl_ord_id;
-    std::string symbol;
-    char        side           = '0';  ///< '1' buy, '2' sell.
-    double      orig_qty       = 0.0;
-    double      price          = 0.0;
-    double      filled_qty     = 0.0;
-    double      avg_fill_price = 0.0;
-    double      leaves_qty     = 0.0;
-    OrderState  state          = OrderState::PendingNew;
-    uint64_t    submit_time_ns = 0;
-    uint64_t    last_update_ns = 0;
+    std::string cl_ord_id;                              ///< Client order ID (unique identifier).
+    std::string symbol;                                  ///< Instrument symbol.
+    char        side           = '0';                    ///< FIX Side: '1' = buy, '2' = sell.
+    double      orig_qty       = 0.0;                    ///< Original order quantity.
+    double      price          = 0.0;                    ///< Limit price (0 for market orders).
+    double      filled_qty     = 0.0;                    ///< Cumulative filled quantity.
+    double      avg_fill_price = 0.0;                    ///< Volume-weighted average fill price.
+    double      leaves_qty     = 0.0;                    ///< Remaining open quantity (orig_qty - filled_qty).
+    OrderState  state          = OrderState::PendingNew; ///< Current lifecycle state.
+    uint64_t    submit_time_ns = 0;                      ///< Submission timestamp (epoch nanoseconds).
+    uint64_t    last_update_ns = 0;                      ///< Last state-change timestamp (epoch nanoseconds).
 };
 
+/// @brief Internal implementation details for the order manager module.
 namespace detail {
+/// @brief Get or create the spdlog logger for the order manager module.
+/// @return Raw pointer to the "fix.ordmgr" logger (never null after first call).
 inline spdlog::logger* fix_ordmgr_logger() noexcept {
     static auto l = [] {
         auto lg = spdlog::get("fix.ordmgr");
@@ -70,13 +80,13 @@ inline spdlog::logger* fix_ordmgr_logger() noexcept {
 }
 } // namespace detail
 
-/// Manages the lifecycle of orders from submission through terminal state.
+/// @brief Manages the lifecycle of orders from submission through terminal state.
 ///
 /// Thread-safety: none -- callers must serialize access externally.
 /// Designed for single-threaded event processing pipelines.
 class OrderManager {
 public:
-    /// Transparent hash for heterogeneous lookup (string_view key without allocation).
+    /// @brief Transparent hash for heterogeneous lookup (string_view key without allocation).
     struct StringHash {
         using is_transparent = void;
         size_t operator()(std::string_view sv) const noexcept {
@@ -86,8 +96,14 @@ public:
             return std::hash<std::string_view>{}(s);
         }
     };
-    /// Register a new order (call after send).
-    /// Returns false if cl_ord_id already exists.
+    /// @brief Register a new order (call after send).
+    ///
+    /// @param cl_ord_id  Unique client order ID.
+    /// @param symbol     Instrument symbol.
+    /// @param side       FIX Side: '1' = Buy, '2' = Sell.
+    /// @param qty        Order quantity.
+    /// @param price      Limit price (0 for market orders).
+    /// @return true if the order was registered, false if cl_ord_id already exists or is empty.
     bool submit(std::string cl_ord_id, std::string symbol,
                 char side, double qty, double price) noexcept
     {
@@ -120,9 +136,13 @@ public:
         return true;
     }
 
-    /// Process an ExecutionReport. Updates order state and optionally
+    /// @brief Process an ExecutionReport. Updates order state and optionally
     /// updates the position tracker on fills.
-    /// Returns false if the order is unknown or missing required fields.
+    ///
+    /// @tparam MaxFields  Maximum fields in the parsed message view.
+    /// @param report     The execution report view to process.
+    /// @param positions  Optional position tracker for automatic fill forwarding.
+    /// @return false if the order is unknown or missing required fields.
     template <size_t MaxFields = 256>
     bool on_execution_report(const ExecutionReportView<MaxFields>& report,
                              PositionTracker* positions = nullptr) noexcept
@@ -294,7 +314,7 @@ public:
         return true;
     }
 
-    /// Handle an OrderCancelReject (MsgType=9).
+    /// @brief Handle an OrderCancelReject (MsgType=9).
     ///
     /// When the exchange rejects a cancel/replace request, the order remains
     /// in its previous state (reverted from PendingCancel back to its prior
@@ -343,7 +363,9 @@ public:
         return true;
     }
 
-    /// Get order by cl_ord_id. Returns nullptr if not found.
+    /// @brief Get order by cl_ord_id.
+    /// @param cl_ord_id  The client order ID to look up.
+    /// @return Pointer to the ManagedOrder, or nullptr if not found.
     [[nodiscard]] const ManagedOrder* get(std::string_view cl_ord_id) const noexcept
     {
         auto it = orders_.find(cl_ord_id);
@@ -351,7 +373,7 @@ public:
         return &it->second;
     }
 
-    /// Count of active (non-terminal) orders.
+    /// @brief Count of active (non-terminal) orders.
     [[nodiscard]] size_t active_count() const noexcept
     {
         size_t count = 0;
@@ -361,11 +383,12 @@ public:
         return count;
     }
 
-    /// All orders.
+    /// @brief Access the full order map (including terminal orders).
     [[nodiscard]] const std::unordered_map<std::string, ManagedOrder, StringHash, std::equal_to<>>&
     orders() const noexcept { return orders_; }
 
-    /// Remove all terminal orders (filled/canceled/rejected).
+    /// @brief Remove all terminal orders (filled/canceled/rejected) from the map.
+    /// @note Frees memory held by terminal orders. Active orders are unaffected.
     void purge_terminal() noexcept
     {
         [[maybe_unused]] size_t removed = 0;
@@ -382,8 +405,9 @@ public:
             removed, orders_.size());
     }
 
-    /// Mark order as PendingCancel. Returns false if order not found or
-    /// already terminal.
+    /// @brief Mark order as PendingCancel.
+    /// @param cl_ord_id  The client order ID to mark.
+    /// @return false if order not found or already terminal.
     bool mark_pending_cancel(std::string_view cl_ord_id) noexcept
     {
         auto it = orders_.find(cl_ord_id);

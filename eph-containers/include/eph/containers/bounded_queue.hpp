@@ -1,5 +1,17 @@
 #pragma once
 
+/// @file bounded_queue.hpp
+/// @brief Lock-free bounded SPSC queue with back-pressure.
+///
+/// Provides a fixed-capacity, single-producer single-consumer FIFO queue
+/// where writes **block or fail** when the queue is full (no data is ever
+/// silently dropped). The implementation uses a classic two-index ring
+/// buffer with shadow copies of the remote index to minimise cross-core
+/// cache-line traffic.
+///
+/// Capacity must be a power of two so index masking replaces modulo on
+/// the hot path.
+
 #include <array>
 #include <atomic>
 #include <bit>
@@ -40,18 +52,20 @@ using eph::utils::cpu_relax;
 // Standalone Stats type (enables std::formatter specialization)
 // ---------------------------------------------------------------------------
 
-/// Queue statistics snapshot for monitoring/debugging.
-/// All values are approximate (relaxed memory order reads).
-/// Defined as a standalone type (rather than nested in the template) to enable
-/// std::formatter specialization — nested types in class templates cannot be
-/// specialized without knowing the template arguments.
+/// @brief Point-in-time statistics snapshot for BoundedQueue monitoring.
+///
+/// All values are approximate (derived from relaxed/acquire atomic loads).
+/// Defined as a standalone (non-nested) type so that a `std::formatter`
+/// specialization can be provided without knowing the queue's template
+/// arguments. Obtain a snapshot via `BoundedQueue::stats()`.
 struct BoundedQueueStats {
     size_t total_pushed;   ///< Total items ever pushed (monotonic)
     size_t total_popped;   ///< Total items ever popped (monotonic)
     size_t current_size;   ///< Approximate current occupancy
     size_t capacity;       ///< Fixed capacity
 
-    /// Multi-line formatted dump for logging/debugging.
+    /// @brief Multi-line human-readable dump for logging/debugging.
+    /// @return Formatted string including capacity, utilization, and counters.
     [[nodiscard]] std::string dump() const {
         double utilization = capacity > 0
             ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
@@ -66,15 +80,21 @@ struct BoundedQueueStats {
             total_pushed, total_popped);
     }
 
-    /// JSON-formatted stats for monitoring system integration.
+    /// @brief JSON-formatted stats for monitoring system integration.
+    /// @return Compact single-line JSON string.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
             capacity, current_size, total_pushed, total_popped);
     }
 
-    /// Compute delta between two snapshots for interval-based monitoring.
-    /// Usage: auto delta = stats_t2 - stats_t1;
+    /// @brief Compute delta between two snapshots for interval-based monitoring.
+    ///
+    /// Usage: `auto delta = stats_t2 - stats_t1;`
+    ///
+    /// @param lhs Later snapshot (e.g. at time T2).
+    /// @param rhs Earlier snapshot (e.g. at time T1).
+    /// @return Per-field difference; `current_size` and `capacity` are taken from @p lhs.
     [[nodiscard]] friend BoundedQueueStats operator-(const BoundedQueueStats& lhs,
                                                      const BoundedQueueStats& rhs) noexcept {
         return BoundedQueueStats{
@@ -85,9 +105,16 @@ struct BoundedQueueStats {
         };
     }
 
-    /// Items popped per second over a measurement interval.
-    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
-    /// @param duration_ns  Measurement interval in nanoseconds
+    /// @brief Items popped per second over a measurement interval.
+    ///
+    /// Apply to a delta snapshot:
+    /// @code
+    ///   auto delta = t2 - t1;
+    ///   double ops = delta.throughput(elapsed_ns);
+    /// @endcode
+    ///
+    /// @param duration_ns Measurement interval in nanoseconds.
+    /// @return Throughput in items/second, or 0.0 if @p duration_ns is zero.
     [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
         return duration_ns > 0
             ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
@@ -98,32 +125,26 @@ struct BoundedQueueStats {
                                           const BoundedQueueStats&) = default;
 };
 
-/**
- * @brief SPSC 无锁不可丢弃队列
- *
- * 内存布局：
- * ```
- * ┌─────────────────────────────────────────────────┐
- * │ Writer Hot Zone (独占 Cache Line)               │
- * │  - writer_.tail_         (全局写入索引, 原子)   │
- * │  - writer_.shadow_head_  (本地影子读取索引)     │
- * ├─────────────────────────────────────────────────┤
- * │ Reader Hot Zone (独占 Cache Line)               │
- * │  - reader_.head_         (全局读取索引, 原子)   │
- * │  - reader_.shadow_tail_  (本地影子写入索引)     │
- * ├─────────────────────────────────────────────────┤
- * │ Slots Zone (数据存储区)                         │
- * │  - buffer_[0..Capacity-1]                       │
- * └─────────────────────────────────────────────────┘
- * ```
- *
- * @note 阻塞接口 (push/pop/produce/consume) 使用纯 cpu_relax() 自旋，
- *       适用于 CPU-pinned 线程间短暂拥塞场景。若队列可能长期满/空，
- *       应使用 try_ 系列接口配合自定义退避策略。
- *
- * @tparam T 数据类型，必须满足 TriviallyCopyable 概念。
- * @tparam Capacity 缓冲区容量，必须是 2 的幂。
- */
+/// @brief Lock-free bounded SPSC (single-producer, single-consumer) queue.
+///
+/// Unlike EvictingQueue, this queue applies **back-pressure**: writes fail
+/// (or spin-wait) when the queue is full, guaranteeing that no data is
+/// silently dropped.
+///
+/// Memory layout (each zone on its own cache line):
+/// @code
+///   Writer Zone  -- tail_ (atomic write index) + shadow_head_ (cached read index)
+///   Reader Zone  -- head_ (atomic read index)  + shadow_tail_ (cached write index)
+///   Slots Zone   -- buffer_[0..Capacity-1]
+/// @endcode
+///
+/// @note Blocking interfaces (push/pop/produce/consume) use pure
+///       `cpu_relax()` spin-waiting, suitable for CPU-pinned threads with
+///       brief contention. For queues that may remain full/empty for extended
+///       periods, prefer the `try_*` family with a custom back-off strategy.
+///
+/// @tparam T        Element type -- must satisfy TrivialData.
+/// @tparam Capacity Ring buffer size. Must be a power of two.
 template <typename T, size_t Capacity>
     requires TrivialData<T>
 class BoundedQueue {
@@ -180,13 +201,11 @@ class BoundedQueue {
     // Writer 操作
     // ===========================================================================
 
-    /**
-     * @brief尝试零拷贝写入 (Visitor 模式)
-     *
-     * @tparam F 回调类型，签名应为 void(T& slot)
-     * @param writer_func 用于初始化或修改数据的回调函数
-     * @return true 写入成功; false 队列已满
-     */
+    /// @brief Try to write via zero-copy visitor pattern (non-blocking).
+    ///
+    /// @tparam F Callable with signature `void(T& slot)`.
+    /// @param writer_func Callback that initialises the slot in-place.
+    /// @return `true` on success; `false` if the queue is full.
     template <typename F>
         requires std::invocable<F, T&>
     [[nodiscard]] bool try_produce(F&& writer_func) noexcept {
@@ -211,12 +230,10 @@ class BoundedQueue {
         return true;
     }
 
-    /**
-     * @brief 尝试原地构造
-     *
-     * @param args 构造参数
-     * @return true 成功; false 队列已满
-     */
+    /// @brief Try to emplace-construct an element (non-blocking).
+    /// @tparam Args Constructor argument types for `T`.
+    /// @param args Arguments forwarded to `std::construct_at`.
+    /// @return `true` on success; `false` if the queue is full.
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     [[nodiscard]] bool try_emplace(Args&&... args) noexcept {
@@ -225,27 +242,24 @@ class BoundedQueue {
         });
     }
 
-    /**
-     * @brief 尝试写入数据
-     *
-     * @param data 源数据 (左值或右值)
-     * @return true 成功; false 队列已满
-     */
+    /// @brief Try to push an element by copy or move (non-blocking).
+    /// @tparam U Type assignable to `T&`.
+    /// @param data Source value (lvalue or rvalue).
+    /// @return `true` on success; `false` if the queue is full.
     template <typename U>
         requires std::is_assignable_v<T&, U>
     [[nodiscard]] bool try_push(U&& data) noexcept {
         return try_produce([&](T& slot) { slot = std::forward<U>(data); });
     }
 
-    /**
-     * @brief 批量尝试写入 (全部或全不语义)
-     *
-     * 一次提交 N 个元素，仅需单次 atomic store 发布索引，
-     * 摊销了逐个 try_push 的原子操作开销。
-     *
-     * @param data 待写入的元素序列
-     * @return true 全部写入成功; false 剩余空间不足，无任何写入
-     */
+    /// @brief Batch push with all-or-nothing semantics (non-blocking).
+    ///
+    /// Commits N elements with a single atomic store, amortising the cost
+    /// of per-element `try_push` calls.
+    ///
+    /// @param data Span of elements to write.
+    /// @return `true` if all elements were enqueued; `false` if insufficient
+    ///         space (no elements written).
     [[nodiscard]] bool try_push_n(std::span<const T> data) noexcept {
         const size_t n = data.size();
         if (n == 0) return true;
@@ -273,17 +287,16 @@ class BoundedQueue {
         return true;
     }
 
-    /**
-     * @brief 批量零拷贝写入 (Visitor 模式)
-     *
-     * 预留 n 个连续槽位，依次对每个槽位调用 writer(slot, index)，
-     * 最后以单次 release store 原子发布所有元素。
-     * 避免构造临时数组再 try_push_n，消除热路径堆分配。
-     *
-     * @param n      要写入的元素个数
-     * @param writer 回调 void(T& slot, size_t index)，index 为 0..n-1
-     * @return true 全部写入成功; false 剩余空间不足，无任何写入
-     */
+    /// @brief Batch zero-copy write via visitor (all-or-nothing, non-blocking).
+    ///
+    /// Reserves N contiguous slots, invokes `writer(slot, index)` for each,
+    /// then publishes all elements with a single release store. Avoids
+    /// constructing a temporary array, eliminating hot-path heap allocation.
+    ///
+    /// @tparam F Callable with signature `void(T& slot, size_t index)`.
+    /// @param n      Number of elements to write.
+    /// @param writer Callback invoked for each slot; `index` is in [0, n).
+    /// @return `true` if all elements were enqueued; `false` if insufficient space.
     template <typename F>
         requires std::invocable<F, T&, size_t>
     [[nodiscard]] bool try_produce_n(size_t n, F&& writer) noexcept {
@@ -310,10 +323,10 @@ class BoundedQueue {
         return true;
     }
 
-    /**
-     * @brief 阻塞式零拷贝写入 (Visitor 模式)
-     * 自旋直到有空间可用，然后执行 writer 回调。
-     */
+    /// @brief Blocking zero-copy write (spins until space is available).
+    /// @tparam F Callable with signature `void(T& slot)`.
+    /// @param writer Callback that initialises the slot.
+    /// @warning Spins indefinitely -- use only on pinned threads.
     template <typename F>
         requires std::invocable<F, T&>
     void produce(F&& writer) noexcept {
@@ -322,9 +335,9 @@ class BoundedQueue {
         }
     }
 
-    /**
-     * @brief 阻塞式写入 (自旋等待)
-     */
+    /// @brief Blocking push by copy or move (spins until space is available).
+    /// @tparam U Type assignable to `T&`.
+    /// @param data Source value.
     template <typename U>
         requires std::is_assignable_v<T&, U>
     void push(U&& data) noexcept {
@@ -333,9 +346,9 @@ class BoundedQueue {
         }
     }
 
-    /**
-     * @brief 阻塞式原地构造
-     */
+    /// @brief Blocking emplace-construct (spins until space is available).
+    /// @tparam Args Constructor argument types for `T`.
+    /// @param args Arguments forwarded to `std::construct_at`.
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     void emplace(Args&&... args) noexcept {
@@ -344,29 +357,26 @@ class BoundedQueue {
         }
     }
 
-    /**
-     * @brief 阻塞式批量写入 (全部或全不语义)
-     *
-     * 自旋等待直到有足够连续空间容纳所有元素，然后以单次
-     * atomic store 原子发布。适用于 CPU-pinned 线程间短暂拥塞。
-     *
-     * @param data 待写入的元素序列
-     */
+    /// @brief Blocking batch push (all-or-nothing, spins until space is available).
+    ///
+    /// Spins until contiguous space for all elements is available, then
+    /// publishes atomically with a single release store.
+    ///
+    /// @param data Span of elements to write.
     void push_n(std::span<const T> data) noexcept {
         while (!try_push_n(data)) {
             cpu_relax();
         }
     }
 
-    /**
-     * @brief 阻塞式批量零拷贝写入 (Visitor 模式)
-     *
-     * 自旋等待直到有足够连续空间，然后依次对每个槽位调用
-     * writer(slot, index)，最后以单次 release store 发布。
-     *
-     * @param n      要写入的元素个数
-     * @param writer 回调 void(T& slot, size_t index)，index 为 0..n-1
-     */
+    /// @brief Blocking batch zero-copy write via visitor (all-or-nothing).
+    ///
+    /// Spins until contiguous space for all elements is available, invokes
+    /// `writer(slot, index)` for each, then publishes atomically.
+    ///
+    /// @tparam F Callable with signature `void(T& slot, size_t index)`.
+    /// @param n      Number of elements to write.
+    /// @param writer Callback invoked for each slot; `index` is in [0, n).
     template <typename F>
         requires std::invocable<F, T&, size_t>
     void produce_n(size_t n, F&& writer) noexcept {
@@ -379,16 +389,17 @@ class BoundedQueue {
     // Writer 带超时操作
     // ===========================================================================
 
-    /**
-     * @brief 带超时的零拷贝写入 (Visitor 模式)
-     *
-     * 自旋等待直到有空间可用或超时。适用于非 CPU-pinned 线程，
-     * 需要在"立即返回"和"无限阻塞"之间取得平衡的场景。
-     *
-     * @param writer_func 用于初始化数据的回调
-     * @param timeout     最大等待时间
-     * @return true 写入成功; false 超时
-     */
+    /// @brief Zero-copy write with timeout.
+    ///
+    /// Spins until space is available or the deadline expires. Suitable for
+    /// non-pinned threads that need a middle ground between immediate return
+    /// and unbounded blocking.
+    ///
+    /// @tparam F Callable with signature `void(T& slot)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param writer_func Callback that initialises the slot.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -406,10 +417,12 @@ class BoundedQueue {
         return false;
     }
 
-    /**
-     * @brief 带超时的写入
-     * @return true 写入成功; false 超时
-     */
+    /// @brief Push with timeout by copy or move.
+    /// @tparam U Type assignable to `T&`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param data Source value.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename U, typename Rep, typename Period>
         requires std::is_assignable_v<T&, U>
     [[nodiscard]] bool try_push_for(U&& data,
@@ -417,10 +430,12 @@ class BoundedQueue {
         return try_produce_for([&](T& slot) { slot = std::forward<U>(data); }, timeout);
     }
 
-    /**
-     * @brief 带超时的原地构造
-     * @return true 成功; false 超时
-     */
+    /// @brief Emplace with timeout.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @tparam Args Constructor argument types for `T`.
+    /// @param timeout Maximum wall-clock wait.
+    /// @param args Arguments forwarded to `std::construct_at`.
+    /// @return `true` on success; `false` on timeout.
     template <typename Rep, typename Period, typename... Args>
         requires std::is_constructible_v<T, Args...>
     [[nodiscard]] bool try_emplace_for(std::chrono::duration<Rep, Period> timeout,
@@ -430,16 +445,14 @@ class BoundedQueue {
             timeout);
     }
 
-    /**
-     * @brief 带超时的批量写入 (全部或全不语义)
-     *
-     * 自旋等待直到有足够连续空间容纳所有元素或超时。
-     * 成功时以单次 atomic store 原子发布所有元素。
-     *
-     * @param data    待写入的元素序列
-     * @param timeout 最大等待时间
-     * @return true 全部写入成功; false 超时，无任何写入
-     */
+    /// @brief Batch push with timeout (all-or-nothing).
+    ///
+    /// Spins until contiguous space for all elements is available or the
+    /// deadline expires.
+    ///
+    /// @param data Span of elements to write.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` if all elements were enqueued; `false` on timeout (nothing written).
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -456,17 +469,18 @@ class BoundedQueue {
         return false;
     }
 
-    /**
-     * @brief 带超时的批量零拷贝写入 (Visitor 模式)
-     *
-     * 自旋等待直到有足够连续空间或超时。成功时预留 n 个槽位，
-     * 依次调用 writer(slot, index)，最后以单次 release store 发布。
-     *
-     * @param n       要写入的元素个数
-     * @param writer  回调 void(T& slot, size_t index)，index 为 0..n-1
-     * @param timeout 最大等待时间
-     * @return true 全部写入成功; false 超时，无任何写入
-     */
+    /// @brief Batch zero-copy write with timeout (all-or-nothing, visitor pattern).
+    ///
+    /// Spins until contiguous space for N elements is available or the
+    /// deadline expires. On success, invokes `writer(slot, index)` for each
+    /// slot and publishes atomically.
+    ///
+    /// @tparam F Callable with signature `void(T& slot, size_t index)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param n       Number of elements to write.
+    /// @param writer  Callback invoked for each slot; `index` is in [0, n).
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` if all elements were enqueued; `false` on timeout.
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -488,13 +502,12 @@ class BoundedQueue {
     // Reader 操作
     // ===========================================================================
 
-    /**
-     * @brief尝试零拷贝消费 (Visitor 模式)
-     *
-     * @tparam F 回调类型，签名应为 void(const T& data)
-     * @param visitor 访问数据的回调（接收 const 引用，不可修改）
-     * @return true 成功; false 队列为空
-     */
+    /// @brief Try to consume the head element via zero-copy visitor (non-blocking).
+    ///
+    /// @tparam F Callable with signature `void(const T& data)`.
+    /// @param visitor Callback invoked with a const reference to the head element.
+    /// @return `true` if an element was consumed; `false` if the queue is empty.
+    /// @note Reader-side only. Exactly one thread may call consume/pop/peek.
     template <typename F>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume(F&& visitor) noexcept {
@@ -519,19 +532,18 @@ class BoundedQueue {
         return true;
     }
 
-    /**
-     * @brief 零拷贝查看队首元素但不消费 (Visitor 模式, Reader 线程专用)
-     *
-     * 对队首元素原地调用 visitor，但不推进 head 指针。适用于消费前需要
-     * 预检查消息类型或决定路由逻辑的场景，避免不必要的拷贝开销。
-     *
-     * @tparam F 回调类型，签名应为 void(const T& data)
-     * @param visitor 访问数据的回调（接收 const 引用，不可修改）
-     * @return true 队列非空且已回调; false 队列为空
-     *
-     * @note 仅 Reader 线程可调用。多次调用访问同一元素，
-     *       直到 try_pop/consume 推进 head。
-     */
+    /// @brief Zero-copy peek at the head element without consuming (reader-side only).
+    ///
+    /// Invokes @p visitor with the head element but does **not** advance the
+    /// head pointer. Useful for pre-inspecting message type or routing logic
+    /// before deciding whether to consume.
+    ///
+    /// @tparam F Callable with signature `void(const T& data)`.
+    /// @param visitor Callback invoked with a const reference to the head.
+    /// @return `true` if the queue is non-empty and the visitor was called;
+    ///         `false` if the queue is empty.
+    /// @note Multiple calls return the same element until `try_pop`/`consume`
+    ///       advances the head.
     template <typename F>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_peek(F&& visitor) noexcept {
@@ -552,45 +564,33 @@ class BoundedQueue {
         return true;
     }
 
-    /**
-     * @brief 查看队首元素但不消费 (Reader 线程专用)
-     *
-     * 读取队首元素的拷贝但不推进 head 指针。适用于消费前需要
-     * 预检查消息类型或决定路由逻辑的场景。
-     *
-     * @param out [out] 目标对象（队列非空时写入）
-     * @return true 队列非空且已复制; false 队列为空
-     *
-     * @note 仅 Reader 线程可调用。多次调用返回同一元素，
-     *       直到 try_pop/consume 推进 head。
-     */
+    /// @brief Peek at the head element by value copy without consuming (reader-side only).
+    ///
+    /// @param out [out] Destination object, written only when the queue is non-empty.
+    /// @return `true` if copied; `false` if the queue is empty.
+    /// @note Multiple calls return the same element until `try_pop`/`consume`
+    ///       advances the head.
     [[nodiscard]] bool try_peek(T& out) noexcept {
         return try_peek([&out](const T& data) { out = data; });
     }
 
-    /**
-     * @brief 查看队首元素并返回可选值 (Reader 线程专用)
-     * @return std::optional 包含数据（非空时）或空
-     */
+    /// @brief Peek at the head element returning an optional (reader-side only).
+    /// @return The head element if the queue is non-empty; `std::nullopt` otherwise.
     [[nodiscard]] std::optional<T> try_peek() noexcept {
         T val;
         if (try_peek(val)) return val;
         return std::nullopt;
     }
 
-    /**
-     * @brief 尝试读取数据到外部变量
-     * @param out [out] 目标对象
-     * @return true 成功; false 队列为空
-     */
+    /// @brief Try to pop the head element into @p out (non-blocking).
+    /// @param out [out] Destination object, written only on success.
+    /// @return `true` if an element was dequeued; `false` if empty.
     [[nodiscard]] bool try_pop(T& out) noexcept {
         return try_consume([&out](const T& data) { out = data; });
     }
 
-    /**
-     * @brief 尝试读取并返回可选值
-     * @return std::optional 包含数据或空
-     */
+    /// @brief Try to pop the head element, returning it as an optional.
+    /// @return The element on success; `std::nullopt` if empty.
     [[nodiscard]] std::optional<T> try_pop() noexcept {
         std::optional<T> res;
         if (try_consume([&](const T& data) { res.emplace(data); })) {
@@ -599,14 +599,13 @@ class BoundedQueue {
         return std::nullopt;
     }
 
-    /**
-     * @brief 批量尝试读取 (尽力而为语义)
-     *
-     * 一次消费最多 min(available, out.size()) 个元素，仅需单次 atomic store 发布索引。
-     *
-     * @param out 输出缓冲区
-     * @return 实际读取的元素数量（0 表示队列为空）
-     */
+    /// @brief Batch pop with best-effort semantics (non-blocking).
+    ///
+    /// Consumes up to `min(available, out.size())` elements with a single
+    /// atomic store to advance the head pointer.
+    ///
+    /// @param out Output span to receive the elements.
+    /// @return Number of elements actually dequeued (0 if empty).
     [[nodiscard]] size_t try_pop_n(std::span<T> out) noexcept {
         const size_t max_n = out.size();
         if (max_n == 0) return 0;
@@ -636,17 +635,16 @@ class BoundedQueue {
         return n;
     }
 
-    /**
-     * @brief 批量零拷贝消费 (Visitor 模式, 尽力而为语义)
-     *
-     * 消费最多 min(n, available) 个元素，对每个元素原地调用
-     * visitor(slot, index)，最后以单次 release store 发布所有消费。
-     * 与 try_produce_n 镜像对称——写端批量生产，读端批量消费，均为零拷贝。
-     *
-     * @param n       最大消费数量
-     * @param visitor 回调 void(const T& slot, size_t index)，index 为 0..consumed-1
-     * @return 实际消费的元素数量（0 表示队列为空）
-     */
+    /// @brief Batch zero-copy consume via visitor (best-effort, non-blocking).
+    ///
+    /// Consumes up to `min(n, available)` elements, invoking
+    /// `visitor(slot, index)` for each, then advances the head pointer
+    /// with a single release store. Mirrors `try_produce_n` on the write side.
+    ///
+    /// @tparam F Callable with signature `void(const T& slot, size_t index)`.
+    /// @param n       Maximum number of elements to consume.
+    /// @param visitor Callback invoked for each element; `index` is in [0, consumed).
+    /// @return Number of elements actually consumed (0 if empty).
     template <typename F>
         requires std::invocable<F, const T&, size_t>
     [[nodiscard]] size_t try_consume_n(size_t n, F&& visitor) noexcept {
@@ -675,15 +673,12 @@ class BoundedQueue {
         return count;
     }
 
-    /**
-     * @brief 阻塞式批量零拷贝消费 (Visitor 模式)
-     *
-     * 自旋等待直到至少有一个元素可消费，然后批量消费最多 n 个元素。
-     *
-     * @param n       最大消费数量
-     * @param visitor 回调 void(const T& slot, size_t index)
-     * @return 实际消费的元素数量（>= 1）
-     */
+    /// @brief Blocking batch zero-copy consume (spins until at least one element).
+    ///
+    /// @tparam F Callable with signature `void(const T& slot, size_t index)`.
+    /// @param n       Maximum number of elements to consume.
+    /// @param visitor Callback invoked for each element.
+    /// @return Number of elements consumed (>= 1).
     template <typename F>
         requires std::invocable<F, const T&, size_t>
     size_t consume_n(size_t n, F&& visitor) noexcept {
@@ -694,9 +689,9 @@ class BoundedQueue {
         return count;
     }
 
-    /**
-     * @brief 阻塞式消费
-     */
+    /// @brief Blocking zero-copy consume (spins until an element is available).
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @param visitor Callback invoked with a const reference to the head element.
     template <typename F>
         requires std::invocable<F, const T&>
     void consume(F&& visitor) noexcept {
@@ -705,17 +700,14 @@ class BoundedQueue {
         }
     }
 
-    /**
-     * @brief 阻塞式读取到外部变量
-     * 自旋直到有数据可用
-     */
+    /// @brief Blocking pop into @p out (spins until data is available).
+    /// @param out [out] Destination object.
     void pop(T& out) noexcept {
         consume([&out](const T& data) { out = data; });
     }
 
-    /**
-     * @brief 阻塞式读取
-     */
+    /// @brief Blocking pop returning the element by value.
+    /// @return The dequeued element.
     [[nodiscard]] T pop() noexcept {
         T res;
         consume([&res](const T& data) { res = data; });
@@ -726,15 +718,15 @@ class BoundedQueue {
     // Reader 带超时操作
     // ===========================================================================
 
-    /**
-     * @brief 带超时的零拷贝消费 (Visitor 模式)
-     *
-     * 自旋等待直到有数据可用或超时。
-     *
-     * @param visitor 访问数据的回调
-     * @param timeout 最大等待时间
-     * @return true 消费成功; false 超时
-     */
+    /// @brief Zero-copy consume with timeout.
+    ///
+    /// Spins until an element is available or the deadline expires.
+    ///
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback invoked on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -752,20 +744,19 @@ class BoundedQueue {
         return false;
     }
 
-    /**
-     * @brief 带超时的读取到外部变量
-     * @return true 读取成功; false 超时
-     */
+    /// @brief Pop with timeout into @p out.
+    /// @param out [out] Destination object.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_pop_for(T& out,
                                     std::chrono::duration<Rep, Period> timeout) noexcept {
         return try_consume_for([&out](const T& data) { out = data; }, timeout);
     }
 
-    /**
-     * @brief 带超时的读取并返回可选值
-     * @return std::optional 包含数据（成功时）或空（超时时）
-     */
+    /// @brief Pop with timeout, returning the element as an optional.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return The element on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<T> try_pop_for(
         std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -774,16 +765,15 @@ class BoundedQueue {
         return res;
     }
 
-    /**
-     * @brief 带超时的批量读取 (尽力而为语义)
-     *
-     * 等待至少一个元素可用（或超时），然后一次消费最多 out.size() 个元素。
-     * 与 try_pop_n 不同，此方法在队列暂时为空时会自旋等待而非立即返回 0。
-     *
-     * @param out     输出缓冲区
-     * @param timeout 最大等待时间
-     * @return 实际读取的元素数量（0 表示超时且队列为空）
-     */
+    /// @brief Batch pop with timeout (best-effort).
+    ///
+    /// Waits until at least one element is available (or timeout), then
+    /// consumes up to `out.size()` elements in one batch. Unlike `try_pop_n`,
+    /// this method spins when the queue is temporarily empty.
+    ///
+    /// @param out Output span to receive the elements.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return Number of elements dequeued (0 only on timeout).
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -802,17 +792,17 @@ class BoundedQueue {
         return 0;
     }
 
-    /**
-     * @brief 带超时的批量零拷贝消费 (Visitor 模式, 尽力而为语义)
-     *
-     * 等待至少一个元素可用（或超时），然后批量消费最多 n 个元素，
-     * 对每个元素原地调用 visitor(slot, index)。
-     *
-     * @param n       最大消费数量
-     * @param visitor 回调 void(const T& slot, size_t index)
-     * @param timeout 最大等待时间
-     * @return 实际消费的元素数量（0 表示超时且队列为空）
-     */
+    /// @brief Batch zero-copy consume with timeout (best-effort, visitor pattern).
+    ///
+    /// Waits until at least one element is available (or timeout), then
+    /// consumes up to N elements, invoking `visitor(slot, index)` for each.
+    ///
+    /// @tparam F Callable with signature `void(const T& slot, size_t index)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param n       Maximum number of elements to consume.
+    /// @param visitor Callback invoked for each element.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return Number of elements consumed (0 only on timeout).
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -832,18 +822,16 @@ class BoundedQueue {
         return 0;
     }
 
-    /// Best-effort drain: consumes all elements visible at the time of the call.
-    /// Does NOT guarantee the queue is empty afterward if the producer is active.
-    /**
-     * @brief 消费当前队列中所有可用元素
-     *
-     * 等效于 try_consume_n(Capacity, visitor)，但语义更清晰。
-     * 适用于关机清空、批量处理等场景。
-     *
-     * @tparam F 回调类型，签名应为 void(const T& slot, size_t index)
-     * @param visitor 回调函数，index 为 0..consumed-1
-     * @return 实际消费的元素数量（0 表示队列为空）
-     */
+    /// @brief Best-effort drain: consume all elements visible at call time.
+    ///
+    /// Equivalent to `try_consume_n(Capacity, visitor)`. Useful for
+    /// shutdown drain or periodic batch processing.
+    ///
+    /// @tparam F Callable with signature `void(const T& slot, size_t index)`.
+    /// @param visitor Callback invoked for each element.
+    /// @return Number of elements consumed (0 if empty).
+    /// @note Does **not** guarantee the queue is empty afterward if the
+    ///       producer is concurrently active.
     template <typename F>
         requires std::invocable<F, const T&, size_t>
     [[nodiscard]] size_t try_consume_all(F&& visitor) noexcept {
@@ -854,10 +842,12 @@ class BoundedQueue {
     // 状态查询
     // ===========================================================================
 
-    /// 丢弃所有排队中的元素，将队列重置为空状态。
+    /// @brief Discard all queued elements, resetting the queue to empty.
     ///
-    /// @warning 仅在确保无并发读写时调用（例如重连阶段、初始化前后）。
-    ///          在 SPSC 热路径中调用此方法是未定义行为。
+    /// Advances head to match tail and flushes shadow indices.
+    ///
+    /// @warning Not thread-safe. Call only when no concurrent readers/writers
+    ///          are active (e.g. reconnection phase, initialization).
     void clear() noexcept {
         // 将 head 追赶到 tail，等效于消费所有元素但不执行任何回调。
         const size_t tail = writer_.tail_.load(std::memory_order_acquire);
@@ -867,34 +857,40 @@ class BoundedQueue {
         reader_.shadow_tail_ = tail;
     }
 
-    /// 获取当前队列中的元素数量（估计值，仅供监控/调试，不保证跨线程一致性）
+    /// @brief Approximate number of elements currently in the queue.
+    /// @return Estimated count (not guaranteed consistent across threads).
     [[nodiscard]] size_t size() const noexcept {
         auto tail = writer_.tail_.load(std::memory_order_relaxed);
         auto head = reader_.head_.load(std::memory_order_relaxed);
         return tail - head;
     }
 
-    /// 检查队列是否为空（估计值）
+    /// @brief Check if the queue is empty (approximate).
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-    /// 检查队列是否已满（估计值）
+    /// @brief Check if the queue is full (approximate).
     [[nodiscard]] bool full() const noexcept { return size() >= Capacity; }
 
-    /// 获取队列固定容量
+    /// @brief Return the fixed queue capacity.
+    /// @return Compile-time constant `Capacity`.
     [[nodiscard]] static constexpr size_t capacity() noexcept {
         return Capacity;
     }
 
-    /// 估计剩余可写入空间（Capacity - size()）。
-    /// 适用于批量写入前预检查：if (q.available_write() >= n) q.try_push_n(...)
-    /// @note 估计值，不保证跨线程一致性。
+    /// @brief Estimated remaining write capacity (`Capacity - size()`).
+    ///
+    /// Useful for pre-checking before batch writes:
+    /// `if (q.available_write() >= n) q.try_push_n(...)`
+    ///
+    /// @return Approximate number of free slots.
+    /// @note Not guaranteed consistent across threads.
     [[nodiscard]] size_t available_write() const noexcept {
         size_t used = size();
         return (used < Capacity) ? (Capacity - used) : 0;
     }
 
-    /// 估计可读取的元素数量（等价于 size()，语义别名）。
-    /// @note 估计值，不保证跨线程一致性。
+    /// @brief Estimated number of elements available to read (semantic alias for `size()`).
+    /// @note Not guaranteed consistent across threads.
     [[nodiscard]] size_t available_read() const noexcept {
         return size();
     }
@@ -903,11 +899,14 @@ class BoundedQueue {
     // 可观测性
     // ===========================================================================
 
-    /// Alias for the standalone BoundedQueueStats type.
+    /// @brief Alias for the standalone BoundedQueueStats type.
     using Stats = BoundedQueueStats;
 
-    /// Take a point-in-time statistics snapshot.
-    /// Zero overhead — derived from existing atomic indices, no extra counters.
+    /// @brief Take a point-in-time statistics snapshot.
+    ///
+    /// Zero overhead -- derived from existing atomic indices, no extra counters.
+    ///
+    /// @return BoundedQueueStats with current values.
     [[nodiscard]] Stats stats() const noexcept {
         auto tail = writer_.tail_.load(std::memory_order_acquire);
         auto head = reader_.head_.load(std::memory_order_acquire);
@@ -929,7 +928,9 @@ class BoundedQueue {
 
 }  // namespace eph::containers
 
-// std::formatter specialization for BoundedQueueStats
+/// @brief std::formatter specialization for BoundedQueueStats.
+///
+/// Delegates to BoundedQueueStats::dump() for use with `std::format`/`std::print`.
 template <>
 struct std::formatter<eph::containers::BoundedQueueStats>
     : std::formatter<std::string> {

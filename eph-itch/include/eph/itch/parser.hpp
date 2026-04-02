@@ -20,7 +20,10 @@
 
 namespace eph::itch {
 
+/// @brief Internal detail namespace for ITCH parser module logger.
 namespace detail {
+/// @brief Get or create the ITCH parser module logger.
+/// @return Shared pointer reference to the spdlog logger instance.
 inline const std::shared_ptr<spdlog::logger>& itch_parser_logger() {
     static auto l = [] {
         auto lg = spdlog::get("itch.parser");
@@ -35,13 +38,16 @@ inline const std::shared_ptr<spdlog::logger>& itch_parser_logger() {
 // Parse errors
 // ---------------------------------------------------------------------------
 
+/// @brief Error codes returned by the ITCH message parser.
 enum class ParseError : uint8_t {
     kIncomplete,   ///< Not enough data to determine message type
     kUnknownType,  ///< Unrecognised message type byte
     kTruncated,    ///< Message shorter than the fixed size for its type
 };
 
-/// Human-readable name for a ParseError value.
+/// @brief Human-readable name for a ParseError value.
+/// @param e The parse error code.
+/// @return String view of the error description (e.g. "incomplete", "truncated message").
 constexpr std::string_view parse_error_name(ParseError e) noexcept {
     switch (e) {
     case ParseError::kIncomplete:  return "incomplete";
@@ -55,7 +61,9 @@ constexpr std::string_view parse_error_name(ParseError e) noexcept {
 // Lookup helpers (defined before parse() so it can call them)
 // ---------------------------------------------------------------------------
 
-/// Get the fixed size for a known ITCH 5.0 message type, or 0 for unknown.
+/// @brief Get the fixed size for a known ITCH 5.0 message type.
+/// @param type The 1-byte ITCH message type character.
+/// @return On-wire message size in bytes (including type tag), or 0 for unknown types.
 inline constexpr size_t message_size(uint8_t type) noexcept {
     switch (type) {
     case kSystemEvent:              return kSystemEventSize;
@@ -84,7 +92,9 @@ inline constexpr size_t message_size(uint8_t type) noexcept {
     }
 }
 
-/// Get a human-readable name for an ITCH message type byte.
+/// @brief Get a human-readable name for an ITCH message type byte.
+/// @param type The 1-byte ITCH message type character.
+/// @return Name string (e.g. "AddOrder", "SystemEvent"), or "Unknown" for unrecognised types.
 inline constexpr std::string_view message_type_name(uint8_t type) noexcept {
     switch (type) {
     case kSystemEvent:              return "SystemEvent";
@@ -204,6 +214,9 @@ parse(const uint8_t* data, size_t len) noexcept {
 /// @param callback Called with (MessageView) for each parsed message.
 ///                 Return true to continue, false to stop early.
 /// @return Number of bytes successfully consumed (sum of parsed message lengths)
+///
+/// @tparam Fn Callback type invocable with `const MessageView&`. May return bool
+///            (false = stop early) or void (always continue).
 ///
 /// @note When callback returns false, processing stops. The returned
 ///       offset points past the last delivered message (including the
@@ -461,6 +474,11 @@ struct Unknown {};
 ///
 /// The handler return value (if any) is forwarded back to the caller.
 /// If the message type is unknown, msg::Unknown is dispatched.
+///
+/// @tparam Handler Callable type with overloads for `(msg::TagType, const uint8_t*)`.
+/// @param view    Parsed message view from parse() or parse_all().
+/// @param handler Handler object, lambda, or overload set to dispatch to.
+/// @return The handler's return value, forwarded as-is.
 template <typename Handler>
 decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
     const uint8_t* msg = view.data; // full message pointer (byte 0 = type)

@@ -32,10 +32,14 @@ inline spdlog::logger* eal_logger() {
 }
 } // namespace detail
 
-/// Initialize DPDK EAL.  Must be called exactly once per process,
-/// before any other rte_* API.
+/// @brief Initialize DPDK EAL (Environment Abstraction Layer).
 ///
-/// @return Number of argv entries consumed by EAL on success.
+/// Must be called exactly once per process, before any other rte_* API.
+/// Parses DPDK-specific command-line arguments (e.g., -l, --vdev, -a).
+///
+/// @param argc  Argument count (from main)
+/// @param argv  Argument vector (from main)
+/// @return Number of argv entries consumed by EAL on success, or error string
 [[nodiscard]] inline std::expected<int, std::string> eal_init(int argc, char** argv) {
     auto log = detail::eal_logger();
     SPDLOG_LOGGER_TRACE(log, "Calling rte_eal_init (argc={})", argc);
@@ -51,7 +55,9 @@ inline spdlog::logger* eal_logger() {
     return ret;
 }
 
-/// Clean up EAL resources.  Call once, after all ports are closed.
+/// @brief Clean up EAL resources. Call once, after all ports are stopped and closed.
+///
+/// @warning After calling this function, no further rte_* API calls are valid.
 inline void eal_cleanup() noexcept {
     auto log = detail::eal_logger();
     SPDLOG_LOGGER_DEBUG(log, "Calling rte_eal_cleanup");

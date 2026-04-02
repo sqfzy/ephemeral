@@ -45,7 +45,12 @@ class RingBuffer {
 public:
     static constexpr std::size_t capacity = Capacity;
 
-    /// Push a new element, overwriting the oldest when full.
+    /// @brief Push a new element, overwriting the oldest when full.
+    ///
+    /// Advances the write head and, if the buffer was not yet full,
+    /// increments the stored count.
+    ///
+    /// @param item Element to store (copied into the ring).
     /// @note Writer-side only. Exactly one thread may call push().
     void push(const T& item) noexcept {
         const std::size_t h = head_.load(std::memory_order_relaxed);

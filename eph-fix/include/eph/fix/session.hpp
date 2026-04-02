@@ -68,6 +68,7 @@ namespace eph::fix {
 // Session state
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief FIX session lifecycle state.
 enum class SessionState : uint8_t {
     kDisconnected,  ///< Initial or disconnected
     kLogonSent,     ///< Logon sent, waiting for server Logon response
@@ -75,6 +76,9 @@ enum class SessionState : uint8_t {
     kLogoutSent,    ///< Logout sent, waiting for response or timeout
 };
 
+/// @brief Get human-readable name for a session state.
+/// @param s  The session state to convert.
+/// @return A string_view representation (e.g. "ACTIVE", "DISCONNECTED").
 constexpr std::string_view session_state_name(SessionState s) noexcept {
     switch (s) {
     case SessionState::kDisconnected: return "DISCONNECTED";
@@ -89,12 +93,16 @@ constexpr std::string_view session_state_name(SessionState s) noexcept {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Configuration for a FIX session.
+///
+/// All fields have sensible defaults. Call validate() to check consistency
+/// before passing to FixSession.
 struct FixSessionConfig {
-    std::string sender_comp_id;
-    std::string target_comp_id;
+    std::string sender_comp_id;                          ///< SenderCompID (tag 49) -- our identity.
+    std::string target_comp_id;                          ///< TargetCompID (tag 56) -- counterparty identity.
     int heartbeat_interval_sec = 30;        ///< HeartBtInt (tag 108), may be overridden by server
-    bool reset_seq_on_logon = true;         ///< Send ResetSeqNumFlag=Y on Logon
-    std::string begin_string = "FIX.4.4";
+    bool reset_seq_on_logon = true;         ///< Send ResetSeqNumFlag=Y on Logon.
+    std::string begin_string = "FIX.4.4"; ///< FIX protocol version (tag 8).
 
     /// Tolerance factor for heartbeat timeout detection.
     /// Server is considered dead if no message received within
@@ -110,7 +118,8 @@ struct FixSessionConfig {
     /// Callback when session state changes (optional, called from any thread).
     std::function<void(SessionState old_state, SessionState new_state)> on_state_change{};
 
-    /// Validate configuration, returning an error description or empty string on success.
+    /// @brief Validate configuration, returning an error description or empty string on success.
+    /// @return Empty string_view on success, or a description of the validation failure.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (sender_comp_id.empty())
             return "sender_comp_id must not be empty";
@@ -132,7 +141,10 @@ struct FixSessionConfig {
 // Logger
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Internal implementation details for the session module.
 namespace detail {
+/// @brief Get or create the spdlog logger for the session module.
+/// @return Shared pointer to the "fix.session" logger.
 inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.session");
@@ -147,6 +159,8 @@ inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
 // FixSession
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief FIX 4.4 session manager -- handles Logon/Logout, Heartbeat, sequence tracking.
+///
 /// Thread model:
 ///   - `state_`, `expected_inbound_seq_`, `last_inbound_seq_`, `outbound_seq_`:
 ///     accessed from both TX (caller) and RX (poll) threads via atomics.
@@ -156,9 +170,12 @@ inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
 ///   - Configuration (`cfg_`) is immutable after construction — no synchronization needed.
 class FixSession {
 public:
-    /// Send callback: returns true if the message was sent successfully.
+    /// @brief Send callback type: returns true if the message was sent successfully.
     using SendFn = std::function<bool(const uint8_t* data, size_t len)>;
 
+    /// @brief Construct a FIX session.
+    /// @param send_fn  Callback invoked to send raw bytes over the transport.
+    /// @param cfg      Session configuration (sender/target IDs, heartbeat, etc.).
     FixSession(SendFn send_fn, FixSessionConfig cfg)
         : send_(std::move(send_fn)), cfg_(std::move(cfg)),
           heartbeat_interval_sec_(cfg_.heartbeat_interval_sec) {
@@ -172,8 +189,11 @@ public:
     // Lifecycle
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Send Logon and wait for server Logon response.
+    /// @brief Send Logon and wait for server Logon response.
+    ///
     /// Blocks the calling thread (spin-wait on atomic state).
+    /// @param timeout  Maximum time to wait for server Logon response.
+    /// @return void on success, or error string on timeout/failure.
     [[nodiscard]] std::expected<void, std::string>
     logon(std::chrono::milliseconds timeout = std::chrono::milliseconds{5000}) {
         if (state_.load(std::memory_order_acquire) != SessionState::kDisconnected) {
@@ -224,7 +244,8 @@ public:
         return {};
     }
 
-    /// Send Logout and wait for response.
+    /// @brief Send Logout and wait for response.
+    /// @param timeout  Maximum time to wait for server Logout response.
     [[nodiscard]] std::expected<void, std::string>
     logout(std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) {
         if (state_.load(std::memory_order_acquire) != SessionState::kActive) {
@@ -260,7 +281,8 @@ public:
         return {};
     }
 
-    /// Reset session state (call before re-logon after disconnect).
+    /// @brief Reset session state (call before re-logon after disconnect).
+    /// @note Resets all sequence numbers to 1 and clears pending TestRequest state.
     void reset() noexcept {
         set_state(SessionState::kDisconnected);
         outbound_seq_.store(1, std::memory_order_relaxed);
@@ -275,7 +297,7 @@ public:
     // RX path (called from RX thread via on_message callback)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Process an incoming FIX message. Called from the RX thread.
+    /// @brief Process an incoming FIX message. Called from the RX thread.
     ///
     /// @return true if session-level message (handled internally).
     ///         false if application message (caller should deliver).
@@ -469,7 +491,7 @@ public:
     // Heartbeat timer (call periodically or rely on on_rx/send_app)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Check heartbeat timing. Handles three scenarios:
+    /// @brief Check heartbeat timing. Handles three scenarios:
     ///   1. We haven't sent anything for HeartBtInt → send Heartbeat
     ///   2. Server hasn't sent anything for HeartBtInt → send TestRequest
     ///   3. Server hasn't sent anything for HeartBtInt * timeout_factor → server dead
@@ -516,7 +538,7 @@ public:
     // TX path (application messages)
     // ─────────────────────────────────────────────────────────────────────
 
-    /// Send an application-level FIX message.
+    /// @brief Send an application-level FIX message.
     /// Fills session header: SenderCompID, TargetCompID, MsgSeqNum, SendingTime.
     ///
     /// @param builder  MessageBuilder with MsgType + app fields set. Must NOT be finished.
@@ -549,18 +571,22 @@ public:
     // State queries
     // ─────────────────────────────────────────────────────────────────────
 
+    /// @brief Get current session state.
     [[nodiscard]] SessionState state() const noexcept {
         return state_.load(std::memory_order_acquire);
     }
 
+    /// @brief Get next outbound sequence number to be assigned.
     [[nodiscard]] uint32_t next_outbound_seq() const noexcept {
         return outbound_seq_.load(std::memory_order_relaxed);
     }
 
+    /// @brief Get last received inbound sequence number.
     [[nodiscard]] uint32_t last_inbound_seq() const noexcept {
         return last_inbound_seq_.load(std::memory_order_relaxed);
     }
 
+    /// @brief Get next expected inbound sequence number.
     [[nodiscard]] uint32_t expected_inbound_seq() const noexcept {
         return expected_inbound_seq_.load(std::memory_order_relaxed);
     }

@@ -1,5 +1,22 @@
 #pragma once
 
+/// @file evicting_queue.hpp
+/// @brief Wait-free SPSC evicting queue with SeqLock-based consistency.
+///
+/// Provides a fixed-capacity, single-producer single-consumer queue where
+/// the writer is **wait-free** (never blocks -- overwrites the oldest entry
+/// when full) and the reader is **lock-free** (optimistic SeqLock reads).
+///
+/// Two variants are provided:
+///   - Primary template (`Capacity > 1`): multi-slot ring with per-slot
+///     sequence locks and a global monotonic index.
+///   - Explicit specialization (`Capacity == 1`): classic SeqLock on a
+///     single data slot, yielding minimal footprint and the lowest possible
+///     latency.
+///
+/// Capacity must be a power of two so index masking replaces modulo on the
+/// hot path.
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -29,10 +46,14 @@ using eph::utils::cpu_relax;
 // Standalone Stats type (enables std::formatter specialization)
 // ---------------------------------------------------------------------------
 
-/// Queue statistics snapshot for monitoring/debugging.
-/// Defined as a standalone type (rather than nested in the template) to enable
-/// std::formatter specialization — nested types in class templates cannot be
-/// specialized without knowing the template arguments.
+/// @brief Point-in-time statistics snapshot for EvictingQueue monitoring.
+///
+/// Defined as a standalone (non-nested) type so that a `std::formatter`
+/// specialization can be provided without knowing the queue's template
+/// arguments. Obtain a snapshot via `EvictingQueue::stats()`.
+///
+/// All counters are derived from relaxed or acquire atomic loads and are
+/// therefore approximate in a concurrent context.
 struct EvictingQueueStats {
     uint64_t total_pushed;       ///< Total writes since construction
     uint64_t total_popped;       ///< Total successful reads
@@ -40,7 +61,8 @@ struct EvictingQueueStats {
     size_t   current_size;       ///< Approximate unread entries
     size_t   capacity;           ///< Fixed capacity
 
-    /// Multi-line formatted dump for logging/debugging.
+    /// @brief Multi-line human-readable dump for logging/debugging.
+    /// @return Formatted string including capacity, sizes, and loss rate.
     [[nodiscard]] std::string dump() const {
         double loss_rate = total_pushed > 0
             ? static_cast<double>(overwritten) * 100.0 / static_cast<double>(total_pushed)
@@ -57,7 +79,8 @@ struct EvictingQueueStats {
             overwritten, loss_rate);
     }
 
-    /// JSON-formatted stats for monitoring system integration.
+    /// @brief JSON-formatted stats for monitoring system integration.
+    /// @return Compact single-line JSON string.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
@@ -65,7 +88,10 @@ struct EvictingQueueStats {
             capacity, current_size, total_pushed, total_popped, overwritten);
     }
 
-    /// Compute delta between two snapshots for interval-based monitoring.
+    /// @brief Compute delta between two snapshots for interval-based monitoring.
+    /// @param lhs Later snapshot (e.g. at time T2).
+    /// @param rhs Earlier snapshot (e.g. at time T1).
+    /// @return Per-field difference; `current_size` and `capacity` are taken from @p lhs.
     [[nodiscard]] friend EvictingQueueStats operator-(const EvictingQueueStats& lhs,
                                                       const EvictingQueueStats& rhs) noexcept {
         return EvictingQueueStats{
@@ -77,18 +103,28 @@ struct EvictingQueueStats {
         };
     }
 
-    /// Items consumed per second over a measurement interval.
-    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
-    /// @param duration_ns  Measurement interval in nanoseconds
+    /// @brief Items consumed per second over a measurement interval.
+    ///
+    /// Apply to a delta snapshot:
+    /// @code
+    ///   auto delta = t2 - t1;
+    ///   double ops = delta.throughput(elapsed_ns);
+    /// @endcode
+    ///
+    /// @param duration_ns Measurement interval in nanoseconds.
+    /// @return Throughput in items/second, or 0.0 if @p duration_ns is zero.
     [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
         return duration_ns > 0
             ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
             : 0.0;
     }
 
-    /// Data loss rate as a fraction [0.0, 1.0].
-    /// 0.0 = no loss (consumer keeping up), 1.0 = total loss.
-    /// Apply to a delta for interval-based monitoring.
+    /// @brief Data loss rate as a fraction in [0.0, 1.0].
+    ///
+    /// 0.0 means no loss (consumer keeping up), 1.0 means total loss.
+    /// Apply to a delta snapshot for interval-based monitoring.
+    ///
+    /// @return Clamped ratio of overwritten to total_pushed.
     [[nodiscard]] double loss_rate() const noexcept {
         return total_pushed > 0
             ? std::clamp(static_cast<double>(overwritten) / static_cast<double>(total_pushed), 0.0, 1.0)
@@ -99,36 +135,27 @@ struct EvictingQueueStats {
                                           const EvictingQueueStats&) = default;
 };
 
-/**
- * @brief 多缓冲顺序锁可丢弃 SPSC 队列
- *
- * 特性：
- * - Writer Wait-free: 写入者永远不会阻塞，队列满时直接覆盖旧数据。
- * - Reader Lock-free: 读取者通过乐观读取，获取最新数据。
- *
- * 内存布局：
- * ```
- * ┌─────────────────────────────────────────────────┐
- * │ Global Zone (读写共享 Cache Line)               │
- * │  - global_index_  (全局索引)                    │
- * ├─────────────────────────────────────────────────┤
- * │ Writer Hot Zone (独占 Cache Line)               │
- * │  - writer_.index_  (本地影子索引)               │
- * ├─────────────────────────────────────────────────┤
- * │ Reader Hot Zone (独占 Cache Line)               │
- * │  - reader_.index_  (本地缓存索引)               │
- * ├─────────────────────────────────────────────────┤
- * │ Slots Zone (数据存储区)                         │
- * │  - slots_[0..N-1]                               │
- * └─────────────────────────────────────────────────┘
- * ```
- *
- * PERF 注释测量条件：payload = { uint64_t id; double data[3]; } (32B),
- * buffer size = 8 slots, x86-64 (Intel i7), 两核 pinned.
- *
- * @tparam T 数据类型 (必须满足 TriviallyCopyable 概念)
- * @tparam Capacity 缓冲槽位数量，必须是 2 的幂。
- */
+/// @brief Multi-slot SeqLock-based evicting SPSC queue (primary template).
+///
+/// The writer is **wait-free**: it never blocks and silently overwrites
+/// the oldest unread entry when the queue is full.  The reader is
+/// **lock-free**: it performs an optimistic SeqLock read and retries on
+/// contention rather than blocking.
+///
+/// Memory layout (each zone occupies its own cache line):
+/// @code
+///   Global Zone   -- global_index_ (shared atomic, monotonic write counter)
+///   Writer Zone   -- shadow_global_index_ (writer-local cached index)
+///   Reader Zone   -- last_global_index_   (reader-local consumed index)
+///   Slots Zone    -- slots_[0..Capacity-1], each with its own seq lock
+/// @endcode
+///
+/// @note PERF comments in the source reference profiling on an x86-64
+///       Intel i7, payload 32 B, 8 slots, two pinned cores.
+///
+/// @tparam T        Element type -- must satisfy TrivialData (trivially
+///                  copyable, trivially destructible, default-initializable).
+/// @tparam Capacity Number of ring slots. Must be a power of two and > 1.
 template <typename T, size_t Capacity = 8>
     requires TrivialData<T>
 class alignas(Align<T>) EvictingQueue {
@@ -197,12 +224,15 @@ class alignas(Align<T>) EvictingQueue {
     // Writer 操作
     // ===========================================================================
 
-    /**
-     * @brief 零拷贝写入 (Visitor 模式)
-     *
-     * @tparam F 回调类型，签名应为 void(T& data)
-     * @param writer_func 用于在 Slot 原位初始化或修改数据的回调函数
-     */
+    /// @brief Zero-copy write via visitor pattern (wait-free).
+    ///
+    /// Acquires the next slot, locks it (odd seq), invokes @p writer_func
+    /// to populate the data in-place, then unlocks (even seq) and publishes
+    /// the global index. Overwrites the oldest entry when full.
+    ///
+    /// @tparam F Callable with signature `void(T& slot)`.
+    /// @param writer_func Callback that initialises or modifies the slot data.
+    /// @note Writer-side only. Exactly one thread may call produce/push/emplace.
     // global_index_ starts at 0 (sentinel: "no data written").
     // First write uses index 1. Reader checks idx > last_read.
     template <typename F>
@@ -243,19 +273,19 @@ class alignas(Align<T>) EvictingQueue {
         writer_.shadow_global_index_ = next_idx;
     }
 
-    /**
-     * @brief 写入新数据 (Copy/Move)
-     */
+    /// @brief Write a new element by copy or move (wait-free).
+    /// @tparam U Type assignable to `T&`.
+    /// @param val Value to store in the next slot.
     template <typename U>
         requires std::is_assignable_v<T&, U>
     void push(U&& val) noexcept {
         produce([&](T& slot) { slot = std::forward<U>(val); });
     }
 
-    /**
-     * @brief 原地构造写入 (Emplace)
-     */
-    /// @note TrivialData 蕴含 trivially_destructible，无需 destroy_at
+    /// @brief Emplace-construct a new element in-place (wait-free).
+    /// @tparam Args Constructor argument types for `T`.
+    /// @param args Arguments forwarded to `std::construct_at`.
+    /// @note TrivialData implies trivially_destructible, so no destroy_at is needed.
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     void emplace(Args&&... args) noexcept {
@@ -293,11 +323,17 @@ class alignas(Align<T>) EvictingQueue {
     // Reader 操作
     // ===========================================================================
 
-    /**
-     * @brief 核心：尝试零拷贝读取 (Visitor Pattern)
-     *
-     * @return true 读取成功; false 数据脏 (发生竞争)
-     */
+    /// @brief Try to read the latest element via zero-copy visitor (lock-free).
+    ///
+    /// Performs an optimistic SeqLock read of the most recently written slot.
+    /// If the read is consistent (no concurrent write detected), the visitor
+    /// is considered successful and the reader's consumed index advances.
+    ///
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @param visitor Callback invoked with a const reference to the slot data.
+    /// @return `true` if a consistent read was obtained; `false` if no new
+    ///         data is available or the read was torn by a concurrent write.
+    /// @note Reader-side only. Exactly one thread may call consume/pop/peek.
     template <typename F>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume_latest(F&& visitor) noexcept {
@@ -346,16 +382,15 @@ class alignas(Align<T>) EvictingQueue {
         return false;
     }
 
-    /**
-     * @brief 尝试读取最新数据 (值拷贝)
-     */
+    /// @brief Try to read the latest element into @p out by value copy.
+    /// @param out [out] Destination object, written only on success.
+    /// @return `true` if a consistent read was obtained; `false` otherwise.
     [[nodiscard]] bool try_pop_latest(T& out) noexcept {
         return try_consume_latest([&out](const T& data) { out = data; });
     }
 
-    /**
-     * @brief 尝试读取并返回可选值
-     */
+    /// @brief Try to read the latest element, returning it as an optional.
+    /// @return The element if a consistent read was obtained; `std::nullopt` otherwise.
     [[nodiscard]] std::optional<T> try_pop_latest() noexcept {
         std::optional<T> res;
         if (try_consume_latest([&res](const T& data) { res.emplace(data); })) {
@@ -461,9 +496,16 @@ class alignas(Align<T>) EvictingQueue {
         return res;
     }
 
-    /**
-     * @brief 阻塞式零拷贝读取 (自旋直到成功)
-     */
+    /// @brief Blocking zero-copy read (spins until a consistent read succeeds).
+    ///
+    /// Equivalent to calling `try_consume_latest` in a spin loop with
+    /// `cpu_relax()` between attempts.
+    ///
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @param visitor Callback invoked with a const reference to the slot data.
+    /// @warning Spins indefinitely -- use only on CPU-pinned threads with a
+    ///          known-active producer. Prefer `try_consume_latest_for` when
+    ///          unbounded blocking is unacceptable.
     template <typename F>
         requires std::invocable<F, const T&>
     void consume_latest(F&& visitor) noexcept {
@@ -472,16 +514,14 @@ class alignas(Align<T>) EvictingQueue {
         }
     }
 
-    /**
-     * @brief 阻塞式值拷贝读取 (自旋直到成功)
-     */
+    /// @brief Blocking value-copy read (spins until success).
+    /// @param out [out] Destination object.
     void pop_latest(T& out) noexcept {
         consume_latest([&out](const T& data) { out = data; });
     }
 
-    /**
-     * @brief 阻塞式读取并返回值 (自旋直到成功)
-     */
+    /// @brief Blocking read returning the element by value (spins until success).
+    /// @return The latest element.
     [[nodiscard]] T pop_latest() noexcept {
         T out;
         pop_latest(out);
@@ -492,15 +532,15 @@ class alignas(Align<T>) EvictingQueue {
     // Reader 带超时操作
     // ===========================================================================
 
-    /**
-     * @brief 带超时的零拷贝读取最新数据
-     *
-     * 自旋等待直到有新数据可用或超时。适用于非 CPU-pinned 线程。
-     *
-     * @param visitor 访问数据的回调 void(const T&)
-     * @param timeout 最大等待时间
-     * @return true 读取成功; false 超时
-     */
+    /// @brief Zero-copy read with timeout (spins until success or deadline).
+    ///
+    /// Suitable for non-pinned threads where unbounded spinning is unacceptable.
+    ///
+    /// @tparam F   Callable with signature `void(const T&)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback invoked on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` if a consistent read was obtained; `false` on timeout.
     // noexcept: steady_clock::now() is guaranteed not to throw on
     // Linux/macOS/Windows. If this assumption breaks on an exotic
     // platform, std::terminate will be called — preferable to
@@ -518,10 +558,10 @@ class alignas(Align<T>) EvictingQueue {
         return false;
     }
 
-    /**
-     * @brief 带超时的值拷贝读取
-     * @return true 读取成功; false 超时
-     */
+    /// @brief Value-copy read with timeout.
+    /// @param out [out] Destination object, written only on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` if a consistent read was obtained; `false` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_pop_latest_for(
         T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -529,10 +569,9 @@ class alignas(Align<T>) EvictingQueue {
             [&out](const T& data) { out = data; }, timeout);
     }
 
-    /**
-     * @brief 带超时的读取并返回可选值
-     * @return std::optional 包含数据（成功时）或空（超时时）
-     */
+    /// @brief Read with timeout, returning the element as an optional.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return The element on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<T> try_pop_latest_for(
         std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -546,9 +585,13 @@ class alignas(Align<T>) EvictingQueue {
     // 状态查询
     // ===========================================================================
 
-    /// 重置队列状态，丢弃所有未读数据。
+    /// @brief Reset the queue, discarding all unread data.
     ///
-    /// @warning 仅在确保无并发读写时调用。
+    /// Advances the reader's consumed index to match the writer's current
+    /// position so that subsequent reads see no pending data.
+    ///
+    /// @warning Not thread-safe. Call only when no concurrent readers/writers
+    ///          are active (e.g. during reconnection or initialization).
     void clear() noexcept {
         // 将 reader 的 last_global_index_ 追赶到 writer 的当前位置，
         // 使后续 try_consume_latest 认为没有新数据。
@@ -556,9 +599,8 @@ class alignas(Align<T>) EvictingQueue {
         reader_.last_global_index_.store(idx, std::memory_order_relaxed);
     }
 
-    /**
-     * @brief 获取缓冲区容量
-     */
+    /// @brief Return the fixed buffer capacity.
+    /// @return Compile-time constant `Capacity`.
     [[nodiscard]] static constexpr size_t capacity() noexcept {
         return Capacity;
     }
@@ -631,29 +673,20 @@ class alignas(Align<T>) EvictingQueue {
     }
 };
 
-/**
- * @brief SPSC 顺序锁 (SeqLock) - 单槽位特化 (N=1)
- *
- * 特性：
- * - Writer Wait-free: 写入者永远不会阻塞。
- * - Reader Lock-free: 读取者通过乐观读取，获取最新数据。
- *
- * 内存布局：
- * ```
- * ┌─────────────────────────────────────────────────┐
- * │ SeqLock Zone (全局共享 Cache Line)              │
- * │ - seq_  (版本号/锁)                             │
- * ├─────────────────────────────────────────────────┤
- * │ Reader Local Zone (独占 Cache Line)             │
- * │ - last_seq_ (本地缓存版本号)                    │
- * ├─────────────────────────────────────────────────┤
- * │ │ Data Zone (独占 Cache Line)                   │
- * │ - data_  (实际数据)                             │
- * └─────────────────────────────────────────────────┘
- * ```
- *
- * @tparam T 数据类型 (必须满足 TriviallyCopyable 概念)
- */
+/// @brief Single-slot SeqLock specialization of EvictingQueue (Capacity == 1).
+///
+/// A classic sequence-lock over a single data element. The writer is
+/// wait-free (increments an even/odd sequence counter around the write);
+/// the reader is lock-free (optimistic read with seq validation).
+///
+/// Memory layout (each zone on its own cache line):
+/// @code
+///   SeqLock Zone  -- seq_      (even = idle, odd = write-in-progress)
+///   Reader Zone   -- last_seq_ (last successfully read sequence number)
+///   Data Zone     -- data_     (the stored element)
+/// @endcode
+///
+/// @tparam T Element type -- must satisfy TrivialData.
 template <typename T>
     requires TrivialData<T>
 class alignas(Align<T>) EvictingQueue<T, 1> {
@@ -680,12 +713,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     // Writer
     // ===========================================================================
 
-    /**
-     * @brief 零拷贝写入 (Visitor 模式)
-     *
-     * @tparam F 回调类型，签名应为 void(T& data)
-     * @param writer_func 用于初始化或修改数据的回调函数
-     */
+    /// @brief Zero-copy write via visitor pattern (wait-free, Capacity=1).
+    ///
+    /// Locks the slot (seq becomes odd), invokes @p writer_func to
+    /// populate the data in-place, then unlocks (seq becomes even).
+    ///
+    /// @tparam F Callable with signature `void(T& slot)`.
+    /// @param writer_func Callback that initialises or modifies the data.
+    /// @note Writer-side only. Exactly one thread may call produce/push/emplace.
     template <typename F>
         requires std::invocable<F, T&>
     void produce(F&& writer_func) noexcept {
@@ -707,13 +742,19 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         seq_.store(seq + 2, std::memory_order_release);
     }
 
+    /// @brief Write a new element by copy or move (wait-free, Capacity=1).
+    /// @tparam U Type assignable to `T&`.
+    /// @param val Value to store.
     template <typename U>
         requires std::is_assignable_v<T&, U>
     void push(U&& val) noexcept {
         produce([&](T& slot) { slot = std::forward<U>(val); });
     }
 
-    /// @note TrivialData 蕴含 trivially_destructible，无需 destroy_at
+    /// @brief Emplace-construct a new element in-place (wait-free, Capacity=1).
+    /// @tparam Args Constructor argument types for `T`.
+    /// @param args Arguments forwarded to `std::construct_at`.
+    /// @note TrivialData implies trivially_destructible, so no destroy_at is needed.
     template <typename... Args>
         requires std::is_constructible_v<T, Args...>
     void emplace(Args&&... args) noexcept {
@@ -722,14 +763,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         });
     }
 
-    /// Batch write N items using a visitor pattern.
+    /// @brief Batch write N items using a visitor pattern (Capacity=1).
     ///
-    /// Calls visitor(T& slot, size_t index) for each of the N items.
+    /// Calls `visitor(T& slot, size_t index)` for each of the N items.
     /// Each write is individually sequenced (wait-free).
-    /// For Capacity=1, only the last item will be visible to the reader.
     ///
-    /// @param count    Number of items to write
-    /// @param visitor  Callable: void(T& slot, size_t index)
+    /// @param count   Number of items to write.
+    /// @param visitor Callable with signature `void(T& slot, size_t index)`.
+    /// @warning For Capacity=1, only the last item will be visible to the reader.
     template <typename F>
         requires std::invocable<F, T&, size_t>
     void produce_n(size_t count, F&& visitor) noexcept {
@@ -740,8 +781,9 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         }
     }
 
-    /// Batch push N items from a span.
-    /// For Capacity=1, only the last item will be visible to the reader.
+    /// @brief Batch push N items from a span (Capacity=1).
+    /// @param items Elements to write sequentially.
+    /// @warning For Capacity=1, only the last item will be visible to the reader.
     void push_n(std::span<const T> items) noexcept {
         produce_n(items.size(), [&](T& slot, size_t i) {
             slot = items[i];
@@ -752,6 +794,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     // Reader
     // ===========================================================================
 
+    /// @brief Try to read the latest element via zero-copy visitor (lock-free, Capacity=1).
+    ///
+    /// Performs an optimistic SeqLock read. Returns `false` if no new data
+    /// exists or the read was torn by a concurrent write.
+    ///
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @param visitor Callback invoked with a const reference to the data.
+    /// @return `true` if a consistent read was obtained; `false` otherwise.
     template <typename F>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume_latest(F&& visitor) noexcept {
@@ -776,10 +826,15 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return false;
     }
 
+    /// @brief Try to read the latest element into @p out by value copy (Capacity=1).
+    /// @param out [out] Destination object, written only on success.
+    /// @return `true` on consistent read; `false` otherwise.
     [[nodiscard]] bool try_pop_latest(T& out) noexcept {
         return try_consume_latest([&out](const T& slot) { out = slot; });
     }
 
+    /// @brief Try to read the latest element, returning it as an optional (Capacity=1).
+    /// @return The element on success; `std::nullopt` otherwise.
     [[nodiscard]] std::optional<T> try_pop_latest() noexcept {
         std::optional<T> res;
         if (try_consume_latest([&res](const T& slot) { res.emplace(slot); })) {
@@ -788,9 +843,15 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return std::nullopt;
     }
 
-    /// Zero-copy non-consuming peek for Capacity=1 specialization (Visitor pattern).
-    /// Reads the latest data without advancing last_seq_, so subsequent
-    /// try_consume_latest will still return the same value.
+    /// @brief Zero-copy non-consuming peek (Capacity=1, visitor pattern).
+    ///
+    /// Reads the latest data without advancing `last_seq_`, so subsequent
+    /// `try_consume_latest` will still return the same value. Useful for
+    /// pre-inspecting message type before deciding whether to consume.
+    ///
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @param visitor Callback invoked with a const reference to the data.
+    /// @return `true` on consistent read; `false` otherwise.
     template <typename F>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_peek_latest(F&& visitor) noexcept {
@@ -806,10 +867,15 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         // Note: last_seq_ is NOT advanced
     }
 
+    /// @brief Non-consuming peek by value copy (Capacity=1).
+    /// @param out [out] Destination object, written only on success.
+    /// @return `true` on consistent read; `false` otherwise.
     [[nodiscard]] bool try_peek_latest(T& out) noexcept {
         return try_peek_latest([&out](const T& data) { out = data; });
     }
 
+    /// @brief Non-consuming peek returning an optional (Capacity=1).
+    /// @return The element on success; `std::nullopt` otherwise.
     [[nodiscard]] std::optional<T> try_peek_latest() noexcept {
         std::optional<T> res;
         if (try_peek_latest([&res](const T& data) { res.emplace(data); })) {
@@ -818,7 +884,12 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return std::nullopt;
     }
 
-    /// 带超时的零拷贝查看最新数据但不标记为已消费 (Capacity=1 特化)
+    /// @brief Non-consuming peek with timeout (zero-copy visitor, Capacity=1).
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback invoked on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_peek_latest_for(
@@ -832,6 +903,10 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return false;
     }
 
+    /// @brief Non-consuming peek with timeout by value copy (Capacity=1).
+    /// @param out [out] Destination object.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_peek_latest_for(
         T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -839,6 +914,9 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
             [&out](const T& data) { out = data; }, timeout);
     }
 
+    /// @brief Non-consuming peek with timeout, returning an optional (Capacity=1).
+    /// @param timeout Maximum wall-clock wait.
+    /// @return The element on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<T> try_peek_latest_for(
         std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -848,6 +926,10 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return res;
     }
 
+    /// @brief Blocking zero-copy read (spins until success, Capacity=1).
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @param visitor Callback invoked with a const reference to the data.
+    /// @warning Spins indefinitely -- use only on pinned threads.
     template <typename F>
         requires std::invocable<F, const T&>
     void consume_latest(F&& visitor) noexcept {
@@ -856,10 +938,14 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         }
     }
 
+    /// @brief Blocking value-copy read (spins until success, Capacity=1).
+    /// @param out [out] Destination object.
     void pop_latest(T& out) noexcept {
         consume_latest([&out](const T& slot) { out = slot; });
     }
 
+    /// @brief Blocking read returning the element by value (Capacity=1).
+    /// @return The latest element.
     [[nodiscard]] T pop_latest() noexcept {
         T out;
         pop_latest(out);
@@ -870,6 +956,12 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     // Reader 带超时操作
     // ===========================================================================
 
+    /// @brief Zero-copy read with timeout (Capacity=1).
+    /// @tparam F Callable with signature `void(const T&)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback invoked on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const T&>
     [[nodiscard]] bool try_consume_latest_for(
@@ -883,6 +975,10 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return false;
     }
 
+    /// @brief Value-copy read with timeout (Capacity=1).
+    /// @param out [out] Destination object.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_pop_latest_for(
         T& out, std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -890,6 +986,9 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
             [&out](const T& data) { out = data; }, timeout);
     }
 
+    /// @brief Read with timeout, returning the element as an optional (Capacity=1).
+    /// @param timeout Maximum wall-clock wait.
+    /// @return The element on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<T> try_pop_latest_for(
         std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -903,18 +1002,19 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
     // 状态查询
     // ===========================================================================
 
-    /// 重置队列状态，丢弃所有未读数据。
-    ///
-    /// @warning 仅在确保无并发读写时调用。
+    /// @brief Reset the queue, discarding all unread data (Capacity=1).
+    /// @warning Not thread-safe. Call only when no concurrent readers/writers.
     void clear() noexcept {
         uint64_t seq = seq_.load(std::memory_order_acquire);
         last_seq_.store(seq, std::memory_order_relaxed);
     }
 
+    /// @brief Return the fixed capacity (always 1).
     [[nodiscard]] static constexpr size_t capacity() noexcept { return 1; }
 
-    /// Approximate number of unread entries (0 or 1 for single-slot).
-    /// The result may be stale by the time it is read in a concurrent context.
+    /// @brief Approximate number of unread entries (0 or 1 for single-slot).
+    /// @return 0 if no unread data or a write is in progress; 1 otherwise.
+    /// @note The result may be stale by the time it is read in a concurrent context.
     [[nodiscard]] size_t size_approx() const noexcept {
         uint64_t seq = seq_.load(std::memory_order_relaxed);
         // If writer is mid-write (odd seq) or no new data since last read, empty
@@ -922,25 +1022,27 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return 1;
     }
 
-    /// Check if there are no unread entries (approximate).
+    /// @brief Check if there are no unread entries (approximate).
     [[nodiscard]] bool empty() const noexcept { return size_approx() == 0; }
 
-    /// Check if the queue is at capacity (writes are overwriting unread data).
-    /// For single-slot, this is equivalent to !empty().
-    /// @note Approximate — suitable for monitoring, not synchronization.
+    /// @brief Check if the queue is at capacity (Capacity=1: equivalent to `!empty()`).
+    /// @note Approximate -- suitable for monitoring, not synchronization.
     [[nodiscard]] bool full() const noexcept { return size_approx() >= 1; }
 
-    /// Total number of writes performed since construction.
-    /// @note Relaxed load — safe to call from any thread for approximate monitoring.
+    /// @brief Total number of writes performed since construction.
+    /// @note Relaxed load -- safe to call from any thread for approximate monitoring.
     [[nodiscard]] uint64_t write_count() const noexcept {
         // seq_ increments by 2 per write (odd→even), so total writes = seq / 2
         return seq_.load(std::memory_order_relaxed) / 2;
     }
 
-    /// Approximate number of writes that overwrote unread data.
+    /// @brief Approximate number of writes that overwrote unread data.
+    ///
     /// Uses actual read count for accuracy (consistent with the primary
-    /// template's formula: max(0, writes - reads - Capacity)).
-    /// @note Approximate — derived from relaxed atomic loads.
+    /// template's formula: `max(0, writes - reads - Capacity)`).
+    ///
+    /// @return Estimated overwrite count.
+    /// @note Approximate -- derived from relaxed atomic loads.
     [[nodiscard]] uint64_t overwrite_count_approx() const noexcept {
         uint64_t writes = write_count();
         uint64_t reads  = read_count();
@@ -948,18 +1050,18 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
         return writes - reads - 1;
     }
 
-    /// Total number of successful reads performed since construction.
-    /// Useful for monitoring consumer throughput and computing discard rates.
+    /// @brief Total number of successful reads since construction (Capacity=1).
     /// @note Only accurate when called from the reader thread.
     [[nodiscard]] uint64_t read_count() const noexcept {
         // seq increments by 2 per write; last_seq_ tracks the seq after last read
         return last_seq_.load(std::memory_order_relaxed) / 2;
     }
 
-    /// Alias for the standalone EvictingQueueStats type.
+    /// @brief Alias for the standalone EvictingQueueStats type.
     using Stats = EvictingQueueStats;
 
-    /// Take a point-in-time statistics snapshot.
+    /// @brief Take a point-in-time statistics snapshot (Capacity=1).
+    /// @return EvictingQueueStats with current counters.
     [[nodiscard]] Stats stats() const noexcept {
         return Stats{
             .total_pushed = write_count(),
@@ -973,7 +1075,10 @@ class alignas(Align<T>) EvictingQueue<T, 1> {
 
 }  // namespace eph::containers
 
-// std::formatter specialization for EvictingQueueStats
+/// @brief std::formatter specialization for EvictingQueueStats.
+///
+/// Delegates to EvictingQueueStats::dump() so that the stats can be
+/// used directly with `std::format` and `std::print`.
 template <>
 struct std::formatter<eph::containers::EvictingQueueStats>
     : std::formatter<std::string> {

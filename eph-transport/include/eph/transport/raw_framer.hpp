@@ -35,6 +35,7 @@ inline spdlog::logger* raw_framer_logger() {
 /// application or a higher-level parser handles message boundaries.
 class RawFramer {
 public:
+    /// Maximum framing overhead in bytes (zero for pass-through).
     static constexpr size_t max_overhead() noexcept { return 0; }
 
     /// Encode raw bytes (pass-through copy).
@@ -52,6 +53,14 @@ public:
         return len;
     }
 
+    /// Decode raw bytes as a single frame (pass-through).
+    ///
+    /// Returns the entire available buffer as one frame. Returns
+    /// FrameError::kIncomplete only when no data is available.
+    ///
+    /// @param data  Input buffer
+    /// @param len   Available bytes in input buffer
+    /// @return Decoded frame spanning all available data, or kIncomplete if len == 0
     [[nodiscard]] std::expected<DecodedFrame, FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len == 0) return std::unexpected(FrameError::kIncomplete);

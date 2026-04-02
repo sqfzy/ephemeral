@@ -35,27 +35,28 @@ namespace eph::net::ws {
 // WebSocket constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// WebSocket frame opcodes (RFC 6455 section 5.2).
 namespace opcode {
-inline constexpr uint8_t kContinuation = 0x0;
-inline constexpr uint8_t kText         = 0x1;
-inline constexpr uint8_t kBinary       = 0x2;
-inline constexpr uint8_t kClose        = 0x8;
-inline constexpr uint8_t kPing         = 0x9;
-inline constexpr uint8_t kPong         = 0xA;
+inline constexpr uint8_t kContinuation = 0x0; ///< Continuation frame (fragmented message)
+inline constexpr uint8_t kText         = 0x1; ///< Text data frame (payload must be UTF-8)
+inline constexpr uint8_t kBinary       = 0x2; ///< Binary data frame
+inline constexpr uint8_t kClose        = 0x8; ///< Connection Close control frame
+inline constexpr uint8_t kPing         = 0x9; ///< Ping control frame (keepalive probe)
+inline constexpr uint8_t kPong         = 0xA; ///< Pong control frame (keepalive response)
 } // namespace opcode
 
-// Close status codes
+/// WebSocket close status codes (RFC 6455 section 7.4.1).
 namespace close_code {
-inline constexpr uint16_t kNormal           = 1000;
-inline constexpr uint16_t kGoingAway        = 1001;
-inline constexpr uint16_t kProtocolError    = 1002;
-inline constexpr uint16_t kUnsupportedData  = 1003;
-inline constexpr uint16_t kAbnormalClosure  = 1006;
-inline constexpr uint16_t kInvalidPayload   = 1007;
-inline constexpr uint16_t kPolicyViolation  = 1008;
-inline constexpr uint16_t kMessageTooBig    = 1009;
-inline constexpr uint16_t kMandatoryExtension = 1010;
-inline constexpr uint16_t kInternalError    = 1011;
+inline constexpr uint16_t kNormal           = 1000; ///< Normal closure (purpose fulfilled)
+inline constexpr uint16_t kGoingAway        = 1001; ///< Endpoint going away (server shutdown)
+inline constexpr uint16_t kProtocolError    = 1002; ///< Protocol error detected
+inline constexpr uint16_t kUnsupportedData  = 1003; ///< Unsupported data type received
+inline constexpr uint16_t kAbnormalClosure  = 1006; ///< Abnormal closure (no Close frame sent)
+inline constexpr uint16_t kInvalidPayload   = 1007; ///< Invalid payload data (e.g., bad UTF-8 in text frame)
+inline constexpr uint16_t kPolicyViolation  = 1008; ///< Policy violation
+inline constexpr uint16_t kMessageTooBig    = 1009; ///< Message too big for the endpoint to process
+inline constexpr uint16_t kMandatoryExtension = 1010; ///< Required extension not negotiated
+inline constexpr uint16_t kInternalError    = 1011; ///< Internal server error
 } // namespace close_code
 
 /// Human-readable name for a WebSocket opcode value.
@@ -160,17 +161,13 @@ constexpr std::string_view decode_error_name(DecodeError e) noexcept {
     return "unknown";
 }
 
-inline constexpr uint8_t kFinBit  = 0x80;
-inline constexpr uint8_t kMaskBit = 0x80;
+inline constexpr uint8_t kFinBit  = 0x80; ///< FIN bit mask in frame byte 0
+inline constexpr uint8_t kMaskBit = 0x80; ///< MASK bit mask in frame byte 1
 
-// Maximum header size: 2 (base) + 8 (extended length) + 4 (mask) = 14
-inline constexpr size_t kMaxFrameHeaderLen = 14;
-// Minimum header size: 2 (base) + 4 (mask) = 6
-inline constexpr size_t kMinFrameHeaderLen = 6;
-// RFC 6455 §5.2: the most significant bit of a 64-bit payload length MUST be 0
-inline constexpr uint64_t kMaxPayloadLen = (uint64_t{1} << 63) - 1;
-// RFC 6455 §5.5: control frame payload MUST NOT exceed 125 bytes
-inline constexpr size_t kMaxControlPayloadLen = 125;
+inline constexpr size_t kMaxFrameHeaderLen = 14;  ///< Max header: 2 (base) + 8 (extended length) + 4 (mask)
+inline constexpr size_t kMinFrameHeaderLen = 6;   ///< Min header: 2 (base) + 4 (mask key)
+inline constexpr uint64_t kMaxPayloadLen = (uint64_t{1} << 63) - 1; ///< Max payload (MSB must be 0, RFC 6455 section 5.2)
+inline constexpr size_t kMaxControlPayloadLen = 125; ///< Max control frame payload (RFC 6455 section 5.5)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Logger
@@ -424,14 +421,17 @@ constexpr size_t total_frame_size(uint64_t payload_len) noexcept {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Decoded WebSocket frame (zero-copy view into the original buffer).
+///
+/// All pointers reference the original input buffer passed to decode_frame().
+/// The caller must not free or modify that buffer while accessing this struct.
 struct DecodedFrame {
-    uint8_t        opcode       = 0;
-    bool           fin          = false;
-    bool           masked       = false;
-    uint64_t       payload_len  = 0;
-    const uint8_t* payload      = nullptr;  // Points into source buffer
-    uint8_t        mask_key[4]  = {};
-    size_t         total_len    = 0;  // Total frame bytes consumed
+    uint8_t        opcode       = 0;       ///< Frame opcode (text, binary, ping, pong, close, continuation)
+    bool           fin          = false;    ///< FIN bit: true if this is the final fragment
+    bool           masked       = false;    ///< True if payload is masked (client-to-server frames)
+    uint64_t       payload_len  = 0;       ///< Payload length in bytes
+    const uint8_t* payload      = nullptr; ///< Pointer into source buffer (zero-copy)
+    uint8_t        mask_key[4]  = {};      ///< 4-byte masking key (valid only if masked==true)
+    size_t         total_len    = 0;       ///< Total frame bytes consumed from the input buffer
 
     [[nodiscard]] bool is_control() const noexcept {
         return (opcode & 0x08) != 0;
@@ -746,8 +746,9 @@ struct std::formatter<eph::net::ws::DecodeError> : std::formatter<std::string_vi
 ///   std::format("opcode: {}", ws::Opcode{op});  // "opcode: PING"
 namespace eph::net::ws {
 
+/// @brief Lightweight wrapper around a raw uint8_t opcode for std::format support.
 struct Opcode {
-    uint8_t value;
+    uint8_t value; ///< Raw opcode value
 };
 
 /// Formatter wrapper for WebSocket close status codes.
@@ -757,8 +758,9 @@ struct Opcode {
 /// Usage:
 ///   uint16_t code = ws::close_code::kNormal;
 ///   std::format("close: {}", ws::CloseCode{code});  // "close: NORMAL_CLOSURE"
+/// @brief Lightweight wrapper around a raw uint16_t close code for std::format support.
 struct CloseCode {
-    uint16_t value;
+    uint16_t value; ///< Raw close status code
 };
 
 } // namespace eph::net::ws

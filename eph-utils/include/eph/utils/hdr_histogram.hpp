@@ -1,3 +1,15 @@
+/// @file hdr_histogram.hpp
+/// @brief High Dynamic Range (HDR) Histogram, scoped TSC timer, and latency statistics.
+///
+/// Implements Gil Tene's HdrHistogram algorithm for recording latency
+/// distributions with constant relative precision across a wide value range.
+/// Also provides `measure_tsc` / `ScopedTSC` convenience wrappers for
+/// TSC-based timing, and a `Stats` struct for aggregated latency summaries.
+///
+/// @note HdrHistogram is not thread-safe. For concurrent recording, use
+///       `ConcurrentRecorder` (recorder.hpp) which maintains per-thread
+///       histograms and merges on demand.
+
 #pragma once
 
 #include <algorithm>
@@ -21,20 +33,20 @@ namespace eph::utils {
 // measure_tsc / ScopedTSC — 便捷计时接口
 // ============================================================================
 
-/**
- * @brief 测量函数执行时间（便捷接口）
- *
- * 执行给定的可调用对象并返回其 CPU 周期数。
- *
- * @tparam Func 可调用类型（函数、lambda、函数对象等）
- * @tparam Args 参数类型
- * @param func 要测量的函数
- * @param args 传递给函数的参数
- * @return uint64_t 执行消耗的 CPU 周期数
- *
- * @note 不捕获返回值，仅适用于测量副作用函数
- * @note 单次测量可能受噪声影响，建议多次测量取统计值
- */
+/// @brief Measure the CPU cycle cost of invoking a callable.
+///
+/// Executes the given function and returns the elapsed TSC cycles.
+///
+/// @tparam Func Callable type (function, lambda, functor, etc.).
+/// @tparam Args Argument types forwarded to the callable.
+/// @param func  The callable to measure.
+/// @param args  Arguments forwarded to `func`.
+/// @return Elapsed CPU cycles (TSC delta).
+///
+/// @note Does not capture the callable's return value; intended for
+///       side-effecting functions.
+/// @note A single measurement may be noisy; record multiple samples
+///       into an `HdrHistogram` for statistical analysis.
 template <typename Func, typename... Args>
     requires std::invocable<Func, Args...>
 [[nodiscard]] inline uint64_t measure_tsc(Func&& func, Args&&... args) {
@@ -44,13 +56,12 @@ template <typename Func, typename... Args>
     return end - start;
 }
 
-/**
- * @brief RAII 风格的作用域计时器
- *
- * 在构造时开始计时，在析构时自动将经过的周期数写入输出变量。
- *
- * @warning 输出变量必须在计时器对象销毁前保持有效
- */
+/// @brief RAII scoped TSC timer.
+///
+/// Captures the TSC at construction; on destruction, writes the elapsed
+/// cycle count to the referenced output variable.
+///
+/// @warning The output variable must outlive the `ScopedTSC` instance.
 class ScopedTSC {
    public:
     explicit inline ScopedTSC(uint64_t& out_cycles)
@@ -70,27 +81,27 @@ class ScopedTSC {
 // HdrHistogram — 高动态范围直方图
 // ============================================================================
 
-/**
- * @brief 高动态范围直方图
- *
- * 使用对数刻度记录延迟分布，在宽范围内保持恒定的相对精度。
- * 基于 Gil Tene 的 HdrHistogram 算法。
- *
- * @note 非线程安全，设计用于单线程环境
- */
+/// @brief High Dynamic Range (HDR) Histogram.
+///
+/// Records value distributions using a logarithmic bucket structure that
+/// maintains constant relative precision across a wide range (e.g., 1 ns
+/// to 10 s). Based on Gil Tene's HdrHistogram algorithm.
+///
+/// @note Not thread-safe. Designed for single-thread recording; use
+///       `ConcurrentRecorder` for multi-threaded scenarios.
 class HdrHistogram {
    public:
     HdrHistogram() = default;
 
-    /**
-     * @brief 构造直方图
-     *
-     * @param lowest_trackable_value 最小可追踪值（>= 1）
-     * @param highest_trackable_value 最大可追踪值（>= 2 * lowest）
-     * @param significant_figures 有效数字位数（1-5，推荐 2-3）
-     *
-     * @throws std::invalid_argument 参数无效
-     */
+    /// @brief Construct a histogram with the given trackable range and precision.
+    ///
+    /// @param lowest_trackable_value   Minimum recordable value (must be >= 1).
+    /// @param highest_trackable_value  Maximum recordable value (must be >= 2 * lowest).
+    /// @param significant_figures      Number of significant value digits to
+    ///                                 preserve (1-5; recommended 2-3). Higher
+    ///                                 values use more memory.
+    ///
+    /// @throws std::invalid_argument if parameters are out of valid range.
     explicit HdrHistogram(uint64_t lowest_trackable_value,
                           uint64_t highest_trackable_value,
                           int significant_figures = 3) {
@@ -137,11 +148,12 @@ class HdrHistogram {
         counts_.resize(counts_len_, 0);
     }
 
-    /**
-     * @brief 记录单个样本
-     * @return true 记录成功，false 值超出范围
-     * @note 性能：约 5-10 纳秒/次
-     */
+    /// @brief Record a single sample value.
+    ///
+    /// @param value The value to record (must be within the trackable range).
+    /// @return `true` on success, `false` if the value is out of range
+    ///         (increments the dropped count).
+    /// @note Typical cost: ~5-10 ns per call.
     bool record(uint64_t value) noexcept {
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
@@ -163,9 +175,11 @@ class HdrHistogram {
         return true;
     }
 
-    /**
-     * @brief 批量记录相同值
-     */
+    /// @brief Record the same value multiple times.
+    ///
+    /// @param value The value to record.
+    /// @param count Number of times to record it.
+    /// @return `true` on success, `false` if out of range.
     bool record_values(uint64_t value, uint64_t count) noexcept {
         if (count == 0) return true;
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
@@ -229,6 +243,7 @@ class HdrHistogram {
         return true;
     }
 
+    /// @brief Reset the histogram, clearing all recorded samples and statistics.
     void reset() noexcept {
         std::fill(counts_.begin(), counts_.end(), 0);
         total_count_ = 0;
@@ -239,6 +254,11 @@ class HdrHistogram {
 
     // ========== 查询 API ==========
 
+    /// @brief Get the value at a given percentile.
+    ///
+    /// @param percentile Percentile in `[0.0, 100.0]`.
+    /// @return The value at the requested percentile (bucket midpoint),
+    ///         or 0 if the histogram is empty or the percentile is invalid.
     [[nodiscard]] uint64_t get_value_at_percentile(
         double percentile) const noexcept {
         if (percentile < 0.0 || percentile > 100.0 || total_count_ == 0)
@@ -266,9 +286,13 @@ class HdrHistogram {
         return max_value_;
     }
 
-    /**
-     * @brief 批量获取多个百分位（单次遍历）
-     */
+    /// @brief Get values at multiple percentiles in a single scan.
+    ///
+    /// More efficient than calling `get_value_at_percentile()` in a loop,
+    /// as it traverses the internal bucket array only once.
+    ///
+    /// @param percentiles Vector of percentile values in `[0.0, 100.0]`.
+    /// @return A vector of values (bucket midpoints), one per input percentile.
     [[nodiscard]] std::vector<uint64_t> get_percentiles(
         const std::vector<double>& percentiles) const {
         std::vector<uint64_t> results(percentiles.size(), 0);
@@ -414,6 +438,7 @@ class HdrHistogram {
         return results;
     }
 
+    /// @brief Total number of successfully recorded samples.
     [[nodiscard]] uint64_t get_total_count() const noexcept {
         return total_count_;
     }
@@ -430,11 +455,13 @@ class HdrHistogram {
         return dropped_count_;
     }
 
+    /// @brief Minimum recorded value, or 0 if the histogram is empty.
     [[nodiscard]] uint64_t get_min_value() const noexcept {
         return min_value_ == std::numeric_limits<uint64_t>::max() ? 0
                                                                   : min_value_;
     }
 
+    /// @brief Maximum recorded value, or 0 if the histogram is empty.
     [[nodiscard]] uint64_t get_max_value() const noexcept { return max_value_; }
 
     /// Count recorded samples in buckets whose representative values fall within [low, high].
@@ -467,6 +494,8 @@ class HdrHistogram {
         return count;
     }
 
+    /// @brief Arithmetic mean of all recorded values.
+    /// @return Mean value, or 0.0 if the histogram is empty.
     [[nodiscard]] double get_mean() const noexcept {
         if (total_count_ == 0) return 0.0;
 
@@ -484,6 +513,8 @@ class HdrHistogram {
         return sum / static_cast<double>(total_count_);
     }
 
+    /// @brief Population standard deviation of all recorded values.
+    /// @return Standard deviation, or 0.0 if the histogram is empty.
     [[nodiscard]] double get_std_deviation() const noexcept {
         if (total_count_ == 0) return 0.0;
 
@@ -504,6 +535,14 @@ class HdrHistogram {
         return std::sqrt(sum_squared_diff / static_cast<double>(total_count_));
     }
 
+    /// @brief Iterate over all non-empty buckets.
+    ///
+    /// Calls `func(value, count)` for each bucket that has at least one
+    /// recorded sample. `value` is the bucket's representative (lowest
+    /// equivalent) value.
+    ///
+    /// @tparam Func Callable with signature `void(uint64_t value, uint64_t count)`.
+    /// @param func  Callback invoked for each non-empty bucket.
     template <typename Func>
     void for_each_recorded_value(Func func) const {
         for (int32_t i = 0; i < counts_len_; ++i) {
@@ -696,10 +735,13 @@ class HdrHistogram {
         }
     }
 
-    /**
-     * @brief 合并另一个直方图
-     * @return true 合并成功，false 配置不兼容
-     */
+    /// @brief Merge another histogram's data into this one.
+    ///
+    /// Both histograms must have been constructed with the same parameters
+    /// (lowest/highest trackable values and sub-bucket configuration).
+    ///
+    /// @param other The histogram to merge from.
+    /// @return `true` on success, `false` if the histograms are incompatible.
     [[nodiscard]] bool merge(const HdrHistogram& other) noexcept {
         if (!is_compatible(other)) return false;
 
@@ -750,20 +792,19 @@ class HdrHistogram {
         return true;
     }
 
+    /// @brief Approximate total memory footprint of this histogram in bytes.
     [[nodiscard]] size_t get_memory_size() const noexcept {
         return sizeof(*this) + counts_.capacity() * sizeof(uint64_t);
     }
 
-    /**
-     * @brief 生成格式化的百分位统计报告
-     *
-     * 输出标准百分位（p50/p90/p99/p99.9/p99.99）以及基本统计量。
-     * 可选单位名称用于标注（如 "ns"、"us"、"cycles"）。
-     *
-     * @param title 报告标题
-     * @param unit  数值单位名称（默认为空）
-     * @return 格式化的多行报告字符串
-     */
+    /// @brief Generate a human-readable percentile report.
+    ///
+    /// Outputs standard percentiles (p50/p90/p99/p99.9/p99.99) plus
+    /// min, max, mean, and standard deviation.
+    ///
+    /// @param title Report title label.
+    /// @param unit  Optional unit suffix (e.g., "ns", "us", "cycles").
+    /// @return Multi-line formatted report string.
     [[nodiscard]] std::string report(std::string_view title = "Histogram",
                                      std::string_view unit = "") const {
         if (total_count_ == 0) {
@@ -897,6 +938,14 @@ class HdrHistogram {
         return counts_ == other.counts_;
     }
 
+    /// @brief Check whether another histogram has compatible configuration.
+    ///
+    /// Two histograms are compatible if they share the same lowest/highest
+    /// trackable values and internal bucket structure. Compatible histograms
+    /// can be merged or subtracted.
+    ///
+    /// @param other The histogram to compare configuration against.
+    /// @return `true` if configurations match, `false` otherwise.
     [[nodiscard]] bool is_compatible(const HdrHistogram& other) const noexcept {
         return lowest_trackable_value_ == other.lowest_trackable_value_ &&
                highest_trackable_value_ == other.highest_trackable_value_ &&
@@ -1009,20 +1058,22 @@ class HdrHistogram {
 // Stats — 延迟统计数据
 // ============================================================================
 
-/**
- * @brief 延迟统计数据（不含系统资源）
- */
+/// @brief Aggregated latency statistics (nanoseconds).
+///
+/// Produced by `Recorder::compute_stats()` and `ConcurrentRecorder::compute_stats()`.
+/// Contains count, average, min/max, percentiles, and standard deviation.
+/// Does not include system resource information (see `SystemResourceStats`).
 struct Stats {
-    std::string name;
-    uint64_t count;
-    double avg_ns;
-    double min_ns;
-    double max_ns;
-    double p50_ns;
-    double p90_ns;
-    double p99_ns;
-    double p999_ns;
-    double stddev_ns;
+    std::string name;  ///< Benchmark / measurement name.
+    uint64_t count;    ///< Number of recorded samples.
+    double avg_ns;     ///< Arithmetic mean latency (ns).
+    double min_ns;     ///< Minimum observed latency (ns).
+    double max_ns;     ///< Maximum observed latency (ns).
+    double p50_ns;     ///< 50th percentile (median) latency (ns).
+    double p90_ns;     ///< 90th percentile latency (ns).
+    double p99_ns;     ///< 99th percentile latency (ns).
+    double p999_ns;    ///< 99.9th percentile latency (ns).
+    double stddev_ns;  ///< Population standard deviation (ns).
 
     /// Human-readable multi-line summary for logging and diagnostics.
     [[nodiscard]] std::string dump() const {
@@ -1079,8 +1130,10 @@ struct Stats {
 
 }  // namespace eph::utils
 
-/// std::format support for Stats.
-/// Example: std::format("{}", stats) → "MyBench (1000 samples): avg=42.3ns p99=128.7ns"
+/// @brief `std::format` support for Stats.
+///
+/// Example: `std::format("{}", stats)` produces
+/// `"MyBench (n=1000): avg=42.3ns p50=40.0ns p99=128.7ns max=500.0ns"`.
 template <>
 struct std::formatter<eph::utils::Stats> : std::formatter<std::string> {
     auto format(const eph::utils::Stats& s, auto& ctx) const {

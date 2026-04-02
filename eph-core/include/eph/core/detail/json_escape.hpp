@@ -13,12 +13,20 @@
 
 namespace eph::core::detail {
 
-/// Escape a string for safe embedding in JSON values (RFC 8259 §7).
-/// Handles: \", \\, \b, \f, \n, \r, \t, and control chars U+0000–U+001F.
-/// Handles valid UTF-8 multibyte sequences (passed through unchanged).
-/// Invalid UTF-8 bytes (0x80–0xFF that are not part of a valid multi-byte
+/// @brief Escape a string for safe embedding in JSON values (RFC 8259 S7).
+///
+/// Handles: \", \\, \b, \f, \n, \r, \t, and control chars U+0000-U+001F.
+/// Valid UTF-8 multibyte sequences are passed through unchanged.
+/// Invalid UTF-8 bytes (0x80-0xFF that are not part of a valid multi-byte
 /// sequence) are escaped as \\uXXXX to prevent JSON injection.
-/// Returns the input unmodified when no escaping is needed (common fast path).
+///
+/// @param sv  The input string to escape. May contain arbitrary bytes.
+/// @return The escaped string. Returns a copy of the input unmodified when
+///         no escaping is needed (common fast path in ASCII-only data).
+///
+/// @note The fast path scans the entire input before allocating. For strings
+///       that need no escaping (the common case for exchange field values),
+///       the only cost is a single pass plus a string copy.
 [[nodiscard]] inline std::string json_escape(std::string_view sv) {
     // Fast path: scan for characters that need escaping
     bool needs_escape = false;

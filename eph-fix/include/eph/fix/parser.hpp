@@ -26,17 +26,20 @@
 
 namespace eph::fix {
 
-/// Default maximum allowed BodyLength (tag 9) value for FIX message parsing.
+/// @brief Default maximum allowed BodyLength (tag 9) value for FIX message parsing.
 /// Protects against malformed messages with absurdly large BodyLength values
 /// that would otherwise cause the parser/framer to wait for gigabytes of data.
 /// 1 MB is generous for any real FIX message (typical max is ~10 KB).
 /// Override via the MaxBodyLength template parameter on parse() or FixFramer.
 inline constexpr size_t kDefaultMaxBodyLength = 1 * 1024 * 1024;
 
-/// Backward-compatible alias.
+/// @brief Backward-compatible alias for kDefaultMaxBodyLength.
 inline constexpr size_t kMaxBodyLength = kDefaultMaxBodyLength;
 
+/// @brief Internal implementation details for the parser module.
 namespace detail {
+/// @brief Get or create the spdlog logger for the parser module.
+/// @return Shared pointer to the "fix.parser" logger.
 inline const std::shared_ptr<spdlog::logger>& fix_parser_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.parser");
@@ -50,7 +53,7 @@ inline const std::shared_ptr<spdlog::logger>& fix_parser_logger() {
 // JSON escaping helper for to_json() output
 // ---------------------------------------------------------------------------
 
-/// Append a JSON-escaped string (RFC 8259 §7) to an existing buffer.
+/// @brief Append a JSON-escaped string (RFC 8259 S7) to an existing buffer.
 /// Handles: \", \\, and control chars U+0000–U+001F.
 /// FIX field values are typically printable ASCII, so the fast path
 /// (no escaping needed) is the common case.
@@ -74,23 +77,31 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
 // Value-parsing helpers — shared by BasicMessageView and GroupEntry
 // ---------------------------------------------------------------------------
 
-/// Parse a single-character value. Returns nullopt if not exactly 1 char.
+/// @brief Parse a single-character value.
+/// @param sv  The string_view to parse.
+/// @return The character, or nullopt if not exactly 1 char.
 [[nodiscard]] inline std::optional<char> parse_char_value(std::string_view sv) noexcept {
     if (sv.size() != 1) return std::nullopt;
     return sv[0];
 }
 
-/// Parse a signed integer from decimal ASCII with overflow detection.
+/// @brief Parse a signed integer from decimal ASCII with overflow detection.
+/// @param sv  The string_view to parse.
+/// @return The parsed int64_t value, or nullopt on invalid input or overflow.
 [[nodiscard]] inline std::optional<int64_t> parse_int_value(std::string_view sv) noexcept {
     return eph::core::parse_int(sv);
 }
 
-/// Parse a double from decimal ASCII (integer + optional fractional part).
+/// @brief Parse a double from decimal ASCII (integer + optional fractional part).
+/// @param sv  The string_view to parse.
+/// @return The parsed double value, or nullopt on invalid input or overflow to infinity.
 [[nodiscard]] inline std::optional<double> parse_double_value(std::string_view sv) noexcept {
     return eph::core::parse_number(sv);
 }
 
-/// Parse a FIX boolean (Y/N).
+/// @brief Parse a FIX boolean (Y/N).
+/// @param sv  The string_view to parse (must be exactly "Y" or "N").
+/// @return true for "Y", false for "N", or nullopt for any other input.
 [[nodiscard]] inline std::optional<bool> parse_bool_value(std::string_view sv) noexcept {
     auto c = parse_char_value(sv);
     if (!c) return std::nullopt;
@@ -99,7 +110,11 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
     return std::nullopt;
 }
 
-/// Parse a FIX UTCTimestamp to nanoseconds since Unix epoch.
+/// @brief Parse a FIX UTCTimestamp to nanoseconds since Unix epoch.
+/// @param sv  The timestamp string in FIX format: "YYYYMMDD-HH:MM:SS[.fff[fff[fff]]]".
+/// @return Nanoseconds since Unix epoch, or nullopt on parse failure.
+/// @note Supports second (17 chars), millisecond (21 chars), microsecond (24 chars),
+///       and nanosecond (27 chars) precision. Leap seconds are not supported.
 [[nodiscard]] inline std::optional<uint64_t> parse_timestamp_value(std::string_view sv) noexcept {
     if (sv.size() != 17 && sv.size() != 21 &&
         sv.size() != 24 && sv.size() != 27) return std::nullopt;
@@ -175,7 +190,7 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
 
 } // namespace detail
 
-/// Error codes from parse().
+/// @brief Error codes from parse().
 enum class ParseError : uint8_t {
     kIncomplete,        ///< No complete message found (missing CheckSum tag)
     kInvalidFormat,     ///< Missing BeginString or BodyLength, or malformed tag=value
@@ -183,7 +198,9 @@ enum class ParseError : uint8_t {
     kFieldOverflow,     ///< Message contains more fields than kMaxFields capacity
 };
 
-/// Human-readable name for ParseError.
+/// @brief Human-readable name for ParseError.
+/// @param e  The error code to convert.
+/// @return A string_view description of the error.
 constexpr std::string_view parse_error_name(ParseError e) noexcept {
     switch (e) {
     case ParseError::kIncomplete:       return "incomplete";
@@ -194,13 +211,13 @@ constexpr std::string_view parse_error_name(ParseError e) noexcept {
     return "unknown";
 }
 
-/// A single FIX field: tag number + value (zero-copy view into source buffer).
+/// @brief A single FIX field: tag number + value (zero-copy view into source buffer).
 struct Field {
-    uint32_t         tag;
-    std::string_view value;
+    uint32_t         tag;    ///< FIX tag number (e.g. 55 for Symbol).
+    std::string_view value;  ///< Field value as a view into the original buffer.
 };
 
-/// Zero-copy view of a parsed FIX message.
+/// @brief Zero-copy view of a parsed FIX message.
 ///
 /// Stores up to MaxFields fields on the stack. All string_view values
 /// reference the original input buffer, so the buffer must outlive this object.
@@ -213,17 +230,19 @@ class BasicMessageView {
 public:
     static constexpr size_t kMaxFields = MaxFieldsV;
 
-    /// Number of parsed fields (excluding BeginString, BodyLength, CheckSum).
+    /// @brief Number of parsed fields (excluding BeginString, BodyLength, CheckSum).
     [[nodiscard]] size_t field_count() const noexcept { return count_; }
 
-    /// Total consumed bytes of the raw FIX message (including CheckSum SOH).
+    /// @brief Total consumed bytes of the raw FIX message (including CheckSum SOH).
     [[nodiscard]] size_t total_len() const noexcept { return total_len_; }
 
-    /// BeginString value (tag 8), e.g. "FIX.4.4". Points into the original buffer.
+    /// @brief BeginString value (tag 8), e.g. "FIX.4.4". Points into the original buffer.
     /// Useful for multi-version FIX handlers that need to dispatch by protocol version.
     [[nodiscard]] std::string_view begin_string() const noexcept { return begin_string_; }
 
-    /// Look up the first field with the given tag.
+    /// @brief Look up the first field with the given tag.
+    /// @param t  FIX tag number to search for.
+    /// @return The field value, or nullopt if the tag is not present.
     [[nodiscard]] std::optional<std::string_view> get(uint32_t t) const noexcept {
         for (size_t i = 0; i < count_; ++i) {
             if (fields_[i].tag == t) return fields_[i].value;
@@ -231,17 +250,18 @@ public:
         return std::nullopt;
     }
 
-    /// Check if a tag exists in the message.
+    /// @brief Check if a tag exists in the message.
+    /// @param t  FIX tag number to search for.
     [[nodiscard]] bool has(uint32_t t) const noexcept {
         return get(t).has_value();
     }
 
-    /// Convenience: get MsgType (tag 35) value.
+    /// @brief Convenience: get MsgType (tag 35) value.
     [[nodiscard]] std::optional<std::string_view> msg_type() const noexcept {
         return get(tag::MsgType);
     }
 
-    /// Look up a tag and return its single-character value.
+    /// @brief Look up a tag and return its single-character value.
     /// Returns nullopt if the tag is missing or the value is not exactly 1 char.
     /// Useful for FIX single-char enum fields (Side, OrdType, ExecType, etc.).
     [[nodiscard]] std::optional<char> get_char(uint32_t t) const noexcept {
@@ -250,7 +270,7 @@ public:
         return detail::parse_char_value(*sv);
     }
 
-    /// Look up a tag and parse its value as int64_t.
+    /// @brief Look up a tag and parse its value as int64_t.
     /// Returns nullopt if the value overflows int64_t range.
     [[nodiscard]] std::optional<int64_t> get_int(uint32_t t) const noexcept {
         auto sv = get(t);
@@ -258,7 +278,7 @@ public:
         return detail::parse_int_value(*sv);
     }
 
-    /// Look up a tag and parse its value as double.
+    /// @brief Look up a tag and parse its value as double.
     /// Returns nullopt if the value overflows to infinity.
     [[nodiscard]] std::optional<double> get_double(uint32_t t) const noexcept {
         auto sv = get(t);
@@ -266,7 +286,7 @@ public:
         return detail::parse_double_value(*sv);
     }
 
-    /// Look up a tag and parse its value as a FIX boolean (Y/N).
+    /// @brief Look up a tag and parse its value as a FIX boolean (Y/N).
     /// Returns nullopt if the tag is missing or the value is not exactly "Y" or "N".
     [[nodiscard]] std::optional<bool> get_bool(uint32_t t) const noexcept {
         auto sv = get(t);
@@ -274,23 +294,27 @@ public:
         return detail::parse_bool_value(*sv);
     }
 
-    /// Look up a tag and parse its value as a FIX UTCTimestamp.
+    /// @brief Look up a tag and parse its value as a FIX UTCTimestamp.
+    ///
     /// Expected format: "YYYYMMDD-HH:MM:SS" or "YYYYMMDD-HH:MM:SS.sss"
-    /// Returns nanoseconds since Unix epoch, or nullopt on parse failure.
+    /// @param t  FIX tag number (e.g. tag::SendingTime, tag::TransactTime).
+    /// @return Nanoseconds since Unix epoch, or nullopt on parse failure.
     [[nodiscard]] std::optional<uint64_t> get_timestamp(uint32_t t) const noexcept {
         auto sv = get(t);
         if (!sv) return std::nullopt;
         return detail::parse_timestamp_value(*sv);
     }
 
-    /// Random-access iterator over parsed fields.
+    /// @brief Random-access iterator over parsed fields.
     using iterator       = const Field*;
     using const_iterator = const Field*;
 
     [[nodiscard]] const_iterator begin() const noexcept { return fields_; }
     [[nodiscard]] const_iterator end()   const noexcept { return fields_ + count_; }
 
-    /// Iterate over all parsed fields, invoking callback(uint32_t tag, std::string_view value).
+    /// @brief Iterate over all parsed fields, invoking callback(uint32_t tag, std::string_view value).
+    /// @tparam Fn  Callable with signature `void(uint32_t, std::string_view)`.
+    /// @param fn   The callback to invoke for each field.
     template <typename Fn>
     void for_each(Fn&& fn) const {
         for (size_t i = 0; i < count_; ++i) {
@@ -298,7 +322,7 @@ public:
         }
     }
 
-    /// Count how many times a tag appears in the message.
+    /// @brief Count how many times a tag appears in the message.
     /// Useful for repeating groups (e.g. NoMDEntries, NoMDEntryTypes).
     [[nodiscard]] size_t count(uint32_t t) const noexcept {
         size_t n = 0;
@@ -308,7 +332,7 @@ public:
         return n;
     }
 
-    /// Look up the nth occurrence (0-based) of a tag.
+    /// @brief Look up the nth occurrence (0-based) of a tag.
     /// Returns nullopt if fewer than n+1 occurrences exist.
     ///
     /// @note For iterating all occurrences, prefer for_each_matching() which
@@ -324,7 +348,7 @@ public:
         return std::nullopt;
     }
 
-    /// Invoke callback for every occurrence of a tag. O(n) single pass.
+    /// @brief Invoke callback for every occurrence of a tag. O(n) single pass.
     /// Preferred over count()+get_nth() loop for iterating repeating groups.
     ///
     /// Usage:
@@ -338,7 +362,7 @@ public:
         }
     }
 
-    /// A single entry in a FIX repeating group — a span of Field pointers
+    /// @brief A single entry in a FIX repeating group -- a span of Field pointers
     /// from the delimiter tag to the next delimiter (or group end).
     struct GroupEntry {
         const Field* fields;  ///< Pointer to first field of this entry
@@ -398,7 +422,7 @@ public:
         [[nodiscard]] const Field* end()   const noexcept { return fields + count; }
     };
 
-    /// View over a FIX repeating group — provides structured iteration.
+    /// @brief View over a FIX repeating group -- provides structured iteration.
     ///
     /// FIX repeating groups follow the pattern:
     ///   count_tag=N | delim_tag=v1 | field=v | ... | delim_tag=v2 | field=v | ...
@@ -420,7 +444,7 @@ public:
         [[nodiscard]] const GroupEntry* end()   const noexcept { return entries + count; }
     };
 
-    /// Extract a repeating group by its count tag and delimiter tag.
+    /// @brief Extract a repeating group by its count tag and delimiter tag.
     ///
     /// @param count_tag  The tag that specifies the number of entries
     ///                   (e.g., tag::NoMDEntries = 268)
@@ -503,9 +527,11 @@ public:
     // Diagnostic output
     // -----------------------------------------------------------------------
 
-    /// Multi-line formatted dump for logging/debugging.
+    /// @brief Multi-line formatted dump for logging/debugging.
+    ///
     /// Includes MsgType name, field count, and all tag=value pairs with
     /// human-readable tag names.
+    /// @return A formatted multi-line string representation of the message.
     [[nodiscard]] std::string dump() const {
         auto mt = msg_type();
         std::string s;
@@ -526,7 +552,7 @@ public:
         return s;
     }
 
-    /// JSON-formatted message for monitoring system integration.
+    /// @brief JSON-formatted message for monitoring system integration.
     /// Produces {"msg_type":"D","field_count":5,"total_len":87,"fields":[...]}.
     /// Field values are JSON-escaped (RFC 8259 §7) to prevent malformed output.
     [[nodiscard]] std::string to_json() const {
@@ -564,7 +590,9 @@ public:
     size_t total_len_ = 0;
     std::string_view begin_string_{};
 
-    /// Append a field. Returns false if capacity exceeded.
+    /// @brief Append a field. Returns false if capacity exceeded.
+    /// @param t  FIX tag number.
+    /// @param v  Field value (view into original buffer).
     bool push(uint32_t t, std::string_view v) noexcept {
         if (count_ >= kMaxFields) return false;
         fields_[count_++] = {t, v};
@@ -572,10 +600,10 @@ public:
     }
 };
 
-/// Default MessageView with 128-field capacity (sufficient for most FIX messages).
+/// @brief Default MessageView with 128-field capacity (sufficient for most FIX messages).
 using MessageView = BasicMessageView<>;
 
-/// Parse a raw tag number from decimal ASCII digits.
+/// @brief Parse a raw tag number from decimal ASCII digits.
 /// Advances `p` past the '=' delimiter. Returns 0 on failure.
 /// FIX tag numbers are small (1–99999 in practice), but we guard against
 /// overflow from malformed input to avoid silent wraparound.
@@ -601,7 +629,10 @@ inline uint32_t parse_tag_number(const char*& p, const char* end) noexcept {
     return num;
 }
 
-/// Compute FIX checksum: sum of all bytes modulo 256.
+/// @brief Compute FIX checksum: sum of all bytes modulo 256.
+/// @param data  Pointer to the bytes to checksum.
+/// @param len   Number of bytes.
+/// @return The checksum value (0-255).
 inline uint8_t compute_checksum(const uint8_t* data, size_t len) noexcept {
     uint32_t sum = 0;
     for (size_t i = 0; i < len; ++i) {
@@ -610,7 +641,7 @@ inline uint8_t compute_checksum(const uint8_t* data, size_t len) noexcept {
     return static_cast<uint8_t>(sum & 0xFF);
 }
 
-/// Verify the checksum of a complete FIX message.
+/// @brief Verify the checksum of a complete FIX message.
 /// `data` must point to the start of the message ("8=..."),
 /// `len` must be the total message length including the trailing "10=XXX\x01".
 ///
@@ -659,7 +690,7 @@ inline bool verify_checksum(const uint8_t* data, size_t len) noexcept {
     return computed == static_cast<uint8_t>(declared);
 }
 
-/// Parse a FIX message from raw bytes.
+/// @brief Parse a FIX message from raw bytes.
 ///
 /// The parser scans for SOH (0x01) delimiters, extracts tag=value pairs,
 /// and validates the message structure (BeginString, BodyLength, CheckSum).
@@ -819,7 +850,7 @@ parse(const uint8_t* data, size_t len) noexcept {
     return view;
 }
 
-/// Parse consecutive FIX messages from a buffer, invoking a callback for each.
+/// @brief Parse consecutive FIX messages from a buffer, invoking a callback for each.
 ///
 /// Processes messages sequentially from the start of the buffer.
 /// Stops on the first parse error or when the buffer is exhausted.

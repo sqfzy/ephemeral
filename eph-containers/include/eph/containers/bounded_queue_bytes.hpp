@@ -1,5 +1,16 @@
 #pragma once
 
+/// @file bounded_queue_bytes.hpp
+/// @brief Byte-oriented bounded SPSC queue for variable-length messages.
+///
+/// Wraps BoundedQueue with a fixed-size `DataWrap` envelope that carries a
+/// payload byte array, a length field, and an optional timestamp. Unlike the
+/// evicting variant, writes **fail** (or spin-wait) when the queue is full,
+/// guaranteeing no data loss.
+///
+/// Typical use: reliable streaming of binary frames between threads where
+/// back-pressure is preferred over dropping stale data.
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -18,14 +29,18 @@ namespace eph::containers {
 // Standalone Stats type (enables std::formatter specialization)
 // ---------------------------------------------------------------------------
 
-/// Queue statistics snapshot for BoundedQueueBytes monitoring/debugging.
+/// @brief Point-in-time statistics snapshot for BoundedQueueBytes monitoring.
+///
+/// Obtain a snapshot via `BoundedQueueBytes::stats()`. Supports delta
+/// computation (`operator-`) and throughput calculation.
 struct BoundedQueueBytesStats {
     size_t total_pushed;   ///< Total messages ever pushed (monotonic)
     size_t total_popped;   ///< Total messages ever popped (monotonic)
     size_t current_size;   ///< Approximate current occupancy
     size_t capacity;       ///< Fixed capacity
 
-    /// Multi-line formatted dump for logging/debugging.
+    /// @brief Multi-line human-readable dump for logging/debugging.
+    /// @return Formatted string with capacity, utilization, and counters.
     [[nodiscard]] std::string dump() const {
         double utilization = capacity > 0
             ? static_cast<double>(current_size) * 100.0 / static_cast<double>(capacity)
@@ -40,14 +55,18 @@ struct BoundedQueueBytesStats {
             total_pushed, total_popped);
     }
 
-    /// JSON-formatted stats for monitoring system integration.
+    /// @brief JSON-formatted stats for monitoring system integration.
+    /// @return Compact single-line JSON string.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},\"total_popped\":{}}}",
             capacity, current_size, total_pushed, total_popped);
     }
 
-    /// Compute delta between two snapshots for interval-based monitoring.
+    /// @brief Compute delta between two snapshots for interval-based monitoring.
+    /// @param lhs Later snapshot (e.g. at time T2).
+    /// @param rhs Earlier snapshot (e.g. at time T1).
+    /// @return Per-field difference; `current_size` and `capacity` from @p lhs.
     [[nodiscard]] friend BoundedQueueBytesStats operator-(const BoundedQueueBytesStats& lhs,
                                                           const BoundedQueueBytesStats& rhs) noexcept {
         return BoundedQueueBytesStats{
@@ -58,8 +77,12 @@ struct BoundedQueueBytesStats {
         };
     }
 
-    /// Messages consumed per second over a measurement interval.
-    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
+    /// @brief Messages consumed per second over a measurement interval.
+    ///
+    /// Apply to a delta: `auto delta = t2 - t1; delta.throughput(elapsed_ns);`
+    ///
+    /// @param duration_ns Measurement interval in nanoseconds.
+    /// @return Throughput in messages/second, or 0.0 if @p duration_ns is zero.
     [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
         return duration_ns > 0
             ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
@@ -70,16 +93,27 @@ struct BoundedQueueBytesStats {
                                           const BoundedQueueBytesStats&) = default;
 };
 
+/// @brief Byte-oriented bounded SPSC queue for variable-length messages.
+///
+/// Each message is stored in a fixed-size `DataWrap` envelope containing an
+/// optional timestamp, a length, and a byte payload of up to @p MaxDataSize
+/// bytes. The underlying BoundedQueue applies back-pressure: writes fail
+/// (or spin-wait) when the queue is full -- no data is silently dropped.
+///
+/// @tparam MaxDataSize Maximum payload size in bytes per message (default 256).
+///                     Must fit in `uint32_t`.
+/// @tparam Capacity    Number of message slots (default 256). Must be a power of two.
 template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class BoundedQueueBytes {
     static_assert(MaxDataSize <= UINT32_MAX,
                   "MaxDataSize must fit in uint32_t (used for len field)");
 
    public:
+    /// @brief Fixed-size envelope wrapping a variable-length byte payload.
     struct DataWrap {
-        uint64_t ts;
-        uint32_t len;
-        std::array<uint8_t, MaxDataSize> data;
+        uint64_t ts;                              ///< User-supplied timestamp (0 if unset).
+        uint32_t len;                             ///< Actual payload length in bytes.
+        std::array<uint8_t, MaxDataSize> data;    ///< Payload buffer (only [0, len) is valid).
     };
 
     BoundedQueueBytes() = default;
@@ -89,9 +123,10 @@ class BoundedQueueBytes {
     // 非阻塞操作 (Writer)
     // ===========================================================================
 
-    /**
-     * @brief 尝试推入带时间戳的字节流
-     */
+    /// @brief Try to push a timestamped byte payload (non-blocking).
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @param ts      User-supplied timestamp.
+    /// @return `true` on success; `false` if the queue is full or payload is oversized.
     [[nodiscard]] bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;
@@ -104,9 +139,9 @@ class BoundedQueueBytes {
         });
     }
 
-    /**
-     * @brief 尝试推入字节流
-     */
+    /// @brief Try to push a byte payload without timestamp (non-blocking, ts=0).
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @return `true` on success; `false` if full or oversized.
     [[nodiscard]] bool try_push(std::span<const uint8_t> payload) noexcept {
         return try_push_wts(payload, 0);
     }
@@ -115,14 +150,13 @@ class BoundedQueueBytes {
     // 批量非阻塞操作 (Writer)
     // ===========================================================================
 
-    /**
-     * @brief 批量推入带时间戳的字节流 (all-or-nothing 语义)
-     *
-     * @param payloads 各消息的 payload span 数组
-     * @param timestamps 各消息的时间戳数组（与 payloads 等长）
-     * @param count 消息数量
-     * @return true 全部入队成功; false 空间不足或某个 payload 过大，无任何写入
-     */
+    /// @brief Batch push timestamped payloads (all-or-nothing, non-blocking).
+    ///
+    /// @param payloads   Array of payload spans (one per message).
+    /// @param timestamps Array of timestamps (parallel to @p payloads).
+    /// @param count      Number of messages.
+    /// @return `true` if all enqueued; `false` if insufficient space or any
+    ///         payload exceeds MaxDataSize (nothing written).
     [[nodiscard]] bool try_push_n_wts(const std::span<const uint8_t>* payloads,
                                        const uint64_t* timestamps,
                                        size_t count) noexcept {
@@ -136,9 +170,10 @@ class BoundedQueueBytes {
         });
     }
 
-    /**
-     * @brief 批量推入字节流 (all-or-nothing 语义, ts=0)
-     */
+    /// @brief Batch push payloads without timestamps (all-or-nothing, ts=0).
+    /// @param payloads Array of payload spans.
+    /// @param count    Number of messages.
+    /// @return `true` if all enqueued; `false` if insufficient space or oversized.
     [[nodiscard]] bool try_push_n(const std::span<const uint8_t>* payloads,
                                    size_t count) noexcept {
         for (size_t i = 0; i < count; ++i) {
@@ -155,15 +190,14 @@ class BoundedQueueBytes {
     // 批量非阻塞操作 (Reader)
     // ===========================================================================
 
-    /**
-     * @brief 批量零拷贝消费 (尽力而为语义)
-     *
-     * 消费最多 n 个消息，对每个消息调用 visitor(data_span, index)。
-     *
-     * @param n 最大消费数量
-     * @param visitor 回调 void(std::span<const uint8_t>, size_t index)
-     * @return 实际消费的消息数量
-     */
+    /// @brief Batch zero-copy consume (best-effort, non-blocking).
+    ///
+    /// Consumes up to N messages, invoking `visitor(data_span, index)` for each.
+    ///
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, size_t index)`.
+    /// @param n       Maximum number of messages to consume.
+    /// @param visitor Callback for each message.
+    /// @return Number of messages actually consumed.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, size_t>
     [[nodiscard]] size_t try_consume_n(size_t n, F&& visitor) noexcept {
@@ -174,13 +208,12 @@ class BoundedQueueBytes {
         });
     }
 
-    /**
-     * @brief 批量零拷贝消费带时间戳 (尽力而为语义)
-     *
-     * @param n 最大消费数量
-     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts, size_t index)
-     * @return 实际消费的消息数量
-     */
+    /// @brief Batch zero-copy consume with timestamps (best-effort).
+    ///
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts, size_t index)`.
+    /// @param n       Maximum number of messages.
+    /// @param visitor Callback for each message.
+    /// @return Number of messages actually consumed.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t, size_t>
     [[nodiscard]] size_t try_consume_n_wts(size_t n, F&& visitor) noexcept {
@@ -192,31 +225,29 @@ class BoundedQueueBytes {
         });
     }
 
-    /// Best-effort drain: consumes all elements visible at the time of the call.
-    /// Does NOT guarantee the queue is empty afterward if the producer is active.
-    /**
-     * @brief 一次性消费所有排队消息 (尽力而为语义)
-     *
-     * 等价于 try_consume_n(Capacity, visitor)，语义更清晰。
-     * 适用于关闭前 drain 或周期性批量处理。
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>, size_t index)
-     * @return 实际消费的消息数量
-     */
+    /// @brief Best-effort drain: consume all queued messages visible at call time.
+    ///
+    /// Equivalent to `try_consume_n(Capacity, visitor)`. Useful for shutdown
+    /// drain or periodic batch processing.
+    ///
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, size_t index)`.
+    /// @param visitor Callback for each message.
+    /// @return Number of messages consumed.
+    /// @note Does **not** guarantee the queue is empty afterward if the
+    ///       producer is concurrently active.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, size_t>
     [[nodiscard]] size_t try_consume_all(F&& visitor) noexcept {
         return try_consume_n(Capacity, std::forward<F>(visitor));
     }
 
-    /**
-     * @brief 一次性消费所有排队消息（带时间戳）
-     *
-     * 等价于 try_consume_n_wts(Capacity, visitor)。
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts, size_t index)
-     * @return 实际消费的消息数量
-     */
+    /// @brief Best-effort drain with timestamps.
+    ///
+    /// Equivalent to `try_consume_n_wts(Capacity, visitor)`.
+    ///
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts, size_t index)`.
+    /// @param visitor Callback for each message.
+    /// @return Number of messages consumed.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t, size_t>
     [[nodiscard]] size_t try_consume_all_wts(F&& visitor) noexcept {
@@ -227,18 +258,15 @@ class BoundedQueueBytes {
     // 非阻塞 Peek 操作 (Reader)
     // ===========================================================================
 
-    /**
-     * @brief 查看队首消息但不消费 (Reader 线程专用)
-     *
-     * 拷贝队首消息到外部 buffer 但不推进 head 指针。适用于消费前需要
-     * 预检查消息类型或决定路由逻辑的场景。
-     *
-     * @param out_buf 输出缓冲区
-     * @return 实际拷贝字节数；std::nullopt 表示队列为空
-     *
-     * @note 仅 Reader 线程可调用。多次调用返回同一消息，
-     *       直到 try_pop/try_consume 推进 head。
-     */
+    /// @brief Peek at the head message without consuming (reader-side only).
+    ///
+    /// Copies the head message into @p out_buf but does **not** advance the
+    /// head pointer. Useful for pre-inspecting message type before consuming.
+    ///
+    /// @param out_buf Pre-allocated output buffer.
+    /// @return Actual bytes copied on success; `std::nullopt` if empty.
+    /// @note Multiple calls return the same message until `try_pop`/`try_consume`
+    ///       advances the head.
     [[nodiscard]] std::optional<uint32_t> try_peek(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         bool success = try_peek_visit([&](std::span<const uint8_t> data) {
@@ -248,13 +276,10 @@ class BoundedQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 查看队首消息但不消费（带时间戳）
-     *
-     * @param out_buf 输出缓冲区
-     * @param out_ts [out] 时间戳
-     * @return 实际拷贝字节数；std::nullopt 表示队列为空
-     */
+    /// @brief Peek at the head message with timestamp (non-consuming).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param out_ts  [out] Timestamp of the message.
+    /// @return Actual bytes copied on success; `std::nullopt` if empty.
     [[nodiscard]] std::optional<uint32_t> try_peek_wts(std::span<uint8_t> out_buf,
                                                         uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
@@ -266,12 +291,10 @@ class BoundedQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 零拷贝查看队首消息但不消费 (Visitor 模式)
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>)
-     * @return true 队列非空且已回调; false 队列为空
-     */
+    /// @brief Zero-copy peek via visitor (non-consuming, reader-side only).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @param visitor Callback receiving a span over the payload bytes.
+    /// @return `true` if the queue is non-empty; `false` if empty.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_peek_visit(F&& visitor) noexcept {
@@ -282,12 +305,10 @@ class BoundedQueueBytes {
         });
     }
 
-    /**
-     * @brief 零拷贝查看队首消息但不消费（带时间戳, Visitor 模式）
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts)
-     * @return true 队列非空且已回调; false 队列为空
-     */
+    /// @brief Zero-copy peek with timestamp via visitor (non-consuming).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts)`.
+    /// @param visitor Callback receiving payload span and timestamp.
+    /// @return `true` if non-empty; `false` if empty.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
     [[nodiscard]] bool try_peek_visit_wts(F&& visitor) noexcept {
@@ -303,10 +324,10 @@ class BoundedQueueBytes {
     // 阻塞操作 (Writer)
     // ===========================================================================
 
-    /**
-     * @brief 阻塞式推入带时间戳的字节流
-     * @return 若 payload 过大无法存入则返回 false，否则自旋直到成功存入并返回 true
-     */
+    /// @brief Blocking push with timestamp (spins until space is available).
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @param ts      User-supplied timestamp.
+    /// @return `true` after successful enqueue; `false` only if payload exceeds MaxDataSize.
     [[nodiscard]] bool push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;
@@ -321,9 +342,9 @@ class BoundedQueueBytes {
         return true;
     }
 
-    /**
-     * @brief 阻塞式推入字节流
-     */
+    /// @brief Blocking push without timestamp (spins, ts=0).
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @return `true` on success; `false` if payload exceeds MaxDataSize.
     [[nodiscard]] bool push(std::span<const uint8_t> payload) noexcept {
         return push_wts(payload, 0);
     }
@@ -332,9 +353,9 @@ class BoundedQueueBytes {
     // 非阻塞操作 (Reader)
     // ===========================================================================
 
-    /**
-     * @brief 消费端：尝试拷贝数据到外部 buffer
-     */
+    /// @brief Try to pop the head message into a caller-supplied buffer (non-blocking).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @return Actual bytes copied on success; `std::nullopt` if empty.
     [[nodiscard]] std::optional<uint32_t> try_pop(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         bool success = try_consume([&](std::span<const uint8_t> data) {
@@ -346,9 +367,10 @@ class BoundedQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 消费端：尝试拷贝带时间戳的数据到外部 buffer
-     */
+    /// @brief Try to pop with timestamp into a caller-supplied buffer (non-blocking).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param out_ts  [out] Timestamp of the message.
+    /// @return Actual bytes copied on success; `std::nullopt` if empty.
     [[nodiscard]] std::optional<uint32_t> try_pop_wts(std::span<uint8_t> out_buf,
                                         uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
@@ -363,9 +385,10 @@ class BoundedQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 消费端：尝试零拷贝访问
-     */
+    /// @brief Try to consume the head message via zero-copy visitor (non-blocking).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @param visitor Callback receiving payload span.
+    /// @return `true` on success; `false` if empty.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_consume(F&& visitor) noexcept {
@@ -377,10 +400,11 @@ class BoundedQueueBytes {
         });
     }
 
-    /**
-     * @brief 消费端：尝试零拷贝访问（带时间戳）
-     * 由于去掉了 id，此接口不再提供 discarded 参数
-     */
+    /// @brief Try to consume the head message with timestamp (zero-copy, non-blocking).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts)`.
+    /// @param visitor Callback receiving payload span and timestamp.
+    /// @return `true` on success; `false` if empty.
+    /// @note No discard count is provided (bounded queue does not drop data).
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
     [[nodiscard]] bool try_consume_wts(F&& visitor) noexcept {
@@ -397,9 +421,9 @@ class BoundedQueueBytes {
     // 阻塞操作 (Reader)
     // ===========================================================================
 
-    /**
-     * @brief 消费端：阻塞式拷贝数据到外部 buffer
-     */
+    /// @brief Blocking pop into a caller-supplied buffer (spins until data).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @return Actual bytes copied.
     uint32_t pop(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         consume([&](std::span<const uint8_t> data) {
@@ -409,9 +433,10 @@ class BoundedQueueBytes {
         return copy_len;
     }
 
-    /**
-     * @brief 消费端：阻塞式拷贝带时间戳的数据到外部 buffer
-     */
+    /// @brief Blocking pop with timestamp (spins until data).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param out_ts  [out] Timestamp of the message.
+    /// @return Actual bytes copied.
     uint32_t pop_wts(std::span<uint8_t> out_buf, uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
         consume_wts([&](std::span<const uint8_t> data, uint64_t ts) {
@@ -422,9 +447,9 @@ class BoundedQueueBytes {
         return copy_len;
     }
 
-    /**
-     * @brief 消费端：阻塞式零拷贝访问
-     */
+    /// @brief Blocking zero-copy consume (spins until data).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @param visitor Callback receiving payload span.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
     void consume(F&& visitor) noexcept {
@@ -436,9 +461,9 @@ class BoundedQueueBytes {
         });
     }
 
-    /**
-     * @brief 消费端：阻塞式零拷贝访问（带时间戳）
-     */
+    /// @brief Blocking zero-copy consume with timestamp (spins until data).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts)`.
+    /// @param visitor Callback receiving payload span and timestamp.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
     void consume_wts(F&& visitor) noexcept {
@@ -455,10 +480,11 @@ class BoundedQueueBytes {
     // 带超时操作 (Writer)
     // ===========================================================================
 
-    /**
-     * @brief 带超时推入带时间戳的字节流
-     * @return true 成功; false 超时或 payload 过大
-     */
+    /// @brief Push with timestamp and timeout.
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @param ts      User-supplied timestamp.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout or oversized payload.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_push_wts_for(std::span<const uint8_t> payload, uint64_t ts,
                                         std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -471,9 +497,10 @@ class BoundedQueueBytes {
         }, timeout);
     }
 
-    /**
-     * @brief 带超时推入字节流
-     */
+    /// @brief Push with timeout (ts=0).
+    /// @param payload Message bytes.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout or oversized payload.
     template <typename Rep, typename Period>
     [[nodiscard]] bool try_push_for(std::span<const uint8_t> payload,
                                     std::chrono::duration<Rep, Period> timeout) noexcept {
@@ -484,9 +511,12 @@ class BoundedQueueBytes {
     // 带超时操作 (Reader)
     // ===========================================================================
 
-    /**
-     * @brief 带超时的零拷贝消费
-     */
+    /// @brief Zero-copy consume with timeout.
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_consume_for(F&& visitor,
@@ -499,9 +529,12 @@ class BoundedQueueBytes {
         }, timeout);
     }
 
-    /**
-     * @brief 带超时的零拷贝消费（带时间戳）
-     */
+    /// @brief Zero-copy consume with timestamp and timeout.
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
     [[nodiscard]] bool try_consume_wts_for(F&& visitor,
@@ -515,9 +548,10 @@ class BoundedQueueBytes {
         }, timeout);
     }
 
-    /**
-     * @brief 带超时的拷贝读取
-     */
+    /// @brief Pop with timeout into a caller-supplied buffer.
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return Actual bytes copied on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<uint32_t> try_pop_for(
         std::span<uint8_t> out_buf,
@@ -530,9 +564,11 @@ class BoundedQueueBytes {
         return ok ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 带超时的拷贝读取（带时间戳）
-     */
+    /// @brief Pop with timestamp and timeout into a buffer.
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param out_ts  [out] Timestamp.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return Actual bytes copied on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<uint32_t> try_pop_wts_for(
         std::span<uint8_t> out_buf, uint64_t& out_ts,
@@ -551,32 +587,37 @@ class BoundedQueueBytes {
     // 状态查询
     // ===========================================================================
 
-    /// 丢弃所有排队中的数据，将队列重置为空状态。
-    /// @warning 仅在确保无并发读写时调用。
+    /// @brief Discard all queued data, resetting the queue to empty.
+    /// @warning Not thread-safe. Call only when no concurrent readers/writers.
     void clear() noexcept { queue_.clear(); }
 
+    /// @brief Approximate number of queued messages.
     [[nodiscard]] size_t size() const noexcept { return queue_.size(); }
 
+    /// @brief Check if the queue is empty (approximate).
     [[nodiscard]] bool empty() const noexcept { return queue_.empty(); }
 
+    /// @brief Check if the queue is full (approximate).
     [[nodiscard]] bool full() const noexcept { return queue_.full(); }
 
+    /// @brief Return the fixed queue capacity.
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
 
-    /// 估计剩余可写入空间
+    /// @brief Estimated remaining write capacity.
     [[nodiscard]] size_t available_write() const noexcept { return queue_.available_write(); }
 
-    /// 估计可读取的消息数量
+    /// @brief Estimated number of messages available to read.
     [[nodiscard]] size_t available_read() const noexcept { return queue_.available_read(); }
 
     // ===========================================================================
     // 可观测性
     // ===========================================================================
 
-    /// Alias for the standalone BoundedQueueBytesStats type.
+    /// @brief Alias for the standalone BoundedQueueBytesStats type.
     using Stats = BoundedQueueBytesStats;
 
-    /// Take a point-in-time statistics snapshot.
+    /// @brief Take a point-in-time statistics snapshot.
+    /// @return BoundedQueueBytesStats with current counter values.
     [[nodiscard]] Stats stats() const noexcept {
         auto s = queue_.stats();
         return Stats{
@@ -593,7 +634,9 @@ class BoundedQueueBytes {
 
 }  // namespace eph::containers
 
-// std::formatter specialization for BoundedQueueBytesStats
+/// @brief std::formatter specialization for BoundedQueueBytesStats.
+///
+/// Delegates to BoundedQueueBytesStats::dump() for use with `std::format`/`std::print`.
 template <>
 struct std::formatter<eph::containers::BoundedQueueBytesStats>
     : std::formatter<std::string> {

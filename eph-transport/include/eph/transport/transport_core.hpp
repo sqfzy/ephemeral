@@ -42,46 +42,47 @@ namespace eph::net {
 template <TcpTransport TcpImpl>
 struct TransportCore {
     /// Factory callable: creates a new, already-connected TcpImpl.
+    /// Called during initial create() and on each reconnection attempt.
     using TcpFactory = std::function<
         std::expected<std::unique_ptr<TcpImpl>, std::string>()>;
 
     // -- Connection objects --
-    TcpFactory tcp_factory;
-    std::unique_ptr<TcpImpl> tcp;
-    std::unique_ptr<TlsSession<TcpImpl>> tls;  // only during handshake
-    std::unique_ptr<TlsRecordCrypto> crypto;
-    TransportConfig config;
+    TcpFactory tcp_factory;                              ///< Creates fresh TCP connections
+    std::unique_ptr<TcpImpl> tcp;                        ///< Active TCP connection
+    std::unique_ptr<TlsSession<TcpImpl>> tls;            ///< TLS session (alive only during handshake for key export)
+    std::unique_ptr<TlsRecordCrypto> crypto;             ///< Hot-path AEAD encryptor + decryptor
+    TransportConfig config;                              ///< User-supplied configuration (copied at create time)
 
-    // -- Lifecycle flags (multi-thread access) --
-    std::atomic<bool> running{false};
-    std::atomic<bool> reconnecting{false};
-    std::atomic<bool> closing{false};
-    std::atomic<bool> force_reconnect{false};
-    std::atomic<bool> close_requested{false};
+    // -- Lifecycle flags (accessed from multiple threads via atomics) --
+    std::atomic<bool> running{false};                    ///< True while the transport is operational
+    std::atomic<bool> reconnecting{false};               ///< True during reconnection (workers must pause)
+    std::atomic<bool> closing{false};                    ///< True after receiving a WS Close frame
+    std::atomic<bool> force_reconnect{false};            ///< Set by application to force a reconnect
+    std::atomic<bool> close_requested{false};            ///< Set by application to initiate graceful close
 
     // -- Connection metadata (written during handshake, read-only after) --
-    std::string tls_version{"none"};
-    std::string cipher_name{"none"};
-    std::string ws_subprotocol;
-    std::string remote_ip;
-    uint64_t last_handshake_ns{0};
-    uint64_t last_tcp_connect_ns{0};
-    uint64_t last_tls_handshake_ns{0};
-    uint64_t last_ws_upgrade_ns{0};
-    std::chrono::steady_clock::time_point created_at;
+    std::string tls_version{"none"};                     ///< Negotiated TLS version string (e.g., "TLSv1.3")
+    std::string cipher_name{"none"};                     ///< Negotiated cipher suite name
+    std::string ws_subprotocol;                          ///< Negotiated WebSocket subprotocol
+    std::string remote_ip;                               ///< Resolved remote IP address
+    uint64_t last_handshake_ns{0};                       ///< Total handshake duration (TCP + TLS + WS) in nanoseconds
+    uint64_t last_tcp_connect_ns{0};                     ///< TCP connect (factory call) duration in nanoseconds
+    uint64_t last_tls_handshake_ns{0};                   ///< TLS handshake duration in nanoseconds (0 if no TLS)
+    uint64_t last_ws_upgrade_ns{0};                      ///< WebSocket Upgrade duration in nanoseconds
+    std::chrono::steady_clock::time_point created_at;    ///< Timestamp when the transport was created
 
     // -- Close handshake state --
-    uint16_t pending_close_code{ws::close_code::kNormal};
-    std::string pending_close_reason;
+    uint16_t pending_close_code{ws::close_code::kNormal}; ///< Close status code for the pending close frame
+    std::string pending_close_reason;                      ///< Close reason string for the pending close frame
 
-    // -- Pong tracking (TX writes ping time, RX writes pong time) --
-    std::atomic<int64_t> last_pong_ns{0};
-    std::atomic<uint64_t> last_ping_tsc{0};
+    // -- Pong tracking (TX thread writes ping time, RX thread writes pong time) --
+    std::atomic<int64_t> last_pong_ns{0};                ///< Steady-clock nanoseconds of last pong received
+    std::atomic<uint64_t> last_ping_tsc{0};              ///< TSC timestamp of last ping sent (for RTT measurement)
 
-    // -- TSC conversion (cached at RX loop entry) --
-    double ns_per_cycle{0.0};
-    uint64_t current_arrival_tsc{0};
-    uint64_t current_decrypt_done_tsc{0};
+    // -- TSC conversion state (cached at RX loop entry, used by FrameProcessor) --
+    double ns_per_cycle{0.0};                            ///< TSC-to-nanosecond conversion factor
+    uint64_t current_arrival_tsc{0};                     ///< TSC at TCP segment arrival (set by RX loop)
+    uint64_t current_decrypt_done_tsc{0};                ///< TSC after TLS decryption completes
 
     // -----------------------------------------------------------------------
     // Connection establishment (control plane)
@@ -308,7 +309,10 @@ struct TransportCore {
                 config.ws_timeout.count())});
     }
 
-    /// Notify state change callbacks safely (catches exceptions).
+    /// Notify state change callbacks safely (catches and logs exceptions).
+    ///
+    /// @param event   The lifecycle event to report
+    /// @param detail  Context string (e.g., error message, attempt count)
     void notify_state(TransportEvent event,
                       std::string_view detail = {}) noexcept {
         if (config.on_state_change) {

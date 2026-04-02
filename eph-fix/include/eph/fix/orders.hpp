@@ -20,7 +20,10 @@
 
 namespace eph::fix {
 
+/// @brief Internal implementation details for the orders module.
 namespace detail {
+/// @brief Get or create the spdlog logger for the orders module.
+/// @return Raw pointer to the "fix.orders" logger (never null after first call).
 inline spdlog::logger* fix_orders_logger() noexcept {
     static auto l = [] {
         auto lg = spdlog::get("fix.orders");
@@ -40,21 +43,27 @@ inline uint64_t now_epoch_ns() noexcept {
 }
 } // namespace detail
 
-/// FIX Side (tag 54)
-enum class Side : char { Buy = '1', Sell = '2' };
-
-/// FIX Order type (tag 40)
-enum class OrdType : char { Market = '1', Limit = '2' };
-
-/// FIX Time in force (tag 59)
-enum class TimeInForce : char {
-    Day = '0',
-    GTC = '1',
-    IOC = '3',
-    FOK = '4',
+/// @brief FIX Side (tag 54) -- direction of the order.
+enum class Side : char {
+    Buy  = '1',  ///< Buy side ('1').
+    Sell = '2',  ///< Sell side ('2').
 };
 
-/// Build a NewOrderSingle (MsgType=D) message.
+/// @brief FIX Order type (tag 40) -- how the order is to be executed.
+enum class OrdType : char {
+    Market = '1',  ///< Market order -- fill immediately at best available price.
+    Limit  = '2',  ///< Limit order -- fill at the specified price or better.
+};
+
+/// @brief FIX Time in force (tag 59) -- how long the order remains active.
+enum class TimeInForce : char {
+    Day = '0',  ///< Day order -- expires at end of trading day.
+    GTC = '1',  ///< Good Till Cancel -- remains active until explicitly canceled.
+    IOC = '3',  ///< Immediate Or Cancel -- fill what you can, cancel the rest.
+    FOK = '4',  ///< Fill Or Kill -- fill entirely or cancel entirely.
+};
+
+/// @brief Build a NewOrderSingle (MsgType=D) message.
 ///
 /// Populates: MsgType, SenderCompID, TargetCompID, ClOrdID, Symbol, Side,
 /// TransactTime, OrderQty, OrdType, TimeInForce, and optionally Price
@@ -132,7 +141,7 @@ enum class TimeInForce : char {
     return len;
 }
 
-/// Build an OrderCancelRequest (MsgType=F) message.
+/// @brief Build an OrderCancelRequest (MsgType=F) message.
 ///
 /// Populates: MsgType, SenderCompID, TargetCompID, ClOrdID, OrigClOrdID,
 /// Symbol, Side, TransactTime.
@@ -181,7 +190,7 @@ enum class TimeInForce : char {
     return len;
 }
 
-/// Build an OrderCancelReplaceRequest (MsgType=G) message.
+/// @brief Build an OrderCancelReplaceRequest (MsgType=G) message.
 ///
 /// Populates: MsgType, SenderCompID, TargetCompID, ClOrdID, OrigClOrdID,
 /// Symbol, Side, TransactTime, OrderQty, OrdType, TimeInForce, and

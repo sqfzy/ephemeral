@@ -43,6 +43,10 @@ namespace eph::json::binance {
 
 namespace detail {
 
+/// @brief Get or create the shared spdlog logger for the Binance REST adapter.
+/// @return Non-owning pointer to the "json.binance_rest" logger instance.
+///
+/// Thread-safe: uses Meyers-singleton initialization.
 inline spdlog::logger* binance_rest_logger() {
     static auto l = [] {
         auto lg = spdlog::get("json.binance_rest");
@@ -56,8 +60,9 @@ inline spdlog::logger* binance_rest_logger() {
 // Depth array parser
 // ---------------------------------------------------------------------------
 
-/// Parse a double from a string_view.
-/// Returns nullopt on failure.
+/// @brief Parse a double from a string_view.
+/// @param sv  String representation of a decimal number.
+/// @return Parsed double, or nullopt on failure.
 inline std::optional<double> parse_double(std::string_view sv) noexcept {
     return eph::core::parse_number(sv);
 }
@@ -281,12 +286,15 @@ parse_server_time_response(std::string_view body) noexcept {
 // REST client
 // ---------------------------------------------------------------------------
 
-/// Configuration for BinanceRestClient.
-/// Defined outside the class to allow aggregate initialization as default arg.
+/// @brief Configuration for BinanceRestClient.
+///
+/// Defined outside the class to allow aggregate initialization as a
+/// default argument. All fields have sensible defaults for Binance
+/// production.
 struct BinanceRestConfig {
-    std::string host = "api.binance.com";
-    uint16_t port = 443;
-    std::chrono::milliseconds timeout{5000};
+    std::string host = "api.binance.com";          ///< Binance REST API hostname
+    uint16_t port = 443;                           ///< HTTPS port
+    std::chrono::milliseconds timeout{5000};       ///< HTTP request timeout
 };
 
 /// Typed Binance REST client for public read-only endpoints.
@@ -298,8 +306,11 @@ struct BinanceRestConfig {
 /// No authentication — these are all public endpoints.
 class BinanceRestClient {
 public:
-    using Config = BinanceRestConfig;
+    using Config = BinanceRestConfig;  ///< Alias for BinanceRestConfig.
 
+    /// @brief Construct a BinanceRestClient with the given configuration.
+    /// @param config  Connection parameters (host, port, timeout). Defaults to
+    ///                Binance production (api.binance.com:443, 5s timeout).
     explicit BinanceRestClient(Config config = {})
         : http_(eph::net::HttpClient::Config{
               .host = config.host,
@@ -312,7 +323,10 @@ public:
             config.host, config.port, config.timeout.count());
     }
 
-    /// Binance accepts only specific depth limit values.
+    /// @brief Binance accepts only specific depth limit values.
+    ///
+    /// Passing any other value to get_depth() will return an error before
+    /// making a network request.
     static constexpr std::array<int, 8> kValidDepthLimits = {5, 10, 20, 50, 100, 500, 1000, 5000};
 
     /// Get orderbook depth snapshot.
@@ -389,7 +403,7 @@ public:
     }
 
 private:
-    eph::net::HttpClient http_;
+    eph::net::HttpClient http_;  ///< Underlying HTTPS transport client.
 };
 
 } // namespace eph::json::binance

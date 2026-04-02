@@ -30,33 +30,38 @@ namespace eph::dpdk::arp {
 // ARP constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr uint16_t kEtherTypeArp      = 0x0806;
-inline constexpr uint16_t kArpHwTypeEthernet = 1;
-inline constexpr uint16_t kArpProtoIpv4      = 0x0800;
-inline constexpr uint16_t kArpOpRequest      = 1;
-inline constexpr uint16_t kArpOpReply        = 2;
-inline constexpr uint8_t  kArpHwAddrLen      = 6;  // MAC address length
-inline constexpr uint8_t  kArpProtoAddrLen   = 4;  // IPv4 address length
-inline constexpr size_t   kArpPacketLen      = 28;  // ARP payload size
+/// @name ARP protocol constants (RFC 826)
+/// @{
+inline constexpr uint16_t kEtherTypeArp      = 0x0806;  ///< EtherType for ARP
+inline constexpr uint16_t kArpHwTypeEthernet = 1;        ///< Hardware type: Ethernet
+inline constexpr uint16_t kArpProtoIpv4      = 0x0800;   ///< Protocol type: IPv4
+inline constexpr uint16_t kArpOpRequest      = 1;         ///< ARP operation: Request
+inline constexpr uint16_t kArpOpReply        = 2;         ///< ARP operation: Reply
+inline constexpr uint8_t  kArpHwAddrLen      = 6;         ///< MAC address length (bytes)
+inline constexpr uint8_t  kArpProtoAddrLen   = 4;         ///< IPv4 address length (bytes)
+inline constexpr size_t   kArpPacketLen      = 28;         ///< ARP payload size (bytes, after Ethernet header)
+/// @}
 
-// Broadcast MAC address
+/// @brief Ethernet broadcast MAC address (ff:ff:ff:ff:ff:ff).
 inline constexpr rte_ether_addr kBroadcastMac = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ARP packet structure (RFC 826)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// ARP packet payload (follows Ethernet header). 28 bytes, packed.
+/// @brief ARP packet payload (RFC 826). Follows the Ethernet header. 28 bytes, packed.
+///
+/// All multi-byte fields are in network byte order on the wire.
 struct ArpPacket {
-    uint16_t hw_type;         // Hardware type (1 = Ethernet)
-    uint16_t proto_type;      // Protocol type (0x0800 = IPv4)
-    uint8_t  hw_addr_len;     // Hardware address length (6)
-    uint8_t  proto_addr_len;  // Protocol address length (4)
-    uint16_t opcode;          // Operation: 1=request, 2=reply
-    uint8_t  sender_mac[6];   // Sender hardware address
-    uint32_t sender_ip;       // Sender protocol address (network byte order)
-    uint8_t  target_mac[6];   // Target hardware address
-    uint32_t target_ip;       // Target protocol address (network byte order)
+    uint16_t hw_type;         ///< Hardware type (1 = Ethernet)
+    uint16_t proto_type;      ///< Protocol type (0x0800 = IPv4)
+    uint8_t  hw_addr_len;     ///< Hardware address length (6 for Ethernet)
+    uint8_t  proto_addr_len;  ///< Protocol address length (4 for IPv4)
+    uint16_t opcode;          ///< Operation: 1 = request, 2 = reply
+    uint8_t  sender_mac[6];   ///< Sender hardware (MAC) address
+    uint32_t sender_ip;       ///< Sender protocol (IPv4) address, network byte order
+    uint8_t  target_mac[6];   ///< Target hardware (MAC) address (zero in requests)
+    uint32_t target_ip;       ///< Target protocol (IPv4) address, network byte order
 } __attribute__((packed));
 
 static_assert(sizeof(ArpPacket) == kArpPacketLen,

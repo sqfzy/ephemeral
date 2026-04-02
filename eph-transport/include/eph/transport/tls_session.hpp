@@ -41,13 +41,17 @@ namespace detail { using eph::core::detail::json_escape; }
 // TLS constants
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// TLS cryptographic constants shared across the transport layer.
+///
+/// These values are defined by the TLS 1.3 specification (RFC 8446)
+/// and the AES-GCM AEAD algorithm (NIST SP 800-38D).
 namespace tls_const {
 
-inline constexpr uint16_t kRecordHeaderLen   = 5;    // TLS record header
-inline constexpr uint16_t kAuthTagLen        = 16;   // AES-GCM auth tag
-inline constexpr uint16_t kMaxRecordPayload  = 16384; // TLS max fragment size
-inline constexpr uint16_t kTls13NonceLen     = 12;   // AES-GCM nonce length
-inline constexpr uint16_t kAes256KeyLen      = 32;   // AES-256 key length
+inline constexpr uint16_t kRecordHeaderLen   = 5;     ///< TLS record header size: content_type(1) + version(2) + length(2)
+inline constexpr uint16_t kAuthTagLen        = 16;    ///< AES-GCM authentication tag length in bytes
+inline constexpr uint16_t kMaxRecordPayload  = 16384; ///< Maximum TLS plaintext fragment size (2^14, RFC 8446 section 5.1)
+inline constexpr uint16_t kTls13NonceLen     = 12;    ///< AES-GCM nonce length in bytes (96 bits)
+inline constexpr uint16_t kAes256KeyLen      = 32;    ///< AES-256 key length in bytes (256 bits)
 
 } // namespace tls_const
 
@@ -55,26 +59,44 @@ inline constexpr uint16_t kAes256KeyLen      = 32;   // AES-256 key length
 // TLS hot state — cache-line-sized for data plane
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Key material (read-only after extraction) — kept on its own cache line.
+/// AES key and initialization vector pair, aligned to a single cache line.
+///
+/// Contains the AES-256 key (32 bytes) and AES-GCM IV (12 bytes) for one
+/// direction of the TLS session. Read-only after key extraction; padding
+/// fills the remainder of the 64-byte cache line to prevent false sharing.
+///
+/// @warning Contains sensitive cryptographic material. The owning TlsHotState
+///          destructor scrubs this struct via OPENSSL_cleanse.
 struct alignas(64) TlsKeyIv {
-    uint8_t key[tls_const::kAes256KeyLen]{};  // 32 bytes
-    uint8_t iv[tls_const::kTls13NonceLen]{};   // 12 bytes
+    uint8_t key[tls_const::kAes256KeyLen]{};  ///< AES-256 key (32 bytes)
+    uint8_t iv[tls_const::kTls13NonceLen]{};  ///< AES-GCM initialization vector (12 bytes)
     // 20 bytes padding to 64
 };
 static_assert(sizeof(TlsKeyIv) == 64, "TlsKeyIv must be exactly 1 cache line");
 
-/// Per-direction TLS state: key/iv on one cache line, seq on another.
-/// seq is written on every encrypt/decrypt call; separating it prevents
-/// false sharing that would invalidate the read-only key/iv.
+/// Per-direction TLS state spanning two cache lines for false-sharing avoidance.
+///
+/// Cache line 1 (TlsKeyIv): key and IV, read-only after handshake.
+/// Cache line 2 (seq): sequence number, incremented on every encrypt/decrypt.
+/// Separating these prevents the hot write to seq from invalidating the
+/// read-only key/IV in the L1 cache of another core.
 struct TlsKeyMaterial {
-    TlsKeyIv ki{};       // cache line 1: read-only after handshake
-    alignas(64) uint64_t seq = 0;  // cache line 2: hot write every packet
+    TlsKeyIv ki{};                 ///< Key + IV (cache line 1, read-only after handshake)
+    alignas(64) uint64_t seq = 0;  ///< Record sequence number (cache line 2, hot write path)
 };
 static_assert(sizeof(TlsKeyMaterial) == 128, "TlsKeyMaterial must be exactly 2 cache lines");
 
+/// Complete TLS session key state for both directions (TX and RX).
+///
+/// Total size: 4 cache lines (256 bytes). After handshake and key extraction,
+/// this struct is consumed by TlsEncryptor and TlsDecryptor (or the combined
+/// TlsRecordCrypto) to initialize their AEAD contexts.
+///
+/// @warning Contains sensitive key material. Destructor scrubs all key/IV data
+///          via OPENSSL_cleanse to prevent residual secrets in freed memory.
 struct TlsHotState {
-    TlsKeyMaterial write{};  // 2 cache lines for TX
-    TlsKeyMaterial read{};   // 2 cache lines for RX
+    TlsKeyMaterial write{};  ///< Write-direction key material (2 cache lines, used by TlsEncryptor)
+    TlsKeyMaterial read{};   ///< Read-direction key material (2 cache lines, used by TlsDecryptor)
 
     ~TlsHotState() {
         // Scrub all key material (keys + IVs) to prevent residual
@@ -101,16 +123,20 @@ static_assert(sizeof(TlsHotState) == 256, "TlsHotState must be exactly 4 cache l
 // TLS session config
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Configuration for a TLS 1.3 session.
+///
+/// Controls SNI hostname, certificate verification, CA trust store,
+/// mutual TLS client credentials, and handshake timeout.
 struct TlsConfig {
-    std::string hostname{};           // SNI hostname for TLS
-    std::string ca_cert_path{};       // CA certificate file (PEM), empty = use default
-    bool        verify_peer = true;   // Verify server certificate
-    std::chrono::milliseconds handshake_timeout{5000};
+    std::string hostname{};           ///< SNI hostname (sent during ClientHello for virtual hosting)
+    std::string ca_cert_path{};       ///< CA certificate file path (PEM format), empty = system default
+    bool        verify_peer = true;   ///< Verify server certificate chain and hostname
+    std::chrono::milliseconds handshake_timeout{5000}; ///< Maximum time for the TLS handshake
 
-    // Client certificate for mutual TLS (mTLS).
-    // Both must be set together; empty = no client certificate.
-    std::string client_cert_path{};   // Client certificate file (PEM)
-    std::string client_key_path{};    // Client private key file (PEM)
+    /// Client certificate for mutual TLS (mTLS).
+    /// Both must be set together; leave both empty to disable client authentication.
+    std::string client_cert_path{};   ///< Client certificate file path (PEM format)
+    std::string client_key_path{};    ///< Client private key file path (PEM format)
 
     /// Validate configuration, returning an error description or empty string on success.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
@@ -180,9 +206,25 @@ inline std::string ssl_error_string() {
 // TLS 1.3 HKDF-Expand-Label for traffic key derivation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// TLS 1.3 key derivation functions (HKDF-based).
+///
+/// Used to derive per-direction AES keys and IVs from the TLS traffic
+/// secrets exported after the handshake completes.
 namespace tls_keygen {
 
-/// HKDF-Expand-Label (RFC 8446 §7.1)
+/// HKDF-Expand-Label as specified in RFC 8446 section 7.1.
+///
+/// Derives output keying material from a secret using the TLS 1.3
+/// label format: "tls13 " + label.
+///
+/// @param digest     Hash algorithm (SHA-256 or SHA-384)
+/// @param secret     Input secret (traffic secret from handshake)
+/// @param secret_len Length of input secret
+/// @param label      Label string (e.g., "key" or "iv")
+/// @param label_len  Length of label string
+/// @param[out] out   Output buffer for derived material
+/// @param out_len    Desired output length
+/// @return true on success, false on failure
 inline bool hkdf_expand_label(const EVP_MD* digest,
                                 const uint8_t* secret, size_t secret_len,
                                 const char* label, size_t label_len,
@@ -208,7 +250,18 @@ inline bool hkdf_expand_label(const EVP_MD* digest,
     return HKDF_expand(out, out_len, digest, secret, secret_len, info, pos) == 1;
 }
 
-/// Derive AES key + IV from a TLS 1.3 traffic secret.
+/// Derive AES key and IV from a TLS 1.3 traffic secret.
+///
+/// Uses HKDF-Expand-Label with "key" and "iv" labels to extract the
+/// per-direction encryption key and initialization vector.
+///
+/// @param secret      Traffic secret (client_application_traffic_secret or server_...)
+/// @param secret_len  Length of traffic secret (32 for SHA-256, 48 for SHA-384)
+/// @param[out] key    Output AES key buffer
+/// @param key_len     Desired key length (16 for AES-128, 32 for AES-256)
+/// @param[out] iv     Output IV buffer
+/// @param iv_len      Desired IV length (typically 12 for AES-GCM)
+/// @return true if both key and IV derivations succeeded
 inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
                            uint8_t* key, size_t key_len,
                            uint8_t* iv, size_t iv_len) noexcept {

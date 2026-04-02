@@ -19,6 +19,13 @@
 namespace eph::net {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the LengthPrefixFramer.
+///
+/// Creates a colored stdout logger named "core.framer" on first call.
+/// If the logger already exists (e.g., registered by a previous shared library
+/// load), returns the existing instance.
+///
+/// @return Pointer to the spdlog logger instance. Never null after initialization.
 inline spdlog::logger* framer_logger() {
     static auto l = [] {
         try {
@@ -31,18 +38,39 @@ inline spdlog::logger* framer_logger() {
 }
 } // namespace detail
 
-/// Length-prefix framer: 2-byte big-endian length header.
+/// @brief Length-prefix framer: 2-byte big-endian length header.
 ///
 /// Encodes: [len_hi][len_lo][payload...]
 /// Decodes: reads 2-byte length, waits for full payload, returns DecodedFrame.
 /// msg_type is set to the first payload byte (protocol message type).
+///
+/// Satisfies the MessageFramer concept. Stateless -- the compiler eliminates
+/// the unused `this` pointer at -O2.
+///
+/// @warning Zero-length payloads are rejected by both encode() and decode()
+///          because msg_type is derived from payload[0]. Protocols needing
+///          heartbeats should use a 1-byte sentinel message instead.
 class LengthPrefixFramer {
 public:
+    /// @brief Maximum framing overhead in bytes (2-byte length prefix).
+    /// @return Always returns 2.
     static constexpr size_t max_overhead() noexcept { return 2; }
 
-    /// Maximum payload length representable in a 2-byte big-endian header.
+    /// @brief Maximum payload length representable in a 2-byte big-endian header (65535).
     static constexpr size_t kMaxPayloadLen = 65535;
 
+    /// @brief Encode a payload into length-prefixed wire format.
+    ///
+    /// Writes a 2-byte big-endian length prefix followed by the payload bytes.
+    ///
+    /// @param out       Output buffer. Must have capacity for at least len + 2 bytes.
+    /// @param data      Pointer to the payload data to encode.
+    /// @param len       Payload length in bytes. Must be in [1, kMaxPayloadLen].
+    /// @param msg_type  Unused by this framer (ignored).
+    /// @return Total bytes written (2 + len), or 0 on invalid arguments.
+    ///
+    /// @warning Returns 0 (not an error type) on failure. Callers must check
+    ///          the return value before advancing write pointers.
     [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         // Guard: payload must fit in a uint16_t length field.
@@ -66,6 +94,15 @@ public:
         return 2 + len;
     }
 
+    /// @brief Decode a length-prefixed frame from the receive buffer.
+    ///
+    /// Reads the 2-byte big-endian length prefix, waits for the full payload,
+    /// and returns a DecodedFrame with msg_type set to the first payload byte.
+    ///
+    /// @param data  Input buffer (may contain partial or multiple frames).
+    /// @param len   Available bytes in the input buffer.
+    /// @return DecodedFrame on success, FrameError::kIncomplete if more data
+    ///         is needed, or FrameError::kInvalidFormat for zero-length payloads.
     [[nodiscard]] std::expected<DecodedFrame, FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len < 2) {

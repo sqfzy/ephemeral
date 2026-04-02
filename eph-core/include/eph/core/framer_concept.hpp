@@ -17,14 +17,16 @@
 
 namespace eph::net {
 
-/// Error codes returned by MessageFramer::decode().
+/// @brief Error codes returned by MessageFramer::decode().
 enum class FrameError : uint8_t {
     kIncomplete,       ///< Need more data (partial frame in buffer)
     kInvalidFormat,    ///< Malformed frame (corrupt header, bad length)
     kPayloadTooLarge,  ///< Payload exceeds maximum allowed size
 };
 
-/// Human-readable name for FrameError.
+/// @brief Return a human-readable name for a FrameError value.
+/// @param e  The FrameError value to convert.
+/// @return A string_view of the error name (e.g., "incomplete", "invalid format").
 constexpr std::string_view frame_error_name(FrameError e) noexcept {
     switch (e) {
     case FrameError::kIncomplete:      return "incomplete";
@@ -34,12 +36,14 @@ constexpr std::string_view frame_error_name(FrameError e) noexcept {
     return "unknown";
 }
 
-// ADL alias for ErrorEnum concept satisfaction
+/// @brief ADL alias for ErrorEnum concept satisfaction.
+/// @param e  The FrameError value to convert.
+/// @return A string_view of the error name.
 constexpr std::string_view error_name(FrameError e) noexcept {
     return frame_error_name(e);
 }
 
-/// Decoded frame — zero-copy view into the receive buffer.
+/// @brief Decoded frame -- zero-copy view into the receive buffer.
 ///
 /// @note Lifetime: `payload` points into the original receive buffer (zero-copy view).
 ///       The pointer is valid only until the next call to `decode()` or until the
@@ -58,7 +62,7 @@ struct DecodedFrame {
     size_t         total_len;    ///< Total consumed bytes including frame header
 };
 
-/// Concept for pluggable message framers.
+/// @brief Concept for pluggable message framers.
 ///
 /// A MessageFramer translates between application payloads and wire-format
 /// framed bytes. It must provide:
@@ -99,7 +103,7 @@ concept MessageFramer = requires(F f, uint8_t* out, const uint8_t* in,
 
 } // namespace eph::net
 
-/// std::formatter specialization for FrameError (via ErrorEnumFormatter).
+/// @brief std::formatter specialization for FrameError (via ErrorEnumFormatter).
 template <>
 struct std::formatter<eph::net::FrameError>
     : eph::net::ErrorEnumFormatter<eph::net::FrameError> {};

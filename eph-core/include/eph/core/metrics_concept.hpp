@@ -22,14 +22,15 @@
 
 namespace eph::core {
 
-/// A single tag (key-value pair) for metric dimensional labeling.
+/// @brief A single tag (key-value pair) for metric dimensional labeling.
+///
 /// Views into caller-owned storage — does not allocate.
 struct MetricTag {
-    std::string_view key;
-    std::string_view value;
+    std::string_view key;   ///< Tag key (e.g., "transport", "symbol").
+    std::string_view value; ///< Tag value (e.g., "dpdk", "btcusdt").
 };
 
-/// MetricsSink concept — any type that can receive counter, gauge, and
+/// @brief MetricsSink concept — any type that can receive counter, gauge, and
 /// histogram metric values with optional dimensional tags.
 ///
 /// Implementations must provide:
@@ -40,6 +41,8 @@ struct MetricTag {
 ///
 /// All methods should be noexcept — metrics collection must never
 /// disrupt the data path.
+///
+/// @tparam T  Type to check against the MetricsSink requirements.
 template <typename T>
 concept MetricsSink = requires(T& sink,
     std::string_view name,
@@ -50,16 +53,21 @@ concept MetricsSink = requires(T& sink,
     { sink.flush() } -> std::same_as<void>;
 };
 
-/// Zero-cost metrics sink — all methods are inline noexcept no-ops.
+/// @brief Zero-cost metrics sink — all methods are inline noexcept no-ops.
+///
 /// When used as a template parameter, the compiler eliminates all
 /// metric push calls entirely at -O2.
 struct NullSink {
+    /// @brief No-op counter push.
     void push_counter(std::string_view, int64_t,
                       std::span<const MetricTag> = {}) noexcept {}
+    /// @brief No-op gauge push.
     void push_gauge(std::string_view, double,
                     std::span<const MetricTag> = {}) noexcept {}
+    /// @brief No-op histogram push.
     void push_histogram(std::string_view, double,
                         std::span<const MetricTag> = {}) noexcept {}
+    /// @brief No-op flush.
     void flush() noexcept {}
 };
 

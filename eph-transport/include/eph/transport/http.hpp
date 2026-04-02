@@ -126,14 +126,17 @@ inline bool iequals(std::string_view a, std::string_view b) noexcept {
 // HTTP response parser (minimal — only handles 101 Switching Protocols)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parsed HTTP response (minimal fields for WebSocket upgrade).
+/// Parsed HTTP response fields relevant to the WebSocket Upgrade handshake.
+///
+/// Only the fields needed to validate a 101 Switching Protocols response
+/// are extracted; all other headers are ignored.
 struct UpgradeResponse {
-    int         status_code = 0;
-    std::string sec_ws_accept{};
-    std::string sec_ws_protocol{};  // Negotiated subprotocol (may be empty)
-    bool        has_upgrade = false;
-    bool        has_connection_upgrade = false;
-    size_t      header_end_offset = 0; // Position after "\r\n\r\n"
+    int         status_code = 0;          ///< HTTP status code (101 expected)
+    std::string sec_ws_accept{};          ///< Sec-WebSocket-Accept header value
+    std::string sec_ws_protocol{};        ///< Negotiated subprotocol (may be empty)
+    bool        has_upgrade = false;      ///< True if "Upgrade: websocket" header present
+    bool        has_connection_upgrade = false; ///< True if "Connection" header contains "upgrade" token
+    size_t      header_end_offset = 0;    ///< Byte position after the "\\r\\n\\r\\n" header terminator
 };
 
 /// Parse an HTTP response looking for 101 Switching Protocols.
@@ -261,8 +264,14 @@ parse_upgrade_response(const char* data, size_t len) {
     return result;
 }
 
-/// Validate the Sec-WebSocket-Accept header against our key.
-/// Accept = Base64(SHA-1(key + GUID)) per RFC 6455 §4.2.2.
+/// Validate the Sec-WebSocket-Accept header against the client key.
+///
+/// Computes Base64(SHA-1(ws_key + GUID)) per RFC 6455 section 4.2.2 and
+/// compares it with the server's Accept header value.
+///
+/// @param ws_key        The Sec-WebSocket-Key sent in the Upgrade request
+/// @param accept_value  The Sec-WebSocket-Accept value from the server's response
+/// @return true if the accept value matches the expected hash
 inline bool validate_ws_accept(std::string_view ws_key,
                                 std::string_view accept_value) {
     static constexpr std::string_view kMagicGuid =

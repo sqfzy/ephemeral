@@ -30,6 +30,12 @@
 namespace eph::json::binance {
 
 namespace detail {
+/// @brief Get or create the shared spdlog logger for the Binance adapter.
+/// @return Non-owning pointer to the "json.binance" logger instance.
+///
+/// Thread-safe: uses Meyers-singleton initialization. The logger is
+/// created on first call and reused thereafter. If the name is already
+/// registered (e.g., by a prior TU), the existing logger is returned.
 inline spdlog::logger* binance_logger() {
     static auto l = [] {
         try {
@@ -46,10 +52,13 @@ inline spdlog::logger* binance_logger() {
 // Symbol extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Extract symbol name from a Binance stream suffix.
-/// "btcusdt@bookTicker" → "btcusdt"
-/// "ethusdt@trade" → "ethusdt"
-/// Returns the full input if no '@' found.
+/// @brief Extract the symbol name from a Binance stream suffix.
+///
+/// Splits on the first '@' character and returns the prefix.
+/// Examples: "btcusdt@bookTicker" -> "btcusdt", "ethusdt@trade" -> "ethusdt".
+///
+/// @param stream  Stream name (e.g., "btcusdt@bookTicker")
+/// @return The symbol portion before '@', or the full input if no '@' is found.
 [[nodiscard]] inline constexpr std::string_view
 extract_symbol(std::string_view stream) noexcept {
     auto pos = stream.find('@');
@@ -101,18 +110,27 @@ symbol_hash(const uint8_t* data, size_t len) noexcept {
 // Binance bookTicker
 // ---------------------------------------------------------------------------
 
-/// Zero-copy view of a Binance bookTicker message.
+/// @brief Zero-copy view of a Binance bookTicker message.
 ///
-/// Fields:
-///   e: "bookTicker"
-///   u: updateId
-///   s: symbol (e.g., "BTCUSDT")
-///   b: bestBidPrice
-///   B: bestBidQty
-///   a: bestAskPrice
-///   A: bestAskQty
-///   T: transaction time (ms)
-///   E: event time (ms)
+/// Maps the single-letter JSON fields from Binance's bookTicker stream
+/// into a typed struct with descriptive member names. All string_view
+/// members point into the original parse buffer -- the caller must
+/// ensure the buffer outlives this struct.
+///
+/// Binance JSON field mapping:
+///   - @c e : "bookTicker" (event type)
+///   - @c u : updateId (order book sequence number)
+///   - @c s : symbol (e.g., "BTCUSDT")
+///   - @c b : bestBidPrice
+///   - @c B : bestBidQty
+///   - @c a : bestAskPrice
+///   - @c A : bestAskQty
+///   - @c T : transaction time (ms since epoch)
+///   - @c E : event time (ms since epoch)
+///
+/// @note Prices are stored as string_views for zero-copy. Use mid_price()
+///       or spread() for pre-parsed double access, or parse manually with
+///       eph::core::parse_number().
 struct BookTicker {
     std::string_view symbol;     ///< "BTCUSDT"
     std::string_view bid_price;  ///< Best bid price (string, e.g., "87245.30")
@@ -128,8 +146,14 @@ struct BookTicker {
     std::optional<double> cached_bid{};  ///< Cached parsed bid price
     std::optional<double> cached_ask{};  ///< Cached parsed ask price
 
-    /// Extract BookTicker from a parsed JsonView.
-    /// Returns nullopt if the required fields are missing or invalid.
+    /// @brief Extract BookTicker from a parsed JsonView.
+    ///
+    /// Reads fields "s", "b", "B", "a", "A" (required) and "u", "E", "T"
+    /// (optional) from the JSON object. Pre-parses bid/ask prices into
+    /// cached doubles for fast mid_price()/spread() access.
+    ///
+    /// @param json  Parsed JSON view of a Binance bookTicker message.
+    /// @return Populated BookTicker, or nullopt if any required field is missing.
     [[nodiscard]] static std::optional<BookTicker>
     from(const JsonView& json) noexcept {
         auto s = json.get_string("s");
@@ -165,9 +189,14 @@ struct BookTicker {
         return t;
     }
 
-    /// Compute mid price as double. Returns nullopt if prices are not valid numbers.
-    /// Uses cached parsed values when available (populated by from()), falls back
-    /// to on-demand parsing for manually constructed instances.
+    /// @brief Compute mid price as (bid + ask) / 2.
+    ///
+    /// Uses cached parsed values when available (populated by from()),
+    /// falls back to on-demand string-to-double parsing for manually
+    /// constructed instances.
+    ///
+    /// @return Mid price as double, or nullopt if either price string
+    ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> mid_price() const noexcept {
         auto bid = cached_bid ? cached_bid : parse_number(bid_price);
         auto ask = cached_ask ? cached_ask : parse_number(ask_price);
@@ -175,9 +204,14 @@ struct BookTicker {
         return (*bid + *ask) / 2.0;
     }
 
-    /// Compute spread as double. Returns nullopt if prices are not valid numbers.
-    /// Uses cached parsed values when available (populated by from()), falls back
-    /// to on-demand parsing for manually constructed instances.
+    /// @brief Compute spread as (ask - bid).
+    ///
+    /// Uses cached parsed values when available (populated by from()),
+    /// falls back to on-demand string-to-double parsing for manually
+    /// constructed instances.
+    ///
+    /// @return Spread as double, or nullopt if either price string
+    ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> spread() const noexcept {
         auto bid = cached_bid ? cached_bid : parse_number(bid_price);
         auto ask = cached_ask ? cached_ask : parse_number(ask_price);
@@ -186,7 +220,9 @@ struct BookTicker {
     }
 
 private:
-    /// Parse a string_view as double (for price fields).
+    /// @brief Parse a string_view as double (for price fields).
+    /// @param sv  String representation of a decimal number.
+    /// @return Parsed double, or nullopt on invalid input.
     static std::optional<double> parse_number(std::string_view sv) noexcept {
         return eph::core::parse_number(sv);
     }
@@ -198,14 +234,26 @@ public:
 // Binance combined stream wrapper
 // ---------------------------------------------------------------------------
 
-/// Parse a Binance combined stream wrapper: {"stream":"...","data":{...}}
-/// Returns the stream name and the inner data object as a JsonView.
+/// @brief Zero-copy view of a Binance combined stream wrapper.
+///
+/// Binance's combined stream endpoint (/stream?streams=...) wraps each
+/// push in {"stream":"<name>","data":{...}}. This struct extracts the
+/// routing metadata (stream name, symbol) and the raw inner payload
+/// without parsing the data object.
+///
+/// @note The @c data_raw member is an opaque JSON object string that must
+///       be re-parsed (via eph::json::parse) to extract individual fields.
 struct CombinedStream {
-    std::string_view stream;   ///< e.g., "btcusdt@bookTicker"
-    std::string_view symbol;   ///< Extracted from stream: "btcusdt"
-    std::string_view data_raw; ///< Raw JSON of the inner "data" object
+    std::string_view stream;   ///< Full stream name, e.g., "btcusdt@bookTicker"
+    std::string_view symbol;   ///< Symbol extracted from stream via extract_symbol(), e.g., "btcusdt"
+    std::string_view data_raw; ///< Raw JSON of the inner "data" object (including braces)
 
-    /// Extract from a parsed JsonView of the combined stream wrapper.
+    /// @brief Extract CombinedStream from a parsed JsonView of the wrapper.
+    ///
+    /// Reads the "stream" string field and the "data" opaque nested object.
+    ///
+    /// @param json  Parsed JSON view of the combined stream wrapper.
+    /// @return Populated CombinedStream, or nullopt if "stream" or "data" is missing.
     [[nodiscard]] static std::optional<CombinedStream>
     from(const JsonView& json) noexcept {
         auto stream = json.get_string("stream");
@@ -225,8 +273,14 @@ struct CombinedStream {
 // WebSocket subscription helpers
 // ---------------------------------------------------------------------------
 
-/// Build a WebSocket path for a single stream.
-/// e.g., ws_path("btcusdt", "bookTicker") -> "/ws/btcusdt@bookTicker"
+/// @brief Build a WebSocket path for a single Binance stream.
+///
+/// Constructs the URL path component for connecting to a single
+/// Binance WebSocket stream.
+///
+/// @param symbol       Lowercase symbol (e.g., "btcusdt")
+/// @param stream_type  Stream type suffix (e.g., "bookTicker", "trade", "depth@100ms")
+/// @return Path string, e.g., "/ws/btcusdt@bookTicker"
 [[nodiscard]] inline std::string
 ws_path(std::string_view symbol, std::string_view stream_type) noexcept {
     std::string result;
@@ -239,10 +293,15 @@ ws_path(std::string_view symbol, std::string_view stream_type) noexcept {
     return result;
 }
 
-/// Build a combined stream WebSocket path for multiple symbols.
-/// e.g., combined_ws_path({"btcusdt","ethusdt"}, "bookTicker")
-///   -> "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"
-/// Returns "/stream?streams=" for an empty symbols list.
+/// @brief Build a combined stream WebSocket path for multiple symbols.
+///
+/// Constructs the URL path for Binance's combined stream endpoint,
+/// which multiplexes multiple streams onto a single WebSocket connection.
+///
+/// @param symbols      Span of lowercase symbols (e.g., {"btcusdt", "ethusdt"})
+/// @param stream_type  Stream type suffix (e.g., "bookTicker")
+/// @return Path string, e.g., "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"
+/// @note Returns "/stream?streams=" for an empty symbols list.
 [[nodiscard]] inline std::string
 combined_ws_path(std::span<const std::string_view> symbols,
                  std::string_view stream_type) noexcept {
@@ -258,9 +317,16 @@ combined_ws_path(std::span<const std::string_view> symbols,
     return result;
 }
 
-/// Build a SUBSCRIBE JSON message (sent after WebSocket connection).
-/// Returns: {"method":"SUBSCRIBE","params":["sym@stream",...],"id":N}
-/// Returns a message with empty params array for an empty symbols list.
+/// @brief Build a Binance SUBSCRIBE JSON message (sent after WebSocket connection).
+///
+/// Produces a JSON message conforming to Binance's WebSocket API:
+///   {"method":"SUBSCRIBE","params":["sym@stream",...],"id":N}
+///
+/// @param symbols      Span of lowercase symbols to subscribe (e.g., {"btcusdt", "ethusdt"})
+/// @param stream_type  Stream type suffix (e.g., "bookTicker", "trade")
+/// @param id           Request ID for matching the server's acknowledgment response
+/// @return JSON subscription message string.
+/// @note Returns a message with an empty params array for an empty symbols list.
 // NOTE: subscribe_message() pattern is similar across exchange adapters (binance/okx/bybit)
 // but JSON payload format differs per exchange, making a shared abstraction impractical.
 [[nodiscard]] inline std::string
@@ -284,9 +350,16 @@ subscribe_message(std::span<const std::string_view> symbols,
     return result;
 }
 
-/// Build an UNSUBSCRIBE JSON message.
-/// Returns: {"method":"UNSUBSCRIBE","params":["sym@stream",...],"id":N}
-/// Returns a message with empty params array for an empty symbols list.
+/// @brief Build a Binance UNSUBSCRIBE JSON message.
+///
+/// Produces a JSON message conforming to Binance's WebSocket API:
+///   {"method":"UNSUBSCRIBE","params":["sym@stream",...],"id":N}
+///
+/// @param symbols      Span of lowercase symbols to unsubscribe
+/// @param stream_type  Stream type suffix (e.g., "bookTicker", "trade")
+/// @param id           Request ID for matching the server's acknowledgment response
+/// @return JSON unsubscription message string.
+/// @note Returns a message with an empty params array for an empty symbols list.
 [[nodiscard]] inline std::string
 unsubscribe_message(std::span<const std::string_view> symbols,
                     std::string_view stream_type,

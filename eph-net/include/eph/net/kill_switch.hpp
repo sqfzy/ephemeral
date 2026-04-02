@@ -39,6 +39,8 @@
 namespace eph::net {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the KillSwitch subsystem.
+/// @return Pointer to the "net.kill_switch" spdlog logger.
 inline spdlog::logger* kill_switch_logger() {
     static auto l = [] {
         try {
@@ -51,12 +53,15 @@ inline spdlog::logger* kill_switch_logger() {
 }
 } // namespace detail
 
-/// Maximum number of transports that can be registered with a KillSwitch.
-/// Fixed array avoids heap allocation — safe for signal handler context.
+/// @brief Maximum number of transports that can be registered with a KillSwitch.
+///
+/// Fixed array avoids heap allocation -- safe for signal handler context.
 inline constexpr size_t kKillSwitchMaxTransports = 32;
 
-/// Type-erased transport handle for shutdown.
-/// Wraps any object that has stop() and is_running() methods.
+/// @brief Type-erased transport handle for shutdown.
+///
+/// Wraps any object that has stop() and is_running() methods via
+/// function pointers, avoiding the need for a polymorphic base class.
 struct TransportHandle {
     void* ptr = nullptr;
     void (*stop_fn)(void*) = nullptr;
@@ -88,8 +93,13 @@ public:
 
     // ── Registration ────────────────────────────────────────────────────
 
-    /// Register a Transport for coordinated shutdown.
+    /// @brief Register a Transport for coordinated shutdown.
+    ///
     /// The transport must outlive the KillSwitch (or be unregistered first).
+    ///
+    /// @tparam Transport  Any type with stop() and is_running() methods.
+    /// @param tp  Pointer to the transport. Must not be null.
+    /// @return true if registered successfully, false if null or capacity reached.
     template <typename Transport>
     bool register_transport(Transport* tp) noexcept {
         if (!tp) return false;
@@ -101,35 +111,48 @@ public:
         return add_handle(h);
     }
 
-    /// Unregister a transport (e.g., before destroying it).
+    /// @brief Unregister a transport (e.g., before destroying it).
+    /// @tparam Transport  Same type used in register_transport().
+    /// @param tp  Pointer to the transport to remove. Null is a no-op.
     template <typename Transport>
     void unregister_transport(Transport* tp) noexcept {
         if (!tp) return;
         remove_handle(static_cast<void*>(tp));
     }
 
-    /// Number of registered transports.
+    /// @brief Number of registered transports.
+    /// @return Count of currently registered transport handles.
     [[nodiscard]] size_t transport_count() const noexcept {
         return count_.load(std::memory_order_acquire);
     }
 
     // ── Shutdown control ────────────────────────────────────────────────
 
-    /// Check if shutdown has been requested (signal or manual).
-    /// Use this in your main loop condition.
+    /// @brief Check if shutdown has been requested (signal or manual).
+    ///
+    /// Use this in your main loop condition:
+    /// @code
+    ///   while (!ks.is_shutdown_requested()) { ... }
+    /// @endcode
+    ///
+    /// @return true if shutdown() / kill() / request_shutdown() / signal has fired.
     [[nodiscard]] bool is_shutdown_requested() const noexcept {
         return shutdown_requested_.load(std::memory_order_acquire);
     }
 
-    /// Request shutdown (non-blocking). Sets the flag so main loops exit.
-    /// Safe to call from signal handlers.
+    /// @brief Request shutdown (non-blocking). Sets the flag so main loops exit.
+    ///
+    /// Safe to call from signal handlers (lock-free atomic store).
     void request_shutdown() noexcept {
         shutdown_requested_.store(true, std::memory_order_release);
     }
 
-    /// Graceful shutdown: stop all registered transports.
+    /// @brief Graceful shutdown: stop all registered transports.
+    ///
     /// Blocks until all transports have stopped.
-    /// Idempotent — safe to call multiple times.
+    /// Idempotent -- safe to call multiple times.
+    /// @note If a transport's stop_fn throws, it is caught and logged;
+    ///       remaining transports are still stopped.
     void shutdown() noexcept {
         if (shutdown_done_.exchange(true, std::memory_order_acq_rel)) return;
         shutdown_requested_.store(true, std::memory_order_release);
@@ -165,9 +188,12 @@ public:
         SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: {}/{} transports stopped", stopped, n);
     }
 
-    /// Emergency kill: request shutdown without blocking.
+    /// @brief Emergency kill: request shutdown without blocking.
+    ///
     /// Use when graceful shutdown is not possible (e.g., crash signal).
     /// Safe to call from signal handlers (no locks, no allocation).
+    /// @warning Does NOT call stop() on transports -- relies on Transport
+    ///          internal loops checking the shutdown flag to exit.
     void kill() noexcept {
         shutdown_requested_.store(true, std::memory_order_release);
         // In emergency mode we don't call stop() — it may block.
@@ -176,8 +202,11 @@ public:
 
     // ── Signal handler installation ─────────────────────────────────────
 
-    /// Install SIGINT and SIGTERM handlers that trigger shutdown.
+    /// @brief Install SIGINT and SIGTERM handlers that trigger shutdown.
+    ///
     /// Must be called from main thread before spawning other threads.
+    /// @warning Only one KillSwitch per process can install signal handlers.
+    ///          A second call overwrites the global instance pointer.
     void install_signal_handlers() noexcept {
         s_instance_.store(this, std::memory_order_release);
         std::signal(SIGINT, signal_handler);

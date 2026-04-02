@@ -1,5 +1,16 @@
 #pragma once
 
+/// @file evicting_queue_bytes.hpp
+/// @brief Byte-oriented evicting SPSC queue for variable-length messages.
+///
+/// Wraps EvictingQueue with a fixed-size `DataWrap` envelope that carries a
+/// payload byte array, a length field, a monotonic message ID, and an
+/// optional timestamp. The writer is **wait-free** (overwrites old messages
+/// when full); the reader is **lock-free** (SeqLock-based optimistic read).
+///
+/// Typical use: streaming binary market-data frames between a network
+/// thread and a strategy thread where dropping stale data is acceptable.
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -19,7 +30,10 @@ namespace eph::containers {
 // Standalone Stats type (enables std::formatter specialization)
 // ---------------------------------------------------------------------------
 
-/// Queue statistics snapshot for EvictingQueueBytes monitoring/debugging.
+/// @brief Point-in-time statistics snapshot for EvictingQueueBytes monitoring.
+///
+/// Obtain a snapshot via `EvictingQueueBytes::stats()`. Supports delta
+/// computation (`operator-`), throughput calculation, and loss-rate queries.
 struct EvictingQueueBytesStats {
     uint64_t total_pushed;     ///< Total messages ever pushed (writer-side)
     uint64_t last_pop_id;      ///< ID of last consumed message (reader-side)
@@ -28,7 +42,8 @@ struct EvictingQueueBytesStats {
     size_t   capacity;         ///< Fixed capacity
     uint64_t total_overwritten; ///< Messages overwritten before being read
 
-    /// Multi-line formatted dump for logging/debugging.
+    /// @brief Multi-line human-readable dump for logging/debugging.
+    /// @return Formatted string with all counter values.
     [[nodiscard]] std::string dump() const {
         return std::format(
             "EvictingQueueBytes::Stats:\n"
@@ -42,7 +57,8 @@ struct EvictingQueueBytesStats {
             total_pushed, last_pop_id, total_popped, total_overwritten);
     }
 
-    /// JSON-formatted stats for monitoring system integration.
+    /// @brief JSON-formatted stats for monitoring system integration.
+    /// @return Compact single-line JSON string.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"capacity\":{},\"current_size\":{},\"total_pushed\":{},"
@@ -51,7 +67,10 @@ struct EvictingQueueBytesStats {
             last_pop_id, total_popped, total_overwritten);
     }
 
-    /// Compute delta between two snapshots for interval-based monitoring.
+    /// @brief Compute delta between two snapshots for interval-based monitoring.
+    /// @param lhs Later snapshot (e.g. at time T2).
+    /// @param rhs Earlier snapshot (e.g. at time T1).
+    /// @return Per-field difference; `current_size` and `capacity` are taken from @p lhs.
     [[nodiscard]] friend EvictingQueueBytesStats operator-(const EvictingQueueBytesStats& lhs,
                                                            const EvictingQueueBytesStats& rhs) noexcept {
         return EvictingQueueBytesStats{
@@ -64,15 +83,20 @@ struct EvictingQueueBytesStats {
         };
     }
 
-    /// Messages consumed per second over a measurement interval.
-    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns)`.
+    /// @brief Messages consumed per second over a measurement interval.
+    ///
+    /// Apply to a delta snapshot: `auto delta = t2 - t1; delta.throughput(elapsed_ns);`
+    ///
+    /// @param duration_ns Measurement interval in nanoseconds.
+    /// @return Throughput in messages/second, or 0.0 if @p duration_ns is zero.
     [[nodiscard]] double throughput(uint64_t duration_ns) const noexcept {
         return duration_ns > 0
             ? static_cast<double>(total_popped) * 1e9 / static_cast<double>(duration_ns)
             : 0.0;
     }
 
-    /// Data loss rate as a fraction [0.0, 1.0].
+    /// @brief Data loss rate as a fraction in [0.0, 1.0].
+    /// @return Clamped ratio of overwritten to total_pushed.
     [[nodiscard]] double loss_rate() const noexcept {
         return total_pushed > 0
             ? std::clamp(static_cast<double>(total_overwritten) / static_cast<double>(total_pushed), 0.0, 1.0)
@@ -83,17 +107,28 @@ struct EvictingQueueBytesStats {
                                           const EvictingQueueBytesStats&) = default;
 };
 
+/// @brief Byte-oriented evicting SPSC queue for variable-length messages.
+///
+/// Each message is stored in a fixed-size `DataWrap` envelope containing a
+/// monotonic ID, an optional timestamp, a length, and a byte payload of up
+/// to @p MaxDataSize bytes.  The underlying EvictingQueue provides wait-free
+/// writes (overwrites old data when full) and lock-free reads.
+///
+/// @tparam MaxDataSize Maximum payload size in bytes per message (default 256).
+///                     Must fit in `uint32_t`.
+/// @tparam Capacity    Number of message slots (default 256). Must be a power of two.
 template <size_t MaxDataSize = 256, size_t Capacity = 256>
 class EvictingQueueBytes {
     static_assert(MaxDataSize <= UINT32_MAX,
                   "MaxDataSize must fit in uint32_t (used for len field)");
 
    public:
+    /// @brief Fixed-size envelope wrapping a variable-length byte payload.
     struct DataWrap {
-        uint64_t id;
-        uint64_t ts;
-        uint32_t len;
-        std::array<uint8_t, MaxDataSize> data;
+        uint64_t id;                              ///< Monotonic 1-based message ID.
+        uint64_t ts;                              ///< User-supplied timestamp (0 if unset).
+        uint32_t len;                             ///< Actual payload length in bytes.
+        std::array<uint8_t, MaxDataSize> data;    ///< Payload buffer (only [0, len) is valid).
     };
 
     EvictingQueueBytes() = default;
@@ -103,9 +138,14 @@ class EvictingQueueBytes {
     // Writer (Wait-free)
     // ===========================================================================
 
+    /// @brief Try to push a timestamped byte payload (wait-free).
+    ///
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @param ts      User-supplied timestamp (e.g. exchange timestamp).
+    /// @return `true` on success; `false` only if `payload.size() > MaxDataSize`.
     /// @note Unlike BoundedQueueBytes::try_push_wts, this method only returns
-    /// false when payload exceeds MaxDataSize. The underlying EvictingQueue is
-    /// wait-free and never blocks on queue fullness — old data is overwritten.
+    ///       false when payload exceeds MaxDataSize. The underlying EvictingQueue
+    ///       is wait-free and never blocks on queue fullness -- old data is overwritten.
     [[nodiscard]] bool try_push_wts(std::span<const uint8_t> payload, uint64_t ts) noexcept {
         if (payload.size() > MaxDataSize) [[unlikely]] {
             return false;
@@ -121,21 +161,23 @@ class EvictingQueueBytes {
         return true;
     }
 
+    /// @brief Try to push a byte payload without timestamp (wait-free, ts=0).
+    /// @param payload Message bytes (must be <= MaxDataSize).
+    /// @return `true` on success; `false` if payload exceeds MaxDataSize.
     [[nodiscard]] bool try_push(std::span<const uint8_t> payload) noexcept {
         return try_push_wts(payload, 0);
     }
 
-    /**
-     * @brief 批量推入带时间戳的字节流 (Wait-free)
-     *
-     * 所有 payload 必须 <= MaxDataSize，否则全部不写入。
-     * 底层 EvictingQueue 为 wait-free 写入——旧数据会被覆盖。
-     *
-     * @param payloads   各消息的 payload span 数组
-     * @param timestamps 各消息的时间戳数组（与 payloads 等长）
-     * @param count      消息数量
-     * @return true 全部写入成功; false 某个 payload 过大
-     */
+    /// @brief Batch push timestamped byte payloads (wait-free).
+    ///
+    /// All payloads must be <= MaxDataSize; if any exceeds the limit, none
+    /// are written. The underlying EvictingQueue is wait-free -- old data
+    /// may be overwritten.
+    ///
+    /// @param payloads   Array of payload spans (one per message).
+    /// @param timestamps Array of timestamps (parallel to @p payloads).
+    /// @param count      Number of messages.
+    /// @return `true` if all were written; `false` if any payload was oversized.
     [[nodiscard]] bool push_n_wts(const std::span<const uint8_t>* payloads,
                                    const uint64_t* timestamps,
                                    size_t count) noexcept {
@@ -151,9 +193,10 @@ class EvictingQueueBytes {
         return true;
     }
 
-    /**
-     * @brief 批量推入字节流 (Wait-free, ts=0)
-     */
+    /// @brief Batch push byte payloads without timestamps (wait-free, ts=0).
+    /// @param payloads Array of payload spans.
+    /// @param count    Number of messages.
+    /// @return `true` if all were written; `false` if any payload was oversized.
     [[nodiscard]] bool push_n(const std::span<const uint8_t>* payloads,
                                size_t count) noexcept {
         for (size_t i = 0; i < count; ++i) {
@@ -172,9 +215,9 @@ class EvictingQueueBytes {
     // 非阻塞 Reader (Lock-free)
     // ===========================================================================
 
-    /**
-     * @brief 消费端（非阻塞）：调用者预分配 buffer，返回实际拷贝字节数或 std::nullopt
-     */
+    /// @brief Try to pop the latest message into a caller-supplied buffer (non-blocking).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @return Actual bytes copied on success; `std::nullopt` if no new data.
     [[nodiscard]] std::optional<uint32_t> try_pop_latest(
         std::span<uint8_t> out_buf) noexcept {
         uint64_t read_id = 0;
@@ -199,9 +242,11 @@ class EvictingQueueBytes {
         return std::nullopt;
     }
 
-    /**
-     * @brief 消费端（非阻塞）：调用者预分配 buffer，返回实际拷贝字节数、时间戳和丢包数
-     */
+    /// @brief Try to pop the latest message with timestamp and discard count (non-blocking).
+    /// @param out_buf       Pre-allocated output buffer.
+    /// @param out_ts        [out] Timestamp of the message.
+    /// @param out_discarded [out] Number of messages skipped since the last read.
+    /// @return Actual bytes copied on success; `std::nullopt` if no new data.
     [[nodiscard]] std::optional<uint32_t> try_pop_latest_wts(std::span<uint8_t> out_buf,
                                                uint64_t& out_ts, 
                                                uint32_t& out_discarded) noexcept {
@@ -219,9 +264,11 @@ class EvictingQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 消费端（非阻塞零拷贝）
-     */
+    /// @brief Try to consume the latest message via zero-copy visitor (non-blocking).
+    ///
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @param visitor Callback receiving a span over the payload bytes.
+    /// @return `true` if the visitor was called with consistent data; `false` otherwise.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_consume_latest(F&& visitor) noexcept {
@@ -247,9 +294,11 @@ class EvictingQueueBytes {
         return false;
     }
 
-    /**
-     * @brief 消费端（非阻塞零拷贝带时间戳和丢包信息）
-     */
+    /// @brief Try to consume the latest message with timestamp and discard count (zero-copy).
+    ///
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts, uint32_t discarded)`.
+    /// @param visitor Callback receiving payload span, timestamp, and discard count.
+    /// @return `true` on consistent read; `false` otherwise.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t, uint32_t>
     [[nodiscard]] bool try_consume_latest_wts(F&& visitor) noexcept {
@@ -287,16 +336,14 @@ class EvictingQueueBytes {
     // 非阻塞 Peek (Lock-free, 不更新 discard 计数)
     // ===========================================================================
 
-    /**
-     * @brief 查看最新消息但不更新读取状态 (Reader 线程专用)
-     *
-     * 与 try_consume_latest 不同，不更新 last_pop_id_，因此后续
-     * try_consume_latest_wts 的丢包计数不受影响。适用于消费前
-     * 预检查消息内容或类型的场景。
-     *
-     * @param out_buf 输出缓冲区
-     * @return 实际拷贝字节数；std::nullopt 表示无数据
-     */
+    /// @brief Peek at the latest message without updating read state (reader-side only).
+    ///
+    /// Unlike `try_consume_latest`, does **not** advance `last_pop_id_`, so
+    /// subsequent `try_consume_latest_wts` discard counts are unaffected.
+    /// Useful for pre-inspecting message content before deciding to consume.
+    ///
+    /// @param out_buf Pre-allocated output buffer.
+    /// @return Actual bytes copied on success; `std::nullopt` if no data.
     [[nodiscard]] std::optional<uint32_t> try_peek_latest(
         std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
@@ -307,13 +354,10 @@ class EvictingQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 查看最新消息但不更新读取状态（带时间戳）
-     *
-     * @param out_buf 输出缓冲区
-     * @param out_ts [out] 时间戳
-     * @return 实际拷贝字节数；std::nullopt 表示无数据
-     */
+    /// @brief Peek at the latest message with timestamp (reader-side only, non-consuming).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param out_ts  [out] Timestamp of the message.
+    /// @return Actual bytes copied on success; `std::nullopt` if no data.
     [[nodiscard]] std::optional<uint32_t> try_peek_latest_wts(
         std::span<uint8_t> out_buf, uint64_t& out_ts) noexcept {
         uint32_t copy_len = 0;
@@ -326,12 +370,10 @@ class EvictingQueueBytes {
         return success ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 零拷贝查看最新消息但不更新读取状态 (Visitor 模式)
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>)
-     * @return true 有新数据且已回调; false 无数据
-     */
+    /// @brief Zero-copy peek via visitor (non-consuming, reader-side only).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @param visitor Callback receiving a span over the payload bytes.
+    /// @return `true` if the visitor was called; `false` if no data.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_peek_latest_visit(F&& visitor) noexcept {
@@ -343,12 +385,10 @@ class EvictingQueueBytes {
         });
     }
 
-    /**
-     * @brief 零拷贝查看最新消息但不更新读取状态（带时间戳, Visitor 模式）
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts)
-     * @return true 有新数据且已回调; false 无数据
-     */
+    /// @brief Zero-copy peek with timestamp via visitor (non-consuming).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts)`.
+    /// @param visitor Callback receiving payload span and timestamp.
+    /// @return `true` if the visitor was called; `false` if no data.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
     [[nodiscard]] bool try_peek_latest_visit_wts(F&& visitor) noexcept {
@@ -361,13 +401,12 @@ class EvictingQueueBytes {
         });
     }
 
-    /**
-     * @brief 带超时的零拷贝查看最新消息但不更新读取状态 (Visitor 模式)
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>)
-     * @param timeout 最大等待时间
-     * @return true 有新数据且已回调; false 超时
-     */
+    /// @brief Zero-copy peek with timeout (non-consuming, visitor pattern).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback receiving a span over the payload bytes.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_peek_latest_visit_for(
@@ -381,13 +420,12 @@ class EvictingQueueBytes {
         return false;
     }
 
-    /**
-     * @brief 带超时的零拷贝查看最新消息但不更新读取状态（带时间戳, Visitor 模式）
-     *
-     * @param visitor 回调 void(std::span<const uint8_t>, uint64_t ts)
-     * @param timeout 最大等待时间
-     * @return true 有新数据且已回调; false 超时
-     */
+    /// @brief Zero-copy peek with timestamp and timeout (non-consuming, visitor pattern).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback receiving payload span and timestamp.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t>
     [[nodiscard]] bool try_peek_latest_visit_wts_for(
@@ -405,9 +443,9 @@ class EvictingQueueBytes {
     // 阻塞 Reader (自旋等待)
     // ===========================================================================
 
-    /**
-     * @brief 消费端：阻塞式读取到外部 buffer，返回拷贝字节数
-     */
+    /// @brief Blocking pop into a caller-supplied buffer (spins until new data).
+    /// @param out_buf Pre-allocated output buffer.
+    /// @return Actual bytes copied.
     uint32_t pop_latest(std::span<uint8_t> out_buf) noexcept {
         uint32_t copy_len = 0;
         consume_latest([&](std::span<const uint8_t> data) {
@@ -417,9 +455,11 @@ class EvictingQueueBytes {
         return copy_len;
     }
 
-    /**
-     * @brief 消费端：阻塞式读取带时间戳和丢包信息到外部 buffer，返回拷贝字节数
-     */
+    /// @brief Blocking pop with timestamp and discard count (spins until new data).
+    /// @param out_buf       Pre-allocated output buffer.
+    /// @param out_ts        [out] Timestamp of the message.
+    /// @param out_discarded [out] Messages skipped since the last read.
+    /// @return Actual bytes copied.
     uint32_t pop_latest_wts(std::span<uint8_t> out_buf, 
                             uint64_t& out_ts, 
                             uint32_t& out_discarded) noexcept {
@@ -433,9 +473,10 @@ class EvictingQueueBytes {
         return copy_len;
     }
 
-    /**
-     * @brief 消费端：阻塞式零拷贝访问（自旋直到成功读取到新数据）
-     */
+    /// @brief Blocking zero-copy consume (spins until new data).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @param visitor Callback receiving a span over the payload bytes.
+    /// @warning Spins indefinitely -- use only on pinned threads.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>>
     void consume_latest(F&& visitor) noexcept {
@@ -444,9 +485,9 @@ class EvictingQueueBytes {
         }
     }
 
-    /**
-     * @brief 消费端：阻塞式零拷贝访问（带时间戳和丢包信息，自旋直到成功）
-     */
+    /// @brief Blocking zero-copy consume with timestamp and discard count (spins).
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts, uint32_t discarded)`.
+    /// @param visitor Callback receiving payload span, timestamp, and discard count.
     template <typename F>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t, uint32_t>
     void consume_latest_wts(F&& visitor) noexcept {
@@ -459,9 +500,12 @@ class EvictingQueueBytes {
     // 带超时 Reader
     // ===========================================================================
 
-    /**
-     * @brief 带超时的零拷贝读取最新数据
-     */
+    /// @brief Zero-copy consume with timeout.
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, std::span<const uint8_t>>
     [[nodiscard]] bool try_consume_latest_for(
@@ -475,9 +519,10 @@ class EvictingQueueBytes {
         return false;
     }
 
-    /**
-     * @brief 带超时的拷贝读取
-     */
+    /// @brief Pop with timeout into a caller-supplied buffer.
+    /// @param out_buf Pre-allocated output buffer.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return Actual bytes copied on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<uint32_t> try_pop_latest_for(
         std::span<uint8_t> out_buf,
@@ -490,9 +535,12 @@ class EvictingQueueBytes {
         return ok ? std::make_optional(copy_len) : std::nullopt;
     }
 
-    /**
-     * @brief 带超时的零拷贝读取最新数据（带时间戳和丢包信息）
-     */
+    /// @brief Zero-copy consume with timestamp and discard count, with timeout.
+    /// @tparam F Callable with signature `void(std::span<const uint8_t>, uint64_t ts, uint32_t discarded)`.
+    /// @tparam Rep, Period `std::chrono::duration` parameters.
+    /// @param visitor Callback on success.
+    /// @param timeout Maximum wall-clock wait.
+    /// @return `true` on success; `false` on timeout.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, std::span<const uint8_t>, uint64_t, uint32_t>
     [[nodiscard]] bool try_consume_latest_wts_for(
@@ -506,9 +554,12 @@ class EvictingQueueBytes {
         return false;
     }
 
-    /**
-     * @brief 带超时的拷贝读取（带时间戳和丢包信息）
-     */
+    /// @brief Pop with timeout, timestamp, and discard count into a buffer.
+    /// @param out_buf       Pre-allocated output buffer.
+    /// @param out_ts        [out] Timestamp.
+    /// @param out_discarded [out] Messages skipped.
+    /// @param timeout       Maximum wall-clock wait.
+    /// @return Actual bytes copied on success; `std::nullopt` on timeout.
     template <typename Rep, typename Period>
     [[nodiscard]] std::optional<uint32_t> try_pop_latest_wts_for(
         std::span<uint8_t> out_buf, uint64_t& out_ts, uint32_t& out_discarded,
@@ -528,8 +579,8 @@ class EvictingQueueBytes {
     // 状态查询
     // ===========================================================================
 
-    /// 丢弃所有未读数据，将队列重置为空状态。
-    /// @warning 仅在确保无并发读写时调用。
+    /// @brief Discard all unread data and reset the queue to empty.
+    /// @warning Not thread-safe. Call only when no concurrent readers/writers.
     void clear() noexcept {
         queue_.clear();
         // 同步 reader 的 last_pop_id_ 到 writer 的 push_count_，
@@ -538,29 +589,34 @@ class EvictingQueueBytes {
                            std::memory_order_relaxed);
     }
 
+    /// @brief Return the fixed queue capacity.
     [[nodiscard]] static constexpr size_t capacity() noexcept { return Capacity; }
 
-    /// Total number of messages successfully pushed (writer-side counter).
+    /// @brief Total number of messages successfully pushed (writer-side counter).
+    ///
     /// Useful for monitoring throughput and computing discard rates.
+    ///
+    /// @return Monotonic push count.
     /// @note Only accurate when called from the writer thread.
     [[nodiscard]] uint64_t total_pushed() const noexcept {
         return push_count_.load(std::memory_order_relaxed);
     }
 
-    /// Approximate number of unread entries (for monitoring/debugging only).
+    /// @brief Approximate number of unread entries (for monitoring/debugging only).
     [[nodiscard]] size_t size_approx() const noexcept { return queue_.size_approx(); }
 
-    /// Check if there are no unread entries (approximate).
+    /// @brief Check if there are no unread entries (approximate).
     [[nodiscard]] bool empty() const noexcept { return queue_.empty(); }
 
     // ===========================================================================
     // 可观测性
     // ===========================================================================
 
-    /// Alias for the standalone EvictingQueueBytesStats type.
+    /// @brief Alias for the standalone EvictingQueueBytesStats type.
     using Stats = EvictingQueueBytesStats;
 
-    /// Take a point-in-time statistics snapshot.
+    /// @brief Take a point-in-time statistics snapshot.
+    /// @return EvictingQueueBytesStats with current counter values.
     [[nodiscard]] Stats stats() const noexcept {
         auto q_stats = queue_.stats();
         return Stats{
@@ -589,7 +645,9 @@ class EvictingQueueBytes {
 
 }  // namespace eph::containers
 
-// std::formatter specialization for EvictingQueueBytesStats
+/// @brief std::formatter specialization for EvictingQueueBytesStats.
+///
+/// Delegates to EvictingQueueBytesStats::dump() for use with `std::format`/`std::print`.
 template <>
 struct std::formatter<eph::containers::EvictingQueueBytesStats>
     : std::formatter<std::string> {

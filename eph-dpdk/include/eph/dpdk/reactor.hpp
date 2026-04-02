@@ -75,7 +75,12 @@ using ReactorDataCallback =
 /// note that not all packets may have matched a registered connection.
 using BurstCompleteCallback = std::function<void()>;
 
-/// Per-connection entry in the Reactor.
+/// @brief Per-connection entry in the Reactor's fixed-size connection table.
+///
+/// Contains the TcpSession pointer (atomic for safe reconnection), the
+/// connection 4-tuple for packet matching, a data callback, and a connected
+/// flag that gates processing. The session pointer and connected flag use
+/// atomic operations to support mark_reconnected() while the RX loop is running.
 struct ReactorEntry {
     /// Atomic pointer — mark_reconnected() may swap this while the RX loop
     /// is running. The RX loop loads it once into a local before calling
@@ -111,10 +116,11 @@ struct ReactorEntry {
 ///   - Data delivery via callback (on_data) in the RX thread context
 class Reactor {
 public:
+    /// @brief Reactor configuration: which port/queue to poll and optional CPU pinning.
     struct Config {
-        uint16_t port_id      = 0;
-        uint16_t rx_queue_id  = 0;
-        int      rx_cpu       = -1;   ///< CPU affinity for RX thread (-1 = no pin)
+        uint16_t port_id      = 0;     ///< DPDK port ID to poll
+        uint16_t rx_queue_id  = 0;     ///< RX queue index on the port
+        int      rx_cpu       = -1;    ///< CPU affinity for RX thread (-1 = no pin)
     };
 
     explicit Reactor(Config config) noexcept
@@ -221,9 +227,12 @@ public:
         on_burst_complete_ = std::move(cb);
     }
 
+    /// @brief Number of registered connections (may include disconnected entries).
     [[nodiscard]] size_t connection_count() const noexcept {
         return count_.load(std::memory_order_acquire);
     }
+
+    /// @brief Check if the RX polling thread is currently running.
     [[nodiscard]] bool is_running() const noexcept {
         return running_.load(std::memory_order_acquire);
     }

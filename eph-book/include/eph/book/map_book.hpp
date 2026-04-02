@@ -33,7 +33,10 @@
 
 namespace eph::book {
 
+/// @cond INTERNAL
 namespace detail {
+/// @brief Lazily-constructed spdlog logger for MapBook diagnostics.
+/// @return Pointer to the "book.map_book" logger instance.
 inline spdlog::logger* map_book_logger() {
     static auto l = [] {
         try {
@@ -45,29 +48,49 @@ inline spdlog::logger* map_book_logger() {
     return l.get();
 }
 } // namespace detail
+/// @endcond
 
 // ============================================================================
 // MapBook — dynamic-depth sorted order book
 // ============================================================================
 
-/// Deep order book for L3 feeds (1000+ levels).
-/// Uses std::map for guaranteed sorted order and O(log n) operations.
-/// More memory-hungry than ArrayBook but scales to arbitrary depth.
+/// @brief Dynamic-depth order book backed by `std::map` for L3 / deep-book feeds.
+///
+/// Supports 1000+ price levels with O(log n) insert/delete/lookup.  Unlike
+/// ArrayBook (fixed-size arrays, optimal for shallow 5-20 level L2 feeds),
+/// MapBook uses `std::map` to handle arbitrary depth without capacity limits.
+/// BBO access is O(1) via `begin()` / `rbegin()` on the sorted maps.
 ///
 /// Prices are quantized to multiples of 1e-9 (sub-nano precision) on
-/// insertion, preventing near-duplicate keys from different rounding
-/// paths.  This exceeds any exchange tick size.
+/// insertion, preventing near-duplicate keys from different floating-point
+/// rounding paths.  This exceeds any exchange tick size.
+///
+/// @note  MapBook allocates on insert (heap nodes from `std::map`).  For
+///        latency-critical shallow-book paths, prefer ArrayBook.
+/// @warning The bids() and asks() accessors return `std::vector` copies
+///          (not spans) because `std::map` is node-based.  Avoid calling
+///          them on the hot path.
 class MapBook {
 public:
     // -- Price-level updates (crypto exchange style) -------------------------
 
-    /// Insert or update a bid level.  If @p qty == 0 the level is removed.
+    /// @brief Insert or update a bid level.  If @p qty == 0 the level is removed.
+    ///
+    /// The price is quantized before insertion to prevent near-duplicate keys.
+    ///
+    /// @param price  Bid price.  NaN values are rejected with a warning.
+    /// @param qty    Quantity at this price.  Zero or negative removes the level.
     void update_bid(double price, double qty) noexcept {
         SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook::update_bid price={} qty={}", price, qty);
         update_side(bids_, price, qty);
     }
 
-    /// Insert or update an ask level.  If @p qty == 0 the level is removed.
+    /// @brief Insert or update an ask level.  If @p qty == 0 the level is removed.
+    ///
+    /// The price is quantized before insertion to prevent near-duplicate keys.
+    ///
+    /// @param price  Ask price.  NaN values are rejected with a warning.
+    /// @param qty    Quantity at this price.  Zero or negative removes the level.
     void update_ask(double price, double qty) noexcept {
         SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook::update_ask price={} qty={}", price, qty);
         update_side(asks_, price, qty);
@@ -75,29 +98,32 @@ public:
 
     // -- BBO queries ---------------------------------------------------------
 
-    /// Best bid (highest price).  Returns nullopt if the bid side is empty.
+    /// @brief Best bid (highest price).
+    /// @return The top-of-book bid level, or `std::nullopt` if the bid side is empty.
     [[nodiscard]] std::optional<PriceLevel> best_bid() const noexcept {
         if (bids_.empty()) return std::nullopt;
         auto it = bids_.begin();
         return PriceLevel{it->first, it->second};
     }
 
-    /// Best ask (lowest price).  Returns nullopt if the ask side is empty.
+    /// @brief Best ask (lowest price).
+    /// @return The top-of-book ask level, or `std::nullopt` if the ask side is empty.
     [[nodiscard]] std::optional<PriceLevel> best_ask() const noexcept {
         if (asks_.empty()) return std::nullopt;
         auto it = asks_.begin();
         return PriceLevel{it->first, it->second};
     }
 
-    /// Mid price = (best_bid + best_ask) / 2.
-    /// Returns nullopt when either side is empty.
+    /// @brief Mid price: arithmetic mean of the best bid and best ask prices.
+    /// @return `(best_bid + best_ask) / 2`, or `std::nullopt` when either side is empty.
     [[nodiscard]] std::optional<double> mid_price() const noexcept {
         if (bids_.empty() || asks_.empty()) return std::nullopt;
         return (bids_.begin()->first + asks_.begin()->first) / 2.0;
     }
 
-    /// Spread = best_ask - best_bid.
-    /// Returns nullopt when either side is empty.
+    /// @brief Bid-ask spread in native price units.
+    /// @return `best_ask - best_bid`, or `std::nullopt` when either side is empty.
+    /// @note  A negative spread indicates a crossed book.
     [[nodiscard]] std::optional<double> spread() const noexcept {
         if (bids_.empty() || asks_.empty()) return std::nullopt;
         return asks_.begin()->first - bids_.begin()->first;
@@ -105,10 +131,14 @@ public:
 
     // -- Depth queries -------------------------------------------------------
 
-    /// Return a vector of active bid levels (descending by price).
-    /// Unlike ArrayBook::bids() which returns a span over a contiguous array,
-    /// MapBook must copy into a vector since std::map is node-based.
-    /// Suitable for use with signals::vwap() and similar span-accepting APIs.
+    /// @brief Return a vector of all active bid levels, sorted descending by price.
+    ///
+    /// Unlike ArrayBook::bids() which returns a zero-copy span, MapBook must
+    /// copy into a vector since `std::map` is node-based.  The returned vector
+    /// is suitable for use with signals::vwap() and similar span-accepting APIs.
+    ///
+    /// @return Owning vector of PriceLevel; empty if the bid side is empty.
+    /// @warning Allocates on every call.  Prefer top_bids() on the hot path.
     [[nodiscard]] std::vector<PriceLevel> bids() const {
         std::vector<PriceLevel> result;
         result.reserve(bids_.size());
@@ -118,8 +148,10 @@ public:
         return result;
     }
 
-    /// Return a vector of active ask levels (ascending by price).
-    /// See bids() for rationale on returning a vector instead of a span.
+    /// @brief Return a vector of all active ask levels, sorted ascending by price.
+    /// @return Owning vector of PriceLevel; empty if the ask side is empty.
+    /// @warning Allocates on every call.  Prefer top_asks() on the hot path.
+    /// @see bids() for rationale on returning a vector instead of a span.
     [[nodiscard]] std::vector<PriceLevel> asks() const {
         std::vector<PriceLevel> result;
         result.reserve(asks_.size());
@@ -129,50 +161,61 @@ public:
         return result;
     }
 
-    /// Number of active bid levels.
+    /// @brief Number of active bid levels.
+    /// @return Count of distinct bid prices currently in the book.
     [[nodiscard]] std::size_t bid_depth() const noexcept { return bids_.size(); }
 
-    /// Number of active ask levels.
+    /// @brief Number of active ask levels.
+    /// @return Count of distinct ask prices currently in the book.
     [[nodiscard]] std::size_t ask_depth() const noexcept { return asks_.size(); }
 
-    /// Total number of active levels (bid + ask).
+    /// @brief Total number of active levels (bid + ask).
+    /// @return Combined count of all price levels.
     [[nodiscard]] std::size_t level_count() const noexcept {
         return bids_.size() + asks_.size();
     }
 
     // -- Housekeeping --------------------------------------------------------
 
-    /// True if best bid strictly exceeds best ask (anomalous).
-    /// Excludes the locked case (bid == ask within epsilon).
-    /// Returns false when either side is empty.
+    /// @brief Check whether the book is crossed (best bid > best ask).
+    ///
+    /// A crossed book is anomalous, typically indicating a feed error.
+    /// The locked case (bid == ask within epsilon) is excluded.
+    ///
+    /// @return `true` if crossed, `false` when either side is empty or normal/locked.
     [[nodiscard]] bool is_crossed() const noexcept {
         if (bids_.empty() || asks_.empty()) return false;
         return bids_.begin()->first > asks_.begin()->first + kEps;
     }
 
-    /// True if best bid equals best ask within epsilon (locked market).
-    /// A locked market is distinct from crossed: prices are equal rather
-    /// than inverted.  Returns false when either side is empty.
+    /// @brief Check whether the book is locked (best bid == best ask within epsilon).
+    ///
+    /// A locked market is distinct from a crossed book: prices are equal
+    /// rather than inverted.
+    ///
+    /// @return `true` if locked, `false` when either side is empty or prices differ.
     [[nodiscard]] bool is_locked() const noexcept {
         if (bids_.empty() || asks_.empty()) return false;
         return std::abs(bids_.begin()->first - asks_.begin()->first) <= kEps;
     }
 
-    /// Sum of quantities across all bid levels.
+    /// @brief Sum of quantities across all active bid levels.
+    /// @return Aggregate bid quantity (>= 0.0).  Zero when the bid side is empty.
     [[nodiscard]] double total_bid_qty() const noexcept {
         double sum = 0.0;
         for (const auto& [price, qty] : bids_) sum += qty;
         return sum;
     }
 
-    /// Sum of quantities across all ask levels.
+    /// @brief Sum of quantities across all active ask levels.
+    /// @return Aggregate ask quantity (>= 0.0).  Zero when the ask side is empty.
     [[nodiscard]] double total_ask_qty() const noexcept {
         double sum = 0.0;
         for (const auto& [price, qty] : asks_) sum += qty;
         return sum;
     }
 
-    /// Remove all levels from both sides.
+    /// @brief Remove all levels from both sides, resetting the book to empty.
     void clear() noexcept {
         bids_.clear();
         asks_.clear();
@@ -181,8 +224,13 @@ public:
 
     // -- Top-N extraction (for display/logging) ------------------------------
 
-    /// Get top N bid levels (descending by price).
-    /// Returns min(n, bid_depth()) levels.
+    /// @brief Get the top N bid levels, sorted descending by price.
+    ///
+    /// Useful for display, logging, or feeding into signal functions that
+    /// accept a span of PriceLevels when full-depth is not needed.
+    ///
+    /// @param n  Maximum number of levels to return.
+    /// @return Vector of `min(n, bid_depth())` levels.
     [[nodiscard]] std::vector<PriceLevel> top_bids(std::size_t n) const {
         std::vector<PriceLevel> result;
         result.reserve(std::min(n, bids_.size()));
@@ -195,8 +243,13 @@ public:
         return result;
     }
 
-    /// Get top N ask levels (ascending by price).
-    /// Returns min(n, ask_depth()) levels.
+    /// @brief Get the top N ask levels, sorted ascending by price.
+    ///
+    /// Useful for display, logging, or feeding into signal functions that
+    /// accept a span of PriceLevels when full-depth is not needed.
+    ///
+    /// @param n  Maximum number of levels to return.
+    /// @return Vector of `min(n, ask_depth())` levels.
     [[nodiscard]] std::vector<PriceLevel> top_asks(std::size_t n) const {
         std::vector<PriceLevel> result;
         result.reserve(std::min(n, asks_.size()));

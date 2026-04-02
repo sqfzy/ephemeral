@@ -17,7 +17,10 @@
 
 namespace eph::itch {
 
+/// @brief Internal detail namespace for SoupBinTCP module logger.
 namespace detail {
+/// @brief Get or create the SoupBinTCP module logger.
+/// @return Raw pointer to the spdlog logger instance (never null after first call).
 inline spdlog::logger* soupbintcp_logger() {
     static auto l = [] {
         try {
@@ -34,19 +37,22 @@ inline spdlog::logger* soupbintcp_logger() {
 // SoupBinTCP packet type constants
 // -------------------------------------------------------------------------
 
+/// @brief SoupBinTCP packet type byte constants.
 namespace soupbin {
 
-inline constexpr uint8_t kDebug           = '+';  // 0x2B — server -> client
-inline constexpr uint8_t kSequencedData   = 'S';  // 0x53 — server -> client (ITCH messages)
-inline constexpr uint8_t kServerHeartbeat = 'H';  // 0x48 — server -> client
-inline constexpr uint8_t kLoginAccepted   = 'A';  // 0x41 — server -> client
-inline constexpr uint8_t kLoginRejected   = 'J';  // 0x4A — server -> client
-inline constexpr uint8_t kLoginRequest    = 'L';  // 0x4C — client -> server
-inline constexpr uint8_t kUnsequencedData = 'U';  // 0x55 — client -> server
-inline constexpr uint8_t kClientHeartbeat = 'R';  // 0x52 — client -> server
-inline constexpr uint8_t kLogoutRequest   = 'O';  // 0x4F — client -> server
+inline constexpr uint8_t kDebug           = '+';  ///< 0x2B -- server -> client: debug text
+inline constexpr uint8_t kSequencedData   = 'S';  ///< 0x53 -- server -> client: ITCH messages
+inline constexpr uint8_t kServerHeartbeat = 'H';  ///< 0x48 -- server -> client: heartbeat
+inline constexpr uint8_t kLoginAccepted   = 'A';  ///< 0x41 -- server -> client: login accepted
+inline constexpr uint8_t kLoginRejected   = 'J';  ///< 0x4A -- server -> client: login rejected
+inline constexpr uint8_t kLoginRequest    = 'L';  ///< 0x4C -- client -> server: login request
+inline constexpr uint8_t kUnsequencedData = 'U';  ///< 0x55 -- client -> server: unsequenced data
+inline constexpr uint8_t kClientHeartbeat = 'R';  ///< 0x52 -- client -> server: heartbeat
+inline constexpr uint8_t kLogoutRequest   = 'O';  ///< 0x4F -- client -> server: logout request
 
-/// True if this is a heartbeat packet (no payload expected).
+/// @brief Check if a SoupBinTCP packet type is a heartbeat (no payload expected).
+/// @param type The SoupBinTCP packet type byte.
+/// @return True if the type is a server or client heartbeat.
 constexpr bool is_heartbeat(uint8_t type) noexcept {
     return type == kServerHeartbeat || type == kClientHeartbeat;
 }

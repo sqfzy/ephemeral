@@ -45,15 +45,23 @@ namespace eph::dpdk {
 
 namespace detail {
 
-/// Check if n is of the form (2^k - 1) for some k >= 1.
+/// @brief Check if n is of the form (2^k - 1) for some k >= 1.
+///
+/// DPDK mempool sizes must satisfy this constraint for optimal bucket hashing.
 /// Rejects 0 (which is technically 2^0-1 but not a valid pool size).
+///
+/// @param n  Value to test
+/// @return true if n == 2^k - 1 for some k >= 1
 constexpr bool is_power_of_two_minus_one(uint32_t n) noexcept {
     if (n == 0) return false;
     uint32_t m = n + 1;
     return m > 0 && (m & (m - 1)) == 0;
 }
 
-/// Next valid pool size >= n that satisfies the 2^k-1 constraint.
+/// @brief Compute the next valid DPDK mempool size >= n satisfying the 2^k-1 constraint.
+///
+/// @param n  Minimum desired pool size
+/// @return Smallest value >= n of the form 2^k - 1
 constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
     uint32_t m = n + 1;
     // Round up to next power of 2.
@@ -61,11 +69,19 @@ constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
     return (1u << (32 - std::countl_zero(m))) - 1u;
 }
 
-/// Clamp descriptor count into [lim.nb_min, lim.nb_max],
-/// aligned to lim.nb_align.
+/// @brief Clamp a descriptor count into [nb_min, nb_max], aligned to nb_align.
 ///
-/// constexpr — can be used in static_assert when NIC descriptor limits
-/// are known at compile time (e.g. from a constexpr dev_info fixture).
+/// constexpr-evaluable: can be used in static_assert when NIC descriptor
+/// limits are known at compile time (e.g., from a constexpr dev_info fixture).
+///
+/// @param requested  Desired descriptor count
+/// @param nb_min     NIC minimum descriptors per queue
+/// @param nb_max     NIC maximum descriptors per queue
+/// @param nb_align   NIC descriptor alignment requirement
+/// @return Clamped and aligned descriptor count
+///
+/// @note Re-clamps after alignment rounding to prevent exceeding nb_max
+///       (e.g., nb_max=255, nb_align=64 would produce 256 without re-clamp).
 constexpr uint16_t clamp_desc(uint16_t requested,
                                uint16_t nb_min,
                                uint16_t nb_max,
@@ -81,7 +97,13 @@ constexpr uint16_t clamp_desc(uint16_t requested,
     return n;
 }
 
-/// Overload accepting rte_eth_desc_lim (not constexpr — struct from DPDK).
+/// @brief Overload accepting rte_eth_desc_lim directly from DPDK dev_info.
+///
+/// Not constexpr because rte_eth_desc_lim is a DPDK C struct populated at runtime.
+///
+/// @param requested  Desired descriptor count
+/// @param lim        NIC descriptor limits from rte_eth_dev_info
+/// @return Clamped and aligned descriptor count
 inline uint16_t clamp_desc(uint16_t requested,
                             const rte_eth_desc_lim& lim) noexcept {
     return clamp_desc(requested, lim.nb_min, lim.nb_max, lim.nb_align);
@@ -106,18 +128,28 @@ inline spdlog::logger* platform_logger() {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Configuration for a single DPDK NIC port.
+///
+/// Controls queue counts, descriptor ring sizes, mempool parameters,
+/// promiscuous mode, and link-up timeout. Supports constexpr validation
+/// via validate_config() and config_ok() for compile-time checking.
+///
+/// @note Queue counts and descriptor counts are automatically clamped to
+///       NIC-reported limits during Platform::create(). Values here are
+///       the *requested* values — actual values may be smaller.
 struct PlatformConfig {
-    uint16_t port_id         = 0;
-    uint16_t nb_rx_queues    = 1;
-    uint16_t nb_tx_queues    = 1;
-    uint16_t nb_rx_desc      = 256;
-    uint16_t nb_tx_desc      = 512;
-    /// Must be 2^n − 1 (e.g. 1023, 4095, 8191).
+    uint16_t port_id         = 0;       ///< DPDK port ID to initialize
+    uint16_t nb_rx_queues    = 1;       ///< Requested number of RX queues
+    uint16_t nb_tx_queues    = 1;       ///< Requested number of TX queues
+    uint16_t nb_rx_desc      = 256;     ///< Requested RX descriptors per queue
+    uint16_t nb_tx_desc      = 512;     ///< Requested TX descriptors per queue
+    /// @brief Mempool size. Must be 2^n - 1 (e.g. 1023, 4095, 8191).
+    /// DPDK mempool bucket hashing requires this form for optimal performance.
     uint32_t mbuf_pool_size  = 4095;
-    uint16_t mbuf_cache_size = 256;
-    bool     enable_promiscuous = false;
-    /// Poll timeout for link-up after port start (ms).
-    /// 0 = single check, move on regardless.
+    uint16_t mbuf_cache_size = 256;     ///< Per-lcore mempool cache size
+    bool     enable_promiscuous = false; ///< Enable promiscuous mode on the port
+    /// @brief Poll timeout for link-up after port start (milliseconds).
+    /// 0 = single check, continue regardless of link state.
     int      link_timeout_ms = 2000;
 
     /// Defaulted equality — all fields must match exactly.
@@ -177,8 +209,23 @@ constexpr bool config_ok(const PlatformConfig& cfg) noexcept {
 // Platform
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief DPDK NIC port manager — owns a configured port and its mempool.
+///
+/// Encapsulates the full DPDK port lifecycle: port enumeration, mempool
+/// creation, port configuration (with NIC capability intersection), queue
+/// setup, port start, and link-up polling. Use the static factory
+/// Platform::create() for construction.
+///
+/// Move-only. Moved-from instances return nullptr/0/false from all accessors.
+/// Check validity via `explicit operator bool()`.
+///
+/// @note Assumes EAL is already initialized (see eal.hpp / EalGuard).
 class Platform {
 public:
+    /// @brief NIC-level packet statistics snapshot.
+    ///
+    /// All counters are cumulative since port start. Use operator- to compute
+    /// deltas for interval-based monitoring.
     struct Stats {
         uint64_t rx_packets = 0;
         uint64_t tx_packets = 0;
@@ -245,12 +292,21 @@ public:
     /// Use before calling other accessors when the Platform may have been moved.
     [[nodiscard]] explicit operator bool() const noexcept { return impl_ != nullptr; }
 
+    /// @brief Get the packet mbuf mempool for this port.
+    /// @return Mempool pointer, or nullptr if moved-from.
     [[nodiscard]] rte_mempool* mempool()          const noexcept;
+
+    /// @brief Get the DPDK port ID.
+    /// @return Port ID, or 0 if moved-from.
     [[nodiscard]] uint16_t     port_id()          const noexcept;
+
+    /// @brief Check if the port has been successfully started.
     [[nodiscard]] bool         is_running()       const noexcept;
     /// Returns true if promiscuous mode was requested AND successfully enabled.
     [[nodiscard]] bool         is_promiscuous()   const noexcept;
 
+    /// @brief Collect current NIC packet statistics via rte_eth_stats_get.
+    /// @return Stats snapshot, or zeroed stats on error or moved-from state.
     [[nodiscard]] Stats collect_stats() const;
 
 private:
@@ -263,6 +319,10 @@ private:
 // Platform::Impl
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Internal implementation of Platform (pimpl pattern).
+///
+/// Owns the mempool and port lifecycle. Destructor calls cleanup() which
+/// stops the port and frees the mempool.
 struct Platform::Impl {
     PlatformConfig config;
     rte_mempool*   mempool{nullptr};

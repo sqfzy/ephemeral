@@ -60,19 +60,24 @@ inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 // RxWorkerStats — aggregate snapshot returned by RxWorker::stats()
 // ---------------------------------------------------------------------------
 
+/// Aggregate stats snapshot returned by RxWorker::stats().
+///
+/// Contains all RX-side counters and latency histograms captured at
+/// a single point in time. Thread-safe to read (all source atomics
+/// use relaxed ordering).
 struct RxWorkerStats {
-    uint64_t rx_packets       = 0;
-    uint64_t rx_bytes         = 0;
-    uint64_t rx_text_packets  = 0;
-    uint64_t rx_text_bytes    = 0;
-    uint64_t rx_dropped       = 0;
-    uint64_t decrypt_errors   = 0;
-    uint64_t ws_pings_received = 0;
-    uint64_t ws_pongs_sent    = 0;
-    size_t   rx_queue_hwm     = 0;
-    RttStats rx_latency{};
-    RttStats rx_decrypt{};
-    RttStats rx_decode{};
+    uint64_t rx_packets       = 0;  ///< Total messages decoded and delivered
+    uint64_t rx_bytes         = 0;  ///< Total application payload bytes received
+    uint64_t rx_text_packets  = 0;  ///< Text frame count (subset of rx_packets)
+    uint64_t rx_text_bytes    = 0;  ///< Text frame bytes (subset of rx_bytes)
+    uint64_t rx_dropped       = 0;  ///< Messages dropped (queue full or oversized)
+    uint64_t decrypt_errors   = 0;  ///< TLS decryption failures
+    uint64_t ws_pings_received = 0; ///< WebSocket Ping frames received
+    uint64_t ws_pongs_sent    = 0;  ///< WebSocket Pong frames sent in response
+    size_t   rx_queue_hwm     = 0;  ///< Peak RX queue occupancy since last reset
+    RttStats rx_latency{};          ///< Total RX latency: NIC arrival to frame decoded
+    RttStats rx_decrypt{};          ///< TLS decrypt latency: arrival to decrypt complete
+    RttStats rx_decode{};           ///< WS decode latency: decrypt complete to frame decoded
 };
 
 // ---------------------------------------------------------------------------

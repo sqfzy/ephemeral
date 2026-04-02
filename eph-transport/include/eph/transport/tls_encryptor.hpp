@@ -22,6 +22,7 @@
 namespace eph::net {
 
 namespace detail {
+/// Lazily-initialized logger for TLS encryption operations.
 inline const std::shared_ptr<spdlog::logger>& tls_enc_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls_enc");
@@ -38,6 +39,14 @@ inline const std::shared_ptr<spdlog::logger>& tls_enc_logger() {
 /// Created from TlsHotState after TLS 1.3 handshake key export.
 class TlsEncryptor {
 public:
+    /// Create a TlsEncryptor from the write-direction key material in a TlsHotState.
+    ///
+    /// Initializes the AEAD context with the appropriate AES-GCM algorithm
+    /// (128 or 256 bit) and copies the write IV and sequence number.
+    ///
+    /// @param state    TLS hot state containing write key, IV, and sequence
+    /// @param key_len  AES key length: 16 (AES-128) or 32 (AES-256, default)
+    /// @return Initialized TlsEncryptor, or error string on failure
     [[nodiscard]] static std::expected<TlsEncryptor, std::string>
     create(const TlsHotState& state, size_t key_len = tls_const::kAes256KeyLen) {
         TlsEncryptor enc;
@@ -175,6 +184,8 @@ public:
                tls_record::kAuthTagLen;
     }
 
+    /// Current write sequence number (monotonically increasing).
+    /// @return Number of records encrypted so far
     [[nodiscard]] uint64_t write_seq() const noexcept { return seq_; }
 
 private:

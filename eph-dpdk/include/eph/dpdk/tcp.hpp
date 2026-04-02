@@ -46,15 +46,23 @@ using eph::net::tcp_state_name;
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief Configuration for a DPDK TcpSession.
+///
+/// Specifies the connection 4-tuple, Ethernet MAC addresses, TCP parameters
+/// (MSS, receive window), and DPDK port/queue identifiers. Validate with
+/// validate() before passing to TcpSession constructor.
+///
+/// @note All IP addresses and ports in the tuple are in HOST byte order.
+///       MAC addresses are in network (wire) byte order as required by DPDK.
 struct TcpConfig {
-    net::ConnectionTuple tuple{};
-    rte_ether_addr       src_mac{};
-    rte_ether_addr       dst_mac{};
-    uint16_t             mss          = net::kDefaultMss;
-    uint32_t             recv_window  = 65535;
-    uint16_t             port_id      = 0;
-    uint16_t             tx_queue_id  = 0;
-    uint16_t             rx_queue_id  = 0;
+    net::ConnectionTuple tuple{};            ///< TCP 4-tuple (src/dst IP + port, host order)
+    rte_ether_addr       src_mac{};          ///< Source (local NIC) MAC address
+    rte_ether_addr       dst_mac{};          ///< Destination (gateway/peer) MAC address
+    uint16_t             mss          = net::kDefaultMss;  ///< Maximum Segment Size (bytes)
+    uint32_t             recv_window  = 65535; ///< Advertised receive window (no window scaling)
+    uint16_t             port_id      = 0;    ///< DPDK port ID for TX/RX
+    uint16_t             tx_queue_id  = 0;    ///< TX queue index on the port
+    uint16_t             rx_queue_id  = 0;    ///< RX queue index on the port
 
     /// Maximum packets per rte_eth_rx_burst call. 0 = auto-calculate from
     /// kDefaultRxBudgetBytes / mss (22 for standard MTU, 3 for jumbo).
@@ -167,24 +175,42 @@ inline spdlog::logger* tcp_logger() {
 // TCP Session
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Minimal TCP session for DPDK data plane.
+/// @brief Minimal user-space TCP session for DPDK data plane.
 ///
-/// Supports three-way handshake, data send/recv, ACK generation,
-/// and graceful close. No retransmission — packet loss triggers reconnect.
+/// Implements the TCP three-way handshake, data send/recv with sequence/ACK
+/// tracking, window management, out-of-order segment reordering, FIN/RST
+/// handling, and TIME_WAIT (2MSL). All I/O goes through DPDK rte_eth_tx_burst
+/// and rte_eth_rx_burst — no kernel sockets are used.
+///
+/// Does NOT implement: retransmission, Nagle, delayed ACK, congestion
+/// control, SACK, or TCP timestamps. Loss strategy: detect packet loss
+/// (reorder buffer overflow) and signal the caller to reconnect (~2ms).
+///
+/// @tparam ReorderSlots  Number of out-of-order segment buffer slots.
+///         Must be <= 255 (stored in uint8_t). Default 64 covers typical
+///         NIC reordering within a burst without excessive memory usage.
+///
+/// @note Not thread-safe. All send/receive operations must run on a single
+///       DPDK poll-mode lcore. For multi-connection setups on a shared RX
+///       queue, use Reactor (reactor.hpp) to demultiplex.
 template <size_t ReorderSlots = 64>
 class TcpSession {
     static_assert(ReorderSlots <= 255,
                   "ReorderSlots must fit in uint8_t (reorder_count_)");
 public:
+    /// @brief TCP session statistics (packets, bytes, reorder events, gap telemetry).
+    ///
+    /// All counters are cumulative. Use operator- to compute deltas between
+    /// two snapshots for interval-based monitoring.
     struct Stats {
-        uint64_t tx_packets      = 0;
-        uint64_t rx_packets      = 0;  ///< TCP segments received
-        uint64_t rx_bursts       = 0;  ///< Non-empty rte_eth_rx_burst calls
-        uint64_t tx_bytes        = 0;
-        uint64_t rx_bytes        = 0;
-        uint64_t acks_sent       = 0;
-        uint64_t out_of_order    = 0;
-        uint64_t resets_received = 0;
+        uint64_t tx_packets      = 0;  ///< Total TCP segments transmitted (including ACKs, SYN, FIN)
+        uint64_t rx_packets      = 0;  ///< Total TCP segments received (matching this connection)
+        uint64_t rx_bursts       = 0;  ///< Non-empty rte_eth_rx_burst calls (via poll_rx only)
+        uint64_t tx_bytes        = 0;  ///< Total TCP payload bytes transmitted
+        uint64_t rx_bytes        = 0;  ///< Total TCP payload bytes received (delivered to callback)
+        uint64_t acks_sent       = 0;  ///< Bare ACK packets sent
+        uint64_t out_of_order    = 0;  ///< Out-of-order segments detected (buffered, dropped, or duplicate)
+        uint64_t resets_received = 0;  ///< RST packets received from peer
 
         // ── Reorder / loss telemetry ──
         uint64_t reorder_hits      = 0;  ///< Segments successfully buffered & delivered via reorder buf
@@ -964,14 +990,23 @@ public:
     // State queries
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// @brief Current TCP state (Closed, SynSent, Established, etc.).
     [[nodiscard]] TcpState state()       const noexcept { return state_; }
+    /// @brief Next sequence number to send (SND.NXT).
     [[nodiscard]] uint32_t snd_nxt()     const noexcept { return snd_nxt_; }
+    /// @brief Oldest unacknowledged sequence number (SND.UNA).
     [[nodiscard]] uint32_t snd_una()     const noexcept { return snd_una_; }
+    /// @brief Next expected receive sequence number from peer (RCV.NXT).
     [[nodiscard]] uint32_t rcv_nxt()     const noexcept { return rcv_nxt_; }
+    /// @brief Our advertised receive window (RCV.WND).
     [[nodiscard]] uint16_t rcv_wnd()     const noexcept { return rcv_wnd_; }
+    /// @brief Peer's advertised receive window (SND.WND).
     [[nodiscard]] uint16_t snd_wnd()     const noexcept { return snd_wnd_; }
+    /// @brief Maximum Segment Size for this session.
     [[nodiscard]] uint16_t mss()         const noexcept { return config_.mss; }
+    /// @brief Access the session's TcpConfig.
     [[nodiscard]] const TcpConfig& config() const noexcept { return config_; }
+    /// @brief Copy of the current statistics snapshot.
     [[nodiscard]] Stats    stats()       const noexcept { return stats_; }
 
     [[nodiscard]] bool is_established() const noexcept {

@@ -25,6 +25,8 @@
 namespace eph::net {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the CircuitBreaker subsystem.
+/// @return Pointer to the "net.circuit_breaker" spdlog logger.
 inline spdlog::logger* circuit_breaker_logger() {
     static auto l = [] {
         try {
@@ -37,7 +39,10 @@ inline spdlog::logger* circuit_breaker_logger() {
 }
 } // namespace detail
 
-/// Circuit breaker state.
+/// @brief Circuit breaker state.
+///
+/// Represents the three states of the circuit breaker automaton:
+/// Closed (normal), Open (tripped), and HalfOpen (probing recovery).
 enum class CircuitState : uint8_t {
     Closed,    ///< Normal operation — calls are allowed.
     Open,      ///< Tripped — calls are blocked until open_duration elapses.
@@ -50,22 +55,29 @@ enum class CircuitState : uint8_t {
 /// down endpoint waste resources and may trigger IP bans.
 class CircuitBreaker {
 public:
-    /// Configuration for the circuit breaker.
+    /// @brief Configuration for the circuit breaker.
+    ///
+    /// All fields are immutable after construction of the CircuitBreaker.
     struct Config {
         std::size_t          failure_threshold;    ///< Trip to Open after N consecutive failures.
         std::chrono::seconds open_duration;        ///< How long to stay Open before probing.
         std::size_t          half_open_max_calls;  ///< Max concurrent test calls in HalfOpen.
 
-        /// Default configuration: 5 failures, 30s cooldown, 1 probe call.
+        /// @brief Default configuration: 5 failures, 30s cooldown, 1 probe call.
         constexpr Config() noexcept
             : failure_threshold{5}, open_duration{30}, half_open_max_calls{1} {}
 
+        /// @brief Construct with explicit values.
+        /// @param thresh  Number of consecutive failures before tripping to Open.
+        /// @param dur     Duration to remain Open before transitioning to HalfOpen.
+        /// @param ho_max  Maximum concurrent probe calls allowed in HalfOpen state.
         constexpr Config(std::size_t thresh, std::chrono::seconds dur,
                          std::size_t ho_max = 1) noexcept
             : failure_threshold{thresh}, open_duration{dur}, half_open_max_calls{ho_max} {}
     };
 
-    /// Construct a circuit breaker with the given configuration.
+    /// @brief Construct a circuit breaker with the given configuration.
+    /// @param config  Breaker configuration (threshold, duration, probe limit).
     explicit CircuitBreaker(Config config = Config{}) noexcept
         : config_{config}
         , state_{CircuitState::Closed}
@@ -79,7 +91,7 @@ public:
                      config_.half_open_max_calls);
     }
 
-    /// Check if a call is allowed through the breaker.
+    /// @brief Check if a call is allowed through the breaker.
     ///
     /// In Closed state, always allows. In Open state, checks if open_duration
     /// has elapsed and transitions to HalfOpen if so. In HalfOpen state,
@@ -91,10 +103,12 @@ public:
         return allow_locked();
     }
 
-    /// Record a successful call result.
+    /// @brief Record a successful call result.
     ///
     /// In Closed state, resets the consecutive failure count.
     /// In HalfOpen state, transitions to Closed (endpoint recovered).
+    /// @note Safe to call from any state; a call in Open is unexpected
+    ///       but handled gracefully with a warning log.
     void record_success() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
 
@@ -127,11 +141,13 @@ public:
         }
     }
 
-    /// Record a failed call result.
+    /// @brief Record a failed call result.
     ///
     /// In Closed state, increments the consecutive failure count and trips
     /// to Open if the threshold is reached. In HalfOpen state, transitions
     /// back to Open (probe failed, endpoint still broken).
+    /// @note Safe to call from any state; a call in Open is unexpected
+    ///       but handled gracefully with a warning log.
     void record_failure() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
 
@@ -162,11 +178,12 @@ public:
         }
     }
 
-    /// Current circuit state.
+    /// @brief Query the current circuit state.
     ///
-    /// Note: in Open state, this evaluates the timeout and may report HalfOpen
-    /// if the open_duration has elapsed (without actually transitioning — the
-    /// transition happens in allow()).
+    /// @return The current CircuitState.
+    /// @note In Open state, this evaluates the timeout and may report HalfOpen
+    ///       if the open_duration has elapsed (without actually transitioning --
+    ///       the transition happens in allow()).
     [[nodiscard]] CircuitState state() const noexcept {
         std::lock_guard<std::mutex> lock(mu_);
         if (state_ == CircuitState::Open && open_duration_elapsed_locked()) {
@@ -175,15 +192,18 @@ public:
         return state_;
     }
 
-    /// Current consecutive failure count.
+    /// @brief Current consecutive failure count.
+    /// @return The number of consecutive failures recorded since the last reset
+    ///         or successful call.
     [[nodiscard]] std::size_t failure_count() const noexcept {
         std::lock_guard<std::mutex> lock(mu_);
         return failure_count_;
     }
 
-    /// Force-reset the circuit breaker to Closed state.
+    /// @brief Force-reset the circuit breaker to Closed state.
     ///
     /// Clears failure count and half-open call tracking.
+    /// Idempotent -- safe to call multiple times.
     void reset() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
         SPDLOG_LOGGER_INFO(detail::circuit_breaker_logger(),

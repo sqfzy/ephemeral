@@ -69,7 +69,13 @@ inline constexpr uint32_t kEmptySlotHash = UINT32_MAX;
 inline constexpr uint32_t kUnrecognizedHash = 0;
 
 /// Core two-phase filter logic, shared between std::function and function pointer overloads.
-/// ExtractorFn must be callable as uint32_t(const uint8_t*, size_t).
+///
+/// Pass 1: extract hashes and record the last frame index per symbol hash.
+/// Pass 2: mark all non-latest frames as deliver=false, then restore latest.
+///
+/// @tparam ExtractorFn  Callable as uint32_t(const uint8_t*, size_t)
+/// @param frames  Span of FrameView entries to filter (deliver flags are mutated)
+/// @param ext     Symbol hash extractor function
 template <typename ExtractorFn>
 void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
     struct Slot { uint32_t hash = kEmptySlotHash; size_t last_idx = 0; };
@@ -218,40 +224,48 @@ using TransportStateCallback =
 // Configuration
 // ---------------------------------------------------------------------------
 
+/// Complete configuration for a Transport connection.
+///
+/// Controls the connection target, TLS settings, timeouts, performance tuning,
+/// reconnection behavior, WebSocket ping/pong, CPU affinity, and all optional
+/// callbacks. Use validate() before passing to Transport::create() for early
+/// error detection, and warnings() for advisory diagnostics.
+///
+/// Convenience: use from_url() to parse a WebSocket URL, then adjust fields.
 struct TransportConfig {
-    // Connection target
-    std::string remote_host{};      // Hostname for TLS SNI and HTTP Host
-    uint16_t    remote_port = 443;  // Remote TCP port
-    std::string ws_path     = "/";  // WebSocket upgrade path
-    std::string ws_subprotocol{};   // WebSocket subprotocol (Sec-WebSocket-Protocol)
-    std::string extra_headers{};    // Additional HTTP headers for upgrade
+    // -- Connection target --
+    std::string remote_host{};      ///< Hostname for TLS SNI and HTTP Host header
+    uint16_t    remote_port = 443;  ///< Remote TCP port
+    std::string ws_path     = "/";  ///< WebSocket upgrade request-URI path
+    std::string ws_subprotocol{};   ///< WebSocket subprotocol (Sec-WebSocket-Protocol header)
+    std::string extra_headers{};    ///< Additional HTTP headers appended to the Upgrade request (must end with \\r\\n)
 
-    // TLS
-    bool        use_tls     = true; // false = plain ws:// (no TLS handshake/encryption)
-    std::string ca_cert_path{};     // CA cert file, empty = system default
-    bool        verify_peer = true;
+    // -- TLS --
+    bool        use_tls     = true; ///< Enable TLS 1.3 (false = plain ws:// without encryption)
+    std::string ca_cert_path{};     ///< CA certificate file (PEM), empty = system default trust store
+    bool        verify_peer = true; ///< Verify server certificate chain and hostname
 
-    // Mutual TLS (mTLS) — client certificate authentication.
-    // Both must be set together; empty = no client certificate.
-    std::string client_cert_path{}; // Client certificate file (PEM)
-    std::string client_key_path{};  // Client private key file (PEM)
+    /// Mutual TLS (mTLS) -- client certificate authentication.
+    /// Both must be set together; leave both empty to disable.
+    std::string client_cert_path{}; ///< Client certificate file path (PEM)
+    std::string client_key_path{};  ///< Client private key file path (PEM)
 
-    // Timeouts
-    std::chrono::milliseconds tcp_timeout{3000};
-    std::chrono::milliseconds tls_timeout{5000};
-    std::chrono::milliseconds ws_timeout{3000};
+    // -- Timeouts --
+    std::chrono::milliseconds tcp_timeout{3000};  ///< TCP connect timeout
+    std::chrono::milliseconds tls_timeout{5000};  ///< TLS handshake timeout
+    std::chrono::milliseconds ws_timeout{3000};   ///< WebSocket Upgrade response timeout
 
-    // Performance
-    uint16_t tx_burst_size = 32;    // Max messages per TX drain batch
-    uint16_t rx_burst_size = 32;    // Max packets per RX poll
+    // -- Performance --
+    uint16_t tx_burst_size = 32;    ///< Maximum messages drained per TX loop iteration
+    uint16_t rx_burst_size = 32;    ///< Maximum TCP segments polled per RX loop iteration
 
-    // Reconnection (exponential backoff with jitter, discard old messages)
-    std::chrono::milliseconds reconnect_interval{100}; // Base interval (first retry)
-    std::chrono::milliseconds max_reconnect_backoff{0}; // Max backoff cap (0 = 16x base)
-    int max_reconnect_attempts = 10;                    // 0 = disable auto-reconnect
+    // -- Reconnection (exponential backoff with jitter, stale messages discarded) --
+    std::chrono::milliseconds reconnect_interval{100}; ///< Base backoff interval (first retry)
+    std::chrono::milliseconds max_reconnect_backoff{0}; ///< Maximum backoff cap (0 = 16x base)
+    int max_reconnect_attempts = 10;                    ///< Max retries (0 = disable auto-reconnect)
 
-    // WebSocket ping (sent by TX thread at configured interval)
-    std::chrono::seconds ping_interval{30};  // 0 = disable ping
+    // -- WebSocket keepalive --
+    std::chrono::seconds ping_interval{30};  ///< Interval between WebSocket Ping frames (0 = disable)
     // Pong timeout: if no pong is received within this duration after a ping,
     // the connection is considered dead and a reconnect is triggered.
     // 0 = disable pong timeout detection (default for backward compatibility).
@@ -265,15 +279,16 @@ struct TransportConfig {
     // close the connection.
     bool skip_utf8_validation = true;
 
-    // CPU affinity for worker threads (-1 = no pinning)
-    int tx_cpu = -1;
-    int rx_cpu = -1;
+    // -- CPU affinity --
+    int tx_cpu = -1;  ///< CPU core for TX thread (-1 = no pinning)
+    int rx_cpu = -1;  ///< CPU core for RX thread (-1 = no pinning)
 
-    // RX drop log throttling: log a warning every N drops (0 = disable logging).
-    // The on_rx_drop callback is still invoked on every drop regardless.
+    /// RX drop log throttling: log a warning every N drops (0 = disable logging).
+    /// @note The on_rx_drop callback is still invoked on every drop regardless.
     uint64_t drop_log_interval = 1000;
 
-    // Connection state change callback (optional, called from worker threads)
+    /// Connection state change callback (optional).
+    /// @warning Called from worker threads -- must be non-blocking.
     TransportStateCallback on_state_change{};
 
     /// Push-mode message callback (optional, called from RX thread).
@@ -695,9 +710,11 @@ struct TransportConfig {
 // Connection info (aggregated metadata from the current connection)
 // ---------------------------------------------------------------------------
 
-/// Snapshot of connection metadata, aggregating information that would
-/// otherwise require multiple getter calls (tls_version, cipher_name,
-/// remote_ip, ws_subprotocol). Useful for logging/monitoring dashboards.
+/// Snapshot of connection metadata for logging and monitoring dashboards.
+///
+/// Aggregates information that would otherwise require multiple getter calls:
+/// TLS version, cipher suite, negotiated WebSocket subprotocol, and the
+/// resolved remote IP address.
 struct ConnectionInfo {
     std::string tls_version;       ///< e.g. "TLSv1.3" or "none"
     std::string cipher_name;       ///< e.g. "TLS_AES_256_GCM_SHA384" or "none"

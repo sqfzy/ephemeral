@@ -39,7 +39,10 @@ namespace eph::net {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parsed HTTP response.
+/// @brief Parsed HTTP response.
+///
+/// Contains the status code, raw header block, and body text
+/// from a completed HTTP/1.1 response.
 struct HttpResponse {
     int         status_code = 0;
     std::string body;
@@ -52,6 +55,8 @@ struct HttpResponse {
 
 namespace detail {
 
+/// @brief Lazily-initialized logger for the HttpClient subsystem.
+/// @return Pointer to the "net.http_client" spdlog logger.
 inline spdlog::logger* http_client_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.http_client");
@@ -61,6 +66,8 @@ inline spdlog::logger* http_client_logger() {
     return l.get();
 }
 
+/// @brief Retrieve the most recent OpenSSL error as a human-readable string.
+/// @return Error description from the OpenSSL error queue.
 inline std::string ssl_last_error() {
     char buf[256];
     ERR_error_string_n(ERR_get_error(), buf, sizeof(buf));
@@ -73,7 +80,7 @@ inline std::string ssl_last_error() {
 // HTTP request builder (pure, testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build an HTTP/1.1 request string.
+/// @brief Build an HTTP/1.1 request string.
 ///
 /// @param method          HTTP method (e.g. "GET", "POST")
 /// @param host            Host header value
@@ -165,7 +172,7 @@ build_http_request(std::string_view method,
 // HTTP response parser (pure, testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parse an HTTP/1.1 response from raw bytes.
+/// @brief Parse an HTTP/1.1 response from raw bytes.
 ///
 /// Supports Content-Length and connection-close semantics.
 /// Does NOT support chunked transfer encoding.
@@ -239,7 +246,7 @@ parse_http_response(std::string_view data) noexcept {
     return resp;
 }
 
-/// Extract a header value by name (case-insensitive) from raw headers.
+/// @brief Extract a header value by name (case-insensitive) from raw headers.
 ///
 /// @param headers_raw  Raw header block (lines separated by \r\n)
 /// @param name         Header name to search for (case-insensitive)
@@ -289,24 +296,29 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
 // HttpClient — synchronous HTTP/1.1 over POSIX sockets + TLS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Minimal synchronous HTTP/1.1 client for REST API calls.
+/// @brief Minimal synchronous HTTP/1.1 client for REST API calls.
 ///
 /// Each request opens a new TCP connection, optionally performs TLS handshake,
 /// sends the request, reads the full response, and closes. No keep-alive,
 /// no pipelining, no chunked encoding, no redirects.
 ///
 /// Designed for crypto exchange REST APIs: order placement, balance queries,
-/// orderbook snapshots — all off the hot path.
+/// orderbook snapshots -- all off the hot path.
+///
+/// @warning NOT suitable for latency-sensitive hot paths. Typical latency is 1-10ms.
 class HttpClient {
 public:
+    /// @brief Configuration for the HTTP client.
     struct Config {
-        std::string                 host;
-        uint16_t                    port = 443;
-        bool                        use_tls = true;
-        std::chrono::milliseconds   timeout{5000};
-        std::string                 ca_cert_path{};  ///< empty = system default
-        size_t                      max_response_size = 8 * 1024 * 1024;  ///< 8 MiB default
+        std::string                 host;             ///< Target hostname (e.g., "api.binance.com").
+        uint16_t                    port = 443;       ///< Target port (default 443 for HTTPS).
+        bool                        use_tls = true;   ///< Enable TLS (default true).
+        std::chrono::milliseconds   timeout{5000};    ///< Timeout for DNS, connect, send, and recv.
+        std::string                 ca_cert_path{};   ///< CA certificate path; empty = system default.
+        size_t                      max_response_size = 8 * 1024 * 1024;  ///< Max response body size (8 MiB default).
 
+        /// @brief Format configuration as a human-readable string for logging.
+        /// @return Single-line description of all config fields.
         [[nodiscard]] std::string dump() const {
             return std::format(
                 "HttpClient::Config(host='{}', port={}, tls={}, timeout={}ms, "
@@ -317,15 +329,17 @@ public:
         }
     };
 
+    /// @brief Construct an HttpClient with the given configuration.
+    /// @param config  Client configuration (host, port, TLS, timeout, etc.).
     explicit HttpClient(Config config) : config_(std::move(config)) {
         SPDLOG_LOGGER_DEBUG(detail::http_client_logger(),
             "HttpClient created: {}", config_.dump());
     }
 
-    /// Send a GET request.
-    /// @param path           Request URI (e.g. "/api/v1/ticker")
-    /// @param extra_headers  Additional headers (\r\n terminated per line)
-    /// @return Parsed response or error string
+    /// @brief Send a GET request.
+    /// @param path           Request URI (e.g. "/api/v1/ticker").
+    /// @param extra_headers  Additional headers (\r\n terminated per line).
+    /// @return Parsed HttpResponse or error string.
     [[nodiscard]] std::expected<HttpResponse, std::string>
     get(std::string_view path,
         std::string_view extra_headers = {}) noexcept {
@@ -339,12 +353,12 @@ public:
         return execute(*req);
     }
 
-    /// Send a POST request with a body.
-    /// @param path           Request URI
-    /// @param body           Request body
-    /// @param content_type   Content-Type header (default: "application/json")
-    /// @param extra_headers  Additional headers (\r\n terminated per line)
-    /// @return Parsed response or error string
+    /// @brief Send a POST request with a body.
+    /// @param path           Request URI (e.g. "/api/v1/order").
+    /// @param body           Request body.
+    /// @param content_type   Content-Type header (default: "application/json").
+    /// @param extra_headers  Additional headers (\r\n terminated per line).
+    /// @return Parsed HttpResponse or error string.
     [[nodiscard]] std::expected<HttpResponse, std::string>
     post(std::string_view path,
          std::string_view body,
@@ -360,7 +374,8 @@ public:
         return execute(*req);
     }
 
-    /// Access the current configuration (for logging/debugging).
+    /// @brief Access the current configuration (for logging/debugging).
+    /// @return Const reference to the HttpClient::Config.
     [[nodiscard]] const Config& config() const noexcept { return config_; }
 
 private:
@@ -385,7 +400,9 @@ private:
         }
     };
 
-    /// RAII socket fd wrapper.
+    /// @brief RAII socket fd wrapper.
+    ///
+    /// Closes the file descriptor on destruction. Move-only.
     struct Socket {
         int fd = -1;
         Socket() = default;
@@ -405,7 +422,8 @@ private:
     // TCP connect
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Resolve host and connect a TCP socket with timeout.
+    /// @brief Resolve host and connect a TCP socket with timeout.
+    /// @return Connected Socket wrapper, or error string on DNS/connect failure.
     [[nodiscard]] std::expected<Socket, std::string>
     tcp_connect() noexcept {
         auto* log = detail::http_client_logger();
@@ -508,8 +526,12 @@ private:
     // TLS handshake
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Perform TLS handshake over an established TCP socket.
-    /// Returns (SSL_CTX*, SSL*) wrapped in unique_ptrs for RAII.
+    /// @brief Perform TLS handshake over an established TCP socket.
+    ///
+    /// Returns (SSL_CTX*, SSL*) wrapped in unique_ptrs for RAII cleanup.
+    ///
+    /// @param fd  Connected socket file descriptor.
+    /// @return Pair of (SSL_CTX, SSL) RAII wrappers, or error string.
     [[nodiscard]] std::expected<
         std::pair<std::unique_ptr<SSL_CTX, SslCtxDeleter>,
                   std::unique_ptr<SSL, SslDeleter>>,
@@ -618,7 +640,10 @@ private:
     // I/O helpers with timeout
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Send all data through a plain socket.
+    /// @brief Send all data through a plain socket.
+    /// @param fd    Socket file descriptor.
+    /// @param data  Data to send.
+    /// @return void on success, error string on timeout or I/O failure.
     [[nodiscard]] std::expected<void, std::string>
     send_all(int fd, std::string_view data) noexcept {
         auto deadline = std::chrono::steady_clock::now() + config_.timeout;
@@ -650,7 +675,11 @@ private:
         return {};
     }
 
-    /// Send all data through TLS.
+    /// @brief Send all data through TLS.
+    /// @param ssl   SSL connection handle.
+    /// @param fd    Underlying socket file descriptor (for poll).
+    /// @param data  Data to send.
+    /// @return void on success, error string on timeout or SSL failure.
     [[nodiscard]] std::expected<void, std::string>
     ssl_send_all(SSL* ssl, int fd, std::string_view data) noexcept {
         auto deadline = std::chrono::steady_clock::now() + config_.timeout;
@@ -689,7 +718,9 @@ private:
         return {};
     }
 
-    /// Read all response data (until connection close or Content-Length satisfied).
+    /// @brief Read all response data (until connection close or Content-Length satisfied).
+    /// @param fd  Socket file descriptor.
+    /// @return Complete raw HTTP response string, or error string.
     [[nodiscard]] std::expected<std::string, std::string>
     recv_all(int fd) noexcept {
         auto deadline = std::chrono::steady_clock::now() + config_.timeout;
@@ -752,7 +783,10 @@ private:
         return buf;
     }
 
-    /// Read all response data through TLS.
+    /// @brief Read all response data through TLS.
+    /// @param ssl  SSL connection handle.
+    /// @param fd   Underlying socket file descriptor (for poll).
+    /// @return Complete raw HTTP response string, or error string.
     [[nodiscard]] std::expected<std::string, std::string>
     ssl_recv_all(SSL* ssl, int fd) noexcept {
         auto deadline = std::chrono::steady_clock::now() + config_.timeout;
@@ -826,9 +860,13 @@ private:
     }
 
 public:
-    /// Check if we've received the complete HTTP response based on Content-Length.
-    /// Returns true if complete, false if more data needed.
-    /// Public for testing — also used internally by recv loops.
+    /// @brief Check if we've received the complete HTTP response based on Content-Length.
+    ///
+    /// Handles Content-Length, chunked Transfer-Encoding, and connection-close semantics.
+    /// Public for testing -- also used internally by recv loops.
+    ///
+    /// @param buf  Raw response data received so far.
+    /// @return true if complete, false if more data needed.
     [[nodiscard]] static bool is_response_complete(std::string_view buf) noexcept {
         auto header_end = buf.find("\r\n\r\n");
         if (header_end == std::string_view::npos) return false;
@@ -885,7 +923,9 @@ private:
     // Main execute path
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Execute a pre-built HTTP request: connect, (TLS), send, recv, parse.
+    /// @brief Execute a pre-built HTTP request: connect, (TLS), send, recv, parse.
+    /// @param request  Complete HTTP/1.1 request string (from build_http_request).
+    /// @return Parsed HttpResponse or error string.
     [[nodiscard]] std::expected<HttpResponse, std::string>
     execute(const std::string& request) noexcept {
         [[maybe_unused]] auto* log = detail::http_client_logger();

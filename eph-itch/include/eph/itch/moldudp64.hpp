@@ -32,11 +32,12 @@ namespace eph::itch {
 // MoldUDP64 constants
 // ---------------------------------------------------------------------------
 
+/// @brief MoldUDP64 protocol constants.
 namespace moldudp64 {
 
-inline constexpr size_t   kSessionLen    = 10;
-inline constexpr size_t   kHeaderLen     = 20;  // 10 session + 8 seq + 2 count
-inline constexpr uint16_t kEndOfSession  = 0xFFFF;
+inline constexpr size_t   kSessionLen    = 10;     ///< Length of the session ID field in bytes.
+inline constexpr size_t   kHeaderLen     = 20;     ///< Total header length: 10 session + 8 seq + 2 count.
+inline constexpr uint16_t kEndOfSession  = 0xFFFF; ///< Sentinel message_count indicating end of session.
 
 }  // namespace moldudp64
 
@@ -44,7 +45,10 @@ inline constexpr uint16_t kEndOfSession  = 0xFFFF;
 // Logger
 // ---------------------------------------------------------------------------
 
+/// @brief Internal detail namespace for MoldUDP64 module logger.
 namespace detail {
+/// @brief Get or create the MoldUDP64 module logger.
+/// @return Shared pointer reference to the spdlog logger instance.
 inline const std::shared_ptr<spdlog::logger>& moldudp64_logger() {
     static auto l = [] {
         auto lg = spdlog::get("itch.moldudp64");

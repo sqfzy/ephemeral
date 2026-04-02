@@ -27,9 +27,14 @@ namespace eph::book {
 // Order flow imbalance
 // ============================================================================
 
-/// Normalized order flow imbalance: (bid_qty - ask_qty) / (bid_qty + ask_qty).
+/// @brief Normalized order flow imbalance: (bid_qty - ask_qty) / (bid_qty + ask_qty).
+///
 /// Returns a value in [-1.0, 1.0].  Positive indicates buy pressure,
 /// negative indicates sell pressure.  Returns 0.0 if both sides are empty.
+///
+/// @tparam Book  Any book type exposing total_bid_qty() and total_ask_qty().
+/// @param  book  The order book to measure imbalance on.
+/// @return Imbalance ratio in [-1.0, 1.0], or 0.0 if the book is empty.
 template <typename Book>
 [[nodiscard]] double order_imbalance(const Book& book) noexcept {
     const double bid_qty = book.total_bid_qty();
@@ -43,12 +48,17 @@ template <typename Book>
 // Weighted mid price
 // ============================================================================
 
-/// Weighted mid price using top-of-book quantities.
+/// @brief Weighted mid price using top-of-book quantities.
+///
 /// Formula: bid * (ask_qty / total) + ask * (bid_qty / total)
 /// where total = bid_qty + ask_qty at the BBO.
 ///
 /// More accurate than simple mid when top-of-book sizes are asymmetric.
-/// Returns nullopt if either side is empty.
+///
+/// @tparam Book  Any book type exposing best_bid() and best_ask() returning
+///               optional<PriceLevel>.
+/// @param  book  The order book to compute weighted mid for.
+/// @return Weighted mid price, or nullopt if either side is empty.
 template <typename Book>
 [[nodiscard]] std::optional<double> weighted_mid(const Book& book) noexcept {
     const auto bid = book.best_bid();
@@ -67,12 +77,16 @@ template <typename Book>
 // Microprice
 // ============================================================================
 
-/// Microprice: identical to weighted_mid for a single-level book.
+/// @brief Microprice: size-weighted fair value using only top-of-book.
+///
 /// microprice = (bid * ask_qty + ask * bid_qty) / (bid_qty + ask_qty)
 ///
 /// Semantically distinct from weighted_mid in that microprice always uses
 /// only top-of-book, whereas weighted_mid could be extended to deeper levels.
-/// Returns nullopt if either side is empty.
+///
+/// @tparam Book  Any book type exposing best_bid() and best_ask().
+/// @param  book  The order book to compute microprice for.
+/// @return Microprice estimate, or nullopt if either side is empty.
 template <typename Book>
 [[nodiscard]] std::optional<double> microprice(const Book& book) noexcept {
     // Top-of-book microprice is the same formula as weighted mid.
@@ -83,8 +97,11 @@ template <typename Book>
 // Bid-ask spread in basis points
 // ============================================================================
 
-/// Spread in basis points: (ask - bid) / mid * 10000.
-/// Returns nullopt if either side is empty.
+/// @brief Bid-ask spread in basis points: (ask - bid) / mid * 10000.
+///
+/// @tparam Book  Any book type exposing best_bid() and best_ask().
+/// @param  book  The order book to measure spread on.
+/// @return Spread in basis points, or nullopt if either side is empty or mid <= 0.
 template <typename Book>
 [[nodiscard]] std::optional<double> spread_bps(const Book& book) noexcept {
     const auto bid = book.best_bid();
@@ -101,9 +118,12 @@ template <typename Book>
 // VWAP over a span of price levels
 // ============================================================================
 
-/// Volume-weighted average price over a span of PriceLevels.
+/// @brief Volume-weighted average price over a span of PriceLevels.
+///
 /// Works with ArrayBook::bids()/asks() spans or any contiguous PriceLevel range.
-/// Returns nullopt if the span is empty or total quantity is zero.
+///
+/// @param levels  Contiguous span of price levels to aggregate.
+/// @return VWAP value, or `std::nullopt` if the span is empty or total quantity is zero.
 [[nodiscard]] inline std::optional<double>
 vwap(std::span<const PriceLevel> levels) noexcept {
     if (levels.empty()) return std::nullopt;
@@ -122,9 +142,14 @@ vwap(std::span<const PriceLevel> levels) noexcept {
 // Book depth ratio
 // ============================================================================
 
-/// Depth ratio: total_bid_qty / total_ask_qty.
-/// Values > 1.0 indicate more buy interest, < 1.0 more sell interest.
-/// Returns 0.0 if the ask side is empty (avoids division by zero).
+/// @brief Depth ratio: total_bid_qty / total_ask_qty.
+///
+/// Values > 1.0 indicate more buy interest; < 1.0 more sell interest.
+///
+/// @tparam Book  Any book type exposing total_bid_qty() and total_ask_qty().
+/// @param  book  The order book to compute the depth ratio for.
+/// @return Ratio of aggregate bid to ask quantity, or 0.0 if the ask side
+///         is empty (avoids division by zero).
 template <typename Book>
 [[nodiscard]] double depth_ratio(const Book& book) noexcept {
     const double ask_qty = book.total_ask_qty();

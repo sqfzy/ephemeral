@@ -38,18 +38,22 @@
 namespace eph::net {
 
 /// Aggregate stats snapshot returned by TxWorker::stats().
+///
+/// Contains all TX-side counters and latency histograms captured at
+/// a single point in time. Thread-safe to read (all source atomics
+/// use relaxed ordering).
 struct TxWorkerStats {
-    uint64_t packets        = 0;
-    uint64_t bytes          = 0;
-    uint64_t text_packets   = 0;
-    uint64_t text_bytes     = 0;
-    uint64_t dropped        = 0;
-    uint64_t crypto_errors  = 0;
-    uint64_t queue_full_count = 0;
-    size_t   queue_hwm      = 0;
-    RttStats tx_latency{};
-    RttStats tx_queue_wait{};
-    RttStats tx_encode{};
+    uint64_t packets        = 0;  ///< Total messages sent on the wire
+    uint64_t bytes          = 0;  ///< Total application payload bytes sent
+    uint64_t text_packets   = 0;  ///< Text frame count (subset of packets)
+    uint64_t text_bytes     = 0;  ///< Text frame bytes (subset of bytes)
+    uint64_t dropped        = 0;  ///< Messages dropped due to TCP send failure
+    uint64_t crypto_errors  = 0;  ///< TLS encryption failures
+    uint64_t queue_full_count = 0; ///< Number of times enqueue failed (queue full)
+    size_t   queue_hwm      = 0;  ///< Peak TX queue occupancy since last reset
+    RttStats tx_latency{};        ///< Total TX latency: enqueue to wire (+ kernel TX if available)
+    RttStats tx_queue_wait{};     ///< Queue transit time: enqueue to drain by TX thread
+    RttStats tx_encode{};         ///< Encode + encrypt time: drain to TCP send
 };
 
 // ---------------------------------------------------------------------------

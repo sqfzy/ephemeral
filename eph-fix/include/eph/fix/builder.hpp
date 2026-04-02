@@ -20,7 +20,10 @@
 
 namespace eph::fix {
 
+/// @brief Internal implementation details for the builder module.
 namespace detail {
+/// @brief Get or create the spdlog logger for the builder module.
+/// @return Shared pointer to the "fix.builder" logger.
 inline const std::shared_ptr<spdlog::logger>& fix_builder_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.builder");
@@ -31,7 +34,7 @@ inline const std::shared_ptr<spdlog::logger>& fix_builder_logger() {
 }
 } // namespace detail
 
-/// Builds a FIX message into a caller-provided buffer.
+/// @brief Builds a FIX message into a caller-provided buffer.
 ///
 /// Usage:
 ///   uint8_t buf[1024];
@@ -65,10 +68,15 @@ public:
         pos_        = kHeaderReserve;
     }
 
-    /// Append a string-valued field: tag=value\x01.
-    /// The value must NOT contain SOH (0x01) bytes — SOH is the FIX field
+    /// @brief Append a string-valued field: tag=value\x01.
+    ///
+    /// The value must NOT contain SOH (0x01) bytes -- SOH is the FIX field
     /// delimiter and embedding it would corrupt the message. Sets overflow
     /// flag if SOH is found.
+    ///
+    /// @param t      FIX tag number (e.g. tag::Symbol).
+    /// @param value  Field value (must not contain SOH bytes).
+    /// @return Reference to this builder for chaining.
     MessageBuilder& set(uint32_t t, std::string_view value) noexcept {
         if (overflow_) [[unlikely]] return *this;
 
@@ -84,19 +92,27 @@ public:
         return set_trusted(t, value);
     }
 
-    /// Append an integer-valued field.
+    /// @brief Append an integer-valued field.
+    /// @param t      FIX tag number.
+    /// @param value  Signed integer value.
+    /// @return Reference to this builder for chaining.
     MessageBuilder& set_int(uint32_t t, int64_t value) noexcept {
         char tmp[24];
         size_t n = format_int(value, tmp);
         return set_trusted(t, std::string_view(tmp, n));
     }
 
-    /// Append a field from a raw byte pointer + length.
+    /// @brief Append a field from a raw byte pointer + length.
+    ///
     /// The data must NOT contain SOH (0x01) bytes, as the parser uses SOH
-    /// as a field delimiter. Sets overflow flag if SOH is found (validated
-    /// by set()).
-    /// For true binary FIX fields (Data/RawData), a length-aware parser
-    /// would be required.
+    /// as a field delimiter. Sets overflow flag if SOH is found.
+    ///
+    /// @param t     FIX tag number.
+    /// @param data  Pointer to raw bytes (may be null if len == 0).
+    /// @param len   Number of bytes to write.
+    /// @return Reference to this builder for chaining.
+    /// @note For true binary FIX fields (Data/RawData), a length-aware parser
+    ///       would be required.
     MessageBuilder& set_raw(uint32_t t, const uint8_t* data, size_t len) noexcept {
         if (data == nullptr || len == 0)
             return set_trusted(t, std::string_view{});
@@ -111,13 +127,18 @@ public:
         return set_trusted(t, std::string_view(reinterpret_cast<const char*>(data), len));
     }
 
-    /// Append a FIX boolean field (Y/N).
+    /// @brief Append a FIX boolean field (Y/N).
+    ///
     /// Useful for PossDupFlag, PossResend, ResetSeqNumFlag, GapFillFlag, etc.
+    ///
+    /// @param t      FIX tag number.
+    /// @param value  Boolean value (true -> "Y", false -> "N").
+    /// @return Reference to this builder for chaining.
     MessageBuilder& set_bool(uint32_t t, bool value) noexcept {
         return set_trusted(t, value ? std::string_view("Y", 1) : std::string_view("N", 1));
     }
 
-    /// Timestamp sub-second precision levels.
+    /// @brief Timestamp sub-second precision levels for UTCTimestamp formatting.
     enum class TimestampPrecision : uint8_t {
         kSeconds = 0,       ///< "YYYYMMDD-HH:MM:SS" (17 chars)
         kMilliseconds = 3,  ///< "YYYYMMDD-HH:MM:SS.sss" (21 chars)
@@ -125,7 +146,7 @@ public:
         kNanoseconds = 9,   ///< "YYYYMMDD-HH:MM:SS.sssssssss" (27 chars)
     };
 
-    /// Append a UTCTimestamp field with configurable sub-second precision.
+    /// @brief Append a UTCTimestamp field with configurable sub-second precision.
     ///
     /// FIX 4.4+ UTCTimestamp format. Default is millisecond precision for
     /// backward compatibility. Use kMicroseconds or kNanoseconds for modern
@@ -205,9 +226,17 @@ public:
         return set_trusted(t, std::string_view(tmp, total_len));
     }
 
-    /// Append a double-valued field with fixed-point precision.
+    /// @brief Append a double-valued field with fixed-point precision.
+    ///
     /// Sets overflow flag if value is NaN or Infinity (not representable in FIX).
     /// Precision is clamped to [0, 15] to prevent buffer overrun in format_double().
+    ///
+    /// @param t          FIX tag number.
+    /// @param value      Floating-point value (must be finite).
+    /// @param precision  Number of decimal places (default 2, clamped to [0, 15]).
+    /// @return Reference to this builder for chaining.
+    /// @warning Uses binary floating-point formatting. For exact decimal fidelity
+    ///          (e.g. financial prices), prefer set_decimal() or set_price().
     MessageBuilder& set_double(uint32_t t, double value, int precision = 2) noexcept {
         if (!std::isfinite(value)) [[unlikely]] {
             log_non_finite(t);
@@ -221,7 +250,7 @@ public:
         return set_trusted(t, std::string_view(tmp, n));
     }
 
-    /// Append a decimal-valued field from its string representation.
+    /// @brief Append a decimal-valued field from its string representation.
     /// Unlike set_double(), this avoids binary floating-point precision loss
     /// by encoding the decimal value directly as-is. Essential for financial
     /// data where exact decimal representation is required (prices, quantities).
@@ -280,7 +309,7 @@ public:
         return set_trusted(t, decimal);
     }
 
-    /// Append a price field from integer mantissa and exponent.
+    /// @brief Append a price field from integer mantissa and exponent.
     /// Encodes price = mantissa * 10^(-decimals) without floating-point.
     ///
     /// Example: set_price(tag::Price, 12345, 2) encodes "123.45"
@@ -335,7 +364,7 @@ public:
         return set_trusted(t, std::string_view(tmp, off));
     }
 
-    /// Finalize the message: prepend BeginString + BodyLength, append CheckSum.
+    /// @brief Finalize the message: prepend BeginString + BodyLength, append CheckSum.
     ///
     /// @param begin_string  FIX version string (default "FIX.4.4")
     /// @return Total message length in bytes, or 0 if buffer was too small
@@ -406,8 +435,10 @@ public:
         return total;
     }
 
-    /// Reset the builder for reuse with the same buffer.
+    /// @brief Reset the builder for reuse with the same buffer.
+    ///
     /// Avoids re-constructing when building many messages into the same buffer.
+    /// After reset(), the builder is in the same state as after construction.
     void reset() noexcept {
         body_start_ = kHeaderReserve;
         pos_        = kHeaderReserve;
@@ -417,7 +448,7 @@ public:
         finished_   = false;
     }
 
-    /// Append a single-character enum field (Side, OrdType, ExecType, etc.).
+    /// @brief Append a single-character enum field (Side, OrdType, ExecType, etc.).
     ///
     /// Convenience over set(tag, string_view(&c, 1)) — avoids constructing
     /// a string_view from a char variable.
@@ -429,7 +460,7 @@ public:
     // Unique-tag setters — reject duplicate tags (FIX spec compliance)
     // -----------------------------------------------------------------------
 
-    /// Like set(), but rejects the field if the tag already exists.
+    /// @brief Like set(), but rejects the field if the tag already exists.
     /// Sets the overflow flag and logs a warning on duplicate.
     /// Use for non-repeating-group fields where duplicates violate the FIX spec.
     MessageBuilder& set_unique(uint32_t t, std::string_view value) noexcept {
@@ -437,39 +468,39 @@ public:
         return set(t, value);
     }
 
-    /// Like set_int(), but rejects duplicates.
+    /// @brief Like set_int(), but rejects duplicates.
     MessageBuilder& set_int_unique(uint32_t t, int64_t value) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_int(t, value);
     }
 
-    /// Like set_double(), but rejects duplicates.
+    /// @brief Like set_double(), but rejects duplicates.
     MessageBuilder& set_double_unique(uint32_t t, double value, int precision = 2) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_double(t, value, precision);
     }
 
-    /// Like set_char(), but rejects duplicates.
+    /// @brief Like set_char(), but rejects duplicates.
     MessageBuilder& set_char_unique(uint32_t t, char value) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_char(t, value);
     }
 
-    /// Like set_bool(), but rejects duplicates.
+    /// @brief Like set_bool(), but rejects duplicates.
     /// Useful for safety-critical flags (PossDupFlag, ResetSeqNumFlag, etc.).
     MessageBuilder& set_bool_unique(uint32_t t, bool value) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_bool(t, value);
     }
 
-    /// Like set_timestamp(), but rejects duplicates.
+    /// @brief Like set_timestamp(), but rejects duplicates.
     MessageBuilder& set_timestamp_unique(uint32_t t, uint64_t epoch_ns,
                                          TimestampPrecision prec = TimestampPrecision::kMilliseconds) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_timestamp(t, epoch_ns, prec);
     }
 
-    /// Like set_raw(), but rejects duplicates.
+    /// @brief Like set_raw(), but rejects duplicates.
     MessageBuilder& set_raw_unique(uint32_t t, const uint8_t* data, size_t len) noexcept {
         if (reject_if_duplicate(t)) return *this;
         return set_raw(t, data, len);
@@ -479,7 +510,7 @@ public:
     // Repeating group support
     // -----------------------------------------------------------------------
 
-    /// Write a repeating group count tag and return a reference for chaining.
+    /// @brief Write a repeating group count tag and return a reference for chaining.
     ///
     /// FIX repeating groups follow the pattern:
     ///   <count_tag>=N\x01  <delim_tag>=...\x01 <field>=...\x01 ...  (entry 1)
@@ -506,11 +537,11 @@ public:
         return set_int(count_tag, static_cast<int64_t>(count));
     }
 
-    /// Check whether the builder has overflowed the buffer.
+    /// @brief Check whether the builder has overflowed the buffer.
     /// Useful for detecting overflow mid-build without waiting for finish().
     [[nodiscard]] bool has_overflow() const noexcept { return overflow_; }
 
-    /// Check whether a tag has already been written to the message body.
+    /// @brief Check whether a tag has already been written to the message body.
     /// Scans the written fields by parsing "tag=value\x01" boundaries.
     /// Useful for preventing duplicate tags, which violate the FIX spec
     /// (outside of repeating groups). O(field_count) scan.
@@ -544,7 +575,7 @@ public:
         return false;
     }
 
-    /// Number of body fields appended so far (excludes BeginString, BodyLength, CheckSum).
+    /// @brief Number of body fields appended so far (excludes BeginString, BodyLength, CheckSum).
     [[nodiscard]] size_t field_count() const noexcept { return field_count_; }
 
     /// Number of body bytes written so far (excluding header reservation).

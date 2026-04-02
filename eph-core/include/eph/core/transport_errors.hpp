@@ -21,9 +21,10 @@ namespace eph::net {
 // Connection error types
 // ---------------------------------------------------------------------------
 
-/// Categorizes connection failures so callers can programmatically distinguish
-/// between different failure modes (e.g., retry on transient TCP errors but
-/// abort on TLS certificate rejection).
+/// @brief Categorizes connection failures for programmatic error handling.
+///
+/// Enables callers to distinguish between different failure modes
+/// (e.g., retry on transient TCP errors but abort on TLS certificate rejection).
 enum class ConnectionError : uint8_t {
     kInvalidConfig,      ///< TransportConfig validation failed
     kFactoryFailed,      ///< TcpFactory returned an error
@@ -36,7 +37,9 @@ enum class ConnectionError : uint8_t {
     kWsAcceptInvalid,    ///< Sec-WebSocket-Accept validation failed
 };
 
-/// Human-readable name for a ConnectionError.
+/// @brief Return a human-readable name for a ConnectionError value.
+/// @param e  The ConnectionError value to convert.
+/// @return A string_view of the error name (e.g., "INVALID_CONFIG", "TLS_HANDSHAKE_FAILED").
 constexpr std::string_view connection_error_name(ConnectionError e) noexcept {
     switch (e) {
         case ConnectionError::kInvalidConfig:      return "INVALID_CONFIG";
@@ -52,24 +55,29 @@ constexpr std::string_view connection_error_name(ConnectionError e) noexcept {
     return "UNKNOWN";
 }
 
-// ADL alias for ErrorEnum concept satisfaction
+/// @brief ADL alias for ErrorEnum concept satisfaction.
+/// @param e  The ConnectionError value to convert.
+/// @return A string_view of the error name.
 constexpr std::string_view error_name(ConnectionError e) noexcept {
     return connection_error_name(e);
 }
 
-/// Structured connection error with typed category and detail message.
+/// @brief Structured connection error with typed category and detail message.
+///
 /// Replaces opaque error strings from Transport::create(), enabling
 /// callers to match on error category for retry/abort decisions.
 struct ConnectionErrorInfo {
     ConnectionError code;       ///< Error category (for programmatic matching)
     std::string     detail;     ///< Human-readable detail (for logging)
 
-    /// Full error message combining category name and detail.
+    /// @brief Full error message combining category name and detail.
+    /// @return A string in the format "[CATEGORY_NAME] detail text".
     [[nodiscard]] std::string message() const {
         return std::format("[{}] {}", connection_error_name(code), detail);
     }
 
-    /// JSON-formatted error info for monitoring system integration.
+    /// @brief JSON-formatted error info for monitoring system integration.
+    /// @return A JSON object string with "code", "detail", and optionally "http_status" fields.
     [[nodiscard]] std::string to_json() const {
         // Only include http_status when it's meaningful
         auto http_str = http_status.has_value()
@@ -86,7 +94,7 @@ struct ConnectionErrorInfo {
     /// Only populated when code == kWsUpgradeRejected; nullopt otherwise.
     std::optional<int> http_status{};
 
-    /// Defaulted equality — all fields must match exactly.
+    /// @brief Defaulted equality -- all fields must match exactly.
     [[nodiscard]] friend bool operator==(const ConnectionErrorInfo&,
                                          const ConnectionErrorInfo&) = default;
 };
@@ -95,7 +103,8 @@ struct ConnectionErrorInfo {
 // Send result
 // ---------------------------------------------------------------------------
 
-/// Result type for Transport::send() and related methods.
+/// @brief Result type for Transport::send() and related methods.
+///
 /// Replaces raw errno return codes with a type-safe enum that
 /// enables exhaustive switch checking at compile time.
 enum class SendError : int8_t {
@@ -110,7 +119,9 @@ enum class SendError : int8_t {
     kTcpSendFailed    = -8, ///< TCP send failed (direct send path)
 };
 
-/// Return a human-readable name for a SendError.
+/// @brief Return a human-readable name for a SendError value.
+/// @param e  The SendError value to convert.
+/// @return A string_view of the error name (e.g., "OK", "QUEUE_FULL").
 constexpr std::string_view send_error_name(SendError e) noexcept {
     switch (e) {
         case SendError::kOk:              return "OK";
@@ -126,15 +137,22 @@ constexpr std::string_view send_error_name(SendError e) noexcept {
     return "UNKNOWN";
 }
 
-// ADL alias for ErrorEnum concept satisfaction
+/// @brief ADL alias for ErrorEnum concept satisfaction.
+/// @param e  The SendError value to convert.
+/// @return A string_view of the error name.
 constexpr std::string_view error_name(SendError e) noexcept {
     return send_error_name(e);
 }
 
-/// Returns true when an error occurred (non-kOk), enabling the idiom:
+/// @brief Returns true when an error occurred (non-kOk).
+///
+/// Enables the idiom:
 ///   if (!send(...)) handle_error();
 /// This inverts the usual boolean convention so that the "not-ok" case
 /// reads naturally as a failure check in if-statements.
+///
+/// @param e  The SendError value to check.
+/// @return true if e != kOk (i.e., an error occurred).
 constexpr bool operator!(SendError e) noexcept {
     return e != SendError::kOk;
 }
@@ -145,16 +163,25 @@ constexpr bool operator!(SendError e) noexcept {
 // std::formatter specializations
 // ---------------------------------------------------------------------------
 
+/// @brief std::formatter specialization for SendError (via ErrorEnumFormatter).
 template <>
 struct std::formatter<eph::net::SendError>
     : eph::net::ErrorEnumFormatter<eph::net::SendError> {};
 
+/// @brief std::formatter specialization for ConnectionError (via ErrorEnumFormatter).
 template <>
 struct std::formatter<eph::net::ConnectionError>
     : eph::net::ErrorEnumFormatter<eph::net::ConnectionError> {};
 
+/// @brief std::formatter specialization for ConnectionErrorInfo.
+///
+/// Formats using ConnectionErrorInfo::message(), producing "[CATEGORY] detail".
 template <>
 struct std::formatter<eph::net::ConnectionErrorInfo> : std::formatter<std::string> {
+    /// @brief Format the ConnectionErrorInfo as its full message string.
+    /// @param e    The ConnectionErrorInfo to format.
+    /// @param ctx  The format context to write into.
+    /// @return Iterator past the end of the formatted output.
     auto format(const eph::net::ConnectionErrorInfo& e, auto& ctx) const {
         return std::formatter<std::string>::format(e.message(), ctx);
     }

@@ -20,8 +20,19 @@
 
 namespace eph::core {
 
-/// Parse a decimal ASCII string as double.
-/// Returns std::nullopt on malformed input, overflow to inf, or empty string.
+/// @brief Parse a decimal ASCII string as double.
+///
+/// Supports sign, integer part, fractional part, and scientific notation
+/// (e.g., "-1.5e10", "3e-8", "0.001"). Zero-allocation; operates entirely
+/// on the input view.
+///
+/// @param sv  The ASCII string to parse. Must be a complete decimal number
+///            with no leading/trailing whitespace.
+/// @return The parsed double value, or std::nullopt on malformed input,
+///         overflow to infinity, or empty string.
+///
+/// @note Rejects: NaN, infinity, empty strings, bare dots ("1.", "."),
+///       bare exponents ("1e"), and overflow beyond IEEE 754 double range.
 [[nodiscard]] inline std::optional<double> parse_number(std::string_view sv) noexcept {
     if (sv.empty()) return std::nullopt;
 
@@ -89,9 +100,18 @@ namespace eph::core {
     return final_val;
 }
 
-/// Parse a decimal ASCII string as int64_t.
+/// @brief Parse a decimal ASCII string as int64_t.
+///
 /// Handles optional leading '-' sign. Overflow-safe for the full int64 range
-/// including INT64_MIN. Returns std::nullopt on malformed input or overflow.
+/// including INT64_MIN (-9223372036854775808). Zero-allocation.
+///
+/// @param sv  The ASCII string to parse. Must contain only an optional '-'
+///            followed by one or more decimal digits, with no whitespace.
+/// @return The parsed int64_t value, or std::nullopt on malformed input
+///         or overflow.
+///
+/// @note Uses unsigned arithmetic internally to avoid signed overflow UB
+///       when parsing INT64_MIN.
 [[nodiscard]] inline std::optional<int64_t> parse_int(std::string_view sv) noexcept {
     if (sv.empty()) return std::nullopt;
 

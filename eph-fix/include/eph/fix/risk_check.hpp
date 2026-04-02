@@ -18,7 +18,10 @@
 
 namespace eph::fix {
 
+/// @brief Internal implementation details for the risk check module.
 namespace detail {
+/// @brief Get or create the spdlog logger for risk checking.
+/// @return Raw pointer to the "fix.risk_check" logger (never null after first call).
 inline spdlog::logger* risk_check_logger() {
     static auto l = [] {
         try {
@@ -31,7 +34,10 @@ inline spdlog::logger* risk_check_logger() {
 }
 } // namespace detail
 
-/// Configurable risk thresholds.  A value of 0.0 (or 0) disables the check.
+/// @brief Configurable risk thresholds.  A value of 0.0 (or 0) disables the check.
+///
+/// All thresholds are checked in order by RiskChecker::check_order(). A zero
+/// value means the corresponding check is skipped (disabled).
 struct RiskLimits {
     double max_order_qty         = 0.0;  ///< Max single order quantity.
     double max_order_notional    = 0.0;  ///< Max single order notional (qty * price).
@@ -41,19 +47,21 @@ struct RiskLimits {
     int    max_orders_per_second = 0;    ///< Rate limit (0 = no limit).
 };
 
-/// Reason an order was rejected by the risk checker.
+/// @brief Reason an order was rejected by the risk checker.
 enum class RiskRejectReason : uint8_t {
-    kOk = 0,
-    kOrderQtyExceeded,
-    kOrderNotionalExceeded,
-    kPositionQtyExceeded,
-    kPositionNotionalExceeded,
-    kTotalExposureExceeded,
-    kRateLimitExceeded,
-    kInvalidInput,
+    kOk = 0,                    ///< Order passed all risk checks.
+    kOrderQtyExceeded,          ///< Single order quantity exceeds max_order_qty.
+    kOrderNotionalExceeded,     ///< Single order notional exceeds max_order_notional.
+    kPositionQtyExceeded,       ///< Projected position quantity exceeds max_position_qty.
+    kPositionNotionalExceeded,  ///< Projected position notional exceeds max_position_notional.
+    kTotalExposureExceeded,     ///< Projected total exposure exceeds max_total_exposure.
+    kRateLimitExceeded,         ///< Order rate exceeds max_orders_per_second.
+    kInvalidInput,              ///< Non-finite, zero, or negative qty/price.
 };
 
-/// Human-readable name for a reject reason.
+/// @brief Human-readable name for a reject reason.
+/// @param r  The reject reason to convert.
+/// @return A string_view description of the reason.
 constexpr std::string_view risk_reject_name(RiskRejectReason r) noexcept
 {
     switch (r) {
@@ -69,12 +77,14 @@ constexpr std::string_view risk_reject_name(RiskRejectReason r) noexcept
     return "Unknown";
 }
 
-/// Pre-trade risk checker.
+/// @brief Pre-trade risk checker.
 ///
 /// Validates orders against configurable limits before sending.
 /// Thread-safety: none -- same single-threaded assumption as PositionTracker.
 class RiskChecker {
 public:
+    /// @brief Construct a risk checker with the given thresholds.
+    /// @param limits  Risk thresholds to enforce (zero values disable individual checks).
     explicit RiskChecker(RiskLimits limits) noexcept
         : limits_(limits)
     {
@@ -86,7 +96,7 @@ public:
                      limits_.max_total_exposure, limits_.max_orders_per_second);
     }
 
-    /// Check if an order passes all risk limits.
+    /// @brief Check if an order passes all risk limits.
     ///
     /// @param symbol     Instrument identifier.
     /// @param side       FIX Side: '1' = Buy, '2' = Sell.
@@ -191,13 +201,15 @@ public:
         return RiskRejectReason::kOk;
     }
 
-    /// Update limits at runtime (e.g. from a control channel).
+    /// @brief Update limits at runtime (e.g. from a control channel).
+    /// @param limits  New risk thresholds to apply immediately.
     void set_limits(RiskLimits limits) noexcept
     {
         limits_ = limits;
         SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "RiskChecker::set_limits updated");
     }
 
+    /// @brief Access current risk limits (read-only).
     [[nodiscard]] const RiskLimits& limits() const noexcept { return limits_; }
 
 private:

@@ -45,6 +45,8 @@ namespace eph::net {
 
 namespace detail {
 
+/// @brief Lazily-initialized logger for the SocketTransport subsystem.
+/// @return Shared pointer to the "net.socket" spdlog logger.
 inline const std::shared_ptr<spdlog::logger>& socket_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.socket");
@@ -60,7 +62,7 @@ inline const std::shared_ptr<spdlog::logger>& socket_logger() {
 // SocketTransport
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// POSIX socket-based TCP transport satisfying the TcpTransport concept.
+/// @brief POSIX socket-based TCP transport satisfying the TcpTransport concept.
 ///
 /// Provides blocking connect with timeout, non-blocking send/recv,
 /// and graceful/forced close. Suitable for generic (non-DPDK) usage
@@ -69,8 +71,13 @@ inline const std::shared_ptr<spdlog::logger>& socket_logger() {
 /// When EPH_ENABLE_TIMESTAMPS is defined to true (e.g. -DEPH_ENABLE_TIMESTAMPS=true),
 /// uses SO_TIMESTAMPING to capture kernel-level RX/TX timestamps for fair
 /// latency comparison with DPDK backends.
+///
+/// @note Not copyable. Move-only. Satisfies the TcpTransport concept.
 class SocketTransport {
 public:
+    /// @brief Construct a SocketTransport with the given configuration.
+    /// @param config  Socket configuration (host, port, TCP options).
+    ///                Does NOT connect -- call connect() explicitly.
     explicit SocketTransport(const SocketConfig& config) noexcept
         : config_(config) {
         SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
@@ -116,6 +123,15 @@ public:
     // Connection
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// @brief Establish a TCP connection to the configured host:port.
+    ///
+    /// Performs asynchronous DNS resolution with timeout, creates a non-blocking
+    /// socket, configures TCP options (nodelay, keepalive, buffers), and completes
+    /// the TCP handshake.
+    ///
+    /// @param timeout  Maximum time for DNS + TCP connect combined (default 3000ms).
+    /// @return void on success, or error string describing the failure.
+    /// @note Must be in TcpState::Closed. Call close() or reset() first to reconnect.
     [[nodiscard]] std::expected<void, std::string>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) {
         auto log = detail::socket_logger();
@@ -368,6 +384,14 @@ public:
     // Data transfer
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// @brief Send data over the established TCP connection.
+    ///
+    /// Writes all bytes, retrying on EAGAIN with poll() until the configured
+    /// send_timeout_ms is reached.
+    ///
+    /// @param data  Pointer to the bytes to send.
+    /// @param len   Number of bytes to send.
+    /// @return Number of bytes sent (always == len on success), or error string.
     [[nodiscard]] std::expected<size_t, std::string>
     send(const void* data, size_t len) {
         if (state_ != TcpState::Established) {
@@ -455,8 +479,13 @@ public:
         return len;
     }
 
-    /// Poll for incoming data and deliver via callback.
-    /// Non-blocking: returns 0 if no data available.
+    /// @brief Poll for incoming data and deliver via callback.
+    ///
+    /// Non-blocking: returns 0 if no data available (EAGAIN).
+    ///
+    /// @tparam F  Callable with signature void(const uint8_t* data, uint16_t len).
+    /// @param data_callback  Invoked once with the received data buffer and length.
+    /// @return Number of callback invocations (0 or 1), or error string on failure.
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
@@ -537,9 +566,16 @@ public:
             "recv() failed: {}", strerror(errno)));
     }
 
-    /// Poll for incoming data with a timeout.
+    /// @brief Poll for incoming data with a timeout.
+    ///
     /// Uses poll() to wait for data availability, avoiding CPU-burning spin loops.
-    /// Returns the number of poll_rx callback invocations (0 or 1), or error.
+    ///
+    /// @tparam F       Callable with signature void(const uint8_t* data, uint16_t len).
+    /// @tparam Rep     Duration rep type (auto-deduced).
+    /// @tparam Period  Duration period type (auto-deduced).
+    /// @param data_callback  Invoked once with the received data buffer and length.
+    /// @param timeout        Maximum time to wait for data availability.
+    /// @return Number of callback invocations (0 or 1), or error string.
     template <typename F, typename Rep, typename Period>
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, std::string> poll_rx_for(
@@ -572,6 +608,13 @@ public:
     // Connection close
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// @brief Initiate graceful connection close (send FIN via shutdown(SHUT_WR)).
+    ///
+    /// After calling close(), the socket enters FinWait1 state. Remaining data
+    /// can still be received via poll_rx() until the peer sends its FIN.
+    /// The fd is closed when poll_rx() detects the peer's FIN, or by the destructor.
+    ///
+    /// @return void on success, or error string if state does not permit close.
     [[nodiscard]] std::expected<void, std::string> close() {
         if (state_ != TcpState::Established &&
             state_ != TcpState::CloseWait) {
@@ -599,6 +642,10 @@ public:
         return {};
     }
 
+    /// @brief Forcefully reset the connection by sending TCP RST.
+    ///
+    /// Sets SO_LINGER with timeout 0 to trigger RST instead of FIN,
+    /// then closes the fd. Use for abnormal termination (e.g., protocol error).
     void reset() noexcept {
         SPDLOG_LOGGER_DEBUG(detail::socket_logger(), "Sending RST");
         // Set SO_LINGER with timeout 0 to send RST instead of FIN
@@ -619,48 +666,59 @@ public:
     // State queries
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// @brief Current TCP connection state.
     [[nodiscard]] TcpState state()       const noexcept { return state_; }
+    /// @brief Negotiated TCP Maximum Segment Size (default 1460 for Ethernet).
     [[nodiscard]] uint16_t mss()         const noexcept { return mss_; }
+    /// @brief Check if the connection is in Established state.
+    /// @return true if connected and ready for data transfer.
     [[nodiscard]] bool is_established()  const noexcept {
         return state_ == TcpState::Established;
     }
+    /// @brief Access the socket configuration.
+    /// @return Const reference to the SocketConfig used at construction.
     [[nodiscard]] const SocketConfig& config() const noexcept {
         return config_;
     }
+    /// @brief Underlying socket file descriptor (-1 if not connected).
     [[nodiscard]] int fd() const noexcept { return fd_; }
 
-    /// Resolved IP address string (e.g. "10.0.0.1") from the last connect().
-    /// Empty if connect() has not been called or DNS resolution failed.
+    /// @brief Resolved IP address string (e.g. "10.0.0.1") from the last connect().
+    /// @return IP address string, or empty if connect() has not been called or DNS failed.
     [[nodiscard]] std::string_view resolved_ip() const noexcept {
         return resolved_ip_;
     }
 
-    /// DNS resolution latency from the last connect() call (nanoseconds).
-    /// Zero if connect() has not been called.
+    /// @brief DNS resolution latency from the last connect() call (nanoseconds).
+    /// @return Nanoseconds, or zero if connect() has not been called.
     [[nodiscard]] uint64_t dns_latency_ns() const noexcept {
         return dns_latency_ns_;
     }
 
-    /// Total connect latency including DNS + TCP handshake (nanoseconds).
-    /// Zero if connect() has not been called or failed.
+    /// @brief Total connect latency including DNS + TCP handshake (nanoseconds).
+    /// @return Nanoseconds, or zero if connect() has not been called or failed.
     [[nodiscard]] uint64_t connect_latency_ns() const noexcept {
         return connect_latency_ns_;
     }
 
-    /// Kernel RX stack latency histogram (NIC driver → recv return).
-    /// Only populated when kEnableSocketTimestamps=true.
+    /// @brief Kernel RX stack latency histogram (NIC driver -> recv return).
+    /// @return Aggregated RX latency statistics.
+    /// @note Only populated when kEnableSocketTimestamps=true.
     [[nodiscard]] RttStats rx_latency() const noexcept {
         return histogram_to_rtt_stats(rx_stack_histogram_);
     }
 
-    /// Kernel TX stack latency histogram (send call → wire departure).
-    /// Only populated when kEnableSocketTimestamps=true.
+    /// @brief Kernel TX stack latency histogram (send call -> wire departure).
+    /// @return Aggregated TX latency statistics.
+    /// @note Only populated when kEnableSocketTimestamps=true.
     [[nodiscard]] RttStats tx_latency() const noexcept {
         return histogram_to_rtt_stats(tx_stack_histogram_);
     }
 
-    /// TSC captured right after recvmsg/recv returns data.
-    /// Transport uses this as the RX arrival baseline.
+    /// @brief TSC captured right after recvmsg/recv returns data.
+    ///
+    /// Transport uses this as the RX arrival baseline for pipeline latency.
+    /// @return TSC counter value, or 0 if no data has been received.
     [[nodiscard]] uint64_t last_rx_burst_tsc() const noexcept {
         return last_rx_burst_tsc_;
     }
@@ -681,8 +739,8 @@ public:
     }
 #endif
 
-    /// Local port number of the connected socket.
-    /// Zero if not connected.
+    /// @brief Local port number of the connected socket.
+    /// @return Ephemeral port number, or zero if not connected.
     [[nodiscard]] uint16_t local_port() const noexcept {
         if (fd_ < 0) return 0;
         struct sockaddr_storage addr{};

@@ -16,6 +16,8 @@
 namespace eph::net {
 
 namespace detail {
+/// Lazily-initialized logger for TLS record-layer operations.
+/// @return Shared pointer to the spdlog logger (never null after first call).
 inline const std::shared_ptr<spdlog::logger>& tls_record_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls_record");
@@ -26,12 +28,16 @@ inline const std::shared_ptr<spdlog::logger>& tls_record_logger() {
 }
 } // namespace detail
 
+/// TLS record-layer constants and utility functions.
+///
+/// Implements the wire format for TLS 1.3 application data records:
+/// header construction, header parsing, and nonce derivation for AES-GCM.
 namespace tls_record {
 
-inline constexpr uint8_t  kContentTypeAppData = 0x17;
-inline constexpr uint16_t kLegacyVersion      = 0x0303;
-inline constexpr uint16_t kRecordHeaderLen     = 5;
-inline constexpr uint16_t kAuthTagLen          = 16;
+inline constexpr uint8_t  kContentTypeAppData = 0x17; ///< TLS 1.3 application data content type
+inline constexpr uint16_t kLegacyVersion      = 0x0303; ///< Legacy TLS version bytes (0x0303 = TLS 1.2, per TLS 1.3 spec)
+inline constexpr uint16_t kRecordHeaderLen     = 5;   ///< TLS record header: content_type(1) + version(2) + length(2)
+inline constexpr uint16_t kAuthTagLen          = 16;  ///< AES-GCM authentication tag length in bytes
 
 /// Maximum TLS 1.3 record sequence number before forced reconnection.
 ///
@@ -45,9 +51,20 @@ inline constexpr uint16_t kAuthTagLen          = 16;
 /// needed, implement TLS 1.3 KeyUpdate (RFC 8446 §4.6.3) instead of
 /// raising this limit.
 inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 24);
+/// Threshold at which a log warning is emitted (90% of max).
 inline constexpr uint64_t kSequenceWarnThreshold = kMaxSequenceNumber * 9 / 10;
+/// Threshold at which a preemptive reconnect is triggered (95% of max).
 inline constexpr uint64_t kSequenceReconnectThreshold = kMaxSequenceNumber * 95 / 100;
 
+/// Build a per-record nonce by XOR-ing the IV with the big-endian sequence number.
+///
+/// Implements the TLS 1.3 nonce construction from RFC 8446 section 5.3:
+/// the 64-bit sequence number is zero-padded to the nonce length and
+/// XOR-ed with the static IV derived during key schedule.
+///
+/// @param[out] out  Output nonce buffer (must be tls_const::kTls13NonceLen bytes)
+/// @param      iv   Static per-connection IV (tls_const::kTls13NonceLen bytes)
+/// @param      seq  Record sequence number (monotonically increasing)
 inline void build_nonce(uint8_t out[tls_const::kTls13NonceLen],
                         const uint8_t iv[tls_const::kTls13NonceLen],
                         uint64_t seq) noexcept {
@@ -64,6 +81,11 @@ inline void build_nonce(uint8_t out[tls_const::kTls13NonceLen],
     std::memcpy(out + 4, &result, 8);
 }
 
+/// Write a 5-byte TLS record header to the output buffer.
+///
+/// @param[out] dst          Output buffer (must have at least kRecordHeaderLen bytes)
+/// @param      content_type TLS content type byte (typically kContentTypeAppData)
+/// @param      payload_len  Length of the encrypted payload (ciphertext + tag)
 inline void write_record_header(uint8_t* dst, uint8_t content_type,
                                  uint16_t payload_len) noexcept {
     dst[0] = content_type;
@@ -73,6 +95,13 @@ inline void write_record_header(uint8_t* dst, uint8_t content_type,
     dst[4] = static_cast<uint8_t>(payload_len & 0xFF);
 }
 
+/// Parse a TLS record header and validate content type and payload bounds.
+///
+/// @param      src          Input buffer (must have at least kRecordHeaderLen bytes)
+/// @param[out] content_type Parsed content type byte
+/// @param[out] payload_len  Parsed payload length
+/// @return true if the record header describes a valid application data record
+///         within the maximum TLS record size; false otherwise.
 inline bool parse_record_header(const uint8_t* src,
                                  uint8_t& content_type,
                                  uint16_t& payload_len) noexcept {

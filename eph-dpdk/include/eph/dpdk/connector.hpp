@@ -85,8 +85,11 @@ inline constexpr uint16_t kEphemeralPortRange = 16384; // 65535 - 49152 + 1
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Required DPDK network identity — no defaults, must be fully specified.
-/// Omitting either field is a compile error (aggregate with no defaults).
+/// @brief Required DPDK network identity for connection setup.
+///
+/// Both fields are mandatory — omitting either prevents connect() from
+/// building valid Ethernet/IP headers. No defaults are provided to force
+/// explicit specification at the call site.
 struct DpdkEndpoint {
     std::string local_ip;    ///< Local IPv4 on DPDK port
     std::string gateway_ip;  ///< Gateway IPv4 for ARP resolution
@@ -118,9 +121,11 @@ struct DpdkEndpoint {
     }
 };
 
-/// Optional connection settings — all fields have sensible defaults.
-/// Nests `PlatformConfig` so advanced users can tune queue counts,
-/// descriptor counts, and mempool size.
+/// @brief Optional connection settings — all fields have sensible defaults.
+///
+/// Nests PlatformConfig so advanced users can tune NIC queue counts,
+/// descriptor ring sizes, and mempool size. Also controls ARP/DNS timeouts,
+/// TCP connect timeout, and optional pre-resolved gateway MAC.
 struct ConnectorOptions {
     PlatformConfig platform{
         .port_id         = 0,
@@ -202,14 +207,19 @@ struct ConnectorOptions {
 // Result — exposes all intermediate products
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Result of a successful `connect()`.  Exposes the Platform, Transport,
-/// and resolved MAC addresses so callers can access stats, mempool, etc.
+/// @brief Result of a successful connect() call.
+///
+/// Exposes all intermediate products (Platform, Transport, MAC addresses)
+/// so callers can access NIC stats, mempool, and reuse the gateway MAC
+/// for subsequent connections on the same port.
+///
+/// @tparam TransportType  The transport type created by connect()
 template <typename TransportType>
 struct ConnectResult {
-    Platform                            platform;
-    std::unique_ptr<TransportType>      transport;
-    rte_ether_addr                      local_mac;
-    rte_ether_addr                      gateway_mac;
+    Platform                            platform;   ///< Initialized DPDK platform (owns port + mempool)
+    std::unique_ptr<TransportType>      transport;  ///< Connected transport (owns TCP session)
+    rte_ether_addr                      local_mac;  ///< NIC's MAC address
+    rte_ether_addr                      gateway_mac; ///< Resolved gateway MAC (from ARP or pre-configured)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -577,7 +587,18 @@ connect(std::string_view host, const DpdkEndpoint& ep,
     return connect<TransportType>(ep, transport_cfg, opts);
 }
 
-/// Connect with existing Platform + pre-resolved IP.
+/// @brief Connect using an existing Platform with a pre-resolved server IP.
+///
+/// Reuses an already-initialized Platform (port + mempool) instead of creating
+/// a new one. Useful for multi-connection setups on the same NIC port.
+///
+/// @tparam TransportType  Transport alias (default: DpdkTransport)
+/// @param platform      Initialized Platform to reuse
+/// @param ep            DPDK endpoint (local_ip, gateway_ip)
+/// @param transport_cfg Transport configuration (TLS, WS, reconnect settings)
+/// @param server_ip     Pre-resolved server IPv4 in host byte order
+/// @param opts          Optional connection settings (timeouts, queue IDs)
+/// @return Unique pointer to the connected Transport, or error string
 template <typename TransportType = DpdkTransport>
 [[nodiscard]] std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
@@ -612,7 +633,14 @@ connect(Platform& platform,
     return std::move(*transport);
 }
 
-/// Connect with existing Platform + DNS resolution (kernel, DPDK fallback).
+/// @brief Connect using an existing Platform with DNS resolution (kernel, then DPDK fallback).
+///
+/// @tparam TransportType  Transport alias (default: DpdkTransport)
+/// @param platform      Initialized Platform to reuse
+/// @param ep            DPDK endpoint (local_ip, gateway_ip)
+/// @param transport_cfg Transport configuration (remote_host must be set)
+/// @param opts          Optional connection settings
+/// @return Unique pointer to the connected Transport, or error string
 template <typename TransportType = DpdkTransport>
 [[nodiscard]] std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform,
@@ -683,7 +711,17 @@ connect(Platform& platform,
     return connect<TransportType>(platform, ep, transport_cfg, *dpdk_ip, opts);
 }
 
-/// Simplest connect with existing Platform.
+/// @brief Simplest connect with an existing Platform: hostname + endpoint.
+///
+/// Builds a default TransportConfig (port 443, TLS on) from the hostname
+/// and delegates to the DNS-resolving overload.
+///
+/// @tparam TransportType  Transport alias (default: DpdkTransport)
+/// @param platform  Initialized Platform to reuse
+/// @param host      Hostname or dotted-decimal IPv4 to connect to
+/// @param ep        DPDK endpoint (local_ip, gateway_ip)
+/// @param opts      Optional connection settings
+/// @return Unique pointer to the connected Transport, or error string
 template <typename TransportType = DpdkTransport>
 [[nodiscard]] std::expected<std::unique_ptr<TransportType>, std::string>
 connect(Platform& platform, std::string_view host, const DpdkEndpoint& ep,

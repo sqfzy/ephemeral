@@ -236,25 +236,35 @@ configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
 // rte_flow steering (Step 3)
 // ---------------------------------------------------------------------------
 
-/// Opaque handle for a rte_flow rule installed on a port.
-/// RAII: destructor removes the rule from the NIC.
+/// @brief RAII handle for an rte_flow rule installed on a NIC port.
+///
+/// Destructor automatically removes the rule from the NIC via rte_flow_destroy.
+/// Move-only: the moved-from instance has handle == nullptr and is safe to
+/// destroy without side effects.
+///
+/// @note Created by install_flow_rule(). Do not construct directly.
 struct FlowRule {
-    uint16_t port_id = 0;
-    uint16_t queue_id = 0;
-    rte_flow* handle = nullptr;
+    uint16_t port_id = 0;        ///< DPDK port the rule is installed on
+    uint16_t queue_id = 0;       ///< Target RX queue for matched packets
+    rte_flow* handle = nullptr;  ///< Opaque DPDK flow rule handle (null if invalid/moved)
 
+    /// @brief Default constructor creates an invalid (empty) rule.
     FlowRule() = default;
+
+    /// @brief Destructor removes the flow rule from the NIC if still valid.
     ~FlowRule() { remove(); }
 
     FlowRule(const FlowRule&) = delete;
     FlowRule& operator=(const FlowRule&) = delete;
 
+    /// @brief Move constructor. Transfers ownership; source becomes invalid.
     FlowRule(FlowRule&& other) noexcept
         : port_id(other.port_id), queue_id(other.queue_id),
           handle(other.handle) {
         other.handle = nullptr;
     }
 
+    /// @brief Move assignment. Removes any existing rule before taking ownership.
     FlowRule& operator=(FlowRule&& other) noexcept {
         if (this != &other) {
             remove();
@@ -282,6 +292,8 @@ struct FlowRule {
         handle = nullptr;
     }
 
+    /// @brief Check if this rule is still active on the NIC.
+    /// @return true if the flow rule handle is non-null
     [[nodiscard]] bool valid() const noexcept { return handle != nullptr; }
 };
 

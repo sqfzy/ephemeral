@@ -1,3 +1,17 @@
+/// @file time.hpp
+/// @brief High-precision TSC (Time Stamp Counter) timing utilities.
+///
+/// Provides nanosecond-resolution timing based on the CPU's hardware
+/// timestamp counter. On x86-64, reads `rdtscp`; on ARM64, reads
+/// `cntvct_el0`; elsewhere, falls back to `std::chrono::steady_clock`.
+///
+/// The TSC must be calibrated once at startup via `TSC::init()` before
+/// cycle-to-nanosecond conversions (`to_ns`, `to_cycles`) can be used.
+///
+/// @warning TSC readings may be non-monotonic across cores on older
+///          hardware or under virtualization. Pin threads to specific
+///          cores for reliable measurements.
+
 #pragma once
 
 #include <algorithm>
@@ -28,6 +42,7 @@ namespace eph::utils {
 
 namespace detail {
 
+/// @brief Lazily-initialized logger for the TSC subsystem.
 inline const std::shared_ptr<spdlog::logger>& tsc_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.tsc");
@@ -40,51 +55,41 @@ inline const std::shared_ptr<spdlog::logger>& tsc_logger() {
 
 } // namespace detail
 
-/**
- * @brief 高精度时间测量工具
- *
- * 基于 CPU 时间戳计数器（TSC）的纳秒级计时器。
- *
- * 使用要求：
- * - 现代 x86_64 CPU（支持 rdtscp 指令）或 ARM64（支持 cntvct_el0）
- * - 建议在程序启动时调用 TSC::init() 进行校准
- *
- * @example
- * @code
- *   // 初始化并校准
- *   if (!TSC::init()) {
- *     std::println(stderr, "TSC initialization failed");
- *     return 1;
- *   }
- *
- *   // 测量代码段执行时间
- *   uint64_t start = TSC::now();
- *   do_something();
- *   uint64_t end = TSC::now();
- *
- *   if (auto latency_ns = TSC::to_ns(end - start)) {
- *     std::println("Latency: {:.2f} ns", *latency_ns);
- *   }
- * @endcode
- *
- * @warning TSC 在某些系统上可能不稳定（如老旧 CPU 的变频、虚拟机）
- * @warning 线程迁移到不同核心可能导致 TSC 不连续（使用 rdtscp 可缓解）
- */
+/// @brief High-precision timing based on the CPU Time Stamp Counter (TSC).
+///
+/// Provides nanosecond-level timing with ~20-cycle overhead per read.
+/// Requires a modern x86-64 CPU (`rdtscp`) or ARM64 (`cntvct_el0`).
+/// Call `TSC::init()` once at startup to calibrate the counter frequency.
+///
+/// @code
+///   if (!TSC::init()) { /* handle error */ }
+///
+///   uint64_t start = TSC::now();
+///   do_something();
+///   uint64_t end = TSC::now();
+///
+///   if (auto ns = TSC::to_ns(end - start)) {
+///       std::println("Latency: {:.2f} ns", *ns);
+///   }
+/// @endcode
+///
+/// @warning TSC may be unstable on older CPUs with frequency scaling or
+///          under virtualization.
+/// @warning Thread migration across cores can cause non-monotonic reads;
+///          `rdtscp` mitigates this on x86-64.
 class TSC {
 public:
-  /**
-   * @brief 获取当前 CPU 时间戳周期数
-   *
-   * 使用硬件计数器读取当前 CPU 周期数，具有极低开销（~20 cycles）。
-   *
-   * @return uint64_t CPU 周期计数（自系统启动以来的累计值）
-   *
-   * @note x86_64: 使用 rdtscp 指令（序列化读取，防止乱序执行）
-   * @note ARM64: 使用 cntvct_el0 寄存器（虚拟计数器）
-   * @note 其他平台: 回退到 std::chrono::steady_clock
-   *
-   * @warning 返回值仅在同一 CPU 核心上单调递增
-   */
+  /// @brief Read the current CPU timestamp counter value.
+  ///
+  /// Reads the hardware cycle counter with minimal overhead (~20 cycles).
+  ///
+  /// @return Cumulative CPU cycle count since system boot.
+  ///
+  /// @note x86-64: uses `rdtscp` (serializing read, prevents reordering).
+  /// @note ARM64: reads `cntvct_el0` virtual counter register.
+  /// @note Other: falls back to `std::chrono::steady_clock`.
+  ///
+  /// @warning Only monotonically increasing within a single CPU core.
   [[nodiscard]] static inline uint64_t now() noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     unsigned int aux;
@@ -101,49 +106,33 @@ public:
 #endif
   }
 
-  /**
-   * @brief 初始化并校准 TSC 频率
-   *
-   * 通过与 std::chrono::steady_clock 对比来计算 TSC 的实际频率。
-   * 必须在使用 to_ns()/to_cycles() 之前调用。
-   *
-   * @param duration 校准持续时间，越长越精确（推荐 100-500ms）
-   * @return true 校准成功
-   * @return false 校准失败（TSC 不可靠或硬件不支持）
-   *
-   * @note 校准期间会预热 CPU（避免节能状态影响）
-   * @note 自动打印 CPU 频率和可靠性警告
-   *
-   * @example
-   * @code
-   *   // 使用默认 200ms 校准时间
-   *   if (!TSC::init()) {
-   *     std::println(stderr, "TSC not available");
-   *     std::exit(1);
-   *   }
-   *
-   *   // 使用更长的校准时间提高精度
-   *   TSC::init(std::chrono::milliseconds(500));
-   * @endcode
-   *
-   * @note Thread-safe: concurrent calls are serialized via std::call_once.
-   *       Only the first call performs calibration; subsequent calls return the
-   *       cached result.
-   */
+  /// @brief Calibrate the TSC frequency against the system clock.
+  ///
+  /// Computes the TSC-to-nanosecond ratio by comparing TSC deltas with
+  /// `std::chrono::steady_clock` over the specified duration. Must be
+  /// called before `to_ns()` or `to_cycles()`.
+  ///
+  /// @param duration Calibration window (longer = more precise; 100-500 ms
+  ///                 recommended). Default is 200 ms.
+  /// @return `true` on successful calibration, `false` if the TSC is
+  ///         unreliable or hardware is unsupported.
+  ///
+  /// @note Warms up the CPU before sampling to avoid power-saving artifacts.
+  /// @note Thread-safe: concurrent calls are serialized via `std::call_once`.
+  ///       Only the first call performs calibration; subsequent calls return
+  ///       the cached result.
   static bool
   init(std::chrono::milliseconds duration = std::chrono::milliseconds(200)) {
     std::call_once(init_flag_, [&] { do_init_(duration); });
     return initialized_.load(std::memory_order_acquire);
   }
 
-  /**
-   * @brief 将 CPU 周期数转换为纳秒
-   *
-   * @param cycles CPU 周期数（通常是两次 now() 调用的差值）
-   * @return std::optional<double> 成功时返回纳秒数，未初始化时返回 nullopt
-   *
-   * @warning 必须先调用 init() 校准
-   */
+  /// @brief Convert CPU cycles to nanoseconds.
+  ///
+  /// @param cycles CPU cycle count (typically a delta between two `now()` calls).
+  /// @return Nanoseconds as `double`, or `nullopt` if `init()` has not been called.
+  ///
+  /// @warning Returns `nullopt` until `init()` completes successfully.
   [[nodiscard]] static std::optional<double> to_ns(uint64_t cycles) noexcept {
     if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
       return std::nullopt;
@@ -151,15 +140,14 @@ public:
     return static_cast<double>(cycles) * ns_per_cycle_;
   }
 
-  /**
-   * @brief 将纳秒转换为 CPU 周期数
-   *
-   * @tparam Rep 数值类型（默认 double）
-   * @param ns 纳秒数
-   * @return std::optional<uint64_t> 成功时返回周期数，未初始化时返回 nullopt
-   *
-   * @warning 必须先调用 init() 校准
-   */
+  /// @brief Convert nanoseconds to CPU cycles.
+  ///
+  /// @tparam Rep Numeric type for the nanosecond value (default `double`).
+  /// @param ns   Duration in nanoseconds.
+  /// @return Cycle count, or `nullopt` if `init()` has not been called or
+  ///         `ns` is negative. Saturates to `UINT64_MAX` on overflow.
+  ///
+  /// @warning Returns `nullopt` until `init()` completes successfully.
   template <typename Rep = double>
   [[nodiscard]] static std::optional<uint64_t> to_cycles(Rep ns) noexcept {
     if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
@@ -175,21 +163,18 @@ public:
     return static_cast<uint64_t>(cycles);
   }
 
-  /**
-   * @brief 将 std::chrono::duration 转换为 CPU 周期数
-   *
-   * @tparam Rep std::chrono::duration 的表示类型
-   * @tparam Period std::chrono::duration 的周期类型
-   * @param d 时间长度
-   * @return std::optional<uint64_t> 成功时返回周期数
-   *
-   * @example
-   * @code
-   *   if (auto cycles = TSC::to_cycles(std::chrono::microseconds(100))) {
-   *     std::println("100us = {} cycles", *cycles);
-   *   }
-   * @endcode
-   */
+  /// @brief Convert a `std::chrono::duration` to CPU cycles.
+  ///
+  /// @tparam Rep    Duration's representation type.
+  /// @tparam Period Duration's tick period.
+  /// @param d       Duration to convert.
+  /// @return Cycle count, or `nullopt` if uncalibrated.
+  ///
+  /// @code
+  ///   if (auto c = TSC::to_cycles(std::chrono::microseconds(100))) {
+  ///       std::println("100us = {} cycles", *c);
+  ///   }
+  /// @endcode
   template <class Rep, class Period>
   [[nodiscard]] static std::optional<uint64_t>
   to_cycles(std::chrono::duration<Rep, Period> d) noexcept {
@@ -200,18 +185,17 @@ public:
     return to_cycles(ns);
   }
 
-  /**
-   * @brief 检查 TSC 是否已初始化
-   */
+  /// @brief Check whether TSC calibration has completed.
+  /// @return `true` if `init()` succeeded, `false` otherwise.
   [[nodiscard]] static bool is_initialized() noexcept {
     return initialized_.load(std::memory_order_acquire);
   }
 
-  /**
-   * @brief 获取校准的纳秒/周期比率（用于高级用途）
-   *
-   * @return std::optional<double> 已初始化时返回比率
-   */
+  /// @brief Get the calibrated nanoseconds-per-cycle ratio.
+  ///
+  /// Intended for advanced use (e.g., manual batch conversions).
+  ///
+  /// @return The ratio if calibrated, `nullopt` otherwise.
   [[nodiscard]] static std::optional<double> get_ns_per_cycle() noexcept {
     if (!initialized_.load(std::memory_order_acquire)) {
       return std::nullopt;
@@ -219,14 +203,12 @@ public:
     return ns_per_cycle_;
   }
 
-  /**
-   * @brief 获取校准的变异系数（coefficient of variation）
-   *
-   * Returns the CV from the calibration sampling. A value > 0.01 (1%)
-   * indicates the TSC may be unstable (frequency scaling, VM, etc.).
-   *
-   * @return std::optional<double> CV value if initialized, nullopt otherwise
-   */
+  /// @brief Get the coefficient of variation (CV) from calibration.
+  ///
+  /// A CV > 0.01 (1%) indicates the TSC may be unstable due to
+  /// frequency scaling, virtualization, or other factors.
+  ///
+  /// @return CV value in `[0, 1]` if calibrated, `nullopt` otherwise.
   [[nodiscard]] static std::optional<double> get_calibration_cv() noexcept {
     if (!initialized_.load(std::memory_order_acquire)) {
       return std::nullopt;
@@ -346,14 +328,12 @@ private:
     return true;
   }
 
-  /**
-   * @brief 检查 TSC 的可靠性（Linux x86_64）
-   *
-   * 读取 /proc/cpuinfo 检查：
-   * - constant_tsc: TSC 频率不随 CPU 频率变化
-   * - nonstop_tsc: TSC 在 C-states（节能状态）下继续计数
-   * - tsc_reliable: 内核标记 TSC 为不可靠
-   */
+  /// @brief Check TSC reliability flags (Linux x86-64 only).
+  ///
+  /// Reads `/proc/cpuinfo` and warns if critical flags are missing:
+  /// - `constant_tsc`: frequency invariant across CPU P-states.
+  /// - `nonstop_tsc`: counter continues in C-states (sleep).
+  /// - `tsc_reliable`: kernel marks TSC as trustworthy.
   static void check_tsc_reliability() noexcept {
     auto log = detail::tsc_logger();
 #if defined(__linux__) && (defined(__x86_64__) || defined(_M_X64))

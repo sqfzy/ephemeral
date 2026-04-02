@@ -48,13 +48,19 @@ inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 // FrameProcessor
 // -----------------------------------------------------------------------
 
-/// Template parameters:
-///   TcpImpl        -- a type satisfying the TcpTransport concept
-///   Framer         -- message framer (WsFramer or generic)
-///   DeliverPolicy  -- callable: void(const uint8_t* data, uint16_t len, uint8_t opcode)
-///   SendFn         -- callable: SendError(const void* data, size_t len, uint8_t opcode)
-///   MaxPayload     -- maximum application payload size per message
-///   LastOnlyDeliver -- when true, only deliver the last data frame per batch
+/// Stateful frame decoder and dispatcher for the RX path.
+///
+/// Decodes frames using the configured Framer, handles WebSocket-specific
+/// concerns (fragmentation reassembly, control frame responses, ping/pong RTT,
+/// batch frame filtering for symbol dedup), and delivers data frames via the
+/// injected DeliverPolicy.
+///
+/// @tparam TcpImpl         Type satisfying the TcpTransport concept
+/// @tparam Framer          Message framer (WsFramer for WebSocket, or generic)
+/// @tparam DeliverPolicy   Callable: void(const uint8_t* data, uint16_t len, uint8_t opcode)
+/// @tparam SendFn          Callable: SendError(const void* data, size_t len, uint8_t opcode)
+/// @tparam MaxPayload      Maximum application payload size per message
+/// @tparam LastOnlyDeliver When true, only the last data frame per batch is delivered
 template <TcpTransport TcpImpl, MessageFramer Framer,
           typename DeliverPolicy, typename SendFn,
           size_t MaxPayload, bool LastOnlyDeliver = false>

@@ -37,6 +37,8 @@
 namespace eph::net {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the Gateway subsystem.
+/// @return Pointer to the "net.gateway" spdlog logger.
 inline spdlog::logger* gateway_logger() {
     static auto l = [] {
         try {
@@ -49,7 +51,9 @@ inline spdlog::logger* gateway_logger() {
 }
 } // namespace detail
 
-/// Connection health status.
+/// @brief Connection health status.
+///
+/// Tracks the perceived health of a managed transport connection.
 enum class ConnHealth : uint8_t {
     Healthy,      ///< Connected and receiving data
     Degraded,     ///< Connected but no data received recently (not yet implemented — reserved for future use)
@@ -57,7 +61,9 @@ enum class ConnHealth : uint8_t {
     Stopped,      ///< Intentionally stopped
 };
 
-/// Human-readable health status name.
+/// @brief Convert a ConnHealth value to a human-readable status name.
+/// @param h  The health status to convert.
+/// @return Null-terminated string view such as "HEALTHY", "DISCONNECTED", etc.
 [[nodiscard]] inline constexpr std::string_view conn_health_name(ConnHealth h) noexcept {
     switch (h) {
     case ConnHealth::Healthy:      return "HEALTHY";
@@ -68,8 +74,11 @@ enum class ConnHealth : uint8_t {
     return "UNKNOWN";
 }
 
-/// Type-erased connection wrapper for Gateway.
+/// @brief Type-erased connection wrapper for Gateway.
+///
 /// Stores a transport with its metadata and health state.
+/// Transport operations are accessed through type-erased function pointers
+/// to avoid requiring a common base class.
 struct GatewayConnection {
     /// Unique tag for this connection (e.g., "binance-btcusdt").
     std::string tag;
@@ -97,22 +106,27 @@ struct GatewayConnection {
 /// Not copyable/movable — designed as a singleton-like coordinator.
 class Gateway {
 public:
+    /// @brief Configuration for the Gateway health monitor and callbacks.
     struct Config {
         /// How often to check connection health (0 = no monitoring).
         std::chrono::milliseconds health_check_interval{5000};
         /// Mark connection as degraded if no activity for this duration.
-        /// Not yet implemented — requires per-connection last-activity timestamps
-        /// tracked via a callback from Transport::on_data(). When implemented,
-        /// check_health() will compare now - last_activity against this threshold
-        /// and transition Healthy → Degraded accordingly.
+        /// @note Not yet implemented -- requires per-connection last-activity timestamps
+        ///       tracked via a callback from Transport::on_data(). When implemented,
+        ///       check_health() will compare now - last_activity against this threshold
+        ///       and transition Healthy -> Degraded accordingly.
         std::chrono::milliseconds degraded_threshold{30000};
-        /// Optional callback when health changes.
+        /// Optional callback invoked when a connection's health changes.
+        /// Called outside the Gateway lock to prevent deadlock.
         std::function<void(std::string_view tag, ConnHealth old_h, ConnHealth new_h)>
             on_health_change{};
     };
 
+    /// @brief Construct a Gateway with default configuration.
     Gateway() = default;
 
+    /// @brief Construct a Gateway with explicit configuration.
+    /// @param config  Health monitoring and callback configuration.
     explicit Gateway(Config config)
         : config_(std::move(config)) {}
 
@@ -128,8 +142,17 @@ public:
 
     // ── Connection management ───────────────────────────────────────────
 
-    /// Add a transport to the gateway. Returns connection index.
+    /// @brief Add a transport to the gateway.
+    ///
     /// The transport must outlive the Gateway (or be removed first).
+    ///
+    /// @tparam Transport  Any type with stop(), is_running(), start_threads(),
+    ///                    and reconnect_now() methods.
+    /// @param tag       Human-readable identifier for this connection (e.g., "binance-btcusdt").
+    /// @param tp        Pointer to the transport instance. Must not be null.
+    /// @param priority  Connection priority (lower = more important). Used for log ordering.
+    /// @return Connection index for use with health(), tag(), reconnect(), etc.
+    ///         Returns SIZE_MAX if tp is null.
     template <typename Transport>
     size_t add(std::string tag, Transport* tp, uint8_t priority = 128) {
         if (!tp) {
@@ -155,20 +178,25 @@ public:
         return id;
     }
 
-    /// Number of managed connections.
+    /// @brief Number of managed connections.
+    /// @return Total number of connections added via add().
     [[nodiscard]] size_t connection_count() const noexcept {
         std::lock_guard lock(mu_);
         return connections_.size();
     }
 
-    /// Get connection health by index.
+    /// @brief Get connection health by index.
+    /// @param id  Connection index returned by add().
+    /// @return Current health status, or ConnHealth::Stopped if id is out of range.
     [[nodiscard]] ConnHealth health(size_t id) const noexcept {
         std::lock_guard lock(mu_);
         if (id >= connections_.size()) return ConnHealth::Stopped;
         return connections_[id].health;
     }
 
-    /// Get connection tag by index.
+    /// @brief Get connection tag by index.
+    /// @param id  Connection index returned by add().
+    /// @return The tag string, or empty string if id is out of range.
     [[nodiscard]] std::string tag(size_t id) const {
         std::lock_guard lock(mu_);
         if (id >= connections_.size()) return "";
@@ -177,7 +205,10 @@ public:
 
     // ── Lifecycle control ───────────────────────────────────────────────
 
-    /// Start all stopped connections' threads.
+    /// @brief Start all stopped connections' threads.
+    ///
+    /// Only starts connections whose health is ConnHealth::Stopped and whose
+    /// transport is not already running. Skips duplicates safely.
     void start_all() noexcept {
         std::lock_guard lock(mu_);
         for (size_t i = 0; i < connections_.size(); ++i) {
@@ -198,9 +229,10 @@ public:
         }
     }
 
-    /// Stop all running connections.
-    /// Snapshots under lock, then calls stop outside the lock to avoid
-    /// deadlock if the transport's stop() calls back into Gateway.
+    /// @brief Stop all running connections.
+    ///
+    /// Snapshots connection pointers under lock, then calls stop() outside
+    /// the lock to avoid deadlock if the transport's stop() calls back into Gateway.
     void stop_all() noexcept {
         struct StopTarget { size_t idx; std::string tag; void* ptr; void (*fn)(void*); };
         std::vector<StopTarget> targets;
@@ -220,7 +252,8 @@ public:
         }
     }
 
-    /// Force reconnect a specific connection.
+    /// @brief Force reconnect a specific connection.
+    /// @param id  Connection index returned by add(). Ignored if out of range.
     void reconnect(size_t id) noexcept {
         std::lock_guard lock(mu_);
         if (id >= connections_.size()) return;
@@ -233,7 +266,10 @@ public:
 
     // ── Health monitoring ───────────────────────────────────────────────
 
-    /// Start background health monitor thread.
+    /// @brief Start background health monitor thread.
+    ///
+    /// The monitor checks connection health at the configured interval.
+    /// Idempotent -- calling when already running is a no-op.
     void start_monitor() noexcept {
         if (monitor_running_.exchange(true, std::memory_order_acq_rel)) return;
         monitor_thread_ = std::thread([this] { monitor_loop(); });
@@ -241,14 +277,17 @@ public:
                      config_.health_check_interval.count());
     }
 
-    /// Stop the health monitor thread.
+    /// @brief Stop the health monitor thread.
+    ///
+    /// Blocks until the monitor thread exits. Idempotent.
     void stop_monitor() noexcept {
         if (!monitor_running_.exchange(false, std::memory_order_acq_rel)) return;
         if (monitor_thread_.joinable()) monitor_thread_.join();
         SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: health monitor stopped");
     }
 
-    /// Run one health check cycle (called by monitor loop or manually).
+    /// @brief Run one health check cycle (called by monitor loop or manually).
+    ///
     /// Health-change callbacks are invoked OUTSIDE the lock to prevent
     /// deadlock if callbacks call back into Gateway methods.
     void check_health() noexcept {
@@ -290,7 +329,9 @@ public:
         }
     }
 
-    /// Formatted status dump of all connections.
+    /// @brief Formatted status dump of all connections.
+    /// @return Multi-line string listing each connection's tag, health, running
+    ///         state, and priority.
     [[nodiscard]] std::string dump() const {
         std::lock_guard lock(mu_);
         bool monitoring = monitor_running_.load(std::memory_order_relaxed);

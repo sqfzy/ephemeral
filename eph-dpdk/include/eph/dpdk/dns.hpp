@@ -39,40 +39,53 @@ namespace eph::dpdk::dns {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr uint16_t kUdpHeaderLen    = 8;
-inline constexpr uint16_t kDnsHeaderLen    = 12;
-inline constexpr uint16_t kDnsPort         = 53;
-inline constexpr uint16_t kMaxDnsPacketLen = 512;  // RFC 1035 max UDP DNS
+/// @name Protocol constants
+/// @{
+inline constexpr uint16_t kUdpHeaderLen    = 8;    ///< UDP header length (RFC 768)
+inline constexpr uint16_t kDnsHeaderLen    = 12;   ///< DNS header length (RFC 1035)
+inline constexpr uint16_t kDnsPort         = 53;   ///< Standard DNS port
+inline constexpr uint16_t kMaxDnsPacketLen = 512;  ///< RFC 1035 max UDP DNS message length
+/// @}
 
-// DNS flags
-inline constexpr uint16_t kDnsFlagQr       = 0x8000;  // Response flag
-inline constexpr uint16_t kDnsFlagRd       = 0x0100;  // Recursion desired
-inline constexpr uint16_t kDnsRcodeMask    = 0x000F;
+/// @name DNS flag bitmasks (RFC 1035 section 4.1.1)
+/// @{
+inline constexpr uint16_t kDnsFlagQr       = 0x8000;  ///< Query/Response flag (1 = response)
+inline constexpr uint16_t kDnsFlagRd       = 0x0100;  ///< Recursion Desired
+inline constexpr uint16_t kDnsRcodeMask    = 0x000F;   ///< Response code mask (bits 0-3)
+/// @}
 
-// DNS record types
-inline constexpr uint16_t kDnsTypeA        = 1;
-inline constexpr uint16_t kDnsClassIn      = 1;
+/// @name DNS record type and class constants
+/// @{
+inline constexpr uint16_t kDnsTypeA        = 1;   ///< A record (IPv4 address)
+inline constexpr uint16_t kDnsClassIn      = 1;   ///< Internet class
+/// @}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wire structures
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief UDP header structure matching the wire format (RFC 768).
+///
+/// All fields are in network byte order. 8 bytes, packed.
 struct UdpHeader {
-    uint16_t src_port;   ///< Network byte order
-    uint16_t dst_port;   ///< Network byte order
-    uint16_t length;     ///< UDP header + payload, network byte order
-    uint16_t checksum;   ///< 0 = disabled (optional for UDP over IPv4)
+    uint16_t src_port;   ///< Source port (network byte order)
+    uint16_t dst_port;   ///< Destination port (network byte order)
+    uint16_t length;     ///< UDP header + payload length (network byte order)
+    uint16_t checksum;   ///< Checksum (0 = disabled, optional for IPv4 UDP)
 } __attribute__((packed));
 
 static_assert(sizeof(UdpHeader) == kUdpHeaderLen);
 
+/// @brief DNS message header (RFC 1035 section 4.1.1).
+///
+/// All fields are in network byte order. 12 bytes, packed.
 struct DnsHeader {
-    uint16_t id;         ///< Transaction ID
+    uint16_t id;         ///< Transaction ID (echoed in response)
     uint16_t flags;      ///< QR, Opcode, AA, TC, RD, RA, Z, RCODE
     uint16_t qd_count;   ///< Number of questions
-    uint16_t an_count;   ///< Number of answer RRs
-    uint16_t ns_count;   ///< Number of authority RRs
-    uint16_t ar_count;   ///< Number of additional RRs
+    uint16_t an_count;   ///< Number of answer resource records
+    uint16_t ns_count;   ///< Number of authority resource records
+    uint16_t ar_count;   ///< Number of additional resource records
 } __attribute__((packed));
 
 static_assert(sizeof(DnsHeader) == kDnsHeaderLen);

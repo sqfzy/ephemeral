@@ -26,6 +26,7 @@
 namespace eph::utils {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the system-stats subsystem.
 inline spdlog::logger* system_stats_logger() {
     static auto l = [] {
         try {
@@ -257,7 +258,9 @@ class SystemStats {
 
 }  // namespace eph::utils
 
-/// std::format support for SystemResourceStats.
+/// @brief `std::format` support for SystemResourceStats.
+///
+/// Example: `std::format("{}", stats)` produces a single-line summary.
 template <>
 struct std::formatter<eph::utils::SystemResourceStats> {
     constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }

@@ -14,23 +14,30 @@
 
 namespace eph {
 
+/// @brief Major version component (breaking API changes).
 inline constexpr int kVersionMajor = 1;
+/// @brief Minor version component (backward-compatible additions).
 inline constexpr int kVersionMinor = 0;
+/// @brief Patch version component (backward-compatible fixes).
 inline constexpr int kVersionPatch = 0;
 
 // Packed version requires minor/patch < 100 to avoid collisions.
 static_assert(kVersionMinor < 100 && kVersionPatch < 100,
     "Packed version scheme requires minor and patch < 100");
 
-/// Packed version number for compile-time comparisons.
-/// Format: (major * 10000) + (minor * 100) + patch
-/// Example: 1.2.3 => 10203
+/// @brief Packed version number for compile-time comparisons.
+///
+/// Format: (major * 10000) + (minor * 100) + patch.
+/// Example: 1.2.3 => 10203.
 inline constexpr int kVersion =
     kVersionMajor * 10000 + kVersionMinor * 100 + kVersionPatch;
 
 namespace detail {
 
-// constexpr helper: write a non-negative int into a char buffer, return chars written.
+/// @brief Write a non-negative int into a char buffer at compile time.
+/// @param buf  Output buffer to write decimal digits into.
+/// @param value  Non-negative integer to convert.
+/// @return Number of characters written.
 constexpr std::size_t write_int(char* buf, int value) {
     if (value == 0) {
         buf[0] = '0';
@@ -51,7 +58,8 @@ constexpr std::size_t write_int(char* buf, int value) {
     return len;
 }
 
-// Build "M.m.p" at compile time. 32 chars is more than enough.
+/// @brief Build "M.m.p" version string at compile time.
+/// @return Pair of (char array, length) representing the version string.
 constexpr auto make_version_string() {
     std::array<char, 32> buf{};
     std::size_t pos = 0;
@@ -63,7 +71,8 @@ constexpr auto make_version_string() {
     return std::pair{buf, pos};
 }
 
-// Build "ephemeral/M.m.p" at compile time.
+/// @brief Build "ephemeral/M.m.p" full version string at compile time.
+/// @return Pair of (char array, length) representing the full version string.
 constexpr auto make_version_full() {
     constexpr std::string_view prefix = "ephemeral/";
     std::array<char, 64> buf{};
@@ -82,20 +91,27 @@ inline constexpr auto kVersionFullData   = make_version_full();
 
 } // namespace detail
 
-/// Human-readable version string, generated from kVersionMajor/Minor/Patch.
+/// @brief Human-readable version string "M.m.p", generated from kVersionMajor/Minor/Patch.
 inline constexpr std::string_view kVersionString{
     detail::kVersionStringData.first.data(),
     detail::kVersionStringData.second};
 
-/// Runtime version string: "ephemeral/M.m.p" — suitable for User-Agent headers,
-/// log preambles, and CLI --version output.
+/// @brief Runtime version string "ephemeral/M.m.p".
+///
+/// Suitable for User-Agent headers, log preambles, and CLI --version output.
 inline constexpr std::string_view kVersionFull{
     detail::kVersionFullData.first.data(),
     detail::kVersionFullData.second};
 
-/// Check at compile time whether the library version is at least (major, minor, patch).
+/// @brief Check at compile time whether the library version is at least the given version.
+///
 /// Useful for feature-gating in downstream code:
 ///   static_assert(eph::version_at_least(1, 2, 0), "Requires ephemeral >= 1.2.0");
+///
+/// @param major  Required major version.
+/// @param minor  Required minor version.
+/// @param patch  Required patch version.
+/// @return true if the library version >= the specified version.
 consteval bool version_at_least(int major, int minor, int patch) noexcept {
     return kVersion >= (major * 10000 + minor * 100 + patch);
 }

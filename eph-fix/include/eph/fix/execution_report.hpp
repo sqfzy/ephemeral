@@ -19,46 +19,53 @@
 
 namespace eph::fix {
 
-/// Execution type (tag 150).
-/// Indicates the reason for the execution report.
+/// @brief Execution type (tag 150).
+///
+/// Indicates the reason for the execution report. Each value maps to the
+/// FIX 4.4 single-character ExecType encoding.
 enum class ExecType : char {
-    New           = '0',
-    PartialFill   = '1',
-    Fill          = '2',
-    DoneForDay    = '3',
-    Canceled      = '4',
-    Replaced      = '5',
-    PendingCancel = '6',
-    Stopped       = '7',
-    Rejected      = '8',
-    Suspended     = '9',
-    PendingNew    = 'A',
-    Calculated    = 'B',
-    Expired       = 'C',
-    PendingReplace = 'E',
-    Trade         = 'F',
+    New            = '0',  ///< Order accepted by the exchange.
+    PartialFill    = '1',  ///< Partial quantity executed.
+    Fill           = '2',  ///< Full quantity executed.
+    DoneForDay     = '3',  ///< Order expired for the trading session.
+    Canceled       = '4',  ///< Order successfully canceled.
+    Replaced       = '5',  ///< Order successfully replaced (cancel/replace).
+    PendingCancel  = '6',  ///< Cancel request received, pending execution.
+    Stopped        = '7',  ///< Order stopped (guaranteed fill price).
+    Rejected       = '8',  ///< Order rejected by the exchange.
+    Suspended      = '9',  ///< Order suspended by the exchange.
+    PendingNew     = 'A',  ///< Order received, pending acceptance.
+    Calculated     = 'B',  ///< Calculated (e.g. post-trade allocation).
+    Expired        = 'C',  ///< Order expired (time in force reached).
+    PendingReplace = 'E',  ///< Replace request received, pending execution.
+    Trade          = 'F',  ///< Trade (FIX 4.4+ -- equivalent to Fill for matching engines).
 };
 
-/// Order status (tag 39).
-/// Current state of the order on the exchange.
+/// @brief Order status (tag 39).
+///
+/// Current state of the order on the exchange. Terminal states are Filled,
+/// Canceled, Rejected, Expired, and DoneForDay.
 enum class OrdStatus : char {
-    New             = '0',
-    PartiallyFilled = '1',
-    Filled          = '2',
-    DoneForDay      = '3',
-    Canceled        = '4',
-    Replaced        = '5',
-    PendingCancel   = '6',
-    Stopped         = '7',
-    Rejected        = '8',
-    Suspended       = '9',
-    PendingNew      = 'A',
-    Calculated      = 'B',
-    Expired         = 'C',
-    PendingReplace  = 'E',
+    New             = '0',  ///< Order accepted, working on the book.
+    PartiallyFilled = '1',  ///< Some quantity executed, remainder working.
+    Filled          = '2',  ///< Full quantity executed (terminal).
+    DoneForDay      = '3',  ///< Order expired for the trading session (terminal).
+    Canceled        = '4',  ///< Order canceled (terminal).
+    Replaced        = '5',  ///< Order replaced -- new order is working.
+    PendingCancel   = '6',  ///< Cancel request pending at the exchange.
+    Stopped         = '7',  ///< Order stopped (guaranteed fill price).
+    Rejected        = '8',  ///< Order rejected by the exchange (terminal).
+    Suspended       = '9',  ///< Order suspended by the exchange.
+    PendingNew      = 'A',  ///< Order received, pending acceptance.
+    Calculated      = 'B',  ///< Calculated (post-trade).
+    Expired         = 'C',  ///< Order expired (terminal).
+    PendingReplace  = 'E',  ///< Replace request pending at the exchange.
 };
 
+/// @brief Internal implementation details for the execution report module.
 namespace detail {
+/// @brief Get or create the spdlog logger for execution report processing.
+/// @return Raw pointer to the "fix.execrpt" logger (never null after first call).
 inline spdlog::logger* fix_execrpt_logger() noexcept {
     static auto l = [] {
         auto lg = spdlog::get("fix.execrpt");
@@ -68,7 +75,9 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
     return l.get();
 }
 
-/// Validate that a char is a known ExecType value.
+/// @brief Validate that a char is a known ExecType value.
+/// @param c  The character to validate.
+/// @return The corresponding ExecType, or nullopt if unrecognized.
 [[nodiscard]] inline std::optional<ExecType> to_exec_type(char c) noexcept {
     switch (c) {
     case '0': case '1': case '2': case '3': case '4':
@@ -83,7 +92,9 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
     }
 }
 
-/// Validate that a char is a known OrdStatus value.
+/// @brief Validate that a char is a known OrdStatus value.
+/// @param c  The character to validate.
+/// @return The corresponding OrdStatus, or nullopt if unrecognized.
 [[nodiscard]] inline std::optional<OrdStatus> to_ord_status(char c) noexcept {
     switch (c) {
     case '0': case '1': case '2': case '3': case '4':
@@ -98,7 +109,7 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
 }
 } // namespace detail
 
-/// Zero-copy view of a FIX ExecutionReport (MsgType=8).
+/// @brief Zero-copy view of a FIX ExecutionReport (MsgType=8).
 ///
 /// Wraps a BasicMessageView and provides typed accessors for the most
 /// commonly needed execution report fields.  All returned string_view
@@ -111,6 +122,9 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
 template <size_t MaxFields = 256>
 class ExecutionReportView {
 public:
+    /// @brief Construct a view over a parsed FIX message.
+    /// @param msg  The parsed message to wrap. Must outlive this view.
+    /// @warning The caller is responsible for verifying MsgType='8' before construction.
     explicit ExecutionReportView(const BasicMessageView<MaxFields>& msg) noexcept
         : msg_(msg) {
         SPDLOG_LOGGER_TRACE(detail::fix_execrpt_logger(),
@@ -235,7 +249,7 @@ private:
 // Wire-bytes convenience parser
 // ---------------------------------------------------------------------------
 
-/// Owns a parsed BasicMessageView together with its ExecutionReportView.
+/// @brief Owns a parsed BasicMessageView together with its ExecutionReportView.
 ///
 /// ExecutionReportView stores a const-reference to BasicMessageView, so
 /// both must live together.  This struct bundles them with correct lifetime
@@ -257,7 +271,7 @@ struct ParsedExecutionReport {
     ParsedExecutionReport& operator=(const ParsedExecutionReport&) = delete;
 };
 
-/// Parse raw FIX bytes and return a ParsedExecutionReport if MsgType=8.
+/// @brief Parse raw FIX bytes and return a ParsedExecutionReport if MsgType=8.
 ///
 /// Combines parse() + MsgType check + view creation in one call, which is
 /// the common hot-path when processing wire bytes in a trading gateway.

@@ -39,6 +39,7 @@
 namespace eph::utils {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the audit-log subsystem.
 inline spdlog::logger* audit_log_logger() {
     static auto l = [] {
         try {

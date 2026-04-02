@@ -28,40 +28,48 @@ namespace eph::net {
 //   - Evict = EvictingQueue RX (drop stale, market data streams)
 //   - (none) = 512B payload / 1024 depth (default)
 
-/// Standard WSS (TLS) WebSocket transport using kernel sockets.
+/// @brief Standard WSS (TLS) WebSocket transport using kernel sockets.
+///
 /// 512-byte max payload, 1024-deep SPSC queues.
 using SocketWssTransport = DefaultTransport<SocketTransport>;
 
-/// Small-payload WSS variant (64B messages, single-symbol feeds).
+/// @brief Small-payload WSS variant (64B messages, single-symbol feeds).
 using SocketWssSmallTransport = SmallTransport<SocketTransport>;
 
-/// Large-payload WSS variant (4KB messages, e.g. JSON market data).
+/// @brief Large-payload WSS variant (4KB messages, e.g. JSON market data).
 using SocketWssLargeTransport = LargeTransport<SocketTransport>;
 
-/// Evicting WSS variant — drops stale messages when RX queue is full.
+/// @brief Evicting WSS variant -- drops stale messages when RX queue is full.
+///
 /// Ideal for market data streams where only the latest update matters.
 using SocketWssEvictTransport = EvictTransport<SocketTransport>;
 
-/// Standard plain WS (no TLS) transport using kernel sockets.
+/// @brief Standard plain WS (no TLS) transport using kernel sockets.
+///
 /// Same as SocketWssTransport but configured with use_tls=false.
 /// Use for internal/test services where TLS is not needed.
 using SocketWsTransport = DefaultTransport<SocketTransport>;
 
-/// Raw TCP transport (no WebSocket framing). For FIX or custom protocols
-/// that handle their own message boundaries.
+/// @brief Raw TCP transport (no WebSocket framing).
+///
+/// For FIX or custom protocols that handle their own message boundaries.
 using SocketRawTransport = RawTransport<SocketTransport>;
 
-// Direct TX mode: app sends directly, RX thread delivers via callback/queue.
+/// @brief Direct TX mode: app sends directly on caller thread, RX thread delivers via callback/queue.
 using SocketDirectTxTransport      = DirectTxDefaultTransport<SocketTransport>;
+/// @brief Direct TX small-payload variant (64B, single-symbol).
 using SocketDirectTxSmallTransport = DirectTxSmallTransport<SocketTransport>;
+/// @brief Direct TX raw variant (no WebSocket framing).
 using SocketDirectTxRawTransport   = DirectTxRawTransport<SocketTransport>;
 
-// Full direct mode: no background threads, app calls send() + poll().
+/// @brief Full direct mode: no background threads, app calls send() + poll() directly.
 using SocketDirectTransport      = DirectDefaultTransport<SocketTransport>;
+/// @brief Full direct small-payload variant (64B, single-symbol).
 using SocketDirectSmallTransport = DirectSmallTransport<SocketTransport>;
+/// @brief Full direct raw variant (no WebSocket framing).
 using SocketDirectRawTransport   = DirectRawTransport<SocketTransport>;
 
-/// Convenience factory: creates a fully connected SocketWssTransport
+/// @brief Convenience factory: creates a fully connected SocketWssTransport
 /// from just a TransportConfig, eliminating the TcpFactory boilerplate.
 ///
 /// Equivalent to:
@@ -71,9 +79,11 @@ using SocketDirectRawTransport   = DirectRawTransport<SocketTransport>;
 /// Optionally accepts a SocketConfig for fine-grained TCP tuning;
 /// if omitted, sensible defaults are derived from the TransportConfig.
 ///
-/// @param config     Transport configuration (host, port, TLS, WS settings)
-/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.)
-/// @return Connected SocketWssTransport or error string
+/// @tparam MaxPayload  Maximum WebSocket payload size in bytes (default 512).
+/// @tparam QueueDepth  SPSC queue depth for RX/TX (default 1024).
+/// @param config     Transport configuration (host, port, TLS, WS settings).
+/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.).
+/// @return Connected SocketWssTransport or ConnectionErrorInfo on failure.
 template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 [[nodiscard]] inline auto
 socket_wss_connect(
@@ -115,13 +125,15 @@ socket_wss_connect(
         std::move(tcp_factory), config);
 }
 
-/// Convenience factory for plain WebSocket (ws://) connections.
+/// @brief Convenience factory for plain WebSocket (ws://) connections.
 ///
 /// Creates a Transport with use_tls=false.
 ///
-/// @param config     Transport configuration (host, port, WS settings)
-/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.)
-/// @return Connected plain WS Transport or error string
+/// @tparam MaxPayload  Maximum WebSocket payload size in bytes (default 512).
+/// @tparam QueueDepth  SPSC queue depth for RX/TX (default 1024).
+/// @param config     Transport configuration (host, port, WS settings).
+/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.).
+/// @return Connected plain WS Transport or ConnectionErrorInfo on failure.
 template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 [[nodiscard]] inline auto
 socket_ws_connect(
@@ -164,7 +176,7 @@ socket_ws_connect(
         std::move(tcp_factory), config);
 }
 
-/// Create a socket-based WebSocket transport from a URL string.
+/// @brief Create a socket-based WebSocket transport from a URL string.
 ///
 /// Combines TransportConfig::from_url() with the appropriate connect
 /// function (wss or ws based on scheme), eliminating boilerplate.
@@ -179,10 +191,13 @@ socket_ws_connect(
 ///       cfg.on_message = [](auto* data, uint16_t len, uint8_t) { ... };
 ///   });
 ///
-/// @param url       WebSocket URL (ws:// or wss://)
-/// @param modifier  Optional callback to customize TransportConfig before connecting
-/// @param sock_cfg  Optional socket-level config (TCP_NODELAY, keepalive, etc.)
-/// @return Connected transport, or ConnectionErrorInfo on failure
+/// @tparam MaxPayload      Maximum WebSocket payload size in bytes (default 512).
+/// @tparam QueueDepth      SPSC queue depth for RX/TX (default 1024).
+/// @tparam ConfigModifier  Callable type for customizing TransportConfig (auto-deduced).
+/// @param url       WebSocket URL (ws:// or wss://).
+/// @param modifier  Optional callback to customize TransportConfig before connecting.
+/// @param sock_cfg  Optional socket-level config (TCP_NODELAY, keepalive, etc.).
+/// @return Connected transport, or ConnectionErrorInfo on failure.
 template <size_t MaxPayload = 512, size_t QueueDepth = 1024,
           typename ConfigModifier = std::nullptr_t>
 [[nodiscard]] inline auto

@@ -15,6 +15,7 @@ namespace eph::dpdk {
 // ---------------------------------------------------------------------------
 // Type aliases — DPDK backend
 // ---------------------------------------------------------------------------
+//
 // Naming convention:
 //   Dpdk{Wss|Raw}{Small|Large|Evict}Transport
 //   - Wss = WebSocket over TLS (default)
@@ -24,30 +25,61 @@ namespace eph::dpdk {
 //   - Evict = EvictingQueue RX (drop stale, market data streams)
 //   - (none) = 512B payload / 1024 depth (default)
 
-/// Default DPDK transport: WsFramer, 512-byte max payload, 1024-deep queue.
+/// @brief Default DPDK transport: WebSocket framing, 512-byte max payload, 1024-deep queue.
+///
+/// Suitable for typical exchange WebSocket feeds (Binance, Coinbase, etc.)
+/// where individual messages fit in a single WebSocket frame under 512 bytes.
 using DpdkTransport = eph::net::DefaultTransport<TcpSession<>>;
 
-/// Small DPDK transport for control messages.
+/// @brief Compact DPDK transport for control/heartbeat messages.
+///
+/// 64-byte max payload, 256-deep queue. Use for low-bandwidth control channels
+/// (e.g., order acknowledgements, heartbeats) where memory footprint matters.
 using DpdkSmallTransport = eph::net::SmallTransport<TcpSession<>>;
 
-/// Large DPDK transport for bulk data.
+/// @brief Large DPDK transport for bulk data feeds.
+///
+/// 4KB max payload, 512-deep queue. Suitable for JSON market data (full order
+/// book snapshots) or REST-over-WebSocket responses.
 using DpdkLargeTransport = eph::net::LargeTransport<TcpSession<>>;
 
-/// Latest-value transport — under backpressure, drops older messages.
+/// @brief Evicting DPDK transport for latest-value market data streams.
+///
+/// Under backpressure, drops the oldest unprocessed messages rather than
+/// blocking the producer. Ideal for Level 1 quote feeds where only the
+/// latest price matters.
 using DpdkEvictTransport = eph::net::EvictTransport<TcpSession<>>;
 
-/// Raw TCP transport (no WebSocket framing) over DPDK.
+/// @brief Raw TCP transport (no WebSocket framing) over DPDK.
+///
+/// Use for protocols that run directly over TCP without WebSocket framing,
+/// such as FIX, SBE, or proprietary binary protocols.
 using DpdkRawTransport = eph::net::RawTransport<TcpSession<>>;
 
-// Direct TX mode: app sends directly, RX thread delivers via callback/queue.
+/// @brief Direct TX DPDK transport: application calls send() directly, RX thread delivers via callback/queue.
+///
+/// Bypasses the internal TX thread — the caller's thread executes rte_eth_tx_burst.
+/// Useful when the caller already runs on a dedicated lcore and wants to avoid
+/// an extra thread hop on the send path.
 using DpdkDirectTxTransport = eph::net::DirectTxDefaultTransport<TcpSession<>>;
+
+/// @brief Direct TX raw DPDK transport (no WebSocket framing, no TX thread).
 using DpdkDirectTxRawTransport = eph::net::DirectTxRawTransport<TcpSession<>>;
 
-// Full direct mode: no background threads, app calls send() + poll().
+/// @brief Fully direct DPDK transport: no background threads, app calls send() + poll().
+///
+/// The application is responsible for both sending and polling. No internal
+/// threads are created. Best for single-threaded event loop architectures
+/// where the application manages all I/O on one lcore.
 using DpdkDirectTransport = eph::net::DirectDefaultTransport<TcpSession<>>;
+
+/// @brief Fully direct raw DPDK transport (no WebSocket framing, no threads).
 using DpdkDirectRawTransport = eph::net::DirectRawTransport<TcpSession<>>;
 
-/// Re-export generic types for convenience.
+/// @brief Re-exported generic transport types for convenience.
+///
+/// These are the backend-agnostic types from eph::net, re-exported into
+/// eph::dpdk so callers don't need to import both namespaces.
 using eph::net::TransportConfig;
 using eph::net::TransportStats;
 using eph::net::SendError;

@@ -27,33 +27,46 @@ namespace eph::dpdk::net {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline constexpr uint16_t kEtherTypeIpv4   = 0x0800;
-inline constexpr uint8_t  kIpProtoTcp      = 6;
-inline constexpr uint8_t  kIpProtoUdp      = 17;
-inline constexpr uint16_t kIpv4HeaderLen   = 20; // No options
-inline constexpr uint16_t kTcpHeaderLen    = 20; // No options
-inline constexpr uint16_t kEtherHeaderLen  = 14;
-inline constexpr uint16_t kAllHeadersLen   = kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;
+/// @name EtherType and IP protocol constants
+/// @{
+inline constexpr uint16_t kEtherTypeIpv4   = 0x0800;  ///< EtherType for IPv4 (IEEE 802.3)
+inline constexpr uint8_t  kIpProtoTcp      = 6;       ///< IP protocol number for TCP (RFC 793)
+inline constexpr uint8_t  kIpProtoUdp      = 17;      ///< IP protocol number for UDP (RFC 768)
+/// @}
 
-// TCP flags
-inline constexpr uint8_t kTcpFin = 0x01;
-inline constexpr uint8_t kTcpSyn = 0x02;
-inline constexpr uint8_t kTcpRst = 0x04;
-inline constexpr uint8_t kTcpPsh = 0x08;
-inline constexpr uint8_t kTcpAck = 0x10;
-inline constexpr uint8_t kTcpUrg = 0x20;
+/// @name Header length constants (bytes)
+/// @{
+inline constexpr uint16_t kIpv4HeaderLen   = 20;  ///< IPv4 header without options
+inline constexpr uint16_t kTcpHeaderLen    = 20;  ///< TCP header without options
+inline constexpr uint16_t kEtherHeaderLen  = 14;  ///< Ethernet II header (dst + src + type)
+inline constexpr uint16_t kAllHeadersLen   = kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;  ///< Combined Eth+IP+TCP header length (54 bytes)
+/// @}
 
-// IPv4 header defaults
-inline constexpr uint8_t  kIpv4VersionIhl5 = 0x45;   // Version 4, IHL 5 (20 bytes, no options)
-inline constexpr uint16_t kIpDontFragment   = 0x4000; // Don't Fragment flag in fragment_offset field
-inline constexpr uint8_t  kDefaultTtl       = 64;     // Default Time-To-Live
+/// @name TCP flag bitmasks (RFC 793 section 3.1)
+/// @{
+inline constexpr uint8_t kTcpFin = 0x01;  ///< No more data from sender
+inline constexpr uint8_t kTcpSyn = 0x02;  ///< Synchronize sequence numbers
+inline constexpr uint8_t kTcpRst = 0x04;  ///< Reset the connection
+inline constexpr uint8_t kTcpPsh = 0x08;  ///< Push buffered data to application
+inline constexpr uint8_t kTcpAck = 0x10;  ///< Acknowledgment field is significant
+inline constexpr uint8_t kTcpUrg = 0x20;  ///< Urgent pointer field is significant
+/// @}
 
-// Default TCP MSS for Ethernet (MTU 1500 - IP header - TCP header)
+/// @name IPv4 header defaults
+/// @{
+inline constexpr uint8_t  kIpv4VersionIhl5 = 0x45;   ///< Version 4, IHL 5 (20 bytes, no options)
+inline constexpr uint16_t kIpDontFragment   = 0x4000; ///< Don't Fragment flag in fragment_offset field
+inline constexpr uint8_t  kDefaultTtl       = 64;     ///< Default Time-To-Live hop count
+/// @}
+
+/// @brief Default TCP Maximum Segment Size for standard Ethernet (MTU 1500 - IP header - TCP header).
 inline constexpr uint16_t kDefaultMss = 1460;
 
-// SYN options: MSS(4) + SACK_PERM(2) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) = 12 bytes
+/// @brief SYN options total length: MSS(4) + SACK_PERM(2) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) = 12 bytes.
 inline constexpr uint16_t kSynOptionsLen = 12;
-inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen; // 32 bytes
+
+/// @brief TCP header length for SYN packets (standard header + SYN options = 32 bytes).
+inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte order helpers
@@ -80,15 +93,24 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen; // 
     }
 }
 
+/// @brief Network-to-host 16-bit (constexpr-safe). Identical to hton16 (symmetric).
 [[nodiscard]] constexpr uint16_t ntoh16(uint16_t n) noexcept { return hton16(n); }
+
+/// @brief Network-to-host 32-bit (constexpr-safe). Identical to hton32 (symmetric).
 [[nodiscard]] constexpr uint32_t ntoh32(uint32_t n) noexcept { return hton32(n); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Checksum computation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Internet checksum (RFC 1071) over arbitrary data.
-/// Operates on host byte order internally, returns network byte order result.
+/// @brief Compute Internet checksum (RFC 1071) over arbitrary data.
+///
+/// Sums 16-bit words with end-around carry, then one's-complements the result.
+/// Handles odd-length buffers by zero-padding the final byte.
+///
+/// @param data  Pointer to the data to checksum
+/// @param len   Length of the data in bytes
+/// @return One's complement checksum in network byte order
 inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
     if (len == 0) return 0xFFFF;
     uint32_t sum = 0;
@@ -118,8 +140,16 @@ inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
     return static_cast<uint16_t>(~sum);
 }
 
-/// TCP/UDP pseudo-header checksum contribution.
-/// Returns partial sum (NOT complemented) in network byte order format.
+/// @brief Compute TCP/UDP pseudo-header checksum contribution (RFC 793 section 3.1).
+///
+/// Returns the partial sum (NOT one's-complemented) for inclusion in the full
+/// TCP or UDP checksum calculation.
+///
+/// @param src_ip_net    Source IP address in network byte order
+/// @param dst_ip_net    Destination IP address in network byte order
+/// @param protocol      IP protocol number (e.g., kIpProtoTcp = 6)
+/// @param tcp_len_host  TCP/UDP segment length (header + payload) in host byte order
+/// @return Partial 32-bit sum in network byte order format
 inline uint32_t pseudo_header_sum(uint32_t src_ip_net, uint32_t dst_ip_net,
                                    uint8_t protocol, uint16_t tcp_len_host) noexcept {
     uint32_t sum = 0;
@@ -136,9 +166,15 @@ inline uint32_t pseudo_header_sum(uint32_t src_ip_net, uint32_t dst_ip_net,
     return sum;
 }
 
-/// Compute TCP checksum including pseudo-header.
-/// All IP addresses in network byte order. tcp_seg points to the TCP header +
-/// payload, total_tcp_len is header + payload length in bytes.
+/// @brief Compute the full TCP checksum including the pseudo-header.
+///
+/// Combines the pseudo-header sum with the TCP segment checksum per RFC 793.
+///
+/// @param src_ip_net     Source IP in network byte order
+/// @param dst_ip_net     Destination IP in network byte order
+/// @param tcp_seg        Pointer to the TCP header (followed by payload)
+/// @param total_tcp_len  Total length of TCP header + payload in bytes
+/// @return TCP checksum in network byte order, ready to store in tcp->cksum
 inline uint16_t tcp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
                               const void* tcp_seg, uint16_t total_tcp_len) noexcept {
     uint32_t sum = pseudo_header_sum(src_ip_net, dst_ip_net, kIpProtoTcp, total_tcp_len);
@@ -199,13 +235,18 @@ inline uint16_t write_syn_options(uint8_t* buf, uint16_t mss) noexcept {
 // Connection tuple
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Identifies a TCP connection. All fields in HOST byte order.
+/// @brief Identifies a TCP connection by its 4-tuple (source/destination IP and port).
+///
+/// All fields are stored in HOST byte order. Conversion to/from network byte
+/// order happens at the packet construction/parsing boundary (PacketTemplate,
+/// parse_packet).
 struct ConnectionTuple {
-    uint32_t src_ip    = 0;
-    uint32_t dst_ip    = 0;
-    uint16_t src_port  = 0;
-    uint16_t dst_port  = 0;
+    uint32_t src_ip    = 0;  ///< Source IPv4 address (host byte order)
+    uint32_t dst_ip    = 0;  ///< Destination IPv4 address (host byte order)
+    uint16_t src_port  = 0;  ///< Source TCP port (host byte order)
+    uint16_t dst_port  = 0;  ///< Destination TCP port (host byte order)
 
+    /// @brief Defaulted equality comparison over all four fields.
     bool operator==(const ConnectionTuple&) const = default;
 };
 
@@ -213,9 +254,15 @@ struct ConnectionTuple {
 // Packet builder — constructs Ethernet/IP/TCP headers on an mbuf
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Ethernet + IPv4 + TCP header template for fast packet construction.
-/// Pre-fill static fields once, then update dynamic fields (seq, ack, flags,
-/// payload length) per packet on the hot path.
+/// @brief Ethernet + IPv4 + TCP header template for fast packet construction.
+///
+/// Pre-fill static fields (MAC addresses, IP/port tuple) once at connection
+/// setup, then update only dynamic fields (seq, ack, flags, payload length)
+/// per packet on the hot path. Provides both allocating (build_packet) and
+/// zero-alloc (fill_packet) construction methods.
+///
+/// @note Not thread-safe. Each TX thread or session must use its own
+///       PacketTemplate instance. The ip_id counter is incremented per packet.
 struct PacketTemplate {
     rte_ether_addr src_mac{};
     rte_ether_addr dst_mac{};
@@ -417,13 +464,20 @@ struct PacketTemplate {
 // Packet parser — extract headers from received mbufs
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parsed packet view — pointers into the original mbuf data (zero-copy).
+/// @brief Zero-copy parsed view of an Ethernet/IPv4/TCP packet.
+///
+/// All pointers reference memory within the original mbuf data buffer.
+/// The view is valid only as long as the underlying mbuf is alive and
+/// unmodified. Returned by parse_packet().
+///
+/// @warning Do not store a ParsedPacket beyond the lifetime of the mbuf
+///          it was parsed from. Access after rte_pktmbuf_free is undefined.
 struct ParsedPacket {
-    const rte_ether_hdr* eth  = nullptr;
-    const rte_ipv4_hdr*  ip   = nullptr;
-    const rte_tcp_hdr*   tcp  = nullptr;
-    const uint8_t*       payload = nullptr;
-    uint16_t             payload_len = 0;
+    const rte_ether_hdr* eth  = nullptr;   ///< Ethernet header (null if parse failed)
+    const rte_ipv4_hdr*  ip   = nullptr;   ///< IPv4 header (null if not IPv4)
+    const rte_tcp_hdr*   tcp  = nullptr;   ///< TCP header (null if not TCP)
+    const uint8_t*       payload = nullptr; ///< TCP payload start (null if no payload)
+    uint16_t             payload_len = 0;   ///< TCP payload length in bytes
 
     /// Extract TCP flags from the parsed packet.
     [[nodiscard]] uint8_t tcp_flags() const noexcept {
@@ -478,9 +532,21 @@ struct ParsedPacket {
     }
 };
 
-/// Parse an Ethernet/IPv4/TCP packet from an mbuf.
-/// Returns empty ParsedPacket (all nullptrs) if the packet is not a valid
-/// IPv4/TCP packet or is too short.
+/// @brief Parse an Ethernet/IPv4/TCP packet from an mbuf (zero-copy).
+///
+/// Validates Ethernet type, IPv4 version/IHL, and TCP data offset before
+/// returning pointers into the mbuf data buffer. Handles variable-length
+/// IP headers (IHL > 5) and uses IP total_length (not mbuf pkt_len) to
+/// compute payload size, avoiding NIC-padded bytes in short frames.
+///
+/// @param mbuf  Received packet mbuf (must not be null)
+/// @return ParsedPacket with all fields populated on success, or all-null
+///         fields if the packet is not a valid IPv4/TCP packet
+///
+/// @note Three safety guards prevent buffer over-read and integer underflow:
+///       1. TCP data offset must not exceed IP total length
+///       2. IP total length must not exceed mbuf data length
+///       3. Payload pointer is only set when actual bytes exist beyond TCP header
 inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     if (!mbuf) [[unlikely]] return {};
     const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
@@ -539,8 +605,17 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     return result;
 }
 
-/// Parse an IPv4 address string "a.b.c.d" to host-order uint32_t.
-/// Returns 0 on invalid input.
+/// @brief Parse a dotted-decimal IPv4 address string "a.b.c.d" to host-order uint32_t.
+///
+/// Validates each octet is in [0, 255] and rejects trailing characters.
+/// Does NOT accept leading zeros, whitespace, or port suffixes.
+///
+/// @param str  Null-terminated IPv4 string (e.g., "10.0.0.1")
+/// @return Host-order uint32_t on success, 0 on invalid input
+///
+/// @note Returns 0 for both invalid input and the valid address "0.0.0.0".
+///       Callers that need to distinguish these cases should check the input
+///       string directly.
 inline uint32_t parse_ipv4(const char* str) noexcept {
     if (!str) return 0;
 
@@ -571,10 +646,15 @@ inline uint32_t parse_ipv4(const char* str) noexcept {
     return (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3];
 }
 
-/// Format an IPv4 address from host-order uint32_t to "a.b.c.d".
-// format_ipv4() returns std::array<char,16> by value; .data() is safe
-// within the full expression (temporary lifetime extends through the
-// enclosing spdlog::info call).
+/// @brief Format a host-order IPv4 address as "a.b.c.d" into a fixed-size array.
+///
+/// Returns a stack-allocated null-terminated char array. Use `.data()` to
+/// get a `const char*`. The array is valid for the lifetime of the returned
+/// object; when used as a temporary in a logging call, the expression's
+/// lifetime guarantees safety.
+///
+/// @param ip  IPv4 address in host byte order
+/// @return Null-terminated char array containing the formatted address
 inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
     std::array<char, 16> buf{};
     snprintf(buf.data(), buf.size(), "%u.%u.%u.%u",
@@ -583,7 +663,10 @@ inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
     return buf;
 }
 
-/// Format a MAC address as "xx:xx:xx:xx:xx:xx".
+/// @brief Format a MAC address as "xx:xx:xx:xx:xx:xx" into a fixed-size array.
+///
+/// @param mac  Ethernet MAC address (rte_ether_addr)
+/// @return Null-terminated char array containing the formatted MAC
 inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
     std::array<char, 18> buf{};
     snprintf(buf.data(), buf.size(), "%02x:%02x:%02x:%02x:%02x:%02x",

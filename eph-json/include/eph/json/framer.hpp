@@ -14,15 +14,40 @@
 
 namespace eph::json {
 
-/// Pass-through framer for JSON-over-WebSocket.
+/// @brief Pass-through framer for JSON-over-WebSocket.
 ///
 /// Since WebSocket handles message boundaries, each recv callback
 /// delivers exactly one JSON message. This framer simply wraps the
 /// raw bytes as a DecodedFrame for the Transport pipeline.
+///
+/// Satisfies the eph::net::MessageFramer concept with zero framing
+/// overhead -- encode is a plain memcpy, decode wraps the buffer
+/// in a DecodedFrame without copying or transforming any bytes.
+///
+/// @note This framer assumes the transport layer (WebSocket) has
+///       already delineated message boundaries. Using it over a raw
+///       TCP stream will treat the entire recv buffer as one message.
 class JsonFramer {
 public:
+    /// @brief Returns the maximum framing overhead in bytes.
+    ///
+    /// Always zero -- JSON-over-WebSocket adds no extra framing bytes
+    /// beyond the WebSocket frame header (handled by the WS layer).
+    ///
+    /// @return Always 0.
     static constexpr size_t max_overhead() noexcept { return 0; }
 
+    /// @brief Encode a JSON message for transmission (identity copy).
+    ///
+    /// Copies @p len bytes from @p data into @p out without modification.
+    /// The caller must ensure @p out has at least @p len bytes of capacity.
+    ///
+    /// @param out       Destination buffer (must have capacity >= @p len)
+    /// @param data      Source JSON payload bytes
+    /// @param len       Number of bytes to encode
+    /// @param msg_type  Ignored (WebSocket message type is set elsewhere)
+    /// @return Number of bytes written to @p out, or 0 if any pointer is null
+    ///         or @p len is zero.
     [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         if (len == 0 || !data || !out) [[unlikely]] return 0;
@@ -30,6 +55,15 @@ public:
         return len;
     }
 
+    /// @brief Decode a received buffer into a DecodedFrame (identity wrap).
+    ///
+    /// Wraps the entire buffer as a single frame with msg_type 0 and
+    /// is_control false. No data is copied or transformed.
+    ///
+    /// @param data  Received payload bytes
+    /// @param len   Number of received bytes
+    /// @return DecodedFrame spanning the full buffer on success,
+    ///         or FrameError::kIncomplete if @p len is zero.
     [[nodiscard]] std::expected<eph::net::DecodedFrame, eph::net::FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len == 0) return std::unexpected(eph::net::FrameError::kIncomplete);

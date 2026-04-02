@@ -1,3 +1,19 @@
+/// @file hugepage.hpp
+/// @brief Huge-page memory allocation utilities for latency-sensitive data structures.
+///
+/// Provides transparent huge-page allocation with automatic fallback to
+/// standard aligned memory when huge pages are unavailable. On Linux,
+/// uses `mmap(MAP_HUGETLB)` to request 2 MB pages; on Windows, uses
+/// `VirtualAlloc(MEM_LARGE_PAGES)`. Other platforms fall back to
+/// `std::aligned_alloc` unconditionally.
+///
+/// Typical usage: allocate long-lived, large objects (order-book caches,
+/// ring buffers, hash maps) on huge pages to reduce TLB misses and
+/// improve memory access latency in HFT hot paths.
+///
+/// @note Huge-page allocation failure is non-fatal -- the library silently
+///       falls back to regular aligned memory and logs a warning.
+
 #pragma once
 
 #include <memory>
@@ -15,6 +31,7 @@ namespace eph::utils {
 
 namespace detail {
 
+/// @brief Lazily-initialized logger for the huge-page subsystem.
 inline const std::shared_ptr<spdlog::logger>& hugepage_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.hugepage");
@@ -26,50 +43,48 @@ inline const std::shared_ptr<spdlog::logger>& hugepage_logger() {
 
 } // namespace detail
 
-/**
- * @brief 大页内存分配辅助工具
- *
- * 系统配置要求：
- * - Linux: 需要配置 /proc/sys/vm/nr_hugepages 或使用透明大页
- *          查看可用大页：cat /proc/meminfo | grep Huge
- * - Windows: 需要 SeLockMemoryPrivilege 权限
- *
- * 使用示例：
- * @code
- *   // 创建使用大页的对象
- *   auto data = HugePage::make<std::vector<int>>(1000);
- *
- *   // 就像普通 unique_ptr 一样使用
- *   data->push_back(42);
- * @endcode
- *
- * @note 大页分配失败不会导致程序失败，会自动使用普通内存
- * @note 适用于长期存活的大型数据结构（如缓存、索引、大数组）
- */
+/// @brief Huge-page memory allocation helper.
+///
+/// Provides static methods to allocate objects on huge-page-backed memory
+/// with automatic fallback to standard aligned memory.
+///
+/// System requirements:
+/// - Linux: configure `/proc/sys/vm/nr_hugepages` or enable transparent
+///   huge pages. Check availability: `cat /proc/meminfo | grep Huge`.
+/// - Windows: the process needs `SeLockMemoryPrivilege`.
+///
+/// @code
+///   // Create an object backed by huge pages
+///   auto data = HugePage::make<std::vector<int>>(1000);
+///
+///   // Use it exactly like a regular unique_ptr
+///   data->push_back(42);
+/// @endcode
+///
+/// @note Allocation failure is non-fatal -- falls back to regular memory.
+/// @note Best suited for long-lived, large data structures (caches, indexes,
+///       ring buffers).
 class HugePage {
 public:
-  /**
-   * @brief 创建使用大页内存的对象（推荐接口）
-   *
-   * 尝试在大页内存上构造对象，失败时回退到普通内存。
-   * 返回的 unique_ptr 包含自定义删除器，能正确释放大页或普通内存。
-   *
-   * @tparam T 要创建的对象类型
-   * @tparam Args 构造函数参数类型
-   * @param args 转发给 T 的构造函数的参数
-   * @return std::unique_ptr<T> 智能指针，自动管理对象生命周期
-   *
-   * @throws 构造函数可能抛出的任何异常（内存分配失败会抛出 std::bad_alloc）
-   *
-   * @example
-   * @code
-   *   // 创建 10MB 的缓冲区
-   *   auto buffer = HugePage::make<std::array<char, 10*1024*1024>>();
-   *
-   *   // 创建带参数的对象
-   *   auto map = HugePage::make<std::unordered_map<int, std::string>>(1000);
-   * @endcode
-   */
+  /// @brief Construct an object on huge-page memory (recommended API).
+  ///
+  /// Attempts placement-new on a huge-page allocation. On failure, falls
+  /// back to standard aligned memory. The returned `unique_ptr` carries a
+  /// custom deleter that correctly releases either type of memory.
+  ///
+  /// @tparam T     The object type to construct.
+  /// @tparam Args  Constructor argument types.
+  /// @param args   Arguments forwarded to `T`'s constructor.
+  /// @return A `unique_ptr<T>` with a custom deleter managing the lifetime.
+  ///
+  /// @throws std::bad_alloc if memory allocation fails entirely.
+  /// @throws Any exception thrown by `T`'s constructor (memory is freed
+  ///         on construction failure).
+  ///
+  /// @code
+  ///   auto buffer = HugePage::make<std::array<char, 10*1024*1024>>();
+  ///   auto map    = HugePage::make<std::unordered_map<int, std::string>>(1000);
+  /// @endcode
   template <typename T, typename... Args> static auto make(Args &&...args) {
     size_t size = sizeof(T);
     size_t alignment = alignof(T);
@@ -96,25 +111,26 @@ public:
     }
   }
 
-  /**
-   * @brief 分配大页内存（底层接口）
-   *
-   * 尝试分配大页内存，失败时回退到 std::aligned_alloc。
-   * 通过输出参数 is_hugepage 告知调用者实际使用的内存类型。
-   *
-   * @param size 请求的字节数
-   * @param alignment 内存对齐要求（如 alignof(T)）
-   * @param is_hugepage [out] 输出参数，true 表示成功分配大页，false
-   * 表示使用普通内存
-   * @return void* 分配的内存指针，失败返回 nullptr
-   *
-   * @note Linux: 使用 mmap + MAP_HUGETLB 标志尝试 2MB 大页
-   * @note Windows: 使用 VirtualAlloc + MEM_LARGE_PAGES 标志
-   * @note 其他平台: 直接使用 std::aligned_alloc
-   *
-   * @warning 返回的指针必须通过 deallocate() 释放，不能使用 free()
-   * @warning 此函数不抛异常，分配失败返回 nullptr
-   */
+  /// @brief Allocate raw huge-page memory (low-level API).
+  ///
+  /// Tries to allocate huge-page memory; falls back to `std::aligned_alloc`
+  /// on failure. The output parameter `is_hugepage` indicates which type
+  /// of allocation succeeded.
+  ///
+  /// @param size               Requested allocation size in bytes.
+  /// @param alignment          Required alignment (e.g., `alignof(T)`).
+  /// @param is_hugepage        [out] Set to `true` if huge pages were used,
+  ///                           `false` if standard memory was used.
+  /// @param out_allocated_size [out] Actual allocated size (rounded up for
+  ///                           alignment or huge-page boundaries).
+  /// @return Pointer to the allocated memory, or `nullptr` on failure.
+  ///
+  /// @note Linux: uses `mmap` with `MAP_HUGETLB` for 2 MB pages.
+  /// @note Windows: uses `VirtualAlloc` with `MEM_LARGE_PAGES`.
+  /// @note Other platforms: directly calls `std::aligned_alloc`.
+  ///
+  /// @warning The returned pointer must be freed via deallocate(), not `free()`.
+  /// @warning This function is `noexcept`; on failure it returns `nullptr`.
   static void *allocate(size_t size, size_t alignment,
                         bool &is_hugepage,
                         size_t &out_allocated_size) noexcept {
@@ -184,21 +200,20 @@ public:
 #endif
   }
 
-  /**
-   * @brief 释放内存（底层接口）
-   *
-   * 根据内存类型选择正确的释放方式：
-   * - 大页内存：使用 munmap (Linux) 或 VirtualFree (Windows)
-   * - 普通内存：使用 std::free
-   *
-   * @param ptr 要释放的内存指针（由 allocate() 返回）
-   * @param size 原始分配的字节数（必须与 allocate 时相同）
-   * @param is_hugepage 标识内存类型（来自 allocate 的输出参数）
-   *
-   * @note ptr 为 nullptr 时安全（无操作）
-   * @note 此函数不抛异常，保证 noexcept
-   * @warning 参数必须与 allocate() 时一致，否则行为未定义
-   */
+  /// @brief Free memory previously obtained from allocate() (low-level API).
+  ///
+  /// Selects the correct deallocation strategy based on memory type:
+  /// - Huge-page memory: `munmap` (Linux) or `VirtualFree` (Windows).
+  /// - Standard memory: `std::free`.
+  ///
+  /// @param ptr         Pointer returned by allocate().
+  /// @param size        The `out_allocated_size` value from the matching allocate() call.
+  /// @param is_hugepage The `is_hugepage` flag from the matching allocate() call.
+  ///
+  /// @note Safe to call with `nullptr` (no-op).
+  /// @note Guaranteed `noexcept`.
+  /// @warning Parameters must exactly match the original allocate() call;
+  ///          mismatched values cause undefined behavior.
   static void deallocate(void *ptr, size_t size, bool is_hugepage) noexcept {
     if (!ptr)
       return;
@@ -232,34 +247,27 @@ public:
   }
 
 private:
-  /**
-   * @brief unique_ptr 自定义删除器
-   *
-   * 捕获分配时的元数据（大小和类型），确保在对象销毁时：
-   * 1. 正确调用析构函数
-   * 2. 使用正确的方式释放内存
-   *
-   * @tparam T 管理的对象类型
-   *
-   * @note 此结构体会作为 unique_ptr 的一部分存储
-   * @note 大小为 sizeof(size_t) + sizeof(bool)，通常为 9 字节（可能对齐到 16
-   * 字节）
-   */
+  /// @brief Custom deleter for huge-page-backed `unique_ptr`.
+  ///
+  /// Captures the allocation metadata (size and type) so that the correct
+  /// deallocation path is taken when the `unique_ptr` is destroyed:
+  /// 1. Calls the object's destructor (placement-new symmetry).
+  /// 2. Frees the underlying memory via deallocate().
+  ///
+  /// @tparam T The managed object type.
+  ///
+  /// @note Stored inline inside the `unique_ptr`. Size is
+  ///       `sizeof(size_t) + sizeof(bool)` (typically 9 bytes, padded to 16).
   template <typename T> struct Deleter {
-    size_t size;      // 原始分配大小（字节）
-    bool is_hugepage; // true = 大页内存，false = 普通内存
+    size_t size;      ///< Allocated size in bytes (from allocate's out_allocated_size).
+    bool is_hugepage; ///< `true` = huge-page memory, `false` = standard memory.
 
-    /**
-     * @brief 删除器调用操作符
-     *
-     * 当 unique_ptr 销毁时自动调用：
-     * 1. 调用对象析构函数
-     * 2. 根据内存类型释放内存
-     *
-     * @param ptr 要删除的对象指针
-     *
-     * @note 保证 noexcept，删除器不能抛异常
-     */
+    /// @brief Invoked when the owning `unique_ptr` is destroyed.
+    ///
+    /// Explicitly destructs the object (placement-new symmetry) and then
+    /// releases the underlying memory via deallocate().
+    ///
+    /// @param ptr Pointer to the managed object.
     void operator()(T *ptr) const noexcept {
       if (ptr) {
         // 显式调用析构函数（因为对象是通过 placement new 创建的）

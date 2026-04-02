@@ -18,7 +18,10 @@
 
 namespace eph::fix {
 
+/// @brief Internal implementation details for the framer module.
 namespace detail {
+/// @brief Get or create the spdlog logger for the framer module.
+/// @return Shared pointer to the "fix.framer" logger.
 inline const std::shared_ptr<spdlog::logger>& fix_framer_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.framer");
@@ -29,7 +32,7 @@ inline const std::shared_ptr<spdlog::logger>& fix_framer_logger() {
 }
 } // namespace detail
 
-/// FIX protocol framer -- finds message boundaries by scanning for the
+/// @brief FIX protocol framer -- finds message boundaries by scanning for the
 /// CheckSum tag ("10=XXX\x01") in the byte stream.
 ///
 /// @tparam MaxBodyLength  Maximum allowed BodyLength value (default 1 MB).
@@ -45,16 +48,23 @@ inline const std::shared_ptr<spdlog::logger>& fix_framer_logger() {
 template <size_t MaxBodyLength = kDefaultMaxBodyLength>
 class BasicFixFramer {
 public:
+    /// @brief Maximum encoding overhead in bytes.
+    /// @return Always 0 -- FIX messages are self-framed and encode() is a pass-through.
     static constexpr size_t max_overhead() noexcept { return 0; }
 
-    /// Pass-through encode: FIX messages are already self-framed.
+    /// @brief Pass-through encode: FIX messages are already self-framed.
+    /// @param out       Output buffer (must have at least `len` bytes available).
+    /// @param data      Source message bytes.
+    /// @param len       Number of bytes to copy.
+    /// @param msg_type  Ignored (FIX messages carry their own MsgType).
+    /// @return Number of bytes written (always `len`).
     [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
         std::memcpy(out, data, len);
         return len;
     }
 
-    /// Decode: find a complete FIX message in the buffer.
+    /// @brief Decode: find a complete FIX message in the buffer.
     ///
     /// Scans for "8=...\x019=NNN\x01" at the start, computes total message
     /// length from BodyLength, and verifies that "10=XXX\x01" is present.
@@ -200,7 +210,7 @@ public:
     }
 };
 
-/// Default FixFramer with 1 MB max body length (backward compatible).
+/// @brief Default FixFramer with 1 MB max body length (backward compatible).
 using FixFramer = BasicFixFramer<>;
 
 static_assert(eph::net::MessageFramer<FixFramer>,

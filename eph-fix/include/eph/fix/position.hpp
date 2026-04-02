@@ -19,7 +19,10 @@
 
 namespace eph::fix {
 
+/// @brief Internal implementation details for the position module.
 namespace detail {
+/// @brief Get or create the spdlog logger for position tracking.
+/// @return Raw pointer to the "fix.position" logger (never null after first call).
 inline spdlog::logger* position_logger() {
     static auto l = [] {
         try {
@@ -32,7 +35,9 @@ inline spdlog::logger* position_logger() {
 }
 } // namespace detail
 
-/// Snapshot of a single symbol's position state.
+/// @brief Snapshot of a single symbol's position state.
+///
+/// All fields are updated atomically on each fill by PositionTracker::on_fill().
 struct Position {
     double   qty          = 0.0;  ///< Signed quantity: positive = long, negative = short.
     double   avg_price    = 0.0;  ///< Volume-weighted average entry price.
@@ -41,25 +46,27 @@ struct Position {
     uint64_t trade_count  = 0;    ///< Number of fills processed.
 };
 
-/// Tracks per-symbol positions and computes PnL.
+/// @brief Tracks per-symbol positions and computes PnL.
 ///
 /// Thread-safety: none -- callers must serialize access externally.
 /// This is intentional: the expected use-case is single-threaded
 /// order-event processing where external locking would add latency.
 class PositionTracker {
 public:
-    /// Transparent hash for heterogeneous lookup (string_view key without allocation).
+    /// @brief Transparent hash for heterogeneous lookup (string_view key without allocation).
     struct StringHash {
-        using is_transparent = void;
+        using is_transparent = void;  ///< Enable heterogeneous lookup in unordered containers.
+        /// @brief Hash a string_view.
         size_t operator()(std::string_view sv) const noexcept {
             return std::hash<std::string_view>{}(sv);
         }
+        /// @brief Hash a std::string (via string_view for consistency).
         size_t operator()(const std::string& s) const noexcept {
             return std::hash<std::string_view>{}(s);
         }
     };
 
-    /// Record a fill.
+    /// @brief Record a fill.
     ///
     /// @param symbol  Instrument identifier.
     /// @param side    FIX Side: '1' = Buy, '2' = Sell.
@@ -170,7 +177,7 @@ public:
                      pos.qty, pos.avg_price, pos.notional, pos.realized_pnl);
     }
 
-    /// Get position for a symbol.  Returns a static zero-initialized
+    /// @brief Get position for a symbol.  Returns a static zero-initialized
     /// Position if the symbol has never been seen.
     [[nodiscard]] const Position& get(std::string_view symbol) const noexcept
     {
@@ -180,18 +187,19 @@ public:
         return it->second;
     }
 
-    /// Check if a symbol has an open (non-zero) position.
+    /// @brief Check if a symbol has an open (non-zero) position.
+    /// @param symbol  Instrument identifier to check.
     [[nodiscard]] bool has_position(std::string_view symbol) const noexcept
     {
         auto it = positions_.find(symbol);  // heterogeneous lookup — no allocation
         return it != positions_.end() && it->second.qty != 0.0;
     }
 
-    /// Access the full position map.
+    /// @brief Access the full position map.
     [[nodiscard]] const std::unordered_map<std::string, Position, StringHash, std::equal_to<>>&
     positions() const noexcept { return positions_; }
 
-    /// Total unrealized PnL across all positions given current market prices.
+    /// @brief Total unrealized PnL across all positions given current market prices.
     ///
     /// For longs:  (market_price - avg_price) * qty
     /// For shorts: (avg_price - market_price) * abs(qty)
@@ -212,7 +220,7 @@ public:
         return total;
     }
 
-    /// Sum of realized PnL across all symbols.
+    /// @brief Sum of realized PnL across all symbols.
     [[nodiscard]] double total_realized_pnl() const noexcept
     {
         double total = 0.0;
@@ -222,7 +230,7 @@ public:
         return total;
     }
 
-    /// Gross notional exposure: sum of abs(notional) across all positions.
+    /// @brief Gross notional exposure: sum of abs(notional) across all positions.
     [[nodiscard]] double net_exposure() const noexcept
     {
         double total = 0.0;
@@ -232,7 +240,7 @@ public:
         return total;
     }
 
-    /// Reset all tracked positions.
+    /// @brief Reset all tracked positions.
     void clear() noexcept
     {
         positions_.clear();

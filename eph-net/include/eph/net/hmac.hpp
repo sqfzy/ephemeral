@@ -30,6 +30,8 @@ namespace eph::net {
 
 namespace detail {
 
+/// @brief Lazily-initialized logger for the HMAC subsystem.
+/// @return Pointer to the "net.hmac" spdlog logger.
 inline spdlog::logger* hmac_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.hmac");
@@ -45,7 +47,9 @@ inline spdlog::logger* hmac_logger() {
 // Hex encoding
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Encode bytes as lowercase hex string.
+/// @brief Encode bytes as lowercase hex string.
+/// @param bytes  Input byte span to encode.
+/// @return Lowercase hexadecimal string (2 chars per byte).
 [[nodiscard]] inline std::string to_hex(std::span<const uint8_t> bytes) noexcept {
     static constexpr char kHexChars[] = "0123456789abcdef";
     std::string result;
@@ -61,8 +65,12 @@ inline spdlog::logger* hmac_logger() {
 // Base64 encoding
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Encode bytes as base64 string (for OKX API which uses base64 signatures).
+/// @brief Encode bytes as base64 string (for OKX API which uses base64 signatures).
+///
 /// Uses EVP_EncodeBlock from aws-lc for correctness.
+///
+/// @param bytes  Input byte span to encode.
+/// @return Base64-encoded string, or error string on EVP failure.
 [[nodiscard]] inline std::expected<std::string, std::string>
 to_base64(std::span<const uint8_t> bytes) noexcept {
     if (bytes.empty()) {
@@ -94,8 +102,13 @@ to_base64(std::span<const uint8_t> bytes) noexcept {
 // HMAC-SHA256
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compute HMAC-SHA256 of a message using a secret key.
+/// @brief Compute HMAC-SHA256 of a message using a secret key.
+///
 /// Returns the raw 32-byte digest.
+///
+/// @param key      The HMAC secret key (e.g., exchange API secret).
+/// @param message  The message to sign.
+/// @return 32-byte digest array, or error string on OpenSSL failure.
 [[nodiscard]] inline std::expected<std::array<uint8_t, 32>, std::string>
 hmac_sha256(std::string_view key, std::string_view message) noexcept {
     std::array<uint8_t, 32> digest{};
@@ -136,8 +149,13 @@ hmac_sha256(std::string_view key, std::string_view message) noexcept {
     return digest;
 }
 
-/// Compute HMAC-SHA256 and return as lowercase hex string.
+/// @brief Compute HMAC-SHA256 and return as lowercase hex string.
+///
 /// This is the format used by Binance and Bybit for request signatures.
+///
+/// @param key      The HMAC secret key.
+/// @param message  The message to sign.
+/// @return 64-character lowercase hex string, or error string on failure.
 [[nodiscard]] inline std::expected<std::string, std::string>
 hmac_sha256_hex(std::string_view key, std::string_view message) noexcept {
     auto digest = hmac_sha256(key, message);
@@ -151,7 +169,8 @@ hmac_sha256_hex(std::string_view key, std::string_view message) noexcept {
 // Constant-time HMAC verification
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Verify an HMAC-SHA256 signature in constant time.
+/// @brief Verify an HMAC-SHA256 signature in constant time.
+///
 /// Use this instead of comparing hmac_sha256() output with == or memcmp,
 /// which are vulnerable to timing side-channel attacks.
 ///
@@ -169,11 +188,11 @@ hmac_verify(std::string_view key, std::string_view message,
     return CRYPTO_memcmp(computed->data(), expected.data(), 32) == 0;
 }
 
-/// Verify an HMAC-SHA256 hex signature in constant time.
-/// @param key              The HMAC secret key
-/// @param message          The message that was signed
-/// @param expected_hex     The expected hex-encoded HMAC signature
-/// @return true if the HMAC matches, false otherwise
+/// @brief Verify an HMAC-SHA256 hex signature in constant time.
+/// @param key              The HMAC secret key.
+/// @param message          The message that was signed.
+/// @param expected_hex     The expected hex-encoded HMAC signature (64 chars).
+/// @return true if the HMAC matches, false otherwise (including on computation error).
 [[nodiscard]] inline bool
 hmac_verify_hex(std::string_view key, std::string_view message,
                 std::string_view expected_hex) noexcept {

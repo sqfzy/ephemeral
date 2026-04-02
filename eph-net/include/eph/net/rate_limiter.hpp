@@ -25,6 +25,8 @@
 namespace eph::net {
 
 namespace detail {
+/// @brief Lazily-initialized logger for the RateLimiter subsystem.
+/// @return Pointer to the "net.rate_limiter" spdlog logger.
 inline spdlog::logger* rate_limiter_logger() {
     static auto l = [] {
         try {
@@ -59,7 +61,8 @@ public:
                      rate_per_sec, burst, rate_per_ns_);
     }
 
-    /// Try to acquire @p n tokens without blocking.
+    /// @brief Try to acquire @p n tokens without blocking.
+    /// @param n  Number of tokens to consume (default 1).
     /// @return true if tokens were consumed, false if insufficient tokens.
     [[nodiscard]] bool try_acquire(std::size_t n = 1) noexcept {
         std::lock_guard<std::mutex> lock(mu_);
@@ -78,10 +81,14 @@ public:
         return false;
     }
 
-    /// Acquire @p n tokens, blocking (via yield) until available.
+    /// @brief Acquire @p n tokens, blocking (via yield) until available.
     ///
     /// Intended for convenience paths where callers prefer blocking over
     /// retry logic. Uses yield() to avoid busy-spinning.
+    ///
+    /// @param n  Number of tokens to consume (default 1).
+    /// @warning This method spins with std::this_thread::yield(). Do not call
+    ///          on hot paths -- prefer try_acquire() with explicit backoff.
     void acquire(std::size_t n = 1) noexcept {
         SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(),
                      "acquire({}) blocking until tokens available", n);
@@ -91,18 +98,22 @@ public:
         SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(), "acquire({}) completed", n);
     }
 
-    /// Approximate number of currently available tokens.
+    /// @brief Approximate number of currently available tokens.
     ///
-    /// Performs a refill before reading — the value is approximate because
+    /// Performs a refill before reading -- the value is approximate because
     /// another thread may consume tokens between the read and the caller
     /// acting on the result. Non-const because refill mutates internal state.
+    ///
+    /// @return Fractional token count (>= 0.0, <= burst).
     [[nodiscard]] double available() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
         refill_locked();
         return tokens_;
     }
 
-    /// Reset token count to full burst capacity.
+    /// @brief Reset token count to full burst capacity.
+    ///
+    /// Refill timestamp is also reset, so the next refill interval starts now.
     void reset() noexcept {
         std::lock_guard<std::mutex> lock(mu_);
         tokens_ = burst_;

@@ -15,8 +15,10 @@
 
 namespace eph::net {
 
-/// TCP connection states (client-side only — this library does not implement server accept).
-/// Follows the RFC 793 active-open path.
+/// @brief TCP connection states (client-side only).
+///
+/// This library does not implement server accept. States follow the
+/// RFC 793 active-open path for client-initiated connections.
 enum class TcpState : uint8_t {
     Closed,
     SynSent,
@@ -29,6 +31,9 @@ enum class TcpState : uint8_t {
     LastAck,
 };
 
+/// @brief Return the RFC 793 name for a TCP state as a C string.
+/// @param s  The TcpState value to convert.
+/// @return A null-terminated string (e.g., "ESTABLISHED", "SYN_SENT").
 constexpr const char* tcp_state_name(TcpState s) noexcept {
     switch (s) {
         case TcpState::Closed:      return "CLOSED";
@@ -44,23 +49,25 @@ constexpr const char* tcp_state_name(TcpState s) noexcept {
     return "UNKNOWN";
 }
 
-/// Concept for a TCP transport backend.
+/// @brief Concept for a TCP transport backend.
 ///
 /// Any type satisfying this concept can be used with TlsSession and Transport.
 /// The key design constraint: all methods must be defined in headers so that
 /// template instantiation can fully inline them (zero runtime overhead).
 ///
 /// Required methods:
-///   - connect(timeout)  → establish the TCP connection
-///   - send(data, len)        → send raw bytes
-///   - poll_rx(callback)      → poll for incoming data, invoke callback per payload
-///   - last_rx_burst_tsc()    → TSC captured right after the lowest-level receive
+///   - connect(timeout)       -- establish the TCP connection
+///   - send(data, len)        -- send raw bytes
+///   - poll_rx(callback)      -- poll for incoming data, invoke callback per payload
+///   - last_rx_burst_tsc()    -- TSC captured right after the lowest-level receive
 ///                               (rte_eth_rx_burst / recvmsg) returns data
-///   - close()                → graceful close (FIN)
-///   - reset()                → forced close (RST)
-///   - mss()                  → maximum segment size
-///   - state()                → current TCP state
-///   - is_established()       → convenience check
+///   - close()                -- graceful close (FIN)
+///   - reset()                -- forced close (RST)
+///   - mss()                  -- maximum segment size
+///   - state()                -- current TCP state
+///   - is_established()       -- convenience check
+///
+/// @tparam T  The TCP transport backend type to check.
 template <typename T>
 concept TcpTransport = requires(T& t,
     const void* data, size_t len,
@@ -98,8 +105,15 @@ concept TcpTransport = requires(T& t,
 // std::formatter specialization for TcpState
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief std::formatter specialization for TcpState.
+///
+/// Formats TcpState values using their RFC 793 names (e.g., "ESTABLISHED").
 template <>
 struct std::formatter<eph::net::TcpState> : std::formatter<const char*> {
+    /// @brief Format the TcpState value as its RFC 793 name.
+    /// @param s    The TcpState value to format.
+    /// @param ctx  The format context to write into.
+    /// @return Iterator past the end of the formatted output.
     auto format(eph::net::TcpState s, auto& ctx) const {
         return std::formatter<const char*>::format(
             eph::net::tcp_state_name(s), ctx);

@@ -26,7 +26,10 @@
 
 namespace eph::book {
 
+/// @cond INTERNAL
 namespace detail {
+/// @brief Lazily-constructed spdlog logger for ItchBookBuilder diagnostics.
+/// @return Pointer to the "book.itch_adapter" logger instance.
 inline spdlog::logger* itch_adapter_logger() {
     static auto l = [] {
         try {
@@ -38,30 +41,62 @@ inline spdlog::logger* itch_adapter_logger() {
     return l.get();
 }
 } // namespace detail
+/// @endcond
 
 // ---------------------------------------------------------------------------
 // Order — per-order state tracked by the adapter
 // ---------------------------------------------------------------------------
 
+/// @brief Per-order state tracked by ItchBookBuilder.
+///
+/// Each live order in the ITCH feed is stored in an internal hash map keyed
+/// by its 64-bit order reference number.  When the order is executed,
+/// cancelled, deleted, or replaced, this record is updated and the
+/// corresponding price level in the ArrayBook is adjusted.
 struct Order {
-    double price;
-    double remaining_qty;
-    char   side;  // 'B' = buy, 'S' = sell
+    double price;          ///< Resting price of this order.
+    double remaining_qty;  ///< Remaining (unexecuted, uncancelled) quantity.
+    char   side;           ///< Side indicator: `'B'` = buy, `'S'` = sell.
 };
 
 // ---------------------------------------------------------------------------
 // ItchBookBuilder — ITCH-to-L2 book adapter
 // ---------------------------------------------------------------------------
 
-/// Converts order-level ITCH 5.0 events into aggregated price-level updates
-/// for an ArrayBook.
+/// @brief Converts order-level ITCH 5.0 events into aggregated L2 price levels.
+///
+/// Maintains an internal order map (`order_ref -> Order`) and per-price
+/// quantity accumulators.  When an ITCH message modifies an order, the
+/// builder adjusts the aggregated quantity at the affected price and pushes
+/// the updated level into the underlying ArrayBook.
+///
+/// Supported ITCH message types:
+///   - `'A'` AddOrder
+///   - `'F'` AddOrderMPID
+///   - `'E'` OrderExecuted
+///   - `'C'` OrderExecutedWithPrice
+///   - `'X'` OrderCancel
+///   - `'D'` OrderDelete
+///   - `'U'` OrderReplace
+///
+/// All other message types are silently ignored.
 ///
 /// @tparam MaxLevels  Maximum price levels per side in the underlying ArrayBook.
+///                    Defaults to 20.
+///
+/// @note  Executed / cancelled shares are clamped to the order's remaining
+///        quantity to guard against exchange over-execution race conditions.
 template <std::size_t MaxLevels = 20>
 class ItchBookBuilder {
 public:
-    /// Process an ITCH message and update the book.
-    /// Returns true if the book was modified.
+    /// @brief Process a single ITCH message and update the book accordingly.
+    ///
+    /// Dispatches to the appropriate handler based on `msg.msg_type`.
+    /// Unrecognized message types are silently ignored (returns `false`).
+    ///
+    /// @param msg  A parsed ITCH message view (type byte + raw data pointer).
+    /// @return `true` if the book was modified, `false` if the message was
+    ///         ignored or the referenced order was not found.
     bool process(const eph::itch::MessageView& msg) noexcept {
         switch (msg.msg_type) {
         case eph::itch::kAddOrder:     return handle_add_order(msg.data);
@@ -77,16 +112,22 @@ public:
         }
     }
 
-    /// Get the current book state (const).
+    /// @brief Get the current book state (const).
+    /// @return Const reference to the underlying ArrayBook.
     [[nodiscard]] const ArrayBook<MaxLevels>& book() const noexcept { return book_; }
 
-    /// Get the current book state (mutable).
+    /// @brief Get the current book state (mutable).
+    /// @return Mutable reference to the underlying ArrayBook.
     [[nodiscard]] ArrayBook<MaxLevels>& book() noexcept { return book_; }
 
-    /// Number of tracked live orders.
+    /// @brief Number of live orders currently tracked in the internal order map.
+    /// @return Count of orders that have been added but not fully executed,
+    ///         cancelled, or deleted.
     [[nodiscard]] std::size_t order_count() const noexcept { return orders_.size(); }
 
-    /// Clear all orders and the book.
+    /// @brief Clear all tracked orders, quantity accumulators, and the book.
+    ///
+    /// After this call, order_count() == 0 and book().level_count() == 0.
     void clear() noexcept {
         orders_.clear();
         bid_qty_.clear();

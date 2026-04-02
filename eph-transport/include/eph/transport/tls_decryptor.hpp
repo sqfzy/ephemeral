@@ -22,6 +22,7 @@
 namespace eph::net {
 
 namespace detail {
+/// Lazily-initialized logger for TLS decryption operations.
 inline const std::shared_ptr<spdlog::logger>& tls_dec_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls_dec");
@@ -38,6 +39,14 @@ inline const std::shared_ptr<spdlog::logger>& tls_dec_logger() {
 /// Created from TlsHotState after TLS 1.3 handshake key export.
 class TlsDecryptor {
 public:
+    /// Create a TlsDecryptor from the read-direction key material in a TlsHotState.
+    ///
+    /// Initializes the AEAD context with the appropriate AES-GCM algorithm
+    /// (128 or 256 bit) and copies the read IV and sequence number.
+    ///
+    /// @param state    TLS hot state containing read key, IV, and sequence
+    /// @param key_len  AES key length: 16 (AES-128) or 32 (AES-256, default)
+    /// @return Initialized TlsDecryptor, or error string on failure
     [[nodiscard]] static std::expected<TlsDecryptor, std::string>
     create(const TlsHotState& state, size_t key_len = tls_const::kAes256KeyLen) {
         TlsDecryptor dec;
@@ -182,6 +191,8 @@ public:
         return true;
     }
 
+    /// Current read sequence number (monotonically increasing).
+    /// @return Number of records decrypted so far
     [[nodiscard]] uint64_t read_seq() const noexcept { return seq_; }
 
 private:

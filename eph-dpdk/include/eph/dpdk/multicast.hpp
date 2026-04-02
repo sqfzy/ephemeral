@@ -62,8 +62,11 @@ inline spdlog::logger* multicast_logger() {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Maximum multicast groups a single MulticastReceiver can manage.
-/// Fixed array avoids heap allocation on the hot path.
+/// @brief Maximum multicast groups a single MulticastReceiver can manage.
+///
+/// Fixed-size array avoids heap allocation on the RX hot path. Increase this
+/// if subscribing to more than 8 concurrent feeds (rare in practice — most
+/// exchange feeds use 2-4 groups).
 inline constexpr size_t kMaxMulticastGroups = 8;
 
 /// UDP header length (RFC 768).
@@ -207,11 +210,15 @@ struct ParsedUdpPacket {
 // Multicast group descriptor
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Describes a single multicast group to join.
+/// @brief Describes a single multicast group to join.
+///
+/// Specifies the group IP, UDP port, and an optional source-specific multicast
+/// (SSM) filter. Use validate() to check parameters before passing to
+/// MulticastReceiver::join_group().
 struct MulticastGroup {
-    uint32_t group_ip   = 0;   ///< Multicast group IPv4 (host byte order)
-    uint16_t group_port = 0;   ///< UDP port to listen on (host byte order)
-    uint32_t source_ip  = 0;   ///< Source-specific filter (0 = any, for SSM)
+    uint32_t group_ip   = 0;   ///< Multicast group IPv4 address (host byte order, must be in 224.0.0.0/4)
+    uint16_t group_port = 0;   ///< UDP destination port to listen on (host byte order)
+    uint32_t source_ip  = 0;   ///< Source-specific multicast filter (0 = accept any source)
 
     bool operator==(const MulticastGroup&) const = default;
 
@@ -228,12 +235,15 @@ struct MulticastGroup {
 // MulticastConfig
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Configuration for the MulticastReceiver.
+/// @brief Configuration for the MulticastReceiver.
+///
+/// Controls which NIC port/queue to poll, optional CPU pinning for the
+/// RX thread, and the burst size per poll cycle.
 struct MulticastConfig {
-    uint16_t port_id      = 0;       ///< DPDK port ID
-    uint16_t rx_queue_id  = 0;       ///< RX queue to poll
+    uint16_t port_id      = 0;       ///< DPDK port ID to poll
+    uint16_t rx_queue_id  = 0;       ///< RX queue index on the port
     int      rx_cpu       = -1;      ///< CPU affinity for RX thread (-1 = no pin)
-    uint16_t rx_burst     = 32;      ///< RX burst size (packets per poll)
+    uint16_t rx_burst     = 32;      ///< Max packets per rte_eth_rx_burst call
 
     /// Validate configuration parameters.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
@@ -523,10 +533,12 @@ public:
     // Accessors
     // ─────────────────────────────────────────────────────────────────────
 
+    /// @brief Check if the RX polling thread is currently running.
     [[nodiscard]] bool is_running() const noexcept {
         return running_.load(std::memory_order_acquire);
     }
 
+    /// @brief Total number of group slots used (including inactive/left groups).
     [[nodiscard]] size_t group_count() const noexcept {
         return group_count_;
     }
@@ -549,10 +561,12 @@ public:
         return groups_[i];
     }
 
+    /// @brief Total received packets across all groups (approximate, relaxed ordering).
     [[nodiscard]] uint64_t total_rx_packets() const noexcept {
         return total_rx_packets_.load(std::memory_order_relaxed);
     }
 
+    /// @brief Access the receiver's configuration.
     [[nodiscard]] const MulticastConfig& config() const noexcept {
         return config_;
     }
