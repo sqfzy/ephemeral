@@ -1,14 +1,16 @@
 /// @file bench_market.cpp
 /// Socket backend: single-connection multi-symbol market data benchmark.
 ///
-/// Connects to the in-process mock WS server via kernel TCP and measures
-/// pipeline latency (mock sendmsg TSC -> app on_message TSC) using
-/// HdrHistogram.
+/// Uses DirectTransport (no threads) — app thread polls directly.
+/// Requires external bench_mock_server running on server-ip.
 ///
-/// Usage:
-///   bench_market [--server-ip IP] [--port PORT] [--symbols SYM1,SYM2]
-///                       [--duration SEC] [--tick-us US]
-///                       [--rx-cpu N] [--tx-cpu N]
+/// Usage: bench_market --server-ip IP [--port PORT] [--duration SEC]
+///                     [--symbols SYM1,SYM2] [--poll-cpu N]
+
+#include <csignal>
+#include <string>
+
+#include <spdlog/spdlog.h>
 
 #include "bench_impl.hpp"
 #include "eph/net/socket_transport.hpp"
@@ -19,44 +21,25 @@ int main(int argc, char** argv) {
     signal(SIGTERM, sig);
 
     bench::BenchConfig cfg;
-
-    // Parse command line args
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--server-ip" && i + 1 < argc) {
-            cfg.server_ip = argv[++i];
-        } else if (arg == "--port" && i + 1 < argc) {
-            cfg.server_port = static_cast<uint16_t>(std::stoi(argv[++i]));
-        } else if (arg == "--symbols" && i + 1 < argc) {
-            cfg.symbols = bench::split(argv[++i], ',');
-        } else if (arg == "--duration" && i + 1 < argc) {
-            cfg.duration = std::chrono::seconds{std::stoi(argv[++i])};
-        } else if (arg == "--tick-us" && i + 1 < argc) {
-            cfg.tick_interval = std::chrono::microseconds{std::stoi(argv[++i])};
-        } else if (arg == "--rx-cpu" && i + 1 < argc) {
-            cfg.rx_cpu = std::stoi(argv[++i]);
-        } else if (arg == "--tx-cpu" && i + 1 < argc) {
-            cfg.tx_cpu = std::stoi(argv[++i]);
-        }
+        if (arg == "--server-ip" && i + 1 < argc) cfg.server_ip = argv[++i];
+        else if (arg == "--port" && i + 1 < argc) cfg.server_port = static_cast<uint16_t>(std::stoi(argv[++i]));
+        else if (arg == "--symbols" && i + 1 < argc) cfg.symbols = bench::split(argv[++i], ',');
+        else if (arg == "--duration" && i + 1 < argc) cfg.duration = std::chrono::seconds{std::stoi(argv[++i])};
+        else if (arg == "--poll-cpu" && i + 1 < argc) cfg.poll_cpu = std::stoi(argv[++i]);
     }
 
-    // Initialize TSC (calibrate CPU frequency)
     if (!eph::utils::TSC::init()) {
-        spdlog::error("TSC initialization failed — cannot measure latency");
+        spdlog::error("TSC calibration failed");
         return 1;
     }
 
     spdlog::info("bench_market (socket): {}:{}, symbols={}, duration={}s",
-                 cfg.server_ip, cfg.server_port, cfg.symbols.size(),
-                 cfg.duration.count());
+                 cfg.server_ip, cfg.server_port, cfg.symbols.size(), cfg.duration.count());
 
-    auto tcp_factory = [&]()
-        -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
-        eph::net::SocketConfig sc{
-            .host = cfg.server_ip,
-            .port = cfg.server_port,
-            .tcp_nodelay = true,
-        };
+    auto tcp_factory = [&]() -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
+        eph::net::SocketConfig sc{.host = cfg.server_ip, .port = cfg.server_port, .tcp_nodelay = true};
         auto tcp = std::make_unique<eph::net::SocketTransport>(sc);
         auto r = tcp->connect(std::chrono::milliseconds{3000});
         if (!r) return std::unexpected(r.error());
