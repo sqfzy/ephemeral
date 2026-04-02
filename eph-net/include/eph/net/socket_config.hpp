@@ -52,6 +52,7 @@ struct SocketConfig {
     int         keepalive_interval = 10; // Seconds between probes (TCP_KEEPINTVL)
     int         keepalive_count = 3;     // Probes before declaring dead (TCP_KEEPCNT)
     int         send_timeout_ms = 1000;  // Timeout for individual send() poll waits (ms)
+    std::string bind_device{};  // SO_BINDTODEVICE: force traffic through this NIC (e.g. "ens35"). Requires CAP_NET_RAW.
 
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {

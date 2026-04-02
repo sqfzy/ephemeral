@@ -1,11 +1,12 @@
 /// @file bench_market_dpdk.cpp
 /// DPDK backend: single-connection multi-symbol market data benchmark.
 ///
-/// Uses DirectTransport (no threads) — app thread polls directly.
-/// Requires external bench_mock_server running on server-ip (NIC-A).
+/// Uses DirectTransport (no threads). Mock server runs in-process on NIC-A
+/// (kernel TCP). DPDK receives via NIC-B PMD. Traffic goes through real NIC.
 ///
 /// Usage: bench_market_dpdk [EAL args] -- --server-ip IP --local-ip IP
-///            --gateway-ip IP [--port PORT] [--duration SEC] [--poll-cpu N]
+///            --gateway-ip IP [--port PORT] [--duration SEC]
+///            [--tick-us US] [--poll-cpu N] [--mock-cpu N]
 
 #include <csignal>
 #include <string>
@@ -37,19 +38,13 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Initialize DPDK EAL
     spdlog::info("Initializing DPDK EAL...");
     auto eal = eph::dpdk::EalGuard::init(argc, argv);
-    if (!eal) {
-        spdlog::error("EAL init failed: {}", eal.error());
-        return 1;
-    }
+    if (!eal) { spdlog::error("EAL init failed: {}", eal.error()); return 1; }
 
-    // Parse app args
     bench::BenchConfig cfg;
     std::string local_ip, gateway_ip;
-    uint16_t dpdk_port = 0;
-    uint16_t local_port = 0;
+    uint16_t dpdk_port = 0, local_port = 0;
 
     for (int i = 0; i < app_argc; ++i) {
         std::string arg = app_argv[i];
@@ -61,7 +56,9 @@ int main(int argc, char** argv) {
         else if (arg == "--local-port" && i + 1 < app_argc) local_port = static_cast<uint16_t>(std::stoi(app_argv[++i]));
         else if (arg == "--symbols" && i + 1 < app_argc) cfg.symbols = bench::split(app_argv[++i], ',');
         else if (arg == "--duration" && i + 1 < app_argc) cfg.duration = std::chrono::seconds{std::stoi(app_argv[++i])};
+        else if (arg == "--tick-us" && i + 1 < app_argc) cfg.tick_interval = std::chrono::microseconds{std::stoi(app_argv[++i])};
         else if (arg == "--poll-cpu" && i + 1 < app_argc) cfg.poll_cpu = std::stoi(app_argv[++i]);
+        else if (arg == "--mock-cpu" && i + 1 < app_argc) cfg.mock_cpu = std::stoi(app_argv[++i]);
     }
 
     if (local_ip.empty() || gateway_ip.empty()) {
@@ -72,7 +69,12 @@ int main(int argc, char** argv) {
     spdlog::info("bench_market_dpdk: server={}:{}, local={}, gateway={}, duration={}s",
                  cfg.server_ip, cfg.server_port, local_ip, gateway_ip, cfg.duration.count());
 
-    // TransportConfig (same as socket bench)
+    // Start mock server (in-process, on NIC-A via kernel TCP)
+    auto mock = bench::start_mock(cfg, /*order_mode=*/false);
+
+    // DPDK connect
+    using BenchTransport = eph::net::DirectTransport<eph::dpdk::TcpSession<>, eph::net::WsFramer, 4096>;
+
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
     tc.remote_port = cfg.server_port;
@@ -82,7 +84,6 @@ int main(int argc, char** argv) {
     tc.max_reconnect_attempts = 0;
     tc.skip_utf8_validation = true;
 
-    // Latency measurement via on_message (same as socket bench)
     eph::utils::HdrHistogram latency_hist{10, 1'000'000'000ULL, 3};
     uint64_t msg_count = 0;
 
@@ -98,30 +99,22 @@ int main(int argc, char** argv) {
         ++msg_count;
     };
 
-    // DPDK connect
-    using BenchTransport = eph::net::DirectTransport<eph::dpdk::TcpSession<>, eph::net::WsFramer, 4096>;
-
     eph::dpdk::DpdkEndpoint ep{.local_ip = local_ip, .gateway_ip = gateway_ip};
-    eph::dpdk::ConnectorOptions opts{
-        .platform = {.port_id = dpdk_port},
-        .local_port = local_port,
-    };
+    eph::dpdk::ConnectorOptions opts{.platform = {.port_id = dpdk_port}, .local_port = local_port};
 
     auto conn = eph::dpdk::connect<BenchTransport>(ep, tc, opts);
     if (!conn) {
         spdlog::error("DPDK connect failed: {}", conn.error());
+        bench::stop_mock(mock);
         return 1;
     }
-    spdlog::info("Connected via DPDK to {}:{}", cfg.server_ip, cfg.server_port);
 
     auto& transport = *conn->transport;
-
     bench::pin_or_die(cfg.poll_cpu, "bench-poll");
 
     spdlog::info("Market bench (DPDK) started: {} symbols, duration={}s",
                  cfg.symbols.size(), cfg.duration.count());
 
-    // Poll loop — identical to socket bench logic
     auto start = std::chrono::steady_clock::now();
     while (g_running.load(std::memory_order_acquire) && transport.is_running()) {
         if (std::chrono::steady_clock::now() - start >= cfg.duration) break;
@@ -129,6 +122,7 @@ int main(int argc, char** argv) {
     }
 
     transport.stop();
+    bench::stop_mock(mock);
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();

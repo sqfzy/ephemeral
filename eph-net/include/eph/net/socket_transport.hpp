@@ -205,6 +205,21 @@ public:
             }
         }
 
+        // Bind to specific NIC (SO_BINDTODEVICE) — forces traffic through
+        // that interface, bypassing kernel loopback optimization.
+        if (!config_.bind_device.empty()) {
+            if (::setsockopt(fd_, SOL_SOCKET, SO_BINDTODEVICE,
+                             config_.bind_device.c_str(),
+                             static_cast<socklen_t>(config_.bind_device.size())) != 0) {
+                auto err = std::format("SO_BINDTODEVICE({}) failed: {} "
+                    "(needs CAP_NET_RAW or root)",
+                    config_.bind_device, strerror(errno));
+                SPDLOG_LOGGER_ERROR(log, "{}", err);
+                return std::unexpected(err);
+            }
+            SPDLOG_LOGGER_INFO(log, "Bound to device: {}", config_.bind_device);
+        }
+
         // Enable TCP keepalive probes
         if (config_.tcp_keepalive) {
             int flag = 1;

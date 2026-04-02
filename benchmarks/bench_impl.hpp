@@ -1,11 +1,10 @@
 /// @file bench_impl.hpp
 /// Shared benchmark logic parameterized by TcpTransport backend.
 ///
-/// Both scenarios use DirectTransport (no threads, no SPSC queues) for
-/// the most accurate latency measurement. The app thread calls poll()
-/// directly: TCP rx → WS decode → on_message callback.
-///
-/// Requires an external bench_mock_server to be running on server_ip:port.
+/// Both scenarios use DirectTransport (no threads, no SPSC queues).
+/// Mock WS server runs as an in-process thread on NIC-A.
+/// Socket bench uses SO_BINDTODEVICE to force traffic through NIC-B
+/// (no loopback). DPDK bench uses NIC-B via DPDK PMD.
 
 #pragma once
 
@@ -13,11 +12,13 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <expected>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -29,27 +30,20 @@
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 #include "bench_common.hpp"
+#include "mock/mock_ws_server.hpp"
 
 namespace bench {
 
 struct BenchConfig {
-    std::string server_ip = "10.0.0.1";
+    std::string server_ip = "10.0.0.1";   // NIC-A IP (mock server binds here)
     uint16_t server_port = 9999;
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     std::chrono::seconds duration{10};
+    std::chrono::microseconds tick_interval{100};
     std::chrono::microseconds order_interval{1000};
-    int poll_cpu = 2;   // CPU core for poll loop (default: core 2)
+    int poll_cpu = 2;    // CPU core for bench poll loop
+    int mock_cpu = 4;    // CPU core for mock server thread
 };
-
-/// Pin current thread to poll_cpu. Exits on failure.
-inline void pin_or_die(int cpu, const char* name) {
-    auto r = eph::utils::set_thread_affinity(cpu, name);
-    if (!r) {
-        spdlog::error("Failed to pin {} to core {}: {}", name, cpu, r.error());
-        std::exit(1);
-    }
-    spdlog::info("Pinned {} to core {}", name, cpu);
-}
 
 /// Parse "T" field (raw TSC cycles) from JSON.
 inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
@@ -66,6 +60,47 @@ inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
     return val;
 }
 
+/// Pin current thread to cpu. Exits process on failure.
+inline void pin_or_die(int cpu, const char* name) {
+    auto r = eph::utils::set_thread_affinity(cpu, name);
+    if (!r) {
+        spdlog::error("Failed to pin {} to core {}: {}", name, cpu, r.error());
+        std::exit(1);
+    }
+    spdlog::info("Pinned {} to core {}", name, cpu);
+}
+
+/// Start in-process mock WS server on a dedicated pinned thread.
+/// Returns the thread handle + running flag. Caller must join on shutdown.
+struct MockHandle {
+    std::thread thread;
+    std::unique_ptr<std::atomic<bool>> running = std::make_unique<std::atomic<bool>>(true);
+};
+
+inline MockHandle start_mock(const BenchConfig& cfg, bool order_mode) {
+    MockHandle h;
+    mock::MockServerConfig mock_cfg{
+        .bind_ip = cfg.server_ip,
+        .port = cfg.server_port,
+        .symbols = cfg.symbols,
+        .tick_interval = cfg.tick_interval,
+        .order_mode = order_mode,
+    };
+    int mock_cpu = cfg.mock_cpu;
+    h.thread = std::thread([mock_cfg, mock_cpu, &running = *h.running] {
+        pin_or_die(mock_cpu, "mock-server");
+        mock::run_mock_ws_server(mock_cfg, running);
+    });
+    // Wait for mock to be listening
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    return h;
+}
+
+inline void stop_mock(MockHandle& h) {
+    *h.running = false;
+    if (h.thread.joinable()) h.thread.join();
+}
+
 // ── Market Data Benchmark ──────────────────────────────────────────────────
 
 /// Single-connection multi-symbol market data latency benchmark.
@@ -77,6 +112,9 @@ void run_market_bench(
     const BenchConfig& cfg)
 {
     using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
+
+    // Start mock server
+    auto mock = start_mock(cfg, /*order_mode=*/false);
 
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
@@ -105,6 +143,7 @@ void run_market_bench(
     auto result = Transport::create(std::move(tcp_factory), tc);
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
+        stop_mock(mock);
         return;
     }
     auto& transport = *result;
@@ -115,14 +154,13 @@ void run_market_bench(
                  cfg.symbols.size(), cfg.duration.count());
 
     auto start = std::chrono::steady_clock::now();
-    while (g_running.load(std::memory_order_acquire)
-           && transport->is_running()) {
+    while (g_running.load(std::memory_order_acquire) && transport->is_running()) {
         if (std::chrono::steady_clock::now() - start >= cfg.duration) break;
-        auto r = transport->poll();
-        if (!r && !transport->is_running()) break;
+        transport->poll();
     }
 
     transport->stop();
+    stop_mock(mock);
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
@@ -138,15 +176,14 @@ void run_market_bench(
 
 /// Order send + ExecutionReport response RTT benchmark.
 /// Uses DirectTransport — app thread alternates between send and poll.
-/// Measures:
-///   - Order RTT:        app send() TSC → app recv(executionReport) TSC
-///   - Response Latency: mock sendmsg() TSC → app on_message TSC
 template <eph::net::TcpTransport TcpImpl>
 void run_order_rtt_bench(
     std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
     const BenchConfig& cfg)
 {
     using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
+
+    auto mock = start_mock(cfg, /*order_mode=*/true);
 
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
@@ -159,14 +196,12 @@ void run_order_rtt_bench(
 
     eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
     eph::utils::HdrHistogram resp_latency_hist{10, 1'000'000'000ULL, 3};
-    uint64_t last_order_tsc = 0;  // single-threaded, no atomic needed
-    uint64_t order_count = 0;
-    uint64_t response_count = 0;
+    uint64_t last_order_tsc = 0;
+    uint64_t order_count = 0, response_count = 0;
 
     tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
         std::string_view json(reinterpret_cast<const char*>(data), len);
         if (json.find("\"e\":\"executionReport\"") != std::string_view::npos) {
-            // Order RTT
             if (last_order_tsc > 0) {
                 uint64_t now = eph::utils::TSC::now();
                 if (now > last_order_tsc) {
@@ -174,7 +209,6 @@ void run_order_rtt_bench(
                     if (ns) rtt_hist.record(static_cast<uint64_t>(*ns));
                 }
             }
-            // Response latency (mock "T" → now)
             uint64_t t_mock = parse_tsc_field(data, len);
             if (t_mock > 0) {
                 uint64_t now = eph::utils::TSC::now();
@@ -190,6 +224,7 @@ void run_order_rtt_bench(
     auto result = Transport::create(std::move(tcp_factory), tc);
     if (!result) {
         spdlog::error("Transport create failed: {}", result.error().message());
+        stop_mock(mock);
         return;
     }
     auto& transport = *result;
@@ -202,12 +237,10 @@ void run_order_rtt_bench(
     auto start = std::chrono::steady_clock::now();
     auto next_order = start;
 
-    while (g_running.load(std::memory_order_acquire)
-           && transport->is_running()) {
+    while (g_running.load(std::memory_order_acquire) && transport->is_running()) {
         auto now_tp = std::chrono::steady_clock::now();
         if (now_tp - start >= cfg.duration) break;
 
-        // Send order at configured interval
         if (now_tp >= next_order) {
             last_order_tsc = eph::utils::TSC::now();
             char buf[256];
@@ -221,17 +254,17 @@ void run_order_rtt_bench(
             next_order += cfg.order_interval;
         }
 
-        // Poll for incoming data (market data + order responses)
         transport->poll();
     }
 
     transport->stop();
+    stop_mock(mock);
 
     auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start).count();
 
     spdlog::info("=== Order RTT Benchmark Results ===");
-    spdlog::info("Duration: {}s, Orders sent: {}, Responses: {}, Rate: {} order/s",
+    spdlog::info("Duration: {}s, Orders: {}, Responses: {}, Rate: {} order/s",
                  duration_s, order_count, response_count,
                  duration_s > 0 ? order_count / static_cast<uint64_t>(duration_s) : 0);
     print_latency("Order RTT (send -> response recv)", hdr_to_stats(rtt_hist));
