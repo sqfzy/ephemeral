@@ -69,7 +69,10 @@ namespace eph::net {
 #define EPH_ENABLE_TIMESTAMPS 0
 #endif
 
+#ifndef EPH_NET_ENABLE_TIMESTAMPS_DEFINED
+#define EPH_NET_ENABLE_TIMESTAMPS_DEFINED
 inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+#endif
 
 // ---------------------------------------------------------------------------
 // Transport -- public API (threaded variant)
