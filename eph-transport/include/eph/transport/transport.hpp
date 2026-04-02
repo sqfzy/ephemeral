@@ -46,6 +46,8 @@
 #include "eph/core/framer_concept.hpp"
 #include "eph/transport/http.hpp"
 #include "eph/core/tcp_concept.hpp"
+#include "eph/transport/tls_decryptor.hpp"
+#include "eph/transport/tls_encryptor.hpp"
 #include "eph/transport/tls_record.hpp"
 #include "eph/transport/tls_session.hpp"
 #include "eph/transport/transport_types.hpp"
@@ -69,6 +71,19 @@ namespace eph::net {
 #endif
 
 inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+
+/// Transport operating mode — controls threading and queue behavior.
+/// Selected at compile time to eliminate dead code via if constexpr.
+enum class TransportMode {
+    kThreaded,  ///< TX thread + RX thread + SPSC queues (default)
+    kDirectTx,  ///< App thread sends directly; RX thread + queue for receive
+    kDirect,    ///< App thread does both TX and RX; no background threads
+};
+
+namespace detail {
+/// Zero-size placeholder for conditionally-disabled members.
+struct Empty {};
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // Transport -- public API
@@ -99,6 +114,7 @@ inline constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
 ///   value matters.  For multi-symbol combined streams, set to false so
 ///   every message reaches the application.
 template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
+          TransportMode Mode = TransportMode::kThreaded,
           size_t MaxPayload = 512, size_t QueueDepth = 1024,
           template <typename, size_t> class RxQueueTmpl =
               eph::containers::BoundedQueue,
@@ -127,6 +143,15 @@ class Transport {
     /// Independent of queue type — EvictingQueue can deliver all frames
     /// (multi-symbol) or only the last (single-symbol).
     static constexpr bool kLastOnlyDeliver = LastOnlyDeliver;
+
+    // -- Mode-derived compile-time constants --
+    static constexpr bool kIsThreaded = (Mode == TransportMode::kThreaded);
+    static constexpr bool kIsDirectTx = (Mode == TransportMode::kDirectTx);
+    static constexpr bool kIsDirect   = (Mode == TransportMode::kDirect);
+    static constexpr bool kHasTxThread = kIsThreaded;
+    static constexpr bool kHasRxThread = !kIsDirect;
+    static constexpr bool kHasTxQueue  = kIsThreaded;
+    static constexpr bool kHasRxQueue  = !kIsDirect;
 
     using TxMsg = detail::TxMessage<MaxPayload>;
     using RxMsg = detail::RxMessage<MaxPayload>;
@@ -207,8 +232,11 @@ public:
 
         // Deferred start: if requested, don't start threads now.
         // Caller must call start_threads() later.
-        if (!config.deferred_start) {
-            t->start_threads();
+        // In direct modes (kDirect), no threads are needed at all.
+        if constexpr (kHasTxThread || kHasRxThread) {
+            if (!config.deferred_start) {
+                t->start_threads();
+            }
         }
 
         SPDLOG_LOGGER_INFO(log, "Transport ready: {}", config.remote_host);
@@ -249,7 +277,11 @@ public:
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx(data, len, opcode);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx(data, len, opcode);
+        } else {
+            return send_direct(data, len, opcode);
+        }
     }
 
     /// Send data from a span (convenience overload).
@@ -273,7 +305,11 @@ public:
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx(data, len, ws::opcode::kText);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx(data, len, ws::opcode::kText);
+        } else {
+            return send_direct(data, len, ws::opcode::kText);
+        }
     }
 
     /// Send a string_view as a WebSocket text frame (convenience for JSON APIs).
@@ -283,7 +319,11 @@ public:
         if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+        } else {
+            return send_direct(sv.data(), sv.size(), ws::opcode::kText);
+        }
     }
 
     /// Send a text frame WITHOUT UTF-8 validation (unchecked).
@@ -293,12 +333,20 @@ public:
     /// If the payload is not valid UTF-8, the remote peer may close the
     /// connection per RFC 6455 §5.6 — this is the caller's responsibility.
     SendError send_text_unchecked(const void* data, size_t len) noexcept {
-        return enqueue_tx(data, len, ws::opcode::kText);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx(data, len, ws::opcode::kText);
+        } else {
+            return send_direct(data, len, ws::opcode::kText);
+        }
     }
 
     /// Send a string_view as an unchecked text frame (no UTF-8 validation).
     SendError send_text_unchecked(std::string_view sv) noexcept {
-        return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx(sv.data(), sv.size(), ws::opcode::kText);
+        } else {
+            return send_direct(sv.data(), sv.size(), ws::opcode::kText);
+        }
     }
 
     /// Send a string_view as a WebSocket binary frame.
@@ -328,7 +376,13 @@ public:
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx_for(data, len, timeout, opcode);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx_for(data, len, timeout, opcode);
+        } else {
+            // Direct mode: timeout is meaningless (no queue), send immediately
+            (void)timeout;
+            return send_direct(data, len, opcode);
+        }
     }
 
     /// Send data from a span with timeout (convenience overload).
@@ -350,7 +404,12 @@ public:
             !ws::is_valid_utf8(static_cast<const uint8_t*>(data), len)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx_for(data, len, timeout, ws::opcode::kText);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx_for(data, len, timeout, ws::opcode::kText);
+        } else {
+            (void)timeout;
+            return send_direct(data, len, ws::opcode::kText);
+        }
     }
 
     /// Send a string_view as a WebSocket text frame with timeout.
@@ -360,7 +419,12 @@ public:
         if (!config_.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
         }
-        return enqueue_tx_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
+        if constexpr (kHasTxQueue) {
+            return enqueue_tx_for(sv.data(), sv.size(), timeout, ws::opcode::kText);
+        } else {
+            (void)timeout;
+            return send_direct(sv.data(), sv.size(), ws::opcode::kText);
+        }
     }
 
     /// Send a WebSocket binary frame with timeout (convenience, explicit intent).
@@ -908,6 +972,196 @@ public:
         return true;
     }
 
+    // -----------------------------------------------------------------------
+    // Direct RX: poll() (kDirect mode only)
+    // -----------------------------------------------------------------------
+
+    /// Poll for incoming data. Direct mode only (kDirect).
+    ///
+    /// Performs one round of: TCP poll_rx → [TLS decrypt] → frame decode.
+    /// Decoded messages are delivered via on_message callback (must be set
+    /// in TransportConfig). Returns the number of bytes received from TCP,
+    /// or an error string if the connection is broken.
+    ///
+    /// Designed for single-threaded event loops: call poll() repeatedly
+    /// to process incoming data. Non-blocking if no data is available.
+    [[nodiscard]] std::expected<uint16_t, std::string> poll() noexcept
+        requires (kIsDirect)
+    {
+        if (!running_.load(std::memory_order_acquire))
+            return std::unexpected(std::string("transport not running"));
+
+        auto log = detail::transport_logger();
+        auto& rx = direct_rx_;
+
+        // Initialize TSC conversion on first poll
+        if (!rx.initialized) {
+            if constexpr (kEnableTimestamps) {
+                auto npc = eph::utils::TSC::get_ns_per_cycle();
+                ns_per_cycle_ = npc.value_or(0.0);
+            }
+            rx.initialized = true;
+        }
+
+        // Poll TCP for data
+        uint16_t total_rx = 0;
+        bool reconnect_needed = false;
+
+        auto rx_result = tcp_->poll_rx(
+            [&](const uint8_t* data, uint16_t len) {
+                total_rx = len;
+                if (config_.use_tls) {
+                    if (rx.reassembly_len + len <= kReassemblyBufSize) {
+                        std::memcpy(rx.reassembly_storage.get() + rx.reassembly_len,
+                                    data, len);
+                        rx.reassembly_len += len;
+                    } else {
+                        SPDLOG_LOGGER_ERROR(log,
+                            "poll: TLS reassembly overflow ({} + {} > {})",
+                            rx.reassembly_len, len, kReassemblyBufSize);
+                        rx.reassembly_len = 0;
+                        rx.ws_reassembly_len = 0;
+                        reconnect_needed = true;
+                    }
+                } else {
+                    if (rx.ws_reassembly_len + len <= kWsReassemblyBufSize) {
+                        std::memcpy(rx.ws_reassembly_storage.get() + rx.ws_reassembly_len,
+                                    data, len);
+                        rx.ws_reassembly_len += len;
+                    } else {
+                        SPDLOG_LOGGER_ERROR(log,
+                            "poll: WS reassembly overflow ({} + {} > {})",
+                            rx.ws_reassembly_len, len, kWsReassemblyBufSize);
+                        rx.ws_reassembly_len = 0;
+                        reconnect_needed = true;
+                    }
+                }
+            });
+
+        if (reconnect_needed) {
+            running_.store(false, std::memory_order_release);
+            return std::unexpected(std::string("reassembly buffer overflow"));
+        }
+
+        if (!rx_result) {
+            running_.store(false, std::memory_order_release);
+            return std::unexpected(std::format("TCP rx error: {}", rx_result.error()));
+        }
+
+        if (*rx_result == 0) return uint16_t{0}; // no data
+
+        // Set arrival TSC
+        if constexpr (kEnableTimestamps) {
+            current_arrival_tsc_ = tcp_->last_rx_burst_tsc();
+        }
+
+        // Plain mode: process framed data directly
+        if (!config_.use_tls) {
+            size_t ws_consumed = process_frame_data(
+                rx.ws_reassembly_storage.get(), rx.ws_reassembly_len);
+
+            ws_consumed = std::min(ws_consumed, rx.ws_reassembly_len);
+            size_t ws_remaining = rx.ws_reassembly_len - ws_consumed;
+            if (ws_remaining > 0 && ws_consumed > 0) {
+                std::memmove(rx.ws_reassembly_storage.get(),
+                             rx.ws_reassembly_storage.get() + ws_consumed,
+                             ws_remaining);
+            }
+            rx.ws_reassembly_len = ws_remaining;
+
+            if constexpr (requires { tcp_->flush_pending_ack(); }) {
+                tcp_->flush_pending_ack();
+            }
+            return total_rx;
+        }
+
+        // TLS mode: decrypt records, then process frames
+        size_t consumed = 0;
+        while (rx.reassembly_len - consumed >=
+               tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
+            const uint8_t* rec_ptr = rx.reassembly_storage.get() + consumed;
+
+            uint8_t content_type;
+            uint16_t payload_len;
+            if (!tls_record::parse_record_header(rec_ptr, content_type, payload_len))
+                break;
+
+            size_t record_total = tls_record::kRecordHeaderLen + payload_len;
+            if (rx.reassembly_len - consumed < record_total) break;
+
+            uint16_t decrypted_len;
+            bool ok = crypto_->dec.decrypt(
+                rec_ptr, static_cast<uint16_t>(record_total),
+                rx.decrypt_buf.get(), decrypted_len);
+
+            if (!ok) {
+                rx_stats_.crypto_errors.fetch_add(1, std::memory_order_relaxed);
+                running_.store(false, std::memory_order_release);
+                return std::unexpected(std::string("TLS decrypt failed"));
+            }
+
+            if constexpr (kEnableTimestamps) {
+                current_decrypt_done_tsc_ = eph::utils::TSC::now();
+            }
+
+            // Handle WS reassembly across TLS records
+            const uint8_t* ws_data;
+            size_t ws_data_len;
+            if (rx.ws_reassembly_len > 0) {
+                if (rx.ws_reassembly_len + decrypted_len <= kWsReassemblyBufSize) {
+                    std::memcpy(rx.ws_reassembly_storage.get() + rx.ws_reassembly_len,
+                                rx.decrypt_buf.get(), decrypted_len);
+                    rx.ws_reassembly_len += decrypted_len;
+                } else {
+                    rx.ws_reassembly_len = 0;
+                    consumed += record_total;
+                    continue;
+                }
+                ws_data = rx.ws_reassembly_storage.get();
+                ws_data_len = rx.ws_reassembly_len;
+            } else {
+                ws_data = rx.decrypt_buf.get();
+                ws_data_len = decrypted_len;
+            }
+
+            size_t ws_consumed = process_frame_data(ws_data, ws_data_len);
+
+            ws_consumed = std::min(ws_consumed, ws_data_len);
+            size_t ws_remaining = ws_data_len - ws_consumed;
+            if (ws_remaining > 0) {
+                if (ws_data == rx.decrypt_buf.get()) {
+                    std::memcpy(rx.ws_reassembly_storage.get(),
+                                rx.decrypt_buf.get() + ws_consumed, ws_remaining);
+                } else {
+                    std::memmove(rx.ws_reassembly_storage.get(),
+                                 rx.ws_reassembly_storage.get() + ws_consumed,
+                                 ws_remaining);
+                }
+                rx.ws_reassembly_len = ws_remaining;
+            } else {
+                rx.ws_reassembly_len = 0;
+            }
+
+            consumed += record_total;
+        }
+
+        // Compact reassembly buffer
+        if (consumed > 0) {
+            rx.reassembly_len -= consumed;
+            if (rx.reassembly_len > 0) {
+                std::memmove(rx.reassembly_storage.get(),
+                             rx.reassembly_storage.get() + consumed,
+                             rx.reassembly_len);
+            }
+        }
+
+        if constexpr (requires { tcp_->flush_pending_ack(); }) {
+            tcp_->flush_pending_ack();
+        }
+
+        return total_rx;
+    }
+
     /// Stop the transport gracefully. Sends WebSocket Close frame.
     ///
     /// Thread safety: waits for TX/RX threads to exit BEFORE touching
@@ -916,8 +1170,12 @@ public:
     /// is true. Must be called exactly once after create() returns.
     void start_threads() {
         auto* tp = this;
-        tx_thread_ = std::thread([tp] { tp->tx_loop(); });
-        rx_thread_ = std::thread([tp] { tp->rx_loop(); });
+        if constexpr (kHasTxThread) {
+            tx_thread_ = std::thread([tp] { tp->tx_loop(); });
+        }
+        if constexpr (kHasRxThread) {
+            rx_thread_ = std::thread([tp] { tp->rx_loop(); });
+        }
     }
 
     void stop() noexcept {
@@ -928,8 +1186,12 @@ public:
 
         // Join worker threads FIRST — ensures no concurrent access to
         // crypto_/tcp_ from TX/RX threads when we send the Close frame.
-        if (tx_thread_.joinable()) tx_thread_.join();
-        if (rx_thread_.joinable()) rx_thread_.join();
+        if constexpr (kHasTxThread) {
+            if (tx_thread_.joinable()) tx_thread_.join();
+        }
+        if constexpr (kHasRxThread) {
+            if (rx_thread_.joinable()) rx_thread_.join();
+        }
 
         // Send WebSocket Close frame after threads have exited (no race)
         // Only applicable when using WsFramer — other framers have no
@@ -1419,6 +1681,75 @@ private:
         return SendError::kOk;
     }
 
+    /// Direct send: WS encode -> [TLS encrypt] -> TCP send.
+    /// Used in kDirectTx and kDirect modes — no SPSC queue involved.
+    /// Called from the application thread; crypto_->enc is exclusively
+    /// owned by the send caller (safe: RX thread only uses crypto_->dec).
+    SendError send_direct(const void* data, size_t len, uint8_t opcode) noexcept
+        requires (!kHasTxQueue)
+    {
+        if (len > MaxPayload) return SendError::kMessageTooLarge;
+        if (!running_.load(std::memory_order_acquire)) return SendError::kNotConnected;
+
+        auto log = detail::transport_logger();
+
+        // 1. Frame encode
+        constexpr size_t kFrameOverhead = kIsWebSocket
+            ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
+        constexpr size_t kBufSize = kFrameOverhead + MaxPayload + 1;
+        uint8_t ws_buf[kBufSize];
+
+        size_t ws_len;
+        if constexpr (kIsWebSocket) {
+            ws_len = ws::encode_frame(ws_buf, opcode,
+                static_cast<const uint8_t*>(data), len);
+        } else {
+            Framer framer{};
+            ws_len = framer.encode(ws_buf,
+                static_cast<const uint8_t*>(data), len, opcode);
+        }
+
+        // 2. TLS encrypt (if enabled) + 3. TCP send
+        if (config_.use_tls) {
+            if (!crypto_) return SendError::kNotConnected;
+            constexpr size_t kTlsBufSize =
+                TlsEncryptor::encrypted_size(
+                    static_cast<uint16_t>(kFrameOverhead + MaxPayload));
+            uint8_t tls_buf[kTlsBufSize];
+
+            uint16_t enc_len = crypto_->enc.encrypt(
+                ws_buf, static_cast<uint16_t>(ws_len), tls_buf);
+            if (enc_len == 0) {
+                SPDLOG_LOGGER_ERROR(log, "send_direct: encrypt failed");
+                return SendError::kEncryptFailed;
+            }
+
+            auto result = tcp_->send(tls_buf, enc_len);
+            if (!result) {
+                SPDLOG_LOGGER_WARN(log, "send_direct: TCP send failed: {}",
+                    result.error());
+                return SendError::kTcpSendFailed;
+            }
+        } else {
+            auto result = tcp_->send(ws_buf, ws_len);
+            if (!result) {
+                SPDLOG_LOGGER_WARN(log, "send_direct: TCP send failed: {}",
+                    result.error());
+                return SendError::kTcpSendFailed;
+            }
+        }
+
+        // Stats
+        tx_stats_.packets.fetch_add(1, std::memory_order_relaxed);
+        tx_stats_.bytes.fetch_add(len, std::memory_order_relaxed);
+        if (opcode == ws::opcode::kText) {
+            tx_stats_.text_packets.fetch_add(1, std::memory_order_relaxed);
+            tx_stats_.text_bytes.fetch_add(len, std::memory_order_relaxed);
+        }
+
+        return SendError::kOk;
+    }
+
     TransportConfig                        config_;
     TcpFactory                             tcp_factory_;
     uint64_t                               current_arrival_tsc_{0};
@@ -1544,6 +1875,35 @@ private:
     // Accumulates continuation frames until FIN=1.
     std::vector<uint8_t>                   ws_frag_buf_;
     uint8_t                                ws_frag_opcode_ = 0;
+
+    // -----------------------------------------------------------------------
+    // kDirect mode: persistent reassembly buffers for poll()
+    // -----------------------------------------------------------------------
+    // In kThreaded/kDirectTx, these are stack-allocated inside rx_loop().
+    // In kDirect, poll() returns between calls so state must persist.
+
+    static constexpr size_t kReassemblyBufSize =
+        4 * (tls_const::kMaxRecordPayload + tls_record::kRecordHeaderLen +
+             tls_record::kAuthTagLen + 1);
+    static constexpr size_t kFrameReassemblyOverhead = kIsWebSocket
+        ? ws::kMaxFrameHeaderLen : Framer::max_overhead();
+    static constexpr size_t kWsReassemblyBufSize =
+        kFrameReassemblyOverhead + MaxPayload + 256;
+
+    struct DirectRxState {
+        std::unique_ptr<uint8_t[]> decrypt_buf =
+            std::make_unique<uint8_t[]>(tls_const::kMaxRecordPayload + 256);
+        std::unique_ptr<uint8_t[]> reassembly_storage =
+            std::make_unique<uint8_t[]>(kReassemblyBufSize);
+        size_t reassembly_len = 0;
+        std::unique_ptr<uint8_t[]> ws_reassembly_storage =
+            std::make_unique<uint8_t[]>(kWsReassemblyBufSize);
+        size_t ws_reassembly_len = 0;
+        bool initialized = false;
+    };
+
+    [[no_unique_address]]
+    std::conditional_t<kIsDirect, DirectRxState, detail::Empty> direct_rx_{};
 
     // Private method implementations (split for readability)
 #include "eph/transport/detail/transport_state.hpp"

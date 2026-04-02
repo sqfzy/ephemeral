@@ -458,3 +458,48 @@ TEST(SendErrorTest, ExhaustiveSwitch) {
     EXPECT_NE(to_int(SendError::kInvalidUtf8), to_int(SendError::kQueueFull));
     EXPECT_NE(to_int(SendError::kInvalidUtf8), to_int(SendError::kMessageTooLarge));
 }
+
+TEST(SendErrorTest, DirectModeErrorCodes) {
+    EXPECT_NE(send_error_name(SendError::kEncryptFailed), "unknown");
+    EXPECT_NE(send_error_name(SendError::kTcpSendFailed), "unknown");
+}
+
+// ---------------------------------------------------------------------------
+// TransportMode compile-time instantiation tests
+// ---------------------------------------------------------------------------
+// Verify all three modes compile correctly with MockTcpSession.
+
+TEST(TransportMode, ThreadedTypeAliases) {
+    // kThreaded mode — backward compatible
+    using T = Transport<MockTcpSession, WsFramer, TransportMode::kThreaded, 128, 16>;
+    static_assert(T::max_payload() == 128);
+    static_assert(T::queue_depth() == 16);
+}
+
+TEST(TransportMode, DirectTxTypeAliases) {
+    // kDirectTx mode — no TX queue, app sends directly
+    using T = Transport<MockTcpSession, WsFramer, TransportMode::kDirectTx, 128, 16>;
+    static_assert(T::max_payload() == 128);
+}
+
+TEST(TransportMode, DirectTypeAliases) {
+    // kDirect mode — no threads, no queues
+    using T = Transport<MockTcpSession, WsFramer, TransportMode::kDirect, 128, 16>;
+    static_assert(T::max_payload() == 128);
+}
+
+TEST(TransportMode, PresetAliasesCompile) {
+    // Verify preset aliases resolve correctly
+    using DT  = DefaultTransport<MockTcpSession>;
+    using DTx = DirectTxTransport<MockTcpSession>;
+    using DD  = DirectTransport<MockTcpSession>;
+    static_assert(DT::max_payload() == 512);
+    static_assert(DTx::max_payload() == 512);
+    static_assert(DD::max_payload() == 512);
+}
+
+TEST(TransportMode, SocketPresetAliasesCompile) {
+    // Verify socket-specific aliases
+    static_assert(sizeof(SocketDirectTxTransport) > 0);
+    static_assert(sizeof(SocketDirectTransport) > 0);
+}

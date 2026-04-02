@@ -39,6 +39,14 @@ using DpdkEvictTransport = eph::net::EvictTransport<TcpSession<>>;
 /// Raw TCP transport (no WebSocket framing) over DPDK.
 using DpdkRawTransport = eph::net::RawTransport<TcpSession<>>;
 
+// Direct TX mode: app sends directly, RX thread delivers via callback/queue.
+using DpdkDirectTxTransport = eph::net::DirectTxTransport<TcpSession<>>;
+using DpdkDirectTxRawTransport = eph::net::DirectTxRawTransport<TcpSession<>>;
+
+// Full direct mode: no background threads, app calls send() + poll().
+using DpdkDirectTransport = eph::net::DirectTransport<TcpSession<>>;
+using DpdkDirectRawTransport = eph::net::DirectRawTransport<TcpSession<>>;
+
 /// Re-export generic types for convenience.
 using eph::net::TransportConfig;
 using eph::net::TransportStats;

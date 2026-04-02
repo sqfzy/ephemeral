@@ -51,6 +51,16 @@ using SocketWsTransport = DefaultTransport<SocketTransport>;
 /// that handle their own message boundaries.
 using SocketRawTransport = RawTransport<SocketTransport>;
 
+// Direct TX mode: app sends directly, RX thread delivers via callback/queue.
+using SocketDirectTxTransport      = DirectTxTransport<SocketTransport>;
+using SocketDirectTxSmallTransport = DirectTxSmallTransport<SocketTransport>;
+using SocketDirectTxRawTransport   = DirectTxRawTransport<SocketTransport>;
+
+// Full direct mode: no background threads, app calls send() + poll().
+using SocketDirectTransport      = DirectTransport<SocketTransport>;
+using SocketDirectSmallTransport = DirectSmallTransport<SocketTransport>;
+using SocketDirectRawTransport   = DirectRawTransport<SocketTransport>;
+
 /// Convenience factory: creates a fully connected SocketWssTransport
 /// from just a TransportConfig, eliminating the TcpFactory boilerplate.
 ///
@@ -69,7 +79,7 @@ template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 socket_wss_connect(
     const TransportConfig& config,
     std::optional<SocketConfig> sock_cfg = std::nullopt)
-    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, TransportMode::kThreaded, MaxPayload, QueueDepth>>,
                      ConnectionErrorInfo>
 {
     SocketConfig sc = sock_cfg.value_or(SocketConfig{
@@ -101,7 +111,7 @@ socket_wss_connect(
         return tcp;
     };
 
-    return Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>::create(
+    return Transport<SocketTransport, WsFramer, TransportMode::kThreaded, MaxPayload, QueueDepth>::create(
         std::move(tcp_factory), config);
 }
 
@@ -117,7 +127,7 @@ template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
 socket_ws_connect(
     TransportConfig config,
     std::optional<SocketConfig> sock_cfg = std::nullopt)
-    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, TransportMode::kThreaded, MaxPayload, QueueDepth>>,
                      ConnectionErrorInfo>
 {
     config.use_tls = false;
@@ -150,7 +160,7 @@ socket_ws_connect(
         return tcp;
     };
 
-    return Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>::create(
+    return Transport<SocketTransport, WsFramer, TransportMode::kThreaded, MaxPayload, QueueDepth>::create(
         std::move(tcp_factory), config);
 }
 
@@ -179,7 +189,7 @@ template <size_t MaxPayload = 512, size_t QueueDepth = 1024,
 connect(std::string_view url,
         ConfigModifier modifier = nullptr,
         std::optional<SocketConfig> sock_cfg = std::nullopt)
-    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, TransportMode::kThreaded, MaxPayload, QueueDepth>>,
                      ConnectionErrorInfo>
 {
     auto cfg_result = TransportConfig::from_url(url);
