@@ -276,6 +276,13 @@ struct TransportConfig {
 | `ws::masked_copy(dst, src, len, mask)` | Fused copy + mask (64-bit blocks) |
 | `ws::frame_header_size(payload_len) -> size_t` | Compute header size for payload |
 | `ws::total_frame_size(payload_len) -> size_t` | Header + payload size |
+| `ws::build_ping_frame(out, payload, len) -> size_t` | Build a Ping frame |
+| `ws::build_pong_frame(out, payload, len) -> size_t` | Build a Pong response frame |
+| `ws::is_valid_payload_len(opcode, len) -> bool` | Validate payload length for opcode |
+| `ws::generate_mask_key(mask)` | Generate random 4-byte mask key (uses batch cache) |
+| `ws::FrameTemplate` | Precomputed frame template for hot-path encode (`for_binary()`, `for_text()`) |
+| `ws::Opcode` | Lightweight wrapper for `std::format` support |
+| `ws::CloseCode` | Lightweight wrapper for `std::format` support |
 | `MaskKeyCache` | CSPRNG batch-pregenerated mask key pool (1024 keys, ~2ns/key) |
 
 ### HTTP (`http::` namespace)
@@ -439,6 +446,22 @@ config.on_frame_filter = eph::net::make_twophase_filter(
         // Return 0 for unrecognized payloads (always delivered)
         return extract_symbol_hash(data, len);
     });
+```
+
+### Reconnection with Subscription Replay
+
+```cpp
+config.on_reconnected = [&](int attempt, uint64_t downtime_ns, uint64_t total) {
+    spdlog::info("Reconnected (attempt {}, downtime {:.1f}ms, total {})",
+        attempt, downtime_ns / 1e6, total);
+    // Replay subscriptions after reconnection
+    transport->send_text(R"({"method":"SUBSCRIBE","params":["btcusdt@bookTicker"]})");
+};
+
+config.on_reconnect_attempt = [](int attempt, int max, std::string_view err) -> bool {
+    spdlog::warn("Reconnect attempt {}/{}: {}", attempt, max, err);
+    return true; // Continue retrying (return false to abort)
+};
 ```
 
 ### URL Parsing
