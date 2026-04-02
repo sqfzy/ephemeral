@@ -1,12 +1,12 @@
 # Code Audit: eph-dpdk & eph-net
-**Date**: 2026-04-02 07:08 — 07:53
-**Scope**: Full-project audit (4 passes: correctness×2, cross-module, security)
+**Date**: 2026-04-02 07:08 — 08:04
+**Scope**: Full-project audit (6 passes: correctness×2, cross-module, security, concurrency, API contract)
 
 ## Summary
 | Category | Found | Fixed | Deferred |
 |----------|-------|-------|----------|
 | Critical | 4 | 4 | 0 |
-| Major | 22 | 20 | 2 |
+| Major | 25 | 23 | 2 |
 | Minor | 17 | 1 | 16 |
 | Security | 4M+4m | 3 | 5 |
 
@@ -15,6 +15,8 @@
 2. `e2864b2` fix(dpdk): CloseWait data delivery, DNS truncation guard
 3. `f81d794` fix(dpdk,net): reactor data race, HMAC key truncation
 4. `01e710e` fix(dpdk,net): DNS answer cap, TLS hostname verify, proxy buffer bound
+5. `9b73997` fix(net): make SocketTransport state_ atomic
+6. `88761ac` fix(net): defer close_fd() for graceful shutdown
 
 ---
 
@@ -73,6 +75,8 @@
 | M5 | http_client.hpp:694 | recv_all timeout returns truncated data | ✅ eaa5381 |
 | M6 | gateway.hpp:185 | start_all sets Healthy unconditionally | ✅ eaa5381 |
 | M7 | hmac.hpp:108 | HMAC key.size() truncated to int | ✅ f81d794 |
+| M8 | socket_transport.hpp:675 | state_ not atomic (RX/TX data race) | ✅ 9b73997 |
+| M9 | socket_transport.hpp:570 | close() destroys fd immediately, breaking graceful shutdown | ✅ 88761ac |
 
 ### Minor (deferred — low risk)
 - m1: parse_proxy_url empty port misleading error
