@@ -123,9 +123,7 @@ int main(int argc, char** argv) {
 
     auto& transport = *conn->transport;
 
-    if (cfg.poll_cpu >= 0) {
-        (void)eph::utils::set_thread_affinity(cfg.poll_cpu, "poll");
-    }
+    bench::pin_or_die(cfg.poll_cpu, "bench-poll");
 
     spdlog::info("Order RTT bench (DPDK) started: interval={}us, duration={}s",
                  cfg.order_interval.count(), cfg.duration.count());

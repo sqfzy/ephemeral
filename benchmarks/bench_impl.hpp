@@ -38,8 +38,18 @@ struct BenchConfig {
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     std::chrono::seconds duration{10};
     std::chrono::microseconds order_interval{1000};
-    int poll_cpu = -1;  // CPU affinity for the poll loop
+    int poll_cpu = 2;   // CPU core for poll loop (default: core 2)
 };
+
+/// Pin current thread to poll_cpu. Exits on failure.
+inline void pin_or_die(int cpu, const char* name) {
+    auto r = eph::utils::set_thread_affinity(cpu, name);
+    if (!r) {
+        spdlog::error("Failed to pin {} to core {}: {}", name, cpu, r.error());
+        std::exit(1);
+    }
+    spdlog::info("Pinned {} to core {}", name, cpu);
+}
 
 /// Parse "T" field (raw TSC cycles) from JSON.
 inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
@@ -99,9 +109,7 @@ void run_market_bench(
     }
     auto& transport = *result;
 
-    if (cfg.poll_cpu >= 0) {
-        (void)eph::utils::set_thread_affinity(cfg.poll_cpu, "poll");
-    }
+    pin_or_die(cfg.poll_cpu, "bench-poll");
 
     spdlog::info("Market bench started: {} symbols, duration={}s",
                  cfg.symbols.size(), cfg.duration.count());
@@ -186,9 +194,7 @@ void run_order_rtt_bench(
     }
     auto& transport = *result;
 
-    if (cfg.poll_cpu >= 0) {
-        (void)eph::utils::set_thread_affinity(cfg.poll_cpu, "poll");
-    }
+    pin_or_die(cfg.poll_cpu, "bench-poll");
 
     spdlog::info("Order RTT bench started: interval={}us, duration={}s",
                  cfg.order_interval.count(), cfg.duration.count());
