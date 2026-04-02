@@ -23,3 +23,4 @@
 | 2026-04-01 19:26 | /cleanup eph-dpdk eph-net | 日志100%统一命名logger、TcpSession move优化、Platform bool、ai_addr null guard、spinlock pause | — | cleanup-20260401-192600.md |
 | 2026-04-02 08:35 | /discuss 架构重设计评估 | 5角色6轮：架构基础正确，4项重构（TransportMode拆分、模块边界微调、文件拆分、FakeTcpTransport） | abf74e2 | discuss-20260402-083558-architecture-redesign.md |
 | 2026-04-02 08:35 | /design auto TransportMode拆分 | 4 commits：3类拆分+4组件提取+组合重写+detail删除，TransportMode完全消除 | 6eda7b0 | design-20260402-083558-transport-split.md |
+| 2026-04-02 10:57 | /discuss bench 重设计 | 5角色4轮：tap虚拟网卡+同进程mock server+无TLS，9 bench→3 bench | 49d2b2c | discuss-20260402-105700-bench-redesign.md |
