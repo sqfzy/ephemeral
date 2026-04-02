@@ -523,8 +523,9 @@ private:
             }
         };
 
-        // Fire the on_message callback (user inspection/logging) before
-        // handing off to the DeliverPolicy.
+        // If on_message callback is set, deliver directly to it and
+        // skip queue delivery. This matches the original Transport behavior:
+        // on_message is a "push" mode alternative to queue-based "pull" mode.
         if (config().on_message) {
             try {
                 config().on_message(data, len, opcode);
@@ -532,9 +533,11 @@ private:
                 SPDLOG_LOGGER_WARN(detail::transport_logger(),
                     "on_message callback threw an exception");
             }
+            update_rx_stats();
+            return;
         }
 
-        // Deliver via the policy (queue-based, callback-based, etc.)
+        // No on_message callback — deliver via the policy (queue enqueue etc.)
         deps_.deliver(data, len, opcode);
         update_rx_stats();
     }

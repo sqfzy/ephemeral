@@ -12,6 +12,12 @@ if is_mode("release") then
     set_optimize("fastest")
 end
 
+-- GCC 14 on Amazon Linux 2023: add libstdc++ path for __cxa_call_terminate etc.
+if os.isfile("/usr/lib/gcc/aarch64-amazon-linux/14/libstdc++.so") then
+    add_linkdirs("/usr/lib/gcc/aarch64-amazon-linux/14")
+    add_rpathdirs("/usr/lib/gcc/aarch64-amazon-linux/14")
+end
+
 add_requires("numactl", "tabulate", "benchmark", "spdlog", { optional = true })
 add_requires("vcpkg::dpdk", { optional = true, alias = "dpdk" })
 add_requires("aws-lc", { optional = true })
