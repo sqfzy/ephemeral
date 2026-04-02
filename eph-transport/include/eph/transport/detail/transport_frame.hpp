@@ -137,10 +137,14 @@
                 // accessible via ReceivedMessage::close_code()/close_reason().
                 if (frame->payload && frame->payload_len > 0 &&
                     frame->payload_len <= MaxPayload) {
-                    (void)rx_enqueue(
-                        frame->payload,
-                        static_cast<uint16_t>(frame->payload_len),
-                        ws::opcode::kClose);
+                    if constexpr (kHasRxQueue) {
+                        (void)rx_enqueue(
+                            frame->payload,
+                            static_cast<uint16_t>(frame->payload_len),
+                            ws::opcode::kClose);
+                    } else if (config_.on_close) {
+                        // kDirect: already delivered via on_close above
+                    }
                 }
                 // RFC 6455 §5.5.1: respond with a Close frame echoing
                 // the status code before shutting down.
@@ -238,11 +242,15 @@
                     // NIC arrival → its own decode, not the cumulative
                     // cost of all frames in the batch.
                     record_rx_latency();
-                    if (fast_deliver && !frame->masked && frame->payload_len > 0)
-                        [[likely]] {
-                        (void)rx_enqueue(frame->payload,
-                            static_cast<uint16_t>(frame->payload_len),
-                            frame->opcode);
+                    if constexpr (kHasRxQueue) {
+                        if (fast_deliver && !frame->masked && frame->payload_len > 0)
+                            [[likely]] {
+                            (void)rx_enqueue(frame->payload,
+                                static_cast<uint16_t>(frame->payload_len),
+                                frame->opcode);
+                        } else {
+                            deliver_data_frame(*frame, /*defer_stats=*/true);
+                        }
                     } else {
                         deliver_data_frame(*frame, /*defer_stats=*/true);
                     }
@@ -377,6 +385,15 @@
             return;
         }
 
+        if constexpr (!kHasRxQueue) {
+            // kDirect mode: no RX queue and no on_message — drop silently.
+            SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                "kDirect mode: no on_message callback and no RX queue, "
+                "dropping frame (len={})", len);
+            rx_stats_.dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        } else {
+
         bool ok = rx_enqueue(data, len, opcode);
 
         if (ok) {
@@ -401,6 +418,8 @@
                 }
             }
         }
+
+        } // else (kHasRxQueue)
     }
 
     /// Deliver a complete single-frame data message.
@@ -576,9 +595,11 @@
             }
             if (frame.payload && frame.payload_len > 0 &&
                 frame.payload_len <= MaxPayload) {
-                (void)rx_enqueue(frame.payload,
-                                 static_cast<uint16_t>(frame.payload_len),
-                                 ws::opcode::kClose);
+                if constexpr (kHasRxQueue) {
+                    (void)rx_enqueue(frame.payload,
+                                     static_cast<uint16_t>(frame.payload_len),
+                                     ws::opcode::kClose);
+                }
             }
             handle_close(code);
             closing_.store(true, std::memory_order_release);
@@ -605,44 +626,68 @@
     }
 
     /// Enqueue pong response into TX queue so the TX thread sends it.
-    /// This avoids data races: only TX thread touches crypto_->encrypt().
+    /// In kDirect/kDirectTx mode (no TX queue), send the pong directly.
     void handle_ping(const ws::DecodedFrame& ping_frame) noexcept {
         // Ping payload is at most 125 bytes (RFC 6455 §5.5).
-        // Enqueue the unmasked payload with kPong opcode; TX thread
-        // will encode the WS frame and encrypt it.
         size_t pong_payload_len = std::min(
             static_cast<size_t>(ping_frame.payload_len),
             static_cast<size_t>(MaxPayload));
 
-        bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+        if constexpr (kHasTxQueue) {
+            bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
+                if (ping_frame.payload && pong_payload_len > 0) {
+                    std::memcpy(msg.data, ping_frame.payload, pong_payload_len);
+                    if (ping_frame.masked) {
+                        ws::apply_mask(msg.data, pong_payload_len,
+                                       ping_frame.mask_key);
+                    }
+                }
+                msg.len = static_cast<uint16_t>(pong_payload_len);
+                msg.opcode = ws::opcode::kPong;
+            });
+
+            if (ok) {
+                ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
+                    "TX queue full, dropping pong response");
+            }
+        } else {
+            // No TX queue — send pong directly.
+            uint8_t pong_buf[125];
             if (ping_frame.payload && pong_payload_len > 0) {
-                std::memcpy(msg.data, ping_frame.payload, pong_payload_len);
+                std::memcpy(pong_buf, ping_frame.payload, pong_payload_len);
                 if (ping_frame.masked) {
-                    ws::apply_mask(msg.data, pong_payload_len,
+                    ws::apply_mask(pong_buf, pong_payload_len,
                                    ping_frame.mask_key);
                 }
             }
-            msg.len = static_cast<uint16_t>(pong_payload_len);
-            msg.opcode = ws::opcode::kPong;
-        });
-
-        if (ok) {
-            ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
-                "TX queue full, dropping pong response");
+            auto err = send_direct(pong_buf, pong_payload_len,
+                                   ws::opcode::kPong);
+            if (err == SendError::kOk) {
+                ws_pongs_sent_.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
+                    "send_direct pong failed: {}", send_error_name(err));
+            }
         }
     }
 
-    /// Enqueue a Close frame response into the TX queue.
-    /// Called from RX thread when a server Close frame is received.
+    /// Send a Close frame response.
+    /// In threaded mode, enqueue into TX queue. In direct mode, send immediately.
     void handle_close(uint16_t status_code) noexcept {
-        // Encode the 2-byte status code as payload; TX thread will wrap
-        // it in a WS Close frame via encode_frame(kClose, ...).
-        tx_queue_.try_produce([&](TxMsg& msg) {
-            msg.data[0] = static_cast<uint8_t>(status_code >> 8);
-            msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
-            msg.len = 2;
-            msg.opcode = ws::opcode::kClose;
-        });
+        uint8_t close_payload[2] = {
+            static_cast<uint8_t>(status_code >> 8),
+            static_cast<uint8_t>(status_code & 0xFF),
+        };
+        if constexpr (kHasTxQueue) {
+            tx_queue_.try_produce([&](TxMsg& msg) {
+                msg.data[0] = close_payload[0];
+                msg.data[1] = close_payload[1];
+                msg.len = 2;
+                msg.opcode = ws::opcode::kClose;
+            });
+        } else {
+            (void)send_direct(close_payload, 2, ws::opcode::kClose);
+        }
     }

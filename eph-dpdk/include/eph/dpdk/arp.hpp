@@ -115,7 +115,8 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
         rte_pktmbuf_append(mbuf, frame_len));
     if (!pkt) {
         SPDLOG_LOGGER_ERROR(detail::arp_logger(),
-            "ARP request: rte_pktmbuf_append failed for {} bytes", frame_len);
+            "ARP request: rte_pktmbuf_append failed for {} bytes (pool_avail={})",
+            frame_len, rte_mempool_avail_count(pool));
         rte_pktmbuf_free(mbuf);
         return nullptr;
     }

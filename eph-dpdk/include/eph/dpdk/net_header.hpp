@@ -518,15 +518,18 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     uint16_t tcp_start = ihl;                          // offset from IP header to TCP
     uint16_t data_start = tcp_start + tcp_doff;        // offset from IP header to payload
 
-    // Reject if TCP data offset overshoots the IP total length.
-    // Without this check, ip_total - data_start would wrap to a huge uint16_t
-    // and the subsequent payload_len would be bogus.
+    // Guard 1: Prevents uint16_t underflow — if TCP data offset exceeds IP
+    // total length, (ip_total - data_start) would wrap to a huge value.
     if (data_start > ip_total) return {};
 
-    // Reject if IP advertises more data than the mbuf actually contains.
-    // A corrupted IP header could point payload past the end of the buffer.
+    // Guard 2: Prevents buffer over-read — rejects packets where the IP
+    // header claims more data than the mbuf actually contains (corrupt or
+    // malicious ip_total).
     if (kEtherHeaderLen + ip_total > pkt_len) return {};
 
+    // Guard 3: Only assign payload when there are actual bytes beyond the
+    // TCP header. Combined with guards 1 and 2, this guarantees
+    // payload_len > 0 and payload points within [data, data + pkt_len).
     if (ip_total > data_start) {
         uint16_t payload_offset = kEtherHeaderLen + data_start;
         result.payload     = data + payload_offset;

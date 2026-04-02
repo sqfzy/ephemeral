@@ -60,6 +60,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Failure tracking ─────────────────────────────────────────────────────────
+TEARDOWN_FAILURES=0
+
+report_teardown_status() {
+    if [[ "$MODE" != "teardown" ]]; then return; fi
+    if [[ $TEARDOWN_FAILURES -gt 0 ]]; then
+        warn "Teardown completed with $TEARDOWN_FAILURES failure(s) — check output above"
+        exit 1
+    fi
+}
+trap report_teardown_status EXIT
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 find_devbind() {

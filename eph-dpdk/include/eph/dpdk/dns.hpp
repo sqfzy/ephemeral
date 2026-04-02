@@ -337,7 +337,7 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
 
         offset += 10;  // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
 
-        if (offset + rdlength > dns_len) {
+        if (rdlength > kMaxDnsPacketLen || offset + rdlength > dns_len) {
             return std::unexpected("DNS response: RDATA exceeds packet");
         }
 
@@ -583,9 +583,12 @@ resolve(uint16_t port_id,
                 SPDLOG_LOGGER_WARN(log, "DNS resolve: tx_burst failed");
             } else {
                 ++requests_sent;
+                auto remaining_ms = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now()).count();
                 SPDLOG_LOGGER_DEBUG(log,
-                    "DNS query #{} sent for '{}' (txid=0x{:04x})",
-                    requests_sent, hostname, tx_id);
+                    "DNS query #{} sent for '{}' (txid=0x{:04x}, {}ms remaining)",
+                    requests_sent, hostname, tx_id, remaining_ms);
             }
 
             next_send = now + retry_interval;

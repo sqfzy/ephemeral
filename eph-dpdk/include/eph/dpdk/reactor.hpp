@@ -77,18 +77,26 @@ using BurstCompleteCallback = std::function<void()>;
 
 /// Per-connection entry in the Reactor.
 struct ReactorEntry {
-    TcpSession<>* session = nullptr;
+    /// Atomic pointer — mark_reconnected() may swap this while the RX loop
+    /// is running. The RX loop loads it once into a local before calling
+    /// process_rx, so a concurrent store is safe (both old and new sessions
+    /// must remain alive until the next burst cycle).
+    std::atomic<TcpSession<>*> session{nullptr};
     net::ConnectionTuple tuple{};
     ReactorDataCallback on_data{};
     std::atomic<bool> connected{false};
 
-    /// FNV-1a hash of the 4-tuple for fast rejection in linear scan.
+    /// Direction-symmetric hash of the 4-tuple for fast rejection in linear scan.
+    /// Uses XOR + sum (both commutative) so hash(A→B) == hash(B→A).
+    /// This is essential because incoming packets have swapped src/dst
+    /// relative to the registered connection tuple.
     [[nodiscard]] static uint64_t hash_tuple(const net::ConnectionTuple& t) noexcept {
         uint64_t h = 14695981039346656037ULL;
         auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
-        mix(t.src_ip);
-        mix(t.dst_ip);
-        mix(static_cast<uint64_t>(t.src_port) << 16 | t.dst_port);
+        mix(t.src_ip ^ t.dst_ip);
+        mix(static_cast<uint64_t>(t.src_ip) + t.dst_ip);
+        mix(t.src_port ^ t.dst_port);
+        mix(static_cast<uint64_t>(t.src_port) + t.dst_port);
         return h;
     }
 };
@@ -136,7 +144,7 @@ public:
                 idx, kReactorMaxConnections));
         }
         auto& e = entries_[idx];
-        e.session = session;
+        e.session.store(session, std::memory_order_relaxed);
         e.tuple = session->connection_tuple();
         e.on_data = std::move(on_data);
         e.connected.store(session->is_established(), std::memory_order_relaxed);
@@ -174,33 +182,30 @@ public:
     }
 
     /// Mark a connection as reconnected (resume processing).
-    /// Safe to call while the reactor is running for the connected flag.
+    /// Safe to call while the reactor is running.
     ///
-    /// Synchronization protocol (disable → fence → swap → enable):
-    ///  1. Set connected=false with release semantics so the RX loop's
-    ///     next acquire-load sees the disconnected state.
-    ///  2. Issue a seq_cst fence to ensure the RX loop has observed the
-    ///     disabled flag before we mutate session/tuple.  Without this
-    ///     fence, the RX loop could have already loaded connected=true
-    ///     (from the previous state) and proceed to dereference the
-    ///     session pointer while we are swapping it.
-    ///  3. Swap session pointer, tuple, and hash while the RX loop is
-    ///     guaranteed to skip this entry.
-    ///  4. Set connected=true with release semantics to re-enable the entry.
+    /// Synchronization protocol:
+    ///  1. Set connected=false (release) so the RX loop's next
+    ///     acquire-load sees the disabled state and skips this entry.
+    ///  2. Atomically store the new session pointer (release).  The RX
+    ///     loop loads session with acquire AFTER its connected check,
+    ///     so it either sees the old session (still valid — caller must
+    ///     keep old session alive until the next burst cycle) or the
+    ///     new one.  Either way, the pointer is valid.
+    ///  3. Update tuple and hash (non-atomic, but only the hash pre-filter
+    ///     and tuple match use them — a stale value causes at most one
+    ///     missed or extra packet, not UB).
+    ///  4. Set connected=true (release) to re-enable the entry.
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
         if (!new_session) return;
         if (conn_id < count_.load(std::memory_order_acquire)) {
             // Step 1: Disable so the RX loop skips this entry.
             entries_[conn_id].connected.store(false, std::memory_order_release);
 
-            // Step 2: Fence ensures any RX loop iteration that loaded
-            // connected=true (old value) has fully completed before we
-            // touch the session pointer.  The RX loop's acquire-load
-            // pairs with this fence to establish happens-before.
-            std::atomic_thread_fence(std::memory_order_seq_cst);
+            // Step 2: Atomically swap session pointer.
+            entries_[conn_id].session.store(new_session, std::memory_order_release);
 
-            // Step 3: Safe to swap — RX loop will skip this entry.
-            entries_[conn_id].session = new_session;
+            // Step 3: Update tuple and hash for the new connection.
             entries_[conn_id].tuple = new_session->connection_tuple();
             hashes_[conn_id] = ReactorEntry::hash_tuple(entries_[conn_id].tuple);
 
@@ -287,8 +292,17 @@ private:
                         break;
                     }
 
+                    // Load session pointer once into a local — safe even if
+                    // mark_reconnected() atomically swaps it concurrently.
+                    auto* sess = entry.session.load(std::memory_order_acquire);
+                    if (!sess) {
+                        rte_pktmbuf_free(pkts[i]);
+                        matched = true;
+                        break;
+                    }
+
                     // Propagate arrival TSC for latency measurement
-                    entry.session->set_last_rx_burst_tsc(burst_tsc);
+                    sess->set_last_rx_burst_tsc(burst_tsc);
 
                     // Direct dispatch — zero ring overhead.
                     // process_rx handles TCP state (seq/ack/flags) and
@@ -296,7 +310,7 @@ private:
                     // process_rx takes ownership of pkts[i] — it frees the mbuf
                     // internally via free_list or on error via free_remaining.
                     // No additional rte_pktmbuf_free needed on the matched path.
-                    auto result = entry.session->process_rx(
+                    auto result = sess->process_rx(
                         &pkts[i], 1,
                         [&](const uint8_t* data, uint16_t len) {
                             entry.on_data(data, len, j);

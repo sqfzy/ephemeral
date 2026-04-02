@@ -132,8 +132,16 @@ build_http_request(std::string_view method,
         req.append(std::format("Content-Length: {}\r\n", body.size()));
     }
 
-    // User-supplied extra headers (must already be \r\n terminated per header)
+    // User-supplied extra headers (must already be \r\n terminated per header).
+    // Reject if it contains a blank line (\r\n\r\n) which would terminate
+    // headers early — this prevents HTTP request smuggling via header injection.
     if (!extra_headers.empty()) {
+        if (extra_headers.find("\r\n\r\n") != std::string_view::npos) {
+            SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+                "build_http_request: extra_headers contains blank line (potential injection)");
+            return std::unexpected(std::string(
+                "extra_headers must not contain \\r\\n\\r\\n (header injection risk)"));
+        }
         req.append(extra_headers);
     }
 
@@ -534,7 +542,11 @@ private:
         }
 
         // Attach fd to SSL
-        SSL_set_fd(ssl, fd);
+        if (!SSL_set_fd(ssl, fd)) {
+            auto err = detail::ssl_last_error();
+            SPDLOG_LOGGER_ERROR(log, "SSL_set_fd failed: {}", err);
+            return std::unexpected(std::format("SSL_set_fd failed: {}", err));
+        }
 
         // Perform handshake (may require multiple iterations for non-blocking)
         auto deadline = std::chrono::steady_clock::now() + config_.timeout;
@@ -770,7 +782,22 @@ public:
         // Use case-insensitive find_header instead of manual substring search
         auto cl_value = find_header(headers_raw, "Content-Length");
         if (cl_value.empty()) {
-            // No Content-Length — rely on connection close
+            // No Content-Length — check for chunked transfer encoding.
+            auto te = find_header(headers_raw, "Transfer-Encoding");
+            if (te.find("chunked") != std::string_view::npos) {
+                // Chunked: complete when final chunk marker "0\r\n\r\n" is present
+                return buf.find("0\r\n\r\n", body_start) != std::string_view::npos
+                    || buf.find("\r\n0\r\n\r\n", body_start) != std::string_view::npos;
+            }
+            // Neither Content-Length nor chunked — rely on connection close.
+            // Cap total buffer to prevent unbounded growth.
+            constexpr size_t kMaxNoClBuffer = 16 * 1024 * 1024; // 16 MiB
+            if (buf.size() > kMaxNoClBuffer) {
+                SPDLOG_LOGGER_WARN(detail::http_client_logger(),
+                    "Response without Content-Length exceeds {} bytes, "
+                    "treating as complete", kMaxNoClBuffer);
+                return true;
+            }
             return false;
         }
 

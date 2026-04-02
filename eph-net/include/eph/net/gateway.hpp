@@ -238,26 +238,43 @@ public:
     }
 
     /// Run one health check cycle (called by monitor loop or manually).
+    /// Health-change callbacks are invoked OUTSIDE the lock to prevent
+    /// deadlock if callbacks call back into Gateway methods.
     void check_health() noexcept {
-        std::lock_guard lock(mu_);
-        for (size_t i = 0; i < connections_.size(); ++i) {
-            auto& c = connections_[i];
-            if (c.health == ConnHealth::Stopped) continue;
+        // Collect health changes under lock, then notify outside.
+        struct HealthChange {
+            size_t idx;
+            std::string tag;
+            ConnHealth old_h;
+            ConnHealth new_h;
+        };
+        std::vector<HealthChange> changes;
 
-            ConnHealth old_h = c.health;
-            if (c.is_running_fn && c.is_running_fn(c.transport_ptr)) {
-                c.health = ConnHealth::Healthy;
-            } else {
-                c.health = ConnHealth::Disconnected;
-            }
+        {
+            std::lock_guard lock(mu_);
+            for (size_t i = 0; i < connections_.size(); ++i) {
+                auto& c = connections_[i];
+                if (c.health == ConnHealth::Stopped) continue;
 
-            if (old_h != c.health) {
-                SPDLOG_LOGGER_WARN(detail::gateway_logger(), "Gateway: [{}] '{}' health {} → {}",
-                            i, c.tag, conn_health_name(old_h),
-                            conn_health_name(c.health));
-                if (config_.on_health_change) {
-                    config_.on_health_change(c.tag, old_h, c.health);
+                ConnHealth old_h = c.health;
+                if (c.is_running_fn && c.is_running_fn(c.transport_ptr)) {
+                    c.health = ConnHealth::Healthy;
+                } else {
+                    c.health = ConnHealth::Disconnected;
                 }
+
+                if (old_h != c.health) {
+                    changes.push_back({i, c.tag, old_h, c.health});
+                }
+            }
+        }
+
+        for (auto& ch : changes) {
+            SPDLOG_LOGGER_WARN(detail::gateway_logger(), "Gateway: [{}] '{}' health {} → {}",
+                        ch.idx, ch.tag, conn_health_name(ch.old_h),
+                        conn_health_name(ch.new_h));
+            if (config_.on_health_change) {
+                config_.on_health_change(ch.tag, ch.old_h, ch.new_h);
             }
         }
     }
@@ -265,7 +282,9 @@ public:
     /// Formatted status dump of all connections.
     [[nodiscard]] std::string dump() const {
         std::lock_guard lock(mu_);
-        std::string result = std::format("Gateway: {} connections\n", connections_.size());
+        bool monitoring = monitor_running_.load(std::memory_order_relaxed);
+        std::string result = std::format("Gateway: {} connections, monitor={}\n",
+            connections_.size(), monitoring ? "running" : "stopped");
         for (size_t i = 0; i < connections_.size(); ++i) {
             auto& c = connections_[i];
             bool running = c.is_running_fn ? c.is_running_fn(c.transport_ptr) : false;

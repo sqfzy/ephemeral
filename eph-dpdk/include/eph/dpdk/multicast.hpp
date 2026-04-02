@@ -178,9 +178,9 @@ struct ParsedUdpPacket {
     if (ihl < net::kIpv4HeaderLen) return {};
     if (ip->next_proto_id != net::kIpProtoUdp) return {};
 
-    // UDP header
+    // UDP header — validate IHL doesn't overshoot the packet
     uint16_t udp_offset = net::kEtherHeaderLen + ihl;
-    if (pkt_len < udp_offset + kUdpHeaderLen) return {};
+    if (udp_offset + kUdpHeaderLen > pkt_len) return {};
 
     auto* udp = reinterpret_cast<const UdpHeader*>(data + udp_offset);
     uint16_t udp_len = net::ntoh16(udp->length);

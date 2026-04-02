@@ -72,7 +72,14 @@ struct TransportHandle {
 class KillSwitch {
 public:
     KillSwitch() noexcept = default;
-    ~KillSwitch() noexcept { shutdown(); }
+    ~KillSwitch() noexcept {
+        shutdown();
+        // Deregister signal handlers and null out the global instance pointer
+        // to prevent use-after-free if a signal arrives after destruction.
+        s_instance_.store(nullptr, std::memory_order_release);
+        std::signal(SIGINT, SIG_DFL);
+        std::signal(SIGTERM, SIG_DFL);
+    }
 
     KillSwitch(const KillSwitch&) = delete;
     KillSwitch& operator=(const KillSwitch&) = delete;

@@ -61,6 +61,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Cleanup trap (setup mode only) ───────────────────────────────────────────
+# Track which resources were allocated so we can roll back on failure.
+HUGEPAGES_ALLOCATED=false
+NIC_BOUND=false
+
+cleanup_on_failure() {
+    if [[ "$MODE" != "setup" ]]; then return; fi
+    local exit_code=$?
+    if [[ $exit_code -eq 0 ]]; then return; fi
+    warn "Setup failed (exit=$exit_code) — rolling back partial changes..."
+    if [[ "$NIC_BOUND" == "true" ]] && [[ -n "${ORIGINAL_DRIVER:-}" ]]; then
+        warn "Attempting to rebind NIC $PCI_ADDR to $ORIGINAL_DRIVER"
+        "$DEVBIND" -b "$ORIGINAL_DRIVER" "$PCI_ADDR" 2>/dev/null || true
+    fi
+    if [[ "$HUGEPAGES_ALLOCATED" == "true" ]]; then
+        warn "Releasing hugepages..."
+        echo 0 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages 2>/dev/null || true
+    fi
+}
+trap cleanup_on_failure EXIT
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 find_devbind() {
@@ -141,6 +162,7 @@ setup_hugepages() {
     fi
 
     echo "$HUGEPAGES" > "/sys/kernel/mm/hugepages/hugepages-${size_kb}kB/nr_hugepages"
+    HUGEPAGES_ALLOCATED=true
     local actual
     actual=$(grep HugePages_Total /proc/meminfo | awk '{print $2}')
     if [[ "$actual" -ge "$HUGEPAGES" ]]; then
@@ -320,7 +342,10 @@ setup_nic() {
     fi
 
     # Bind and verify — devbind exits 0 even on some warnings, so check status
+    # Save original driver for rollback on failure
+    ORIGINAL_DRIVER=$($devbind --status-dev net 2>/dev/null | grep "$PCI_ADDR" | grep -o "drv=[^ ]*" | cut -d= -f2 || true)
     $devbind -b vfio-pci "$PCI_ADDR"
+    NIC_BOUND=true
     if $devbind --status-dev net 2>/dev/null | grep "$PCI_ADDR" | grep -q "drv=vfio-pci"; then
         info "Bound ${PCI_ADDR} to vfio-pci"
     else
