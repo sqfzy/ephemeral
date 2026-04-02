@@ -280,6 +280,7 @@ run_socket_benchmarks() {
     log_info "Running bench_market (socket)..."
     "$BUILD_DIR/bench_market" \
         --server-ip "$IP_A" \
+        --bind-dev "$NIC_B" \
         --port "$MOCK_PORT" \
         --symbols "$SYMBOLS" \
         --duration "$DURATION" \
@@ -289,6 +290,7 @@ run_socket_benchmarks() {
     log_info "Running bench_order_rtt (socket)..."
     "$BUILD_DIR/bench_order_rtt" \
         --server-ip "$IP_A" \
+        --bind-dev "$NIC_B" \
         --port "$MOCK_PORT" \
         --symbols "$SYMBOLS" \
         --duration "$DURATION" \
