@@ -10,7 +10,7 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/websocket.hpp"
+#include "eph/transport/websocket.hpp"
 
 using namespace eph::net::ws;
 

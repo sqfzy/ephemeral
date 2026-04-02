@@ -7,7 +7,7 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/http.hpp"
+#include "eph/transport/http.hpp"
 
 using namespace eph::net::http;
 

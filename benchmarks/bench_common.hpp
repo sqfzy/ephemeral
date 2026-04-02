@@ -21,7 +21,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/net/transport_types.hpp"
+#include "eph/transport/transport_types.hpp"
 #include "eph/utils/hdr_histogram.hpp"
 #include "eph/utils/time.hpp"
 

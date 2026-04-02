@@ -31,7 +31,7 @@ A custom framer for a proprietary protocol with a 4-byte header:
 ```
 
 ```cpp
-#include "eph/net/framer_concept.hpp"
+#include "eph/core/framer_concept.hpp"
 
 class FixedHeaderFramer {
 public:

@@ -30,10 +30,12 @@
 #include <openssl/mem.h>     // OPENSSL_cleanse
 #include <openssl/ssl.h>
 
-#include "eph/net/detail/json_escape.hpp"
-#include "eph/net/tcp_concept.hpp"
+#include "eph/core/detail/json_escape.hpp"
+#include "eph/core/tcp_concept.hpp"
 
 namespace eph::net {
+
+namespace detail { using eph::core::detail::json_escape; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS constants

@@ -7,8 +7,8 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <eph/net/framer_concept.hpp>
-#include <eph/net/websocket.hpp>
+#include <eph/core/framer_concept.hpp>
+#include <eph/transport/websocket.hpp>
 
 namespace eph::net {
 

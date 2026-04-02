@@ -23,6 +23,8 @@
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/net/proxy.hpp"
 #include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport.hpp"
+#include "eph/transport/ws_framer.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/utils/cpu.hpp"
 

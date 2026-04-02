@@ -36,6 +36,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport.hpp"
 #include "eph/utils/recorder.hpp"
 #include "eph/utils/time.hpp"
 

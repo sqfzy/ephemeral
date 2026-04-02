@@ -9,7 +9,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "eph/net/websocket.hpp"
+#include "eph/transport/websocket.hpp"
 
 namespace {
 

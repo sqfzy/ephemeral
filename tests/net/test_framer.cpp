@@ -9,10 +9,10 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/framer_concept.hpp"
-#include "eph/net/length_prefix_framer.hpp"
-#include "eph/net/raw_framer.hpp"
-#include "eph/net/ws_framer.hpp"
+#include "eph/core/framer_concept.hpp"
+#include "eph/core/length_prefix_framer.hpp"
+#include "eph/transport/raw_framer.hpp"
+#include "eph/transport/ws_framer.hpp"
 
 using namespace eph::net;
 

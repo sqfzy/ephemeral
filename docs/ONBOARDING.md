@@ -224,12 +224,12 @@ Communication between threads uses the lock-free `BoundedQueue` from eph-contain
 
 | What you want to understand | Start here |
 |-----------------------------|-----------|
-| How connections are established | `eph/net/transport.hpp` -- `Transport::create()` |
+| How connections are established | `eph/transport/transport.hpp` -- `Transport::create()` |
 | The TCP abstraction all backends implement | `eph/core/tcp_concept.hpp` -- `TcpTransport` concept |
 | POSIX socket backend | `eph/net/socket_transport.hpp` |
 | DPDK backend | `eph/dpdk/tcp.hpp` |
-| WebSocket framing | `eph/net/ws_framer.hpp` and `eph/net/websocket.hpp` |
-| TLS 1.3 layer | `eph/net/tls_session.hpp` and `eph/net/tls_record.hpp` |
+| WebSocket framing | `eph/transport/ws_framer.hpp` and `eph/transport/websocket.hpp` |
+| TLS 1.3 layer | `eph/transport/tls_session.hpp` and `eph/transport/tls_record.hpp` |
 | Multi-connection management | `eph/net/gateway.hpp` -- `Gateway` class |
 | FIX protocol | `eph/fix/parser.hpp` (read) and `eph/fix/builder.hpp` (write) |
 | ITCH protocol | `eph/itch/parser.hpp` and `eph/itch/messages.hpp` |

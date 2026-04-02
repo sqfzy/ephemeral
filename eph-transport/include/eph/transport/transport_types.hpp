@@ -24,10 +24,12 @@
 #include <string_view>
 #include <vector>
 
-#include "eph/net/detail/json_escape.hpp"
+#include "eph/core/detail/json_escape.hpp"
 #include "eph/core/transport_errors.hpp"
 
 namespace eph::net {
+
+namespace detail { using eph::core::detail::json_escape; }
 
 // ---------------------------------------------------------------------------
 // Batch frame filter for selective delivery

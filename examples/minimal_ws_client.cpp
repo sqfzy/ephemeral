@@ -24,6 +24,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport.hpp"
 
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);

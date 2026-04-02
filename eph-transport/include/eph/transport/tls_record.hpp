@@ -21,7 +21,7 @@
 
 #include <openssl/aead.h>
 
-#include "eph/net/tls_session.hpp"
+#include "eph/transport/tls_session.hpp"
 
 namespace eph::net {
 

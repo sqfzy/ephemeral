@@ -23,8 +23,8 @@
 
 #include <benchmark/benchmark.h>
 
-#include "eph/net/tls_record.hpp"
-#include "eph/net/websocket.hpp"
+#include "eph/transport/tls_record.hpp"
+#include "eph/transport/websocket.hpp"
 
 namespace {
 

@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/tls_record.hpp"
+#include "eph/transport/tls_record.hpp"
 
 using namespace eph::net;
 

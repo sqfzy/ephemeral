@@ -6,7 +6,7 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/socket_transport.hpp"
+#include "eph/net/socket_connect.hpp"
 
 using namespace eph::net;
 

@@ -20,11 +20,11 @@
 
 #include <benchmark/benchmark.h>
 
-#include "eph/net/length_prefix_framer.hpp"
-#include "eph/net/raw_framer.hpp"
-#include "eph/net/tls_record.hpp"
-#include "eph/net/transport_types.hpp"
-#include "eph/net/websocket.hpp"
+#include "eph/core/length_prefix_framer.hpp"
+#include "eph/transport/raw_framer.hpp"
+#include "eph/transport/tls_record.hpp"
+#include "eph/transport/transport_types.hpp"
+#include "eph/transport/websocket.hpp"
 
 namespace {
 

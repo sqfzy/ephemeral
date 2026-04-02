@@ -24,6 +24,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration

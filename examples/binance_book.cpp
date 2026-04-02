@@ -23,6 +23,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport.hpp"
 #include "eph/json/parser.hpp"
 #include "eph/json/adapters/binance.hpp"
 #include "eph/book/binance_adapter.hpp"

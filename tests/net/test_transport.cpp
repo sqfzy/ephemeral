@@ -17,10 +17,10 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/http.hpp"
-#include "eph/net/tcp_concept.hpp"
-#include "eph/net/transport.hpp"
-#include "eph/net/websocket.hpp"
+#include "eph/transport/http.hpp"
+#include "eph/core/tcp_concept.hpp"
+#include "eph/transport/transport.hpp"
+#include "eph/transport/websocket.hpp"
 
 using namespace eph::net;
 using namespace std::chrono_literals;

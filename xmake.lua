@@ -74,12 +74,22 @@ target("eph-core")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
+target("eph-transport")
+    set_kind("headeronly")
+    add_includedirs("eph-transport/include", { public = true })
+    add_headerfiles("eph-transport/include/(eph/transport/**.hpp)")
+    add_deps("eph-core", "eph-utils", "eph-containers", { public = true })
+    add_packages("spdlog", "aws-lc", { public = true })
+    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
+    add_rules("utils.install.cmake_importfiles")
+    add_rules("utils.install.pkgconfig_importfiles")
+
 target("eph-net")
     set_kind("headeronly")
     add_includedirs("eph-net/include", { public = true })
     add_headerfiles("eph-net/include/(eph/net/**.hpp)")
-    add_deps("eph-core", "eph-utils", "eph-containers", { public = true })
-    add_packages("spdlog", "aws-lc", { public = true })
+    add_deps("eph-transport", { public = true })
+    add_packages("spdlog", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
@@ -137,15 +147,15 @@ target("eph-dpdk")
     add_includedirs("eph-dpdk/include", { public = true })
     add_headerfiles("eph-dpdk/include/(eph/dpdk/**.hpp)")
     add_headerfiles("eph-dpdk/include/(eph/dpdk.hpp)")
-    -- DPDK backend needs TcpTransport concept and public types from eph-core
-    -- (tcp_concept.hpp, transport_errors.hpp), plus eph-net headers for
-    -- Transport type aliases in types.hpp. We include eph-net's path directly
-    -- to avoid inheriting eph-net's aws-lc package dependency.
+    -- DPDK backend needs eph-transport headers for Transport template and
+    -- protocol stack. We use add_includedirs instead of add_deps to control
+    -- include path ordering: aws-lc's <openssl/*.h> MUST appear before
+    -- vcpkg DPDK's bundled OpenSSL (incompatible type definitions).
+    -- add_deps("eph-transport") resolves transitive package paths in an
+    -- order that places vcpkg before aws-lc, causing header conflicts.
     add_deps("eph-core", "eph-utils", "eph-containers", { public = true })
-    add_includedirs("eph-net/include", { public = true })
+    add_includedirs("eph-transport/include", { public = true })
     add_packages("spdlog", { public = true })
-    -- aws-lc is optional: only needed when using Transport<TcpSession> aliases
-    -- from types.hpp. Raw DPDK TCP (tcp.hpp) works without it.
     add_packages("aws-lc", { public = true })
     add_packages("dpdk", { public = true })
     -- vcpkg's DPDK install includes fmt headers (compiled library, not header-only).
@@ -173,6 +183,7 @@ target("eph-dpdk")
 
 local bench_module_deps = {
     containers = "eph-containers",
+    core       = "eph-core",
     utils      = "eph-utils",
     net        = "eph-net",
     itch       = "eph-itch",
@@ -205,6 +216,14 @@ target("bench_array_book")
     set_group("benchmarks")
     set_default(false)
     add_files("benchmarks/book/bench_array_book.cpp")
+    add_deps("eph-book", "eph-json")
+    add_packages("benchmark")
+
+target("bench_map_book")
+    set_kind("binary")
+    set_group("benchmarks")
+    set_default(false)
+    add_files("benchmarks/book/bench_map_book.cpp")
     add_deps("eph-book", "eph-json")
     add_packages("benchmark")
 
@@ -283,6 +302,24 @@ target("test_binance_rest")
     set_default(false)
     add_files("tests/json/test_binance_rest.cpp")
     add_deps("eph-json", "eph-net")
+    add_packages("gtest")
+    add_defines("SPDLOG_NO_EXCEPTIONS")
+
+target("test_parse_number")
+    set_kind("binary")
+    set_group("tests")
+    set_default(false)
+    add_files("tests/core/test_parse_number.cpp")
+    add_deps("eph-core")
+    add_packages("gtest")
+    add_defines("SPDLOG_NO_EXCEPTIONS")
+
+target("test_transport_errors")
+    set_kind("binary")
+    set_group("tests")
+    set_default(false)
+    add_files("tests/core/test_transport_errors.cpp")
+    add_deps("eph-core")
     add_packages("gtest")
     add_defines("SPDLOG_NO_EXCEPTIONS")
 

@@ -8,9 +8,9 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/net/transport_types.hpp"
-#include "eph/net/websocket.hpp"
-#include "eph/net/socket_transport.hpp"
+#include "eph/transport/transport_types.hpp"
+#include "eph/transport/websocket.hpp"
+#include "eph/net/socket_connect.hpp"
 
 using namespace eph::net;
 

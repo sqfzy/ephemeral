@@ -34,7 +34,7 @@
 #include <rte_mbuf.h>
 
 #include "eph/dpdk/net_header.hpp"
-#include "eph/net/tcp_concept.hpp"
+#include "eph/core/tcp_concept.hpp"
 #include "eph/utils/time.hpp"
 
 namespace eph::dpdk {
