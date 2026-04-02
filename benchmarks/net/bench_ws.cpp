@@ -83,4 +83,70 @@ static void BM_WsDecode(benchmark::State& state) {
 }
 BENCHMARK(BM_WsDecode)->Apply(PayloadSizeArgs);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket control frame build (ping/pong) — covers null-pointer guard path
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_WsBuildPing_Empty(benchmark::State& state) {
+    uint8_t buf[64];
+    for (auto _ : state) {
+        auto n = eph::net::ws::build_ping_frame(buf);
+        benchmark::DoNotOptimize(n);
+    }
+}
+BENCHMARK(BM_WsBuildPing_Empty);
+
+static void BM_WsBuildPing_WithPayload(benchmark::State& state) {
+    uint8_t payload[32];
+    fill_random(payload, sizeof(payload));
+    uint8_t buf[64];
+    for (auto _ : state) {
+        auto n = eph::net::ws::build_ping_frame(buf, payload, sizeof(payload));
+        benchmark::DoNotOptimize(n);
+    }
+}
+BENCHMARK(BM_WsBuildPing_WithPayload);
+
+static void BM_WsBuildPong(benchmark::State& state) {
+    uint8_t payload[32];
+    fill_random(payload, sizeof(payload));
+    uint8_t buf[64];
+    for (auto _ : state) {
+        auto n = eph::net::ws::build_pong_frame(buf, payload, sizeof(payload));
+        benchmark::DoNotOptimize(n);
+    }
+}
+BENCHMARK(BM_WsBuildPong);
+
+static void BM_WsBuildClose(benchmark::State& state) {
+    uint8_t buf[64];
+    for (auto _ : state) {
+        auto n = eph::net::ws::build_close_frame(buf,
+            eph::net::ws::close_code::kNormal, "bye");
+        benchmark::DoNotOptimize(n);
+    }
+}
+BENCHMARK(BM_WsBuildClose);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket encode+decode roundtrip (full pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_WsRoundtrip(benchmark::State& state) {
+    auto sz = static_cast<size_t>(state.range(0));
+    std::vector<uint8_t> payload(sz);
+    fill_random(payload.data(), sz);
+    std::vector<uint8_t> frame_buf(eph::net::ws::kMaxFrameHeaderLen + sz);
+
+    for (auto _ : state) {
+        auto enc_len = eph::net::ws::encode_frame(
+            frame_buf.data(), eph::net::ws::opcode::kBinary,
+            payload.data(), sz);
+        auto r = eph::net::ws::decode_frame(frame_buf.data(), enc_len);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(sz));
+}
+BENCHMARK(BM_WsRoundtrip)->Apply(PayloadSizeArgs);
+
 BENCHMARK_MAIN();
