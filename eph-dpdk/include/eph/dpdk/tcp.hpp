@@ -289,7 +289,7 @@ public:
         , snd_nxt_(generate_isn().value_or(1))
         , snd_una_(snd_nxt_)
         , rcv_nxt_(0)
-        , rcv_wnd_(config.recv_window)
+        , rcv_wnd_(static_cast<uint16_t>(config.recv_window))
         , snd_wnd_(0) {
 
         if (!pool_) [[unlikely]] {
@@ -584,7 +584,9 @@ public:
 
     /// Build a data packet into a pre-allocated mbuf (hot path, no alloc).
     /// Returns the mbuf ready for tx_burst, or nullptr on error.
-    /// Caller is responsible for tx_burst and updating stats.
+    /// @warning snd_nxt_ is advanced immediately. Caller MUST transmit the
+    ///          returned mbuf via tx_burst. If TX fails, the session sequence
+    ///          numbers are inconsistent and must be reset().
     rte_mbuf* build_data_packet(rte_mbuf* mbuf,
                                 const void* data, uint16_t len) noexcept {
         if (state_ != TcpState::Established || len > config_.mss) return nullptr;
@@ -660,11 +662,19 @@ public:
                 }
                 snd_wnd_ = parsed.window();
 
-                // RFC 793 §3.5: In CLOSING state, receiving the ACK of our FIN
-                // (i.e. snd_una_ has now caught up to snd_nxt_) moves us to TIME_WAIT.
-                if (state_ == TcpState::Closing && snd_una_ == snd_nxt_) {
-                    SPDLOG_LOGGER_DEBUG(log, "CLOSING: received ACK of FIN -> TIME_WAIT");
-                    enter_time_wait();
+                // RFC 793 §3.5: ACK of our FIN (snd_una_ catches up to snd_nxt_)
+                // drives state transitions depending on current state.
+                if (snd_una_ == snd_nxt_) {
+                    if (state_ == TcpState::FinWait1) {
+                        SPDLOG_LOGGER_DEBUG(log, "FIN_WAIT_1: received ACK of FIN -> FIN_WAIT_2");
+                        state_ = TcpState::FinWait2;
+                    } else if (state_ == TcpState::Closing) {
+                        SPDLOG_LOGGER_DEBUG(log, "CLOSING: received ACK of FIN -> TIME_WAIT");
+                        enter_time_wait();
+                    } else if (state_ == TcpState::LastAck) {
+                        SPDLOG_LOGGER_DEBUG(log, "LAST_ACK: received ACK of FIN -> CLOSED");
+                        state_ = TcpState::Closed;
+                    }
                 }
             }
 

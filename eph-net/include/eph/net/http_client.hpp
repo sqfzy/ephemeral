@@ -693,8 +693,12 @@ private:
                     strerror(errno)));
             }
             if (poll_ret == 0) {
-                // Timeout — if we have headers, this may be fine (connection: close)
-                break;
+                // Timeout — only acceptable if the response is already complete.
+                // For Connection: close without Content-Length, we rely on
+                // recv() returning 0 (server closes), not poll timeout.
+                if (is_response_complete(buf)) break;
+                return std::unexpected(std::format(
+                    "Receive timeout (got {}B, response incomplete)", buf.size()));
             }
 
             ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
@@ -754,10 +758,18 @@ private:
                 break;
             }
             if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                // Re-check deadline — remaining may have gone negative since
+                // the check at the top of the loop, which would cause poll()
+                // to block indefinitely (negative timeout = infinite wait).
+                auto remaining_now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now());
+                if (remaining_now.count() <= 0) {
+                    return std::unexpected(std::string("SSL receive timeout"));
+                }
                 struct pollfd pfd{};
                 pfd.fd = fd;
                 pfd.events = (err == SSL_ERROR_WANT_READ) ? POLLIN : POLLOUT;
-                int prc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+                int prc = ::poll(&pfd, 1, static_cast<int>(remaining_now.count()));
                 if (prc < 0 && errno != EINTR) {
                     return std::unexpected(std::format(
                         "SSL recv poll failed: {}", strerror(errno)));

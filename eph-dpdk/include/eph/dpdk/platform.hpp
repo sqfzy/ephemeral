@@ -75,6 +75,9 @@ constexpr uint16_t clamp_desc(uint16_t requested,
     if (nb_align > 1)
         n = static_cast<uint16_t>(
             ((n + nb_align - 1) / nb_align) * nb_align);
+    // Re-clamp after alignment rounding — alignment can push past nb_max
+    // (e.g. nb_max=255, nb_align=64 → 256 without re-clamp).
+    n = std::min(n, nb_max);
     return n;
 }
 
@@ -334,14 +337,18 @@ struct Platform::Impl {
         // max_rx/tx_queues causes rte_eth_dev_configure to fail with EINVAL.
         uint16_t nb_rx = std::min(config.nb_rx_queues, dev_info.max_rx_queues);
         uint16_t nb_tx = std::min(config.nb_tx_queues, dev_info.max_tx_queues);
-        if (nb_rx != config.nb_rx_queues)
+        if (nb_rx != config.nb_rx_queues) {
             SPDLOG_LOGGER_WARN(log,
                 "nb_rx_queues={} exceeds NIC max={}; clamped to {}",
                 config.nb_rx_queues, dev_info.max_rx_queues, nb_rx);
-        if (nb_tx != config.nb_tx_queues)
+            config.nb_rx_queues = nb_rx;
+        }
+        if (nb_tx != config.nb_tx_queues) {
             SPDLOG_LOGGER_WARN(log,
                 "nb_tx_queues={} exceeds NIC max={}; clamped to {}",
                 config.nb_tx_queues, dev_info.max_tx_queues, nb_tx);
+            config.nb_tx_queues = nb_tx;
+        }
 
         rte_eth_conf eth_conf{};
         // No offloads requested — conservative default for minimal setup.

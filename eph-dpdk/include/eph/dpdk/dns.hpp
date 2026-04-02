@@ -446,6 +446,11 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
     if (ip->next_proto_id != net::kIpProtoUdp) return std::nullopt;
     if (net::ntoh32(ip->src_addr) != nameserver_ip) return std::nullopt;
 
+    // Re-check total length with actual IHL — IP options can extend the header
+    // beyond the 20-byte minimum used in min_len above.
+    if (net::kEtherHeaderLen + ihl + kUdpHeaderLen + kDnsHeaderLen > mbuf->data_len)
+        return std::nullopt;
+
     // Check UDP source port = 53
     auto* udp = reinterpret_cast<const UdpHeader*>(
         pkt + net::kEtherHeaderLen + ihl);

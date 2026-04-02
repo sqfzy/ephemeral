@@ -191,21 +191,32 @@ public:
                 } else {
                     SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: [{}] '{}' already running, skipping start", i, c.tag);
                 }
-                c.health = ConnHealth::Healthy;
+                // Verify the transport actually started before marking healthy
+                c.health = c.is_running_fn(c.transport_ptr)
+                    ? ConnHealth::Healthy : ConnHealth::Disconnected;
             }
         }
     }
 
     /// Stop all running connections.
+    /// Snapshots under lock, then calls stop outside the lock to avoid
+    /// deadlock if the transport's stop() calls back into Gateway.
     void stop_all() noexcept {
-        std::lock_guard lock(mu_);
-        for (size_t i = 0; i < connections_.size(); ++i) {
-            auto& c = connections_[i];
-            if (c.health != ConnHealth::Stopped && c.stop_fn) {
-                SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping [{}] '{}'", i, c.tag);
-                c.stop_fn(c.transport_ptr);
-                c.health = ConnHealth::Stopped;
+        struct StopTarget { size_t idx; std::string tag; void* ptr; void (*fn)(void*); };
+        std::vector<StopTarget> targets;
+        {
+            std::lock_guard lock(mu_);
+            for (size_t i = 0; i < connections_.size(); ++i) {
+                auto& c = connections_[i];
+                if (c.health != ConnHealth::Stopped && c.stop_fn) {
+                    targets.push_back({i, c.tag, c.transport_ptr, c.stop_fn});
+                    c.health = ConnHealth::Stopped;
+                }
             }
+        }
+        for (auto& t : targets) {
+            SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping [{}] '{}'", t.idx, t.tag);
+            t.fn(t.ptr);
         }
     }
 

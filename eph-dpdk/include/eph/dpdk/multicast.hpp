@@ -256,7 +256,8 @@ struct MulticastGroupEntry {
     bool           active = false;
 
     /// Packet counter for diagnostics.
-    uint64_t rx_packets = 0;
+    /// Atomic: written by RX thread, readable from any thread for stats.
+    std::atomic<uint64_t> rx_packets = 0;
 };
 
 } // namespace detail
@@ -549,7 +550,7 @@ public:
     }
 
     [[nodiscard]] uint64_t total_rx_packets() const noexcept {
-        return total_rx_packets_;
+        return total_rx_packets_.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]] const MulticastConfig& config() const noexcept {
@@ -694,8 +695,8 @@ private:
             }
 
             // Match found — deliver payload
-            ++entry.rx_packets;
-            ++total_rx_packets_;
+            entry.rx_packets.fetch_add(1, std::memory_order_relaxed);
+            total_rx_packets_.fetch_add(1, std::memory_order_relaxed);
 
             if (parsed.payload && parsed.payload_len > 0) {
                 SPDLOG_LOGGER_TRACE(detail::multicast_logger(),
@@ -718,7 +719,8 @@ private:
     MulticastPacketCallback callback_;
     std::atomic<bool> running_{false};
     std::thread thread_;
-    uint64_t total_rx_packets_ = 0;
+    // Atomic: written by RX thread, readable from any thread for stats.
+    std::atomic<uint64_t> total_rx_packets_ = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

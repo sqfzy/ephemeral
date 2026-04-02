@@ -118,13 +118,15 @@ struct HandshakeIO {
         }
 
         while (filled < needed) {
-            if (std::chrono::steady_clock::now() >= deadline) {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (remaining.count() <= 0) {
                 return std::unexpected(std::format(
                     "proxy handshake read timeout (got {}/{} bytes)",
                     filled, needed));
             }
 
-            auto result = tcp.poll_rx([&](const uint8_t* data, uint16_t len) {
+            auto result = tcp.poll_rx_for([&](const uint8_t* data, uint16_t len) {
                 size_t want = needed - filled;
                 size_t take = std::min(static_cast<size_t>(len), want);
                 std::memcpy(out + filled, data, take);
@@ -133,7 +135,7 @@ struct HandshakeIO {
                 if (static_cast<size_t>(len) > take) {
                     buf.insert(buf.end(), data + take, data + len);
                 }
-            });
+            }, remaining);
 
             if (!result) {
                 return std::unexpected(std::format(
@@ -404,9 +406,13 @@ http_connect_handshake(SocketTransport& tcp,
     auto deadline = std::chrono::steady_clock::now() + cfg.timeout;
 
     while (std::chrono::steady_clock::now() < deadline) {
-        auto result = tcp.poll_rx([&](const uint8_t* data, uint16_t len) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) break;
+
+        auto result = tcp.poll_rx_for([&](const uint8_t* data, uint16_t len) {
             response.append(reinterpret_cast<const char*>(data), len);
-        });
+        }, remaining);
 
         if (!result) {
             return std::unexpected(std::format(
@@ -458,6 +464,18 @@ http_connect_handshake(SocketTransport& tcp,
             : "unknown";
         return std::unexpected(std::format(
             "HTTP CONNECT: proxy returned {} {}", status_code, reason));
+    }
+
+    // Warn if the proxy sent tunneled data after the response headers
+    // in the same TCP segment — those bytes are consumed from the socket
+    // and would be lost.  In practice proxies don't do this, but log it
+    // so a future debugger knows to look here if TLS handshakes fail.
+    auto hdr_end = response.find("\r\n\r\n");
+    if (hdr_end + 4 < response.size()) {
+        SPDLOG_LOGGER_WARN(log,
+            "HTTP CONNECT: {} leftover bytes after response headers "
+            "(tunneled data may be lost)",
+            response.size() - hdr_end - 4);
     }
 
     SPDLOG_LOGGER_INFO(log, "HTTP CONNECT tunnel established to {}:{}",
@@ -595,15 +613,18 @@ parse_proxy_url(std::string_view url) {
 
     cfg.host = std::string(url.substr(0, colon));
     auto port_str = url.substr(colon + 1);
-    int port_val = 0;
-    for (char c : port_str) {
-        if (c < '0' || c > '9') {
-            return std::unexpected(std::format(
-                "proxy URL invalid port: {}", port_str));
-        }
-        port_val = port_val * 10 + (c - '0');
+    if (port_str.empty()) {
+        return std::unexpected("proxy URL missing port number after ':'");
     }
-    if (port_val <= 0 || port_val > 65535) {
+    uint32_t port_val = 0;
+    auto [ptr, ec] = std::from_chars(port_str.data(),
+                                     port_str.data() + port_str.size(),
+                                     port_val);
+    if (ec != std::errc{} || ptr != port_str.data() + port_str.size()) {
+        return std::unexpected(std::format(
+            "proxy URL invalid port: {}", port_str));
+    }
+    if (port_val == 0 || port_val > 65535) {
         return std::unexpected(std::format(
             "proxy URL port out of range: {}", port_val));
     }
