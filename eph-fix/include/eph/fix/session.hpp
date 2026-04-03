@@ -44,10 +44,12 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <format>
 #include <functional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -134,6 +136,87 @@ struct FixSessionConfig {
         if (heartbeat_timeout_factor > 10.0)
             return "heartbeat_timeout_factor must be <= 10.0 (likely misconfiguration)";
         return {};
+    }
+
+    /// Multi-line formatted dump for logging/debugging.
+    /// Callbacks are shown as set/unset (closures cannot be serialized).
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "FixSessionConfig:\n"
+            "  sender_comp_id: {}\n"
+            "  target_comp_id: {}\n"
+            "  begin_string: {}\n"
+            "  heartbeat: {}s (timeout factor: {:.1f}x)\n"
+            "  reset_seq_on_logon: {}\n"
+            "  resend_on_gap: {}\n"
+            "  on_state_change: {}",
+            sender_comp_id, target_comp_id, begin_string,
+            heartbeat_interval_sec, heartbeat_timeout_factor,
+            reset_seq_on_logon, resend_on_gap,
+            static_cast<bool>(on_state_change));
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        // Minimal JSON escape for string fields — replace \ and " only.
+        // eph-fix does not depend on eph-core, so we inline a simple escape.
+        auto esc = [](std::string_view s) -> std::string {
+            std::string out;
+            out.reserve(s.size());
+            for (char c : s) {
+                if (c == '"')       out += "\\\"";
+                else if (c == '\\') out += "\\\\";
+                else                out += c;
+            }
+            return out;
+        };
+        return std::format(
+            "{{"
+            "\"sender_comp_id\":\"{}\",\"target_comp_id\":\"{}\","
+            "\"begin_string\":\"{}\","
+            "\"heartbeat_interval_sec\":{},\"heartbeat_timeout_factor\":{:.2f},"
+            "\"reset_seq_on_logon\":{},\"resend_on_gap\":{}}}",
+            esc(sender_comp_id), esc(target_comp_id),
+            esc(begin_string),
+            heartbeat_interval_sec, heartbeat_timeout_factor,
+            reset_seq_on_logon ? "true" : "false",
+            resend_on_gap ? "true" : "false");
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (heartbeat_interval_sec > 120)
+            w.emplace_back(std::format(
+                "heartbeat_interval_sec={} is unusually large (>120s) -- "
+                "may cause slow disconnect detection", heartbeat_interval_sec));
+        if (heartbeat_interval_sec < 5)
+            w.emplace_back(std::format(
+                "heartbeat_interval_sec={} is very short (<5s) -- "
+                "may generate excessive Heartbeat traffic", heartbeat_interval_sec));
+        if (!reset_seq_on_logon)
+            w.emplace_back("reset_seq_on_logon=false -- sequence numbers must "
+                           "be persisted across sessions to avoid gaps");
+        if (begin_string != "FIX.4.4" && begin_string != "FIX.4.2" &&
+            begin_string != "FIXT.1.1")
+            w.emplace_back(std::format(
+                "begin_string=\"{}\" is not a commonly used FIX version "
+                "(expected FIX.4.2, FIX.4.4, or FIXT.1.1)", begin_string));
+        return w;
+    }
+
+    /// Equality comparison. Callbacks are excluded (closures are not comparable).
+    [[nodiscard]] friend bool operator==(const FixSessionConfig& a,
+                                         const FixSessionConfig& b) noexcept {
+        return a.sender_comp_id          == b.sender_comp_id
+            && a.target_comp_id          == b.target_comp_id
+            && a.heartbeat_interval_sec  == b.heartbeat_interval_sec
+            && a.reset_seq_on_logon      == b.reset_seq_on_logon
+            && a.begin_string            == b.begin_string
+            && a.heartbeat_timeout_factor == b.heartbeat_timeout_factor
+            && a.resend_on_gap           == b.resend_on_gap;
     }
 };
 
@@ -803,3 +886,22 @@ private:
 };
 
 } // namespace eph::fix
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::fix::FixSessionConfig> : std::formatter<std::string> {
+    auto format(const eph::fix::FixSessionConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(c.dump(), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::fix::SessionState> : std::formatter<std::string_view> {
+    auto format(eph::fix::SessionState s, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::fix::session_state_name(s), ctx);
+    }
+};

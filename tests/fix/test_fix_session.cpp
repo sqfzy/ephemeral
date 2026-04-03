@@ -486,3 +486,145 @@ TEST(FixSession, ConfigValidateRejectsBadTimeoutFactor) {
     EXPECT_FALSE(err.empty());
     EXPECT_NE(err.find("timeout_factor"), std::string_view::npos);
 }
+
+// ---------------------------------------------------------------------------
+// FixSessionConfig dump/to_json/equality/warnings/formatter tests
+// ---------------------------------------------------------------------------
+
+TEST(FixSession, ConfigDumpContainsAllFields) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "MY_ALGO",
+        .target_comp_id = "EXCHANGE",
+        .heartbeat_interval_sec = 30,
+        .reset_seq_on_logon = true,
+        .begin_string = "FIX.4.4",
+    };
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("MY_ALGO"), std::string::npos);
+    EXPECT_NE(d.find("EXCHANGE"), std::string::npos);
+    EXPECT_NE(d.find("FIX.4.4"), std::string::npos);
+    EXPECT_NE(d.find("30"), std::string::npos);
+}
+
+TEST(FixSession, ConfigToJsonIsValidStructure) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+    };
+    auto j = cfg.to_json();
+    EXPECT_TRUE(j.starts_with("{"));
+    EXPECT_TRUE(j.ends_with("}"));
+    EXPECT_NE(j.find("\"sender_comp_id\":\"SENDER\""), std::string::npos);
+    EXPECT_NE(j.find("\"target_comp_id\":\"TARGET\""), std::string::npos);
+    EXPECT_NE(j.find("\"heartbeat_interval_sec\":30"), std::string::npos);
+    EXPECT_NE(j.find("\"reset_seq_on_logon\":true"), std::string::npos);
+}
+
+TEST(FixSession, ConfigToJsonEscapesSpecialChars) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "test\"quote",
+        .target_comp_id = "back\\slash",
+    };
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("test\\\"quote"), std::string::npos);
+    EXPECT_NE(j.find("back\\\\slash"), std::string::npos);
+}
+
+TEST(FixSession, ConfigEqualityMatchesIdentical) {
+    FixSessionConfig a{
+        .sender_comp_id = "S",
+        .target_comp_id = "T",
+        .heartbeat_interval_sec = 15,
+    };
+    FixSessionConfig b = a;
+    EXPECT_EQ(a, b);
+}
+
+TEST(FixSession, ConfigEqualityDetectsDifferences) {
+    FixSessionConfig a{.sender_comp_id = "S", .target_comp_id = "T"};
+    FixSessionConfig b = a;
+    b.heartbeat_interval_sec = 60;
+    EXPECT_NE(a, b);
+}
+
+TEST(FixSession, ConfigEqualityIgnoresCallbacks) {
+    FixSessionConfig a{.sender_comp_id = "S", .target_comp_id = "T"};
+    FixSessionConfig b = a;
+    b.on_state_change = [](SessionState, SessionState) {};
+    EXPECT_EQ(a, b);
+}
+
+TEST(FixSession, ConfigWarningsDetectsLargeHeartbeat) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "S", .target_comp_id = "T",
+        .heartbeat_interval_sec = 200,
+    };
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("unusually large") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(FixSession, ConfigWarningsDetectsShortHeartbeat) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "S", .target_comp_id = "T",
+        .heartbeat_interval_sec = 2,
+    };
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("very short") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(FixSession, ConfigWarningsDetectsNoSeqReset) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "S", .target_comp_id = "T",
+        .reset_seq_on_logon = false,
+    };
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("persisted") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(FixSession, ConfigWarningsDetectsUnusualBeginString) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "S", .target_comp_id = "T",
+        .begin_string = "FIX.5.0",
+    };
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("commonly used") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(FixSession, ConfigWarningsEmptyForNominalConfig) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "S", .target_comp_id = "T",
+        .heartbeat_interval_sec = 30,
+        .reset_seq_on_logon = true,
+        .begin_string = "FIX.4.4",
+    };
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(FixSession, ConfigFormatterProducesDump) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "S", .target_comp_id = "T",
+    };
+    auto formatted = std::format("{}", cfg);
+    EXPECT_NE(formatted.find("FixSessionConfig"), std::string::npos);
+    EXPECT_NE(formatted.find("S"), std::string::npos);
+}
+
+TEST(FixSession, SessionStateFormatterProducesName) {
+    auto s = std::format("{}", SessionState::kActive);
+    EXPECT_EQ(s, "ACTIVE");
+    auto s2 = std::format("{}", SessionState::kDisconnected);
+    EXPECT_EQ(s2, "DISCONNECTED");
+}
