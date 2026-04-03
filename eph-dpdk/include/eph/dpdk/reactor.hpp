@@ -117,6 +117,19 @@ public:
         uint16_t port_id      = 0;     ///< DPDK port ID to poll
         uint16_t rx_queue_id  = 0;     ///< RX queue index on the port
         int      rx_cpu       = -1;    ///< CPU affinity for RX thread (-1 = no pin)
+
+        /// Validate configuration, returning an error description or empty string on success.
+        [[nodiscard]] constexpr std::string_view validate() const noexcept {
+            if (rx_cpu < -1)
+                return "rx_cpu must be >= -1 (-1 = no pinning)";
+            return {};
+        }
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format("Reactor::Config(port={}, queue={}, cpu={})",
+                               port_id, rx_queue_id, rx_cpu);
+        }
     };
 
     explicit Reactor(Config config) noexcept

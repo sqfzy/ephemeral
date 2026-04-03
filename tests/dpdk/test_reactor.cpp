@@ -97,3 +97,27 @@ TEST(ReactorEntry, HashIsConstexprSafe) {
     auto h2 = ReactorEntry::hash_tuple(t);
     EXPECT_EQ(h1, h2);
 }
+
+// ---------------------------------------------------------------------------
+// Reactor::Config validate/dump
+// ---------------------------------------------------------------------------
+
+TEST(ReactorConfig, DefaultConfigIsValid) {
+    Reactor::Config cfg;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(ReactorConfig, NegativeCpuAffinity) {
+    Reactor::Config cfg{.rx_cpu = -2};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_cpu"), std::string_view::npos);
+}
+
+TEST(ReactorConfig, DumpContainsFields) {
+    Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("port=1"), std::string::npos);
+    EXPECT_NE(d.find("queue=2"), std::string::npos);
+    EXPECT_NE(d.find("cpu=3"), std::string::npos);
+}
