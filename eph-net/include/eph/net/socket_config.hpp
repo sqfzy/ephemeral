@@ -74,12 +74,14 @@ struct SocketConfig {
             "  target: {}:{}\n"
             "  tcp_nodelay: {}, send_timeout: {}ms\n"
             "  buffers: recv={}, send={}\n"
-            "  keepalive: enabled={}, idle={}s, interval={}s, count={}",
+            "  keepalive: enabled={}, idle={}s, interval={}s, count={}\n"
+            "  bind_device: {}",
             host, port,
             tcp_nodelay, send_timeout_ms,
             recv_buf_size == 0 ? std::string("OS default") : std::to_string(recv_buf_size),
             send_buf_size == 0 ? std::string("OS default") : std::to_string(send_buf_size),
-            tcp_keepalive, keepalive_idle, keepalive_interval, keepalive_count);
+            tcp_keepalive, keepalive_idle, keepalive_interval, keepalive_count,
+            bind_device.empty() ? std::string("(none)") : bind_device);
     }
 
     /// @brief JSON-formatted config for monitoring system integration.
@@ -94,12 +96,14 @@ struct SocketConfig {
             "\"tcp_nodelay\":{},\"recv_buf_size\":{},"
             "\"send_buf_size\":{},\"tcp_keepalive\":{},"
             "\"keepalive_idle\":{},\"keepalive_interval\":{},"
-            "\"keepalive_count\":{},\"send_timeout_ms\":{}}}",
+            "\"keepalive_count\":{},\"send_timeout_ms\":{},"
+            "\"bind_device\":\"{}\"}}",
             detail::json_escape(host), port,
             tcp_nodelay ? "true" : "false", recv_buf_size,
             send_buf_size, tcp_keepalive ? "true" : "false",
             keepalive_idle, keepalive_interval,
-            keepalive_count, send_timeout_ms);
+            keepalive_count, send_timeout_ms,
+            detail::json_escape(bind_device));
     }
 
     /// @brief Defaulted equality -- all fields must match exactly.
