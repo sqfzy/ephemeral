@@ -57,21 +57,45 @@ public:
     ///
     /// All fields are immutable after construction of the CircuitBreaker.
     struct Config {
-        std::size_t          failure_threshold;    ///< Trip to Open after N consecutive failures.
-        std::chrono::seconds open_duration;        ///< How long to stay Open before probing.
-        std::size_t          half_open_max_calls;  ///< Max concurrent test calls in HalfOpen.
+        std::size_t               failure_threshold;    ///< Trip to Open after N consecutive failures.
+        std::chrono::milliseconds open_duration;        ///< How long to stay Open before probing (ms precision for HFT use).
+        std::size_t               half_open_max_calls;  ///< Max concurrent test calls in HalfOpen.
 
         /// @brief Default configuration: 5 failures, 30s cooldown, 1 probe call.
         constexpr Config() noexcept
-            : failure_threshold{5}, open_duration{30}, half_open_max_calls{1} {}
+            : failure_threshold{5}, open_duration{30000}, half_open_max_calls{1} {}
 
         /// @brief Construct with explicit values.
         /// @param thresh  Number of consecutive failures before tripping to Open.
         /// @param dur     Duration to remain Open before transitioning to HalfOpen.
         /// @param ho_max  Maximum concurrent probe calls allowed in HalfOpen state.
-        constexpr Config(std::size_t thresh, std::chrono::seconds dur,
+        constexpr Config(std::size_t thresh, std::chrono::milliseconds dur,
                          std::size_t ho_max = 1) noexcept
             : failure_threshold{thresh}, open_duration{dur}, half_open_max_calls{ho_max} {}
+
+        /// @brief Convenience constructor accepting std::chrono::seconds.
+        /// @param thresh  Number of consecutive failures before tripping to Open.
+        /// @param dur     Duration to remain Open before transitioning to HalfOpen.
+        /// @param ho_max  Maximum concurrent probe calls allowed in HalfOpen state.
+        constexpr Config(std::size_t thresh, std::chrono::seconds dur,
+                         std::size_t ho_max = 1) noexcept
+            : failure_threshold{thresh}
+            , open_duration{std::chrono::duration_cast<std::chrono::milliseconds>(dur)}
+            , half_open_max_calls{ho_max} {}
+
+        /// @brief Validate configuration, returning an error description or
+        ///        empty string on success.
+        ///
+        /// Consistent with TransportConfig::validate() and SocketConfig::validate().
+        [[nodiscard]] constexpr std::string_view validate() const noexcept {
+            if (failure_threshold == 0)
+                return "failure_threshold must be > 0";
+            if (open_duration.count() < 0)
+                return "open_duration must be >= 0";
+            if (half_open_max_calls == 0)
+                return "half_open_max_calls must be > 0";
+            return {};
+        }
     };
 
     /// @brief Construct a circuit breaker with the given configuration.
@@ -84,7 +108,7 @@ public:
         , opened_at_{}
     {
         SPDLOG_LOGGER_DEBUG(detail::circuit_breaker_logger(),
-                     "CircuitBreaker created: threshold={} open_duration={}s half_open_max={}",
+                     "CircuitBreaker created: threshold={} open_duration={}ms half_open_max={}",
                      config_.failure_threshold, config_.open_duration.count(),
                      config_.half_open_max_calls);
     }
@@ -229,7 +253,7 @@ private:
         opened_at_ = Clock::now();
         half_open_calls_ = 0;
         SPDLOG_LOGGER_WARN(detail::circuit_breaker_logger(),
-                    "CircuitBreaker: tripped to Open, failures={}, cooldown={}s",
+                    "CircuitBreaker: tripped to Open, failures={}, cooldown={}ms",
                     failure_count_, config_.open_duration.count());
     }
 

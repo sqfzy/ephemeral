@@ -15,6 +15,81 @@ using namespace eph::net;
 using namespace std::chrono_literals;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Config validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreakerConfig, ValidDefaultConfig) {
+    CircuitBreaker::Config cfg;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(CircuitBreakerConfig, ValidExplicitConfig) {
+    CircuitBreaker::Config cfg{3, 500ms, 2};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(CircuitBreakerConfig, ZeroFailureThresholdIsInvalid) {
+    CircuitBreaker::Config cfg{0, 1s, 1};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("failure_threshold"), std::string_view::npos);
+}
+
+TEST(CircuitBreakerConfig, NegativeOpenDurationIsInvalid) {
+    CircuitBreaker::Config cfg{5, std::chrono::milliseconds{-1}, 1};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("open_duration"), std::string_view::npos);
+}
+
+TEST(CircuitBreakerConfig, ZeroHalfOpenMaxCallsIsInvalid) {
+    CircuitBreaker::Config cfg{5, 1s, 0};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("half_open_max_calls"), std::string_view::npos);
+}
+
+TEST(CircuitBreakerConfig, ZeroOpenDurationIsValid) {
+    // Zero duration = immediately transition to HalfOpen (useful for testing).
+    CircuitBreaker::Config cfg{3, 0ms, 1};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(CircuitBreakerConfig, MillisecondPrecisionOpenDuration) {
+    // Verify that millisecond precision is properly stored (not truncated to seconds).
+    CircuitBreaker::Config cfg{3, 1500ms, 1};
+    EXPECT_EQ(cfg.open_duration.count(), 1500);
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(CircuitBreakerConfig, SecondsConstructorConversion) {
+    // Verify the seconds convenience constructor properly converts.
+    CircuitBreaker::Config cfg{5, 30s, 2};
+    EXPECT_EQ(cfg.open_duration.count(), 30000);
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Millisecond-precision timeout
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, MillisecondPrecisionTimeout) {
+    // Verify sub-second open_duration works correctly.
+    // Use 200ms which is long enough to be reliable but short for a test.
+    CircuitBreaker cb(CircuitBreaker::Config{1, 200ms, 1});
+
+    cb.record_failure();
+    EXPECT_EQ(cb.state(), CircuitState::Open);
+
+    // Immediately after tripping, should still be Open.
+    EXPECT_FALSE(cb.allow());
+
+    // Wait past the 200ms threshold.
+    std::this_thread::sleep_for(250ms);
+
+    // Should now be HalfOpen.
+    EXPECT_EQ(cb.state(), CircuitState::HalfOpen);
+    EXPECT_TRUE(cb.allow());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Basic closed-state behavior
 // ─────────────────────────────────────────────────────────────────────────────
 
