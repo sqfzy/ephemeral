@@ -72,6 +72,12 @@ class ScopedTSC {
     ScopedTSC(const ScopedTSC&) = delete;
     ScopedTSC& operator=(const ScopedTSC&) = delete;
 
+    /// Read the elapsed cycle count so far without stopping the timer.
+    /// Useful for intermediate progress checks within a timed scope.
+    [[nodiscard]] inline uint64_t elapsed() const noexcept {
+        return TSC::now() - start_cycles_;
+    }
+
    private:
     uint64_t& out_cycles_;
     uint64_t start_cycles_;

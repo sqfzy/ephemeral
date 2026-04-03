@@ -1,10 +1,64 @@
 #include <gtest/gtest.h>
 
+#include <thread>
 #include <vector>
 
 #include "eph/utils/hdr_histogram.hpp"
+#include "eph/utils/time.hpp"
 
 using namespace eph::utils;
+
+// ============================================================================
+// measure_tsc / ScopedTSC
+// ============================================================================
+
+class TscTimerTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        ASSERT_TRUE(TSC::init()) << "TSC initialization failed";
+    }
+};
+
+TEST_F(TscTimerTest, MeasureTscReturnsPositiveCycles) {
+    auto cycles = measure_tsc([] {
+        volatile int x = 0;
+        for (int i = 0; i < 100; ++i) x += i;
+    });
+    EXPECT_GT(cycles, 0u);
+}
+
+TEST_F(TscTimerTest, MeasureTscWithArgs) {
+    auto cycles = measure_tsc([](int n) {
+        volatile int x = 0;
+        for (int i = 0; i < n; ++i) x += i;
+    }, 100);
+    EXPECT_GT(cycles, 0u);
+}
+
+TEST_F(TscTimerTest, ScopedTscWritesResult) {
+    uint64_t cycles = 0;
+    {
+        ScopedTSC timer(cycles);
+        volatile int x = 0;
+        for (int i = 0; i < 100; ++i) x += i;
+    }
+    EXPECT_GT(cycles, 0u);
+}
+
+TEST_F(TscTimerTest, ScopedTscElapsedReturnsIntermediateValue) {
+    uint64_t final_cycles = 0;
+    {
+        ScopedTSC timer(final_cycles);
+        volatile int x = 0;
+        for (int i = 0; i < 100; ++i) x += i;
+        uint64_t intermediate = timer.elapsed();
+        EXPECT_GT(intermediate, 0u);
+        // Continue doing more work
+        for (int i = 0; i < 100; ++i) x += i;
+    }
+    // Final should be >= the intermediate we saw mid-scope
+    EXPECT_GT(final_cycles, 0u);
+}
 
 // ============================================================================
 // Construction
