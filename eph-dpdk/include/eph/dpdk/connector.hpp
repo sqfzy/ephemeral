@@ -216,6 +216,42 @@ struct ConnectorOptions {
             net::format_ipv4(dns.nameserver_ip).data(),
             platform.dump());
     }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // Short ARP timeout may fail on loaded switches
+        if (arp_timeout.count() < 500)
+            w.emplace_back(std::format(
+                "arp_timeout={}ms is very short -- ARP resolution may "
+                "fail on loaded switches", arp_timeout.count()));
+        // Short connect timeout may fail on high-latency links
+        if (connect_timeout.count() < 1000)
+            w.emplace_back(std::format(
+                "connect_timeout={}ms is very short -- TCP handshake may "
+                "fail on high-latency or congested links",
+                connect_timeout.count()));
+        // Connect timeout shorter than ARP timeout is suspicious
+        if (connect_timeout < arp_timeout)
+            w.emplace_back(std::format(
+                "connect_timeout ({}ms) < arp_timeout ({}ms) -- "
+                "connect may time out before ARP completes",
+                connect_timeout.count(), arp_timeout.count()));
+        // Well-known ports (< 1024) as local port is unusual for DPDK
+        if (local_port > 0 && local_port < 1024)
+            w.emplace_back(std::format(
+                "local_port={} is in the well-known range (< 1024) -- "
+                "unusual for a client connection", local_port));
+        // Small mempool may exhaust during connection setup
+        if (platform.mbuf_pool_size < 1023)
+            w.emplace_back(std::format(
+                "mbuf_pool_size={} is small -- may exhaust during "
+                "concurrent ARP/DNS/TCP operations",
+                platform.mbuf_pool_size));
+        return w;
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

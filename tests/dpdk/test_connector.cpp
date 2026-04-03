@@ -331,3 +331,83 @@ TEST(DpdkEndpoint, EqualityOperator) {
     EXPECT_EQ(a, b);
     EXPECT_NE(a, c);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectorOptions::warnings
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectorOptionsWarnings, DefaultOptionsNoWarnings) {
+    ConnectorOptions opts{};
+    auto w = opts.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(ConnectorOptionsWarnings, ShortArpTimeout) {
+    ConnectorOptions opts{};
+    opts.arp_timeout = std::chrono::milliseconds{200};
+    auto w = opts.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("arp_timeout") != std::string::npos &&
+            msg.find("200ms") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected short arp_timeout warning";
+}
+
+TEST(ConnectorOptionsWarnings, ShortConnectTimeout) {
+    ConnectorOptions opts{};
+    opts.connect_timeout = std::chrono::milliseconds{500};
+    auto w = opts.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("connect_timeout") != std::string::npos &&
+            msg.find("500ms") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected short connect_timeout warning";
+}
+
+TEST(ConnectorOptionsWarnings, ConnectShorterThanArp) {
+    ConnectorOptions opts{};
+    opts.arp_timeout = std::chrono::milliseconds{5000};
+    opts.connect_timeout = std::chrono::milliseconds{3000};
+    auto w = opts.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("connect_timeout") != std::string::npos &&
+            msg.find("arp_timeout") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected connect < arp warning";
+}
+
+TEST(ConnectorOptionsWarnings, WellKnownLocalPort) {
+    ConnectorOptions opts{};
+    opts.local_port = 80;
+    auto w = opts.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("well-known") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected well-known port warning";
+}
+
+TEST(ConnectorOptionsWarnings, SmallMempoolSize) {
+    ConnectorOptions opts{};
+    opts.platform.mbuf_pool_size = 511; // 2^9 - 1
+    auto w = opts.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("mbuf_pool_size") != std::string::npos &&
+            msg.find("small") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected small mempool warning";
+}
