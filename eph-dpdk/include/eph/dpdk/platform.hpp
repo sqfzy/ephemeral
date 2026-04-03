@@ -52,7 +52,7 @@ namespace detail {
 ///
 /// @param n  Value to test
 /// @return true if n == 2^k - 1 for some k >= 1
-constexpr bool is_power_of_two_minus_one(uint32_t n) noexcept {
+[[nodiscard]] constexpr bool is_power_of_two_minus_one(uint32_t n) noexcept {
     if (n == 0) return false;
     uint32_t m = n + 1;
     return m > 0 && (m & (m - 1)) == 0;
@@ -62,7 +62,7 @@ constexpr bool is_power_of_two_minus_one(uint32_t n) noexcept {
 ///
 /// @param n  Minimum desired pool size
 /// @return Smallest value >= n of the form 2^k - 1
-constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
+[[nodiscard]] constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
     uint32_t m = n + 1;
     // Round up to next power of 2.
     if (m == 0 || (m & (m - 1)) == 0) return m - 1;
@@ -82,7 +82,7 @@ constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
 ///
 /// @note Re-clamps after alignment rounding to prevent exceeding nb_max
 ///       (e.g., nb_max=255, nb_align=64 would produce 256 without re-clamp).
-constexpr uint16_t clamp_desc(uint16_t requested,
+[[nodiscard]] constexpr uint16_t clamp_desc(uint16_t requested,
                                uint16_t nb_min,
                                uint16_t nb_max,
                                uint16_t nb_align) noexcept {
@@ -104,7 +104,7 @@ constexpr uint16_t clamp_desc(uint16_t requested,
 /// @param requested  Desired descriptor count
 /// @param lim        NIC descriptor limits from rte_eth_dev_info
 /// @return Clamped and aligned descriptor count
-inline uint16_t clamp_desc(uint16_t requested,
+[[nodiscard]] inline uint16_t clamp_desc(uint16_t requested,
                             const rte_eth_desc_lim& lim) noexcept {
     return clamp_desc(requested, lim.nb_min, lim.nb_max, lim.nb_align);
 }
@@ -218,7 +218,7 @@ struct PlatformConfig {
 ///
 /// A result containing "2^n" is a performance warning (DPDK rounds up silently),
 /// not a hard error.
-constexpr std::string_view validate_config(const PlatformConfig& cfg) noexcept {
+[[nodiscard]] constexpr std::string_view validate_config(const PlatformConfig& cfg) noexcept {
     if (cfg.nb_rx_queues  == 0) return "nb_rx_queues must be > 0";
     if (cfg.nb_tx_queues  == 0) return "nb_tx_queues must be > 0";
     if (cfg.nb_rx_desc    == 0) return "nb_rx_desc must be > 0";
@@ -232,7 +232,7 @@ constexpr std::string_view validate_config(const PlatformConfig& cfg) noexcept {
 /// For use in static_assert with constexpr configs:
 ///   constexpr PlatformConfig cfg{...};
 ///   static_assert(config_ok(cfg), "bad platform config");
-constexpr bool config_ok(const PlatformConfig& cfg) noexcept {
+[[nodiscard]] constexpr bool config_ok(const PlatformConfig& cfg) noexcept {
     return validate_config(cfg).empty();
 }
 
