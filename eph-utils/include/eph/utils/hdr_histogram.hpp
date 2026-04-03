@@ -908,7 +908,9 @@ class HdrHistogram {
     /// @return Multi-line string in standard HDR Histogram percentile distribution format
     [[nodiscard]] std::string output_percentile_distribution(
         double output_value_unit_scaling = 1.0) const {
-        if (output_value_unit_scaling <= 0.0) output_value_unit_scaling = 1.0;
+        // Guard against NaN and non-positive scaling. NaN comparisons
+        // always return false, so a simple <= 0.0 check wouldn't catch NaN.
+        if (!(output_value_unit_scaling > 0.0)) output_value_unit_scaling = 1.0;
 
         std::string result;
         result.reserve(4096);
