@@ -68,6 +68,15 @@ struct ProxyConfig {
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (host.empty())
             return "proxy host must not be empty";
+        // Reject control characters in proxy hostname. For HTTP CONNECT
+        // proxies, the host appears in the CONNECT request line; control
+        // characters could enable request smuggling.
+        for (char c : host) {
+            auto uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc == 0x7f) {
+                return "proxy host contains control characters";
+            }
+        }
         if (port == 0)
             return "proxy port must be > 0";
         if (timeout.count() <= 0)

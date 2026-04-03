@@ -272,3 +272,72 @@ TEST(ProxyUrl, EmptyPasswordAfterColon) {
     EXPECT_EQ(r->username, "user");
     EXPECT_TRUE(r->password.empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigValidation, ValidDefaultSocks5) {
+    ProxyConfig cfg{.host = "proxy.local", .port = 1080};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(ProxyConfigValidation, ValidHttpConnect) {
+    ProxyConfig cfg{.host = "proxy.local", .port = 8080,
+                    .type = ProxyType::kHttpConnect};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(ProxyConfigValidation, EmptyHostFails) {
+    ProxyConfig cfg{.host = "", .port = 1080};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("host"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, ZeroPortFails) {
+    ProxyConfig cfg{.host = "proxy.local", .port = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("port"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, NegativeTimeoutFails) {
+    ProxyConfig cfg{.host = "proxy.local", .port = 1080,
+                    .timeout = std::chrono::milliseconds{-1}};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("timeout"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, Socks5UsernameTooLongFails) {
+    ProxyConfig cfg{.host = "proxy.local", .port = 1080,
+                    .type = ProxyType::kSocks5,
+                    .username = std::string(256, 'x')};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("username"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, Socks5PasswordTooLongFails) {
+    ProxyConfig cfg{.host = "proxy.local", .port = 1080,
+                    .type = ProxyType::kSocks5,
+                    .password = std::string(256, 'x')};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("password"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, HostWithControlCharsRejected) {
+    ProxyConfig cfg{.host = "evil\r\nhost", .port = 1080};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, HostWithNullByteRejected) {
+    ProxyConfig cfg{.host = std::string("evil\0host", 9), .port = 1080};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
