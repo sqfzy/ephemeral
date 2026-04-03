@@ -523,6 +523,82 @@ TEST(FrameView, DefaultConstructedFieldsAreZero) {
     EXPECT_TRUE(f.deliver);  // default is true (deliver by default)
 }
 
+TEST(FrameView, CustomConstructedFields) {
+    uint8_t data[] = {0x01, 0x02, 0x03};
+    FrameView f{.payload = data, .payload_len = 3, .opcode = 0x02, .deliver = false};
+    EXPECT_EQ(f.payload, data);
+    EXPECT_EQ(f.payload_len, 3);
+    EXPECT_EQ(f.opcode, 0x02);
+    EXPECT_FALSE(f.deliver);
+}
+
+// =======================================================================
+// ThreadStats::Snapshot — equality
+// =======================================================================
+
+TEST(ThreadStatsSnapshot, EqualityOperator) {
+    ThreadStats::Snapshot a{.packets = 10, .bytes = 500, .text_packets = 2,
+                            .text_bytes = 100, .dropped = 1, .crypto_errors = 0};
+    ThreadStats::Snapshot b = a;
+    EXPECT_EQ(a, b);
+    b.packets = 11;
+    EXPECT_NE(a, b);
+}
+
+// =======================================================================
+// TransportStats — additional delta edge cases
+// =======================================================================
+
+TEST(TransportStats, DeltaSubtractsAllCounterFields) {
+    TransportStats a{};
+    a.tx_packets = 200;
+    a.tx_bytes = 10000;
+    a.rx_packets = 100;
+    a.rx_bytes = 5000;
+    a.tx_dropped = 5;
+    a.rx_dropped = 3;
+    a.encrypt_errors = 2;
+    a.decrypt_errors = 1;
+    a.queue_full_count = 10;
+    a.ws_pings_received = 20;
+    a.ws_pongs_sent = 19;
+    a.pong_timeouts = 1;
+    a.reconnect_count = 2;
+    a.uptime_ns = 2'000'000'000;
+
+    TransportStats b{};
+    b.tx_packets = 100;
+    b.tx_bytes = 5000;
+    b.rx_packets = 50;
+    b.rx_bytes = 2500;
+    b.tx_dropped = 2;
+    b.rx_dropped = 1;
+    b.encrypt_errors = 1;
+    b.decrypt_errors = 0;
+    b.queue_full_count = 5;
+    b.ws_pings_received = 10;
+    b.ws_pongs_sent = 10;
+    b.pong_timeouts = 0;
+    b.reconnect_count = 1;
+    b.uptime_ns = 1'000'000'000;
+
+    auto d = a - b;
+    EXPECT_EQ(d.tx_packets, 100);
+    EXPECT_EQ(d.tx_bytes, 5000);
+    EXPECT_EQ(d.rx_packets, 50);
+    EXPECT_EQ(d.rx_bytes, 2500);
+    EXPECT_EQ(d.tx_dropped, 3);
+    EXPECT_EQ(d.rx_dropped, 2);
+    EXPECT_EQ(d.encrypt_errors, 1);
+    EXPECT_EQ(d.decrypt_errors, 1);
+    EXPECT_EQ(d.queue_full_count, 5);
+    EXPECT_EQ(d.ws_pings_received, 10);
+    EXPECT_EQ(d.ws_pongs_sent, 9);
+    EXPECT_EQ(d.pong_timeouts, 1);
+    EXPECT_EQ(d.reconnect_count, 1);
+    EXPECT_EQ(d.uptime_ns, 1'000'000'000);
+}
+
 // =======================================================================
 // TwophaseFilter — boundary conditions
 // =======================================================================
