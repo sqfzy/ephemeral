@@ -110,7 +110,7 @@ TEST_F(RecorderTest, ComputeStatsNoData) {
 TEST_F(RecorderTest, ComputeStatsWithData) {
     Recorder rec("Test");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     auto stats = rec.compute_stats();
@@ -131,7 +131,7 @@ TEST_F(RecorderTest, ComputeStatsPercentileOrdering) {
     Recorder rec("Test");
     // Record values with a known distribution
     for (uint64_t i = 1; i <= 10000; ++i) {
-        rec.record(i);
+        (void)rec.record(i);
     }
 
     auto stats = rec.compute_stats();
@@ -152,7 +152,7 @@ TEST_F(RecorderTest, HasDataFalseWhenEmpty) {
 
 TEST_F(RecorderTest, HasDataTrueAfterRecord) {
     Recorder rec("Test");
-    rec.record(100);
+    (void)rec.record(100);
     EXPECT_TRUE(rec.has_data());
 }
 
@@ -162,8 +162,8 @@ TEST_F(RecorderTest, HasDataTrueAfterRecord) {
 
 TEST_F(RecorderTest, ResetClearsAllState) {
     Recorder rec("Test");
-    rec.record(100);
-    rec.record(0);  // triggers invalid skip
+    (void)rec.record(100);
+    (void)rec.record(0);  // triggers invalid skip
 
     rec.reset();
 
@@ -205,7 +205,7 @@ TEST_F(RecorderTest, ExportJsonNoData) {
 TEST_F(RecorderTest, ExportJsonWithData) {
     Recorder rec("TestExport");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     EXPECT_TRUE(rec.export_json("test_outputs"));
@@ -229,7 +229,7 @@ TEST_F(RecorderTest, ExportCsvNoData) {
 TEST_F(RecorderTest, ExportCsvWithData) {
     Recorder rec("TestExport");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     EXPECT_TRUE(rec.export_csv("test_outputs"));
@@ -247,7 +247,7 @@ TEST_F(RecorderTest, ExportCsvWithData) {
 TEST_F(RecorderTest, ExportAll) {
     Recorder rec("TestExport");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     EXPECT_TRUE(rec.export_all("test_outputs"));
@@ -260,7 +260,7 @@ TEST_F(RecorderTest, ExportAll) {
 TEST_F(RecorderTest, PrintReportWithData) {
     Recorder rec("Test");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
     EXPECT_NO_THROW(rec.print_report());
 }
@@ -276,9 +276,9 @@ TEST_F(RecorderTest, PrintReportNoData) {
 
 TEST_F(RecorderTest, HistogramAccessorReflectsRecordedData) {
     Recorder rec("HistAccess");
-    rec.record(100);
-    rec.record(200);
-    rec.record(300);
+    (void)rec.record(100);
+    (void)rec.record(200);
+    (void)rec.record(300);
 
     const auto& hist = rec.histogram();
     // Histogram should have recorded 3 values
@@ -297,7 +297,7 @@ TEST_F(RecorderTest, HistogramAccessorEmptyRecorder) {
 
 TEST_F(RecorderTest, HistogramAccessorAfterReset) {
     Recorder rec("HistReset");
-    rec.record(500);
+    (void)rec.record(500);
     EXPECT_EQ(rec.histogram().get_total_count(), 1u);
     rec.reset();
     EXPECT_EQ(rec.histogram().get_total_count(), 0u);
@@ -315,7 +315,7 @@ TEST_F(RecorderTest, RecordRealTscMeasurements) {
             x += j;
         }
         uint64_t end = TSC::now();
-        rec.record(end - start);
+        (void)rec.record(end - start);
     }
 
     EXPECT_EQ(rec.count(), 100);
@@ -377,7 +377,7 @@ TEST_F(ConcurrentRecorderTest, MultiThreadRecord) {
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&rec]() {
             for (uint64_t i = 1; i <= records_per_thread; ++i) {
-                rec.record(i * 10);
+                (void)rec.record(i * 10);
             }
         });
     }
@@ -398,7 +398,7 @@ TEST_F(ConcurrentRecorderTest, ThreadCountTracking) {
         std::vector<std::thread> threads;
         for (int i = 0; i < 3; ++i) {
             threads.emplace_back([&rec]() {
-                rec.record(100);
+                (void)rec.record(100);
             });
         }
         for (auto& t : threads) {
@@ -418,7 +418,7 @@ TEST_F(ConcurrentRecorderTest, DataPreservedAfterThreadExit) {
     {
         std::thread t([&rec, value]() {
             for (int i = 0; i < 100; ++i) {
-                rec.record(value);
+                (void)rec.record(value);
             }
         });
         t.join();
@@ -432,7 +432,7 @@ TEST_F(ConcurrentRecorderTest, DataPreservedAfterThreadExit) {
 
 TEST_F(ConcurrentRecorderTest, PrintReportDoesNotCrash) {
     ConcurrentRecorder rec("ConcPrint");
-    rec.record(100);
+    (void)rec.record(100);
     EXPECT_NO_THROW(rec.print_report());
 }
 
@@ -445,7 +445,7 @@ TEST_F(ConcurrentRecorderTest, ResetClearsAllData) {
     ConcurrentRecorder rec("ConcReset");
     // Record some data
     for (int i = 0; i < 100; ++i) {
-        rec.record(1000 + i);
+        (void)rec.record(1000 + i);
     }
     auto stats_before = rec.compute_stats();
     ASSERT_TRUE(stats_before.has_value());
@@ -460,11 +460,11 @@ TEST_F(ConcurrentRecorderTest, ResetClearsAllData) {
 
 TEST_F(ConcurrentRecorderTest, ResetThenRecordFreshData) {
     ConcurrentRecorder rec("ConcResetFresh");
-    for (int i = 0; i < 50; ++i) rec.record(500);
+    for (int i = 0; i < 50; ++i) (void)rec.record(500);
     rec.reset();
 
     // Record new data after reset
-    for (int i = 0; i < 30; ++i) rec.record(800);
+    for (int i = 0; i < 30; ++i) (void)rec.record(800);
     auto stats = rec.compute_stats();
     ASSERT_TRUE(stats.has_value());
     EXPECT_EQ(stats->count, 30u);
@@ -493,7 +493,7 @@ TEST_F(ConcurrentRecorderExportTest, ExportJsonNoDataReturnsFalse) {
 TEST_F(ConcurrentRecorderExportTest, ExportJsonWithData) {
     ConcurrentRecorder rec("ConcExportJson");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     EXPECT_TRUE(rec.export_json("test_conc_outputs"));
@@ -526,7 +526,7 @@ TEST_F(ConcurrentRecorderExportTest, ExportCsvNoDataReturnsFalse) {
 TEST_F(ConcurrentRecorderExportTest, ExportCsvWithData) {
     ConcurrentRecorder rec("ConcExportCsv");
     for (uint64_t i = 1; i <= 100; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     EXPECT_TRUE(rec.export_csv("test_conc_outputs"));
@@ -548,7 +548,7 @@ TEST_F(ConcurrentRecorderExportTest, ExportCsvWithData) {
 TEST_F(ConcurrentRecorderExportTest, ExportAllCreatesJsonAndCsv) {
     ConcurrentRecorder rec("ConcExportAll");
     for (uint64_t i = 1; i <= 50; ++i) {
-        rec.record(i * 100);
+        (void)rec.record(i * 100);
     }
 
     EXPECT_TRUE(rec.export_all("test_conc_outputs"));
@@ -575,15 +575,15 @@ TEST_F(ConcurrentRecorderTest, RetiredThreadSkippedCountsPreserved) {
         std::thread worker([&rec]() {
             // Record valid values
             for (int i = 0; i < 10; ++i) {
-                rec.record(50);
+                (void)rec.record(50);
             }
             // Record overflow values (> 100)
             for (int i = 0; i < 5; ++i) {
-                rec.record(1000);  // will be skipped as overflow
+                (void)rec.record(1000);  // will be skipped as overflow
             }
             // Record invalid values (0)
             for (int i = 0; i < 3; ++i) {
-                rec.record(0);  // will be skipped as invalid
+                (void)rec.record(0);  // will be skipped as invalid
             }
         });
         worker.join();
@@ -608,7 +608,7 @@ TEST_F(ConcurrentRecorderTest, RetiredThreadSkippedCountsPreserved) {
 TEST(ConcurrentRecorderComputeAndReset, returns_stats_and_clears_data) {
     ConcurrentRecorder rec("ConcCAR");
     for (int i = 0; i < 100; ++i) {
-        rec.record(50);
+        (void)rec.record(50);
     }
 
     // compute_and_reset should return the accumulated stats
@@ -633,7 +633,7 @@ TEST(ConcurrentRecorderComputeAndReset, multi_window_non_overlapping) {
 
     // Window 1: record 50 samples
     for (int i = 0; i < 50; ++i) {
-        rec.record(100);
+        (void)rec.record(100);
     }
     auto w1 = rec.compute_and_reset();
     ASSERT_TRUE(w1.has_value());
@@ -641,7 +641,7 @@ TEST(ConcurrentRecorderComputeAndReset, multi_window_non_overlapping) {
 
     // Window 2: record 30 samples
     for (int i = 0; i < 30; ++i) {
-        rec.record(200);
+        (void)rec.record(200);
     }
     auto w2 = rec.compute_and_reset();
     ASSERT_TRUE(w2.has_value());
@@ -658,7 +658,7 @@ TEST(ConcurrentRecorderComputeAndReset, includes_retired_thread_data) {
     {
         std::thread worker([&rec]() {
             for (int i = 0; i < 100; ++i) {
-                rec.record(50);
+                (void)rec.record(50);
             }
         });
         worker.join();
@@ -666,7 +666,7 @@ TEST(ConcurrentRecorderComputeAndReset, includes_retired_thread_data) {
 
     // Record from main thread
     for (int i = 0; i < 50; ++i) {
-        rec.record(50);
+        (void)rec.record(50);
     }
 
     // compute_and_reset should include both threads' data
@@ -685,10 +685,10 @@ TEST(ConcurrentRecorderComputeAndReset, only_retired_threads_no_active) {
     // Record only from worker threads that will retire
     {
         std::thread w1([&rec]() {
-            for (int i = 0; i < 50; ++i) rec.record(100);
+            for (int i = 0; i < 50; ++i) (void)rec.record(100);
         });
         std::thread w2([&rec]() {
-            for (int i = 0; i < 50; ++i) rec.record(200);
+            for (int i = 0; i < 50; ++i) (void)rec.record(200);
         });
         w1.join();
         w2.join();
@@ -709,7 +709,7 @@ TEST(ConcurrentRecorderComputeAndReset, stats_percentiles_monotonic) {
 
     // Record a spread of values to get meaningful percentiles
     for (uint64_t v = 10; v <= 1000; v += 10) {
-        rec.record(v);
+        (void)rec.record(v);
     }
 
     auto stats = rec.compute_and_reset();
@@ -732,7 +732,7 @@ TEST(ConcurrentRecorderComputeAndReset, stats_percentiles_monotonic) {
 
 TEST(ConcurrentRecorderComputeAndReset, name_preserved_in_stats) {
     ConcurrentRecorder rec("MyRecorderName");
-    rec.record(42);
+    (void)rec.record(42);
     auto stats = rec.compute_and_reset();
     ASSERT_TRUE(stats.has_value());
     EXPECT_EQ(stats->name, "MyRecorderName");
@@ -744,7 +744,7 @@ TEST(ConcurrentRecorderComputeAndReset, rapid_successive_windows) {
     // 5 rapid windows, each with different sample counts
     for (int window = 1; window <= 5; ++window) {
         for (int i = 0; i < window * 10; ++i) {
-            rec.record(50);
+            (void)rec.record(50);
         }
         auto stats = rec.compute_and_reset();
         ASSERT_TRUE(stats.has_value());
@@ -762,7 +762,7 @@ TEST(ConcurrentRecorderComputeAndReset, concurrent_record_does_not_crash) {
     // Recording thread runs continuously
     std::thread recorder([&]() {
         while (!stop.load(std::memory_order_relaxed)) {
-            rec.record(100);
+            (void)rec.record(100);
         }
     });
 
