@@ -492,3 +492,96 @@ TEST(MulticastConfigFormatter, ContainsKeyFields) {
     EXPECT_NE(s.find("cpu=5"), std::string::npos);
     EXPECT_NE(s.find("burst=64"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastConfig equality
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastConfigEquality, DefaultsAreEqual) {
+    MulticastConfig a{};
+    MulticastConfig b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(MulticastConfigEquality, DifferentPortIdNotEqual) {
+    MulticastConfig a{.port_id = 0};
+    MulticastConfig b{.port_id = 1};
+    EXPECT_NE(a, b);
+}
+
+TEST(MulticastConfigEquality, DifferentRxQueueNotEqual) {
+    MulticastConfig a{.rx_queue_id = 0};
+    MulticastConfig b{.rx_queue_id = 1};
+    EXPECT_NE(a, b);
+}
+
+TEST(MulticastConfigEquality, DifferentCpuNotEqual) {
+    MulticastConfig a{.rx_cpu = -1};
+    MulticastConfig b{.rx_cpu = 2};
+    EXPECT_NE(a, b);
+}
+
+TEST(MulticastConfigEquality, DifferentBurstNotEqual) {
+    MulticastConfig a{.rx_burst = 32};
+    MulticastConfig b{.rx_burst = 64};
+    EXPECT_NE(a, b);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastGroup::warnings
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastGroupWarnings, NormalGroupNoWarnings) {
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477};
+    auto w = grp.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(MulticastGroupWarnings, LocalControlBlockWarns) {
+    // 224.0.0.1 is in the local network control block (RFC 5771)
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("224.0.0.1"),
+        .group_port = 5000};
+    auto w = grp.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("local network control block") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected local control block warning for 224.0.0.1";
+}
+
+TEST(MulticastGroupWarnings, LoopbackSourceWarns) {
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+        .source_ip = parse_ipv4("127.0.0.1")};
+    auto w = grp.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("loopback") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected loopback source warning";
+}
+
+TEST(MulticastGroupWarnings, WellKnownPortWarns) {
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 80};
+    auto w = grp.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("well-known") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected well-known port warning for port 80";
+}

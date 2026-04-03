@@ -27,6 +27,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -228,6 +229,34 @@ struct MulticastGroup {
         return {};
     }
 
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks operation, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // 224.0.0.x is the "local network control block" (RFC 5771 §4)
+        // -- these addresses are not routable and typically reserved for
+        // protocols like IGMP, OSPF, VRRP. Using them for market data is
+        // almost certainly a mistake.
+        if (group_ip != 0 && (group_ip >> 8) == 0xE00000)
+            w.emplace_back(std::format(
+                "group_ip {} is in 224.0.0.0/24 (local network control block, "
+                "RFC 5771) -- these are reserved for protocol use, not market data",
+                net::format_ipv4(group_ip).data()));
+        // Source-specific multicast with loopback source is unusual
+        if (source_ip != 0 && (source_ip >> 24) == 127)
+            w.emplace_back(std::format(
+                "source_ip {} is in 127.0.0.0/8 (loopback) -- SSM filter "
+                "will never match traffic from a real source",
+                net::format_ipv4(source_ip).data()));
+        // Well-known ports (< 1024) are unusual for multicast data feeds
+        if (group_port > 0 && group_port < 1024)
+            w.emplace_back(std::format(
+                "group_port={} is in the well-known range (< 1024) -- "
+                "unusual for market data feeds", group_port));
+        return w;
+    }
+
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
         return std::format("MulticastGroup(ip={}, port={}, source={})",
@@ -259,6 +288,9 @@ struct MulticastConfig {
     uint16_t rx_queue_id  = 0;       ///< RX queue index on the port
     int      rx_cpu       = -1;      ///< CPU affinity for RX thread (-1 = no pin)
     uint16_t rx_burst     = 32;      ///< Max packets per rte_eth_rx_burst call
+
+    [[nodiscard]] friend bool operator==(const MulticastConfig&,
+                                          const MulticastConfig&) = default;
 
     /// Validate configuration parameters.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
