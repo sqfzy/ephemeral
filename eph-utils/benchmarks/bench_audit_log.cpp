@@ -91,6 +91,23 @@ static void BM_AuditDump(benchmark::State& state) {
 BENCHMARK(BM_AuditDump);
 
 // ---------------------------------------------------------------------------
+// Single-entry dump formatting
+// ---------------------------------------------------------------------------
+
+static void BM_AuditEntryDump(benchmark::State& state) {
+    AuditLog<64> log;
+    (void)log.record(AuditEvent::Fill, 42, 50000.25, 1.5,
+               Side::Buy, 3, 50001.0, 1.5);
+    const auto* entry = log.latest();
+    for (auto _ : state) {
+        auto s = entry->dump();
+        benchmark::DoNotOptimize(s);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_AuditEntryDump);
+
+// ---------------------------------------------------------------------------
 // audit_event_name lookup
 // ---------------------------------------------------------------------------
 
