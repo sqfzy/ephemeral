@@ -136,3 +136,108 @@ TEST(TlsRecordConstants, WarnThresholdIs90Percent) {
     EXPECT_EQ(tls_record::kSequenceWarnThreshold,
               tls_record::kMaxSequenceNumber * 9 / 10);
 }
+
+TEST(TlsRecordConstants, ReconnectThresholdIs95Percent) {
+    EXPECT_EQ(tls_record::kSequenceReconnectThreshold,
+              tls_record::kMaxSequenceNumber * 95 / 100);
+}
+
+TEST(TlsRecordConstants, MaxSequenceNumberIs2Pow24) {
+    EXPECT_EQ(tls_record::kMaxSequenceNumber, 1ULL << 24);
+}
+
+TEST(TlsRecordConstants, AuthTagLenIs16) {
+    EXPECT_EQ(tls_record::kAuthTagLen, 16);
+}
+
+TEST(TlsRecordConstants, RecordHeaderLenIs5) {
+    EXPECT_EQ(tls_record::kRecordHeaderLen, 5);
+}
+
+// =======================================================================
+// build_nonce — additional edge cases
+// =======================================================================
+
+TEST(TlsRecordBuildNonce, LargeSequenceNumberXorsCorrectly) {
+    // Test with a sequence number that uses upper bytes
+    uint8_t iv[tls_const::kTls13NonceLen] = {};
+    uint8_t out[tls_const::kTls13NonceLen] = {};
+    // seq = 0x0102030405060708
+    tls_record::build_nonce(out, iv, 0x0102030405060708ULL);
+
+    // With zero IV, out should equal big-endian seq right-aligned in 12 bytes
+    // First 4 bytes are IV[0..3] = 0, and the XOR is with the high 4 bytes
+    // of the 8-byte big-endian seq, which is placed at offset 4.
+    // Big-endian of 0x0102030405060708: 01 02 03 04 05 06 07 08
+    // This gets XORed with iv[4..11] which is all zeros.
+    EXPECT_EQ(out[4], 0x01);
+    EXPECT_EQ(out[5], 0x02);
+    EXPECT_EQ(out[6], 0x03);
+    EXPECT_EQ(out[7], 0x04);
+    EXPECT_EQ(out[8], 0x05);
+    EXPECT_EQ(out[9], 0x06);
+    EXPECT_EQ(out[10], 0x07);
+    EXPECT_EQ(out[11], 0x08);
+}
+
+TEST(TlsRecordBuildNonce, XorWithNonZeroIvAndSeq) {
+    uint8_t iv[tls_const::kTls13NonceLen] = {
+        0xFF, 0xFF, 0xFF, 0xFF,  // first 4 bytes copied directly
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF};
+    uint8_t out[tls_const::kTls13NonceLen] = {};
+    tls_record::build_nonce(out, iv, 1);
+
+    // First 4 bytes: copied from IV
+    EXPECT_EQ(out[0], 0xFF);
+    EXPECT_EQ(out[1], 0xFF);
+    EXPECT_EQ(out[2], 0xFF);
+    EXPECT_EQ(out[3], 0xFF);
+    // Last byte: iv[11] XOR seq_be[7] = 0xFF XOR 0x01 = 0xFE
+    EXPECT_EQ(out[11], 0xFE);
+}
+
+// =======================================================================
+// parse_record_header — additional edge cases
+// =======================================================================
+
+TEST(TlsRecordHeader, ParseZeroPayloadLength) {
+    uint8_t buf[tls_record::kRecordHeaderLen] = {
+        tls_record::kContentTypeAppData, 0x03, 0x03, 0x00, 0x00};
+    uint8_t ct = 0;
+    uint16_t len = 0;
+    bool ok = tls_record::parse_record_header(buf, ct, len);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(len, 0);
+}
+
+TEST(TlsRecordHeader, WriteAndParseSmallPayload) {
+    uint8_t buf[tls_record::kRecordHeaderLen] = {};
+    tls_record::write_record_header(buf, tls_record::kContentTypeAppData, 1);
+    uint8_t ct = 0;
+    uint16_t len = 0;
+    bool ok = tls_record::parse_record_header(buf, ct, len);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(len, 1);
+}
+
+TEST(TlsRecordHeader, ParseChangeTlsContentType) {
+    // Change cipher spec (0x14) should be rejected
+    uint8_t buf[tls_record::kRecordHeaderLen] = {
+        0x14, 0x03, 0x03, 0x00, 0x01};
+    uint8_t ct = 0;
+    uint16_t len = 0;
+    bool ok = tls_record::parse_record_header(buf, ct, len);
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(ct, 0x14);
+}
+
+TEST(TlsRecordHeader, ParseHandshakeContentType) {
+    // Handshake (0x16) should be rejected
+    uint8_t buf[tls_record::kRecordHeaderLen] = {
+        0x16, 0x03, 0x03, 0x00, 0x01};
+    uint8_t ct = 0;
+    uint16_t len = 0;
+    bool ok = tls_record::parse_record_header(buf, ct, len);
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(ct, 0x16);
+}
