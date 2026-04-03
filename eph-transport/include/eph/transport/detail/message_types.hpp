@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -30,7 +31,7 @@ namespace detail {
 /// written/read when Transport::kEnableTimestamps is true.
 template <size_t MaxPayload>
 struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
-    uint8_t  data[MaxPayload]{};
+    std::array<uint8_t, MaxPayload> data{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
     uint64_t tsc = 0;  // enqueue-time TSC (unused when kEnableTimestamps=false)
@@ -44,10 +45,14 @@ struct alignas(eph::utils::CACHE_LINE_SIZE) TxMessage {
 /// tsc carries the arrival-time TSC (unused when kEnableTimestamps=false).
 template <size_t MaxPayload>
 struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
-    uint8_t  data[MaxPayload]{};
+    std::array<uint8_t, MaxPayload> data{};
     uint16_t len = 0;
     uint8_t  opcode = ws::opcode::kBinary;
     uint64_t tsc = 0;  // arrival-time TSC (unused when kEnableTimestamps=false)
+
+    static_assert(MaxPayload > 0, "MaxPayload must be > 0");
+    static_assert(MaxPayload <= tls_const::kMaxRecordPayload,
+                  "MaxPayload exceeds TLS max record size");
 };
 
 /// Lazily-initialized shared logger for the transport subsystem.
