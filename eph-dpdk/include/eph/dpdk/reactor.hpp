@@ -173,6 +173,7 @@ public:
             return std::unexpected("add_connection() must be called before start()");
         }
         if (!session) return std::unexpected("session is null");
+        if (!on_data) return std::unexpected("on_data callback is null");
         size_t idx = count_.load(std::memory_order_relaxed);
         if (idx >= kReactorMaxConnections) {
             return std::unexpected(std::format(
@@ -197,10 +198,17 @@ public:
     }
 
     /// Start the reactor RX thread.
-    void start() {
-        if (running_.load(std::memory_order_relaxed)) return;
+    /// @return true if started, false if already running or no connections registered.
+    [[nodiscard]] bool start() {
+        if (running_.load(std::memory_order_relaxed)) return false;
+        if (count_.load(std::memory_order_relaxed) == 0) {
+            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+                "start(): no connections registered");
+            return false;
+        }
         running_.store(true, std::memory_order_release);
         thread_ = std::thread([this] { rx_loop(); });
+        return true;
     }
 
     /// Stop the reactor RX thread (blocks until joined).
@@ -270,9 +278,15 @@ public:
     }
 
     /// Register a callback invoked after each NIC burst + dispatch cycle.
-    /// Must be called before start().
-    void set_on_burst_complete(BurstCompleteCallback cb) {
+    /// Must be called before start(). Returns false if reactor is already running.
+    [[nodiscard]] bool set_on_burst_complete(BurstCompleteCallback cb) {
+        if (running_.load(std::memory_order_acquire)) {
+            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+                "set_on_burst_complete: called while reactor is running");
+            return false;
+        }
         on_burst_complete_ = std::move(cb);
+        return true;
     }
 
     /// @brief Number of registered connections (may include disconnected entries).

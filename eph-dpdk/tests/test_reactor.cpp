@@ -248,3 +248,45 @@ TEST(Reactor, StopWhileNotRunningIsSafe) {
     reactor.stop(); // Double stop should be idempotent
     EXPECT_FALSE(reactor.is_running());
 }
+
+// ---------------------------------------------------------------------------
+// Reactor — add_connection null callback rejection
+// ---------------------------------------------------------------------------
+
+TEST(Reactor, AddConnectionNullCallbackFails) {
+    Reactor reactor(Reactor::Config{});
+    // Fake non-null session pointer for testing callback validation
+    TcpSession<>* fake_session = reinterpret_cast<TcpSession<>*>(0xBEEF);
+    ReactorDataCallback empty_cb;  // default-constructed = empty
+    auto result = reactor.add_connection(fake_session, empty_cb);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("null"), std::string::npos);
+    EXPECT_EQ(reactor.connection_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Reactor::start — returns false with zero connections
+// ---------------------------------------------------------------------------
+
+TEST(Reactor, StartWithNoConnectionsReturnsFalse) {
+    Reactor reactor(Reactor::Config{});
+    EXPECT_FALSE(reactor.start());
+    EXPECT_FALSE(reactor.is_running());
+}
+
+// ---------------------------------------------------------------------------
+// Reactor::set_on_burst_complete — returns bool
+// ---------------------------------------------------------------------------
+
+TEST(Reactor, SetOnBurstCompleteReturnsTrue) {
+    Reactor reactor(Reactor::Config{});
+    bool result = reactor.set_on_burst_complete([]() {});
+    EXPECT_TRUE(result);
+}
+
+TEST(Reactor, SetOnBurstCompleteNullCallbackReturnsTrue) {
+    Reactor reactor(Reactor::Config{});
+    // Clearing the callback is a valid operation
+    bool result = reactor.set_on_burst_complete(nullptr);
+    EXPECT_TRUE(result);
+}
