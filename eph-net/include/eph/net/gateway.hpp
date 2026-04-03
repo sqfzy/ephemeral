@@ -353,22 +353,51 @@ public:
     ///
     /// Only starts connections whose health is ConnHealth::Stopped and whose
     /// transport is not already running. Skips duplicates safely.
+    ///
+    /// Transport start functions are called outside the lock to prevent
+    /// deadlock if start_threads() calls back into Gateway.
     void start_all() noexcept {
-        std::lock_guard lock(mu_);
-        for (size_t i = 0; i < connections_.size(); ++i) {
-            auto& c = connections_[i];
-            if (c.health == ConnHealth::Stopped && c.start_threads_fn) {
-                // Guard against spawning duplicate threads if the transport
-                // is somehow already running (e.g. started externally).
-                if (!c.is_running_fn(c.transport_ptr)) {
-                    SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: starting [{}] '{}'", i, c.tag);
-                    c.start_threads_fn(c.transport_ptr);
-                } else {
-                    SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: [{}] '{}' already running, skipping start", i, c.tag);
+        struct StartTarget {
+            size_t idx; std::string tag; void* ptr;
+            void (*start_fn)(void*);
+            bool (*is_running_fn)(void*);
+        };
+        std::vector<StartTarget> targets;
+        {
+            std::lock_guard lock(mu_);
+            for (size_t i = 0; i < connections_.size(); ++i) {
+                auto& c = connections_[i];
+                if (c.health == ConnHealth::Stopped && c.start_threads_fn) {
+                    targets.push_back({i, c.tag, c.transport_ptr,
+                                       c.start_threads_fn, c.is_running_fn});
                 }
-                // Verify the transport actually started before marking healthy
-                c.health = c.is_running_fn(c.transport_ptr)
-                    ? ConnHealth::Healthy : ConnHealth::Disconnected;
+            }
+        }
+        for (auto& t : targets) {
+            // Guard against spawning duplicate threads if the transport
+            // is somehow already running (e.g. started externally).
+            if (t.is_running_fn && t.is_running_fn(t.ptr)) {
+                SPDLOG_LOGGER_INFO(detail::gateway_logger(),
+                    "Gateway: [{}] '{}' already running, skipping start", t.idx, t.tag);
+            } else {
+                SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: starting [{}] '{}'", t.idx, t.tag);
+                try {
+                    t.start_fn(t.ptr);
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                        "Gateway: start_threads_fn threw for [{}] '{}'", t.idx, t.tag);
+                }
+            }
+        }
+        // Update health after all start calls complete.
+        {
+            std::lock_guard lock(mu_);
+            for (auto& t : targets) {
+                if (t.idx < connections_.size()) {
+                    auto& c = connections_[t.idx];
+                    c.health = (c.is_running_fn && c.is_running_fn(c.transport_ptr))
+                        ? ConnHealth::Healthy : ConnHealth::Disconnected;
+                }
             }
         }
     }
