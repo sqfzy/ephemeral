@@ -432,6 +432,28 @@ static void BM_PacketTemplateValidate(benchmark::State& state) {
 BENCHMARK(BM_PacketTemplateValidate);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Reactor::Config serialization
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ReactorConfigDump(benchmark::State& state) {
+    eph::dpdk::Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
+    for (auto _ : state) {
+        auto s = cfg.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ReactorConfigDump);
+
+static void BM_ReactorConfigToJson(benchmark::State& state) {
+    eph::dpdk::Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
+    for (auto _ : state) {
+        auto s = cfg.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ReactorConfigToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ParsedPacket::to_json
 // ─────────────────────────────────────────────────────────────────────────────
 

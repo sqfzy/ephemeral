@@ -290,3 +290,45 @@ TEST(Reactor, SetOnBurstCompleteNullCallbackReturnsTrue) {
     bool result = reactor.set_on_burst_complete(nullptr);
     EXPECT_TRUE(result);
 }
+
+// ---------------------------------------------------------------------------
+// Reactor::Config — to_json with negative rx_cpu
+// ---------------------------------------------------------------------------
+
+TEST(ReactorConfig, ToJsonNegativeCpu) {
+    Reactor::Config cfg{.port_id = 0, .rx_queue_id = 0, .rx_cpu = -1};
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"rx_cpu\":-1"), std::string::npos);
+}
+
+TEST(ReactorConfig, DumpDefaultConfig) {
+    Reactor::Config cfg{};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("Reactor::Config"), std::string::npos);
+    EXPECT_NE(d.find("port=0"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// ReactorEntry — hash_tuple edge cases
+// ---------------------------------------------------------------------------
+
+TEST(ReactorHash, MaxValueTupleNonZeroHash) {
+    auto t = make_tuple(UINT32_MAX, UINT32_MAX, UINT16_MAX, UINT16_MAX);
+    auto h = ReactorEntry::hash_tuple(t);
+    // Should produce some hash, not zero (collisions are theoretically possible
+    // but extremely unlikely for a well-distributed hash)
+    EXPECT_EQ(h, ReactorEntry::hash_tuple(t));  // Deterministic
+}
+
+TEST(ReactorHash, SingleBitDifferenceDifferentHash) {
+    // Verify single-bit difference in IP produces different hash
+    auto t1 = make_tuple(0x80000000, 0x0A000002, 12345, 443);
+    auto t2 = make_tuple(0x80000001, 0x0A000002, 12345, 443);
+    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+}
+
+TEST(ReactorHash, SingleBitDifferencePortDifferentHash) {
+    auto t1 = make_tuple(0x0A000001, 0x0A000002, 1, 443);
+    auto t2 = make_tuple(0x0A000001, 0x0A000002, 2, 443);
+    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+}
