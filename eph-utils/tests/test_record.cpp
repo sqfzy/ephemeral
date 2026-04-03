@@ -422,10 +422,89 @@ TEST(HdrHistogramReport, PopulatedHistogramIncludesAllPercentiles) {
 
 TEST(HdrHistogramReport, ReportWithoutUnitOmitsUnitSuffix) {
     HdrHistogram hist(1, 10000, 3);
-    hist.record(42);
+    (void)hist.record(42);
 
     auto r = hist.report("Test");
     // Should have values but no unit suffix beyond the numbers
     EXPECT_NE(r.find("Test"), std::string::npos);
     EXPECT_NE(r.find("1 samples"), std::string::npos);
+}
+
+// ============================================================================
+// Stats dump / to_json / operator-
+// ============================================================================
+
+TEST_F(RecordTest, StatsDumpEmptyCount) {
+    Stats s{.name = "Test", .count = 0};
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("empty"), std::string::npos);
+    EXPECT_NE(dump.find("Test"), std::string::npos);
+}
+
+TEST_F(RecordTest, StatsDumpPopulated) {
+    Stats s{.name = "Bench", .count = 100, .avg_ns = 50.0,
+            .min_ns = 10.0, .max_ns = 200.0, .p50_ns = 45.0,
+            .p90_ns = 80.0, .p99_ns = 150.0, .p999_ns = 190.0,
+            .stddev_ns = 25.0};
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("Bench"), std::string::npos);
+    EXPECT_NE(dump.find("100 samples"), std::string::npos);
+    EXPECT_NE(dump.find("50.0"), std::string::npos);  // avg
+}
+
+TEST_F(RecordTest, StatsToJsonEmpty) {
+    Stats s{.name = "Test", .count = 0};
+    auto json = s.to_json();
+    EXPECT_NE(json.find("\"count\":0"), std::string::npos);
+    EXPECT_NE(json.find("\"name\":\"Test\""), std::string::npos);
+}
+
+TEST_F(RecordTest, StatsToJsonPopulated) {
+    Stats s{.name = "Bench", .count = 100, .avg_ns = 50.0,
+            .min_ns = 10.0, .max_ns = 200.0, .p50_ns = 45.0,
+            .p90_ns = 80.0, .p99_ns = 150.0, .p999_ns = 190.0,
+            .stddev_ns = 25.0};
+    auto json = s.to_json();
+    EXPECT_NE(json.find("\"count\":100"), std::string::npos);
+    EXPECT_NE(json.find("\"avg_ns\":50.00"), std::string::npos);
+}
+
+TEST_F(RecordTest, StatsSubtractOperator) {
+    Stats a{.name = "Bench", .count = 200, .avg_ns = 60.0,
+            .min_ns = 5.0, .max_ns = 300.0, .p50_ns = 55.0,
+            .p90_ns = 90.0, .p99_ns = 160.0, .p999_ns = 200.0,
+            .stddev_ns = 30.0};
+    Stats b{.name = "Bench", .count = 100, .avg_ns = 50.0,
+            .min_ns = 10.0, .max_ns = 200.0, .p50_ns = 45.0,
+            .p90_ns = 80.0, .p99_ns = 150.0, .p999_ns = 190.0,
+            .stddev_ns = 25.0};
+    auto diff = a - b;
+    EXPECT_EQ(diff.count, 100);  // 200 - 100
+    EXPECT_EQ(diff.name, "Bench");
+    // Point-in-time fields should be from lhs
+    EXPECT_DOUBLE_EQ(diff.avg_ns, 60.0);
+    EXPECT_DOUBLE_EQ(diff.min_ns, 5.0);
+}
+
+TEST_F(RecordTest, StatsSubtractUnderflowClamps) {
+    Stats a{.name = "X", .count = 50};
+    Stats b{.name = "X", .count = 100};
+    auto diff = a - b;
+    EXPECT_EQ(diff.count, 0);  // clamped, not wrapped
+}
+
+TEST_F(RecordTest, StatsFormatSupport) {
+    Stats s{.name = "MyBench", .count = 1000, .avg_ns = 42.3,
+            .min_ns = 10.0, .max_ns = 500.0, .p50_ns = 40.0,
+            .p90_ns = 80.0, .p99_ns = 128.7, .p999_ns = 450.0,
+            .stddev_ns = 20.0};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("MyBench"), std::string::npos);
+    EXPECT_NE(formatted.find("n=1000"), std::string::npos);
+}
+
+TEST_F(RecordTest, StatsFormatEmptyCount) {
+    Stats s{.name = "Empty", .count = 0};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("no samples"), std::string::npos);
 }
