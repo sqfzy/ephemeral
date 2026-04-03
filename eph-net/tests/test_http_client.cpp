@@ -18,7 +18,11 @@ using namespace eph::net;
 // Compile-time verification of constexpr HttpResponse status methods
 // ─────────────────────────────────────────────────────────────────────────────
 
+static_assert(HttpResponse{.status_code = 100}.is_informational());
+static_assert(!HttpResponse{.status_code = 100}.is_success());
+
 static_assert(HttpResponse{.status_code = 200}.is_success());
+static_assert(!HttpResponse{.status_code = 200}.is_informational());
 static_assert(!HttpResponse{.status_code = 200}.is_redirect());
 static_assert(!HttpResponse{.status_code = 200}.is_client_error());
 static_assert(!HttpResponse{.status_code = 200}.is_server_error());
@@ -580,11 +584,20 @@ TEST(HttpResponse, IsServerErrorFor5xx) {
 
 TEST(HttpResponse, ZeroStatusCodeIsNoneOfCategories) {
     HttpResponse resp;
+    EXPECT_FALSE(resp.is_informational());
     EXPECT_FALSE(resp.is_success());
     EXPECT_FALSE(resp.is_client_error());
     EXPECT_FALSE(resp.is_server_error());
     EXPECT_FALSE(resp.is_redirect());
     EXPECT_FALSE(resp.is_error());
+}
+
+TEST(HttpResponse, IsInformationalFor1xx) {
+    EXPECT_TRUE((HttpResponse{.status_code = 100}).is_informational());
+    EXPECT_TRUE((HttpResponse{.status_code = 101}).is_informational());
+    EXPECT_TRUE((HttpResponse{.status_code = 199}).is_informational());
+    EXPECT_FALSE((HttpResponse{.status_code = 99}).is_informational());
+    EXPECT_FALSE((HttpResponse{.status_code = 200}).is_informational());
 }
 
 TEST(HttpResponse, IsRedirectFor3xx) {
@@ -613,18 +626,20 @@ TEST(HttpResponse, StatusCategoriesMutuallyExclusive) {
     // For each major status range, verify exactly one category matches
     auto check = [](int code) {
         HttpResponse r{.status_code = code};
-        int count = (r.is_success() ? 1 : 0)
+        int count = (r.is_informational() ? 1 : 0)
+                  + (r.is_success() ? 1 : 0)
                   + (r.is_redirect() ? 1 : 0)
                   + (r.is_client_error() ? 1 : 0)
                   + (r.is_server_error() ? 1 : 0);
         return count;
     };
-    EXPECT_EQ(check(200), 1);
-    EXPECT_EQ(check(301), 1);
-    EXPECT_EQ(check(404), 1);
-    EXPECT_EQ(check(500), 1);
+    EXPECT_EQ(check(100), 1); // 1xx informational
+    EXPECT_EQ(check(200), 1); // 2xx success
+    EXPECT_EQ(check(301), 1); // 3xx redirect
+    EXPECT_EQ(check(404), 1); // 4xx client error
+    EXPECT_EQ(check(500), 1); // 5xx server error
     EXPECT_EQ(check(0), 0);   // none match
-    EXPECT_EQ(check(100), 0); // 1xx not classified
+    EXPECT_EQ(check(600), 0); // beyond 5xx
 }
 
 // =============================================================================

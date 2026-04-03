@@ -65,6 +65,11 @@ struct HttpResponse {
     std::string body;             ///< Response body text.
     std::string headers_raw;      ///< Raw header block (excluding status line) for optional parsing.
 
+    /// Check if the response is informational (1xx status code).
+    [[nodiscard]] constexpr bool is_informational() const noexcept {
+        return status_code >= 100 && status_code < 200;
+    }
+
     /// Check if the response indicates success (2xx status code).
     [[nodiscard]] constexpr bool is_success() const noexcept {
         return status_code >= 200 && status_code < 300;
