@@ -268,6 +268,25 @@ struct MulticastConfig {
         return {};
     }
 
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (rx_cpu == -1)
+            w.emplace_back("rx_cpu=-1 (no pinning) -- multicast RX thread "
+                           "may migrate across cores, increasing jitter");
+        if (rx_burst < 8)
+            w.emplace_back(std::format(
+                "rx_burst={} is unusually small -- may increase poll "
+                "overhead per packet", rx_burst));
+        if (rx_burst > 128)
+            w.emplace_back(std::format(
+                "rx_burst={} is unusually large -- may increase "
+                "per-iteration latency variance", rx_burst));
+        return w;
+    }
+
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
         return std::format(

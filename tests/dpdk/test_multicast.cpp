@@ -425,6 +425,59 @@ TEST(MulticastGroupFormatter, SourceSpecific) {
     EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastConfig::warnings
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastConfigWarnings, PinnedCpuNoWarnings) {
+    MulticastConfig cfg{.rx_cpu = 3, .rx_burst = 32};
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(MulticastConfigWarnings, UnpinnedCpuWarns) {
+    MulticastConfig cfg{.rx_cpu = -1, .rx_burst = 32};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("no pinning") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected no-pinning warning";
+}
+
+TEST(MulticastConfigWarnings, SmallBurstWarns) {
+    MulticastConfig cfg{.rx_cpu = 1, .rx_burst = 4};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("rx_burst=4") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected small burst warning";
+}
+
+TEST(MulticastConfigWarnings, LargeBurstWarns) {
+    MulticastConfig cfg{.rx_cpu = 1, .rx_burst = 256};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("rx_burst=256") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected large burst warning";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
 TEST(MulticastConfigFormatter, ContainsKeyFields) {
     MulticastConfig cfg{
         .port_id = 1,
