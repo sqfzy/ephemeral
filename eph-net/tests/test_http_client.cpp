@@ -966,3 +966,224 @@ TEST(HttpClientFindHeaderOpt, CaseInsensitive) {
     ASSERT_TRUE(find_header_opt(headers, "content-type").has_value());
     ASSERT_TRUE(find_header_opt(headers, "CONTENT-TYPE").has_value());
 }
+
+// =============================================================================
+// HttpClient::Config::from_url() — happy paths
+// =============================================================================
+
+TEST(HttpClientConfigFromUrl, HttpsDefaultPort) {
+    auto result = HttpClient::Config::from_url("https://api.binance.com");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "api.binance.com");
+    EXPECT_EQ(result->port, 443);
+    EXPECT_TRUE(result->use_tls);
+}
+
+TEST(HttpClientConfigFromUrl, HttpsExplicitPort) {
+    auto result = HttpClient::Config::from_url("https://api.binance.com:8443");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "api.binance.com");
+    EXPECT_EQ(result->port, 8443);
+    EXPECT_TRUE(result->use_tls);
+}
+
+TEST(HttpClientConfigFromUrl, HttpDefaultPort) {
+    auto result = HttpClient::Config::from_url("http://localhost");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "localhost");
+    EXPECT_EQ(result->port, 80);
+    EXPECT_FALSE(result->use_tls);
+}
+
+TEST(HttpClientConfigFromUrl, HttpExplicitPort) {
+    auto result = HttpClient::Config::from_url("http://localhost:8080");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "localhost");
+    EXPECT_EQ(result->port, 8080);
+    EXPECT_FALSE(result->use_tls);
+}
+
+TEST(HttpClientConfigFromUrl, HttpsWithPath) {
+    // Path should be stripped -- only host:port is relevant
+    auto result = HttpClient::Config::from_url("https://api.binance.com/api/v3/ticker");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "api.binance.com");
+    EXPECT_EQ(result->port, 443);
+}
+
+TEST(HttpClientConfigFromUrl, HttpsWithPortAndPath) {
+    auto result = HttpClient::Config::from_url("https://api.exchange.com:9443/ws/v1");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "api.exchange.com");
+    EXPECT_EQ(result->port, 9443);
+}
+
+TEST(HttpClientConfigFromUrl, Ipv6BracketNotation) {
+    auto result = HttpClient::Config::from_url("https://[::1]:8443");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "::1");
+    EXPECT_EQ(result->port, 8443);
+    EXPECT_TRUE(result->use_tls);
+}
+
+TEST(HttpClientConfigFromUrl, Ipv6WithoutPort) {
+    auto result = HttpClient::Config::from_url("https://[::1]");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "::1");
+    EXPECT_EQ(result->port, 443);  // default HTTPS port
+}
+
+TEST(HttpClientConfigFromUrl, IpAddress) {
+    auto result = HttpClient::Config::from_url("http://192.168.1.1:3000");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->host, "192.168.1.1");
+    EXPECT_EQ(result->port, 3000);
+    EXPECT_FALSE(result->use_tls);
+}
+
+TEST(HttpClientConfigFromUrl, DefaultFieldsRetained) {
+    // from_url should only set host/port/use_tls; other fields stay default
+    auto result = HttpClient::Config::from_url("https://api.io");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->timeout, std::chrono::milliseconds{5000});
+    EXPECT_TRUE(result->ca_cert_path.empty());
+    EXPECT_EQ(result->max_response_size, 8u * 1024 * 1024);
+}
+
+// =============================================================================
+// HttpClient::Config::from_url() — error paths
+// =============================================================================
+
+TEST(HttpClientConfigFromUrl, UnsupportedSchemeReturnsError) {
+    auto result = HttpClient::Config::from_url("ftp://example.com");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("unsupported scheme"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, NoSchemeReturnsError) {
+    auto result = HttpClient::Config::from_url("api.binance.com");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(HttpClientConfigFromUrl, EmptyHostReturnsError) {
+    auto result = HttpClient::Config::from_url("https://");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("empty host"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, EmptyHostWithPortReturnsError) {
+    auto result = HttpClient::Config::from_url("https://:443");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("empty host"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, InvalidPortReturnsError) {
+    auto result = HttpClient::Config::from_url("https://api.io:abc");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("invalid port"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, PortZeroReturnsError) {
+    auto result = HttpClient::Config::from_url("https://api.io:0");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("port out of range"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, PortTooLargeReturnsError) {
+    auto result = HttpClient::Config::from_url("https://api.io:99999");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("port out of range"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, HostWithControlCharsReturnsError) {
+    auto result = HttpClient::Config::from_url("https://evil\r\nhost");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("control characters"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, Ipv6MissingClosingBracketReturnsError) {
+    auto result = HttpClient::Config::from_url("https://[::1:443");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("']'"), std::string::npos);
+}
+
+TEST(HttpClientConfigFromUrl, Ipv6EmptyAddressReturnsError) {
+    auto result = HttpClient::Config::from_url("https://[]:443");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("empty"), std::string::npos);
+}
+
+// =============================================================================
+// HttpClient::Config::to_url()
+// =============================================================================
+
+TEST(HttpClientConfigToUrl, HttpsDefaultPortOmitted) {
+    HttpClient::Config cfg{.host = "api.binance.com", .port = 443, .use_tls = true};
+    EXPECT_EQ(cfg.to_url(), "https://api.binance.com");
+}
+
+TEST(HttpClientConfigToUrl, HttpsNonDefaultPortIncluded) {
+    HttpClient::Config cfg{.host = "api.binance.com", .port = 8443, .use_tls = true};
+    EXPECT_EQ(cfg.to_url(), "https://api.binance.com:8443");
+}
+
+TEST(HttpClientConfigToUrl, HttpDefaultPortOmitted) {
+    HttpClient::Config cfg{.host = "localhost", .port = 80, .use_tls = false};
+    EXPECT_EQ(cfg.to_url(), "http://localhost");
+}
+
+TEST(HttpClientConfigToUrl, HttpNonDefaultPortIncluded) {
+    HttpClient::Config cfg{.host = "localhost", .port = 8080, .use_tls = false};
+    EXPECT_EQ(cfg.to_url(), "http://localhost:8080");
+}
+
+TEST(HttpClientConfigToUrl, Ipv6BracketEnclosed) {
+    HttpClient::Config cfg{.host = "::1", .port = 8443, .use_tls = true};
+    EXPECT_EQ(cfg.to_url(), "https://[::1]:8443");
+}
+
+TEST(HttpClientConfigToUrl, Ipv6DefaultPortOmitted) {
+    HttpClient::Config cfg{.host = "::1", .port = 443, .use_tls = true};
+    EXPECT_EQ(cfg.to_url(), "https://[::1]");
+}
+
+// =============================================================================
+// HttpClient::Config::from_url() + to_url() — round-trip
+// =============================================================================
+
+TEST(HttpClientConfigUrlRoundTrip, HttpsWithDefaultPort) {
+    auto cfg = HttpClient::Config::from_url("https://api.binance.com");
+    ASSERT_TRUE(cfg.has_value()) << cfg.error();
+    EXPECT_EQ(cfg->to_url(), "https://api.binance.com");
+}
+
+TEST(HttpClientConfigUrlRoundTrip, HttpsWithExplicitPort) {
+    auto cfg = HttpClient::Config::from_url("https://api.binance.com:9443");
+    ASSERT_TRUE(cfg.has_value()) << cfg.error();
+    EXPECT_EQ(cfg->to_url(), "https://api.binance.com:9443");
+}
+
+TEST(HttpClientConfigUrlRoundTrip, HttpWithDefaultPort) {
+    auto cfg = HttpClient::Config::from_url("http://localhost");
+    ASSERT_TRUE(cfg.has_value()) << cfg.error();
+    EXPECT_EQ(cfg->to_url(), "http://localhost");
+}
+
+TEST(HttpClientConfigUrlRoundTrip, HttpWithExplicitPort) {
+    auto cfg = HttpClient::Config::from_url("http://192.168.1.1:3000");
+    ASSERT_TRUE(cfg.has_value()) << cfg.error();
+    EXPECT_EQ(cfg->to_url(), "http://192.168.1.1:3000");
+}
+
+TEST(HttpClientConfigUrlRoundTrip, Ipv6WithPort) {
+    auto cfg = HttpClient::Config::from_url("https://[::1]:8443");
+    ASSERT_TRUE(cfg.has_value()) << cfg.error();
+    EXPECT_EQ(cfg->to_url(), "https://[::1]:8443");
+}
+
+TEST(HttpClientConfigUrlRoundTrip, PathStrippedInRoundTrip) {
+    // from_url strips path, so round-trip produces just scheme://host
+    auto cfg = HttpClient::Config::from_url("https://api.io/v1/ticker");
+    ASSERT_TRUE(cfg.has_value()) << cfg.error();
+    EXPECT_EQ(cfg->to_url(), "https://api.io");
+}
