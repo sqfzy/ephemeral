@@ -306,3 +306,89 @@ TEST_F(ReconnectPolicyTest, SingleAttemptMaxExhaustsAfterOne) {
     (void)policy.attempt(fail_fn);
     EXPECT_TRUE(policy.exhausted());
 }
+
+TEST_F(ReconnectPolicyTest, AttemptAfterExhaustionStillWorks) {
+    // Calling attempt() after exhaustion should not crash.
+    // The caller is responsible for checking exhausted() before calling.
+    auto cfg = make_config(1);
+    ReconnectPolicy policy(cfg);
+
+    auto fail_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kFactoryFailed, "test failure"});
+    };
+
+    (void)policy.attempt(fail_fn);
+    EXPECT_TRUE(policy.exhausted());
+    // Call again after exhaustion
+    (void)policy.attempt(fail_fn);
+    EXPECT_EQ(policy.attempts(), 2);
+    EXPECT_TRUE(policy.exhausted());
+}
+
+TEST_F(ReconnectPolicyTest, SuccessAfterExhaustionStillCountsReconnect) {
+    // Even if max attempts are exhausted, a successful attempt() still
+    // increments total_reconnects_ (caller controls the loop).
+    auto cfg = make_config(1);
+    ReconnectPolicy policy(cfg);
+
+    auto fail_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kFactoryFailed, "test failure"});
+    };
+    auto success_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return {};
+    };
+
+    (void)policy.attempt(fail_fn);
+    EXPECT_TRUE(policy.exhausted());
+    // Force a successful attempt even when exhausted
+    bool ok = policy.attempt(success_fn);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(policy.total_reconnects(), 1);
+}
+
+TEST_F(ReconnectPolicyTest, CallbackReceivesCorrectAttemptAndMax) {
+    int received_attempt = -1;
+    int received_max = -1;
+    std::string received_error;
+
+    auto cfg = make_config(5);
+    cfg.on_reconnect_attempt = [&](int attempt, int max, std::string_view error) {
+        received_attempt = attempt;
+        received_max = max;
+        received_error = std::string(error);
+        return true;  // continue
+    };
+    ReconnectPolicy policy(cfg);
+
+    auto fail_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kFactoryFailed, "specific error msg"});
+    };
+
+    (void)policy.attempt(fail_fn);
+    EXPECT_EQ(received_attempt, 1);
+    EXPECT_EQ(received_max, 5);
+    EXPECT_NE(received_error.find("specific error msg"), std::string::npos);
+}
+
+TEST_F(ReconnectPolicyTest, MultipleResetsAndReconnects) {
+    auto cfg = make_config(3);
+    ReconnectPolicy policy(cfg);
+
+    auto success_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return {};
+    };
+
+    // Three cycles of connect + reset
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        bool ok = policy.attempt(success_fn);
+        EXPECT_TRUE(ok);
+        policy.reset();
+    }
+
+    EXPECT_EQ(policy.total_reconnects(), 3);
+    EXPECT_EQ(policy.attempts(), 0);
+    EXPECT_FALSE(policy.exhausted());
+}
