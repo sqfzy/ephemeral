@@ -45,7 +45,7 @@ inline spdlog::logger* http_logger() {
 }
 
 /// Case-insensitive string comparison for HTTP header matching.
-inline bool iequals(std::string_view a, std::string_view b) noexcept {
+[[nodiscard]] inline bool iequals(std::string_view a, std::string_view b) noexcept {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
         if (std::tolower(static_cast<unsigned char>(a[i])) !=
@@ -257,7 +257,7 @@ parse_upgrade_response(const char* data, size_t len) {
 /// @param ws_key        The Sec-WebSocket-Key sent in the Upgrade request
 /// @param accept_value  The Sec-WebSocket-Accept value from the server's response
 /// @return true if the accept value matches the expected hash
-inline bool validate_ws_accept(std::string_view ws_key,
+[[nodiscard]] inline bool validate_ws_accept(std::string_view ws_key,
                                 std::string_view accept_value) {
     static constexpr std::string_view kMagicGuid =
         "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

@@ -102,7 +102,7 @@ inline void write_record_header(uint8_t* dst, uint8_t content_type,
 /// @param[out] payload_len  Parsed payload length
 /// @return true if the record header describes a valid application data record
 ///         within the maximum TLS record size; false otherwise.
-inline bool parse_record_header(const uint8_t* src,
+[[nodiscard]] inline bool parse_record_header(const uint8_t* src,
                                  uint8_t& content_type,
                                  uint16_t& payload_len) noexcept {
     content_type = src[0];
