@@ -68,26 +68,13 @@ inline spdlog::logger* multicast_logger() {
 /// exchange feeds use 2-4 groups).
 inline constexpr size_t kMaxMulticastGroups = 8;
 
-/// UDP header length (RFC 768).
-inline constexpr uint16_t kUdpHeaderLen = 8;
+/// UdpHeader and kUdpHeaderLen are defined in net_header.hpp (shared with dns.hpp).
+using net::UdpHeader;
+using net::kUdpHeaderLen;
 
 /// Minimum Ethernet + IPv4 + UDP header length for a valid multicast packet.
 inline constexpr uint16_t kMinUdpPacketLen =
     net::kEtherHeaderLen + net::kIpv4HeaderLen + kUdpHeaderLen;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UDP header (packed, wire format)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// UDP header structure matching the wire format (network byte order).
-struct UdpHeader {
-    uint16_t src_port;   ///< Source port (network byte order)
-    uint16_t dst_port;   ///< Destination port (network byte order)
-    uint16_t length;     ///< UDP header + payload length (network byte order)
-    uint16_t checksum;   ///< Checksum (0 = disabled for IPv4)
-} __attribute__((packed));
-
-static_assert(sizeof(UdpHeader) == kUdpHeaderLen);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Multicast MAC computation (RFC 1112)

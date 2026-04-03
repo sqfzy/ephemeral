@@ -42,7 +42,6 @@ namespace eph::dpdk::dns {
 
 /// @name Protocol constants
 /// @{
-inline constexpr uint16_t kUdpHeaderLen    = 8;    ///< UDP header length (RFC 768)
 inline constexpr uint16_t kDnsHeaderLen    = 12;   ///< DNS header length (RFC 1035)
 inline constexpr uint16_t kDnsPort         = 53;   ///< Standard DNS port
 inline constexpr uint16_t kMaxDnsPacketLen = 512;  ///< RFC 1035 max UDP DNS message length
@@ -65,17 +64,9 @@ inline constexpr uint16_t kDnsClassIn      = 1;   ///< Internet class
 // Wire structures
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief UDP header structure matching the wire format (RFC 768).
-///
-/// All fields are in network byte order. 8 bytes, packed.
-struct UdpHeader {
-    uint16_t src_port;   ///< Source port (network byte order)
-    uint16_t dst_port;   ///< Destination port (network byte order)
-    uint16_t length;     ///< UDP header + payload length (network byte order)
-    uint16_t checksum;   ///< Checksum (0 = disabled, optional for IPv4 UDP)
-} __attribute__((packed));
-
-static_assert(sizeof(UdpHeader) == kUdpHeaderLen);
+/// UdpHeader is defined in net_header.hpp (shared with multicast.hpp).
+using net::UdpHeader;
+using net::kUdpHeaderLen;
 
 /// @brief DNS message header (RFC 1035 section 4.1.1).
 ///

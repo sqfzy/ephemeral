@@ -565,3 +565,39 @@ TEST(ConnectionTuple, DumpZeroTuple) {
     EXPECT_NE(d.find("0.0.0.0"), std::string::npos);
     EXPECT_NE(d.find(":0"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UdpHeader (unified definition in net_header.hpp)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(UdpHeader, SizeMatchesRfcSpec) {
+    static_assert(sizeof(UdpHeader) == 8,
+        "UDP header must be exactly 8 bytes per RFC 768");
+    EXPECT_EQ(sizeof(UdpHeader), kUdpHeaderLen);
+}
+
+TEST(UdpHeader, FieldOffsetsArePacked) {
+    // Verify packed layout: fields at expected byte offsets
+    UdpHeader hdr{};
+    hdr.src_port = hton16(12345);
+    hdr.dst_port = hton16(53);
+    hdr.length   = hton16(20);
+    hdr.checksum = hton16(0xABCD);
+
+    auto* raw = reinterpret_cast<const uint8_t*>(&hdr);
+    uint16_t sp, dp, len, cksum;
+    std::memcpy(&sp,    raw + 0, 2);
+    std::memcpy(&dp,    raw + 2, 2);
+    std::memcpy(&len,   raw + 4, 2);
+    std::memcpy(&cksum, raw + 6, 2);
+
+    EXPECT_EQ(ntoh16(sp), 12345);
+    EXPECT_EQ(ntoh16(dp), 53);
+    EXPECT_EQ(ntoh16(len), 20);
+    EXPECT_EQ(ntoh16(cksum), 0xABCD);
+}
+
+TEST(UdpHeader, KUdpHeaderLenConstant) {
+    static_assert(kUdpHeaderLen == 8);
+    EXPECT_EQ(kUdpHeaderLen, 8u);
+}

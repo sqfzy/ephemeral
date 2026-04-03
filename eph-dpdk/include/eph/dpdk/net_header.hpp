@@ -41,8 +41,25 @@ inline constexpr uint8_t  kIpProtoUdp      = 17;      ///< IP protocol number fo
 inline constexpr uint16_t kIpv4HeaderLen   = 20;  ///< IPv4 header without options
 inline constexpr uint16_t kTcpHeaderLen    = 20;  ///< TCP header without options
 inline constexpr uint16_t kEtherHeaderLen  = 14;  ///< Ethernet II header (dst + src + type)
+inline constexpr uint16_t kUdpHeaderLen    = 8;   ///< UDP header without options (RFC 768)
 inline constexpr uint16_t kAllHeadersLen   = kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;  ///< Combined Eth+IP+TCP header length (54 bytes)
 /// @}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UDP header (packed, wire format)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief UDP header structure matching the wire format (RFC 768).
+///
+/// All fields are in network byte order. 8 bytes, packed.
+struct UdpHeader {
+    uint16_t src_port;   ///< Source port (network byte order)
+    uint16_t dst_port;   ///< Destination port (network byte order)
+    uint16_t length;     ///< UDP header + payload length (network byte order)
+    uint16_t checksum;   ///< Checksum (0 = disabled, optional for IPv4)
+} __attribute__((packed));
+
+static_assert(sizeof(UdpHeader) == kUdpHeaderLen);
 
 /// @name TCP flag bitmasks (RFC 793 section 3.1)
 /// @{
