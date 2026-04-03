@@ -153,12 +153,15 @@ public:
     if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
       return std::nullopt;
     }
-    if (ns < 0) [[unlikely]] {
+    // Use !(ns >= 0) instead of (ns < 0) to also reject NaN inputs.
+    // NaN comparisons always return false, so (NaN < 0) is false and
+    // would let NaN pass through to static_cast<uint64_t>(NaN) = UB.
+    if (!(ns >= 0)) [[unlikely]] {
       return std::nullopt;
     }
     auto cycles = static_cast<double>(ns) / ns_per_cycle_;
-    if (cycles > static_cast<double>(UINT64_MAX)) [[unlikely]] {
-      return UINT64_MAX; // Saturate on overflow instead of UB
+    if (!(cycles <= static_cast<double>(UINT64_MAX))) [[unlikely]] {
+      return UINT64_MAX; // Saturate on overflow/NaN instead of UB
     }
     return static_cast<uint64_t>(cycles);
   }
