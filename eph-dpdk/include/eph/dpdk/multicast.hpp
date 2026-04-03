@@ -143,6 +143,16 @@ struct ParsedUdpPacket {
     [[nodiscard]] explicit operator bool() const noexcept {
         return eth != nullptr && ip != nullptr && udp != nullptr;
     }
+
+    /// Human-readable one-line summary for diagnostics/logging.
+    /// Returns "(invalid)" if the packet was not successfully parsed.
+    [[nodiscard]] std::string dump() const {
+        if (!udp) return "(invalid)";
+        return std::format("UDP {}:{} -> {}:{} payload={}B",
+            net::format_ipv4(src_ip()).data(), src_port(),
+            net::format_ipv4(dst_ip()).data(), dst_port(),
+            payload_len);
+    }
 };
 
 /// Parse a UDP/IPv4/Ethernet packet from an mbuf.

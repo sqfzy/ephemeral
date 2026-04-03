@@ -318,4 +318,50 @@ static void BM_ReactorDispatchSim(benchmark::State& state) {
 }
 BENCHMARK(BM_ReactorDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(16);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedPacket::dump — diagnostic output formatting
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParsedPacketDump(benchmark::State& state) {
+    uint16_t total_pkt_len = eph::dpdk::net::kAllHeadersLen + 100;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen + eph::dpdk::net::kTcpHeaderLen + 100);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoTcp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    tcp->data_off = (eph::dpdk::net::kTcpHeaderLen / 4) << 4;
+    tcp->tcp_flags = eph::dpdk::net::kTcpAck | eph::dpdk::net::kTcpPsh;
+    tcp->src_port = eph::dpdk::net::hton16(12345);
+    tcp->dst_port = eph::dpdk::net::hton16(443);
+    tcp->sent_seq = eph::dpdk::net::hton32(1000);
+    tcp->recv_ack = eph::dpdk::net::hton32(2000);
+    tcp->rx_win   = eph::dpdk::net::hton16(65535);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    auto parsed = eph::dpdk::net::parse_packet(&mbuf);
+
+    for (auto _ : state) {
+        auto s = parsed.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ParsedPacketDump);
+
 BENCHMARK_MAIN();

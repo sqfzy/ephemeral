@@ -310,6 +310,36 @@ TEST(ParseUdpPacket, NullMbufRejected) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ParsedUdpPacket::dump
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedUdpPacket, DumpInvalidPacket) {
+    ParsedUdpPacket empty{};
+    EXPECT_EQ(empty.dump(), "(invalid)");
+}
+
+TEST(ParsedUdpPacket, DumpShowsAddressesAndPayloadLen) {
+    uint8_t payload[] = {0xDE, 0xAD};
+    FakeUdpMbuf fake;
+    auto len = build_fake_udp_packet(
+        fake.data(), sizeof(fake.buf),
+        parse_ipv4("10.1.2.3"), 5000,
+        parse_ipv4("233.54.12.111"), 26477,
+        payload, sizeof(payload));
+    ASSERT_GT(len, 0u);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    auto parsed = parse_udp_packet(&fake.mbuf);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    auto d = parsed.dump();
+    EXPECT_NE(d.find("UDP"), std::string::npos);
+    EXPECT_NE(d.find("10.1.2.3"), std::string::npos);
+    EXPECT_NE(d.find("5000"), std::string::npos);
+    EXPECT_NE(d.find("26477"), std::string::npos);
+    EXPECT_NE(d.find("payload=2B"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MoldUDP64 adapter
 // ─────────────────────────────────────────────────────────────────────────────
 
