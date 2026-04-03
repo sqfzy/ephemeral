@@ -72,4 +72,39 @@ static void BM_AuditLatest(benchmark::State& state) {
 }
 BENCHMARK(BM_AuditLatest);
 
+// ---------------------------------------------------------------------------
+// Dump formatting
+// ---------------------------------------------------------------------------
+
+static void BM_AuditDump(benchmark::State& state) {
+    AuditLog<1024> log;
+    for (uint64_t i = 0; i < 100; ++i) {
+        (void)log.record(AuditEvent::NewOrder, i, 50000.0 + i, 1.5,
+                   Side::Buy, static_cast<uint8_t>(i % 4));
+    }
+    for (auto _ : state) {
+        auto s = log.dump(20);
+        benchmark::DoNotOptimize(s);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_AuditDump);
+
+// ---------------------------------------------------------------------------
+// audit_event_name lookup
+// ---------------------------------------------------------------------------
+
+static void BM_AuditEventName(benchmark::State& state) {
+    auto events = {AuditEvent::NewOrder, AuditEvent::Fill,
+                   AuditEvent::Canceled, AuditEvent::KillSwitch};
+    int idx = 0;
+    for (auto _ : state) {
+        auto name = audit_event_name(*(events.begin() + (idx % 4)));
+        benchmark::DoNotOptimize(name);
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_AuditEventName);
+
 BENCHMARK_MAIN();
