@@ -3,10 +3,12 @@
 
 #include <array>
 #include <cstring>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "eph/transport/detail/tls_constants.hpp"
+#include "eph/transport/detail/tls_record.hpp"
 
 using namespace eph::net;
 
@@ -240,4 +242,243 @@ TEST(TlsRecordHeader, ParseHandshakeContentType) {
     bool ok = tls_record::parse_record_header(buf, ct, len);
     EXPECT_FALSE(ok);
     EXPECT_EQ(ct, 0x16);
+}
+
+// =======================================================================
+// TlsRecordCrypto — encrypt/decrypt roundtrip
+// =======================================================================
+
+namespace {
+
+/// Create a TlsHotState with deterministic key material for testing.
+TlsHotState make_test_hot_state() {
+    TlsHotState state{};
+    // Fill with deterministic test keys
+    for (size_t i = 0; i < tls_const::kAes256KeyLen; ++i) {
+        state.write.ki.key[i] = static_cast<uint8_t>(i);
+        state.read.ki.key[i] = static_cast<uint8_t>(i + 0x80);
+    }
+    for (size_t i = 0; i < tls_const::kTls13NonceLen; ++i) {
+        state.write.ki.iv[i] = static_cast<uint8_t>(i + 0x40);
+        state.read.ki.iv[i] = static_cast<uint8_t>(i + 0xC0);
+    }
+    state.write.seq = 0;
+    state.read.seq = 0;
+    return state;
+}
+
+/// Create a matching pair: encryptor uses write keys, decryptor uses write keys
+/// (same direction) so we can roundtrip in a single test.
+TlsHotState make_roundtrip_hot_state() {
+    TlsHotState state{};
+    for (size_t i = 0; i < tls_const::kAes256KeyLen; ++i) {
+        state.write.ki.key[i] = static_cast<uint8_t>(i + 1);
+        state.read.ki.key[i] = static_cast<uint8_t>(i + 1);  // same as write
+    }
+    for (size_t i = 0; i < tls_const::kTls13NonceLen; ++i) {
+        state.write.ki.iv[i] = static_cast<uint8_t>(i + 0x10);
+        state.read.ki.iv[i] = static_cast<uint8_t>(i + 0x10);  // same as write
+    }
+    state.write.seq = 0;
+    state.read.seq = 0;
+    return state;
+}
+
+} // namespace
+
+TEST(TlsRecordCrypto, CreateWithValidKeys) {
+    auto state = make_test_hot_state();
+    auto result = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->write_seq(), 0u);
+    EXPECT_EQ(result->read_seq(), 0u);
+}
+
+TEST(TlsRecordCrypto, CreateWithUnsupportedKeyLenFails) {
+    auto state = make_test_hot_state();
+    auto result = TlsRecordCrypto::create(state, 24);  // invalid key len
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Unsupported"), std::string::npos);
+}
+
+TEST(TlsRecordCrypto, EncryptDecryptRoundtrip) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    // Encrypt a short message
+    uint8_t plaintext[] = "Hello, TLS 1.3!";
+    constexpr uint16_t plaintext_len = sizeof(plaintext) - 1;
+
+    uint8_t record[TlsEncryptor::encrypted_size(plaintext_len)];
+    uint16_t enc_len = crypto->encrypt(plaintext, plaintext_len, record);
+    ASSERT_GT(enc_len, 0u);
+    EXPECT_EQ(enc_len, TlsEncryptor::encrypted_size(plaintext_len));
+    EXPECT_EQ(crypto->write_seq(), 1u);
+
+    // Decrypt the record
+    uint8_t decrypted[plaintext_len + 1]{};
+    uint16_t dec_len = 0;
+    bool ok = crypto->decrypt(record, enc_len, decrypted, dec_len);
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(dec_len, plaintext_len);
+    EXPECT_EQ(std::memcmp(decrypted, plaintext, plaintext_len), 0);
+    EXPECT_EQ(crypto->read_seq(), 1u);
+}
+
+TEST(TlsRecordCrypto, MultipleRecordsRoundtrip) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    for (int i = 0; i < 10; ++i) {
+        std::string msg = "Message #" + std::to_string(i);
+        auto pl = reinterpret_cast<const uint8_t*>(msg.data());
+        auto pl_len = static_cast<uint16_t>(msg.size());
+
+        uint8_t record[TlsEncryptor::encrypted_size(512)];
+        uint16_t enc_len = crypto->encrypt(pl, pl_len, record);
+        ASSERT_GT(enc_len, 0u);
+
+        uint8_t decrypted[512]{};
+        uint16_t dec_len = 0;
+        bool ok = crypto->decrypt(record, enc_len, decrypted, dec_len);
+        ASSERT_TRUE(ok);
+        EXPECT_EQ(dec_len, pl_len);
+        EXPECT_EQ(std::memcmp(decrypted, pl, pl_len), 0);
+    }
+    EXPECT_EQ(crypto->write_seq(), 10u);
+    EXPECT_EQ(crypto->read_seq(), 10u);
+}
+
+TEST(TlsRecordCrypto, EncryptedSizeConstexpr) {
+    // Verify the constexpr size calculation
+    constexpr auto size_0 = TlsEncryptor::encrypted_size(0);
+    // header(5) + content_type(1) + tag(16) = 22
+    EXPECT_EQ(size_0, tls_record::kRecordHeaderLen + 1 + tls_record::kAuthTagLen);
+
+    constexpr auto size_100 = TlsEncryptor::encrypted_size(100);
+    EXPECT_EQ(size_100, tls_record::kRecordHeaderLen + 101 + tls_record::kAuthTagLen);
+}
+
+TEST(TlsRecordCrypto, DecryptTruncatedRecordFails) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t plaintext[] = "test data";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(plaintext))];
+    uint16_t enc_len = crypto->encrypt(plaintext, sizeof(plaintext), record);
+    ASSERT_GT(enc_len, 0u);
+
+    // Try to decrypt with truncated record
+    uint8_t decrypted[64]{};
+    uint16_t dec_len = 0;
+    bool ok = crypto->decrypt(record, tls_record::kRecordHeaderLen, decrypted, dec_len);
+    EXPECT_FALSE(ok);
+}
+
+TEST(TlsRecordCrypto, DecryptTamperedCiphertextFails) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t plaintext[] = "authentic data";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(plaintext))];
+    uint16_t enc_len = crypto->encrypt(plaintext, sizeof(plaintext), record);
+    ASSERT_GT(enc_len, 0u);
+
+    // Tamper with ciphertext (flip a bit in the encrypted payload)
+    record[tls_record::kRecordHeaderLen + 2] ^= 0xFF;
+
+    uint8_t decrypted[64]{};
+    uint16_t dec_len = 0;
+    bool ok = crypto->decrypt(record, enc_len, decrypted, dec_len);
+    EXPECT_FALSE(ok);  // AEAD authentication should fail
+}
+
+TEST(TlsRecordCrypto, EncryptNullPointerWithNonZeroLenReturnsZero) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t record[128];
+    uint16_t enc_len = crypto->encrypt(nullptr, 10, record);
+    EXPECT_EQ(enc_len, 0u);
+}
+
+TEST(TlsRecordCrypto, DecryptNullRecordFails) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t out[64];
+    uint16_t out_len = 0;
+    bool ok = crypto->decrypt(nullptr, 100, out, out_len);
+    EXPECT_FALSE(ok);
+}
+
+TEST(TlsRecordCrypto, DecryptNullOutputFails) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t plaintext[] = "test";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(plaintext))];
+    uint16_t enc_len = crypto->encrypt(plaintext, sizeof(plaintext), record);
+    ASSERT_GT(enc_len, 0u);
+
+    uint16_t out_len = 0;
+    bool ok = crypto->decrypt(record, enc_len, nullptr, out_len);
+    EXPECT_FALSE(ok);
+}
+
+TEST(TlsRecordCrypto, CreateWith128BitKey) {
+    TlsHotState state{};
+    // Only first 16 bytes need to be valid for AES-128
+    for (size_t i = 0; i < 16; ++i) {
+        state.write.ki.key[i] = static_cast<uint8_t>(i + 1);
+        state.read.ki.key[i] = static_cast<uint8_t>(i + 1);
+    }
+    for (size_t i = 0; i < tls_const::kTls13NonceLen; ++i) {
+        state.write.ki.iv[i] = static_cast<uint8_t>(i + 0x20);
+        state.read.ki.iv[i] = static_cast<uint8_t>(i + 0x20);
+    }
+    auto crypto = TlsRecordCrypto::create(state, 16);  // AES-128
+    ASSERT_TRUE(crypto.has_value());
+
+    // Roundtrip
+    uint8_t pt[] = "AES-128 test";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(pt))];
+    uint16_t enc_len = crypto->encrypt(pt, sizeof(pt), record);
+    ASSERT_GT(enc_len, 0u);
+
+    uint8_t dec[sizeof(pt) + 1]{};
+    uint16_t dec_len = 0;
+    EXPECT_TRUE(crypto->decrypt(record, enc_len, dec, dec_len));
+    EXPECT_EQ(dec_len, sizeof(pt));
+    EXPECT_EQ(std::memcmp(dec, pt, sizeof(pt)), 0);
+}
+
+TEST(TlsEncryptor, MoveConstructor) {
+    auto state = make_roundtrip_hot_state();
+    auto enc_result = TlsEncryptor::create(state);
+    ASSERT_TRUE(enc_result.has_value());
+
+    auto enc2 = std::move(*enc_result);
+    // enc2 should work, original should be invalidated
+    uint8_t pt[] = "move test";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(pt))];
+    uint16_t len = enc2.encrypt(pt, sizeof(pt), record);
+    EXPECT_GT(len, 0u);
+    EXPECT_EQ(enc2.write_seq(), 1u);
+}
+
+TEST(TlsDecryptor, MoveConstructor) {
+    auto state = make_roundtrip_hot_state();
+    auto dec_result = TlsDecryptor::create(state);
+    ASSERT_TRUE(dec_result.has_value());
+
+    auto dec2 = std::move(*dec_result);
+    EXPECT_EQ(dec2.read_seq(), 0u);
 }
