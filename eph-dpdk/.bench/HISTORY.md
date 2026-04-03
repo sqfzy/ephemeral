@@ -40,6 +40,11 @@ Platform: same as baseline
 
 No regressions vs baseline (all existing benchmarks within noise).
 
+| Benchmark | Time (ns) | Notes |
+|---|---|---|
+| BM_PacketTemplateDump | 832 | Diagnostic: MACs + IPs + MSS + hw_cksum |
+| BM_PacketTemplateValidate | 0.36 | Constexpr-capable field validation |
+
 ### bench_dns_codec
 
 | Benchmark | Time (ns) |
