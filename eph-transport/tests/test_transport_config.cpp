@@ -280,6 +280,19 @@ TEST(TransportConfigFromUrl, LeadingTrailingWhitespaceStripped) {
     EXPECT_EQ(result->remote_host, "host.example");
 }
 
+TEST(TransportConfigFromUrl, LeadingTrailingTabsStripped) {
+    auto result = TransportConfig::from_url("\twss://host.example/ws\t");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->remote_host, "host.example");
+    EXPECT_EQ(result->ws_path, "/ws");
+}
+
+TEST(TransportConfigFromUrl, MixedWhitespaceStripped) {
+    auto result = TransportConfig::from_url(" \t wss://host.example/ws \t ");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->remote_host, "host.example");
+}
+
 // =======================================================================
 // from_url() — error paths
 // =======================================================================
