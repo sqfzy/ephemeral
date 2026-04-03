@@ -80,6 +80,19 @@ struct HttpResponse {
         return status_code >= 500 && status_code < 600;
     }
 
+    /// Check if the response indicates a redirect (3xx status code).
+    ///
+    /// Exchange REST APIs occasionally return redirects (e.g., Binance EU
+    /// migration). Callers can check this to decide whether to follow.
+    [[nodiscard]] constexpr bool is_redirect() const noexcept {
+        return status_code >= 300 && status_code < 400;
+    }
+
+    /// Check if the response indicates any error (4xx or 5xx).
+    [[nodiscard]] constexpr bool is_error() const noexcept {
+        return status_code >= 400 && status_code < 600;
+    }
+
     /// @brief JSON-formatted summary for monitoring system integration.
     ///
     /// Body is truncated to prevent massive JSON blobs. Use .body directly

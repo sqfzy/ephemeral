@@ -536,6 +536,48 @@ TEST(HttpResponse, ZeroStatusCodeIsNoneOfCategories) {
     EXPECT_FALSE(resp.is_success());
     EXPECT_FALSE(resp.is_client_error());
     EXPECT_FALSE(resp.is_server_error());
+    EXPECT_FALSE(resp.is_redirect());
+    EXPECT_FALSE(resp.is_error());
+}
+
+TEST(HttpResponse, IsRedirectFor3xx) {
+    EXPECT_TRUE((HttpResponse{.status_code = 301}).is_redirect());
+    EXPECT_TRUE((HttpResponse{.status_code = 302}).is_redirect());
+    EXPECT_TRUE((HttpResponse{.status_code = 307}).is_redirect());
+    EXPECT_TRUE((HttpResponse{.status_code = 399}).is_redirect());
+    EXPECT_FALSE((HttpResponse{.status_code = 200}).is_redirect());
+    EXPECT_FALSE((HttpResponse{.status_code = 299}).is_redirect());
+    EXPECT_FALSE((HttpResponse{.status_code = 400}).is_redirect());
+}
+
+TEST(HttpResponse, IsErrorFor4xxAnd5xx) {
+    EXPECT_TRUE((HttpResponse{.status_code = 400}).is_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 404}).is_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 500}).is_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 503}).is_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 599}).is_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 200}).is_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 301}).is_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 399}).is_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 600}).is_error());
+}
+
+TEST(HttpResponse, StatusCategoriesMutuallyExclusive) {
+    // For each major status range, verify exactly one category matches
+    auto check = [](int code) {
+        HttpResponse r{.status_code = code};
+        int count = (r.is_success() ? 1 : 0)
+                  + (r.is_redirect() ? 1 : 0)
+                  + (r.is_client_error() ? 1 : 0)
+                  + (r.is_server_error() ? 1 : 0);
+        return count;
+    };
+    EXPECT_EQ(check(200), 1);
+    EXPECT_EQ(check(301), 1);
+    EXPECT_EQ(check(404), 1);
+    EXPECT_EQ(check(500), 1);
+    EXPECT_EQ(check(0), 0);   // none match
+    EXPECT_EQ(check(100), 0); // 1xx not classified
 }
 
 // =============================================================================
