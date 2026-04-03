@@ -144,6 +144,26 @@ static void BM_Gateway_ForEach(benchmark::State& state) {
 BENCHMARK(BM_Gateway_ForEach)->Arg(1)->Arg(4)->Arg(8)->Arg(16);
 
 // ---------------------------------------------------------------------------
+// Gateway::connection_tags() — snapshot all tags
+// ---------------------------------------------------------------------------
+
+static void BM_Gateway_ConnectionTags(benchmark::State& state) {
+    const auto n = static_cast<size_t>(state.range(0));
+    Gateway gw;
+    std::vector<BenchTransport> transports(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        (void)gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+
+    for (auto _ : state) {
+        auto tags = gw.connection_tags();
+        benchmark::DoNotOptimize(tags);
+    }
+}
+BENCHMARK(BM_Gateway_ConnectionTags)->Arg(1)->Arg(4)->Arg(8)->Arg(16);
+
+// ---------------------------------------------------------------------------
 // Gateway::dump() — serialization overhead
 // ---------------------------------------------------------------------------
 

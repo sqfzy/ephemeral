@@ -351,6 +351,22 @@ public:
         return n;
     }
 
+    /// @brief Get all connection tags as a vector.
+    ///
+    /// Convenience method for logging, diagnostics, and test assertions.
+    /// Returns a snapshot -- the vector is not updated if connections change.
+    ///
+    /// @return Vector of tag strings for all managed connections, in index order.
+    [[nodiscard]] std::vector<std::string> connection_tags() const {
+        std::lock_guard lock(mu_);
+        std::vector<std::string> tags;
+        tags.reserve(connections_.size());
+        for (const auto& c : connections_) {
+            tags.push_back(c.tag);
+        }
+        return tags;
+    }
+
     /// @brief Iterate all connections with a callback.
     ///
     /// The callback receives the connection index, tag, and health for each

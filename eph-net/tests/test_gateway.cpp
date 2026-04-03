@@ -938,6 +938,39 @@ TEST(Gateway, MonitorDetectsDisconnectionAsync) {
 
 // ── Full lifecycle: add -> start -> health check -> disconnect -> reconnect -> stop ──
 
+// ── connection_tags() ──────────────────────────────────────────────────────
+
+TEST(Gateway, ConnectionTagsReturnsAllTags) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    gw.add("alpha", &tp1);
+    gw.add("beta", &tp2);
+    gw.add("gamma", &tp3);
+
+    auto tags = gw.connection_tags();
+    ASSERT_EQ(tags.size(), 3);
+    EXPECT_EQ(tags[0], "alpha");
+    EXPECT_EQ(tags[1], "beta");
+    EXPECT_EQ(tags[2], "gamma");
+}
+
+TEST(Gateway, ConnectionTagsEmptyGateway) {
+    Gateway gw;
+    EXPECT_TRUE(gw.connection_tags().empty());
+}
+
+TEST(Gateway, ConnectionTagsUpdatesAfterRemove) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    gw.add("first", &tp1);
+    gw.add("second", &tp2);
+
+    gw.remove(0);
+    auto tags = gw.connection_tags();
+    ASSERT_EQ(tags.size(), 1);
+    EXPECT_EQ(tags[0], "second");
+}
+
 TEST(Gateway, FullLifecycle) {
     Gateway gw;
     MockTransport tp;
