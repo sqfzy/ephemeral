@@ -16,6 +16,24 @@
 using namespace eph::net::proxy;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compile-time constexpr verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+// proxy_type_name is constexpr
+static_assert(proxy_type_name(ProxyType::kSocks5) == "SOCKS5");
+static_assert(proxy_type_name(ProxyType::kHttpConnect) == "HTTP_CONNECT");
+
+// ProxyConfig::validate() is constexpr — verify at compile time
+static_assert(ProxyConfig{.host = "proxy.local", .port = 1080}.validate().empty(),
+    "Valid ProxyConfig must pass compile-time validation");
+
+static_assert(!ProxyConfig{.host = "", .port = 1080}.validate().empty(),
+    "Empty host must fail compile-time validation");
+
+static_assert(!ProxyConfig{.host = "proxy.local", .port = 0}.validate().empty(),
+    "Zero port must fail compile-time validation");
+
+// ─────────────────────────────────────────────────────────────────────────────
 // parse_proxy_url — SOCKS5 scheme
 // ─────────────────────────────────────────────────────────────────────────────
 

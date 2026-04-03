@@ -18,6 +18,28 @@ static_assert(TcpTransport<SocketTransport>,
     "SocketTransport must satisfy TcpTransport concept");
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compile-time SocketConfig::validate() verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+static_assert(SocketConfig{.host = "localhost", .port = 8080}.validate().empty(),
+    "Valid SocketConfig must pass compile-time validation");
+
+static_assert(!SocketConfig{.host = "", .port = 8080}.validate().empty(),
+    "Empty host must fail compile-time validation");
+
+static_assert(!SocketConfig{.host = "localhost", .port = 0}.validate().empty(),
+    "Zero port must fail compile-time validation");
+
+static_assert(!SocketConfig{.host = "localhost", .port = 8080,
+    .send_timeout_ms = 0}.validate().empty(),
+    "Zero send_timeout must fail compile-time validation");
+
+static_assert(SocketConfig{.host = "localhost", .port = 8080,
+    .tcp_keepalive = true, .keepalive_idle = 60,
+    .keepalive_interval = 10, .keepalive_count = 3}.validate().empty(),
+    "Valid keepalive config must pass compile-time validation");
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Construction and initial state
 // ─────────────────────────────────────────────────────────────────────────────
 
