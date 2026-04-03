@@ -258,6 +258,51 @@ TEST(EmaTest, multiple_resets_are_safe) {
     EXPECT_DOUBLE_EQ(ema.value(), 42.0);
 }
 
+TEST(EmaTest, update_nan_rejected_preserves_state) {
+    Ema ema(0.5);
+    (void)ema.update(100.0);
+    EXPECT_DOUBLE_EQ(ema.value(), 100.0);
+
+    // NaN input should be rejected; state should remain at 100.0
+    double result = ema.update(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_DOUBLE_EQ(result, 100.0);
+    EXPECT_DOUBLE_EQ(ema.value(), 100.0);
+    EXPECT_TRUE(ema.initialized());
+}
+
+TEST(EmaTest, update_inf_rejected_preserves_state) {
+    Ema ema(0.5);
+    (void)ema.update(50.0);
+
+    // +Inf rejected
+    double result = ema.update(std::numeric_limits<double>::infinity());
+    EXPECT_DOUBLE_EQ(result, 50.0);
+
+    // -Inf rejected
+    result = ema.update(-std::numeric_limits<double>::infinity());
+    EXPECT_DOUBLE_EQ(result, 50.0);
+
+    // Normal update still works after rejection
+    result = ema.update(60.0);
+    double expected = 0.5 * 60.0 + 0.5 * 50.0;
+    EXPECT_DOUBLE_EQ(result, expected);
+}
+
+TEST(EmaTest, update_nan_before_init_stays_uninitialized) {
+    Ema ema(0.5);
+    EXPECT_FALSE(ema.initialized());
+
+    // NaN as first input — should not initialize
+    double result = ema.update(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_DOUBLE_EQ(result, 0.0);
+    EXPECT_FALSE(ema.initialized());
+
+    // Normal value after should seed correctly
+    result = ema.update(42.0);
+    EXPECT_DOUBLE_EQ(result, 42.0);
+    EXPECT_TRUE(ema.initialized());
+}
+
 // ---------------------------------------------------------------------------
 // EmaCrossover error / boundary condition tests
 // ---------------------------------------------------------------------------
@@ -275,6 +320,31 @@ TEST(EmaCrossoverTest, equal_periods_no_crossover) {
         EXPECT_EQ(sig, EmaCrossover::Signal::None)
             << "Equal-period crossover should never fire at iteration " << i;
     }
+}
+
+TEST(EmaCrossoverTest, nan_price_rejected_no_signal) {
+    EmaCrossover cross(2, 5);
+    (void)cross.update(100.0);
+    (void)cross.update(105.0);
+
+    double prev_fast = cross.fast();
+    double prev_slow = cross.slow();
+
+    // NaN should be rejected — no signal, state unchanged
+    auto sig = cross.update(std::numeric_limits<double>::quiet_NaN());
+    EXPECT_EQ(sig, EmaCrossover::Signal::None);
+    EXPECT_DOUBLE_EQ(cross.fast(), prev_fast);
+    EXPECT_DOUBLE_EQ(cross.slow(), prev_slow);
+}
+
+TEST(EmaCrossoverTest, inf_price_rejected_no_signal) {
+    EmaCrossover cross(2, 5);
+    (void)cross.update(100.0);
+
+    auto sig = cross.update(std::numeric_limits<double>::infinity());
+    EXPECT_EQ(sig, EmaCrossover::Signal::None);
+    EXPECT_DOUBLE_EQ(cross.fast(), 100.0);
+    EXPECT_DOUBLE_EQ(cross.slow(), 100.0);
 }
 
 TEST(EmaCrossoverTest, rapid_oscillation_generates_signals) {

@@ -56,7 +56,17 @@ class Ema {
 
     /// Update with a new value. Returns the new EMA.
     /// First call seeds the EMA directly with `value` (no warm-up).
+    ///
+    /// NaN/Inf inputs are rejected: the EMA state is left unchanged and the
+    /// current (or default-initialized) value is returned. This prevents a
+    /// single bad sample from permanently poisoning the moving average.
     [[nodiscard]] double update(double value) noexcept {
+        if (std::isnan(value) || std::isinf(value)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ema_logger(),
+                "EMA update rejected non-finite input={}, "
+                "state unchanged (current={:.6f})", value, value_);
+            return value_;
+        }
         if (!initialized_) [[unlikely]] {
             value_ = value;
             initialized_ = true;
@@ -122,7 +132,13 @@ class EmaCrossover {
     /// Update with a new price. Returns crossover signal (if any).
     /// Both EMAs must have been initialized (i.e., at least one prior update)
     /// before a crossover can be detected, so the first call always returns None.
+    /// NaN/Inf prices are silently rejected (returns None, state unchanged).
     [[nodiscard]] Signal update(double price) noexcept {
+        if (std::isnan(price) || std::isinf(price)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ema_logger(),
+                "EmaCrossover: rejected non-finite price={}", price);
+            return Signal::None;
+        }
         const double prev_fast = fast_.value();
         const double prev_slow = slow_.value();
         const bool was_initialized =
