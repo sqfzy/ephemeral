@@ -39,7 +39,7 @@ inline spdlog::logger* eal_logger() {
 /// @param argv  Argument vector (from main)
 /// @return Number of argv entries consumed by EAL on success, or error string
 [[nodiscard]] inline std::expected<int, std::string> eal_init(int argc, char** argv) {
-    auto log = detail::eal_logger();
+    [[maybe_unused]] auto log = detail::eal_logger();
     SPDLOG_LOGGER_TRACE(log, "Calling rte_eal_init (argc={})", argc);
 
     int ret = rte_eal_init(argc, argv);
@@ -57,7 +57,7 @@ inline spdlog::logger* eal_logger() {
 ///
 /// @warning After calling this function, no further rte_* API calls are valid.
 inline void eal_cleanup() noexcept {
-    auto log = detail::eal_logger();
+    [[maybe_unused]] auto log = detail::eal_logger();
     SPDLOG_LOGGER_DEBUG(log, "Calling rte_eal_cleanup");
     int ret = rte_eal_cleanup();
     if (ret != 0) [[unlikely]] {

@@ -7,7 +7,6 @@
 /// serialization, and the kEnableSocketTimestamps compile-time switch.
 
 #include <charconv>
-#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <format>

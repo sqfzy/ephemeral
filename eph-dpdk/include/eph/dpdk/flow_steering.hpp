@@ -106,12 +106,12 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
         tcp_mask.hdr.dst_port = 0xFFFF;
 
         rte_flow_item pattern[] = {
-            {.type = RTE_FLOW_ITEM_TYPE_ETH},
+            {.type = RTE_FLOW_ITEM_TYPE_ETH, .spec = nullptr, .last = nullptr, .mask = nullptr},
             {.type = RTE_FLOW_ITEM_TYPE_IPV4,
-             .spec = &ipv4_spec, .mask = &ipv4_mask},
+             .spec = &ipv4_spec, .last = nullptr, .mask = &ipv4_mask},
             {.type = RTE_FLOW_ITEM_TYPE_TCP,
-             .spec = &tcp_spec, .mask = &tcp_mask},
-            {.type = RTE_FLOW_ITEM_TYPE_END},
+             .spec = &tcp_spec, .last = nullptr, .mask = &tcp_mask},
+            {.type = RTE_FLOW_ITEM_TYPE_END, .spec = nullptr, .last = nullptr, .mask = nullptr},
         };
 
         rte_flow_action_queue queue_action{};
@@ -119,7 +119,7 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
 
         rte_flow_action actions[] = {
             {.type = RTE_FLOW_ACTION_TYPE_QUEUE, .conf = &queue_action},
-            {.type = RTE_FLOW_ACTION_TYPE_END},
+            {.type = RTE_FLOW_ACTION_TYPE_END, .conf = nullptr},
         };
 
         rte_flow_error error{};
@@ -325,12 +325,12 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     tcp_mask.hdr.dst_port = 0xFFFF;
 
     rte_flow_item pattern[] = {
-        {.type = RTE_FLOW_ITEM_TYPE_ETH},
+        {.type = RTE_FLOW_ITEM_TYPE_ETH, .spec = nullptr, .last = nullptr, .mask = nullptr},
         {.type = RTE_FLOW_ITEM_TYPE_IPV4,
-         .spec = &ipv4_spec, .mask = &ipv4_mask},
+         .spec = &ipv4_spec, .last = nullptr, .mask = &ipv4_mask},
         {.type = RTE_FLOW_ITEM_TYPE_TCP,
-         .spec = &tcp_spec, .mask = &tcp_mask},
-        {.type = RTE_FLOW_ITEM_TYPE_END},
+         .spec = &tcp_spec, .last = nullptr, .mask = &tcp_mask},
+        {.type = RTE_FLOW_ITEM_TYPE_END, .spec = nullptr, .last = nullptr, .mask = nullptr},
     };
 
     rte_flow_action_queue queue_conf{};
@@ -338,7 +338,7 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
 
     rte_flow_action actions[] = {
         {.type = RTE_FLOW_ACTION_TYPE_QUEUE, .conf = &queue_conf},
-        {.type = RTE_FLOW_ACTION_TYPE_END},
+        {.type = RTE_FLOW_ACTION_TYPE_END, .conf = nullptr},
     };
 
     rte_flow_error error{};

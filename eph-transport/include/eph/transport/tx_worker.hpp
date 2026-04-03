@@ -378,8 +378,8 @@ private:
     // -- TX loop (runs on dedicated thread) -----------------------------------
 
     void tx_loop_() {
-        (void)eph::utils::set_thread_affinity(core_.config.tx_cpu, "TX");
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(core_.config.tx_cpu, "TX");
+        [[maybe_unused]] auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "TX loop started");
 
         // Frame encode buffer: header overhead + payload + 1 byte for TLS
@@ -695,7 +695,7 @@ private:
                       [[maybe_unused]] size_t tls_buf_size,
                       [[maybe_unused]] WsTmpl& ws_tmpl,
                       [[maybe_unused]] FramerInst& framer_instance,
-                      spdlog::logger* log) noexcept {
+                      [[maybe_unused]] spdlog::logger* log) noexcept {
         int remaining = static_cast<int>(tx_queue_.try_consume_n(
             static_cast<size_t>(max_batch),
             [&](const TxMsg& msg, [[maybe_unused]] size_t idx) {

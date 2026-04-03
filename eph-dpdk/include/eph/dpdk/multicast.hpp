@@ -440,7 +440,7 @@ public:
             group_idx,
             net::format_ipv4(entry.group.group_ip).data(),
             entry.group.group_port,
-            entry.rx_packets);
+            entry.rx_packets.load(std::memory_order_relaxed));
 
         entry.active = false;
 
@@ -648,7 +648,7 @@ private:
 
     void rx_loop() {
         if (config_.rx_cpu >= 0) {
-            (void)eph::utils::set_thread_affinity(config_.rx_cpu, "multicast_rx");
+            [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(config_.rx_cpu, "multicast_rx");
         }
 
         auto* log = detail::multicast_logger();

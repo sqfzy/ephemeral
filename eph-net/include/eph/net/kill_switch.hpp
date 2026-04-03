@@ -24,14 +24,10 @@
 ///   ks.shutdown();  // graceful
 ///   ks.kill();      // emergency (no waiting)
 
-#include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <csignal>
-#include <cstdint>
 #include <cstdio>
-#include <cstring>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>

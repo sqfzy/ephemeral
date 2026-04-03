@@ -240,7 +240,7 @@ struct ConnectResult {
 /// @return IPv4 address in host byte order, or error string
 [[nodiscard]] inline std::expected<uint32_t, std::string>
 resolve_hostname(const std::string& host) {
-    auto log = detail::connector_logger();
+    [[maybe_unused]] auto log = detail::connector_logger();
     SPDLOG_LOGGER_DEBUG(log, "Resolving hostname: '{}'", host);
 
     // RFC 1035 §3.1: total name length must not exceed 253 characters.
@@ -436,7 +436,7 @@ connect(const DpdkEndpoint& ep,
         return std::unexpected("server_ip must be a valid IPv4 address (host byte order)");
     }
 
-    auto log = detail::connector_logger();
+    [[maybe_unused]] auto log = detail::connector_logger();
     SPDLOG_LOGGER_DEBUG(log, "dpdk::connect: local={}, gateway={}, server={}",
                  ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
@@ -495,7 +495,7 @@ connect(const DpdkEndpoint& ep,
 
     // Kernel DNS failed — fall back to DPDK DNS.
     // Validate config before creating Platform to fail fast on bad input.
-    auto log = detail::connector_logger();
+    [[maybe_unused]] auto log = detail::connector_logger();
     SPDLOG_LOGGER_DEBUG(log, "dpdk::connect: kernel DNS failed ({}), trying DPDK DNS",
                  ip.error());
 
@@ -605,7 +605,7 @@ connect(Platform& platform,
         uint32_t server_ip,
         const ConnectorOptions& opts = {}) {
 
-    auto log = detail::connector_logger();
+    [[maybe_unused]] auto log = detail::connector_logger();
     SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): local={}, gateway={}, server={}",
                  ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
@@ -645,7 +645,7 @@ connect(Platform& platform,
         const DpdkEndpoint& ep,
         const TransportConfig& transport_cfg,
         const ConnectorOptions& opts = {}) {
-    auto log = detail::connector_logger();
+    [[maybe_unused]] auto log = detail::connector_logger();
     if (transport_cfg.remote_host.empty()) {
         SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): remote_host is empty");
         return std::unexpected(

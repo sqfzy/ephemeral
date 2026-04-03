@@ -246,7 +246,7 @@ public:
 private:
     void rx_loop() {
         if (config_.rx_cpu >= 0) {
-            (void)eph::utils::set_thread_affinity(config_.rx_cpu, "reactor_rx");
+            [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(config_.rx_cpu, "reactor_rx");
         }
 
         auto* log = detail::reactor_logger();

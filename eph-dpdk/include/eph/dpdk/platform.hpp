@@ -20,7 +20,6 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
-#include <cstring>
 #include <expected>
 #include <format>
 #include <memory>
@@ -328,7 +327,7 @@ struct Platform::Impl {
     ~Impl() { cleanup(); }
 
     [[nodiscard]] std::expected<void, std::string> enumerate_ports() {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
         uint16_t count = rte_eth_dev_count_avail();
 
         if (count == 0) {
@@ -351,7 +350,7 @@ struct Platform::Impl {
     }
 
     [[nodiscard]] std::expected<void, std::string> create_mempool() {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
         SPDLOG_LOGGER_DEBUG(log,
             "Creating mbuf pool: size={}, cache={}, data_room={}",
             config.mbuf_pool_size, config.mbuf_cache_size,
@@ -379,7 +378,7 @@ struct Platform::Impl {
 
     [[nodiscard]] std::expected<void, std::string>
     configure_port(const rte_eth_dev_info& dev_info) {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
 
         SPDLOG_LOGGER_DEBUG(log,
             "port={} driver={} max_rx_q={} max_tx_q={} "
@@ -428,7 +427,7 @@ struct Platform::Impl {
 
     [[nodiscard]] std::expected<void, std::string>
     setup_queues(const rte_eth_dev_info& dev_info) {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
 
         uint16_t rx_desc = detail::clamp_desc(config.nb_rx_desc,
                                                dev_info.rx_desc_lim);
@@ -482,7 +481,7 @@ struct Platform::Impl {
     }
 
     [[nodiscard]] std::expected<void, std::string> start_port() {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
 
         if (config.enable_promiscuous) {
             int ret = rte_eth_promiscuous_enable(config.port_id);
@@ -513,7 +512,7 @@ struct Platform::Impl {
     }
 
     void wait_link_up() {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
         using namespace std::chrono;
 
         auto check_once = [&]() -> bool {
@@ -551,7 +550,7 @@ struct Platform::Impl {
     }
 
     void cleanup() noexcept {
-        auto log = detail::platform_logger();
+        [[maybe_unused]] auto log = detail::platform_logger();
         if (port_started) {
             SPDLOG_LOGGER_DEBUG(log, "Stopping port={}", config.port_id);
             rte_eth_dev_stop(config.port_id);
@@ -581,7 +580,7 @@ inline Platform& Platform::operator=(Platform&&) noexcept = default;
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(const PlatformConfig& config) {
-    auto log = detail::platform_logger();
+    [[maybe_unused]] auto log = detail::platform_logger();
 
     if (auto err = validate_config(config); !err.empty()) {
         SPDLOG_LOGGER_ERROR(log, "Invalid PlatformConfig: {}", err);
@@ -625,7 +624,7 @@ inline bool         Platform::is_running()       const noexcept { return impl_ &
 inline bool         Platform::is_promiscuous()   const noexcept { return impl_ && impl_->promiscuous_active; }
 
 inline Platform::Stats Platform::collect_stats() const {
-    auto log = detail::platform_logger();
+    [[maybe_unused]] auto log = detail::platform_logger();
     if (!impl_) {
         SPDLOG_LOGGER_WARN(log,
             "collect_stats() called on moved-from Platform; returning empty stats");

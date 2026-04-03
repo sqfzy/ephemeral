@@ -533,7 +533,7 @@ resolve(uint16_t port_id,
         return std::unexpected(std::format("Invalid DNS config: {}", err));
     }
 
-    auto log = detail::dns_logger();
+    [[maybe_unused]] auto log = detail::dns_logger();
 
     if (hostname.empty()) {
         return std::unexpected("DNS resolve: hostname is empty");
@@ -602,7 +602,7 @@ resolve(uint16_t port_id,
                 SPDLOG_LOGGER_WARN(log, "DNS resolve: tx_burst failed");
             } else {
                 ++requests_sent;
-                auto remaining_ms = std::chrono::duration_cast<
+                [[maybe_unused]] auto remaining_ms = std::chrono::duration_cast<
                     std::chrono::milliseconds>(
                     deadline - std::chrono::steady_clock::now()).count();
                 SPDLOG_LOGGER_DEBUG(log,
