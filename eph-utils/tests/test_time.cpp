@@ -133,6 +133,33 @@ TEST_F(TimeTest, to_cycles_overflow_saturates_to_uint64_max) {
   EXPECT_EQ(*result, UINT64_MAX);
 }
 
+TEST_F(TimeTest, DeltaNsReturnsPositiveForWork) {
+  auto start = TSC::now();
+  volatile int x = 0;
+  for (int i = 0; i < 1000; ++i) x += i;
+  auto end = TSC::now();
+
+  auto ns = TSC::delta_ns(start, end);
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_GT(*ns, 0.0);
+}
+
+TEST_F(TimeTest, DeltaNsZeroDeltaReturnsZero) {
+  auto ns = TSC::delta_ns(100, 100);
+  ASSERT_TRUE(ns.has_value());
+  EXPECT_DOUBLE_EQ(*ns, 0.0);
+}
+
+TEST_F(TimeTest, DeltaNsConsistentWithToNs) {
+  uint64_t start = 1000;
+  uint64_t end = 2000;
+  auto delta_result = TSC::delta_ns(start, end);
+  auto direct_result = TSC::to_ns(end - start);
+  ASSERT_TRUE(delta_result.has_value());
+  ASSERT_TRUE(direct_result.has_value());
+  EXPECT_DOUBLE_EQ(*delta_result, *direct_result);
+}
+
 TEST_F(TimeTest, init_flag_visibility_across_threads) {
   // Verify that a thread spawned after init() sees the calibrated value.
   std::optional<double> observed;

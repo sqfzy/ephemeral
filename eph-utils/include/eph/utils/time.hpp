@@ -185,6 +185,27 @@ public:
     return to_cycles(ns);
   }
 
+  /// @brief Compute the elapsed time in nanoseconds between two TSC readings.
+  ///
+  /// Convenience wrapper that combines cycle delta with to_ns() conversion.
+  /// Useful for simple timing patterns without ScopedTSC/measure_tsc.
+  ///
+  /// @param start TSC value from a previous now() call.
+  /// @param end   TSC value from a later now() call (must be >= start).
+  /// @return Elapsed nanoseconds, or `nullopt` if uncalibrated.
+  ///
+  /// @code
+  ///   auto start = TSC::now();
+  ///   do_work();
+  ///   if (auto ns = TSC::delta_ns(start, TSC::now())) {
+  ///       SPDLOG_INFO("work took {:.1f} ns", *ns);
+  ///   }
+  /// @endcode
+  [[nodiscard]] static std::optional<double>
+  delta_ns(uint64_t start, uint64_t end) noexcept {
+    return to_ns(end - start);
+  }
+
   /// @brief Check whether TSC calibration has completed.
   /// @return `true` if `init()` succeeded, `false` otherwise.
   [[nodiscard]] static bool is_initialized() noexcept {
