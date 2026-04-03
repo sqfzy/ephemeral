@@ -113,6 +113,39 @@ struct ProxyConfig {
             return "SOCKS5 password exceeds 255 bytes";
         return {};
     }
+
+    /// @brief Multi-line formatted dump for logging/debugging.
+    ///
+    /// Password is redacted to prevent accidental credential leakage in logs.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "ProxyConfig:\n"
+            "  type: {}\n"
+            "  target: {}:{}\n"
+            "  timeout: {}ms\n"
+            "  auth: {}",
+            proxy_type_name(type), host, port,
+            timeout.count(),
+            username.empty() ? std::string("none")
+                             : std::format("user='{}' pass=<redacted>", username));
+    }
+
+    /// @brief JSON-formatted config for monitoring system integration.
+    ///
+    /// Password is always redacted in JSON output.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"type\":\"{}\",\"host\":\"{}\",\"port\":{},"
+            "\"timeout_ms\":{},\"username\":\"{}\",\"has_password\":{}}}",
+            proxy_type_name(type), host, port,
+            timeout.count(), username,
+            password.empty() ? "false" : "true");
+    }
+
+    /// @brief Equality comparison. Password is compared for completeness
+    /// (both configs must represent the same proxy endpoint with the same credentials).
+    [[nodiscard]] friend bool operator==(const ProxyConfig&,
+                                         const ProxyConfig&) = default;
 };
 
 // ---------------------------------------------------------------------------
@@ -690,5 +723,19 @@ struct std::formatter<eph::net::proxy::ProxyType> : std::formatter<std::string_v
     auto format(eph::net::proxy::ProxyType t, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::net::proxy::proxy_type_name(t), ctx);
+    }
+};
+
+/// @brief std::formatter specialization for ProxyConfig -- compact one-line summary.
+///
+/// Password is never included in formatted output to prevent credential leakage.
+template <>
+struct std::formatter<eph::net::proxy::ProxyConfig> : std::formatter<std::string> {
+    auto format(const eph::net::proxy::ProxyConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("ProxyConfig({}://{}:{}, timeout={}ms)",
+                eph::net::proxy::proxy_type_name(c.type),
+                c.host, c.port, c.timeout.count()),
+            ctx);
     }
 };

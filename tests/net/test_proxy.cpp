@@ -410,3 +410,115 @@ TEST(ProxyTypeFormatter, CompositeFormat) {
     auto s = std::format("type={} port={}", ProxyType::kSocks5, 1080);
     EXPECT_EQ(s, "type=SOCKS5 port=1080");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig::dump()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigDump, ContainsKeyFields) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 9050, .type = ProxyType::kSocks5,
+        .timeout = std::chrono::milliseconds{3000}};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("SOCKS5"), std::string::npos);
+    EXPECT_NE(d.find("proxy.io"), std::string::npos);
+    EXPECT_NE(d.find("9050"), std::string::npos);
+    EXPECT_NE(d.find("3000ms"), std::string::npos);
+    EXPECT_NE(d.find("auth: none"), std::string::npos);
+}
+
+TEST(ProxyConfigDump, RedactsPassword) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 1080, .type = ProxyType::kSocks5,
+        .username = "alice", .password = "s3cret"};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("alice"), std::string::npos);
+    EXPECT_NE(d.find("<redacted>"), std::string::npos);
+    // Password must NOT appear in dump
+    EXPECT_EQ(d.find("s3cret"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig::to_json()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigJson, ValidStructure) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 9050, .type = ProxyType::kSocks5,
+        .timeout = std::chrono::milliseconds{5000}};
+    auto j = cfg.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"type\":\"SOCKS5\""), std::string::npos);
+    EXPECT_NE(j.find("\"host\":\"proxy.io\""), std::string::npos);
+    EXPECT_NE(j.find("\"port\":9050"), std::string::npos);
+    EXPECT_NE(j.find("\"timeout_ms\":5000"), std::string::npos);
+}
+
+TEST(ProxyConfigJson, OmitsPasswordValue) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 1080,
+        .username = "bob", .password = "hunter2"};
+    auto j = cfg.to_json();
+    // JSON should indicate password presence but not reveal the value
+    EXPECT_NE(j.find("\"has_password\":true"), std::string::npos);
+    EXPECT_EQ(j.find("hunter2"), std::string::npos);
+}
+
+TEST(ProxyConfigJson, NoPasswordField) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 1080};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"has_password\":false"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig equality
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigEquality, IdenticalConfigsAreEqual) {
+    ProxyConfig a{.host = "proxy.io", .port = 1080, .type = ProxyType::kSocks5,
+                  .username = "u", .password = "p"};
+    ProxyConfig b = a;
+    EXPECT_EQ(a, b);
+}
+
+TEST(ProxyConfigEquality, DifferentHostNotEqual) {
+    ProxyConfig a{.host = "a.io", .port = 1080};
+    ProxyConfig b{.host = "b.io", .port = 1080};
+    EXPECT_NE(a, b);
+}
+
+TEST(ProxyConfigEquality, DifferentPasswordNotEqual) {
+    ProxyConfig a{.host = "proxy.io", .port = 1080, .password = "p1"};
+    ProxyConfig b{.host = "proxy.io", .port = 1080, .password = "p2"};
+    EXPECT_NE(a, b);
+}
+
+TEST(ProxyConfigEquality, DifferentTypeNotEqual) {
+    ProxyConfig a{.host = "proxy.io", .port = 1080, .type = ProxyType::kSocks5};
+    ProxyConfig b{.host = "proxy.io", .port = 1080, .type = ProxyType::kHttpConnect};
+    EXPECT_NE(a, b);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter<ProxyConfig>
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigFormatter, ContainsKeyFields) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 9050, .type = ProxyType::kSocks5,
+        .timeout = std::chrono::milliseconds{3000}};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("SOCKS5"), std::string::npos);
+    EXPECT_NE(s.find("proxy.io"), std::string::npos);
+    EXPECT_NE(s.find("9050"), std::string::npos);
+    EXPECT_NE(s.find("3000ms"), std::string::npos);
+}
+
+TEST(ProxyConfigFormatter, DoesNotLeakPassword) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 1080,
+        .username = "alice", .password = "s3cret"};
+    auto s = std::format("{}", cfg);
+    EXPECT_EQ(s.find("s3cret"), std::string::npos);
+}
