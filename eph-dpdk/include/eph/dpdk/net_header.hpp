@@ -268,6 +268,16 @@ struct ConnectionTuple {
     /// @brief Defaulted equality comparison over all four fields.
     [[nodiscard]] bool operator==(const ConnectionTuple&) const = default;
 
+    /// Validate all four fields are non-zero (required for a valid TCP connection).
+    /// @return empty string_view on success, error description on failure.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (src_ip == 0) return "src_ip must not be zero";
+        if (dst_ip == 0) return "dst_ip must not be zero";
+        if (src_port == 0) return "src_port must not be zero";
+        if (dst_port == 0) return "dst_port must not be zero";
+        return {};
+    }
+
     /// Human-readable dump for logging/debugging.
     /// Defined after format_ipv4() (see below).
     [[nodiscard]] inline std::string dump() const;
@@ -582,6 +592,11 @@ struct ParsedPacket {
     /// Returns "(invalid)" if the packet was not successfully parsed.
     /// Defined after format_ipv4() (see below).
     [[nodiscard]] inline std::string dump() const;
+
+    /// JSON-formatted packet summary for monitoring/logging.
+    /// Returns "{\"valid\":false}" if the packet was not parsed.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string to_json() const;
 };
 
 /// @brief Parse an Ethernet/IPv4/TCP packet from an mbuf (zero-copy).
@@ -767,6 +782,16 @@ inline std::string ParsedPacket::dump() const {
         format_ipv4(src_ip()).data(), src_port(),
         format_ipv4(dst_ip()).data(), dst_port(),
         flag_str, seq(), ack(), window(), payload_len);
+}
+
+inline std::string ParsedPacket::to_json() const {
+    if (!tcp) return "{\"valid\":false}";
+    return std::format(
+        "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{},"
+        "\"seq\":{},\"ack\":{},\"window\":{},\"flags\":{},\"payload_len\":{}}}",
+        format_ipv4(src_ip()).data(), src_port(),
+        format_ipv4(dst_ip()).data(), dst_port(),
+        seq(), ack(), window(), tcp_flags(), payload_len);
 }
 
 } // namespace eph::dpdk::net

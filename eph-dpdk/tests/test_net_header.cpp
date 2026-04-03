@@ -989,3 +989,102 @@ TEST(FormatMac, ResultIsNullTerminated) {
     // Should be exactly 17 chars + null terminator
     EXPECT_EQ(std::strlen(buf.data()), 17u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionTuple::validate
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionTuple, ValidateValidTuplePasses) {
+    ConnectionTuple t{.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                      .src_port = 12345, .dst_port = 443};
+    EXPECT_TRUE(t.validate().empty());
+}
+
+TEST(ConnectionTuple, ValidateZeroSrcIpFails) {
+    ConnectionTuple t{.src_ip = 0, .dst_ip = 0x0A000002,
+                      .src_port = 12345, .dst_port = 443};
+    auto err = t.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("src_ip"), std::string_view::npos);
+}
+
+TEST(ConnectionTuple, ValidateZeroDstIpFails) {
+    ConnectionTuple t{.src_ip = 0x0A000001, .dst_ip = 0,
+                      .src_port = 12345, .dst_port = 443};
+    EXPECT_FALSE(t.validate().empty());
+}
+
+TEST(ConnectionTuple, ValidateZeroSrcPortFails) {
+    ConnectionTuple t{.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                      .src_port = 0, .dst_port = 443};
+    EXPECT_FALSE(t.validate().empty());
+}
+
+TEST(ConnectionTuple, ValidateZeroDstPortFails) {
+    ConnectionTuple t{.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                      .src_port = 12345, .dst_port = 0};
+    EXPECT_FALSE(t.validate().empty());
+}
+
+TEST(ConnectionTuple, ValidateIsConstexpr) {
+    constexpr ConnectionTuple t{.src_ip = 1, .dst_ip = 2,
+                                .src_port = 3, .dst_port = 4};
+    static_assert(t.validate().empty());
+    constexpr ConnectionTuple bad{};
+    static_assert(!bad.validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedPacket::to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedPacket, ToJsonInvalid) {
+    ParsedPacket p{};
+    auto json = p.to_json();
+    EXPECT_NE(json.find("\"valid\":false"), std::string::npos);
+}
+
+TEST(ParsedPacket, ToJsonValidPacket) {
+    // Build a minimal valid TCP packet in a flat buffer
+    uint16_t total_pkt_len = kAllHeadersLen + 100;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = hton16(kIpv4HeaderLen + kTcpHeaderLen + 100);
+    ip->next_proto_id = kIpProtoTcp;
+    ip->src_addr = hton32(0x0A000001);
+    ip->dst_addr = hton32(0x0A000002);
+
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(
+        pkt_buf.data() + kEtherHeaderLen + kIpv4HeaderLen);
+    tcp->data_off = (kTcpHeaderLen / 4) << 4;
+    tcp->tcp_flags = kTcpAck | kTcpPsh;
+    tcp->src_port = hton16(12345);
+    tcp->dst_port = hton16(443);
+    tcp->sent_seq = hton32(1000);
+    tcp->recv_ack = hton32(2000);
+    tcp->rx_win   = hton16(65535);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+
+    auto json = parsed.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"src_port\":12345"), std::string::npos);
+    EXPECT_NE(json.find("\"dst_port\":443"), std::string::npos);
+    EXPECT_NE(json.find("\"seq\":1000"), std::string::npos);
+    EXPECT_NE(json.find("\"ack\":2000"), std::string::npos);
+    EXPECT_NE(json.find("\"payload_len\":100"), std::string::npos);
+}

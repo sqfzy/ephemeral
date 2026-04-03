@@ -432,6 +432,67 @@ static void BM_PacketTemplateValidate(benchmark::State& state) {
 BENCHMARK(BM_PacketTemplateValidate);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ParsedPacket::to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParsedPacketToJson(benchmark::State& state) {
+    uint16_t total_pkt_len = eph::dpdk::net::kAllHeadersLen + 100;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen + eph::dpdk::net::kTcpHeaderLen + 100);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoTcp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    tcp->data_off = (eph::dpdk::net::kTcpHeaderLen / 4) << 4;
+    tcp->tcp_flags = eph::dpdk::net::kTcpAck | eph::dpdk::net::kTcpPsh;
+    tcp->src_port = eph::dpdk::net::hton16(12345);
+    tcp->dst_port = eph::dpdk::net::hton16(443);
+    tcp->sent_seq = eph::dpdk::net::hton32(1000);
+    tcp->recv_ack = eph::dpdk::net::hton32(2000);
+    tcp->rx_win   = eph::dpdk::net::hton16(65535);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    auto parsed = eph::dpdk::net::parse_packet(&mbuf);
+
+    for (auto _ : state) {
+        auto s = parsed.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ParsedPacketToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionTuple::to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ConnectionTupleToJson(benchmark::State& state) {
+    eph::dpdk::net::ConnectionTuple t{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 443};
+    for (auto _ : state) {
+        auto s = t.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ConnectionTupleToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TcpConfig::dump / to_json
 // ─────────────────────────────────────────────────────────────────────────────
 
