@@ -8,6 +8,8 @@
 ///   - FlowRule RAII semantics (move, default state)
 ///   - detect_rx_dispatch_mode return value semantics
 
+#include <format>
+
 #include <gtest/gtest.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
@@ -93,4 +95,19 @@ TEST(ConfigureRss, RejectsLessThanTwoQueues) {
 TEST(ConfigureRss, RejectsZeroQueues) {
     auto result = configure_rss(0, 0);
     EXPECT_FALSE(result.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// std::formatter
+// ---------------------------------------------------------------------------
+
+TEST(RxDispatchMode, FormatterProducesOutput) {
+    EXPECT_EQ(std::format("{}", RxDispatchMode::Software), "Software (Reactor)");
+    EXPECT_EQ(std::format("{}", RxDispatchMode::RssPartitioned), "RSS Partitioned");
+    EXPECT_EQ(std::format("{}", RxDispatchMode::FlowDirector), "Flow Director (rte_flow)");
+}
+
+TEST(RxDispatchMode, FormatterWorksInCompositeFormat) {
+    auto s = std::format("mode={} port={}", RxDispatchMode::Software, 0);
+    EXPECT_EQ(s, "mode=Software (Reactor) port=0");
 }

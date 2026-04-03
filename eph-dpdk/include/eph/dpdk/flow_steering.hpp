@@ -20,6 +20,7 @@
 #include <expected>
 #include <format>
 #include <string>
+#include <string_view>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -366,3 +367,18 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
 }
 
 } // namespace eph::dpdk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for RxDispatchMode
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter specialization for RxDispatchMode.
+///
+/// Formats as the human-readable name from rx_dispatch_mode_name().
+template <>
+struct std::formatter<eph::dpdk::RxDispatchMode> : std::formatter<std::string_view> {
+    auto format(eph::dpdk::RxDispatchMode m, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::dpdk::rx_dispatch_mode_name(m), ctx);
+    }
+};
