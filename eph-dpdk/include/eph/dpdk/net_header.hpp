@@ -335,6 +335,10 @@ struct PacketTemplate {
     /// Defined after format_ipv4() (see below).
     [[nodiscard]] inline std::string dump() const;
 
+    /// JSON-formatted template for monitoring system integration.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string to_json() const;
+
     /// Build a complete TCP packet in an mbuf.
     /// @param pool     Mempool to allocate from
     /// @param seq      TCP sequence number (host order)
@@ -765,6 +769,18 @@ inline std::string PacketTemplate::dump() const {
         format_ipv4(tuple.src_ip).data(), tuple.src_port,
         format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
         mss, ip_id, hw_cksum);
+}
+
+inline std::string PacketTemplate::to_json() const {
+    return std::format(
+        "{{\"src_mac\":\"{}\",\"dst_mac\":\"{}\","
+        "\"src_ip\":\"{}\",\"dst_ip\":\"{}\","
+        "\"src_port\":{},\"dst_port\":{},"
+        "\"mss\":{},\"ip_id\":{},\"hw_cksum\":{}}}",
+        format_mac(src_mac).data(), format_mac(dst_mac).data(),
+        format_ipv4(tuple.src_ip).data(), format_ipv4(tuple.dst_ip).data(),
+        tuple.src_port, tuple.dst_port,
+        mss, ip_id, hw_cksum ? "true" : "false");
 }
 
 inline std::string ParsedPacket::dump() const {

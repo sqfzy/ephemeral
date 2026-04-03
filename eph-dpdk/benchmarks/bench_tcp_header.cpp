@@ -432,6 +432,27 @@ static void BM_PacketTemplateValidate(benchmark::State& state) {
 BENCHMARK(BM_PacketTemplateValidate);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PacketTemplate::to_json — JSON serialization
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_PacketTemplateToJson(benchmark::State& state) {
+    eph::dpdk::net::PacketTemplate tmpl{};
+    tmpl.src_mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    tmpl.dst_mac = {{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}};
+    tmpl.tuple = {
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 443};
+    tmpl.mss = 1460;
+    tmpl.hw_cksum = true;
+
+    for (auto _ : state) {
+        auto s = tmpl.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_PacketTemplateToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Reactor::Config serialization
 // ─────────────────────────────────────────────────────────────────────────────
 

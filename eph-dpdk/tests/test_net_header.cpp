@@ -423,6 +423,33 @@ TEST(PacketTemplate, DumpContainsKeyFields) {
     EXPECT_NE(d.find("hw_cksum=true"), std::string::npos);
 }
 
+TEST(PacketTemplate, ToJsonContainsAllFields) {
+    PacketTemplate tmpl{};
+    tmpl.src_mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    tmpl.dst_mac = {{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    tmpl.mss = 1460;
+    tmpl.hw_cksum = true;
+    auto j = tmpl.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"src_mac\":\"de:ad:be:ef:01:23\""), std::string::npos);
+    EXPECT_NE(j.find("\"dst_mac\":\"66:77:88:99:aa:bb\""), std::string::npos);
+    EXPECT_NE(j.find("\"src_port\":12345"), std::string::npos);
+    EXPECT_NE(j.find("\"dst_port\":443"), std::string::npos);
+    EXPECT_NE(j.find("\"mss\":1460"), std::string::npos);
+    EXPECT_NE(j.find("\"hw_cksum\":true"), std::string::npos);
+}
+
+TEST(PacketTemplate, ToJsonHwCksumFalse) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 1, .dst_ip = 2, .src_port = 3, .dst_port = 4};
+    tmpl.hw_cksum = false;
+    auto j = tmpl.to_json();
+    EXPECT_NE(j.find("\"hw_cksum\":false"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // parse_packet boundary tests (simulated mbuf via raw buffer)
 // ─────────────────────────────────────────────────────────────────────────────
