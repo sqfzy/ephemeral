@@ -158,9 +158,9 @@ struct TcpConfig {
     static constexpr uint32_t kDefaultRxBudgetBytes = 32768;
 
     /// Format a MAC address as "xx:xx:xx:xx:xx:xx".
+    /// @deprecated Prefer net::format_mac() directly to avoid std::string allocation.
     [[nodiscard]] static std::string format_mac(const rte_ether_addr& m) {
-        auto buf = net::format_mac(m);
-        return std::string(buf.data());
+        return std::string(net::format_mac(m).data());
     }
 
     /// Multi-line formatted dump for logging/debugging.
@@ -173,7 +173,7 @@ struct TcpConfig {
             "  port_id: {}, tx_queue: {}, rx_queue: {}",
             net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
             net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
-            format_mac(src_mac), format_mac(dst_mac),
+            net::format_mac(src_mac).data(), net::format_mac(dst_mac).data(),
             mss, recv_window,
             port_id, tx_queue_id, rx_queue_id);
     }
@@ -189,7 +189,7 @@ struct TcpConfig {
             net::format_ipv4(tuple.src_ip).data(),
             net::format_ipv4(tuple.dst_ip).data(),
             tuple.src_port, tuple.dst_port,
-            format_mac(src_mac), format_mac(dst_mac),
+            net::format_mac(src_mac).data(), net::format_mac(dst_mac).data(),
             mss, recv_window,
             port_id, tx_queue_id, rx_queue_id);
     }

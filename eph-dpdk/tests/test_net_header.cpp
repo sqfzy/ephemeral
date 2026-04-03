@@ -665,3 +665,32 @@ TEST(UdpHeader, KUdpHeaderLenConstant) {
     static_assert(kUdpHeaderLen == 8);
     EXPECT_EQ(kUdpHeaderLen, 8u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// format_mac
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FormatMac, AllZeros) {
+    rte_ether_addr mac = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    auto buf = format_mac(mac);
+    EXPECT_STREQ(buf.data(), "00:00:00:00:00:00");
+}
+
+TEST(FormatMac, Broadcast) {
+    rte_ether_addr mac = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+    auto buf = format_mac(mac);
+    EXPECT_STREQ(buf.data(), "ff:ff:ff:ff:ff:ff");
+}
+
+TEST(FormatMac, MixedBytes) {
+    rte_ether_addr mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    auto buf = format_mac(mac);
+    EXPECT_STREQ(buf.data(), "de:ad:be:ef:01:23");
+}
+
+TEST(FormatMac, ResultIsNullTerminated) {
+    rte_ether_addr mac = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}};
+    auto buf = format_mac(mac);
+    // Should be exactly 17 chars + null terminator
+    EXPECT_EQ(std::strlen(buf.data()), 17u);
+}

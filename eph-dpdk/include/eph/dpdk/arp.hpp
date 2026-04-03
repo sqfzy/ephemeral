@@ -82,11 +82,6 @@ inline spdlog::logger* arp_logger() {
     return l.get();
 }
 
-/// Format a MAC address — delegates to net::format_mac (net_header.hpp).
-inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
-    return net::format_mac(mac);
-}
-
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -276,7 +271,7 @@ resolve(uint16_t port_id,
                 SPDLOG_LOGGER_INFO(log,
                     "ARP resolved: {} -> {} (after {} request(s))",
                     net::format_ipv4(target_ip).data(),
-                    detail::format_mac(*mac).data(),
+                    net::format_mac(*mac).data(),
                     requests_sent);
 
                 // Free remaining packets

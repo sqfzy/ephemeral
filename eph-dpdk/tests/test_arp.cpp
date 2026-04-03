@@ -348,17 +348,17 @@ TEST(ArpReply, ZeroAddrLensIgnored) {
 
 TEST(ArpUtil, FormatMac) {
     rte_ether_addr mac = {{0x00, 0x11, 0x22, 0xAA, 0xBB, 0xCC}};
-    auto str = detail::format_mac(mac);
+    auto str = net::format_mac(mac);
     EXPECT_STREQ(str.data(), "00:11:22:aa:bb:cc");
 }
 
 TEST(ArpUtil, FormatMacBroadcast) {
-    auto str = detail::format_mac(kBroadcastMac);
+    auto str = net::format_mac(kBroadcastMac);
     EXPECT_STREQ(str.data(), "ff:ff:ff:ff:ff:ff");
 }
 
 TEST(ArpUtil, FormatMacZero) {
     rte_ether_addr zero = {{0, 0, 0, 0, 0, 0}};
-    auto str = detail::format_mac(zero);
+    auto str = net::format_mac(zero);
     EXPECT_STREQ(str.data(), "00:00:00:00:00:00");
 }
