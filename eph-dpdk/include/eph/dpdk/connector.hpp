@@ -40,6 +40,7 @@
 #include <optional>
 
 #include <eph/core/detail/json_escape.hpp>
+#include <eph/core/detail/string_checks.hpp>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -101,18 +102,10 @@ struct DpdkEndpoint {
         if (local_ip.empty())   return "local_ip must not be empty";
         if (gateway_ip.empty()) return "gateway_ip must not be empty";
         // Reject control characters to prevent log injection.
-        for (char c : local_ip) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return "local_ip contains control characters";
-            }
-        }
-        for (char c : gateway_ip) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return "gateway_ip contains control characters";
-            }
-        }
+        if (core::detail::contains_control_chars(local_ip))
+            return "local_ip contains control characters";
+        if (core::detail::contains_control_chars(gateway_ip))
+            return "gateway_ip contains control characters";
         return {};
     }
 

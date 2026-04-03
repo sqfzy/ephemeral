@@ -33,6 +33,8 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include "eph/core/detail/string_checks.hpp"
+
 namespace eph::net {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -341,11 +343,8 @@ public:
         [[nodiscard]] constexpr std::string_view validate() const noexcept {
             if (host.empty())
                 return "host must not be empty";
-            for (char c : host) {
-                auto uc = static_cast<unsigned char>(c);
-                if (uc < 0x20 || uc == 0x7f)
-                    return "host contains control characters (header injection risk)";
-            }
+            if (eph::core::detail::contains_control_chars(host))
+                return "host contains control characters (header injection risk)";
             if (port == 0)
                 return "port must be > 0";
             if (timeout.count() <= 0)
