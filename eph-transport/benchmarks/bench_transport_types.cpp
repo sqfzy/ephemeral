@@ -20,6 +20,7 @@
 
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/detail/tls_constants.hpp"
+#include "eph/transport/detail/tls_record.hpp"
 #include "eph/transport/detail/websocket.hpp"
 #include "eph/transport/detail/http.hpp"
 
@@ -694,5 +695,86 @@ static void BM_BuildUpgradeRequest(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_BuildUpgradeRequest);
+
+// ---------------------------------------------------------------------------
+// TLS encrypt/decrypt — AEAD hot path benchmarks
+// ---------------------------------------------------------------------------
+
+namespace {
+eph::net::TlsHotState make_bench_hot_state() {
+    eph::net::TlsHotState state{};
+    for (size_t i = 0; i < eph::net::tls_const::kAes256KeyLen; ++i) {
+        state.write.ki.key[i] = static_cast<uint8_t>(i + 1);
+        state.read.ki.key[i] = static_cast<uint8_t>(i + 1);
+    }
+    for (size_t i = 0; i < eph::net::tls_const::kTls13NonceLen; ++i) {
+        state.write.ki.iv[i] = static_cast<uint8_t>(i + 0x10);
+        state.read.ki.iv[i] = static_cast<uint8_t>(i + 0x10);
+    }
+    return state;
+}
+} // namespace
+
+static void BM_TlsEncrypt_64B(benchmark::State& state) {
+    auto hot = make_bench_hot_state();
+    auto crypto = eph::net::TlsRecordCrypto::create(hot);
+    uint8_t plaintext[64];
+    std::memset(plaintext, 0x42, sizeof(plaintext));
+    uint8_t record[eph::net::TlsEncryptor::encrypted_size(64)];
+    for (auto _ : state) {
+        // Reset seq to avoid exhaustion during long benchmarks
+        hot.write.seq = 0;
+        crypto = eph::net::TlsRecordCrypto::create(hot);
+        for (int i = 0; i < 1000; ++i) {
+            auto n = crypto->encrypt(plaintext, sizeof(plaintext), record);
+            benchmark::DoNotOptimize(n);
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * 1000);
+    state.SetBytesProcessed(state.iterations() * 1000 * 64);
+}
+BENCHMARK(BM_TlsEncrypt_64B);
+
+static void BM_TlsEncrypt_512B(benchmark::State& state) {
+    auto hot = make_bench_hot_state();
+    auto crypto = eph::net::TlsRecordCrypto::create(hot);
+    std::array<uint8_t, 512> plaintext;
+    plaintext.fill(0x42);
+    uint8_t record[eph::net::TlsEncryptor::encrypted_size(512)];
+    for (auto _ : state) {
+        hot.write.seq = 0;
+        crypto = eph::net::TlsRecordCrypto::create(hot);
+        for (int i = 0; i < 1000; ++i) {
+            auto n = crypto->encrypt(plaintext.data(), plaintext.size(), record);
+            benchmark::DoNotOptimize(n);
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * 1000);
+    state.SetBytesProcessed(state.iterations() * 1000 * 512);
+}
+BENCHMARK(BM_TlsEncrypt_512B);
+
+static void BM_TlsEncryptDecrypt_64B(benchmark::State& state) {
+    auto hot = make_bench_hot_state();
+    auto crypto = eph::net::TlsRecordCrypto::create(hot);
+    uint8_t plaintext[64];
+    std::memset(plaintext, 0x42, sizeof(plaintext));
+    uint8_t record[eph::net::TlsEncryptor::encrypted_size(64)];
+    uint8_t decrypted[64];
+    for (auto _ : state) {
+        hot.write.seq = 0;
+        hot.read.seq = 0;
+        crypto = eph::net::TlsRecordCrypto::create(hot);
+        for (int i = 0; i < 1000; ++i) {
+            auto enc_len = crypto->encrypt(plaintext, sizeof(plaintext), record);
+            uint16_t dec_len = 0;
+            crypto->decrypt(record, enc_len, decrypted, dec_len);
+            benchmark::DoNotOptimize(dec_len);
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * 1000);
+    state.SetBytesProcessed(state.iterations() * 1000 * 64);
+}
+BENCHMARK(BM_TlsEncryptDecrypt_64B);
 
 BENCHMARK_MAIN();

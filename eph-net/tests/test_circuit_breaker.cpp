@@ -736,3 +736,30 @@ TEST(CircuitBreaker, DumpHalfOpenState) {
     EXPECT_NE(d.find("HALF_OPEN"), std::string::npos);
     EXPECT_NE(d.find("half_open_max=3"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter — compact one-line format for CircuitBreaker instance
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, FormatterClosedState) {
+    CircuitBreaker cb;
+    auto s = std::format("{}", cb);
+    EXPECT_NE(s.find("CircuitBreaker"), std::string::npos);
+    EXPECT_NE(s.find("CLOSED"), std::string::npos);
+    EXPECT_NE(s.find("failures=0"), std::string::npos);
+}
+
+TEST(CircuitBreaker, FormatterOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    auto s = std::format("{}", cb);
+    EXPECT_NE(s.find("OPEN"), std::string::npos);
+    EXPECT_NE(s.find("failures=2"), std::string::npos);
+}
+
+TEST(CircuitBreaker, FormatterComposableInFormat) {
+    CircuitBreaker cb;
+    auto s = std::format("breaker: {}", cb);
+    EXPECT_NE(s.find("breaker: CircuitBreaker"), std::string::npos);
+}

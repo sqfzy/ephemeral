@@ -287,7 +287,10 @@ class HdrHistogram {
     ///         or 0 if the histogram is empty or the percentile is invalid.
     [[nodiscard]] uint64_t get_value_at_percentile(
         double percentile) const noexcept {
-        if (percentile < 0.0 || percentile > 100.0 || total_count_ == 0)
+        // Use negated range check to also reject NaN inputs.
+        // NaN comparisons always return false, so (NaN < 0.0) and
+        // (NaN > 100.0) are both false — NaN would pass a direct check.
+        if (!(percentile >= 0.0 && percentile <= 100.0) || total_count_ == 0)
             [[unlikely]] {
             return 0;
         }
@@ -346,7 +349,9 @@ class HdrHistogram {
                 size_t original_idx = sorted_indices[next_idx];
                 double p = percentiles[original_idx];
 
-                if (p < 0.0 || p > 100.0) {
+                // Use negated range check to reject NaN (NaN comparisons
+                // are always false, so direct < / > checks miss it).
+                if (!(p >= 0.0 && p <= 100.0)) {
                     next_idx++;
                     continue;
                 }

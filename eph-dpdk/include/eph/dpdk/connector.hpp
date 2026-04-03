@@ -213,12 +213,15 @@ struct ConnectorOptions {
     }
 
     [[nodiscard]] std::string to_json() const {
+        auto mac_str = gateway_mac.has_value()
+            ? std::format("\"{}\"", net::format_mac(*gateway_mac).data())
+            : std::string("null");
         return std::format(
             "{{\"platform\":{},\"local_port\":{},\"tx_queue_id\":{},"
-            "\"rx_queue_id\":{},\"arp_timeout_ms\":{},\"connect_timeout_ms\":{},"
-            "\"dns\":{}}}",
+            "\"rx_queue_id\":{},\"gateway_mac\":{},\"arp_timeout_ms\":{},"
+            "\"connect_timeout_ms\":{},\"dns\":{}}}",
             platform.to_json(), local_port, tx_queue_id,
-            rx_queue_id, arp_timeout.count(), connect_timeout.count(),
+            rx_queue_id, mac_str, arp_timeout.count(), connect_timeout.count(),
             dns.to_json());
     }
 

@@ -283,6 +283,16 @@ TEST(ConnectorOptions, ToJsonContainsNestedPlatform) {
     EXPECT_NE(json.find("\"port_id\":"), std::string::npos);  // nested platform
     EXPECT_NE(json.find("\"dns\":"), std::string::npos);       // nested dns
     EXPECT_NE(json.find("\"nameserver_ip\":"), std::string::npos);
+    // gateway_mac defaults to null
+    EXPECT_NE(json.find("\"gateway_mac\":null"), std::string::npos);
+}
+
+TEST(ConnectorOptions, ToJsonWithGatewayMac) {
+    ConnectorOptions opts{};
+    rte_ether_addr mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    opts.gateway_mac = mac;
+    auto json = opts.to_json();
+    EXPECT_NE(json.find("\"gateway_mac\":\"de:ad:be:ef:01:23\""), std::string::npos);
 }
 
 TEST(ConnectorOptions, FormatterProducesNonEmpty) {
