@@ -160,4 +160,95 @@ static void BM_TcpHeaderParse(benchmark::State& state) {
 }
 BENCHMARK(BM_TcpHeaderParse)->Apply(PayloadSizeArgs);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_packet() — real function (includes all validation guards)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParsePacketReal(benchmark::State& state) {
+    auto sz = static_cast<uint16_t>(state.range(0));
+    uint16_t total_pkt_len = eph::dpdk::net::kAllHeadersLen + sz;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen + eph::dpdk::net::kTcpHeaderLen + sz);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoTcp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    tcp->data_off = (eph::dpdk::net::kTcpHeaderLen / 4) << 4;
+    tcp->tcp_flags = eph::dpdk::net::kTcpAck;
+    tcp->src_port = eph::dpdk::net::hton16(12345);
+    tcp->dst_port = eph::dpdk::net::hton16(443);
+
+    // Simulate mbuf with flat buffer
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    for (auto _ : state) {
+        auto parsed = eph::dpdk::net::parse_packet(&mbuf);
+        benchmark::DoNotOptimize(parsed.payload_len);
+        benchmark::DoNotOptimize(parsed.tcp);
+    }
+}
+BENCHMARK(BM_ParsePacketReal)->Apply(PayloadSizeArgs);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TCP checksum (pseudo-header + payload)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_TcpChecksum(benchmark::State& state) {
+    auto sz = static_cast<uint16_t>(state.range(0));
+    uint16_t tcp_total = eph::dpdk::net::kTcpHeaderLen + sz;
+    std::vector<uint8_t> tcp_seg(tcp_total);
+    fill_random(tcp_seg.data(), tcp_total, 77);
+
+    // Set up a minimal TCP header
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(tcp_seg.data());
+    tcp->data_off = (eph::dpdk::net::kTcpHeaderLen / 4) << 4;
+    tcp->cksum = 0;
+
+    uint32_t src_ip = eph::dpdk::net::hton32(0x0A000001);
+    uint32_t dst_ip = eph::dpdk::net::hton32(0x0A000002);
+
+    for (auto _ : state) {
+        auto c = eph::dpdk::net::tcp_checksum(src_ip, dst_ip, tcp_seg.data(), tcp_total);
+        benchmark::DoNotOptimize(c);
+    }
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(tcp_total));
+}
+BENCHMARK(BM_TcpChecksum)->Apply(PayloadSizeArgs);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IPv4 parse + format roundtrip
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_Ipv4ParseFormat(benchmark::State& state) {
+    const char* ips[] = {
+        "10.0.0.1", "192.168.1.100", "172.16.254.1",
+        "8.8.8.8", "255.255.255.255",
+    };
+    constexpr size_t n = 5;
+    size_t idx = 0;
+
+    for (auto _ : state) {
+        auto ip = eph::dpdk::net::parse_ipv4(ips[idx % n]);
+        auto buf = eph::dpdk::net::format_ipv4(ip);
+        benchmark::DoNotOptimize(buf.data());
+        idx++;
+    }
+}
+BENCHMARK(BM_Ipv4ParseFormat);
+
 BENCHMARK_MAIN();
