@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -211,6 +212,29 @@ struct SocketConfig {
             return std::format("tcp://[{}]:{}", host, port);
         }
         return std::format("tcp://{}:{}", host, port);
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (!tcp_nodelay && send_timeout_ms < 200)
+            w.emplace_back("tcp_nodelay=false with short send_timeout may cause "
+                           "Nagle-induced latency spikes");
+        if (tcp_keepalive && keepalive_idle < 10)
+            w.emplace_back(std::format(
+                "keepalive_idle={}s is unusually short — may generate excessive "
+                "probe traffic", keepalive_idle));
+        if (recv_buf_size > 0 && recv_buf_size > 16 * 1024 * 1024)
+            w.emplace_back(std::format(
+                "recv_buf_size={}B is very large — may waste kernel memory",
+                recv_buf_size));
+        if (send_buf_size > 0 && send_buf_size > 16 * 1024 * 1024)
+            w.emplace_back(std::format(
+                "send_buf_size={}B is very large — may waste kernel memory",
+                send_buf_size));
+        return w;
     }
 
     /// @brief Validate configuration, returning an error description or empty string on success.

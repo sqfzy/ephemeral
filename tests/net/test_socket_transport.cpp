@@ -704,3 +704,53 @@ TEST(SocketWsConnect, ConnectionRefusedReturnsFactoryFailed) {
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().code, ConnectionError::kFactoryFailed);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SocketConfig::warnings()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketConfig, WarningsDefaultConfigIsEmpty) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(SocketConfig, WarningsNagleWithShortTimeout) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.tcp_nodelay = false;
+    cfg.send_timeout_ms = 100;
+    auto w = cfg.warnings();
+    ASSERT_EQ(w.size(), 1);
+    EXPECT_NE(w[0].find("Nagle"), std::string::npos);
+}
+
+TEST(SocketConfig, WarningsShortKeepaliveIdle) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.tcp_keepalive = true;
+    cfg.keepalive_idle = 5;
+    auto w = cfg.warnings();
+    ASSERT_EQ(w.size(), 1);
+    EXPECT_NE(w[0].find("keepalive_idle"), std::string::npos);
+}
+
+TEST(SocketConfig, WarningsLargeRecvBuf) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.recv_buf_size = 32 * 1024 * 1024;
+    auto w = cfg.warnings();
+    ASSERT_EQ(w.size(), 1);
+    EXPECT_NE(w[0].find("recv_buf_size"), std::string::npos);
+}
+
+TEST(SocketConfig, WarningsLargeSendBuf) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.send_buf_size = 32 * 1024 * 1024;
+    auto w = cfg.warnings();
+    ASSERT_EQ(w.size(), 1);
+    EXPECT_NE(w[0].find("send_buf_size"), std::string::npos);
+}
+
+TEST(SocketConfig, WarningsNoFalsePositiveForNagleWithLongTimeout) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.tcp_nodelay = false;
+    cfg.send_timeout_ms = 500;  // long enough, no warning
+    EXPECT_TRUE(cfg.warnings().empty());
+}
