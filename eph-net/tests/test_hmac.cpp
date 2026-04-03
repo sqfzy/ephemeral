@@ -321,3 +321,92 @@ TEST(HmacVerifyHex, EmptyExpectedReturnsFalse) {
     std::string_view msg = "test-message";
     EXPECT_FALSE(hmac_verify_hex(key, msg, ""));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// hmac_sha256_base64 — convenience function
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(HmacSha256Base64, ProducesCorrectLength) {
+    // Base64 of 32 bytes = 44 chars (with padding).
+    auto result = hmac_sha256_base64("key", "message");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->size(), 44u);
+}
+
+TEST(HmacSha256Base64, AllCharsAreValidBase64) {
+    auto result = hmac_sha256_base64("secret", "data");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    for (char c : *result) {
+        EXPECT_TRUE(std::isalnum(c) || c == '+' || c == '/' || c == '=')
+            << "Invalid base64 char: " << c;
+    }
+}
+
+TEST(HmacSha256Base64, MatchesManualPipeline) {
+    // Verify convenience function produces same result as manual hmac_sha256 + to_base64.
+    std::string_view key = "test-secret-key";
+    std::string_view msg = "2023-01-01T00:00:00.000ZGET/api/v5/account/balance";
+
+    auto convenience = hmac_sha256_base64(key, msg);
+    ASSERT_TRUE(convenience.has_value()) << convenience.error();
+
+    auto digest = hmac_sha256(key, msg);
+    ASSERT_TRUE(digest.has_value()) << digest.error();
+    auto manual = to_base64(*digest);
+    ASSERT_TRUE(manual.has_value()) << manual.error();
+
+    EXPECT_EQ(*convenience, *manual);
+}
+
+TEST(HmacSha256Base64, EmptyKeyAndMessage) {
+    auto result = hmac_sha256_base64("", "");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->size(), 44u);
+}
+
+TEST(HmacSha256Base64, DifferentKeysProduceDifferentSignatures) {
+    auto sig1 = hmac_sha256_base64("key-a", "same message");
+    auto sig2 = hmac_sha256_base64("key-b", "same message");
+    ASSERT_TRUE(sig1.has_value());
+    ASSERT_TRUE(sig2.has_value());
+    EXPECT_NE(*sig1, *sig2);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// hmac_verify_base64 — constant-time base64 verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(HmacVerifyBase64, CorrectBase64ReturnsTrue) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    auto b64 = hmac_sha256_base64(key, msg);
+    ASSERT_TRUE(b64.has_value());
+    EXPECT_TRUE(hmac_verify_base64(key, msg, *b64));
+}
+
+TEST(HmacVerifyBase64, WrongBase64ReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    // 44-char base64 string that won't match
+    std::string wrong_b64(44, 'A');
+    EXPECT_FALSE(hmac_verify_base64(key, msg, wrong_b64));
+}
+
+TEST(HmacVerifyBase64, WrongLengthReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    EXPECT_FALSE(hmac_verify_base64(key, msg, "tooshort"));
+}
+
+TEST(HmacVerifyBase64, EmptyExpectedReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    EXPECT_FALSE(hmac_verify_base64(key, msg, ""));
+}
+
+TEST(HmacVerifyBase64, DifferentMessageReturnsFalse) {
+    std::string_view key = "test-key";
+    auto b64 = hmac_sha256_base64(key, "message-a");
+    ASSERT_TRUE(b64.has_value());
+    EXPECT_FALSE(hmac_verify_base64(key, "message-b", *b64));
+}

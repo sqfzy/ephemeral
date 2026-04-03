@@ -100,6 +100,33 @@ static void BM_ToBase64_32Bytes(benchmark::State& state) {
 }
 BENCHMARK(BM_ToBase64_32Bytes);
 
+/// Benchmark hmac_sha256_base64 with a typical OKX-sized prehash string.
+static void BM_HmacSha256Base64_OkxPrehash(benchmark::State& state) {
+    std::string_view key = "test-secret-key-for-okx-signing";
+    std::string_view msg = "2023-01-01T00:00:00.000ZGET/api/v5/account/balance";
+
+    for (auto _ : state) {
+        auto result = hmac_sha256_base64(key, msg);
+        benchmark::DoNotOptimize(result);
+    }
+    state.SetBytesProcessed(
+        static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(msg.size()));
+}
+BENCHMARK(BM_HmacSha256Base64_OkxPrehash);
+
+/// Benchmark hmac_verify_base64 (compute + base64 encode + constant-time compare).
+static void BM_HmacVerifyBase64(benchmark::State& state) {
+    std::string_view key = "test-key-for-verification";
+    std::string_view msg = "data-to-verify&timestamp=12345";
+    auto b64 = hmac_sha256_base64(key, msg);
+
+    for (auto _ : state) {
+        bool ok = hmac_verify_base64(key, msg, *b64);
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_HmacVerifyBase64);
+
 /// Benchmark HMAC with varying message sizes.
 static void BM_HmacSha256_MessageSize(benchmark::State& state) {
     std::string_view key = "fixed-key";

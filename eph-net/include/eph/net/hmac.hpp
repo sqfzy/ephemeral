@@ -165,6 +165,25 @@ hmac_sha256_hex(std::string_view key, std::string_view message) noexcept {
     return to_hex(*digest);
 }
 
+/// @brief Compute HMAC-SHA256 and return as base64-encoded string.
+///
+/// This is the format used by OKX for request signatures. Combines the
+/// hmac_sha256() + to_base64() pipeline into a single call to eliminate
+/// boilerplate and prevent misuse (e.g., accidentally base64-encoding the
+/// hex string instead of the raw digest).
+///
+/// @param key      The HMAC secret key.
+/// @param message  The message to sign.
+/// @return 44-character base64 string (32 bytes padded), or error string on failure.
+[[nodiscard]] inline std::expected<std::string, std::string>
+hmac_sha256_base64(std::string_view key, std::string_view message) noexcept {
+    auto digest = hmac_sha256(key, message);
+    if (!digest) {
+        return std::unexpected(digest.error());
+    }
+    return to_base64(*digest);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constant-time HMAC verification
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,6 +242,40 @@ hmac_verify_hex(std::string_view key, std::string_view message,
     bool match = CRYPTO_memcmp(computed->data(), expected_hex.data(),
                                computed->size()) == 0;
     SPDLOG_LOGGER_DEBUG(detail::hmac_logger(), "hmac_verify_hex: result={}", match ? "match" : "mismatch");
+    return match;
+}
+
+/// @brief Verify an HMAC-SHA256 base64 signature in constant time.
+///
+/// Computes the HMAC-SHA256 of the message, base64-encodes the digest, and
+/// compares with the expected base64 string using constant-time comparison.
+/// Designed for OKX-style signature verification.
+///
+/// @param key              The HMAC secret key.
+/// @param message          The message that was signed.
+/// @param expected_b64     The expected base64-encoded HMAC signature (44 chars for SHA-256).
+/// @return true if the HMAC matches, false otherwise (including on computation error).
+[[nodiscard]] inline bool
+hmac_verify_base64(std::string_view key, std::string_view message,
+                   std::string_view expected_b64) noexcept {
+    SPDLOG_LOGGER_DEBUG(detail::hmac_logger(),
+                        "hmac_verify_base64: key_len={}, msg_len={}, expected_b64_len={}",
+                        key.size(), message.size(), expected_b64.size());
+    auto computed = hmac_sha256_base64(key, message);
+    if (!computed) {
+        SPDLOG_LOGGER_WARN(detail::hmac_logger(),
+                           "hmac_verify_base64: HMAC computation failed: {}", computed.error());
+        return false;
+    }
+    if (computed->size() != expected_b64.size()) {
+        SPDLOG_LOGGER_DEBUG(detail::hmac_logger(),
+                            "hmac_verify_base64: length mismatch (computed={}, expected={})",
+                            computed->size(), expected_b64.size());
+        return false;
+    }
+    bool match = CRYPTO_memcmp(computed->data(), expected_b64.data(),
+                               computed->size()) == 0;
+    SPDLOG_LOGGER_DEBUG(detail::hmac_logger(), "hmac_verify_base64: result={}", match ? "match" : "mismatch");
     return match;
 }
 
