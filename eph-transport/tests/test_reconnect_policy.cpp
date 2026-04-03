@@ -264,3 +264,45 @@ TEST_F(ReconnectPolicyTest, TotalReconnectsPreservedAcrossReset) {
     EXPECT_EQ(policy.total_reconnects(), 2);
     EXPECT_EQ(policy.attempts(), 1);  // attempts reset, reconnects not
 }
+
+TEST_F(ReconnectPolicyTest, CallbackExceptionDoesNotAbort) {
+    // If the on_reconnect_attempt callback throws, the exception should be
+    // caught and reconnection should continue (not abort).
+    auto cfg = make_config(10);
+    cfg.on_reconnect_attempt = [](int, int, std::string_view) -> bool {
+        throw std::runtime_error("callback exploded");
+    };
+    ReconnectPolicy policy(cfg);
+
+    auto fail_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kFactoryFailed, "test failure"});
+    };
+
+    // Should not propagate the exception
+    bool ok = policy.attempt(fail_fn);
+    EXPECT_FALSE(ok);
+    // Should NOT be exhausted — exception is caught, retries continue
+    EXPECT_FALSE(policy.exhausted());
+    EXPECT_EQ(policy.attempts(), 1);
+}
+
+TEST_F(ReconnectPolicyTest, ZeroMaxAttemptsIsImmediatelyExhausted) {
+    auto cfg = make_config(0);
+    ReconnectPolicy policy(cfg);
+    EXPECT_TRUE(policy.exhausted());  // 0 >= 0
+}
+
+TEST_F(ReconnectPolicyTest, SingleAttemptMaxExhaustsAfterOne) {
+    auto cfg = make_config(1);
+    ReconnectPolicy policy(cfg);
+    EXPECT_FALSE(policy.exhausted());
+
+    auto fail_fn = []() -> std::expected<void, ConnectionErrorInfo> {
+        return std::unexpected(ConnectionErrorInfo{
+            ConnectionError::kFactoryFailed, "test failure"});
+    };
+
+    (void)policy.attempt(fail_fn);
+    EXPECT_TRUE(policy.exhausted());
+}
