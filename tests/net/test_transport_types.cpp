@@ -1235,6 +1235,25 @@ TEST(TransportConfigValidation, HostWithHighByteUtf8Accepted) {
     EXPECT_TRUE(err.empty()) << "UTF-8 hostname should be valid, got: " << err;
 }
 
+TEST(TransportConfigValidation, WsPathWithControlCharsRejected) {
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws\r\nEvil-Header: true\r\n";
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("ws_path"), std::string_view::npos);
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidation, WsPathWithQueryStringAccepted) {
+    // Query strings with normal characters should be accepted.
+    TransportConfig cfg;
+    cfg.remote_host = "example.com";
+    cfg.ws_path = "/ws/v1?symbol=BTCUSDT&depth=5";
+    auto err = cfg.validate();
+    EXPECT_TRUE(err.empty()) << "ws_path with query string should be valid, got: " << err;
+}
+
 TEST(TransportConfigWarnings, MultipleWarningsFromSameConfig) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";

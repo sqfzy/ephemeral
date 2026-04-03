@@ -510,6 +510,15 @@ struct TransportConfig {
             return "ws_path must not be empty";
         if (ws_path[0] != '/')
             return "ws_path must start with '/'";
+        // Reject control characters in ws_path — it is interpolated directly
+        // into the HTTP Upgrade request line. CR/LF would allow HTTP request
+        // smuggling (CWE-113).
+        for (char c : ws_path) {
+            auto uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc == 0x7f) {
+                return "ws_path contains control characters (request smuggling risk)";
+            }
+        }
         if (tx_burst_size == 0)
             return "tx_burst_size must be > 0";
         if (rx_burst_size == 0)
