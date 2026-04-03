@@ -234,3 +234,113 @@ TEST(BinanceRestDepthLevels, NotAnArrayReturnsError) {
     auto result = detail::parse_depth_levels("not_an_array");
     ASSERT_FALSE(result.has_value());
 }
+
+// ---------------------------------------------------------------------------
+// BinanceRestConfig API tests
+// ---------------------------------------------------------------------------
+
+TEST(BinanceRestConfig, ValidateAcceptsDefaults) {
+    BinanceRestConfig cfg{};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(BinanceRestConfig, ValidateRejectsEmptyHost) {
+    BinanceRestConfig cfg{.host = ""};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("host"), std::string_view::npos);
+}
+
+TEST(BinanceRestConfig, ValidateRejectsZeroPort) {
+    BinanceRestConfig cfg{.port = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(BinanceRestConfig, ValidateRejectsNonPositiveTimeout) {
+    BinanceRestConfig cfg{.timeout = std::chrono::milliseconds{0}};
+    EXPECT_FALSE(cfg.validate().empty());
+}
+
+TEST(BinanceRestConfig, DumpContainsAllFields) {
+    BinanceRestConfig cfg{.host = "test.example.com", .port = 8443,
+                           .timeout = std::chrono::milliseconds{3000}};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("test.example.com"), std::string::npos);
+    EXPECT_NE(d.find("8443"), std::string::npos);
+    EXPECT_NE(d.find("3000"), std::string::npos);
+}
+
+TEST(BinanceRestConfig, ToJsonIsValidStructure) {
+    BinanceRestConfig cfg{};
+    auto j = cfg.to_json();
+    EXPECT_TRUE(j.starts_with("{"));
+    EXPECT_TRUE(j.ends_with("}"));
+    EXPECT_NE(j.find("\"host\":\"api.binance.com\""), std::string::npos);
+    EXPECT_NE(j.find("\"port\":443"), std::string::npos);
+    EXPECT_NE(j.find("\"timeout_ms\":5000"), std::string::npos);
+}
+
+TEST(BinanceRestConfig, ToJsonEscapesSpecialChars) {
+    BinanceRestConfig cfg{.host = "test\"host"};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("test\\\"host"), std::string::npos);
+}
+
+TEST(BinanceRestConfig, EqualityMatchesIdentical) {
+    BinanceRestConfig a{}, b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(BinanceRestConfig, EqualityDetectsDifferences) {
+    BinanceRestConfig a{}, b{};
+    b.port = 8080;
+    EXPECT_NE(a, b);
+}
+
+TEST(BinanceRestConfig, WarningsEmptyForDefaults) {
+    BinanceRestConfig cfg{};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(BinanceRestConfig, WarningsDetectsNonStandardPort) {
+    BinanceRestConfig cfg{.port = 8080};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("443") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(BinanceRestConfig, WarningsDetectsShortTimeout) {
+    BinanceRestConfig cfg{.timeout = std::chrono::milliseconds{500}};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("very short") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(BinanceRestConfig, WarningsDetectsUnknownHost) {
+    BinanceRestConfig cfg{.host = "custom.host.com"};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("not a recognized") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(BinanceRestConfig, WarningsAcceptsTestnet) {
+    BinanceRestConfig cfg{.host = "testnet.binance.vision"};
+    auto w = cfg.warnings();
+    // Should not warn about testnet host
+    bool found_host_warn = false;
+    for (const auto& msg : w)
+        if (msg.find("not a recognized") != std::string::npos) found_host_warn = true;
+    EXPECT_FALSE(found_host_warn);
+}
+
+TEST(BinanceRestConfig, FormatterProducesDump) {
+    BinanceRestConfig cfg{};
+    auto formatted = std::format("{}", cfg);
+    EXPECT_NE(formatted.find("BinanceRestConfig"), std::string::npos);
+    EXPECT_NE(formatted.find("api.binance.com"), std::string::npos);
+}

@@ -295,6 +295,67 @@ struct BinanceRestConfig {
     std::string host = "api.binance.com";          ///< Binance REST API hostname
     uint16_t port = 443;                           ///< HTTPS port
     std::chrono::milliseconds timeout{5000};       ///< HTTP request timeout
+
+    /// Validate configuration, returning an error description or empty string on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (host.empty())
+            return "host must not be empty";
+        if (port == 0)
+            return "port must be > 0";
+        if (timeout.count() <= 0)
+            return "timeout must be positive";
+        return {};
+    }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format("BinanceRestConfig(host={}, port={}, timeout={}ms)",
+                           host, port, timeout.count());
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        // Minimal JSON escape — eph-json does not depend on eph-core's json_escape.
+        auto esc = [](std::string_view s) -> std::string {
+            std::string out;
+            out.reserve(s.size());
+            for (char c : s) {
+                if (c == '"')       out += "\\\"";
+                else if (c == '\\') out += "\\\\";
+                else                out += c;
+            }
+            return out;
+        };
+        return std::format(
+            "{{\"host\":\"{}\",\"port\":{},\"timeout_ms\":{}}}",
+            esc(host), port, timeout.count());
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (port != 443)
+            w.emplace_back(std::format(
+                "port={} differs from standard HTTPS (443) -- "
+                "Binance REST API requires HTTPS", port));
+        if (timeout.count() < 1000)
+            w.emplace_back(std::format(
+                "timeout={}ms is very short -- Binance REST API may "
+                "take >1s under load", timeout.count()));
+        if (timeout.count() > 30000)
+            w.emplace_back(std::format(
+                "timeout={}ms is unusually large (>30s) -- may cause "
+                "slow failure detection", timeout.count()));
+        if (host != "api.binance.com" && host != "testnet.binance.vision")
+            w.emplace_back(std::format(
+                "host=\"{}\" is not a recognized Binance endpoint -- "
+                "expected api.binance.com or testnet.binance.vision", host));
+        return w;
+    }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const BinanceRestConfig&,
+                                          const BinanceRestConfig&) = default;
 };
 
 /// Typed Binance REST client for public read-only endpoints.
@@ -407,3 +468,15 @@ private:
 };
 
 } // namespace eph::json::binance
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for BinanceRestConfig
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::json::binance::BinanceRestConfig>
+    : std::formatter<std::string> {
+    auto format(const eph::json::binance::BinanceRestConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(c.dump(), ctx);
+    }
+};
