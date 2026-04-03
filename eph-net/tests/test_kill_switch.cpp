@@ -266,3 +266,44 @@ TEST(KillSwitch, ResetIsIdempotent) {
     ks.reset();
     EXPECT_FALSE(ks.is_shutdown_requested());
 }
+
+// ── to_json() ────────────────────────────────────────────────────────────
+
+TEST(KillSwitch, ToJsonInitialState) {
+    KillSwitch ks;
+    auto j = ks.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"transport_count\":0"), std::string::npos);
+    EXPECT_NE(j.find("\"shutdown_requested\":false"), std::string::npos);
+    EXPECT_NE(j.find("\"shutdown_done\":false"), std::string::npos);
+}
+
+TEST(KillSwitch, ToJsonAfterRegister) {
+    KillSwitch ks;
+    MockTransport tp1, tp2;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    auto j = ks.to_json();
+    EXPECT_NE(j.find("\"transport_count\":2"), std::string::npos);
+}
+
+TEST(KillSwitch, ToJsonAfterShutdown) {
+    KillSwitch ks;
+    MockTransport tp;
+    ASSERT_TRUE(ks.register_transport(&tp));
+    ks.shutdown();
+    auto j = ks.to_json();
+    EXPECT_NE(j.find("\"shutdown_requested\":true"), std::string::npos);
+    EXPECT_NE(j.find("\"shutdown_done\":true"), std::string::npos);
+}
+
+TEST(KillSwitch, ToJsonSignalHandlersInstalled) {
+    KillSwitch ks;
+    auto j_before = ks.to_json();
+    EXPECT_NE(j_before.find("\"signal_handlers_installed\":false"), std::string::npos);
+
+    ks.install_signal_handlers();
+    auto j_after = ks.to_json();
+    EXPECT_NE(j_after.find("\"signal_handlers_installed\":true"), std::string::npos);
+}

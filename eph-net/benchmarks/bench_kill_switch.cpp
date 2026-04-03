@@ -104,4 +104,21 @@ static void BM_KillSwitch_RequestShutdown(benchmark::State& state) {
 }
 BENCHMARK(BM_KillSwitch_RequestShutdown);
 
+// ---------------------------------------------------------------------------
+// to_json() — monitoring snapshot
+// ---------------------------------------------------------------------------
+
+static void BM_KillSwitch_ToJson(benchmark::State& state) {
+    KillSwitch ks;
+    BenchTransport tp1, tp2;
+    ks.register_transport(&tp1);
+    ks.register_transport(&tp2);
+
+    for (auto _ : state) {
+        auto j = ks.to_json();
+        benchmark::DoNotOptimize(j);
+    }
+}
+BENCHMARK(BM_KillSwitch_ToJson);
+
 BENCHMARK_MAIN();

@@ -29,6 +29,8 @@
 #include <concepts>
 #include <csignal>
 #include <cstddef>
+#include <format>
+#include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -211,6 +213,20 @@ public:
         shutdown_done_.store(false, std::memory_order_release);
         SPDLOG_LOGGER_DEBUG(detail::kill_switch_logger(),
             "KillSwitch: reset — shutdown state cleared");
+    }
+
+    /// @brief JSON-formatted snapshot of KillSwitch state for monitoring.
+    ///
+    /// Includes transport count, shutdown state, and signal handler status.
+    /// Thread-safe: uses atomic reads only (no lock needed).
+    [[nodiscard]] std::string to_json() const noexcept {
+        return std::format(
+            "{{\"transport_count\":{},\"shutdown_requested\":{},"
+            "\"shutdown_done\":{},\"signal_handlers_installed\":{}}}",
+            count_.load(std::memory_order_acquire),
+            shutdown_requested_.load(std::memory_order_acquire) ? "true" : "false",
+            shutdown_done_.load(std::memory_order_acquire) ? "true" : "false",
+            s_instance_.load(std::memory_order_acquire) == this ? "true" : "false");
     }
 
     /// @brief Emergency kill: request shutdown without blocking.
