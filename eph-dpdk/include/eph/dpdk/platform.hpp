@@ -658,3 +658,17 @@ struct std::formatter<eph::dpdk::Platform::Stats> : std::formatter<std::string> 
         return std::formatter<std::string>::format(s.dump(), ctx);
     }
 };
+
+/// @brief std::formatter for PlatformConfig — compact one-line summary.
+template <>
+struct std::formatter<eph::dpdk::PlatformConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::PlatformConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("PlatformConfig(port={}, q={}rx/{}tx, desc={}rx/{}tx, "
+                        "pool={}, promisc={})",
+                c.port_id, c.nb_rx_queues, c.nb_tx_queues,
+                c.nb_rx_desc, c.nb_tx_desc, c.mbuf_pool_size,
+                c.enable_promiscuous ? "true" : "false"),
+            ctx);
+    }
+};

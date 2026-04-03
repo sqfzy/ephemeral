@@ -646,3 +646,18 @@ resolve(uint16_t port_id,
 }
 
 } // namespace eph::dpdk::dns
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for DnsConfig
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::dpdk::dns::DnsConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::dns::DnsConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("DnsConfig(ns={}:{}, timeout={}ms)",
+                eph::dpdk::net::format_ipv4(c.nameserver_ip).data(),
+                c.port, c.timeout.count()),
+            ctx);
+    }
+};

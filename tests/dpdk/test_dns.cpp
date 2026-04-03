@@ -546,3 +546,20 @@ TEST(DnsParseResponse, WrongRdlengthForARecordSkips) {
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("no A record"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DnsConfig std::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsConfig, StdFormatterContainsKeyFields) {
+    DnsConfig cfg{
+        .nameserver_ip = 0x01010101,  // 1.1.1.1
+        .port = 5353,
+        .timeout = std::chrono::milliseconds{750},
+    };
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("DnsConfig"), std::string::npos);
+    EXPECT_NE(s.find("1.1.1.1"), std::string::npos);
+    EXPECT_NE(s.find("5353"), std::string::npos);
+    EXPECT_NE(s.find("750ms"), std::string::npos);
+}

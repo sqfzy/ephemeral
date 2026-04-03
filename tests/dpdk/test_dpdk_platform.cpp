@@ -444,3 +444,34 @@ TEST(TcpConfig, formatter_default_config) {
     auto formatted = std::format("{}", cfg);
     EXPECT_NE(formatted.find("TcpConfig"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlatformConfig std::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PlatformConfig, FormatterContainsKeyFields) {
+    PlatformConfig cfg{
+        .port_id = 2,
+        .nb_rx_queues = 4,
+        .nb_tx_queues = 2,
+        .nb_rx_desc = 512,
+        .nb_tx_desc = 1024,
+        .mbuf_pool_size = 8191,
+        .enable_promiscuous = true,
+    };
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("PlatformConfig"), std::string::npos);
+    EXPECT_NE(s.find("port=2"), std::string::npos);
+    EXPECT_NE(s.find("4rx"), std::string::npos);
+    EXPECT_NE(s.find("2tx"), std::string::npos);
+    EXPECT_NE(s.find("pool=8191"), std::string::npos);
+    EXPECT_NE(s.find("promisc=true"), std::string::npos);
+}
+
+TEST(PlatformConfig, FormatterDefaultConfig) {
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size = 4095; // valid 2^n-1
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("PlatformConfig"), std::string::npos);
+    EXPECT_NE(s.find("pool=4095"), std::string::npos);
+}

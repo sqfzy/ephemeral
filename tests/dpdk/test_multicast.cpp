@@ -398,3 +398,44 @@ TEST(MoldUDP64Adapter, EmptyPacketNoCallback) {
     adapter(data, sizeof(data));
     EXPECT_EQ(callback_count, 0);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastGroupFormatter, ContainsKeyFields) {
+    MulticastGroup g{
+        .group_ip   = 0xE9360C6F, // 233.54.12.111
+        .group_port = 26477,
+        .source_ip  = 0,
+    };
+    auto s = std::format("{}", g);
+    EXPECT_NE(s.find("MulticastGroup"), std::string::npos);
+    EXPECT_NE(s.find("26477"), std::string::npos);
+    EXPECT_NE(s.find("any"), std::string::npos);
+}
+
+TEST(MulticastGroupFormatter, SourceSpecific) {
+    MulticastGroup g{
+        .group_ip   = 0xE9360C6F,
+        .group_port = 26477,
+        .source_ip  = 0x0A000001, // 10.0.0.1
+    };
+    auto s = std::format("{}", g);
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
+}
+
+TEST(MulticastConfigFormatter, ContainsKeyFields) {
+    MulticastConfig cfg{
+        .port_id = 1,
+        .rx_queue_id = 3,
+        .rx_cpu = 5,
+        .rx_burst = 64,
+    };
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("MulticastConfig"), std::string::npos);
+    EXPECT_NE(s.find("port=1"), std::string::npos);
+    EXPECT_NE(s.find("q=3"), std::string::npos);
+    EXPECT_NE(s.find("cpu=5"), std::string::npos);
+    EXPECT_NE(s.find("burst=64"), std::string::npos);
+}

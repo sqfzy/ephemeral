@@ -833,3 +833,32 @@ make_moldudp64_adapter(ParseFn&& parse_fn, MsgCb&& msg_callback) {
 }
 
 } // namespace eph::dpdk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter for MulticastGroup — compact "ip:port" summary.
+template <>
+struct std::formatter<eph::dpdk::MulticastGroup> : std::formatter<std::string> {
+    auto format(const eph::dpdk::MulticastGroup& g, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("MulticastGroup({}:{} src={})",
+                eph::dpdk::net::format_ipv4(g.group_ip).data(),
+                g.group_port,
+                g.source_ip == 0 ? "any" :
+                    std::string(eph::dpdk::net::format_ipv4(g.source_ip).data())),
+            ctx);
+    }
+};
+
+/// @brief std::formatter for MulticastConfig — compact one-line summary.
+template <>
+struct std::formatter<eph::dpdk::MulticastConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::MulticastConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("MulticastConfig(port={}, q={}, cpu={}, burst={})",
+                c.port_id, c.rx_queue_id, c.rx_cpu, c.rx_burst),
+            ctx);
+    }
+};
