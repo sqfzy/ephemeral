@@ -14,6 +14,25 @@
 
 using namespace eph::net;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Compile-time verification of constexpr HttpResponse status methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+static_assert(HttpResponse{.status_code = 200}.is_success());
+static_assert(!HttpResponse{.status_code = 200}.is_redirect());
+static_assert(!HttpResponse{.status_code = 200}.is_client_error());
+static_assert(!HttpResponse{.status_code = 200}.is_server_error());
+static_assert(!HttpResponse{.status_code = 200}.is_error());
+
+static_assert(HttpResponse{.status_code = 301}.is_redirect());
+static_assert(!HttpResponse{.status_code = 301}.is_success());
+
+static_assert(HttpResponse{.status_code = 404}.is_client_error());
+static_assert(HttpResponse{.status_code = 404}.is_error());
+
+static_assert(HttpResponse{.status_code = 500}.is_server_error());
+static_assert(HttpResponse{.status_code = 500}.is_error());
+
 // =============================================================================
 // build_http_request — GET
 // =============================================================================

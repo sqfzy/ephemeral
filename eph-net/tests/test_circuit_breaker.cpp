@@ -17,6 +17,30 @@ using namespace eph::net;
 using namespace std::chrono_literals;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compile-time verification of constexpr Config validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+static_assert(CircuitBreaker::Config{}.validate().empty(),
+    "Default CircuitBreaker::Config must be valid at compile time");
+
+static_assert(CircuitBreaker::Config{3, std::chrono::milliseconds{500}, 2}.validate().empty(),
+    "Explicit valid CircuitBreaker::Config must pass compile-time validation");
+
+static_assert(!CircuitBreaker::Config{0, std::chrono::milliseconds{1000}, 1}.validate().empty(),
+    "Zero failure_threshold must fail compile-time validation");
+
+static_assert(!CircuitBreaker::Config{5, std::chrono::milliseconds{-1}, 1}.validate().empty(),
+    "Negative open_duration must fail compile-time validation");
+
+static_assert(!CircuitBreaker::Config{5, std::chrono::milliseconds{1000}, 0}.validate().empty(),
+    "Zero half_open_max_calls must fail compile-time validation");
+
+// Verify circuit_state_name is constexpr
+static_assert(circuit_state_name(CircuitState::Closed) == "CLOSED");
+static_assert(circuit_state_name(CircuitState::Open) == "OPEN");
+static_assert(circuit_state_name(CircuitState::HalfOpen) == "HALF_OPEN");
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Config validation
 // ─────────────────────────────────────────────────────────────────────────────
 

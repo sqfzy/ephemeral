@@ -15,6 +15,25 @@ using namespace eph::net;
 using namespace std::chrono_literals;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compile-time verification of constexpr Config validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+static_assert(RateLimiter::Config{}.validate().empty(),
+    "Default RateLimiter::Config must be valid at compile time");
+
+static_assert(RateLimiter::Config{.rate_per_sec = 1000.0, .burst = 50}.validate().empty(),
+    "Explicit valid RateLimiter::Config must pass compile-time validation");
+
+static_assert(!RateLimiter::Config{.rate_per_sec = -1.0, .burst = 10}.validate().empty(),
+    "Negative rate_per_sec must fail compile-time validation");
+
+static_assert(!RateLimiter::Config{.rate_per_sec = 100.0, .burst = 0}.validate().empty(),
+    "Zero burst must fail compile-time validation");
+
+static_assert(RateLimiter::Config{.rate_per_sec = 0.0, .burst = 10}.validate().empty(),
+    "Zero rate with valid burst must pass compile-time validation");
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Basic token bucket semantics
 // ─────────────────────────────────────────────────────────────────────────────
 
