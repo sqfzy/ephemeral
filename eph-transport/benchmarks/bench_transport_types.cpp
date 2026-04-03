@@ -20,6 +20,7 @@
 
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/detail/tls_constants.hpp"
+#include "eph/transport/detail/websocket.hpp"
 
 using namespace eph::net;
 
@@ -431,5 +432,71 @@ static void BM_RttStatsDump(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_RttStatsDump);
+
+// ---------------------------------------------------------------------------
+// ws::is_valid_utf8 — UTF-8 validation (text frame hot path)
+// ---------------------------------------------------------------------------
+
+static void BM_Utf8Validate_AsciiOnly(benchmark::State& state) {
+    // 256 bytes of pure ASCII — fast path (all bytes < 0x80)
+    std::string text(256, 'A');
+    auto* data = reinterpret_cast<const uint8_t*>(text.data());
+    for (auto _ : state) {
+        auto ok = eph::net::ws::is_valid_utf8(data, text.size());
+        benchmark::DoNotOptimize(ok);
+    }
+    state.SetBytesProcessed(state.iterations() * text.size());
+}
+BENCHMARK(BM_Utf8Validate_AsciiOnly);
+
+static void BM_Utf8Validate_Mixed(benchmark::State& state) {
+    // Mix of ASCII and multi-byte UTF-8 (typical JSON with some unicode)
+    std::string text;
+    for (int i = 0; i < 32; ++i) {
+        text += "{\"symbol\":\"BTC\xC3\xB6USD\",\"price\":42000}";  // ö is 2-byte
+    }
+    auto* data = reinterpret_cast<const uint8_t*>(text.data());
+    for (auto _ : state) {
+        auto ok = eph::net::ws::is_valid_utf8(data, text.size());
+        benchmark::DoNotOptimize(ok);
+    }
+    state.SetBytesProcessed(state.iterations() * text.size());
+}
+BENCHMARK(BM_Utf8Validate_Mixed);
+
+static void BM_Utf8Validate_Invalid(benchmark::State& state) {
+    // Invalid UTF-8 at byte 128 — measures early-exit performance
+    std::string text(256, 'A');
+    text[128] = static_cast<char>(0xFF);  // invalid byte
+    auto* data = reinterpret_cast<const uint8_t*>(text.data());
+    for (auto _ : state) {
+        auto ok = eph::net::ws::is_valid_utf8(data, text.size());
+        benchmark::DoNotOptimize(ok);
+    }
+    state.SetBytesProcessed(state.iterations() * text.size());
+}
+BENCHMARK(BM_Utf8Validate_Invalid);
+
+// ---------------------------------------------------------------------------
+// ws::opcode_name — opcode-to-string lookup (logging path)
+// ---------------------------------------------------------------------------
+
+static void BM_OpcodeName_Known(benchmark::State& state) {
+    for (auto _ : state) {
+        auto s = eph::net::ws::opcode_name(0x02);  // BINARY
+        benchmark::DoNotOptimize(s);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_OpcodeName_Known);
+
+static void BM_OpcodeName_Unknown(benchmark::State& state) {
+    for (auto _ : state) {
+        auto s = eph::net::ws::opcode_name(0x0F);  // unknown
+        benchmark::DoNotOptimize(s);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_OpcodeName_Unknown);
 
 BENCHMARK_MAIN();
