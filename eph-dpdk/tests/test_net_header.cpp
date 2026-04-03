@@ -630,6 +630,45 @@ TEST(ConnectionTuple, DumpZeroTuple) {
     EXPECT_NE(d.find(":0"), std::string::npos);
 }
 
+TEST(ConnectionTuple, FormatterProducesOutput) {
+    ConnectionTuple t{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 5000, .dst_port = 443};
+    auto s = std::format("{}", t);
+    EXPECT_FALSE(s.empty());
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(s.find("5000"), std::string::npos);
+    EXPECT_NE(s.find("10.0.0.2"), std::string::npos);
+    EXPECT_NE(s.find("443"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pseudo-header checksum
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PseudoHeaderSum, NonZeroForValidInputs) {
+    // Any real IP/port combination should produce a non-zero pseudo-header sum
+    uint32_t sum = pseudo_header_sum(
+        hton32(0x0A000001), hton32(0x0A000002), kIpProtoTcp, 20);
+    EXPECT_NE(sum, 0u);
+}
+
+TEST(PseudoHeaderSum, DeterministicForSameInputs) {
+    uint32_t a = pseudo_header_sum(
+        hton32(0xC0A80101), hton32(0x08080808), kIpProtoTcp, 40);
+    uint32_t b = pseudo_header_sum(
+        hton32(0xC0A80101), hton32(0x08080808), kIpProtoTcp, 40);
+    EXPECT_EQ(a, b);
+}
+
+TEST(PseudoHeaderSum, DifferentProtocolsDifferentSums) {
+    uint32_t tcp_sum = pseudo_header_sum(
+        hton32(0x0A000001), hton32(0x0A000002), kIpProtoTcp, 20);
+    uint32_t udp_sum = pseudo_header_sum(
+        hton32(0x0A000001), hton32(0x0A000002), kIpProtoUdp, 20);
+    EXPECT_NE(tcp_sum, udp_sum);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // UdpHeader (unified definition in net_header.hpp)
 // ─────────────────────────────────────────────────────────────────────────────

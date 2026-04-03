@@ -134,6 +134,37 @@ TEST(IsMulticast, NonMulticast) {
     EXPECT_FALSE(is_multicast_ip(0));
 }
 
+TEST(IsMulticast, BoundaryJustBelowMulticast) {
+    // 223.255.255.255 is the last Class C address, just below multicast range
+    EXPECT_FALSE(is_multicast_ip(parse_ipv4("223.255.255.255")));
+}
+
+TEST(IsMulticast, BoundaryJustAboveMulticast) {
+    // 240.0.0.0 is the first Class E address, just above multicast range
+    EXPECT_FALSE(is_multicast_ip(parse_ipv4("240.0.0.0")));
+}
+
+TEST(IsMulticast, ConstexprEvaluation) {
+    // Verify is_multicast_ip works at compile time
+    static_assert(is_multicast_ip(0xE0000001));   // 224.0.0.1
+    static_assert(!is_multicast_ip(0xC0A80101));  // 192.168.1.1
+    static_assert(!is_multicast_ip(0));
+    static_assert(!is_multicast_ip(0xF0000000));  // 240.0.0.0 (class E)
+}
+
+TEST(MulticastMac, ConstexprEvaluation) {
+    // Verify multicast_mac_from_ip works at compile time
+    constexpr auto mac = multicast_mac_from_ip(0xE9FF6F6F); // 233.255.111.111
+    static_assert(mac.addr_bytes[0] == 0x01);
+    static_assert(mac.addr_bytes[1] == 0x00);
+    static_assert(mac.addr_bytes[2] == 0x5e);
+    // Low 23 bits of 233.255.111.111: bits 22..16 = 0x7F & 0x7F = 0x7F,
+    // bits 15..8 = 0x6F, bits 7..0 = 0x6F
+    static_assert(mac.addr_bytes[3] == 0x7F);
+    static_assert(mac.addr_bytes[4] == 0x6F);
+    static_assert(mac.addr_bytes[5] == 0x6F);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MulticastConfig validation
 // ─────────────────────────────────────────────────────────────────────────────
