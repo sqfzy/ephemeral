@@ -319,6 +319,35 @@ static void BM_ReactorDispatchSim(benchmark::State& state) {
 BENCHMARK(BM_ReactorDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(16);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// write_syn_options — SYN option serialization
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_WriteSynOptions(benchmark::State& state) {
+    uint8_t buf[12];
+    for (auto _ : state) {
+        auto len = eph::dpdk::net::write_syn_options(buf, 1460);
+        benchmark::DoNotOptimize(len);
+        benchmark::DoNotOptimize(buf);
+    }
+}
+BENCHMARK(BM_WriteSynOptions);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionTuple::dump — formatting
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ConnectionTupleDump(benchmark::State& state) {
+    eph::dpdk::net::ConnectionTuple t{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 443};
+    for (auto _ : state) {
+        auto s = t.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ConnectionTupleDump);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ParsedPacket::dump — diagnostic output formatting
 // ─────────────────────────────────────────────────────────────────────────────
 

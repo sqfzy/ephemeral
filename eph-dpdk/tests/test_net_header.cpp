@@ -232,6 +232,95 @@ TEST(NetHeader, TcpChecksumSelfVerifies) {
     EXPECT_EQ(static_cast<uint16_t>(~sum), 0u);
 }
 
+TEST(NetHeader, TcpChecksumWithPayload) {
+    // TCP header (20 bytes) + 4 bytes payload
+    uint8_t tcp_seg[24] = {};
+    uint16_t sp = hton16(443);
+    std::memcpy(tcp_seg, &sp, 2);
+    uint16_t dp = hton16(8080);
+    std::memcpy(tcp_seg + 2, &dp, 2);
+    tcp_seg[12] = (5 << 4);
+    tcp_seg[13] = kTcpAck | kTcpPsh;
+    uint16_t win = hton16(32000);
+    std::memcpy(tcp_seg + 14, &win, 2);
+    // Payload bytes
+    tcp_seg[20] = 0xDE; tcp_seg[21] = 0xAD;
+    tcp_seg[22] = 0xBE; tcp_seg[23] = 0xEF;
+
+    uint32_t src = hton32(0xC0A80001); // 192.168.0.1
+    uint32_t dst = hton32(0xC0A80002); // 192.168.0.2
+
+    uint16_t cksum = tcp_checksum(src, dst, tcp_seg, 24);
+    EXPECT_NE(cksum, 0u);  // Non-trivial checksum
+
+    // Store and verify self-consistency
+    std::memcpy(tcp_seg + 16, &cksum, 2);
+    uint32_t sum = pseudo_header_sum(src, dst, kIpProtoTcp, 24);
+    for (int i = 0; i < 12; ++i) {
+        uint16_t word;
+        std::memcpy(&word, tcp_seg + i * 2, 2);
+        sum += word;
+    }
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    EXPECT_EQ(static_cast<uint16_t>(~sum), 0u);
+}
+
+TEST(NetHeader, TcpChecksumOddPayloadLength) {
+    // TCP header (20 bytes) + 3 bytes payload (odd length)
+    uint8_t tcp_seg[23] = {};
+    tcp_seg[12] = (5 << 4);
+    tcp_seg[13] = kTcpAck;
+    tcp_seg[20] = 0xAA; tcp_seg[21] = 0xBB; tcp_seg[22] = 0xCC;
+
+    uint32_t src = hton32(0x0A000001);
+    uint32_t dst = hton32(0x0A000002);
+
+    uint16_t cksum = tcp_checksum(src, dst, tcp_seg, 23);
+    EXPECT_NE(cksum, 0u);
+
+    // Verify self-consistency
+    std::memcpy(tcp_seg + 16, &cksum, 2);
+    // Re-verify: compute full checksum manually
+    uint32_t sum = pseudo_header_sum(src, dst, kIpProtoTcp, 23);
+    size_t len = 23;
+    const uint8_t* ptr = tcp_seg;
+    while (len > 1) {
+        uint16_t word;
+        std::memcpy(&word, ptr, 2);
+        sum += word;
+        ptr += 2;
+        len -= 2;
+    }
+    if (len == 1) {
+        uint16_t word = 0;
+        std::memcpy(&word, ptr, 1);
+        sum += word;
+    }
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    EXPECT_EQ(static_cast<uint16_t>(~sum), 0u);
+}
+
+TEST(InternetChecksum, EmptyDataReturns0xFFFF) {
+    auto c = internet_checksum(nullptr, 0);
+    EXPECT_EQ(c, 0xFFFFu);
+}
+
+TEST(InternetChecksum, SingleByteChecksum) {
+    uint8_t data[] = {0x42};
+    auto c = internet_checksum(data, 1);
+    // 0x42 padded to 0x4200 -> ~0x4200 = 0xBDFF
+    EXPECT_EQ(c, static_cast<uint16_t>(~0x0042u));
+}
+
+TEST(InternetChecksum, TwoByteChecksum) {
+    uint8_t data[] = {0x00, 0x01};
+    auto c = internet_checksum(data, 2);
+    // On little-endian: word = 0x0100, ~0x0100 = 0xFEFF
+    uint16_t word;
+    std::memcpy(&word, data, 2);
+    EXPECT_EQ(c, static_cast<uint16_t>(~word));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PacketTemplate constants check
 // ─────────────────────────────────────────────────────────────────────────────
