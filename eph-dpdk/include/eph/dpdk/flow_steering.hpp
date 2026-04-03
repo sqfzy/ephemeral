@@ -296,6 +296,14 @@ struct FlowRule {
     /// Convenience bool conversion for validity checking.
     /// Usage: if (rule) { /* rule is active */ }
     [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
+
+    /// Human-readable dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        if (!handle)
+            return "FlowRule(inactive)";
+        return std::format("FlowRule(port={}, queue={}, active)",
+                           port_id, queue_id);
+    }
 };
 
 /// Install a rte_flow rule that steers packets matching a TCP 5-tuple
@@ -384,5 +392,15 @@ struct std::formatter<eph::dpdk::RxDispatchMode> : std::formatter<std::string_vi
     auto format(eph::dpdk::RxDispatchMode m, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::dpdk::rx_dispatch_mode_name(m), ctx);
+    }
+};
+
+/// @brief std::formatter specialization for FlowRule.
+///
+/// Formats as a compact one-line summary showing port, queue, and status.
+template <>
+struct std::formatter<eph::dpdk::FlowRule> : std::formatter<std::string> {
+    auto format(const eph::dpdk::FlowRule& r, auto& ctx) const {
+        return std::formatter<std::string>::format(r.dump(), ctx);
     }
 };

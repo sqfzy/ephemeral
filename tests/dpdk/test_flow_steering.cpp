@@ -111,3 +111,33 @@ TEST(RxDispatchMode, FormatterWorksInCompositeFormat) {
     auto s = std::format("mode={} port={}", RxDispatchMode::Software, 0);
     EXPECT_EQ(s, "mode=Software (Reactor) port=0");
 }
+
+// ---------------------------------------------------------------------------
+// FlowRule dump and formatter
+// ---------------------------------------------------------------------------
+
+TEST(FlowRule, DumpInactive) {
+    FlowRule rule;
+    EXPECT_EQ(rule.dump(), "FlowRule(inactive)");
+}
+
+TEST(FlowRule, DumpActiveShowsPortAndQueue) {
+    FlowRule rule;
+    rule.port_id = 1;
+    rule.queue_id = 3;
+    // Simulate an active rule (non-null handle). We use a fake pointer
+    // because we can't create a real rte_flow without DPDK EAL.
+    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+    auto d = rule.dump();
+    EXPECT_NE(d.find("port=1"), std::string::npos);
+    EXPECT_NE(d.find("queue=3"), std::string::npos);
+    EXPECT_NE(d.find("active"), std::string::npos);
+    // Prevent destructor from calling rte_flow_destroy on the fake pointer
+    rule.handle = nullptr;
+}
+
+TEST(FlowRule, FormatterProducesOutput) {
+    FlowRule rule;
+    auto s = std::format("{}", rule);
+    EXPECT_NE(s.find("inactive"), std::string::npos);
+}
