@@ -23,13 +23,14 @@ namespace eph::net {
 
 namespace detail {
 /// Lazily-initialized logger for TLS decryption operations.
-inline const std::shared_ptr<spdlog::logger>& tls_dec_logger() {
+/// @return Pointer to the "net.tls_dec" spdlog logger.
+inline spdlog::logger* tls_dec_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls_dec");
         if (!lg) lg = spdlog::stdout_color_mt("net.tls_dec");
         return lg;
     }();
-    return l;
+    return l.get();
 }
 } // namespace detail
 

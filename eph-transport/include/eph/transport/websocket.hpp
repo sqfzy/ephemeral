@@ -175,14 +175,14 @@ inline constexpr size_t kMaxControlPayloadLen = 125; ///< Max control frame payl
 
 namespace detail {
 
-inline const std::shared_ptr<spdlog::logger>& ws_logger() {
+/// @return Pointer to the "net.websocket" spdlog logger.
+inline spdlog::logger* ws_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.websocket");
         if (!lg) lg = spdlog::stdout_color_mt("net.websocket");
-        // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 } // namespace detail

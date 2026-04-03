@@ -49,14 +49,14 @@ inline std::string base64_encode(const uint8_t* data, size_t len) {
     return result;
 }
 
-inline const std::shared_ptr<spdlog::logger>& http_logger() {
+/// @return Pointer to the "net.http" spdlog logger.
+inline spdlog::logger* http_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.http");
         if (!lg) lg = spdlog::stdout_color_mt("net.http");
-        // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 /// Case-insensitive string comparison for HTTP header matching.

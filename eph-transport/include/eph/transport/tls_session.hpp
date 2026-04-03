@@ -183,14 +183,14 @@ struct TlsConfig {
 
 namespace detail {
 
-inline const std::shared_ptr<spdlog::logger>& tls_logger() {
+/// @return Pointer to the "net.tls" spdlog logger.
+inline spdlog::logger* tls_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls");
         if (!lg) lg = spdlog::stdout_color_mt("net.tls");
-        // Inherit level from spdlog global default
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 /// Get the last OpenSSL error as a string.

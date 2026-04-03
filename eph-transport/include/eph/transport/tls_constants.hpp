@@ -17,14 +17,14 @@ namespace eph::net {
 
 namespace detail {
 /// Lazily-initialized logger for TLS record-layer operations.
-/// @return Shared pointer to the spdlog logger (never null after first call).
-inline const std::shared_ptr<spdlog::logger>& tls_record_logger() {
+/// @return Pointer to the "net.tls_record" spdlog logger.
+inline spdlog::logger* tls_record_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.tls_record");
         if (!lg) lg = spdlog::stdout_color_mt("net.tls_record");
         return lg;
     }();
-    return l;
+    return l.get();
 }
 } // namespace detail
 
