@@ -97,6 +97,26 @@ TEST_F(RecorderTest, RecordValuesZeroCountIsNoop) {
     EXPECT_EQ(rec.count(), 0);
 }
 
+TEST_F(RecorderTest, RecordValuesSaturatesOnCyclesCountOverflow) {
+    // The default recorder range is ~10 seconds worth of cycles.
+    // Use record_values with a large count that would cause
+    // cycles * count to overflow uint64_t.
+    Recorder rec("OverflowTest");
+    // Pick a valid cycle value within range, and a huge count.
+    // cycles=10000 is well within range; count near UINT64_MAX/cycles
+    // would overflow without saturation.
+    uint64_t cycles = 10000;
+    uint64_t count = std::numeric_limits<uint64_t>::max() / cycles + 1;
+    // This should succeed (histogram accepts the value) and saturate total_cycles
+    EXPECT_TRUE(rec.record_values(cycles, count));
+    EXPECT_EQ(rec.count(), count);
+    // Stats should still compute without crashing
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats.has_value());
+    // avg_ns will be huge due to saturation, but it shouldn't crash
+    EXPECT_GT(stats->avg_ns, 0.0);
+}
+
 // ============================================================================
 // Recorder — compute_stats()
 // ============================================================================

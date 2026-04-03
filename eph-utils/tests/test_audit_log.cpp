@@ -284,3 +284,34 @@ TEST(AuditLog, EntryDumpContainsAllFields) {
     EXPECT_NE(dump.find("42"), std::string::npos);
     EXPECT_NE(dump.find("SELL"), std::string::npos);
 }
+
+TEST(AuditEntry, DumpShowsBuyForBuySide) {
+    AuditEntry entry{};
+    entry.side = Side::Buy;
+    entry.event = AuditEvent::NewOrder;
+    std::string dump = entry.dump();
+    EXPECT_NE(dump.find("BUY"), std::string::npos);
+    // Must NOT contain SELL or ???
+    EXPECT_EQ(dump.find("SELL"), std::string::npos);
+    EXPECT_EQ(dump.find("???"), std::string::npos);
+}
+
+TEST(AuditEntry, DumpShowsSellForSellSide) {
+    AuditEntry entry{};
+    entry.side = Side::Sell;
+    entry.event = AuditEvent::NewOrder;
+    std::string dump = entry.dump();
+    EXPECT_NE(dump.find("SELL"), std::string::npos);
+    EXPECT_EQ(dump.find("BUY"), std::string::npos);
+    EXPECT_EQ(dump.find("???"), std::string::npos);
+}
+
+TEST(AuditEntry, DumpShowsQuestionMarksForZeroedSide) {
+    // A zeroed AuditEntry has side == 0 which is neither Buy(1) nor Sell(2).
+    // dump() must NOT misrepresent it as "SELL".
+    AuditEntry entry{};
+    std::memset(&entry, 0, sizeof(entry));
+    std::string dump = entry.dump();
+    EXPECT_NE(dump.find("???"), std::string::npos)
+        << "Zeroed side should display '???' not 'SELL'; dump=" << dump;
+}
