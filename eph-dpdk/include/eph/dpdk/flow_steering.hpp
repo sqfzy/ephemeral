@@ -55,7 +55,7 @@ enum class RxDispatchMode : uint8_t {
 };
 
 /// Human-readable name for RxDispatchMode.
-constexpr std::string_view rx_dispatch_mode_name(RxDispatchMode m) noexcept {
+[[nodiscard]] constexpr std::string_view rx_dispatch_mode_name(RxDispatchMode m) noexcept {
     switch (m) {
     case RxDispatchMode::Software:       return "Software (Reactor)";
     case RxDispatchMode::RssPartitioned: return "RSS Partitioned";

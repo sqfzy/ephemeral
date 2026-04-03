@@ -191,7 +191,7 @@ enum class TransportState : uint8_t {
 };
 
 /// Return a human-readable name for a TransportEvent.
-constexpr std::string_view transport_event_name(TransportEvent e) noexcept {
+[[nodiscard]] constexpr std::string_view transport_event_name(TransportEvent e) noexcept {
     switch (e) {
         case TransportEvent::kConnected:    return "CONNECTED";
         case TransportEvent::kDisconnected: return "DISCONNECTED";
@@ -202,12 +202,12 @@ constexpr std::string_view transport_event_name(TransportEvent e) noexcept {
 }
 
 // ADL alias for ErrorEnum concept satisfaction
-constexpr std::string_view error_name(TransportEvent e) noexcept {
+[[nodiscard]] constexpr std::string_view error_name(TransportEvent e) noexcept {
     return transport_event_name(e);
 }
 
 /// Return a human-readable name for a TransportState.
-constexpr std::string_view transport_state_name(TransportState s) noexcept {
+[[nodiscard]] constexpr std::string_view transport_state_name(TransportState s) noexcept {
     switch (s) {
         case TransportState::kConnected:    return "CONNECTED";
         case TransportState::kReconnecting: return "RECONNECTING";
@@ -217,7 +217,7 @@ constexpr std::string_view transport_state_name(TransportState s) noexcept {
 }
 
 // ADL alias for ErrorEnum concept satisfaction
-constexpr std::string_view error_name(TransportState s) noexcept {
+[[nodiscard]] constexpr std::string_view error_name(TransportState s) noexcept {
     return transport_state_name(s);
 }
 

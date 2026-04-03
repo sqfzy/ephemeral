@@ -165,6 +165,10 @@ struct ConnectorOptions {
     ///         storage duration).
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (auto err = validate_config(platform); !err.empty()) return err;
+        if (tx_queue_id >= platform.nb_tx_queues)
+            return "tx_queue_id must be < platform.nb_tx_queues";
+        if (rx_queue_id >= platform.nb_rx_queues)
+            return "rx_queue_id must be < platform.nb_rx_queues";
         if (arp_timeout.count() <= 0)
             return "arp_timeout must be positive";
         if (connect_timeout.count() <= 0)

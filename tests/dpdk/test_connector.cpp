@@ -221,6 +221,31 @@ TEST(ConnectorOptions, ValidateZeroArpTimeoutFails) {
     EXPECT_FALSE(opts.validate().empty());
 }
 
+TEST(ConnectorOptions, ValidateTxQueueOutOfRangeFails) {
+    ConnectorOptions opts{};
+    opts.tx_queue_id = 5;  // default nb_tx_queues is 1
+    auto err = opts.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("tx_queue_id"), std::string_view::npos);
+}
+
+TEST(ConnectorOptions, ValidateRxQueueOutOfRangeFails) {
+    ConnectorOptions opts{};
+    opts.rx_queue_id = 5;  // default nb_rx_queues is 1
+    auto err = opts.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_queue_id"), std::string_view::npos);
+}
+
+TEST(ConnectorOptions, ValidateQueueIdAtBoundaryPasses) {
+    ConnectorOptions opts{};
+    opts.platform.nb_tx_queues = 4;
+    opts.platform.nb_rx_queues = 4;
+    opts.tx_queue_id = 3;  // 3 < 4 = valid
+    opts.rx_queue_id = 3;
+    EXPECT_TRUE(opts.validate().empty());
+}
+
 TEST(ConnectorOptions, ValidateZeroConnectTimeoutFails) {
     ConnectorOptions opts{.connect_timeout = std::chrono::milliseconds{0}};
     EXPECT_FALSE(opts.validate().empty());
