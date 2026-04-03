@@ -141,6 +141,34 @@ TEST(HttpClientRequest, EmptyPathReturnsError) {
     EXPECT_NE(result.error().find("Path"), std::string::npos);
 }
 
+TEST(HttpClientRequest, ExtraHeadersWithBlankLineRejectsInjection) {
+    // extra_headers containing \r\n\r\n would terminate headers early,
+    // enabling HTTP request smuggling. Verify this is rejected.
+    auto result = build_http_request("GET", "host.com", "/path",
+        {}, {}, "Injected: yes\r\n\r\nGET /evil HTTP/1.1\r\n");
+    EXPECT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("injection"), std::string::npos);
+}
+
+TEST(HttpClientRequest, ExtraHeadersWithoutBlankLineAccepted) {
+    // Normal multi-header extra_headers should work fine
+    auto result = build_http_request("GET", "host.com", "/path",
+        {}, {}, "X-One: 1\r\nX-Two: 2\r\n");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("X-One: 1\r\n"), std::string::npos);
+    EXPECT_NE(result->find("X-Two: 2\r\n"), std::string::npos);
+}
+
+TEST(HttpClientRequest, LargeBodyIncludesContentLength) {
+    std::string body(10000, 'x');
+    auto result = build_http_request("POST", "host.com", "/upload",
+        body, "application/octet-stream");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("Content-Length: 10000\r\n"), std::string::npos);
+    // Verify the body is appended
+    EXPECT_GE(result->size(), 10000u);
+}
+
 // =============================================================================
 // build_http_request — other methods
 // =============================================================================
