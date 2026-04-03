@@ -1,77 +1,27 @@
-# Benchmark History -- eph-net
+# eph-net Benchmark History
 
-## 2026-04-03 bench_http_client (initial baselines)
+## 2026-04-03 — HttpClient::Config URL parsing/serialization baseline
 
-| Benchmark | Time (ns) | CPU (ns) |
-|---|---|---|
-| BM_BuildHttpRequest_Get | 57.3 | 57.3 |
-| BM_BuildHttpRequest_Post | 160 | 160 |
-| BM_ParseHttpResponse_Json | 81.3 | 81.3 |
-| BM_ParseHttpResponse_LargeBody | 86.5 | 86.5 |
-| BM_FindHeader | 77.3 | 77.3 |
-| BM_FindHeader_LastHeader | 67.2 | 67.2 |
-| BM_FindHeader_Miss | 22.7 | 22.7 |
-| BM_HttpResponse_ToJson | 292 | 292 |
-| BM_HttpClientConfig_Validate | 7.15 | 7.15 |
+Source: `/bench` after adding `from_url()` and `to_url()`
+Commit: (current dev HEAD)
+CPU: 16x ARM64 @ 2000 MHz, L3 36864 KiB
 
-## 2026-04-03 bench_proxy (initial baselines)
-
-| Benchmark | Time (ns) | CPU (ns) |
-|---|---|---|
-| BM_ParseProxyUrl_Socks5NoAuth | 46.0 | 46.0 |
-| BM_ParseProxyUrl_Socks5WithAuth | 62.7 | 62.7 |
-| BM_ParseProxyUrl_HttpConnect | 31.3 | 31.3 |
-| BM_ProxyConfig_Validate | 8.58 | 8.58 |
-| BM_ProxyConfig_ToUrl | 145 | 145 |
-| BM_ProxyConfig_ToJson | 210 | 210 |
-| BM_ProxyConfig_Dump | 226 | 226 |
-
-## 2026-04-03 bench_socket_config (initial baselines)
-
-| Benchmark | Time (ns) | CPU (ns) |
-|---|---|---|
-| BM_SocketConfig_FromUrl_Simple | 30.1 | 30.1 |
-| BM_SocketConfig_FromUrl_TcpScheme | 42.0 | 42.0 |
-| BM_SocketConfig_FromUrl_IPv6 | 28.1 | 28.1 |
-| BM_SocketConfig_ToUrl | 82.6 | 82.6 |
-| BM_SocketConfig_Validate | 7.86 | 7.86 |
-| BM_SocketConfig_ToJson | 403 | 403 |
-| BM_SocketConfig_Dump | 356 | 356 |
-
-## 2026-04-03 bench_kill_switch (after KillSwitch::to_json)
-
-| Benchmark | Time (ns) | CPU (ns) |
-|---|---|---|
-| BM_KillSwitch_IsShutdownRequested | 0.363 | 0.363 |
-| BM_KillSwitch_Register | 3139 | 3165 |
-| BM_KillSwitch_Unregister | 224 | 225 |
-| BM_KillSwitch_TransportCount | 0.358 | 0.358 |
-| BM_KillSwitch_RequestShutdown | 0.358 | 0.358 |
-| BM_KillSwitch_ToJson | 139 | 139 |
-
-## 2026-04-03 bench_gateway (after Gateway::to_json)
-
-| Benchmark | Time (ns) | CPU (ns) |
-|---|---|---|
-| BM_Gateway_ToJson/1 | 475 | 475 |
-| BM_Gateway_ToJson/4 | 893 | 893 |
-| BM_Gateway_ToJson/8 | 1442 | 1442 |
-
-## 2026-04-03 bench_control_plane (after RateLimiter to_json/config parity)
-
-| Benchmark | Time (ns) | CPU (ns) |
-|---|---|---|
-| BM_RateLimiter_TryAcquire_Available | 42.5 | 42.5 |
-| BM_RateLimiter_TryAcquire_Exhausted | 42.8 | 42.8 |
-| BM_RateLimiter_Available | 39.4 | 39.4 |
-| BM_CircuitBreaker_Allow_Closed | 5.36 | 5.36 |
-| BM_CircuitBreaker_Allow_Open | 37.4 | 37.4 |
-| BM_CircuitBreaker_RecordSuccess_Closed | 5.38 | 5.38 |
-| BM_CircuitBreaker_RecordFailure_Closed | 5.37 | 5.37 |
-| BM_CircuitBreaker_State | 5.06 | 5.06 |
-| BM_CircuitBreaker_Reset | 1642 | 1642 |
-| BM_RateLimiter_Reset | 36.9 | 36.9 |
-| BM_CircuitBreakerConfig_Validate | 0.357 | 0.357 |
-| BM_RateLimiterConfig_Validate | 0.357 | 0.357 |
-| BM_RateLimiter_ToJson | 345 | 345 |
-| BM_CircuitBreaker_ToJson | 294 | 294 |
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|-----------|-----------|----------|------------|
+| BM_BuildHttpRequest_Get | 57.2 | 57.2 | 12,219,013 |
+| BM_BuildHttpRequest_Post | 159 | 159 | 4,399,183 |
+| BM_ParseHttpResponse_Json | 82.2 | 82.2 | 8,519,143 |
+| BM_ParseHttpResponse_LargeBody | 88.0 | 88.0 | 7,955,052 |
+| BM_FindHeader | 81.9 | 81.9 | 8,548,831 |
+| BM_FindHeader_LastHeader | 71.0 | 71.0 | 9,865,016 |
+| BM_FindHeaderOpt | 78.0 | 78.0 | 8,975,648 |
+| BM_FindHeader_Miss | 23.5 | 23.5 | 29,731,130 |
+| BM_HttpResponse_ToJson | 290 | 290 | 2,417,032 |
+| BM_HttpClientConfig_Validate | 7.15 | 7.15 | 97,898,398 |
+| BM_HttpClientConfig_FromUrl_Https | 32.5 | 32.5 | 21,589,853 |
+| BM_HttpClientConfig_FromUrl_HttpsWithPortAndPath | 47.8 | 47.8 | 14,650,451 |
+| BM_HttpClientConfig_FromUrl_Http | 31.2 | 31.2 | 22,437,623 |
+| BM_HttpClientConfig_FromUrl_Ipv6 | 27.9 | 27.9 | 25,123,438 |
+| BM_HttpClientConfig_ToUrl_DefaultPort | 72.5 | 72.5 | 9,665,760 |
+| BM_HttpClientConfig_ToUrl_NonDefaultPort | 106 | 106 | 6,602,287 |
+| BM_HttpClientConfig_ToUrl_Ipv6 | 106 | 106 | 6,598,767 |
