@@ -123,6 +123,14 @@ TEST(CpuTest, SetThreadRealtimePriorityClampsToMax) {
   }
 }
 
+TEST(CpuTest, CpuTopologyInfoFormat) {
+  CpuTopologyInfo info{.socket_id = 0, .core_id = 2, .hw_thread_id = 4};
+  auto formatted = std::format("{}", info);
+  EXPECT_NE(formatted.find("socket=0"), std::string::npos);
+  EXPECT_NE(formatted.find("core=2"), std::string::npos);
+  EXPECT_NE(formatted.find("thread=4"), std::string::npos);
+}
+
 TEST(CpuTest, ThreadAffinityDoesNotCrash) {
   std::atomic<bool> ready{false};
   
