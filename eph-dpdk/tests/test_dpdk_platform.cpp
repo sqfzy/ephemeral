@@ -23,6 +23,77 @@ static constexpr PlatformConfig test_config{
 static_assert(config_ok(test_config), "Test config must be valid");
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compile-time utilities: is_power_of_two_minus_one, next_valid_pool_size, clamp_desc
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PlatformDetail, IsPowerOfTwoMinusOne) {
+    using detail::is_power_of_two_minus_one;
+    // Valid: 2^k - 1 for k >= 1
+    static_assert(is_power_of_two_minus_one(1));     // 2^1 - 1
+    static_assert(is_power_of_two_minus_one(3));     // 2^2 - 1
+    static_assert(is_power_of_two_minus_one(7));     // 2^3 - 1
+    static_assert(is_power_of_two_minus_one(15));    // 2^4 - 1
+    static_assert(is_power_of_two_minus_one(1023));  // 2^10 - 1
+    static_assert(is_power_of_two_minus_one(4095));  // 2^12 - 1
+    static_assert(is_power_of_two_minus_one(8191));  // 2^13 - 1
+    // Invalid
+    static_assert(!is_power_of_two_minus_one(0));
+    static_assert(!is_power_of_two_minus_one(2));
+    static_assert(!is_power_of_two_minus_one(4));
+    static_assert(!is_power_of_two_minus_one(1000));
+    static_assert(!is_power_of_two_minus_one(1024));
+    static_assert(!is_power_of_two_minus_one(4096));
+    SUCCEED();
+}
+
+TEST(PlatformDetail, NextValidPoolSize) {
+    using detail::next_valid_pool_size;
+    using detail::is_power_of_two_minus_one;
+    // Already valid
+    static_assert(next_valid_pool_size(1) == 1);
+    static_assert(next_valid_pool_size(3) == 3);
+    static_assert(next_valid_pool_size(1023) == 1023);
+    static_assert(next_valid_pool_size(4095) == 4095);
+    // Not valid, round up
+    static_assert(next_valid_pool_size(2) == 3);
+    static_assert(next_valid_pool_size(4) == 7);
+    static_assert(next_valid_pool_size(1000) == 1023);
+    static_assert(next_valid_pool_size(4000) == 4095);
+    static_assert(next_valid_pool_size(5000) == 8191);
+    // Verify result is always valid (for non-zero inputs)
+    for (uint32_t n = 1; n <= 10000; ++n) {
+        uint32_t result = next_valid_pool_size(n);
+        EXPECT_TRUE(is_power_of_two_minus_one(result))
+            << "next_valid_pool_size(" << n << ") = " << result
+            << " is not 2^k-1";
+        EXPECT_GE(result, n)
+            << "next_valid_pool_size(" << n << ") = " << result
+            << " is less than input";
+    }
+}
+
+TEST(PlatformDetail, ClampDescBasic) {
+    using detail::clamp_desc;
+    // Within range, no alignment needed
+    EXPECT_EQ(clamp_desc(128, 64, 512, 1), 128);
+    // Below minimum
+    EXPECT_EQ(clamp_desc(32, 64, 512, 1), 64);
+    // Above maximum
+    EXPECT_EQ(clamp_desc(1024, 64, 512, 1), 512);
+    // Alignment rounding
+    EXPECT_EQ(clamp_desc(100, 64, 512, 64), 128);
+    // Alignment + re-clamp: 250 aligns up to 256, re-clamped to max=255
+    EXPECT_EQ(clamp_desc(250, 64, 255, 64), 255);
+}
+
+TEST(PlatformDetail, ClampDescConstexpr) {
+    // Verify constexpr evaluation
+    constexpr auto r = detail::clamp_desc(100, 64, 512, 64);
+    static_assert(r == 128);
+    EXPECT_EQ(r, 128);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests that don't need a running Platform (config validation, error paths).
 // These either reject config before touching DPDK or request a non-existent
 // port, so they don't consume the one-shot net_null port.
