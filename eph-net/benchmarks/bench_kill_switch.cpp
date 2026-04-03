@@ -139,4 +139,21 @@ static void BM_KillSwitch_ToJson(benchmark::State& state) {
 }
 BENCHMARK(BM_KillSwitch_ToJson);
 
+// ---------------------------------------------------------------------------
+// dump() — human-readable state snapshot for logging
+// ---------------------------------------------------------------------------
+
+static void BM_KillSwitch_Dump(benchmark::State& state) {
+    KillSwitch ks;
+    BenchTransport tp1, tp2;
+    ks.register_transport(&tp1);
+    ks.register_transport(&tp2);
+
+    for (auto _ : state) {
+        auto d = ks.dump();
+        benchmark::DoNotOptimize(d);
+    }
+}
+BENCHMARK(BM_KillSwitch_Dump);
+
 BENCHMARK_MAIN();

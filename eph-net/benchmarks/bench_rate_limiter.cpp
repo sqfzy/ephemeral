@@ -100,6 +100,20 @@ static void BM_RateLimiter_ToJson(benchmark::State& state) {
 BENCHMARK(BM_RateLimiter_ToJson);
 
 // ---------------------------------------------------------------------------
+// dump() — human-readable state snapshot for logging
+// ---------------------------------------------------------------------------
+
+static void BM_RateLimiter_Dump(benchmark::State& state) {
+    RateLimiter rl(1200.0, 50);
+
+    for (auto _ : state) {
+        auto d = rl.dump();
+        benchmark::DoNotOptimize(d);
+    }
+}
+BENCHMARK(BM_RateLimiter_Dump);
+
+// ---------------------------------------------------------------------------
 // reset() — refill to burst capacity
 // ---------------------------------------------------------------------------
 

@@ -159,6 +159,22 @@ static void BM_CircuitBreaker_TimeUntilHalfOpen(benchmark::State& state) {
 BENCHMARK(BM_CircuitBreaker_TimeUntilHalfOpen);
 
 // ---------------------------------------------------------------------------
+// dump() — human-readable state snapshot for logging
+// ---------------------------------------------------------------------------
+
+static void BM_CircuitBreaker_Dump(benchmark::State& state) {
+    CircuitBreaker cb(CircuitBreaker::Config{5, 30s, 2});
+    cb.record_failure();
+    cb.record_failure();
+
+    for (auto _ : state) {
+        auto d = cb.dump();
+        benchmark::DoNotOptimize(d);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_Dump);
+
+// ---------------------------------------------------------------------------
 // Full trip cycle: record_failure x N -> allow (blocked) -> reset
 // ---------------------------------------------------------------------------
 
