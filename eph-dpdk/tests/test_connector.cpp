@@ -71,6 +71,25 @@ TEST(ResolveHostname, InvalidFormatReturnsError) {
     ASSERT_FALSE(result.has_value());
 }
 
+TEST(ResolveHostname, HostnameTooLongReturnsError) {
+    // RFC 1035 §3.1: hostname must not exceed 253 characters
+    std::string long_host(254, 'a');
+    auto result = resolve_hostname(long_host);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("253"), std::string::npos)
+        << "Error should mention the 253-char limit";
+}
+
+TEST(ResolveHostname, HostnameExactly253CharsTriesDns) {
+    // 253-char hostname passes the length check but fails DNS
+    std::string host_253(253, 'x');
+    auto result = resolve_hostname(host_253);
+    // parse_ipv4 fails, DNS will fail, but it should NOT fail with "too long"
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().find("253 chars"), std::string::npos)
+        << "253-char hostname should not trigger length error";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ConnectorOptions — default values
 // ─────────────────────────────────────────────────────────────────────────────
@@ -458,4 +477,40 @@ TEST(DpdkEndpointWarnings, SameLocalAndGatewayWarns) {
         }
     }
     EXPECT_TRUE(found) << "Expected self-gateway warning";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ephemeral port constants and random_ephemeral_port
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(EphemeralPort, ConstantsAreIANA) {
+    // IANA ephemeral range (RFC 6335 section 6): 49152-65535
+    EXPECT_EQ(kEphemeralPortMin, 49152);
+    EXPECT_EQ(kEphemeralPortRange, 16384);
+    // Range must be a power of 2 for unbiased modulo
+    EXPECT_EQ(kEphemeralPortRange & (kEphemeralPortRange - 1), 0);
+    // Min + Range - 1 = 65535
+    EXPECT_EQ(kEphemeralPortMin + kEphemeralPortRange - 1, 65535);
+}
+
+TEST(EphemeralPort, RandomPortInRange) {
+    // Generate several random ports and verify all are in range
+    for (int i = 0; i < 100; ++i) {
+        auto port = detail::random_ephemeral_port();
+        // port == 0 means CSPRNG failure; skip that case
+        if (port == 0) continue;
+        EXPECT_GE(port, kEphemeralPortMin) << "Port below ephemeral range";
+        EXPECT_LE(port, 65535u) << "Port above ephemeral range";
+    }
+}
+
+TEST(EphemeralPort, RandomPortNotAlwaysSame) {
+    // Generate two ports; they should differ with overwhelming probability
+    auto p1 = detail::random_ephemeral_port();
+    auto p2 = detail::random_ephemeral_port();
+    // Both non-zero (CSPRNG should work)
+    EXPECT_NE(p1, 0u) << "CSPRNG failure";
+    EXPECT_NE(p2, 0u) << "CSPRNG failure";
+    // P(collision) = 1/16384 ~ 0.006%, acceptable to assert inequality
+    EXPECT_NE(p1, p2) << "Two random ports collided (extremely unlikely)";
 }
