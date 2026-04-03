@@ -27,7 +27,7 @@
 #include <array>
 #include <atomic>
 #include <csignal>
-#include <cstdio>
+#include <cstddef>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
