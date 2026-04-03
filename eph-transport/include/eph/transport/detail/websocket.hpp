@@ -63,7 +63,7 @@ inline constexpr uint16_t kInternalError    = 1011; ///< Internal server error
 /// Returns "UNKNOWN(0xNN)" for unrecognized opcodes.
 /// Known opcodes return a constexpr string_view (zero allocation).
 /// Unknown opcodes fall back to a thread-local formatted string.
-inline std::string_view opcode_name(uint8_t op) noexcept {
+[[nodiscard]] inline std::string_view opcode_name(uint8_t op) noexcept {
     switch (op) {
     case opcode::kContinuation: return "CONTINUATION";
     case opcode::kText:         return "TEXT";
@@ -96,7 +96,7 @@ inline std::string_view opcode_name(uint8_t op) noexcept {
 /// Returns "UNKNOWN(NNNN)" for unrecognized codes.
 /// Known codes return a constexpr string_view (zero allocation).
 /// Unknown/registered/private codes use a thread-local formatted buffer.
-inline std::string_view close_code_name(uint16_t code) noexcept {
+[[nodiscard]] inline std::string_view close_code_name(uint16_t code) noexcept {
     switch (code) {
     case close_code::kNormal:             return "NORMAL_CLOSURE";
     case close_code::kGoingAway:          return "GOING_AWAY";
@@ -131,7 +131,7 @@ inline std::string_view close_code_name(uint16_t code) noexcept {
 /// Check if a close status code is valid for sending per RFC 6455 §7.4.
 /// Valid ranges: 1000-1003, 1007-1011, 3000-4999.
 /// Codes 1004-1006 and 1015 are reserved and MUST NOT be sent in a Close frame.
-constexpr bool is_valid_close_code(uint16_t code) noexcept {
+[[nodiscard]] constexpr bool is_valid_close_code(uint16_t code) noexcept {
     // Standard codes that may be sent
     if (code >= 1000 && code <= 1003) return true;
     if (code >= 1007 && code <= 1011) return true;
@@ -150,7 +150,7 @@ enum class DecodeError : uint8_t {
 };
 
 /// Human-readable name for a DecodeError value.
-constexpr std::string_view decode_error_name(DecodeError e) noexcept {
+[[nodiscard]] constexpr std::string_view decode_error_name(DecodeError e) noexcept {
     switch (e) {
     case DecodeError::kIncomplete:             return "incomplete";
     case DecodeError::kReservedBits:           return "non-zero RSV bits without negotiated extension";
@@ -320,7 +320,7 @@ inline void generate_mask_key(uint8_t mask[4]) noexcept {
 /// @param fin          FIN bit (true for complete messages)
 /// @param mask_key     4-byte mask key (client MUST mask)
 /// @return Number of header bytes written, or 0 if payload_len is invalid
-inline size_t encode_frame_header(uint8_t* out, uint8_t opcode_val,
+[[nodiscard]] inline size_t encode_frame_header(uint8_t* out, uint8_t opcode_val,
                                    uint64_t payload_len, bool fin,
                                    const uint8_t mask_key[4]) noexcept {
     // RFC 6455 §5.2: MSB of 64-bit payload length must be 0
@@ -365,7 +365,7 @@ inline size_t encode_frame_header(uint8_t* out, uint8_t opcode_val,
 }
 
 /// Check whether a payload length is valid for the given opcode.
-constexpr bool is_valid_payload_len(uint8_t opcode_val,
+[[nodiscard]] constexpr bool is_valid_payload_len(uint8_t opcode_val,
                                      uint64_t payload_len) noexcept {
     if (payload_len > kMaxPayloadLen) return false;
     if ((opcode_val & 0x08) && payload_len > kMaxControlPayloadLen) return false;
@@ -583,7 +583,7 @@ decode_frame(const uint8_t* data, size_t len) {
 /// @param status_code  Close reason code (e.g. close_code::kNormal)
 /// @param reason       Optional close reason string (max 123 bytes)
 /// @return Total frame bytes written
-inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
+[[nodiscard]] inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
                                  std::string_view reason = {}) noexcept {
     // Close payload: 2-byte status code + optional reason (max 123 chars)
     // Control frames MUST have payload <= 125 bytes (RFC 6455 §5.5)
@@ -609,7 +609,7 @@ inline size_t build_close_frame(uint8_t* out, uint16_t status_code,
 }
 
 /// Build a Pong response frame (echo back the ping payload).
-inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
+[[nodiscard]] inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
                                 uint64_t payload_len) noexcept {
     // Defensively clamp length to 0 when pointer is null to prevent UB.
     // In practice the WebSocket decoder always provides a valid pointer for
@@ -621,7 +621,7 @@ inline size_t build_pong_frame(uint8_t* out, const uint8_t* ping_payload,
 }
 
 /// Build a Ping frame.
-inline size_t build_ping_frame(uint8_t* out,
+[[nodiscard]] inline size_t build_ping_frame(uint8_t* out,
                                 const uint8_t* payload = nullptr,
                                 uint64_t payload_len = 0) noexcept {
     // Defensively clamp length to 0 when pointer is null to prevent UB.
@@ -684,7 +684,7 @@ struct FrameTemplate {
 /// @param data  Byte sequence to validate
 /// @param len   Length in bytes
 /// @return true if the sequence is valid UTF-8, false otherwise
-inline bool is_valid_utf8(const uint8_t* data, size_t len) noexcept {
+[[nodiscard]] inline bool is_valid_utf8(const uint8_t* data, size_t len) noexcept {
     // DFA states: 0 = accept, 12 = reject, others = intermediate
     // Lookup tables from Bjoern Hoehrmann's UTF-8 decoder/validator
     // http://bjoern.hoehrmann.de/utf-8/decoder/dfa/
@@ -716,12 +716,12 @@ inline bool is_valid_utf8(const uint8_t* data, size_t len) noexcept {
 }
 
 /// Convenience overload for span.
-inline bool is_valid_utf8(std::span<const uint8_t> data) noexcept {
+[[nodiscard]] inline bool is_valid_utf8(std::span<const uint8_t> data) noexcept {
     return is_valid_utf8(data.data(), data.size());
 }
 
 /// Convenience overload for string_view.
-inline bool is_valid_utf8(std::string_view sv) noexcept {
+[[nodiscard]] inline bool is_valid_utf8(std::string_view sv) noexcept {
     return is_valid_utf8(reinterpret_cast<const uint8_t*>(sv.data()), sv.size());
 }
 
