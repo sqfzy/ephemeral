@@ -531,3 +531,37 @@ TEST(ParsePacket, MatchesSwapsAddresses) {
         .src_port = 12345, .dst_port = 443};
     EXPECT_FALSE(parsed.matches(wrong));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionTuple dump/to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ConnectionTuple, DumpShowsIpsAndPorts) {
+    ConnectionTuple t{
+        .src_ip = 0x0A000002, .dst_ip = 0x0A000001,
+        .src_port = 443, .dst_port = 12345};
+    auto d = t.dump();
+    EXPECT_NE(d.find("10.0.0.2"), std::string::npos);
+    EXPECT_NE(d.find("443"), std::string::npos);
+    EXPECT_NE(d.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(d.find("12345"), std::string::npos);
+    EXPECT_NE(d.find("->"), std::string::npos);
+}
+
+TEST(ConnectionTuple, ToJsonFormat) {
+    ConnectionTuple t{
+        .src_ip = 0xC0A80101, .dst_ip = 0x08080808,
+        .src_port = 5000, .dst_port = 443};
+    auto j = t.to_json();
+    EXPECT_NE(j.find("\"src_ip\":\"192.168.1.1\""), std::string::npos);
+    EXPECT_NE(j.find("\"dst_ip\":\"8.8.8.8\""), std::string::npos);
+    EXPECT_NE(j.find("\"src_port\":5000"), std::string::npos);
+    EXPECT_NE(j.find("\"dst_port\":443"), std::string::npos);
+}
+
+TEST(ConnectionTuple, DumpZeroTuple) {
+    ConnectionTuple t{};
+    auto d = t.dump();
+    EXPECT_NE(d.find("0.0.0.0"), std::string::npos);
+    EXPECT_NE(d.find(":0"), std::string::npos);
+}

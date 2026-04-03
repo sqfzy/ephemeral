@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <format>
+#include <string>
 
 #include <spdlog/spdlog.h>
 
@@ -248,6 +250,14 @@ struct ConnectionTuple {
 
     /// @brief Defaulted equality comparison over all four fields.
     bool operator==(const ConnectionTuple&) const = default;
+
+    /// Human-readable dump for logging/debugging.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string dump() const;
+
+    /// JSON-formatted tuple for monitoring system integration.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string to_json() const;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -673,6 +683,23 @@ inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
              mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
              mac.addr_bytes[3], mac.addr_bytes[4], mac.addr_bytes[5]);
     return buf;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionTuple method definitions (deferred because format_ipv4 is above)
+// ─────────────────────────────────────────────────────────────────────────────
+
+inline std::string ConnectionTuple::dump() const {
+    return std::format("{}:{} -> {}:{}",
+        format_ipv4(src_ip).data(), src_port,
+        format_ipv4(dst_ip).data(), dst_port);
+}
+
+inline std::string ConnectionTuple::to_json() const {
+    return std::format(
+        "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{}}}",
+        format_ipv4(src_ip).data(), src_port,
+        format_ipv4(dst_ip).data(), dst_port);
 }
 
 } // namespace eph::dpdk::net
