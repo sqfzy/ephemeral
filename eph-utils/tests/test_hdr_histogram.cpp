@@ -43,6 +43,32 @@ TEST(HdrHistogramTest, DefaultConstructedIsEmpty) {
     EXPECT_DOUBLE_EQ(h.get_std_deviation(), 0.0);
 }
 
+TEST(HdrHistogramTest, DefaultConstructedRecordReturnsFalse) {
+    // Default-constructed histogram has no counts array — record must
+    // gracefully return false without undefined behavior (no negative shift).
+    HdrHistogram h;
+    EXPECT_FALSE(h.record(1));
+    EXPECT_FALSE(h.record(0));
+    EXPECT_FALSE(h.record(100));
+    EXPECT_EQ(h.get_total_count(), 0);
+    EXPECT_EQ(h.get_dropped_count(), 3);
+}
+
+TEST(HdrHistogramTest, DefaultConstructedRecordValuesReturnsFalse) {
+    HdrHistogram h;
+    EXPECT_FALSE(h.record_values(1, 5));
+    EXPECT_EQ(h.get_total_count(), 0);
+    EXPECT_EQ(h.get_dropped_count(), 5);
+    // Zero count is a no-op, returns true
+    EXPECT_TRUE(h.record_values(1, 0));
+}
+
+TEST(HdrHistogramTest, DefaultConstructedRecordCorrectedReturnsFalse) {
+    HdrHistogram h;
+    EXPECT_FALSE(h.record_corrected(10, 5));
+    EXPECT_EQ(h.get_total_count(), 0);
+}
+
 // ============================================================================
 // Record
 // ============================================================================

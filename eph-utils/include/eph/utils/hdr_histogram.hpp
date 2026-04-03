@@ -163,6 +163,14 @@ class HdrHistogram {
     ///         (increments the dropped count).
     /// @note Typical cost: ~5-10 ns per call.
     [[nodiscard]] bool record(uint64_t value) noexcept {
+        // Guard against default-constructed (uninitialized) histogram where
+        // counts_ is empty and internal state is zeroed — calling
+        // counts_index_for() would trigger undefined behavior (negative shift).
+        if (counts_len_ == 0) [[unlikely]] {
+            ++dropped_count_;
+            return false;
+        }
+
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
             ++dropped_count_;
@@ -190,6 +198,10 @@ class HdrHistogram {
     /// @return `true` on success, `false` if out of range.
     [[nodiscard]] bool record_values(uint64_t value, uint64_t count) noexcept {
         if (count == 0) return true;
+        if (counts_len_ == 0) [[unlikely]] {
+            dropped_count_ += count;
+            return false;
+        }
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
             dropped_count_ += count;
