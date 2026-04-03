@@ -362,3 +362,33 @@ TEST(ArpUtil, FormatMacZero) {
     auto str = net::format_mac(zero);
     EXPECT_STREQ(str.data(), "00:00:00:00:00:00");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARP constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ArpConstants, BroadcastMacIsAllOnes) {
+    for (int i = 0; i < 6; ++i) {
+        EXPECT_EQ(kBroadcastMac.addr_bytes[i], 0xFF)
+            << "Byte " << i << " should be 0xFF";
+    }
+}
+
+TEST(ArpConstants, PacketLengthMatches) {
+    EXPECT_EQ(kArpPacketLen, 28u);
+    EXPECT_EQ(sizeof(ArpPacket), kArpPacketLen);
+}
+
+TEST(ArpConstants, EtherTypeIsStandard) {
+    EXPECT_EQ(kEtherTypeArp, 0x0806u);
+}
+
+TEST(ArpConstants, OpcodeValues) {
+    EXPECT_EQ(kArpOpRequest, 1u);
+    EXPECT_EQ(kArpOpReply, 2u);
+}
+
+TEST(ArpConstants, AddressLengths) {
+    EXPECT_EQ(kArpHwAddrLen, 6u);     // Ethernet MAC
+    EXPECT_EQ(kArpProtoAddrLen, 4u);   // IPv4
+}
