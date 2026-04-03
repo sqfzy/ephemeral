@@ -325,6 +325,50 @@ public:
         return connections_[id].tag;
     }
 
+    /// @brief Remove a connection by tag name.
+    ///
+    /// Atomic alternative to find_by_tag() + remove() that avoids TOCTOU
+    /// issues from index shifts between the two calls.
+    ///
+    /// @param tag  Tag string of the connection to remove.
+    /// @return true if found and removed, false if no connection with that tag exists.
+    bool remove_by_tag(std::string_view tag) noexcept {
+        void* ptr = nullptr;
+        void (*stop_fn)(void*) = nullptr;
+        bool (*is_running_fn)(void*) = nullptr;
+        std::string removed_tag;
+
+        {
+            std::lock_guard lock(mu_);
+            for (size_t i = 0; i < connections_.size(); ++i) {
+                if (connections_[i].tag == tag) {
+                    auto& c = connections_[i];
+                    removed_tag = c.tag;
+                    ptr = c.transport_ptr;
+                    stop_fn = c.stop_fn;
+                    is_running_fn = c.is_running_fn;
+                    connections_.erase(connections_.begin() + static_cast<ptrdiff_t>(i));
+                    break;
+                }
+            }
+        }
+
+        if (!ptr) return false;
+
+        // Stop outside the lock to avoid deadlock if stop() calls back into Gateway
+        if (stop_fn && is_running_fn && is_running_fn(ptr)) {
+            SPDLOG_LOGGER_DEBUG(detail::gateway_logger(),
+                "Gateway: stopping '{}' before removal", removed_tag);
+            try { stop_fn(ptr); } catch (...) {
+                SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                    "Gateway: stop_fn threw for '{}' during removal", removed_tag);
+            }
+        }
+        SPDLOG_LOGGER_INFO(detail::gateway_logger(),
+            "Gateway: removed connection '{}'", removed_tag);
+        return true;
+    }
+
     /// @brief Look up a connection index by tag.
     ///
     /// Linear scan -- suitable for small connection counts typical of HFT

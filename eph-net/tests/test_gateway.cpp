@@ -940,6 +940,68 @@ TEST(Gateway, MonitorDetectsDisconnectionAsync) {
 
 // ── connection_tags() ──────────────────────────────────────────────────────
 
+// ── Gateway::remove_by_tag() ──────────────────────────────────────────────
+
+TEST(Gateway, RemoveByTagFindsAndRemoves) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    gw.add("alpha", &tp1);
+    gw.add("beta", &tp2);
+    gw.add("gamma", &tp3);
+
+    EXPECT_TRUE(gw.remove_by_tag("beta"));
+    EXPECT_EQ(gw.connection_count(), 2);
+    EXPECT_EQ(gw.find_by_tag("beta"), SIZE_MAX);
+    EXPECT_NE(gw.find_by_tag("alpha"), SIZE_MAX);
+    EXPECT_NE(gw.find_by_tag("gamma"), SIZE_MAX);
+}
+
+TEST(Gateway, RemoveByTagStopsRunningTransport) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    gw.add("running-conn", &tp);
+
+    EXPECT_TRUE(gw.remove_by_tag("running-conn"));
+    EXPECT_FALSE(tp.is_running());
+    EXPECT_EQ(gw.connection_count(), 0);
+}
+
+TEST(Gateway, RemoveByTagNotFoundReturnsFalse) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("exists", &tp);
+
+    EXPECT_FALSE(gw.remove_by_tag("nonexistent"));
+    EXPECT_EQ(gw.connection_count(), 1);
+}
+
+TEST(Gateway, RemoveByTagEmptyGatewayReturnsFalse) {
+    Gateway gw;
+    EXPECT_FALSE(gw.remove_by_tag("anything"));
+}
+
+TEST(Gateway, RemoveByTagDoesNotAffectOthers) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    tp1.running.store(true);
+    tp2.running.store(true);
+    tp3.running.store(true);
+
+    gw.add("first", &tp1);
+    gw.add("middle", &tp2);
+    gw.add("last", &tp3);
+
+    EXPECT_TRUE(gw.remove_by_tag("middle"));
+
+    EXPECT_TRUE(tp1.is_running());
+    EXPECT_FALSE(tp2.is_running());
+    EXPECT_TRUE(tp3.is_running());
+    EXPECT_EQ(gw.connection_count(), 2);
+}
+
+// ── connection_tags() ──────────────────────────────────────────────────────
+
 TEST(Gateway, ConnectionTagsReturnsAllTags) {
     Gateway gw;
     MockTransport tp1, tp2, tp3;
