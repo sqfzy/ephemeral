@@ -11,8 +11,32 @@
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/websocket.hpp"
 #include "eph/net/socket_connect.hpp"
+#include "eph/core/detail/string_checks.hpp"
 
 using namespace eph::net;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// contains_control_chars() — compile-time validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+static_assert(!eph::core::detail::contains_control_chars(""),
+    "empty string has no control chars");
+static_assert(!eph::core::detail::contains_control_chars("hello"),
+    "plain ASCII has no control chars");
+static_assert(!eph::core::detail::contains_control_chars("host.example.com"),
+    "hostname with dots has no control chars");
+static_assert(eph::core::detail::contains_control_chars("evil\nhost"),
+    "newline is a control char");
+static_assert(eph::core::detail::contains_control_chars("evil\rhost"),
+    "carriage return is a control char");
+static_assert(eph::core::detail::contains_control_chars("\x01" "bad"),
+    "SOH (0x01) is a control char");
+static_assert(eph::core::detail::contains_control_chars("bad\x7f"),
+    "DEL (0x7F) is a control char");
+static_assert(eph::core::detail::contains_control_chars(std::string_view("\0host", 5)),
+    "NUL (0x00) is a control char");
+static_assert(!eph::core::detail::contains_control_chars(" spaces ok"),
+    "space (0x20) is NOT a control char");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SendError
