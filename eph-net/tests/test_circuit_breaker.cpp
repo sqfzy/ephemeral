@@ -524,6 +524,22 @@ TEST(CircuitBreakerConfig, WarnsOnLongOpenDuration) {
 // config() accessor
 // ─────────────────────────────────────────────────────────────────────────────
 
+TEST(CircuitBreaker, HalfOpenAllowsMultipleProbes) {
+    // When half_open_max_calls > 1, multiple probes should be allowed.
+    CircuitBreaker cb(CircuitBreaker::Config{2, 0s, 3});  // 3 probes
+
+    cb.record_failure();
+    cb.record_failure();
+
+    // First allow() transitions Open -> HalfOpen, counts as probe 1
+    EXPECT_TRUE(cb.allow());
+    // Probes 2 and 3 should also be allowed
+    EXPECT_TRUE(cb.allow());
+    EXPECT_TRUE(cb.allow());
+    // Probe 4 should be blocked
+    EXPECT_FALSE(cb.allow());
+}
+
 TEST(CircuitBreaker, ConfigAccessorReturnsConstructionConfig) {
     CircuitBreaker::Config cfg{3, 500ms, 2};
     CircuitBreaker cb(cfg);

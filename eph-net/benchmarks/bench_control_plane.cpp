@@ -114,4 +114,47 @@ static void BM_CircuitBreaker_State(benchmark::State& state) {
 }
 BENCHMARK(BM_CircuitBreaker_State);
 
+/// Measure reset() overhead (resets to Closed from Open state).
+static void BM_CircuitBreaker_Reset(benchmark::State& state) {
+    CircuitBreaker cb(CircuitBreaker::Config{1, std::chrono::seconds{3600}});
+
+    for (auto _ : state) {
+        cb.record_failure();  // trip to Open
+        cb.reset();           // reset to Closed
+    }
+}
+BENCHMARK(BM_CircuitBreaker_Reset);
+
+/// Measure RateLimiter::reset() (refill to burst capacity).
+static void BM_RateLimiter_Reset(benchmark::State& state) {
+    RateLimiter rl(0.0, 100);
+
+    for (auto _ : state) {
+        rl.reset();
+    }
+}
+BENCHMARK(BM_RateLimiter_Reset);
+
+/// Measure CircuitBreaker::Config::validate() overhead.
+static void BM_CircuitBreakerConfig_Validate(benchmark::State& state) {
+    CircuitBreaker::Config cfg{5, std::chrono::seconds{30}, 1};
+
+    for (auto _ : state) {
+        auto err = cfg.validate();
+        benchmark::DoNotOptimize(err);
+    }
+}
+BENCHMARK(BM_CircuitBreakerConfig_Validate);
+
+/// Measure RateLimiter::Config::validate() overhead.
+static void BM_RateLimiterConfig_Validate(benchmark::State& state) {
+    RateLimiter::Config cfg{.rate_per_sec = 1000.0, .burst = 100};
+
+    for (auto _ : state) {
+        auto err = cfg.validate();
+        benchmark::DoNotOptimize(err);
+    }
+}
+BENCHMARK(BM_RateLimiterConfig_Validate);
+
 BENCHMARK_MAIN();
