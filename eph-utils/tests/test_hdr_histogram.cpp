@@ -1837,3 +1837,26 @@ TEST(HdrHistogramLinearIter, consecutive_entries_have_aligned_ranges) {
         EXPECT_EQ(e.range_end - e.range_start, 10u);
     }
 }
+
+TEST(HdrHistogramLinearIter, HighOffsetSkipsEmptyPrefix) {
+    // Values start at 100000 — for_each_linear should start at the step
+    // boundary containing min_value, not at 0, to avoid O(min/step) overhead.
+    HdrHistogram h(1, 1'000'000, 3);
+    for (uint64_t v = 100'000; v <= 100'100; ++v) {
+        (void)h.record(v);
+    }
+
+    std::vector<HdrHistogram::LinearEntry> entries;
+    h.for_each_linear(10, [&](const HdrHistogram::LinearEntry& e) {
+        entries.push_back(e);
+    });
+
+    // Should have entries only near 100000, not starting from 0
+    ASSERT_FALSE(entries.empty());
+    EXPECT_GE(entries.front().range_start, 99'990u)
+        << "for_each_linear should skip empty prefix and start near min_value";
+    // Total count across all entries should equal recorded count
+    uint64_t total = 0;
+    for (const auto& e : entries) total += e.count;
+    EXPECT_EQ(total, h.get_total_count());
+}

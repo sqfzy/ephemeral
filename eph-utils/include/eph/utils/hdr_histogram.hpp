@@ -599,8 +599,11 @@ class HdrHistogram {
         if (total_count_ == 0 || value_units_per_bucket < 1) return;
 
         uint64_t cumulative = 0;
-        // Walk internal buckets, accumulating into linear steps
-        uint64_t current_step_start = 0;
+        // Start at the step boundary that contains min_value_ to avoid
+        // iterating through potentially millions of empty steps when the
+        // histogram range doesn't start near zero.
+        uint64_t min_val = get_min_value();
+        uint64_t current_step_start = (min_val / value_units_per_bucket) * value_units_per_bucket;
         uint64_t current_step_count = 0;
         int32_t  bucket_idx = 0;
 
