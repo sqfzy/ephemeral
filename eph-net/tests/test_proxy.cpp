@@ -252,18 +252,33 @@ TEST(ProxyUrl, ParsedConfigCanBeUsedDirectly) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(ProxyUrl, AuthWithAtSignInPassword) {
-    // The parser finds the first '@' to split auth from host.
-    // "user:p@ss@host:port" → username="user", password="p",
-    // and "ss@host:port" is parsed as host — this may be lossy.
-    // Test documents current behavior for awareness.
+    // Parser uses rfind('@') to split on the LAST '@', so passwords
+    // containing '@' are handled correctly.
     auto r = parse_proxy_url("socks5://user:p@ss@host:1080");
-    // The parser splits on first '@': auth="user:p", host_part="ss@host:1080"
-    // Then rfind(':') on "ss@host:1080" → port="1080", host="ss@host"
+    // rfind('@') splits on last '@': auth="user:p@ss", host_part="host:1080"
     ASSERT_TRUE(r.has_value()) << r.error();
     EXPECT_EQ(r->username, "user");
-    EXPECT_EQ(r->password, "p");
-    EXPECT_EQ(r->host, "ss@host");
+    EXPECT_EQ(r->password, "p@ss");
+    EXPECT_EQ(r->host, "host");
     EXPECT_EQ(r->port, 1080);
+}
+
+TEST(ProxyUrl, AuthWithMultipleAtSigns) {
+    // Multiple '@' in password: "user:p@@ss@host:port"
+    auto r = parse_proxy_url("socks5://user:p@@ss@host:1080");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->username, "user");
+    EXPECT_EQ(r->password, "p@@ss");
+    EXPECT_EQ(r->host, "host");
+    EXPECT_EQ(r->port, 1080);
+}
+
+TEST(ProxyUrl, AuthWithAtSignRoundTrip) {
+    // Verify round-trip works for passwords with '@'
+    auto r = parse_proxy_url("socks5://alice:p@ss@proxy.io:9050");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    // to_url includes the password, so round-trip should work
+    EXPECT_EQ(r->to_url(), "socks5://alice:p@ss@proxy.io:9050");
 }
 
 TEST(ProxyUrl, EmptyPasswordAfterColon) {

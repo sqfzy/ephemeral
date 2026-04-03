@@ -685,8 +685,10 @@ parse_proxy_url(std::string_view url) {
             "unsupported proxy scheme (expected socks5:// or http://): {}", url));
     }
 
-    // Check for user:pass@
-    auto at_pos = url.find('@');
+    // Check for user:pass@ — use rfind to split on the LAST '@' so that
+    // passwords containing '@' are handled correctly (hostnames never
+    // contain '@', so the last '@' always separates auth from host).
+    auto at_pos = url.rfind('@');
     if (at_pos != std::string_view::npos) {
         auto auth = url.substr(0, at_pos);
         auto colon = auth.find(':');
