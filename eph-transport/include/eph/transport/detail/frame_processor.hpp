@@ -693,6 +693,7 @@ private:
         frame.total_len   = entry.total_len;
 
         if (frame.is_ping()) {
+            deps_.rx_stats.packets.fetch_add(1, std::memory_order_relaxed);
             deps_.ws_pings_received.fetch_add(1, std::memory_order_relaxed);
             if (config().on_ping) {
                 try {
@@ -710,6 +711,7 @@ private:
             return;
         }
         if (frame.is_close()) {
+            deps_.rx_stats.packets.fetch_add(1, std::memory_order_relaxed);
             uint16_t code = frame.close_status_code();
             std::string_view reason = frame.close_reason();
             SPDLOG_LOGGER_INFO(detail::transport_logger(),
@@ -737,9 +739,28 @@ private:
             return;
         }
         if (frame.is_pong()) {
+            deps_.rx_stats.packets.fetch_add(1, std::memory_order_relaxed);
+            record_rx_latency();
             core().last_pong_ns.store(
                 std::chrono::steady_clock::now().time_since_epoch().count(),
                 std::memory_order_relaxed);
+
+            // RTT measurement: mirror the logic in process_ws_data() so
+            // filtered-mode pongs also record round-trip latency.
+            uint64_t ping_tsc = core().last_ping_tsc.load(
+                std::memory_order_relaxed);
+            if (ping_tsc > 0 && eph::utils::TSC::is_initialized()) {
+                uint64_t pong_tsc = eph::utils::TSC::now();
+                if (pong_tsc > ping_tsc) {
+                    auto rtt_ns = eph::utils::TSC::to_ns(pong_tsc - ping_tsc);
+                    if (rtt_ns) {
+                        deps_.rtt_histogram.record(
+                            static_cast<uint64_t>(*rtt_ns));
+                    }
+                }
+                core().last_ping_tsc.store(0, std::memory_order_relaxed);
+            }
+
             if (config().on_pong) {
                 try {
                     config().on_pong(frame.payload,
