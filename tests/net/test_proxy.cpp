@@ -341,3 +341,32 @@ TEST(ProxyConfigValidation, HostWithNullByteRejected) {
     EXPECT_FALSE(err.empty());
     EXPECT_NE(err.find("control characters"), std::string_view::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// proxy_type_name() — covers all enum values
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyTypeName, Socks5) {
+    EXPECT_EQ(proxy_type_name(ProxyType::kSocks5), "SOCKS5");
+}
+
+TEST(ProxyTypeName, HttpConnect) {
+    EXPECT_EQ(proxy_type_name(ProxyType::kHttpConnect), "HTTP_CONNECT");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter<ProxyType>
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyTypeFormatter, FormatSocks5) {
+    EXPECT_EQ(std::format("{}", ProxyType::kSocks5), "SOCKS5");
+}
+
+TEST(ProxyTypeFormatter, FormatHttpConnect) {
+    EXPECT_EQ(std::format("{}", ProxyType::kHttpConnect), "HTTP_CONNECT");
+}
+
+TEST(ProxyTypeFormatter, CompositeFormat) {
+    auto s = std::format("type={} port={}", ProxyType::kSocks5, 1080);
+    EXPECT_EQ(s, "type=SOCKS5 port=1080");
+}

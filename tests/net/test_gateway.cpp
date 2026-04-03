@@ -332,3 +332,61 @@ TEST(ConnHealth, FormatterWorksInCompositeFormat) {
     auto s = std::format("health={} id={}", ConnHealth::Healthy, 42);
     EXPECT_EQ(s, "health=HEALTHY id=42");
 }
+
+// ── Gateway::Config::validate() ─────────────────────────────────────────────
+
+TEST(GatewayConfig, DefaultConfigIsValid) {
+    Gateway::Config cfg;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(GatewayConfig, NegativeHealthCheckIntervalIsInvalid) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{-1};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("health_check_interval"), std::string_view::npos);
+}
+
+TEST(GatewayConfig, ZeroHealthCheckIntervalIsValid) {
+    // 0 = disabled monitoring
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{0};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(GatewayConfig, NegativeDegradedThresholdIsInvalid) {
+    Gateway::Config cfg;
+    cfg.degraded_threshold = std::chrono::milliseconds{-1};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("degraded_threshold"), std::string_view::npos);
+}
+
+TEST(GatewayConfig, DegradedThresholdMustExceedHealthCheckInterval) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{5000};
+    cfg.degraded_threshold = std::chrono::milliseconds{5000};  // equal, not greater
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("degraded_threshold must be greater"), std::string_view::npos);
+}
+
+TEST(GatewayConfig, DegradedThresholdGreaterThanIntervalIsValid) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{5000};
+    cfg.degraded_threshold = std::chrono::milliseconds{5001};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(GatewayConfig, ZeroDegradedThresholdSkipsIntervalCheck) {
+    // 0 degraded_threshold means disabled, so no comparison with interval needed
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{5000};
+    cfg.degraded_threshold = std::chrono::milliseconds{0};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(GatewayConfig, BothZeroIsValid) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{0};
+    cfg.degraded_threshold = std::chrono::milliseconds{0};
+    EXPECT_TRUE(cfg.validate().empty());
+}

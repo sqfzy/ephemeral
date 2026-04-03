@@ -46,6 +46,17 @@ enum class ProxyType : uint8_t {
     kHttpConnect,  ///< HTTP CONNECT (RFC 7231 §4.3.6)
 };
 
+/// @brief Convert a ProxyType value to a human-readable name.
+/// @param t  The proxy type to convert.
+/// @return Null-terminated string view such as "SOCKS5" or "HTTP_CONNECT".
+[[nodiscard]] constexpr std::string_view proxy_type_name(ProxyType t) noexcept {
+    switch (t) {
+    case ProxyType::kSocks5:      return "SOCKS5";
+    case ProxyType::kHttpConnect: return "HTTP_CONNECT";
+    }
+    return "UNKNOWN";
+}
+
 /// @brief Proxy server configuration.
 ///
 /// @note password is never logged or included in error messages.
@@ -665,3 +676,18 @@ parse_proxy_url(std::string_view url) {
 }
 
 } // namespace eph::net::proxy
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for ProxyType
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter specialization for ProxyType.
+///
+/// Formats as "SOCKS5" or "HTTP_CONNECT".
+template <>
+struct std::formatter<eph::net::proxy::ProxyType> : std::formatter<std::string_view> {
+    auto format(eph::net::proxy::ProxyType t, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::net::proxy::proxy_type_name(t), ctx);
+    }
+};

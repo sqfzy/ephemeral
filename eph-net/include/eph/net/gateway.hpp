@@ -122,6 +122,20 @@ public:
         /// Called outside the Gateway lock to prevent deadlock.
         std::function<void(std::string_view tag, ConnHealth old_h, ConnHealth new_h)>
             on_health_change{};
+
+        /// Validate configuration, returning an error description or empty string on success.
+        /// Call before constructing a Gateway for early, actionable error messages.
+        [[nodiscard]] constexpr std::string_view validate() const noexcept {
+            if (health_check_interval.count() < 0)
+                return "health_check_interval must be >= 0 (0 disables monitoring)";
+            if (degraded_threshold.count() < 0)
+                return "degraded_threshold must be >= 0";
+            if (health_check_interval.count() > 0 && degraded_threshold.count() > 0 &&
+                degraded_threshold <= health_check_interval)
+                return "degraded_threshold must be greater than health_check_interval "
+                       "(otherwise degraded detection fires every check cycle)";
+            return {};
+        }
     };
 
     /// @brief Construct a Gateway with default configuration.
