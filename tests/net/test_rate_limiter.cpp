@@ -288,3 +288,39 @@ TEST(RateLimiterConfig, ConstructFromConfig) {
     EXPECT_TRUE(rl.try_acquire(20));
     EXPECT_FALSE(rl.try_acquire(1));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config dump, to_json, formatter, equality
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiterConfig, DumpContainsKeyFields) {
+    RateLimiter::Config cfg{.rate_per_sec = 1200.0, .burst = 50};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("1200.00"), std::string::npos);
+    EXPECT_NE(d.find("50"), std::string::npos);
+}
+
+TEST(RateLimiterConfig, ToJsonValidStructure) {
+    RateLimiter::Config cfg{.rate_per_sec = 100.0, .burst = 10};
+    auto j = cfg.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"rate_per_sec\":100.00"), std::string::npos);
+    EXPECT_NE(j.find("\"burst\":10"), std::string::npos);
+}
+
+TEST(RateLimiterConfig, Equality) {
+    RateLimiter::Config a{.rate_per_sec = 100.0, .burst = 10};
+    RateLimiter::Config b{.rate_per_sec = 100.0, .burst = 10};
+    RateLimiter::Config c{.rate_per_sec = 200.0, .burst = 10};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
+TEST(RateLimiterConfig, FormatterContainsKeyFields) {
+    RateLimiter::Config cfg{.rate_per_sec = 1200.0, .burst = 50};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("RateLimiter"), std::string::npos);
+    EXPECT_NE(s.find("1200.00"), std::string::npos);
+    EXPECT_NE(s.find("burst=50"), std::string::npos);
+}

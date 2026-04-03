@@ -15,7 +15,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <format>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -61,6 +63,25 @@ public:
                 return "burst must be >= 1";
             return {};
         }
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "RateLimiter::Config:\n"
+                "  rate: {:.2f}/s, burst: {}",
+                rate_per_sec, burst);
+        }
+
+        /// JSON-formatted config for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"rate_per_sec\":{:.2f},\"burst\":{}}}",
+                rate_per_sec, burst);
+        }
+
+        /// Defaulted equality -- all fields must match exactly.
+        [[nodiscard]] friend bool operator==(const Config&,
+                                             const Config&) = default;
     };
 
     /// @brief Construct a token bucket rate limiter from a Config.
@@ -185,3 +206,17 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for RateLimiter::Config
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::net::RateLimiter::Config> : std::formatter<std::string> {
+    auto format(const eph::net::RateLimiter::Config& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("RateLimiter::Config(rate={:.2f}/s, burst={})",
+                c.rate_per_sec, c.burst),
+            ctx);
+    }
+};
