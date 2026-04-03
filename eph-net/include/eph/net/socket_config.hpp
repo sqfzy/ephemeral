@@ -221,6 +221,15 @@ struct SocketConfig {
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (host.empty())
             return "host must not be empty";
+        // Reject control characters in hostname. The host field is passed
+        // directly to getaddrinfo and logged; control characters could cause
+        // log injection or unexpected DNS behavior.
+        for (char c : host) {
+            auto uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc == 0x7f) {
+                return "host contains control characters";
+            }
+        }
         if (port == 0)
             return "port must be > 0";
         if (recv_buf_size < 0)

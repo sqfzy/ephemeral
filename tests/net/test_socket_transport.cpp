@@ -318,6 +318,20 @@ TEST(SocketConfigValidate, KeepaliveIntervalWithoutIdleFails) {
     EXPECT_NE(err.find("keepalive_idle"), std::string_view::npos);
 }
 
+TEST(SocketConfigValidate, HostWithControlCharsRejected) {
+    SocketConfig cfg{.host = "evil\r\nhost", .port = 443};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, HostWithNullByteRejected) {
+    SocketConfig cfg{.host = std::string("host\0evil", 9), .port = 443};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
 TEST(SocketConfigValidate, EqualityOperator) {
     SocketConfig a{.host = "example.com", .port = 443, .tcp_nodelay = true};
     SocketConfig b{.host = "example.com", .port = 443, .tcp_nodelay = true};
