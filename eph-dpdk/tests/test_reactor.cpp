@@ -55,6 +55,38 @@ TEST(ReactorHash, ZeroTupleNonZeroHash) {
     EXPECT_EQ(h, ReactorEntry::hash_tuple(t));
 }
 
+TEST(ReactorHash, SymmetricSwappedSrcDst) {
+    // Critical property: hash(A->B) == hash(B->A) because incoming packets
+    // have swapped src/dst relative to the registered connection tuple.
+    auto local = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
+    auto remote = make_tuple(0x0A000002, 0x0A000001, 443, 12345); // swapped
+    EXPECT_EQ(ReactorEntry::hash_tuple(local),
+              ReactorEntry::hash_tuple(remote))
+        << "Hash must be direction-symmetric for RX dispatch";
+}
+
+TEST(ReactorHash, SymmetricMultipleTuples) {
+    // Verify symmetry across several different connection tuples
+    struct { uint32_t a_ip; uint32_t b_ip; uint16_t a_port; uint16_t b_port; } cases[] = {
+        {0xC0A80101, 0x08080808, 5000, 443},
+        {0xAC100001, 0xAC100002, 8443, 9090},
+        {0x0A0A0001, 0x0A0A0002, 55123, 80},
+    };
+    for (const auto& c : cases) {
+        auto fwd = make_tuple(c.a_ip, c.b_ip, c.a_port, c.b_port);
+        auto rev = make_tuple(c.b_ip, c.a_ip, c.b_port, c.a_port);
+        EXPECT_EQ(ReactorEntry::hash_tuple(fwd), ReactorEntry::hash_tuple(rev))
+            << "Symmetry violation for " << c.a_ip << " <-> " << c.b_ip;
+    }
+}
+
+TEST(ReactorHash, NonSymmetricIpsDifferentHash) {
+    // Different IPs (not just swapped) should produce different hashes
+    auto t1 = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
+    auto t2 = make_tuple(0x0A000001, 0x0A000003, 12345, 443);
+    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+}
+
 // ---------------------------------------------------------------------------
 // Reactor — connection management (no NIC needed)
 // ---------------------------------------------------------------------------
