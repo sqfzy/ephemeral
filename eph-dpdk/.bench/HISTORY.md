@@ -63,3 +63,37 @@ No regressions vs baseline (all existing benchmarks within noise).
 | BM_MulticastMacFromIp | 1.12 | - |
 | BM_IsMulticastIp | 0.505 | - |
 | BM_ParseUdpPacketRejectTcp | 1.10 | - |
+
+## 2026-04-03 Batch 3 (observability + design improvements)
+
+Platform: same as baseline
+
+### bench_tcp_header (new entries)
+
+| Benchmark | Time (ns) | Notes |
+|---|---|---|
+| BM_FlowRuleDump | 86.9 | FlowRule diagnostic formatting |
+| BM_FlowRuleToJson | 126 | FlowRule JSON serialization |
+| BM_TcpConfigDump | 883 | TcpConfig multi-line dump (MACs + IPs) |
+| BM_TcpConfigToJson | 911 | TcpConfig JSON (12 fields) |
+| BM_TcpStatsDump | 673 | TcpSession::Stats diagnostic dump |
+| BM_TcpStatsToJson | 595 | TcpSession::Stats JSON (sparse histogram) |
+| BM_ParsedPacketToJson | 565 | Parsed TCP packet JSON |
+| BM_ConnectionTupleToJson | 359 | 4-tuple JSON serialization |
+| BM_ReactorConfigDump | 115 | Reactor::Config diagnostic dump |
+| BM_ReactorConfigToJson | 125 | Reactor::Config JSON |
+
+### bench_dns_codec (new entries)
+
+| Benchmark | Time (ns) | Notes |
+|---|---|---|
+| BM_ResolveHostnameDottedDecimal | 23.2 | Fast-path IP string parsing |
+
+### bench_multicast (new entries)
+
+| Benchmark | Time (ns) | Notes |
+|---|---|---|
+| BM_ParsedUdpPacketDump | 411 | UDP packet diagnostic dump |
+| BM_ParsedUdpPacketToJson | 406 | UDP packet JSON serialization |
+
+No regressions vs baseline (all existing benchmarks verified stable).
