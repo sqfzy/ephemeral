@@ -82,12 +82,20 @@ public:
 
 private:
     /// Format tags as " {key1=val1, key2=val2}" or " {}" if empty.
+    /// Values containing commas, equals signs, or braces are quoted to
+    /// prevent ambiguous log output.
     static std::string format_tags(std::span<const core::MetricTag> tags) {
         if (tags.empty()) return " {}";
         std::string result = " {";
         for (size_t i = 0; i < tags.size(); ++i) {
             if (i > 0) result += ", ";
-            result += std::format("{}={}", tags[i].key, tags[i].value);
+            const auto& val = tags[i].value;
+            bool needs_quoting = val.find_first_of(",={}\"") != std::string_view::npos;
+            if (needs_quoting) {
+                result += std::format("{}=\"{}\"", tags[i].key, val);
+            } else {
+                result += std::format("{}={}", tags[i].key, val);
+            }
         }
         result += '}';
         return result;

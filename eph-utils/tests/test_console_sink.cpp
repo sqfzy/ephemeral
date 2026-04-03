@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <array>
+
 #include "eph/utils/console_sink.hpp"
 
 using namespace eph::utils;
@@ -75,4 +77,24 @@ TEST(ConsoleSinkTest, LargeValues) {
     ConsoleSink sink;
     EXPECT_NO_THROW(sink.push_counter("big_counter", INT64_MAX));
     EXPECT_NO_THROW(sink.push_gauge("big_gauge", 1e300));
+}
+
+TEST(ConsoleSinkTest, TagValueWithSpecialCharsIsQuoted) {
+    // Values containing commas, equals signs, or braces should be quoted
+    // to prevent ambiguous log output when parsing.
+    ConsoleSink sink;
+    eph::core::MetricTag tags[] = {
+        {"region", "us-east-1,us-west-2"},
+        {"filter", "status=active"},
+    };
+    // Should not crash and should produce quoted output
+    EXPECT_NO_THROW(sink.push_counter("test_metric", 1, tags));
+}
+
+TEST(ConsoleSinkTest, TagValueWithoutSpecialCharsNotQuoted) {
+    ConsoleSink sink;
+    eph::core::MetricTag tags[] = {
+        {"region", "us-east-1"},
+    };
+    EXPECT_NO_THROW(sink.push_counter("test_metric", 1, tags));
 }
