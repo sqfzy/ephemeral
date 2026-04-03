@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <format>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -403,4 +405,26 @@ TEST(CircuitBreaker, ConcurrentFailureTripsExactlyOnce) {
 
     // Circuit should be Open after exactly kThreshold failures.
     EXPECT_EQ(cb.state(), CircuitState::Open);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Name function and std::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitState, NameCoversAllValues) {
+    EXPECT_EQ(circuit_state_name(CircuitState::Closed), "CLOSED");
+    EXPECT_EQ(circuit_state_name(CircuitState::Open), "OPEN");
+    EXPECT_EQ(circuit_state_name(CircuitState::HalfOpen), "HALF_OPEN");
+}
+
+TEST(CircuitState, FormatterProducesOutput) {
+    EXPECT_EQ(std::format("{}", CircuitState::Closed), "CLOSED");
+    EXPECT_EQ(std::format("{}", CircuitState::Open), "OPEN");
+    EXPECT_EQ(std::format("{}", CircuitState::HalfOpen), "HALF_OPEN");
+}
+
+TEST(CircuitState, FormatterWorksInCompositeFormat) {
+    // Verify the formatter works when embedded in a larger format string.
+    auto s = std::format("state={} count={}", CircuitState::Open, 5);
+    EXPECT_EQ(s, "state=OPEN count=5");
 }

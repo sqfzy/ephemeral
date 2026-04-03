@@ -17,7 +17,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <mutex>
+#include <string_view>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -46,6 +48,18 @@ enum class CircuitState : uint8_t {
     Open,      ///< Tripped — calls are blocked until open_duration elapses.
     HalfOpen,  ///< Probing — limited test calls allowed to check recovery.
 };
+
+/// @brief Convert a CircuitState value to a human-readable name.
+/// @param s  The circuit state to convert.
+/// @return Null-terminated string view such as "CLOSED", "OPEN", "HALF_OPEN".
+[[nodiscard]] inline constexpr std::string_view circuit_state_name(CircuitState s) noexcept {
+    switch (s) {
+    case CircuitState::Closed:   return "CLOSED";
+    case CircuitState::Open:     return "OPEN";
+    case CircuitState::HalfOpen: return "HALF_OPEN";
+    }
+    return "UNKNOWN";
+}
 
 /// Thread-safe circuit breaker for protecting against broken endpoints.
 ///
@@ -303,3 +317,18 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for CircuitState
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter specialization for CircuitState.
+///
+/// Formats as "CLOSED", "OPEN", or "HALF_OPEN" for use with std::format/spdlog.
+template <>
+struct std::formatter<eph::net::CircuitState> : std::formatter<std::string_view> {
+    auto format(eph::net::CircuitState s, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::net::circuit_state_name(s), ctx);
+    }
+};

@@ -393,3 +393,18 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for ConnHealth
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter specialization for ConnHealth.
+///
+/// Formats as "HEALTHY", "DEGRADED", "DISCONNECTED", or "STOPPED".
+template <>
+struct std::formatter<eph::net::ConnHealth> : std::formatter<std::string_view> {
+    auto format(eph::net::ConnHealth h, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::net::conn_health_name(h), ctx);
+    }
+};

@@ -3,6 +3,7 @@
 #include "eph/net/gateway.hpp"
 
 #include <atomic>
+#include <format>
 #include <string>
 #include <thread>
 #include <vector>
@@ -318,4 +319,16 @@ TEST(ConnHealth, NameCoversAllValues) {
     EXPECT_EQ(conn_health_name(ConnHealth::Degraded), "DEGRADED");
     EXPECT_EQ(conn_health_name(ConnHealth::Disconnected), "DISCONNECTED");
     EXPECT_EQ(conn_health_name(ConnHealth::Stopped), "STOPPED");
+}
+
+TEST(ConnHealth, FormatterProducesOutput) {
+    EXPECT_EQ(std::format("{}", ConnHealth::Healthy), "HEALTHY");
+    EXPECT_EQ(std::format("{}", ConnHealth::Degraded), "DEGRADED");
+    EXPECT_EQ(std::format("{}", ConnHealth::Disconnected), "DISCONNECTED");
+    EXPECT_EQ(std::format("{}", ConnHealth::Stopped), "STOPPED");
+}
+
+TEST(ConnHealth, FormatterWorksInCompositeFormat) {
+    auto s = std::format("health={} id={}", ConnHealth::Healthy, 42);
+    EXPECT_EQ(s, "health=HEALTHY id=42");
 }
