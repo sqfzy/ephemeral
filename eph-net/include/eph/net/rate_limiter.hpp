@@ -177,6 +177,16 @@ public:
         return true;
     }
 
+    /// @brief Check if the limiter has no tokens available.
+    ///
+    /// Convenience predicate for monitoring and condition checks.
+    /// Performs a refill before checking, same as available().
+    ///
+    /// @return true if available tokens < 1.0 (cannot satisfy try_acquire(1)).
+    [[nodiscard]] bool is_exhausted() noexcept {
+        return available() < 1.0;
+    }
+
     /// @brief Approximate number of currently available tokens.
     ///
     /// Performs a refill before reading -- the value is approximate because

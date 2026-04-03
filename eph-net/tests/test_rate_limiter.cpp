@@ -282,6 +282,38 @@ TEST(RateLimiter, ConcurrentAcquireWithRefill) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// is_exhausted() convenience predicate
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiter, IsExhaustedFalseWhenFull) {
+    RateLimiter rl(100.0, 10);
+    EXPECT_FALSE(rl.is_exhausted());
+}
+
+TEST(RateLimiter, IsExhaustedTrueWhenDrained) {
+    RateLimiter rl(0.0, 3);
+    EXPECT_TRUE(rl.try_acquire(3));
+    EXPECT_TRUE(rl.is_exhausted());
+}
+
+TEST(RateLimiter, IsExhaustedFalseAfterReset) {
+    RateLimiter rl(0.0, 5);
+    EXPECT_TRUE(rl.try_acquire(5));
+    EXPECT_TRUE(rl.is_exhausted());
+    rl.reset();
+    EXPECT_FALSE(rl.is_exhausted());
+}
+
+TEST(RateLimiter, IsExhaustedRecoverAfterRefill) {
+    // High rate ensures quick refill
+    RateLimiter rl(1000000.0, 1);
+    EXPECT_TRUE(rl.try_acquire());
+    // After a small sleep, tokens should refill
+    std::this_thread::sleep_for(10ms);
+    EXPECT_FALSE(rl.is_exhausted());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Config validation
 // ─────────────────────────────────────────────────────────────────────────────
 

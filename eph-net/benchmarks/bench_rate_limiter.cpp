@@ -72,6 +72,20 @@ static void BM_RateLimiter_Available(benchmark::State& state) {
 BENCHMARK(BM_RateLimiter_Available);
 
 // ---------------------------------------------------------------------------
+// is_exhausted() — convenience predicate
+// ---------------------------------------------------------------------------
+
+static void BM_RateLimiter_IsExhausted(benchmark::State& state) {
+    RateLimiter rl(1000.0, 100);
+
+    for (auto _ : state) {
+        bool e = rl.is_exhausted();
+        benchmark::DoNotOptimize(e);
+    }
+}
+BENCHMARK(BM_RateLimiter_IsExhausted);
+
+// ---------------------------------------------------------------------------
 // to_json() — monitoring snapshot serialization
 // ---------------------------------------------------------------------------
 
