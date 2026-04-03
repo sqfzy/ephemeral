@@ -704,3 +704,35 @@ TEST(CircuitBreaker, TimeUntilHalfOpenInHalfOpenState) {
     EXPECT_TRUE(cb.allow()); // transitions to HalfOpen
     EXPECT_EQ(cb.time_until_half_open().count(), 0);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dump() — human-readable live state snapshot
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, DumpClosedState) {
+    CircuitBreaker cb(CircuitBreaker::Config{5, 30s, 1});
+    auto d = cb.dump();
+    EXPECT_NE(d.find("CircuitBreaker:"), std::string::npos);
+    EXPECT_NE(d.find("CLOSED"), std::string::npos);
+    EXPECT_NE(d.find("failure_count: 0/5"), std::string::npos);
+    EXPECT_NE(d.find("threshold=5"), std::string::npos);
+}
+
+TEST(CircuitBreaker, DumpOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    auto d = cb.dump();
+    EXPECT_NE(d.find("OPEN"), std::string::npos);
+    EXPECT_NE(d.find("failure_count: 2/2"), std::string::npos);
+}
+
+TEST(CircuitBreaker, DumpHalfOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 0s, 3});
+    cb.record_failure();
+    cb.record_failure();
+    auto d = cb.dump();
+    // With 0s open_duration, state should show HALF_OPEN
+    EXPECT_NE(d.find("HALF_OPEN"), std::string::npos);
+    EXPECT_NE(d.find("half_open_max=3"), std::string::npos);
+}

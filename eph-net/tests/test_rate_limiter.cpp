@@ -499,3 +499,31 @@ TEST(RateLimiter, ToJsonAfterReset) {
     auto j = rl.to_json();
     EXPECT_NE(j.find("\"available_tokens\":10.00"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dump() — human-readable live state snapshot
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiter, DumpContainsStateAndConfig) {
+    RateLimiter rl(100.0, 10);
+    auto d = rl.dump();
+    EXPECT_NE(d.find("RateLimiter:"), std::string::npos);
+    EXPECT_NE(d.find("rate=100.00/s"), std::string::npos);
+    EXPECT_NE(d.find("burst=10"), std::string::npos);
+    EXPECT_NE(d.find("/10 tokens"), std::string::npos);
+}
+
+TEST(RateLimiter, DumpAfterExhaustion) {
+    RateLimiter rl(0.0, 5);
+    ASSERT_TRUE(rl.try_acquire(5));
+    auto d = rl.dump();
+    EXPECT_NE(d.find("available: 0.00/5 tokens"), std::string::npos);
+}
+
+TEST(RateLimiter, DumpAfterReset) {
+    RateLimiter rl(0.0, 10);
+    ASSERT_TRUE(rl.try_acquire(10));
+    rl.reset();
+    auto d = rl.dump();
+    EXPECT_NE(d.find("available: 10.00/10 tokens"), std::string::npos);
+}

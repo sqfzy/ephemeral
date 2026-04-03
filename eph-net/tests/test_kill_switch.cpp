@@ -430,3 +430,41 @@ TEST(KillSwitch, KillThenShutdownIsIdempotent) {
     EXPECT_FALSE(tp.is_running());
     EXPECT_EQ(tp.stop_count.load(), 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dump() — human-readable state snapshot
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(KillSwitch, DumpContainsStateInfo) {
+    KillSwitch ks;
+    auto d = ks.dump();
+    EXPECT_NE(d.find("KillSwitch:"), std::string::npos);
+    EXPECT_NE(d.find("transports: 0/"), std::string::npos);
+    EXPECT_NE(d.find("shutdown_requested: no"), std::string::npos);
+    EXPECT_NE(d.find("shutdown_done: no"), std::string::npos);
+}
+
+TEST(KillSwitch, DumpReflectsRegisteredTransports) {
+    KillSwitch ks;
+    MockTransport tp1, tp2;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    auto d = ks.dump();
+    EXPECT_NE(d.find("transports: 2/"), std::string::npos);
+}
+
+TEST(KillSwitch, DumpReflectsShutdownState) {
+    KillSwitch ks;
+    ks.request_shutdown();
+    auto d = ks.dump();
+    EXPECT_NE(d.find("shutdown_requested: yes"), std::string::npos);
+}
+
+TEST(KillSwitch, DumpShowsSignalHandlerStatus) {
+    KillSwitch ks;
+    auto d1 = ks.dump();
+    EXPECT_NE(d1.find("signal_handlers: not installed"), std::string::npos);
+    ks.install_signal_handlers();
+    auto d2 = ks.dump();
+    EXPECT_NE(d2.find("signal_handlers: installed"), std::string::npos);
+}
