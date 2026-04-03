@@ -1,0 +1,22 @@
+# Benchmark baseline after improve round 2
+# Commit: 0bc58a0 (dev)
+# Date: 2026-04-03
+# Source: /bench baseline (post-improve logger refactor)
+# Build: xmake build -m release
+# No performance-sensitive code changed in this round (logger init, deprecated attrs)
+
+## bench_ws (WebSocket encode/decode)
+BM_WsMasking/64:   4.98 ns  (11.97 GiB/s)
+BM_WsMasking/512:  39.8 ns  (11.97 GiB/s)
+BM_WsEncode/64:    7.31 ns  (8.16 GiB/s)
+BM_WsEncode/512:   27.9 ns  (17.08 GiB/s)
+BM_WsDecode/64:    7.95 ns
+BM_WsDecode/512:   8.20 ns
+BM_WsRoundtrip/64:  14.5 ns (4.10 GiB/s)
+BM_WsRoundtrip/512: 33.7 ns (14.14 GiB/s)
+
+## bench_rx_pipeline (RX processing)
+BM_RxPipeline/10/512:        2182 ns (2.21 GiB/s)
+BM_RxPipeline/30/512:        4987 ns (2.89 GiB/s)
+BM_RxPipeline_Raw/512:        496 ns (1.00 GiB/s)
+BM_RxPipeline_LengthPrefix/10/512: 1571 ns (3.06 GiB/s)
