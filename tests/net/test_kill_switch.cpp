@@ -44,7 +44,7 @@ TEST(KillSwitch, RegisterNullptrRejected) {
 TEST(KillSwitch, UnregisterTransport) {
     KillSwitch ks;
     MockTransport tp;
-    ks.register_transport(&tp);
+    ASSERT_TRUE(ks.register_transport(&tp));
     EXPECT_EQ(ks.transport_count(), 1);
     ks.unregister_transport(&tp);
     EXPECT_EQ(ks.transport_count(), 0);
@@ -53,7 +53,7 @@ TEST(KillSwitch, UnregisterTransport) {
 TEST(KillSwitch, UnregisterNonexistentIsNoop) {
     KillSwitch ks;
     MockTransport tp1, tp2;
-    ks.register_transport(&tp1);
+    ASSERT_TRUE(ks.register_transport(&tp1));
     ks.unregister_transport(&tp2);  // not registered
     EXPECT_EQ(ks.transport_count(), 1);
 }
@@ -88,9 +88,9 @@ TEST(KillSwitch, RequestShutdownSetsFlag) {
 TEST(KillSwitch, ShutdownStopsAllTransports) {
     KillSwitch ks;
     MockTransport tp1, tp2, tp3;
-    ks.register_transport(&tp1);
-    ks.register_transport(&tp2);
-    ks.register_transport(&tp3);
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    ASSERT_TRUE(ks.register_transport(&tp3));
 
     EXPECT_TRUE(tp1.is_running());
     EXPECT_TRUE(tp2.is_running());
@@ -107,7 +107,7 @@ TEST(KillSwitch, ShutdownStopsAllTransports) {
 TEST(KillSwitch, ShutdownIsIdempotent) {
     KillSwitch ks;
     MockTransport tp;
-    ks.register_transport(&tp);
+    ASSERT_TRUE(ks.register_transport(&tp));
 
     ks.shutdown();
     EXPECT_EQ(tp.stop_count.load(), 1);
@@ -121,8 +121,8 @@ TEST(KillSwitch, ShutdownSkipsAlreadyStoppedTransports) {
     MockTransport tp1, tp2;
     tp1.running.store(false);  // pre-stopped
 
-    ks.register_transport(&tp1);
-    ks.register_transport(&tp2);
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
 
     ks.shutdown();
 
@@ -133,7 +133,7 @@ TEST(KillSwitch, ShutdownSkipsAlreadyStoppedTransports) {
 TEST(KillSwitch, KillSetsRequestWithoutBlocking) {
     KillSwitch ks;
     MockTransport tp;
-    ks.register_transport(&tp);
+    ASSERT_TRUE(ks.register_transport(&tp));
 
     ks.kill();  // non-blocking emergency kill
 
@@ -146,7 +146,7 @@ TEST(KillSwitch, DestructorCallsShutdown) {
     MockTransport tp;
     {
         KillSwitch ks;
-        ks.register_transport(&tp);
+        ASSERT_TRUE(ks.register_transport(&tp));
         EXPECT_TRUE(tp.is_running());
     }  // destructor calls shutdown()
     EXPECT_FALSE(tp.is_running());
@@ -160,7 +160,7 @@ TEST(KillSwitch, ConcurrentRegistration) {
 
     for (int i = 0; i < N; ++i) {
         threads.emplace_back([&ks, &transports, i] {
-            ks.register_transport(&transports[i]);
+            [[maybe_unused]] bool ok = ks.register_transport(&transports[i]);
         });
     }
     for (auto& t : threads) t.join();
@@ -175,9 +175,9 @@ TEST(KillSwitch, ConcurrentRegistration) {
 TEST(KillSwitch, UnregisterMiddleElementPreservesOthers) {
     KillSwitch ks;
     MockTransport tp1, tp2, tp3;
-    ks.register_transport(&tp1);
-    ks.register_transport(&tp2);
-    ks.register_transport(&tp3);
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    ASSERT_TRUE(ks.register_transport(&tp3));
 
     ks.unregister_transport(&tp2);
     EXPECT_EQ(ks.transport_count(), 2);

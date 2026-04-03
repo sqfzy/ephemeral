@@ -44,14 +44,14 @@ namespace eph::net {
 namespace detail {
 
 /// @brief Lazily-initialized logger for the SocketTransport subsystem.
-/// @return Shared pointer to the "net.socket" spdlog logger.
-inline const std::shared_ptr<spdlog::logger>& socket_logger() {
+/// @return Pointer to the "net.socket" spdlog logger.
+inline spdlog::logger* socket_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.socket");
         if (!lg) lg = spdlog::stdout_color_mt("net.socket");
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 } // namespace detail

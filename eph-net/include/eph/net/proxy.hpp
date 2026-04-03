@@ -87,14 +87,14 @@ struct ProxyConfig {
 namespace detail {
 
 /// @brief Lazily-initialized logger for the proxy subsystem.
-/// @return Shared pointer to the "net.proxy" spdlog logger.
-inline const std::shared_ptr<spdlog::logger>& proxy_logger() {
+/// @return Pointer to the "net.proxy" spdlog logger.
+inline spdlog::logger* proxy_logger() {
     static auto l = [] {
         auto lg = spdlog::get("net.proxy");
         if (!lg) lg = spdlog::stdout_color_mt("net.proxy");
         return lg;
     }();
-    return l;
+    return l.get();
 }
 
 /// @brief Buffered I/O helper for proxy handshakes.

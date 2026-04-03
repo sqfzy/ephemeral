@@ -97,7 +97,7 @@ public:
     /// @param tp  Pointer to the transport. Must not be null.
     /// @return true if registered successfully, false if null or capacity reached.
     template <typename Transport>
-    bool register_transport(Transport* tp) noexcept {
+    [[nodiscard]] bool register_transport(Transport* tp) noexcept {
         if (!tp) return false;
         TransportHandle h{
             .ptr = static_cast<void*>(tp),
@@ -234,7 +234,7 @@ private:
         lock_.store(false, std::memory_order_release);
     }
 
-    bool add_handle(const TransportHandle& h) noexcept {
+    [[nodiscard]] bool add_handle(const TransportHandle& h) noexcept {
         spin_lock();
         size_t n = count_.load(std::memory_order_relaxed);
         if (n >= kKillSwitchMaxTransports) {
