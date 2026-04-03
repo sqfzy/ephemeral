@@ -43,6 +43,16 @@
 namespace eph::net {
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Forward declarations (used by HttpResponse convenience methods)
+// ─────────────────────────────────────────────────────────────────────────────
+
+[[nodiscard]] inline std::string
+find_header(std::string_view headers_raw, std::string_view name) noexcept;
+
+[[nodiscard]] inline std::optional<std::string>
+find_header_opt(std::string_view headers_raw, std::string_view name) noexcept;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -91,6 +101,20 @@ struct HttpResponse {
             status_code, body.size(),
             is_success() ? "true" : "false",
             escaped, truncated ? "..." : "");
+    }
+
+    /// @brief Look up a response header by name (case-insensitive).
+    /// @param name  Header name to search for.
+    /// @return Header value (trimmed), or empty string if not found.
+    [[nodiscard]] std::string header(std::string_view name) const noexcept {
+        return find_header(headers_raw, name);
+    }
+
+    /// @brief Check if a response header exists (case-insensitive).
+    /// @param name  Header name to check for.
+    /// @return true if the header is present (even with empty value).
+    [[nodiscard]] bool has_header(std::string_view name) const noexcept {
+        return find_header_opt(headers_raw, name).has_value();
     }
 
     /// Defaulted equality -- all fields must match exactly.

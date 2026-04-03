@@ -774,6 +774,28 @@ TEST(HttpClientFindHeader, ValueWithLeadingAndTrailingOWS) {
 // find_header_opt — distinguishes missing from empty
 // =============================================================================
 
+// =============================================================================
+// HttpResponse::header() and has_header() convenience methods
+// =============================================================================
+
+TEST(HttpResponse, HeaderConvenienceReturnsValue) {
+    HttpResponse resp{
+        .status_code = 200, .body = "ok",
+        .headers_raw = "Content-Type: application/json\r\nX-Rate: 5\r\n"};
+    EXPECT_EQ(resp.header("Content-Type"), "application/json");
+    EXPECT_EQ(resp.header("X-Rate"), "5");
+    EXPECT_EQ(resp.header("X-Missing"), "");
+}
+
+TEST(HttpResponse, HasHeaderReturnsTrueForPresent) {
+    HttpResponse resp{
+        .status_code = 200, .body = "",
+        .headers_raw = "Content-Type: text/plain\r\nX-Empty:\r\n"};
+    EXPECT_TRUE(resp.has_header("Content-Type"));
+    EXPECT_TRUE(resp.has_header("X-Empty"));  // present even with empty value
+    EXPECT_FALSE(resp.has_header("X-Missing"));
+}
+
 TEST(HttpClientFindHeaderOpt, ReturnsValueWhenPresent) {
     std::string headers = "Content-Type: application/json\r\n";
     auto result = find_header_opt(headers, "Content-Type");
