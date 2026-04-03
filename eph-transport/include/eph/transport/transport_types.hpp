@@ -1227,7 +1227,8 @@ struct TransportStats {
             rtt.to_json(),
             tx_latency.to_json(), tx_queue_wait.to_json(), tx_encode.to_json(),
             rx_latency.to_json(), rx_decrypt.to_json(), rx_decode.to_json());
-        return part1 + part2;
+        part1 += part2;
+        return part1;
     }
 
     /// Defaulted equality — all fields must match exactly.
