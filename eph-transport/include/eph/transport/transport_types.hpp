@@ -1116,6 +1116,8 @@ struct TransportStats {
         d.rx_text_packets   = lhs.rx_text_packets   - rhs.rx_text_packets;
         d.rx_text_bytes     = lhs.rx_text_bytes     - rhs.rx_text_bytes;
         d.rx_dropped        = lhs.rx_dropped        - rhs.rx_dropped;
+        d.tcp_rx_packets    = lhs.tcp_rx_packets    - rhs.tcp_rx_packets;
+        d.tcp_rx_bursts     = lhs.tcp_rx_bursts     - rhs.tcp_rx_bursts;
         d.encrypt_errors    = lhs.encrypt_errors    - rhs.encrypt_errors;
         d.decrypt_errors    = lhs.decrypt_errors    - rhs.decrypt_errors;
         d.queue_full_count  = lhs.queue_full_count  - rhs.queue_full_count;
@@ -1150,6 +1152,7 @@ struct TransportStats {
             "text: {} pkts/{} B, {} dropped, {} encrypt errors\n"
             "  RX: {} packets ({:.0f}/s), {} bytes ({:.0f} B/s), "
             "text: {} pkts/{} B, {} dropped, {} decrypt errors\n"
+            "  TCP RX: {} segments, {} bursts\n"
             "  Queue full: {}, TX HWM: {}, RX HWM: {}\n"
             "  WebSocket: {} pings received, {} pongs sent, {} pong timeouts\n"
             "  Reconnections: {}, handshake: {:.1f}ms "
@@ -1167,6 +1170,7 @@ struct TransportStats {
             tx_text_packets, tx_text_bytes, tx_dropped, encrypt_errors,
             rx_packets, rx_pps(), rx_bytes, rx_bps(),
             rx_text_packets, rx_text_bytes, rx_dropped, decrypt_errors,
+            tcp_rx_packets, tcp_rx_bursts,
             queue_full_count, tx_queue_hwm, rx_queue_hwm,
             ws_pings_received, ws_pongs_sent, pong_timeouts,
             reconnect_count, handshake_ms(),
@@ -1192,6 +1196,7 @@ struct TransportStats {
             "\"tx_text_bytes\":{},\"tx_dropped\":{},"
             "\"rx_packets\":{},\"rx_bytes\":{},\"rx_text_packets\":{},"
             "\"rx_text_bytes\":{},\"rx_dropped\":{},"
+            "\"tcp_rx_packets\":{},\"tcp_rx_bursts\":{},"
             "\"encrypt_errors\":{},\"decrypt_errors\":{},"
             "\"queue_full_count\":{},\"tx_queue_hwm\":{},\"rx_queue_hwm\":{},"
             "\"ws_pings_received\":{},"
@@ -1203,6 +1208,7 @@ struct TransportStats {
             tx_text_bytes, tx_dropped,
             rx_packets, rx_bytes, rx_text_packets,
             rx_text_bytes, rx_dropped,
+            tcp_rx_packets, tcp_rx_bursts,
             encrypt_errors, decrypt_errors,
             queue_full_count, tx_queue_hwm, rx_queue_hwm,
             ws_pings_received,

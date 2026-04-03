@@ -586,15 +586,28 @@ TEST(TwophaseFilter, MoreThanMaxFramesPerBatchTruncated) {
 // TransportStats — additional edge cases
 // =======================================================================
 
-TEST(TransportStats, TcpRxFields) {
+TEST(TransportStats, TcpRxFieldsInJsonAndDump) {
     TransportStats s{};
     s.tcp_rx_packets = 100;
     s.tcp_rx_bursts = 10;
     auto j = s.to_json();
-    // tcp_rx_packets is not in the JSON but should be in dump
+    EXPECT_NE(j.find("\"tcp_rx_packets\":100"), std::string::npos);
+    EXPECT_NE(j.find("\"tcp_rx_bursts\":10"), std::string::npos);
     auto d = s.dump();
-    // Just verify these fields exist and dump doesn't crash
-    EXPECT_GE(d.size(), 50u);
+    EXPECT_NE(d.find("100 segments"), std::string::npos);
+    EXPECT_NE(d.find("10 bursts"), std::string::npos);
+}
+
+TEST(TransportStats, DeltaSubtractsTcpRxFields) {
+    TransportStats a{};
+    a.tcp_rx_packets = 200;
+    a.tcp_rx_bursts = 50;
+    TransportStats b{};
+    b.tcp_rx_packets = 100;
+    b.tcp_rx_bursts = 30;
+    auto d = a - b;
+    EXPECT_EQ(d.tcp_rx_packets, 100);
+    EXPECT_EQ(d.tcp_rx_bursts, 20);
 }
 
 TEST(TransportStats, EqualityDetectsDifference) {
