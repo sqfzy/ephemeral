@@ -1062,6 +1062,72 @@ TEST(Gateway, ConnectionTagsUpdatesAfterRemove) {
     EXPECT_EQ(tags[0], "second");
 }
 
+// ── is_all_healthy() / is_any_disconnected() ──────────────────────────────
+
+TEST(Gateway, IsAllHealthyEmptyGateway) {
+    Gateway gw;
+    EXPECT_TRUE(gw.is_all_healthy()) << "empty gateway should be vacuously healthy";
+    EXPECT_FALSE(gw.is_any_disconnected());
+}
+
+TEST(Gateway, IsAllHealthyAfterStartAll) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    gw.add("a", &tp1);
+    gw.add("b", &tp2);
+    gw.start_all();
+    EXPECT_TRUE(gw.is_all_healthy());
+    EXPECT_FALSE(gw.is_any_disconnected());
+}
+
+TEST(Gateway, IsAllHealthyFalseWhenOneDisconnected) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    gw.add("a", &tp1);
+    gw.add("b", &tp2);
+    gw.start_all();
+
+    tp2.running.store(false);
+    gw.check_health();
+    EXPECT_FALSE(gw.is_all_healthy());
+    EXPECT_TRUE(gw.is_any_disconnected());
+}
+
+TEST(Gateway, IsAnyDisconnectedFalseWhenStopped) {
+    // Stopped is intentional, not Disconnected
+    Gateway gw;
+    MockTransport tp;
+    gw.add("a", &tp);
+    // Initially Stopped, not Disconnected
+    EXPECT_FALSE(gw.is_any_disconnected());
+}
+
+TEST(Gateway, IsAllHealthyFalseWhenStopped) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("a", &tp);
+    // Stopped != Healthy
+    EXPECT_FALSE(gw.is_all_healthy());
+}
+
+TEST(Gateway, IsAllHealthyRecoveryAfterReconnect) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("a", &tp);
+    gw.start_all();
+    EXPECT_TRUE(gw.is_all_healthy());
+
+    // Simulate disconnect
+    tp.running.store(false);
+    gw.check_health();
+    EXPECT_FALSE(gw.is_all_healthy());
+
+    // Simulate recovery
+    tp.running.store(true);
+    gw.check_health();
+    EXPECT_TRUE(gw.is_all_healthy());
+}
+
 TEST(Gateway, FullLifecycle) {
     Gateway gw;
     MockTransport tp;
