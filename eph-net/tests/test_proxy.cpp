@@ -596,3 +596,26 @@ TEST(ProxyConfigWarnings, WarnsOnHttpConnectWithCredentials) {
     }
     EXPECT_TRUE(found);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_proxy_url — trailing content after port
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyUrl, TrailingSlashAfterPortReturnsError) {
+    // Proxy URLs should not have paths or trailing content.
+    auto r = parse_proxy_url("socks5://proxy.io:1080/");
+    // from_chars will fail because "/" is not consumed, causing an error
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(ProxyUrl, TrailingPathAfterPortReturnsError) {
+    auto r = parse_proxy_url("socks5://proxy.io:1080/path");
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(ProxyUrl, PortWithLeadingZerosStillParses) {
+    // Leading zeros may be unusual but from_chars handles them
+    auto r = parse_proxy_url("socks5://proxy.io:01080");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->port, 1080);
+}
