@@ -144,6 +144,24 @@ static void BM_Gateway_ForEach(benchmark::State& state) {
 BENCHMARK(BM_Gateway_ForEach)->Arg(1)->Arg(4)->Arg(8)->Arg(16);
 
 // ---------------------------------------------------------------------------
+// Gateway::remove_by_tag() — tag-based removal
+// ---------------------------------------------------------------------------
+
+static void BM_Gateway_RemoveByTag(benchmark::State& state) {
+    for (auto _ : state) {
+        state.PauseTiming();
+        Gateway gw;
+        BenchTransport tp;
+        (void)gw.add("bench-remove", &tp);
+        state.ResumeTiming();
+
+        bool ok = gw.remove_by_tag("bench-remove");
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_Gateway_RemoveByTag);
+
+// ---------------------------------------------------------------------------
 // Gateway::reconnect_by_tag() — tag-based reconnect
 // ---------------------------------------------------------------------------
 
