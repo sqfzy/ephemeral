@@ -92,8 +92,8 @@ TEST(Gateway, StopAllStopsRunningConnections) {
     tp1.running.store(true);
     tp2.running.store(true);
 
-    gw.add("t1", &tp1);
-    gw.add("t2", &tp2);
+    [[maybe_unused]] auto id1 = gw.add("t1", &tp1);
+    [[maybe_unused]] auto id2 = gw.add("t2", &tp2);
 
     gw.stop_all();
 
