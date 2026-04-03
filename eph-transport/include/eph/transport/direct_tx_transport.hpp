@@ -291,20 +291,20 @@ public:
 
     /// Send a WebSocket Close frame with a custom status code and reason.
     /// Delegates to TransportCore::send_close_direct() (shared with DirectTransport).
-    SendError send_close(uint16_t status_code,
+    [[nodiscard]] SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
         return core_.send_close_direct(status_code, reason, MaxPayload);
     }
 
     /// Send a WebSocket Ping frame.
     /// Delegates to TransportCore::send_ping_direct() (shared with DirectTransport).
-    SendError send_ping(const void* payload = nullptr,
+    [[nodiscard]] SendError send_ping(const void* payload = nullptr,
                         size_t payload_len = 0) noexcept {
         return core_.send_ping_direct(payload, payload_len, MaxPayload);
     }
 
     /// Batch-send multiple messages (sends each directly).
-    SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
+    [[nodiscard]] SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
                      uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;

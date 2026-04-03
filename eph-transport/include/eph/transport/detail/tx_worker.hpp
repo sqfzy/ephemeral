@@ -123,7 +123,7 @@ public:
             return SendError::kNotConnected;
 
         bool ok = tx_queue_.try_produce([&](TxMsg& msg) {
-            std::memcpy(msg.data, data, len);
+            std::memcpy(msg.data.data(), data, len);
             msg.len = static_cast<uint16_t>(len);
             msg.opcode = opcode;
             if constexpr (kEnableTimestamps) {
@@ -163,7 +163,7 @@ public:
             return SendError::kNotConnected;
 
         bool ok = tx_queue_.try_produce_for([&](TxMsg& msg) {
-            std::memcpy(msg.data, data, len);
+            std::memcpy(msg.data.data(), data, len);
             msg.len = static_cast<uint16_t>(len);
             msg.opcode = opcode;
             if constexpr (kEnableTimestamps) {
@@ -197,7 +197,7 @@ public:
 
         bool ok = tx_queue_.try_produce_n(count,
             [&](TxMsg& slot, size_t i) {
-                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
+                std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
                 slot.len = static_cast<uint16_t>(payloads[i].size());
                 slot.opcode = opcode;
                 if constexpr (kEnableTimestamps) {
@@ -229,7 +229,7 @@ public:
 
         bool ok = tx_queue_.try_produce_n_for(count,
             [&](TxMsg& slot, size_t i) {
-                std::memcpy(slot.data, payloads[i].data(), payloads[i].size());
+                std::memcpy(slot.data.data(), payloads[i].data(), payloads[i].size());
                 slot.len = static_cast<uint16_t>(payloads[i].size());
                 slot.opcode = opcode;
                 if constexpr (kEnableTimestamps) {
@@ -536,15 +536,15 @@ private:
                     // fall back to encode_frame for other opcodes.
                     if (batch[i].opcode == ws::opcode::kBinary) {
                         ws_len = ws_tmpl.encode(
-                            ws_buf, batch[i].data, batch[i].len);
+                            ws_buf, batch[i].data.data(), batch[i].len);
                     } else {
                         ws_len = ws::encode_frame(
                             ws_buf, batch[i].opcode,
-                            batch[i].data, batch[i].len);
+                            batch[i].data.data(), batch[i].len);
                     }
                 } else {
                     ws_len = framer_instance.encode(
-                        ws_buf, batch[i].data, batch[i].len, batch[i].opcode);
+                        ws_buf, batch[i].data.data(), batch[i].len, batch[i].opcode);
                 }
 
                 // Record TSC for RTT measurement when a ping frame is
@@ -713,15 +713,15 @@ private:
             if constexpr (kIsWebSocket) {
                 if (batch[i].opcode == ws::opcode::kBinary) {
                     ws_len = ws_tmpl.encode(
-                        ws_buf, batch[i].data, batch[i].len);
+                        ws_buf, batch[i].data.data(), batch[i].len);
                 } else {
                     ws_len = ws::encode_frame(
                         ws_buf, batch[i].opcode,
-                        batch[i].data, batch[i].len);
+                        batch[i].data.data(), batch[i].len);
                 }
             } else {
                 ws_len = framer_instance.encode(
-                    ws_buf, batch[i].data, batch[i].len, batch[i].opcode);
+                    ws_buf, batch[i].data.data(), batch[i].len, batch[i].opcode);
             }
 
             auto account_drain_msg = [&](uint16_t len, uint8_t opcode) {

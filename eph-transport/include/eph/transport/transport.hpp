@@ -337,7 +337,7 @@ public:
     /// @param opcode   WebSocket opcode (default: binary)
     /// @return SendError::kOk on success, kQueueFull on timeout
     template <typename Rep, typename Period>
-    SendError send_for(const void* data, size_t len,
+    [[nodiscard]] SendError send_for(const void* data, size_t len,
                        std::chrono::duration<Rep, Period> timeout,
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
@@ -351,7 +351,7 @@ public:
 
     /// Send data from a span with timeout (convenience overload).
     template <typename Rep, typename Period>
-    SendError send_for(std::span<const uint8_t> data,
+    [[nodiscard]] SendError send_for(std::span<const uint8_t> data,
                        std::chrono::duration<Rep, Period> timeout,
                        uint8_t opcode = ws::opcode::kBinary) noexcept {
         return send_for(data.data(), data.size(), timeout, opcode);
@@ -361,7 +361,7 @@ public:
     /// Combines send_text()'s UTF-8 check with send_for()'s backpressure wait.
     /// Validation is skipped when TransportConfig::skip_utf8_validation is true.
     template <typename Rep, typename Period>
-    SendError send_text_for(const void* data, size_t len,
+    [[nodiscard]] SendError send_text_for(const void* data, size_t len,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
         if (len > 0 && !data) [[unlikely]] return SendError::kNullData;
         if (!core_.config.skip_utf8_validation &&
@@ -373,7 +373,7 @@ public:
 
     /// Send a string_view as a WebSocket text frame with timeout.
     template <typename Rep, typename Period>
-    SendError send_text_for(std::string_view sv,
+    [[nodiscard]] SendError send_text_for(std::string_view sv,
                             std::chrono::duration<Rep, Period> timeout) noexcept {
         if (!core_.config.skip_utf8_validation && !ws::is_valid_utf8(sv)) {
             return SendError::kInvalidUtf8;
@@ -383,14 +383,14 @@ public:
 
     /// Send a WebSocket binary frame with timeout (convenience, explicit intent).
     template <typename Rep, typename Period>
-    SendError send_binary_for(const void* data, size_t len,
+    [[nodiscard]] SendError send_binary_for(const void* data, size_t len,
                               std::chrono::duration<Rep, Period> timeout) noexcept {
         return send_for(data, len, timeout, ws::opcode::kBinary);
     }
 
     /// Send a span as a WebSocket binary frame with timeout.
     template <typename Rep, typename Period>
-    SendError send_binary_for(std::span<const uint8_t> data,
+    [[nodiscard]] SendError send_binary_for(std::span<const uint8_t> data,
                               std::chrono::duration<Rep, Period> timeout) noexcept {
         return send_for(data.data(), data.size(), timeout, ws::opcode::kBinary);
     }
@@ -404,7 +404,7 @@ public:
     /// @param status_code  Close reason code (e.g., ws::close_code::kGoingAway)
     /// @param reason       Optional human-readable reason (max 123 bytes, truncated if longer)
     /// @return SendError::kOk on success, or a specific error code
-    SendError send_close(uint16_t status_code,
+    [[nodiscard]] SendError send_close(uint16_t status_code,
                          std::string_view reason = {}) noexcept {
         if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (!ws::is_valid_close_code(status_code)) return SendError::kInvalidCloseCode;
@@ -427,7 +427,7 @@ public:
             msg.data[0] = static_cast<uint8_t>(status_code >> 8);
             msg.data[1] = static_cast<uint8_t>(status_code & 0xFF);
             if (reason_len > 0) {
-                std::memcpy(msg.data + 2, reason.data(), reason_len);
+                std::memcpy(msg.data.data() + 2, reason.data(), reason_len);
             }
             msg.len = payload_len;
             msg.opcode = ws::opcode::kClose;
@@ -449,7 +449,7 @@ public:
     /// @param payload      Optional ping payload data (nullptr for empty ping)
     /// @param payload_len  Payload length (must be <= 125, truncated if larger)
     /// @return SendError::kOk on success, or a specific error code
-    SendError send_ping(const void* payload = nullptr,
+    [[nodiscard]] SendError send_ping(const void* payload = nullptr,
                         size_t payload_len = 0) noexcept {
         if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
@@ -465,7 +465,7 @@ public:
 
         bool ok = tx_.queue().try_produce([&](TxMsg& msg) {
             if (payload && payload_len > 0) {
-                std::memcpy(msg.data, payload, payload_len);
+                std::memcpy(msg.data.data(), payload, payload_len);
             }
             msg.len = static_cast<uint16_t>(payload_len);
             msg.opcode = ws::opcode::kPing;
@@ -491,7 +491,7 @@ public:
     /// @param count     Number of messages
     /// @param opcode    WebSocket opcode for all messages
     /// @return SendError::kOk on success, or a specific error code
-    SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
+    [[nodiscard]] SendError send_n(const std::span<const uint8_t>* payloads, size_t count,
                      uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
         if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
@@ -519,7 +519,7 @@ public:
     /// @param opcode    WebSocket opcode for all messages
     /// @return SendError::kOk on success, or a specific error code
     template <typename Rep, typename Period>
-    SendError send_n_for(const std::span<const uint8_t>* payloads, size_t count,
+    [[nodiscard]] SendError send_n_for(const std::span<const uint8_t>* payloads, size_t count,
                          std::chrono::duration<Rep, Period> timeout,
                          uint8_t opcode = ws::opcode::kBinary) noexcept {
         if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
