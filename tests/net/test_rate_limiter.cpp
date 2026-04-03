@@ -184,6 +184,21 @@ TEST(RateLimiter, AcquireBlocksUntilTokenAvailable) {
     EXPECT_LT(elapsed, 100ms) << "acquire() took too long to unblock";
 }
 
+TEST(RateLimiter, AcquireTimesOutWithZeroRate) {
+    // Rate=0 and burst already exhausted: acquire() should time out and return false,
+    // not spin indefinitely.
+    RateLimiter rl(0.0, 1);
+    EXPECT_TRUE(rl.try_acquire()); // exhaust burst
+
+    const auto start = std::chrono::steady_clock::now();
+    bool result = rl.acquire(1, std::chrono::milliseconds{100});
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_FALSE(result) << "acquire() should return false on timeout";
+    EXPECT_GE(elapsed, 90ms) << "should have waited near the timeout duration";
+    EXPECT_LT(elapsed, 500ms) << "should not wait much longer than timeout";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Thread safety
 // ─────────────────────────────────────────────────────────────────────────────

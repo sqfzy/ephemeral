@@ -268,7 +268,7 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         SPDLOG_LOGGER_INFO(detail::circuit_breaker_logger(),
                     "CircuitBreaker: manual reset to Closed (was state={}, failures={})",
-                    static_cast<int>(state_), failure_count_);
+                    circuit_state_name(state_), failure_count_);
         state_ = CircuitState::Closed;
         failure_count_ = 0;
         half_open_calls_ = 0;

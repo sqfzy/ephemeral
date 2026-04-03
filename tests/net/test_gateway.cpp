@@ -432,3 +432,101 @@ TEST(GatewayConfig, FormatterContainsKeyFields) {
     EXPECT_NE(s.find("health=5000ms"), std::string::npos);
     EXPECT_NE(s.find("degraded=30000ms"), std::string::npos);
 }
+
+// ── Gateway::Config equality ────────────────────────────────────────────────
+
+TEST(GatewayConfig, EqualityMatchingConfigs) {
+    Gateway::Config a, b;
+    a.health_check_interval = std::chrono::milliseconds{3000};
+    a.degraded_threshold = std::chrono::milliseconds{15000};
+    b.health_check_interval = std::chrono::milliseconds{3000};
+    b.degraded_threshold = std::chrono::milliseconds{15000};
+    EXPECT_EQ(a, b);
+}
+
+TEST(GatewayConfig, EqualityDifferentInterval) {
+    Gateway::Config a, b;
+    a.health_check_interval = std::chrono::milliseconds{3000};
+    b.health_check_interval = std::chrono::milliseconds{5000};
+    EXPECT_NE(a, b);
+}
+
+TEST(GatewayConfig, EqualityCallbackPresence) {
+    // Both without callback
+    Gateway::Config a, b;
+    EXPECT_EQ(a, b);
+
+    // Both with callback (presence matches, identity ignored)
+    a.on_health_change = [](std::string_view, ConnHealth, ConnHealth) {};
+    b.on_health_change = [](std::string_view, ConnHealth, ConnHealth) {};
+    EXPECT_EQ(a, b);
+
+    // One with, one without
+    Gateway::Config c;
+    EXPECT_NE(a, c);
+}
+
+// ── Gateway::remove() ──────────────────────────────────────────────────────
+
+TEST(Gateway, RemoveConnectionByIndex) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    auto id1 = gw.add("t1", &tp1);
+    auto id2 = gw.add("t2", &tp2);
+
+    EXPECT_EQ(gw.connection_count(), 2);
+    EXPECT_TRUE(gw.remove(id1));
+    EXPECT_EQ(gw.connection_count(), 1);
+    // After removing index 0, t2 shifts to index 0
+    EXPECT_EQ(gw.tag(0), "t2");
+}
+
+TEST(Gateway, RemoveOutOfRangeReturnsFalse) {
+    Gateway gw;
+    EXPECT_FALSE(gw.remove(0));
+    EXPECT_FALSE(gw.remove(999));
+}
+
+TEST(Gateway, RemoveStopsRunningConnection) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    gw.add("running-conn", &tp);
+
+    EXPECT_TRUE(tp.is_running());
+    EXPECT_TRUE(gw.remove(0));
+    EXPECT_FALSE(tp.is_running());
+    EXPECT_EQ(gw.connection_count(), 0);
+}
+
+TEST(Gateway, RemoveSkipsStopForStoppedConnection) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("stopped-conn", &tp);
+
+    EXPECT_TRUE(gw.remove(0));
+    EXPECT_EQ(tp.stop_count.load(), 0);
+}
+
+TEST(Gateway, RemoveDoesNotAffectOtherConnections) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    tp1.running.store(true);
+    tp2.running.store(true);
+    tp3.running.store(true);
+
+    gw.add("first", &tp1);
+    gw.add("middle", &tp2);
+    gw.add("last", &tp3);
+
+    // Remove the middle connection
+    EXPECT_TRUE(gw.remove(1));
+    EXPECT_EQ(gw.connection_count(), 2);
+    EXPECT_EQ(gw.tag(0), "first");
+    EXPECT_EQ(gw.tag(1), "last");
+
+    // Other transports should still be running
+    EXPECT_TRUE(tp1.is_running());
+    EXPECT_FALSE(tp2.is_running());  // removed and stopped
+    EXPECT_TRUE(tp3.is_running());
+}

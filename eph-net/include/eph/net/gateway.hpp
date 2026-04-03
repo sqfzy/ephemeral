@@ -19,6 +19,7 @@
 ///   gw.stop_all();
 
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -34,6 +35,19 @@
 #include <spdlog/spdlog.h>
 
 namespace eph::net {
+
+/// @brief Concept for types manageable by Gateway.
+///
+/// Extends Stoppable with start_threads() and reconnect_now(), matching the
+/// full lifecycle API that Gateway type-erases. This catches type mismatches
+/// at the add() call site instead of inside the type-erased lambda body.
+template <typename T>
+concept GatewayManageable = requires(T t) {
+    { t.stop() };
+    { t.is_running() } -> std::convertible_to<bool>;
+    { t.start_threads() };
+    { t.reconnect_now() };
+};
 
 namespace detail {
 /// @brief Lazily-initialized logger for the Gateway subsystem.
@@ -159,6 +173,15 @@ public:
                 degraded_threshold.count(),
                 static_cast<bool>(on_health_change) ? "true" : "false");
         }
+
+        /// Equality comparison. Compares interval and threshold values.
+        /// Callbacks are compared by presence (both set or both unset), not identity,
+        /// because std::function does not support meaningful equality comparison.
+        [[nodiscard]] friend bool operator==(const Config& a, const Config& b) noexcept {
+            return a.health_check_interval == b.health_check_interval &&
+                   a.degraded_threshold == b.degraded_threshold &&
+                   static_cast<bool>(a.on_health_change) == static_cast<bool>(b.on_health_change);
+        }
     };
 
     /// @brief Construct a Gateway with default configuration.
@@ -186,14 +209,13 @@ public:
     ///
     /// The transport must outlive the Gateway (or be removed first).
     ///
-    /// @tparam Transport  Any type with stop(), is_running(), start_threads(),
-    ///                    and reconnect_now() methods.
+    /// @tparam Transport  Any type satisfying the GatewayManageable concept.
     /// @param tag       Human-readable identifier for this connection (e.g., "binance-btcusdt").
     /// @param tp        Pointer to the transport instance. Must not be null.
     /// @param priority  Connection priority (lower = more important). Used for log ordering.
     /// @return Connection index for use with health(), tag(), reconnect(), etc.
     ///         Returns SIZE_MAX if tp is null.
-    template <typename Transport>
+    template <GatewayManageable Transport>
     [[nodiscard]] size_t add(std::string tag, Transport* tp, uint8_t priority = 128) {
         if (!tp) {
             SPDLOG_LOGGER_ERROR(detail::gateway_logger(), "Gateway::add: null transport for tag '{}'", tag);
@@ -216,6 +238,44 @@ public:
         SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: added connection [{}] '{}' (priority={})",
                      id, connections_[id].tag, priority);
         return id;
+    }
+
+    /// @brief Remove a connection by index.
+    ///
+    /// Stops the connection if it is running, then removes it from the
+    /// managed list. Indices of connections added after this one shift down.
+    ///
+    /// @param id  Connection index returned by add().
+    /// @return true if the connection was found and removed, false if out of range.
+    bool remove(size_t id) noexcept {
+        void* ptr = nullptr;
+        void (*stop_fn)(void*) = nullptr;
+        bool (*is_running_fn)(void*) = nullptr;
+        std::string removed_tag;
+
+        {
+            std::lock_guard lock(mu_);
+            if (id >= connections_.size()) return false;
+            auto& c = connections_[id];
+            removed_tag = c.tag;
+            ptr = c.transport_ptr;
+            stop_fn = c.stop_fn;
+            is_running_fn = c.is_running_fn;
+            connections_.erase(connections_.begin() + static_cast<ptrdiff_t>(id));
+        }
+
+        // Stop outside the lock to avoid deadlock if stop() calls back into Gateway
+        if (ptr && stop_fn && is_running_fn && is_running_fn(ptr)) {
+            SPDLOG_LOGGER_DEBUG(detail::gateway_logger(),
+                "Gateway: stopping removed connection [{}] '{}' before removal", id, removed_tag);
+            try { stop_fn(ptr); } catch (...) {
+                SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                    "Gateway: stop_fn threw for [{}] '{}' during removal", id, removed_tag);
+            }
+        }
+        SPDLOG_LOGGER_INFO(detail::gateway_logger(),
+            "Gateway: removed connection [{}] '{}'", id, removed_tag);
+        return true;
     }
 
     /// @brief Number of managed connections.
