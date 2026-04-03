@@ -134,3 +134,67 @@ TEST(Timestamp, format_timestamp_ms_with_fractional) {
     std::string s = format_timestamp_ms(epoch_ms);
     EXPECT_EQ(s, "2026-03-28T00:00:00.456Z");
 }
+
+// ---------------------------------------------------------------------------
+// Edge cases and boundary conditions
+// ---------------------------------------------------------------------------
+
+TEST(Timestamp, format_timestamp_ns_epoch_zero) {
+    // Unix epoch start: 1970-01-01T00:00:00.000000000Z
+    std::string s = format_timestamp_ns(0);
+    EXPECT_EQ(s, "1970-01-01T00:00:00.000000000Z");
+}
+
+TEST(Timestamp, format_timestamp_ms_epoch_zero) {
+    std::string s = format_timestamp_ms(0);
+    EXPECT_EQ(s, "1970-01-01T00:00:00.000Z");
+}
+
+TEST(Timestamp, ms_to_ns_large_value_no_overflow) {
+    // Year ~2100 in ms: approximately 4'102'444'800'000 ms
+    constexpr int64_t far_future_ms = 4'102'444'800'000LL;
+    constexpr uint64_t result = ms_to_ns(far_future_ms);
+    // Verify round-trip
+    EXPECT_EQ(ns_to_ms(result), far_future_ms);
+}
+
+TEST(Timestamp, ns_to_ms_single_nanosecond) {
+    // A single nanosecond should truncate to 0 ms
+    static_assert(ns_to_ms(1) == 0);
+    EXPECT_EQ(ns_to_ms(1), 0);
+}
+
+TEST(Timestamp, us_to_ns_large_value) {
+    // 1 hour in microseconds
+    constexpr int64_t one_hour_us = 3'600'000'000LL;
+    constexpr uint64_t result = us_to_ns(one_hour_us);
+    EXPECT_EQ(result, 3'600'000'000'000ULL);
+}
+
+TEST(Timestamp, format_timestamp_ns_end_of_day) {
+    // 2026-03-28T23:59:59.999999999Z
+    constexpr uint64_t epoch_ns = 1'774'656'000'000'000'000ULL
+                                + 86'399ULL * 1'000'000'000ULL
+                                + 999'999'999ULL;
+    std::string s = format_timestamp_ns(epoch_ns);
+    EXPECT_EQ(s, "2026-03-28T23:59:59.999999999Z");
+}
+
+TEST(Timestamp, now_ns_called_twice_returns_increasing_values) {
+    // Stronger monotonicity test with multiple samples
+    uint64_t prev = now_ns();
+    for (int i = 0; i < 100; ++i) {
+        uint64_t curr = now_ns();
+        EXPECT_GE(curr, prev) << "now_ns() went backwards at iteration " << i;
+        prev = curr;
+    }
+}
+
+TEST(Timestamp, feed_latency_ns_from_old_timestamp) {
+    // An exchange timestamp from 1 second ago should yield ~1s latency
+    uint64_t one_sec_ago = now_ns() - 1'000'000'000ULL;
+    int64_t latency = feed_latency_ns(one_sec_ago);
+    // Should be close to 1 billion ns (1 second), allow some tolerance
+    EXPECT_GT(latency, 900'000'000LL);
+    EXPECT_LT(latency, 1'100'000'000LL);
+}

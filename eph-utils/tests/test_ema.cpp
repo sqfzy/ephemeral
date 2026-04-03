@@ -190,3 +190,95 @@ TEST(EmaCrossoverTest, fast_and_slow_accessors) {
     // Fast (alpha=0.667) should respond more than slow (alpha=0.333).
     EXPECT_GT(cross.fast(), cross.slow());
 }
+
+// ---------------------------------------------------------------------------
+// Ema error / boundary condition tests
+// ---------------------------------------------------------------------------
+
+TEST(EmaTest, alpha_zero_throws) {
+    EXPECT_THROW(Ema(0.0), std::invalid_argument);
+}
+
+TEST(EmaTest, alpha_negative_throws) {
+    EXPECT_THROW(Ema(-0.5), std::invalid_argument);
+}
+
+TEST(EmaTest, alpha_above_one_throws) {
+    EXPECT_THROW(Ema(1.1), std::invalid_argument);
+}
+
+TEST(EmaTest, from_period_zero_throws) {
+    // size_t(0) - 1 wraps, but the check is period < 1 which is always false
+    // for size_t. However size_t(0) IS < 1 in unsigned comparison... actually
+    // size_t(0) < size_t(1) is true. Let's verify.
+    EXPECT_THROW(Ema::from_period(0), std::invalid_argument);
+}
+
+TEST(EmaTest, update_with_negative_values) {
+    Ema ema(0.5);
+    double result = ema.update(-100.0);
+    EXPECT_DOUBLE_EQ(result, -100.0);
+
+    result = ema.update(-50.0);
+    // -100 * 0.5 + (-50) * 0.5 = -75
+    double expected = 0.5 * (-50.0) + 0.5 * (-100.0);
+    EXPECT_DOUBLE_EQ(result, expected);
+}
+
+TEST(EmaTest, update_with_very_large_values) {
+    Ema ema(0.5);
+    double big = 1e15;
+    (void)ema.update(big);
+    EXPECT_DOUBLE_EQ(ema.value(), big);
+
+    (void)ema.update(big);
+    EXPECT_DOUBLE_EQ(ema.value(), big);
+}
+
+TEST(EmaTest, multiple_resets_are_safe) {
+    Ema ema(0.5);
+    ema.reset();
+    ema.reset();
+    EXPECT_FALSE(ema.initialized());
+
+    (void)ema.update(42.0);
+    EXPECT_TRUE(ema.initialized());
+    EXPECT_DOUBLE_EQ(ema.value(), 42.0);
+}
+
+// ---------------------------------------------------------------------------
+// EmaCrossover error / boundary condition tests
+// ---------------------------------------------------------------------------
+
+TEST(EmaCrossoverTest, fast_greater_than_slow_throws) {
+    EXPECT_THROW(EmaCrossover(10, 5), std::invalid_argument);
+}
+
+TEST(EmaCrossoverTest, equal_periods_no_crossover) {
+    // When fast == slow, both EMAs track identically, no crossover possible.
+    EmaCrossover cross(5, 5);
+    (void)cross.update(100.0);
+    for (int i = 0; i < 50; ++i) {
+        auto sig = cross.update(100.0 + static_cast<double>(i));
+        EXPECT_EQ(sig, EmaCrossover::Signal::None)
+            << "Equal-period crossover should never fire at iteration " << i;
+    }
+}
+
+TEST(EmaCrossoverTest, rapid_oscillation_generates_signals) {
+    // Alternate between high and low prices — should eventually see crossovers.
+    EmaCrossover cross(2, 10);
+    (void)cross.update(100.0);
+
+    int bullish_count = 0;
+    int bearish_count = 0;
+    for (int i = 0; i < 200; ++i) {
+        double price = (i % 2 == 0) ? 150.0 : 50.0;
+        auto sig = cross.update(price);
+        if (sig == EmaCrossover::Signal::BullishCross) ++bullish_count;
+        if (sig == EmaCrossover::Signal::BearishCross) ++bearish_count;
+    }
+    // With such extreme oscillation, we should see both types of crossovers
+    EXPECT_GT(bullish_count, 0) << "Expected at least one bullish cross";
+    EXPECT_GT(bearish_count, 0) << "Expected at least one bearish cross";
+}
