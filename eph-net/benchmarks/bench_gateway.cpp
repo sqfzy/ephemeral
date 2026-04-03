@@ -144,6 +144,29 @@ static void BM_Gateway_ForEach(benchmark::State& state) {
 BENCHMARK(BM_Gateway_ForEach)->Arg(1)->Arg(4)->Arg(8)->Arg(16);
 
 // ---------------------------------------------------------------------------
+// Gateway::reconnect_by_tag() — tag-based reconnect
+// ---------------------------------------------------------------------------
+
+static void BM_Gateway_ReconnectByTag(benchmark::State& state) {
+    const auto n = static_cast<size_t>(state.range(0));
+    Gateway gw;
+    std::vector<BenchTransport> transports(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        transports[i].running = true;
+        (void)gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+
+    // Reconnect the last tag (worst case for linear scan)
+    std::string target = "conn-" + std::to_string(n - 1);
+
+    for (auto _ : state) {
+        gw.reconnect_by_tag(target);
+    }
+}
+BENCHMARK(BM_Gateway_ReconnectByTag)->Arg(1)->Arg(4)->Arg(8)->Arg(16);
+
+// ---------------------------------------------------------------------------
 // Gateway::connection_tags() — snapshot all tags
 // ---------------------------------------------------------------------------
 
