@@ -169,12 +169,12 @@ struct TcpConfig {
             "TcpConfig:\n"
             "  src: {}:{}, dst: {}:{}\n"
             "  src_mac: {}, dst_mac: {}\n"
-            "  mss: {}, recv_window: {}\n"
+            "  mss: {}, recv_window: {}, max_rx_burst: {}\n"
             "  port_id: {}, tx_queue: {}, rx_queue: {}",
             net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
             net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
             net::format_mac(src_mac).data(), net::format_mac(dst_mac).data(),
-            mss, recv_window,
+            mss, recv_window, max_rx_burst,
             port_id, tx_queue_id, rx_queue_id);
     }
 
@@ -184,13 +184,13 @@ struct TcpConfig {
             "{{\"src_ip\":\"{}\",\"dst_ip\":\"{}\","
             "\"src_port\":{},\"dst_port\":{},"
             "\"src_mac\":\"{}\",\"dst_mac\":\"{}\","
-            "\"mss\":{},\"recv_window\":{},"
+            "\"mss\":{},\"recv_window\":{},\"max_rx_burst\":{},"
             "\"port_id\":{},\"tx_queue_id\":{},\"rx_queue_id\":{}}}",
             net::format_ipv4(tuple.src_ip).data(),
             net::format_ipv4(tuple.dst_ip).data(),
             tuple.src_port, tuple.dst_port,
             net::format_mac(src_mac).data(), net::format_mac(dst_mac).data(),
-            mss, recv_window,
+            mss, recv_window, max_rx_burst,
             port_id, tx_queue_id, rx_queue_id);
     }
 };

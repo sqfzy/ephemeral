@@ -432,6 +432,84 @@ static void BM_PacketTemplateValidate(benchmark::State& state) {
 BENCHMARK(BM_PacketTemplateValidate);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::dump / to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include "eph/dpdk/tcp.hpp"
+
+static void BM_TcpConfigDump(benchmark::State& state) {
+    eph::dpdk::TcpConfig cfg{};
+    cfg.tuple = {
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 443};
+    cfg.mss = 1460;
+    cfg.recv_window = 65535;
+    cfg.src_mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    cfg.dst_mac = {{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}};
+
+    for (auto _ : state) {
+        auto s = cfg.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_TcpConfigDump);
+
+static void BM_TcpConfigToJson(benchmark::State& state) {
+    eph::dpdk::TcpConfig cfg{};
+    cfg.tuple = {
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 443};
+    cfg.mss = 1460;
+    cfg.recv_window = 65535;
+    cfg.src_mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    cfg.dst_mac = {{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}};
+
+    for (auto _ : state) {
+        auto s = cfg.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_TcpConfigToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpStats::dump / to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_TcpStatsDump(benchmark::State& state) {
+    eph::dpdk::TcpSession<>::Stats s{};
+    s.tx_packets = 10000;
+    s.rx_packets = 9500;
+    s.tx_bytes = 5000000;
+    s.rx_bytes = 4750000;
+    s.reorder_hits = 42;
+    s.gap_histogram[10] = 5;
+    s.gap_histogram[11] = 2;
+
+    for (auto _ : state) {
+        auto d = s.dump();
+        benchmark::DoNotOptimize(d.data());
+    }
+}
+BENCHMARK(BM_TcpStatsDump);
+
+static void BM_TcpStatsToJson(benchmark::State& state) {
+    eph::dpdk::TcpSession<>::Stats s{};
+    s.tx_packets = 10000;
+    s.rx_packets = 9500;
+    s.tx_bytes = 5000000;
+    s.rx_bytes = 4750000;
+    s.reorder_hits = 42;
+    s.gap_histogram[10] = 5;
+    s.gap_histogram[11] = 2;
+
+    for (auto _ : state) {
+        auto j = s.to_json();
+        benchmark::DoNotOptimize(j.data());
+    }
+}
+BENCHMARK(BM_TcpStatsToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FlowRule::dump / to_json
 // ─────────────────────────────────────────────────────────────────────────────
 

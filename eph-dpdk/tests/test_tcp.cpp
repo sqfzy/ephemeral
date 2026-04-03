@@ -561,3 +561,57 @@ TEST(TcpConfig, MaxRxBurstBoundary) {
     cfg.max_rx_burst = 33;
     EXPECT_FALSE(cfg.validate().empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::dump and to_json — max_rx_burst inclusion
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, DumpIncludesMaxRxBurst) {
+    auto cfg = make_valid_config();
+    cfg.max_rx_burst = 16;
+    auto dump = cfg.dump();
+    EXPECT_NE(dump.find("max_rx_burst: 16"), std::string::npos);
+}
+
+TEST(TcpConfig, ToJsonIncludesMaxRxBurst) {
+    auto cfg = make_valid_config();
+    cfg.max_rx_burst = 24;
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"max_rx_burst\":24"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpStats — multi-bucket gap histogram in JSON
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpStats, ToJsonMultipleBucketsGapHistogram) {
+    Stats s{};
+    s.gap_histogram[5] = 10;
+    s.gap_histogram[10] = 3;
+    s.gap_histogram[15] = 1;
+    auto json = s.to_json();
+    // All three buckets should appear in the gap_histogram object
+    EXPECT_NE(json.find("\"gap_histogram\":{"), std::string::npos);
+    EXPECT_NE(json.find("\"5\":10"), std::string::npos);
+    EXPECT_NE(json.find("\"10\":3"), std::string::npos);
+    EXPECT_NE(json.find("\"15\":1"), std::string::npos);
+}
+
+TEST(TcpStats, DumpMultipleBucketsGapHistogram) {
+    Stats s{};
+    s.gap_histogram[0] = 100;
+    s.gap_histogram[31] = 1;
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("gap[2^0..2^1): 100"), std::string::npos);
+    EXPECT_NE(dump.find("gap[2^31..2^32): 1"), std::string::npos);
+}
+
+TEST(TcpStats, DumpSkipsZeroBuckets) {
+    Stats s{};
+    s.gap_histogram[5] = 42;
+    auto dump = s.dump();
+    EXPECT_NE(dump.find("gap[2^5..2^6): 42"), std::string::npos);
+    // Bucket 4 and 6 (neighbors) should NOT appear since they're zero
+    EXPECT_EQ(dump.find("gap[2^4..2^5)"), std::string::npos);
+    EXPECT_EQ(dump.find("gap[2^6..2^7)"), std::string::npos);
+}
