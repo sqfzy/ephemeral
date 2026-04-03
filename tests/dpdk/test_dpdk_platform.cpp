@@ -475,3 +475,80 @@ TEST(PlatformConfig, FormatterDefaultConfig) {
     EXPECT_NE(s.find("PlatformConfig"), std::string::npos);
     EXPECT_NE(s.find("pool=4095"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlatformConfig::warnings
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(PlatformConfigWarnings, SensibleDefaultsNoWarnings) {
+    PlatformConfig cfg{
+        .nb_rx_desc = 256,
+        .nb_tx_desc = 512,
+        .mbuf_pool_size = 4095,
+        .mbuf_cache_size = 256,
+        .enable_promiscuous = false,
+        .link_timeout_ms = 2000,
+    };
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(PlatformConfigWarnings, SmallRxDesc) {
+    PlatformConfig cfg{.nb_rx_desc = 32, .nb_tx_desc = 512,
+                       .mbuf_pool_size = 4095, .mbuf_cache_size = 256,
+                       .link_timeout_ms = 2000};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("nb_rx_desc") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected small rx desc warning";
+}
+
+TEST(PlatformConfigWarnings, SmallTxDesc) {
+    PlatformConfig cfg{.nb_rx_desc = 256, .nb_tx_desc = 32,
+                       .mbuf_pool_size = 4095, .mbuf_cache_size = 256,
+                       .link_timeout_ms = 2000};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("nb_tx_desc") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected small tx desc warning";
+}
+
+TEST(PlatformConfigWarnings, LargeCacheRelativeToPool) {
+    PlatformConfig cfg{.nb_rx_desc = 256, .nb_tx_desc = 512,
+                       .mbuf_pool_size = 1023, .mbuf_cache_size = 512,
+                       .link_timeout_ms = 2000};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("mbuf_cache_size") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected large cache warning";
+}
+
+TEST(PlatformConfigWarnings, PromiscuousMode) {
+    PlatformConfig cfg{.nb_rx_desc = 256, .nb_tx_desc = 512,
+                       .mbuf_pool_size = 4095, .mbuf_cache_size = 256,
+                       .enable_promiscuous = true, .link_timeout_ms = 2000};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("promiscuous") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected promiscuous warning";
+}
+
+TEST(PlatformConfigWarnings, ZeroLinkTimeout) {
+    PlatformConfig cfg{.nb_rx_desc = 256, .nb_tx_desc = 512,
+                       .mbuf_pool_size = 4095, .mbuf_cache_size = 256,
+                       .link_timeout_ms = 0};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("link_timeout_ms") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected zero link timeout warning";
+}

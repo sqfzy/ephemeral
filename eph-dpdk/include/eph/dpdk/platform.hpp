@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -160,6 +161,41 @@ struct PlatformConfig {
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false", link_timeout_ms);
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate_config() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // Very small descriptor counts may cause drops under burst
+        if (nb_rx_desc < 64)
+            w.emplace_back(std::format(
+                "nb_rx_desc={} is small -- may cause RX drops under "
+                "burst traffic", nb_rx_desc));
+        if (nb_tx_desc < 64)
+            w.emplace_back(std::format(
+                "nb_tx_desc={} is small -- may cause TX backpressure",
+                nb_tx_desc));
+        // Large cache relative to pool wastes memory per-lcore
+        if (mbuf_cache_size > 0 && mbuf_pool_size > 0 &&
+            mbuf_cache_size > mbuf_pool_size / 4)
+            w.emplace_back(std::format(
+                "mbuf_cache_size={} is large relative to pool_size={} -- "
+                "each lcore reserves this many mbufs, reducing effective "
+                "pool capacity for other lcores",
+                mbuf_cache_size, mbuf_pool_size));
+        // Promiscuous mode in production is a security concern
+        if (enable_promiscuous)
+            w.emplace_back("enable_promiscuous=true -- receives all NIC "
+                           "traffic, not just this MAC; consider disabling "
+                           "in production");
+        // Zero link timeout means no wait for link-up
+        if (link_timeout_ms == 0)
+            w.emplace_back("link_timeout_ms=0 -- will not wait for NIC "
+                           "link-up; operations may fail if link is slow "
+                           "to establish");
+        return w;
     }
 
     /// JSON-formatted config for monitoring system integration.
