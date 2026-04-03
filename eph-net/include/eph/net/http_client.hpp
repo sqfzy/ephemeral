@@ -20,6 +20,7 @@
 #include <future>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -383,6 +384,38 @@ public:
                 host, port, use_tls, timeout.count(),
                 max_response_size,
                 ca_cert_path.empty() ? "(system)" : ca_cert_path);
+        }
+
+        /// @brief JSON-formatted config for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"host\":\"{}\",\"port\":{},\"use_tls\":{},\"timeout_ms\":{},"
+                "\"max_response_size\":{},\"ca_cert_path\":\"{}\"}}",
+                host, port, use_tls ? "true" : "false", timeout.count(),
+                max_response_size,
+                ca_cert_path.empty() ? "" : ca_cert_path);
+        }
+
+        /// Defaulted equality -- all fields must match exactly.
+        [[nodiscard]] friend bool operator==(const Config&,
+                                             const Config&) = default;
+
+        /// Check for non-fatal contradictions or likely misconfigurations.
+        /// Returns a list of warning messages (empty if no issues).
+        [[nodiscard]] std::vector<std::string> warnings() const {
+            std::vector<std::string> w;
+            if (!use_tls)
+                w.emplace_back("use_tls=false — HTTP requests will be sent "
+                               "in plaintext (credentials may be exposed)");
+            if (timeout.count() < 1000)
+                w.emplace_back(std::format(
+                    "timeout={}ms is short — DNS + TLS handshake alone "
+                    "may exceed this on slow networks", timeout.count()));
+            if (max_response_size > 64 * 1024 * 1024)
+                w.emplace_back(std::format(
+                    "max_response_size={}B (>64MB) — may consume excessive "
+                    "memory for a single response", max_response_size));
+            return w;
         }
     };
 

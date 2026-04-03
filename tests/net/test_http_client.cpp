@@ -653,3 +653,46 @@ TEST(HttpClientConfig, FormatterContainsKeyFields) {
     EXPECT_NE(s.find("443"), std::string::npos);
     EXPECT_NE(s.find("5000ms"), std::string::npos);
 }
+
+TEST(HttpClientConfig, ToJsonValidStructure) {
+    HttpClient::Config cfg{.host = "api.binance.com", .port = 443};
+    auto j = cfg.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"host\":\"api.binance.com\""), std::string::npos);
+    EXPECT_NE(j.find("\"port\":443"), std::string::npos);
+}
+
+TEST(HttpClientConfig, Equality) {
+    HttpClient::Config a{.host = "api.io", .port = 443};
+    HttpClient::Config b{.host = "api.io", .port = 443};
+    HttpClient::Config c{.host = "other.io", .port = 443};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
+TEST(HttpClientConfig, WarningsEmptyForReasonableConfig) {
+    HttpClient::Config cfg{.host = "api.io"};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(HttpClientConfig, WarnsOnPlaintextHttp) {
+    HttpClient::Config cfg{.host = "api.io", .use_tls = false};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("plaintext") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(HttpClientConfig, WarnsOnShortTimeout) {
+    HttpClient::Config cfg{.host = "api.io",
+                           .timeout = std::chrono::milliseconds{500}};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("short") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
