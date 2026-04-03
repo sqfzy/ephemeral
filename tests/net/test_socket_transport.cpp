@@ -754,3 +754,33 @@ TEST(SocketConfig, WarningsNoFalsePositiveForNagleWithLongTimeout) {
     cfg.send_timeout_ms = 500;  // long enough, no warning
     EXPECT_TRUE(cfg.warnings().empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SocketConfig::dump() / to_json() — bind_device inclusion
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(SocketConfig, DumpIncludesBindDevice) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.bind_device = "ens35";
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("ens35"), std::string::npos);
+}
+
+TEST(SocketConfig, DumpShowsNoneForEmptyBindDevice) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("(none)"), std::string::npos);
+}
+
+TEST(SocketConfig, ToJsonIncludesBindDevice) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    cfg.bind_device = "eth0";
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"bind_device\":\"eth0\""), std::string::npos);
+}
+
+TEST(SocketConfig, ToJsonEmptyBindDevice) {
+    SocketConfig cfg{.host = "localhost", .port = 8080};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"bind_device\":\"\""), std::string::npos);
+}
