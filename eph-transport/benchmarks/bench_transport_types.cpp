@@ -381,4 +381,55 @@ static void BM_ConnectionInfoToJson(benchmark::State& state) {
 }
 BENCHMARK(BM_ConnectionInfoToJson);
 
+// ---------------------------------------------------------------------------
+// TransportStats::operator- — windowed metrics delta (monitoring path)
+// ---------------------------------------------------------------------------
+
+static void BM_StatsDelta(benchmark::State& state) {
+    TransportStats a{};
+    a.tx_packets = 2'000'000;
+    a.tx_bytes = 1'000'000'000;
+    a.rx_packets = 4'000'000;
+    a.rx_bytes = 2'000'000'000;
+    a.tcp_rx_packets = 5'000'000;
+    a.tcp_rx_bursts = 500'000;
+    a.uptime_ns = 120'000'000'000;
+    a.remote_ip = "10.0.1.42";
+    a.rtt = {.count = 200, .min_ns = 500, .max_ns = 50000,
+             .mean_ns = 5000.0, .p50_ns = 4000, .p99_ns = 40000, .p999_ns = 48000};
+    a.tx_latency = a.rtt;
+    a.rx_latency = a.rtt;
+
+    TransportStats b{};
+    b.tx_packets = 1'000'000;
+    b.tx_bytes = 500'000'000;
+    b.rx_packets = 2'000'000;
+    b.rx_bytes = 1'000'000'000;
+    b.tcp_rx_packets = 2'500'000;
+    b.tcp_rx_bursts = 250'000;
+    b.uptime_ns = 60'000'000'000;
+
+    for (auto _ : state) {
+        auto d = a - b;
+        benchmark::DoNotOptimize(d);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_StatsDelta);
+
+// ---------------------------------------------------------------------------
+// RttStats::dump — RTT stats human-readable output
+// ---------------------------------------------------------------------------
+
+static void BM_RttStatsDump(benchmark::State& state) {
+    RttStats r{.count = 1000, .min_ns = 500, .max_ns = 100000,
+               .mean_ns = 10000.0, .p50_ns = 8000, .p99_ns = 80000, .p999_ns = 95000};
+    for (auto _ : state) {
+        auto d = r.dump();
+        benchmark::DoNotOptimize(d);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_RttStatsDump);
+
 BENCHMARK_MAIN();
