@@ -82,8 +82,38 @@ namespace eph::utils {
 // Formatting (for logging — not hot-path)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Internal: portable gmtime wrapper
+// ---------------------------------------------------------------------------
+
+namespace detail {
+
+/// @brief Portable thread-safe gmtime wrapper.
+///
+/// Uses `gmtime_r` on POSIX systems and `gmtime_s` on Windows. Returns
+/// the UTC-decomposed time in the caller-provided `tm` struct.
+///
+/// @param secs   Seconds since Unix epoch.
+/// @param result [out] Decomposed UTC time.
+/// @return `true` on success, `false` on conversion failure.
+inline bool portable_gmtime(time_t secs, struct tm& result) noexcept {
+#if defined(_WIN32)
+    return gmtime_s(&result, &secs) == 0;
+#else
+    return gmtime_r(&secs, &result) != nullptr;
+#endif
+}
+
+} // namespace detail
+
+// ---------------------------------------------------------------------------
+// Formatting (for logging -- not hot-path)
+// ---------------------------------------------------------------------------
+
 /// Format nanosecond epoch timestamp as ISO 8601 string.
 /// e.g., "2026-03-28T14:30:00.123456789Z"
+///
+/// @return Formatted string, or "(invalid timestamp)" on conversion failure.
 [[nodiscard]] inline std::string format_timestamp_ns(uint64_t epoch_ns) {
     // M13: time_t must be 64-bit to avoid Y2K38 overflow on large epoch values.
     static_assert(sizeof(time_t) >= 8,
@@ -93,7 +123,9 @@ namespace eph::utils {
     auto nanos = static_cast<uint32_t>(epoch_ns % 1'000'000'000ULL);
 
     struct tm utc{};
-    gmtime_r(&secs, &utc);
+    if (!detail::portable_gmtime(secs, utc)) [[unlikely]] {
+        return "(invalid timestamp)";
+    }
 
     return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:09d}Z",
                        utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
@@ -102,6 +134,8 @@ namespace eph::utils {
 
 /// Format millisecond epoch timestamp as ISO 8601 string.
 /// e.g., "2026-03-28T14:30:00.123Z"
+///
+/// @return Formatted string, or "(invalid timestamp)" on conversion failure.
 [[nodiscard]] inline std::string format_timestamp_ms(int64_t epoch_ms) {
     // M13: time_t must be 64-bit to avoid Y2K38 overflow on large epoch values.
     static_assert(sizeof(time_t) >= 8,
@@ -120,7 +154,9 @@ namespace eph::utils {
     auto ms = static_cast<uint32_t>(ms_rem);
 
     struct tm utc{};
-    gmtime_r(&secs, &utc);
+    if (!detail::portable_gmtime(secs, utc)) [[unlikely]] {
+        return "(invalid timestamp)";
+    }
 
     return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:03d}Z",
                        utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,

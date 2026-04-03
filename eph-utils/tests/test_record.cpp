@@ -295,10 +295,10 @@ TEST_F(RecordTest, SystemStatsReset) {
 }
 
 // ============================================================================
-// Stats — operator- and operator==
+// Stats -- count_delta and operator==
 // ============================================================================
 
-TEST_F(RecordTest, StatsDiffOperator) {
+TEST_F(RecordTest, StatsCountDelta) {
   Stats s1{.name = "test", .count = 10, .avg_ns = 100.0, .min_ns = 50.0,
             .max_ns = 200.0, .p50_ns = 90.0, .p90_ns = 150.0,
             .p99_ns = 190.0, .p999_ns = 198.0, .stddev_ns = 30.0};
@@ -306,7 +306,7 @@ TEST_F(RecordTest, StatsDiffOperator) {
             .max_ns = 250.0, .p50_ns = 100.0, .p90_ns = 180.0,
             .p99_ns = 230.0, .p999_ns = 245.0, .stddev_ns = 40.0};
 
-  auto delta = s2 - s1;
+  auto delta = count_delta(s2, s1);
   EXPECT_EQ(delta.name, "test");
   EXPECT_EQ(delta.count, 20u);
   // Point-in-time fields come from lhs (s2)
@@ -469,7 +469,7 @@ TEST_F(RecordTest, StatsToJsonPopulated) {
     EXPECT_NE(json.find("\"avg_ns\":50.00"), std::string::npos);
 }
 
-TEST_F(RecordTest, StatsSubtractOperator) {
+TEST_F(RecordTest, StatsCountDeltaFunction) {
     Stats a{.name = "Bench", .count = 200, .avg_ns = 60.0,
             .min_ns = 5.0, .max_ns = 300.0, .p50_ns = 55.0,
             .p90_ns = 90.0, .p99_ns = 160.0, .p999_ns = 200.0,
@@ -478,7 +478,7 @@ TEST_F(RecordTest, StatsSubtractOperator) {
             .min_ns = 10.0, .max_ns = 200.0, .p50_ns = 45.0,
             .p90_ns = 80.0, .p99_ns = 150.0, .p999_ns = 190.0,
             .stddev_ns = 25.0};
-    auto diff = a - b;
+    auto diff = count_delta(a, b);
     EXPECT_EQ(diff.count, 100);  // 200 - 100
     EXPECT_EQ(diff.name, "Bench");
     // Point-in-time fields should be from lhs
@@ -486,10 +486,10 @@ TEST_F(RecordTest, StatsSubtractOperator) {
     EXPECT_DOUBLE_EQ(diff.min_ns, 5.0);
 }
 
-TEST_F(RecordTest, StatsSubtractUnderflowClamps) {
+TEST_F(RecordTest, StatsCountDeltaUnderflowClamps) {
     Stats a{.name = "X", .count = 50};
     Stats b{.name = "X", .count = 100};
-    auto diff = a - b;
+    auto diff = count_delta(a, b);
     EXPECT_EQ(diff.count, 0);  // clamped, not wrapped
 }
 
