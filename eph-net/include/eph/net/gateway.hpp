@@ -395,6 +395,35 @@ public:
         return n;
     }
 
+    /// @brief Check if all managed connections are healthy.
+    ///
+    /// Convenience predicate for health gates: equivalent to
+    /// `healthy_count() == connection_count()` but avoids double iteration.
+    /// Returns true when there are no connections (vacuous truth).
+    ///
+    /// @return true if every connection has ConnHealth::Healthy status.
+    [[nodiscard]] bool is_all_healthy() const noexcept {
+        std::lock_guard lock(mu_);
+        for (const auto& c : connections_) {
+            if (c.health != ConnHealth::Healthy) return false;
+        }
+        return true;
+    }
+
+    /// @brief Check if any managed connection is disconnected.
+    ///
+    /// Useful for alerting: fires when at least one connection has dropped
+    /// but hasn't been intentionally stopped.
+    ///
+    /// @return true if any connection has ConnHealth::Disconnected status.
+    [[nodiscard]] bool is_any_disconnected() const noexcept {
+        std::lock_guard lock(mu_);
+        for (const auto& c : connections_) {
+            if (c.health == ConnHealth::Disconnected) return true;
+        }
+        return false;
+    }
+
     /// @brief Get all connection tags as a vector.
     ///
     /// Convenience method for logging, diagnostics, and test assertions.
