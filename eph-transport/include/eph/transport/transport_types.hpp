@@ -494,6 +494,16 @@ struct TransportConfig {
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (remote_host.empty())
             return "remote_host must not be empty";
+        // Reject control characters in hostname to prevent HTTP header
+        // injection (CWE-93). The hostname is interpolated into the Host
+        // header and TLS SNI extension. Cast to unsigned char to avoid
+        // signed-char treating bytes >= 0x80 (valid UTF-8) as negative.
+        for (char c : remote_host) {
+            auto uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc == 0x7f) {
+                return "remote_host contains control characters (header injection risk)";
+            }
+        }
         if (remote_port == 0)
             return "remote_port must be > 0";
         if (ws_path.empty())

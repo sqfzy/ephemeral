@@ -1203,6 +1203,38 @@ TEST(TransportConfigValidation, PongTimeoutEqualsPingIntervalIsError) {
     EXPECT_NE(err.find("pong_timeout"), std::string_view::npos);
 }
 
+TEST(TransportConfigValidation, HostWithControlCharsRejected) {
+    TransportConfig cfg;
+    cfg.remote_host = "evil\r\nInjection: true\r\n";
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidation, HostWithNullByteRejected) {
+    TransportConfig cfg;
+    cfg.remote_host = std::string("evil\0host", 9);
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidation, HostWithTabRejected) {
+    TransportConfig cfg;
+    cfg.remote_host = "evil\thost";
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidation, HostWithHighByteUtf8Accepted) {
+    // UTF-8 multibyte characters (>= 0x80) should be accepted.
+    TransportConfig cfg;
+    cfg.remote_host = "\xc3\xa9xample.com"; // "example.com" with accent
+    auto err = cfg.validate();
+    EXPECT_TRUE(err.empty()) << "UTF-8 hostname should be valid, got: " << err;
+}
+
 TEST(TransportConfigWarnings, MultipleWarningsFromSameConfig) {
     TransportConfig cfg;
     cfg.remote_host = "example.com";
