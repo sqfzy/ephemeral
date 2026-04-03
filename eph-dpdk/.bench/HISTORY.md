@@ -26,6 +26,20 @@ Platform: Linux aarch64, 16x 2000 MHz, L1d 64K, L2 2M, L3 36M
 | BM_ReactorDispatchSim/4 | 2.74 | - |
 | BM_ReactorDispatchSim/16 | 11.6 | - |
 
+## 2026-04-03 Batch 2 (new benchmarks added)
+
+Platform: same as baseline
+
+### bench_tcp_header (new entries)
+
+| Benchmark | Time (ns) | Notes |
+|---|---|---|
+| BM_WriteSynOptions | 0.405 | SYN option serialization (12 bytes) |
+| BM_ConnectionTupleDump | 333 | Diagnostic formatting |
+| BM_ParsedPacketDump | 537 | Diagnostic formatting (flags + addresses) |
+
+No regressions vs baseline (all existing benchmarks within noise).
+
 ### bench_dns_codec
 
 | Benchmark | Time (ns) |
