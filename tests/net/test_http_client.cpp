@@ -594,3 +594,35 @@ TEST(HttpResponse, EqualityOperator) {
     EXPECT_EQ(a, b);
     EXPECT_NE(a, c);
 }
+
+// =============================================================================
+// std::formatter<HttpResponse>
+// =============================================================================
+
+TEST(HttpResponse, FormatterContainsStatusAndSize) {
+    HttpResponse resp{.status_code = 200, .body = "hello world"};
+    auto s = std::format("{}", resp);
+    EXPECT_NE(s.find("200"), std::string::npos);
+    EXPECT_NE(s.find("11B"), std::string::npos);  // "hello world" = 11 bytes
+}
+
+TEST(HttpResponse, FormatterCompositeFormat) {
+    HttpResponse resp{.status_code = 404, .body = ""};
+    auto s = std::format("result={}", resp);
+    EXPECT_NE(s.find("result="), std::string::npos);
+    EXPECT_NE(s.find("404"), std::string::npos);
+}
+
+// =============================================================================
+// std::formatter<HttpClient::Config>
+// =============================================================================
+
+TEST(HttpClientConfig, FormatterContainsKeyFields) {
+    HttpClient::Config cfg{
+        .host = "api.binance.com", .port = 443,
+        .use_tls = true, .timeout = std::chrono::milliseconds{5000}};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("api.binance.com"), std::string::npos);
+    EXPECT_NE(s.find("443"), std::string::npos);
+    EXPECT_NE(s.find("5000ms"), std::string::npos);
+}

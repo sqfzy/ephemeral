@@ -1013,3 +1013,32 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter for HttpResponse -- compact one-line summary.
+///
+/// Shows status code, body size, and a truncated body preview.
+/// Full body is omitted to keep log output manageable.
+template <>
+struct std::formatter<eph::net::HttpResponse> : std::formatter<std::string> {
+    auto format(const eph::net::HttpResponse& r, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("HttpResponse(status={}, body={}B)",
+                r.status_code, r.body.size()),
+            ctx);
+    }
+};
+
+/// @brief std::formatter for HttpClient::Config -- compact one-line summary.
+template <>
+struct std::formatter<eph::net::HttpClient::Config> : std::formatter<std::string> {
+    auto format(const eph::net::HttpClient::Config& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("HttpClient::Config({}:{}, tls={}, timeout={}ms)",
+                c.host, c.port, c.use_tls, c.timeout.count()),
+            ctx);
+    }
+};
