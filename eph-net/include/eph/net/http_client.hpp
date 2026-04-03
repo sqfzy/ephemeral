@@ -319,52 +319,13 @@ parse_http_response(std::string_view data) noexcept {
     return resp;
 }
 
-/// @brief Extract a header value by name (case-insensitive) from raw headers.
-///
-/// @param headers_raw  Raw header block (lines separated by \r\n)
-/// @param name         Header name to search for (case-insensitive)
-/// @return Header value (trimmed), or empty string if not found
-[[nodiscard]] inline std::string
-find_header(std::string_view headers_raw, std::string_view name) noexcept {
-    size_t pos = 0;
-    while (pos < headers_raw.size()) {
-        auto line_end = headers_raw.find("\r\n", pos);
-        if (line_end == std::string_view::npos) {
-            line_end = headers_raw.size();
-        }
-
-        auto line = headers_raw.substr(pos, line_end - pos);
-        pos = (line_end == headers_raw.size()) ? line_end : line_end + 2;
-
-        auto colon = line.find(':');
-        if (colon == std::string_view::npos) continue;
-
-        auto hdr_name = line.substr(0, colon);
-
-        // Case-insensitive name comparison using ranges
-        auto to_lower = [](unsigned char c) -> unsigned char {
-            return static_cast<unsigned char>(std::tolower(c));
-        };
-        if (!std::ranges::equal(hdr_name, name, {}, to_lower, to_lower))
-            continue;
-
-        // Trim OWS from value
-        auto value = line.substr(colon + 1);
-        while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
-            value.remove_prefix(1);
-        while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
-            value.remove_suffix(1);
-
-        return std::string(value);
-    }
-    return {};
-}
-
 /// @brief Extract a header value by name, distinguishing "not found" from "empty value".
 ///
 /// Unlike find_header() which returns empty string for both missing and empty-value
 /// headers, this variant returns std::nullopt when the header is absent, allowing
 /// callers to distinguish the two cases.
+///
+/// This is the canonical implementation; find_header() delegates to this.
 ///
 /// @param headers_raw  Raw header block (lines separated by \r\n)
 /// @param name         Header name to search for (case-insensitive)
@@ -392,7 +353,7 @@ find_header_opt(std::string_view headers_raw, std::string_view name) noexcept {
         if (!std::ranges::equal(hdr_name, name, {}, to_lower, to_lower))
             continue;
 
-        // Trim OWS from value
+        // Trim OWS (optional whitespace) from value per RFC 7230 section 3.2.6
         auto value = line.substr(colon + 1);
         while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
             value.remove_prefix(1);
@@ -402,6 +363,20 @@ find_header_opt(std::string_view headers_raw, std::string_view name) noexcept {
         return std::string(value);
     }
     return std::nullopt;
+}
+
+/// @brief Extract a header value by name (case-insensitive) from raw headers.
+///
+/// Delegates to find_header_opt() and converts std::nullopt to empty string.
+/// Use find_header_opt() when you need to distinguish "header absent" from
+/// "header present with empty value".
+///
+/// @param headers_raw  Raw header block (lines separated by \r\n)
+/// @param name         Header name to search for (case-insensitive)
+/// @return Header value (trimmed), or empty string if not found
+[[nodiscard]] inline std::string
+find_header(std::string_view headers_raw, std::string_view name) noexcept {
+    return find_header_opt(headers_raw, name).value_or(std::string{});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
