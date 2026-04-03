@@ -225,6 +225,14 @@ TEST(TcpSession, SatisfiesTcpTransportConcept) {
                   "TcpSession must satisfy TcpTransport concept");
 }
 
+TEST(TcpSession, TypeTraits) {
+    // TcpSession manages NIC resources — copy would be unsafe
+    static_assert(!std::is_copy_constructible_v<TcpSession<>>);
+    static_assert(!std::is_copy_assignable_v<TcpSession<>>);
+    // Move is allowed for ownership transfer (e.g., into unique_ptr)
+    static_assert(std::is_move_constructible_v<TcpSession<>>);
+}
+
 // Default ReorderSlots is now 64 (Layer 1)
 TEST(TcpSession, DefaultReorderSlots64) {
     // TcpSession<> should use 64 slots by default

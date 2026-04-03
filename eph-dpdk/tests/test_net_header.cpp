@@ -376,6 +376,13 @@ TEST(PacketTemplate, ValidateExcessiveMssFails) {
     EXPECT_NE(err.find("jumbo"), std::string_view::npos);
 }
 
+TEST(PacketTemplate, ValidateIsConstexpr) {
+    // Verify validate() can be evaluated at compile time
+    constexpr PacketTemplate tmpl_invalid{};
+    static_assert(!tmpl_invalid.validate().empty(),
+                  "Default PacketTemplate should fail validation (zero IPs)");
+}
+
 TEST(PacketTemplate, DumpContainsKeyFields) {
     PacketTemplate tmpl{};
     tmpl.src_mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
