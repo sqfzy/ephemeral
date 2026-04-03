@@ -274,6 +274,18 @@ struct TransportCore {
 
             response_buf.append(reinterpret_cast<const char*>(chunk), *read_result);
 
+            // Guard against unbounded response accumulation: a well-behaved
+            // HTTP Upgrade response should be under 8 KiB.  If we've read
+            // more without finding the header terminator, abort.
+            constexpr size_t kMaxUpgradeResponse = 8192;
+            if (response_buf.size() > kMaxUpgradeResponse) {
+                return std::unexpected(ConnectionErrorInfo{
+                    ConnectionError::kWsUpgradeRejected,
+                    std::format("WS upgrade response exceeded {} bytes "
+                                "without header terminator",
+                                kMaxUpgradeResponse)});
+            }
+
             // Check for end of HTTP headers
             if (response_buf.find("\r\n\r\n") != std::string::npos) {
                 auto parsed = http::parse_upgrade_response(
