@@ -551,6 +551,59 @@ TEST(DnsParseResponse, WrongRdlengthForARecordSkips) {
 // DnsConfig std::formatter
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DnsConfig::warnings
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsConfigWarnings, DefaultConfigNoWarnings) {
+    DnsConfig cfg{};
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(DnsConfigWarnings, LoopbackNameserver) {
+    DnsConfig cfg{.nameserver_ip = 0x7F000001}; // 127.0.0.1
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("loopback") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected loopback warning";
+}
+
+TEST(DnsConfigWarnings, ShortTimeout) {
+    DnsConfig cfg{.timeout = std::chrono::milliseconds{200}};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("200ms") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected short timeout warning";
+}
+
+TEST(DnsConfigWarnings, NonStandardPort) {
+    DnsConfig cfg{.port = 5353};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("non-standard") != std::string::npos) { found = true; break; }
+    }
+    EXPECT_TRUE(found) << "Expected non-standard port warning";
+}
+
+TEST(DnsConfigWarnings, StandardPortNoWarning) {
+    DnsConfig cfg{.port = 53};
+    auto w = cfg.warnings();
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("non-standard"), std::string::npos)
+            << "Standard port should not trigger warning";
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DnsConfig std::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
 TEST(DnsConfig, StdFormatterContainsKeyFields) {
     DnsConfig cfg{
         .nameserver_ip = 0x01010101,  // 1.1.1.1

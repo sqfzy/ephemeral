@@ -21,6 +21,7 @@
 #include <cstring>
 #include <expected>
 #include <string>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -127,6 +128,28 @@ struct DnsConfig {
         return std::format(
             "{{\"nameserver_ip\":\"{}\",\"port\":{},\"timeout_ms\":{}}}",
             net::format_ipv4(nameserver_ip).data(), port, timeout.count());
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks operation, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // Loopback nameserver is unusual for DPDK (bypasses kernel)
+        if ((nameserver_ip >> 24) == 127)
+            w.emplace_back("nameserver_ip is in 127.0.0.0/8 (loopback) -- "
+                           "DPDK bypasses the kernel, loopback DNS will not work");
+        // Very short timeout may fail on WAN nameservers
+        if (timeout.count() < 500)
+            w.emplace_back(std::format(
+                "timeout={}ms is very short -- DNS resolution may fail "
+                "on high-latency nameservers", timeout.count()));
+        // Non-standard port may be intentional but worth flagging
+        if (port != kDnsPort && port != 0)
+            w.emplace_back(std::format(
+                "port={} is non-standard (DNS uses port 53) -- "
+                "ensure your nameserver listens on this port", port));
+        return w;
     }
 };
 
