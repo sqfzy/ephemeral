@@ -279,3 +279,139 @@ TEST(TcpStats, GapBucketIsConstexpr) {
     static_assert(Stats::gap_bucket(1) == 0);
     static_assert(Stats::gap_bucket(1024) == 10);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::warnings — advisory diagnostics
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfigWarnings, ValidConfigNoWarnings) {
+    auto cfg = make_valid_config();
+    // Set non-zero MACs to avoid the "all zeros" warning
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(TcpConfigWarnings, LoopbackSrcIp) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.tuple.src_ip = 0x7F000001; // 127.0.0.1
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("loopback") != std::string::npos &&
+            msg.find("src_ip") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected loopback warning for src_ip";
+}
+
+TEST(TcpConfigWarnings, LoopbackDstIp) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.tuple.dst_ip = 0x7F000001; // 127.0.0.1
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("loopback") != std::string::npos &&
+            msg.find("dst_ip") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected loopback warning for dst_ip";
+}
+
+TEST(TcpConfigWarnings, SelfConnect) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.tuple.src_ip = 0x0A000001;
+    cfg.tuple.dst_ip = 0x0A000001; // same as src
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("self-connect") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected self-connect warning";
+}
+
+TEST(TcpConfigWarnings, LowMss) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.mss = 256;
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("mss=256") != std::string::npos &&
+            msg.find("fragmentation") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected low MSS warning";
+}
+
+TEST(TcpConfigWarnings, JumboMss) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.mss = 8000;
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("jumbo") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected jumbo frame warning";
+}
+
+TEST(TcpConfigWarnings, ZeroSrcMac) {
+    auto cfg = make_valid_config();
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    // src_mac defaults to all zeros
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("src_mac") != std::string::npos &&
+            msg.find("zeros") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected zero src_mac warning";
+}
+
+TEST(TcpConfigWarnings, ZeroDstMac) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    // dst_mac defaults to all zeros
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("dst_mac") != std::string::npos &&
+            msg.find("zeros") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected zero dst_mac warning";
+}

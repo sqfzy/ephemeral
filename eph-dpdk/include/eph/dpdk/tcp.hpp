@@ -24,6 +24,7 @@
 #include <format>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -105,6 +106,50 @@ struct TcpConfig {
             && a.tx_queue_id  == b.tx_queue_id
             && a.rx_queue_id  == b.rx_queue_id
             && a.max_rx_burst == b.max_rx_burst;
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // Loopback IP in src or dst suggests a misconfiguration -- DPDK
+        // bypasses the kernel, so loopback traffic never reaches the NIC.
+        if ((tuple.src_ip >> 24) == 127)
+            w.emplace_back("src_ip is in 127.0.0.0/8 (loopback) -- "
+                           "DPDK bypasses the kernel, loopback traffic "
+                           "will not reach the NIC");
+        if ((tuple.dst_ip >> 24) == 127)
+            w.emplace_back("dst_ip is in 127.0.0.0/8 (loopback) -- "
+                           "DPDK bypasses the kernel, loopback traffic "
+                           "will not reach the NIC");
+        // Same src and dst IP likely means self-connect
+        if (tuple.src_ip == tuple.dst_ip)
+            w.emplace_back(std::format(
+                "src_ip == dst_ip ({}) -- self-connect is unusual for DPDK",
+                net::format_ipv4(tuple.src_ip).data()));
+        // MSS below typical Ethernet minimum (536) may indicate a mistake
+        if (mss < 536)
+            w.emplace_back(std::format(
+                "mss={} is below the recommended minimum (536) -- "
+                "may cause excessive fragmentation", mss));
+        // MSS above 1460 (standard Ethernet) requires jumbo frames
+        if (mss > 1460 && mss <= 9000)
+            w.emplace_back(std::format(
+                "mss={} exceeds standard Ethernet MTU (1460) -- "
+                "requires jumbo frame support on NIC and switches", mss));
+        // Zero MAC addresses likely mean uninitialized config
+        rte_ether_addr zero_mac{};
+        if (std::memcmp(&src_mac, &zero_mac, sizeof(rte_ether_addr)) == 0)
+            w.emplace_back("src_mac is all zeros -- likely uninitialized");
+        if (std::memcmp(&dst_mac, &zero_mac, sizeof(rte_ether_addr)) == 0)
+            w.emplace_back("dst_mac is all zeros -- likely uninitialized");
+        // TX and RX on the same queue may cause contention
+        if (tx_queue_id == rx_queue_id && tx_queue_id > 0)
+            w.emplace_back(std::format(
+                "tx_queue_id == rx_queue_id == {} -- shared queue may "
+                "introduce contention on multi-queue NICs", tx_queue_id));
+        return w;
     }
 
     /// Default RX budget per poll_rx call (bytes). Used to auto-calculate
