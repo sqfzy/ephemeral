@@ -318,6 +318,27 @@ public:
         return remaining.count() > 0 ? remaining : std::chrono::milliseconds{0};
     }
 
+    /// @brief Multi-line formatted dump for logging/debugging.
+    ///
+    /// Includes configuration and live state. Consistent with Gateway::dump().
+    /// Thread-safe: takes a lock to read consistent state.
+    [[nodiscard]] std::string dump() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto effective_state = state_;
+        if (state_ == CircuitState::Open && open_duration_elapsed_locked()) {
+            effective_state = CircuitState::HalfOpen;
+        }
+        return std::format(
+            "CircuitBreaker:\n"
+            "  state: {}, failure_count: {}/{}, half_open_calls: {}/{}\n"
+            "  config: threshold={}, open_duration={}ms, half_open_max={}",
+            circuit_state_name(effective_state),
+            failure_count_, config_.failure_threshold,
+            half_open_calls_, config_.half_open_max_calls,
+            config_.failure_threshold, config_.open_duration.count(),
+            config_.half_open_max_calls);
+    }
+
     /// @brief JSON-formatted snapshot of current breaker state for monitoring.
     ///
     /// Includes both configuration and live state (current state, failure count).

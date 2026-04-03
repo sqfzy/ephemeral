@@ -234,6 +234,23 @@ public:
             "KillSwitch: reset — shutdown state cleared");
     }
 
+    /// @brief Multi-line formatted dump for logging/debugging.
+    ///
+    /// Includes transport count, shutdown state, and signal handler status.
+    /// Consistent with Gateway::dump().
+    /// Thread-safe: uses atomic reads only (no lock needed).
+    [[nodiscard]] std::string dump() const noexcept {
+        return std::format(
+            "KillSwitch:\n"
+            "  transports: {}/{}\n"
+            "  shutdown_requested: {}, shutdown_done: {}\n"
+            "  signal_handlers: {}",
+            count_.load(std::memory_order_acquire), kKillSwitchMaxTransports,
+            shutdown_requested_.load(std::memory_order_acquire) ? "yes" : "no",
+            shutdown_done_.load(std::memory_order_acquire) ? "yes" : "no",
+            s_instance_.load(std::memory_order_acquire) == this ? "installed" : "not installed");
+    }
+
     /// @brief JSON-formatted snapshot of KillSwitch state for monitoring.
     ///
     /// Includes transport count, shutdown state, and signal handler status.

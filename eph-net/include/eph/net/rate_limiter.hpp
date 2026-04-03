@@ -212,6 +212,21 @@ public:
     /// @return Internal rate expressed in tokens/ns. Multiply by 1e9 for tokens/sec.
     [[nodiscard]] double rate_per_ns() const noexcept { return rate_per_ns_; }
 
+    /// @brief Multi-line formatted dump for logging/debugging.
+    ///
+    /// Includes configuration and live state. Consistent with Gateway::dump().
+    /// Thread-safe: takes a lock to read consistent state.
+    [[nodiscard]] std::string dump() {
+        std::lock_guard<std::mutex> lock(mu_);
+        refill_locked();
+        return std::format(
+            "RateLimiter:\n"
+            "  available: {:.2f}/{:.0f} tokens\n"
+            "  config: rate={:.2f}/s, burst={}",
+            tokens_, burst_,
+            config_.rate_per_sec, config_.burst);
+    }
+
     /// @brief JSON-formatted snapshot of current limiter state for monitoring.
     ///
     /// Includes both configuration and live state (available tokens).
