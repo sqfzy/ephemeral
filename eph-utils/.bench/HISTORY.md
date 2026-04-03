@@ -41,3 +41,12 @@ at scale but not in this microbenchmark.
 ConcurrentRecorder shows linear scaling due to zero-contention
 thread_local design. Single-thread overhead is ~3x vs Recorder
 (unordered_map lookup for thread-local guard).
+
+## 2026-04-03 bench_cpu baseline (3d2744d)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_CpuRelax | 0.357 | 0.357 | 1958293113 |
+| BM_EmptyLoop | 0.357 | 0.357 | 1958508982 |
+
+ARM YIELD instruction has zero measurable overhead vs empty loop on Graviton.
