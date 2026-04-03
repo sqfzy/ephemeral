@@ -64,3 +64,17 @@ ARM YIELD instruction has zero measurable overhead vs empty loop on Graviton.
 Snapshot is expensive (~13us) due to getrusage syscall + /proc reads.
 Reset is cheap (~230ns) as it only calls getrusage once.
 Formatting methods are ~500ns each (std::format overhead).
+
+## 2026-04-03 bench_hdr_histogram extended (1ede336)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_HdrGetPercentiles_Batch | 11753 | 11754 | 59392 |
+| BM_HdrReport | 59215 | 59215 | 11773 |
+| BM_HdrToJson | 72054 | 72055 | 9971 |
+| BM_HdrForEachLinear_HighOffset | 7760 | 7760 | 90378 |
+
+Batch percentile query (~12us for 5 percentiles) is ~2.5x faster than
+5 individual queries. Report/JSON formatting is 60-72us (std::format
++ percentile computation). for_each_linear on high-offset data benefits
+from the skip-empty-prefix optimization.

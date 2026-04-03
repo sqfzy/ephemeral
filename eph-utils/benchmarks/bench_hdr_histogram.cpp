@@ -138,4 +138,77 @@ static void BM_HdrReset(benchmark::State& state) {
 }
 BENCHMARK(BM_HdrReset);
 
+// ---------------------------------------------------------------------------
+// Batch percentile query
+// ---------------------------------------------------------------------------
+
+static void BM_HdrGetPercentiles_Batch(benchmark::State& state) {
+    HdrHistogram h(1, 3'600'000'000ULL, 3);
+    std::mt19937_64 rng(42);
+    std::uniform_int_distribution<uint64_t> dist(100, 100'000);
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
+
+    std::vector<double> pcts = {50.0, 90.0, 99.0, 99.9, 99.99};
+    for (auto _ : state) {
+        auto v = h.get_percentiles(pcts);
+        benchmark::DoNotOptimize(v);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HdrGetPercentiles_Batch);
+
+// ---------------------------------------------------------------------------
+// Report and JSON formatting
+// ---------------------------------------------------------------------------
+
+static void BM_HdrReport(benchmark::State& state) {
+    HdrHistogram h(1, 3'600'000'000ULL, 3);
+    std::mt19937_64 rng(42);
+    std::uniform_int_distribution<uint64_t> dist(100, 100'000);
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
+
+    for (auto _ : state) {
+        auto s = h.report("Latency", "ns");
+        benchmark::DoNotOptimize(s);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HdrReport);
+
+static void BM_HdrToJson(benchmark::State& state) {
+    HdrHistogram h(1, 3'600'000'000ULL, 3);
+    std::mt19937_64 rng(42);
+    std::uniform_int_distribution<uint64_t> dist(100, 100'000);
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
+
+    for (auto _ : state) {
+        auto s = h.to_json();
+        benchmark::DoNotOptimize(s);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HdrToJson);
+
+// ---------------------------------------------------------------------------
+// for_each_linear — high-offset histogram (tests skip optimization)
+// ---------------------------------------------------------------------------
+
+static void BM_HdrForEachLinear_HighOffset(benchmark::State& state) {
+    HdrHistogram h(1, 1'000'000, 3);
+    // Values start at 100'000 — tests the optimization of skipping empty prefix
+    for (uint64_t v = 100'000; v <= 100'100; ++v) {
+        (void)h.record(v);
+    }
+
+    for (auto _ : state) {
+        uint64_t total = 0;
+        h.for_each_linear(10, [&](const HdrHistogram::LinearEntry& e) {
+            total += e.count;
+        });
+        benchmark::DoNotOptimize(total);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HdrForEachLinear_HighOffset);
+
 BENCHMARK_MAIN();
