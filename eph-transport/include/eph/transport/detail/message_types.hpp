@@ -13,8 +13,8 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/utils/alignment.hpp"
-#include "eph/transport/websocket.hpp"
-#include "eph/transport/tls_record.hpp"
+#include "eph/transport/detail/websocket.hpp"
+#include "eph/transport/detail/tls_record.hpp"
 
 namespace eph::net {
 

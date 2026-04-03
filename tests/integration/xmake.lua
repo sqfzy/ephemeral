@@ -1,0 +1,22 @@
+-- Cross-module integration tests.
+-- Each target explicitly declares its multi-module dependencies.
+
+target("test_itch_adapter")
+    add_rules("eph-test")
+    add_files("test_itch_adapter.cpp")
+    add_deps("eph-book", "eph-itch")
+
+target("test_binance_adapter")
+    add_rules("eph-test")
+    add_files("test_binance_adapter.cpp")
+    add_deps("eph-book", "eph-json")
+
+target("test_binance_rest")
+    add_rules("eph-test")
+    add_files("test_binance_rest.cpp")
+    add_deps("eph-json", "eph-net")
+
+target("test_metrics_concept")
+    add_rules("eph-test")
+    add_files("test_metrics_concept.cpp")
+    add_deps("eph-core", "eph-utils")

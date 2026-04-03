@@ -8,7 +8,7 @@
 #include <spdlog/spdlog.h>
 
 #include <eph/core/framer_concept.hpp>
-#include <eph/transport/websocket.hpp>
+#include <eph/transport/detail/websocket.hpp>
 
 namespace eph::net {
 
