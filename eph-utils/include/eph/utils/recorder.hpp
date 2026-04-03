@@ -52,7 +52,12 @@ namespace recorder_detail {
 [[nodiscard]] inline std::string sanitize_filename(std::string name) {
     std::replace_if(
         name.begin(), name.end(),
-        [](char c) { return !(std::isalnum(c) || c == '_' || c == '-'); },
+        [](char c) {
+            // Cast to unsigned char to avoid UB with std::isalnum on
+            // negative char values (e.g., UTF-8 continuation bytes).
+            auto uc = static_cast<unsigned char>(c);
+            return !(std::isalnum(uc) || c == '_' || c == '-');
+        },
         '_');
     return name;
 }

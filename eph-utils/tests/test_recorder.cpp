@@ -817,6 +817,51 @@ TEST(ConcurrentRecorderRecordValues, bulk_record_matches_individual) {
     EXPECT_NEAR(bulk_stats->avg_ns, ind_stats->avg_ns, 0.01);
 }
 
+// ============================================================================
+// recorder_detail utility function tests
+// ============================================================================
+
+TEST(RecorderDetail, SanitizeFilenameAlphanumeric) {
+    EXPECT_EQ(recorder_detail::sanitize_filename("hello123"), "hello123");
+}
+
+TEST(RecorderDetail, SanitizeFilenamePreservesUnderscoreAndDash) {
+    EXPECT_EQ(recorder_detail::sanitize_filename("my-bench_v2"), "my-bench_v2");
+}
+
+TEST(RecorderDetail, SanitizeFilenameReplacesSpecialChars) {
+    EXPECT_EQ(recorder_detail::sanitize_filename("test/foo.bar"), "test_foo_bar");
+    EXPECT_EQ(recorder_detail::sanitize_filename("a b c"), "a_b_c");
+    EXPECT_EQ(recorder_detail::sanitize_filename("$pecial!"), "_pecial_");
+}
+
+TEST(RecorderDetail, SanitizeFilenameEmptyString) {
+    EXPECT_EQ(recorder_detail::sanitize_filename(""), "");
+}
+
+TEST(RecorderDetail, SanitizeFilenameHighBytesNoUB) {
+    // High-byte chars (e.g., UTF-8) must not trigger UB via std::isalnum
+    // with negative char values. They should be sanitized to underscores.
+    std::string name = "bench\xC3\xA9test";  // "benchétest" in UTF-8
+    auto result = recorder_detail::sanitize_filename(name);
+    EXPECT_EQ(result.size(), name.size());
+    // Non-ASCII bytes should be replaced with underscore
+    EXPECT_EQ(result, "bench__test");
+}
+
+TEST(RecorderDetail, EnsureDirectoryCreatesAndReturnsTrue) {
+    std::string dir = "/tmp/eph_test_ensure_dir_" + recorder_detail::get_timestamp();
+    EXPECT_TRUE(recorder_detail::ensure_directory(dir));
+    EXPECT_TRUE(fs::exists(dir));
+    fs::remove_all(dir);
+}
+
+TEST(RecorderDetail, EnsureDirectoryExistingReturnsTrue) {
+    EXPECT_TRUE(recorder_detail::ensure_directory("/tmp"));
+}
+
+// ============================================================================
+
 TEST(ConcurrentRecorderRecordValues, bulk_across_threads) {
     ConcurrentRecorder rec("BulkThreads");
     constexpr int kThreads = 4;
