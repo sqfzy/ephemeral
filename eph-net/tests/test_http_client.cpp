@@ -457,6 +457,56 @@ TEST(HttpClientComplete, LowercaseContentLength) {
     EXPECT_TRUE(HttpClient::is_response_complete(buf));
 }
 
+TEST(HttpClientComplete, ChunkedTransferComplete) {
+    // Chunked response with final chunk marker "0\r\n\r\n"
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, ChunkedTransferIncomplete) {
+    // Chunked response without final chunk marker
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n";
+    EXPECT_FALSE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, ChunkedTransferWithTrailingCrlf) {
+    // Final chunk with preceding \r\n before "0\r\n\r\n"
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n\r\n0\r\n\r\n";
+    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, InvalidContentLengthReturnsFalse) {
+    // Non-numeric Content-Length should be treated as unknown
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: abc\r\n"
+        "\r\n"
+        "data";
+    EXPECT_FALSE(HttpClient::is_response_complete(buf));
+}
+
+TEST(HttpClientComplete, ExcessBodyBeyondContentLength) {
+    // Body larger than Content-Length -- still complete (body_len >= content_length)
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 3\r\n"
+        "\r\n"
+        "abcdef";
+    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+}
+
 // =============================================================================
 // HttpClient::Config
 // =============================================================================
