@@ -75,3 +75,19 @@ TEST(EalGuard, InitializedIsNodiscard) {
     static_assert(std::is_same_v<decltype(std::declval<const EalGuard&>().initialized()), bool>,
                   "initialized() must return bool");
 }
+
+TEST(EalGuard, TypeTraits) {
+    // EalGuard is RAII — not copyable, only movable
+    static_assert(!std::is_copy_constructible_v<EalGuard>);
+    static_assert(!std::is_copy_assignable_v<EalGuard>);
+    static_assert(std::is_move_constructible_v<EalGuard>);
+    static_assert(std::is_move_assignable_v<EalGuard>);
+    static_assert(std::is_nothrow_move_constructible_v<EalGuard>);
+    static_assert(std::is_nothrow_move_assignable_v<EalGuard>);
+}
+
+TEST(EalGuard, ExplicitBoolNotImplicit) {
+    // Verify that EalGuard cannot be used in implicit bool contexts
+    static_assert(!std::is_convertible_v<EalGuard, bool>);
+    static_assert(!std::is_convertible_v<const EalGuard&, bool>);
+}
