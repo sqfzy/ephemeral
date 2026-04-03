@@ -168,6 +168,18 @@ static void BM_RateLimiter_ToJson(benchmark::State& state) {
 }
 BENCHMARK(BM_RateLimiter_ToJson);
 
+/// Measure CircuitBreaker::time_until_half_open() (monitoring countdown).
+static void BM_CircuitBreaker_TimeUntilHalfOpen(benchmark::State& state) {
+    CircuitBreaker cb(CircuitBreaker::Config{1, std::chrono::seconds{3600}});
+    cb.record_failure();
+
+    for (auto _ : state) {
+        auto t = cb.time_until_half_open();
+        benchmark::DoNotOptimize(t);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_TimeUntilHalfOpen);
+
 /// Measure CircuitBreaker::to_json() (state snapshot for monitoring).
 static void BM_CircuitBreaker_ToJson(benchmark::State& state) {
     CircuitBreaker cb;

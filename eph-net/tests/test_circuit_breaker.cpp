@@ -552,3 +552,74 @@ TEST(CircuitBreaker, ConfigAccessorDefaultConfig) {
     EXPECT_EQ(cb.config().open_duration.count(), 30000);
     EXPECT_EQ(cb.config().half_open_max_calls, 1u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// to_json() — live state snapshot
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, ToJsonClosedState) {
+    CircuitBreaker cb(CircuitBreaker::Config{5, 30s, 1});
+    auto j = cb.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"state\":\"CLOSED\""), std::string::npos);
+    EXPECT_NE(j.find("\"failure_count\":0"), std::string::npos);
+}
+
+TEST(CircuitBreaker, ToJsonOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    auto j = cb.to_json();
+    EXPECT_NE(j.find("\"state\":\"OPEN\""), std::string::npos);
+    EXPECT_NE(j.find("\"failure_count\":2"), std::string::npos);
+}
+
+TEST(CircuitBreaker, ToJsonHalfOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 0s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    // With open_duration=0, to_json should show HALF_OPEN
+    auto j = cb.to_json();
+    EXPECT_NE(j.find("\"state\":\"HALF_OPEN\""), std::string::npos);
+}
+
+TEST(CircuitBreaker, ToJsonIncludesConfig) {
+    CircuitBreaker cb(CircuitBreaker::Config{3, 5s, 2});
+    auto j = cb.to_json();
+    EXPECT_NE(j.find("\"config\":{"), std::string::npos);
+    EXPECT_NE(j.find("\"failure_threshold\":3"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// time_until_half_open()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, TimeUntilHalfOpenInClosedState) {
+    CircuitBreaker cb;
+    EXPECT_EQ(cb.time_until_half_open().count(), 0);
+}
+
+TEST(CircuitBreaker, TimeUntilHalfOpenInOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{1, 5s, 1});
+    cb.record_failure();
+    EXPECT_EQ(cb.state(), CircuitState::Open);
+    // Should be close to 5000ms (allow some margin for test execution time)
+    auto remaining = cb.time_until_half_open();
+    EXPECT_GT(remaining.count(), 4000) << "remaining=" << remaining.count() << "ms";
+    EXPECT_LE(remaining.count(), 5000);
+}
+
+TEST(CircuitBreaker, TimeUntilHalfOpenZeroAfterElapsed) {
+    CircuitBreaker cb(CircuitBreaker::Config{1, 0s, 1});
+    cb.record_failure();
+    // open_duration=0, so should immediately report 0
+    EXPECT_EQ(cb.time_until_half_open().count(), 0);
+}
+
+TEST(CircuitBreaker, TimeUntilHalfOpenInHalfOpenState) {
+    CircuitBreaker cb(CircuitBreaker::Config{1, 0s, 1});
+    cb.record_failure();
+    EXPECT_TRUE(cb.allow()); // transitions to HalfOpen
+    EXPECT_EQ(cb.time_until_half_open().count(), 0);
+}

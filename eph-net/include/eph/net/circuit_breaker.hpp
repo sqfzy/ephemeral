@@ -292,6 +292,40 @@ public:
     /// @return Const reference to the Config used at construction.
     [[nodiscard]] const Config& config() const noexcept { return config_; }
 
+    /// @brief Time remaining until the circuit transitions from Open to HalfOpen.
+    ///
+    /// Returns zero if the circuit is not in Open state or if the open
+    /// duration has already elapsed (transition pending on next allow() call).
+    /// Useful for monitoring dashboards to show countdown timers.
+    ///
+    /// @return Duration remaining, or zero if not applicable.
+    [[nodiscard]] std::chrono::milliseconds time_until_half_open() const noexcept {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (state_ != CircuitState::Open) return std::chrono::milliseconds{0};
+        auto elapsed = Clock::now() - opened_at_;
+        auto remaining = config_.open_duration - std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+        return remaining.count() > 0 ? remaining : std::chrono::milliseconds{0};
+    }
+
+    /// @brief JSON-formatted snapshot of current breaker state for monitoring.
+    ///
+    /// Includes both configuration and live state (current state, failure count).
+    /// Thread-safe: takes a lock to read consistent state.
+    [[nodiscard]] std::string to_json() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto effective_state = state_;
+        if (state_ == CircuitState::Open && open_duration_elapsed_locked()) {
+            effective_state = CircuitState::HalfOpen;
+        }
+        return std::format(
+            "{{\"state\":\"{}\",\"failure_count\":{},\"half_open_calls\":{},"
+            "\"config\":{}}}",
+            circuit_state_name(effective_state),
+            failure_count_,
+            half_open_calls_,
+            config_.to_json());
+    }
+
     /// @brief Force-reset the circuit breaker to Closed state.
     ///
     /// Clears failure count and half-open call tracking.
