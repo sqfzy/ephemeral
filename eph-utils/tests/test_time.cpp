@@ -160,6 +160,37 @@ TEST_F(TimeTest, DeltaNsConsistentWithToNs) {
   EXPECT_DOUBLE_EQ(*delta_result, *direct_result);
 }
 
+TEST_F(TimeTest, ToCyclesNanReturnsNullopt) {
+  auto result = TSC::to_cycles(std::numeric_limits<double>::quiet_NaN());
+  EXPECT_FALSE(result.has_value())
+      << "NaN input must return nullopt, not UB via static_cast";
+}
+
+TEST_F(TimeTest, ToCyclesPositiveInfSaturates) {
+  auto result = TSC::to_cycles(std::numeric_limits<double>::infinity());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, UINT64_MAX);
+}
+
+TEST_F(TimeTest, ToCyclesNegativeInfReturnsNullopt) {
+  auto result = TSC::to_cycles(-std::numeric_limits<double>::infinity());
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(TimeTest, ToCyclesZeroReturnsZero) {
+  auto result = TSC::to_cycles(0.0);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, 0u);
+}
+
+TEST_F(TimeTest, GetCalibrationCvIsSmall) {
+  auto cv = TSC::get_calibration_cv();
+  ASSERT_TRUE(cv.has_value());
+  EXPECT_GE(*cv, 0.0);
+  // CV should be well below 1% on a stable system
+  EXPECT_LT(*cv, 0.1) << "Calibration CV > 10% indicates unstable TSC";
+}
+
 TEST_F(TimeTest, init_flag_visibility_across_threads) {
   // Verify that a thread spawned after init() sees the calibrated value.
   std::optional<double> observed;
