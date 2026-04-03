@@ -502,3 +502,46 @@ TEST(HttpClientRoundTrip, PostOrderAndParseResponse) {
     EXPECT_EQ(resp->status_code, 201);
     EXPECT_EQ(resp->body, R"({"orderId":"12345","ok":1})");
 }
+
+// =============================================================================
+// HttpResponse — status category helpers
+// =============================================================================
+
+TEST(HttpResponse, IsSuccessFor2xx) {
+    EXPECT_TRUE((HttpResponse{.status_code = 200}).is_success());
+    EXPECT_TRUE((HttpResponse{.status_code = 201}).is_success());
+    EXPECT_TRUE((HttpResponse{.status_code = 299}).is_success());
+    EXPECT_FALSE((HttpResponse{.status_code = 199}).is_success());
+    EXPECT_FALSE((HttpResponse{.status_code = 300}).is_success());
+}
+
+TEST(HttpResponse, IsClientErrorFor4xx) {
+    EXPECT_TRUE((HttpResponse{.status_code = 400}).is_client_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 404}).is_client_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 499}).is_client_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 399}).is_client_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 500}).is_client_error());
+}
+
+TEST(HttpResponse, IsServerErrorFor5xx) {
+    EXPECT_TRUE((HttpResponse{.status_code = 500}).is_server_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 503}).is_server_error());
+    EXPECT_TRUE((HttpResponse{.status_code = 599}).is_server_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 499}).is_server_error());
+    EXPECT_FALSE((HttpResponse{.status_code = 600}).is_server_error());
+}
+
+TEST(HttpResponse, ZeroStatusCodeIsNoneOfCategories) {
+    HttpResponse resp;
+    EXPECT_FALSE(resp.is_success());
+    EXPECT_FALSE(resp.is_client_error());
+    EXPECT_FALSE(resp.is_server_error());
+}
+
+TEST(HttpResponse, EqualityOperator) {
+    HttpResponse a{200, "ok", "Content-Type: text/plain\r\n"};
+    HttpResponse b{200, "ok", "Content-Type: text/plain\r\n"};
+    HttpResponse c{404, "not found", ""};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}

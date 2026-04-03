@@ -784,6 +784,10 @@ struct ConnectionInfo {
             remote_port,
             use_tls ? "true" : "false");
     }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const ConnectionInfo&,
+                                         const ConnectionInfo&) = default;
 };
 
 // ---------------------------------------------------------------------------

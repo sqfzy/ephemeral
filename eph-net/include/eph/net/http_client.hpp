@@ -47,6 +47,25 @@ struct HttpResponse {
     int         status_code = 0;  ///< HTTP status code (e.g. 200, 404, 500).
     std::string body;             ///< Response body text.
     std::string headers_raw;      ///< Raw header block (excluding status line) for optional parsing.
+
+    /// Check if the response indicates success (2xx status code).
+    [[nodiscard]] constexpr bool is_success() const noexcept {
+        return status_code >= 200 && status_code < 300;
+    }
+
+    /// Check if the response indicates a client error (4xx status code).
+    [[nodiscard]] constexpr bool is_client_error() const noexcept {
+        return status_code >= 400 && status_code < 500;
+    }
+
+    /// Check if the response indicates a server error (5xx status code).
+    [[nodiscard]] constexpr bool is_server_error() const noexcept {
+        return status_code >= 500 && status_code < 600;
+    }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const HttpResponse&,
+                                         const HttpResponse&) = default;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
