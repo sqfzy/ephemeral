@@ -647,9 +647,13 @@ struct TransportConfig {
             url.remove_prefix(host_end);
         }
 
-        // Reject control characters in hostname (CWE-93 header injection)
+        // Reject control characters in hostname (CWE-93 header injection).
+        // Cast to unsigned char to avoid signed-char UB: on platforms where
+        // char is signed, bytes >= 0x80 (valid in UTF-8) would compare as
+        // negative and falsely match `c < 0x20`.
         for (char c : cfg.remote_host) {
-            if (c < 0x20 || c == 0x7f) {
+            auto uc = static_cast<unsigned char>(c);
+            if (uc < 0x20 || uc == 0x7f) {
                 return std::unexpected(
                     "hostname contains control characters");
             }

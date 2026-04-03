@@ -69,40 +69,32 @@ using SocketDirectSmallTransport = DirectSmallTransport<SocketTransport>;
 /// @brief Full direct raw variant (no WebSocket framing).
 using SocketDirectRawTransport   = DirectRawTransport<SocketTransport>;
 
-/// @brief Convenience factory: creates a fully connected SocketWssTransport
-/// from just a TransportConfig, eliminating the TcpFactory boilerplate.
+namespace detail {
+
+/// @brief Shared implementation for socket_wss_connect / socket_ws_connect.
 ///
-/// Equivalent to:
-///   auto factory = [&]() { /* create SocketTransport, connect */ };
-///   auto transport = SocketWssTransport::create(factory, config);
+/// Resolves SocketConfig (using provided or deriving from TransportConfig),
+/// validates, builds a TcpFactory, and delegates to Transport::create().
 ///
-/// Optionally accepts a SocketConfig for fine-grained TCP tuning;
-/// if omitted, sensible defaults are derived from the TransportConfig.
-///
-/// @tparam MaxPayload  Maximum WebSocket payload size in bytes (default 512).
-/// @tparam QueueDepth  SPSC queue depth for RX/TX (default 1024).
+/// @tparam MaxPayload  Maximum WebSocket payload size in bytes.
+/// @tparam QueueDepth  SPSC queue depth for RX/TX.
 /// @param config     Transport configuration (host, port, TLS, WS settings).
-/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.).
-/// @return Connected SocketWssTransport or ConnectionErrorInfo on failure.
-template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
+/// @param sock_cfg   Optional socket-level config override.
+/// @return Connected Transport or ConnectionErrorInfo on failure.
+template <size_t MaxPayload, size_t QueueDepth>
 [[nodiscard]] inline auto
-socket_wss_connect(
+socket_connect_impl(
     const TransportConfig& config,
-    std::optional<SocketConfig> sock_cfg = std::nullopt)
+    std::optional<SocketConfig> sock_cfg)
     -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
                      ConnectionErrorInfo>
 {
+    // Use caller-provided SocketConfig or derive sensible defaults from TransportConfig
     SocketConfig sc = sock_cfg.value_or(SocketConfig{
         .host         = config.remote_host,
         .port         = config.remote_port,
         .tcp_nodelay  = true,
     });
-
-    // Ensure host/port match TransportConfig if not explicitly overridden
-    if (!sock_cfg) {
-        sc.host = config.remote_host;
-        sc.port = config.remote_port;
-    }
 
     // Validate SocketConfig early for actionable error messages
     if (auto err = sc.validate(); !err.empty()) {
@@ -125,6 +117,30 @@ socket_wss_connect(
         std::move(tcp_factory), config);
 }
 
+} // namespace detail
+
+/// @brief Convenience factory: creates a fully connected SocketWssTransport
+/// from just a TransportConfig, eliminating the TcpFactory boilerplate.
+///
+/// Optionally accepts a SocketConfig for fine-grained TCP tuning;
+/// if omitted, sensible defaults are derived from the TransportConfig.
+///
+/// @tparam MaxPayload  Maximum WebSocket payload size in bytes (default 512).
+/// @tparam QueueDepth  SPSC queue depth for RX/TX (default 1024).
+/// @param config     Transport configuration (host, port, TLS, WS settings).
+/// @param sock_cfg   Optional socket-level config (TCP_NODELAY, keepalive, etc.).
+/// @return Connected SocketWssTransport or ConnectionErrorInfo on failure.
+template <size_t MaxPayload = 512, size_t QueueDepth = 1024>
+[[nodiscard]] inline auto
+socket_wss_connect(
+    const TransportConfig& config,
+    std::optional<SocketConfig> sock_cfg = std::nullopt)
+    -> std::expected<std::unique_ptr<Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>>,
+                     ConnectionErrorInfo>
+{
+    return detail::socket_connect_impl<MaxPayload, QueueDepth>(config, std::move(sock_cfg));
+}
+
 /// @brief Convenience factory for plain WebSocket (ws://) connections.
 ///
 /// Creates a Transport with use_tls=false.
@@ -143,37 +159,7 @@ socket_ws_connect(
                      ConnectionErrorInfo>
 {
     config.use_tls = false;
-
-    SocketConfig sc = sock_cfg.value_or(SocketConfig{
-        .host         = config.remote_host,
-        .port         = config.remote_port,
-        .tcp_nodelay  = true,
-    });
-
-    if (!sock_cfg) {
-        sc.host = config.remote_host;
-        sc.port = config.remote_port;
-    }
-
-    // Validate SocketConfig early for actionable error messages
-    if (auto err = sc.validate(); !err.empty()) {
-        return std::unexpected(ConnectionErrorInfo{
-            ConnectionError::kInvalidConfig,
-            std::format("SocketConfig: {}", err)});
-    }
-
-    auto tcp_timeout = config.tcp_timeout;
-
-    auto tcp_factory = [sc, tcp_timeout]()
-        -> std::expected<std::unique_ptr<SocketTransport>, std::string> {
-        auto tcp = std::make_unique<SocketTransport>(sc);
-        auto result = tcp->connect(tcp_timeout);
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
-
-    return Transport<SocketTransport, WsFramer, MaxPayload, QueueDepth>::create(
-        std::move(tcp_factory), config);
+    return detail::socket_connect_impl<MaxPayload, QueueDepth>(config, std::move(sock_cfg));
 }
 
 /// @brief Create a socket-based WebSocket transport from a URL string.
