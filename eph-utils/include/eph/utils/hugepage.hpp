@@ -136,6 +136,13 @@ public:
                         size_t &out_allocated_size) noexcept {
 
     is_hugepage = false;
+    out_allocated_size = 0;
+
+    // Zero-size allocation is undefined for std::aligned_alloc and
+    // returns EINVAL from mmap. Return nullptr to the caller.
+    if (size == 0) [[unlikely]] {
+        return nullptr;
+    }
 
     // 确保对齐值至少为系统的基本最大对齐
     size_t actual_alignment = alignment > alignof(std::max_align_t)
