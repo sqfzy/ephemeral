@@ -202,6 +202,14 @@ TEST(AuditEntry, SizeIs64Bytes) {
     EXPECT_EQ(sizeof(AuditEntry), 64);
 }
 
+TEST(AuditEntry, AlignmentIsCacheLine) {
+    // AuditEntry must be cache-line aligned to prevent false sharing
+    // when stored in the ring buffer array.
+    static_assert(alignof(AuditEntry) == 64,
+                  "AuditEntry must have 64-byte alignment for cache-line isolation");
+    EXPECT_EQ(alignof(AuditEntry), 64);
+}
+
 // ---------------------------------------------------------------------------
 // Return value and error path tests
 // ---------------------------------------------------------------------------
