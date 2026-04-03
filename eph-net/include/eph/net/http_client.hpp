@@ -464,6 +464,119 @@ public:
                     : eph::core::detail::json_escape(ca_cert_path));
         }
 
+        /// @brief Parse an HTTP(S) URL into an HttpClient::Config.
+        ///
+        /// Supported formats:
+        ///   https://host            (port defaults to 443, use_tls=true)
+        ///   https://host:port       (explicit port, use_tls=true)
+        ///   http://host             (port defaults to 80, use_tls=false)
+        ///   http://host:port        (explicit port, use_tls=false)
+        ///
+        /// Only sets host, port, and use_tls. All other fields retain defaults.
+        /// Path component (if any) is ignored -- pass it to get()/post() instead.
+        ///
+        /// @param url  HTTP(S) URL string
+        /// @return Config on success, or error description
+        [[nodiscard]] static std::expected<Config, std::string>
+        from_url(std::string_view url) {
+            Config cfg;
+
+            // Determine scheme
+            if (url.starts_with("https://")) {
+                cfg.use_tls = true;
+                cfg.port = 443;
+                url.remove_prefix(8);
+            } else if (url.starts_with("http://")) {
+                cfg.use_tls = false;
+                cfg.port = 80;
+                url.remove_prefix(7);
+            } else {
+                return std::unexpected(std::format(
+                    "unsupported scheme (expected http:// or https://): {}", url));
+            }
+
+            // Strip path/query/fragment -- only host[:port] is relevant
+            auto path_pos = url.find('/');
+            if (path_pos != std::string_view::npos) {
+                url = url.substr(0, path_pos);
+            }
+
+            if (url.empty()) {
+                return std::unexpected(std::string("URL has empty host"));
+            }
+
+            // IPv6 bracket notation: [::1]:port
+            if (url.front() == '[') {
+                auto bracket_end = url.find(']');
+                if (bracket_end == std::string_view::npos) {
+                    return std::unexpected(std::string("IPv6 address missing closing ']'"));
+                }
+                cfg.host = std::string(url.substr(1, bracket_end - 1));
+                if (cfg.host.empty()) {
+                    return std::unexpected(std::string("URL has empty IPv6 address"));
+                }
+                url.remove_prefix(bracket_end + 1);
+                // Optional :port after bracket
+                if (!url.empty() && url.front() == ':') {
+                    url.remove_prefix(1);
+                }
+            } else {
+                // Regular hostname -- check for optional :port
+                auto colon = url.rfind(':');
+                if (colon != std::string_view::npos) {
+                    cfg.host = std::string(url.substr(0, colon));
+                    url.remove_prefix(colon + 1);
+                } else {
+                    cfg.host = std::string(url);
+                    url = {};
+                }
+            }
+
+            if (cfg.host.empty()) {
+                return std::unexpected(std::string("URL has empty host"));
+            }
+
+            // Reject control characters in hostname
+            if (eph::core::detail::contains_control_chars(cfg.host)) {
+                return std::unexpected(std::string("hostname contains control characters"));
+            }
+
+            // Parse optional port
+            if (!url.empty()) {
+                uint32_t port_val = 0;
+                auto [ptr, ec] = std::from_chars(
+                    url.data(), url.data() + url.size(), port_val);
+                if (ec != std::errc{} || ptr != url.data() + url.size()) {
+                    return std::unexpected(std::format("invalid port: '{}'", url));
+                }
+                if (port_val == 0 || port_val > 65535) {
+                    return std::unexpected(std::format("port out of range: {}", port_val));
+                }
+                cfg.port = static_cast<uint16_t>(port_val);
+            }
+
+            return cfg;
+        }
+
+        /// @brief Serialize as an HTTP(S) URL string (inverse of from_url).
+        ///
+        /// Format: scheme://host[:port]
+        /// Port is included only when it differs from the scheme default
+        /// (443 for HTTPS, 80 for HTTP).
+        ///
+        /// @return URL string like "https://api.binance.com" or "http://localhost:8080"
+        [[nodiscard]] std::string to_url() const {
+            std::string_view scheme = use_tls ? "https" : "http";
+            uint16_t default_port = use_tls ? 443 : 80;
+            bool is_ipv6 = host.find(':') != std::string::npos;
+            if (port == default_port) {
+                if (is_ipv6) return std::format("{}://[{}]", scheme, host);
+                return std::format("{}://{}", scheme, host);
+            }
+            if (is_ipv6) return std::format("{}://[{}]:{}", scheme, host, port);
+            return std::format("{}://{}:{}", scheme, host, port);
+        }
+
         /// Defaulted equality -- all fields must match exactly.
         [[nodiscard]] friend bool operator==(const Config&,
                                              const Config&) = default;
