@@ -157,4 +157,26 @@ static void BM_RateLimiterConfig_Validate(benchmark::State& state) {
 }
 BENCHMARK(BM_RateLimiterConfig_Validate);
 
+/// Measure RateLimiter::to_json() (state snapshot for monitoring).
+static void BM_RateLimiter_ToJson(benchmark::State& state) {
+    RateLimiter rl(1000.0, 100);
+
+    for (auto _ : state) {
+        auto j = rl.to_json();
+        benchmark::DoNotOptimize(j);
+    }
+}
+BENCHMARK(BM_RateLimiter_ToJson);
+
+/// Measure CircuitBreaker::to_json() (state snapshot for monitoring).
+static void BM_CircuitBreaker_ToJson(benchmark::State& state) {
+    CircuitBreaker cb;
+
+    for (auto _ : state) {
+        auto j = cb.to_json();
+        benchmark::DoNotOptimize(j);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_ToJson);
+
 BENCHMARK_MAIN();

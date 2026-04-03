@@ -401,3 +401,50 @@ TEST(RateLimiter, RatePerNsZeroRate) {
     RateLimiter rl(0.0, 10);
     EXPECT_DOUBLE_EQ(rl.rate_per_ns(), 0.0);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// config() accessor
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiter, ConfigAccessorReturnsConstructionConfig) {
+    RateLimiter::Config cfg{.rate_per_sec = 500.0, .burst = 42};
+    RateLimiter rl(cfg);
+    EXPECT_EQ(rl.config(), cfg);
+}
+
+TEST(RateLimiter, ConfigAccessorFromDirectConstruction) {
+    RateLimiter rl(1200.0, 100);
+    EXPECT_DOUBLE_EQ(rl.config().rate_per_sec, 1200.0);
+    EXPECT_EQ(rl.config().burst, 100u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// to_json() — live state snapshot
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiter, ToJsonFullBurst) {
+    RateLimiter rl(100.0, 10);
+    auto j = rl.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"available_tokens\":"), std::string::npos);
+    EXPECT_NE(j.find("\"config\":{"), std::string::npos);
+    EXPECT_NE(j.find("\"rate_per_sec\":100.00"), std::string::npos);
+    EXPECT_NE(j.find("\"burst\":10"), std::string::npos);
+}
+
+TEST(RateLimiter, ToJsonAfterExhaustion) {
+    RateLimiter rl(0.0, 5);
+    ASSERT_TRUE(rl.try_acquire(5));
+    auto j = rl.to_json();
+    // Tokens should be at or near zero
+    EXPECT_NE(j.find("\"available_tokens\":0.00"), std::string::npos);
+}
+
+TEST(RateLimiter, ToJsonAfterReset) {
+    RateLimiter rl(0.0, 10);
+    ASSERT_TRUE(rl.try_acquire(10));
+    rl.reset();
+    auto j = rl.to_json();
+    EXPECT_NE(j.find("\"available_tokens\":10.00"), std::string::npos);
+}

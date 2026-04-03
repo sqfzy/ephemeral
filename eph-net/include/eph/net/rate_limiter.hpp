@@ -107,7 +107,8 @@ public:
     /// @brief Construct a token bucket rate limiter from a Config.
     /// @param config  Rate limiter configuration.
     explicit RateLimiter(Config config) noexcept
-        : rate_per_ns_{config.rate_per_sec / 1'000'000'000.0}
+        : config_{config}
+        , rate_per_ns_{config.rate_per_sec / 1'000'000'000.0}
         , burst_{static_cast<double>(config.burst)}
         , tokens_{static_cast<double>(config.burst)}
         , last_refill_{std::chrono::steady_clock::now()}
@@ -189,6 +190,10 @@ public:
         return tokens_;
     }
 
+    /// @brief Read-only access to the limiter's immutable configuration.
+    /// @return Const reference to the Config used at construction.
+    [[nodiscard]] const Config& config() const noexcept { return config_; }
+
     /// @brief Read-only access to the limiter's burst capacity.
     /// @return Maximum token capacity (matches the burst value from Config).
     [[nodiscard]] double burst() const noexcept { return burst_; }
@@ -196,6 +201,19 @@ public:
     /// @brief Read-only access to the refill rate in tokens per nanosecond.
     /// @return Internal rate expressed in tokens/ns. Multiply by 1e9 for tokens/sec.
     [[nodiscard]] double rate_per_ns() const noexcept { return rate_per_ns_; }
+
+    /// @brief JSON-formatted snapshot of current limiter state for monitoring.
+    ///
+    /// Includes both configuration and live state (available tokens).
+    /// Thread-safe: takes a lock to read consistent state.
+    [[nodiscard]] std::string to_json() {
+        std::lock_guard<std::mutex> lock(mu_);
+        refill_locked();
+        return std::format(
+            "{{\"available_tokens\":{:.2f},\"config\":{}}}",
+            tokens_,
+            config_.to_json());
+    }
 
     /// @brief Reset token count to full burst capacity.
     ///
@@ -225,6 +243,7 @@ private:
         }
     }
 
+    Config    config_;        ///< Limiter configuration (immutable after construction).
     double    rate_per_ns_;   ///< Tokens generated per nanosecond
     double    burst_;         ///< Maximum token capacity
     double    tokens_;        ///< Current available tokens (fractional for smooth accumulation)
