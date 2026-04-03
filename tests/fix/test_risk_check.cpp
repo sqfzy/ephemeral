@@ -289,3 +289,136 @@ TEST(RiskChecker, ProjectedExposureCorrectWithReducingOrder)
     EXPECT_EQ(checker.check_order("TSLA", '1', 200.0, 200.0, positions),
               RiskRejectReason::kTotalExposureExceeded);
 }
+
+// ---------------------------------------------------------------------------
+// RiskLimits Config API tests
+// ---------------------------------------------------------------------------
+
+TEST(RiskLimits, ValidateAcceptsDefaults) {
+    RiskLimits limits{};
+    EXPECT_TRUE(limits.validate().empty());
+}
+
+TEST(RiskLimits, ValidateAcceptsPositiveValues) {
+    RiskLimits limits{
+        .max_order_qty = 100.0,
+        .max_order_notional = 50000.0,
+        .max_position_qty = 1000.0,
+        .max_position_notional = 500000.0,
+        .max_total_exposure = 1000000.0,
+        .max_orders_per_second = 10,
+    };
+    EXPECT_TRUE(limits.validate().empty());
+}
+
+TEST(RiskLimits, ValidateRejectsNegativeOrderQty) {
+    RiskLimits limits{.max_order_qty = -1.0};
+    EXPECT_FALSE(limits.validate().empty());
+}
+
+TEST(RiskLimits, ValidateRejectsNegativeNotional) {
+    RiskLimits limits{.max_order_notional = -100.0};
+    EXPECT_FALSE(limits.validate().empty());
+}
+
+TEST(RiskLimits, ValidateRejectsNegativeRateLimit) {
+    RiskLimits limits{.max_orders_per_second = -1};
+    EXPECT_FALSE(limits.validate().empty());
+}
+
+TEST(RiskLimits, DumpContainsFieldNames) {
+    RiskLimits limits{.max_order_qty = 100.0};
+    auto d = limits.dump();
+    EXPECT_NE(d.find("RiskLimits"), std::string::npos);
+    EXPECT_NE(d.find("100.00"), std::string::npos);
+    EXPECT_NE(d.find("disabled"), std::string::npos);
+}
+
+TEST(RiskLimits, DumpShowsDisabledForZero) {
+    RiskLimits limits{};
+    auto d = limits.dump();
+    // All fields should show "disabled"
+    auto count_disabled = [&] {
+        size_t count = 0, pos = 0;
+        while ((pos = d.find("disabled", pos)) != std::string::npos) {
+            ++count; pos += 8;
+        }
+        return count;
+    }();
+    EXPECT_EQ(count_disabled, 6u); // 6 fields
+}
+
+TEST(RiskLimits, ToJsonIsValidStructure) {
+    RiskLimits limits{.max_order_qty = 100.5, .max_orders_per_second = 10};
+    auto j = limits.to_json();
+    EXPECT_TRUE(j.starts_with("{"));
+    EXPECT_TRUE(j.ends_with("}"));
+    EXPECT_NE(j.find("\"max_order_qty\":100.5"), std::string::npos);
+    EXPECT_NE(j.find("\"max_orders_per_second\":10"), std::string::npos);
+}
+
+TEST(RiskLimits, EqualityMatchesIdentical) {
+    RiskLimits a{.max_order_qty = 100.0, .max_orders_per_second = 5};
+    RiskLimits b = a;
+    EXPECT_EQ(a, b);
+}
+
+TEST(RiskLimits, EqualityDetectsDifferences) {
+    RiskLimits a{.max_order_qty = 100.0};
+    RiskLimits b{.max_order_qty = 200.0};
+    EXPECT_NE(a, b);
+}
+
+TEST(RiskLimits, WarningsAllDisabled) {
+    RiskLimits limits{};
+    auto w = limits.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("all risk limits are disabled") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(RiskLimits, WarningsNotionalWithoutExposure) {
+    RiskLimits limits{.max_order_notional = 50000.0};
+    auto w = limits.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("aggregate exposure") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(RiskLimits, WarningsPositionWithoutOrderQty) {
+    RiskLimits limits{.max_position_qty = 1000.0};
+    auto w = limits.warnings();
+    bool found = false;
+    for (const auto& msg : w)
+        if (msg.find("single large order") != std::string::npos) found = true;
+    EXPECT_TRUE(found);
+}
+
+TEST(RiskLimits, WarningsEmptyForCompleteConfig) {
+    RiskLimits limits{
+        .max_order_qty = 100.0,
+        .max_order_notional = 50000.0,
+        .max_position_qty = 1000.0,
+        .max_position_notional = 500000.0,
+        .max_total_exposure = 1000000.0,
+        .max_orders_per_second = 10,
+    };
+    EXPECT_TRUE(limits.warnings().empty());
+}
+
+TEST(RiskLimits, FormatterProducesDump) {
+    RiskLimits limits{.max_order_qty = 42.0};
+    auto formatted = std::format("{}", limits);
+    EXPECT_NE(formatted.find("RiskLimits"), std::string::npos);
+    EXPECT_NE(formatted.find("42.00"), std::string::npos);
+}
+
+TEST(RiskLimits, RiskRejectReasonFormatterProducesName) {
+    auto s = std::format("{}", RiskRejectReason::kOrderQtyExceeded);
+    EXPECT_EQ(s, "OrderQtyExceeded");
+    auto s2 = std::format("{}", RiskRejectReason::kOk);
+    EXPECT_EQ(s2, "Ok");
+}

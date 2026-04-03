@@ -703,3 +703,14 @@ inline std::string ConnectionTuple::to_json() const {
 }
 
 } // namespace eph::dpdk::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for ConnectionTuple
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::dpdk::net::ConnectionTuple> : std::formatter<std::string> {
+    auto format(const eph::dpdk::net::ConnectionTuple& t, auto& ctx) const {
+        return std::formatter<std::string>::format(t.dump(), ctx);
+    }
+};

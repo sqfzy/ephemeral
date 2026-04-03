@@ -9,7 +9,10 @@
 
 #include <cmath>
 #include <cstdint>
+#include <format>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -45,6 +48,84 @@ struct RiskLimits {
     double max_position_notional = 0.0;  ///< Max position notional per symbol.
     double max_total_exposure    = 0.0;  ///< Max total exposure across all symbols.
     int    max_orders_per_second = 0;    ///< Rate limit (0 = no limit).
+
+    /// Validate limits, returning an error description or empty string on success.
+    /// A value of 0.0 (or 0) disables the corresponding check, which is valid.
+    /// Negative values are invalid.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (max_order_qty < 0.0)
+            return "max_order_qty must be >= 0 (0 disables)";
+        if (max_order_notional < 0.0)
+            return "max_order_notional must be >= 0 (0 disables)";
+        if (max_position_qty < 0.0)
+            return "max_position_qty must be >= 0 (0 disables)";
+        if (max_position_notional < 0.0)
+            return "max_position_notional must be >= 0 (0 disables)";
+        if (max_total_exposure < 0.0)
+            return "max_total_exposure must be >= 0 (0 disables)";
+        if (max_orders_per_second < 0)
+            return "max_orders_per_second must be >= 0 (0 disables)";
+        return {};
+    }
+
+    /// Multi-line formatted dump for logging/debugging.
+    /// Zero-valued limits are shown as "disabled".
+    [[nodiscard]] std::string dump() const {
+        auto fmtd = [](double v) -> std::string {
+            return v > 0.0 ? std::format("{:.2f}", v) : std::string("disabled");
+        };
+        auto fmti = [](int v) -> std::string {
+            return v > 0 ? std::format("{}", v) : std::string("disabled");
+        };
+        return std::format(
+            "RiskLimits:\n"
+            "  max_order_qty: {}\n"
+            "  max_order_notional: {}\n"
+            "  max_position_qty: {}\n"
+            "  max_position_notional: {}\n"
+            "  max_total_exposure: {}\n"
+            "  max_orders_per_second: {}",
+            fmtd(max_order_qty), fmtd(max_order_notional),
+            fmtd(max_position_qty), fmtd(max_position_notional),
+            fmtd(max_total_exposure), fmti(max_orders_per_second));
+    }
+
+    /// JSON-formatted limits for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"max_order_qty\":{:.6g},\"max_order_notional\":{:.6g},"
+            "\"max_position_qty\":{:.6g},\"max_position_notional\":{:.6g},"
+            "\"max_total_exposure\":{:.6g},\"max_orders_per_second\":{}}}",
+            max_order_qty, max_order_notional,
+            max_position_qty, max_position_notional,
+            max_total_exposure, max_orders_per_second);
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // All limits disabled means no risk protection
+        if (max_order_qty <= 0.0 && max_order_notional <= 0.0 &&
+            max_position_qty <= 0.0 && max_position_notional <= 0.0 &&
+            max_total_exposure <= 0.0 && max_orders_per_second <= 0) {
+            w.emplace_back("all risk limits are disabled (0) -- "
+                           "no pre-trade risk protection is active");
+        }
+        // Order notional without position limit
+        if (max_order_notional > 0.0 && max_total_exposure <= 0.0)
+            w.emplace_back("max_order_notional is set but max_total_exposure "
+                           "is disabled -- aggregate exposure is unchecked");
+        // Position qty without order qty
+        if (max_position_qty > 0.0 && max_order_qty <= 0.0)
+            w.emplace_back("max_position_qty is set but max_order_qty is "
+                           "disabled -- a single large order could fill the "
+                           "entire position limit");
+        return w;
+    }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const RiskLimits&,
+                                         const RiskLimits&) = default;
 };
 
 /// @brief Reason an order was rejected by the risk checker.
@@ -217,3 +298,22 @@ private:
 };
 
 }  // namespace eph::fix
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::fix::RiskLimits> : std::formatter<std::string> {
+    auto format(const eph::fix::RiskLimits& r, auto& ctx) const {
+        return std::formatter<std::string>::format(r.dump(), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::fix::RiskRejectReason> : std::formatter<std::string_view> {
+    auto format(eph::fix::RiskRejectReason r, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::fix::risk_reject_name(r), ctx);
+    }
+};
