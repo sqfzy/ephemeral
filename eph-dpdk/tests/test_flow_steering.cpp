@@ -141,3 +141,24 @@ TEST(FlowRule, FormatterProducesOutput) {
     auto s = std::format("{}", rule);
     EXPECT_NE(s.find("inactive"), std::string::npos);
 }
+
+TEST(FlowRule, ExplicitBoolConversion) {
+    FlowRule rule;
+    EXPECT_FALSE(static_cast<bool>(rule));
+    // Verify explicit conversion is required (not implicit)
+    static_assert(!std::is_convertible_v<FlowRule, bool>,
+                  "FlowRule's bool conversion must be explicit");
+    static_assert(requires(const FlowRule& r) { static_cast<bool>(r); },
+                  "FlowRule must support explicit bool conversion");
+}
+
+TEST(FlowRule, SelfMoveAssignmentIsSafe) {
+    FlowRule rule;
+    rule.port_id = 5;
+    rule.queue_id = 7;
+    // Self-move should not crash or corrupt state
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-diagnostic-self-move)
+    rule = std::move(rule);
+    EXPECT_EQ(rule.port_id, 5);
+    EXPECT_EQ(rule.queue_id, 7);
+}

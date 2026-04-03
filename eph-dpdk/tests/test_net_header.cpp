@@ -505,6 +505,70 @@ TEST(SynOptions, ConstantsAreConsistent) {
     EXPECT_EQ(kSynTcpHeaderLen % 4, 0u);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedPacket accessor null-safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedPacket, DefaultConstructedReturnsZeros) {
+    ParsedPacket empty{};
+    EXPECT_EQ(empty.tcp_flags(), 0);
+    EXPECT_EQ(empty.seq(), 0u);
+    EXPECT_EQ(empty.ack(), 0u);
+    EXPECT_EQ(empty.window(), 0);
+    EXPECT_EQ(empty.src_port(), 0);
+    EXPECT_EQ(empty.dst_port(), 0);
+    EXPECT_EQ(empty.src_ip(), 0u);
+    EXPECT_EQ(empty.dst_ip(), 0u);
+    EXPECT_FALSE(empty.has_flag(kTcpSyn));
+    EXPECT_FALSE(empty.has_flag(kTcpAck));
+}
+
+TEST(ParsedPacket, NullMbufReturnsEmpty) {
+    auto parsed = parse_packet(nullptr);
+    EXPECT_EQ(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.ip, nullptr);
+    EXPECT_EQ(parsed.eth, nullptr);
+    EXPECT_EQ(parsed.payload, nullptr);
+    EXPECT_EQ(parsed.payload_len, 0);
+}
+
+TEST(ParsedPacket, MatchesOnEmptyReturnsFalse) {
+    ParsedPacket empty{};
+    ConnectionTuple t{.src_ip = 1, .dst_ip = 2, .src_port = 80, .dst_port = 443};
+    EXPECT_FALSE(empty.matches(t));
+}
+
+TEST(ParsedPacket, AccessorsExtractCorrectValues) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 10);
+
+    // Set specific seq/ack/window values
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + kEtherHeaderLen + kIpv4HeaderLen);
+    tcp->sent_seq  = hton32(12345678);
+    tcp->recv_ack  = hton32(87654321);
+    tcp->rx_win    = hton16(32000);
+    tcp->tcp_flags = kTcpAck | kTcpPsh;
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(kAllHeadersLen + 10);
+    mbuf.pkt_len  = kAllHeadersLen + 10;
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.seq(), 12345678u);
+    EXPECT_EQ(parsed.ack(), 87654321u);
+    EXPECT_EQ(parsed.window(), 32000);
+    EXPECT_TRUE(parsed.has_flag(kTcpAck));
+    EXPECT_TRUE(parsed.has_flag(kTcpPsh));
+    EXPECT_FALSE(parsed.has_flag(kTcpSyn));
+    EXPECT_EQ(parsed.src_port(), 12345);
+    EXPECT_EQ(parsed.dst_port(), 443);
+    EXPECT_EQ(parsed.src_ip(), 0x0A000001u);
+    EXPECT_EQ(parsed.dst_ip(), 0x0A000002u);
+}
+
 TEST(ParsePacket, MatchesSwapsAddresses) {
     uint8_t buf[128];
     build_raw_packet(buf, 0);

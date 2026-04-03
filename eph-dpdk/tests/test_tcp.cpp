@@ -98,6 +98,50 @@ TEST(TcpConfig, ZeroRecvWindowFails) {
     EXPECT_NE(err.find("recv_window"), std::string_view::npos);
 }
 
+TEST(TcpConfig, RecvWindowExceeds65535Fails) {
+    auto cfg = make_valid_config();
+    cfg.recv_window = 65536;
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("recv_window"), std::string_view::npos);
+}
+
+TEST(TcpConfig, RecvWindowAt65535Passes) {
+    auto cfg = make_valid_config();
+    cfg.recv_window = 65535;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::validate — max_rx_burst boundary
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, MaxRxBurstZeroAutoIsValid) {
+    auto cfg = make_valid_config();
+    cfg.max_rx_burst = 0;  // auto-calculate from MSS
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TcpConfig, MaxRxBurstAt32Passes) {
+    auto cfg = make_valid_config();
+    cfg.max_rx_burst = 32;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TcpConfig, MaxRxBurstExceeds32Fails) {
+    auto cfg = make_valid_config();
+    cfg.max_rx_burst = 33;
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("max_rx_burst"), std::string_view::npos);
+}
+
+TEST(TcpConfig, MaxRxBurstOneIsValid) {
+    auto cfg = make_valid_config();
+    cfg.max_rx_burst = 1;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TcpConfig::format_mac
 // ─────────────────────────────────────────────────────────────────────────────
