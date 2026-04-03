@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -34,6 +35,20 @@ enum class OrderState : uint8_t {
     Canceled,        ///< Canceled (terminal).
     Rejected,        ///< Exchange rejected (terminal).
 };
+
+/// Human-readable name for OrderState.
+[[nodiscard]] constexpr std::string_view order_state_name(OrderState s) noexcept {
+    switch (s) {
+    case OrderState::PendingNew:      return "PendingNew";
+    case OrderState::New:             return "New";
+    case OrderState::PartiallyFilled: return "PartiallyFilled";
+    case OrderState::Filled:          return "Filled";
+    case OrderState::PendingCancel:   return "PendingCancel";
+    case OrderState::Canceled:        return "Canceled";
+    case OrderState::Rejected:        return "Rejected";
+    }
+    return "Unknown";
+}
 
 /// @brief Returns true if the state is terminal (no further transitions expected).
 /// @param s  The order state to check.
@@ -436,3 +451,14 @@ private:
 };
 
 } // namespace eph::fix
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for OrderState
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::fix::OrderState> : std::formatter<std::string_view> {
+    auto format(eph::fix::OrderState s, auto& ctx) const {
+        return std::formatter<std::string_view>::format(eph::fix::order_state_name(s), ctx);
+    }
+};

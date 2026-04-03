@@ -8,6 +8,7 @@
 /// All string_view values point into the original message buffer -- no copies.
 
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <string_view>
 
@@ -61,6 +62,49 @@ enum class OrdStatus : char {
     Expired         = 'C',  ///< Order expired (terminal).
     PendingReplace  = 'E',  ///< Replace request pending at the exchange.
 };
+
+/// Human-readable name for ExecType.
+[[nodiscard]] constexpr std::string_view exec_type_name(ExecType t) noexcept {
+    switch (t) {
+    case ExecType::New:            return "New";
+    case ExecType::PartialFill:    return "PartialFill";
+    case ExecType::Fill:           return "Fill";
+    case ExecType::DoneForDay:     return "DoneForDay";
+    case ExecType::Canceled:       return "Canceled";
+    case ExecType::Replaced:       return "Replaced";
+    case ExecType::PendingCancel:  return "PendingCancel";
+    case ExecType::Stopped:        return "Stopped";
+    case ExecType::Rejected:       return "Rejected";
+    case ExecType::Suspended:      return "Suspended";
+    case ExecType::PendingNew:     return "PendingNew";
+    case ExecType::Calculated:     return "Calculated";
+    case ExecType::Expired:        return "Expired";
+    case ExecType::PendingReplace: return "PendingReplace";
+    case ExecType::Trade:          return "Trade";
+    }
+    return "Unknown";
+}
+
+/// Human-readable name for OrdStatus.
+[[nodiscard]] constexpr std::string_view ord_status_name(OrdStatus s) noexcept {
+    switch (s) {
+    case OrdStatus::New:             return "New";
+    case OrdStatus::PartiallyFilled: return "PartiallyFilled";
+    case OrdStatus::Filled:          return "Filled";
+    case OrdStatus::DoneForDay:      return "DoneForDay";
+    case OrdStatus::Canceled:        return "Canceled";
+    case OrdStatus::Replaced:        return "Replaced";
+    case OrdStatus::PendingCancel:   return "PendingCancel";
+    case OrdStatus::Stopped:         return "Stopped";
+    case OrdStatus::Rejected:        return "Rejected";
+    case OrdStatus::Suspended:       return "Suspended";
+    case OrdStatus::PendingNew:      return "PendingNew";
+    case OrdStatus::Calculated:      return "Calculated";
+    case OrdStatus::Expired:         return "Expired";
+    case OrdStatus::PendingReplace:  return "PendingReplace";
+    }
+    return "Unknown";
+}
 
 /// @brief Internal implementation details for the execution report module.
 namespace detail {
@@ -303,3 +347,21 @@ try_parse_execution_report(const uint8_t* data, size_t len) noexcept {
 }
 
 } // namespace eph::fix
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations for FIX execution report enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::fix::ExecType> : std::formatter<std::string_view> {
+    auto format(eph::fix::ExecType t, auto& ctx) const {
+        return std::formatter<std::string_view>::format(eph::fix::exec_type_name(t), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::fix::OrdStatus> : std::formatter<std::string_view> {
+    auto format(eph::fix::OrdStatus s, auto& ctx) const {
+        return std::formatter<std::string_view>::format(eph::fix::ord_status_name(s), ctx);
+    }
+};

@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <format>
 #include <string_view>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -49,11 +50,29 @@ enum class Side : char {
     Sell = '2',  ///< Sell side ('2').
 };
 
+/// Human-readable name for Side.
+[[nodiscard]] constexpr std::string_view side_name(Side s) noexcept {
+    switch (s) {
+    case Side::Buy:  return "Buy";
+    case Side::Sell: return "Sell";
+    }
+    return "Unknown";
+}
+
 /// @brief FIX Order type (tag 40) -- how the order is to be executed.
 enum class OrdType : char {
     Market = '1',  ///< Market order -- fill immediately at best available price.
     Limit  = '2',  ///< Limit order -- fill at the specified price or better.
 };
+
+/// Human-readable name for OrdType.
+[[nodiscard]] constexpr std::string_view ord_type_name(OrdType t) noexcept {
+    switch (t) {
+    case OrdType::Market: return "Market";
+    case OrdType::Limit:  return "Limit";
+    }
+    return "Unknown";
+}
 
 /// @brief FIX Time in force (tag 59) -- how long the order remains active.
 enum class TimeInForce : char {
@@ -62,6 +81,17 @@ enum class TimeInForce : char {
     IOC = '3',  ///< Immediate Or Cancel -- fill what you can, cancel the rest.
     FOK = '4',  ///< Fill Or Kill -- fill entirely or cancel entirely.
 };
+
+/// Human-readable name for TimeInForce.
+[[nodiscard]] constexpr std::string_view time_in_force_name(TimeInForce tif) noexcept {
+    switch (tif) {
+    case TimeInForce::Day: return "Day";
+    case TimeInForce::GTC: return "GTC";
+    case TimeInForce::IOC: return "IOC";
+    case TimeInForce::FOK: return "FOK";
+    }
+    return "Unknown";
+}
 
 /// @brief Build a NewOrderSingle (MsgType=D) message.
 ///
@@ -268,3 +298,28 @@ enum class TimeInForce : char {
 }
 
 } // namespace eph::fix
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specializations for FIX order enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::fix::Side> : std::formatter<std::string_view> {
+    auto format(eph::fix::Side s, auto& ctx) const {
+        return std::formatter<std::string_view>::format(eph::fix::side_name(s), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::fix::OrdType> : std::formatter<std::string_view> {
+    auto format(eph::fix::OrdType t, auto& ctx) const {
+        return std::formatter<std::string_view>::format(eph::fix::ord_type_name(t), ctx);
+    }
+};
+
+template <>
+struct std::formatter<eph::fix::TimeInForce> : std::formatter<std::string_view> {
+    auto format(eph::fix::TimeInForce tif, auto& ctx) const {
+        return std::formatter<std::string_view>::format(eph::fix::time_in_force_name(tif), ctx);
+    }
+};

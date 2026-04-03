@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <string_view>
 
 #include "eph/fix.hpp"
@@ -309,4 +310,70 @@ TEST(FixOrders, build_new_order_default_timestamp_uses_current_time) {
     // Just verify timestamp tags are present (value is wall-clock dependent)
     EXPECT_TRUE(result->has(tag::TransactTime));
     EXPECT_TRUE(result->has(tag::SendingTime));
+}
+
+// ---------------------------------------------------------------------------
+// FIX enum formatter tests
+// ---------------------------------------------------------------------------
+
+TEST(FixEnumFormatters, SideFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", Side::Buy), "Buy");
+    EXPECT_EQ(std::format("{}", Side::Sell), "Sell");
+}
+
+TEST(FixEnumFormatters, OrdTypeFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", OrdType::Market), "Market");
+    EXPECT_EQ(std::format("{}", OrdType::Limit), "Limit");
+}
+
+TEST(FixEnumFormatters, TimeInForceFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", TimeInForce::Day), "Day");
+    EXPECT_EQ(std::format("{}", TimeInForce::GTC), "GTC");
+    EXPECT_EQ(std::format("{}", TimeInForce::IOC), "IOC");
+    EXPECT_EQ(std::format("{}", TimeInForce::FOK), "FOK");
+}
+
+TEST(FixEnumFormatters, ExecTypeFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", ExecType::New), "New");
+    EXPECT_EQ(std::format("{}", ExecType::Fill), "Fill");
+    EXPECT_EQ(std::format("{}", ExecType::Canceled), "Canceled");
+    EXPECT_EQ(std::format("{}", ExecType::Rejected), "Rejected");
+    EXPECT_EQ(std::format("{}", ExecType::Trade), "Trade");
+}
+
+TEST(FixEnumFormatters, OrdStatusFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", OrdStatus::New), "New");
+    EXPECT_EQ(std::format("{}", OrdStatus::Filled), "Filled");
+    EXPECT_EQ(std::format("{}", OrdStatus::Canceled), "Canceled");
+    EXPECT_EQ(std::format("{}", OrdStatus::Rejected), "Rejected");
+    EXPECT_EQ(std::format("{}", OrdStatus::PartiallyFilled), "PartiallyFilled");
+}
+
+TEST(FixEnumFormatters, OrderStateFormatsCorrectly) {
+    EXPECT_EQ(std::format("{}", OrderState::PendingNew), "PendingNew");
+    EXPECT_EQ(std::format("{}", OrderState::New), "New");
+    EXPECT_EQ(std::format("{}", OrderState::Filled), "Filled");
+    EXPECT_EQ(std::format("{}", OrderState::Canceled), "Canceled");
+    EXPECT_EQ(std::format("{}", OrderState::Rejected), "Rejected");
+}
+
+TEST(FixEnumFormatters, SideNameFunction) {
+    EXPECT_EQ(side_name(Side::Buy), "Buy");
+    EXPECT_EQ(side_name(Side::Sell), "Sell");
+}
+
+TEST(FixEnumFormatters, OrdTypeNameFunction) {
+    EXPECT_EQ(ord_type_name(OrdType::Market), "Market");
+    EXPECT_EQ(ord_type_name(OrdType::Limit), "Limit");
+}
+
+TEST(FixEnumFormatters, ExecTypeNameFunction) {
+    EXPECT_EQ(exec_type_name(ExecType::PartialFill), "PartialFill");
+    EXPECT_EQ(exec_type_name(ExecType::PendingNew), "PendingNew");
+    EXPECT_EQ(exec_type_name(ExecType::Expired), "Expired");
+}
+
+TEST(FixEnumFormatters, OrderStateNameFunction) {
+    EXPECT_EQ(order_state_name(OrderState::PartiallyFilled), "PartiallyFilled");
+    EXPECT_EQ(order_state_name(OrderState::PendingCancel), "PendingCancel");
 }
