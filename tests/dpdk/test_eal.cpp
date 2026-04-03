@@ -42,3 +42,13 @@ TEST(EalGuard, MoveConstructorTransfersOwnership) {
     static_assert(!std::is_copy_constructible_v<EalGuard>);
     static_assert(!std::is_copy_assignable_v<EalGuard>);
 }
+
+TEST(EalGuard, ExplicitBoolConversion) {
+    // Verify that explicit operator bool() is available and works correctly.
+    // EalGuard should NOT be implicitly convertible to bool.
+    static_assert(!std::is_convertible_v<EalGuard, bool>,
+                  "EalGuard's bool conversion must be explicit");
+    // But explicit static_cast<bool>() should work.
+    static_assert(requires(const EalGuard& g) { static_cast<bool>(g); },
+                  "EalGuard must support explicit bool conversion");
+}

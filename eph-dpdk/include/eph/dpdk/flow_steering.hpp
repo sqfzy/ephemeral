@@ -292,6 +292,10 @@ struct FlowRule {
     /// @brief Check if this rule is still active on the NIC.
     /// @return true if the flow rule handle is non-null
     [[nodiscard]] bool valid() const noexcept { return handle != nullptr; }
+
+    /// Convenience bool conversion for validity checking.
+    /// Usage: if (rule) { /* rule is active */ }
+    [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
 };
 
 /// Install a rte_flow rule that steers packets matching a TCP 5-tuple

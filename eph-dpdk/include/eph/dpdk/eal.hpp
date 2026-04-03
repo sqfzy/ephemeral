@@ -124,6 +124,10 @@ public:
     /// Check whether this guard holds an initialized EAL instance.
     [[nodiscard]] bool initialized() const noexcept { return initialized_; }
 
+    /// Convenience bool conversion for validity checking.
+    /// Usage: if (eal) { /* EAL is initialized */ }
+    [[nodiscard]] explicit operator bool() const noexcept { return initialized_; }
+
 private:
     explicit EalGuard(int args_consumed) noexcept
         : initialized_{true}, args_consumed_{args_consumed} {}
