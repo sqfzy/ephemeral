@@ -97,7 +97,7 @@ enum class Side : uint8_t {
 ///
 /// Trivially copyable for zero-overhead ring buffer storage and
 /// binary file persistence.
-struct AuditEntry {
+struct alignas(64) AuditEntry {
     uint64_t   tsc;          ///< TSC timestamp (convert via TSC::to_ns)
     uint64_t   order_id;     ///< Application-assigned order ID
     double     price;        ///< Order/execution price
