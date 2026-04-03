@@ -428,3 +428,41 @@ TEST(CircuitState, FormatterWorksInCompositeFormat) {
     auto s = std::format("state={} count={}", CircuitState::Open, 5);
     EXPECT_EQ(s, "state=OPEN count=5");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config dump, to_json, equality, formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreakerConfig, DumpContainsKeyFields) {
+    CircuitBreaker::Config cfg{3, std::chrono::milliseconds{5000}, 2};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("failure_threshold: 3"), std::string::npos);
+    EXPECT_NE(d.find("5000ms"), std::string::npos);
+    EXPECT_NE(d.find("half_open_max_calls: 2"), std::string::npos);
+}
+
+TEST(CircuitBreakerConfig, ToJsonValidStructure) {
+    CircuitBreaker::Config cfg{5, std::chrono::milliseconds{30000}};
+    auto j = cfg.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"failure_threshold\":5"), std::string::npos);
+    EXPECT_NE(j.find("\"open_duration_ms\":30000"), std::string::npos);
+    EXPECT_NE(j.find("\"half_open_max_calls\":1"), std::string::npos);
+}
+
+TEST(CircuitBreakerConfig, Equality) {
+    CircuitBreaker::Config a{5, std::chrono::milliseconds{30000}, 1};
+    CircuitBreaker::Config b{5, std::chrono::milliseconds{30000}, 1};
+    CircuitBreaker::Config c{3, std::chrono::milliseconds{30000}, 1};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
+TEST(CircuitBreakerConfig, FormatterContainsKeyFields) {
+    CircuitBreaker::Config cfg{3, std::chrono::milliseconds{5000}, 2};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("thresh=3"), std::string::npos);
+    EXPECT_NE(s.find("open=5000ms"), std::string::npos);
+    EXPECT_NE(s.find("ho_max=2"), std::string::npos);
+}

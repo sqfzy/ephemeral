@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <format>
 #include <mutex>
+#include <string>
 #include <string_view>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -110,6 +111,29 @@ public:
                 return "half_open_max_calls must be > 0";
             return {};
         }
+
+        /// Multi-line formatted dump for logging/debugging.
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "CircuitBreaker::Config:\n"
+                "  failure_threshold: {}, open_duration: {}ms, "
+                "half_open_max_calls: {}",
+                failure_threshold, open_duration.count(),
+                half_open_max_calls);
+        }
+
+        /// JSON-formatted config for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"failure_threshold\":{},\"open_duration_ms\":{},"
+                "\"half_open_max_calls\":{}}}",
+                failure_threshold, open_duration.count(),
+                half_open_max_calls);
+        }
+
+        /// Defaulted equality -- all fields must match exactly.
+        [[nodiscard]] friend bool operator==(const Config&,
+                                             const Config&) = default;
     };
 
     /// @brief Construct a circuit breaker with the given configuration.
@@ -330,5 +354,17 @@ struct std::formatter<eph::net::CircuitState> : std::formatter<std::string_view>
     auto format(eph::net::CircuitState s, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::net::circuit_state_name(s), ctx);
+    }
+};
+
+/// @brief std::formatter for CircuitBreaker::Config -- compact one-line summary.
+template <>
+struct std::formatter<eph::net::CircuitBreaker::Config> : std::formatter<std::string> {
+    auto format(const eph::net::CircuitBreaker::Config& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("CircuitBreaker::Config(thresh={}, open={}ms, ho_max={})",
+                c.failure_threshold, c.open_duration.count(),
+                c.half_open_max_calls),
+            ctx);
     }
 };
