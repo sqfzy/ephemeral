@@ -24,11 +24,15 @@
 #include <vector>
 
 #include "eph/core/detail/json_escape.hpp"
+#include "eph/core/detail/string_checks.hpp"
 #include "eph/core/transport_errors.hpp"
 
 namespace eph::net {
 
-namespace detail { using eph::core::detail::json_escape; }
+namespace detail {
+    using eph::core::detail::json_escape;
+    using eph::core::detail::contains_control_chars;
+}
 
 // ---------------------------------------------------------------------------
 // Compile-time timestamp control (single definition point)
@@ -496,14 +500,9 @@ struct TransportConfig {
             return "remote_host must not be empty";
         // Reject control characters in hostname to prevent HTTP header
         // injection (CWE-93). The hostname is interpolated into the Host
-        // header and TLS SNI extension. Cast to unsigned char to avoid
-        // signed-char treating bytes >= 0x80 (valid UTF-8) as negative.
-        for (char c : remote_host) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return "remote_host contains control characters (header injection risk)";
-            }
-        }
+        // header and TLS SNI extension.
+        if (detail::contains_control_chars(remote_host))
+            return "remote_host contains control characters (header injection risk)";
         if (remote_port == 0)
             return "remote_port must be > 0";
         if (ws_path.empty())
@@ -513,12 +512,8 @@ struct TransportConfig {
         // Reject control characters in ws_path — it is interpolated directly
         // into the HTTP Upgrade request line. CR/LF would allow HTTP request
         // smuggling (CWE-113).
-        for (char c : ws_path) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return "ws_path contains control characters (request smuggling risk)";
-            }
-        }
+        if (detail::contains_control_chars(ws_path))
+            return "ws_path contains control characters (request smuggling risk)";
         if (tx_burst_size == 0)
             return "tx_burst_size must be > 0";
         if (rx_burst_size == 0)
@@ -665,16 +660,8 @@ struct TransportConfig {
         }
 
         // Reject control characters in hostname (CWE-93 header injection).
-        // Cast to unsigned char to avoid signed-char UB: on platforms where
-        // char is signed, bytes >= 0x80 (valid in UTF-8) would compare as
-        // negative and falsely match `c < 0x20`.
-        for (char c : cfg.remote_host) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return std::unexpected(
-                    "hostname contains control characters");
-            }
-        }
+        if (detail::contains_control_chars(cfg.remote_host))
+            return std::unexpected("hostname contains control characters");
 
         // Parse optional port
         if (!url.empty() && url.front() == ':') {

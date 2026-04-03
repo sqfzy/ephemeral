@@ -18,11 +18,15 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/core/detail/json_escape.hpp"
+#include "eph/core/detail/string_checks.hpp"
 
 namespace eph::net {
 
-// Bring json_escape into eph::net::detail so existing to_json() code compiles.
-namespace detail { using eph::core::detail::json_escape; }
+// Bring shared helpers into eph::net::detail so existing code compiles.
+namespace detail {
+    using eph::core::detail::json_escape;
+    using eph::core::detail::contains_control_chars;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compile-time timestamp control
@@ -170,14 +174,10 @@ struct SocketConfig {
             url.remove_prefix(colon + 1);
         }
 
-        // Reject control characters in hostname (cast to unsigned to avoid
-        // signed-char treating bytes >= 0x80 as negative)
-        for (char c : cfg.host) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return std::unexpected(std::string("hostname contains control characters"));
-            }
-        }
+        // Reject control characters in hostname to prevent log injection
+        // and unexpected DNS behavior.
+        if (detail::contains_control_chars(cfg.host))
+            return std::unexpected(std::string("hostname contains control characters"));
 
         // Parse port (required)
         if (url.empty()) {
@@ -248,12 +248,8 @@ struct SocketConfig {
         // Reject control characters in hostname. The host field is passed
         // directly to getaddrinfo and logged; control characters could cause
         // log injection or unexpected DNS behavior.
-        for (char c : host) {
-            auto uc = static_cast<unsigned char>(c);
-            if (uc < 0x20 || uc == 0x7f) {
-                return "host contains control characters";
-            }
-        }
+        if (detail::contains_control_chars(host))
+            return "host contains control characters";
         if (port == 0)
             return "port must be > 0";
         if (recv_buf_size < 0)
