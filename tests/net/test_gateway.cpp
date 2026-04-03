@@ -530,3 +530,77 @@ TEST(Gateway, RemoveDoesNotAffectOtherConnections) {
     EXPECT_FALSE(tp2.is_running());  // removed and stopped
     EXPECT_TRUE(tp3.is_running());
 }
+
+// ── Gateway::find_by_tag() ─────────────────────────────────────────────────
+
+TEST(Gateway, FindByTagReturnsCorrectIndex) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    gw.add("alpha", &tp1);
+    gw.add("beta", &tp2);
+    gw.add("gamma", &tp3);
+
+    EXPECT_EQ(gw.find_by_tag("alpha"), 0);
+    EXPECT_EQ(gw.find_by_tag("beta"), 1);
+    EXPECT_EQ(gw.find_by_tag("gamma"), 2);
+}
+
+TEST(Gateway, FindByTagReturnsMaxForMissing) {
+    Gateway gw;
+    EXPECT_EQ(gw.find_by_tag("nonexistent"), SIZE_MAX);
+
+    MockTransport tp;
+    gw.add("exists", &tp);
+    EXPECT_EQ(gw.find_by_tag("nonexistent"), SIZE_MAX);
+}
+
+TEST(Gateway, FindByTagUpdatesAfterRemove) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    gw.add("first", &tp1);
+    gw.add("second", &tp2);
+
+    gw.remove(0);
+    // "second" shifts to index 0 after "first" is removed
+    EXPECT_EQ(gw.find_by_tag("second"), 0);
+    EXPECT_EQ(gw.find_by_tag("first"), SIZE_MAX);
+}
+
+// ── Gateway::healthy_count() ───────────────────────────────────────────────
+
+TEST(Gateway, HealthyCountReflectsState) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    tp1.running.store(true);
+    tp2.running.store(true);
+
+    gw.add("healthy1", &tp1);
+    gw.add("healthy2", &tp2);
+    gw.add("stopped", &tp3);
+
+    // tp1 and tp2 are running -> healthy; tp3 is stopped
+    EXPECT_EQ(gw.healthy_count(), 2);
+}
+
+TEST(Gateway, HealthyCountZeroWhenEmpty) {
+    Gateway gw;
+    EXPECT_EQ(gw.healthy_count(), 0);
+}
+
+TEST(Gateway, HealthyCountUpdatesAfterCheckHealth) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    gw.add("conn", &tp);
+    EXPECT_EQ(gw.healthy_count(), 1);
+
+    // Simulate disconnection
+    tp.running.store(false);
+    gw.check_health();
+    EXPECT_EQ(gw.healthy_count(), 0);
+
+    // Simulate reconnection
+    tp.running.store(true);
+    gw.check_health();
+    EXPECT_EQ(gw.healthy_count(), 1);
+}

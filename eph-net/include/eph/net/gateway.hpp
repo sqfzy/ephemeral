@@ -303,6 +303,32 @@ public:
         return connections_[id].tag;
     }
 
+    /// @brief Look up a connection index by tag.
+    ///
+    /// Linear scan -- suitable for small connection counts typical of HFT
+    /// gateways (2-8 connections). For O(1) lookup, maintain an external map.
+    ///
+    /// @param tag  Tag string to search for.
+    /// @return Connection index, or SIZE_MAX if not found.
+    [[nodiscard]] size_t find_by_tag(std::string_view tag) const noexcept {
+        std::lock_guard lock(mu_);
+        for (size_t i = 0; i < connections_.size(); ++i) {
+            if (connections_[i].tag == tag) return i;
+        }
+        return SIZE_MAX;
+    }
+
+    /// @brief Count of connections currently in Healthy state.
+    /// @return Number of connections with health == ConnHealth::Healthy.
+    [[nodiscard]] size_t healthy_count() const noexcept {
+        std::lock_guard lock(mu_);
+        size_t n = 0;
+        for (const auto& c : connections_) {
+            if (c.health == ConnHealth::Healthy) ++n;
+        }
+        return n;
+    }
+
     // ── Lifecycle control ───────────────────────────────────────────────
 
     /// @brief Start all stopped connections' threads.
