@@ -455,6 +455,20 @@ struct std::formatter<eph::net::CircuitState> : std::formatter<std::string_view>
     }
 };
 
+/// @brief std::formatter for CircuitBreaker -- compact one-line state summary.
+///
+/// Shows current state and failure count. Consistent with other eph::net formatters.
+template <>
+struct std::formatter<eph::net::CircuitBreaker> : std::formatter<std::string> {
+    auto format(const eph::net::CircuitBreaker& cb, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("CircuitBreaker(state={}, failures={})",
+                eph::net::circuit_state_name(cb.state()),
+                cb.failure_count()),
+            ctx);
+    }
+};
+
 /// @brief std::formatter for CircuitBreaker::Config -- compact one-line summary.
 template <>
 struct std::formatter<eph::net::CircuitBreaker::Config> : std::formatter<std::string> {
