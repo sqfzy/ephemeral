@@ -639,6 +639,28 @@ TEST(TransportStats, DeltaCarriesLatencyHistograms) {
     EXPECT_EQ(d.rx_decode.p50_ns, a.rx_decode.p50_ns);
 }
 
+TEST(TransportStats, ToJsonContainsTcpRxAndLatencyFields) {
+    TransportStats s{};
+    s.tcp_rx_packets = 42;
+    s.tcp_rx_bursts = 7;
+    s.tx_latency = {.count = 10, .min_ns = 100, .max_ns = 5000,
+                    .mean_ns = 2000.0, .p50_ns = 1800, .p99_ns = 4500, .p999_ns = 4900};
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"tcp_rx_packets\":42"), std::string::npos);
+    EXPECT_NE(j.find("\"tcp_rx_bursts\":7"), std::string::npos);
+    // Verify latency sub-object is nested correctly
+    EXPECT_NE(j.find("\"tx_latency\":{"), std::string::npos);
+}
+
+TEST(TransportStats, DumpContainsTcpRxLine) {
+    TransportStats s{};
+    s.tcp_rx_packets = 1234;
+    s.tcp_rx_bursts = 56;
+    auto d = s.dump();
+    EXPECT_NE(d.find("1234 segments"), std::string::npos);
+    EXPECT_NE(d.find("56 bursts"), std::string::npos);
+}
+
 TEST(TransportStats, EqualityDetectsDifference) {
     TransportStats a{};
     TransportStats b{};

@@ -635,3 +635,20 @@ TEST(TransportConfigJson, ContainsNewFields) {
     EXPECT_NE(j.find("\"drop_log_interval\":500"), std::string::npos);
     EXPECT_NE(j.find("\"deferred_start\":true"), std::string::npos);
 }
+
+TEST(TransportConfigJson, DefaultValuesSerializeCorrectly) {
+    auto cfg = valid_config();
+    // valid_config() sets skip_utf8_validation=false
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"skip_utf8_validation\":false"), std::string::npos);
+    EXPECT_NE(j.find("\"drop_log_interval\":1000"), std::string::npos);
+    EXPECT_NE(j.find("\"deferred_start\":false"), std::string::npos);
+}
+
+TEST(TransportConfigDump, DumpContainsDefaultOptions) {
+    auto cfg = valid_config();
+    auto d = cfg.dump();
+    // valid_config() sets skip_utf8_validation=false
+    EXPECT_NE(d.find("skip_utf8_validation=false"), std::string::npos);
+    EXPECT_NE(d.find("deferred_start=false"), std::string::npos);
+}
