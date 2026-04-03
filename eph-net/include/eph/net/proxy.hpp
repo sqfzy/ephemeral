@@ -32,6 +32,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/core/detail/base64.hpp"
 #include "eph/net/socket_transport.hpp"
 
 namespace eph::net::proxy {
@@ -428,22 +429,8 @@ http_connect_handshake(SocketTransport& tcp,
 
     // Basic auth if credentials provided
     if (!cfg.username.empty()) {
-        // Simple base64 for username:password
-        // Use a minimal inline base64 encoder to avoid external dependency
         auto plain = std::format("{}:{}", cfg.username, cfg.password);
-        static constexpr char kBase64[] =
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        std::string encoded;
-        encoded.reserve((plain.size() + 2) / 3 * 4);
-        for (size_t i = 0; i < plain.size(); i += 3) {
-            uint32_t n = static_cast<uint8_t>(plain[i]) << 16;
-            if (i + 1 < plain.size()) n |= static_cast<uint8_t>(plain[i + 1]) << 8;
-            if (i + 2 < plain.size()) n |= static_cast<uint8_t>(plain[i + 2]);
-            encoded += kBase64[(n >> 18) & 0x3F];
-            encoded += kBase64[(n >> 12) & 0x3F];
-            encoded += (i + 1 < plain.size()) ? kBase64[(n >> 6) & 0x3F] : '=';
-            encoded += (i + 2 < plain.size()) ? kBase64[n & 0x3F] : '=';
-        }
+        auto encoded = eph::core::detail::base64_encode(plain);
         request += std::format("Proxy-Authorization: Basic {}\r\n", encoded);
     }
 

@@ -20,6 +20,8 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include "eph/core/detail/base64.hpp"
+
 namespace eph::net::http {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,26 +30,9 @@ namespace eph::net::http {
 
 namespace detail {
 
-inline constexpr char kBase64Chars[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// Base64 encode raw bytes. Returns encoded string.
-inline std::string base64_encode(const uint8_t* data, size_t len) {
-    std::string result;
-    result.reserve(((len + 2) / 3) * 4);
-
-    for (size_t i = 0; i < len; i += 3) {
-        uint32_t triple = static_cast<uint32_t>(data[i]) << 16;
-        if (i + 1 < len) triple |= static_cast<uint32_t>(data[i + 1]) << 8;
-        if (i + 2 < len) triple |= static_cast<uint32_t>(data[i + 2]);
-
-        result += kBase64Chars[(triple >> 18) & 0x3F];
-        result += kBase64Chars[(triple >> 12) & 0x3F];
-        result += (i + 1 < len) ? kBase64Chars[(triple >> 6) & 0x3F] : '=';
-        result += (i + 2 < len) ? kBase64Chars[triple & 0x3F] : '=';
-    }
-    return result;
-}
+// Delegate to shared base64 implementation to avoid duplication
+// with proxy.hpp and other modules that need base64 encoding.
+using eph::core::detail::base64_encode;
 
 /// @return Pointer to the "net.http" spdlog logger.
 inline spdlog::logger* http_logger() {
