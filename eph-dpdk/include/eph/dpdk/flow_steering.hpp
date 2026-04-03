@@ -304,6 +304,13 @@ struct FlowRule {
         return std::format("FlowRule(port={}, queue={}, active)",
                            port_id, queue_id);
     }
+
+    /// JSON-formatted status for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"port_id\":{},\"queue_id\":{},\"active\":{}}}",
+            port_id, queue_id, handle != nullptr ? "true" : "false");
+    }
 };
 
 /// Install a rte_flow rule that steers packets matching a TCP 5-tuple

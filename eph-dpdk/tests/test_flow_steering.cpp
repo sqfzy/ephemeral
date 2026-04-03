@@ -198,3 +198,53 @@ TEST(ConfigureRss, OneQueueReturnsDescriptiveError) {
     // Verify the error message is helpful
     EXPECT_NE(result.error().find("2"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// FlowRule::to_json
+// ---------------------------------------------------------------------------
+
+TEST(FlowRule, ToJsonInactive) {
+    FlowRule rule;
+    auto json = rule.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"active\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"port_id\":0"), std::string::npos);
+    EXPECT_NE(json.find("\"queue_id\":0"), std::string::npos);
+}
+
+TEST(FlowRule, ToJsonActiveShowsTrue) {
+    FlowRule rule;
+    rule.port_id = 2;
+    rule.queue_id = 5;
+    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+    auto json = rule.to_json();
+    EXPECT_NE(json.find("\"active\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"port_id\":2"), std::string::npos);
+    EXPECT_NE(json.find("\"queue_id\":5"), std::string::npos);
+    // Prevent destructor from calling rte_flow_destroy on fake pointer
+    rule.handle = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// RxDispatchMode — constexpr enum value ordering
+// ---------------------------------------------------------------------------
+
+TEST(RxDispatchMode, EnumOrdering) {
+    // Software < RssPartitioned < FlowDirector
+    EXPECT_LT(static_cast<uint8_t>(RxDispatchMode::Software),
+              static_cast<uint8_t>(RxDispatchMode::RssPartitioned));
+    EXPECT_LT(static_cast<uint8_t>(RxDispatchMode::RssPartitioned),
+              static_cast<uint8_t>(RxDispatchMode::FlowDirector));
+}
+
+// ---------------------------------------------------------------------------
+// FlowRule — double-remove is safe
+// ---------------------------------------------------------------------------
+
+TEST(FlowRule, DoubleRemoveIsSafe) {
+    FlowRule rule;
+    rule.remove();
+    rule.remove();  // Idempotent
+    EXPECT_FALSE(rule.valid());
+}

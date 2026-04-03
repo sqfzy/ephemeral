@@ -431,4 +431,40 @@ static void BM_PacketTemplateValidate(benchmark::State& state) {
 }
 BENCHMARK(BM_PacketTemplateValidate);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FlowRule::dump / to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include "eph/dpdk/flow_steering.hpp"
+
+static void BM_FlowRuleDump(benchmark::State& state) {
+    eph::dpdk::FlowRule rule;
+    rule.port_id = 1;
+    rule.queue_id = 3;
+    // Simulate active rule with fake pointer
+    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+
+    for (auto _ : state) {
+        auto s = rule.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+    // Prevent destructor from calling rte_flow_destroy
+    rule.handle = nullptr;
+}
+BENCHMARK(BM_FlowRuleDump);
+
+static void BM_FlowRuleToJson(benchmark::State& state) {
+    eph::dpdk::FlowRule rule;
+    rule.port_id = 1;
+    rule.queue_id = 3;
+    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+
+    for (auto _ : state) {
+        auto s = rule.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+    rule.handle = nullptr;
+}
+BENCHMARK(BM_FlowRuleToJson);
+
 BENCHMARK_MAIN();
