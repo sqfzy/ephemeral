@@ -43,23 +43,47 @@ inline spdlog::logger* rate_limiter_logger() {
 /// precision for rate limiting (not on the hot data path).
 class RateLimiter {
 public:
+    /// @brief Configuration for a token bucket rate limiter.
+    ///
+    /// Mirrors the constructor parameters for declarative configuration
+    /// and pre-construction validation, consistent with CircuitBreaker::Config
+    /// and TransportConfig.
+    struct Config {
+        double      rate_per_sec = 0.0;  ///< Sustained rate (tokens/second). 0 = no refill.
+        std::size_t burst        = 1;    ///< Maximum burst capacity (tokens). Must be >= 1.
+
+        /// @brief Validate configuration, returning an error description or
+        ///        empty string on success.
+        [[nodiscard]] constexpr std::string_view validate() const noexcept {
+            if (rate_per_sec < 0.0)
+                return "rate_per_sec must be >= 0";
+            if (burst == 0)
+                return "burst must be >= 1";
+            return {};
+        }
+    };
+
+    /// @brief Construct a token bucket rate limiter from a Config.
+    /// @param config  Rate limiter configuration.
+    explicit RateLimiter(Config config) noexcept
+        : rate_per_ns_{config.rate_per_sec / 1'000'000'000.0}
+        , burst_{static_cast<double>(config.burst)}
+        , tokens_{static_cast<double>(config.burst)}
+        , last_refill_{std::chrono::steady_clock::now()}
+    {
+        SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(),
+                     "RateLimiter created: rate={:.2f}/s burst={} rate_per_ns={:.12f}",
+                     config.rate_per_sec, config.burst, rate_per_ns_);
+    }
+
     /// @brief Construct a token bucket rate limiter.
     /// @param rate_per_sec  Sustained rate (tokens/second). Must be >= 0.
     ///                      A rate of 0 means no tokens are ever generated
     ///                      (only the initial burst is available).
     /// @param burst         Maximum burst size (tokens). Must be >= 1.
     explicit RateLimiter(double rate_per_sec, std::size_t burst) noexcept
-        /// Convert rate from per-second to per-nanosecond for sub-microsecond
-        /// token accumulation without repeated division in the refill path.
-        : rate_per_ns_{rate_per_sec / 1'000'000'000.0}
-        , burst_{static_cast<double>(burst)}
-        , tokens_{static_cast<double>(burst)}
-        , last_refill_{std::chrono::steady_clock::now()}
-    {
-        SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(),
-                     "RateLimiter created: rate={:.2f}/s burst={} rate_per_ns={:.12f}",
-                     rate_per_sec, burst, rate_per_ns_);
-    }
+        : RateLimiter(Config{rate_per_sec, burst})
+    {}
 
     /// @brief Try to acquire @p n tokens without blocking.
     /// @param n  Number of tokens to consume (default 1).

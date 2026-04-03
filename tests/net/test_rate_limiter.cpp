@@ -246,3 +246,45 @@ TEST(RateLimiter, ConcurrentAcquireWithRefill) {
     // Allow wide range due to scheduling, but should be in the right ballpark.
     EXPECT_GT(total, 100) << "total acquired suspiciously low";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiterConfig, ValidDefaultConfig) {
+    RateLimiter::Config cfg;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(RateLimiterConfig, ValidExplicitConfig) {
+    RateLimiter::Config cfg{.rate_per_sec = 1000.0, .burst = 50};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(RateLimiterConfig, ZeroRateIsValid) {
+    // Zero rate means no refill — only initial burst is available.
+    RateLimiter::Config cfg{.rate_per_sec = 0.0, .burst = 10};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(RateLimiterConfig, NegativeRateIsInvalid) {
+    RateLimiter::Config cfg{.rate_per_sec = -1.0, .burst = 10};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("rate_per_sec"), std::string_view::npos);
+}
+
+TEST(RateLimiterConfig, ZeroBurstIsInvalid) {
+    RateLimiter::Config cfg{.rate_per_sec = 100.0, .burst = 0};
+    EXPECT_FALSE(cfg.validate().empty());
+    EXPECT_NE(cfg.validate().find("burst"), std::string_view::npos);
+}
+
+TEST(RateLimiterConfig, ConstructFromConfig) {
+    RateLimiter::Config cfg{.rate_per_sec = 500.0, .burst = 20};
+    RateLimiter rl(cfg);
+
+    // Should start with full burst capacity.
+    EXPECT_DOUBLE_EQ(rl.available(), 20.0);
+    EXPECT_TRUE(rl.try_acquire(20));
+    EXPECT_FALSE(rl.try_acquire(1));
+}
