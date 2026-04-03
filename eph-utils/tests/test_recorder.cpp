@@ -841,6 +841,89 @@ TEST(ConcurrentRecorderRecordValues, bulk_record_matches_individual) {
 // recorder_detail utility function tests
 // ============================================================================
 
+// ============================================================================
+// Stats — dump / to_json / operator-
+// ============================================================================
+
+TEST(Stats, DumpEmptyShowsEmpty) {
+    Stats s{.name = "MyBench", .count = 0};
+    auto d = s.dump();
+    EXPECT_NE(d.find("empty"), std::string::npos);
+    EXPECT_NE(d.find("MyBench"), std::string::npos);
+}
+
+TEST(Stats, DumpWithDataContainsPercentiles) {
+    Stats s{.name = "Bench", .count = 100,
+            .avg_ns = 42.5, .min_ns = 10.0, .max_ns = 200.0,
+            .p50_ns = 40.0, .p90_ns = 80.0, .p99_ns = 150.0,
+            .p999_ns = 190.0, .stddev_ns = 25.0};
+    auto d = s.dump();
+    EXPECT_NE(d.find("100 samples"), std::string::npos);
+    EXPECT_NE(d.find("42.5"), std::string::npos);
+    EXPECT_NE(d.find("p99"), std::string::npos);
+}
+
+TEST(Stats, ToJsonEmptyHasCountZero) {
+    Stats s{.name = "Test", .count = 0};
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"count\":0"), std::string::npos);
+    EXPECT_EQ(j.find("avg_ns"), std::string::npos);
+}
+
+TEST(Stats, ToJsonWithDataHasAllFields) {
+    Stats s{.name = "Bench", .count = 100,
+            .avg_ns = 42.5, .min_ns = 10.0, .max_ns = 200.0,
+            .p50_ns = 40.0, .p90_ns = 80.0, .p99_ns = 150.0,
+            .p999_ns = 190.0, .stddev_ns = 25.0};
+    auto j = s.to_json();
+    EXPECT_NE(j.find("\"count\":100"), std::string::npos);
+    EXPECT_NE(j.find("\"avg_ns\":"), std::string::npos);
+    EXPECT_NE(j.find("\"p999_ns\":"), std::string::npos);
+}
+
+TEST(Stats, OperatorMinusSubtractsCounts) {
+    Stats a{.name = "B", .count = 100, .avg_ns = 50.0, .min_ns = 10.0,
+            .max_ns = 200.0, .p50_ns = 40.0, .p90_ns = 80.0,
+            .p99_ns = 150.0, .p999_ns = 190.0, .stddev_ns = 25.0};
+    Stats b{.name = "B", .count = 30, .avg_ns = 45.0, .min_ns = 15.0,
+            .max_ns = 180.0, .p50_ns = 35.0, .p90_ns = 75.0,
+            .p99_ns = 140.0, .p999_ns = 180.0, .stddev_ns = 20.0};
+    auto delta = a - b;
+    EXPECT_EQ(delta.count, 70);
+    EXPECT_EQ(delta.name, "B");
+    // Percentile fields come from lhs (point-in-time)
+    EXPECT_DOUBLE_EQ(delta.avg_ns, a.avg_ns);
+    EXPECT_DOUBLE_EQ(delta.p99_ns, a.p99_ns);
+}
+
+TEST(Stats, OperatorMinusClampsCountToZero) {
+    Stats a{.name = "B", .count = 10};
+    Stats b{.name = "B", .count = 50};
+    auto delta = a - b;
+    EXPECT_EQ(delta.count, 0);
+}
+
+TEST(Stats, FormatProducesExpectedOutput) {
+    Stats s{.name = "Fast", .count = 1000,
+            .avg_ns = 42.3, .min_ns = 10.0, .max_ns = 500.0,
+            .p50_ns = 40.0, .p90_ns = 80.0, .p99_ns = 128.7,
+            .p999_ns = 450.0, .stddev_ns = 25.0};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("Fast"), std::string::npos);
+    EXPECT_NE(formatted.find("n=1000"), std::string::npos);
+    EXPECT_NE(formatted.find("42.3ns"), std::string::npos);
+}
+
+TEST(Stats, FormatEmptyShowsNoSamples) {
+    Stats s{.name = "Empty", .count = 0};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("no samples"), std::string::npos);
+}
+
+// ============================================================================
+// recorder_detail utility function tests
+// ============================================================================
+
 TEST(RecorderDetail, SanitizeFilenameAlphanumeric) {
     EXPECT_EQ(recorder_detail::sanitize_filename("hello123"), "hello123");
 }
@@ -878,6 +961,26 @@ TEST(RecorderDetail, EnsureDirectoryCreatesAndReturnsTrue) {
 
 TEST(RecorderDetail, EnsureDirectoryExistingReturnsTrue) {
     EXPECT_TRUE(recorder_detail::ensure_directory("/tmp"));
+}
+
+TEST(RecorderDetail, EnsureDirectoryCalledTwiceReturnsTrueBothTimes) {
+    // Exercises the idempotent path: second call sees existing directory.
+    // Previously this would have been vulnerable to a TOCTOU race.
+    std::string dir = "/tmp/eph_test_double_ensure_" + recorder_detail::get_timestamp();
+    EXPECT_TRUE(recorder_detail::ensure_directory(dir));
+    EXPECT_TRUE(recorder_detail::ensure_directory(dir))
+        << "Second ensure_directory on existing dir must return true";
+    fs::remove_all(dir);
+}
+
+TEST(RecorderDetail, EnsureDirectoryNestedPath) {
+    std::string dir = "/tmp/eph_test_nested_" + recorder_detail::get_timestamp() + "/a/b/c";
+    EXPECT_TRUE(recorder_detail::ensure_directory(dir));
+    EXPECT_TRUE(fs::exists(dir));
+    // Clean up from the root
+    fs::remove_all("/tmp/eph_test_nested_" + recorder_detail::get_timestamp().substr(0, 10));
+    // Best-effort cleanup
+    fs::remove_all(fs::path(dir).parent_path().parent_path().parent_path());
 }
 
 // ============================================================================
