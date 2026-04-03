@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -425,4 +426,54 @@ TEST(OrderManager, IsTerminalFreeFunction)
     EXPECT_TRUE(is_terminal(OrderState::Filled));
     EXPECT_TRUE(is_terminal(OrderState::Canceled));
     EXPECT_TRUE(is_terminal(OrderState::Rejected));
+}
+
+// ---------------------------------------------------------------------------
+// ManagedOrder dump/to_json tests
+// ---------------------------------------------------------------------------
+
+TEST(ManagedOrder, DumpContainsAllFields) {
+    ManagedOrder order{
+        .cl_ord_id = "ORD001", .symbol = "AAPL", .side = '1',
+        .orig_qty = 100.0, .price = 150.25, .filled_qty = 50.0,
+        .avg_fill_price = 150.10, .leaves_qty = 50.0,
+        .state = OrderState::PartiallyFilled,
+    };
+    auto d = order.dump();
+    EXPECT_NE(d.find("ORD001"), std::string::npos);
+    EXPECT_NE(d.find("AAPL"), std::string::npos);
+    EXPECT_NE(d.find("Buy"), std::string::npos);
+    EXPECT_NE(d.find("PartiallyFilled"), std::string::npos);
+    EXPECT_NE(d.find("150.25"), std::string::npos);
+}
+
+TEST(ManagedOrder, DumpShowsSellSide) {
+    ManagedOrder order{.side = '2', .state = OrderState::New};
+    auto d = order.dump();
+    EXPECT_NE(d.find("Sell"), std::string::npos);
+}
+
+TEST(ManagedOrder, ToJsonIsValidStructure) {
+    ManagedOrder order{
+        .cl_ord_id = "ORD002", .symbol = "TSLA", .side = '2',
+        .orig_qty = 200.0, .state = OrderState::Filled,
+    };
+    auto j = order.to_json();
+    EXPECT_TRUE(j.starts_with("{"));
+    EXPECT_TRUE(j.ends_with("}"));
+    EXPECT_NE(j.find("\"cl_ord_id\":\"ORD002\""), std::string::npos);
+    EXPECT_NE(j.find("\"symbol\":\"TSLA\""), std::string::npos);
+    EXPECT_NE(j.find("\"state\":\"Filled\""), std::string::npos);
+}
+
+TEST(ManagedOrder, ToJsonEscapesSpecialChars) {
+    ManagedOrder order{.cl_ord_id = "test\"id", .symbol = "back\\slash"};
+    auto j = order.to_json();
+    EXPECT_NE(j.find("test\\\"id"), std::string::npos);
+    EXPECT_NE(j.find("back\\\\slash"), std::string::npos);
+}
+
+TEST(ManagedOrder, OrderStateFormatterInFormat) {
+    auto s = std::format("{}", OrderState::PendingNew);
+    EXPECT_EQ(s, "PendingNew");
 }

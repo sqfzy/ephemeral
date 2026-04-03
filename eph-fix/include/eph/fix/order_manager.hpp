@@ -79,6 +79,43 @@ struct ManagedOrder {
     OrderState  state          = OrderState::PendingNew; ///< Current lifecycle state.
     uint64_t    submit_time_ns = 0;                      ///< Submission timestamp (epoch nanoseconds).
     uint64_t    last_update_ns = 0;                      ///< Last state-change timestamp (epoch nanoseconds).
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "ManagedOrder(id={}, sym={}, side={}, state={}, "
+            "qty={:.4f}, filled={:.4f}, leaves={:.4f}, "
+            "price={:.6f}, avg_fill={:.6f})",
+            cl_ord_id, symbol,
+            side == '1' ? "Buy" : (side == '2' ? "Sell" : "?"),
+            order_state_name(state),
+            orig_qty, filled_qty, leaves_qty,
+            price, avg_fill_price);
+    }
+
+    /// JSON-formatted order for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        // Inline escape for cl_ord_id and symbol (eph-fix does not depend on eph-core)
+        auto esc = [](std::string_view s) -> std::string {
+            std::string out;
+            out.reserve(s.size());
+            for (char c : s) {
+                if (c == '"')       out += "\\\"";
+                else if (c == '\\') out += "\\\\";
+                else                out += c;
+            }
+            return out;
+        };
+        return std::format(
+            "{{\"cl_ord_id\":\"{}\",\"symbol\":\"{}\",\"side\":\"{}\","
+            "\"state\":\"{}\",\"orig_qty\":{:.6g},\"price\":{:.6g},"
+            "\"filled_qty\":{:.6g},\"avg_fill_price\":{:.6g},"
+            "\"leaves_qty\":{:.6g},\"submit_time_ns\":{},\"last_update_ns\":{}}}",
+            esc(cl_ord_id), esc(symbol), side,
+            order_state_name(state),
+            orig_qty, price, filled_qty, avg_fill_price,
+            leaves_qty, submit_time_ns, last_update_ns);
+    }
 };
 
 /// @brief Internal implementation details for the order manager module.
