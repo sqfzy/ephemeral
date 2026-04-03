@@ -207,6 +207,18 @@ TEST(EmaTest, alpha_above_one_throws) {
     EXPECT_THROW(Ema(1.1), std::invalid_argument);
 }
 
+TEST(EmaTest, alpha_nan_throws) {
+    EXPECT_THROW(Ema(std::numeric_limits<double>::quiet_NaN()), std::invalid_argument);
+}
+
+TEST(EmaTest, alpha_positive_infinity_throws) {
+    EXPECT_THROW(Ema(std::numeric_limits<double>::infinity()), std::invalid_argument);
+}
+
+TEST(EmaTest, alpha_negative_infinity_throws) {
+    EXPECT_THROW(Ema(-std::numeric_limits<double>::infinity()), std::invalid_argument);
+}
+
 TEST(EmaTest, from_period_zero_throws) {
     // size_t(0) - 1 wraps, but the check is period < 1 which is always false
     // for size_t. However size_t(0) IS < 1 in unsigned comparison... actually
