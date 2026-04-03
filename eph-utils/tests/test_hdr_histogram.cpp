@@ -1461,13 +1461,19 @@ TEST(HdrHistogramDistribution, nan_scaling_treated_as_default) {
 
     auto output = h.output_percentile_distribution(
         std::numeric_limits<double>::quiet_NaN());
-    // NaN <= 0 is false, so it should NOT be treated as invalid.
-    // Actually NaN comparisons are all false, so NaN > 0 is false,
-    // triggering the guard that resets to 1.0.
-    // Just verify we get a non-empty output without crash.
+    // NaN is rejected by the guard !(x > 0.0) since NaN > 0.0 is
+    // false, so NaN is treated as invalid and reset to 1.0 (unscaled).
+    // Verify we get valid output without crash or NaN values.
+    // Compare with unscaled output to verify NaN was treated as 1.0.
     EXPECT_FALSE(output.empty());
     EXPECT_NE(output.find("Value"), std::string::npos)
         << "output should contain the header";
+    // Must not contain "nan" anywhere in the output
+    EXPECT_EQ(output.find("nan"), std::string::npos)
+        << "NaN scaling must not produce nan values in output";
+    // NaN-scaled output should equal unscaled (scale=1.0) output
+    auto unscaled = h.output_percentile_distribution(1.0);
+    EXPECT_EQ(output, unscaled);
 }
 
 TEST(HdrHistogramDistribution, infinity_scaling_produces_zero_values) {
