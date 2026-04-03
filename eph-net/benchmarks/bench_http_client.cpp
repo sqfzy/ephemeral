@@ -171,6 +171,56 @@ static void BM_HttpClientConfig_Validate(benchmark::State& state) {
 BENCHMARK(BM_HttpClientConfig_Validate);
 
 // ---------------------------------------------------------------------------
+// is_response_complete — called in read loop to detect full response
+// ---------------------------------------------------------------------------
+
+/// Content-Length complete detection (common case).
+static void BM_IsResponseComplete_ContentLength(benchmark::State& state) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 39\r\n"
+        "\r\n"
+        R"({"symbol":"BTCUSDT","price":"50000.00"})";
+
+    for (auto _ : state) {
+        bool ok = HttpClient::is_response_complete(buf);
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_IsResponseComplete_ContentLength);
+
+/// Chunked transfer encoding complete detection.
+static void BM_IsResponseComplete_Chunked(benchmark::State& state) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+
+    for (auto _ : state) {
+        bool ok = HttpClient::is_response_complete(buf);
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_IsResponseComplete_Chunked);
+
+/// Incomplete response (still accumulating, most frequent call).
+static void BM_IsResponseComplete_Incomplete(benchmark::State& state) {
+    std::string buf =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 1000\r\n"
+        "\r\n"
+        "partial";
+
+    for (auto _ : state) {
+        bool ok = HttpClient::is_response_complete(buf);
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_IsResponseComplete_Incomplete);
+
+// ---------------------------------------------------------------------------
 // HttpClient::Config::from_url() — URL parsing
 // ---------------------------------------------------------------------------
 
