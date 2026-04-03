@@ -466,3 +466,56 @@ TEST(CircuitBreakerConfig, FormatterContainsKeyFields) {
     EXPECT_NE(s.find("open=5000ms"), std::string::npos);
     EXPECT_NE(s.find("ho_max=2"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config warnings (advisory diagnostics)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreakerConfig, WarningsEmptyForReasonableConfig) {
+    CircuitBreaker::Config cfg{5, std::chrono::seconds{30}, 1};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(CircuitBreakerConfig, WarnsOnSingleFailureThreshold) {
+    CircuitBreaker::Config cfg{1, std::chrono::seconds{30}, 1};
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("single failure") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about single failure threshold";
+}
+
+TEST(CircuitBreakerConfig, WarnsOnZeroOpenDuration) {
+    CircuitBreaker::Config cfg{3, std::chrono::milliseconds{0}, 1};
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("immediately") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about zero open_duration";
+}
+
+TEST(CircuitBreakerConfig, WarnsOnHighHalfOpenMaxCalls) {
+    CircuitBreaker::Config cfg{5, std::chrono::seconds{30}, 15};
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("unusually high") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about high half_open_max_calls";
+}
+
+TEST(CircuitBreakerConfig, WarnsOnLongOpenDuration) {
+    CircuitBreaker::Config cfg{5, std::chrono::milliseconds{900'000}, 1}; // 15 minutes
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("long cooldown") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about long open_duration";
+}

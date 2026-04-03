@@ -19,6 +19,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -82,6 +83,25 @@ public:
         /// Defaulted equality -- all fields must match exactly.
         [[nodiscard]] friend bool operator==(const Config&,
                                              const Config&) = default;
+
+        /// Check for non-fatal contradictions or likely misconfigurations.
+        /// Returns a list of warning messages (empty if no issues).
+        /// Unlike validate() which blocks construction, these are advisory.
+        [[nodiscard]] std::vector<std::string> warnings() const {
+            std::vector<std::string> w;
+            if (rate_per_sec > 1'000'000'000.0)
+                w.emplace_back(std::format(
+                    "rate_per_sec={:.0f} exceeds 1 billion — verify this is "
+                    "intentional (sub-nanosecond token generation)", rate_per_sec));
+            if (burst > 1'000'000)
+                w.emplace_back(std::format(
+                    "burst={} is very large — may allow excessive request "
+                    "spikes to the exchange", burst));
+            if (rate_per_sec == 0.0 && burst > 0)
+                w.emplace_back("rate_per_sec=0 with non-zero burst — tokens will "
+                               "never refill after initial burst is consumed");
+            return w;
+        }
     };
 
     /// @brief Construct a token bucket rate limiter from a Config.

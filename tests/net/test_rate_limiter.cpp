@@ -339,3 +339,45 @@ TEST(RateLimiterConfig, FormatterContainsKeyFields) {
     EXPECT_NE(s.find("1200.00"), std::string::npos);
     EXPECT_NE(s.find("burst=50"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config warnings (advisory diagnostics)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiterConfig, WarningsEmptyForReasonableConfig) {
+    RateLimiter::Config cfg{.rate_per_sec = 1000.0, .burst = 100};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(RateLimiterConfig, WarnsOnExcessiveRate) {
+    RateLimiter::Config cfg{.rate_per_sec = 2'000'000'000.0, .burst = 10};
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("billion") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about excessive rate";
+}
+
+TEST(RateLimiterConfig, WarnsOnLargeBurst) {
+    RateLimiter::Config cfg{.rate_per_sec = 100.0, .burst = 2'000'000};
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("very large") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about large burst";
+}
+
+TEST(RateLimiterConfig, WarnsOnZeroRateWithBurst) {
+    RateLimiter::Config cfg{.rate_per_sec = 0.0, .burst = 10};
+    auto w = cfg.warnings();
+    EXPECT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("never refill") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about zero rate";
+}

@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -134,6 +135,33 @@ public:
         /// Defaulted equality -- all fields must match exactly.
         [[nodiscard]] friend bool operator==(const Config&,
                                              const Config&) = default;
+
+        /// Check for non-fatal contradictions or likely misconfigurations.
+        /// Returns a list of warning messages (empty if no issues).
+        /// Unlike validate() which blocks construction, these are advisory.
+        [[nodiscard]] std::vector<std::string> warnings() const {
+            std::vector<std::string> w;
+            if (failure_threshold == 1)
+                w.emplace_back("failure_threshold=1 — circuit will trip on any "
+                               "single failure (consider threshold >= 3 for "
+                               "transient error tolerance)");
+            if (open_duration.count() == 0)
+                w.emplace_back("open_duration=0ms — circuit transitions to "
+                               "HalfOpen immediately (useful for testing, not "
+                               "production)");
+            if (half_open_max_calls > 10)
+                w.emplace_back(std::format(
+                    "half_open_max_calls={} is unusually high — more probe "
+                    "calls increase load on a potentially degraded endpoint",
+                    half_open_max_calls));
+            if (open_duration > std::chrono::minutes{10})
+                w.emplace_back(std::format(
+                    "open_duration={}ms (>{} min) — long cooldown delays "
+                    "recovery detection", open_duration.count(),
+                    std::chrono::duration_cast<std::chrono::minutes>(
+                        open_duration).count()));
+            return w;
+        }
     };
 
     /// @brief Construct a circuit breaker with the given configuration.
