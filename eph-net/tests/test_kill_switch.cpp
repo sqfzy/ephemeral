@@ -468,3 +468,33 @@ TEST(KillSwitch, DumpShowsSignalHandlerStatus) {
     auto d2 = ks.dump();
     EXPECT_NE(d2.find("signal_handlers: installed"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter — compact one-line format
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(KillSwitch, FormatterContainsKeyFields) {
+    KillSwitch ks;
+    auto s = std::format("{}", ks);
+    EXPECT_NE(s.find("KillSwitch"), std::string::npos);
+    EXPECT_NE(s.find("transports=0"), std::string::npos);
+    EXPECT_NE(s.find("shutdown=no"), std::string::npos);
+}
+
+TEST(KillSwitch, FormatterReflectsState) {
+    KillSwitch ks;
+    MockTransport tp1, tp2;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    ks.request_shutdown();
+
+    auto s = std::format("{}", ks);
+    EXPECT_NE(s.find("transports=2"), std::string::npos);
+    EXPECT_NE(s.find("shutdown=yes"), std::string::npos);
+}
+
+TEST(KillSwitch, FormatterComposableInFormat) {
+    KillSwitch ks;
+    auto s = std::format("status: {}", ks);
+    EXPECT_NE(s.find("status: KillSwitch"), std::string::npos);
+}
