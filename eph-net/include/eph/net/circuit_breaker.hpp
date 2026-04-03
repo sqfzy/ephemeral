@@ -266,6 +266,17 @@ public:
         }
     }
 
+    /// @brief Check if the circuit breaker is tripped (Open or HalfOpen).
+    ///
+    /// Convenience predicate for condition checks where you only care whether
+    /// the circuit has tripped, not the exact state. Equivalent to
+    /// `state() != CircuitState::Closed`.
+    ///
+    /// @return true if the circuit is Open or HalfOpen (i.e., not Closed).
+    [[nodiscard]] bool is_tripped() const noexcept {
+        return state() != CircuitState::Closed;
+    }
+
     /// @brief Query the current circuit state.
     ///
     /// @return The current CircuitState.

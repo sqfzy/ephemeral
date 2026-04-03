@@ -578,6 +578,49 @@ TEST(CircuitBreaker, ConfigAccessorDefaultConfig) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// is_tripped() convenience predicate
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, IsTrippedFalseWhenClosed) {
+    CircuitBreaker cb;
+    EXPECT_FALSE(cb.is_tripped());
+}
+
+TEST(CircuitBreaker, IsTrippedTrueWhenOpen) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s});
+    cb.record_failure();
+    cb.record_failure();
+    EXPECT_TRUE(cb.is_tripped());
+}
+
+TEST(CircuitBreaker, IsTrippedTrueWhenHalfOpen) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 0s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    // With 0s open_duration, state reports HalfOpen
+    EXPECT_TRUE(cb.is_tripped());
+}
+
+TEST(CircuitBreaker, IsTrippedFalseAfterReset) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s});
+    cb.record_failure();
+    cb.record_failure();
+    EXPECT_TRUE(cb.is_tripped());
+    cb.reset();
+    EXPECT_FALSE(cb.is_tripped());
+}
+
+TEST(CircuitBreaker, IsTrippedFalseAfterRecovery) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 0s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    EXPECT_TRUE(cb.is_tripped());
+    cb.allow(); // transitions to HalfOpen
+    cb.record_success(); // transitions to Closed
+    EXPECT_FALSE(cb.is_tripped());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // to_json() — live state snapshot
 // ─────────────────────────────────────────────────────────────────────────────
 

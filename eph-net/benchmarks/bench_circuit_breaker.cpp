@@ -103,6 +103,31 @@ static void BM_CircuitBreaker_FailureCount(benchmark::State& state) {
 BENCHMARK(BM_CircuitBreaker_FailureCount);
 
 // ---------------------------------------------------------------------------
+// is_tripped() — convenience predicate
+// ---------------------------------------------------------------------------
+
+static void BM_CircuitBreaker_IsTripped_Closed(benchmark::State& state) {
+    CircuitBreaker cb(CircuitBreaker::Config{5, 30s, 1});
+
+    for (auto _ : state) {
+        bool t = cb.is_tripped();
+        benchmark::DoNotOptimize(t);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_IsTripped_Closed);
+
+static void BM_CircuitBreaker_IsTripped_Open(benchmark::State& state) {
+    CircuitBreaker cb(CircuitBreaker::Config{1, 60s, 1});
+    cb.record_failure(); // trip
+
+    for (auto _ : state) {
+        bool t = cb.is_tripped();
+        benchmark::DoNotOptimize(t);
+    }
+}
+BENCHMARK(BM_CircuitBreaker_IsTripped_Open);
+
+// ---------------------------------------------------------------------------
 // to_json() — monitoring snapshot serialization
 // ---------------------------------------------------------------------------
 
