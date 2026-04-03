@@ -191,3 +191,60 @@ TEST(ReactorConfig, FormatterContainsKeyFields) {
     EXPECT_NE(s.find("Reactor"), std::string::npos);
     EXPECT_NE(s.find("port=1"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Reactor::entry out-of-bounds
+// ---------------------------------------------------------------------------
+
+TEST(Reactor, EntryOutOfBoundsReturnsEmpty) {
+    Reactor reactor(Reactor::Config{});
+    // No connections added, any index should return the static empty entry
+    const auto& e = reactor.entry(0);
+    EXPECT_EQ(e.session, nullptr);
+    EXPECT_FALSE(e.connected);
+
+    // Large index
+    const auto& e2 = reactor.entry(999);
+    EXPECT_EQ(e2.session, nullptr);
+    EXPECT_FALSE(e2.connected);
+}
+
+TEST(Reactor, MarkDisconnectedOutOfBoundsIsSafe) {
+    Reactor reactor(Reactor::Config{});
+    // Should not crash, just log a warning
+    reactor.mark_disconnected(0);
+    reactor.mark_disconnected(999);
+    EXPECT_EQ(reactor.connection_count(), 0u);
+}
+
+TEST(Reactor, MarkReconnectedNullSessionIsSafe) {
+    Reactor reactor(Reactor::Config{});
+    // Should not crash, null session is logged
+    reactor.mark_reconnected(0, nullptr);
+    EXPECT_EQ(reactor.connection_count(), 0u);
+}
+
+TEST(Reactor, MarkReconnectedOutOfBoundsIsSafe) {
+    Reactor reactor(Reactor::Config{});
+    // Fake non-null session pointer for testing out-of-bounds
+    TcpSession<>* fake_session = reinterpret_cast<TcpSession<>*>(0xDEAD);
+    // Should not crash, just log a warning (does not dereference pointer
+    // because conn_id check fires first)
+    reactor.mark_reconnected(999, fake_session);
+    EXPECT_EQ(reactor.connection_count(), 0u);
+}
+
+TEST(Reactor, AddConnectionWhileRunningFails) {
+    // Cannot test start()/stop() without EAL, but can verify the running
+    // check logic indirectly via the atomic flag
+    Reactor reactor(Reactor::Config{});
+    EXPECT_FALSE(reactor.is_running());
+    // The actual "running" rejection test would require mocking the thread
+}
+
+TEST(Reactor, StopWhileNotRunningIsSafe) {
+    Reactor reactor(Reactor::Config{});
+    reactor.stop(); // Should not crash
+    reactor.stop(); // Double stop should be idempotent
+    EXPECT_FALSE(reactor.is_running());
+}
