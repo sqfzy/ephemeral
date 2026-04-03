@@ -604,3 +604,60 @@ TEST(Gateway, HealthyCountUpdatesAfterCheckHealth) {
     gw.check_health();
     EXPECT_EQ(gw.healthy_count(), 1);
 }
+
+// ── Gateway::for_each() ───────────────────────────────────────────────
+
+TEST(Gateway, ForEachVisitsAllConnections) {
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    tp1.running.store(true);
+    // tp2 stopped, tp3 stopped
+    gw.add("alpha", &tp1);
+    gw.add("beta", &tp2);
+    gw.add("gamma", &tp3);
+
+    std::vector<std::string> tags;
+    std::vector<ConnHealth> healths;
+    std::vector<size_t> indices;
+    gw.for_each([&](size_t idx, std::string_view tag, ConnHealth h) {
+        indices.push_back(idx);
+        tags.emplace_back(tag);
+        healths.push_back(h);
+    });
+
+    ASSERT_EQ(tags.size(), 3);
+    EXPECT_EQ(tags[0], "alpha");
+    EXPECT_EQ(tags[1], "beta");
+    EXPECT_EQ(tags[2], "gamma");
+    EXPECT_EQ(indices[0], 0);
+    EXPECT_EQ(indices[1], 1);
+    EXPECT_EQ(indices[2], 2);
+    EXPECT_EQ(healths[0], ConnHealth::Healthy);
+    EXPECT_EQ(healths[1], ConnHealth::Stopped);
+    EXPECT_EQ(healths[2], ConnHealth::Stopped);
+}
+
+TEST(Gateway, ForEachOnEmptyGateway) {
+    Gateway gw;
+    int count = 0;
+    gw.for_each([&](size_t, std::string_view, ConnHealth) { ++count; });
+    EXPECT_EQ(count, 0);
+}
+
+// ── Concept verification ──────────────────────────────────────────────
+
+// Verify GatewayManageable subsumes Stoppable: any GatewayManageable type
+// is also Stoppable, so it can be used with both Gateway and KillSwitch.
+static_assert(Stoppable<MockTransport>,
+    "MockTransport must satisfy Stoppable (base of GatewayManageable)");
+static_assert(GatewayManageable<MockTransport>,
+    "MockTransport must satisfy GatewayManageable");
+
+struct StoppableOnly {
+    void stop() noexcept {}
+    bool is_running() const noexcept { return false; }
+};
+static_assert(Stoppable<StoppableOnly>,
+    "StoppableOnly satisfies Stoppable");
+static_assert(!GatewayManageable<StoppableOnly>,
+    "StoppableOnly lacks start_threads/reconnect_now so must NOT satisfy GatewayManageable");

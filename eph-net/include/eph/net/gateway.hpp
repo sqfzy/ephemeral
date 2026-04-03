@@ -34,17 +34,18 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include "eph/net/kill_switch.hpp"  // for Stoppable concept
+
 namespace eph::net {
 
 /// @brief Concept for types manageable by Gateway.
 ///
-/// Extends Stoppable with start_threads() and reconnect_now(), matching the
-/// full lifecycle API that Gateway type-erases. This catches type mismatches
-/// at the add() call site instead of inside the type-erased lambda body.
+/// Refines Stoppable (stop() + is_running()) with start_threads() and
+/// reconnect_now(), matching the full lifecycle API that Gateway type-erases.
+/// Expressing this as a refinement ensures that any GatewayManageable type
+/// is also usable with KillSwitch (which requires only Stoppable).
 template <typename T>
-concept GatewayManageable = requires(T t) {
-    { t.stop() };
-    { t.is_running() } -> std::convertible_to<bool>;
+concept GatewayManageable = Stoppable<T> && requires(T t) {
     { t.start_threads() };
     { t.reconnect_now() };
 };
@@ -327,6 +328,23 @@ public:
             if (c.health == ConnHealth::Healthy) ++n;
         }
         return n;
+    }
+
+    /// @brief Iterate all connections with a callback.
+    ///
+    /// The callback receives the connection index, tag, and health for each
+    /// managed connection. Useful for building status dashboards, metrics
+    /// collection, or custom health reporting without exposing internals.
+    ///
+    /// The callback is invoked under the Gateway lock -- it must not call
+    /// other Gateway methods (deadlock) or block for extended periods.
+    ///
+    /// @param fn  Callable as void(size_t index, std::string_view tag, ConnHealth health).
+    void for_each(std::function<void(size_t, std::string_view, ConnHealth)> fn) const {
+        std::lock_guard lock(mu_);
+        for (size_t i = 0; i < connections_.size(); ++i) {
+            fn(i, connections_[i].tag, connections_[i].health);
+        }
     }
 
     // ── Lifecycle control ───────────────────────────────────────────────
