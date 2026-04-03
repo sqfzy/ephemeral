@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <format>
 #include <string>
 #include <unordered_map>
 
@@ -291,4 +292,57 @@ TEST(PositionTracker, ShortCrossesZeroExactlyNoNaN)
     EXPECT_FALSE(std::isnan(pos.avg_price));
     EXPECT_FALSE(std::isnan(pos.realized_pnl));
     EXPECT_FALSE(std::isnan(pos.notional));
+}
+
+// ---------------------------------------------------------------------------
+// Position dump/to_json/equality/formatter tests
+// ---------------------------------------------------------------------------
+
+TEST(Position, DumpContainsAllFields) {
+    Position pos{.qty = 100.5, .avg_price = 150.25, .realized_pnl = 500.0,
+                  .notional = 15100.125, .trade_count = 3};
+    auto d = pos.dump();
+    EXPECT_NE(d.find("Position"), std::string::npos);
+    EXPECT_NE(d.find("100.5"), std::string::npos);
+    EXPECT_NE(d.find("150.25"), std::string::npos);
+    EXPECT_NE(d.find("500.0"), std::string::npos);
+    EXPECT_NE(d.find("3"), std::string::npos);
+}
+
+TEST(Position, ToJsonIsValidStructure) {
+    Position pos{.qty = -50.0, .avg_price = 200.0, .realized_pnl = -100.0,
+                  .notional = 10000.0, .trade_count = 2};
+    auto j = pos.to_json();
+    EXPECT_TRUE(j.starts_with("{"));
+    EXPECT_TRUE(j.ends_with("}"));
+    EXPECT_NE(j.find("\"qty\":-50"), std::string::npos);
+    EXPECT_NE(j.find("\"trade_count\":2"), std::string::npos);
+}
+
+TEST(Position, EqualityMatchesIdentical) {
+    Position a{.qty = 100.0, .avg_price = 150.0, .trade_count = 1};
+    Position b = a;
+    EXPECT_EQ(a, b);
+}
+
+TEST(Position, EqualityDetectsDifferences) {
+    Position a{.qty = 100.0};
+    Position b{.qty = 200.0};
+    EXPECT_NE(a, b);
+}
+
+TEST(Position, DefaultPositionIsZero) {
+    Position pos{};
+    EXPECT_EQ(pos.qty, 0.0);
+    EXPECT_EQ(pos.avg_price, 0.0);
+    EXPECT_EQ(pos.realized_pnl, 0.0);
+    EXPECT_EQ(pos.notional, 0.0);
+    EXPECT_EQ(pos.trade_count, 0u);
+}
+
+TEST(Position, FormatterProducesDump) {
+    Position pos{.qty = 42.0, .avg_price = 100.0};
+    auto formatted = std::format("{}", pos);
+    EXPECT_NE(formatted.find("Position"), std::string::npos);
+    EXPECT_NE(formatted.find("42"), std::string::npos);
 }

@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -44,6 +45,26 @@ struct Position {
     double   realized_pnl = 0.0;  ///< Cumulative realized PnL from closed portions.
     double   notional     = 0.0;  ///< abs(qty) * avg_price.
     uint64_t trade_count  = 0;    ///< Number of fills processed.
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "Position(qty={:.4f}, avg_price={:.6f}, realized_pnl={:.2f}, "
+            "notional={:.2f}, trades={})",
+            qty, avg_price, realized_pnl, notional, trade_count);
+    }
+
+    /// JSON-formatted position for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"qty\":{:.6g},\"avg_price\":{:.6g},\"realized_pnl\":{:.6g},"
+            "\"notional\":{:.6g},\"trade_count\":{}}}",
+            qty, avg_price, realized_pnl, notional, trade_count);
+    }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const Position&,
+                                         const Position&) = default;
 };
 
 /// @brief Tracks per-symbol positions and computes PnL.
@@ -252,3 +273,14 @@ private:
 };
 
 }  // namespace eph::fix
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for Position
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::fix::Position> : std::formatter<std::string> {
+    auto format(const eph::fix::Position& p, auto& ctx) const {
+        return std::formatter<std::string>::format(p.dump(), ctx);
+    }
+};
