@@ -796,3 +796,37 @@ TEST(ConnectionInfo, DumpNoTls) {
     auto d = ci.dump();
     EXPECT_NE(d.find("unknown"), std::string::npos);
 }
+
+TEST(ConnectionInfo, ToJsonFalseForNoTls) {
+    ConnectionInfo ci{.use_tls = false};
+    auto j = ci.to_json();
+    EXPECT_NE(j.find("\"use_tls\":false"), std::string::npos);
+}
+
+TEST(ConnectionInfo, DumpWithSubprotocol) {
+    ConnectionInfo ci{
+        .tls_version = "TLSv1.3",
+        .cipher_name = "AES_256_GCM",
+        .ws_subprotocol = "graphql-ws",
+        .remote_ip = "10.0.0.1",
+        .remote_port = 443,
+        .use_tls = true
+    };
+    auto d = ci.dump();
+    EXPECT_NE(d.find("graphql-ws"), std::string::npos);
+    // Should NOT show "(none)" since subprotocol is set
+    EXPECT_EQ(d.find("(none)"), std::string::npos);
+}
+
+// =======================================================================
+// ThreadStats — format test
+// =======================================================================
+
+TEST(ThreadStatsSnapshot, FormatSpecialization) {
+    ThreadStats::Snapshot s{.packets = 42, .bytes = 1000,
+                            .text_packets = 10, .text_bytes = 500,
+                            .dropped = 2, .crypto_errors = 1};
+    auto formatted = std::format("{}", s);
+    EXPECT_NE(formatted.find("42"), std::string::npos);
+    EXPECT_NE(formatted.find("1000"), std::string::npos);
+}
