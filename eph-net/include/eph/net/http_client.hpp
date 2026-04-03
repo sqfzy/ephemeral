@@ -11,6 +11,7 @@
 /// no redirects). Intentionally minimal for crypto exchange REST APIs
 /// (order placement, balance queries, orderbook snapshots).
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <expected>
 #include <format>
 #include <future>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -314,17 +316,12 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
 
         auto hdr_name = line.substr(0, colon);
 
-        // Case-insensitive name comparison
-        if (hdr_name.size() != name.size()) continue;
-        bool match = true;
-        for (size_t i = 0; i < hdr_name.size(); ++i) {
-            if (std::tolower(static_cast<unsigned char>(hdr_name[i])) !=
-                std::tolower(static_cast<unsigned char>(name[i]))) {
-                match = false;
-                break;
-            }
-        }
-        if (!match) continue;
+        // Case-insensitive name comparison using ranges
+        auto to_lower = [](unsigned char c) -> unsigned char {
+            return static_cast<unsigned char>(std::tolower(c));
+        };
+        if (!std::ranges::equal(hdr_name, name, {}, to_lower, to_lower))
+            continue;
 
         // Trim OWS from value
         auto value = line.substr(colon + 1);

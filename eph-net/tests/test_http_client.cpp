@@ -724,3 +724,31 @@ TEST(HttpClientConfig, WarnsOnShortTimeout) {
     }
     EXPECT_TRUE(found);
 }
+
+// =============================================================================
+// find_header edge cases
+// =============================================================================
+
+TEST(HttpClientFindHeader, PartialNameMatchDoesNotFalsePositive) {
+    // "Content-Typ" should not match "Content-Type"
+    std::string headers = "Content-Type: application/json\r\n";
+    EXPECT_EQ(find_header(headers, "Content-Typ"), "");
+}
+
+TEST(HttpClientFindHeader, EmptyValueReturnsEmpty) {
+    // Header with empty value after colon
+    std::string headers = "X-Empty:\r\n";
+    EXPECT_EQ(find_header(headers, "X-Empty"), "");
+}
+
+TEST(HttpClientFindHeader, WhitespaceOnlyValueReturnsEmpty) {
+    // Header with only whitespace value (should be trimmed to empty)
+    std::string headers = "X-Blank:   \t  \r\n";
+    EXPECT_EQ(find_header(headers, "X-Blank"), "");
+}
+
+TEST(HttpClientFindHeader, ValueWithLeadingAndTrailingOWS) {
+    // RFC 7230: OWS (optional whitespace) should be trimmed
+    std::string headers = "X-Val:  \t hello  \r\n";
+    EXPECT_EQ(find_header(headers, "X-Val"), "hello");
+}
