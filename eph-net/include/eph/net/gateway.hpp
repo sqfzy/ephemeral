@@ -420,8 +420,11 @@ public:
     /// The callback is invoked under the Gateway lock -- it must not call
     /// other Gateway methods (deadlock) or block for extended periods.
     ///
-    /// @param fn  Callable as void(size_t index, std::string_view tag, ConnHealth health).
-    void for_each(std::function<void(size_t, std::string_view, ConnHealth)> fn) const {
+    /// @tparam F  Callable as void(size_t index, std::string_view tag, ConnHealth health).
+    /// @param fn  The callback to invoke for each connection.
+    template <typename F>
+        requires std::invocable<F, size_t, std::string_view, ConnHealth>
+    void for_each(F&& fn) const {
         std::lock_guard lock(mu_);
         for (size_t i = 0; i < connections_.size(); ++i) {
             fn(i, connections_[i].tag, connections_[i].health);
