@@ -1,4 +1,12 @@
-# Benchmark History — eph-net
+# Benchmark History -- eph-net
+
+## 2026-04-03 bench_gateway (after Gateway::to_json)
+
+| Benchmark | Time (ns) | CPU (ns) |
+|---|---|---|
+| BM_Gateway_ToJson/1 | 475 | 475 |
+| BM_Gateway_ToJson/4 | 893 | 893 |
+| BM_Gateway_ToJson/8 | 1442 | 1442 |
 
 ## 2026-04-03 bench_control_plane (after RateLimiter to_json/config parity)
 

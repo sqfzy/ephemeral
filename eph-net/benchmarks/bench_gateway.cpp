@@ -164,4 +164,25 @@ static void BM_Gateway_Dump(benchmark::State& state) {
 }
 BENCHMARK(BM_Gateway_Dump)->Arg(1)->Arg(4)->Arg(8);
 
+// ---------------------------------------------------------------------------
+// Gateway::to_json() — JSON serialization overhead
+// ---------------------------------------------------------------------------
+
+static void BM_Gateway_ToJson(benchmark::State& state) {
+    const auto n = static_cast<size_t>(state.range(0));
+    Gateway gw;
+    std::vector<BenchTransport> transports(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        transports[i].running = (i % 2 == 0);
+        (void)gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+
+    for (auto _ : state) {
+        auto s = gw.to_json();
+        benchmark::DoNotOptimize(s);
+    }
+}
+BENCHMARK(BM_Gateway_ToJson)->Arg(1)->Arg(4)->Arg(8);
+
 BENCHMARK_MAIN();

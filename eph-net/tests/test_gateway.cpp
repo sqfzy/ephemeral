@@ -772,3 +772,41 @@ TEST(Gateway, StartAllUpdatesHealthByPointerNotIndex) {
     EXPECT_EQ(gw.health(0), ConnHealth::Healthy);
     EXPECT_EQ(gw.health(1), ConnHealth::Healthy);
 }
+
+// ── to_json() ────────────────────────────────────────────────────────────
+
+TEST(Gateway, ToJsonEmptyGateway) {
+    Gateway gw;
+    auto j = gw.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"connection_count\":0"), std::string::npos);
+    EXPECT_NE(j.find("\"healthy_count\":0"), std::string::npos);
+    EXPECT_NE(j.find("\"connections\":[]"), std::string::npos);
+}
+
+TEST(Gateway, ToJsonWithConnections) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    tp1.running.store(true);  // starts as Healthy
+    gw.add("binance-btc", &tp1, 1);
+    gw.add("deribit-eth", &tp2, 5);
+
+    auto j = gw.to_json();
+    EXPECT_NE(j.find("\"connection_count\":2"), std::string::npos);
+    EXPECT_NE(j.find("\"tag\":\"binance-btc\""), std::string::npos);
+    EXPECT_NE(j.find("\"tag\":\"deribit-eth\""), std::string::npos);
+    EXPECT_NE(j.find("\"priority\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"priority\":5"), std::string::npos);
+}
+
+TEST(Gateway, ToJsonReflectsHealthAfterStart) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("test", &tp);
+    gw.start_all();
+
+    auto j = gw.to_json();
+    EXPECT_NE(j.find("\"healthy_count\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"health\":\"HEALTHY\""), std::string::npos);
+}

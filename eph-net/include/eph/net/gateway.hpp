@@ -587,6 +587,36 @@ public:
         return result;
     }
 
+    /// @brief JSON-formatted snapshot of gateway state for monitoring.
+    ///
+    /// Includes connection count, healthy count, monitor status, and
+    /// per-connection details (tag, health, priority).
+    /// Thread-safe: takes a lock to read consistent state.
+    [[nodiscard]] std::string to_json() const {
+        std::lock_guard lock(mu_);
+        bool monitoring = monitor_running_.load(std::memory_order_relaxed);
+        size_t n_healthy = 0;
+        for (const auto& c : connections_)
+            if (c.health == ConnHealth::Healthy) ++n_healthy;
+
+        std::string result = std::format(
+            "{{\"connection_count\":{},\"healthy_count\":{},\"monitor_running\":{},"
+            "\"config\":{},\"connections\":[",
+            connections_.size(),
+            n_healthy,
+            monitoring ? "true" : "false",
+            config_.to_json());
+        for (size_t i = 0; i < connections_.size(); ++i) {
+            if (i > 0) result += ',';
+            const auto& c = connections_[i];
+            result += std::format(
+                "{{\"tag\":\"{}\",\"health\":\"{}\",\"priority\":{}}}",
+                c.tag, conn_health_name(c.health), c.priority);
+        }
+        result += "]}";
+        return result;
+    }
+
 private:
     void monitor_loop() noexcept {
         while (monitor_running_.load(std::memory_order_acquire)) {
