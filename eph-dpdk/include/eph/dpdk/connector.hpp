@@ -311,6 +311,11 @@ resolve_hostname(const std::string& host) {
     [[maybe_unused]] auto log = detail::connector_logger();
     SPDLOG_LOGGER_DEBUG(log, "Resolving hostname: '{}'", host);
 
+    if (host.empty()) {
+        SPDLOG_LOGGER_DEBUG(log, "resolve_hostname: empty hostname");
+        return std::unexpected("Hostname is empty");
+    }
+
     // RFC 1035 §3.1: total name length must not exceed 253 characters.
     if (host.size() > 253) {
         return std::unexpected(

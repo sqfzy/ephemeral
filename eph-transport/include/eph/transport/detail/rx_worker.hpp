@@ -205,7 +205,7 @@ public:
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
             std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
+                        msg.data.data(),
                         static_cast<size_t>(msg.len));
         });
         return consumed;
@@ -219,7 +219,7 @@ public:
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}", msg.len, msg.opcode);
             std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
+                        msg.data.data(),
                         static_cast<size_t>(msg.len), msg.opcode);
         });
         return consumed;
@@ -236,7 +236,7 @@ public:
             SPDLOG_LOGGER_TRACE(detail::transport_logger(),
                 "RX dequeue: len={}, opcode={}, tsc={}", msg.len, msg.opcode, msg.tsc);
             std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
+                        msg.data.data(),
                         static_cast<size_t>(msg.len), msg.opcode, msg.tsc);
         });
         return consumed;
@@ -246,7 +246,7 @@ public:
     [[nodiscard]] std::optional<std::vector<uint8_t>> try_recv() {
         std::optional<std::vector<uint8_t>> result;
         (void)rx_consume_([&](const RxMsg& msg) {
-            result.emplace(msg.data, msg.data + msg.len);
+            result.emplace(msg.data.data(), msg.data.data() + msg.len);
         });
         return result;
     }
@@ -256,7 +256,7 @@ public:
         std::optional<ReceivedMessage> result;
         (void)rx_consume_([&](const RxMsg& msg) {
             result.emplace(ReceivedMessage{
-                .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
+                .data = std::vector<uint8_t>(msg.data.data(), msg.data.data() + msg.len),
                 .opcode = msg.opcode,
             });
         });
@@ -273,7 +273,7 @@ public:
     [[nodiscard]] bool recv_peek(F&& callback) {
         return rx_peek_([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
+                        msg.data.data(),
                         static_cast<size_t>(msg.len));
         });
     }
@@ -284,7 +284,7 @@ public:
     [[nodiscard]] bool recv_peek(F&& callback) {
         return rx_peek_([&](const RxMsg& msg) {
             std::invoke(std::forward<F>(callback),
-                        static_cast<const uint8_t*>(msg.data),
+                        msg.data.data(),
                         static_cast<size_t>(msg.len),
                         msg.opcode);
         });
@@ -295,7 +295,7 @@ public:
         std::optional<ReceivedMessage> result;
         (void)rx_peek_([&](const RxMsg& msg) {
             result.emplace(ReceivedMessage{
-                .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
+                .data = std::vector<uint8_t>(msg.data.data(), msg.data.data() + msg.len),
                 .opcode = msg.opcode,
             });
         });
@@ -313,7 +313,7 @@ public:
     [[nodiscard]] size_t recv_n(F&& callback, size_t max_count) {
         return rx_queue_.try_consume_n(max_count,
             [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
-                std::invoke(std::forward<F>(callback), msg.data, msg.len);
+                std::invoke(std::forward<F>(callback), msg.data.data(), msg.len);
             });
     }
 
@@ -325,7 +325,7 @@ public:
         return rx_queue_.try_consume_n(max_count,
             [&](const RxMsg& msg, [[maybe_unused]] size_t idx) {
                 std::invoke(std::forward<F>(callback),
-                            msg.data, msg.len, msg.opcode);
+                            msg.data.data(), msg.len, msg.opcode);
             });
     }
 
@@ -349,7 +349,7 @@ public:
         while (core_.running.load(std::memory_order_acquire)) {
             bool got = rx_consume_([&](const RxMsg& msg) {
                 std::invoke(std::forward<F>(callback),
-                            static_cast<const uint8_t*>(msg.data),
+                            msg.data.data(),
                             static_cast<size_t>(msg.len));
             });
             if (got) return true;
@@ -367,7 +367,7 @@ public:
         while (core_.running.load(std::memory_order_acquire)) {
             bool got = rx_consume_([&](const RxMsg& msg) {
                 std::invoke(std::forward<F>(callback),
-                            static_cast<const uint8_t*>(msg.data),
+                            msg.data.data(),
                             static_cast<size_t>(msg.len), msg.opcode);
             });
             if (got) return true;
@@ -385,7 +385,7 @@ public:
         while (core_.running.load(std::memory_order_acquire)) {
             bool got = rx_consume_([&](const RxMsg& msg) {
                 result.emplace(ReceivedMessage{
-                    .data = std::vector<uint8_t>(msg.data, msg.data + msg.len),
+                    .data = std::vector<uint8_t>(msg.data.data(), msg.data.data() + msg.len),
                     .opcode = msg.opcode,
                 });
             });
@@ -498,7 +498,7 @@ private:
                      uint8_t opcode) noexcept {
         if constexpr (kRxEvicting) {
             rx_queue_.produce([&](RxMsg& slot) {
-                std::memcpy(slot.data, data, len);
+                std::memcpy(slot.data.data(), data, len);
                 slot.len = len;
                 slot.opcode = opcode;
                 if constexpr (kEnableTimestamps) {
@@ -508,7 +508,7 @@ private:
             return true;
         } else {
             return rx_queue_.try_produce([&](RxMsg& msg) {
-                std::memcpy(msg.data, data, len);
+                std::memcpy(msg.data.data(), data, len);
                 msg.len = len;
                 msg.opcode = opcode;
                 if constexpr (kEnableTimestamps) {
