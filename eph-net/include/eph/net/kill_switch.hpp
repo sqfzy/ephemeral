@@ -365,3 +365,21 @@ private:
 };
 
 } // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for KillSwitch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter for KillSwitch -- compact one-line summary.
+///
+/// Shows transport count, shutdown state. Consistent with other eph::net formatters.
+template <>
+struct std::formatter<eph::net::KillSwitch> : std::formatter<std::string> {
+    auto format(const eph::net::KillSwitch& ks, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("KillSwitch(transports={}, shutdown={})",
+                ks.transport_count(),
+                ks.is_shutdown_requested() ? "yes" : "no"),
+            ctx);
+    }
+};
