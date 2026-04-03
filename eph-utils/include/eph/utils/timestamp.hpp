@@ -24,18 +24,18 @@ namespace eph::utils {
 // ---------------------------------------------------------------------------
 
 /// Convert milliseconds since Unix epoch to nanoseconds.
-constexpr uint64_t ms_to_ns(int64_t ms) noexcept {
+[[nodiscard]] constexpr uint64_t ms_to_ns(int64_t ms) noexcept {
     assert(ms >= 0 && "ms_to_ns: negative millisecond input would wrap on cast to uint64_t");
     return static_cast<uint64_t>(ms) * 1'000'000;
 }
 
 /// Convert nanoseconds to milliseconds (truncating).
-constexpr int64_t ns_to_ms(uint64_t ns) noexcept {
+[[nodiscard]] constexpr int64_t ns_to_ms(uint64_t ns) noexcept {
     return static_cast<int64_t>(ns / 1'000'000);
 }
 
 /// Convert microseconds to nanoseconds.
-constexpr uint64_t us_to_ns(int64_t us) noexcept {
+[[nodiscard]] constexpr uint64_t us_to_ns(int64_t us) noexcept {
     assert(us >= 0 && "us_to_ns: negative microsecond input would wrap on cast to uint64_t");
     return static_cast<uint64_t>(us) * 1'000;
 }
@@ -43,7 +43,7 @@ constexpr uint64_t us_to_ns(int64_t us) noexcept {
 /// Nanoseconds since midnight (ITCH timestamp format) to nanoseconds since epoch.
 /// @param ns_since_midnight  Timestamp from ITCH feed.
 /// @param midnight_epoch_ns  Epoch nanoseconds at midnight of the trading day.
-constexpr uint64_t itch_ts_to_epoch_ns(uint64_t ns_since_midnight,
+[[nodiscard]] constexpr uint64_t itch_ts_to_epoch_ns(uint64_t ns_since_midnight,
                                        uint64_t midnight_epoch_ns) noexcept {
     return midnight_epoch_ns + ns_since_midnight;
 }
@@ -53,7 +53,7 @@ constexpr uint64_t itch_ts_to_epoch_ns(uint64_t ns_since_midnight,
 // ---------------------------------------------------------------------------
 
 /// Get current time as nanoseconds since Unix epoch.
-inline uint64_t now_ns() noexcept {
+[[nodiscard]] inline uint64_t now_ns() noexcept {
     struct timespec ts{};
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
         return 0;
@@ -63,18 +63,18 @@ inline uint64_t now_ns() noexcept {
 }
 
 /// Get current time as milliseconds since Unix epoch (Binance format).
-inline int64_t now_ms() noexcept {
+[[nodiscard]] inline int64_t now_ms() noexcept {
     return ns_to_ms(now_ns());
 }
 
 /// Compute feed latency: current wall-clock minus exchange timestamp (ns).
 /// Returns nanoseconds. Negative if clocks are skewed.
-inline int64_t feed_latency_ns(uint64_t exchange_ts_ns) noexcept {
+[[nodiscard]] inline int64_t feed_latency_ns(uint64_t exchange_ts_ns) noexcept {
     return static_cast<int64_t>(now_ns()) - static_cast<int64_t>(exchange_ts_ns);
 }
 
 /// Compute feed latency from a millisecond exchange timestamp (Binance).
-inline int64_t feed_latency_ns_from_ms(int64_t exchange_ts_ms) noexcept {
+[[nodiscard]] inline int64_t feed_latency_ns_from_ms(int64_t exchange_ts_ms) noexcept {
     return feed_latency_ns(ms_to_ns(exchange_ts_ms));
 }
 
@@ -84,7 +84,7 @@ inline int64_t feed_latency_ns_from_ms(int64_t exchange_ts_ms) noexcept {
 
 /// Format nanosecond epoch timestamp as ISO 8601 string.
 /// e.g., "2026-03-28T14:30:00.123456789Z"
-inline std::string format_timestamp_ns(uint64_t epoch_ns) {
+[[nodiscard]] inline std::string format_timestamp_ns(uint64_t epoch_ns) {
     // M13: time_t must be 64-bit to avoid Y2K38 overflow on large epoch values.
     static_assert(sizeof(time_t) >= 8,
                   "time_t must be at least 64-bit to avoid Y2K38 overflow");
@@ -102,7 +102,7 @@ inline std::string format_timestamp_ns(uint64_t epoch_ns) {
 
 /// Format millisecond epoch timestamp as ISO 8601 string.
 /// e.g., "2026-03-28T14:30:00.123Z"
-inline std::string format_timestamp_ms(int64_t epoch_ms) {
+[[nodiscard]] inline std::string format_timestamp_ms(int64_t epoch_ms) {
     // M13: time_t must be 64-bit to avoid Y2K38 overflow on large epoch values.
     static_assert(sizeof(time_t) >= 8,
                   "time_t must be at least 64-bit to avoid Y2K38 overflow");

@@ -201,3 +201,78 @@ TEST(AuditLog, DefaultCapacity) {
 TEST(AuditEntry, SizeIs64Bytes) {
     EXPECT_EQ(sizeof(AuditEntry), 64);
 }
+
+// ---------------------------------------------------------------------------
+// Return value and error path tests
+// ---------------------------------------------------------------------------
+
+TEST(AuditLog, RecordReturnsTrueBeforeOverflow) {
+    TestLog log;
+    // First 64 records should return true (no overflow)
+    for (uint64_t i = 0; i < 64; ++i) {
+        bool ok = log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+        EXPECT_TRUE(ok) << "record() should return true before capacity at i=" << i;
+    }
+}
+
+TEST(AuditLog, RecordReturnsFalseOnOverflow) {
+    TestLog log;
+    // Fill to capacity
+    for (uint64_t i = 0; i < 64; ++i) {
+        log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+    }
+    // 65th record should return false (overwriting oldest)
+    bool ok = log.record(AuditEvent::NewOrder, 99, 0.0, 0.0, Side::Buy, 0);
+    EXPECT_FALSE(ok);
+}
+
+TEST(AuditLog, RecordMtReturnsFalseOnOverflow) {
+    AuditLog<64> log;
+    for (uint64_t i = 0; i < 64; ++i) {
+        log.record_mt(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+    }
+    bool ok = log.record_mt(AuditEvent::NewOrder, 99, 0.0, 0.0, Side::Buy, 0);
+    EXPECT_FALSE(ok);
+}
+
+TEST(AuditLog, FlushToFileInvalidPathReturnsZero) {
+    TestLog log;
+    log.record(AuditEvent::NewOrder, 1, 100.0, 1.0, Side::Buy, 0);
+    // Writing to an invalid/non-existent directory should fail
+    size_t written = log.flush_to_file("/nonexistent_dir_xyz/audit.bin");
+    EXPECT_EQ(written, 0);
+}
+
+TEST(AuditLog, FlushToFileEmptyLogReturnsZero) {
+    TestLog log;
+    size_t written = log.flush_to_file("/tmp/test_audit_empty.bin");
+    EXPECT_EQ(written, 0);
+    std::remove("/tmp/test_audit_empty.bin");
+}
+
+TEST(AuditLog, DumpEmptyLog) {
+    TestLog log;
+    std::string output = log.dump();
+    EXPECT_NE(output.find("0 entries"), std::string::npos);
+}
+
+TEST(AuditLog, DumpLimitedEntries) {
+    TestLog log;
+    for (uint64_t i = 0; i < 10; ++i) {
+        log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+    }
+    // Dump only 3 entries
+    std::string output = log.dump(3);
+    EXPECT_NE(output.find("showing 3"), std::string::npos);
+}
+
+TEST(AuditLog, EntryDumpContainsAllFields) {
+    TestLog log;
+    log.record(AuditEvent::Fill, 42, 100.25, 5.0, Side::Sell, 3, 100.30, 5.0);
+    const auto* e = log.latest();
+    ASSERT_NE(e, nullptr);
+    std::string dump = e->dump();
+    EXPECT_NE(dump.find("FILL"), std::string::npos);
+    EXPECT_NE(dump.find("42"), std::string::npos);
+    EXPECT_NE(dump.find("SELL"), std::string::npos);
+}

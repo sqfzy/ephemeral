@@ -150,10 +150,12 @@ public:
                 double fill_price = 0.0, double fill_qty = 0.0) noexcept {
         size_t idx = head_.load(std::memory_order_relaxed);
         bool overflowed = idx >= Capacity;
-        if (overflowed) {
-            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),"AuditLog: ring buffer overflow at index={}, "
-                        "overwriting oldest entry (capacity={})",
-                        idx, Capacity);
+        // Log only on the exact wrap boundary to avoid flooding hot-path logs.
+        // Subsequent overwrites are expected ring buffer behavior.
+        if (idx == Capacity) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),
+                "AuditLog: ring buffer wrapped at capacity={}, "
+                "oldest entries will be overwritten", Capacity);
         }
         auto& entry = entries_[idx & kMask];
         entry.tsc = TSC::now();
@@ -179,10 +181,11 @@ public:
                    double fill_price = 0.0, double fill_qty = 0.0) noexcept {
         size_t idx = head_.fetch_add(1, std::memory_order_acq_rel);
         bool overflowed = idx >= Capacity;
-        if (overflowed) {
-            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),"AuditLog: ring buffer overflow at index={}, "
-                        "overwriting oldest entry (capacity={})",
-                        idx, Capacity);
+        // Log only on the exact wrap boundary to avoid flooding hot-path logs.
+        if (idx == Capacity) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),
+                "AuditLog: ring buffer wrapped at capacity={}, "
+                "oldest entries will be overwritten", Capacity);
         }
         auto& entry = entries_[idx & kMask];
         entry.tsc = TSC::now();
