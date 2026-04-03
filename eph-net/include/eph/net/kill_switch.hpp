@@ -26,6 +26,7 @@
 
 #include <array>
 #include <atomic>
+#include <concepts>
 #include <csignal>
 #include <cstddef>
 
@@ -33,6 +34,18 @@
 #include <spdlog/spdlog.h>
 
 namespace eph::net {
+
+/// @brief Concept for types that can be managed by KillSwitch.
+///
+/// Requires stop() (to shut down the transport) and is_running() (to query
+/// whether shutdown is still needed). This replaces the unconstrained template
+/// parameter, catching type mismatches at the call site rather than deep inside
+/// the type-erased lambda body.
+template <typename T>
+concept Stoppable = requires(T t) {
+    { t.stop() };
+    { t.is_running() } -> std::convertible_to<bool>;
+};
 
 namespace detail {
 /// @brief Lazily-initialized logger for the KillSwitch subsystem.
@@ -93,10 +106,10 @@ public:
     ///
     /// The transport must outlive the KillSwitch (or be unregistered first).
     ///
-    /// @tparam Transport  Any type with stop() and is_running() methods.
+    /// @tparam Transport  Any type satisfying the Stoppable concept.
     /// @param tp  Pointer to the transport. Must not be null.
     /// @return true if registered successfully, false if null or capacity reached.
-    template <typename Transport>
+    template <Stoppable Transport>
     [[nodiscard]] bool register_transport(Transport* tp) noexcept {
         if (!tp) return false;
         TransportHandle h{
@@ -108,9 +121,9 @@ public:
     }
 
     /// @brief Unregister a transport (e.g., before destroying it).
-    /// @tparam Transport  Same type used in register_transport().
+    /// @tparam Transport  Same type satisfying the Stoppable concept.
     /// @param tp  Pointer to the transport to remove. Null is a no-op.
-    template <typename Transport>
+    template <Stoppable Transport>
     void unregister_transport(Transport* tp) noexcept {
         if (!tp) return;
         remove_handle(static_cast<void*>(tp));

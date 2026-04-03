@@ -22,6 +22,23 @@ struct MockTransport {
     }
 };
 
+// Verify the Stoppable concept is satisfied by MockTransport
+static_assert(Stoppable<MockTransport>,
+    "MockTransport must satisfy the Stoppable concept");
+
+// Verify non-conforming types are correctly rejected
+struct NotStoppable { int x; };
+static_assert(!Stoppable<NotStoppable>,
+    "NotStoppable must NOT satisfy the Stoppable concept");
+
+struct MissingIsRunning { void stop() {} };
+static_assert(!Stoppable<MissingIsRunning>,
+    "MissingIsRunning (no is_running()) must NOT satisfy Stoppable");
+
+struct MissingStop { bool is_running() const { return false; } };
+static_assert(!Stoppable<MissingStop>,
+    "MissingStop (no stop()) must NOT satisfy Stoppable");
+
 TEST(KillSwitch, InitialState) {
     KillSwitch ks;
     EXPECT_FALSE(ks.is_shutdown_requested());
