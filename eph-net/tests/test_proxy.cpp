@@ -132,6 +132,18 @@ TEST(ProxyUrl, EmptyUrlReturnsError) {
     ASSERT_FALSE(r.has_value());
 }
 
+TEST(ProxyUrl, EmptyHostReturnsError) {
+    auto r = parse_proxy_url("socks5://:1080");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("empty host"), std::string::npos);
+}
+
+TEST(ProxyUrl, EmptyHostWithAuthReturnsError) {
+    auto r = parse_proxy_url("socks5://user:pass@:1080");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("empty host"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // parse_proxy_url — IP address hosts
 // ─────────────────────────────────────────────────────────────────────────────

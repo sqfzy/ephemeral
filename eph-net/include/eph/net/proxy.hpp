@@ -709,6 +709,9 @@ parse_proxy_url(std::string_view url) {
     }
 
     cfg.host = std::string(url.substr(0, colon));
+    if (cfg.host.empty()) {
+        return std::unexpected(std::string("proxy URL has empty host"));
+    }
     auto port_str = url.substr(colon + 1);
     if (port_str.empty()) {
         return std::unexpected("proxy URL missing port number after ':'");
