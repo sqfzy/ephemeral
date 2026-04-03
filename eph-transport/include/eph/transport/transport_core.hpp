@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <functional>
@@ -21,8 +22,6 @@
 #include <string_view>
 
 #include <spdlog/spdlog.h>
-
-#include <cstring>
 
 #include "eph/core/tcp_concept.hpp"
 #include "eph/core/framer_concept.hpp"

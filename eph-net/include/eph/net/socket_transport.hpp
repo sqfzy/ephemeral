@@ -7,6 +7,7 @@
 /// Designed for generic WebSocket clients that don't need DPDK's
 /// kernel-bypass latency but want the same Transport<> API.
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -16,10 +17,7 @@
 #include <future>
 #include <string>
 
-#include <atomic>
-
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <linux/net_tstamp.h>
 #include <netdb.h>
 #include <netinet/tcp.h>
