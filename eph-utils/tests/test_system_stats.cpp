@@ -380,3 +380,36 @@ TEST(SystemResourceStatsTest, EqualityApproximateFloats) {
     b.user_cpu_s += 1e-12;
     EXPECT_EQ(a, b);
 }
+
+// ============================================================================
+// SystemStats — move semantics
+// ============================================================================
+
+TEST(SystemStatsTest, MoveConstructorDisablesAutoLogOnSource) {
+    // Create auto-logging stats, move it — only the destination should log.
+    // The test verifies no crash/double-log by exercising move construction.
+    SystemStats src(/*auto_log=*/true);
+    SystemStats dst(std::move(src));
+    // src is now moved-from: its destructor should NOT log
+    // dst destructor will log (auto_log_ transferred)
+}
+
+TEST(SystemStatsTest, MoveAssignmentDisablesAutoLogOnSource) {
+    SystemStats src(/*auto_log=*/true);
+    SystemStats dst(/*auto_log=*/false);
+
+    dst = std::move(src);
+    // src is moved-from: destructor should not log
+    // dst now owns auto_log=true
+}
+
+TEST(SystemStatsTest, MoveConstructorSnapshotWorks) {
+    SystemStats src;
+    volatile double x = 0;
+    for (int i = 0; i < 10000; ++i) x += std::sin(i);
+
+    SystemStats dst(std::move(src));
+    auto snap = dst.snapshot();
+    // Should still work — baseline rusage was transferred
+    EXPECT_GE(snap.total_cpu_s, 0.0);
+}

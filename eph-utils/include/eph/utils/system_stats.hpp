@@ -145,8 +145,29 @@ class SystemStats {
 
     SystemStats(const SystemStats&) = delete;
     SystemStats& operator=(const SystemStats&) = delete;
-    SystemStats(SystemStats&&) = default;
-    SystemStats& operator=(SystemStats&&) = default;
+
+    /// Move constructor: transfers ownership of auto-log responsibility.
+    /// The moved-from object is left with auto_log_=false so its destructor
+    /// does not produce a spurious log report.
+    SystemStats(SystemStats&& other) noexcept
+        : initial_rusage_(other.initial_rusage_),
+          auto_log_(other.auto_log_) {
+        other.auto_log_ = false;
+    }
+
+    /// Move assignment: same semantics — source loses auto-log responsibility.
+    SystemStats& operator=(SystemStats&& other) noexcept {
+        if (this != &other) {
+            // If this object was auto-logging, log before we overwrite.
+            if (auto_log_) {
+                try { log_report(); } catch (...) {}
+            }
+            initial_rusage_ = other.initial_rusage_;
+            auto_log_ = other.auto_log_;
+            other.auto_log_ = false;
+        }
+        return *this;
+    }
 
     /// Compute resource delta since construction or last reset().
     [[nodiscard]] SystemResourceStats snapshot() const noexcept {
