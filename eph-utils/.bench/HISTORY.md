@@ -78,3 +78,39 @@ Batch percentile query (~12us for 5 percentiles) is ~2.5x faster than
 5 individual queries. Report/JSON formatting is 60-72us (std::format
 + percentile computation). for_each_linear on high-offset data benefits
 from the skip-empty-prefix optimization.
+
+## 2026-04-03 bench_ema baseline (631ab93)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_EmaUpdate | 5.07 | 5.07 | 138134704 |
+| BM_EmaUpdate_Random | 4.84 | 4.84 | 144808656 |
+| BM_EmaCrossover_Update | 4.83 | 4.83 | 145229410 |
+
+EMA update is ~5ns per sample. Random prices do not add cache pressure
+(8K buffer fits in L1). EmaCrossover (dual EMA) matches single EMA
+cost due to branch-free steady-state execution.
+
+## 2026-04-03 bench_timestamp baseline (631ab93)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_MsToNs | 0.357 | 0.357 | 1958074443 |
+| BM_NsToMs | 0.450 | 0.450 | 1554835173 |
+| BM_NowNs | 31.2 | 31.2 | 22446058 |
+| BM_NowMs | 31.3 | 31.3 | 22382463 |
+| BM_FeedLatencyNs | 31.2 | 31.2 | 22462559 |
+| BM_FormatTimestampNs | 414 | 414 | 1690856 |
+| BM_FormatTimestampMs | 404 | 404 | 1733725 |
+
+Unit conversions are sub-nanosecond (compiler constant-folds).
+clock_gettime(CLOCK_REALTIME) costs ~31ns on this platform.
+ISO 8601 formatting is ~400ns (gmtime_r + std::format).
+
+## 2026-04-03 bench_audit_log extended (d15eb9f)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_AuditEntryDump | 644 | 644 | 1086560 |
+
+Single-entry dump formatting costs ~644ns (TSC::to_ns + std::format).
