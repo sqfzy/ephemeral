@@ -640,6 +640,34 @@ TEST(HttpResponse, ToJsonErrorResponse) {
     EXPECT_NE(j.find("503"), std::string::npos);
 }
 
+TEST(HttpResponse, ToJsonEscapesBodyWithQuotes) {
+    // Body containing quotes and backslashes must be properly escaped
+    // to produce valid JSON (RFC 8259 section 7).
+    HttpResponse resp{.status_code = 200, .body = R"({"key":"value"})"};
+    auto j = resp.to_json();
+    // The body_preview should have escaped quotes so the JSON is valid
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    // The raw quote characters in body should be escaped
+    EXPECT_NE(j.find("\\\"key\\\""), std::string::npos)
+        << "body_preview should escape embedded quotes; got: " << j;
+}
+
+TEST(HttpResponse, ToJsonEscapesBodyWithBackslash) {
+    HttpResponse resp{.status_code = 200, .body = "path\\to\\file"};
+    auto j = resp.to_json();
+    EXPECT_NE(j.find("path\\\\to\\\\file"), std::string::npos)
+        << "body_preview should escape backslashes; got: " << j;
+}
+
+TEST(HttpResponse, ToJsonEscapesBodyWithControlChars) {
+    HttpResponse resp{.status_code = 200, .body = "line1\nline2\ttab"};
+    auto j = resp.to_json();
+    // Control characters should be escaped (no raw \n or \t in JSON string)
+    EXPECT_NE(j.find("\\n"), std::string::npos)
+        << "body_preview should escape newlines; got: " << j;
+}
+
 // =============================================================================
 // std::formatter<HttpClient::Config>
 // =============================================================================

@@ -52,11 +52,11 @@ inline spdlog::logger* hmac_logger() {
 /// @return Lowercase hexadecimal string (2 chars per byte).
 [[nodiscard]] inline std::string to_hex(std::span<const uint8_t> bytes) noexcept {
     static constexpr char kHexChars[] = "0123456789abcdef";
-    std::string result;
-    result.reserve(bytes.size() * 2);
+    std::string result(bytes.size() * 2, '\0');
+    char* out = result.data();
     for (uint8_t b : bytes) {
-        result += kHexChars[b >> 4];
-        result += kHexChars[b & 0x0F];
+        *out++ = kHexChars[b >> 4];
+        *out++ = kHexChars[b & 0x0F];
     }
     return result;
 }

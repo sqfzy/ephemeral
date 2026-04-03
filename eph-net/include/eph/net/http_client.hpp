@@ -34,6 +34,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include "eph/core/detail/json_escape.hpp"
 #include "eph/core/detail/string_checks.hpp"
 
 namespace eph::net {
@@ -78,12 +79,15 @@ struct HttpResponse {
             body_preview = body_preview.substr(0, 256);
             truncated = true;
         }
+        // Escape body_preview per RFC 8259 to prevent malformed JSON
+        // from response bodies containing quotes, backslashes, or control chars.
+        auto escaped = eph::core::detail::json_escape(body_preview);
         return std::format(
             "{{\"status_code\":{},\"body_size\":{},\"is_success\":{}"
             ",\"body_preview\":\"{}{}\"}}",
             status_code, body.size(),
             is_success() ? "true" : "false",
-            body_preview, truncated ? "..." : "");
+            escaped, truncated ? "..." : "");
     }
 
     /// Defaulted equality -- all fields must match exactly.
