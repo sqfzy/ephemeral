@@ -183,6 +183,26 @@ public:
                    a.degraded_threshold == b.degraded_threshold &&
                    static_cast<bool>(a.on_health_change) == static_cast<bool>(b.on_health_change);
         }
+
+        /// Check for non-fatal contradictions or likely misconfigurations.
+        /// Returns a list of warning messages (empty if no issues).
+        /// Unlike validate() which blocks construction, these are advisory.
+        [[nodiscard]] std::vector<std::string> warnings() const {
+            std::vector<std::string> w;
+            if (health_check_interval.count() > 0 && health_check_interval.count() < 100)
+                w.emplace_back(std::format(
+                    "health_check_interval={}ms is very short — frequent "
+                    "is_running() polls may add overhead", health_check_interval.count()));
+            if (health_check_interval.count() > 60000)
+                w.emplace_back(std::format(
+                    "health_check_interval={}ms (>60s) — disconnections may "
+                    "go undetected for over a minute",
+                    health_check_interval.count()));
+            if (!on_health_change)
+                w.emplace_back("on_health_change callback not set — health "
+                               "transitions will only appear in logs");
+            return w;
+        }
     };
 
     /// @brief Construct a Gateway with default configuration.

@@ -486,6 +486,52 @@ TEST(GatewayConfig, EqualityCallbackPresence) {
     EXPECT_NE(a, c);
 }
 
+// ── Gateway::Config::warnings() ────────────────────────────────────────────
+
+TEST(GatewayConfig, WarningsWithCallbackAndReasonableInterval) {
+    Gateway::Config cfg;
+    cfg.on_health_change = [](std::string_view, ConnHealth, ConnHealth) {};
+    auto w = cfg.warnings();
+    // Reasonable defaults + callback set = no warnings
+    EXPECT_TRUE(w.empty());
+}
+
+TEST(GatewayConfig, WarnsOnVeryShortHealthCheckInterval) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{50};
+    cfg.on_health_change = [](std::string_view, ConnHealth, ConnHealth) {};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("very short") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about short health check interval";
+}
+
+TEST(GatewayConfig, WarnsOnLongHealthCheckInterval) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{120000};
+    cfg.degraded_threshold = std::chrono::milliseconds{240000};
+    cfg.on_health_change = [](std::string_view, ConnHealth, ConnHealth) {};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("over a minute") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about long health check interval";
+}
+
+TEST(GatewayConfig, WarnsOnMissingHealthChangeCallback) {
+    Gateway::Config cfg;
+    // Default: no callback
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("on_health_change") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about missing callback";
+}
+
 // ── Gateway::remove() ──────────────────────────────────────────────────────
 
 TEST(Gateway, RemoveConnectionByIndex) {
