@@ -21,6 +21,7 @@
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/detail/tls_constants.hpp"
 #include "eph/transport/detail/websocket.hpp"
+#include "eph/transport/detail/http.hpp"
 
 using namespace eph::net;
 
@@ -620,5 +621,78 @@ static void BM_MaskedCopy_512(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * src.size());
 }
 BENCHMARK(BM_MaskedCopy_512);
+
+// ---------------------------------------------------------------------------
+// http::parse_upgrade_response — WS upgrade response parsing (handshake path)
+// ---------------------------------------------------------------------------
+
+static void BM_ParseUpgradeResponse_Valid101(benchmark::State& state) {
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        "Sec-WebSocket-Protocol: graphql-ws\r\n"
+        "\r\n";
+    for (auto _ : state) {
+        auto r = eph::net::http::parse_upgrade_response(
+            response.data(), response.size());
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ParseUpgradeResponse_Valid101);
+
+static void BM_ParseUpgradeResponse_ManyHeaders(benchmark::State& state) {
+    // Simulate a response with many headers (realistic server response)
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
+        "Server: nginx/1.25.0\r\n"
+        "Date: Thu, 03 Apr 2026 10:00:00 GMT\r\n"
+        "X-Request-Id: abc-123-def-456\r\n"
+        "X-Rate-Limit: 1000\r\n"
+        "X-Custom-Header: some-value\r\n"
+        "\r\n";
+    for (auto _ : state) {
+        auto r = eph::net::http::parse_upgrade_response(
+            response.data(), response.size());
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ParseUpgradeResponse_ManyHeaders);
+
+// ---------------------------------------------------------------------------
+// http::validate_ws_accept — SHA-1 + base64 verification (handshake path)
+// ---------------------------------------------------------------------------
+
+static void BM_ValidateWsAccept(benchmark::State& state) {
+    for (auto _ : state) {
+        auto ok = eph::net::http::validate_ws_accept(
+            "dGhlIHNhbXBsZSBub25jZQ==", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        benchmark::DoNotOptimize(ok);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ValidateWsAccept);
+
+// ---------------------------------------------------------------------------
+// http::build_upgrade_request — WS upgrade request builder (handshake path)
+// ---------------------------------------------------------------------------
+
+static void BM_BuildUpgradeRequest(benchmark::State& state) {
+    for (auto _ : state) {
+        auto r = eph::net::http::build_upgrade_request(
+            "stream.example.com:8443", "/ws/v2",
+            "dGhlIHNhbXBsZSBub25jZQ==",
+            "Authorization: Bearer tok123\r\n");
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuildUpgradeRequest);
 
 BENCHMARK_MAIN();

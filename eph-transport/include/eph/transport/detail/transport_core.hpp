@@ -296,6 +296,24 @@ struct TransportCore {
                         std::format("WS upgrade parse failed: {}", parsed.error())});
                 }
 
+                // RFC 6455 §4.2.2: validate mandatory response fields
+                if (parsed->status_code != 101) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeRejected,
+                        std::format("Expected HTTP 101, got {}",
+                                    parsed->status_code)});
+                }
+                if (!parsed->has_upgrade) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeRejected,
+                        "Missing or invalid 'Upgrade: websocket' header"});
+                }
+                if (!parsed->has_connection_upgrade) {
+                    return std::unexpected(ConnectionErrorInfo{
+                        ConnectionError::kWsUpgradeRejected,
+                        "Missing or invalid 'Connection: Upgrade' header"});
+                }
+
                 // Validate Sec-WebSocket-Accept
                 if (!http::validate_ws_accept(ws_key, parsed->sec_ws_accept)) {
                     return std::unexpected(ConnectionErrorInfo{
