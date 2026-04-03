@@ -251,4 +251,77 @@ static void BM_StatsToJson(benchmark::State& state) {
 }
 BENCHMARK(BM_StatsToJson);
 
+// ---------------------------------------------------------------------------
+// TransportStats::dump — human-readable stats output (monitoring/logging path)
+// ---------------------------------------------------------------------------
+
+static void BM_StatsDump(benchmark::State& state) {
+    TransportStats s{};
+    s.tx_packets = 1000000;
+    s.tx_bytes = 500000000;
+    s.rx_packets = 2000000;
+    s.rx_bytes = 1000000000;
+    s.uptime_ns = 60'000'000'000;
+    s.remote_ip = "10.0.1.42";
+    s.rtt = {.count = 100, .min_ns = 500, .max_ns = 50000,
+             .mean_ns = 5000.0, .p50_ns = 4000, .p99_ns = 40000, .p999_ns = 48000};
+    for (auto _ : state) {
+        auto d = s.dump();
+        benchmark::DoNotOptimize(d);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_StatsDump);
+
+// ---------------------------------------------------------------------------
+// TransportConfig::to_url — URL serialization (startup/logging path)
+// ---------------------------------------------------------------------------
+
+static void BM_ConfigToUrl(benchmark::State& state) {
+    TransportConfig cfg;
+    cfg.remote_host = "stream.example.com";
+    cfg.remote_port = 8443;
+    cfg.ws_path = "/ws/v2";
+    cfg.use_tls = true;
+    for (auto _ : state) {
+        auto url = cfg.to_url();
+        benchmark::DoNotOptimize(url);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ConfigToUrl);
+
+// ---------------------------------------------------------------------------
+// TransportConfig::dump — config dump (startup/logging path)
+// ---------------------------------------------------------------------------
+
+static void BM_ConfigDump(benchmark::State& state) {
+    TransportConfig cfg;
+    cfg.remote_host = "stream.example.com";
+    cfg.remote_port = 8443;
+    cfg.ws_path = "/ws/v2";
+    cfg.ws_subprotocol = "graphql-ws";
+    for (auto _ : state) {
+        auto d = cfg.dump();
+        benchmark::DoNotOptimize(d);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ConfigDump);
+
+// ---------------------------------------------------------------------------
+// RttStats::to_json — RTT stats serialization (monitoring path)
+// ---------------------------------------------------------------------------
+
+static void BM_RttStatsToJson(benchmark::State& state) {
+    RttStats r{.count = 1000, .min_ns = 500, .max_ns = 100000,
+               .mean_ns = 10000.0, .p50_ns = 8000, .p99_ns = 80000, .p999_ns = 95000};
+    for (auto _ : state) {
+        auto j = r.to_json();
+        benchmark::DoNotOptimize(j);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_RttStatsToJson);
+
 BENCHMARK_MAIN();
