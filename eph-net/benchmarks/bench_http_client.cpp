@@ -114,6 +114,20 @@ static void BM_FindHeader_LastHeader(benchmark::State& state) {
 }
 BENCHMARK(BM_FindHeader_LastHeader);
 
+/// find_header_opt — optional variant that distinguishes missing from empty.
+static void BM_FindHeaderOpt(benchmark::State& state) {
+    std::string headers =
+        "Content-Type: application/json\r\n"
+        "Content-Length: 39\r\n"
+        "X-MBX-USED-WEIGHT-1M: 1\r\n";
+
+    for (auto _ : state) {
+        auto val = find_header_opt(headers, "X-MBX-USED-WEIGHT-1M");
+        benchmark::DoNotOptimize(val);
+    }
+}
+BENCHMARK(BM_FindHeaderOpt);
+
 /// Find a non-existent header (full scan, miss).
 static void BM_FindHeader_Miss(benchmark::State& state) {
     std::string headers =

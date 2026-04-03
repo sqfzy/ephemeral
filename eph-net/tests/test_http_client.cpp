@@ -769,3 +769,50 @@ TEST(HttpClientFindHeader, ValueWithLeadingAndTrailingOWS) {
     std::string headers = "X-Val:  \t hello  \r\n";
     EXPECT_EQ(find_header(headers, "X-Val"), "hello");
 }
+
+// =============================================================================
+// find_header_opt — distinguishes missing from empty
+// =============================================================================
+
+TEST(HttpClientFindHeaderOpt, ReturnsValueWhenPresent) {
+    std::string headers = "Content-Type: application/json\r\n";
+    auto result = find_header_opt(headers, "Content-Type");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "application/json");
+}
+
+TEST(HttpClientFindHeaderOpt, ReturnsNulloptWhenMissing) {
+    std::string headers = "Content-Type: application/json\r\n";
+    auto result = find_header_opt(headers, "X-Nonexistent");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(HttpClientFindHeaderOpt, ReturnsEmptyStringForEmptyValue) {
+    // Header present but with empty value: should return "" not nullopt
+    std::string headers = "X-Empty:\r\n";
+    auto result = find_header_opt(headers, "X-Empty");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "");
+}
+
+TEST(HttpClientFindHeaderOpt, DistinguishesMissingFromEmpty) {
+    // This is the key use case: missing vs empty
+    std::string headers = "X-Present:\r\nX-Valued: 42\r\n";
+    auto present = find_header_opt(headers, "X-Present");
+    auto valued = find_header_opt(headers, "X-Valued");
+    auto missing = find_header_opt(headers, "X-Missing");
+
+    ASSERT_TRUE(present.has_value());
+    EXPECT_EQ(*present, "");
+
+    ASSERT_TRUE(valued.has_value());
+    EXPECT_EQ(*valued, "42");
+
+    EXPECT_FALSE(missing.has_value());
+}
+
+TEST(HttpClientFindHeaderOpt, CaseInsensitive) {
+    std::string headers = "Content-Type: text/plain\r\n";
+    ASSERT_TRUE(find_header_opt(headers, "content-type").has_value());
+    ASSERT_TRUE(find_header_opt(headers, "CONTENT-TYPE").has_value());
+}
