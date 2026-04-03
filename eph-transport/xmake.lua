@@ -16,3 +16,11 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         add_files(file)
         add_deps("eph-net")
 end
+
+-- Module benchmarks
+for _, file in ipairs(os.files("benchmarks/**.cpp")) do
+    target(path.basename(file))
+        add_rules("eph-bench")
+        add_files(file)
+        add_deps("eph-transport")
+end

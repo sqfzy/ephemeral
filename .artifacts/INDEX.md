@@ -25,3 +25,6 @@
 | 2026-04-02 08:35 | /design auto TransportMode拆分 | 4 commits：3类拆分+4组件提取+组合重写+detail删除，TransportMode完全消除 | 6eda7b0 | design-20260402-083558-transport-split.md |
 | 2026-04-02 10:57 | /discuss bench 重设计 | 5角色4轮：tap虚拟网卡+同进程mock server+无TLS，9 bench→3 bench | 49d2b2c | discuss-20260402-105700-bench-redesign.md |
 | 2026-04-03 07:27 | /discuss 项目组织重构 | 5角色7轮：模块级xmake.lua+测试跟随模块+transport detail/分层+PCH/ccache，5阶段增量实施 | e0a2beb | discuss-20260403-072707.md |
+| 2026-04-03 07:38 | /design 项目组织重构 | 10模块xmake.lua+tests/benchmarks跟随模块+transport detail/分层+rules/ccache/PCH基础设施 | 9f5c271 | design-20260403-073807.md |
+| 2026-04-03 07:38 | /plan 项目组织重构 | 已完成归档 | 9f5c271 | project-reorg-20260403.plan.md |
+| 2026-04-03 08:37 | /bench transport baseline | build_nonce 0.47ns, twophase 424-661ns, from_url 87-101ns, validate 14-18ns | 5e20ef3 | eph-transport/.artifacts/bench-data-20260403-083736.txt |

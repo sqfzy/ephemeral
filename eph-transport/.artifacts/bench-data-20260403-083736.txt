@@ -1,0 +1,21 @@
+# Benchmark Baseline: eph-transport
+# Date: 2026-04-03 08:37:36 UTC
+# Commit: 5e20ef3 (dev)
+# Source: /bench baseline (round 1)
+# Build: xmake release, gcc14, -O3, C++23
+# CPU: 16x ARM64 @ 2000 MHz, L3 36864 KiB
+# OS: Linux 6.1.163 aarch64
+
+BM_BuildNonce                                0.468 ns   items/s=2.1362G/s
+BM_TwophaseFilter_16Frames_4Symbols            424 ns   items/s=37.7117M/s
+BM_TwophaseFilter_64Frames_16Symbols           513 ns   items/s=124.869M/s
+BM_TwophaseFilter_128Frames_32Symbols          661 ns   items/s=193.624M/s
+BM_TwophaseFilter_64Frames_AllUnique           496 ns   items/s=128.912M/s
+BM_TwophaseFilter_64Frames_SingleSymbol        524 ns   items/s=122.027M/s
+BM_FromUrl_Simple                             93.9 ns   items/s=10.6521M/s
+BM_FromUrl_WithPort                            101 ns   items/s=9.89585M/s
+BM_FromUrl_Ipv6                               87.4 ns   items/s=11.4371M/s
+BM_Validate_Valid                             14.7 ns   items/s=68.2297M/s
+BM_Validate_WithAllOptionalFields             18.3 ns   items/s=54.6923M/s
+BM_ConfigToJson                                818 ns   items/s=1.22196M/s
+BM_StatsToJson                                5047 ns   items/s=198.155k/s
