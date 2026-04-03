@@ -127,4 +127,26 @@ static void BM_SkipDnsName(benchmark::State& state) {
 }
 BENCHMARK(BM_SkipDnsName);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// resolve_hostname — dotted-decimal fast path (no DNS query)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include "eph/dpdk/connector.hpp"
+
+static void BM_ResolveHostnameDottedDecimal(benchmark::State& state) {
+    const char* ips[] = {
+        "10.0.0.1", "192.168.1.100", "172.16.254.1",
+        "8.8.8.8", "255.255.255.255",
+    };
+    constexpr size_t n = 5;
+    size_t idx = 0;
+
+    for (auto _ : state) {
+        auto result = eph::dpdk::resolve_hostname(ips[idx % n]);
+        benchmark::DoNotOptimize(result);
+        idx++;
+    }
+}
+BENCHMARK(BM_ResolveHostnameDottedDecimal);
+
 BENCHMARK_MAIN();

@@ -402,7 +402,7 @@ struct PacketTemplate {
         // Write SYN options (MSS, SACK Permitted, Window Scale)
         if (is_syn) {
             auto* opt_ptr = pkt + kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;
-            write_syn_options(opt_ptr, mss);
+            [[maybe_unused]] auto syn_opt_len = write_syn_options(opt_ptr, mss);
         }
 
         // Copy payload if present
