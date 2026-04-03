@@ -538,6 +538,55 @@ TEST(HttpResponse, ZeroStatusCodeIsNoneOfCategories) {
     EXPECT_FALSE(resp.is_server_error());
 }
 
+// =============================================================================
+// HttpClient::Config::validate()
+// =============================================================================
+
+TEST(HttpClientConfig, DefaultConstructedIsInvalid) {
+    HttpClient::Config cfg;
+    EXPECT_FALSE(cfg.validate().empty());  // host is empty
+}
+
+TEST(HttpClientConfig, ValidConfigPasses) {
+    HttpClient::Config cfg{.host = "api.binance.com"};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(HttpClientConfig, EmptyHostFails) {
+    HttpClient::Config cfg{.host = "", .port = 443};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("host"), std::string_view::npos);
+}
+
+TEST(HttpClientConfig, HostWithControlCharsFails) {
+    HttpClient::Config cfg{.host = "evil\r\nhost"};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(HttpClientConfig, ZeroPortFails) {
+    HttpClient::Config cfg{.host = "example.com", .port = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("port"), std::string_view::npos);
+}
+
+TEST(HttpClientConfig, ZeroTimeoutFails) {
+    HttpClient::Config cfg{.host = "example.com", .timeout = std::chrono::milliseconds{0}};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("timeout"), std::string_view::npos);
+}
+
+TEST(HttpClientConfig, ZeroMaxResponseSizeFails) {
+    HttpClient::Config cfg{.host = "example.com", .max_response_size = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("max_response_size"), std::string_view::npos);
+}
+
 TEST(HttpResponse, EqualityOperator) {
     HttpResponse a{200, "ok", "Content-Type: text/plain\r\n"};
     HttpResponse b{200, "ok", "Content-Type: text/plain\r\n"};

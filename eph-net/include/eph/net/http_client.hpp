@@ -336,6 +336,25 @@ public:
         std::string                 ca_cert_path{};   ///< CA certificate path; empty = system default.
         size_t                      max_response_size = 8 * 1024 * 1024;  ///< Max response body size (8 MiB default).
 
+        /// @brief Validate configuration, returning an error description or empty string on success.
+        /// Call before constructing an HttpClient for early, actionable error messages.
+        [[nodiscard]] constexpr std::string_view validate() const noexcept {
+            if (host.empty())
+                return "host must not be empty";
+            for (char c : host) {
+                auto uc = static_cast<unsigned char>(c);
+                if (uc < 0x20 || uc == 0x7f)
+                    return "host contains control characters (header injection risk)";
+            }
+            if (port == 0)
+                return "port must be > 0";
+            if (timeout.count() <= 0)
+                return "timeout must be positive";
+            if (max_response_size == 0)
+                return "max_response_size must be > 0";
+            return {};
+        }
+
         /// @brief Format configuration as a human-readable string for logging.
         /// @return Single-line description of all config fields.
         [[nodiscard]] std::string dump() const {
