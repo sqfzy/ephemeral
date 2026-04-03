@@ -1233,9 +1233,12 @@ private:
                         core_.config.on_reconnected(
                             reconnect_.attempts(), downtime_ns,
                             static_cast<uint64_t>(total));
+                    } catch (const std::exception& e) {
+                        SPDLOG_LOGGER_ERROR(log,
+                            "on_reconnected callback threw: {}", e.what());
                     } catch (...) {
-                        SPDLOG_LOGGER_WARN(log,
-                            "on_reconnected callback threw an exception");
+                        SPDLOG_LOGGER_ERROR(log,
+                            "on_reconnected callback threw non-std::exception");
                     }
                 }
                 return true;
