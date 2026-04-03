@@ -246,4 +246,48 @@ static void BM_Gateway_ToJson(benchmark::State& state) {
 }
 BENCHMARK(BM_Gateway_ToJson)->Arg(1)->Arg(4)->Arg(8);
 
+// ---------------------------------------------------------------------------
+// Gateway::is_all_healthy() — convenience health gate
+// ---------------------------------------------------------------------------
+
+static void BM_Gateway_IsAllHealthy(benchmark::State& state) {
+    const auto n = static_cast<size_t>(state.range(0));
+    Gateway gw;
+    std::vector<BenchTransport> transports(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        transports[i].running = true;
+        (void)gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+    gw.start_all();
+
+    for (auto _ : state) {
+        bool ok = gw.is_all_healthy();
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_Gateway_IsAllHealthy)->Arg(1)->Arg(4)->Arg(8);
+
+// ---------------------------------------------------------------------------
+// Gateway::is_any_disconnected() — alerting predicate
+// ---------------------------------------------------------------------------
+
+static void BM_Gateway_IsAnyDisconnected(benchmark::State& state) {
+    const auto n = static_cast<size_t>(state.range(0));
+    Gateway gw;
+    std::vector<BenchTransport> transports(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        transports[i].running = true;
+        (void)gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+    gw.start_all();
+
+    for (auto _ : state) {
+        bool d = gw.is_any_disconnected();
+        benchmark::DoNotOptimize(d);
+    }
+}
+BENCHMARK(BM_Gateway_IsAnyDisconnected)->Arg(1)->Arg(4)->Arg(8);
+
 BENCHMARK_MAIN();
