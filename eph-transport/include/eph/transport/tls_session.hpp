@@ -175,6 +175,33 @@ struct TlsConfig {
             client_cert_path.empty() ? "(none)" : client_cert_path,
             client_key_path.empty() ? "(none)" : client_key_path);
     }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (!verify_peer)
+            w.emplace_back("verify_peer=false -- server certificate will NOT be "
+                           "validated (vulnerable to MITM attacks)");
+        if (hostname.empty())
+            w.emplace_back("hostname is empty -- SNI will not be sent, which may "
+                           "cause TLS handshake failures with virtual-hosted servers");
+        if (handshake_timeout.count() < 1000)
+            w.emplace_back(std::format(
+                "handshake_timeout={}ms is very short -- TLS 1.3 handshake "
+                "may fail on high-latency links", handshake_timeout.count()));
+        if (handshake_timeout.count() > 30000)
+            w.emplace_back(std::format(
+                "handshake_timeout={}ms is very long -- consider a shorter "
+                "timeout to detect unresponsive peers faster",
+                handshake_timeout.count()));
+        if (!ca_cert_path.empty() && !verify_peer)
+            w.emplace_back("ca_cert_path is set but verify_peer=false -- "
+                           "CA certificate will be loaded but not used for "
+                           "verification");
+        return w;
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1011,3 +1011,85 @@ TEST(TlsRecord, EncryptZeroLengthNullPlaintext) {
     EXPECT_TRUE(ok);
     EXPECT_EQ(dec_len, 0u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TlsConfig::warnings()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TlsConfigWarnings, SecureDefaultNoWarnings) {
+    TlsConfig cfg{.hostname = "example.com"};
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(TlsConfigWarnings, VerifyPeerDisabledWarns) {
+    TlsConfig cfg{.hostname = "example.com", .verify_peer = false};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("MITM") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected MITM warning when verify_peer=false";
+}
+
+TEST(TlsConfigWarnings, EmptyHostnameWarns) {
+    TlsConfig cfg{};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("SNI") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected SNI warning for empty hostname";
+}
+
+TEST(TlsConfigWarnings, ShortHandshakeTimeoutWarns) {
+    TlsConfig cfg{.hostname = "example.com",
+                  .handshake_timeout = std::chrono::milliseconds{500}};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("500ms") != std::string::npos &&
+            msg.find("short") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected short timeout warning";
+}
+
+TEST(TlsConfigWarnings, LongHandshakeTimeoutWarns) {
+    TlsConfig cfg{.hostname = "example.com",
+                  .handshake_timeout = std::chrono::milliseconds{60000}};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("60000ms") != std::string::npos &&
+            msg.find("long") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected long timeout warning";
+}
+
+TEST(TlsConfigWarnings, CaCertWithVerifyPeerDisabledWarns) {
+    TlsConfig cfg{.hostname = "example.com",
+                  .ca_cert_path = "/path/to/ca.pem",
+                  .verify_peer = false};
+    auto w = cfg.warnings();
+    bool found_mitm = false;
+    bool found_ca = false;
+    for (const auto& msg : w) {
+        if (msg.find("MITM") != std::string::npos) found_mitm = true;
+        if (msg.find("ca_cert_path") != std::string::npos &&
+            msg.find("verify_peer=false") != std::string::npos) found_ca = true;
+    }
+    EXPECT_TRUE(found_mitm) << "Expected MITM warning";
+    EXPECT_TRUE(found_ca) << "Expected CA cert ignored warning";
+}
