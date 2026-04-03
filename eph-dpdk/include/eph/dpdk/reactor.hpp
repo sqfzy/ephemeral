@@ -45,14 +45,10 @@ namespace eph::dpdk {
 
 namespace detail {
 inline spdlog::logger* reactor_logger() {
-    // try/catch handles the race between concurrent first callers:
-    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.reactor");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.reactor");
-        }
+        auto lg = spdlog::get("dpdk.reactor");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.reactor");
+        return lg;
     }();
     return l.get();
 }

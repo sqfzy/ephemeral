@@ -41,11 +41,9 @@ namespace detail {
 /// @return Pointer to the "net.gateway" spdlog logger.
 inline spdlog::logger* gateway_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("net.gateway");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("net.gateway");
-        }
+        auto lg = spdlog::get("net.gateway");
+        if (!lg) lg = spdlog::stdout_color_mt("net.gateway");
+        return lg;
     }();
     return l.get();
 }
@@ -240,21 +238,43 @@ public:
     /// Snapshots connection pointers under lock, then calls stop() outside
     /// the lock to avoid deadlock if the transport's stop() calls back into Gateway.
     void stop_all() noexcept {
-        struct StopTarget { size_t idx; std::string tag; void* ptr; void (*fn)(void*); };
+        struct StopTarget {
+            size_t idx; std::string tag; void* ptr;
+            void (*fn)(void*); bool (*is_running_fn)(void*);
+        };
         std::vector<StopTarget> targets;
         {
             std::lock_guard lock(mu_);
             for (size_t i = 0; i < connections_.size(); ++i) {
                 auto& c = connections_[i];
                 if (c.health != ConnHealth::Stopped && c.stop_fn) {
-                    targets.push_back({i, c.tag, c.transport_ptr, c.stop_fn});
-                    c.health = ConnHealth::Stopped;
+                    targets.push_back({i, c.tag, c.transport_ptr,
+                                       c.stop_fn, c.is_running_fn});
                 }
             }
         }
         for (auto& t : targets) {
             SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping [{}] '{}'", t.idx, t.tag);
-            t.fn(t.ptr);
+            try {
+                t.fn(t.ptr);
+            } catch (...) {
+                SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                    "Gateway: stop_fn threw for [{}] '{}' — continuing", t.idx, t.tag);
+            }
+        }
+        // Update health after all stop calls complete, reflecting actual state.
+        // This avoids marking a transport as Stopped if its stop_fn failed.
+        {
+            std::lock_guard lock(mu_);
+            for (auto& t : targets) {
+                if (t.idx < connections_.size()) {
+                    auto& c = connections_[t.idx];
+                    bool still_running = c.is_running_fn &&
+                                         c.is_running_fn(c.transport_ptr);
+                    c.health = still_running ? ConnHealth::Disconnected
+                                             : ConnHealth::Stopped;
+                }
+            }
         }
     }
 

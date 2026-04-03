@@ -28,16 +28,17 @@ namespace detail { using eph::core::detail::json_escape; }
 // Compile-time timestamp control
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Compile-time switch for SO_TIMESTAMPING support in SocketTransport.
-///
-/// Pass -DEPH_ENABLE_TIMESTAMPS=1 via the build system to enable.
-/// Any non-zero value enables; 0 or undefined disables.
 #ifndef EPH_ENABLE_TIMESTAMPS
 #define EPH_ENABLE_TIMESTAMPS 0
 #endif
 
-/// @brief Compile-time constant derived from EPH_ENABLE_TIMESTAMPS macro.
-inline constexpr bool kEnableSocketTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+/// @brief Deprecated alias — identical to kEnableTimestamps from
+/// transport_types.hpp. Use kEnableTimestamps in new code; this name is
+/// retained only so existing code outside this project continues to compile.
+/// @deprecated Use eph::net::kEnableTimestamps from transport_types.hpp.
+inline constexpr bool kEnableSocketTimestamps [[deprecated(
+    "use eph::net::kEnableTimestamps from transport_types.hpp")]]
+    = (EPH_ENABLE_TIMESTAMPS != 0);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -231,9 +232,7 @@ struct SocketConfig {
             return "send_buf_size must be >= 0 (0 = OS default)";
         if (send_buf_size > 0 && send_buf_size < 1024)
             return "send_buf_size must be at least 1024 when set (or 0 for OS default)";
-        if (send_timeout_ms < 0)
-            return "send_timeout_ms must be >= 0";
-        if (send_timeout_ms == 0)
+        if (send_timeout_ms <= 0)
             return "send_timeout_ms must be positive";
         if (keepalive_interval > 0 && keepalive_idle <= 0)
             return "keepalive_idle must be positive when keepalive_interval > 0";

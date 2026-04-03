@@ -79,8 +79,8 @@ TEST_F(ReconnectPolicyTest, ResetClearsAttemptCount) {
             ConnectionError::kFactoryFailed, "test failure"});
     };
 
-    policy.attempt(fail_fn);
-    policy.attempt(fail_fn);
+    (void)policy.attempt(fail_fn);
+    (void)policy.attempt(fail_fn);
     EXPECT_EQ(policy.attempts(), 2);
 
     policy.reset();

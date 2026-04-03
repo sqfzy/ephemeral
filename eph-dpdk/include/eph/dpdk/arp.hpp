@@ -74,14 +74,10 @@ static_assert(sizeof(ArpPacket) == kArpPacketLen,
 namespace detail {
 
 inline spdlog::logger* arp_logger() {
-    // try/catch handles the race between concurrent first callers:
-    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.arp");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.arp");
-        }
+        auto lg = spdlog::get("dpdk.arp");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.arp");
+        return lg;
     }();
     return l.get();
 }

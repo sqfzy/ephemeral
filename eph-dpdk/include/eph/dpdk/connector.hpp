@@ -63,11 +63,9 @@ namespace eph::dpdk {
 namespace detail {
 inline spdlog::logger* connector_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.connector");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.connector");
-        }
+        auto lg = spdlog::get("dpdk.connector");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.connector");
+        return lg;
     }();
     return l.get();
 }

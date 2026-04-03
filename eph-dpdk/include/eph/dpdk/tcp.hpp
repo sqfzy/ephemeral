@@ -157,14 +157,10 @@ struct TcpConfig {
 namespace detail {
 
 inline spdlog::logger* tcp_logger() {
-    // try/catch handles the race between concurrent first callers:
-    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.tcp");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.tcp");
-        }
+        auto lg = spdlog::get("dpdk.tcp");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.tcp");
+        return lg;
     }();
     return l.get();
 }

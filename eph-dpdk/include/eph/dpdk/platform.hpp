@@ -110,14 +110,10 @@ inline uint16_t clamp_desc(uint16_t requested,
 }
 
 inline spdlog::logger* platform_logger() {
-    // try/catch handles the race between concurrent first callers:
-    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.platform");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.platform");
-        }
+        auto lg = spdlog::get("dpdk.platform");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.platform");
+        return lg;
     }();
     return l.get();
 }

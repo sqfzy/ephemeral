@@ -43,11 +43,9 @@ namespace detail {
 /// @return Pointer to the "net.kill_switch" spdlog logger.
 inline spdlog::logger* kill_switch_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("net.kill_switch");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("net.kill_switch");
-        }
+        auto lg = spdlog::get("net.kill_switch");
+        if (!lg) lg = spdlog::stdout_color_mt("net.kill_switch");
+        return lg;
     }();
     return l.get();
 }

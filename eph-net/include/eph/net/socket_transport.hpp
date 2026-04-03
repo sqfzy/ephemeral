@@ -288,7 +288,7 @@ public:
 
         // Enable kernel RX/TX software timestamps for latency measurement.
         // Provides netif_receive_skb timestamp (RX) and qdisc/driver timestamp (TX).
-        if constexpr (kEnableSocketTimestamps) {
+        if constexpr (kEnableTimestamps) {
             int ts_flags = SOF_TIMESTAMPING_RX_SOFTWARE
                          | SOF_TIMESTAMPING_TX_SOFTWARE
                          | SOF_TIMESTAMPING_SOFTWARE
@@ -411,7 +411,7 @@ public:
             // Record send time for TX kernel stack latency (send → wire).
             // Only on the first write of each send() call to avoid
             // overwriting on partial-write retries.
-            if constexpr (kEnableSocketTimestamps) {
+            if constexpr (kEnableTimestamps) {
                 if (ptr == static_cast<const uint8_t*>(data)) {
                     struct timespec ts;
                     ::clock_gettime(CLOCK_REALTIME, &ts);
@@ -501,7 +501,7 @@ public:
         uint8_t buf[16384];
         ssize_t n;
 
-        if constexpr (kEnableSocketTimestamps) {
+        if constexpr (kEnableTimestamps) {
             // Use recvmsg() to extract kernel RX timestamp from cmsg.
             struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
             alignas(struct cmsghdr) uint8_t ctrl[256];
@@ -705,14 +705,14 @@ public:
 
     /// @brief Kernel RX stack latency histogram (NIC driver -> recv return).
     /// @return Aggregated RX latency statistics.
-    /// @note Only populated when kEnableSocketTimestamps=true.
+    /// @note Only populated when kEnableTimestamps=true.
     [[nodiscard]] RttStats rx_latency() const noexcept {
         return histogram_to_rtt_stats(rx_stack_histogram_);
     }
 
     /// @brief Kernel TX stack latency histogram (send call -> wire departure).
     /// @return Aggregated TX latency statistics.
-    /// @note Only populated when kEnableSocketTimestamps=true.
+    /// @note Only populated when kEnableTimestamps=true.
     [[nodiscard]] RttStats tx_latency() const noexcept {
         return histogram_to_rtt_stats(tx_stack_histogram_);
     }
@@ -776,7 +776,7 @@ private:
     uint64_t     dns_latency_ns_ = 0;
     uint64_t     connect_latency_ns_ = 0;
 
-    // SO_TIMESTAMPING members (only active when kEnableSocketTimestamps=true).
+    // SO_TIMESTAMPING members (only active when kEnableTimestamps=true).
     // RX: kernel NIC-driver-to-recv latency (CLOCK_REALTIME domain).
     // TX: kernel send-to-wire latency (CLOCK_REALTIME domain, via error queue).
     eph::utils::HdrHistogram rx_stack_histogram_{10, 1'000'000'000ULL, 3};

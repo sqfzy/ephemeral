@@ -29,11 +29,9 @@ namespace detail {
 /// @return Pointer to the "net.rate_limiter" spdlog logger.
 inline spdlog::logger* rate_limiter_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("net.rate_limiter");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("net.rate_limiter");
-        }
+        auto lg = spdlog::get("net.rate_limiter");
+        if (!lg) lg = spdlog::stdout_color_mt("net.rate_limiter");
+        return lg;
     }();
     return l.get();
 }
@@ -84,21 +82,34 @@ public:
         return false;
     }
 
-    /// @brief Acquire @p n tokens, blocking (via yield) until available.
+    /// @brief Acquire @p n tokens, blocking (via yield) until available or timeout.
     ///
     /// Intended for convenience paths where callers prefer blocking over
     /// retry logic. Uses yield() to avoid busy-spinning.
     ///
-    /// @param n  Number of tokens to consume (default 1).
+    /// @param n        Number of tokens to consume (default 1).
+    /// @param timeout  Maximum duration to wait (default 10s). Prevents infinite
+    ///                 spin when rate is zero or tokens cannot refill fast enough.
+    /// @return true if tokens were acquired, false if the timeout elapsed first.
     /// @warning This method spins with std::this_thread::yield(). Do not call
     ///          on hot paths -- prefer try_acquire() with explicit backoff.
-    void acquire(std::size_t n = 1) noexcept {
+    [[nodiscard]] bool acquire(std::size_t n = 1,
+                               std::chrono::milliseconds timeout =
+                                   std::chrono::milliseconds{10000}) noexcept {
         SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(),
-                     "acquire({}) blocking until tokens available", n);
+                     "acquire({}) blocking until tokens available (timeout={}ms)",
+                     n, timeout.count());
+        auto deadline = Clock::now() + timeout;
         while (!try_acquire(n)) {
+            if (Clock::now() >= deadline) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::rate_limiter_logger(),
+                    "acquire({}) timed out after {}ms", n, timeout.count());
+                return false;
+            }
             std::this_thread::yield();
         }
         SPDLOG_LOGGER_DEBUG(detail::rate_limiter_logger(), "acquire({}) completed", n);
+        return true;
     }
 
     /// @brief Approximate number of currently available tokens.

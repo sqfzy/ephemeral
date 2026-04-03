@@ -29,11 +29,9 @@ namespace detail {
 /// @return Pointer to the "net.circuit_breaker" spdlog logger.
 inline spdlog::logger* circuit_breaker_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("net.circuit_breaker");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("net.circuit_breaker");
-        }
+        auto lg = spdlog::get("net.circuit_breaker");
+        if (!lg) lg = spdlog::stdout_color_mt("net.circuit_breaker");
+        return lg;
     }();
     return l.get();
 }

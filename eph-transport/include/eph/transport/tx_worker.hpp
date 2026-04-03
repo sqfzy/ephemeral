@@ -29,7 +29,7 @@
 #include "eph/transport/detail/message_types.hpp"
 #include "eph/utils/cpu.hpp"
 
-// kEnableTimestamps macro + constant defined once in transport_types.hpp (included above).
+// kEnableTimestamps constant defined once in transport_types.hpp (included via detail/message_types.hpp).
 #include "eph/utils/hdr_histogram.hpp"
 
 namespace eph::net {
@@ -71,7 +71,8 @@ class TxWorker {
                   "QueueDepth must be power of 2");
 
     static constexpr bool kIsWebSocket = std::is_same_v<Framer, WsFramer>;
-    static constexpr bool kEnableTimestamps = (EPH_ENABLE_TIMESTAMPS != 0);
+    // Uses namespace-level eph::net::kEnableTimestamps from transport_types.hpp
+    // (no local shadow — single source of truth for the compile-time switch).
 
 public:
     using TxMsg  = detail::TxMessage<MaxPayload>;

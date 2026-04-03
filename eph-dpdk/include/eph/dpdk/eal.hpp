@@ -22,11 +22,9 @@ namespace eph::dpdk {
 namespace detail {
 inline spdlog::logger* eal_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.eal");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.eal");
-        }
+        auto lg = spdlog::get("dpdk.eal");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.eal");
+        return lg;
     }();
     return l.get();
 }

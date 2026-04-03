@@ -137,14 +137,10 @@ struct DnsConfig {
 namespace detail {
 
 inline spdlog::logger* dns_logger() {
-    // try/catch handles the race between concurrent first callers:
-    // stdout_color_mt throws spdlog_ex if the name is already registered.
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.dns");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.dns");
-        }
+        auto lg = spdlog::get("dpdk.dns");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.dns");
+        return lg;
     }();
     return l.get();
 }

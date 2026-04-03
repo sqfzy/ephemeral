@@ -48,11 +48,9 @@ namespace eph::dpdk {
 namespace detail {
 inline spdlog::logger* multicast_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("dpdk.multicast");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("dpdk.multicast");
-        }
+        auto lg = spdlog::get("dpdk.multicast");
+        if (!lg) lg = spdlog::stdout_color_mt("dpdk.multicast");
+        return lg;
     }();
     return l.get();
 }

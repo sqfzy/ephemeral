@@ -1,7 +1,6 @@
 /// @file test_websocket.cpp
 /// Unit tests for WebSocket frame encode/decode, masking, and edge cases.
 
-#include <array>
 #include <cstdint>
 #include <cstring>
 #include <format>
