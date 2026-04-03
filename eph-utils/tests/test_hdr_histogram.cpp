@@ -1914,3 +1914,106 @@ TEST(HdrHistogramLinearIter, HighOffsetSkipsEmptyPrefix) {
     for (const auto& e : entries) total += e.count;
     EXPECT_EQ(total, h.get_total_count());
 }
+
+// ============================================================================
+// get_count_between()
+// ============================================================================
+
+TEST(HdrHistogramTest, GetCountBetweenEmptyHistogram) {
+    HdrHistogram h(1, 1000, 3);
+    EXPECT_EQ(h.get_count_between(1, 1000), 0u);
+}
+
+TEST(HdrHistogramTest, GetCountBetweenFullRange) {
+    HdrHistogram h(1, 1000, 3);
+    for (uint64_t v = 1; v <= 100; ++v) {
+        (void)h.record(v);
+    }
+    // Asking for entire range should return all samples
+    uint64_t count = h.get_count_between(1, 1000);
+    EXPECT_EQ(count, 100u);
+}
+
+TEST(HdrHistogramTest, GetCountBetweenSubRange) {
+    HdrHistogram h(1, 10000, 3);
+    // Record 100 values at 100, 100 at 500, 100 at 1000
+    for (int i = 0; i < 100; ++i) (void)h.record(100);
+    for (int i = 0; i < 100; ++i) (void)h.record(500);
+    for (int i = 0; i < 100; ++i) (void)h.record(1000);
+
+    // Count between 400 and 600 should be ~100 (the values at 500)
+    uint64_t count = h.get_count_between(400, 600);
+    EXPECT_EQ(count, 100u);
+}
+
+TEST(HdrHistogramTest, GetCountBetweenInvertedRangeReturnsZero) {
+    HdrHistogram h(1, 1000, 3);
+    (void)h.record(500);
+    EXPECT_EQ(h.get_count_between(600, 400), 0u);
+}
+
+// ============================================================================
+// get_percentile_at_or_below()
+// ============================================================================
+
+TEST(HdrHistogramTest, GetPercentileAtOrBelowEmpty) {
+    HdrHistogram h(1, 1000, 3);
+    EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(500), 0.0);
+}
+
+TEST(HdrHistogramTest, GetPercentileAtOrBelowAllBelow) {
+    HdrHistogram h(1, 10000, 3);
+    for (uint64_t v = 1; v <= 100; ++v) (void)h.record(v);
+
+    // All values are <= 1000
+    double pct = h.get_percentile_at_or_below(1000);
+    EXPECT_DOUBLE_EQ(pct, 100.0);
+}
+
+TEST(HdrHistogramTest, GetPercentileAtOrBelowNoneBelow) {
+    HdrHistogram h(1, 10000, 3);
+    for (int i = 0; i < 100; ++i) (void)h.record(5000);
+
+    // No values are <= 10
+    double pct = h.get_percentile_at_or_below(10);
+    EXPECT_DOUBLE_EQ(pct, 0.0);
+}
+
+TEST(HdrHistogramTest, GetPercentileAtOrBelowHalfway) {
+    HdrHistogram h(1, 10000, 3);
+    // 50 values at 100, 50 values at 1000
+    for (int i = 0; i < 50; ++i) (void)h.record(100);
+    for (int i = 0; i < 50; ++i) (void)h.record(1000);
+
+    // At 500, only the 50 values at 100 should be below
+    double pct = h.get_percentile_at_or_below(500);
+    EXPECT_NEAR(pct, 50.0, 1.0);
+}
+
+// ============================================================================
+// get_percentiles_at_or_below() — batch inverse CDF
+// ============================================================================
+
+TEST(HdrHistogramTest, GetPercentilesAtOrBelowBatch) {
+    HdrHistogram h(1, 10000, 3);
+    for (uint64_t v = 1; v <= 100; ++v) (void)h.record(v);
+
+    auto results = h.get_percentiles_at_or_below({0, 50, 100, 10000});
+    ASSERT_EQ(results.size(), 4u);
+    // Value 0 is below all recorded values
+    EXPECT_DOUBLE_EQ(results[0], 0.0);
+    // Value 50 should be around 50%
+    EXPECT_NEAR(results[1], 50.0, 2.0);
+    // Value 100 should be 100%
+    EXPECT_DOUBLE_EQ(results[2], 100.0);
+    // Value 10000 is above all
+    EXPECT_DOUBLE_EQ(results[3], 100.0);
+}
+
+TEST(HdrHistogramTest, GetPercentilesAtOrBelowEmpty) {
+    HdrHistogram h(1, 1000, 3);
+    auto results = h.get_percentiles_at_or_below({100, 500});
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_DOUBLE_EQ(results[0], 0.0);
+    EXPECT_DOUBLE_EQ(results[1], 0.0);
+}
