@@ -247,3 +247,62 @@ TEST(ConnectorOptions, FormatterProducesNonEmpty) {
     EXPECT_FALSE(s.empty());
     EXPECT_NE(s.find("ConnectorOptions"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DpdkEndpoint validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DpdkEndpoint, ValidEndpointPasses) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    EXPECT_TRUE(ep.validate().empty());
+}
+
+TEST(DpdkEndpoint, EmptyLocalIpFails) {
+    DpdkEndpoint ep{.local_ip = "", .gateway_ip = "10.0.0.1"};
+    auto err = ep.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("local_ip"), std::string_view::npos);
+}
+
+TEST(DpdkEndpoint, EmptyGatewayIpFails) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = ""};
+    auto err = ep.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("gateway_ip"), std::string_view::npos);
+}
+
+TEST(DpdkEndpoint, LocalIpWithControlCharsRejected) {
+    DpdkEndpoint ep{.local_ip = "10.0\n.0.2", .gateway_ip = "10.0.0.1"};
+    auto err = ep.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(DpdkEndpoint, GatewayIpWithControlCharsRejected) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0\r.0.1"};
+    auto err = ep.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(DpdkEndpoint, DumpProducesOutput) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    auto s = ep.dump();
+    EXPECT_NE(s.find("10.0.0.2"), std::string::npos);
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
+}
+
+TEST(DpdkEndpoint, ToJsonProducesValidStructure) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    auto json = ep.to_json();
+    EXPECT_NE(json.find("\"local_ip\":\"10.0.0.2\""), std::string::npos);
+    EXPECT_NE(json.find("\"gateway_ip\":\"10.0.0.1\""), std::string::npos);
+}
+
+TEST(DpdkEndpoint, EqualityOperator) {
+    DpdkEndpoint a{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint b{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    DpdkEndpoint c{.local_ip = "10.0.0.3", .gateway_ip = "10.0.0.1"};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
