@@ -50,3 +50,17 @@ thread_local design. Single-thread overhead is ~3x vs Recorder
 | BM_EmptyLoop | 0.357 | 0.357 | 1958508982 |
 
 ARM YIELD instruction has zero measurable overhead vs empty loop on Graviton.
+
+## 2026-04-03 bench_system_stats baseline (c946171)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_SystemStatsSnapshot | 12911 | 12911 | 54169 |
+| BM_SystemStatsReset | 230 | 230 | 3010891 |
+| BM_SystemResourceStatsDump | 506 | 506 | 1384684 |
+| BM_SystemResourceStatsToJson | 526 | 526 | 1331117 |
+| BM_SystemResourceStatsFormat | 463 | 463 | 1511604 |
+
+Snapshot is expensive (~13us) due to getrusage syscall + /proc reads.
+Reset is cheap (~230ns) as it only calls getrusage once.
+Formatting methods are ~500ns each (std::format overhead).

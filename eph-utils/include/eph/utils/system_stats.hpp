@@ -220,7 +220,8 @@ class SystemStats {
         if (!fp) return 0;
         long pages = 0;
         // Skip first field (size), read second (resident)
-        if (std::fscanf(fp.get(), "%*ld %ld", &pages) != 1) pages = 0;
+        // NOLINTNEXTLINE — %*ld is intentional: skip first field, read second
+        if (std::fscanf(fp.get(), "%*d %ld", &pages) != 1) pages = 0;
         // Convert pages to KB
         long ps = sysconf(_SC_PAGESIZE);
         if (ps <= 0) return 0;
