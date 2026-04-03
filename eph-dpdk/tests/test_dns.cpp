@@ -650,6 +650,54 @@ TEST(DnsConfigWarnings, StandardPortNoWarning) {
 // DnsConfig std::formatter
 // ─────────────────────────────────────────────────────────────────────────────
 
+TEST(DnsConfig, EqualityDefault) {
+    DnsConfig a{};
+    DnsConfig b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(DnsConfig, EqualityDifferentNameserver) {
+    DnsConfig a{.nameserver_ip = 0x08080808};
+    DnsConfig b{.nameserver_ip = 0x01010101};
+    EXPECT_NE(a, b);
+}
+
+TEST(DnsConfig, EqualityDifferentPort) {
+    DnsConfig a{.port = 53};
+    DnsConfig b{.port = 5353};
+    EXPECT_NE(a, b);
+}
+
+TEST(DnsConfig, EqualityDifferentTimeout) {
+    DnsConfig a{.timeout = std::chrono::milliseconds{3000}};
+    DnsConfig b{.timeout = std::chrono::milliseconds{1000}};
+    EXPECT_NE(a, b);
+}
+
+TEST(DnsConstants, HeaderLength) {
+    EXPECT_EQ(kDnsHeaderLen, 12u);
+    EXPECT_EQ(sizeof(DnsHeader), kDnsHeaderLen);
+}
+
+TEST(DnsConstants, StandardPort) {
+    EXPECT_EQ(kDnsPort, 53u);
+}
+
+TEST(DnsConstants, MaxPacketLength) {
+    EXPECT_EQ(kMaxDnsPacketLen, 512u);
+}
+
+TEST(DnsConstants, FlagValues) {
+    EXPECT_EQ(kDnsFlagQr, 0x8000u);
+    EXPECT_EQ(kDnsFlagRd, 0x0100u);
+    EXPECT_EQ(kDnsRcodeMask, 0x000Fu);
+}
+
+TEST(DnsConstants, RecordTypes) {
+    EXPECT_EQ(kDnsTypeA, 1u);
+    EXPECT_EQ(kDnsClassIn, 1u);
+}
+
 TEST(DnsConfig, StdFormatterContainsKeyFields) {
     DnsConfig cfg{
         .nameserver_ip = 0x01010101,  // 1.1.1.1
