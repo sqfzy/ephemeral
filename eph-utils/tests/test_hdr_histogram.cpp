@@ -554,11 +554,47 @@ TEST(HdrHistogramTest, SubtractLargerCountReturnsFalse) {
     HdrHistogram h1(1, 10'000, 3);
     HdrHistogram h2(1, 10'000, 3);
 
-    h1.record(100);
-    h2.record(100);
-    h2.record(100);
+    (void)h1.record(100);
+    (void)h2.record(100);
+    (void)h2.record(100);
 
     // h2 has more counts than h1 — subtraction would underflow
+    EXPECT_FALSE(h1.subtract(h2));
+}
+
+TEST(HdrHistogramTest, SubtractIncludesDroppedCount) {
+    HdrHistogram h1(10, 1000, 3);
+    HdrHistogram h2(10, 1000, 3);
+
+    // Record valid values and cause some drops (out of range)
+    for (int i = 0; i < 100; ++i) (void)h1.record(50);
+    (void)h1.record(5);     // below range -> dropped
+    (void)h1.record(5000);  // above range -> dropped
+
+    for (int i = 0; i < 30; ++i) (void)h2.record(50);
+    (void)h2.record(5);     // dropped
+
+    EXPECT_EQ(h1.get_dropped_count(), 2u);
+    EXPECT_EQ(h2.get_dropped_count(), 1u);
+
+    EXPECT_TRUE(h1.subtract(h2));
+    EXPECT_EQ(h1.get_total_count(), 70u);
+    // Dropped count should also be subtracted
+    EXPECT_EQ(h1.get_dropped_count(), 1u);
+}
+
+TEST(HdrHistogramTest, SubtractLargerDroppedCountReturnsFalse) {
+    HdrHistogram h1(10, 1000, 3);
+    HdrHistogram h2(10, 1000, 3);
+
+    (void)h1.record(50);
+    (void)h1.record(5);  // 1 drop
+
+    (void)h2.record(50);
+    (void)h2.record(5);  // 1 drop
+    (void)h2.record(5);  // 2 drops
+
+    // h2 has more drops than h1 — subtraction should fail
     EXPECT_FALSE(h1.subtract(h2));
 }
 

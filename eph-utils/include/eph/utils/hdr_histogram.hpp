@@ -799,6 +799,7 @@ class HdrHistogram {
     [[nodiscard]] bool subtract(const HdrHistogram& other) noexcept {
         if (!is_compatible(other)) return false;
         if (other.total_count_ > total_count_) return false;
+        if (other.dropped_count_ > dropped_count_) return false;
 
         // Validate no bucket underflows before mutating
         for (int32_t i = 0; i < counts_len_; ++i) {
@@ -807,6 +808,7 @@ class HdrHistogram {
 
         // Subtract + recompute min/max in a single pass
         total_count_ -= other.total_count_;
+        dropped_count_ -= other.dropped_count_;
         min_value_ = std::numeric_limits<uint64_t>::max();
         max_value_ = 0;
         for (int32_t i = 0; i < counts_len_; ++i) {
