@@ -323,6 +323,65 @@ TEST(MoldUDP64Adapter, CallbackInvoked) {
     EXPECT_EQ(callback_count, 1);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastGroup dump/to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastGroup, DumpContainsIpAndPort) {
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477};
+    auto d = grp.dump();
+    EXPECT_NE(d.find("233.54.12.111"), std::string::npos);
+    EXPECT_NE(d.find("26477"), std::string::npos);
+    EXPECT_NE(d.find("any"), std::string::npos);  // source_ip == 0
+}
+
+TEST(MulticastGroup, DumpWithSourceFilter) {
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+        .source_ip = parse_ipv4("10.0.0.1")};
+    auto d = grp.dump();
+    EXPECT_NE(d.find("10.0.0.1"), std::string::npos);
+}
+
+TEST(MulticastGroup, ToJsonFormat) {
+    MulticastGroup grp{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477};
+    auto j = grp.to_json();
+    EXPECT_NE(j.find("\"group_ip\":\"233.54.12.111\""), std::string::npos);
+    EXPECT_NE(j.find("\"group_port\":26477"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastConfig dump/to_json/validate
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastConfigObservability, DumpContainsFields) {
+    MulticastConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3, .rx_burst = 64};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("port_id: 1"), std::string::npos);
+    EXPECT_NE(d.find("rx_queue: 2"), std::string::npos);
+    EXPECT_NE(d.find("rx_cpu: 3"), std::string::npos);
+    EXPECT_NE(d.find("rx_burst: 64"), std::string::npos);
+}
+
+TEST(MulticastConfigObservability, ToJsonFormat) {
+    MulticastConfig cfg{.port_id = 0, .rx_queue_id = 0, .rx_cpu = -1, .rx_burst = 32};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"port_id\":0"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_burst\":32"), std::string::npos);
+}
+
+TEST(MulticastConfigValidation, NegativeCpuAffinity) {
+    MulticastConfig cfg{.rx_cpu = -2};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_cpu"), std::string_view::npos);
+}
+
 TEST(MoldUDP64Adapter, EmptyPacketNoCallback) {
     int callback_count = 0;
     auto adapter = make_moldudp64_adapter(

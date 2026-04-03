@@ -227,6 +227,23 @@ struct MulticastGroup {
         if (group_port == 0) return "group_port must not be zero";
         return {};
     }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format("MulticastGroup(ip={}, port={}, source={})",
+            net::format_ipv4(group_ip).data(), group_port,
+            source_ip == 0 ? "any" :
+                std::string(net::format_ipv4(source_ip).data()));
+    }
+
+    /// JSON-formatted group for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"group_ip\":\"{}\",\"group_port\":{},\"source_ip\":\"{}\"}}",
+            net::format_ipv4(group_ip).data(), group_port,
+            source_ip == 0 ? "0.0.0.0" :
+                std::string(net::format_ipv4(source_ip).data()));
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,7 +264,23 @@ struct MulticastConfig {
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (rx_burst == 0) return "rx_burst must not be zero";
         if (rx_burst > 512) return "rx_burst too large (max 512)";
+        if (rx_cpu < -1) return "rx_cpu must be >= -1 (-1 = no pinning)";
         return {};
+    }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "MulticastConfig:\n"
+            "  port_id: {}, rx_queue: {}, rx_cpu: {}, rx_burst: {}",
+            port_id, rx_queue_id, rx_cpu, rx_burst);
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"port_id\":{},\"rx_queue_id\":{},\"rx_cpu\":{},\"rx_burst\":{}}}",
+            port_id, rx_queue_id, rx_cpu, rx_burst);
     }
 };
 
@@ -524,7 +557,8 @@ public:
         if (!running_.exchange(false, std::memory_order_acq_rel)) return;
         if (thread_.joinable()) thread_.join();
         SPDLOG_LOGGER_INFO(detail::multicast_logger(),
-            "MulticastReceiver stopped (total_rx={})", total_rx_packets_);
+            "MulticastReceiver stopped (total_rx={})",
+            total_rx_packets_.load(std::memory_order_relaxed));
     }
 
     // ─────────────────────────────────────────────────────────────────────
