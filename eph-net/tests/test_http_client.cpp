@@ -831,6 +831,30 @@ TEST(HttpClientConfig, WarnsOnShortTimeout) {
     EXPECT_TRUE(found);
 }
 
+TEST(HttpClientConfig, WarnsOnExcessiveMaxResponseSize) {
+    HttpClient::Config cfg{.host = "api.io",
+                           .max_response_size = 128 * 1024 * 1024}; // 128 MB
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("64MB") != std::string::npos || s.find("memory") != std::string::npos)
+            found = true;
+    }
+    EXPECT_TRUE(found) << "expected warning about excessive max_response_size";
+}
+
+TEST(HttpClientConfig, NoWarningsWhenAllReasonable) {
+    // Full config with all fields set to reasonable values
+    HttpClient::Config cfg{
+        .host = "api.binance.com",
+        .port = 443,
+        .use_tls = true,
+        .timeout = std::chrono::milliseconds{5000},
+        .max_response_size = 8 * 1024 * 1024,
+    };
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
 // =============================================================================
 // find_header edge cases
 // =============================================================================
