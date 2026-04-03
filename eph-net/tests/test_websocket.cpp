@@ -1317,11 +1317,7 @@ TEST(CloseStatusCode, ExtractsStatusCodeFromCloseFrame) {
     ASSERT_TRUE(result.has_value());
     EXPECT_TRUE(result->is_close());
 
-    // Unmask the payload before reading status code
-    if (result->masked) {
-        apply_mask(const_cast<uint8_t*>(result->payload),
-                   result->payload_len, result->mask_key);
-    }
+    // close_status_code() handles masking internally — no manual unmask needed
     EXPECT_EQ(result->close_status_code(), 1000);
 }
 
@@ -1334,10 +1330,7 @@ TEST(CloseStatusCode, ExtractsVariousStatusCodes) {
         auto result = decode_frame(buf, len);
         ASSERT_TRUE(result.has_value());
 
-        if (result->masked) {
-            apply_mask(const_cast<uint8_t*>(result->payload),
-                       result->payload_len, result->mask_key);
-        }
+        // close_status_code() handles masking internally — no manual unmask needed
         EXPECT_EQ(result->close_status_code(), code)
             << "Status code mismatch for " << code;
     }

@@ -531,4 +531,94 @@ static void BM_EncodeFrame_512(benchmark::State& state) {
 }
 BENCHMARK(BM_EncodeFrame_512);
 
+// ---------------------------------------------------------------------------
+// ws::decode_frame — WS frame decoding (RX hot path)
+// ---------------------------------------------------------------------------
+
+static void BM_DecodeFrame_SmallUnmasked(benchmark::State& state) {
+    // Pre-build an unmasked binary frame with 64-byte payload
+    // (simulates server-to-client frame)
+    uint8_t frame[128];
+    frame[0] = 0x82;  // FIN + binary
+    frame[1] = 64;    // payload len (no mask)
+    std::memset(frame + 2, 0x42, 64);
+    size_t frame_len = 2 + 64;
+    for (auto _ : state) {
+        auto r = eph::net::ws::decode_frame(frame, frame_len);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetBytesProcessed(state.iterations() * 64);
+}
+BENCHMARK(BM_DecodeFrame_SmallUnmasked);
+
+static void BM_DecodeFrame_MaskedPayload(benchmark::State& state) {
+    // Pre-encode a masked binary frame (client-to-server)
+    uint8_t payload[64];
+    std::memset(payload, 0x42, sizeof(payload));
+    uint8_t frame[128];
+    auto len = eph::net::ws::encode_frame(frame, eph::net::ws::opcode::kBinary,
+                                           payload, sizeof(payload));
+    for (auto _ : state) {
+        auto r = eph::net::ws::decode_frame(frame, len);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetBytesProcessed(state.iterations() * sizeof(payload));
+}
+BENCHMARK(BM_DecodeFrame_MaskedPayload);
+
+static void BM_DecodeFrame_CloseWithReason(benchmark::State& state) {
+    // Pre-build a close frame with reason
+    uint8_t frame[64];
+    auto len = eph::net::ws::build_close_frame(
+        frame, eph::net::ws::close_code::kNormal, "going away");
+    for (auto _ : state) {
+        auto r = eph::net::ws::decode_frame(frame, len);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_DecodeFrame_CloseWithReason);
+
+static void BM_DecodeFrame_CloseStatusCodeExtraction(benchmark::State& state) {
+    // Measure close_status_code() with masking (the hot path fix)
+    uint8_t frame[64];
+    auto len = eph::net::ws::build_close_frame(
+        frame, eph::net::ws::close_code::kGoingAway, "shutdown");
+    auto decoded = eph::net::ws::decode_frame(frame, len);
+    for (auto _ : state) {
+        auto code = decoded->close_status_code();
+        benchmark::DoNotOptimize(code);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_DecodeFrame_CloseStatusCodeExtraction);
+
+// ---------------------------------------------------------------------------
+// ws::masked_copy — fused memcpy + XOR (TX hot path)
+// ---------------------------------------------------------------------------
+
+static void BM_MaskedCopy_64(benchmark::State& state) {
+    uint8_t src[64], dst[64];
+    std::memset(src, 0x42, sizeof(src));
+    uint8_t mask[] = {0x12, 0x34, 0x56, 0x78};
+    for (auto _ : state) {
+        eph::net::ws::masked_copy(dst, src, sizeof(src), mask);
+        benchmark::DoNotOptimize(dst);
+    }
+    state.SetBytesProcessed(state.iterations() * sizeof(src));
+}
+BENCHMARK(BM_MaskedCopy_64);
+
+static void BM_MaskedCopy_512(benchmark::State& state) {
+    std::array<uint8_t, 512> src, dst;
+    src.fill(0x42);
+    uint8_t mask[] = {0x12, 0x34, 0x56, 0x78};
+    for (auto _ : state) {
+        eph::net::ws::masked_copy(dst.data(), src.data(), src.size(), mask);
+        benchmark::DoNotOptimize(dst);
+    }
+    state.SetBytesProcessed(state.iterations() * src.size());
+}
+BENCHMARK(BM_MaskedCopy_512);
+
 BENCHMARK_MAIN();

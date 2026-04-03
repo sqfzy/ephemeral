@@ -455,23 +455,48 @@ struct DecodedFrame {
     }
 
     /// For close frames: extract the 2-byte status code.
+    /// Handles masked frames correctly by XOR-unmasking the status code bytes.
     [[nodiscard]] uint16_t close_status_code() const noexcept {
         if (opcode != opcode::kClose || payload_len < 2 || !payload) {
             return 0;
         }
-        return static_cast<uint16_t>((payload[0] << 8) | payload[1]);
+        uint8_t b0 = payload[0];
+        uint8_t b1 = payload[1];
+        if (masked) {
+            b0 ^= mask_key[0];
+            b1 ^= mask_key[1];
+        }
+        return static_cast<uint16_t>((b0 << 8) | b1);
     }
 
     /// For close frames: extract the reason string (after the 2-byte status code).
     /// Returns empty string_view if not a close frame or no reason present.
-    /// @note For masked (client-sent) frames, the returned view contains masked
-    ///       bytes. Unmask the payload first with apply_mask() if needed.
+    /// @note For masked frames, the returned reason bytes are still masked.
+    ///       Use close_reason_unmasked() to get an unmasked copy.
     [[nodiscard]] std::string_view close_reason() const noexcept {
         if (opcode != opcode::kClose || payload_len <= 2 || !payload) {
             return {};
         }
         return {reinterpret_cast<const char*>(payload + 2),
                 static_cast<size_t>(payload_len - 2)};
+    }
+
+    /// For close frames: extract the reason string, unmasked.
+    /// Returns empty string if not a close frame or no reason present.
+    /// Unlike close_reason(), this returns an owned string with unmasked bytes.
+    [[nodiscard]] std::string close_reason_unmasked() const noexcept {
+        if (opcode != opcode::kClose || payload_len <= 2 || !payload) {
+            return {};
+        }
+        size_t reason_len = static_cast<size_t>(payload_len - 2);
+        std::string result(reinterpret_cast<const char*>(payload + 2), reason_len);
+        if (masked) {
+            // Unmask starting from offset 2 within the payload (mask key rotates)
+            for (size_t i = 0; i < reason_len; ++i) {
+                result[i] ^= static_cast<char>(mask_key[(i + 2) & 3]);
+            }
+        }
+        return result;
     }
 };
 
