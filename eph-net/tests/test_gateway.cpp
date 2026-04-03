@@ -727,3 +727,48 @@ static_assert(Stoppable<StoppableOnly>,
     "StoppableOnly satisfies Stoppable");
 static_assert(!GatewayManageable<StoppableOnly>,
     "StoppableOnly lacks start_threads/reconnect_now so must NOT satisfy GatewayManageable");
+
+// ── Concurrent remove during stop_all ─────────────────────────────────────
+
+TEST(Gateway, StopAllUpdatesHealthByPointerNotIndex) {
+    // Verify that stop_all() correctly updates health even when
+    // indices shift due to a concurrent remove() between the snapshot
+    // and the health update phase (matched by transport pointer, not index).
+    Gateway gw;
+    MockTransport tp1, tp2, tp3;
+    tp1.running.store(true);
+    tp2.running.store(true);
+    tp3.running.store(true);
+
+    gw.add("first", &tp1);
+    gw.add("second", &tp2);
+    gw.add("third", &tp3);
+
+    // Stop all — this should correctly mark all as Stopped
+    gw.stop_all();
+
+    EXPECT_FALSE(tp1.is_running());
+    EXPECT_FALSE(tp2.is_running());
+    EXPECT_FALSE(tp3.is_running());
+
+    // Verify health is correctly updated for all connections
+    EXPECT_EQ(gw.health(0), ConnHealth::Stopped);
+    EXPECT_EQ(gw.health(1), ConnHealth::Stopped);
+    EXPECT_EQ(gw.health(2), ConnHealth::Stopped);
+}
+
+TEST(Gateway, StartAllUpdatesHealthByPointerNotIndex) {
+    // Similar test for start_all() — verify ptr-based matching.
+    Gateway gw;
+    MockTransport tp1, tp2;
+
+    gw.add("first", &tp1);
+    gw.add("second", &tp2);
+
+    gw.start_all();
+
+    EXPECT_TRUE(tp1.is_running());
+    EXPECT_TRUE(tp2.is_running());
+    EXPECT_EQ(gw.health(0), ConnHealth::Healthy);
+    EXPECT_EQ(gw.health(1), ConnHealth::Healthy);
+}

@@ -410,13 +410,17 @@ public:
             }
         }
         // Update health after all start calls complete.
+        // Match by transport pointer rather than index to handle concurrent
+        // remove() calls that may shift indices during unlocked start phase.
         {
             std::lock_guard lock(mu_);
             for (auto& t : targets) {
-                if (t.idx < connections_.size()) {
-                    auto& c = connections_[t.idx];
-                    c.health = (c.is_running_fn && c.is_running_fn(c.transport_ptr))
-                        ? ConnHealth::Healthy : ConnHealth::Disconnected;
+                for (auto& c : connections_) {
+                    if (c.transport_ptr == t.ptr) {
+                        c.health = (c.is_running_fn && c.is_running_fn(c.transport_ptr))
+                            ? ConnHealth::Healthy : ConnHealth::Disconnected;
+                        break;
+                    }
                 }
             }
         }
@@ -428,7 +432,7 @@ public:
     /// the lock to avoid deadlock if the transport's stop() calls back into Gateway.
     void stop_all() noexcept {
         struct StopTarget {
-            size_t idx; std::string tag; void* ptr;
+            std::string tag; void* ptr;
             void (*fn)(void*); bool (*is_running_fn)(void*);
         };
         std::vector<StopTarget> targets;
@@ -437,31 +441,34 @@ public:
             for (size_t i = 0; i < connections_.size(); ++i) {
                 auto& c = connections_[i];
                 if (c.health != ConnHealth::Stopped && c.stop_fn) {
-                    targets.push_back({i, c.tag, c.transport_ptr,
+                    targets.push_back({c.tag, c.transport_ptr,
                                        c.stop_fn, c.is_running_fn});
                 }
             }
         }
         for (auto& t : targets) {
-            SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping [{}] '{}'", t.idx, t.tag);
+            SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping '{}'", t.tag);
             try {
                 t.fn(t.ptr);
             } catch (...) {
                 SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
-                    "Gateway: stop_fn threw for [{}] '{}' — continuing", t.idx, t.tag);
+                    "Gateway: stop_fn threw for '{}' — continuing", t.tag);
             }
         }
         // Update health after all stop calls complete, reflecting actual state.
-        // This avoids marking a transport as Stopped if its stop_fn failed.
+        // Match by transport pointer rather than index to handle concurrent
+        // remove() calls that may shift indices during unlocked stop phase.
         {
             std::lock_guard lock(mu_);
             for (auto& t : targets) {
-                if (t.idx < connections_.size()) {
-                    auto& c = connections_[t.idx];
-                    bool still_running = c.is_running_fn &&
-                                         c.is_running_fn(c.transport_ptr);
-                    c.health = still_running ? ConnHealth::Disconnected
-                                             : ConnHealth::Stopped;
+                for (auto& c : connections_) {
+                    if (c.transport_ptr == t.ptr) {
+                        bool still_running = c.is_running_fn &&
+                                             c.is_running_fn(c.transport_ptr);
+                        c.health = still_running ? ConnHealth::Disconnected
+                                                 : ConnHealth::Stopped;
+                        break;
+                    }
                 }
             }
         }
