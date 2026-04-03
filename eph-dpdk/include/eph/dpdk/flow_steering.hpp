@@ -72,7 +72,7 @@ constexpr std::string_view rx_dispatch_mode_name(RxDispatchMode m) noexcept {
 /// @return The highest-capability mode the NIC supports
 [[nodiscard]] inline RxDispatchMode
 detect_rx_dispatch_mode(uint16_t port_id) noexcept {
-    auto* log = detail::flow_logger();
+    [[maybe_unused]] auto* log = detail::flow_logger();
 
     // 1. Query device info for RSS offload capabilities
     rte_eth_dev_info dev_info{};
@@ -167,7 +167,7 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
 /// @return Number of queues actually configured, or error
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
-    auto* log = detail::flow_logger();
+    [[maybe_unused]] auto* log = detail::flow_logger();
 
     if (num_queues < 2) {
         return std::unexpected("RSS requires at least 2 queues");
@@ -303,7 +303,7 @@ struct FlowRule {
 [[nodiscard]] inline std::expected<FlowRule, std::string>
 install_flow_rule(uint16_t port_id, uint16_t queue_id,
                   const net::ConnectionTuple& tuple) noexcept {
-    auto* log = detail::flow_logger();
+    [[maybe_unused]] auto* log = detail::flow_logger();
 
     rte_flow_attr attr{};
     attr.ingress = 1;

@@ -164,7 +164,7 @@ public:
     /// for programmatic handling and a detail string for logging.
     [[nodiscard]] static std::expected<std::unique_ptr<Transport>, ConnectionErrorInfo>
     create(TcpFactory tcp_factory, const TransportConfig& config) {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         if (!tcp_factory) {
             return std::unexpected(ConnectionErrorInfo{
@@ -780,7 +780,7 @@ public:
     void stop() noexcept {
         bool was_running = core_.running.exchange(false, std::memory_order_acq_rel);
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping transport");
 
         // Join worker threads FIRST — ensures no concurrent access to
@@ -1153,7 +1153,7 @@ private:
     /// Discards old SPSC queue data. Called from RX thread when disconnect
     /// is detected. Returns true if reconnection succeeded.
     bool do_reconnect_() {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         int max_attempts = core_.config.max_reconnect_attempts;
         if (max_attempts <= 0) {
             SPDLOG_LOGGER_ERROR(log, "Auto-reconnect disabled, stopping");

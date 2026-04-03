@@ -145,7 +145,7 @@ struct UpgradeResponse {
 /// @return Parsed response, or error if incomplete/malformed
 [[nodiscard]] inline std::expected<UpgradeResponse, std::string>
 parse_upgrade_response(const char* data, size_t len) {
-    auto log = detail::http_logger();
+    [[maybe_unused]] auto log = detail::http_logger();
 
     std::string_view response(data, len);
 

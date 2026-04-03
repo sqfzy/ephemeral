@@ -93,7 +93,7 @@ struct TransportCore {
     /// Full handshake: TCP connect → TLS 1.3 → key export.
     /// Called during initial create() and on each reconnect.
     [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_connect() noexcept {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // Phase 1: TCP connect
         auto tcp_start = std::chrono::steady_clock::now();
@@ -444,7 +444,7 @@ struct TransportCore {
             }
         }
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         switch (event) {
         case TransportEvent::kConnected:
             SPDLOG_LOGGER_INFO(log, "State: Connected ({})", detail);

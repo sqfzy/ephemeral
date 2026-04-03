@@ -651,7 +651,7 @@ private:
             [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(config_.rx_cpu, "multicast_rx");
         }
 
-        auto* log = detail::multicast_logger();
+        [[maybe_unused]] auto* log = detail::multicast_logger();
         SPDLOG_LOGGER_INFO(log,
             "Multicast RX loop started: {} active groups, port={}, queue={}, cpu={}",
             active_group_count(), config_.port_id, config_.rx_queue_id, config_.rx_cpu);

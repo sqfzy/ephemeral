@@ -199,7 +199,7 @@ struct HandshakeIO {
 socks5_handshake(SocketTransport& tcp,
                  std::string_view target_host, uint16_t target_port,
                  const ProxyConfig& cfg) {
-    auto log = detail::proxy_logger();
+    [[maybe_unused]] auto log = detail::proxy_logger();
     detail::HandshakeIO io(tcp);
 
     if (target_host.size() > 255) {
@@ -379,7 +379,7 @@ socks5_handshake(SocketTransport& tcp,
 http_connect_handshake(SocketTransport& tcp,
                        std::string_view target_host, uint16_t target_port,
                        const ProxyConfig& cfg) {
-    auto log = detail::proxy_logger();
+    [[maybe_unused]] auto log = detail::proxy_logger();
     SPDLOG_LOGGER_DEBUG(log, "HTTP CONNECT to {}:{}", target_host, target_port);
 
     // Build CONNECT request
@@ -536,7 +536,7 @@ make_proxied_factory(const SocketConfig& base_sock_cfg,
                      std::string_view target_host, uint16_t target_port) {
     // Fail-fast: validate proxy config before capturing into the factory closure
     if (auto err = proxy_cfg.validate(); !err.empty()) {
-        auto log = detail::proxy_logger();
+        [[maybe_unused]] auto log = detail::proxy_logger();
         SPDLOG_LOGGER_ERROR(log, "ProxyConfig validation failed: {}", err);
         // Return a factory that always fails with the validation error
         return [msg = std::string(err)]()

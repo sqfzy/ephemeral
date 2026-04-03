@@ -100,7 +100,7 @@ public:
     /// Returns unique_ptr because DirectTxTransport owns threads and is non-movable.
     [[nodiscard]] static std::expected<std::unique_ptr<DirectTxTransport>, ConnectionErrorInfo>
     create(TcpFactory tcp_factory, const TransportConfig& config) {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         if (!tcp_factory) {
             return std::unexpected(ConnectionErrorInfo{
@@ -498,7 +498,7 @@ public:
     void stop() noexcept {
         bool was_running = core_.running.exchange(false, std::memory_order_acq_rel);
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping DirectTxTransport");
 
         // Join RX thread FIRST -- ensures no concurrent access to
@@ -755,7 +755,7 @@ private:
     /// Execute reconnection with exponential backoff via ReconnectPolicy.
     /// Returns true if reconnected successfully, false if exhausted.
     [[nodiscard]] bool do_reconnect_() noexcept {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         if (core_.config.max_reconnect_attempts <= 0) {
             SPDLOG_LOGGER_WARN(log,
@@ -829,7 +829,7 @@ private:
         if (len > MaxPayload) return SendError::kMessageTooLarge;
         if (!core_.running.load(std::memory_order_acquire)) return SendError::kNotConnected;
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // 1. Frame encode
         constexpr size_t kFrameOverhead = kIsWebSocket

@@ -443,7 +443,7 @@ public:
     /// Create a TLS session over an established TCP connection.
     [[nodiscard]] static std::expected<TlsSession, std::string>
     create(TcpImpl& tcp, const TlsConfig& config) {
-        auto log = detail::tls_logger();
+        [[maybe_unused]] auto log = detail::tls_logger();
 
         if (!tcp.is_established()) {
             return std::unexpected("TCP session not established");
@@ -662,7 +662,7 @@ public:
     /// Perform TLS 1.3 handshake (blocking, polls TCP rx through BIO).
     /// Must be called from the control thread, NOT the hot-path lcore.
     [[nodiscard]] std::expected<void, std::string> handshake() {
-        auto log = detail::tls_logger();
+        [[maybe_unused]] auto log = detail::tls_logger();
 
         if (handshake_done_) {
             return std::unexpected("Handshake already completed");
@@ -772,7 +772,7 @@ public:
     /// Key length is determined dynamically from the negotiated cipher:
     ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key
     [[nodiscard]] std::expected<TlsHotState, std::string> extract_hot_state() const {
-        auto log = detail::tls_logger();
+        [[maybe_unused]] auto log = detail::tls_logger();
 
         if (!handshake_done_) {
             return std::unexpected("Cannot extract keys: handshake not done");

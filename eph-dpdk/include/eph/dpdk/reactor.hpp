@@ -249,7 +249,7 @@ private:
             [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(config_.rx_cpu, "reactor_rx");
         }
 
-        auto* log = detail::reactor_logger();
+        [[maybe_unused]] auto* log = detail::reactor_logger();
         SPDLOG_LOGGER_INFO(log,
             "Reactor RX loop started: {} connections, port={}, queue={}, cpu={}",
             count_.load(std::memory_order_acquire), config_.port_id, config_.rx_queue_id, config_.rx_cpu);

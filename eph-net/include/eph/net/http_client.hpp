@@ -181,7 +181,7 @@ build_http_request(std::string_view method,
 /// @return Parsed response, or error string
 [[nodiscard]] inline std::expected<HttpResponse, std::string>
 parse_http_response(std::string_view data) noexcept {
-    auto* log = detail::http_client_logger();
+    [[maybe_unused]] auto* log = detail::http_client_logger();
 
     // Find end of headers
     auto header_end = data.find("\r\n\r\n");
@@ -428,7 +428,7 @@ private:
     /// @return Connected Socket wrapper, or error string on DNS/connect failure.
     [[nodiscard]] std::expected<Socket, std::string>
     tcp_connect() noexcept {
-        auto* log = detail::http_client_logger();
+        [[maybe_unused]] auto* log = detail::http_client_logger();
 
         SPDLOG_LOGGER_DEBUG(log, "Resolving {}:{}", config_.host, config_.port);
 
@@ -539,7 +539,7 @@ private:
                   std::unique_ptr<SSL, SslDeleter>>,
         std::string>
     tls_handshake(int fd) noexcept {
-        auto* log = detail::http_client_logger();
+        [[maybe_unused]] auto* log = detail::http_client_logger();
 
         SPDLOG_LOGGER_DEBUG(log, "Starting TLS handshake with {}",
             config_.host);

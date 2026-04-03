@@ -183,7 +183,7 @@ private:
     /// Process data using a generic (non-WS) framer. Simple decode loop
     /// that delivers each successfully decoded frame's payload directly.
     size_t process_generic_data(const uint8_t* data, size_t len) {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         size_t offset = 0;
 
         while (offset < len) {
@@ -226,7 +226,7 @@ private:
             return process_ws_data_filtered(data, len);
         }
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         size_t offset = 0;
 
         // EvictingQueue last-only optimization: when the app only reads
@@ -580,7 +580,7 @@ private:
     /// Phase 2: call filter on FrameView[].
     /// Phase 3: dispatch control frames immediately + data frames per filter.
     size_t process_ws_data_filtered(const uint8_t* data, size_t len) {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // -- Phase 1: single-pass scan --
         // Build frame index (for dispatch) and FrameView (for filter)

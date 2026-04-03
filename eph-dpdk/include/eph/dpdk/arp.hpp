@@ -216,7 +216,7 @@ resolve(uint16_t port_id,
         uint32_t target_ip,
         std::chrono::milliseconds timeout = std::chrono::milliseconds{1000}) {
 
-    auto log = detail::arp_logger();
+    [[maybe_unused]] auto log = detail::arp_logger();
 
     if (!pool) {
         return std::unexpected("ARP resolve: mempool is null");

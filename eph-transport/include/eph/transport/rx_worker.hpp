@@ -634,7 +634,7 @@ private:
 
     void rx_loop_() {
         (void)eph::utils::set_thread_affinity(core_.config.rx_cpu, "RX");
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         SPDLOG_LOGGER_DEBUG(log, "RX loop started");
 
         // Lazily construct the FrameProcessor on first start.

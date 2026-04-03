@@ -132,7 +132,7 @@ public:
     /// @note Must be in TcpState::Closed. Call close() or reset() first to reconnect.
     [[nodiscard]] std::expected<void, std::string>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) {
-        auto log = detail::socket_logger();
+        [[maybe_unused]] auto log = detail::socket_logger();
 
         if (state_ != TcpState::Closed) {
             return std::unexpected(std::format(

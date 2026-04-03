@@ -148,7 +148,7 @@ public:
     /// NO threads are started (this is the point of DirectTransport).
     [[nodiscard]] static std::expected<std::unique_ptr<DirectTransport>, ConnectionErrorInfo>
     create(TcpFactory tcp_factory, const TransportConfig& config) {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         if (!tcp_factory) {
             return std::unexpected(ConnectionErrorInfo{
@@ -330,7 +330,7 @@ public:
     /// Must be called from a single thread (no concurrent calls).
     void feed_rx(const uint8_t* data, uint16_t len) noexcept {
         auto& rx = direct_rx_;
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // Lazy-init TSC conversion factor on first call
         if (!rx.initialized) [[unlikely]] {
@@ -373,7 +373,7 @@ public:
     /// Must be called from the same thread as feed_rx().
     void process_pending() noexcept {
         auto& rx = direct_rx_;
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // Set arrival TSC for latency measurement
         if constexpr (kEnableTimestamps) {
@@ -551,7 +551,7 @@ public:
     void stop() noexcept {
         bool was_running = core_.running.exchange(false, std::memory_order_acq_rel);
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping direct transport");
 
         // Send WebSocket Close frame (no thread race — single thread)
@@ -793,7 +793,7 @@ private:
     /// TLS phases are skipped when config_.use_tls is false (plain ws://).
     /// On success, core_.tcp (and optionally core_.tls, core_.crypto) are populated.
     [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_connect_() {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         auto connect_start = std::chrono::steady_clock::now();
 
         // Phase 1: Create TCP session via factory
@@ -916,7 +916,7 @@ private:
     /// WebSocket HTTP Upgrade handshake (RFC 6455).
     /// Called from do_connect_() when using WsFramer.
     [[nodiscard]] std::expected<void, ConnectionErrorInfo> do_ws_upgrade_() {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // Generate WebSocket key
         auto ws_key_result = http::generate_ws_key();
@@ -1090,7 +1090,7 @@ private:
         if (!core_.running.load(std::memory_order_acquire))
             return SendError::kNotConnected;
 
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
 
         // 1. Frame encode
         constexpr size_t kFrameOverhead = kIsWebSocket

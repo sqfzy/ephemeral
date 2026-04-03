@@ -412,7 +412,7 @@ public:
     /// @return Error string on failure
     [[nodiscard]] std::expected<void, std::string>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
-        auto log = detail::tcp_logger();
+        [[maybe_unused]] auto log = detail::tcp_logger();
 
         if (state_ == TcpState::TimeWait) {
             // Allow reconnection once the 2MSL timer has expired (RFC 793 §3.5).
@@ -635,7 +635,7 @@ public:
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, std::string>
     process_rx(rte_mbuf** pkts, uint16_t nb_pkts, F&& data_callback) {
-        auto log = detail::tcp_logger();
+        [[maybe_unused]] auto log = detail::tcp_logger();
         uint16_t data_count = 0;
         bool need_ack = false;
 
@@ -926,7 +926,7 @@ public:
 
     /// Initiate graceful TCP close (send FIN).
     [[nodiscard]] std::expected<void, std::string> close() {
-        auto log = detail::tcp_logger();
+        [[maybe_unused]] auto log = detail::tcp_logger();
 
         if (state_ != TcpState::Established &&
             state_ != TcpState::CloseWait) {

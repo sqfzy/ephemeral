@@ -55,7 +55,7 @@ public:
     [[nodiscard]] bool attempt(
         std::function<std::expected<void, ConnectionErrorInfo>()> connect_fn) noexcept
     {
-        auto log = detail::transport_logger();
+        [[maybe_unused]] auto log = detail::transport_logger();
         ++attempt_;
 
         // Exponential backoff with ±25% jitter
