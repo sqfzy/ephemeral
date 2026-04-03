@@ -157,7 +157,7 @@ public:
     /// @return Connection index for use with health(), tag(), reconnect(), etc.
     ///         Returns SIZE_MAX if tp is null.
     template <typename Transport>
-    size_t add(std::string tag, Transport* tp, uint8_t priority = 128) {
+    [[nodiscard]] size_t add(std::string tag, Transport* tp, uint8_t priority = 128) {
         if (!tp) {
             SPDLOG_LOGGER_ERROR(detail::gateway_logger(), "Gateway::add: null transport for tag '{}'", tag);
             return SIZE_MAX;
