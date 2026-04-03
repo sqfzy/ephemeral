@@ -162,3 +162,39 @@ TEST(FlowRule, SelfMoveAssignmentIsSafe) {
     EXPECT_EQ(rule.port_id, 5);
     EXPECT_EQ(rule.queue_id, 7);
 }
+
+TEST(FlowRule, TypeTraits) {
+    // FlowRule is RAII — not copyable, only movable
+    static_assert(!std::is_copy_constructible_v<FlowRule>);
+    static_assert(!std::is_copy_assignable_v<FlowRule>);
+    static_assert(std::is_move_constructible_v<FlowRule>);
+    static_assert(std::is_move_assignable_v<FlowRule>);
+    static_assert(std::is_nothrow_move_constructible_v<FlowRule>);
+    static_assert(std::is_nothrow_move_assignable_v<FlowRule>);
+}
+
+TEST(FlowRule, DefaultValues) {
+    FlowRule rule;
+    EXPECT_EQ(rule.port_id, 0);
+    EXPECT_EQ(rule.queue_id, 0);
+    EXPECT_EQ(rule.handle, nullptr);
+    EXPECT_FALSE(rule.valid());
+}
+
+TEST(RxDispatchMode, AllEnumValuesHaveNames) {
+    // Verify all enum values produce non-empty, non-"unknown" names
+    EXPECT_NE(rx_dispatch_mode_name(RxDispatchMode::Software), "unknown");
+    EXPECT_NE(rx_dispatch_mode_name(RxDispatchMode::RssPartitioned), "unknown");
+    EXPECT_NE(rx_dispatch_mode_name(RxDispatchMode::FlowDirector), "unknown");
+    // Names should not be empty
+    EXPECT_FALSE(rx_dispatch_mode_name(RxDispatchMode::Software).empty());
+    EXPECT_FALSE(rx_dispatch_mode_name(RxDispatchMode::RssPartitioned).empty());
+    EXPECT_FALSE(rx_dispatch_mode_name(RxDispatchMode::FlowDirector).empty());
+}
+
+TEST(ConfigureRss, OneQueueReturnsDescriptiveError) {
+    auto result = configure_rss(0, 1);
+    ASSERT_FALSE(result.has_value());
+    // Verify the error message is helpful
+    EXPECT_NE(result.error().find("2"), std::string::npos);
+}
