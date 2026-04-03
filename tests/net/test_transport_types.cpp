@@ -1737,6 +1737,27 @@ TEST(TransportConfigFromUrl, HostWithNullByteRejected) {
     }
 }
 
+TEST(TransportConfigFromUrl, HostWithHighByteUtf8Accepted) {
+    // UTF-8 hostnames contain bytes >= 0x80. Before the fix, these were
+    // falsely rejected as control characters because `char` is signed on
+    // x86 Linux and bytes >= 0x80 compared as negative (< 0x20).
+    // IDN hostnames like "xn--e1afmapc.xn--p1ai" are ASCII, but some
+    // environments pass raw UTF-8 hostnames through.
+    // Use a hostname with a 2-byte UTF-8 sequence (U+00E9 = 0xC3 0xA9 = 'e')
+    std::string url = "wss://caf\xC3\xA9.example.com/ws";
+    auto r = TransportConfig::from_url(url);
+    ASSERT_TRUE(r.has_value()) << "UTF-8 hostname should be accepted, error: " << r.error();
+    EXPECT_EQ(r->remote_host, "caf\xC3\xA9.example.com");
+}
+
+TEST(TransportConfigFromUrl, HostWithAllHighBytesAccepted) {
+    // Extreme case: hostname contains byte 0xFF (valid in string, though
+    // not valid UTF-8). Should NOT be rejected as a control character.
+    std::string url = "wss://host\xFF" "name.com/ws";
+    auto r = TransportConfig::from_url(url);
+    ASSERT_TRUE(r.has_value()) << "High-byte hostname should be accepted, error: " << r.error();
+}
+
 TEST(TransportConfigFromUrl, PathWithFragment) {
     auto r = TransportConfig::from_url("wss://example.com/ws#section");
     ASSERT_TRUE(r.has_value());
