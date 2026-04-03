@@ -390,3 +390,45 @@ TEST(GatewayConfig, BothZeroIsValid) {
     cfg.degraded_threshold = std::chrono::milliseconds{0};
     EXPECT_TRUE(cfg.validate().empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gateway::Config dump, to_json, formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(GatewayConfig, DumpContainsKeyFields) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{3000};
+    cfg.degraded_threshold = std::chrono::milliseconds{15000};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("3000ms"), std::string::npos);
+    EXPECT_NE(d.find("15000ms"), std::string::npos);
+    EXPECT_NE(d.find("unset"), std::string::npos); // no callback set
+}
+
+TEST(GatewayConfig, DumpShowsCallbackSet) {
+    Gateway::Config cfg;
+    cfg.on_health_change = [](std::string_view, ConnHealth, ConnHealth) {};
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("set"), std::string::npos);
+}
+
+TEST(GatewayConfig, ToJsonValidStructure) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{5000};
+    cfg.degraded_threshold = std::chrono::milliseconds{30000};
+    auto j = cfg.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"health_check_interval_ms\":5000"), std::string::npos);
+    EXPECT_NE(j.find("\"degraded_threshold_ms\":30000"), std::string::npos);
+}
+
+TEST(GatewayConfig, FormatterContainsKeyFields) {
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{5000};
+    cfg.degraded_threshold = std::chrono::milliseconds{30000};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("Gateway"), std::string::npos);
+    EXPECT_NE(s.find("health=5000ms"), std::string::npos);
+    EXPECT_NE(s.find("degraded=30000ms"), std::string::npos);
+}

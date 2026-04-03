@@ -136,6 +136,29 @@ public:
                        "(otherwise degraded detection fires every check cycle)";
             return {};
         }
+
+        /// Multi-line formatted dump for logging/debugging.
+        /// Callbacks are shown as set/unset (closures cannot be serialized).
+        [[nodiscard]] std::string dump() const {
+            return std::format(
+                "Gateway::Config:\n"
+                "  health_check_interval: {}ms\n"
+                "  degraded_threshold: {}ms\n"
+                "  on_health_change: {}",
+                health_check_interval.count(),
+                degraded_threshold.count(),
+                static_cast<bool>(on_health_change) ? "set" : "unset");
+        }
+
+        /// JSON-formatted config for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"health_check_interval_ms\":{},\"degraded_threshold_ms\":{},"
+                "\"on_health_change\":{}}}",
+                health_check_interval.count(),
+                degraded_threshold.count(),
+                static_cast<bool>(on_health_change) ? "true" : "false");
+        }
     };
 
     /// @brief Construct a Gateway with default configuration.
@@ -420,5 +443,17 @@ struct std::formatter<eph::net::ConnHealth> : std::formatter<std::string_view> {
     auto format(eph::net::ConnHealth h, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::net::conn_health_name(h), ctx);
+    }
+};
+
+/// @brief std::formatter for Gateway::Config -- compact one-line summary.
+template <>
+struct std::formatter<eph::net::Gateway::Config> : std::formatter<std::string> {
+    auto format(const eph::net::Gateway::Config& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("Gateway::Config(health={}ms, degraded={}ms)",
+                c.health_check_interval.count(),
+                c.degraded_threshold.count()),
+            ctx);
     }
 };
