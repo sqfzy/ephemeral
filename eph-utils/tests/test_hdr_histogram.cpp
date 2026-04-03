@@ -120,7 +120,7 @@ TEST(HdrHistogramTest, RecordValuesOutOfRangeReturnsFalse) {
 
 TEST(HdrHistogramTest, ResetClearsAllData) {
     HdrHistogram h(1, 10'000, 3);
-    for (uint64_t i = 1; i <= 100; ++i) h.record(i);
+    for (uint64_t i = 1; i <= 100; ++i) (void)h.record(i);
 
     EXPECT_EQ(h.get_total_count(), 100);
     h.reset();
@@ -132,7 +132,7 @@ TEST(HdrHistogramTest, ResetClearsAllData) {
 
 TEST(HdrHistogramTest, ResetAllowsReuse) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(42);
+    (void)h.record(42);
     h.reset();
 
     EXPECT_TRUE(h.record(99));
@@ -153,14 +153,14 @@ TEST(HdrHistogramTest, PercentileOnEmptyHistogramReturnsZero) {
 
 TEST(HdrHistogramTest, PercentileInvalidInputReturnsZero) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(100);
+    (void)h.record(100);
     EXPECT_EQ(h.get_value_at_percentile(-1.0), 0);
     EXPECT_EQ(h.get_value_at_percentile(101.0), 0);
 }
 
 TEST(HdrHistogramTest, PercentileSingleValue) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     // All percentiles should return the same value (approximately 500)
     auto p50 = h.get_value_at_percentile(50.0);
@@ -177,7 +177,7 @@ TEST(HdrHistogramTest, PercentileUniformDistribution) {
 
     // Record uniform distribution 1..1000
     for (uint64_t i = 1; i <= 1000; ++i) {
-        h.record(i);
+        (void)h.record(i);
     }
 
     auto p50 = h.get_value_at_percentile(50.0);
@@ -192,7 +192,7 @@ TEST(HdrHistogramTest, PercentileUniformDistribution) {
 
 TEST(HdrHistogramTest, PercentileP0ReturnsMinimum) {
     HdrHistogram h(1, 10'000, 3);
-    for (uint64_t i = 100; i <= 200; ++i) h.record(i);
+    for (uint64_t i = 100; i <= 200; ++i) (void)h.record(i);
 
     // p0 returns the first recorded bucket (ceil(0) = 0, first accumulated > 0 matches)
     auto p0 = h.get_value_at_percentile(0.0);
@@ -202,7 +202,7 @@ TEST(HdrHistogramTest, PercentileP0ReturnsMinimum) {
 
 TEST(HdrHistogramTest, PercentileP100ReturnsMaximum) {
     HdrHistogram h(1, 10'000, 3);
-    for (uint64_t i = 100; i <= 200; ++i) h.record(i);
+    for (uint64_t i = 100; i <= 200; ++i) (void)h.record(i);
 
     auto p100 = h.get_value_at_percentile(100.0);
     EXPECT_NEAR(p100, 200, 2);
@@ -221,14 +221,14 @@ TEST(HdrHistogramTest, BatchPercentilesEmpty) {
 
 TEST(HdrHistogramTest, BatchPercentilesEmptyInput) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(100);
+    (void)h.record(100);
     auto results = h.get_percentiles({});
     EXPECT_TRUE(results.empty());
 }
 
 TEST(HdrHistogramTest, BatchPercentilesMatchSingleQueries) {
     HdrHistogram h(1, 100'000, 3);
-    for (uint64_t i = 1; i <= 10'000; ++i) h.record(i);
+    for (uint64_t i = 1; i <= 10'000; ++i) (void)h.record(i);
 
     std::vector<double> percentiles = {50.0, 90.0, 99.0, 99.9};
     auto batch = h.get_percentiles(percentiles);
@@ -242,7 +242,7 @@ TEST(HdrHistogramTest, BatchPercentilesMatchSingleQueries) {
 
 TEST(HdrHistogramTest, BatchPercentilesUnsortedInput) {
     HdrHistogram h(1, 10'000, 3);
-    for (uint64_t i = 1; i <= 1000; ++i) h.record(i);
+    for (uint64_t i = 1; i <= 1000; ++i) (void)h.record(i);
 
     // Percentiles provided out of order
     auto results = h.get_percentiles({99.0, 50.0, 90.0});
@@ -257,7 +257,7 @@ TEST(HdrHistogramTest, BatchPercentilesUnsortedInput) {
 
 TEST(HdrHistogramTest, BatchPercentilesWithInvalidValues) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     auto results = h.get_percentiles({-5.0, 50.0, 150.0});
     EXPECT_EQ(results[0], 0);      // invalid negative
@@ -271,13 +271,13 @@ TEST(HdrHistogramTest, BatchPercentilesWithInvalidValues) {
 
 TEST(HdrHistogramTest, MeanOfSingleValue) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(1000);
+    (void)h.record(1000);
     EXPECT_NEAR(h.get_mean(), 1000.0, 1.0);
 }
 
 TEST(HdrHistogramTest, MeanOfUniformDistribution) {
     HdrHistogram h(1, 100'000, 3);
-    for (uint64_t i = 1; i <= 10'000; ++i) h.record(i);
+    for (uint64_t i = 1; i <= 10'000; ++i) (void)h.record(i);
 
     // Expected mean ≈ 5000.5
     EXPECT_NEAR(h.get_mean(), 5000.5, 50.0);
@@ -285,7 +285,7 @@ TEST(HdrHistogramTest, MeanOfUniformDistribution) {
 
 TEST(HdrHistogramTest, StdDeviationOfConstantValue) {
     HdrHistogram h(1, 10'000, 3);
-    for (int i = 0; i < 1000; ++i) h.record(500);
+    for (int i = 0; i < 1000; ++i) (void)h.record(500);
 
     // All same value → stddev ≈ 0
     EXPECT_NEAR(h.get_std_deviation(), 0.0, 1.0);
@@ -298,9 +298,9 @@ TEST(HdrHistogramTest, StdDeviationEmpty) {
 
 TEST(HdrHistogramTest, MinMaxTracking) {
     HdrHistogram h(1, 100'000, 3);
-    h.record(50);
-    h.record(5000);
-    h.record(100);
+    (void)h.record(50);
+    (void)h.record(5000);
+    (void)h.record(100);
 
     EXPECT_EQ(h.get_min_value(), 50);
     EXPECT_EQ(h.get_max_value(), 5000);
@@ -317,9 +317,9 @@ TEST(HdrHistogramTest, MinValueEmptyReturnsZero) {
 
 TEST(HdrHistogramTest, ForEachRecordedValueVisitsAllBuckets) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(10);
-    h.record(100);
-    h.record(1000);
+    (void)h.record(10);
+    (void)h.record(100);
+    (void)h.record(1000);
 
     uint64_t total = 0;
     int bucket_count = 0;
@@ -545,7 +545,7 @@ TEST(HdrHistogramTest, ReportEmptyHistogram) {
 
 TEST(HdrHistogramTest, ReportWithData) {
     HdrHistogram h(1, 10'000, 3);
-    for (uint64_t i = 1; i <= 100; ++i) h.record(i);
+    for (uint64_t i = 1; i <= 100; ++i) (void)h.record(i);
 
     auto report = h.report("Latency", "ns");
     EXPECT_TRUE(report.find("100 samples") != std::string::npos);
@@ -560,7 +560,7 @@ TEST(HdrHistogramTest, ToJsonEmptyHistogram) {
 
 TEST(HdrHistogramTest, ToJsonWithData) {
     HdrHistogram h(1, 10'000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     auto json = h.to_json();
     EXPECT_TRUE(json.find("\"count\":1") != std::string::npos);
@@ -574,7 +574,7 @@ TEST(HdrHistogramTest, ToJsonWithData) {
 
 TEST(HdrHistogramTest, PrecisionOneDigit) {
     HdrHistogram h(1, 10'000, 1);
-    h.record(1234);
+    (void)h.record(1234);
 
     auto p100 = h.get_value_at_percentile(100.0);
     // With 1 significant digit, value should be in the right ballpark
@@ -585,7 +585,7 @@ TEST(HdrHistogramTest, PrecisionOneDigit) {
 
 TEST(HdrHistogramTest, PrecisionFiveDigits) {
     HdrHistogram h(1, 10'000, 5);
-    h.record(1234);
+    (void)h.record(1234);
 
     auto p100 = h.get_value_at_percentile(100.0);
     // With 5 significant digits, should be very close
@@ -806,7 +806,7 @@ TEST(HdrHistogramDropped, record_values_counts_batch_drops) {
 
 TEST(HdrHistogramDropped, reset_clears_dropped_count) {
     eph::utils::HdrHistogram h(1, 1000, 3);
-    h.record(5000);  // dropped
+    (void)h.record(5000);  // dropped
     EXPECT_EQ(h.get_dropped_count(), 1u);
     h.reset();
     EXPECT_EQ(h.get_dropped_count(), 0u);
@@ -814,8 +814,8 @@ TEST(HdrHistogramDropped, reset_clears_dropped_count) {
 
 TEST(HdrHistogramDropped, report_includes_dropped_when_nonzero) {
     eph::utils::HdrHistogram h(1, 1000, 3);
-    h.record(500);
-    h.record(5000);  // dropped
+    (void)h.record(500);
+    (void)h.record(5000);  // dropped
     auto report = h.report("Test");
     EXPECT_NE(report.find("dropped"), std::string::npos);
     EXPECT_NE(report.find("1"), std::string::npos);
@@ -823,22 +823,22 @@ TEST(HdrHistogramDropped, report_includes_dropped_when_nonzero) {
 
 TEST(HdrHistogramDropped, report_excludes_dropped_when_zero) {
     eph::utils::HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
     auto report = h.report("Test");
     EXPECT_EQ(report.find("dropped"), std::string::npos);
 }
 
 TEST(HdrHistogramDropped, to_json_includes_dropped_when_nonzero) {
     eph::utils::HdrHistogram h(1, 1000, 3);
-    h.record(500);
-    h.record(5000);  // dropped
+    (void)h.record(500);
+    (void)h.record(5000);  // dropped
     auto json = h.to_json();
     EXPECT_NE(json.find("\"dropped\":1"), std::string::npos);
 }
 
 TEST(HdrHistogramDropped, to_json_excludes_dropped_when_zero) {
     eph::utils::HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
     auto json = h.to_json();
     EXPECT_EQ(json.find("dropped"), std::string::npos);
 }
@@ -854,14 +854,14 @@ TEST(HdrHistogramInverseCdf, empty_histogram_returns_zero) {
 
 TEST(HdrHistogramInverseCdf, single_value_below_returns_zero) {
     HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
     // Query a value below the recorded value
     EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(1), 0.0);
 }
 
 TEST(HdrHistogramInverseCdf, single_value_at_or_above_returns_100) {
     HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
     // Query at or above the recorded value → 100%
     EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(500), 100.0);
     EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(999), 100.0);
@@ -871,7 +871,7 @@ TEST(HdrHistogramInverseCdf, uniform_distribution) {
     HdrHistogram h(1, 1000, 3);
     // Record 100 values: 1, 2, 3, ..., 100
     for (uint64_t i = 1; i <= 100; ++i) {
-        h.record(i);
+        (void)h.record(i);
     }
 
     // Value 50 should be around 50th percentile
@@ -891,7 +891,7 @@ TEST(HdrHistogramInverseCdf, uniform_distribution) {
 TEST(HdrHistogramInverseCdf, round_trip_with_value_at_percentile) {
     HdrHistogram h(1, 100000, 3);
     for (uint64_t i = 1; i <= 10000; ++i) {
-        h.record(i);
+        (void)h.record(i);
     }
 
     // Get value at P95, then verify inverse returns ~95%
@@ -917,7 +917,7 @@ TEST(HdrHistogramBatchInverseCdf, empty_histogram_returns_zeros) {
 TEST(HdrHistogramBatchInverseCdf, unsorted_input_produces_correct_results) {
     HdrHistogram h(1, 1000, 3);
     for (uint64_t i = 1; i <= 100; ++i) {
-        h.record(i);
+        (void)h.record(i);
     }
 
     // Values in non-sorted order
@@ -935,8 +935,8 @@ TEST(HdrHistogramBatchInverseCdf, unsorted_input_produces_correct_results) {
 
 TEST(HdrHistogramBatchInverseCdf, values_above_max_return_100) {
     HdrHistogram h(1, 1000, 3);
-    h.record(10);
-    h.record(20);
+    (void)h.record(10);
+    (void)h.record(20);
 
     auto results = h.get_percentiles_at_or_below({5000, 10000});
     ASSERT_EQ(results.size(), 2);
@@ -947,7 +947,7 @@ TEST(HdrHistogramBatchInverseCdf, values_above_max_return_100) {
 TEST(HdrHistogramBatchInverseCdf, consistent_with_single_query) {
     HdrHistogram h(1, 100000, 3);
     for (uint64_t i = 1; i <= 10000; ++i) {
-        h.record(i);
+        (void)h.record(i);
     }
 
     std::vector<uint64_t> values = {100, 1000, 5000, 9000, 10000};
@@ -975,7 +975,7 @@ TEST(HdrHistogramDistribution, empty_histogram_has_header_only) {
 
 TEST(HdrHistogramDistribution, single_value_produces_one_data_line) {
     HdrHistogram h(1, 1000, 3);
-    h.record(42);
+    (void)h.record(42);
     auto output = h.output_percentile_distribution();
     EXPECT_NE(output.find("1.000000"), std::string::npos);  // 100th percentile
     EXPECT_NE(output.find("#[Mean"), std::string::npos);
@@ -984,8 +984,8 @@ TEST(HdrHistogramDistribution, single_value_produces_one_data_line) {
 
 TEST(HdrHistogramDistribution, scaling_divides_values) {
     HdrHistogram h(1, 1000000, 3);
-    h.record(1000);
-    h.record(2000);
+    (void)h.record(1000);
+    (void)h.record(2000);
 
     // Scale by 1000 → values should be ~1.0 and ~2.0
     auto output = h.output_percentile_distribution(1000.0);
@@ -995,7 +995,7 @@ TEST(HdrHistogramDistribution, scaling_divides_values) {
 TEST(HdrHistogramDistribution, multi_value_has_multiple_lines) {
     HdrHistogram h(1, 10000, 3);
     for (uint64_t i = 1; i <= 100; ++i) {
-        h.record(i);
+        (void)h.record(i);
     }
     auto output = h.output_percentile_distribution();
     // Should have footer with stats
@@ -1005,7 +1005,7 @@ TEST(HdrHistogramDistribution, multi_value_has_multiple_lines) {
 
 TEST(HdrHistogramDistribution, negative_scaling_uses_default) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     // Negative scaling should be treated as 1.0
     auto output = h.output_percentile_distribution(-1.0);
     EXPECT_NE(output.find("#[Mean"), std::string::npos);
@@ -1013,7 +1013,7 @@ TEST(HdrHistogramDistribution, negative_scaling_uses_default) {
 
 TEST(HdrHistogramDistribution, zero_scaling_treated_as_one) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     auto unscaled = h.output_percentile_distribution(1.0);
     auto zero_scaled = h.output_percentile_distribution(0.0);
     // Zero scaling should produce identical output to 1.0
@@ -1022,9 +1022,9 @@ TEST(HdrHistogramDistribution, zero_scaling_treated_as_one) {
 
 TEST(HdrHistogramDistribution, footer_values_are_scaled) {
     HdrHistogram h(1, 1000000, 3);
-    h.record(1000);
-    h.record(2000);
-    h.record(3000);
+    (void)h.record(1000);
+    (void)h.record(2000);
+    (void)h.record(3000);
     auto output = h.output_percentile_distribution(1000.0);
     // Mean of 1000,2000,3000 is ~2000, scaled by 1000 → ~2.0
     // Footer should show scaled mean
@@ -1035,7 +1035,7 @@ TEST(HdrHistogramDistribution, footer_values_are_scaled) {
 
 TEST(HdrHistogramDistribution, last_percentile_shows_inf) {
     HdrHistogram h(1, 1000, 3);
-    h.record(42);
+    (void)h.record(42);
     auto output = h.output_percentile_distribution();
     // Last entry at 100th percentile should show "inf" in 1/(1-p) column
     EXPECT_NE(output.find("inf"), std::string::npos);
@@ -1043,7 +1043,7 @@ TEST(HdrHistogramDistribution, last_percentile_shows_inf) {
 
 TEST(HdrHistogramDistribution, fractional_scaling_doubles_values) {
     HdrHistogram h(1, 1000000, 3);
-    h.record(1000);
+    (void)h.record(1000);
     // Scaling by 0.5 should double the displayed values
     auto output = h.output_percentile_distribution(0.5);
     // Mean ~1000, scaled by 0.5 → ~2000
@@ -1057,16 +1057,16 @@ TEST(HdrHistogramDistribution, fractional_scaling_doubles_values) {
 
 TEST(HdrHistogramInverseCdf, value_zero_returns_zero) {
     HdrHistogram h(1, 1000, 3);
-    h.record(10);
-    h.record(100);
+    (void)h.record(10);
+    (void)h.record(100);
     // All buckets have value_from_index > 0, so nothing is <= 0
     EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(0), 0.0);
 }
 
 TEST(HdrHistogramInverseCdf, value_uint64_max_returns_100) {
     HdrHistogram h(1, 1000, 3);
-    h.record(10);
-    h.record(500);
+    (void)h.record(10);
+    (void)h.record(500);
     EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(
         std::numeric_limits<uint64_t>::max()), 100.0);
 }
@@ -1074,8 +1074,8 @@ TEST(HdrHistogramInverseCdf, value_uint64_max_returns_100) {
 TEST(HdrHistogramInverseCdf, value_between_recorded_values) {
     HdrHistogram h(1, 10000, 3);
     // Record 100 values at 100 and 100 values at 9000
-    for (int i = 0; i < 100; ++i) h.record(100);
-    for (int i = 0; i < 100; ++i) h.record(9000);
+    for (int i = 0; i < 100; ++i) (void)h.record(100);
+    for (int i = 0; i < 100; ++i) (void)h.record(9000);
 
     // Value between the two clusters: should be ~50%
     double p = h.get_percentile_at_or_below(5000);
@@ -1085,9 +1085,9 @@ TEST(HdrHistogramInverseCdf, value_between_recorded_values) {
 
 TEST(HdrHistogramInverseCdf, sparse_distribution) {
     HdrHistogram h(1, 100000, 3);
-    h.record(1);
-    h.record(1000);
-    h.record(50000);
+    (void)h.record(1);
+    (void)h.record(1000);
+    (void)h.record(50000);
     // Value 500 is between 1 and 1000
     double p = h.get_percentile_at_or_below(500);
     // Only the value 1 is <= 500, so ~33%
@@ -1097,8 +1097,8 @@ TEST(HdrHistogramInverseCdf, sparse_distribution) {
 
 TEST(HdrHistogramInverseCdf, value_below_lowest_trackable) {
     HdrHistogram h(10, 10000, 3);
-    h.record(10);
-    h.record(100);
+    (void)h.record(10);
+    (void)h.record(100);
     // Query value below lowest_trackable_value — nothing recorded <= 5
     EXPECT_DOUBLE_EQ(h.get_percentile_at_or_below(5), 0.0);
 }
@@ -1109,14 +1109,14 @@ TEST(HdrHistogramInverseCdf, value_below_lowest_trackable) {
 
 TEST(HdrHistogramBatchInverseCdf, empty_values_returns_empty) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     auto results = h.get_percentiles_at_or_below({});
     EXPECT_TRUE(results.empty());
 }
 
 TEST(HdrHistogramBatchInverseCdf, single_element_vector) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     auto results = h.get_percentiles_at_or_below({100});
     ASSERT_EQ(results.size(), 1);
     EXPECT_DOUBLE_EQ(results[0], 100.0);
@@ -1124,7 +1124,7 @@ TEST(HdrHistogramBatchInverseCdf, single_element_vector) {
 
 TEST(HdrHistogramBatchInverseCdf, duplicate_values_get_same_result) {
     HdrHistogram h(1, 10000, 3);
-    for (uint64_t i = 1; i <= 100; ++i) h.record(i);
+    for (uint64_t i = 1; i <= 100; ++i) (void)h.record(i);
 
     auto results = h.get_percentiles_at_or_below({50, 50, 50});
     ASSERT_EQ(results.size(), 3);
@@ -1134,8 +1134,8 @@ TEST(HdrHistogramBatchInverseCdf, duplicate_values_get_same_result) {
 
 TEST(HdrHistogramBatchInverseCdf, all_values_below_min) {
     HdrHistogram h(10, 10000, 3);
-    h.record(100);
-    h.record(200);
+    (void)h.record(100);
+    (void)h.record(200);
     // All query values are below smallest recorded value
     auto results = h.get_percentiles_at_or_below({1, 5, 9});
     ASSERT_EQ(results.size(), 3);
@@ -1146,7 +1146,7 @@ TEST(HdrHistogramBatchInverseCdf, all_values_below_min) {
 
 TEST(HdrHistogramBatchInverseCdf, value_zero_in_batch) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     auto results = h.get_percentiles_at_or_below({0, 100, 999});
     ASSERT_EQ(results.size(), 3);
     EXPECT_DOUBLE_EQ(results[0], 0.0);
@@ -1156,8 +1156,8 @@ TEST(HdrHistogramBatchInverseCdf, value_zero_in_batch) {
 
 TEST(HdrHistogramBatchInverseCdf, uint64_max_in_batch) {
     HdrHistogram h(1, 1000, 3);
-    h.record(10);
-    h.record(500);
+    (void)h.record(10);
+    (void)h.record(500);
     auto results = h.get_percentiles_at_or_below(
         {0, std::numeric_limits<uint64_t>::max()});
     ASSERT_EQ(results.size(), 2);
@@ -1180,7 +1180,7 @@ TEST(HdrHistogramPercentileIter, empty_histogram_yields_no_entries) {
 
 TEST(HdrHistogramPercentileIter, single_value_yields_entries) {
     HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     std::vector<HdrHistogram::PercentileEntry> entries;
     h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
@@ -1200,7 +1200,7 @@ TEST(HdrHistogramPercentileIter, single_value_yields_entries) {
 TEST(HdrHistogramPercentileIter, percentiles_are_monotonically_increasing) {
     HdrHistogram h(1, 100000, 3);
     for (int i = 1; i <= 10000; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     double prev_percentile = -1.0;
@@ -1222,7 +1222,7 @@ TEST(HdrHistogramPercentileIter, percentiles_are_monotonically_increasing) {
 TEST(HdrHistogramPercentileIter, covers_full_range) {
     HdrHistogram h(1, 100000, 3);
     for (int i = 1; i <= 1000; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     bool has_below_50 = false;
@@ -1243,7 +1243,7 @@ TEST(HdrHistogramPercentileIter, covers_full_range) {
 TEST(HdrHistogramPercentileIter, ticks_per_half_distance_affects_density) {
     HdrHistogram h(1, 100000, 3);
     for (int i = 1; i <= 1000; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     int count_1 = 0, count_10 = 0;
@@ -1262,7 +1262,7 @@ TEST(HdrHistogramPercentileIter, ticks_per_half_distance_affects_density) {
 TEST(HdrHistogramPercentileIter, inv_percentile_correct) {
     HdrHistogram h(1, 100000, 3);
     for (int i = 1; i <= 10000; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     h.for_each_percentile([&](const HdrHistogram::PercentileEntry& e) {
@@ -1279,7 +1279,7 @@ TEST(HdrHistogramPercentileIter, inv_percentile_correct) {
 
 TEST(HdrHistogramPercentileIter, invalid_ticks_yields_no_entries) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     int count = 0;
     h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
         ++count;
@@ -1289,7 +1289,7 @@ TEST(HdrHistogramPercentileIter, invalid_ticks_yields_no_entries) {
 
 TEST(HdrHistogramPercentileIter, negative_ticks_yields_no_entries) {
     HdrHistogram h(1, 1000, 3);
-    h.record(100);
+    (void)h.record(100);
     int count = 0;
     h.for_each_percentile([&](const HdrHistogram::PercentileEntry&) {
         ++count;
@@ -1300,7 +1300,7 @@ TEST(HdrHistogramPercentileIter, negative_ticks_yields_no_entries) {
 TEST(HdrHistogramPercentileIter, total_count_to_val_monotonically_increases) {
     HdrHistogram h(1, 100000, 3);
     for (int i = 1; i <= 1000; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     uint64_t prev_count = 0;
@@ -1316,7 +1316,7 @@ TEST(HdrHistogramPercentileIter, total_count_to_val_monotonically_increases) {
 TEST(HdrHistogramPercentileIter, repeated_calls_produce_same_results) {
     HdrHistogram h(1, 10000, 3);
     for (int i = 1; i <= 500; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     std::vector<uint64_t> values1, values2;
@@ -1341,7 +1341,7 @@ TEST(HdrHistogramPercentileIter, repeated_calls_produce_same_results) {
 
 TEST(HdrHistogramDistribution, nan_scaling_treated_as_default) {
     HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     auto output = h.output_percentile_distribution(
         std::numeric_limits<double>::quiet_NaN());
@@ -1356,7 +1356,7 @@ TEST(HdrHistogramDistribution, nan_scaling_treated_as_default) {
 
 TEST(HdrHistogramDistribution, infinity_scaling_produces_zero_values) {
     HdrHistogram h(1, 1000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     auto output = h.output_percentile_distribution(
         std::numeric_limits<double>::infinity());
@@ -1377,14 +1377,14 @@ TEST(HdrHistogramTest, EmptyOnNewHistogram) {
 
 TEST(HdrHistogramTest, EmptyAfterRecord) {
     HdrHistogram h(1, 10000, 3);
-    h.record(100);
+    (void)h.record(100);
     EXPECT_FALSE(h.empty());
 }
 
 TEST(HdrHistogramTest, EmptyAfterReset) {
     HdrHistogram h(1, 10000, 3);
-    h.record(100);
-    h.record(200);
+    (void)h.record(100);
+    (void)h.record(200);
     EXPECT_FALSE(h.empty());
     h.reset();
     EXPECT_TRUE(h.empty());
@@ -1393,7 +1393,7 @@ TEST(HdrHistogramTest, EmptyAfterReset) {
 TEST(HdrHistogramTest, EmptyNotAffectedByDroppedSamples) {
     HdrHistogram h(10, 100, 3);
     // Record value outside range — should be dropped
-    h.record(1);  // below lowest_trackable_value
+    (void)h.record(1);  // below lowest_trackable_value
     EXPECT_TRUE(h.empty());  // dropped samples don't count
     EXPECT_GT(h.get_dropped_count(), 0u);
 }
@@ -1409,13 +1409,13 @@ TEST(HdrHistogramTest, CountBetweenEmptyHistogram) {
 
 TEST(HdrHistogramTest, CountBetweenInvertedRangeReturnsZero) {
     HdrHistogram h(1, 10000, 3);
-    h.record(100);
+    (void)h.record(100);
     EXPECT_EQ(h.get_count_between(200, 50), 0u);
 }
 
 TEST(HdrHistogramTest, CountBetweenFullRange) {
     HdrHistogram h(1, 10000, 3);
-    for (int i = 1; i <= 100; ++i) h.record(i);
+    for (int i = 1; i <= 100; ++i) (void)h.record(i);
     // Full range should capture all samples
     EXPECT_EQ(h.get_count_between(1, 10000), 100u);
 }
@@ -1423,8 +1423,8 @@ TEST(HdrHistogramTest, CountBetweenFullRange) {
 TEST(HdrHistogramTest, CountBetweenSubRange) {
     HdrHistogram h(1, 10000, 3);
     // Record distinct values in known ranges
-    for (int i = 0; i < 50; ++i) h.record(100);   // 50 samples at ~100
-    for (int i = 0; i < 30; ++i) h.record(5000);  // 30 samples at ~5000
+    for (int i = 0; i < 50; ++i) (void)h.record(100);   // 50 samples at ~100
+    for (int i = 0; i < 30; ++i) (void)h.record(5000);  // 30 samples at ~5000
 
     // Low range should capture ~50 samples, high range ~30
     uint64_t low_count = h.get_count_between(1, 500);
@@ -1435,9 +1435,9 @@ TEST(HdrHistogramTest, CountBetweenSubRange) {
 
 TEST(HdrHistogramTest, CountBetweenSameValue) {
     HdrHistogram h(1, 10000, 3);
-    h.record(500);
-    h.record(500);
-    h.record(500);
+    (void)h.record(500);
+    (void)h.record(500);
+    (void)h.record(500);
     // Exact point query should find them
     uint64_t count = h.get_count_between(500, 500);
     EXPECT_EQ(count, 3u);
@@ -1529,7 +1529,7 @@ TEST(HdrHistogramLinearIter, empty_histogram_yields_no_entries) {
 
 TEST(HdrHistogramLinearIter, zero_step_yields_no_entries) {
     HdrHistogram h(1, 10000, 3);
-    h.record(500);
+    (void)h.record(500);
     int count = 0;
     h.for_each_linear(0, [&](const HdrHistogram::LinearEntry&) {
         ++count;
@@ -1539,7 +1539,7 @@ TEST(HdrHistogramLinearIter, zero_step_yields_no_entries) {
 
 TEST(HdrHistogramLinearIter, single_value_single_bucket) {
     HdrHistogram h(1, 10000, 3);
-    h.record(500);
+    (void)h.record(500);
 
     std::vector<HdrHistogram::LinearEntry> entries;
     h.for_each_linear(1000, [&](const HdrHistogram::LinearEntry& e) {
@@ -1558,7 +1558,7 @@ TEST(HdrHistogramLinearIter, multiple_buckets_uniform_distribution) {
     HdrHistogram h(1, 10000, 3);
     // Record 10 values at 100, 200, ..., 1000
     for (int i = 1; i <= 10; ++i) {
-        h.record(static_cast<uint64_t>(i * 100));
+        (void)h.record(static_cast<uint64_t>(i * 100));
     }
 
     std::vector<HdrHistogram::LinearEntry> entries;
@@ -1584,8 +1584,8 @@ TEST(HdrHistogramLinearIter, multiple_buckets_uniform_distribution) {
 
 TEST(HdrHistogramLinearIter, step_larger_than_range_collapses_to_one) {
     HdrHistogram h(1, 10000, 3);
-    h.record(100);
-    h.record(200);
+    (void)h.record(100);
+    (void)h.record(200);
 
     std::vector<HdrHistogram::LinearEntry> entries;
     h.for_each_linear(100000, [&](const HdrHistogram::LinearEntry& e) {
@@ -1600,7 +1600,7 @@ TEST(HdrHistogramLinearIter, step_larger_than_range_collapses_to_one) {
 TEST(HdrHistogramLinearIter, percentile_monotonically_increasing) {
     HdrHistogram h(1, 10000, 3);
     for (int i = 1; i <= 1000; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     double prev_pct = -1.0;
@@ -1615,7 +1615,7 @@ TEST(HdrHistogramLinearIter, percentile_monotonically_increasing) {
 TEST(HdrHistogramLinearIter, total_count_matches) {
     HdrHistogram h(1, 10000, 3);
     for (int i = 1; i <= 500; ++i) {
-        h.record(static_cast<uint64_t>(i * 2));
+        (void)h.record(static_cast<uint64_t>(i * 2));
     }
 
     uint64_t sum = 0;
@@ -1629,7 +1629,7 @@ TEST(HdrHistogramLinearIter, total_count_matches) {
 TEST(HdrHistogramLinearIter, large_step_no_overflow) {
     // Regression: step size near uint64_t max must not overflow and hang
     HdrHistogram h(1, 10000, 3);
-    h.record(5000);
+    (void)h.record(5000);
 
     int count = 0;
     h.for_each_linear(std::numeric_limits<uint64_t>::max() / 2,
@@ -1749,9 +1749,9 @@ TEST(HdrHistogramCorrected, fill_in_values_are_actually_recorded) {
 
 TEST(HdrHistogramLinearIter, step_one_creates_per_unit_buckets) {
     HdrHistogram h(1, 100, 3);
-    h.record(1);
-    h.record(5);
-    h.record(10);
+    (void)h.record(1);
+    (void)h.record(5);
+    (void)h.record(10);
 
     std::vector<HdrHistogram::LinearEntry> entries;
     h.for_each_linear(1, [&](const HdrHistogram::LinearEntry& e) {
@@ -1770,8 +1770,8 @@ TEST(HdrHistogramLinearIter, step_one_creates_per_unit_buckets) {
 
 TEST(HdrHistogramLinearIter, sparse_values_skip_empty_steps) {
     HdrHistogram h(1, 10000, 3);
-    h.record(100);
-    h.record(5000);
+    (void)h.record(100);
+    (void)h.record(5000);
 
     std::vector<HdrHistogram::LinearEntry> entries;
     h.for_each_linear(100, [&](const HdrHistogram::LinearEntry& e) {
@@ -1793,7 +1793,7 @@ TEST(HdrHistogramLinearIter, sparse_values_skip_empty_steps) {
 TEST(HdrHistogramLinearIter, consecutive_entries_have_aligned_ranges) {
     HdrHistogram h(1, 1000, 3);
     for (int i = 1; i <= 100; ++i) {
-        h.record(static_cast<uint64_t>(i));
+        (void)h.record(static_cast<uint64_t>(i));
     }
 
     std::vector<HdrHistogram::LinearEntry> entries;

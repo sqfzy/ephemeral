@@ -87,7 +87,7 @@ TEST_F(RecordTest, HdrHistogramBatchPercentiles) {
   HdrHistogram hist(1, 1000000, 3);
 
   for (uint64_t i = 1; i <= 100; ++i) {
-    hist.record(i);
+    (void)hist.record(i);
   }
 
   auto percentiles = hist.get_percentiles({50.0, 90.0, 99.0, 99.9});
@@ -128,7 +128,7 @@ TEST_F(RecordTest, HdrHistogramStatistics) {
   HdrHistogram hist(1, 1000000, 3);
 
   for (int i = 0; i < 1000; ++i) {
-    hist.record(500);
+    (void)hist.record(500);
   }
 
   double mean = hist.get_mean();
@@ -404,7 +404,7 @@ TEST(HdrHistogramReport, EmptyHistogramReportsEmpty) {
 TEST(HdrHistogramReport, PopulatedHistogramIncludesAllPercentiles) {
     HdrHistogram hist(1, 100000, 3);
     for (uint64_t i = 1; i <= 1000; ++i) {
-        hist.record(i);
+        (void)hist.record(i);
     }
 
     auto r = hist.report("Roundtrip", "ns");

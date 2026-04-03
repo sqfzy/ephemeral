@@ -19,7 +19,7 @@ using namespace eph::utils;
 static void BM_HdrRecord_Constant(benchmark::State& state) {
     HdrHistogram h(1, 3'600'000'000ULL, 3);
     for (auto _ : state) {
-        h.record(1000);
+        (void)h.record(1000);
     }
     state.SetItemsProcessed(state.iterations());
 }
@@ -30,7 +30,7 @@ static void BM_HdrRecord_Sequential(benchmark::State& state) {
     HdrHistogram h(1, 3'600'000'000ULL, 3);
     uint64_t val = 1;
     for (auto _ : state) {
-        h.record(val);
+        (void)h.record(val);
         val = (val < 1'000'000) ? val + 1 : 1;
     }
     state.SetItemsProcessed(state.iterations());
@@ -50,7 +50,7 @@ static void BM_HdrRecord_Random(benchmark::State& state) {
 
     size_t idx = 0;
     for (auto _ : state) {
-        h.record(values[idx]);
+        (void)h.record(values[idx]);
         idx = (idx + 1) & (kSize - 1);
     }
     state.SetItemsProcessed(state.iterations());
@@ -67,7 +67,7 @@ static void BM_HdrPercentile_P50(benchmark::State& state) {
     // Populate with realistic latency data
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<uint64_t> dist(100, 100'000);
-    for (int i = 0; i < 100'000; ++i) h.record(dist(rng));
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
 
     for (auto _ : state) {
         auto v = h.get_value_at_percentile(50.0);
@@ -81,7 +81,7 @@ static void BM_HdrPercentile_P99(benchmark::State& state) {
     HdrHistogram h(1, 3'600'000'000ULL, 3);
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<uint64_t> dist(100, 100'000);
-    for (int i = 0; i < 100'000; ++i) h.record(dist(rng));
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
 
     for (auto _ : state) {
         auto v = h.get_value_at_percentile(99.0);
@@ -95,7 +95,7 @@ static void BM_HdrPercentile_P999(benchmark::State& state) {
     HdrHistogram h(1, 3'600'000'000ULL, 3);
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<uint64_t> dist(100, 100'000);
-    for (int i = 0; i < 100'000; ++i) h.record(dist(rng));
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
 
     for (auto _ : state) {
         auto v = h.get_value_at_percentile(99.9);
@@ -113,7 +113,7 @@ static void BM_HdrMean(benchmark::State& state) {
     HdrHistogram h(1, 3'600'000'000ULL, 3);
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<uint64_t> dist(100, 100'000);
-    for (int i = 0; i < 100'000; ++i) h.record(dist(rng));
+    for (int i = 0; i < 100'000; ++i) (void)h.record(dist(rng));
 
     for (auto _ : state) {
         auto v = h.get_mean();
@@ -130,7 +130,7 @@ static void BM_HdrReset(benchmark::State& state) {
 
     for (auto _ : state) {
         state.PauseTiming();
-        for (int i = 0; i < 10'000; ++i) h.record(dist(rng));
+        for (int i = 0; i < 10'000; ++i) (void)h.record(dist(rng));
         state.ResumeTiming();
         h.reset();
     }

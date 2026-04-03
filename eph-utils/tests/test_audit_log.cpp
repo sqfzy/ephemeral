@@ -19,7 +19,7 @@ TEST(AuditLog, InitiallyEmpty) {
 
 TEST(AuditLog, RecordSingleEntry) {
     TestLog log;
-    log.record(AuditEvent::NewOrder, 1001, 50000.0, 1.5, Side::Buy, 0);
+    (void)log.record(AuditEvent::NewOrder, 1001, 50000.0, 1.5, Side::Buy, 0);
     EXPECT_EQ(log.total_count(), 1);
     EXPECT_EQ(log.count(), 1);
 
@@ -36,9 +36,9 @@ TEST(AuditLog, RecordSingleEntry) {
 
 TEST(AuditLog, RecordMultipleEntries) {
     TestLog log;
-    log.record(AuditEvent::NewOrder, 1, 100.0, 10.0, Side::Buy, 1);
-    log.record(AuditEvent::Acknowledged, 1, 100.0, 10.0, Side::Buy, 1);
-    log.record(AuditEvent::Fill, 1, 100.0, 10.0, Side::Buy, 1, 100.05, 10.0);
+    (void)log.record(AuditEvent::NewOrder, 1, 100.0, 10.0, Side::Buy, 1);
+    (void)log.record(AuditEvent::Acknowledged, 1, 100.0, 10.0, Side::Buy, 1);
+    (void)log.record(AuditEvent::Fill, 1, 100.0, 10.0, Side::Buy, 1, 100.05, 10.0);
 
     EXPECT_EQ(log.count(), 3);
     const auto* latest = log.latest();
@@ -51,7 +51,7 @@ TEST(AuditLog, RecordMultipleEntries) {
 TEST(AuditLog, AtOffsetReturnsCorrectEntry) {
     TestLog log;
     for (uint64_t i = 0; i < 5; ++i) {
-        log.record(AuditEvent::NewOrder, i, static_cast<double>(i), 1.0, Side::Buy, 0);
+        (void)log.record(AuditEvent::NewOrder, i, static_cast<double>(i), 1.0, Side::Buy, 0);
     }
 
     // at(0) = most recent (order_id=4), at(4) = oldest (order_id=0)
@@ -71,7 +71,7 @@ TEST(AuditLog, RingBufferWrapsAround) {
 
     // Write 100 entries (wraps around)
     for (uint64_t i = 0; i < 100; ++i) {
-        log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+        (void)log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
     }
 
     EXPECT_EQ(log.total_count(), 100);
@@ -90,7 +90,7 @@ TEST(AuditLog, RingBufferWrapsAround) {
 
 TEST(AuditLog, FillEventRecordsFillFields) {
     TestLog log;
-    log.record(AuditEvent::PartialFill, 42, 100.0, 10.0, Side::Sell, 2, 100.10, 3.5);
+    (void)log.record(AuditEvent::PartialFill, 42, 100.0, 10.0, Side::Sell, 2, 100.10, 3.5);
 
     const auto* e = log.latest();
     ASSERT_NE(e, nullptr);
@@ -103,8 +103,8 @@ TEST(AuditLog, FillEventRecordsFillFields) {
 
 TEST(AuditLog, SessionEvents) {
     TestLog log;
-    log.record(AuditEvent::SessionLogon, 0, 0.0, 0.0, Side::Buy, 1);
-    log.record(AuditEvent::ConnectionUp, 0, 0.0, 0.0, Side::Buy, 1);
+    (void)log.record(AuditEvent::SessionLogon, 0, 0.0, 0.0, Side::Buy, 1);
+    (void)log.record(AuditEvent::ConnectionUp, 0, 0.0, 0.0, Side::Buy, 1);
 
     EXPECT_EQ(log.count(), 2);
     EXPECT_EQ(log.at(0)->event, AuditEvent::ConnectionUp);
@@ -113,8 +113,8 @@ TEST(AuditLog, SessionEvents) {
 
 TEST(AuditLog, TscTimestampsAreMonotonic) {
     TestLog log;
-    log.record(AuditEvent::NewOrder, 1, 0.0, 0.0, Side::Buy, 0);
-    log.record(AuditEvent::NewOrder, 2, 0.0, 0.0, Side::Buy, 0);
+    (void)log.record(AuditEvent::NewOrder, 1, 0.0, 0.0, Side::Buy, 0);
+    (void)log.record(AuditEvent::NewOrder, 2, 0.0, 0.0, Side::Buy, 0);
 
     const auto* e1 = log.at(1);  // older
     const auto* e2 = log.at(0);  // newer
@@ -125,8 +125,8 @@ TEST(AuditLog, TscTimestampsAreMonotonic) {
 
 TEST(AuditLog, DumpProducesOutput) {
     TestLog log;
-    log.record(AuditEvent::NewOrder, 1, 50000.0, 1.5, Side::Buy, 0);
-    log.record(AuditEvent::Fill, 1, 50000.0, 1.5, Side::Buy, 0, 50001.0, 1.5);
+    (void)log.record(AuditEvent::NewOrder, 1, 50000.0, 1.5, Side::Buy, 0);
+    (void)log.record(AuditEvent::Fill, 1, 50000.0, 1.5, Side::Buy, 0, 50001.0, 1.5);
 
     std::string output = log.dump();
     EXPECT_FALSE(output.empty());
@@ -136,8 +136,8 @@ TEST(AuditLog, DumpProducesOutput) {
 
 TEST(AuditLog, FlushToFile) {
     TestLog log;
-    log.record(AuditEvent::NewOrder, 1, 100.0, 5.0, Side::Buy, 0);
-    log.record(AuditEvent::Acknowledged, 1, 100.0, 5.0, Side::Buy, 0);
+    (void)log.record(AuditEvent::NewOrder, 1, 100.0, 5.0, Side::Buy, 0);
+    (void)log.record(AuditEvent::Acknowledged, 1, 100.0, 5.0, Side::Buy, 0);
 
     auto path = "/tmp/test_audit_flush.bin";
     size_t written = log.flush_to_file(path);
@@ -179,7 +179,7 @@ TEST(AuditLog, MultiThreadedRecordMt) {
     for (int t = 0; t < N_THREADS; ++t) {
         threads.emplace_back([&log, t] {
             for (int i = 0; i < N_PER_THREAD; ++i) {
-                log.record_mt(AuditEvent::NewOrder,
+                (void)log.record_mt(AuditEvent::NewOrder,
                     static_cast<uint64_t>(t * N_PER_THREAD + i),
                     100.0, 1.0, Side::Buy, static_cast<uint8_t>(t));
             }
@@ -194,7 +194,7 @@ TEST(AuditLog, DefaultCapacity) {
     // Verify the default template parameter compiles
     AuditLog<> log;
     EXPECT_EQ(log.capacity, 65536);
-    log.record(AuditEvent::NewOrder, 1, 0.0, 0.0, Side::Buy, 0);
+    (void)log.record(AuditEvent::NewOrder, 1, 0.0, 0.0, Side::Buy, 0);
     EXPECT_EQ(log.count(), 1);
 }
 
@@ -227,7 +227,7 @@ TEST(AuditLog, RecordReturnsFalseOnOverflow) {
     TestLog log;
     // Fill to capacity
     for (uint64_t i = 0; i < 64; ++i) {
-        log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+        (void)log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
     }
     // 65th record should return false (overwriting oldest)
     bool ok = log.record(AuditEvent::NewOrder, 99, 0.0, 0.0, Side::Buy, 0);
@@ -237,7 +237,7 @@ TEST(AuditLog, RecordReturnsFalseOnOverflow) {
 TEST(AuditLog, RecordMtReturnsFalseOnOverflow) {
     AuditLog<64> log;
     for (uint64_t i = 0; i < 64; ++i) {
-        log.record_mt(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+        (void)log.record_mt(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
     }
     bool ok = log.record_mt(AuditEvent::NewOrder, 99, 0.0, 0.0, Side::Buy, 0);
     EXPECT_FALSE(ok);
@@ -245,7 +245,7 @@ TEST(AuditLog, RecordMtReturnsFalseOnOverflow) {
 
 TEST(AuditLog, FlushToFileInvalidPathReturnsZero) {
     TestLog log;
-    log.record(AuditEvent::NewOrder, 1, 100.0, 1.0, Side::Buy, 0);
+    (void)log.record(AuditEvent::NewOrder, 1, 100.0, 1.0, Side::Buy, 0);
     // Writing to an invalid/non-existent directory should fail
     size_t written = log.flush_to_file("/nonexistent_dir_xyz/audit.bin");
     EXPECT_EQ(written, 0);
@@ -267,7 +267,7 @@ TEST(AuditLog, DumpEmptyLog) {
 TEST(AuditLog, DumpLimitedEntries) {
     TestLog log;
     for (uint64_t i = 0; i < 10; ++i) {
-        log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+        (void)log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
     }
     // Dump only 3 entries
     std::string output = log.dump(3);
@@ -276,7 +276,7 @@ TEST(AuditLog, DumpLimitedEntries) {
 
 TEST(AuditLog, EntryDumpContainsAllFields) {
     TestLog log;
-    log.record(AuditEvent::Fill, 42, 100.25, 5.0, Side::Sell, 3, 100.30, 5.0);
+    (void)log.record(AuditEvent::Fill, 42, 100.25, 5.0, Side::Sell, 3, 100.30, 5.0);
     const auto* e = log.latest();
     ASSERT_NE(e, nullptr);
     std::string dump = e->dump();

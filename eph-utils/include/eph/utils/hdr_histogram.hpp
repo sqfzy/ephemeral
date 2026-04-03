@@ -145,7 +145,7 @@ class HdrHistogram {
 
         establish_size(highest_trackable_value);
 
-        /// Maximum allowed counts array length to prevent accidental huge allocations.
+        // Maximum allowed counts array length to prevent accidental huge allocations.
         static constexpr int32_t kMaxCountsLen = 10'000'000;
 
         if (counts_len_ > kMaxCountsLen) {

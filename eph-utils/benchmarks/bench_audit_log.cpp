@@ -20,7 +20,7 @@ static void BM_AuditRecord_SingleWriter(benchmark::State& state) {
     AuditLog<65536> log;
     uint64_t oid = 0;
     for (auto _ : state) {
-        log.record(AuditEvent::NewOrder, oid++, 50000.0, 1.5,
+        (void)log.record(AuditEvent::NewOrder, oid++, 50000.0, 1.5,
                    Side::Buy, 0);
     }
     state.SetItemsProcessed(state.iterations());
@@ -32,7 +32,7 @@ static void BM_AuditRecord_WithFill(benchmark::State& state) {
     AuditLog<65536> log;
     uint64_t oid = 0;
     for (auto _ : state) {
-        log.record(AuditEvent::Fill, oid++, 50000.0, 1.5,
+        (void)log.record(AuditEvent::Fill, oid++, 50000.0, 1.5,
                    Side::Buy, 0, 50001.0, 1.5);
     }
     state.SetItemsProcessed(state.iterations());
@@ -47,7 +47,7 @@ static void BM_AuditRecordMt(benchmark::State& state) {
     static AuditLog<65536> log;
     uint64_t oid = state.thread_index() * 10'000'000;
     for (auto _ : state) {
-        log.record_mt(AuditEvent::NewOrder, oid++, 50000.0, 1.5,
+        (void)log.record_mt(AuditEvent::NewOrder, oid++, 50000.0, 1.5,
                       Side::Buy, 0);
     }
     state.SetItemsProcessed(state.iterations());
@@ -62,7 +62,7 @@ static void BM_AuditLatest(benchmark::State& state) {
     AuditLog<65536> log;
     // Fill with some data
     for (uint64_t i = 0; i < 1000; ++i) {
-        log.record(AuditEvent::NewOrder, i, 50000.0, 1.5, Side::Buy, 0);
+        (void)log.record(AuditEvent::NewOrder, i, 50000.0, 1.5, Side::Buy, 0);
     }
     for (auto _ : state) {
         auto* e = log.latest();
