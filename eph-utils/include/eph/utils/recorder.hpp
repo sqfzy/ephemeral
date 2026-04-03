@@ -196,7 +196,7 @@ class Recorder {
     ///
     /// @param other The recorder to merge from (must have compatible histogram config).
     /// @return `true` on success, `false` if histograms are incompatible.
-    bool merge(const Recorder& other) noexcept {
+    [[nodiscard]] bool merge(const Recorder& other) noexcept {
         if (!histogram_.merge(other.histogram_)) {
             return false;
         }
@@ -281,7 +281,7 @@ class Recorder {
     ///
     /// @param output_dir Directory for the output file (created if absent).
     /// @return `true` on success, `false` on error (logged to stderr).
-    bool export_json(const std::string& output_dir = "outputs") const {
+    [[nodiscard]] bool export_json(const std::string& output_dir = "outputs") const {
         auto stats = compute_stats();
         if (!stats) return false;
 
@@ -342,7 +342,7 @@ class Recorder {
     ///
     /// @param output_dir Directory for the output file (created if absent).
     /// @return `true` on success, `false` on error (logged to stderr).
-    bool export_csv(const std::string& output_dir = "outputs") const {
+    [[nodiscard]] bool export_csv(const std::string& output_dir = "outputs") const {
         if (count_ == 0) return false;
 
         if (!ensure_directory(output_dir)) return false;
@@ -384,7 +384,7 @@ class Recorder {
     /// @brief Export both JSON summary and CSV distribution files.
     /// @param output_dir Directory for the output files (created if absent).
     /// @return `true` if both exports succeeded.
-    bool export_all(const std::string& output_dir = "outputs") const {
+    [[nodiscard]] bool export_all(const std::string& output_dir = "outputs") const {
         bool json_ok = export_json(output_dir);
         bool csv_ok = export_csv(output_dir);
         return json_ok && csv_ok;
@@ -686,7 +686,7 @@ class ConcurrentRecorder {
     ///
     /// @param output_dir  Directory for the output file (created if absent)
     /// @return true on success, false on error (logged to stderr)
-    bool export_json(const std::string& output_dir = "outputs") const {
+    [[nodiscard]] bool export_json(const std::string& output_dir = "outputs") const {
         auto stats = compute_stats();
         if (!stats) return false;
 
@@ -755,7 +755,7 @@ class ConcurrentRecorder {
     ///
     /// @param output_dir  Directory for the output file (created if absent)
     /// @return true on success, false on error (logged to stderr)
-    bool export_csv(const std::string& output_dir = "outputs") const {
+    [[nodiscard]] bool export_csv(const std::string& output_dir = "outputs") const {
         auto merged = state_->merge_all();
         if (merged.count == 0) return false;
 
@@ -798,7 +798,7 @@ class ConcurrentRecorder {
     /// @brief Export both JSON summary and CSV distribution files.
     /// @param output_dir Directory for the output files (created if absent).
     /// @return `true` if both exports succeeded.
-    bool export_all(const std::string& output_dir = "outputs") const {
+    [[nodiscard]] bool export_all(const std::string& output_dir = "outputs") const {
         bool json_ok = export_json(output_dir);
         bool csv_ok = export_csv(output_dir);
         return json_ok && csv_ok;
