@@ -206,7 +206,7 @@ struct MulticastGroup {
     uint16_t group_port = 0;   ///< UDP destination port to listen on (host byte order)
     uint32_t source_ip  = 0;   ///< Source-specific multicast filter (0 = accept any source)
 
-    bool operator==(const MulticastGroup&) const = default;
+    [[nodiscard]] bool operator==(const MulticastGroup&) const = default;
 
     /// Validate that the group IP is in the multicast range.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {

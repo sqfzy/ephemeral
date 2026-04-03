@@ -56,14 +56,17 @@ inline spdlog::logger* eal_logger() {
 /// @brief Clean up EAL resources. Call once, after all ports are stopped and closed.
 ///
 /// @warning After calling this function, no further rte_* API calls are valid.
-inline void eal_cleanup() noexcept {
+/// @return true if cleanup succeeded, false on error (logged at ERROR level)
+[[nodiscard]] inline bool eal_cleanup() noexcept {
     [[maybe_unused]] auto log = detail::eal_logger();
     SPDLOG_LOGGER_DEBUG(log, "Calling rte_eal_cleanup");
     int ret = rte_eal_cleanup();
     if (ret != 0) [[unlikely]] {
         SPDLOG_LOGGER_ERROR(log, "rte_eal_cleanup failed (ret={}, rte_errno={}): {}",
                      ret, rte_errno, rte_strerror(rte_errno));
+        return false;
     }
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,7 +95,7 @@ public:
     ~EalGuard() {
         if (initialized_) {
             SPDLOG_LOGGER_DEBUG(detail::eal_logger(), "EalGuard destroying, calling eal_cleanup");
-            eal_cleanup();
+            [[maybe_unused]] bool ok = eal_cleanup();
         }
     }
 
@@ -107,7 +110,7 @@ public:
     ///          running on the target guard.
     EalGuard& operator=(EalGuard&& other) noexcept {
         if (this != &other) {
-            if (initialized_) eal_cleanup();
+            if (initialized_) [[maybe_unused]] bool ok = eal_cleanup();
             initialized_ = other.initialized_;
             args_consumed_ = other.args_consumed_;
             other.initialized_ = false;

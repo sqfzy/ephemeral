@@ -266,7 +266,7 @@ struct ConnectionTuple {
     uint16_t dst_port  = 0;  ///< Destination TCP port (host byte order)
 
     /// @brief Defaulted equality comparison over all four fields.
-    bool operator==(const ConnectionTuple&) const = default;
+    [[nodiscard]] bool operator==(const ConnectionTuple&) const = default;
 
     /// Human-readable dump for logging/debugging.
     /// Defined after format_ipv4() (see below).

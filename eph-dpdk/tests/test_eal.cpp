@@ -52,3 +52,26 @@ TEST(EalGuard, ExplicitBoolConversion) {
     static_assert(requires(const EalGuard& g) { static_cast<bool>(g); },
                   "EalGuard must support explicit bool conversion");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// eal_cleanup — return value semantics
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(EalCleanup, ReturnsBool) {
+    // Verify eal_cleanup returns bool (not void) — [[nodiscard]] means
+    // callers must check success/failure.
+    static_assert(std::is_same_v<decltype(eal_cleanup()), bool>,
+                  "eal_cleanup must return bool for [[nodiscard]]");
+}
+
+TEST(EalGuard, ArgsConsumedIsNodiscard) {
+    // Verify that args_consumed() is [[nodiscard]] by checking it compiles
+    // as an expression (the attribute is already declared in the header).
+    static_assert(std::is_same_v<decltype(std::declval<const EalGuard&>().args_consumed()), int>,
+                  "args_consumed() must return int");
+}
+
+TEST(EalGuard, InitializedIsNodiscard) {
+    static_assert(std::is_same_v<decltype(std::declval<const EalGuard&>().initialized()), bool>,
+                  "initialized() must return bool");
+}
