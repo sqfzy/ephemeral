@@ -450,6 +450,21 @@ TEST(PacketTemplate, ToJsonHwCksumFalse) {
     EXPECT_NE(j.find("\"hw_cksum\":false"), std::string::npos);
 }
 
+TEST(PacketTemplate, FormatterProducesOutput) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    auto s = std::format("{}", tmpl);
+    EXPECT_NE(s.find("PacketTemplate"), std::string::npos);
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
+}
+
+TEST(ParsedPacket, FormatterInvalidProducesOutput) {
+    ParsedPacket p{};
+    auto s = std::format("{}", p);
+    EXPECT_EQ(s, "(invalid)");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // parse_packet boundary tests (simulated mbuf via raw buffer)
 // ─────────────────────────────────────────────────────────────────────────────

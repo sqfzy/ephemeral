@@ -771,3 +771,29 @@ TEST(MulticastGroup, ToJsonNoSourceFilter) {
     auto json = g.to_json();
     EXPECT_NE(json.find("\"source_ip\":\"0.0.0.0\""), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedUdpPacket::formatter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedUdpPacket, FormatterInvalidProducesOutput) {
+    ParsedUdpPacket p{};
+    auto s = std::format("{}", p);
+    EXPECT_EQ(s, "(invalid)");
+}
+
+TEST(ParsedUdpPacket, FormatterValidProducesOutput) {
+    FakeUdpMbuf fake;
+    uint8_t payload[] = {0xAB};
+    size_t pkt_len = build_fake_udp_packet(
+        fake.data(), sizeof(fake.buf),
+        parse_ipv4("10.1.2.3"), 5000,
+        parse_ipv4("233.54.12.111"), 26477,
+        payload, 1);
+    ASSERT_GT(pkt_len, 0u);
+    fake.set_len(static_cast<uint16_t>(pkt_len));
+    auto parsed = parse_udp_packet(&fake.mbuf);
+    auto s = std::format("{}", parsed);
+    EXPECT_NE(s.find("UDP"), std::string::npos);
+    EXPECT_NE(s.find("5000"), std::string::npos);
+}

@@ -822,3 +822,23 @@ struct std::formatter<eph::dpdk::net::ConnectionTuple> : std::formatter<std::str
         return std::formatter<std::string>::format(t.dump(), ctx);
     }
 };
+
+/// @brief std::formatter specialization for ParsedPacket.
+///
+/// Formats as the one-line dump string showing IPs, ports, flags, and payload.
+template <>
+struct std::formatter<eph::dpdk::net::ParsedPacket> : std::formatter<std::string> {
+    auto format(const eph::dpdk::net::ParsedPacket& p, auto& ctx) const {
+        return std::formatter<std::string>::format(p.dump(), ctx);
+    }
+};
+
+/// @brief std::formatter specialization for PacketTemplate.
+///
+/// Formats as a compact one-line summary with MACs, IPs, ports, and MSS.
+template <>
+struct std::formatter<eph::dpdk::net::PacketTemplate> : std::formatter<std::string> {
+    auto format(const eph::dpdk::net::PacketTemplate& t, auto& ctx) const {
+        return std::formatter<std::string>::format(t.dump(), ctx);
+    }
+};

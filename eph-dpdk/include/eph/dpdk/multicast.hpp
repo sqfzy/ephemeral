@@ -898,6 +898,14 @@ make_moldudp64_adapter(ParseFn&& parse_fn, MsgCb&& msg_callback) {
 // std::formatter specializations
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// @brief std::formatter for ParsedUdpPacket.
+template <>
+struct std::formatter<eph::dpdk::ParsedUdpPacket> : std::formatter<std::string> {
+    auto format(const eph::dpdk::ParsedUdpPacket& p, auto& ctx) const {
+        return std::formatter<std::string>::format(p.dump(), ctx);
+    }
+};
+
 /// @brief std::formatter for MulticastGroup — compact "ip:port" summary.
 template <>
 struct std::formatter<eph::dpdk::MulticastGroup> : std::formatter<std::string> {
