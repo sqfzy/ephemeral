@@ -967,6 +967,35 @@ TEST(Gateway, RemoveByTagStopsRunningTransport) {
     EXPECT_EQ(gw.connection_count(), 0);
 }
 
+// ── Gateway::reconnect_by_tag() ───────────────────────────────────────────
+
+TEST(Gateway, ReconnectByTagTriggersReconnect) {
+    Gateway gw;
+    MockTransport tp1, tp2;
+    tp1.running.store(true);
+    tp2.running.store(true);
+    gw.add("conn-a", &tp1);
+    gw.add("conn-b", &tp2);
+
+    EXPECT_TRUE(gw.reconnect_by_tag("conn-a"));
+    EXPECT_EQ(tp1.reconnect_count.load(), 1);
+    EXPECT_EQ(tp2.reconnect_count.load(), 0);
+}
+
+TEST(Gateway, ReconnectByTagNotFoundReturnsFalse) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("exists", &tp);
+
+    EXPECT_FALSE(gw.reconnect_by_tag("nonexistent"));
+    EXPECT_EQ(tp.reconnect_count.load(), 0);
+}
+
+TEST(Gateway, ReconnectByTagEmptyGatewayReturnsFalse) {
+    Gateway gw;
+    EXPECT_FALSE(gw.reconnect_by_tag("anything"));
+}
+
 TEST(Gateway, RemoveByTagNotFoundReturnsFalse) {
     Gateway gw;
     MockTransport tp;

@@ -565,6 +565,40 @@ public:
         }
     }
 
+    /// @brief Force reconnect a connection identified by tag.
+    ///
+    /// Atomic alternative to find_by_tag() + reconnect() that avoids TOCTOU
+    /// issues from index shifts between the two calls.
+    ///
+    /// @param tag  Tag string of the connection to reconnect.
+    /// @return true if found and reconnect triggered, false if tag not found.
+    bool reconnect_by_tag(std::string_view tag) noexcept {
+        void* ptr = nullptr;
+        void (*fn)(void*) = nullptr;
+        std::string found_tag;
+        {
+            std::lock_guard lock(mu_);
+            for (auto& c : connections_) {
+                if (c.tag == tag) {
+                    ptr = c.transport_ptr;
+                    fn = c.reconnect_fn;
+                    found_tag = c.tag;
+                    break;
+                }
+            }
+        }
+        if (!fn) return false;
+
+        SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: reconnecting '{}'", found_tag);
+        try {
+            fn(ptr);
+        } catch (...) {
+            SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                "Gateway: reconnect_fn threw for '{}'", found_tag);
+        }
+        return true;
+    }
+
     // ── Health monitoring ───────────────────────────────────────────────
 
     /// @brief Start background health monitor thread.
