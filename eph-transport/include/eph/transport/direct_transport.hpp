@@ -105,7 +105,15 @@ class DirectTransport {
 
         void operator()(const uint8_t* data, uint16_t len, uint8_t opcode) noexcept {
             if (config.on_message) {
-                try { config.on_message(data, len, opcode); } catch (...) {}
+                try {
+                    config.on_message(data, len, opcode);
+                } catch (const std::exception& e) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_message callback threw: {}", e.what());
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_message callback threw non-std::exception");
+                }
             }
             rx_stats.packets.fetch_add(1, std::memory_order_relaxed);
             rx_stats.bytes.fetch_add(len, std::memory_order_relaxed);

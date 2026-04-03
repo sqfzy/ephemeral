@@ -698,7 +698,13 @@ private:
                 try {
                     config().on_ping(frame.payload,
                                      static_cast<uint16_t>(frame.payload_len));
-                } catch (...) {}
+                } catch (const std::exception& e) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_ping callback threw: {}", e.what());
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_ping callback threw non-std::exception");
+                }
             }
             handle_ping(frame);
             return;
@@ -710,7 +716,15 @@ private:
                 "Received WS Close frame: code={} reason=\"{}\"",
                 code, reason);
             if (config().on_close) {
-                try { config().on_close(code, reason); } catch (...) {}
+                try {
+                    config().on_close(code, reason);
+                } catch (const std::exception& e) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_close callback threw: {}", e.what());
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_close callback threw non-std::exception");
+                }
             }
             if (frame.payload && frame.payload_len > 0 &&
                 frame.payload_len <= MaxPayload) {
@@ -730,7 +744,13 @@ private:
                 try {
                     config().on_pong(frame.payload,
                                      static_cast<uint16_t>(frame.payload_len));
-                } catch (...) {}
+                } catch (const std::exception& e) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_pong callback threw: {}", e.what());
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::transport_logger(),
+                        "on_pong callback threw non-std::exception");
+                }
             }
             return;
         }
