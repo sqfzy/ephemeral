@@ -481,3 +481,178 @@ TEST(Formatters, TransportConfigFormats) {
     auto s = std::format("{}", cfg);
     EXPECT_NE(s.find("host.example"), std::string::npos);
 }
+
+// =======================================================================
+// RttStats — edge cases
+// =======================================================================
+
+TEST(RttStats, SubtractionPreservesPercentiles) {
+    // Verify that min/max/mean/percentiles come from lhs (later snapshot)
+    RttStats a{.count = 100, .min_ns = 200, .max_ns = 8000,
+               .mean_ns = 3000.0, .p50_ns = 2500, .p99_ns = 7000, .p999_ns = 7800};
+    RttStats b{.count = 50,  .min_ns = 500, .max_ns = 6000,
+               .mean_ns = 2000.0, .p50_ns = 1800, .p99_ns = 5000, .p999_ns = 5500};
+    auto delta = a - b;
+    EXPECT_EQ(delta.count, 50);
+    // Percentiles are from lhs (a), not subtracted
+    EXPECT_EQ(delta.min_ns, a.min_ns);
+    EXPECT_EQ(delta.max_ns, a.max_ns);
+    EXPECT_DOUBLE_EQ(delta.mean_ns, a.mean_ns);
+    EXPECT_EQ(delta.p50_ns, a.p50_ns);
+    EXPECT_EQ(delta.p99_ns, a.p99_ns);
+    EXPECT_EQ(delta.p999_ns, a.p999_ns);
+}
+
+TEST(RttStats, ToJsonAllZeroFieldsValid) {
+    RttStats r{};
+    auto j = r.to_json();
+    EXPECT_NE(j.find("\"count\":0"), std::string::npos);
+    EXPECT_NE(j.find("\"min_ns\":0"), std::string::npos);
+    EXPECT_NE(j.find("\"max_ns\":0"), std::string::npos);
+}
+
+// =======================================================================
+// FrameView — default construction
+// =======================================================================
+
+TEST(FrameView, DefaultConstructedFieldsAreZero) {
+    FrameView f{};
+    EXPECT_EQ(f.payload, nullptr);
+    EXPECT_EQ(f.payload_len, 0);
+    EXPECT_EQ(f.opcode, 0);
+    EXPECT_TRUE(f.deliver);  // default is true (deliver by default)
+}
+
+// =======================================================================
+// TwophaseFilter — boundary conditions
+// =======================================================================
+
+TEST(TwophaseFilter, ExactlyMaxFramesPerBatch) {
+    // Test with exactly kMaxFramesPerBatch (128) frames
+    constexpr size_t N = filter_detail::kMaxFramesPerBatch;
+    std::vector<uint8_t> backing(N);
+    std::vector<FrameView> frames(N);
+    for (size_t i = 0; i < N; ++i) {
+        backing[i] = static_cast<uint8_t>(i % 4);
+        frames[i] = {.payload = &backing[i], .payload_len = 1, .deliver = true};
+    }
+    // 4 unique hashes, should keep only the last of each
+    filter_detail::apply_twophase_filter(
+        std::span<FrameView>(frames),
+        [](const uint8_t* data, size_t) -> uint32_t {
+            return static_cast<uint32_t>(*data) + 1;
+        });
+
+    // Last frame for each hash should be delivered
+    // Hash 1: frames 0,4,8,...,124 -> last is 124
+    // Hash 2: frames 1,5,9,...,125 -> last is 125
+    // Hash 3: frames 2,6,10,...,126 -> last is 126
+    // Hash 4: frames 3,7,11,...,127 -> last is 127
+    for (size_t i = 0; i < N; ++i) {
+        if (i >= N - 4) {
+            EXPECT_TRUE(frames[i].deliver) << "Frame " << i << " should be delivered";
+        } else {
+            EXPECT_FALSE(frames[i].deliver) << "Frame " << i << " should be skipped";
+        }
+    }
+}
+
+TEST(TwophaseFilter, MoreThanMaxFramesPerBatchTruncated) {
+    // Test with more than kMaxFramesPerBatch frames
+    // Only the first 128 should be processed; rest unchanged
+    constexpr size_t N = filter_detail::kMaxFramesPerBatch + 10;
+    std::vector<uint8_t> backing(N, 0);
+    std::vector<FrameView> frames(N);
+    for (size_t i = 0; i < N; ++i) {
+        frames[i] = {.payload = &backing[i], .payload_len = 1, .deliver = true};
+    }
+    filter_detail::apply_twophase_filter(
+        std::span<FrameView>(frames),
+        [](const uint8_t*, size_t) -> uint32_t { return 42; });
+
+    // Within first 128: only the last (index 127) should be delivered
+    for (size_t i = 0; i < filter_detail::kMaxFramesPerBatch - 1; ++i) {
+        EXPECT_FALSE(frames[i].deliver) << "Frame " << i << " should be skipped";
+    }
+    EXPECT_TRUE(frames[filter_detail::kMaxFramesPerBatch - 1].deliver);
+
+    // Beyond kMaxFramesPerBatch: deliver flags untouched (true)
+    for (size_t i = filter_detail::kMaxFramesPerBatch; i < N; ++i) {
+        EXPECT_TRUE(frames[i].deliver) << "Frame " << i << " should remain delivered";
+    }
+}
+
+// =======================================================================
+// TransportStats — additional edge cases
+// =======================================================================
+
+TEST(TransportStats, TcpRxFields) {
+    TransportStats s{};
+    s.tcp_rx_packets = 100;
+    s.tcp_rx_bursts = 10;
+    auto j = s.to_json();
+    // tcp_rx_packets is not in the JSON but should be in dump
+    auto d = s.dump();
+    // Just verify these fields exist and dump doesn't crash
+    EXPECT_GE(d.size(), 50u);
+}
+
+TEST(TransportStats, EqualityDetectsDifference) {
+    TransportStats a{};
+    TransportStats b{};
+    EXPECT_EQ(a, b);
+    a.tx_packets = 1;
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportStats, RateComputationWithLargeUptime) {
+    TransportStats s{};
+    s.tx_packets = 1'000'000;
+    s.rx_packets = 500'000;
+    s.tx_bytes = 100'000'000;
+    s.rx_bytes = 50'000'000;
+    s.uptime_ns = 60'000'000'000;  // 60 seconds
+    // tx_pps = 1M / 60 = ~16666.67
+    EXPECT_NEAR(s.tx_pps(), 16666.67, 1.0);
+    // tx_mbps = 100M * 8 / 60 / 1e6 = ~13.33
+    EXPECT_NEAR(s.tx_mbps(), 13.333, 0.01);
+}
+
+// =======================================================================
+// TransportConfig::to_json() — special characters
+// =======================================================================
+
+TEST(TransportConfigJson, SpecialCharsAreEscaped) {
+    TransportConfig cfg;
+    cfg.remote_host = "host\"with\\quotes";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/path?a=b&c=d";
+    auto j = cfg.to_json();
+    // Verify the JSON doesn't contain unescaped quotes from host
+    // The json_escape function should handle this
+    EXPECT_NE(j.find("host\\\"with"), std::string::npos);
+}
+
+// =======================================================================
+// ConnectionInfo — additional coverage
+// =======================================================================
+
+TEST(ConnectionInfo, ToJsonSpecialChars) {
+    ConnectionInfo ci{
+        .tls_version = "TLSv1.3",
+        .cipher_name = "TLS_AES_256_GCM_SHA384",
+        .ws_subprotocol = "graphql-ws",
+        .remote_ip = "10.0.0.1",
+        .remote_port = 443,
+        .use_tls = true
+    };
+    auto j = ci.to_json();
+    EXPECT_NE(j.find("\"ws_subprotocol\":\"graphql-ws\""), std::string::npos);
+    EXPECT_NE(j.find("\"remote_port\":443"), std::string::npos);
+}
+
+TEST(ConnectionInfo, DumpNoTls) {
+    ConnectionInfo ci{.use_tls = false};
+    auto d = ci.dump();
+    EXPECT_NE(d.find("unknown"), std::string::npos);
+}

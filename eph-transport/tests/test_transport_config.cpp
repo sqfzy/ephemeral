@@ -485,3 +485,131 @@ TEST(TransportConfigEquality, DifferentPortsAreNotEqual) {
     b.remote_port = 8080;
     EXPECT_NE(a, b);
 }
+
+// =======================================================================
+// validate() — additional edge cases
+// =======================================================================
+
+TEST(TransportConfigValidate, NegativePingIntervalRejected) {
+    auto cfg = valid_config();
+    cfg.ping_interval = std::chrono::seconds{-1};
+    auto err = cfg.validate();
+    EXPECT_NE(err.find("ping_interval must be >= 0"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidate, NegativePongTimeoutRejected) {
+    auto cfg = valid_config();
+    cfg.pong_timeout = std::chrono::seconds{-1};
+    auto err = cfg.validate();
+    EXPECT_NE(err.find("pong_timeout must be >= 0"), std::string_view::npos);
+}
+
+TEST(TransportConfigValidate, ValidMtlsConfig) {
+    auto cfg = valid_config();
+    cfg.use_tls = true;
+    cfg.client_cert_path = "/cert.pem";
+    cfg.client_key_path = "/key.pem";
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TransportConfigValidate, NegativeTcpTimeoutRejected) {
+    auto cfg = valid_config();
+    cfg.tcp_timeout = std::chrono::milliseconds{-1};
+    auto err = cfg.validate();
+    EXPECT_EQ(err, "tcp_timeout must be positive");
+}
+
+// =======================================================================
+// warnings() — additional coverage
+// =======================================================================
+
+TEST(TransportConfigWarnings, LargeRxBurstSizeWarns) {
+    auto cfg = valid_config();
+    cfg.rx_burst_size = 2000;
+    cfg.skip_utf8_validation = false;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("rx_burst_size") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+// =======================================================================
+// from_url() — additional edge cases
+// =======================================================================
+
+TEST(TransportConfigFromUrl, WsPlainRoundtrip) {
+    auto result = TransportConfig::from_url("ws://localhost:8080/stream");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->remote_host, "localhost");
+    EXPECT_EQ(result->remote_port, 8080);
+    EXPECT_EQ(result->ws_path, "/stream");
+    EXPECT_FALSE(result->use_tls);
+    // Roundtrip
+    auto url = result->to_url();
+    EXPECT_EQ(url, "ws://localhost:8080/stream");
+}
+
+TEST(TransportConfigFromUrl, WsDefaultPort80OmittedInToUrl) {
+    auto result = TransportConfig::from_url("ws://host.example/ws");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->remote_port, 80);
+    EXPECT_EQ(result->to_url(), "ws://host.example/ws");
+}
+
+TEST(TransportConfigFromUrl, Ipv6WithDefaultPort) {
+    TransportConfig cfg;
+    cfg.remote_host = "::1";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    cfg.use_tls = true;
+    // Default port omitted in URL
+    EXPECT_EQ(cfg.to_url(), "wss://[::1]/ws");
+}
+
+TEST(TransportConfigFromUrl, FragmentInPathPreserved) {
+    auto result = TransportConfig::from_url("wss://host.example/path#fragment");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->ws_path, "/path#fragment");
+}
+
+TEST(TransportConfigFromUrl, PortMax65535Accepted) {
+    auto result = TransportConfig::from_url("wss://host:65535/ws");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->remote_port, 65535);
+}
+
+TEST(TransportConfigFromUrl, Port65536Rejected) {
+    auto result = TransportConfig::from_url("wss://host:65536/ws");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("port out of range"), std::string::npos);
+}
+
+// =======================================================================
+// to_json() / dump() — roundtrip and format checks
+// =======================================================================
+
+TEST(TransportConfigJson, JsonContainsAllFields) {
+    auto cfg = valid_config();
+    cfg.ws_subprotocol = "graphql-ws";
+    cfg.extra_headers = "X-Custom: val\r\n";
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"ws_subprotocol\":\"graphql-ws\""), std::string::npos);
+    EXPECT_NE(j.find("\"extra_headers\""), std::string::npos);
+    EXPECT_NE(j.find("\"tx_burst_size\""), std::string::npos);
+    EXPECT_NE(j.find("\"rx_burst_size\""), std::string::npos);
+}
+
+TEST(TransportConfigDump, DumpContainsSubprotocol) {
+    auto cfg = valid_config();
+    cfg.ws_subprotocol = "graphql-ws";
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("graphql-ws"), std::string::npos);
+}
+
+TEST(TransportConfigDump, DumpNoSubprotocolShowsNone) {
+    auto cfg = valid_config();
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("(none)"), std::string::npos);
+}
