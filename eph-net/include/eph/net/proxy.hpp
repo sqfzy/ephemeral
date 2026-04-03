@@ -29,6 +29,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -146,6 +147,24 @@ struct ProxyConfig {
     /// (both configs must represent the same proxy endpoint with the same credentials).
     [[nodiscard]] friend bool operator==(const ProxyConfig&,
                                          const ProxyConfig&) = default;
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (timeout.count() < 1000)
+            w.emplace_back(std::format(
+                "proxy timeout={}ms is short — handshake may fail on "
+                "high-latency networks", timeout.count()));
+        if (type == ProxyType::kSocks5 && !username.empty() && password.empty())
+            w.emplace_back("SOCKS5 username set without password — server "
+                           "may reject authentication");
+        if (type == ProxyType::kHttpConnect && !username.empty())
+            w.emplace_back("HTTP CONNECT with credentials uses Basic auth "
+                           "(base64, not encrypted) — ensure TLS is used");
+        return w;
+    }
 };
 
 // ---------------------------------------------------------------------------

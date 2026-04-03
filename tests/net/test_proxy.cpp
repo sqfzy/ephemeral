@@ -522,3 +522,50 @@ TEST(ProxyConfigFormatter, DoesNotLeakPassword) {
     auto s = std::format("{}", cfg);
     EXPECT_EQ(s.find("s3cret"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig::warnings()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigWarnings, NoWarningsForReasonableConfig) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 1080};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
+
+TEST(ProxyConfigWarnings, WarnsOnShortTimeout) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 1080,
+                    .timeout = std::chrono::milliseconds{500}};
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("short") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(ProxyConfigWarnings, WarnsOnSocks5UsernameWithoutPassword) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 1080,
+                    .type = ProxyType::kSocks5,
+                    .username = "alice"};
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("without password") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(ProxyConfigWarnings, WarnsOnHttpConnectWithCredentials) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 8080,
+                    .type = ProxyType::kHttpConnect,
+                    .username = "alice", .password = "pass"};
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    bool found = false;
+    for (const auto& s : w) {
+        if (s.find("Basic auth") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
