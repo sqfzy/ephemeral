@@ -499,4 +499,36 @@ static void BM_OpcodeName_Unknown(benchmark::State& state) {
 }
 BENCHMARK(BM_OpcodeName_Unknown);
 
+// ---------------------------------------------------------------------------
+// ws::encode_frame — WS frame encoding (TX hot path)
+// ---------------------------------------------------------------------------
+
+static void BM_EncodeFrame_Small(benchmark::State& state) {
+    uint8_t payload[64];
+    std::memset(payload, 0x42, sizeof(payload));
+    uint8_t out[128];
+    for (auto _ : state) {
+        auto n = eph::net::ws::encode_frame(out, eph::net::ws::opcode::kBinary,
+                                              payload, sizeof(payload));
+        benchmark::DoNotOptimize(n);
+        benchmark::DoNotOptimize(out);
+    }
+    state.SetBytesProcessed(state.iterations() * sizeof(payload));
+}
+BENCHMARK(BM_EncodeFrame_Small);
+
+static void BM_EncodeFrame_512(benchmark::State& state) {
+    std::array<uint8_t, 512> payload;
+    payload.fill(0x42);
+    uint8_t out[1024];
+    for (auto _ : state) {
+        auto n = eph::net::ws::encode_frame(out, eph::net::ws::opcode::kBinary,
+                                              payload.data(), payload.size());
+        benchmark::DoNotOptimize(n);
+        benchmark::DoNotOptimize(out);
+    }
+    state.SetBytesProcessed(state.iterations() * payload.size());
+}
+BENCHMARK(BM_EncodeFrame_512);
+
 BENCHMARK_MAIN();
