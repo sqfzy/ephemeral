@@ -324,7 +324,7 @@ struct TransportCore {
     /// @param frame      Encoded WS frame bytes
     /// @param frame_len  Length of the encoded frame
     /// @return SendError::kOk on success
-    SendError send_raw_direct(const uint8_t* frame, size_t frame_len) noexcept {
+    [[nodiscard]] SendError send_raw_direct(const uint8_t* frame, size_t frame_len) noexcept {
         if (!running.load(std::memory_order_acquire))
             return SendError::kNotConnected;
 
@@ -354,7 +354,7 @@ struct TransportCore {
     /// @param reason       Optional reason string (max 123 bytes, truncated)
     /// @param max_payload  MaxPayload of the owning transport (for size check)
     /// @return SendError::kOk on success
-    SendError send_close_direct(uint16_t status_code,
+    [[nodiscard]] SendError send_close_direct(uint16_t status_code,
                                 std::string_view reason,
                                 size_t max_payload) noexcept {
         if (!running.load(std::memory_order_acquire))
@@ -396,7 +396,7 @@ struct TransportCore {
     /// @param payload_len  Payload length (truncated to 125 if larger)
     /// @param max_payload  MaxPayload of the owning transport (for size check)
     /// @return SendError::kOk on success
-    SendError send_ping_direct(const void* payload,
+    [[nodiscard]] SendError send_ping_direct(const void* payload,
                                size_t payload_len,
                                size_t max_payload) noexcept {
         if (!running.load(std::memory_order_acquire))
