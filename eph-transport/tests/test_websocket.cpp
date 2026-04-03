@@ -606,3 +606,154 @@ TEST(DecodedFrame, IsControlVsData) {
     EXPECT_FALSE(frame.is_data());
     EXPECT_TRUE(frame.is_control());
 }
+
+// =======================================================================
+// is_valid_utf8 — RFC 6455 §5.6 text frame payload validation
+// =======================================================================
+
+TEST(IsValidUtf8, EmptyInputIsValid) {
+    EXPECT_TRUE(is_valid_utf8(nullptr, 0));
+}
+
+TEST(IsValidUtf8, PureAsciiIsValid) {
+    std::string s = "Hello, World! 123 !@#$%";
+    EXPECT_TRUE(is_valid_utf8(
+        reinterpret_cast<const uint8_t*>(s.data()), s.size()));
+}
+
+TEST(IsValidUtf8, TwoByteSequence) {
+    // U+00E9 (e-acute): 0xC3 0xA9
+    uint8_t data[] = {0xC3, 0xA9};
+    EXPECT_TRUE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, ThreeByteSequence) {
+    // U+20AC (Euro sign): 0xE2 0x82 0xAC
+    uint8_t data[] = {0xE2, 0x82, 0xAC};
+    EXPECT_TRUE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, FourByteSequence) {
+    // U+1F600 (grinning face): 0xF0 0x9F 0x98 0x80
+    uint8_t data[] = {0xF0, 0x9F, 0x98, 0x80};
+    EXPECT_TRUE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, InvalidContinuationByteAlone) {
+    // 0x80-0xBF are continuation bytes; standalone is invalid
+    uint8_t data[] = {0x80};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, TruncatedTwoByteSequence) {
+    // 0xC3 expects a continuation byte, but ends prematurely
+    uint8_t data[] = {0xC3};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, TruncatedThreeByteSequence) {
+    // 0xE2 expects two continuation bytes, only one provided
+    uint8_t data[] = {0xE2, 0x82};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, TruncatedFourByteSequence) {
+    // 0xF0 expects three continuation bytes, only two provided
+    uint8_t data[] = {0xF0, 0x9F, 0x98};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, InvalidByte0xFF) {
+    uint8_t data[] = {0xFF};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, InvalidByte0xFE) {
+    uint8_t data[] = {0xFE};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, OverlongTwoByteEncoding) {
+    // U+002F (/) as overlong 2-byte: 0xC0 0xAF (should be just 0x2F)
+    uint8_t data[] = {0xC0, 0xAF};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, OverlongThreeByteEncoding) {
+    // U+002F as overlong 3-byte: 0xE0 0x80 0xAF
+    uint8_t data[] = {0xE0, 0x80, 0xAF};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, SurrogateHalfRejected) {
+    // U+D800 (high surrogate): 0xED 0xA0 0x80 — invalid in UTF-8
+    uint8_t data[] = {0xED, 0xA0, 0x80};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, MaxValidCodePoint) {
+    // U+10FFFF: 0xF4 0x8F 0xBF 0xBF
+    uint8_t data[] = {0xF4, 0x8F, 0xBF, 0xBF};
+    EXPECT_TRUE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, BeyondMaxCodePointRejected) {
+    // U+110000: 0xF4 0x90 0x80 0x80 — beyond max Unicode scalar value
+    uint8_t data[] = {0xF4, 0x90, 0x80, 0x80};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, MixedAsciiAndMultibyte) {
+    // "Hello éàü"
+    std::string s = "Hello \xC3\xA9\xC3\xA0\xC3\xBC";
+    EXPECT_TRUE(is_valid_utf8(
+        reinterpret_cast<const uint8_t*>(s.data()), s.size()));
+}
+
+TEST(IsValidUtf8, InvalidByteInMiddle) {
+    // Valid ASCII, then invalid 0xFF, then valid ASCII
+    uint8_t data[] = {'A', 'B', 0xFF, 'C', 'D'};
+    EXPECT_FALSE(is_valid_utf8(data, sizeof(data)));
+}
+
+TEST(IsValidUtf8, StringViewOverload) {
+    std::string_view sv = "valid UTF-8 string";
+    EXPECT_TRUE(is_valid_utf8(sv));
+    std::string_view bad("\xFF", 1);
+    EXPECT_FALSE(is_valid_utf8(bad));
+}
+
+// =======================================================================
+// MaskKeyCache — batch mask key generation
+// =======================================================================
+
+TEST(MaskKeyCache, ProducesNonZeroKeys) {
+    MaskKeyCache cache;
+    uint8_t key[4]{};
+    cache.next_key(key);
+    // Very unlikely that all 4 bytes are zero from CSPRNG
+    bool all_zero = (key[0] == 0 && key[1] == 0 && key[2] == 0 && key[3] == 0);
+    // Not a hard failure since it's probabilistic, but assert some activity
+    EXPECT_FALSE(all_zero);
+}
+
+TEST(MaskKeyCache, ConsecutiveKeysAreDifferent) {
+    MaskKeyCache cache;
+    uint8_t key1[4]{}, key2[4]{};
+    cache.next_key(key1);
+    cache.next_key(key2);
+    // Two consecutive keys from CSPRNG should differ with overwhelming probability
+    EXPECT_NE(std::memcmp(key1, key2, 4), 0);
+}
+
+TEST(MaskKeyCache, ExhaustsPoolAndRefills) {
+    MaskKeyCache cache;
+    uint8_t key[4]{};
+    // Exhaust the pool (1024 keys) + 1 to trigger refill
+    for (size_t i = 0; i < MaskKeyCache::kPoolSize + 1; ++i) {
+        cache.next_key(key);
+    }
+    // Should still produce a valid key after refill
+    bool all_zero = (key[0] == 0 && key[1] == 0 && key[2] == 0 && key[3] == 0);
+    EXPECT_FALSE(all_zero);
+}

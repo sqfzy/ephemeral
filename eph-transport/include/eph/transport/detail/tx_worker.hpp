@@ -188,7 +188,8 @@ public:
             uint8_t opcode) noexcept {
         if (!core_.running.load(std::memory_order_acquire))
             return SendError::kNotConnected;
-        if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
+        if (count == 0) return SendError::kOk;
+        if (!payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload)
@@ -207,7 +208,15 @@ public:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            update_hwm_(QueueDepth);
+            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+                "TX batch enqueue failed: queue full (count={}, opcode={})",
+                count, opcode);
             return SendError::kQueueFull;
+        }
+        // Sample HWM after batch to track peak occupancy
+        if ((++tx_hwm_counter_ & 63) == 0) {
+            update_hwm_(tx_queue_.size());
         }
         return SendError::kOk;
     }
@@ -220,7 +229,8 @@ public:
             uint8_t opcode) noexcept {
         if (!core_.running.load(std::memory_order_acquire))
             return SendError::kNotConnected;
-        if (count > 0 && !payloads) [[unlikely]] return SendError::kNullData;
+        if (count == 0) return SendError::kOk;
+        if (!payloads) [[unlikely]] return SendError::kNullData;
 
         for (size_t i = 0; i < count; ++i) {
             if (payloads[i].size() > MaxPayload)
@@ -239,7 +249,14 @@ public:
 
         if (!ok) {
             queue_full_count_.fetch_add(1, std::memory_order_relaxed);
+            update_hwm_(QueueDepth);
+            SPDLOG_LOGGER_TRACE(detail::transport_logger(),
+                "TX batch enqueue_for failed: queue full (count={}, opcode={})",
+                count, opcode);
             return SendError::kQueueFull;
+        }
+        if ((++tx_hwm_counter_ & 63) == 0) {
+            update_hwm_(tx_queue_.size());
         }
         return SendError::kOk;
     }
