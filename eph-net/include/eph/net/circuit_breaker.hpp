@@ -288,6 +288,10 @@ public:
         return failure_count_;
     }
 
+    /// @brief Read-only access to the breaker's immutable configuration.
+    /// @return Const reference to the Config used at construction.
+    [[nodiscard]] const Config& config() const noexcept { return config_; }
+
     /// @brief Force-reset the circuit breaker to Closed state.
     ///
     /// Clears failure count and half-open call tracking.

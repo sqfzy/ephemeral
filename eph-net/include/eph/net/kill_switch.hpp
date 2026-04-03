@@ -197,6 +197,22 @@ public:
         SPDLOG_LOGGER_INFO(detail::kill_switch_logger(), "KillSwitch: {}/{} transports stopped", stopped, n);
     }
 
+    /// @brief Reset the shutdown state so shutdown() can be called again.
+    ///
+    /// Use after shutdown() to allow re-registration and re-shutdown of
+    /// new transports. Does NOT re-register previously registered transports.
+    /// Typically used in test harnesses or long-running processes that
+    /// need to cycle transport lifetimes.
+    ///
+    /// @warning Not safe to call concurrently with shutdown() or from a
+    ///          signal handler.
+    void reset() noexcept {
+        shutdown_requested_.store(false, std::memory_order_release);
+        shutdown_done_.store(false, std::memory_order_release);
+        SPDLOG_LOGGER_DEBUG(detail::kill_switch_logger(),
+            "KillSwitch: reset — shutdown state cleared");
+    }
+
     /// @brief Emergency kill: request shutdown without blocking.
     ///
     /// Use when graceful shutdown is not possible (e.g., crash signal).

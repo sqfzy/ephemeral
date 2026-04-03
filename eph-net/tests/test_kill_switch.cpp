@@ -234,3 +234,35 @@ TEST(KillSwitch, UnregisterNullIsNoop) {
     ks.unregister_transport<MockTransport>(nullptr);
     EXPECT_EQ(ks.transport_count(), 0);
 }
+
+TEST(KillSwitch, ResetClearsShutdownState) {
+    KillSwitch ks;
+    ks.request_shutdown();
+    EXPECT_TRUE(ks.is_shutdown_requested());
+    ks.reset();
+    EXPECT_FALSE(ks.is_shutdown_requested());
+}
+
+TEST(KillSwitch, ResetAllowsReShutdown) {
+    KillSwitch ks;
+    MockTransport tp1;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ks.shutdown();
+    EXPECT_FALSE(tp1.is_running());
+    EXPECT_EQ(tp1.stop_count.load(), 1);
+
+    // Reset and register a new transport
+    ks.reset();
+    MockTransport tp2;
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    ks.shutdown();
+    EXPECT_FALSE(tp2.is_running());
+    EXPECT_EQ(tp2.stop_count.load(), 1);
+}
+
+TEST(KillSwitch, ResetIsIdempotent) {
+    KillSwitch ks;
+    ks.reset();  // no-op on fresh instance
+    ks.reset();
+    EXPECT_FALSE(ks.is_shutdown_requested());
+}

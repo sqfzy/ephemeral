@@ -381,3 +381,23 @@ TEST(RateLimiterConfig, WarnsOnZeroRateWithBurst) {
     }
     EXPECT_TRUE(found) << "expected warning about zero rate";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Accessors: burst() and rate_per_ns()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiter, BurstAccessorMatchesConfig) {
+    RateLimiter rl(500.0, 42);
+    EXPECT_DOUBLE_EQ(rl.burst(), 42.0);
+}
+
+TEST(RateLimiter, RatePerNsMatchesConfig) {
+    RateLimiter rl(1'000'000'000.0, 1);
+    // 1e9 tokens/sec = 1.0 token/ns
+    EXPECT_DOUBLE_EQ(rl.rate_per_ns(), 1.0);
+}
+
+TEST(RateLimiter, RatePerNsZeroRate) {
+    RateLimiter rl(0.0, 10);
+    EXPECT_DOUBLE_EQ(rl.rate_per_ns(), 0.0);
+}

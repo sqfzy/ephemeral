@@ -181,11 +181,19 @@ hmac_sha256_hex(std::string_view key, std::string_view message) noexcept {
 [[nodiscard]] inline bool
 hmac_verify(std::string_view key, std::string_view message,
             std::span<const uint8_t, 32> expected) noexcept {
+    SPDLOG_LOGGER_DEBUG(detail::hmac_logger(),
+                        "hmac_verify: key_len={}, msg_len={}", key.size(), message.size());
     auto computed = hmac_sha256(key, message);
-    if (!computed) return false;
+    if (!computed) {
+        SPDLOG_LOGGER_WARN(detail::hmac_logger(),
+                           "hmac_verify: HMAC computation failed: {}", computed.error());
+        return false;
+    }
     // CRYPTO_memcmp returns 0 if equal, in constant time regardless of
     // where the first difference occurs.
-    return CRYPTO_memcmp(computed->data(), expected.data(), 32) == 0;
+    bool match = CRYPTO_memcmp(computed->data(), expected.data(), 32) == 0;
+    SPDLOG_LOGGER_DEBUG(detail::hmac_logger(), "hmac_verify: result={}", match ? "match" : "mismatch");
+    return match;
 }
 
 /// @brief Verify an HMAC-SHA256 hex signature in constant time.
@@ -196,12 +204,26 @@ hmac_verify(std::string_view key, std::string_view message,
 [[nodiscard]] inline bool
 hmac_verify_hex(std::string_view key, std::string_view message,
                 std::string_view expected_hex) noexcept {
+    SPDLOG_LOGGER_DEBUG(detail::hmac_logger(),
+                        "hmac_verify_hex: key_len={}, msg_len={}, expected_hex_len={}",
+                        key.size(), message.size(), expected_hex.size());
     auto computed = hmac_sha256_hex(key, message);
-    if (!computed) return false;
-    if (computed->size() != expected_hex.size()) return false;
+    if (!computed) {
+        SPDLOG_LOGGER_WARN(detail::hmac_logger(),
+                           "hmac_verify_hex: HMAC computation failed: {}", computed.error());
+        return false;
+    }
+    if (computed->size() != expected_hex.size()) {
+        SPDLOG_LOGGER_DEBUG(detail::hmac_logger(),
+                            "hmac_verify_hex: length mismatch (computed={}, expected={})",
+                            computed->size(), expected_hex.size());
+        return false;
+    }
     // Constant-time comparison on the hex strings
-    return CRYPTO_memcmp(computed->data(), expected_hex.data(),
-                         computed->size()) == 0;
+    bool match = CRYPTO_memcmp(computed->data(), expected_hex.data(),
+                               computed->size()) == 0;
+    SPDLOG_LOGGER_DEBUG(detail::hmac_logger(), "hmac_verify_hex: result={}", match ? "match" : "mismatch");
+    return match;
 }
 
 } // namespace eph::net

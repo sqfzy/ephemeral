@@ -519,3 +519,20 @@ TEST(CircuitBreakerConfig, WarnsOnLongOpenDuration) {
     }
     EXPECT_TRUE(found) << "expected warning about long open_duration";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// config() accessor
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, ConfigAccessorReturnsConstructionConfig) {
+    CircuitBreaker::Config cfg{3, 500ms, 2};
+    CircuitBreaker cb(cfg);
+    EXPECT_EQ(cb.config(), cfg);
+}
+
+TEST(CircuitBreaker, ConfigAccessorDefaultConfig) {
+    CircuitBreaker cb;
+    EXPECT_EQ(cb.config().failure_threshold, 5u);
+    EXPECT_EQ(cb.config().open_duration.count(), 30000);
+    EXPECT_EQ(cb.config().half_open_max_calls, 1u);
+}

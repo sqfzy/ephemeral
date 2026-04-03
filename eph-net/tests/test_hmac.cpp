@@ -268,3 +268,56 @@ TEST(HmacSha256, HexConvenienceMatchesManual) {
 
     EXPECT_EQ(to_hex(*raw), *hex_convenience);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HMAC verification (constant-time)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(HmacVerify, CorrectDigestReturnsTrue) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    auto digest = hmac_sha256(key, msg);
+    ASSERT_TRUE(digest.has_value());
+    EXPECT_TRUE(hmac_verify(key, msg, *digest));
+}
+
+TEST(HmacVerify, WrongDigestReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    std::array<uint8_t, 32> wrong{};  // all zeros
+    EXPECT_FALSE(hmac_verify(key, msg, wrong));
+}
+
+TEST(HmacVerify, DifferentMessageReturnsFalse) {
+    std::string_view key = "test-key";
+    auto digest = hmac_sha256(key, "message-a");
+    ASSERT_TRUE(digest.has_value());
+    EXPECT_FALSE(hmac_verify(key, "message-b", *digest));
+}
+
+TEST(HmacVerifyHex, CorrectHexReturnsTrue) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    auto hex = hmac_sha256_hex(key, msg);
+    ASSERT_TRUE(hex.has_value());
+    EXPECT_TRUE(hmac_verify_hex(key, msg, *hex));
+}
+
+TEST(HmacVerifyHex, WrongHexReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    std::string wrong_hex(64, '0');
+    EXPECT_FALSE(hmac_verify_hex(key, msg, wrong_hex));
+}
+
+TEST(HmacVerifyHex, WrongLengthReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    EXPECT_FALSE(hmac_verify_hex(key, msg, "tooshort"));
+}
+
+TEST(HmacVerifyHex, EmptyExpectedReturnsFalse) {
+    std::string_view key = "test-key";
+    std::string_view msg = "test-message";
+    EXPECT_FALSE(hmac_verify_hex(key, msg, ""));
+}

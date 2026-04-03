@@ -189,6 +189,14 @@ public:
         return tokens_;
     }
 
+    /// @brief Read-only access to the limiter's burst capacity.
+    /// @return Maximum token capacity (matches the burst value from Config).
+    [[nodiscard]] double burst() const noexcept { return burst_; }
+
+    /// @brief Read-only access to the refill rate in tokens per nanosecond.
+    /// @return Internal rate expressed in tokens/ns. Multiply by 1e9 for tokens/sec.
+    [[nodiscard]] double rate_per_ns() const noexcept { return rate_per_ns_; }
+
     /// @brief Reset token count to full burst capacity.
     ///
     /// Refill timestamp is also reset, so the next refill interval starts now.
