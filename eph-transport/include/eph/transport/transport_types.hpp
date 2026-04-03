@@ -9,7 +9,7 @@
 /// headers.
 ///
 /// Error types (SendError, ConnectionError, ConnectionErrorInfo) are defined
-/// in eph/core/transport_errors.hpp and re-exported here for backward compat.
+/// in eph/core/transport_errors.hpp — include that header directly when needed.
 
 #include <atomic>
 #include <charconv>
@@ -18,7 +18,6 @@
 #include <expected>
 #include <format>
 #include <functional>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -170,7 +169,6 @@ inline FrameFilterFn make_twophase_filter(
 
 // ---------------------------------------------------------------------------
 // Connection error types & Send result — defined in eph/core/transport_errors.hpp
-// (ConnectionError, ConnectionErrorInfo, SendError are re-exported via include above)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
