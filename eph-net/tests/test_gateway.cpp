@@ -800,6 +800,15 @@ TEST(Gateway, ToJsonWithConnections) {
     EXPECT_NE(j.find("\"priority\":5"), std::string::npos);
 }
 
+TEST(Gateway, ToJsonEscapesTagWithSpecialChars) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("tag\"with\"quotes", &tp);
+    auto j = gw.to_json();
+    EXPECT_NE(j.find("tag\\\"with\\\"quotes"), std::string::npos)
+        << "tag with quotes should be escaped; got: " << j;
+}
+
 TEST(Gateway, ToJsonReflectsHealthAfterStart) {
     Gateway gw;
     MockTransport tp;

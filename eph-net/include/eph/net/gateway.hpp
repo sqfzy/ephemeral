@@ -34,6 +34,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include "eph/core/detail/json_escape.hpp"
 #include "eph/net/kill_switch.hpp"  // for Stoppable concept
 
 namespace eph::net {
@@ -611,7 +612,8 @@ public:
             const auto& c = connections_[i];
             result += std::format(
                 "{{\"tag\":\"{}\",\"health\":\"{}\",\"priority\":{}}}",
-                c.tag, conn_health_name(c.health), c.priority);
+                eph::core::detail::json_escape(c.tag),
+                conn_health_name(c.health), c.priority);
         }
         result += "]}";
         return result;
