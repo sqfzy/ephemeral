@@ -378,7 +378,7 @@ public:
     /// deadlock if start_threads() calls back into Gateway.
     void start_all() noexcept {
         struct StartTarget {
-            size_t idx; std::string tag; void* ptr;
+            std::string tag; void* ptr;
             void (*start_fn)(void*);
             bool (*is_running_fn)(void*);
         };
@@ -388,7 +388,7 @@ public:
             for (size_t i = 0; i < connections_.size(); ++i) {
                 auto& c = connections_[i];
                 if (c.health == ConnHealth::Stopped && c.start_threads_fn) {
-                    targets.push_back({i, c.tag, c.transport_ptr,
+                    targets.push_back({c.tag, c.transport_ptr,
                                        c.start_threads_fn, c.is_running_fn});
                 }
             }
@@ -398,14 +398,14 @@ public:
             // is somehow already running (e.g. started externally).
             if (t.is_running_fn && t.is_running_fn(t.ptr)) {
                 SPDLOG_LOGGER_INFO(detail::gateway_logger(),
-                    "Gateway: [{}] '{}' already running, skipping start", t.idx, t.tag);
+                    "Gateway: '{}' already running, skipping start", t.tag);
             } else {
-                SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: starting [{}] '{}'", t.idx, t.tag);
+                SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: starting '{}'", t.tag);
                 try {
                     t.start_fn(t.ptr);
                 } catch (...) {
                     SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
-                        "Gateway: start_threads_fn threw for [{}] '{}'", t.idx, t.tag);
+                        "Gateway: start_threads_fn threw for '{}'", t.tag);
                 }
             }
         }

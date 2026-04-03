@@ -276,6 +276,11 @@ struct SocketConfig {
             if (keepalive_count <= 0)
                 return "keepalive_count must be positive when keepalive is enabled";
         }
+        // Reject control characters in bind_device since it is passed to
+        // setsockopt(SO_BINDTODEVICE) and logged — control characters could
+        // cause log injection or unexpected kernel behavior.
+        if (!bind_device.empty() && detail::contains_control_chars(bind_device))
+            return "bind_device contains control characters";
         return {};
     }
 };

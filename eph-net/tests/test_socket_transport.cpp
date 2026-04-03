@@ -332,6 +332,27 @@ TEST(SocketConfigValidate, HostWithNullByteRejected) {
     EXPECT_NE(err.find("control characters"), std::string_view::npos);
 }
 
+TEST(SocketConfigValidate, BindDeviceWithControlCharsRejected) {
+    SocketConfig cfg{.host = "example.com", .port = 443};
+    cfg.bind_device = "eth0\nmalicious";
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("bind_device"), std::string_view::npos);
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, ValidBindDevicePasses) {
+    SocketConfig cfg{.host = "example.com", .port = 443};
+    cfg.bind_device = "ens35";
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, EmptyBindDevicePasses) {
+    SocketConfig cfg{.host = "example.com", .port = 443};
+    // Default empty bind_device should be fine
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
 TEST(SocketConfigValidate, EqualityOperator) {
     SocketConfig a{.host = "example.com", .port = 443, .tcp_nodelay = true};
     SocketConfig b{.host = "example.com", .port = 443, .tcp_nodelay = true};
