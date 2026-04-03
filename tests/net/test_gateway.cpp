@@ -246,6 +246,73 @@ TEST(Gateway, TagOutOfBoundsReturnsEmpty) {
     EXPECT_EQ(gw.tag(999), "");
 }
 
+TEST(Gateway, StartAllSkipsAlreadyRunning) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);  // pre-started externally
+    gw.add("t1", &tp);
+
+    // stop_all first to set health to Stopped, then start_all
+    gw.stop_all();
+    tp.running.store(true);  // simulate external start before gateway's start
+    int before = tp.start_count.load();
+    gw.start_all();  // should detect running and skip
+    // start_threads_fn should NOT be called since transport is already running
+    EXPECT_EQ(tp.start_count.load(), before);
+}
+
+TEST(Gateway, StopAllHandlesThrowingStopFn) {
+    // A transport whose stop() throws should not prevent other transports
+    // from being stopped (Gateway catches exceptions in stop_all).
+    struct ThrowingTransport {
+        std::atomic<bool> running{true};
+        void start_threads() noexcept { running = true; }
+        void stop() { throw std::runtime_error("stop failed"); }
+        bool is_running() const noexcept { return running.load(); }
+        void reconnect_now() noexcept {}
+    };
+
+    Gateway gw;
+    ThrowingTransport tp1;
+    MockTransport tp2;
+    tp2.running.store(true);
+
+    gw.add("throwing", &tp1);
+    gw.add("normal", &tp2);
+
+    // Should not throw; tp2 should still be stopped
+    gw.stop_all();
+    EXPECT_FALSE(tp2.is_running());
+}
+
+TEST(Gateway, CheckHealthSkipsStoppedConnections) {
+    Gateway gw;
+    MockTransport tp;
+    gw.add("t1", &tp);
+
+    // Health starts as Stopped; check_health should leave it as Stopped
+    gw.check_health();
+    EXPECT_EQ(gw.health(0), ConnHealth::Stopped);
+}
+
+TEST(Gateway, StartAllVerifiesActualStart) {
+    // Transport that fails to start (start_threads called but running stays false)
+    struct FailStartTransport {
+        void start_threads() noexcept { /* deliberately does not set running */ }
+        void stop() noexcept {}
+        bool is_running() const noexcept { return false; }
+        void reconnect_now() noexcept {}
+    };
+
+    Gateway gw;
+    FailStartTransport tp;
+    gw.add("fail-start", &tp);
+
+    gw.start_all();
+    // Should be Disconnected since is_running() returns false after start attempt
+    EXPECT_EQ(gw.health(0), ConnHealth::Disconnected);
+}
+
 TEST(ConnHealth, NameCoversAllValues) {
     EXPECT_EQ(conn_health_name(ConnHealth::Healthy), "HEALTHY");
     EXPECT_EQ(conn_health_name(ConnHealth::Degraded), "DEGRADED");

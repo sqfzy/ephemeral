@@ -284,6 +284,48 @@ TEST(SocketConfigValidate, ZeroBufSizeIsValid) {
     EXPECT_TRUE(cfg.validate().empty());
 }
 
+TEST(SocketConfigValidate, RecvBufSizeTooSmallFails) {
+    // Buffer sizes between 1 and 1023 should fail validation.
+    SocketConfig cfg{.host = "example.com", .port = 443, .recv_buf_size = 512};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("recv_buf_size"), std::string_view::npos);
+    EXPECT_NE(err.find("1024"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, SendBufSizeTooSmallFails) {
+    SocketConfig cfg{.host = "example.com", .port = 443, .send_buf_size = 1};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("send_buf_size"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, MinValidBufSizePasses) {
+    // 1024 is the minimum valid buffer size when set.
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .recv_buf_size = 1024, .send_buf_size = 1024};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(SocketConfigValidate, KeepaliveIntervalWithoutIdleFails) {
+    // keepalive_interval > 0 but keepalive_idle <= 0 is invalid even
+    // when tcp_keepalive is disabled (defensive validation).
+    SocketConfig cfg{.host = "example.com", .port = 443,
+                     .tcp_keepalive = false,
+                     .keepalive_idle = 0, .keepalive_interval = 10};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("keepalive_idle"), std::string_view::npos);
+}
+
+TEST(SocketConfigValidate, EqualityOperator) {
+    SocketConfig a{.host = "example.com", .port = 443, .tcp_nodelay = true};
+    SocketConfig b{.host = "example.com", .port = 443, .tcp_nodelay = true};
+    SocketConfig c{.host = "other.com", .port = 443, .tcp_nodelay = true};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SocketConfig::dump() and to_json()
 // ─────────────────────────────────────────────────────────────────────────────
