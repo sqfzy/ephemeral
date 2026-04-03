@@ -557,6 +557,16 @@ struct ParsedPacket {
     [[nodiscard]] bool has_flag(uint8_t flag) const noexcept {
         return (tcp_flags() & flag) != 0;
     }
+
+    /// Check if this parsed view is valid (all required headers present).
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return tcp != nullptr;
+    }
+
+    /// Human-readable one-line summary for diagnostics/logging.
+    /// Returns "(invalid)" if the packet was not successfully parsed.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string dump() const;
 };
 
 /// @brief Parse an Ethernet/IPv4/TCP packet from an mbuf (zero-copy).
@@ -717,6 +727,23 @@ inline std::string ConnectionTuple::to_json() const {
         "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{}}}",
         format_ipv4(src_ip).data(), src_port,
         format_ipv4(dst_ip).data(), dst_port);
+}
+
+inline std::string ParsedPacket::dump() const {
+    if (!tcp) return "(invalid)";
+    auto flags = tcp_flags();
+    std::string flag_str;
+    if (flags & kTcpSyn) flag_str += "SYN ";
+    if (flags & kTcpAck) flag_str += "ACK ";
+    if (flags & kTcpFin) flag_str += "FIN ";
+    if (flags & kTcpRst) flag_str += "RST ";
+    if (flags & kTcpPsh) flag_str += "PSH ";
+    if (flags & kTcpUrg) flag_str += "URG ";
+    if (!flag_str.empty()) flag_str.pop_back(); // trailing space
+    return std::format("{}:{} -> {}:{} [{}] seq={} ack={} win={} payload={}B",
+        format_ipv4(src_ip()).data(), src_port(),
+        format_ipv4(dst_ip()).data(), dst_port(),
+        flag_str, seq(), ack(), window(), payload_len);
 }
 
 } // namespace eph::dpdk::net

@@ -597,6 +597,81 @@ TEST(ParsePacket, MatchesSwapsAddresses) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ParsedPacket — operator bool and dump
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedPacket, BoolConversionValidPacket) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 10);
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(kAllHeadersLen + 10);
+    mbuf.pkt_len  = kAllHeadersLen + 10;
+
+    auto parsed = parse_packet(&mbuf);
+    EXPECT_TRUE(static_cast<bool>(parsed));
+}
+
+TEST(ParsedPacket, BoolConversionInvalidPacket) {
+    ParsedPacket empty{};
+    EXPECT_FALSE(static_cast<bool>(empty));
+    // Explicit conversion required (not implicit)
+    static_assert(!std::is_convertible_v<ParsedPacket, bool>,
+                  "ParsedPacket bool conversion must be explicit");
+}
+
+TEST(ParsedPacket, DumpInvalidPacket) {
+    ParsedPacket empty{};
+    EXPECT_EQ(empty.dump(), "(invalid)");
+}
+
+TEST(ParsedPacket, DumpShowsFlagsAndAddresses) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 10);
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + kEtherHeaderLen + kIpv4HeaderLen);
+    tcp->tcp_flags = kTcpAck | kTcpPsh;
+    tcp->sent_seq = hton32(1000);
+    tcp->recv_ack = hton32(2000);
+    tcp->rx_win   = hton16(65535);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = static_cast<uint16_t>(kAllHeadersLen + 10);
+    mbuf.pkt_len  = kAllHeadersLen + 10;
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    auto d = parsed.dump();
+    EXPECT_NE(d.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(d.find("10.0.0.2"), std::string::npos);
+    EXPECT_NE(d.find("ACK"), std::string::npos);
+    EXPECT_NE(d.find("PSH"), std::string::npos);
+    EXPECT_NE(d.find("seq=1000"), std::string::npos);
+    EXPECT_NE(d.find("payload=10B"), std::string::npos);
+}
+
+TEST(ParsedPacket, DumpSynFlag) {
+    uint8_t buf[128];
+    build_raw_packet(buf, 0);
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + kEtherHeaderLen + kIpv4HeaderLen);
+    tcp->tcp_flags = kTcpSyn;
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = kAllHeadersLen;
+    mbuf.pkt_len  = kAllHeadersLen;
+
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    auto d = parsed.dump();
+    EXPECT_NE(d.find("SYN"), std::string::npos);
+    EXPECT_EQ(d.find("ACK"), std::string::npos);  // No ACK
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ConnectionTuple dump/to_json
 // ─────────────────────────────────────────────────────────────────────────────
 

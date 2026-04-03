@@ -213,8 +213,15 @@ public:
     /// Mark a connection as disconnected (skip processing until reconnected).
     /// Safe to call while the reactor is running.
     void mark_disconnected(size_t conn_id) noexcept {
-        if (conn_id < count_.load(std::memory_order_acquire))
-            entries_[conn_id].connected.store(false, std::memory_order_release);
+        if (conn_id >= count_.load(std::memory_order_acquire)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+                "mark_disconnected: conn_id={} out of range (count={})",
+                conn_id, count_.load(std::memory_order_relaxed));
+            return;
+        }
+        entries_[conn_id].connected.store(false, std::memory_order_release);
+        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+            "Connection {} marked disconnected", conn_id);
     }
 
     /// Mark a connection as reconnected (resume processing).
@@ -234,21 +241,32 @@ public:
     ///     visibility of the new tuple/hash values).
     ///  4. Set connected=true (release) to re-enable the entry.
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
-        if (!new_session) return;
-        if (conn_id < count_.load(std::memory_order_acquire)) {
-            // Step 1: Disable so the RX loop skips this entry.
-            entries_[conn_id].connected.store(false, std::memory_order_release);
-
-            // Step 2: Atomically swap session pointer.
-            entries_[conn_id].session.store(new_session, std::memory_order_release);
-
-            // Step 3: Update tuple and hash for the new connection.
-            entries_[conn_id].tuple = new_session->connection_tuple();
-            hashes_[conn_id] = ReactorEntry::hash_tuple(entries_[conn_id].tuple);
-
-            // Step 4: Re-enable the entry for the RX loop.
-            entries_[conn_id].connected.store(true, std::memory_order_release);
+        if (!new_session) {
+            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+                "mark_reconnected: null session for conn_id={}", conn_id);
+            return;
         }
+        if (conn_id >= count_.load(std::memory_order_acquire)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+                "mark_reconnected: conn_id={} out of range (count={})",
+                conn_id, count_.load(std::memory_order_relaxed));
+            return;
+        }
+        // Step 1: Disable so the RX loop skips this entry.
+        entries_[conn_id].connected.store(false, std::memory_order_release);
+
+        // Step 2: Atomically swap session pointer.
+        entries_[conn_id].session.store(new_session, std::memory_order_release);
+
+        // Step 3: Update tuple and hash for the new connection.
+        entries_[conn_id].tuple = new_session->connection_tuple();
+        hashes_[conn_id] = ReactorEntry::hash_tuple(entries_[conn_id].tuple);
+
+        // Step 4: Re-enable the entry for the RX loop.
+        entries_[conn_id].connected.store(true, std::memory_order_release);
+
+        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+            "Connection {} reconnected with new session", conn_id);
     }
 
     /// Register a callback invoked after each NIC burst + dispatch cycle.
