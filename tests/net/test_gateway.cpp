@@ -129,6 +129,26 @@ TEST(Gateway, ReconnectInvalidIdIsNoop) {
     gw.reconnect(999);  // should not crash
 }
 
+TEST(Gateway, ReconnectHandlesThrowingTransport) {
+    // reconnect_fn is called outside the lock; verify it catches exceptions
+    struct ThrowingReconnectTransport {
+        std::atomic<bool> running{true};
+        void start_threads() noexcept { running = true; }
+        void stop() noexcept { running = false; }
+        bool is_running() const noexcept { return running.load(); }
+        void reconnect_now() { throw std::runtime_error("reconnect failed"); }
+    };
+
+    Gateway gw;
+    ThrowingReconnectTransport tp;
+    auto id = gw.add("throwing-reconnect", &tp);
+
+    // Should not throw — Gateway catches the exception
+    gw.reconnect(id);
+    // Gateway should still function normally after the exception
+    EXPECT_EQ(gw.connection_count(), 1);
+}
+
 TEST(Gateway, HealthInitiallyStoppedForNewConnections) {
     Gateway gw;
     MockTransport tp;

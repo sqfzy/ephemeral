@@ -419,14 +419,32 @@ public:
     }
 
     /// @brief Force reconnect a specific connection.
+    ///
+    /// The reconnect function is called OUTSIDE the lock to prevent deadlock
+    /// if the transport's reconnect_now() calls back into Gateway methods
+    /// (same pattern as stop_all()).
+    ///
     /// @param id  Connection index returned by add(). Ignored if out of range.
     void reconnect(size_t id) noexcept {
-        std::lock_guard lock(mu_);
-        if (id >= connections_.size()) return;
-        auto& c = connections_[id];
-        if (c.reconnect_fn) {
-            SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: reconnecting [{}] '{}'", id, c.tag);
-            c.reconnect_fn(c.transport_ptr);
+        void* ptr = nullptr;
+        void (*fn)(void*) = nullptr;
+        std::string tag;
+        {
+            std::lock_guard lock(mu_);
+            if (id >= connections_.size()) return;
+            auto& c = connections_[id];
+            ptr = c.transport_ptr;
+            fn = c.reconnect_fn;
+            tag = c.tag;
+        }
+        if (fn) {
+            SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: reconnecting [{}] '{}'", id, tag);
+            try {
+                fn(ptr);
+            } catch (...) {
+                SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                    "Gateway: reconnect_fn threw for [{}] '{}'", id, tag);
+            }
         }
     }
 
