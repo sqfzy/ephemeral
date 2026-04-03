@@ -725,9 +725,16 @@ private:
     explicit DirectTxTransport(const TransportConfig& config)
         : core_{}
         , rx_(core_, reconnect_count_, make_rx_callbacks_())
-        , reconnect_(config)
-    {
+        // Bind to core_.config (owned copy) instead of the constructor
+        // parameter, which may go out of scope before reconnect attempts.
+        , reconnect_(init_core_config_(config))
+    {}
+
+    /// Set core_.config and return a reference to it, for use in the
+    /// initializer list to ensure ReconnectPolicy binds to the owned copy.
+    const TransportConfig& init_core_config_(const TransportConfig& config) {
         core_.config = config;
+        return core_.config;
     }
 
     // -----------------------------------------------------------------------

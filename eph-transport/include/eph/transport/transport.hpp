@@ -1130,7 +1130,7 @@ private:
     // =======================================================================
 
     Transport(TcpFactory tcp_factory, const TransportConfig& config)
-        : core_{}
+        : core_{} // core_.config set via init_core_config_ below
         , tx_(core_, pong_timeouts_)
         , rx_(core_, reconnect_count_, typename RxWorkerT::Callbacks{
             .do_reconnect = [this]() -> bool { return do_reconnect_(); },
@@ -1139,10 +1139,23 @@ private:
                 return tx_.enqueue(data, len, opcode);
             },
           })
-        , reconnect_(config)
+        // ReconnectPolicy holds a const& to core_.config for reading
+        // max_reconnect_attempts, reconnect_interval, and callbacks during
+        // reconnection attempts. We must reference core_.config (not the
+        // constructor parameter) because the parameter's lifetime ends with
+        // the caller's scope, while Transport (and its reconnect_ member)
+        // may outlive it.  core_.config is copied from the parameter in the
+        // body below, before any reconnect attempt can occur.
+        , reconnect_(init_core_config_(config))
     {
         core_.tcp_factory = std::move(tcp_factory);
+    }
+
+    /// Set core_.config and return a reference to it, for use in the
+    /// initializer list to ensure ReconnectPolicy binds to the owned copy.
+    const TransportConfig& init_core_config_(const TransportConfig& config) {
         core_.config = config;
+        return core_.config;
     }
 
     // =======================================================================

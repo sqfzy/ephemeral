@@ -169,7 +169,7 @@ public:
 
         auto t = std::unique_ptr<DirectTransport>(new DirectTransport(config));
         t->core_.tcp_factory = std::move(tcp_factory);
-        t->core_.config = config;
+        // core_.config already set by init_core_config_() in the constructor
 
         // Full handshake: TCP + TLS + WS upgrade (uses private methods
         // with the proven detail-file logic, not TransportCore::do_connect
@@ -758,8 +758,17 @@ private:
     // -----------------------------------------------------------------------
 
     explicit DirectTransport(const TransportConfig& config)
-        : reconnect_(config)
+        // Bind to core_.config (owned copy) instead of the constructor
+        // parameter, which may go out of scope before reconnect attempts.
+        : reconnect_(init_core_config_(config))
     {}
+
+    /// Set core_.config and return a reference to it, for use in the
+    /// initializer list to ensure ReconnectPolicy binds to the owned copy.
+    const TransportConfig& init_core_config_(const TransportConfig& config) {
+        core_.config = config;
+        return core_.config;
+    }
 
     // -----------------------------------------------------------------------
     // FrameProcessor initialization
