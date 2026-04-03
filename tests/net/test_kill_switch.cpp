@@ -204,3 +204,33 @@ TEST(KillSwitch, UnregisterMiddleElementPreservesOthers) {
     EXPECT_TRUE(tp2.is_running());  // was unregistered
     EXPECT_FALSE(tp3.is_running());
 }
+
+TEST(KillSwitch, ShutdownContinuesAfterStopThrows) {
+    // A transport whose stop() throws must not prevent other transports
+    // from being stopped -- KillSwitch catches exceptions and continues.
+    struct ThrowingTransport {
+        std::atomic<bool> running{true};
+        void stop() { throw std::runtime_error("stop failed"); }
+        bool is_running() const noexcept { return running.load(); }
+    };
+
+    KillSwitch ks;
+    ThrowingTransport tp_throw;
+    MockTransport tp_normal;
+
+    ASSERT_TRUE(ks.register_transport(&tp_throw));
+    ASSERT_TRUE(ks.register_transport(&tp_normal));
+
+    // shutdown() should not throw even though tp_throw.stop() does
+    ks.shutdown();
+
+    // tp_normal should still have been stopped despite tp_throw's exception
+    EXPECT_FALSE(tp_normal.is_running());
+    EXPECT_TRUE(ks.is_shutdown_requested());
+}
+
+TEST(KillSwitch, UnregisterNullIsNoop) {
+    KillSwitch ks;
+    ks.unregister_transport<MockTransport>(nullptr);
+    EXPECT_EQ(ks.transport_count(), 0);
+}
