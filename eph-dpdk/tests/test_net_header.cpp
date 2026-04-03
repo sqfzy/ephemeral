@@ -21,6 +21,29 @@ static_assert(kTcpHeaderLen == 20);
 static_assert(kAllHeadersLen == 54);
 static_assert(kDefaultMss == 1460);
 
+// TCP flag bitmasks must be single-bit, non-overlapping
+static_assert(kTcpFin == 0x01);
+static_assert(kTcpSyn == 0x02);
+static_assert(kTcpRst == 0x04);
+static_assert(kTcpPsh == 0x08);
+static_assert(kTcpAck == 0x10);
+static_assert(kTcpUrg == 0x20);
+// All flags are distinct (no overlap)
+static_assert((kTcpFin | kTcpSyn | kTcpRst | kTcpPsh | kTcpAck | kTcpUrg) == 0x3F);
+
+// IPv4 constants
+static_assert(kIpv4VersionIhl5 == 0x45);
+static_assert(kIpDontFragment == 0x4000);
+static_assert(kDefaultTtl == 64);
+static_assert(kIpProtoTcp == 6);
+static_assert(kIpProtoUdp == 17);
+static_assert(kEtherTypeIpv4 == 0x0800);
+
+// SYN options
+static_assert(kSynOptionsLen == 12);
+static_assert(kSynTcpHeaderLen == kTcpHeaderLen + kSynOptionsLen);
+static_assert(kUdpHeaderLen == 8);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte order helpers
 // ─────────────────────────────────────────────────────────────────────────────
