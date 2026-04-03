@@ -459,3 +459,69 @@ TEST(TcpConfigWarnings, ZeroDstMac) {
     }
     EXPECT_TRUE(found) << "Expected zero dst_mac warning";
 }
+
+TEST(TcpConfigWarnings, SharedNonZeroQueueWarns) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.tx_queue_id = 2;
+    cfg.rx_queue_id = 2;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("tx_queue_id == rx_queue_id") != std::string::npos &&
+            msg.find("contention") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected shared queue contention warning";
+}
+
+TEST(TcpConfigWarnings, SharedQueueZeroNoWarning) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.tx_queue_id = 0;
+    cfg.rx_queue_id = 0;
+    auto w = cfg.warnings();
+    // Queue 0 shared is the default -- should NOT warn
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("tx_queue_id == rx_queue_id"), std::string::npos)
+            << "Should not warn about shared queue 0: " << msg;
+    }
+}
+
+TEST(TcpConfigWarnings, DifferentQueuesNoContention) {
+    auto cfg = make_valid_config();
+    cfg.src_mac.addr_bytes[0] = 0xDE;
+    cfg.dst_mac.addr_bytes[0] = 0xBE;
+    cfg.tx_queue_id = 1;
+    cfg.rx_queue_id = 2;
+    auto w = cfg.warnings();
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("contention"), std::string::npos)
+            << "Should not warn about contention with different queues: " << msg;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::validate boundary: mss == 1 (minimum valid)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, MssAtMinimumOne) {
+    auto cfg = make_valid_config();
+    cfg.mss = 1;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TcpConfig, MaxRxBurstBoundary) {
+    // Test the full valid range [0, 32]
+    auto cfg = make_valid_config();
+    for (uint16_t v = 0; v <= 32; ++v) {
+        cfg.max_rx_burst = v;
+        EXPECT_TRUE(cfg.validate().empty()) << "max_rx_burst=" << v;
+    }
+    cfg.max_rx_burst = 33;
+    EXPECT_FALSE(cfg.validate().empty());
+}
