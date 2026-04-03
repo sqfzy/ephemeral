@@ -483,6 +483,41 @@ TEST(DpdkEndpointWarnings, SameLocalAndGatewayWarns) {
 // Ephemeral port constants and random_ephemeral_port
 // ─────────────────────────────────────────────────────────────────────────────
 
+TEST(ConnectorOptions, GatewayMacEqualityNone) {
+    ConnectorOptions a{};
+    ConnectorOptions b{};
+    // Both without gateway_mac should be equal
+    EXPECT_EQ(a, b);
+}
+
+TEST(ConnectorOptions, GatewayMacEqualityPresent) {
+    ConnectorOptions a{};
+    ConnectorOptions b{};
+    rte_ether_addr mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    a.gateway_mac = mac;
+    b.gateway_mac = mac;
+    EXPECT_EQ(a, b);
+}
+
+TEST(ConnectorOptions, GatewayMacEqualityMismatch) {
+    ConnectorOptions a{};
+    ConnectorOptions b{};
+    rte_ether_addr mac1 = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    rte_ether_addr mac2 = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
+    a.gateway_mac = mac1;
+    b.gateway_mac = mac2;
+    EXPECT_NE(a, b);
+}
+
+TEST(ConnectorOptions, GatewayMacEqualityOneEmpty) {
+    ConnectorOptions a{};
+    ConnectorOptions b{};
+    rte_ether_addr mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    a.gateway_mac = mac;
+    // b has no gateway_mac
+    EXPECT_NE(a, b);
+}
+
 TEST(EphemeralPort, ConstantsAreIANA) {
     // IANA ephemeral range (RFC 6335 section 6): 49152-65535
     EXPECT_EQ(kEphemeralPortMin, 49152);
