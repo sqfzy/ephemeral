@@ -110,7 +110,7 @@ public:
     ///
     /// For WsFramer: handles WS control frames (ping/pong/close) and
     /// fragmentation reassembly. For generic framers: simple decode loop.
-    size_t process(const uint8_t* data, size_t len) {
+    [[nodiscard]] size_t process(const uint8_t* data, size_t len) {
         if constexpr (kIsWebSocket) {
             return process_ws_data(data, len);
         } else {
