@@ -58,7 +58,7 @@ struct TlsRecordCrypto {
     /// @param plaintext_len Input length (must be <= kMaxRecordPayload)
     /// @param out           Output buffer (must have at least encrypted_size() bytes)
     /// @return Total bytes written to out, or 0 on error
-    uint16_t encrypt(const uint8_t* plaintext, uint16_t plaintext_len,
+    [[nodiscard]] uint16_t encrypt(const uint8_t* plaintext, uint16_t plaintext_len,
                      uint8_t* out) noexcept {
         return enc.encrypt(plaintext, plaintext_len, out);
     }
@@ -69,7 +69,7 @@ struct TlsRecordCrypto {
     /// @param out          Output buffer for decrypted plaintext
     /// @param[out] out_len Actual decrypted plaintext length
     /// @return true on success, false on decryption/authentication failure
-    bool decrypt(const uint8_t* record, uint16_t record_len,
+    [[nodiscard]] bool decrypt(const uint8_t* record, uint16_t record_len,
                  uint8_t* out, uint16_t& out_len) noexcept {
         return dec.decrypt(record, record_len, out, out_len);
     }

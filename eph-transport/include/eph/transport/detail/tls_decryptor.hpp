@@ -115,7 +115,7 @@ public:
     /// @param out          Output buffer for decrypted plaintext
     /// @param[out] out_len Actual decrypted plaintext length (excluding content type)
     /// @return true on success, false on decryption/authentication failure
-    bool decrypt(const uint8_t* record, uint16_t record_len,
+    [[nodiscard]] bool decrypt(const uint8_t* record, uint16_t record_len,
                  uint8_t* out, uint16_t& out_len) noexcept {
         if (record_len < tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
             SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),

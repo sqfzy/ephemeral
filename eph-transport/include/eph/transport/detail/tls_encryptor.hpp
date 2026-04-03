@@ -114,7 +114,7 @@ public:
     /// @param plaintext_len Input length (must be <= kMaxRecordPayload)
     /// @param out           Output buffer (must have at least encrypted_size() bytes)
     /// @return Total bytes written to out, or 0 on error
-    uint16_t encrypt(const uint8_t* plaintext, uint16_t plaintext_len,
+    [[nodiscard]] uint16_t encrypt(const uint8_t* plaintext, uint16_t plaintext_len,
                      uint8_t* out) noexcept {
         if (plaintext_len > tls_const::kMaxRecordPayload) {
             SPDLOG_LOGGER_WARN(detail::tls_enc_logger(),
