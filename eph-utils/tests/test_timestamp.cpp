@@ -198,3 +198,31 @@ TEST(Timestamp, feed_latency_ns_from_old_timestamp) {
     EXPECT_GT(latency, 900'000'000LL);
     EXPECT_LT(latency, 1'100'000'000LL);
 }
+
+// ---------------------------------------------------------------------------
+// Negative / pre-epoch timestamps
+// ---------------------------------------------------------------------------
+
+TEST(Timestamp, format_timestamp_ms_negative_one_ms) {
+    // -1 ms should be 1969-12-31T23:59:59.999Z
+    std::string s = format_timestamp_ms(-1);
+    EXPECT_EQ(s, "1969-12-31T23:59:59.999Z");
+}
+
+TEST(Timestamp, format_timestamp_ms_negative_1000_ms) {
+    // -1000 ms = -1 second exactly
+    std::string s = format_timestamp_ms(-1000);
+    EXPECT_EQ(s, "1969-12-31T23:59:59.000Z");
+}
+
+TEST(Timestamp, format_timestamp_ms_negative_1001_ms) {
+    // -1001 ms = 1 second and 1 ms before epoch
+    std::string s = format_timestamp_ms(-1001);
+    EXPECT_EQ(s, "1969-12-31T23:59:58.999Z");
+}
+
+TEST(Timestamp, format_timestamp_ms_negative_500_ms) {
+    // -500 ms = half a second before epoch
+    std::string s = format_timestamp_ms(-500);
+    EXPECT_EQ(s, "1969-12-31T23:59:59.500Z");
+}

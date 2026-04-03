@@ -107,8 +107,17 @@ namespace eph::utils {
     static_assert(sizeof(time_t) >= 8,
                   "time_t must be at least 64-bit to avoid Y2K38 overflow");
 
+    // For negative timestamps (pre-epoch), C++ truncation division yields a
+    // negative remainder. Use Euclidean division to get a non-negative
+    // millisecond component and the correct floor'd seconds.
+    // e.g., -1 ms => secs = -1, ms_part = 999 (i.e., 1969-12-31T23:59:59.999Z)
     auto secs = static_cast<time_t>(epoch_ms / 1'000);
-    auto ms   = static_cast<uint32_t>(epoch_ms % 1'000);
+    auto ms_rem = static_cast<int32_t>(epoch_ms % 1'000);
+    if (ms_rem < 0) {
+        ms_rem += 1'000;
+        secs -= 1;
+    }
+    auto ms = static_cast<uint32_t>(ms_rem);
 
     struct tm utc{};
     gmtime_r(&secs, &utc);
