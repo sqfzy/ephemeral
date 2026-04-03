@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -39,8 +40,8 @@ class Ema {
     /// @param alpha Smoothing factor in (0, 1]. Larger = more responsive.
     ///              For period N: alpha = 2/(N+1).
     explicit Ema(double alpha) : alpha_(alpha) {
-        if (alpha <= 0.0 || alpha > 1.0) {
-            throw std::invalid_argument("EMA alpha must be in (0.0, 1.0]");
+        if (std::isnan(alpha) || std::isinf(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw std::invalid_argument("EMA alpha must be a finite value in (0.0, 1.0]");
         }
     }
 

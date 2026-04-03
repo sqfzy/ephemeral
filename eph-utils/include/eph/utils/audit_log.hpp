@@ -144,7 +144,7 @@ public:
     ///         buffer wrapped around (oldest entry was overwritten).
     /// @note NOT thread-safe. Must be called from a single writer thread only.
     ///       For concurrent writes, use record_mt() instead.
-    bool record(AuditEvent event, uint64_t order_id,
+    [[nodiscard]] bool record(AuditEvent event, uint64_t order_id,
                 double price, double quantity,
                 Side side, uint8_t venue_id,
                 double fill_price = 0.0, double fill_qty = 0.0) noexcept {
@@ -175,7 +175,7 @@ public:
     /// Record an audit event (multi-writer safe via CAS spinloop).
     /// @return true if recorded without overwriting old data, false if the ring
     ///         buffer wrapped around (oldest entry was overwritten).
-    bool record_mt(AuditEvent event, uint64_t order_id,
+    [[nodiscard]] bool record_mt(AuditEvent event, uint64_t order_id,
                    double price, double quantity,
                    Side side, uint8_t venue_id,
                    double fill_price = 0.0, double fill_qty = 0.0) noexcept {

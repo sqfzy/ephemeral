@@ -77,7 +77,7 @@ public:
 
     /// @brief Flush all buffered log messages to the underlying sink.
     void flush() noexcept {
-        spdlog::default_logger()->flush();
+        detail::console_sink_logger()->flush();
     }
 
 private:

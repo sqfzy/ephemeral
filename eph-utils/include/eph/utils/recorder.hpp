@@ -148,7 +148,7 @@ class Recorder {
     /// @param cycles Elapsed TSC cycles (must be > 0).
     /// @return `true` on success, `false` if the value is zero or out of
     ///         the histogram's trackable range.
-    bool record(uint64_t cycles) noexcept {
+    [[nodiscard]] bool record(uint64_t cycles) noexcept {
         if (cycles == 0) [[unlikely]] {
             skipped_invalid_++;
             return false;
@@ -172,7 +172,7 @@ class Recorder {
     /// @param cycles Elapsed TSC cycles (must be > 0).
     /// @param count  Number of times to record this value.
     /// @return `true` on success, `false` if the value is zero or out of range.
-    bool record_values(uint64_t cycles, uint64_t count) noexcept {
+    [[nodiscard]] bool record_values(uint64_t cycles, uint64_t count) noexcept {
         if (count == 0) return true;
         if (cycles == 0) [[unlikely]] {
             skipped_invalid_ += count;
@@ -539,7 +539,7 @@ class ConcurrentRecorder {
     ///
     /// @param cycles Elapsed TSC cycles (must be > 0).
     /// @return `true` on success, `false` if the value is zero or out of range.
-    bool record(uint64_t cycles) noexcept {
+    [[nodiscard]] bool record(uint64_t cycles) noexcept {
         auto* local = get_or_create_local();
         if (!local) [[unlikely]] return false;
 
@@ -569,7 +569,7 @@ class ConcurrentRecorder {
     /// @param cycles Elapsed TSC cycles (must be > 0).
     /// @param count  Number of times to record this value.
     /// @return `true` on success, `false` if the value is zero or out of range.
-    bool record_values(uint64_t cycles, uint64_t count) noexcept {
+    [[nodiscard]] bool record_values(uint64_t cycles, uint64_t count) noexcept {
         if (count == 0) return true;
 
         auto* local = get_or_create_local();

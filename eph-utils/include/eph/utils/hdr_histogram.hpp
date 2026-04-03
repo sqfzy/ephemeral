@@ -162,7 +162,7 @@ class HdrHistogram {
     /// @return `true` on success, `false` if the value is out of range
     ///         (increments the dropped count).
     /// @note Typical cost: ~5-10 ns per call.
-    bool record(uint64_t value) noexcept {
+    [[nodiscard]] bool record(uint64_t value) noexcept {
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
             ++dropped_count_;
@@ -188,7 +188,7 @@ class HdrHistogram {
     /// @param value The value to record.
     /// @param count Number of times to record it.
     /// @return `true` on success, `false` if out of range.
-    bool record_values(uint64_t value, uint64_t count) noexcept {
+    [[nodiscard]] bool record_values(uint64_t value, uint64_t count) noexcept {
         if (count == 0) return true;
         if (value < lowest_trackable_value_ || value > highest_trackable_value_)
             [[unlikely]] {
@@ -230,7 +230,7 @@ class HdrHistogram {
     /// @note Based on Gil Tene's coordinated omission correction algorithm.
     ///       Use this when benchmarking with a constant-rate load generator
     ///       to avoid underreporting tail latency.
-    bool record_corrected(uint64_t value, uint64_t expected_interval) noexcept {
+    [[nodiscard]] bool record_corrected(uint64_t value, uint64_t expected_interval) noexcept {
         if (!record(value)) return false;
 
         if (expected_interval == 0 || value <= expected_interval) {
