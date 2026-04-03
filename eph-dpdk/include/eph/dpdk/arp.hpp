@@ -95,7 +95,7 @@ inline spdlog::logger* arp_logger() {
 /// @param src_ip     Our IPv4 address (host byte order)
 /// @param target_ip  IPv4 address to resolve (host byte order)
 /// @return Allocated mbuf with ARP request, or nullptr on allocation failure
-inline rte_mbuf* build_arp_request(rte_mempool* pool,
+[[nodiscard]] inline rte_mbuf* build_arp_request(rte_mempool* pool,
                                     const rte_ether_addr& src_mac,
                                     uint32_t src_ip,
                                     uint32_t target_ip) noexcept {
@@ -153,7 +153,7 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
 /// @param mbuf       Received packet
 /// @param target_ip  The IP we're resolving (host byte order)
 /// @return Sender MAC if match, std::nullopt otherwise
-inline std::optional<rte_ether_addr>
+[[nodiscard]] inline std::optional<rte_ether_addr>
 parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + sizeof(ArpPacket);
     if (mbuf->data_len < min_len) return std::nullopt;

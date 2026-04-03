@@ -188,7 +188,7 @@ inline uint16_t random_ephemeral_port() noexcept {
 /// @param out    Output buffer (must have at least hostname.size() + 2 bytes)
 /// @param hostname  The hostname to encode
 /// @return Number of bytes written, or 0 on error (label > 63 chars, total > 253)
-inline size_t encode_qname(uint8_t* out, const std::string& hostname) noexcept {
+[[nodiscard]] inline size_t encode_qname(uint8_t* out, const std::string& hostname) noexcept {
     if (hostname.empty() || hostname.size() > 253) return 0;
 
     size_t pos = 0;
@@ -215,7 +215,7 @@ inline size_t encode_qname(uint8_t* out, const std::string& hostname) noexcept {
 /// @param tx_id     Transaction ID (network byte order)
 /// @param hostname  Hostname to query
 /// @return Total bytes written, or 0 on error
-inline size_t build_dns_query(uint8_t* out, uint16_t tx_id,
+[[nodiscard]] inline size_t build_dns_query(uint8_t* out, uint16_t tx_id,
                                const std::string& hostname) noexcept {
     // DNS header
     auto* hdr = reinterpret_cast<DnsHeader*>(out);
@@ -255,7 +255,7 @@ inline size_t build_dns_query(uint8_t* out, uint16_t tx_id,
 /// @param offset Current offset into data
 /// @param len    Total length of DNS message
 /// @return New offset after the name, or 0 on error
-inline size_t skip_dns_name(const uint8_t* data, size_t offset, size_t len) noexcept {
+[[nodiscard]] inline size_t skip_dns_name(const uint8_t* data, size_t offset, size_t len) noexcept {
     bool followed_pointer = false;
     size_t end_offset = 0;
 
@@ -384,7 +384,7 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
 
 /// Build a DNS query UDP packet on an mbuf.
 /// @return Allocated mbuf, or nullptr on failure
-inline rte_mbuf* build_dns_packet(
+[[nodiscard]] inline rte_mbuf* build_dns_packet(
     rte_mempool* pool,
     const rte_ether_addr& src_mac,
     const rte_ether_addr& dst_mac,
