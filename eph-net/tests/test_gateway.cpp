@@ -819,3 +819,152 @@ TEST(Gateway, ToJsonReflectsHealthAfterStart) {
     EXPECT_NE(j.find("\"healthy_count\":1"), std::string::npos);
     EXPECT_NE(j.find("\"health\":\"HEALTHY\""), std::string::npos);
 }
+
+// ── Concurrent operations ──────────────────────────────────────────────────
+
+TEST(Gateway, ConcurrentAddAndCheckHealth) {
+    // Add connections from one thread while check_health runs on another.
+    Gateway gw;
+    constexpr int N = 8;
+    std::array<MockTransport, N> transports;
+    for (auto& tp : transports) tp.running.store(true);
+
+    std::thread adder([&] {
+        for (int i = 0; i < N; ++i) {
+            gw.add("conn-" + std::to_string(i), &transports[i]);
+        }
+    });
+
+    std::thread checker([&] {
+        for (int i = 0; i < 20; ++i) {
+            gw.check_health();
+        }
+    });
+
+    adder.join();
+    checker.join();
+
+    EXPECT_EQ(gw.connection_count(), N);
+}
+
+TEST(Gateway, ConcurrentStartStopAll) {
+    // start_all and stop_all from different threads should not crash.
+    Gateway gw;
+    constexpr int N = 4;
+    std::array<MockTransport, N> transports;
+    for (int i = 0; i < N; ++i) {
+        gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+
+    std::thread t1([&] {
+        for (int i = 0; i < 10; ++i) gw.start_all();
+    });
+    std::thread t2([&] {
+        for (int i = 0; i < 10; ++i) gw.stop_all();
+    });
+
+    t1.join();
+    t2.join();
+
+    // Should not crash; final state depends on thread scheduling.
+    EXPECT_EQ(gw.connection_count(), N);
+}
+
+TEST(Gateway, ConcurrentRemoveAndForEach) {
+    // Remove connections while iterating with for_each.
+    Gateway gw;
+    constexpr int N = 8;
+    std::array<MockTransport, N> transports;
+    for (int i = 0; i < N; ++i) {
+        gw.add("conn-" + std::to_string(i), &transports[i]);
+    }
+
+    std::atomic<bool> done{false};
+    std::thread remover([&] {
+        for (int i = N - 1; i >= 0; --i) {
+            gw.remove(static_cast<size_t>(i));
+        }
+        done.store(true);
+    });
+
+    // for_each takes the lock, so this should not crash even during concurrent removes
+    while (!done.load()) {
+        size_t count = 0;
+        gw.for_each([&](size_t, std::string_view, ConnHealth) { ++count; });
+        (void)count;
+    }
+
+    remover.join();
+    EXPECT_EQ(gw.connection_count(), 0);
+}
+
+// ── Monitor thread lifecycle ───────────────────────────────────────────────
+
+TEST(Gateway, MonitorStartStopIdempotent) {
+    Gateway gw({.health_check_interval = std::chrono::milliseconds{50}});
+    // Double start should be safe
+    gw.start_monitor();
+    gw.start_monitor();
+    // Double stop should be safe
+    gw.stop_monitor();
+    gw.stop_monitor();
+}
+
+TEST(Gateway, MonitorDetectsDisconnectionAsync) {
+    // The monitor thread should detect health changes asynchronously.
+    int changes = 0;
+    Gateway gw({
+        .health_check_interval = std::chrono::milliseconds{50},
+        .on_health_change = [&](std::string_view, ConnHealth, ConnHealth) {
+            ++changes;
+        },
+    });
+
+    MockTransport tp;
+    tp.running.store(true);
+    gw.add("async-detect", &tp);
+
+    gw.start_monitor();
+    std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+    // Simulate disconnection
+    tp.running.store(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    gw.stop_monitor();
+
+    EXPECT_GT(changes, 0) << "monitor should have detected disconnection";
+    EXPECT_EQ(gw.health(0), ConnHealth::Disconnected);
+}
+
+// ── Full lifecycle: add -> start -> health check -> disconnect -> reconnect -> stop ──
+
+TEST(Gateway, FullLifecycle) {
+    Gateway gw;
+    MockTransport tp;
+    auto id = gw.add("lifecycle-test", &tp);
+
+    // Phase 1: Start
+    gw.start_all();
+    EXPECT_TRUE(tp.is_running());
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+    EXPECT_EQ(tp.start_count.load(), 1);
+
+    // Phase 2: Health check confirms healthy
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+
+    // Phase 3: Simulate disconnection
+    tp.running.store(false);
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Disconnected);
+
+    // Phase 4: Reconnect
+    gw.reconnect(id);
+    EXPECT_EQ(tp.reconnect_count.load(), 1);
+
+    // Phase 5: Stop
+    tp.running.store(true); // simulate reconnect success
+    gw.stop_all();
+    EXPECT_FALSE(tp.is_running());
+    EXPECT_EQ(gw.health(id), ConnHealth::Stopped);
+}

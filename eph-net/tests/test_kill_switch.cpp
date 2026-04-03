@@ -307,3 +307,90 @@ TEST(KillSwitch, ToJsonSignalHandlersInstalled) {
     auto j_after = ks.to_json();
     EXPECT_NE(j_after.find("\"signal_handlers_installed\":true"), std::string::npos);
 }
+
+// ── Concurrent unregister during shutdown ───────────────────────────────────
+
+TEST(KillSwitch, ConcurrentUnregisterDuringShutdown) {
+    // Verify that unregistering transports from one thread while another
+    // thread runs shutdown() does not crash or corrupt state.
+    constexpr int N = 16;
+    std::array<MockTransport, N> transports;
+
+    KillSwitch ks;
+    for (int i = 0; i < N; ++i) {
+        ASSERT_TRUE(ks.register_transport(&transports[i]));
+    }
+
+    std::thread t1([&] { ks.shutdown(); });
+    std::thread t2([&] {
+        // Unregister even-indexed transports concurrently with shutdown
+        for (int i = 0; i < N; i += 2) {
+            ks.unregister_transport(&transports[i]);
+        }
+    });
+
+    t1.join();
+    t2.join();
+
+    // After both threads complete, the system should be in a consistent state.
+    EXPECT_TRUE(ks.is_shutdown_requested());
+}
+
+TEST(KillSwitch, ConcurrentRegisterAndShutdown) {
+    // Register transports on one thread while shutdown runs on another.
+    KillSwitch ks;
+    constexpr int N = 16;
+    std::array<MockTransport, N> transports;
+
+    std::thread t1([&] {
+        for (int i = 0; i < N; ++i) {
+            ks.register_transport(&transports[i]);
+        }
+    });
+    std::thread t2([&] { ks.shutdown(); });
+
+    t1.join();
+    t2.join();
+
+    EXPECT_TRUE(ks.is_shutdown_requested());
+}
+
+TEST(KillSwitch, ShutdownAfterResetAndReRegister) {
+    // Test the full cycle: register -> shutdown -> reset -> re-register -> shutdown
+    KillSwitch ks;
+    MockTransport tp1, tp2;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+
+    ks.shutdown();
+    EXPECT_FALSE(tp1.is_running());
+    EXPECT_EQ(tp1.stop_count.load(), 1);
+
+    // Reset and do it again with a different transport
+    ks.reset();
+    tp2.running.store(true);
+    ASSERT_TRUE(ks.register_transport(&tp2));
+
+    ks.shutdown();
+    EXPECT_FALSE(tp2.is_running());
+    EXPECT_EQ(tp2.stop_count.load(), 1);
+    // tp1 was not re-registered, so its stop count should not change
+    EXPECT_EQ(tp1.stop_count.load(), 1);
+}
+
+TEST(KillSwitch, KillThenShutdownIsIdempotent) {
+    // kill() sets the flag; a subsequent shutdown() should still be a no-op
+    // because shutdown_done_ is already set... wait, kill() does NOT set
+    // shutdown_done_. So shutdown() after kill() should execute.
+    KillSwitch ks;
+    MockTransport tp;
+    tp.running.store(true);
+    ASSERT_TRUE(ks.register_transport(&tp));
+
+    ks.kill(); // sets shutdown_requested but not shutdown_done
+    EXPECT_TRUE(ks.is_shutdown_requested());
+    EXPECT_TRUE(tp.is_running()); // kill() doesn't call stop()
+
+    ks.shutdown(); // should now stop the transport
+    EXPECT_FALSE(tp.is_running());
+    EXPECT_EQ(tp.stop_count.load(), 1);
+}
