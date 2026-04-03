@@ -700,3 +700,74 @@ TEST(MulticastReceiver, StopIsIdempotent) {
     receiver.stop();  // Double stop should not crash
     EXPECT_FALSE(receiver.is_running());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedUdpPacket::to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedUdpPacket, ToJsonInvalid) {
+    ParsedUdpPacket p{};
+    auto json = p.to_json();
+    EXPECT_NE(json.find("\"valid\":false"), std::string::npos);
+}
+
+TEST(ParsedUdpPacket, ToJsonValidPacket) {
+    FakeUdpMbuf fake;
+    uint8_t payload[] = {0xDE, 0xAD};
+    size_t pkt_len = build_fake_udp_packet(
+        fake.data(), sizeof(fake.buf),
+        parse_ipv4("10.1.2.3"), 5000,
+        parse_ipv4("233.54.12.111"), 26477,
+        payload, 2);
+    ASSERT_GT(pkt_len, 0u);
+    fake.set_len(static_cast<uint16_t>(pkt_len));
+
+    auto parsed = parse_udp_packet(&fake.mbuf);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+
+    auto json = parsed.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"src_port\":5000"), std::string::npos);
+    EXPECT_NE(json.find("\"dst_port\":26477"), std::string::npos);
+    EXPECT_NE(json.find("\"payload_len\":2"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastConfig::to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastConfig, ToJsonContainsAllFields) {
+    MulticastConfig cfg{.port_id = 2, .rx_queue_id = 3, .rx_cpu = 5, .rx_burst = 64};
+    auto json = cfg.to_json();
+    EXPECT_EQ(json.front(), '{');
+    EXPECT_EQ(json.back(), '}');
+    EXPECT_NE(json.find("\"port_id\":2"), std::string::npos);
+    EXPECT_NE(json.find("\"rx_queue_id\":3"), std::string::npos);
+    EXPECT_NE(json.find("\"rx_cpu\":5"), std::string::npos);
+    EXPECT_NE(json.find("\"rx_burst\":64"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastGroup::to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastGroup, ToJsonWithSourceFilter) {
+    MulticastGroup g{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+        .source_ip = parse_ipv4("10.1.2.3"),
+    };
+    auto json = g.to_json();
+    EXPECT_NE(json.find("\"group_port\":26477"), std::string::npos);
+    EXPECT_NE(json.find("\"source_ip\":\"10.1.2.3\""), std::string::npos);
+}
+
+TEST(MulticastGroup, ToJsonNoSourceFilter) {
+    MulticastGroup g{
+        .group_ip = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+    };
+    auto json = g.to_json();
+    EXPECT_NE(json.find("\"source_ip\":\"0.0.0.0\""), std::string::npos);
+}

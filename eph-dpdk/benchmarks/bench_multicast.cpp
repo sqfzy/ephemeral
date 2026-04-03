@@ -184,3 +184,45 @@ static void BM_ParseUdpPacketRejectTcp(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_ParseUdpPacketRejectTcp);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedUdpPacket::dump / to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParsedUdpPacketDump(benchmark::State& state) {
+    FakeMbuf fake;
+    std::vector<uint8_t> payload(256);
+    fill_random(payload.data(), payload.size(), 99);
+    size_t pkt_len = build_udp_packet(
+        fake.buf, sizeof(fake.buf),
+        eph::dpdk::net::parse_ipv4("10.1.2.3"), 5000,
+        eph::dpdk::net::parse_ipv4("233.54.12.111"), 26477,
+        payload.data(), 256);
+    fake.set_len(static_cast<uint16_t>(pkt_len));
+    auto parsed = eph::dpdk::parse_udp_packet(&fake.mbuf);
+
+    for (auto _ : state) {
+        auto s = parsed.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ParsedUdpPacketDump);
+
+static void BM_ParsedUdpPacketToJson(benchmark::State& state) {
+    FakeMbuf fake;
+    std::vector<uint8_t> payload(256);
+    fill_random(payload.data(), payload.size(), 99);
+    size_t pkt_len = build_udp_packet(
+        fake.buf, sizeof(fake.buf),
+        eph::dpdk::net::parse_ipv4("10.1.2.3"), 5000,
+        eph::dpdk::net::parse_ipv4("233.54.12.111"), 26477,
+        payload.data(), 256);
+    fake.set_len(static_cast<uint16_t>(pkt_len));
+    auto parsed = eph::dpdk::parse_udp_packet(&fake.mbuf);
+
+    for (auto _ : state) {
+        auto s = parsed.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ParsedUdpPacketToJson);

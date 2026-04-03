@@ -153,6 +153,18 @@ struct ParsedUdpPacket {
             net::format_ipv4(dst_ip()).data(), dst_port(),
             payload_len);
     }
+
+    /// JSON-formatted packet summary for monitoring/logging.
+    /// Returns "{\"valid\":false}" if the packet was not parsed.
+    [[nodiscard]] std::string to_json() const {
+        if (!udp) return "{\"valid\":false}";
+        return std::format(
+            "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{},"
+            "\"payload_len\":{}}}",
+            net::format_ipv4(src_ip()).data(), src_port(),
+            net::format_ipv4(dst_ip()).data(), dst_port(),
+            payload_len);
+    }
 };
 
 /// Parse a UDP/IPv4/Ethernet packet from an mbuf.
