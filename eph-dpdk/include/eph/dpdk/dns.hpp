@@ -166,17 +166,15 @@ inline spdlog::logger* dns_logger() {
 /// Generate a random ephemeral port in [49152, 65535].
 /// Returns 0 on CSPRNG failure.
 ///
-/// Range is a power of 2 so the modulo distributes uniformly — no low-value
-/// bias from the truncation.
+/// Uses shared constants from net_header.hpp. Range is a power of 2
+/// so the modulo distributes uniformly — no low-value bias.
 inline uint16_t random_ephemeral_port() noexcept {
-    static constexpr uint16_t kMin   = 49152;
-    static constexpr uint16_t kRange = 16384;  // 65536 - 49152, must be 2^n
-    static_assert((kRange & (kRange - 1)) == 0,
-                  "kRange must be a power of 2 for unbiased modulo");
+    static_assert((net::kEphemeralPortRange & (net::kEphemeralPortRange - 1)) == 0,
+                  "kEphemeralPortRange must be a power of 2 for unbiased modulo");
     uint16_t rnd;
     if (RAND_bytes(reinterpret_cast<unsigned char*>(&rnd), sizeof(rnd)) != 1)
         return 0;
-    return kMin + (rnd % kRange);
+    return net::kEphemeralPortMin + (rnd % net::kEphemeralPortRange);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -450,7 +448,7 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
 
 /// Try to extract a DNS response from a received mbuf.
 /// @return IPv4 address (host order) if valid DNS response, nullopt otherwise
-inline std::optional<uint32_t>
+[[nodiscard]] inline std::optional<uint32_t>
 try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
                      uint32_t nameserver_ip) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + net::kIpv4HeaderLen

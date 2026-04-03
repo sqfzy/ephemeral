@@ -7,10 +7,10 @@
 /// Provides constexpr checksum computation and header template building
 /// for zero-copy packet construction on mbufs.
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <format>
 #include <string>
@@ -122,33 +122,33 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
 // Checksum computation
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Compute Internet checksum (RFC 1071) over arbitrary data.
+/// @brief Compute Internet checksum (RFC 1071) over typed byte data.
 ///
 /// Sums 16-bit words with end-around carry, then one's-complements the result.
 /// Handles odd-length buffers by zero-padding the final byte.
+/// constexpr-evaluable: can be used in static_assert for compile-time
+/// checksum verification of fixed headers.
 ///
-/// @param data  Pointer to the data to checksum
+/// @param data  Pointer to the byte data to checksum
 /// @param len   Length of the data in bytes
 /// @return One's complement checksum in network byte order
-[[nodiscard]] inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
-    if (len == 0) return 0xFFFF;
+[[nodiscard]] constexpr uint16_t internet_checksum(const uint8_t* data, size_t len) noexcept {
+    if (len == 0 || !data) return 0xFFFF;
     uint32_t sum = 0;
-    auto ptr = static_cast<const uint8_t*>(data);
 
     // Sum 16-bit words
-    while (len > 1) {
-        uint16_t word;
-        std::memcpy(&word, ptr, 2);
+    size_t i = 0;
+    while (i + 1 < len) {
+        // Reconstruct uint16_t from two bytes — constexpr-safe (no memcpy needed).
+        uint16_t word = static_cast<uint16_t>(data[i]) |
+                        static_cast<uint16_t>(static_cast<uint16_t>(data[i + 1]) << 8);
         sum += word;
-        ptr += 2;
-        len -= 2;
+        i += 2;
     }
 
     // Handle odd byte
-    if (len == 1) {
-        uint16_t word = 0;
-        std::memcpy(&word, ptr, 1);
-        sum += word;
+    if (i < len) {
+        sum += data[i];
     }
 
     // Fold 32-bit sum to 16-bit
@@ -157,6 +157,15 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
     }
 
     return static_cast<uint16_t>(~sum);
+}
+
+/// @brief Overload accepting const void* for backward compatibility with
+///        DPDK structs (rte_ipv4_hdr, etc.) passed as opaque pointers.
+///
+/// Delegates to the constexpr uint8_t* overload at runtime.
+/// Not constexpr because void*->uint8_t* reinterpret is not constexpr before C++26.
+[[nodiscard]] inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
+    return internet_checksum(static_cast<const uint8_t*>(data), len);
 }
 
 /// @brief Compute TCP/UDP pseudo-header checksum contribution (RFC 793 section 3.1).
@@ -728,9 +737,11 @@ struct ParsedPacket {
 /// @return Null-terminated char array containing the formatted address
 [[nodiscard]] inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
     std::array<char, 16> buf{};
-    snprintf(buf.data(), buf.size(), "%u.%u.%u.%u",
-                  (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                  (ip >> 8) & 0xFF, ip & 0xFF);
+    // std::format_to for type-safety; result is always <= 15 chars ("255.255.255.255").
+    auto [end, _] = std::format_to_n(buf.data(), buf.size() - 1, "{}.{}.{}.{}",
+        (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+        (ip >> 8) & 0xFF, ip & 0xFF);
+    *end = '\0';
     return buf;
 }
 
@@ -740,9 +751,12 @@ struct ParsedPacket {
 /// @return Null-terminated char array containing the formatted MAC
 [[nodiscard]] inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
     std::array<char, 18> buf{};
-    snprintf(buf.data(), buf.size(), "%02x:%02x:%02x:%02x:%02x:%02x",
-             mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
-             mac.addr_bytes[3], mac.addr_bytes[4], mac.addr_bytes[5]);
+    // std::format_to for type-safety; result is always exactly 17 chars ("xx:xx:xx:xx:xx:xx").
+    auto [end, _] = std::format_to_n(buf.data(), buf.size() - 1,
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
+        mac.addr_bytes[3], mac.addr_bytes[4], mac.addr_bytes[5]);
+    *end = '\0';
     return buf;
 }
 
@@ -809,6 +823,16 @@ inline std::string ParsedPacket::to_json() const {
         format_ipv4(dst_ip()).data(), dst_port(),
         seq(), ack(), window(), tcp_flags(), payload_len);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ephemeral port generation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @name IANA ephemeral port range (RFC 6335 section 6)
+/// @{
+inline constexpr uint16_t kEphemeralPortMin   = 49152;
+inline constexpr uint16_t kEphemeralPortRange = 16384; // 65536 - 49152, must be 2^n
+/// @}
 
 } // namespace eph::dpdk::net
 

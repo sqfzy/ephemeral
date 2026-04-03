@@ -76,9 +76,9 @@ inline spdlog::logger* connector_logger() {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// IANA ephemeral port range (RFC 6335 §6): 49152–65535.
-inline constexpr uint16_t kEphemeralPortMin   = 49152;
-inline constexpr uint16_t kEphemeralPortRange = 16384; // 65535 - 49152 + 1
+/// Re-exported from net_header.hpp for backward compatibility.
+inline constexpr uint16_t kEphemeralPortMin   = net::kEphemeralPortMin;
+inline constexpr uint16_t kEphemeralPortRange = net::kEphemeralPortRange;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration

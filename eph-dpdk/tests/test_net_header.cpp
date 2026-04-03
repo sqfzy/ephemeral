@@ -171,7 +171,8 @@ TEST(NetHeader, ChecksumRfc1071Example) {
 
 TEST(NetHeader, ChecksumZeroLength) {
     // Checksum of empty data = ~0 = 0xFFFF
-    uint16_t cksum = internet_checksum(nullptr, 0);
+    const uint8_t* null_data = nullptr;
+    uint16_t cksum = internet_checksum(null_data, 0);
     EXPECT_EQ(cksum, 0xFFFFu);
 }
 
@@ -324,7 +325,8 @@ TEST(NetHeader, TcpChecksumOddPayloadLength) {
 }
 
 TEST(InternetChecksum, EmptyDataReturns0xFFFF) {
-    auto c = internet_checksum(nullptr, 0);
+    const uint8_t* null_data = nullptr;
+    auto c = internet_checksum(null_data, 0);
     EXPECT_EQ(c, 0xFFFFu);
 }
 
@@ -1129,4 +1131,72 @@ TEST(ParsedPacket, ToJsonValidPacket) {
     EXPECT_NE(json.find("\"seq\":1000"), std::string::npos);
     EXPECT_NE(json.find("\"ack\":2000"), std::string::npos);
     EXPECT_NE(json.find("\"payload_len\":100"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constexpr internet_checksum
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(NetHeader, ChecksumIsConstexpr) {
+    // Verify internet_checksum can be evaluated at compile time.
+    // Uses a small known-good input to validate both constexpr path and
+    // byte-by-byte reconstruction (no memcpy in constexpr context).
+    constexpr uint8_t data[] = {0x00, 0x01, 0xF2, 0x03, 0xF4, 0xF5, 0xF6, 0xF7};
+    constexpr uint16_t cksum = internet_checksum(data, sizeof(data));
+    static_assert(cksum == hton16(0x220D), "constexpr checksum must match RFC 1071 example");
+    EXPECT_EQ(cksum, hton16(0x220D));
+}
+
+TEST(NetHeader, ConstexprChecksumOddLength) {
+    // Verify constexpr path handles odd-length buffers correctly
+    constexpr uint8_t data[] = {0x01};
+    constexpr uint16_t cksum = internet_checksum(data, 1);
+    static_assert(cksum == static_cast<uint16_t>(~0x0001),
+                  "constexpr odd-byte checksum must match runtime");
+    EXPECT_EQ(cksum, static_cast<uint16_t>(~0x0001));
+}
+
+TEST(NetHeader, ConstexprChecksumEmpty) {
+    constexpr const uint8_t* null_data = nullptr;
+    constexpr uint16_t cksum = internet_checksum(null_data, 0);
+    static_assert(cksum == 0xFFFF, "constexpr empty checksum must be 0xFFFF");
+    EXPECT_EQ(cksum, 0xFFFFu);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ephemeral port constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(NetHeader, EphemeralPortConstants) {
+    // Verify IANA ephemeral port range (RFC 6335 section 6)
+    static_assert(kEphemeralPortMin == 49152);
+    static_assert(kEphemeralPortRange == 16384);
+    // Range must be a power of 2 for unbiased modulo
+    static_assert((kEphemeralPortRange & (kEphemeralPortRange - 1)) == 0);
+    // Max port = 49152 + 16384 - 1 = 65535
+    EXPECT_EQ(kEphemeralPortMin + kEphemeralPortRange - 1, 65535);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constexpr checksum matches runtime for various payload sizes
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(NetHeader, ChecksumConsistencyAcrossSizes) {
+    // Verify the constexpr-safe byte-reconstruction approach produces the
+    // same results as the old memcpy approach for a range of buffer sizes.
+    for (size_t len = 0; len <= 32; ++len) {
+        std::vector<uint8_t> data(len);
+        for (size_t i = 0; i < len; ++i) {
+            data[i] = static_cast<uint8_t>(i * 17 + 3); // deterministic pattern
+        }
+        uint16_t cksum = internet_checksum(data.data(), len);
+        // Verify checksum validates to zero when appended (RFC 1071 property)
+        if (len > 0 && len % 2 == 0) {
+            std::vector<uint8_t> with_cksum(data.begin(), data.end());
+            with_cksum.push_back(static_cast<uint8_t>(cksum & 0xFF));
+            with_cksum.push_back(static_cast<uint8_t>(cksum >> 8));
+            uint16_t verify = internet_checksum(with_cksum.data(), with_cksum.size());
+            EXPECT_EQ(verify, 0u) << "Checksum self-verification failed for len=" << len;
+        }
+    }
 }
