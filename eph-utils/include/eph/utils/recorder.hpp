@@ -79,9 +79,14 @@ namespace recorder_detail {
 /// @return `true` if the directory exists (or was created), `false` on error.
 [[nodiscard]] inline bool ensure_directory(const std::string& path) noexcept {
     try {
-        if (!fs::exists(path)) {
-            return fs::create_directories(path);
-        }
+        // create_directories() is idempotent: returns true if it created
+        // the directory, false if it already existed. Either way, the
+        // directory exists afterward. Only throws on actual I/O errors.
+        // Previous code had a TOCTOU race: fs::exists() + create_directories()
+        // could return false if a concurrent thread created the directory
+        // between the two calls (create_directories returns false for
+        // "already exists" but that's not an error).
+        fs::create_directories(path);
         return true;
     } catch (const fs::filesystem_error& e) {
         std::println(stderr, "Directory error: {}", e.what());
