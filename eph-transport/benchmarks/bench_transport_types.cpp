@@ -324,4 +324,61 @@ static void BM_RttStatsToJson(benchmark::State& state) {
 }
 BENCHMARK(BM_RttStatsToJson);
 
+// ---------------------------------------------------------------------------
+// TransportConfig::warnings — advisory diagnostics (startup path)
+// ---------------------------------------------------------------------------
+
+static void BM_Warnings_Clean(benchmark::State& state) {
+    TransportConfig cfg;
+    cfg.remote_host = "stream.example.com";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    cfg.skip_utf8_validation = false;  // avoid default warning
+    for (auto _ : state) {
+        auto w = cfg.warnings();
+        benchmark::DoNotOptimize(w);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Warnings_Clean);
+
+static void BM_Warnings_WithIssues(benchmark::State& state) {
+    TransportConfig cfg;
+    cfg.remote_host = "stream.example.com";
+    cfg.remote_port = 443;
+    cfg.ws_path = "/ws";
+    cfg.use_tls = false;
+    cfg.verify_peer = true;  // contradicts use_tls=false
+    cfg.ca_cert_path = "/some/ca.pem";  // unused without TLS
+    cfg.tx_burst_size = 2000;  // unusually large
+    cfg.skip_utf8_validation = true;  // generates a warning
+    for (auto _ : state) {
+        auto w = cfg.warnings();
+        benchmark::DoNotOptimize(w);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Warnings_WithIssues);
+
+// ---------------------------------------------------------------------------
+// ConnectionInfo::to_json — connection metadata serialization
+// ---------------------------------------------------------------------------
+
+static void BM_ConnectionInfoToJson(benchmark::State& state) {
+    ConnectionInfo ci{
+        .tls_version = "TLSv1.3",
+        .cipher_name = "TLS_AES_256_GCM_SHA384",
+        .ws_subprotocol = "graphql-ws",
+        .remote_ip = "10.0.1.42",
+        .remote_port = 443,
+        .use_tls = true
+    };
+    for (auto _ : state) {
+        auto j = ci.to_json();
+        benchmark::DoNotOptimize(j);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ConnectionInfoToJson);
+
 BENCHMARK_MAIN();
