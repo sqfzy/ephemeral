@@ -299,6 +299,18 @@ TEST(HugePageTest, CheckHugePageAvailability) {
 }
 #endif
 
+TEST(HugePageTest, AllocateZeroSizeReturnsNullptr) {
+  bool is_hugepage = false;
+  size_t allocated_size = 42;  // non-zero to verify it's set to 0
+
+  void *ptr = HugePage::allocate(0, alignof(std::max_align_t), is_hugepage, allocated_size);
+  EXPECT_EQ(ptr, nullptr);
+  EXPECT_EQ(allocated_size, 0u);
+  EXPECT_FALSE(is_hugepage);
+  // Deallocating nullptr should be a no-op (not crash)
+  HugePage::deallocate(ptr, allocated_size, is_hugepage);
+}
+
 TEST(HugePageTest, StressTest) {
   // 分配和释放多个不同大小的对象
   std::vector<decltype(HugePage::make<std::vector<int>>())> pointers;
