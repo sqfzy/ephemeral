@@ -65,6 +65,26 @@ struct HttpResponse {
         return status_code >= 500 && status_code < 600;
     }
 
+    /// @brief JSON-formatted summary for monitoring system integration.
+    ///
+    /// Body is truncated to prevent massive JSON blobs. Use .body directly
+    /// for the full response content.
+    [[nodiscard]] std::string to_json() const {
+        // Truncate body at 256 chars to keep JSON manageable
+        std::string_view body_preview = body;
+        bool truncated = false;
+        if (body_preview.size() > 256) {
+            body_preview = body_preview.substr(0, 256);
+            truncated = true;
+        }
+        return std::format(
+            "{{\"status_code\":{},\"body_size\":{},\"is_success\":{}"
+            ",\"body_preview\":\"{}{}\"}}",
+            status_code, body.size(),
+            is_success() ? "true" : "false",
+            body_preview, truncated ? "..." : "");
+    }
+
     /// Defaulted equality -- all fields must match exactly.
     [[nodiscard]] friend bool operator==(const HttpResponse&,
                                          const HttpResponse&) = default;

@@ -614,6 +614,33 @@ TEST(HttpResponse, FormatterCompositeFormat) {
 }
 
 // =============================================================================
+// HttpResponse::to_json()
+// =============================================================================
+
+TEST(HttpResponse, ToJsonContainsKeyFields) {
+    HttpResponse resp{.status_code = 200, .body = R"({"ok":true})"};
+    auto j = resp.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"status_code\":200"), std::string::npos);
+    EXPECT_NE(j.find("\"is_success\":true"), std::string::npos);
+}
+
+TEST(HttpResponse, ToJsonTruncatesLargeBody) {
+    HttpResponse resp{.status_code = 200, .body = std::string(500, 'x')};
+    auto j = resp.to_json();
+    EXPECT_NE(j.find("\"body_size\":500"), std::string::npos);
+    EXPECT_NE(j.find("..."), std::string::npos);  // truncation marker
+}
+
+TEST(HttpResponse, ToJsonErrorResponse) {
+    HttpResponse resp{.status_code = 503, .body = "Service Unavailable"};
+    auto j = resp.to_json();
+    EXPECT_NE(j.find("\"is_success\":false"), std::string::npos);
+    EXPECT_NE(j.find("503"), std::string::npos);
+}
+
+// =============================================================================
 // std::formatter<HttpClient::Config>
 // =============================================================================
 
