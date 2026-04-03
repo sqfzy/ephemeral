@@ -91,6 +91,14 @@ class ScopedTSC {
 ///       `ConcurrentRecorder` for multi-threaded scenarios.
 class HdrHistogram {
    public:
+    /// @brief Default-construct an empty histogram with no trackable range.
+    ///
+    /// A default-constructed histogram cannot record any values (record()
+    /// always returns false). Use the parameterized constructor to create
+    /// a usable histogram, or assign over this instance later.
+    ///
+    /// @note Exists to support deferred initialization patterns (e.g.,
+    ///       member variables assigned in constructor bodies).
     HdrHistogram() = default;
 
     /// @brief Construct a histogram with the given trackable range and precision.

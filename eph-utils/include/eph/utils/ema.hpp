@@ -19,15 +19,13 @@ namespace eph::utils {
 
 namespace detail {
 /// @brief Lazily-initialized logger for EMA utilities.
-inline spdlog::logger* ema_logger() {
+inline const std::shared_ptr<spdlog::logger>& ema_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("utils.ema");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("utils.ema");
-        }
+        auto lg = spdlog::get("utils.ema");
+        if (!lg) lg = spdlog::stdout_color_mt("utils.ema");
+        return lg;
     }();
-    return l.get();
+    return l;
 }
 } // namespace detail
 

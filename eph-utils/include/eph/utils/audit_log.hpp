@@ -40,15 +40,13 @@ namespace eph::utils {
 
 namespace detail {
 /// @brief Lazily-initialized logger for the audit-log subsystem.
-inline spdlog::logger* audit_log_logger() {
+inline const std::shared_ptr<spdlog::logger>& audit_log_logger() {
     static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("utils.audit_log");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("utils.audit_log");
-        }
+        auto lg = spdlog::get("utils.audit_log");
+        if (!lg) lg = spdlog::stdout_color_mt("utils.audit_log");
+        return lg;
     }();
-    return l.get();
+    return l;
 }
 } // namespace detail
 
