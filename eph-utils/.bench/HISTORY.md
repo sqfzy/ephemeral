@@ -26,3 +26,18 @@ Platform: Linux aarch64, 16 cores @ 2.0 GHz, L3 36864 KiB
 Note: HugePage allocation uses mmap(MAP_HUGETLB) which has high syscall
 overhead. The benefit is TLB miss reduction on large working sets, visible
 at scale but not in this microbenchmark.
+
+## 2026-04-03 bench_recorder baseline (0484dc9)
+
+| Benchmark | Time (ns) | CPU (ns) | Iterations |
+|---|---|---|---|
+| BM_RecorderRecord | 3.38 | 3.38 | 207226087 |
+| BM_RecorderRecordValues | 3.42 | 3.42 | 204772271 |
+| BM_ConcurrentRecorderRecord_1Thread | 9.05 | 9.05 | 75701282 |
+| BM_ConcurrentRecorderRecord_MT/threads:1 | 9.53 | 9.53 | 73418800 |
+| BM_ConcurrentRecorderRecord_MT/threads:2 | 9.53 | 9.53 | 73364666 |
+| BM_ConcurrentRecorderRecord_MT/threads:4 | 9.54 | 9.54 | 73346768 |
+
+ConcurrentRecorder shows linear scaling due to zero-contention
+thread_local design. Single-thread overhead is ~3x vs Recorder
+(unordered_map lookup for thread-local guard).
