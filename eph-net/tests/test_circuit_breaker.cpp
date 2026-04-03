@@ -544,6 +544,20 @@ TEST(CircuitBreakerConfig, WarnsOnLongOpenDuration) {
     EXPECT_TRUE(found) << "expected warning about long open_duration";
 }
 
+TEST(CircuitBreakerConfig, MultipleWarningsCanCoexist) {
+    // A config with multiple issues should report all of them.
+    CircuitBreaker::Config cfg{1, std::chrono::milliseconds{0}, 15};
+    auto w = cfg.warnings();
+    EXPECT_GE(w.size(), 3u) << "expected at least 3 warnings for threshold=1, duration=0, ho_max=15";
+}
+
+TEST(CircuitBreakerConfig, WarningsEmptyForBorderlineConfig) {
+    // Threshold=2, duration=10min, ho_max=10: all just inside safe boundaries
+    CircuitBreaker::Config cfg{2, std::chrono::milliseconds{600000}, 10};
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty()) << "borderline-safe config should produce no warnings";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // config() accessor
 // ─────────────────────────────────────────────────────────────────────────────
