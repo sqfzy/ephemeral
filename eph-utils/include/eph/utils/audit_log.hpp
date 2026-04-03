@@ -112,10 +112,19 @@ struct alignas(64) AuditEntry {
     /// Format as a human-readable log line.
     [[nodiscard]] std::string dump() const {
         auto ns = TSC::to_ns(tsc);
+        // Explicitly handle each Side enum value to avoid misrepresenting
+        // uninitialized/zeroed entries (side == 0) as "SELL".
+        auto side_str = [this]() -> std::string_view {
+            switch (side) {
+            case Side::Buy:  return "BUY";
+            case Side::Sell: return "SELL";
+            }
+            return "???";
+        }();
         return std::format("[{:>12}ns] {:12s} oid={} side={} px={:.4f} qty={:.4f}"
                            " fill_px={:.4f} fill_qty={:.4f} venue={}",
             ns.value_or(0), audit_event_name(event), order_id,
-            side == Side::Buy ? "BUY" : "SELL",
+            side_str,
             price, quantity, fill_price, fill_qty, venue_id);
     }
 };

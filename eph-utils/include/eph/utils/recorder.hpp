@@ -192,7 +192,14 @@ class Recorder {
         }
 
         count_ += count;
-        total_cycles_ += cycles * count;
+        // Saturate on overflow instead of wrapping to prevent corrupted
+        // average calculations. This can happen with very large cycle
+        // values recorded many times (e.g., cycles=10^10, count=10^9).
+        if (cycles <= std::numeric_limits<uint64_t>::max() / count) [[likely]] {
+            total_cycles_ += cycles * count;
+        } else {
+            total_cycles_ = std::numeric_limits<uint64_t>::max();
+        }
         min_cycles_ = std::min(min_cycles_, cycles);
         max_cycles_ = std::max(max_cycles_, cycles);
 
@@ -593,7 +600,12 @@ class ConcurrentRecorder {
         }
 
         local->count += count;
-        local->total_cycles += cycles * count;
+        // Saturate on overflow to prevent corrupted average calculations.
+        if (cycles <= std::numeric_limits<uint64_t>::max() / count) [[likely]] {
+            local->total_cycles += cycles * count;
+        } else {
+            local->total_cycles = std::numeric_limits<uint64_t>::max();
+        }
         local->min_cycles = std::min(local->min_cycles, cycles);
         local->max_cycles = std::max(local->max_cycles, cycles);
 
