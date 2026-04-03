@@ -610,6 +610,35 @@ TEST(TransportStats, DeltaSubtractsTcpRxFields) {
     EXPECT_EQ(d.tcp_rx_bursts, 20);
 }
 
+TEST(TransportStats, DeltaCarriesLatencyHistograms) {
+    // Latency histograms are not subtractable — the later snapshot's
+    // values should be carried through to the delta.
+    TransportStats a{};
+    a.tx_latency = {.count = 50, .min_ns = 100, .max_ns = 5000,
+                    .mean_ns = 2000.0, .p50_ns = 1800, .p99_ns = 4500, .p999_ns = 4900};
+    a.rx_latency = {.count = 30, .min_ns = 200, .max_ns = 6000,
+                    .mean_ns = 3000.0, .p50_ns = 2800, .p99_ns = 5500, .p999_ns = 5900};
+    a.tx_queue_wait = {.count = 50, .p50_ns = 100};
+    a.tx_encode = {.count = 50, .p50_ns = 200};
+    a.rx_decrypt = {.count = 30, .p50_ns = 300};
+    a.rx_decode = {.count = 30, .p50_ns = 400};
+
+    TransportStats b{};
+    // b has different values — they should be ignored in the delta
+    b.tx_latency = {.count = 20};
+    b.rx_latency = {.count = 10};
+
+    auto d = a - b;
+    EXPECT_EQ(d.tx_latency.count, a.tx_latency.count);
+    EXPECT_EQ(d.tx_latency.p50_ns, a.tx_latency.p50_ns);
+    EXPECT_EQ(d.rx_latency.count, a.rx_latency.count);
+    EXPECT_EQ(d.rx_latency.p50_ns, a.rx_latency.p50_ns);
+    EXPECT_EQ(d.tx_queue_wait.p50_ns, a.tx_queue_wait.p50_ns);
+    EXPECT_EQ(d.tx_encode.p50_ns, a.tx_encode.p50_ns);
+    EXPECT_EQ(d.rx_decrypt.p50_ns, a.rx_decrypt.p50_ns);
+    EXPECT_EQ(d.rx_decode.p50_ns, a.rx_decode.p50_ns);
+}
+
 TEST(TransportStats, EqualityDetectsDifference) {
     TransportStats a{};
     TransportStats b{};

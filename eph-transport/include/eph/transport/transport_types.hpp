@@ -1137,6 +1137,13 @@ struct TransportStats {
         d.ws_upgrade_ns     = lhs.ws_upgrade_ns;
         d.remote_ip         = lhs.remote_ip;
         d.rtt               = lhs.rtt;
+        // Latency histograms: carry from later snapshot (not subtractable)
+        d.tx_latency        = lhs.tx_latency;
+        d.tx_queue_wait     = lhs.tx_queue_wait;
+        d.tx_encode         = lhs.tx_encode;
+        d.rx_latency        = lhs.rx_latency;
+        d.rx_decrypt        = lhs.rx_decrypt;
+        d.rx_decode         = lhs.rx_decode;
         d.tls_write_seq     = lhs.tls_write_seq;
         d.tls_read_seq      = lhs.tls_read_seq;
         d.tls_seq_limit     = lhs.tls_seq_limit;
