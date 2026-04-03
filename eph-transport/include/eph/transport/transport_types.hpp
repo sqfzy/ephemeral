@@ -11,6 +11,7 @@
 /// Error types (SendError, ConnectionError, ConnectionErrorInfo) are defined
 /// in eph/core/transport_errors.hpp — include that header directly when needed.
 
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -96,12 +97,12 @@ inline constexpr uint32_t kUnrecognizedHash = 0;
 template <typename ExtractorFn>
 void apply_twophase_filter(std::span<FrameView> frames, ExtractorFn&& ext) {
     struct Slot { uint32_t hash = kEmptySlotHash; size_t last_idx = 0; };
-    Slot slots[kFilterSlots];
+    std::array<Slot, kFilterSlots> slots;
     // Initialize all slots to the empty sentinel.
-    for (auto& s : slots) s = {kEmptySlotHash, 0};
+    slots.fill({kEmptySlotHash, 0});
 
     // Compute hashes once, cache for reuse in pass 2.
-    uint32_t hashes[kMaxFramesPerBatch];
+    std::array<uint32_t, kMaxFramesPerBatch> hashes{};
     size_t n = std::min(frames.size(), kMaxFramesPerBatch);
 
     // Pass 1: extract hashes + record last index per symbol.

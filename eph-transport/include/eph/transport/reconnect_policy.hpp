@@ -8,6 +8,7 @@
 /// connection logic — that stays in TransportCore.
 
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 
 #include <spdlog/spdlog.h>
 
@@ -50,10 +52,14 @@ public:
     /// 4. On failure: increments attempt_, doubles backoff, calls
     ///    on_reconnect_attempt callback, returns false
     ///
-    /// @param connect_fn  Callable returning expected<void, ConnectionErrorInfo>
+    /// @tparam ConnectFn  Callable returning std::expected<void, ConnectionErrorInfo>
+    /// @param connect_fn  Connection factory (invoked once per attempt)
     /// @return true if reconnection succeeded
-    [[nodiscard]] bool attempt(
-        std::function<std::expected<void, ConnectionErrorInfo>()> connect_fn) noexcept
+    template <typename ConnectFn>
+        requires std::invocable<ConnectFn> &&
+                 std::same_as<std::invoke_result_t<ConnectFn>,
+                              std::expected<void, ConnectionErrorInfo>>
+    [[nodiscard]] bool attempt(ConnectFn&& connect_fn) noexcept
     {
         [[maybe_unused]] auto log = detail::transport_logger();
         ++attempt_;
