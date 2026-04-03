@@ -74,6 +74,23 @@ struct ProxyConfig {
     /// @brief Timeout for the proxy handshake (not the TCP connect to the proxy).
     std::chrono::milliseconds timeout{5000};
 
+    /// @brief Serialize as a proxy URL string (inverse of parse_proxy_url).
+    ///
+    /// Format: scheme://[user:pass@]host:port
+    /// Password is included in the URL — handle with care.
+    ///
+    /// @return URL string like "socks5://user:pass@host:port"
+    [[nodiscard]] std::string to_url() const {
+        std::string_view scheme = (type == ProxyType::kSocks5) ? "socks5" : "http";
+        if (username.empty()) {
+            return std::format("{}://{}:{}", scheme, host, port);
+        }
+        if (password.empty()) {
+            return std::format("{}://{}@{}:{}", scheme, username, host, port);
+        }
+        return std::format("{}://{}:{}@{}:{}", scheme, username, password, host, port);
+    }
+
     /// @brief Validate configuration, returning an error description or empty string on success.
     /// @return Empty string_view on success; otherwise a human-readable error description.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {

@@ -343,6 +343,46 @@ TEST(ProxyConfigValidation, HostWithNullByteRejected) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig::to_url() — round-trip with parse_proxy_url
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigUrl, Socks5NoAuth) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 1080, .type = ProxyType::kSocks5};
+    EXPECT_EQ(cfg.to_url(), "socks5://proxy.io:1080");
+}
+
+TEST(ProxyConfigUrl, HttpConnectNoAuth) {
+    ProxyConfig cfg{.host = "squid.local", .port = 3128, .type = ProxyType::kHttpConnect};
+    EXPECT_EQ(cfg.to_url(), "http://squid.local:3128");
+}
+
+TEST(ProxyConfigUrl, Socks5WithFullAuth) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 9050, .type = ProxyType::kSocks5,
+        .username = "alice", .password = "s3cret"};
+    EXPECT_EQ(cfg.to_url(), "socks5://alice:s3cret@proxy.io:9050");
+}
+
+TEST(ProxyConfigUrl, UsernameOnlyOmitsPassword) {
+    ProxyConfig cfg{
+        .host = "proxy.io", .port = 1080, .type = ProxyType::kSocks5,
+        .username = "bob"};
+    EXPECT_EQ(cfg.to_url(), "socks5://bob@proxy.io:1080");
+}
+
+TEST(ProxyConfigUrl, RoundTripSocks5) {
+    auto parsed = parse_proxy_url("socks5://user:pass@proxy.net:9050");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+    EXPECT_EQ(parsed->to_url(), "socks5://user:pass@proxy.net:9050");
+}
+
+TEST(ProxyConfigUrl, RoundTripHttpConnect) {
+    auto parsed = parse_proxy_url("http://admin:hunter2@corp.proxy:8080");
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+    EXPECT_EQ(parsed->to_url(), "http://admin:hunter2@corp.proxy:8080");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // proxy_type_name() — covers all enum values
 // ─────────────────────────────────────────────────────────────────────────────
 
