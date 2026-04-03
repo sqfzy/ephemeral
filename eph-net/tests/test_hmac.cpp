@@ -323,6 +323,67 @@ TEST(HmacVerifyHex, EmptyExpectedReturnsFalse) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HMAC-SHA256 with large message
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(HmacSha256, LargeMessage4KB) {
+    // Verify HMAC works correctly with a 4KB message (typical orderbook snapshot).
+    std::string msg(4096, 'A');
+    auto result = hmac_sha256_hex("key", msg);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->size(), 64u);
+}
+
+TEST(HmacSha256, LargeMessage64KB) {
+    // Verify HMAC works correctly with a 64KB message.
+    std::string msg(65536, 'B');
+    auto result = hmac_sha256_hex("key", msg);
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->size(), 64u);
+}
+
+TEST(HmacSha256, DeterministicWithSameInput) {
+    // Same key + message must always produce the same signature.
+    auto r1 = hmac_sha256_hex("key", "data");
+    auto r2 = hmac_sha256_hex("key", "data");
+    ASSERT_TRUE(r1.has_value());
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_EQ(*r1, *r2);
+}
+
+TEST(HmacSha256, DifferentKeysProduceDifferentDigests) {
+    auto r1 = hmac_sha256_hex("key-a", "same data");
+    auto r2 = hmac_sha256_hex("key-b", "same data");
+    ASSERT_TRUE(r1.has_value());
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_NE(*r1, *r2);
+}
+
+TEST(HmacSha256, DifferentMessagesProduceDifferentDigests) {
+    auto r1 = hmac_sha256_hex("same-key", "message-a");
+    auto r2 = hmac_sha256_hex("same-key", "message-b");
+    ASSERT_TRUE(r1.has_value());
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_NE(*r1, *r2);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// to_hex edge cases
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ToHex, SequentialBytes) {
+    std::array<uint8_t, 16> data;
+    for (size_t i = 0; i < 16; ++i) data[i] = static_cast<uint8_t>(i);
+    EXPECT_EQ(to_hex(data), "000102030405060708090a0b0c0d0e0f");
+}
+
+TEST(ToHex, HighNibblePattern) {
+    // Verify high nibble encoding for 0xF0, 0xA0, etc.
+    std::array<uint8_t, 3> data{0xF0, 0xA0, 0x50};
+    EXPECT_EQ(to_hex(data), "f0a050");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // hmac_sha256_base64 — convenience function
 // ─────────────────────────────────────────────────────────────────────────────
 
