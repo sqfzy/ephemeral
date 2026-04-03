@@ -646,3 +646,57 @@ TEST(MulticastGroupWarnings, WellKnownPortWarns) {
     }
     EXPECT_TRUE(found) << "Expected well-known port warning for port 80";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MulticastReceiver — type safety and lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MulticastReceiver, NotCopyable) {
+    static_assert(!std::is_copy_constructible_v<MulticastReceiver>);
+    static_assert(!std::is_copy_assignable_v<MulticastReceiver>);
+}
+
+TEST(MulticastReceiver, NotMovable) {
+    static_assert(!std::is_move_constructible_v<MulticastReceiver>);
+    static_assert(!std::is_move_assignable_v<MulticastReceiver>);
+}
+
+TEST(MulticastReceiver, InitialState) {
+    MulticastReceiver receiver(MulticastConfig{});
+    EXPECT_EQ(receiver.group_count(), 0u);
+    EXPECT_EQ(receiver.active_group_count(), 0u);
+    EXPECT_FALSE(receiver.is_running());
+}
+
+TEST(MulticastReceiver, JoinInvalidGroupFails) {
+    MulticastReceiver receiver(MulticastConfig{});
+    // Zero group IP is invalid
+    MulticastGroup bad{.group_ip = 0, .group_port = 12345};
+    auto result = receiver.join_group(bad);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("Invalid"), std::string::npos);
+}
+
+TEST(MulticastReceiver, JoinUnicastGroupFails) {
+    MulticastReceiver receiver(MulticastConfig{});
+    // 10.0.0.1 is not a multicast address
+    MulticastGroup bad{.group_ip = parse_ipv4("10.0.0.1"), .group_port = 12345};
+    auto result = receiver.join_group(bad);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("multicast"), std::string::npos);
+}
+
+TEST(MulticastReceiver, JoinZeroPortFails) {
+    MulticastReceiver receiver(MulticastConfig{});
+    MulticastGroup bad{.group_ip = parse_ipv4("233.54.12.111"), .group_port = 0};
+    auto result = receiver.join_group(bad);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("port"), std::string::npos);
+}
+
+TEST(MulticastReceiver, StopIsIdempotent) {
+    MulticastReceiver receiver(MulticastConfig{});
+    receiver.stop();
+    receiver.stop();  // Double stop should not crash
+    EXPECT_FALSE(receiver.is_running());
+}
