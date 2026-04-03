@@ -130,7 +130,7 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
 /// @param data  Pointer to the data to checksum
 /// @param len   Length of the data in bytes
 /// @return One's complement checksum in network byte order
-inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
+[[nodiscard]] inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
     if (len == 0) return 0xFFFF;
     uint32_t sum = 0;
     auto ptr = static_cast<const uint8_t*>(data);
@@ -169,7 +169,7 @@ inline uint16_t internet_checksum(const void* data, size_t len) noexcept {
 /// @param protocol      IP protocol number (e.g., kIpProtoTcp = 6)
 /// @param tcp_len_host  TCP/UDP segment length (header + payload) in host byte order
 /// @return Partial 32-bit sum in network byte order format
-inline uint32_t pseudo_header_sum(uint32_t src_ip_net, uint32_t dst_ip_net,
+[[nodiscard]] inline uint32_t pseudo_header_sum(uint32_t src_ip_net, uint32_t dst_ip_net,
                                    uint8_t protocol, uint16_t tcp_len_host) noexcept {
     uint32_t sum = 0;
     // Source IP (already network order, sum as two 16-bit words)
@@ -194,7 +194,7 @@ inline uint32_t pseudo_header_sum(uint32_t src_ip_net, uint32_t dst_ip_net,
 /// @param tcp_seg        Pointer to the TCP header (followed by payload)
 /// @param total_tcp_len  Total length of TCP header + payload in bytes
 /// @return TCP checksum in network byte order, ready to store in tcp->cksum
-inline uint16_t tcp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
+[[nodiscard]] inline uint16_t tcp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
                               const void* tcp_seg, uint16_t total_tcp_len) noexcept {
     uint32_t sum = pseudo_header_sum(src_ip_net, dst_ip_net, kIpProtoTcp, total_tcp_len);
 
@@ -229,7 +229,7 @@ inline uint16_t tcp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
 /// @param buf  Pointer to option area (right after 20-byte TCP header)
 /// @param mss  MSS value in host byte order
 /// @return Number of bytes written (always kSynOptionsLen = 12)
-inline uint16_t write_syn_options(uint8_t* buf, uint16_t mss) noexcept {
+[[nodiscard]] inline uint16_t write_syn_options(uint8_t* buf, uint16_t mss) noexcept {
     buf[0] = 2;                            // Kind: MSS
     buf[1] = 4;                            // Length
     uint16_t mss_net = hton16(mss);
@@ -574,7 +574,7 @@ struct ParsedPacket {
 ///       1. TCP data offset must not exceed IP total length
 ///       2. IP total length must not exceed mbuf data length
 ///       3. Payload pointer is only set when actual bytes exist beyond TCP header
-inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
+[[nodiscard]] inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
     if (!mbuf) [[unlikely]] return {};
     const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
     if (pkt_len < kAllHeadersLen) return {};
@@ -643,7 +643,7 @@ inline ParsedPacket parse_packet(const rte_mbuf* mbuf) noexcept {
 /// @note Returns 0 for both invalid input and the valid address "0.0.0.0".
 ///       Callers that need to distinguish these cases should check the input
 ///       string directly.
-inline uint32_t parse_ipv4(const char* str) noexcept {
+[[nodiscard]] inline uint32_t parse_ipv4(const char* str) noexcept {
     if (!str) return 0;
 
     uint32_t octets[4]{};
@@ -682,7 +682,7 @@ inline uint32_t parse_ipv4(const char* str) noexcept {
 ///
 /// @param ip  IPv4 address in host byte order
 /// @return Null-terminated char array containing the formatted address
-inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
+[[nodiscard]] inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
     std::array<char, 16> buf{};
     snprintf(buf.data(), buf.size(), "%u.%u.%u.%u",
                   (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
@@ -694,7 +694,7 @@ inline std::array<char, 16> format_ipv4(uint32_t ip) noexcept {
 ///
 /// @param mac  Ethernet MAC address (rte_ether_addr)
 /// @return Null-terminated char array containing the formatted MAC
-inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
+[[nodiscard]] inline std::array<char, 18> format_mac(const rte_ether_addr& mac) noexcept {
     std::array<char, 18> buf{};
     snprintf(buf.data(), buf.size(), "%02x:%02x:%02x:%02x:%02x:%02x",
              mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
