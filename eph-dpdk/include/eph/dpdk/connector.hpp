@@ -123,6 +123,28 @@ struct DpdkEndpoint {
         return std::format("DpdkEndpoint(local={}, gw={})",
                            local_ip, gateway_ip);
     }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    /// Returns a list of warning messages (empty if no issues).
+    /// Unlike validate() which blocks operation, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        // Loopback addresses are not reachable via DPDK (bypasses kernel)
+        if (local_ip.starts_with("127."))
+            w.emplace_back("local_ip starts with 127.x (loopback) -- "
+                           "DPDK bypasses the kernel, loopback traffic "
+                           "will not reach the NIC");
+        if (gateway_ip.starts_with("127."))
+            w.emplace_back("gateway_ip starts with 127.x (loopback) -- "
+                           "DPDK bypasses the kernel, ARP for loopback "
+                           "gateway will fail");
+        // Same IP for local and gateway is unusual
+        if (!local_ip.empty() && local_ip == gateway_ip)
+            w.emplace_back(std::format(
+                "local_ip == gateway_ip ({}) -- self-gateway is unusual "
+                "and may indicate a configuration error", local_ip));
+        return w;
+    }
 };
 
 /// @brief Optional connection settings — all fields have sensible defaults.

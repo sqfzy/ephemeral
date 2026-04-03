@@ -411,3 +411,51 @@ TEST(ConnectorOptionsWarnings, SmallMempoolSize) {
     }
     EXPECT_TRUE(found) << "Expected small mempool warning";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DpdkEndpoint::warnings()
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DpdkEndpointWarnings, NormalEndpointNoWarnings) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "10.0.0.1"};
+    auto w = ep.warnings();
+    EXPECT_TRUE(w.empty()) << "Unexpected warning: " << (w.empty() ? "" : w[0]);
+}
+
+TEST(DpdkEndpointWarnings, LoopbackLocalIpWarns) {
+    DpdkEndpoint ep{.local_ip = "127.0.0.1", .gateway_ip = "10.0.0.1"};
+    auto w = ep.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("local_ip") != std::string::npos &&
+            msg.find("loopback") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected loopback local_ip warning";
+}
+
+TEST(DpdkEndpointWarnings, LoopbackGatewayIpWarns) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.2", .gateway_ip = "127.0.0.1"};
+    auto w = ep.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("gateway_ip") != std::string::npos &&
+            msg.find("loopback") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected loopback gateway_ip warning";
+}
+
+TEST(DpdkEndpointWarnings, SameLocalAndGatewayWarns) {
+    DpdkEndpoint ep{.local_ip = "10.0.0.1", .gateway_ip = "10.0.0.1"};
+    auto w = ep.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("local_ip == gateway_ip") != std::string::npos) {
+            found = true; break;
+        }
+    }
+    EXPECT_TRUE(found) << "Expected self-gateway warning";
+}
