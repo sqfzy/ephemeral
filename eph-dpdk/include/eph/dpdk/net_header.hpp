@@ -310,6 +310,21 @@ struct PacketTemplate {
     /// silently corrupt packets.
     bool hw_cksum = false;
 
+    /// Validate template fields. Returns empty string_view if valid.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (tuple.src_ip == 0) return "src_ip must not be zero";
+        if (tuple.dst_ip == 0) return "dst_ip must not be zero";
+        if (tuple.src_port == 0) return "src_port must not be zero";
+        if (tuple.dst_port == 0) return "dst_port must not be zero";
+        if (mss == 0) return "mss must not be zero";
+        if (mss > 9000) return "mss exceeds jumbo frame limit (9000)";
+        return {};
+    }
+
+    /// Human-readable dump for logging/diagnostics.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string dump() const;
+
     /// Build a complete TCP packet in an mbuf.
     /// @param pool     Mempool to allocate from
     /// @param seq      TCP sequence number (host order)
@@ -727,6 +742,14 @@ inline std::string ConnectionTuple::to_json() const {
         "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{}}}",
         format_ipv4(src_ip).data(), src_port,
         format_ipv4(dst_ip).data(), dst_port);
+}
+
+inline std::string PacketTemplate::dump() const {
+    return std::format("PacketTemplate({} -> {}, {}:{} -> {}:{}, mss={}, ip_id={}, hw_cksum={})",
+        format_mac(src_mac).data(), format_mac(dst_mac).data(),
+        format_ipv4(tuple.src_ip).data(), tuple.src_port,
+        format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
+        mss, ip_id, hw_cksum);
 }
 
 inline std::string ParsedPacket::dump() const {

@@ -331,6 +331,68 @@ TEST(NetHeader, PacketTemplateDefaults) {
     EXPECT_FALSE(tmpl.hw_cksum);
 }
 
+TEST(PacketTemplate, ValidateValidTemplate) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    EXPECT_TRUE(tmpl.validate().empty());
+}
+
+TEST(PacketTemplate, ValidateZeroSrcIpFails) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 0, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    auto err = tmpl.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("src_ip"), std::string_view::npos);
+}
+
+TEST(PacketTemplate, ValidateZeroDstPortFails) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 0};
+    auto err = tmpl.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("dst_port"), std::string_view::npos);
+}
+
+TEST(PacketTemplate, ValidateZeroMssFails) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    tmpl.mss = 0;
+    auto err = tmpl.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("mss"), std::string_view::npos);
+}
+
+TEST(PacketTemplate, ValidateExcessiveMssFails) {
+    PacketTemplate tmpl{};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    tmpl.mss = 9001;
+    auto err = tmpl.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("jumbo"), std::string_view::npos);
+}
+
+TEST(PacketTemplate, DumpContainsKeyFields) {
+    PacketTemplate tmpl{};
+    tmpl.src_mac = {{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}};
+    tmpl.tuple = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+                  .src_port = 12345, .dst_port = 443};
+    tmpl.mss = 1460;
+    tmpl.hw_cksum = true;
+    auto d = tmpl.dump();
+    EXPECT_NE(d.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(d.find("10.0.0.2"), std::string::npos);
+    EXPECT_NE(d.find("12345"), std::string::npos);
+    EXPECT_NE(d.find("443"), std::string::npos);
+    EXPECT_NE(d.find("1460"), std::string::npos);
+    EXPECT_NE(d.find("de:ad:be:ef:01:23"), std::string::npos);
+    EXPECT_NE(d.find("hw_cksum=true"), std::string::npos);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // parse_packet boundary tests (simulated mbuf via raw buffer)
 // ─────────────────────────────────────────────────────────────────────────────
