@@ -121,3 +121,41 @@ TEST(ReactorConfig, DumpContainsFields) {
     EXPECT_NE(d.find("queue=2"), std::string::npos);
     EXPECT_NE(d.find("cpu=3"), std::string::npos);
 }
+
+TEST(ReactorConfig, ToJsonValidStructure) {
+    Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    auto j = cfg.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"port_id\":1"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_queue_id\":2"), std::string::npos);
+    EXPECT_NE(j.find("\"rx_cpu\":3"), std::string::npos);
+}
+
+TEST(ReactorConfig, Equality) {
+    Reactor::Config a{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    Reactor::Config b{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    Reactor::Config c{.port_id = 0, .rx_queue_id = 2, .rx_cpu = 3};
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
+TEST(ReactorConfig, WarningUnpinnedCpu) {
+    Reactor::Config cfg{.rx_cpu = -1};
+    auto w = cfg.warnings();
+    ASSERT_FALSE(w.empty());
+    EXPECT_NE(w[0].find("no pinning"), std::string::npos);
+}
+
+TEST(ReactorConfig, NoWarningPinnedCpu) {
+    Reactor::Config cfg{.rx_cpu = 3};
+    auto w = cfg.warnings();
+    EXPECT_TRUE(w.empty());
+}
+
+TEST(ReactorConfig, FormatterContainsKeyFields) {
+    Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("Reactor"), std::string::npos);
+    EXPECT_NE(s.find("port=1"), std::string::npos);
+}

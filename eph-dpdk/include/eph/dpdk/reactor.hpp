@@ -29,6 +29,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -130,6 +131,26 @@ public:
             return std::format("Reactor::Config(port={}, queue={}, cpu={})",
                                port_id, rx_queue_id, rx_cpu);
         }
+
+        /// JSON-formatted config for monitoring system integration.
+        [[nodiscard]] std::string to_json() const {
+            return std::format(
+                "{{\"port_id\":{},\"rx_queue_id\":{},\"rx_cpu\":{}}}",
+                port_id, rx_queue_id, rx_cpu);
+        }
+
+        /// Check for non-fatal contradictions or likely misconfigurations.
+        [[nodiscard]] std::vector<std::string> warnings() const {
+            std::vector<std::string> w;
+            if (rx_cpu == -1)
+                w.emplace_back("rx_cpu=-1 (no pinning) -- Reactor RX thread "
+                               "may migrate across cores, increasing tail latency");
+            return w;
+        }
+
+        /// Defaulted equality -- all fields must match exactly.
+        [[nodiscard]] friend bool operator==(const Config&,
+                                             const Config&) = default;
     };
 
     explicit Reactor(Config config) noexcept
@@ -372,3 +393,17 @@ private:
 };
 
 } // namespace eph::dpdk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for Reactor::Config
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <>
+struct std::formatter<eph::dpdk::Reactor::Config> : std::formatter<std::string> {
+    auto format(const eph::dpdk::Reactor::Config& c, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("Reactor::Config(port={}, queue={}, cpu={})",
+                c.port_id, c.rx_queue_id, c.rx_cpu),
+            ctx);
+    }
+};
