@@ -726,6 +726,43 @@ struct TransportConfig {
         return std::format("{}://{}:{}{}", scheme, host_part,
                            remote_port, ws_path);
     }
+
+    /// Value equality for non-callback fields.
+    ///
+    /// Callbacks (on_state_change, on_message, on_close, on_ping, on_pong,
+    /// on_rx_drop, on_reconnect_attempt, on_reconnected, on_frame_filter,
+    /// on_connected_before_threads) are excluded because std::function is
+    /// not equality-comparable. Two configs that differ only in callbacks
+    /// will compare equal — this is intentional for config deduplication
+    /// and round-trip testing (from_url -> to_url -> from_url).
+    [[nodiscard]] friend bool operator==(const TransportConfig& a,
+                                         const TransportConfig& b) noexcept {
+        return a.remote_host           == b.remote_host
+            && a.remote_port           == b.remote_port
+            && a.ws_path               == b.ws_path
+            && a.ws_subprotocol        == b.ws_subprotocol
+            && a.extra_headers         == b.extra_headers
+            && a.use_tls               == b.use_tls
+            && a.ca_cert_path          == b.ca_cert_path
+            && a.verify_peer           == b.verify_peer
+            && a.client_cert_path      == b.client_cert_path
+            && a.client_key_path       == b.client_key_path
+            && a.tcp_timeout           == b.tcp_timeout
+            && a.tls_timeout           == b.tls_timeout
+            && a.ws_timeout            == b.ws_timeout
+            && a.tx_burst_size         == b.tx_burst_size
+            && a.rx_burst_size         == b.rx_burst_size
+            && a.reconnect_interval    == b.reconnect_interval
+            && a.max_reconnect_backoff == b.max_reconnect_backoff
+            && a.max_reconnect_attempts == b.max_reconnect_attempts
+            && a.ping_interval         == b.ping_interval
+            && a.pong_timeout          == b.pong_timeout
+            && a.skip_utf8_validation  == b.skip_utf8_validation
+            && a.tx_cpu                == b.tx_cpu
+            && a.rx_cpu                == b.rx_cpu
+            && a.drop_log_interval     == b.drop_log_interval
+            && a.deferred_start        == b.deferred_start;
+    }
 };
 
 // ---------------------------------------------------------------------------

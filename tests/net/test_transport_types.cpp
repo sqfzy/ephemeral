@@ -2272,3 +2272,94 @@ TEST(TwophaseFilter, ManySymbolsAllLatestDelivered) {
     for (int i = 0; i < 26; ++i)
         EXPECT_TRUE(views[i].deliver) << "symbol " << char('A' + i) << " should be delivered";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TransportConfig equality
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TransportConfigEquality, IdenticalConfigsAreEqual) {
+    TransportConfig a{.remote_host = "example.com"};
+    TransportConfig b{.remote_host = "example.com"};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TransportConfigEquality, DefaultsAreEqual) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentHostDetected) {
+    TransportConfig a{.remote_host = "a.com"};
+    TransportConfig b{.remote_host = "b.com"};
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentPortDetected) {
+    TransportConfig a{.remote_host = "h", .remote_port = 443};
+    TransportConfig b{.remote_host = "h", .remote_port = 8080};
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentWsPathDetected) {
+    TransportConfig a{.remote_host = "h", .ws_path = "/v1"};
+    TransportConfig b{.remote_host = "h", .ws_path = "/v2"};
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentTlsSettingDetected) {
+    TransportConfig a{.remote_host = "h", .use_tls = true};
+    TransportConfig b{.remote_host = "h", .use_tls = false};
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentTimeoutDetected) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    b.tcp_timeout = std::chrono::milliseconds{9999};
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentReconnectSettingsDetected) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    b.max_reconnect_attempts = 99;
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentBurstSizeDetected) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    b.tx_burst_size = 64;
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, DifferentCpuPinningDetected) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    b.tx_cpu = 5;
+    EXPECT_NE(a, b);
+}
+
+TEST(TransportConfigEquality, CallbacksIgnored) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    b.on_state_change = [](TransportEvent, std::string_view) {};
+    b.on_message = [](const uint8_t*, uint16_t, uint8_t) {};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TransportConfigEquality, FromUrlRoundTripEquality) {
+    auto cfg1 = TransportConfig::from_url("wss://example.com:8443/ws/v1");
+    ASSERT_TRUE(cfg1.has_value());
+    auto cfg2 = TransportConfig::from_url(cfg1->to_url());
+    ASSERT_TRUE(cfg2.has_value());
+    EXPECT_EQ(*cfg1, *cfg2);
+}
+
+TEST(TransportConfigEquality, DeferredStartDetected) {
+    TransportConfig a{.remote_host = "h"};
+    TransportConfig b{.remote_host = "h"};
+    b.deferred_start = true;
+    EXPECT_NE(a, b);
+}
