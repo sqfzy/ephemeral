@@ -324,6 +324,34 @@ TEST(TcpStats, GapBucketIsConstexpr) {
     static_assert(Stats::gap_bucket(1024) == 10);
 }
 
+TEST(TcpStats, EqualityDefaultConstructed) {
+    Stats a{};
+    Stats b{};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TcpStats, EqualityDifferentFields) {
+    Stats a{};
+    Stats b{};
+    a.tx_packets = 1;
+    EXPECT_NE(a, b);
+}
+
+TEST(TcpStats, EqualityGapHistogram) {
+    Stats a{};
+    Stats b{};
+    a.gap_histogram[5] = 42;
+    EXPECT_NE(a, b);
+    b.gap_histogram[5] = 42;
+    EXPECT_EQ(a, b);
+}
+
+TEST(TcpStats, OperatorMinusDefaultIsZero) {
+    Stats a{};
+    auto delta = a - a;
+    EXPECT_EQ(delta, Stats{});
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TcpConfig::warnings — advisory diagnostics
 // ─────────────────────────────────────────────────────────────────────────────

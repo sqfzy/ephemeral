@@ -296,6 +296,52 @@ TEST(DnsConfig, ToJsonCustomConfig) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DnsConfig::validate
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DnsConfigValidation, DefaultIsValid) {
+    DnsConfig cfg{};
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(DnsConfigValidation, ZeroNameserverFails) {
+    DnsConfig cfg{.nameserver_ip = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("nameserver_ip"), std::string_view::npos);
+}
+
+TEST(DnsConfigValidation, ZeroPortFails) {
+    DnsConfig cfg{.port = 0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("port"), std::string_view::npos);
+}
+
+TEST(DnsConfigValidation, ZeroTimeoutFails) {
+    DnsConfig cfg{.timeout = std::chrono::milliseconds{0}};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("timeout"), std::string_view::npos);
+}
+
+TEST(DnsConfigValidation, NegativeTimeoutFails) {
+    DnsConfig cfg{.timeout = std::chrono::milliseconds{-1}};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("timeout"), std::string_view::npos);
+}
+
+TEST(DnsConfigValidation, CustomValidConfig) {
+    DnsConfig cfg{
+        .nameserver_ip = 0x01010101,  // 1.1.1.1
+        .port = 5353,
+        .timeout = std::chrono::milliseconds{100},
+    };
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // resolve() — fast path: dotted-decimal IPv4 bypass
 // ─────────────────────────────────────────────────────────────────────────────
 
