@@ -555,9 +555,7 @@ resolve(uint16_t port_id,
     if (!pool) {
         return std::unexpected("DNS resolve: mempool is null");
     }
-    if (cfg.nameserver_ip == 0) {
-        return std::unexpected("DNS resolve: nameserver_ip is 0");
-    }
+    // Note: nameserver_ip == 0 is already caught by cfg.validate() above.
 
     SPDLOG_LOGGER_DEBUG(log, "DNS resolve: {} via {} on port {} queue {}",
         hostname, net::format_ipv4(cfg.nameserver_ip).data(),

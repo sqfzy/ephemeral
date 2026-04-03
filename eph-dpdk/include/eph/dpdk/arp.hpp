@@ -106,7 +106,7 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
         return nullptr;
     }
 
-    constexpr uint16_t frame_len = sizeof(rte_ether_hdr) + sizeof(ArpPacket);
+    constexpr uint16_t frame_len = net::kEtherHeaderLen + sizeof(ArpPacket);
     auto* pkt = reinterpret_cast<uint8_t*>(
         rte_pktmbuf_append(mbuf, frame_len));
     if (!pkt) {
@@ -124,7 +124,7 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
     eth->ether_type = net::hton16(kEtherTypeArp);
 
     // ARP payload
-    auto* arp = reinterpret_cast<ArpPacket*>(pkt + sizeof(rte_ether_hdr));
+    auto* arp = reinterpret_cast<ArpPacket*>(pkt + net::kEtherHeaderLen);
     arp->hw_type       = net::hton16(kArpHwTypeEthernet);
     arp->proto_type    = net::hton16(kArpProtoIpv4);
     arp->hw_addr_len   = kArpHwAddrLen;
@@ -155,7 +155,7 @@ inline rte_mbuf* build_arp_request(rte_mempool* pool,
 /// @return Sender MAC if match, std::nullopt otherwise
 inline std::optional<rte_ether_addr>
 parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
-    constexpr size_t min_len = sizeof(rte_ether_hdr) + sizeof(ArpPacket);
+    constexpr size_t min_len = net::kEtherHeaderLen + sizeof(ArpPacket);
     if (mbuf->data_len < min_len) return std::nullopt;
 
     auto* pkt = rte_pktmbuf_mtod(mbuf, const uint8_t*);
@@ -164,7 +164,7 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
     // Check EtherType = ARP
     if (net::ntoh16(eth->ether_type) != kEtherTypeArp) return std::nullopt;
 
-    auto* arp = reinterpret_cast<const ArpPacket*>(pkt + sizeof(rte_ether_hdr));
+    auto* arp = reinterpret_cast<const ArpPacket*>(pkt + net::kEtherHeaderLen);
 
     // Validate ARP reply for IPv4 over Ethernet (RFC 826)
     if (net::ntoh16(arp->hw_type) != kArpHwTypeEthernet) return std::nullopt;
