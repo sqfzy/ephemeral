@@ -92,6 +92,24 @@ static void BM_KillSwitch_TransportCount(benchmark::State& state) {
 BENCHMARK(BM_KillSwitch_TransportCount);
 
 // ---------------------------------------------------------------------------
+// running_count() — spinlock-protected scan
+// ---------------------------------------------------------------------------
+
+static void BM_KillSwitch_RunningCount(benchmark::State& state) {
+    KillSwitch ks;
+    BenchTransport tp1, tp2, tp3;
+    ks.register_transport(&tp1);
+    ks.register_transport(&tp2);
+    ks.register_transport(&tp3);
+
+    for (auto _ : state) {
+        auto n = ks.running_count();
+        benchmark::DoNotOptimize(n);
+    }
+}
+BENCHMARK(BM_KillSwitch_RunningCount);
+
+// ---------------------------------------------------------------------------
 // request_shutdown() — signal-safe atomic store
 // ---------------------------------------------------------------------------
 

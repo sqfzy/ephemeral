@@ -137,6 +137,25 @@ public:
         return count_.load(std::memory_order_acquire);
     }
 
+    /// @brief Count of registered transports currently in running state.
+    ///
+    /// Useful for health monitoring: if running_count() < transport_count(),
+    /// some transports have stopped unexpectedly.
+    /// Takes the spinlock to iterate handles safely.
+    ///
+    /// @return Number of transports where is_running() returns true.
+    [[nodiscard]] size_t running_count() noexcept {
+        spin_lock();
+        size_t n = count_.load(std::memory_order_relaxed);
+        size_t running = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (handles_[i].is_running_fn && handles_[i].is_running_fn(handles_[i].ptr))
+                ++running;
+        }
+        spin_unlock();
+        return running;
+    }
+
     // ── Shutdown control ────────────────────────────────────────────────
 
     /// @brief Check if shutdown has been requested (signal or manual).

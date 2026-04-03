@@ -377,6 +377,42 @@ TEST(KillSwitch, ShutdownAfterResetAndReRegister) {
     EXPECT_EQ(tp1.stop_count.load(), 1);
 }
 
+// ── running_count() ──────────────────────────────────────────────────────
+
+TEST(KillSwitch, RunningCountReflectsState) {
+    KillSwitch ks;
+    MockTransport tp1, tp2, tp3;
+    tp1.running.store(true);
+    tp2.running.store(true);
+    tp3.running.store(false);
+
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    ASSERT_TRUE(ks.register_transport(&tp3));
+
+    EXPECT_EQ(ks.running_count(), 2);
+    EXPECT_EQ(ks.transport_count(), 3);
+}
+
+TEST(KillSwitch, RunningCountZeroAfterShutdown) {
+    KillSwitch ks;
+    MockTransport tp1, tp2;
+    tp1.running.store(true);
+    tp2.running.store(true);
+
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+
+    EXPECT_EQ(ks.running_count(), 2);
+    ks.shutdown();
+    EXPECT_EQ(ks.running_count(), 0);
+}
+
+TEST(KillSwitch, RunningCountZeroWhenEmpty) {
+    KillSwitch ks;
+    EXPECT_EQ(ks.running_count(), 0);
+}
+
 TEST(KillSwitch, KillThenShutdownIsIdempotent) {
     // kill() sets the flag; a subsequent shutdown() should still be a no-op
     // because shutdown_done_ is already set... wait, kill() does NOT set
