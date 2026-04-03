@@ -438,6 +438,7 @@ struct TransportConfig {
             "  reconnect: interval={}ms, max_backoff={}ms, max_attempts={}\n"
             "  ping: interval={}s, pong_timeout={}s\n"
             "  cpu: tx={}, rx={}\n"
+            "  options: skip_utf8_validation={}, drop_log_interval={}, deferred_start={}\n"
             "  callbacks: on_state_change={}, on_message={}, on_close={}, "
             "on_ping={}, on_pong={}, on_rx_drop={}, on_reconnect_attempt={}, "
             "on_reconnected={}",
@@ -453,6 +454,7 @@ struct TransportConfig {
             max_reconnect_attempts,
             ping_interval.count(), pong_timeout.count(),
             tx_cpu, rx_cpu,
+            skip_utf8_validation, drop_log_interval, deferred_start,
             static_cast<bool>(on_state_change), static_cast<bool>(on_message),
             static_cast<bool>(on_close), static_cast<bool>(on_ping),
             static_cast<bool>(on_pong), static_cast<bool>(on_rx_drop),
@@ -476,6 +478,8 @@ struct TransportConfig {
             "\"max_reconnect_attempts\":{},"
             "\"ping_interval_s\":{},\"pong_timeout_s\":{},"
             "\"tx_cpu\":{},\"rx_cpu\":{},"
+            "\"skip_utf8_validation\":{},\"drop_log_interval\":{},"
+            "\"deferred_start\":{},"
             "\"extra_headers\":\"{}\"}}",
             detail::json_escape(remote_host), remote_port,
             detail::json_escape(ws_path),
@@ -491,6 +495,8 @@ struct TransportConfig {
             max_reconnect_attempts,
             ping_interval.count(), pong_timeout.count(),
             tx_cpu, rx_cpu,
+            skip_utf8_validation ? "true" : "false", drop_log_interval,
+            deferred_start ? "true" : "false",
             detail::json_escape(extra_headers));
     }
 

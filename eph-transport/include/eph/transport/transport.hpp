@@ -431,6 +431,9 @@ public:
             }
             msg.len = payload_len;
             msg.opcode = ws::opcode::kClose;
+            if constexpr (kEnableTimestamps) {
+                msg.tsc = eph::utils::TSC::now();
+            }
         });
 
         if (!ok) {

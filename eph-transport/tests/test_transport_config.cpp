@@ -613,3 +613,25 @@ TEST(TransportConfigDump, DumpNoSubprotocolShowsNone) {
     auto d = cfg.dump();
     EXPECT_NE(d.find("(none)"), std::string::npos);
 }
+
+TEST(TransportConfigDump, DumpContainsOptionsLine) {
+    auto cfg = valid_config();
+    cfg.skip_utf8_validation = true;
+    cfg.drop_log_interval = 500;
+    cfg.deferred_start = true;
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("skip_utf8_validation=true"), std::string::npos);
+    EXPECT_NE(d.find("drop_log_interval=500"), std::string::npos);
+    EXPECT_NE(d.find("deferred_start=true"), std::string::npos);
+}
+
+TEST(TransportConfigJson, ContainsNewFields) {
+    auto cfg = valid_config();
+    cfg.skip_utf8_validation = true;
+    cfg.drop_log_interval = 500;
+    cfg.deferred_start = true;
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"skip_utf8_validation\":true"), std::string::npos);
+    EXPECT_NE(j.find("\"drop_log_interval\":500"), std::string::npos);
+    EXPECT_NE(j.find("\"deferred_start\":true"), std::string::npos);
+}
