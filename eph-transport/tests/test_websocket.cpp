@@ -757,3 +757,159 @@ TEST(MaskKeyCache, ExhaustsPoolAndRefills) {
     bool all_zero = (key[0] == 0 && key[1] == 0 && key[2] == 0 && key[3] == 0);
     EXPECT_FALSE(all_zero);
 }
+
+// =======================================================================
+// decode_frame — 64-bit extended payload length (len_byte == 127)
+// =======================================================================
+
+TEST(DecodeFrame, ExtendedPayloadLen127) {
+    // FIN=1, opcode=0x2, no mask, payload_len=70000 (uses 127 extended format)
+    // Header: 2 + 8 = 10 bytes (unmasked)
+    std::vector<uint8_t> data(10 + 70000);
+    data[0] = 0x82;  // FIN + binary
+    data[1] = 127;   // 64-bit extended
+    // 8-byte big-endian length = 70000
+    uint64_t payload_len = 70000;
+    for (int i = 0; i < 8; ++i) {
+        data[2 + i] = static_cast<uint8_t>((payload_len >> ((7 - i) * 8)) & 0xFF);
+    }
+    auto result = decode_frame(data.data(), data.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 70000u);
+    EXPECT_EQ(result->total_len, 10u + 70000u);
+    EXPECT_FALSE(result->masked);
+}
+
+TEST(DecodeFrame, IncompleteExtendedLen126Header) {
+    // 126 format needs 2 more bytes for length, but only 1 extra provided
+    uint8_t data[] = {0x82, 126, 0x00};  // missing 2nd length byte
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
+
+TEST(DecodeFrame, IncompleteExtendedLen127Header) {
+    // 127 format needs 8 more bytes for length, but only 4 provided
+    uint8_t data[] = {0x82, 127, 0, 0, 0, 0};
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
+
+TEST(DecodeFrame, IncompleteMaskKey) {
+    // MASK bit set but only 2 of 4 mask key bytes available
+    uint8_t data[] = {0x82, 0x80 | 0, 0xAA, 0xBB};  // mask bit + len=0, 2 mask bytes
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
+
+// =======================================================================
+// decode_frame — all reserved opcodes rejected
+// =======================================================================
+
+TEST(DecodeFrame, AllReservedDataOpcodesRejected) {
+    // Data opcodes 0x3-0x7 are reserved
+    for (uint8_t op = 0x03; op <= 0x07; ++op) {
+        uint8_t data[] = {static_cast<uint8_t>(0x80 | op), 0x00};  // FIN + reserved
+        auto result = decode_frame(data, sizeof(data));
+        ASSERT_FALSE(result.has_value()) << "opcode 0x" << std::hex << int(op);
+        EXPECT_EQ(result.error(), DecodeError::kInvalidOpcode);
+    }
+}
+
+TEST(DecodeFrame, AllReservedControlOpcodesRejected) {
+    // Control opcodes 0xB-0xF are reserved
+    for (uint8_t op = 0x0B; op <= 0x0F; ++op) {
+        uint8_t data[] = {static_cast<uint8_t>(0x80 | op), 0x00};  // FIN + reserved
+        auto result = decode_frame(data, sizeof(data));
+        ASSERT_FALSE(result.has_value()) << "opcode 0x" << std::hex << int(op);
+        EXPECT_EQ(result.error(), DecodeError::kInvalidOpcode);
+    }
+}
+
+// =======================================================================
+// decode_frame — RSV bits
+// =======================================================================
+
+TEST(DecodeFrame, RSV2Rejected) {
+    uint8_t data[] = {0x80 | 0x20 | 0x02, 0x00};  // FIN + RSV2 + binary
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kReservedBits);
+}
+
+TEST(DecodeFrame, RSV3Rejected) {
+    uint8_t data[] = {0x80 | 0x10 | 0x02, 0x00};  // FIN + RSV3 + binary
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kReservedBits);
+}
+
+TEST(DecodeFrame, AllRSVBitsRejected) {
+    uint8_t data[] = {0x80 | 0x70 | 0x02, 0x00};  // FIN + RSV1+2+3 + binary
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kReservedBits);
+}
+
+// =======================================================================
+// encode_frame_header — edge cases
+// =======================================================================
+
+TEST(EncodeFrameHeader, SmallPayloadHeader) {
+    uint8_t out[14];
+    uint8_t mask[] = {0x11, 0x22, 0x33, 0x44};
+    auto len = encode_frame_header(out, opcode::kBinary, 100, true, mask);
+    EXPECT_EQ(len, 6u);  // 2 base + 4 mask
+    EXPECT_EQ(out[0] & 0x0F, opcode::kBinary);
+    EXPECT_TRUE(out[0] & kFinBit);
+}
+
+TEST(EncodeFrameHeader, MediumPayloadHeader) {
+    uint8_t out[14];
+    uint8_t mask[] = {0x11, 0x22, 0x33, 0x44};
+    auto len = encode_frame_header(out, opcode::kBinary, 300, true, mask);
+    EXPECT_EQ(len, 8u);  // 2 base + 2 extended + 4 mask
+}
+
+TEST(EncodeFrameHeader, LargePayloadHeader) {
+    uint8_t out[14];
+    uint8_t mask[] = {0x11, 0x22, 0x33, 0x44};
+    auto len = encode_frame_header(out, opcode::kBinary, 100000, true, mask);
+    EXPECT_EQ(len, 14u);  // 2 base + 8 extended + 4 mask
+}
+
+TEST(EncodeFrameHeader, ControlFrameTooLargeReturnsZero) {
+    uint8_t out[14];
+    uint8_t mask[] = {0x11, 0x22, 0x33, 0x44};
+    auto len = encode_frame_header(out, opcode::kPing, 126, true, mask);
+    EXPECT_EQ(len, 0u);
+}
+
+TEST(EncodeFrameHeader, FinBitNotSetForFragment) {
+    uint8_t out[14];
+    uint8_t mask[] = {0x11, 0x22, 0x33, 0x44};
+    auto len = encode_frame_header(out, opcode::kBinary, 10, false, mask);
+    EXPECT_GT(len, 0u);
+    EXPECT_FALSE(out[0] & kFinBit);
+}
+
+// =======================================================================
+// Opcode / CloseCode formatter wrappers
+// =======================================================================
+
+TEST(OpcodeWrapper, FormatsKnownOpcode) {
+    auto result = std::format("{}", eph::net::ws::Opcode{opcode::kPing});
+    EXPECT_EQ(result, "PING");
+}
+
+TEST(CloseCodeWrapper, FormatsKnownCode) {
+    auto result = std::format("{}", eph::net::ws::CloseCode{close_code::kNormal});
+    EXPECT_EQ(result, "NORMAL_CLOSURE");
+}
+
+TEST(DecodeErrorFormatter, FormatsCorrectly) {
+    auto result = std::format("{}", DecodeError::kIncomplete);
+    EXPECT_EQ(result, "incomplete");
+}
