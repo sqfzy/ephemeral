@@ -27,7 +27,7 @@ enum class FrameError : uint8_t {
 /// @brief Return a human-readable name for a FrameError value.
 /// @param e  The FrameError value to convert.
 /// @return A string_view of the error name (e.g., "incomplete", "invalid format").
-constexpr std::string_view frame_error_name(FrameError e) noexcept {
+[[nodiscard]] constexpr std::string_view frame_error_name(FrameError e) noexcept {
     switch (e) {
     case FrameError::kIncomplete:      return "incomplete";
     case FrameError::kInvalidFormat:   return "invalid format";
@@ -39,7 +39,7 @@ constexpr std::string_view frame_error_name(FrameError e) noexcept {
 /// @brief ADL alias for ErrorEnum concept satisfaction.
 /// @param e  The FrameError value to convert.
 /// @return A string_view of the error name.
-constexpr std::string_view error_name(FrameError e) noexcept {
+[[nodiscard]] constexpr std::string_view error_name(FrameError e) noexcept {
     return frame_error_name(e);
 }
 

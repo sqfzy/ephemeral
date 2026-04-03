@@ -34,7 +34,7 @@ enum class TcpState : uint8_t {
 /// @brief Return the RFC 793 name for a TCP state as a C string.
 /// @param s  The TcpState value to convert.
 /// @return A null-terminated string (e.g., "ESTABLISHED", "SYN_SENT").
-constexpr const char* tcp_state_name(TcpState s) noexcept {
+[[nodiscard]] constexpr const char* tcp_state_name(TcpState s) noexcept {
     switch (s) {
         case TcpState::Closed:      return "CLOSED";
         case TcpState::SynSent:     return "SYN_SENT";

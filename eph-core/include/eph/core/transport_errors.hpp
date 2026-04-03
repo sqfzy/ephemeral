@@ -40,7 +40,7 @@ enum class ConnectionError : uint8_t {
 /// @brief Return a human-readable name for a ConnectionError value.
 /// @param e  The ConnectionError value to convert.
 /// @return A string_view of the error name (e.g., "INVALID_CONFIG", "TLS_HANDSHAKE_FAILED").
-constexpr std::string_view connection_error_name(ConnectionError e) noexcept {
+[[nodiscard]] constexpr std::string_view connection_error_name(ConnectionError e) noexcept {
     switch (e) {
         case ConnectionError::kInvalidConfig:      return "INVALID_CONFIG";
         case ConnectionError::kFactoryFailed:      return "FACTORY_FAILED";
@@ -58,7 +58,7 @@ constexpr std::string_view connection_error_name(ConnectionError e) noexcept {
 /// @brief ADL alias for ErrorEnum concept satisfaction.
 /// @param e  The ConnectionError value to convert.
 /// @return A string_view of the error name.
-constexpr std::string_view error_name(ConnectionError e) noexcept {
+[[nodiscard]] constexpr std::string_view error_name(ConnectionError e) noexcept {
     return connection_error_name(e);
 }
 
@@ -122,7 +122,7 @@ enum class SendError : int8_t {
 /// @brief Return a human-readable name for a SendError value.
 /// @param e  The SendError value to convert.
 /// @return A string_view of the error name (e.g., "OK", "QUEUE_FULL").
-constexpr std::string_view send_error_name(SendError e) noexcept {
+[[nodiscard]] constexpr std::string_view send_error_name(SendError e) noexcept {
     switch (e) {
         case SendError::kOk:              return "OK";
         case SendError::kMessageTooLarge: return "MESSAGE_TOO_LARGE";
@@ -140,7 +140,7 @@ constexpr std::string_view send_error_name(SendError e) noexcept {
 /// @brief ADL alias for ErrorEnum concept satisfaction.
 /// @param e  The SendError value to convert.
 /// @return A string_view of the error name.
-constexpr std::string_view error_name(SendError e) noexcept {
+[[nodiscard]] constexpr std::string_view error_name(SendError e) noexcept {
     return send_error_name(e);
 }
 
