@@ -34,6 +34,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/core/detail/base64.hpp"
+#include "eph/core/detail/json_escape.hpp"
 #include "eph/core/detail/string_checks.hpp"
 #include "eph/net/socket_transport.hpp"
 
@@ -134,12 +135,15 @@ struct ProxyConfig {
     /// @brief JSON-formatted config for monitoring system integration.
     ///
     /// Password is always redacted in JSON output.
+    /// String fields are escaped per RFC 8259 section 7.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{\"type\":\"{}\",\"host\":\"{}\",\"port\":{},"
             "\"timeout_ms\":{},\"username\":\"{}\",\"has_password\":{}}}",
-            proxy_type_name(type), host, port,
-            timeout.count(), username,
+            proxy_type_name(type),
+            eph::core::detail::json_escape(host), port,
+            timeout.count(),
+            eph::core::detail::json_escape(username),
             password.empty() ? "false" : "true");
     }
 

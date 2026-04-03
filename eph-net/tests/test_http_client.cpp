@@ -691,6 +691,23 @@ TEST(HttpClientConfig, ToJsonValidStructure) {
     EXPECT_NE(j.find("\"port\":443"), std::string::npos);
 }
 
+TEST(HttpClientConfig, ToJsonEscapesHostWithQuotes) {
+    // Host containing quotes should be escaped in JSON output
+    HttpClient::Config cfg{.host = "evil\"host", .port = 443};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("evil\\\"host"), std::string::npos)
+        << "host with quotes should be escaped; got: " << j;
+}
+
+TEST(HttpClientConfig, ToJsonEscapesCaCertPath) {
+    // ca_cert_path with backslashes should be escaped
+    HttpClient::Config cfg{.host = "api.io", .port = 443,
+                           .ca_cert_path = "C:\\certs\\ca.pem"};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("C:\\\\certs\\\\ca.pem"), std::string::npos)
+        << "ca_cert_path backslashes should be escaped; got: " << j;
+}
+
 TEST(HttpClientConfig, Equality) {
     HttpClient::Config a{.host = "api.io", .port = 443};
     HttpClient::Config b{.host = "api.io", .port = 443};

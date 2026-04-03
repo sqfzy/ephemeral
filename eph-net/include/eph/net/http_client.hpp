@@ -388,13 +388,18 @@ public:
         }
 
         /// @brief JSON-formatted config for monitoring system integration.
+        ///
+        /// String fields are escaped per RFC 8259 section 7 to prevent
+        /// malformed output from hostnames or paths containing special characters.
         [[nodiscard]] std::string to_json() const {
             return std::format(
                 "{{\"host\":\"{}\",\"port\":{},\"use_tls\":{},\"timeout_ms\":{},"
                 "\"max_response_size\":{},\"ca_cert_path\":\"{}\"}}",
-                host, port, use_tls ? "true" : "false", timeout.count(),
+                eph::core::detail::json_escape(host), port,
+                use_tls ? "true" : "false", timeout.count(),
                 max_response_size,
-                ca_cert_path.empty() ? "" : ca_cert_path);
+                ca_cert_path.empty() ? std::string{}
+                    : eph::core::detail::json_escape(ca_cert_path));
         }
 
         /// Defaulted equality -- all fields must match exactly.

@@ -498,6 +498,21 @@ TEST(ProxyConfigJson, NoPasswordField) {
     EXPECT_NE(j.find("\"has_password\":false"), std::string::npos);
 }
 
+TEST(ProxyConfigJson, EscapesHostWithSpecialChars) {
+    ProxyConfig cfg{.host = "evil\"host", .port = 1080};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("evil\\\"host"), std::string::npos)
+        << "host with quotes should be escaped; got: " << j;
+}
+
+TEST(ProxyConfigJson, EscapesUsernameWithSpecialChars) {
+    ProxyConfig cfg{.host = "proxy.io", .port = 1080,
+                    .username = "user\"name"};
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("user\\\"name"), std::string::npos)
+        << "username with quotes should be escaped; got: " << j;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ProxyConfig equality
 // ─────────────────────────────────────────────────────────────────────────────
