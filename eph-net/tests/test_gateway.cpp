@@ -1128,6 +1128,145 @@ TEST(Gateway, IsAllHealthyRecoveryAfterReconnect) {
     EXPECT_TRUE(gw.is_all_healthy());
 }
 
+// ── Degraded detection via rx_packets ─────────────────────────────────────
+
+/// Mock transport with stats().rx_packets for degraded detection tests.
+struct StatsTransport {
+    std::atomic<bool> running{false};
+    std::atomic<int> start_count{0};
+    std::atomic<int> stop_count{0};
+    std::atomic<int> reconnect_count{0};
+    std::atomic<uint64_t> rx_packets_val{0};
+
+    struct Stats {
+        uint64_t rx_packets = 0;
+    };
+
+    void start_threads() noexcept {
+        running.store(true, std::memory_order_release);
+        start_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    void stop() noexcept {
+        running.store(false, std::memory_order_release);
+        stop_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool is_running() const noexcept {
+        return running.load(std::memory_order_acquire);
+    }
+    void reconnect_now() noexcept {
+        reconnect_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    [[nodiscard]] Stats stats() const noexcept {
+        return {rx_packets_val.load(std::memory_order_relaxed)};
+    }
+};
+
+static_assert(GatewayManageable<StatsTransport>,
+    "StatsTransport must satisfy GatewayManageable");
+
+TEST(Gateway, DegradedDetectionTransitionsCorrectly) {
+    // Use a short degraded_threshold so the test completes quickly.
+    // health_check_interval must be < degraded_threshold per validation.
+    std::vector<std::tuple<std::string, ConnHealth, ConnHealth>> transitions;
+
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{10};
+    cfg.degraded_threshold = std::chrono::milliseconds{50};
+    cfg.on_health_change = [&](std::string_view tag, ConnHealth old_h, ConnHealth new_h) {
+        transitions.emplace_back(std::string(tag), old_h, new_h);
+    };
+
+    Gateway gw(cfg);
+    StatsTransport tp;
+    tp.running.store(true);
+    tp.rx_packets_val.store(10);
+    auto id = gw.add("stats-conn", &tp);
+
+    // After add with running=true, should be Healthy
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+
+    // First check_health: rx_packets=10, last_rx_packets starts at 0 -> delta>0 -> Healthy
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+
+    // Second check with same rx_packets — starts the degraded timer (degraded_since_ns set)
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy) << "should still be healthy (timer just started)";
+
+    // Wait longer than degraded_threshold, then check again
+    std::this_thread::sleep_for(std::chrono::milliseconds{80});
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Degraded);
+
+    // Verify on_health_change fired for Healthy -> Degraded
+    bool found_degraded_transition = false;
+    for (const auto& [t, oh, nh] : transitions) {
+        if (t == "stats-conn" && oh == ConnHealth::Healthy && nh == ConnHealth::Degraded) {
+            found_degraded_transition = true;
+        }
+    }
+    EXPECT_TRUE(found_degraded_transition) << "expected Healthy -> Degraded transition callback";
+
+    // Increase rx_packets -> should recover to Healthy
+    tp.rx_packets_val.store(20);
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+
+    // Verify Degraded -> Healthy callback fired
+    bool found_recovery_transition = false;
+    for (const auto& [t, oh, nh] : transitions) {
+        if (t == "stats-conn" && oh == ConnHealth::Degraded && nh == ConnHealth::Healthy) {
+            found_recovery_transition = true;
+        }
+    }
+    EXPECT_TRUE(found_recovery_transition) << "expected Degraded -> Healthy transition callback";
+}
+
+TEST(Gateway, DegradedDetectionResetOnDisconnect) {
+    // When a connection disconnects, degraded_since_ns should reset
+    Gateway::Config cfg;
+    cfg.health_check_interval = std::chrono::milliseconds{10};
+    cfg.degraded_threshold = std::chrono::milliseconds{50};
+    Gateway gw(cfg);
+
+    StatsTransport tp;
+    tp.running.store(true);
+    tp.rx_packets_val.store(5);
+    auto id = gw.add("reset-test", &tp);
+
+    // First check establishes baseline
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+
+    // Wait to accumulate degraded time, then disconnect
+    std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    tp.running.store(false);
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Disconnected);
+
+    // Reconnect with same rx_packets — degraded timer should have been reset
+    tp.running.store(true);
+    tp.rx_packets_val.store(10);  // new data after reconnect
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+}
+
+TEST(Gateway, NoRxPacketsFnFallsBackToRunningCheck) {
+    // MockTransport has no stats() method, so rx_packets_fn should be null.
+    // check_health() should fall back to running = healthy.
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    auto id = gw.add("no-stats", &tp);
+
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Healthy);
+
+    tp.running.store(false);
+    gw.check_health();
+    EXPECT_EQ(gw.health(id), ConnHealth::Disconnected);
+}
+
 TEST(Gateway, FullLifecycle) {
     Gateway gw;
     MockTransport tp;

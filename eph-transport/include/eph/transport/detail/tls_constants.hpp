@@ -156,21 +156,23 @@ struct TlsConfig {
                                           const TlsConfig&) = default;
 
     /// JSON-formatted config for logging/monitoring.
+    /// @note client_key_path is redacted to prevent private key path leakage in logs.
     [[nodiscard]] std::string to_json() const {
         return std::format(
             "{{"
             "\"hostname\":\"{}\",\"ca_cert_path\":\"{}\","
             "\"verify_peer\":{},\"handshake_timeout_ms\":{},"
-            "\"client_cert_path\":\"{}\",\"client_key_path\":\"{}\"}}",
+            "\"client_cert_path\":\"{}\",\"has_client_key\":{}}}",
             detail::json_escape(hostname),
             detail::json_escape(ca_cert_path),
             verify_peer ? "true" : "false",
             handshake_timeout.count(),
             detail::json_escape(client_cert_path),
-            detail::json_escape(client_key_path));
+            client_key_path.empty() ? "false" : "true");
     }
 
     /// Human-readable dump for debug logging.
+    /// @note client_key_path is redacted to prevent private key path leakage in logs.
     [[nodiscard]] std::string dump() const {
         return std::format(
             "TlsConfig(hostname='{}', verify_peer={}, timeout={}ms, "
@@ -178,7 +180,7 @@ struct TlsConfig {
             hostname, verify_peer, handshake_timeout.count(),
             ca_cert_path,
             client_cert_path.empty() ? "(none)" : client_cert_path,
-            client_key_path.empty() ? "(none)" : client_key_path);
+            client_key_path.empty() ? "(none)" : "(redacted)");
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.

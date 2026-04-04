@@ -69,7 +69,7 @@ inline spdlog::logger* gateway_logger() {
 /// Tracks the perceived health of a managed transport connection.
 enum class ConnHealth : uint8_t {
     Healthy,      ///< Connected and receiving data
-    Degraded,     ///< Connected but no data received recently (not yet implemented — reserved for future use)
+    Degraded,     ///< Connected but no new RX packets for longer than degraded_threshold
     Disconnected, ///< Not connected
     Stopped,      ///< Intentionally stopped
 };
@@ -111,6 +111,13 @@ struct GatewayConnection {
     ConnHealth health = ConnHealth::Stopped;
     /// @brief Timestamp (ns) of last health check for this connection.
     uint64_t last_health_check_ns = 0;
+    /// @brief Type-erased RX packet counter for degraded detection.
+    /// Returns current rx_packets from transport stats, or 0 if unavailable.
+    uint64_t (*rx_packets_fn)(void*) = nullptr;
+    /// @brief RX packet count at last health check (for delta detection).
+    uint64_t last_rx_packets = 0;
+    /// @brief Timestamp (ns) when zero-delta was first observed. 0 = not degraded.
+    uint64_t degraded_since_ns = 0;
 
     /// @brief Connection priority (lower = more important). Used for log ordering.
     uint8_t priority = 128;
@@ -128,11 +135,12 @@ public:
     struct Config {
         /// How often to check connection health (0 = no monitoring).
         std::chrono::milliseconds health_check_interval{5000};
-        /// Mark connection as degraded if no activity for this duration.
-        /// @note Not yet implemented -- requires per-connection last-activity timestamps
-        ///       tracked via a callback from Transport::on_data(). When implemented,
-        ///       check_health() will compare now - last_activity against this threshold
-        ///       and transition Healthy -> Degraded accordingly.
+        /// Mark connection as degraded if no new RX packets for this duration.
+        /// When a transport provides stats().rx_packets (detected at compile time
+        /// via if-constexpr), check_health() compares the current rx_packets count
+        /// against the previous check. If the count is unchanged for longer than
+        /// this threshold, the connection transitions Healthy -> Degraded.
+        /// Transports without stats().rx_packets fall back to is_running()-only checks.
         std::chrono::milliseconds degraded_threshold{30000};
         /// Optional callback invoked when a connection's health changes.
         /// Called outside the Gateway lock to prevent deadlock.
@@ -253,6 +261,11 @@ public:
         conn.is_running_fn = [](void* p) { return static_cast<Transport*>(p)->is_running(); };
         conn.start_threads_fn = [](void* p) { static_cast<Transport*>(p)->start_threads(); };
         conn.reconnect_fn = [](void* p) { static_cast<Transport*>(p)->reconnect_now(); };
+        if constexpr (requires { tp->stats().rx_packets; }) {
+            conn.rx_packets_fn = [](void* p) -> uint64_t {
+                return static_cast<Transport*>(p)->stats().rx_packets;
+            };
+        }
         conn.priority = priority;
         conn.health = tp->is_running() ? ConnHealth::Healthy : ConnHealth::Stopped;
 
@@ -702,10 +715,39 @@ public:
                     SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                         "Gateway: is_running_fn threw for '{}' during health check", c.tag);
                 }
-                if (running) {
-                    c.health = ConnHealth::Healthy;
-                } else {
+                if (!running) {
                     c.health = ConnHealth::Disconnected;
+                    c.degraded_since_ns = 0;
+                } else if (c.rx_packets_fn) {
+                    uint64_t current_rx = 0;
+                    try {
+                        current_rx = c.rx_packets_fn(c.transport_ptr);
+                    } catch (...) {
+                        SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                            "Gateway: rx_packets_fn threw for '{}'", c.tag);
+                    }
+                    if (current_rx > c.last_rx_packets) {
+                        // New data received — healthy
+                        c.health = ConnHealth::Healthy;
+                        c.degraded_since_ns = 0;
+                    } else {
+                        // No new data since last check
+                        auto now_ns = static_cast<uint64_t>(
+                            std::chrono::steady_clock::now().time_since_epoch().count());
+                        if (c.degraded_since_ns == 0) {
+                            c.degraded_since_ns = now_ns;
+                        }
+                        auto elapsed = std::chrono::nanoseconds(now_ns - c.degraded_since_ns);
+                        if (elapsed >= config_.degraded_threshold) {
+                            c.health = ConnHealth::Degraded;
+                        } else {
+                            c.health = ConnHealth::Healthy;
+                        }
+                    }
+                    c.last_rx_packets = current_rx;
+                } else {
+                    // No rx_packets_fn — fall back to running = healthy
+                    c.health = ConnHealth::Healthy;
                 }
 
                 if (old_h != c.health) {
