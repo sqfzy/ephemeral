@@ -31,7 +31,7 @@
 namespace eph::utils {
 
 // ============================================================================
-// measure_tsc / ScopedTSC — 便捷计时接口
+// measure_tsc / ScopedTSC — Convenience timing interface
 // ============================================================================
 
 /// @brief Measure the CPU cycle cost of invoking a callable.
@@ -85,7 +85,7 @@ class ScopedTSC {
 };
 
 // ============================================================================
-// HdrHistogram — 高动态范围直方图
+// HdrHistogram — High Dynamic Range Histogram
 // ============================================================================
 
 /// @brief High Dynamic Range (HDR) Histogram.
@@ -301,7 +301,7 @@ class HdrHistogram {
         dropped_count_ = 0;
     }
 
-    // ========== 查询 API ==========
+    // ========== Query API ==========
 
     /// @brief Get the value at a given percentile.
     ///
@@ -1126,7 +1126,7 @@ class HdrHistogram {
 };
 
 // ============================================================================
-// Stats — 延迟统计数据
+// Stats — Latency statistics data
 // ============================================================================
 
 /// @brief Aggregated latency statistics (nanoseconds).

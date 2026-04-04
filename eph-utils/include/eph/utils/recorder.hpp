@@ -97,7 +97,7 @@ namespace recorder_detail {
 }  // namespace recorder_detail
 
 // ============================================================================
-// Recorder — 单线程性能记录器
+// Recorder — Single-threaded performance recorder
 // ============================================================================
 
 /// @brief Single-threaded latency recorder backed by an HdrHistogram.
@@ -144,11 +144,11 @@ class Recorder {
             }
         }
 
-        // 默认最大周期数：10 秒（而非 1 小时，减少内存占用）
+        // Default max cycles: 10 seconds (not 1 hour, to reduce memory usage)
         if (highest_cycles == 0) {
             highest_cycles =
                 TSC::to_cycles(std::chrono::seconds(10))
-                    .value_or(10ULL * 3'400'000'000);  // 回退到 3.4 GHz
+                    .value_or(10ULL * 3'400'000'000);  // fallback to 3.4 GHz
         }
 
         highest_cycles = std::max(highest_cycles, 2 * lowest_cycles);
@@ -484,7 +484,7 @@ class Recorder {
 };
 
 // ============================================================================
-// ConcurrentRecorder — 多线程性能记录器
+// ConcurrentRecorder — Multi-threaded performance recorder
 // ============================================================================
 
 /// @brief Concurrent (multi-threaded) latency recorder.
@@ -538,7 +538,7 @@ class ConcurrentRecorder {
 
         highest_cycles = std::max(highest_cycles, 2 * lowest_cycles);
 
-        // 共享状态：通过 shared_ptr 管理，线程退出时仍可安全访问
+        // Shared state: managed via shared_ptr so threads can safely access it after exit
         state_ = std::make_shared<SharedState>(
             lowest_cycles, highest_cycles, precision);
     }
@@ -889,7 +889,7 @@ class ConcurrentRecorder {
     }
 
    private:
-    // 每个线程持有的本地数据
+    // Per-thread local data
     struct ThreadLocalData {
         HdrHistogram histogram;
         uint64_t count = 0;
@@ -900,7 +900,7 @@ class ConcurrentRecorder {
         uint64_t skipped_overflow = 0;
     };
 
-    // 共享状态：通过 shared_ptr 管理，确保线程退出时仍可安全访问
+    // Shared state: managed via shared_ptr to ensure safe access when threads exit
     struct SharedState {
         uint64_t lowest_cycles;
         uint64_t highest_cycles;
@@ -908,10 +908,10 @@ class ConcurrentRecorder {
 
         mutable std::mutex mutex;
 
-        // 活跃线程的本地数据指针
+        // Pointers to active thread-local data
         std::vector<ThreadLocalData*> active_locals;
 
-        // 已退出线程的累积数据
+        // Accumulated data from retired (exited) threads
         HdrHistogram retired_histogram;
         uint64_t retired_count = 0;
         uint64_t retired_total_cycles = 0;
@@ -932,14 +932,14 @@ class ConcurrentRecorder {
             active_locals.push_back(local);
         }
 
-        // 线程退出时调用：merge 数据到退役缓冲区，然后从活跃列表移除
+        // Called on thread exit: merge data into retirement buffer and remove from active list
         void retire_local(ThreadLocalData* local) noexcept {
             try {
                 std::lock_guard lock(mutex);
                 auto it = std::find(
                     active_locals.begin(), active_locals.end(), local);
                 if (it != active_locals.end()) {
-                    // 将数据 merge 到退役缓冲区 (always compatible — same ctor params)
+                    // Merge data into retirement buffer (always compatible — same ctor params)
                     (void)retired_histogram.merge(local->histogram);
                     retired_count += local->count;
                     retired_total_cycles += local->total_cycles;
@@ -954,11 +954,11 @@ class ConcurrentRecorder {
                     active_locals.erase(it);
                 }
             } catch (...) {
-                // 静默忽略，避免在析构路径中抛出
+                // Silently ignore to avoid throwing on destructor path
             }
         }
 
-        // 合并结果结构
+        // Merged result structure
         struct MergedData {
             HdrHistogram histogram;
             uint64_t count = 0;
@@ -967,20 +967,20 @@ class ConcurrentRecorder {
             uint64_t max_cycles = 0;
         };
 
-        // merge 所有数据（退役 + 活跃）— 调用方持有 mutex
+        // Merge all data (retired + active) — caller holds mutex
         [[nodiscard]] MergedData merge_all_locked() const {
             MergedData merged;
             merged.histogram =
                 HdrHistogram(lowest_cycles, highest_cycles, precision);
 
-            // 先 merge 退役数据 (always compatible — same ctor params)
+            // First merge retired data (always compatible — same ctor params)
             (void)merged.histogram.merge(retired_histogram);
             merged.count = retired_count;
             merged.total_cycles = retired_total_cycles;
             merged.min_cycles = retired_min_cycles;
             merged.max_cycles = retired_max_cycles;
 
-            // 再 merge 活跃线程数据 (always compatible — same ctor params)
+            // Then merge active thread data (always compatible — same ctor params)
             for (const auto* local : active_locals) {
                 (void)merged.histogram.merge(local->histogram);
                 merged.count += local->count;
@@ -994,7 +994,7 @@ class ConcurrentRecorder {
             return merged;
         }
 
-        // 重置所有数据（退役 + 活跃）— 调用方持有 mutex
+        // Reset all data (retired + active) — caller holds mutex
         void reset_all_locked() noexcept {
             for (auto* local : active_locals) {
                 local->histogram.reset();
@@ -1014,7 +1014,7 @@ class ConcurrentRecorder {
             retired_skipped_overflow = 0;
         }
 
-        // merge 所有数据（退役 + 活跃）
+        // Merge all data (retired + active)
         [[nodiscard]] MergedData merge_all() const {
             std::lock_guard lock(mutex);
             return merge_all_locked();
@@ -1038,7 +1038,7 @@ class ConcurrentRecorder {
         }
     };
 
-    // RAII guard：持有 shared_ptr<SharedState>，线程退出时安全 retire
+    // RAII guard: holds shared_ptr<SharedState>, safely retires on thread exit
     struct ThreadLocalGuard {
         ThreadLocalData data;
         std::shared_ptr<SharedState> state;
@@ -1051,7 +1051,7 @@ class ConcurrentRecorder {
         }
 
         ~ThreadLocalGuard() {
-            // shared_ptr 确保 SharedState 此时仍然存活
+            // shared_ptr ensures SharedState is still alive at this point
             state->retire_local(&data);
         }
 

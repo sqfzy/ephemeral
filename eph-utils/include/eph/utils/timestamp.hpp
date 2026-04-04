@@ -23,11 +23,18 @@ namespace eph::utils {
 // ---------------------------------------------------------------------------
 
 /// Convert milliseconds since Unix epoch to nanoseconds.
+/// Returns 0 for negative inputs (clock skew guard).
+/// Returns 0 for inputs that would overflow uint64_t (ms > UINT64_MAX / 1'000'000).
 [[nodiscard]] constexpr uint64_t ms_to_ns(int64_t ms) noexcept {
     // P0-4: Runtime guard replaces assert (disabled in release builds).
     // Negative timestamps from clock skew would silently wrap to huge uint64 values.
     if (ms < 0) [[unlikely]] return 0;
-    return static_cast<uint64_t>(ms) * 1'000'000;
+    // Overflow guard: UINT64_MAX / 1'000'000 = 18'446'744'073'709.
+    // Values above this threshold would silently wrap when multiplied.
+    constexpr uint64_t kMaxSafeMs = UINT64_MAX / 1'000'000;
+    auto ums = static_cast<uint64_t>(ms);
+    if (ums > kMaxSafeMs) [[unlikely]] return 0;
+    return ums * 1'000'000;
 }
 
 /// Convert nanoseconds to milliseconds (truncating).
@@ -36,11 +43,18 @@ namespace eph::utils {
 }
 
 /// Convert microseconds to nanoseconds.
+/// Returns 0 for negative inputs (clock skew guard).
+/// Returns 0 for inputs that would overflow uint64_t (us > UINT64_MAX / 1'000).
 [[nodiscard]] constexpr uint64_t us_to_ns(int64_t us) noexcept {
     // P0-4: Runtime guard replaces assert (disabled in release builds).
     // Negative timestamps from clock skew would silently wrap to huge uint64 values.
     if (us < 0) [[unlikely]] return 0;
-    return static_cast<uint64_t>(us) * 1'000;
+    // Overflow guard: UINT64_MAX / 1'000 = 18'446'744'073'709'551.
+    // Values above this threshold would silently wrap when multiplied.
+    constexpr uint64_t kMaxSafeUs = UINT64_MAX / 1'000;
+    auto uus = static_cast<uint64_t>(us);
+    if (uus > kMaxSafeUs) [[unlikely]] return 0;
+    return uus * 1'000;
 }
 
 /// Nanoseconds since midnight (ITCH timestamp format) to nanoseconds since epoch.

@@ -1003,3 +1003,102 @@ TEST(ConcurrentRecorderRecordValues, bulk_across_threads) {
     ASSERT_TRUE(stats.has_value());
     EXPECT_EQ(stats->count, kThreads * kCountPerThread);
 }
+
+// ============================================================================
+// recorder_detail::sanitize_filename — previously untested utility
+// ============================================================================
+
+TEST(RecorderDetailTest, SanitizeFilenamePreservesAlphanumeric) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("TestBench123");
+    EXPECT_EQ(result, "TestBench123");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenamePreservesUnderscoreAndHyphen) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("test_bench-v2");
+    EXPECT_EQ(result, "test_bench-v2");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenameReplacesSpaces) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("my test bench");
+    EXPECT_EQ(result, "my_test_bench");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenameReplacesSpecialChars) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("bench@host:8080/path");
+    EXPECT_EQ(result, "bench_host_8080_path");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenameReplacesPathTraversal) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("../../etc/passwd");
+    EXPECT_EQ(result, "______etc_passwd");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenameEmptyString) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("");
+    EXPECT_EQ(result, "");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenameAllSpecialChars) {
+    auto result = eph::utils::recorder_detail::sanitize_filename("!@#$%^&*()");
+    // All chars should be replaced with underscore
+    EXPECT_EQ(result, "__________");
+}
+
+TEST(RecorderDetailTest, SanitizeFilenameUnicodeReplaced) {
+    // UTF-8 continuation bytes have negative char values on most platforms;
+    // they should be replaced (not cause UB via isalnum).
+    auto result = eph::utils::recorder_detail::sanitize_filename("bench\xC3\xA9mark");
+    // The non-ASCII bytes should be replaced, ASCII 'b','e','n','c','h' preserved
+    EXPECT_EQ(result.substr(0, 5), "bench");
+    EXPECT_EQ(result.substr(7), "mark");
+    EXPECT_EQ(result[5], '_');
+    EXPECT_EQ(result[6], '_');
+}
+
+// ============================================================================
+// recorder_detail::ensure_directory — previously untested utility
+// ============================================================================
+
+TEST(RecorderDetailTest, EnsureDirectoryCreatesDirectory) {
+    const std::string path = "test_outputs/ensure_dir_test";
+    fs::remove_all(path);
+    EXPECT_TRUE(eph::utils::recorder_detail::ensure_directory(path));
+    EXPECT_TRUE(fs::is_directory(path));
+    fs::remove_all("test_outputs");
+}
+
+TEST(RecorderDetailTest, EnsureDirectoryIdempotent) {
+    const std::string path = "test_outputs/ensure_dir_idem";
+    fs::remove_all(path);
+    EXPECT_TRUE(eph::utils::recorder_detail::ensure_directory(path));
+    EXPECT_TRUE(eph::utils::recorder_detail::ensure_directory(path));
+    EXPECT_TRUE(fs::is_directory(path));
+    fs::remove_all("test_outputs");
+}
+
+TEST(RecorderDetailTest, EnsureDirectoryCreatesNestedPaths) {
+    const std::string path = "test_outputs/a/b/c/d";
+    fs::remove_all("test_outputs");
+    EXPECT_TRUE(eph::utils::recorder_detail::ensure_directory(path));
+    EXPECT_TRUE(fs::is_directory(path));
+    fs::remove_all("test_outputs");
+}
+
+// ============================================================================
+// recorder_detail::make_output_path — previously untested utility
+// ============================================================================
+
+TEST(RecorderDetailTest, MakeOutputPathIncludesExtension) {
+    auto path = eph::utils::recorder_detail::make_output_path("bench", "/tmp", ".json");
+    EXPECT_EQ(path.extension(), ".json");
+    EXPECT_TRUE(path.string().starts_with("/tmp/bench_"));
+}
+
+TEST(RecorderDetailTest, MakeOutputPathSanitizesName) {
+    auto path = eph::utils::recorder_detail::make_output_path("my bench!", "/tmp", ".csv");
+    auto filename = path.filename().string();
+    // The name should have been sanitized: space and ! replaced
+    EXPECT_EQ(filename.find(' '), std::string::npos);
+    EXPECT_EQ(filename.find('!'), std::string::npos);
+    EXPECT_TRUE(filename.starts_with("my_bench_"));
+}

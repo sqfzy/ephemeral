@@ -112,39 +112,23 @@ TEST(JsonEscape, FourByteUtf8PassedThrough) {
 // ----------------------------------------------------------------------------
 // Invalid / truncated UTF-8 escaped as \uXXXX
 // ----------------------------------------------------------------------------
-// NOTE: The fast path only triggers escaping for control chars, quotes, and
-// backslash. Bytes >= 0x80 alone do NOT trigger the slow path. Invalid UTF-8
-// is only escaped when the string also contains a character that forces the
-// slow path. We test this by mixing invalid UTF-8 with a control char.
-
 TEST(JsonEscape, OrphanContinuationByteEscaped) {
-    // 0x80 alone passes through on the fast path (no trigger character)
-    std::string_view alone("\x80", 1);
-    EXPECT_EQ(json_escape(alone), std::string("\x80"));
-
-    // With a newline forcing the slow path, orphan 0x80 gets escaped
-    std::string_view mixed("\x80\n", 2);
-    EXPECT_EQ(json_escape(mixed), "\\u0080\\n");
+    // 0x80 is a continuation byte without a lead byte — escaped as \uXXXX
+    std::string_view input("\x80", 1);
+    EXPECT_EQ(json_escape(input), "\\u0080");
 }
 
 TEST(JsonEscape, TruncatedTwoByteSequenceEscaped) {
-    // 0xC3 alone passes through (fast path, no trigger)
-    std::string_view alone("\xC3", 1);
-    EXPECT_EQ(json_escape(alone), std::string("\xC3"));
-
-    // With a tab forcing the slow path, truncated sequence gets escaped
-    std::string_view mixed("\xC3\t", 2);
-    EXPECT_EQ(json_escape(mixed), "\\u00c3\\t");
+    // 0xC3 alone (missing continuation byte) — escaped as \uXXXX
+    std::string_view input("\xC3", 1);
+    EXPECT_EQ(json_escape(input), "\\u00c3");
 }
 
 TEST(JsonEscape, TruncatedThreeByteSequenceEscaped) {
-    // 0xE4 0xB8 alone passes through (fast path)
-    std::string_view alone("\xE4\xB8", 2);
-    EXPECT_EQ(json_escape(alone), std::string("\xE4\xB8"));
-
-    // With a quote forcing the slow path, both bytes get individually escaped
-    std::string mixed = std::string("\xE4\xB8") + "\"";
-    EXPECT_EQ(json_escape(mixed), "\\u00e4\\u00b8\\\"");
+    // 0xE4 0xB8 alone (missing third continuation byte)
+    // Both bytes are individually escaped since the 3-byte sequence is incomplete.
+    std::string_view input("\xE4\xB8", 2);
+    EXPECT_EQ(json_escape(input), "\\u00e4\\u00b8");
 }
 
 // ----------------------------------------------------------------------------

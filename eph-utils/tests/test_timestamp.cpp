@@ -280,3 +280,55 @@ TEST(Timestamp, us_to_ns_boundary_max_safe_us) {
     constexpr uint64_t result = us_to_ns(max_safe_us);
     EXPECT_EQ(result, static_cast<uint64_t>(max_safe_us) * 1'000);
 }
+
+// ---------------------------------------------------------------------------
+// Overflow protection: values beyond max safe threshold return 0
+// ---------------------------------------------------------------------------
+
+TEST(Timestamp, ms_to_ns_overflow_returns_zero) {
+    // One past the max safe value should return 0 (overflow protection)
+    constexpr int64_t overflow_ms = 18'446'744'073'710LL;  // max_safe + 1
+    EXPECT_EQ(ms_to_ns(overflow_ms), 0u)
+        << "ms_to_ns must return 0 for values that would overflow uint64_t";
+
+    // INT64_MAX would definitely overflow
+    EXPECT_EQ(ms_to_ns(INT64_MAX), 0u)
+        << "ms_to_ns(INT64_MAX) must return 0 to prevent silent overflow";
+}
+
+TEST(Timestamp, us_to_ns_overflow_returns_zero) {
+    // One past the max safe value should return 0 (overflow protection)
+    constexpr int64_t overflow_us = 18'446'744'073'709'552LL;  // max_safe + 1
+    EXPECT_EQ(us_to_ns(overflow_us), 0u)
+        << "us_to_ns must return 0 for values that would overflow uint64_t";
+
+    // INT64_MAX would definitely overflow
+    EXPECT_EQ(us_to_ns(INT64_MAX), 0u)
+        << "us_to_ns(INT64_MAX) must return 0 to prevent silent overflow";
+}
+
+TEST(Timestamp, ms_to_ns_negative_returns_zero) {
+    // Negative values should return 0 (existing behavior, regression test)
+    EXPECT_EQ(ms_to_ns(-1), 0u);
+    EXPECT_EQ(ms_to_ns(INT64_MIN), 0u);
+}
+
+TEST(Timestamp, us_to_ns_negative_returns_zero) {
+    EXPECT_EQ(us_to_ns(-1), 0u);
+    EXPECT_EQ(us_to_ns(INT64_MIN), 0u);
+}
+
+TEST(Timestamp, ms_to_ns_at_exact_boundary_succeeds) {
+    // The exact max safe value should still work
+    constexpr int64_t max_safe_ms = 18'446'744'073'709LL;
+    constexpr uint64_t result = ms_to_ns(max_safe_ms);
+    EXPECT_GT(result, 0u);
+    EXPECT_EQ(ns_to_ms(result), max_safe_ms);
+}
+
+TEST(Timestamp, us_to_ns_at_exact_boundary_succeeds) {
+    constexpr int64_t max_safe_us = 18'446'744'073'709'551LL;
+    constexpr uint64_t result = us_to_ns(max_safe_us);
+    EXPECT_GT(result, 0u);
+    EXPECT_EQ(result, static_cast<uint64_t>(max_safe_us) * 1'000);
+}

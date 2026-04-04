@@ -191,10 +191,10 @@ get_cpu_topology() {
     return std::unexpected(std::move(msg));
   }
 
-  // 按 hw_thread_id 排序
+  // Sort by hw_thread_id
   std::ranges::sort(cpus, {}, &CpuTopologyInfo::hw_thread_id);
 #else
-  // macOS/Windows 回退方案
+  // macOS/Windows fallback
   SPDLOG_LOGGER_DEBUG(log, "Using simplified topology (non-Linux)");
   for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) {
     cpus.push_back({0, i, i});
@@ -243,7 +243,7 @@ set_thread_affinity(int cpu_id, const char* name = nullptr) {
   SPDLOG_LOGGER_INFO(log, "{} pinned to cpu_id={}", tag, cpu_id);
   return {};
 #elif defined(__APPLE__)
-  // macOS 不支持硬亲和性，只能设置 QoS
+  // macOS does not support hard affinity, use QoS instead
   SPDLOG_LOGGER_DEBUG(log,
       "macOS: setting QoS instead of hard affinity for {} (cpu_id={})",
       tag, cpu_id);
@@ -443,7 +443,7 @@ set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
 inline void cpu_relax() noexcept {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
     defined(_M_IX86)
-  _mm_pause(); // 提示 CPU 这是一个自旋循环，降低功耗并避免流水线清空
+  _mm_pause(); // Hint to CPU this is a spin loop, reducing power and avoiding pipeline stalls
 #elif defined(__aarch64__)
   asm volatile("yield"); // ARM64
 #else
