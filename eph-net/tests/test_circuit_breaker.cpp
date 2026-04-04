@@ -763,3 +763,102 @@ TEST(CircuitBreaker, FormatterComposableInFormat) {
     auto s = std::format("breaker: {}", cb);
     EXPECT_NE(s.find("breaker: CircuitBreaker"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unexpected-state handling: record_success/record_failure in Open state
+//
+// These paths should never happen in normal operation (calls are blocked in
+// Open state), but the code handles them gracefully with warning logs.
+// Verifying they don't corrupt state is important for production robustness.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, RecordSuccessInOpenStateIsIgnored) {
+    // Trip the circuit with a long open_duration so it stays Open.
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    ASSERT_EQ(cb.state(), CircuitState::Open);
+
+    // Calling record_success in Open state is unexpected but must not crash
+    // or change state. The circuit should remain Open.
+    cb.record_success();
+    EXPECT_EQ(cb.state(), CircuitState::Open);
+    // Failure count should be unchanged (success in Open is ignored).
+    EXPECT_EQ(cb.failure_count(), 2u);
+}
+
+TEST(CircuitBreaker, RecordFailureInOpenStateIsIgnored) {
+    // Trip the circuit with a long open_duration so it stays Open.
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    ASSERT_EQ(cb.state(), CircuitState::Open);
+    EXPECT_EQ(cb.failure_count(), 2u);
+
+    // Calling record_failure in Open state is unexpected but must not crash
+    // or further increment the failure count or reset the open timer.
+    cb.record_failure();
+    EXPECT_EQ(cb.state(), CircuitState::Open);
+    // Failure count should remain at 2 (the threshold value when it tripped).
+    EXPECT_EQ(cb.failure_count(), 2u);
+}
+
+TEST(CircuitBreaker, MultipleRecordSuccessInOpenDoesNotTransition) {
+    CircuitBreaker cb(CircuitBreaker::Config{2, 60s, 1});
+    cb.record_failure();
+    cb.record_failure();
+    ASSERT_EQ(cb.state(), CircuitState::Open);
+
+    // Multiple unexpected successes in Open should all be no-ops.
+    for (int i = 0; i < 10; ++i) {
+        cb.record_success();
+    }
+    EXPECT_EQ(cb.state(), CircuitState::Open);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// time_until_half_open() countdown verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, TimeUntilHalfOpenDecreases) {
+    // Use a 2s open_duration and verify the countdown decreases over time.
+    CircuitBreaker cb(CircuitBreaker::Config{1, 2s, 1});
+    cb.record_failure();
+    ASSERT_EQ(cb.state(), CircuitState::Open);
+
+    auto remaining1 = cb.time_until_half_open();
+    EXPECT_GT(remaining1.count(), 1500);
+
+    std::this_thread::sleep_for(500ms);
+
+    auto remaining2 = cb.time_until_half_open();
+    // Should have decreased by roughly 500ms.
+    EXPECT_LT(remaining2.count(), remaining1.count());
+    EXPECT_LE(remaining2.count(), 1600);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HalfOpen → Open re-trip resets the timer
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CircuitBreaker, RetripInHalfOpenResetsTimer) {
+    // Use 200ms open_duration to make the test fast but verifiable.
+    CircuitBreaker cb(CircuitBreaker::Config{2, 200ms, 1});
+    cb.record_failure();
+    cb.record_failure();
+    ASSERT_EQ(cb.state(), CircuitState::Open);
+
+    // Wait for transition to HalfOpen.
+    std::this_thread::sleep_for(250ms);
+    ASSERT_EQ(cb.state(), CircuitState::HalfOpen);
+    ASSERT_TRUE(cb.allow()); // transition + probe
+
+    // Probe fails -> re-trip to Open with fresh timer.
+    cb.record_failure();
+
+    // The timer was reset, so immediately after re-trip it should be Open
+    // and time_until_half_open should be close to 200ms (not near zero).
+    EXPECT_FALSE(cb.allow()); // should be blocked
+    auto remaining = cb.time_until_half_open();
+    EXPECT_GT(remaining.count(), 100) << "timer should have been reset on re-trip";
+}

@@ -955,3 +955,214 @@ TEST(DecodeErrorFormatter, FormatsCorrectly) {
     auto result = std::format("{}", DecodeError::kIncomplete);
     EXPECT_EQ(result, "incomplete");
 }
+
+// =======================================================================
+// decode_frame — boundary payload lengths (16-bit extended format)
+//
+// The 16-bit extended format (len_byte=126) covers payloads 126..65535.
+// These boundary tests verify the decoder handles the exact transition
+// points correctly, including masked variants which add 4 bytes to the
+// header and are the common case for client frames.
+// =======================================================================
+
+TEST(DecodeFrame, PayloadLen125UsesShortFormat) {
+    // Payload length 125 is the maximum for the short (1-byte) format.
+    // Header: FIN+opcode(1) + len(1) = 2 bytes (unmasked).
+    std::vector<uint8_t> data(2 + 125);
+    data[0] = 0x82;  // FIN + binary
+    data[1] = 125;
+    auto result = decode_frame(data.data(), data.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 125u);
+    EXPECT_EQ(result->total_len, 2u + 125u);
+    EXPECT_FALSE(result->masked);
+}
+
+TEST(DecodeFrame, PayloadLen126Uses16BitExtendedFormat) {
+    // Payload length 126 is the first value using 16-bit extended format.
+    // Header: 2 + 2 = 4 bytes (unmasked).
+    std::vector<uint8_t> data(4 + 126);
+    data[0] = 0x82;  // FIN + binary
+    data[1] = 126;   // extended 16-bit indicator
+    data[2] = 0x00;
+    data[3] = 126;
+    auto result = decode_frame(data.data(), data.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 126u);
+    EXPECT_EQ(result->total_len, 4u + 126u);
+}
+
+TEST(DecodeFrame, PayloadLen65535Uses16BitExtendedFormat) {
+    // 65535 is the maximum for the 16-bit extended format.
+    std::vector<uint8_t> data(4 + 65535);
+    data[0] = 0x82;
+    data[1] = 126;
+    data[2] = 0xFF;
+    data[3] = 0xFF;
+    auto result = decode_frame(data.data(), data.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 65535u);
+    EXPECT_EQ(result->total_len, 4u + 65535u);
+}
+
+TEST(DecodeFrame, MaskedMediumPayloadRoundtrip) {
+    // Build a masked binary frame with 200 bytes of payload via encode_frame,
+    // then decode and verify the round-trip preserves all fields correctly.
+    std::vector<uint8_t> payload(200);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<uint8_t>(i & 0xFF);
+    }
+
+    std::vector<uint8_t> buf(8 + 200);  // 8-byte header for masked medium frame
+    size_t len = encode_frame(buf.data(), opcode::kBinary,
+                              payload.data(), payload.size());
+    ASSERT_GT(len, 0u);
+
+    auto result = decode_frame(buf.data(), len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->opcode, opcode::kBinary);
+    EXPECT_TRUE(result->fin);
+    EXPECT_TRUE(result->masked);
+    EXPECT_EQ(result->payload_len, 200u);
+
+    // Unmask and verify payload integrity.
+    std::vector<uint8_t> unmasked(result->payload,
+                                   result->payload + result->payload_len);
+    apply_mask(unmasked.data(), unmasked.size(), result->mask_key);
+    EXPECT_EQ(unmasked, payload);
+}
+
+TEST(DecodeFrame, PongFrameWithMaxPayload) {
+    // Pong frame with exactly 125 bytes (maximum control frame payload).
+    std::vector<uint8_t> payload(125, 0x42);
+    uint8_t buf[256];
+    size_t len = build_pong_frame(buf, payload.data(), payload.size());
+    ASSERT_GT(len, 0u);
+
+    auto result = decode_frame(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->is_pong());
+    EXPECT_EQ(result->payload_len, 125u);
+}
+
+TEST(DecodeFrame, CloseFrameAllStandardCodes) {
+    // Verify all standard close codes can be encoded and decoded correctly.
+    constexpr uint16_t standard_codes[] = {
+        1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011
+    };
+    for (uint16_t code : standard_codes) {
+        uint8_t buf[64];
+        size_t len = build_close_frame(buf, code, "test");
+        ASSERT_GT(len, 0u) << "code=" << code;
+
+        auto result = decode_frame(buf, len);
+        ASSERT_TRUE(result.has_value()) << "code=" << code;
+        EXPECT_TRUE(result->is_close());
+        EXPECT_EQ(result->close_status_code(), code) << "code=" << code;
+        EXPECT_EQ(result->close_reason_unmasked(), "test") << "code=" << code;
+    }
+}
+
+// =======================================================================
+// masked_copy — boundary sizes (0, 1, 3, 4, 7, 8, 9 bytes)
+//
+// masked_copy uses 64-bit blocks, then 32-bit tail, then byte tail.
+// These tests exercise the transitions between those phases.
+// =======================================================================
+
+TEST(MaskedCopy, SingleByte) {
+    uint8_t src[] = {0x42};
+    uint8_t dst[1];
+    uint8_t mask[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    masked_copy(dst, src, 1, mask);
+    EXPECT_EQ(dst[0], 0x42 ^ 0xAA);
+}
+
+TEST(MaskedCopy, ThreeBytes) {
+    uint8_t src[] = {0x01, 0x02, 0x03};
+    uint8_t dst[3];
+    uint8_t mask[] = {0x11, 0x22, 0x33, 0x44};
+    masked_copy(dst, src, 3, mask);
+    EXPECT_EQ(dst[0], 0x01 ^ 0x11);
+    EXPECT_EQ(dst[1], 0x02 ^ 0x22);
+    EXPECT_EQ(dst[2], 0x03 ^ 0x33);
+}
+
+TEST(MaskedCopy, ExactlyFourBytes) {
+    uint8_t src[] = {0x10, 0x20, 0x30, 0x40};
+    uint8_t dst[4];
+    uint8_t mask[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    masked_copy(dst, src, 4, mask);
+    // Should use the 32-bit tail path (no 64-bit block).
+    uint8_t expected[4];
+    std::memcpy(expected, src, 4);
+    apply_mask(expected, 4, mask);
+    EXPECT_EQ(std::memcmp(dst, expected, 4), 0);
+}
+
+TEST(MaskedCopy, ExactlyEightBytes) {
+    uint8_t src[8];
+    for (size_t i = 0; i < 8; ++i) src[i] = static_cast<uint8_t>(i + 1);
+    uint8_t dst[8];
+    uint8_t mask[] = {0x12, 0x34, 0x56, 0x78};
+    masked_copy(dst, src, 8, mask);
+    // Should use exactly one 64-bit block, no tail.
+    uint8_t expected[8];
+    std::memcpy(expected, src, 8);
+    apply_mask(expected, 8, mask);
+    EXPECT_EQ(std::memcmp(dst, expected, 8), 0);
+}
+
+TEST(MaskedCopy, NineBytes) {
+    uint8_t src[9];
+    for (size_t i = 0; i < 9; ++i) src[i] = static_cast<uint8_t>(i);
+    uint8_t dst[9];
+    uint8_t mask[] = {0xAB, 0xCD, 0xEF, 0x01};
+    masked_copy(dst, src, 9, mask);
+    // 8-byte block + 1-byte tail.
+    uint8_t expected[9];
+    std::memcpy(expected, src, 9);
+    apply_mask(expected, 9, mask);
+    EXPECT_EQ(std::memcmp(dst, expected, 9), 0);
+}
+
+TEST(MaskedCopy, ZeroLength) {
+    uint8_t src[] = {0x42};
+    uint8_t dst[] = {0xFF};
+    uint8_t mask[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    masked_copy(dst, src, 0, mask);
+    // dst should be unchanged.
+    EXPECT_EQ(dst[0], 0xFF);
+}
+
+// =======================================================================
+// encode_frame — boundary payload lengths
+// =======================================================================
+
+TEST(EncodeFrame, ExactBoundary125BytePayload) {
+    // 125 bytes: last size using short format header.
+    std::vector<uint8_t> payload(125, 0x42);
+    std::vector<uint8_t> buf(6 + 125);  // 6-byte header for masked short frame
+    size_t len = encode_frame(buf.data(), opcode::kBinary,
+                              payload.data(), payload.size());
+    ASSERT_GT(len, 0u);
+    EXPECT_EQ(len, 6u + 125u);  // 2 base + 4 mask + 125 payload
+
+    auto result = decode_frame(buf.data(), len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 125u);
+}
+
+TEST(EncodeFrame, ExactBoundary126BytePayload) {
+    // 126 bytes: first size using 16-bit extended format.
+    std::vector<uint8_t> payload(126, 0x42);
+    std::vector<uint8_t> buf(8 + 126);  // 8-byte header for masked medium frame
+    size_t len = encode_frame(buf.data(), opcode::kBinary,
+                              payload.data(), payload.size());
+    ASSERT_GT(len, 0u);
+    EXPECT_EQ(len, 8u + 126u);  // 2 base + 2 ext + 4 mask + 126 payload
+
+    auto result = decode_frame(buf.data(), len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 126u);
+}

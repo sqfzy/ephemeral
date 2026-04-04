@@ -652,3 +652,111 @@ TEST(ProxyUrl, PortWithLeadingZerosStillParses) {
     ASSERT_TRUE(r.has_value()) << r.error();
     EXPECT_EQ(r->port, 1080);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_proxy_url — additional edge cases for production robustness
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyUrl, EmptyPortAfterColonReturnsError) {
+    // "socks5://proxy.io:" has an empty port string after the colon.
+    auto r = parse_proxy_url("socks5://proxy.io:");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("port"), std::string::npos);
+}
+
+TEST(ProxyUrl, PortOverflowUint16ReturnsError) {
+    // 65536 is 1 above the valid range.
+    auto r = parse_proxy_url("socks5://proxy.io:65536");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("port out of range"), std::string::npos);
+}
+
+TEST(ProxyUrl, PortLargeNumberOverflowReturnsError) {
+    // Very large number that overflows uint32_t range should fail.
+    auto r = parse_proxy_url("socks5://proxy.io:4294967296");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(ProxyUrl, PortNegativeNumberReturnsError) {
+    // Negative numbers should not parse as valid ports.
+    auto r = parse_proxy_url("socks5://proxy.io:-1");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(ProxyUrl, PasswordWithColons) {
+    // Passwords may contain multiple colons. Only the first ':' in auth
+    // separates username from password.
+    auto r = parse_proxy_url("socks5://user:pass:with:colons@proxy.io:1080");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->username, "user");
+    EXPECT_EQ(r->password, "pass:with:colons");
+    EXPECT_EQ(r->host, "proxy.io");
+    EXPECT_EQ(r->port, 1080);
+}
+
+TEST(ProxyUrl, EmptyUsernameWithAtSign) {
+    // "@host:port" with empty username: rfind('@') finds it, auth="" before '@'.
+    auto r = parse_proxy_url("socks5://@proxy.io:1080");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    // Empty auth string, no colon found => username is empty string from auth
+    EXPECT_TRUE(r->username.empty());
+    EXPECT_TRUE(r->password.empty());
+    EXPECT_EQ(r->host, "proxy.io");
+    EXPECT_EQ(r->port, 1080);
+}
+
+TEST(ProxyUrl, Port1IsValid) {
+    auto r = parse_proxy_url("socks5://proxy.io:1");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->port, 1);
+}
+
+TEST(ProxyUrl, Port65535IsValid) {
+    auto r = parse_proxy_url("socks5://proxy.io:65535");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->port, 65535);
+}
+
+TEST(ProxyUrl, HostWithDotsAndDashes) {
+    auto r = parse_proxy_url("http://my-proxy.sub.domain.com:3128");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    EXPECT_EQ(r->host, "my-proxy.sub.domain.com");
+    EXPECT_EQ(r->port, 3128);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProxyConfig::validate() — control character injection in username
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ProxyConfigValidation, HostWithTabRejected) {
+    ProxyConfig cfg{.host = "evil\thost", .port = 1080};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("control characters"), std::string_view::npos);
+}
+
+TEST(ProxyConfigValidation, Socks5MaxLengthCredentialsAtBoundary) {
+    // 255 bytes is exactly the SOCKS5 limit -- should pass.
+    ProxyConfig cfg{
+        .host = "proxy.local", .port = 1080,
+        .type = ProxyType::kSocks5,
+        .username = std::string(255, 'u'),
+        .password = std::string(255, 'p')};
+    EXPECT_TRUE(cfg.validate().empty());
+
+    // 256 bytes exceeds -- should fail for username.
+    ProxyConfig cfg2{
+        .host = "proxy.local", .port = 1080,
+        .type = ProxyType::kSocks5,
+        .username = std::string(256, 'u'),
+        .password = std::string(255, 'p')};
+    EXPECT_FALSE(cfg2.validate().empty());
+
+    // 256 bytes exceeds -- should fail for password.
+    ProxyConfig cfg3{
+        .host = "proxy.local", .port = 1080,
+        .type = ProxyType::kSocks5,
+        .username = std::string(255, 'u'),
+        .password = std::string(256, 'p')};
+    EXPECT_FALSE(cfg3.validate().empty());
+}
