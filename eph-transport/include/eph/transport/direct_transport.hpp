@@ -799,7 +799,6 @@ private:
             .rx_decrypt_histogram = rx_decrypt_histogram_,
             .rx_decode_histogram  = rx_decode_histogram_,
             .rx_hwm             = rx_hwm_,
-            .rx_hwm_counter     = rx_hwm_counter_,
         };
         fp_ = std::make_unique<FP>(std::move(deps));
     }
@@ -1252,7 +1251,6 @@ private:
     std::atomic<uint64_t> reconnect_count_{0};
     std::atomic<uint64_t> pong_timeouts_{0};
     std::atomic<size_t>   rx_hwm_{0};
-    uint64_t              rx_hwm_counter_{0};
 
     // -----------------------------------------------------------------------
     // Members — DirectRxState (persistent reassembly buffers for poll)

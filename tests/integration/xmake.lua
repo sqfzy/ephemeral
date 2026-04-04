@@ -20,3 +20,8 @@ target("test_metrics_concept")
     add_rules("eph-test")
     add_files("test_metrics_concept.cpp")
     add_deps("eph-core", "eph-utils")
+
+target("test_transport_e2e")
+    add_rules("eph-test")
+    add_files("test_transport_e2e.cpp")
+    add_deps("eph-transport")

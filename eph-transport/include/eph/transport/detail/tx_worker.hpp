@@ -141,12 +141,9 @@ public:
         }
         SPDLOG_LOGGER_TRACE(detail::transport_logger(),
             "TX enqueue: len={}, opcode={}", len, opcode);
-        // Sample HWM every 64 enqueues to avoid cross-core size() read
-        // on every send(). size() reads both writer tail and reader head
-        // which sit on separate cache lines — expensive on every call.
-        if ((++tx_hwm_counter_ & 63) == 0) {
-            update_hwm_(tx_queue_.size());
-        }
+        // Track HWM on every enqueue via atomic max-CAS (one relaxed
+        // load + at most one CAS — negligible vs. the SPSC operation).
+        update_hwm_(tx_queue_.size());
         return SendError::kOk;
     }
 
@@ -176,9 +173,7 @@ public:
             update_hwm_(QueueDepth);
             return SendError::kQueueFull;
         }
-        if ((++tx_hwm_counter_ & 63) == 0) {
-            update_hwm_(tx_queue_.size());
-        }
+        update_hwm_(tx_queue_.size());
         return SendError::kOk;
     }
 
@@ -214,10 +209,7 @@ public:
                 count, opcode);
             return SendError::kQueueFull;
         }
-        // Sample HWM after batch to track peak occupancy
-        if ((++tx_hwm_counter_ & 63) == 0) {
-            update_hwm_(tx_queue_.size());
-        }
+        update_hwm_(tx_queue_.size());
         return SendError::kOk;
     }
 
@@ -255,9 +247,7 @@ public:
                 count, opcode);
             return SendError::kQueueFull;
         }
-        if ((++tx_hwm_counter_ & 63) == 0) {
-            update_hwm_(tx_queue_.size());
-        }
+        update_hwm_(tx_queue_.size());
         return SendError::kOk;
     }
 
@@ -300,7 +290,6 @@ public:
         tx_stats_.reset();
         queue_full_count_.store(0, std::memory_order_relaxed);
         tx_hwm_.store(0, std::memory_order_relaxed);
-        tx_hwm_counter_ = 0;
         tx_latency_histogram_.reset();
         tx_queue_wait_histogram_.reset();
         tx_encode_histogram_.reset();
@@ -357,7 +346,6 @@ private:
     ThreadStats   tx_stats_{};
     std::atomic<size_t>   tx_hwm_{0};
     std::atomic<uint64_t> queue_full_count_{0};
-    uint64_t      tx_hwm_counter_{0};
     bool          ping_awaiting_pong_{false};
     bool          seq_warning_logged_{false};
 

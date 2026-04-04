@@ -444,7 +444,6 @@ public:
         ws_pings_received_.store(0, std::memory_order_relaxed);
         ws_pongs_sent_.store(0, std::memory_order_relaxed);
         rx_hwm_.store(0, std::memory_order_relaxed);
-        rx_hwm_counter_ = 0;
         rx_latency_histogram_.reset();
         rx_decrypt_histogram_.reset();
         rx_decode_histogram_.reset();
@@ -590,10 +589,8 @@ private:
                     "RX enqueue failed: queue full (len={}, opcode={})",
                     len, opcode);
             }
-            // Sample HWM every 64 enqueues
-            if ((++self->rx_hwm_counter_ & 63) == 0) {
-                update_hwm_(self->rx_hwm_, self->rx_size_());
-            }
+            // Track HWM on every enqueue via atomic max-CAS
+            update_hwm_(self->rx_hwm_, self->rx_size_());
         }
     };
 
@@ -624,7 +621,6 @@ private:
                 .rx_decrypt_histogram = rx_decrypt_histogram_,
                 .rx_decode_histogram  = rx_decode_histogram_,
                 .rx_hwm             = rx_hwm_,
-                .rx_hwm_counter     = rx_hwm_counter_,
             });
     }
 
@@ -944,7 +940,6 @@ private:
     // Owned state: stats
     ThreadStats rx_stats_{};
     std::atomic<size_t> rx_hwm_{0};
-    uint64_t rx_hwm_counter_{0};
     bool rx_seq_warning_logged_{false};
 
     // Owned state: histograms

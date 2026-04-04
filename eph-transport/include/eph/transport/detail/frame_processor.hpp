@@ -77,7 +77,6 @@ public:
         eph::utils::HdrHistogram& rx_decrypt_histogram;
         eph::utils::HdrHistogram& rx_decode_histogram;
         std::atomic<size_t>& rx_hwm;
-        uint64_t& rx_hwm_counter;
     };
 
     // -------------------------------------------------------------------
