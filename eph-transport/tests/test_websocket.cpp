@@ -724,6 +724,48 @@ TEST(IsValidUtf8, StringViewOverload) {
 }
 
 // =======================================================================
+// opcode_name — opcode-to-string lookup
+// =======================================================================
+
+TEST(OpcodeName, KnownOpcodes) {
+    EXPECT_EQ(opcode_name(opcode::kContinuation), "CONTINUATION");
+    EXPECT_EQ(opcode_name(opcode::kText), "TEXT");
+    EXPECT_EQ(opcode_name(opcode::kBinary), "BINARY");
+    EXPECT_EQ(opcode_name(opcode::kClose), "CLOSE");
+    EXPECT_EQ(opcode_name(opcode::kPing), "PING");
+    EXPECT_EQ(opcode_name(opcode::kPong), "PONG");
+}
+
+TEST(OpcodeName, UnknownOpcodeFormatsHex) {
+    auto name = opcode_name(0x0F);
+    EXPECT_NE(name.find("UNKNOWN"), std::string_view::npos);
+    // std::to_chars base 16 uses lowercase hex digits
+    EXPECT_NE(name.find("0f"), std::string_view::npos);
+}
+
+TEST(OpcodeName, UnknownOpcodeZeroPads) {
+    auto name = opcode_name(0x03);
+    // Should be "UNKNOWN(0x03)" not "UNKNOWN(0x3)"
+    EXPECT_NE(name.find("03"), std::string_view::npos);
+}
+
+TEST(OpcodeName, UnknownOpcodeSingleDigit) {
+    // Reserved data opcode 0x05
+    auto name = opcode_name(0x05);
+    EXPECT_NE(name.find("UNKNOWN"), std::string_view::npos);
+    EXPECT_NE(name.find("05"), std::string_view::npos);
+}
+
+TEST(OpcodeName, ThreadLocalBufferDoesNotCorrupt) {
+    // Call twice quickly — ensure thread-local buffer isn't corrupted
+    // Must copy to std::string because opcode_name returns view into thread-local buffer
+    auto name1 = std::string(opcode_name(0x0B));
+    auto name2 = std::string(opcode_name(0x0C));
+    EXPECT_NE(name1.find("0b"), std::string::npos);
+    EXPECT_NE(name2.find("0c"), std::string::npos);
+}
+
+// =======================================================================
 // MaskKeyCache — batch mask key generation
 // =======================================================================
 
