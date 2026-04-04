@@ -146,7 +146,13 @@ public:
     static constexpr size_t capacity = Capacity;
     static constexpr size_t kMask = Capacity - 1;
 
-    AuditLog() noexcept = default;
+    AuditLog() noexcept {
+        // All committed flags are default-initialized to false via
+        // value-initialization of the array, but be explicit for clarity.
+        for (auto& c : committed_) {
+            c.store(false, std::memory_order_relaxed);
+        }
+    }
 
     /// Record an audit event (single-writer, no synchronization).
     /// @return true if recorded without overwriting old data, false if the ring
@@ -166,7 +172,10 @@ public:
                 "AuditLog: ring buffer wrapped at capacity={}, "
                 "oldest entries will be overwritten", Capacity);
         }
-        auto& entry = entries_[idx & kMask];
+        size_t slot = idx & kMask;
+        // Mark slot as in-progress so readers know this entry is being written.
+        committed_[slot].store(false, std::memory_order_relaxed);
+        auto& entry = entries_[slot];
         entry.tsc = TSC::now();
         entry.order_id = order_id;
         entry.price = price;
@@ -177,11 +186,13 @@ public:
         entry.side = side;
         entry.venue_id = venue_id;
         std::memset(entry.padding_, 0, sizeof(entry.padding_));
+        // Mark slot as fully written; readers acquire this to see consistent data.
+        committed_[slot].store(true, std::memory_order_release);
         head_.store(idx + 1, std::memory_order_release);
         return !overflowed;
     }
 
-    /// Record an audit event (multi-writer safe via CAS spinloop).
+    /// Record an audit event (multi-writer safe via atomic index reservation).
     /// @return true if recorded without overwriting old data, false if the ring
     ///         buffer wrapped around (oldest entry was overwritten).
     [[nodiscard]] bool record_mt(AuditEvent event, uint64_t order_id,
@@ -196,7 +207,10 @@ public:
                 "AuditLog: ring buffer wrapped at capacity={}, "
                 "oldest entries will be overwritten", Capacity);
         }
-        auto& entry = entries_[idx & kMask];
+        size_t slot = idx & kMask;
+        // Mark slot as in-progress so readers see a torn write as uncommitted.
+        committed_[slot].store(false, std::memory_order_relaxed);
+        auto& entry = entries_[slot];
         entry.tsc = TSC::now();
         entry.order_id = order_id;
         entry.price = price;
@@ -207,6 +221,8 @@ public:
         entry.side = side;
         entry.venue_id = venue_id;
         std::memset(entry.padding_, 0, sizeof(entry.padding_));
+        // Signal that the slot is fully written; readers acquire this flag.
+        committed_[slot].store(true, std::memory_order_release);
         return !overflowed;
     }
 
@@ -222,13 +238,17 @@ public:
     }
 
     /// Access entry at offset from newest (0 = most recent).
-    /// Returns nullptr if offset >= count().
+    /// Returns nullptr if offset >= count() or if the entry has not been
+    /// fully committed yet (i.e., a concurrent writer is mid-write).
     [[nodiscard]] const AuditEntry* at(size_t offset) const noexcept {
         // Load head_ once to avoid TOCTOU race between count check and index calc.
         size_t head = head_.load(std::memory_order_acquire);
         size_t n = head < Capacity ? head : Capacity;
         if (offset >= n) return nullptr;
         size_t idx = (head - 1 - offset) & kMask;
+        // Check that the slot has been fully written — a concurrent writer
+        // may have reserved the index but not finished populating the entry.
+        if (!committed_[idx].load(std::memory_order_acquire)) return nullptr;
         return &entries_[idx];
     }
 
@@ -273,6 +293,10 @@ public:
 
 private:
     std::array<AuditEntry, Capacity> entries_{};
+    /// Per-slot write-completion flag. A reader must acquire-load this before
+    /// reading the corresponding entry to avoid observing a partially-written
+    /// slot (data race when the ring buffer wraps under concurrent writers).
+    std::array<std::atomic<bool>, Capacity> committed_{};
     std::atomic<size_t> head_{0};
 };
 

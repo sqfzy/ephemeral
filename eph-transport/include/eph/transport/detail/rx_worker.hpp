@@ -812,11 +812,34 @@ private:
                 continue;
             }
 
-            // Proactive warning at 90% of TLS read sequence limit,
-            // symmetric with the TX thread's write sequence check.
-            if (!rx_seq_warning_logged_) [[likely]] {
+            // Proactive TLS read sequence monitoring:
+            //   90%: warn (one-time log)
+            //   95%: trigger reconnect for key refresh (P0-2 hardening)
+            // Symmetric with TX thread's write sequence check in tx_worker.hpp.
+            {
+                if (!core_.crypto) continue;
                 uint64_t rseq = core_.crypto->read_seq();
-                if (rseq >= tls_record::kSequenceWarnThreshold) [[unlikely]] {
+
+                // 95% threshold: reconnect to refresh keys before nonce exhaustion
+                if (rseq >= tls_record::kSequenceReconnectThreshold) [[unlikely]] {
+                    SPDLOG_LOGGER_WARN(log,
+                        "TLS read sequence at {}/{} (95%%), "
+                        "triggering preemptive reconnect for key refresh",
+                        rseq, tls_record::kMaxSequenceNumber);
+                    reassembly_len = 0;
+                    ws_reassembly_len = 0;
+                    frame_processor_->reset();
+                    if (!callbacks_.do_reconnect()) {
+                        core_.running.store(false, std::memory_order_release);
+                        break;
+                    }
+                    rx_seq_warning_logged_ = false;
+                    continue;
+                }
+
+                // 90% threshold: one-time warning
+                if (!rx_seq_warning_logged_ &&
+                    rseq >= tls_record::kSequenceWarnThreshold) [[unlikely]] {
                     SPDLOG_LOGGER_WARN(log,
                         "TLS read sequence at {}/{} (90%%), "
                         "reconnect imminent for key refresh",

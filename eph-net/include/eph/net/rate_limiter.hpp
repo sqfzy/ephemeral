@@ -258,14 +258,15 @@ private:
     /// MUST be called with mu_ held.
     void refill_locked() noexcept {
         const auto now = Clock::now();
+        // P1-4: Guard against clock rewind (NTP adjustment, etc.)
+        // steady_clock should be monotonic, but defensive coding for edge cases.
+        if (now <= last_refill_) return;
         const auto elapsed_ns = static_cast<double>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(now - last_refill_).count());
 
-        if (elapsed_ns > 0.0) {
-            const double new_tokens = elapsed_ns * rate_per_ns_;
-            tokens_ = std::min(burst_, tokens_ + new_tokens);
-            last_refill_ = now;
-        }
+        const double new_tokens = elapsed_ns * rate_per_ns_;
+        tokens_ = std::min(burst_, tokens_ + new_tokens);
+        last_refill_ = now;
     }
 
     Config    config_;        ///< Limiter configuration (immutable after construction).

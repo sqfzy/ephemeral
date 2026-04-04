@@ -11,7 +11,6 @@
 /// This header provides constexpr conversion functions between them,
 /// plus wall-clock helpers for latency measurement and logging.
 
-#include <cassert>
 #include <cstdint>
 #include <ctime>
 #include <format>
@@ -25,7 +24,9 @@ namespace eph::utils {
 
 /// Convert milliseconds since Unix epoch to nanoseconds.
 [[nodiscard]] constexpr uint64_t ms_to_ns(int64_t ms) noexcept {
-    assert(ms >= 0 && "ms_to_ns: negative millisecond input would wrap on cast to uint64_t");
+    // P0-4: Runtime guard replaces assert (disabled in release builds).
+    // Negative timestamps from clock skew would silently wrap to huge uint64 values.
+    if (ms < 0) [[unlikely]] return 0;
     return static_cast<uint64_t>(ms) * 1'000'000;
 }
 
@@ -36,7 +37,9 @@ namespace eph::utils {
 
 /// Convert microseconds to nanoseconds.
 [[nodiscard]] constexpr uint64_t us_to_ns(int64_t us) noexcept {
-    assert(us >= 0 && "us_to_ns: negative microsecond input would wrap on cast to uint64_t");
+    // P0-4: Runtime guard replaces assert (disabled in release builds).
+    // Negative timestamps from clock skew would silently wrap to huge uint64 values.
+    if (us < 0) [[unlikely]] return 0;
     return static_cast<uint64_t>(us) * 1'000;
 }
 

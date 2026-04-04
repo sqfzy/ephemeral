@@ -151,9 +151,6 @@ class HdrHistogram {
 
         establish_size(highest_trackable_value);
 
-        // Maximum allowed counts array length to prevent accidental huge allocations.
-        static constexpr int32_t kMaxCountsLen = 10'000'000;
-
         if (counts_len_ > kMaxCountsLen) {
             throw std::invalid_argument(
                 "Histogram too large: counts_len exceeds 10M");
@@ -1009,10 +1006,20 @@ class HdrHistogram {
     uint64_t max_value_ = 0;
     uint64_t dropped_count_ = 0;  ///< Samples rejected (out of trackable range)
 
+    /// Maximum allowed counts array length to prevent accidental huge allocations.
+    static constexpr int32_t kMaxCountsLen = 10'000'000;
+
     void establish_size(uint64_t max_value) {
         int32_t buckets_needed = get_buckets_needed_to_cover_value(max_value);
         bucket_count_ = buckets_needed;
-        counts_len_ = static_cast<int32_t>((buckets_needed + 1) * static_cast<int64_t>(sub_bucket_count_ / 2));
+        int64_t product = (static_cast<int64_t>(buckets_needed) + 1)
+                        * (sub_bucket_count_ / 2);
+        if (product > kMaxCountsLen) {
+            throw std::invalid_argument(std::format(
+                "Histogram too large: counts_len {} exceeds max {}",
+                product, kMaxCountsLen));
+        }
+        counts_len_ = static_cast<int32_t>(product);
     }
 
     [[nodiscard]] int32_t get_buckets_needed_to_cover_value(

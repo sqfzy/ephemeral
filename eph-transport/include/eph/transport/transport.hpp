@@ -786,7 +786,25 @@ public:
         [[maybe_unused]] auto log = detail::transport_logger();
         SPDLOG_LOGGER_INFO(log, "Stopping transport");
 
-        // Join worker threads FIRST — ensures no concurrent access to
+        // Wait for RX thread to exit any in-progress reconnect before joining.
+        // Without this guard, do_reconnect_() may be accessing crypto/tcp
+        // pointers when tx_.stop()/rx_.stop() attempt to join the threads,
+        // causing a use-after-free race (P0-1 production hardening).
+        if (was_running) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            while (core_.reconnecting.load(std::memory_order_acquire)) {
+                if (std::chrono::steady_clock::now() > deadline) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "stop: reconnect still in progress after 5s, "
+                        "forcing TCP reset to unblock");
+                    if (core_.tcp) core_.tcp->reset();
+                    break;
+                }
+                eph::utils::cpu_relax();
+            }
+        }
+
+        // Join worker threads — ensures no concurrent access to
         // crypto/tcp from TX/RX threads when we send the Close frame.
         tx_.stop();
         rx_.stop();
@@ -1170,6 +1188,15 @@ private:
     /// is detected. Returns true if reconnection succeeded.
     bool do_reconnect_() {
         [[maybe_unused]] auto log = detail::transport_logger();
+
+        // Guard: if stop() has already been called, do not enter reconnect.
+        // This closes the race window between running=false and thread join
+        // where do_reconnect_() could access freed crypto/tcp pointers.
+        if (!core_.running.load(std::memory_order_acquire)) {
+            SPDLOG_LOGGER_DEBUG(log, "do_reconnect: running=false, skipping");
+            return false;
+        }
+
         int max_attempts = core_.config.max_reconnect_attempts;
         if (max_attempts <= 0) {
             SPDLOG_LOGGER_ERROR(log, "Auto-reconnect disabled, stopping");
@@ -1195,6 +1222,12 @@ private:
 
         bool success = false;
         while (!reconnect_.exhausted()) {
+            // Check running flag each attempt — stop() may have been called
+            if (!core_.running.load(std::memory_order_acquire)) {
+                SPDLOG_LOGGER_DEBUG(log, "do_reconnect: stop() called during reconnect, aborting");
+                core_.reconnecting.store(false, std::memory_order_release);
+                return false;
+            }
             core_.notify_state(TransportEvent::kReconnecting,
                 std::format("{}/{}", reconnect_.attempts() + 1, max_attempts));
 

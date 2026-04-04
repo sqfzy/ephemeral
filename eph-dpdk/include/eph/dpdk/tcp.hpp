@@ -858,6 +858,19 @@ public:
 
             // RST — immediate close
             if (parsed.has_flag(net::kTcpRst)) {
+                // RFC 5961 §3.2: validate RST sequence is within receive window
+                // to prevent off-path RST injection attacks.
+                uint32_t rst_seq = parsed.seq();
+                bool in_window = (rst_seq == rcv_nxt_) ||
+                                 (seq_after(rst_seq, rcv_nxt_) &&
+                                  !seq_after(rst_seq, static_cast<uint32_t>(rcv_nxt_ + rcv_wnd_)));
+                if (!in_window) {
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "RST seq {} outside receive window [{}, +{}), ignored (RFC 5961)",
+                        rst_seq, rcv_nxt_, rcv_wnd_);
+                    free_list[free_count++] = pkts[i];
+                    continue;
+                }
                 SPDLOG_LOGGER_WARN(log,
                     "Received RST, closing connection: {}:{} -> {}:{}",
                     net::format_ipv4(config_.tuple.src_ip).data(),

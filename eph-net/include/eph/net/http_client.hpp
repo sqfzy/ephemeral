@@ -773,13 +773,12 @@ private:
                 // Connection closed by server — expected with Connection: close
                 break;
             }
-            buf.append(chunk, static_cast<size_t>(n));
-
-            if (buf.size() > config_.max_response_size) {
+            if (buf.size() + static_cast<size_t>(n) > config_.max_response_size) {
                 return std::unexpected(std::format(
-                    "Response exceeds max_response_size ({}B > {}B)",
-                    buf.size(), config_.max_response_size));
+                    "Response exceeds max_response_size ({}+{}B > {}B)",
+                    buf.size(), n, config_.max_response_size));
             }
+            buf.append(chunk, static_cast<size_t>(n));
 
             // Check if we have complete response (Content-Length based)
             if (auto complete = is_response_complete(buf); complete) {
@@ -814,13 +813,12 @@ private:
             ERR_clear_error();
             int n = SSL_read(ssl, chunk, sizeof(chunk));
             if (n > 0) {
-                buf.append(chunk, static_cast<size_t>(n));
-
-                if (buf.size() > config_.max_response_size) {
+                if (buf.size() + static_cast<size_t>(n) > config_.max_response_size) {
                     return std::unexpected(std::format(
-                        "SSL response exceeds max_response_size ({}B > {}B)",
-                        buf.size(), config_.max_response_size));
+                        "SSL response exceeds max_response_size ({}+{}B > {}B)",
+                        buf.size(), n, config_.max_response_size));
                 }
+                buf.append(chunk, static_cast<size_t>(n));
 
                 // Check if we have complete response
                 if (auto complete = is_response_complete(buf); complete) {

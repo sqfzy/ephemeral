@@ -563,15 +563,36 @@ TEST(TransportConfigWarnings, PinnedSpkiWithoutTlsWarns) {
     EXPECT_TRUE(found);
 }
 
-TEST(TransportConfigWarnings, PinnedSpkiWithTlsNoWarning) {
+TEST(TransportConfigWarnings, PinnedSpkiWithTlsNoUseTlsWarning) {
+    // With TLS enabled, the "use_tls=false" pinning warning should NOT appear.
+    // But the hard-pin mode warning (no callback) IS expected.
     auto cfg = valid_config();
     cfg.use_tls = true;
     cfg.skip_utf8_validation = false;
     cfg.pinned_spki_sha256 = {"somehash"};
     auto w = cfg.warnings();
     for (const auto& msg : w) {
-        EXPECT_EQ(msg.find("pinned_spki_sha256"), std::string::npos)
-            << "Unexpected pinning warning: " << msg;
+        EXPECT_EQ(msg.find("use_tls=false"), std::string::npos)
+            << "Unexpected use_tls warning with TLS enabled: " << msg;
+    }
+    // Hard-pin warning expected when no on_pin_mismatch callback
+    bool found_hardpin = false;
+    for (const auto& msg : w) {
+        if (msg.find("hard-pin") != std::string::npos) found_hardpin = true;
+    }
+    EXPECT_TRUE(found_hardpin) << "Expected hard-pin mode warning";
+}
+
+TEST(TransportConfigWarnings, PinnedSpkiWithCallbackNoHardPinWarning) {
+    auto cfg = valid_config();
+    cfg.use_tls = true;
+    cfg.skip_utf8_validation = false;
+    cfg.pinned_spki_sha256 = {"somehash"};
+    cfg.on_pin_mismatch = [](std::string_view) { return true; };
+    auto w = cfg.warnings();
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("hard-pin"), std::string::npos)
+            << "Unexpected hard-pin warning when callback is set: " << msg;
     }
 }
 

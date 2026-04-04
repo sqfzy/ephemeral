@@ -90,30 +90,28 @@ enum class ConnHealth : uint8_t {
 /// @brief Type-erased connection wrapper for Gateway.
 ///
 /// Stores a transport with its metadata and health state.
-/// Transport operations are accessed through type-erased function pointers
-/// to avoid requiring a common base class.
+/// Transport operations are accessed through std::function callbacks
+/// that capture the transport pointer, avoiding a common base class.
 struct GatewayConnection {
     /// @brief Unique tag for this connection (e.g., "binance-btcusdt").
     std::string tag;
 
-    /// @brief Type-erased transport handle (opaque pointer).
-    void* transport_ptr = nullptr;
-    /// @brief Type-erased stop function (calls Transport::stop()).
-    void (*stop_fn)(void*) = nullptr;
-    /// @brief Type-erased running check (calls Transport::is_running()).
-    bool (*is_running_fn)(void*) = nullptr;
-    /// @brief Type-erased thread launcher (calls Transport::start_threads()).
-    void (*start_threads_fn)(void*) = nullptr;
-    /// @brief Type-erased reconnect trigger (calls Transport::reconnect_now()).
-    void (*reconnect_fn)(void*) = nullptr;
+    /// @brief Stop callback (calls Transport::stop()).
+    std::function<void()> stop_fn{};
+    /// @brief Running check callback (calls Transport::is_running()).
+    std::function<bool()> is_running_fn{};
+    /// @brief Thread launcher callback (calls Transport::start_threads()).
+    std::function<void()> start_threads_fn{};
+    /// @brief Reconnect trigger callback (calls Transport::reconnect_now()).
+    std::function<void()> reconnect_fn{};
 
     /// @brief Current health status of this connection.
     ConnHealth health = ConnHealth::Stopped;
     /// @brief Timestamp (ns) of last health check for this connection.
     uint64_t last_health_check_ns = 0;
-    /// @brief Type-erased RX packet counter for degraded detection.
+    /// @brief RX packet counter callback for degraded detection.
     /// Returns current rx_packets from transport stats, or 0 if unavailable.
-    uint64_t (*rx_packets_fn)(void*) = nullptr;
+    std::function<uint64_t()> rx_packets_fn{};
     /// @brief RX packet count at last health check (for delta detection).
     uint64_t last_rx_packets = 0;
     /// @brief Timestamp (ns) when zero-delta was first observed. 0 = not degraded.
@@ -238,8 +236,8 @@ public:
     /// @brief Add a transport to the gateway.
     ///
     /// @warning The transport must outlive the Gateway (or be removed via
-    /// remove()/remove_by_tag() first). Gateway stores a non-owning void*;
-    /// destroying a transport without removing it causes dangling pointer UB.
+    /// remove()/remove_by_tag() first). Gateway captures a non-owning pointer
+    /// in closures; destroying a transport without removing it causes UB.
     ///
     /// @tparam Transport  Any type satisfying the GatewayManageable concept.
     /// @param tag       Human-readable identifier for this connection (e.g., "binance-btcusdt").
@@ -256,14 +254,13 @@ public:
 
         GatewayConnection conn;
         conn.tag = std::move(tag);
-        conn.transport_ptr = static_cast<void*>(tp);
-        conn.stop_fn = [](void* p) { static_cast<Transport*>(p)->stop(); };
-        conn.is_running_fn = [](void* p) { return static_cast<Transport*>(p)->is_running(); };
-        conn.start_threads_fn = [](void* p) { static_cast<Transport*>(p)->start_threads(); };
-        conn.reconnect_fn = [](void* p) { static_cast<Transport*>(p)->reconnect_now(); };
+        conn.stop_fn = [tp] { tp->stop(); };
+        conn.is_running_fn = [tp] { return tp->is_running(); };
+        conn.start_threads_fn = [tp] { tp->start_threads(); };
+        conn.reconnect_fn = [tp] { tp->reconnect_now(); };
         if constexpr (requires { tp->stats().rx_packets; }) {
-            conn.rx_packets_fn = [](void* p) -> uint64_t {
-                return static_cast<Transport*>(p)->stats().rx_packets;
+            conn.rx_packets_fn = [tp]() -> uint64_t {
+                return tp->stats().rx_packets;
             };
         }
         conn.priority = priority;
@@ -285,9 +282,8 @@ public:
     /// @param id  Connection index returned by add().
     /// @return true if the connection was found and removed, false if out of range.
     bool remove(size_t id) noexcept {
-        void* ptr = nullptr;
-        void (*stop_fn)(void*) = nullptr;
-        bool (*is_running_fn)(void*) = nullptr;
+        std::function<void()> stop_fn;
+        std::function<bool()> is_running_fn;
         std::string removed_tag;
 
         {
@@ -295,17 +291,16 @@ public:
             if (id >= connections_.size()) return false;
             auto& c = connections_[id];
             removed_tag = c.tag;
-            ptr = c.transport_ptr;
             stop_fn = c.stop_fn;
             is_running_fn = c.is_running_fn;
             connections_.erase(connections_.begin() + static_cast<ptrdiff_t>(id));
         }
 
         // Stop outside the lock to avoid deadlock if stop() calls back into Gateway
-        if (ptr && stop_fn && is_running_fn && is_running_fn(ptr)) {
+        if (stop_fn && is_running_fn && is_running_fn()) {
             SPDLOG_LOGGER_DEBUG(detail::gateway_logger(),
                 "Gateway: stopping removed connection [{}] '{}' before removal", id, removed_tag);
-            try { stop_fn(ptr); } catch (...) {
+            try { stop_fn(); } catch (...) {
                 SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                     "Gateway: stop_fn threw for [{}] '{}' during removal", id, removed_tag);
             }
@@ -348,10 +343,10 @@ public:
     /// @param tag  Tag string of the connection to remove.
     /// @return true if found and removed, false if no connection with that tag exists.
     bool remove_by_tag(std::string_view tag) noexcept {
-        void* ptr = nullptr;
-        void (*stop_fn)(void*) = nullptr;
-        bool (*is_running_fn)(void*) = nullptr;
+        std::function<void()> stop_fn;
+        std::function<bool()> is_running_fn;
         std::string removed_tag;
+        bool found = false;
 
         {
             std::lock_guard lock(mu_);
@@ -359,22 +354,22 @@ public:
                 if (connections_[i].tag == tag) {
                     auto& c = connections_[i];
                     removed_tag = c.tag;
-                    ptr = c.transport_ptr;
                     stop_fn = c.stop_fn;
                     is_running_fn = c.is_running_fn;
                     connections_.erase(connections_.begin() + static_cast<ptrdiff_t>(i));
+                    found = true;
                     break;
                 }
             }
         }
 
-        if (!ptr) return false;
+        if (!found) return false;
 
         // Stop outside the lock to avoid deadlock if stop() calls back into Gateway
-        if (stop_fn && is_running_fn && is_running_fn(ptr)) {
+        if (stop_fn && is_running_fn && is_running_fn()) {
             SPDLOG_LOGGER_DEBUG(detail::gateway_logger(),
                 "Gateway: stopping '{}' before removal", removed_tag);
-            try { stop_fn(ptr); } catch (...) {
+            try { stop_fn(); } catch (...) {
                 SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                     "Gateway: stop_fn threw for '{}' during removal", removed_tag);
             }
@@ -486,9 +481,9 @@ public:
     /// deadlock if start_threads() calls back into Gateway.
     void start_all() noexcept {
         struct StartTarget {
-            std::string tag; void* ptr;
-            void (*start_fn)(void*);
-            bool (*is_running_fn)(void*);
+            std::string tag;
+            std::function<void()> start_fn;
+            std::function<bool()> is_running_fn;
         };
         std::vector<StartTarget> targets;
         {
@@ -496,8 +491,7 @@ public:
             for (size_t i = 0; i < connections_.size(); ++i) {
                 auto& c = connections_[i];
                 if (c.health == ConnHealth::Stopped && c.start_threads_fn) {
-                    targets.push_back({c.tag, c.transport_ptr,
-                                       c.start_threads_fn, c.is_running_fn});
+                    targets.push_back({c.tag, c.start_threads_fn, c.is_running_fn});
                 }
             }
         }
@@ -506,7 +500,7 @@ public:
             // is somehow already running (e.g. started externally).
             bool already_running = false;
             try {
-                already_running = t.is_running_fn && t.is_running_fn(t.ptr);
+                already_running = t.is_running_fn && t.is_running_fn();
             } catch (...) {
                 SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                     "Gateway: is_running_fn threw for '{}' during start pre-check", t.tag);
@@ -517,7 +511,7 @@ public:
             } else {
                 SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: starting '{}'", t.tag);
                 try {
-                    t.start_fn(t.ptr);
+                    t.start_fn();
                 } catch (...) {
                     SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                         "Gateway: start_threads_fn threw for '{}'", t.tag);
@@ -525,16 +519,16 @@ public:
             }
         }
         // Update health after all start calls complete.
-        // Match by transport pointer rather than index to handle concurrent
+        // Match by tag rather than index to handle concurrent
         // remove() calls that may shift indices during unlocked start phase.
         {
             std::lock_guard lock(mu_);
             for (auto& t : targets) {
                 for (auto& c : connections_) {
-                    if (c.transport_ptr == t.ptr) {
+                    if (c.tag == t.tag) {
                         bool running = false;
                         try {
-                            running = c.is_running_fn && c.is_running_fn(c.transport_ptr);
+                            running = c.is_running_fn && c.is_running_fn();
                         } catch (...) {
                             SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                                 "Gateway: is_running_fn threw for '{}' during start health update", t.tag);
@@ -553,8 +547,9 @@ public:
     /// the lock to avoid deadlock if the transport's stop() calls back into Gateway.
     void stop_all() noexcept {
         struct StopTarget {
-            std::string tag; void* ptr;
-            void (*fn)(void*); bool (*is_running_fn)(void*);
+            std::string tag;
+            std::function<void()> stop_fn;
+            std::function<bool()> is_running_fn;
         };
         std::vector<StopTarget> targets;
         {
@@ -562,32 +557,31 @@ public:
             for (size_t i = 0; i < connections_.size(); ++i) {
                 auto& c = connections_[i];
                 if (c.health != ConnHealth::Stopped && c.stop_fn) {
-                    targets.push_back({c.tag, c.transport_ptr,
-                                       c.stop_fn, c.is_running_fn});
+                    targets.push_back({c.tag, c.stop_fn, c.is_running_fn});
                 }
             }
         }
         for (auto& t : targets) {
             SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: stopping '{}'", t.tag);
             try {
-                t.fn(t.ptr);
+                t.stop_fn();
             } catch (...) {
                 SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                     "Gateway: stop_fn threw for '{}' — continuing", t.tag);
             }
         }
         // Update health after all stop calls complete, reflecting actual state.
-        // Match by transport pointer rather than index to handle concurrent
+        // Match by tag rather than index to handle concurrent
         // remove() calls that may shift indices during unlocked stop phase.
         {
             std::lock_guard lock(mu_);
             for (auto& t : targets) {
                 for (auto& c : connections_) {
-                    if (c.transport_ptr == t.ptr) {
+                    if (c.tag == t.tag) {
                         bool still_running = false;
                         try {
                             still_running = c.is_running_fn &&
-                                            c.is_running_fn(c.transport_ptr);
+                                            c.is_running_fn();
                         } catch (...) {
                             SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                                 "Gateway: is_running_fn threw for '{}' during stop health update", t.tag);
@@ -609,21 +603,19 @@ public:
     ///
     /// @param id  Connection index returned by add(). Ignored if out of range.
     void reconnect(size_t id) noexcept {
-        void* ptr = nullptr;
-        void (*fn)(void*) = nullptr;
+        std::function<void()> fn;
         std::string tag;
         {
             std::lock_guard lock(mu_);
             if (id >= connections_.size()) return;
             auto& c = connections_[id];
-            ptr = c.transport_ptr;
             fn = c.reconnect_fn;
             tag = c.tag;
         }
         if (fn) {
             SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: reconnecting [{}] '{}'", id, tag);
             try {
-                fn(ptr);
+                fn();
             } catch (...) {
                 SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                     "Gateway: reconnect_fn threw for [{}] '{}'", id, tag);
@@ -639,14 +631,12 @@ public:
     /// @param tag  Tag string of the connection to reconnect.
     /// @return true if found and reconnect triggered, false if tag not found.
     bool reconnect_by_tag(std::string_view tag) noexcept {
-        void* ptr = nullptr;
-        void (*fn)(void*) = nullptr;
+        std::function<void()> fn;
         std::string found_tag;
         {
             std::lock_guard lock(mu_);
             for (auto& c : connections_) {
                 if (c.tag == tag) {
-                    ptr = c.transport_ptr;
                     fn = c.reconnect_fn;
                     found_tag = c.tag;
                     break;
@@ -657,7 +647,7 @@ public:
 
         SPDLOG_LOGGER_INFO(detail::gateway_logger(), "Gateway: reconnecting '{}'", found_tag);
         try {
-            fn(ptr);
+            fn();
         } catch (...) {
             SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                 "Gateway: reconnect_fn threw for '{}'", found_tag);
@@ -710,7 +700,7 @@ public:
                 ConnHealth old_h = c.health;
                 bool running = false;
                 try {
-                    running = c.is_running_fn && c.is_running_fn(c.transport_ptr);
+                    running = c.is_running_fn && c.is_running_fn();
                 } catch (...) {
                     SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                         "Gateway: is_running_fn threw for '{}' during health check", c.tag);
@@ -721,7 +711,7 @@ public:
                 } else if (c.rx_packets_fn) {
                     uint64_t current_rx = 0;
                     try {
-                        current_rx = c.rx_packets_fn(c.transport_ptr);
+                        current_rx = c.rx_packets_fn();
                     } catch (...) {
                         SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
                             "Gateway: rx_packets_fn threw for '{}'", c.tag);
@@ -782,7 +772,7 @@ public:
             connections_.size(), monitoring ? "running" : "stopped");
         for (size_t i = 0; i < connections_.size(); ++i) {
             auto& c = connections_[i];
-            bool running = c.is_running_fn ? c.is_running_fn(c.transport_ptr) : false;
+            bool running = c.is_running_fn ? c.is_running_fn() : false;
             result += std::format("  [{}] {} — health={} running={} priority={}\n",
                                   i, c.tag, conn_health_name(c.health),
                                   running ? "yes" : "no", c.priority);

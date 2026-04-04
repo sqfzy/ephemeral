@@ -752,8 +752,14 @@ private:
             SPDLOG_LOGGER_WARN(log,
                 "SPKI pin mismatch: on_pin_mismatch callback allowed connection to continue");
         } else {
-            SPDLOG_LOGGER_WARN(log,
-                "SPKI pin mismatch: no callback set, continuing (soft-pin default)");
+            // P0-3: Hard pin default — reject connection when pin list is set but no
+            // override callback is configured. Safe default prevents MITM bypass.
+            SPDLOG_LOGGER_ERROR(log,
+                "SPKI pin mismatch: no on_pin_mismatch callback set, "
+                "rejecting connection (configure callback to override)");
+            return std::unexpected(std::format(
+                "SPKI pin mismatch: actual={}, no override callback configured",
+                actual_hash));
         }
         return {};
     }

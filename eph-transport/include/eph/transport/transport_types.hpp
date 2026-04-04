@@ -514,6 +514,9 @@ struct TransportConfig {
             w.emplace_back("skip_utf8_validation=true — text frames will NOT be "
                            "validated for UTF-8 conformance (RFC 6455 §5.6); "
                            "caller assumes responsibility for payload validity");
+        if (!pinned_spki_sha256.empty() && !on_pin_mismatch)
+            w.emplace_back("pinned_spki_sha256 is configured but on_pin_mismatch is null "
+                           "— pin mismatch will reject the connection (hard-pin mode)");
         return w;
     }
 
