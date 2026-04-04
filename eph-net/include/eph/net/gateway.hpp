@@ -489,7 +489,14 @@ public:
         for (auto& t : targets) {
             // Guard against spawning duplicate threads if the transport
             // is somehow already running (e.g. started externally).
-            if (t.is_running_fn && t.is_running_fn(t.ptr)) {
+            bool already_running = false;
+            try {
+                already_running = t.is_running_fn && t.is_running_fn(t.ptr);
+            } catch (...) {
+                SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                    "Gateway: is_running_fn threw for '{}' during start pre-check", t.tag);
+            }
+            if (already_running) {
                 SPDLOG_LOGGER_INFO(detail::gateway_logger(),
                     "Gateway: '{}' already running, skipping start", t.tag);
             } else {

@@ -1,0 +1,20 @@
+# Benchmark baseline: /improve 基线
+# Date: 2026-04-04 11:22
+# Commit: ba21cfa
+
+BM_BuildNonce                                 0.722 ns
+BM_TwophaseFilter_16Frames_4Symbols             431 ns
+BM_TwophaseFilter_64Frames_16Symbols            543 ns
+BM_TwophaseFilter_128Frames_32Symbols           820 ns
+BM_FromUrl_Simple                               109 ns
+BM_FromUrl_WithPort                             121 ns
+BM_Validate_Valid                              18.0 ns
+BM_ConfigToJson                                1137 ns
+BM_StatsToJson                                 6571 ns
+BM_StatsDump                                   3221 ns
+BM_EncodeFrame_Small                           12.2 ns
+BM_EncodeFrame_512                             69.6 ns
+BM_DecodeFrame_SmallUnmasked                   26.3 ns
+BM_TlsEncrypt_64B                           573518 ns
+BM_TlsEncrypt_512B                         1250719 ns
+BM_TlsEncryptDecrypt_64B                    611674 ns
