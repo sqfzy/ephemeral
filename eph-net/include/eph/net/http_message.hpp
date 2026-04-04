@@ -1,0 +1,460 @@
+#pragma once
+
+/// @file http_message.hpp
+/// HTTP/1.1 message types, request builder, and response parser.
+///
+/// Pure value types and stateless functions — no network I/O, no TLS,
+/// no POSIX headers. Suitable for unit testing without linking OpenSSL
+/// or socket libraries.
+///
+/// For the synchronous HTTP client that uses these types, see http_client.hpp.
+
+#include <charconv>
+#include <expected>
+#include <format>
+#include <optional>
+#include <ranges>
+#include <string>
+#include <string_view>
+
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
+#include "eph/core/detail/json_escape.hpp"
+
+namespace eph::net {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Forward declarations (used by HttpResponse convenience methods)
+// ─────────────────────────────────────────────────────────────────────────────
+
+[[nodiscard]] inline std::string
+find_header(std::string_view headers_raw, std::string_view name) noexcept;
+
+[[nodiscard]] inline std::optional<std::string>
+find_header_opt(std::string_view headers_raw, std::string_view name) noexcept;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Parsed HTTP response.
+///
+/// Contains the status code, raw header block, and body text
+/// from a completed HTTP/1.1 response.
+struct HttpResponse {
+    int         status_code = 0;  ///< HTTP status code (e.g. 200, 404, 500).
+    std::string body;             ///< Response body text.
+    std::string headers_raw;      ///< Raw header block (excluding status line) for optional parsing.
+
+    /// Check if the response is informational (1xx status code).
+    [[nodiscard]] constexpr bool is_informational() const noexcept {
+        return status_code >= 100 && status_code < 200;
+    }
+
+    /// Check if the response indicates success (2xx status code).
+    [[nodiscard]] constexpr bool is_success() const noexcept {
+        return status_code >= 200 && status_code < 300;
+    }
+
+    /// Check if the response indicates a client error (4xx status code).
+    [[nodiscard]] constexpr bool is_client_error() const noexcept {
+        return status_code >= 400 && status_code < 500;
+    }
+
+    /// Check if the response indicates a server error (5xx status code).
+    [[nodiscard]] constexpr bool is_server_error() const noexcept {
+        return status_code >= 500 && status_code < 600;
+    }
+
+    /// Check if the response indicates a redirect (3xx status code).
+    ///
+    /// Exchange REST APIs occasionally return redirects (e.g., Binance EU
+    /// migration). Callers can check this to decide whether to follow.
+    [[nodiscard]] constexpr bool is_redirect() const noexcept {
+        return status_code >= 300 && status_code < 400;
+    }
+
+    /// Check if the response indicates any error (4xx or 5xx).
+    [[nodiscard]] constexpr bool is_error() const noexcept {
+        return status_code >= 400 && status_code < 600;
+    }
+
+    /// @brief JSON-formatted summary for monitoring system integration.
+    ///
+    /// Body is truncated to prevent massive JSON blobs. Use .body directly
+    /// for the full response content.
+    [[nodiscard]] std::string to_json() const {
+        // Truncate body at 256 chars to keep JSON manageable
+        std::string_view body_preview = body;
+        bool truncated = false;
+        if (body_preview.size() > 256) {
+            body_preview = body_preview.substr(0, 256);
+            truncated = true;
+        }
+        // Escape body_preview per RFC 8259 to prevent malformed JSON
+        // from response bodies containing quotes, backslashes, or control chars.
+        auto escaped = eph::core::detail::json_escape(body_preview);
+        return std::format(
+            "{{\"status_code\":{},\"body_size\":{},\"is_success\":{}"
+            ",\"body_preview\":\"{}{}\"}}",
+            status_code, body.size(),
+            is_success() ? "true" : "false",
+            escaped, truncated ? "..." : "");
+    }
+
+    /// @brief Look up a response header by name (case-insensitive).
+    /// @param name  Header name to search for.
+    /// @return Header value (trimmed), or empty string if not found.
+    [[nodiscard]] std::string header(std::string_view name) const noexcept {
+        return find_header(headers_raw, name);
+    }
+
+    /// @brief Check if a response header exists (case-insensitive).
+    /// @param name  Header name to check for.
+    /// @return true if the header is present (even with empty value).
+    [[nodiscard]] bool has_header(std::string_view name) const noexcept {
+        return find_header_opt(headers_raw, name).has_value();
+    }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const HttpResponse&,
+                                         const HttpResponse&) = default;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logger (shared with http_client.hpp — same logger name for unified output)
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// @brief Lazily-initialized logger for the HTTP message subsystem.
+/// @return Pointer to the "net.http_client" spdlog logger.
+///
+/// Uses the same logger name as HttpClient so all HTTP-related log output
+/// appears under a single channel.
+inline spdlog::logger* http_client_logger() {
+    static auto l = [] {
+        auto lg = spdlog::get("net.http_client");
+        if (!lg) lg = spdlog::stdout_color_mt("net.http_client");
+        return lg;
+    }();
+    return l.get();
+}
+
+} // namespace detail
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP request builder (pure, testable)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Build an HTTP/1.1 request string.
+///
+/// @param method          HTTP method (e.g. "GET", "POST")
+/// @param host            Host header value
+/// @param path            Request URI path (e.g. "/api/v1/order")
+/// @param body            Request body (empty for GET)
+/// @param content_type    Content-Type header value (only added if body is non-empty)
+/// @param extra_headers   Additional headers, each terminated with \r\n
+/// @return Complete HTTP/1.1 request string, or error if params are invalid
+[[nodiscard]] inline std::expected<std::string, std::string>
+build_http_request(std::string_view method,
+                   std::string_view host,
+                   std::string_view path,
+                   std::string_view body = {},
+                   std::string_view content_type = {},
+                   std::string_view extra_headers = {}) noexcept {
+    if (method.empty()) {
+        SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+            "build_http_request: method is empty");
+        return std::unexpected(std::string("HTTP method must not be empty"));
+    }
+    if (host.empty()) {
+        SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+            "build_http_request: host is empty");
+        return std::unexpected(std::string("Host must not be empty"));
+    }
+    if (path.empty()) {
+        SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+            "build_http_request: path is empty");
+        return std::unexpected(std::string("Path must not be empty"));
+    }
+
+    std::string req;
+    // Pre-allocate a reasonable size to avoid reallocations
+    req.reserve(256 + body.size() + extra_headers.size());
+
+    // Request line
+    req.append(method);
+    req.append(" ");
+    req.append(path);
+    req.append(" HTTP/1.1\r\n");
+
+    // Mandatory headers
+    req.append("Host: ");
+    req.append(host);
+    req.append("\r\n");
+
+    // Close connection after response (no keep-alive)
+    req.append("Connection: close\r\n");
+
+    // Body-related headers
+    if (!body.empty()) {
+        if (!content_type.empty()) {
+            req.append("Content-Type: ");
+            req.append(content_type);
+            req.append("\r\n");
+        }
+        req.append(std::format("Content-Length: {}\r\n", body.size()));
+    }
+
+    // User-supplied extra headers (must already be \r\n terminated per header).
+    // Reject if it contains a blank line (\r\n\r\n) which would terminate
+    // headers early — this prevents HTTP request smuggling via header injection.
+    if (!extra_headers.empty()) {
+        if (extra_headers.find("\r\n\r\n") != std::string_view::npos) {
+            SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+                "build_http_request: extra_headers contains blank line (potential injection)");
+            return std::unexpected(std::string(
+                "extra_headers must not contain \\r\\n\\r\\n (header injection risk)"));
+        }
+        req.append(extra_headers);
+    }
+
+    // End of headers
+    req.append("\r\n");
+
+    // Body
+    if (!body.empty()) {
+        req.append(body);
+    }
+
+    SPDLOG_LOGGER_DEBUG(detail::http_client_logger(),
+        "Built HTTP request: {} {} ({} bytes total)",
+        method, path, req.size());
+
+    return req;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP response parser (pure, testable)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Parse an HTTP/1.1 response from raw bytes.
+///
+/// Supports Content-Length and connection-close semantics.
+/// Does NOT support chunked transfer encoding.
+///
+/// @param data  Complete raw HTTP response (headers + body)
+/// @return Parsed response, or error string
+[[nodiscard]] inline std::expected<HttpResponse, std::string>
+parse_http_response(std::string_view data) noexcept {
+    [[maybe_unused]] auto* log = detail::http_client_logger();
+
+    // Find end of headers
+    auto header_end = data.find("\r\n\r\n");
+    if (header_end == std::string_view::npos) {
+        SPDLOG_LOGGER_WARN(log,
+            "parse_http_response: no header terminator found in {} bytes",
+            data.size());
+        return std::unexpected(
+            std::string("Incomplete HTTP response: no \\r\\n\\r\\n found"));
+    }
+
+    size_t body_start = header_end + 4;
+
+    // Parse status line: "HTTP/1.1 200 OK\r\n"
+    auto first_line_end = data.find("\r\n");
+    if (first_line_end == std::string_view::npos) {
+        return std::unexpected(std::string("Malformed HTTP response: no status line"));
+    }
+
+    auto status_line = data.substr(0, first_line_end);
+
+    // Find status code (after first space)
+    auto space1 = status_line.find(' ');
+    if (space1 == std::string_view::npos) {
+        SPDLOG_LOGGER_WARN(log,
+            "parse_http_response: malformed status line: '{}'",
+            std::string(status_line));
+        return std::unexpected(std::format(
+            "Malformed HTTP status line: '{}'", status_line));
+    }
+
+    auto code_start = space1 + 1;
+    auto space2 = status_line.find(' ', code_start);
+    auto code_str = status_line.substr(code_start,
+        (space2 != std::string_view::npos)
+            ? space2 - code_start
+            : std::string_view::npos);
+
+    HttpResponse resp;
+    auto [ptr, ec] = std::from_chars(
+        code_str.data(), code_str.data() + code_str.size(),
+        resp.status_code);
+    if (ec != std::errc{}) {
+        SPDLOG_LOGGER_WARN(log,
+            "parse_http_response: invalid status code: '{}'",
+            std::string(code_str));
+        return std::unexpected(std::format(
+            "Invalid HTTP status code: '{}'", code_str));
+    }
+
+    // Extract raw headers (between status line and the blank line)
+    resp.headers_raw = std::string(
+        data.substr(first_line_end + 2, header_end - (first_line_end + 2)));
+
+    // Body is everything after \r\n\r\n
+    resp.body = std::string(data.substr(body_start));
+
+    SPDLOG_LOGGER_DEBUG(log,
+        "Parsed HTTP response: status={}, headers_len={}, body_len={}",
+        resp.status_code, resp.headers_raw.size(), resp.body.size());
+
+    return resp;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Header extraction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Extract a header value by name, distinguishing "not found" from "empty value".
+///
+/// Unlike find_header() which returns empty string for both missing and empty-value
+/// headers, this variant returns std::nullopt when the header is absent, allowing
+/// callers to distinguish the two cases.
+///
+/// This is the canonical implementation; find_header() delegates to this.
+///
+/// @param headers_raw  Raw header block (lines separated by \r\n)
+/// @param name         Header name to search for (case-insensitive)
+/// @return Header value (trimmed), or std::nullopt if header is not present
+[[nodiscard]] inline std::optional<std::string>
+find_header_opt(std::string_view headers_raw, std::string_view name) noexcept {
+    auto to_lower = [](unsigned char c) -> unsigned char {
+        return static_cast<unsigned char>(std::tolower(c));
+    };
+
+    size_t pos = 0;
+    while (pos < headers_raw.size()) {
+        auto line_end = headers_raw.find("\r\n", pos);
+        if (line_end == std::string_view::npos) {
+            line_end = headers_raw.size();
+        }
+
+        auto line = headers_raw.substr(pos, line_end - pos);
+        pos = (line_end == headers_raw.size()) ? line_end : line_end + 2;
+
+        auto colon = line.find(':');
+        if (colon == std::string_view::npos) continue;
+
+        auto hdr_name = line.substr(0, colon);
+        if (!std::ranges::equal(hdr_name, name, {}, to_lower, to_lower))
+            continue;
+
+        // Trim OWS (optional whitespace) from value per RFC 7230 section 3.2.6
+        auto value = line.substr(colon + 1);
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+            value.remove_prefix(1);
+        while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+            value.remove_suffix(1);
+
+        return std::string(value);
+    }
+    return std::nullopt;
+}
+
+/// @brief Extract a header value by name (case-insensitive) from raw headers.
+///
+/// Delegates to find_header_opt() and converts std::nullopt to empty string.
+/// Use find_header_opt() when you need to distinguish "header absent" from
+/// "header present with empty value".
+///
+/// @param headers_raw  Raw header block (lines separated by \r\n)
+/// @param name         Header name to search for (case-insensitive)
+/// @return Header value (trimmed), or empty string if not found
+[[nodiscard]] inline std::string
+find_header(std::string_view headers_raw, std::string_view name) noexcept {
+    return find_header_opt(headers_raw, name).value_or(std::string{});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Response completeness detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Check if a raw HTTP response buffer contains a complete response.
+///
+/// Handles Content-Length, chunked Transfer-Encoding, and connection-close semantics.
+///
+/// @param buf  Raw response data received so far.
+/// @return true if complete, false if more data needed.
+[[nodiscard]] inline bool is_http_response_complete(std::string_view buf) noexcept {
+    auto header_end = buf.find("\r\n\r\n");
+    if (header_end == std::string_view::npos) return false;
+
+    size_t body_start = header_end + 4;
+    size_t body_len = buf.size() - body_start;
+
+    // Extract raw headers (between status line end and blank line)
+    auto headers_raw = buf.substr(0, header_end);
+
+    // Use case-insensitive find_header instead of manual substring search
+    auto cl_value = find_header(headers_raw, "Content-Length");
+    if (cl_value.empty()) {
+        // No Content-Length — check for chunked transfer encoding.
+        auto te = find_header(headers_raw, "Transfer-Encoding");
+        if (te.find("chunked") != std::string_view::npos) {
+            // Chunked: complete when final chunk marker "0\r\n\r\n" is present
+            return buf.find("0\r\n\r\n", body_start) != std::string_view::npos
+                || buf.find("\r\n0\r\n\r\n", body_start) != std::string_view::npos;
+        }
+        // Neither Content-Length nor chunked — rely on connection close.
+        // Cap total buffer to prevent unbounded growth.
+        constexpr size_t kMaxNoClBuffer = 16 * 1024 * 1024; // 16 MiB
+        if (buf.size() > kMaxNoClBuffer) {
+            SPDLOG_LOGGER_WARN(detail::http_client_logger(),
+                "Response without Content-Length exceeds {} bytes, "
+                "treating as complete", kMaxNoClBuffer);
+            return true;
+        }
+        return false;
+    }
+
+    size_t content_length = 0;
+    auto [ptr, ec] = std::from_chars(
+        cl_value.data(),
+        cl_value.data() + cl_value.size(),
+        content_length);
+    if (ec != std::errc{}) return false;
+
+    // Reject absurdly large Content-Length to prevent OOM (256 MiB limit for REST responses)
+    constexpr size_t kMaxContentLength = 256 * 1024 * 1024;
+    if (content_length > kMaxContentLength) {
+        SPDLOG_LOGGER_WARN(detail::http_client_logger(),
+            "Content-Length {} exceeds maximum allowed {} bytes",
+            content_length, kMaxContentLength);
+        return false;
+    }
+
+    return body_len >= content_length;
+}
+
+} // namespace eph::net
+
+// ─────────────────────────────────────────────────────────────────────────────
+// std::formatter specialization for HttpResponse
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter for HttpResponse -- compact one-line summary.
+///
+/// Shows status code, body size, and a truncated body preview.
+/// Full body is omitted to keep log output manageable.
+template <>
+struct std::formatter<eph::net::HttpResponse> : std::formatter<std::string> {
+    auto format(const eph::net::HttpResponse& r, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("HttpResponse(status={}, body={}B)",
+                r.status_code, r.body.size()),
+            ctx);
+    }
+};
