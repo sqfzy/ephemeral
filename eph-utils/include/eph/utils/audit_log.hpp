@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -163,6 +165,16 @@ public:
                 double price, double quantity,
                 Side side, uint8_t venue_id,
                 double fill_price = 0.0, double fill_qty = 0.0) noexcept {
+#ifndef NDEBUG
+        {
+            auto expected = std::thread::id{};
+            auto current = std::this_thread::get_id();
+            if (!record_owner_tid_.compare_exchange_strong(expected, current,
+                    std::memory_order_relaxed) && expected != current) {
+                assert(false && "AuditLog::record() called from multiple threads — use record_mt() instead");
+            }
+        }
+#endif
         size_t idx = head_.load(std::memory_order_relaxed);
         bool overflowed = idx >= Capacity;
         // Log only on the exact wrap boundary to avoid flooding hot-path logs.
@@ -298,6 +310,13 @@ private:
     /// slot (data race when the ring buffer wraps under concurrent writers).
     std::array<std::atomic<bool>, Capacity> committed_{};
     std::atomic<size_t> head_{0};
+
+#ifndef NDEBUG
+    /// Thread ownership guard for single-writer record(). Stores the TID of
+    /// the first caller; subsequent calls from a different thread trigger an
+    /// assert, catching accidental cross-thread misuse early.
+    std::atomic<std::thread::id> record_owner_tid_{};
+#endif
 };
 
 } // namespace eph::utils

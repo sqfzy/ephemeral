@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <format>
 #include <functional>
@@ -192,6 +193,31 @@ class HdrHistogram {
         max_value_ = std::max(max_value_, value);
 
         return true;
+    }
+
+    /// @brief Record a single sample from a floating-point value.
+    ///
+    /// Rejects NaN, +/-Infinity, and negative values (silently dropped).
+    /// Valid non-negative finite values are truncated to uint64_t before
+    /// recording.
+    ///
+    /// @param value The value to record.
+    /// @return `true` on success, `false` if the value is non-finite,
+    ///         negative, or out of the trackable range.
+    template <std::floating_point F>
+    [[nodiscard]] bool record(F value) noexcept {
+        // Reject NaN, +Inf, -Inf, and negative values.
+        // Using !(value >= 0) to also catch NaN (all NaN comparisons are false).
+        if (!(value >= 0.0) || !std::isfinite(value)) [[unlikely]] {
+            ++dropped_count_;
+            return false;
+        }
+        // Saturate at UINT64_MAX to avoid undefined behavior from overflow.
+        if (value > static_cast<double>(UINT64_MAX)) [[unlikely]] {
+            ++dropped_count_;
+            return false;
+        }
+        return record(static_cast<uint64_t>(value));
     }
 
     /// @brief Record the same value multiple times.

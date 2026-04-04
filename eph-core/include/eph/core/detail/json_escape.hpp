@@ -32,7 +32,7 @@ namespace eph::core::detail {
     bool needs_escape = false;
     for (char c : sv) {
         auto uc = static_cast<unsigned char>(c);
-        if (c == '"' || c == '\\' || uc < 0x20 || uc == 0x7f) {
+        if (c == '"' || c == '\\' || uc < 0x20 || uc == 0x7f || uc >= 0x80) {
             needs_escape = true;
             break;
         }

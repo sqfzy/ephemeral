@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -2058,4 +2059,43 @@ TEST(HdrHistogramTest, GetPercentilesAtOrBelowEmpty) {
     ASSERT_EQ(results.size(), 2u);
     EXPECT_DOUBLE_EQ(results[0], 0.0);
     EXPECT_DOUBLE_EQ(results[1], 0.0);
+}
+
+// ============================================================================
+// record(double) — NaN / Infinity / negative rejection
+// ============================================================================
+
+TEST(HdrHistogramDoubleRecord, nan_is_silently_rejected) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_FALSE(h.record(std::numeric_limits<double>::quiet_NaN()));
+    EXPECT_EQ(h.get_total_count(), 0u);
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+}
+
+TEST(HdrHistogramDoubleRecord, positive_infinity_is_silently_rejected) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_FALSE(h.record(std::numeric_limits<double>::infinity()));
+    EXPECT_EQ(h.get_total_count(), 0u);
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+}
+
+TEST(HdrHistogramDoubleRecord, negative_infinity_is_silently_rejected) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_FALSE(h.record(-std::numeric_limits<double>::infinity()));
+    EXPECT_EQ(h.get_total_count(), 0u);
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+}
+
+TEST(HdrHistogramDoubleRecord, negative_value_is_rejected) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_FALSE(h.record(-1.0));
+    EXPECT_EQ(h.get_total_count(), 0u);
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+}
+
+TEST(HdrHistogramDoubleRecord, valid_positive_double_is_recorded) {
+    HdrHistogram h(1, 10000, 3);
+    EXPECT_TRUE(h.record(500.7));  // truncated to 500
+    EXPECT_EQ(h.get_total_count(), 1u);
+    EXPECT_EQ(h.get_dropped_count(), 0u);
 }

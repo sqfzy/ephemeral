@@ -32,5 +32,6 @@
 | 2026-04-04 18:51 | /discuss 生产就绪性分析 | 5角色7轮：Gateway降级=#1差距,错误码统一=#1债务,fuzzing+ASan最优起点,soft pin安全折中 | 3cfbb97 | discuss-20260404-185159.md |
 | 2026-04-04 19:00 | /plan+/design 生产就绪改造 | 5阶段计划+实施：TLS 2^32, 错误码+6, Gateway降级, soft pin, FakeTcp, 3 fuzzer, HWM | 6cec402 | production-readiness-20260404.plan.md |
 | 2026-04-04 14:07 | /design 生产就绪补完 | ARP refresh+send_batch+ThresholdConfig+E2E bench, enqueue 13-57ns | 1b2461f | design-20260404-140700.md |
+| 2026-04-05 00:23 | /discuss 生产级差距(utils+core) | 4轮5角色：测试缺口为主(LPF/json/base64/string_checks),AuditLog assert,5c简化 | ed61cd2 | discuss-20260405-002336.md |
 | 2026-04-04 14:15 | /discuss 生产级别差距分析 | 5角色6轮：12个CRITICAL/HIGH，P0=5项(stop竞态/TLS RX seq/pin/assert/RST)，三阶段修复 | — | discuss-20260404-production-level.md |
 | 2026-04-04 14:50 | /plan+/design 生产加固 | 10项修复(5P0+5P1)：stop竞态guard/RX seq reconnect/hard pin/timestamp/RST/Gateway/AuditLog/HttpClient/RateLimiter/Histogram | 6d68627 | plan-production-hardening-20260404.md |

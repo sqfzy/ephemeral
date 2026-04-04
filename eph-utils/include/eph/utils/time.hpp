@@ -261,10 +261,10 @@ private:
     auto log = detail::tsc_logger();
     SPDLOG_LOGGER_INFO(log, "Calibrating TSC...");
 
-    // === 1. 检查 TSC 可靠性 ===
+    // === 1. Check TSC reliability ===
     check_tsc_reliability();
 
-    // === 2. 预热：让 CPU 退出节能状态并填充指令缓存 ===
+    // === 2. Warm up: bring CPU out of power-saving state and fill instruction cache ===
     auto warm_up = [](auto dur) {
       auto start = steady_clock::now();
       while (steady_clock::now() - start < dur) {
@@ -273,7 +273,7 @@ private:
     };
     warm_up(milliseconds(20));
 
-    // === 3. 多轮采样取中位数（提高鲁棒性）===
+    // === 3. Multi-round sampling with median selection (improves robustness) ===
     constexpr int num_samples = 5;
     double samples[num_samples];
 
@@ -302,11 +302,11 @@ private:
       samples[i] = ns_elapsed / cycles_elapsed;
     }
 
-    // 计算中位数（更鲁棒）
+    // Select the median sample (more robust than mean against outliers)
     std::ranges::sort(samples);
     ns_per_cycle_ = samples[num_samples / 2];
 
-    // === 4. 合理性检查 ===
+    // === 4. Sanity check ===
     double freq_ghz = 1.0 / ns_per_cycle_;
     if (freq_ghz < 0.5 || freq_ghz > 10.0) {
       SPDLOG_LOGGER_ERROR(log,
@@ -315,7 +315,7 @@ private:
       return false;
     }
 
-    // 检查样本离散度（标准差）
+    // Check sample dispersion (standard deviation)
     double mean = 0.0;
     for (double s : samples) {
       mean += s;
@@ -328,19 +328,19 @@ private:
       variance += diff * diff;
     }
     double stddev = std::sqrt(variance / num_samples);
-    double cv = stddev / mean; // 变异系数
+    double cv = stddev / mean; // coefficient of variation
 
     // Store calibration CV so callers can query it via get_calibration_cv().
     calibration_cv_ = cv;
 
-    if (cv > 0.01) { // 超过 1% 的变异被认为不稳定
+    if (cv > 0.01) { // >1% variation is considered unstable
       SPDLOG_LOGGER_ERROR(log,
           "High calibration variance (CV={:.2f}%), TSC may be unstable — "
           "timing measurements are unreliable",
           cv * 100);
     }
 
-    // === 5. 标记为已初始化 ===
+    // === 5. Mark as initialized ===
     // Release store: guarantees all preceding writes (especially ns_per_cycle_)
     // are visible to any thread that observes initialized_==true via acquire load.
     initialized_.store(true, std::memory_order_release);
@@ -365,7 +365,7 @@ private:
     bool has_nonstop_tsc = false;
     bool has_tsc_reliable = false;
 
-    // 读取 /proc/cpuinfo
+    // Read /proc/cpuinfo
     std::ifstream cpuinfo("/proc/cpuinfo");
     if (!cpuinfo) {
       SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
