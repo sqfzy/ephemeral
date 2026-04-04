@@ -226,3 +226,57 @@ TEST(Timestamp, format_timestamp_ms_negative_500_ms) {
     std::string s = format_timestamp_ms(-500);
     EXPECT_EQ(s, "1969-12-31T23:59:59.500Z");
 }
+
+// ---------------------------------------------------------------------------
+// Boundary: far future timestamps
+// ---------------------------------------------------------------------------
+
+TEST(Timestamp, format_timestamp_ns_year_2100) {
+    // 2100-01-01T00:00:00Z = 4102444800 seconds since epoch
+    constexpr uint64_t epoch_ns = 4'102'444'800ULL * 1'000'000'000ULL;
+    std::string s = format_timestamp_ns(epoch_ns);
+    EXPECT_EQ(s, "2100-01-01T00:00:00.000000000Z");
+}
+
+TEST(Timestamp, format_timestamp_ms_year_2100) {
+    constexpr int64_t epoch_ms = 4'102'444'800'000LL;
+    std::string s = format_timestamp_ms(epoch_ms);
+    EXPECT_EQ(s, "2100-01-01T00:00:00.000Z");
+}
+
+// ---------------------------------------------------------------------------
+// count_delta tests (from hdr_histogram.hpp Stats)
+// ---------------------------------------------------------------------------
+
+TEST(Timestamp, feed_latency_ns_future_timestamp_yields_negative) {
+    // Exchange timestamp in the future should give negative latency (clock skew)
+    uint64_t future_ts = now_ns() + 1'000'000'000ULL;
+    int64_t latency = feed_latency_ns(future_ts);
+    EXPECT_LT(latency, 0);
+}
+
+TEST(Timestamp, format_timestamp_ns_max_nanoseconds_within_second) {
+    // Last nanosecond of 2026-03-28: 23:59:59.999999999Z
+    constexpr uint64_t epoch_ns = 1'774'656'000'000'000'000ULL
+                                + 86'399ULL * 1'000'000'000ULL
+                                + 999'999'999ULL;
+    std::string s = format_timestamp_ns(epoch_ns);
+    EXPECT_TRUE(s.ends_with("999999999Z"));
+}
+
+TEST(Timestamp, ms_to_ns_boundary_max_safe_ms) {
+    // Largest ms value that fits in uint64_t after *1e6:
+    // UINT64_MAX / 1'000'000 = 18'446'744'073'709
+    constexpr int64_t max_safe_ms = 18'446'744'073'709LL;
+    constexpr uint64_t result = ms_to_ns(max_safe_ms);
+    // Should not overflow
+    EXPECT_EQ(ns_to_ms(result), max_safe_ms);
+}
+
+TEST(Timestamp, us_to_ns_boundary_max_safe_us) {
+    // Largest us value that fits in uint64_t after *1e3:
+    // UINT64_MAX / 1'000 = 18'446'744'073'709'551
+    constexpr int64_t max_safe_us = 18'446'744'073'709'551LL;
+    constexpr uint64_t result = us_to_ns(max_safe_us);
+    EXPECT_EQ(result, static_cast<uint64_t>(max_safe_us) * 1'000);
+}

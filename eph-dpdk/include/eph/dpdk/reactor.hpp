@@ -45,14 +45,7 @@
 namespace eph::dpdk {
 
 namespace detail {
-inline spdlog::logger* reactor_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.reactor");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.reactor");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* reactor_logger() { return get_logger<LoggerName{"dpdk.reactor"}>(); }
 } // namespace detail
 
 /// Maximum connections a single Reactor can service.

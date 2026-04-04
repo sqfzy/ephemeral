@@ -47,14 +47,7 @@ namespace eph::dpdk {
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace detail {
-inline spdlog::logger* multicast_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.multicast");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.multicast");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* multicast_logger() { return get_logger<LoggerName{"dpdk.multicast"}>(); }
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────

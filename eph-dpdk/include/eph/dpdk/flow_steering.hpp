@@ -33,14 +33,7 @@
 namespace eph::dpdk {
 
 namespace detail {
-inline spdlog::logger* flow_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.flow");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.flow");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* flow_logger() { return get_logger<LoggerName{"dpdk.flow"}>(); }
 } // namespace detail
 
 // ---------------------------------------------------------------------------

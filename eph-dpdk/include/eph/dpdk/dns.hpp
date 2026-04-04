@@ -150,14 +150,7 @@ struct DnsConfig {
 
 namespace detail {
 
-inline spdlog::logger* dns_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.dns");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.dns");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* dns_logger() { return get_logger<LoggerName{"dpdk.dns"}>(); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ephemeral port helper

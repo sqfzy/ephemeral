@@ -645,6 +645,74 @@ public:
         return execute(*req);
     }
 
+    /// @brief Send a PUT request with a body.
+    /// @param path           Request URI (e.g. "/api/v1/order").
+    /// @param body           Request body.
+    /// @param content_type   Content-Type header (default: "application/json").
+    /// @param extra_headers  Additional headers (\r\n terminated per line).
+    /// @return Parsed HttpResponse or error string.
+    [[nodiscard]] std::expected<HttpResponse, std::string>
+    put(std::string_view path,
+        std::string_view body,
+        std::string_view content_type = "application/json",
+        std::string_view extra_headers = {}) noexcept {
+        SPDLOG_LOGGER_DEBUG(detail::http_client_logger(),
+            "PUT {}:{}{} ({} bytes body)", config_.host, config_.port,
+            path, body.size());
+
+        auto req = build_http_request("PUT", config_.host, path,
+                                       body, content_type, extra_headers);
+        if (!req) return std::unexpected(req.error());
+        return execute(*req);
+    }
+
+    /// @brief Send a DELETE request.
+    ///
+    /// Named delete_request to avoid conflict with the C++ keyword `delete`.
+    ///
+    /// @param path           Request URI (e.g. "/api/v1/order?orderId=123").
+    /// @param extra_headers  Additional headers (\r\n terminated per line).
+    /// @return Parsed HttpResponse or error string.
+    [[nodiscard]] std::expected<HttpResponse, std::string>
+    delete_request(std::string_view path,
+                   std::string_view extra_headers = {}) noexcept {
+        SPDLOG_LOGGER_DEBUG(detail::http_client_logger(),
+            "DELETE {}:{}{}", config_.host, config_.port, path);
+
+        auto req = build_http_request("DELETE", config_.host, path,
+                                       /*body=*/{}, /*content_type=*/{},
+                                       extra_headers);
+        if (!req) return std::unexpected(req.error());
+        return execute(*req);
+    }
+
+    /// @brief Send a generic HTTP request with any method.
+    ///
+    /// Use this for PATCH, OPTIONS, HEAD, or custom methods not covered
+    /// by the convenience methods above.
+    ///
+    /// @param method         HTTP method string (e.g. "PATCH", "HEAD").
+    /// @param path           Request URI.
+    /// @param body           Request body (empty for bodyless methods).
+    /// @param content_type   Content-Type header (only added if body is non-empty).
+    /// @param extra_headers  Additional headers (\r\n terminated per line).
+    /// @return Parsed HttpResponse or error string.
+    [[nodiscard]] std::expected<HttpResponse, std::string>
+    request(std::string_view method,
+            std::string_view path,
+            std::string_view body = {},
+            std::string_view content_type = {},
+            std::string_view extra_headers = {}) noexcept {
+        SPDLOG_LOGGER_DEBUG(detail::http_client_logger(),
+            "{} {}:{}{} ({} bytes body)", method, config_.host, config_.port,
+            path, body.size());
+
+        auto req = build_http_request(method, config_.host, path,
+                                       body, content_type, extra_headers);
+        if (!req) return std::unexpected(req.error());
+        return execute(*req);
+    }
+
     /// @brief Access the current configuration (for logging/debugging).
     /// @return Const reference to the HttpClient::Config.
     [[nodiscard]] const Config& config() const noexcept { return config_; }
@@ -710,38 +778,47 @@ private:
 
         auto port_str = std::to_string(config_.port);
 
-        struct addrinfo* result = nullptr;
         // Run getaddrinfo asynchronously with a timeout — blocking DNS
         // resolution can hang indefinitely if the nameserver is unreachable.
-        auto dns_future = std::async(std::launch::async, [&]() {
-            return ::getaddrinfo(config_.host.c_str(), port_str.c_str(),
-                                &hints, &result);
-        });
+        // Capture host/port by value to avoid dangling references if we
+        // timeout and return before the async thread completes. Use
+        // shared_ptr so the async thread frees addrinfo even if we abandon it.
+        auto dns_host = config_.host;
+        auto dns_port = port_str;
+        auto dns_future = std::async(std::launch::async,
+            [dns_host, dns_port, hints]() mutable
+                -> std::expected<std::shared_ptr<struct addrinfo>, std::string> {
+                struct addrinfo* res = nullptr;
+                int rc = ::getaddrinfo(dns_host.c_str(), dns_port.c_str(),
+                                       &hints, &res);
+                if (rc != 0) {
+                    return std::unexpected(std::format(
+                        "DNS resolution failed: {}", gai_strerror(rc)));
+                }
+                return std::shared_ptr<struct addrinfo>(res, ::freeaddrinfo);
+            });
         auto dns_status = dns_future.wait_for(config_.timeout);
         if (dns_status != std::future_status::ready) {
             SPDLOG_LOGGER_ERROR(log, "DNS resolution timeout for {}:{} ({}ms)",
                 config_.host, config_.port, config_.timeout.count());
+            // The async thread holds a shared_ptr that will freeaddrinfo()
+            // when getaddrinfo eventually returns. No leak, no dangling ref.
             return std::unexpected(std::format(
                 "DNS resolution timeout for {}:{} ({}ms)",
                 config_.host, config_.port, config_.timeout.count()));
         }
-        int gai_err = dns_future.get();
-        if (gai_err != 0) {
+        auto dns_result = dns_future.get();
+        if (!dns_result) {
             SPDLOG_LOGGER_ERROR(log, "getaddrinfo failed for {}:{}: {}",
-                config_.host, config_.port, gai_strerror(gai_err));
+                config_.host, config_.port, dns_result.error());
             return std::unexpected(std::format(
                 "DNS resolution failed for {}:{}: {}",
-                config_.host, config_.port, gai_strerror(gai_err)));
+                config_.host, config_.port, dns_result.error()));
         }
-
-        // RAII cleanup for addrinfo
-        struct AddrInfoGuard {
-            struct addrinfo* info;
-            ~AddrInfoGuard() { if (info) ::freeaddrinfo(info); }
-        } guard{result};
+        auto result_ptr = *dns_result;
 
         // Try each resolved address
-        for (auto* rp = result; rp != nullptr; rp = rp->ai_next) {
+        for (auto* rp = result_ptr.get(); rp != nullptr; rp = rp->ai_next) {
             int fd = ::socket(rp->ai_family, rp->ai_socktype | SOCK_NONBLOCK,
                               rp->ai_protocol);
             if (fd < 0) continue;

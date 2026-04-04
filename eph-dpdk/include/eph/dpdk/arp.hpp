@@ -73,14 +73,7 @@ static_assert(sizeof(ArpPacket) == kArpPacketLen,
 
 namespace detail {
 
-inline spdlog::logger* arp_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.arp");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.arp");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* arp_logger() { return get_logger<LoggerName{"dpdk.arp"}>(); }
 
 } // namespace detail
 

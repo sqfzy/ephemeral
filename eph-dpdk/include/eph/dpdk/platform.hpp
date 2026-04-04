@@ -109,14 +109,7 @@ namespace detail {
     return clamp_desc(requested, lim.nb_min, lim.nb_max, lim.nb_align);
 }
 
-inline spdlog::logger* platform_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.platform");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.platform");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* platform_logger() { return get_logger<LoggerName{"dpdk.platform"}>(); }
 
 } // namespace detail
 

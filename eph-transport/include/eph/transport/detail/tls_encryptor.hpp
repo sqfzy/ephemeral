@@ -143,19 +143,24 @@ public:
 
         uint8_t nonce[tls_const::kTls13NonceLen];
         tls_record::build_nonce(nonce, iv_, seq_);
-        alignas(64) uint8_t inner_buf[tls_const::kMaxRecordPayload + 1];
-        if (plaintext_len > 0) {
-            std::memcpy(inner_buf, plaintext, plaintext_len);
-        }
-        inner_buf[plaintext_len] = tls_record::kContentTypeAppData;
 
-        uint8_t* ciphertext = out + tls_record::kRecordHeaderLen;
+        // Build inner plaintext (payload + content type byte) directly in
+        // the output buffer region that will hold ciphertext. BoringSSL/
+        // aws-lc EVP_AEAD_CTX_seal supports in-place encryption (out == in),
+        // so we avoid a separate 16 KB stack buffer that was previously
+        // allocated on every encrypt() call.
+        uint8_t* cipher_region = out + tls_record::kRecordHeaderLen;
+        if (plaintext_len > 0) {
+            std::memcpy(cipher_region, plaintext, plaintext_len);
+        }
+        cipher_region[plaintext_len] = tls_record::kContentTypeAppData;
+
         size_t ciphertext_len = 0;
 
-        bool ok = EVP_AEAD_CTX_seal(&ctx_, ciphertext, &ciphertext_len,
+        bool ok = EVP_AEAD_CTX_seal(&ctx_, cipher_region, &ciphertext_len,
                                      inner_len + tls_record::kAuthTagLen,
                                      nonce, tls_const::kTls13NonceLen,
-                                     inner_buf, inner_len,
+                                     cipher_region, inner_len,
                                      out, tls_record::kRecordHeaderLen);
 
         if (!ok) {

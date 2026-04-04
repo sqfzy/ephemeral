@@ -201,14 +201,7 @@ struct TcpConfig {
 
 namespace detail {
 
-inline spdlog::logger* tcp_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.tcp");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.tcp");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* tcp_logger() { return get_logger<LoggerName{"dpdk.tcp"}>(); }
 
 } // namespace detail
 

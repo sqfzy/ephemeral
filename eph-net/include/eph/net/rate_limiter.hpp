@@ -292,3 +292,17 @@ struct std::formatter<eph::net::RateLimiter::Config> : std::formatter<std::strin
             ctx);
     }
 };
+
+/// @brief std::formatter for RateLimiter -- compact one-line state summary.
+///
+/// Shows available tokens and configuration. Consistent with other eph::net formatters.
+/// Note: calls available() which performs a refill, so the instance must be non-const.
+template <>
+struct std::formatter<eph::net::RateLimiter> : std::formatter<std::string> {
+    auto format(eph::net::RateLimiter& rl, auto& ctx) const {
+        return std::formatter<std::string>::format(
+            std::format("RateLimiter(available={:.1f}/{}, rate={:.2f}/s)",
+                rl.available(), rl.burst(), rl.config().rate_per_sec),
+            ctx);
+    }
+};

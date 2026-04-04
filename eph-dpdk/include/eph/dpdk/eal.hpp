@@ -20,14 +20,7 @@
 namespace eph::dpdk {
 
 namespace detail {
-inline spdlog::logger* eal_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("dpdk.eal");
-        if (!lg) lg = spdlog::stdout_color_mt("dpdk.eal");
-        return lg;
-    }();
-    return l.get();
-}
+inline spdlog::logger* eal_logger() { return get_logger<LoggerName{"dpdk.eal"}>(); }
 } // namespace detail
 
 /// @brief Initialize DPDK EAL (Environment Abstraction Layer).
