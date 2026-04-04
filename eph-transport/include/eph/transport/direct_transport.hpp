@@ -422,8 +422,13 @@ public:
 
             uint8_t content_type;
             uint16_t payload_len;
-            if (!tls_record::parse_record_header(rec_ptr, content_type, payload_len))
+            if (!tls_record::parse_record_header(rec_ptr, content_type, payload_len)) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "DirectTransport: malformed TLS record header at offset {}, "
+                    "remaining {} bytes",
+                    consumed, rx.reassembly_len - consumed);
                 break;
+            }
 
             size_t record_total = tls_record::kRecordHeaderLen + payload_len;
             if (rx.reassembly_len - consumed < record_total) break;

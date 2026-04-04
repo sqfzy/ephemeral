@@ -821,6 +821,10 @@ private:
                 uint16_t payload_len;
                 if (!tls_record::parse_record_header(
                         rec_ptr, content_type, payload_len)) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "RX: malformed TLS record header at offset {}, "
+                        "remaining {} bytes",
+                        consumed, reassembly_len - consumed);
                     break;
                 }
 

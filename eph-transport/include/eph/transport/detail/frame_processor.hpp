@@ -818,7 +818,11 @@ private:
             static_cast<uint8_t>(status_code >> 8),
             static_cast<uint8_t>(status_code & 0xFF),
         };
-        (void)deps_.send_response(close_payload, 2, ws::opcode::kClose);
+        auto err = deps_.send_response(close_payload, 2, ws::opcode::kClose);
+        if (err != SendError::kOk) {
+            SPDLOG_LOGGER_DEBUG(detail::transport_logger(),
+                "send_response close failed: {}", send_error_name(err));
+        }
     }
 
     // -------------------------------------------------------------------
