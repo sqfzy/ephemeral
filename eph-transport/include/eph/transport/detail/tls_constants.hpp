@@ -108,9 +108,13 @@ inline void write_record_header(uint8_t* dst, uint8_t content_type,
     content_type = src[0];
     payload_len = static_cast<uint16_t>((src[3] << 8) | src[4]);
 
+    // RFC 8446 §5.1: legacy_record_version must be 0x0303 for TLS 1.3
+    // records.  Non-conforming values indicate protocol violations or
+    // middlebox interference — warn instead of silently accepting.
     if (src[1] != 0x03 || src[2] != 0x03) {
-        SPDLOG_LOGGER_DEBUG(detail::tls_record_logger(),
-            "TLS record header: unexpected version bytes 0x{:02X}{:02X}",
+        SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
+            "TLS record header: unexpected version bytes 0x{:02X}{:02X} "
+            "(expected 0x0303 per RFC 8446)",
             src[1], src[2]);
     }
 

@@ -136,8 +136,15 @@ private:
         std::chrono::milliseconds base) noexcept
     {
         if (base.count() <= 0) return base;
-        // Thread-local RNG to avoid contention
-        thread_local std::mt19937 rng(std::random_device{}());
+        // Thread-local RNG seeded with multiple entropy sources to avoid
+        // predictable reconnect timing across threads/restarts.
+        thread_local std::mt19937 rng([] {
+            std::seed_seq ss{
+                std::random_device{}(), std::random_device{}(),
+                static_cast<unsigned>(std::chrono::steady_clock::now()
+                    .time_since_epoch().count())};
+            return std::mt19937{ss};
+        }());
         auto lo = base * 75 / 100;
         auto hi = base * 125 / 100;
         std::uniform_int_distribution<int64_t> dist(lo.count(), hi.count());
