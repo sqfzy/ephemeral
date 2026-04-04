@@ -229,7 +229,9 @@ public:
 
     /// @brief Add a transport to the gateway.
     ///
-    /// The transport must outlive the Gateway (or be removed first).
+    /// @warning The transport must outlive the Gateway (or be removed via
+    /// remove()/remove_by_tag() first). Gateway stores a non-owning void*;
+    /// destroying a transport without removing it causes dangling pointer UB.
     ///
     /// @tparam Transport  Any type satisfying the GatewayManageable concept.
     /// @param tag       Human-readable identifier for this connection (e.g., "binance-btcusdt").

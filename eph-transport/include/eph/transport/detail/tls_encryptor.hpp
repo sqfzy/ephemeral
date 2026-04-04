@@ -10,6 +10,7 @@
 #include <cstring>
 #include <expected>
 #include <string>
+#include <type_traits>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -88,6 +89,8 @@ public:
     // internal heap pointers. Bitwise copy is safe for move semantics.
     // If aws-lc changes this invariant, replace with EVP_AEAD_CTX_init
     // from saved key material instead of direct struct copy.
+    static_assert(std::is_trivially_copyable_v<EVP_AEAD_CTX>,
+        "EVP_AEAD_CTX is no longer trivially copyable — bitwise move is unsafe");
     TlsEncryptor(TlsEncryptor&& other) noexcept
         : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_) {
         std::memcpy(iv_, other.iv_, tls_const::kTls13NonceLen);

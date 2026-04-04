@@ -614,7 +614,10 @@ public:
             return std::unexpected(std::format("BIO_new failed: {}", err));
         }
 
-        // Set up BIO context
+        // BIO context: TlsSession retains ownership; BIO holds a non-owning
+        // pointer.  Safe because ~TlsSession calls SSL_free (which destroys the
+        // BIO) before bio_ctx_ is freed.  Single-threaded usage guaranteed by
+        // the transport's RX/TX worker design.
         auto bio_ctx = std::make_unique<BioContext>();
         bio_ctx->tcp = &tcp;
         bio_ctx->poll_timeout = config.handshake_timeout;
