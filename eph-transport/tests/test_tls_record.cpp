@@ -482,3 +482,106 @@ TEST(TlsDecryptor, MoveConstructor) {
     auto dec2 = std::move(*dec_result);
     EXPECT_EQ(dec2.read_seq(), 0u);
 }
+
+// =======================================================================
+// TlsRecordCrypto — boundary payload sizes
+// =======================================================================
+
+TEST(TlsRecordCrypto, EncryptDecryptSingleByte) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t pt = 0x42;
+    uint8_t record[TlsEncryptor::encrypted_size(1)];
+    uint16_t enc_len = crypto->encrypt(&pt, 1, record);
+    ASSERT_GT(enc_len, 0u);
+
+    uint8_t dec[1]{};
+    uint16_t dec_len = 0;
+    EXPECT_TRUE(crypto->decrypt(record, enc_len, dec, dec_len));
+    EXPECT_EQ(dec_len, 1u);
+    EXPECT_EQ(dec[0], 0x42);
+}
+
+TEST(TlsRecordCrypto, EncryptDecryptMaxRecordPayload) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    // TLS max plaintext fragment = 16384 bytes
+    std::vector<uint8_t> pt(tls_const::kMaxRecordPayload, 0xAB);
+    std::vector<uint8_t> record(TlsEncryptor::encrypted_size(tls_const::kMaxRecordPayload));
+    uint16_t enc_len = crypto->encrypt(pt.data(),
+        static_cast<uint16_t>(pt.size()), record.data());
+    ASSERT_GT(enc_len, 0u);
+
+    std::vector<uint8_t> dec(tls_const::kMaxRecordPayload);
+    uint16_t dec_len = 0;
+    EXPECT_TRUE(crypto->decrypt(record.data(), enc_len, dec.data(), dec_len));
+    EXPECT_EQ(dec_len, tls_const::kMaxRecordPayload);
+    EXPECT_EQ(std::memcmp(dec.data(), pt.data(), pt.size()), 0);
+}
+
+TEST(TlsRecordCrypto, EncryptZeroLengthPayload) {
+    auto state = make_roundtrip_hot_state();
+    auto crypto = TlsRecordCrypto::create(state);
+    ASSERT_TRUE(crypto.has_value());
+
+    uint8_t record[TlsEncryptor::encrypted_size(0)];
+    uint16_t enc_len = crypto->encrypt(nullptr, 0, record);
+    // Zero-length encrypt should succeed (TLS inner content type byte only)
+    ASSERT_GT(enc_len, 0u);
+
+    uint8_t dec[1]{};
+    uint16_t dec_len = 0;
+    EXPECT_TRUE(crypto->decrypt(record, enc_len, dec, dec_len));
+    EXPECT_EQ(dec_len, 0u);
+}
+
+TEST(TlsRecordCrypto, DecryptWithWrongKeyFails) {
+    auto state = make_roundtrip_hot_state();
+
+    // Encrypt with write keys
+    auto enc = TlsEncryptor::create(state);
+    ASSERT_TRUE(enc.has_value());
+    uint8_t pt[] = "secret data";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(pt))];
+    uint16_t enc_len = enc->encrypt(pt, sizeof(pt), record);
+    ASSERT_GT(enc_len, 0u);
+
+    // Create decryptor with different keys
+    TlsHotState bad_state{};
+    for (size_t i = 0; i < tls_const::kAes256KeyLen; ++i) {
+        bad_state.read.ki.key[i] = static_cast<uint8_t>(i + 100); // different key
+    }
+    for (size_t i = 0; i < tls_const::kTls13NonceLen; ++i) {
+        bad_state.read.ki.iv[i] = state.read.ki.iv[i]; // same IV
+    }
+    auto dec = TlsDecryptor::create(bad_state);
+    ASSERT_TRUE(dec.has_value());
+
+    uint8_t decrypted[sizeof(pt)]{};
+    uint16_t dec_len = 0;
+    EXPECT_FALSE(dec->decrypt(record, enc_len, decrypted, dec_len));
+}
+
+TEST(TlsRecordCrypto, SequenceIncrementIsCorrect) {
+    auto state = make_roundtrip_hot_state();
+    auto enc = TlsEncryptor::create(state);
+    ASSERT_TRUE(enc.has_value());
+
+    EXPECT_EQ(enc->write_seq(), 0u);
+
+    uint8_t pt[] = "test";
+    uint8_t record[TlsEncryptor::encrypted_size(sizeof(pt))];
+
+    enc->encrypt(pt, sizeof(pt), record);
+    EXPECT_EQ(enc->write_seq(), 1u);
+
+    enc->encrypt(pt, sizeof(pt), record);
+    EXPECT_EQ(enc->write_seq(), 2u);
+
+    enc->encrypt(pt, sizeof(pt), record);
+    EXPECT_EQ(enc->write_seq(), 3u);
+}

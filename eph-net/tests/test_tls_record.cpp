@@ -16,8 +16,8 @@ using namespace eph::net;
 // Compile-time validation
 // ─────────────────────────────────────────────────────────────────────────────
 
-static_assert(tls_const::kRecordHeaderLen == 5);
-static_assert(tls_const::kAuthTagLen == 16);
+static_assert(tls_record::kRecordHeaderLen == 5);
+static_assert(tls_record::kAuthTagLen == 16);
 static_assert(tls_const::kMaxRecordPayload == 16384);
 static_assert(tls_const::kTls13NonceLen == 12);
 static_assert(tls_const::kAes256KeyLen == 32);
