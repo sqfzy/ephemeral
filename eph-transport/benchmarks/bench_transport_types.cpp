@@ -778,6 +778,34 @@ static void BM_TlsEncryptDecrypt_64B(benchmark::State& state) {
 BENCHMARK(BM_TlsEncryptDecrypt_64B);
 
 // ---------------------------------------------------------------------------
+// apply_mask — in-place XOR unmasking (RX path for masked server frames)
+// ---------------------------------------------------------------------------
+
+static void BM_ApplyMask_64(benchmark::State& state) {
+    uint8_t data[64];
+    std::memset(data, 0x42, sizeof(data));
+    uint8_t mask[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    for (auto _ : state) {
+        ws::apply_mask(data, sizeof(data), mask);
+        benchmark::DoNotOptimize(data);
+    }
+    state.SetBytesProcessed(state.iterations() * 64);
+}
+BENCHMARK(BM_ApplyMask_64);
+
+static void BM_ApplyMask_512(benchmark::State& state) {
+    uint8_t data[512];
+    std::memset(data, 0x42, sizeof(data));
+    uint8_t mask[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    for (auto _ : state) {
+        ws::apply_mask(data, sizeof(data), mask);
+        benchmark::DoNotOptimize(data);
+    }
+    state.SetBytesProcessed(state.iterations() * 512);
+}
+BENCHMARK(BM_ApplyMask_512);
+
+// ---------------------------------------------------------------------------
 // TLS decrypt standalone — RX hot path
 // ---------------------------------------------------------------------------
 
@@ -812,6 +840,37 @@ static void BM_TlsDecrypt_64B(benchmark::State& state) {
     state.SetBytesProcessed(state.iterations() * kBatch * 64);
 }
 BENCHMARK(BM_TlsDecrypt_64B);
+
+static void BM_TlsDecrypt_512B(benchmark::State& state) {
+    auto hot = make_bench_hot_state();
+    std::array<uint8_t, 512> plaintext;
+    plaintext.fill(0x42);
+
+    constexpr int kBatch = 1000;
+    std::array<std::array<uint8_t, eph::net::TlsEncryptor::encrypted_size(512)>, kBatch> records;
+    std::array<uint16_t, kBatch> record_lens;
+    {
+        auto enc = eph::net::TlsEncryptor::create(hot);
+        for (int i = 0; i < kBatch; ++i) {
+            record_lens[i] = enc->encrypt(plaintext.data(), plaintext.size(),
+                                          records[i].data());
+        }
+    }
+
+    uint8_t decrypted[512];
+    for (auto _ : state) {
+        hot.read.seq = 0;
+        auto dec = eph::net::TlsDecryptor::create(hot);
+        for (int i = 0; i < kBatch; ++i) {
+            uint16_t dec_len = 0;
+            bool ok = dec->decrypt(records[i].data(), record_lens[i], decrypted, dec_len);
+            benchmark::DoNotOptimize(ok);
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * kBatch);
+    state.SetBytesProcessed(state.iterations() * kBatch * 512);
+}
+BENCHMARK(BM_TlsDecrypt_512B);
 
 // ---------------------------------------------------------------------------
 // TLS record header parse — RX hot path
