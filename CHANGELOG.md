@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 #### DPDK (`dpdk`)
 - Reactor feed integration for direct-mode transport
 
+### Changed
+
+#### DPDK (`dpdk`)
+- Extract logger factory (`LoggerName`, `get_logger`) from `net_header.hpp` into `detail/logger.hpp` to reduce header coupling
+- Fix unqualified `get_logger`/`LoggerName` calls in `dns.hpp` and `arp.hpp` (wrong namespace scope)
+
 #### Benchmarks
 - Mock WebSocket server for deterministic latency measurement (no live exchange dependency)
 - Socket and DPDK benchmark variants using `DirectTransport` for fair comparison
