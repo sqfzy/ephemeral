@@ -510,8 +510,14 @@ public:
             for (auto& t : targets) {
                 for (auto& c : connections_) {
                     if (c.transport_ptr == t.ptr) {
-                        c.health = (c.is_running_fn && c.is_running_fn(c.transport_ptr))
-                            ? ConnHealth::Healthy : ConnHealth::Disconnected;
+                        bool running = false;
+                        try {
+                            running = c.is_running_fn && c.is_running_fn(c.transport_ptr);
+                        } catch (...) {
+                            SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                                "Gateway: is_running_fn threw for '{}' during start health update", t.tag);
+                        }
+                        c.health = running ? ConnHealth::Healthy : ConnHealth::Disconnected;
                         break;
                     }
                 }
@@ -556,8 +562,14 @@ public:
             for (auto& t : targets) {
                 for (auto& c : connections_) {
                     if (c.transport_ptr == t.ptr) {
-                        bool still_running = c.is_running_fn &&
-                                             c.is_running_fn(c.transport_ptr);
+                        bool still_running = false;
+                        try {
+                            still_running = c.is_running_fn &&
+                                            c.is_running_fn(c.transport_ptr);
+                        } catch (...) {
+                            SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                                "Gateway: is_running_fn threw for '{}' during stop health update", t.tag);
+                        }
                         c.health = still_running ? ConnHealth::Disconnected
                                                  : ConnHealth::Stopped;
                         break;
@@ -674,7 +686,14 @@ public:
                 if (c.health == ConnHealth::Stopped) continue;
 
                 ConnHealth old_h = c.health;
-                if (c.is_running_fn && c.is_running_fn(c.transport_ptr)) {
+                bool running = false;
+                try {
+                    running = c.is_running_fn && c.is_running_fn(c.transport_ptr);
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                        "Gateway: is_running_fn threw for '{}' during health check", c.tag);
+                }
+                if (running) {
                     c.health = ConnHealth::Healthy;
                 } else {
                     c.health = ConnHealth::Disconnected;
@@ -691,7 +710,13 @@ public:
                         ch.idx, ch.tag, conn_health_name(ch.old_h),
                         conn_health_name(ch.new_h));
             if (config_.on_health_change) {
-                config_.on_health_change(ch.tag, ch.old_h, ch.new_h);
+                try {
+                    config_.on_health_change(ch.tag, ch.old_h, ch.new_h);
+                } catch (...) {
+                    SPDLOG_LOGGER_ERROR(detail::gateway_logger(),
+                        "Gateway: on_health_change callback threw for [{}] '{}' — continuing",
+                        ch.idx, ch.tag);
+                }
             }
         }
     }
