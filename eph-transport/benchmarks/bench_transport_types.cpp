@@ -777,4 +777,106 @@ static void BM_TlsEncryptDecrypt_64B(benchmark::State& state) {
 }
 BENCHMARK(BM_TlsEncryptDecrypt_64B);
 
+// ---------------------------------------------------------------------------
+// TLS decrypt standalone — RX hot path
+// ---------------------------------------------------------------------------
+
+static void BM_TlsDecrypt_64B(benchmark::State& state) {
+    auto hot = make_bench_hot_state();
+    uint8_t plaintext[64];
+    std::memset(plaintext, 0x42, sizeof(plaintext));
+
+    // Pre-encrypt 1000 records to decrypt during benchmark
+    constexpr int kBatch = 1000;
+    std::array<std::array<uint8_t, eph::net::TlsEncryptor::encrypted_size(64)>, kBatch> records;
+    std::array<uint16_t, kBatch> record_lens;
+    {
+        auto enc = eph::net::TlsEncryptor::create(hot);
+        for (int i = 0; i < kBatch; ++i) {
+            record_lens[i] = enc->encrypt(plaintext, sizeof(plaintext),
+                                          records[i].data());
+        }
+    }
+
+    uint8_t decrypted[64];
+    for (auto _ : state) {
+        hot.read.seq = 0;
+        auto dec = eph::net::TlsDecryptor::create(hot);
+        for (int i = 0; i < kBatch; ++i) {
+            uint16_t dec_len = 0;
+            bool ok = dec->decrypt(records[i].data(), record_lens[i], decrypted, dec_len);
+            benchmark::DoNotOptimize(ok);
+        }
+    }
+    state.SetItemsProcessed(state.iterations() * kBatch);
+    state.SetBytesProcessed(state.iterations() * kBatch * 64);
+}
+BENCHMARK(BM_TlsDecrypt_64B);
+
+// ---------------------------------------------------------------------------
+// TLS record header parse — RX hot path
+// ---------------------------------------------------------------------------
+
+static void BM_ParseRecordHeader(benchmark::State& state) {
+    // Build a valid TLS record header
+    uint8_t hdr[tls_record::kRecordHeaderLen];
+    tls_record::write_record_header(hdr, tls_record::kContentTypeAppData, 100);
+
+    uint8_t content_type;
+    uint16_t payload_len;
+    for (auto _ : state) {
+        bool ok = tls_record::parse_record_header(hdr, content_type, payload_len);
+        benchmark::DoNotOptimize(ok);
+        benchmark::DoNotOptimize(payload_len);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_ParseRecordHeader);
+
+// ---------------------------------------------------------------------------
+// WebSocket control frame builders — RX auto-response path
+// ---------------------------------------------------------------------------
+
+static void BM_BuildPongFrame(benchmark::State& state) {
+    uint8_t ping_payload[] = "heartbeat";
+    uint8_t out[ws::kMaxFrameHeaderLen + sizeof(ping_payload)];
+    for (auto _ : state) {
+        auto n = ws::build_pong_frame(out, ping_payload, sizeof(ping_payload));
+        benchmark::DoNotOptimize(n);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuildPongFrame);
+
+static void BM_BuildCloseFrame(benchmark::State& state) {
+    uint8_t out[ws::kMaxFrameHeaderLen + ws::kMaxControlPayloadLen];
+    for (auto _ : state) {
+        auto n = ws::build_close_frame(out, ws::close_code::kNormal, "goodbye");
+        benchmark::DoNotOptimize(n);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuildCloseFrame);
+
+// ---------------------------------------------------------------------------
+// HKDF key derivation — handshake path baseline
+// ---------------------------------------------------------------------------
+
+static void BM_HkdfDeriveKeyIv(benchmark::State& state) {
+    uint8_t secret[32];
+    for (size_t i = 0; i < sizeof(secret); ++i)
+        secret[i] = static_cast<uint8_t>(i + 1);
+
+    uint8_t key[tls_const::kAes256KeyLen];
+    uint8_t iv[tls_const::kTls13NonceLen];
+    for (auto _ : state) {
+        bool ok = tls_keygen::derive_key_iv(secret, sizeof(secret),
+                                            key, sizeof(key), iv, sizeof(iv));
+        benchmark::DoNotOptimize(ok);
+        benchmark::DoNotOptimize(key);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HkdfDeriveKeyIv);
+
 BENCHMARK_MAIN();
