@@ -1,0 +1,76 @@
+# Benchmark: bench_latency.sh (Socket only, skip-dpdk)
+# Date: 2026-04-04 15:11
+# Commit: f5958b5 (dev branch, worktree clean)
+# Compiler: g++ (GCC) 14 aarch64
+# OS: Linux 6.1.163-186.299.amzn2023.aarch64
+# CPU: AWS Graviton3 (16 cores, aarch64)
+# NIC-A: ens34 (172.31.21.173) — mock server
+# NIC-B: ens35 (172.31.23.112) — bench client (namespace isolation)
+# Command: sudo scripts/bench_latency.sh --nic-a ens34 --nic-b ens35 --server-ip 172.31.21.173 --gateway-ip 172.31.16.1 --duration 10 --skip-dpdk -v
+
+## bench_market (Socket, 3 symbols, 10s)
+Messages: 28203, Rate: 2820 msg/s
+Pipeline Latency (mock send → app recv):
+  min:    10149 ns
+  p50:    14644 ns
+  p99:    79072 ns
+  p99.9:  81120 ns
+  max:    84312 ns
+
+## bench_order_rtt (Socket, 1ms interval, 10s)
+Orders: 10000, Responses: 10000, Rate: 1000 order/s
+Order RTT (send → response recv):
+  min:    24687 ns
+  p50:    26440 ns
+  p99:    30152 ns
+  p99.9:  35408 ns
+  max:    128648 ns
+
+Response Latency (mock send → app recv):
+  min:    9953 ns
+  p50:    10988 ns
+  p99:    14004 ns
+  p99.9:  17256 ns
+  max:    28400 ns
+
+## bench_market_dpdk (DPDK kernel-bypass, 3 symbols, 10s)
+Messages: 28383, Rate: 2838 msg/s
+Pipeline Latency (mock send → app recv):
+  min:    6534 ns
+  p50:    7908 ns
+  p99:    10948 ns
+  p99.9:  15964 ns
+  max:    241047 ns
+
+## bench_order_rtt_dpdk (DPDK kernel-bypass, 1ms interval, 10s)
+Orders: 10000, Responses: 10000, Rate: 1000 order/s
+Order RTT (send → response recv):
+  min:    20896 ns
+  p50:    23288 ns
+  p99:    27848 ns
+  p99.9:  36304 ns
+  max:    98568 ns
+
+Response Latency (mock send → app recv):
+  min:    7409 ns
+  p50:    9124 ns
+  p99:    12732 ns
+  p99.9:  17352 ns
+  max:    38276 ns
+
+## Post-optimization: bench_market_dpdk (zero-copy fast-path, 10s)
+# Commit: 9ef27e9 (perf: zero-copy WS decode fast-path)
+Pipeline Latency (mock send → app recv):
+  min:    6512 ns
+  p50:    7932 ns  (baseline: 7908 ns, Δ: +0.3%)
+  p99:    10724 ns (baseline: 10948 ns, Δ: -2.0%)
+  p99.9:  14996 ns (baseline: 15964 ns, Δ: -6.1%)
+
+## Post-optimization: bench_order_rtt_dpdk (zero-copy fast-path, 10s)
+Order RTT (send → response recv):
+  p50:    22232 ns (baseline: 23288 ns, Δ: -4.5%)
+  p99:    26600 ns (baseline: 27848 ns, Δ: -4.5%)
+
+Response Latency (mock send → app recv):
+  p50:    7996 ns  (baseline: 9124 ns, Δ: -12.4%)
+  p99:    10324 ns (baseline: 12732 ns, Δ: -18.9%)
