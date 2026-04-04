@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -143,6 +144,17 @@ struct TlsConfig {
     std::string client_cert_path{};   ///< Client certificate file path (PEM format)
     std::string client_key_path{};    ///< Client private key file path (PEM format)
 
+    /// SPKI SHA-256 hashes for certificate pinning (base64-encoded).
+    /// Empty = no pinning (default). Non-empty = verify peer cert SPKI hash
+    /// against this list after TLS handshake.
+    std::vector<std::string> pinned_spki_sha256{};
+
+    /// Callback invoked when peer cert SPKI hash doesn't match any pin.
+    /// Receives the actual base64-encoded SPKI SHA-256 hash.
+    /// Return true to continue connection despite mismatch, false to abort.
+    /// nullptr = log warning only, continue connection (default soft-pin behavior).
+    std::function<bool(std::string_view actual_hash)> on_pin_mismatch{};
+
     /// Validate configuration, returning an error description or empty string on success.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (handshake_timeout.count() <= 0)
@@ -152,8 +164,16 @@ struct TlsConfig {
         return {};
     }
 
-    [[nodiscard]] friend bool operator==(const TlsConfig&,
-                                          const TlsConfig&) = default;
+    /// Equality comparison (excludes on_pin_mismatch callback which is not comparable).
+    [[nodiscard]] friend bool operator==(const TlsConfig& a, const TlsConfig& b) {
+        return a.hostname == b.hostname
+            && a.ca_cert_path == b.ca_cert_path
+            && a.verify_peer == b.verify_peer
+            && a.handshake_timeout == b.handshake_timeout
+            && a.client_cert_path == b.client_cert_path
+            && a.client_key_path == b.client_key_path
+            && a.pinned_spki_sha256 == b.pinned_spki_sha256;
+    }
 
     /// JSON-formatted config for logging/monitoring.
     /// @note client_key_path is redacted to prevent private key path leakage in logs.
@@ -210,6 +230,55 @@ struct TlsConfig {
         return w;
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPKI SHA-256 pin verification utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace spki_pin {
+
+/// Compute the base64-encoded SHA-256 hash of a DER-encoded SPKI blob.
+///
+/// @param spki_der  DER-encoded Subject Public Key Info bytes
+/// @param spki_len  Length of the DER data
+/// @return Base64-encoded SHA-256 hash, or empty string on failure
+[[nodiscard]] inline std::string compute_spki_sha256_b64(
+        const uint8_t* spki_der, size_t spki_len) {
+    // SHA-256 digest
+    uint8_t digest[32];
+    unsigned int digest_len = 0;
+    if (!EVP_Digest(spki_der, spki_len, digest, &digest_len,
+                    EVP_sha256(), nullptr) || digest_len != 32) {
+        return {};
+    }
+
+    // Base64 encode (EVP_EncodeBlock outputs null-terminated string,
+    // output size = 4 * ceil(n/3) + 1 for null terminator)
+    // For 32 bytes: 4 * ceil(32/3) = 4 * 11 = 44 chars + null
+    char b64[48]{};
+    int b64_len = EVP_EncodeBlock(
+        reinterpret_cast<uint8_t*>(b64), digest, 32);
+    if (b64_len <= 0) return {};
+
+    return std::string(b64, static_cast<size_t>(b64_len));
+}
+
+/// Check whether a base64-encoded SPKI SHA-256 hash matches any pin
+/// in the given list.
+///
+/// @param actual_hash  The computed base64-encoded SHA-256 hash
+/// @param pins         List of expected base64-encoded hashes
+/// @return true if actual_hash matches at least one pin
+[[nodiscard]] inline bool matches_any_pin(
+        std::string_view actual_hash,
+        const std::vector<std::string>& pins) {
+    for (const auto& pin : pins) {
+        if (actual_hash == pin) return true;
+    }
+    return false;
+}
+
+} // namespace spki_pin
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS 1.3 HKDF-Expand-Label for traffic key derivation

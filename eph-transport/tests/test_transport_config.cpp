@@ -548,6 +548,33 @@ TEST(TransportConfigWarnings, LargeRxBurstSizeWarns) {
     EXPECT_TRUE(found);
 }
 
+TEST(TransportConfigWarnings, PinnedSpkiWithoutTlsWarns) {
+    auto cfg = valid_config();
+    cfg.use_tls = false;
+    cfg.verify_peer = false;
+    cfg.skip_utf8_validation = false;
+    cfg.pinned_spki_sha256 = {"somehash"};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("pinned_spki_sha256") != std::string::npos &&
+            msg.find("use_tls=false") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(TransportConfigWarnings, PinnedSpkiWithTlsNoWarning) {
+    auto cfg = valid_config();
+    cfg.use_tls = true;
+    cfg.skip_utf8_validation = false;
+    cfg.pinned_spki_sha256 = {"somehash"};
+    auto w = cfg.warnings();
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("pinned_spki_sha256"), std::string::npos)
+            << "Unexpected pinning warning: " << msg;
+    }
+}
+
 // =======================================================================
 // from_url() — additional edge cases
 // =======================================================================

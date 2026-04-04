@@ -845,6 +845,8 @@ private:
                 .handshake_timeout = core_.config.tls_timeout,
                 .client_cert_path = core_.config.client_cert_path,
                 .client_key_path = core_.config.client_key_path,
+                .pinned_spki_sha256 = core_.config.pinned_spki_sha256,
+                .on_pin_mismatch = core_.config.on_pin_mismatch,
             };
 
             auto tls_result = TlsSession<TcpImpl>::create(*core_.tcp, tls_cfg);

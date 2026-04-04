@@ -131,6 +131,8 @@ struct TransportCore {
                 .verify_peer     = config.verify_peer,
                 .client_cert_path = config.client_cert_path,
                 .client_key_path  = config.client_key_path,
+                .pinned_spki_sha256 = config.pinned_spki_sha256,
+                .on_pin_mismatch = config.on_pin_mismatch,
             };
 
             auto tls_result = TlsSession<TcpImpl>::create(*tcp, tls_cfg);

@@ -146,6 +146,17 @@ struct TransportConfig {
     std::string client_cert_path{}; ///< Client certificate file path (PEM)
     std::string client_key_path{};  ///< Client private key file path (PEM)
 
+    /// SPKI SHA-256 hashes for certificate pinning (base64-encoded).
+    /// Empty = no pinning (default). Non-empty = verify peer cert SPKI hash
+    /// against this list after TLS handshake.
+    std::vector<std::string> pinned_spki_sha256{};
+
+    /// Callback invoked when peer cert SPKI hash doesn't match any pin.
+    /// Receives the actual base64-encoded SPKI SHA-256 hash.
+    /// Return true to continue connection despite mismatch, false to abort.
+    /// nullptr = log warning only, continue connection (default soft-pin behavior).
+    std::function<bool(std::string_view actual_hash)> on_pin_mismatch{};
+
     // -- Timeouts --
     std::chrono::milliseconds tcp_timeout{3000};  ///< TCP connect timeout
     std::chrono::milliseconds tls_timeout{5000};  ///< TLS handshake timeout
@@ -462,6 +473,8 @@ struct TransportConfig {
             w.emplace_back("verify_peer=true has no effect when use_tls=false");
         if (!use_tls && !ca_cert_path.empty())
             w.emplace_back("ca_cert_path is set but use_tls=false — CA cert will be ignored");
+        if (!use_tls && !pinned_spki_sha256.empty())
+            w.emplace_back("pinned_spki_sha256 is set but use_tls=false — certificate pinning has no effect without TLS");
         if (tx_burst_size > static_cast<uint16_t>(1024))
             w.emplace_back(std::format(
                 "tx_burst_size={} is unusually large — may increase "

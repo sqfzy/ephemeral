@@ -811,7 +811,8 @@ TEST(TlsConfig, ToJsonContainsAllFields) {
     EXPECT_NE(json.find("\"verify_peer\":false"), std::string::npos);
     EXPECT_NE(json.find("\"handshake_timeout_ms\":3000"), std::string::npos);
     EXPECT_NE(json.find("\"client_cert_path\":\"/client.pem\""), std::string::npos);
-    EXPECT_NE(json.find("\"client_key_path\":\"/key.pem\""), std::string::npos);
+    // client_key_path is redacted in JSON output for security
+    EXPECT_NE(json.find("\"has_client_key\":true"), std::string::npos);
 }
 
 TEST(TlsConfig, DumpContainsHostname) {

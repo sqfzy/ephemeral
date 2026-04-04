@@ -31,6 +31,7 @@
 #include <openssl/evp.h>
 #include <openssl/mem.h>     // OPENSSL_cleanse
 #include <openssl/ssl.h>
+#include <openssl/x509.h>    // X509_get_X509_PUBKEY, i2d_X509_PUBKEY
 
 #include "eph/core/tcp_concept.hpp"
 #include "eph/transport/detail/tls_constants.hpp"
@@ -479,6 +480,16 @@ public:
                     "TLS handshake complete: version={}, cipher={}",
                     SSL_get_version(ssl_),
                     SSL_CIPHER_get_name(SSL_get_current_cipher(ssl_)));
+
+                // SPKI certificate pin verification (soft pinning)
+                if (!config_.pinned_spki_sha256.empty()) {
+                    auto pin_result = verify_spki_pin();
+                    if (!pin_result) {
+                        handshake_done_ = false;
+                        return std::unexpected(pin_result.error());
+                    }
+                }
+
                 return {};
             }
 
@@ -656,6 +667,96 @@ public:
 
 private:
     TlsSession() = default;
+
+    /// Verify peer certificate SPKI hash against pinned hashes.
+    /// Called after successful TLS handshake when pinned_spki_sha256 is non-empty.
+    /// @return success if pin matches or soft-pin callback allows continuation,
+    ///         error string if pin mismatch and callback rejects (or no cert).
+    [[nodiscard]] std::expected<void, std::string> verify_spki_pin() {
+        [[maybe_unused]] auto log = detail::tls_logger();
+
+        // Get peer certificate
+        X509* cert = SSL_get_peer_certificate(ssl_);
+        if (!cert) {
+            SPDLOG_LOGGER_WARN(log,
+                "SPKI pin check: no peer certificate available");
+            return std::unexpected("spki_pin: no peer certificate");
+        }
+
+        // Extract SPKI in DER format
+        EVP_PKEY* pubkey_handle = X509_get0_pubkey(cert);
+        X509_PUBKEY* spki = X509_get_X509_PUBKEY(cert);
+        if (!spki) {
+            X509_free(cert);
+            SPDLOG_LOGGER_ERROR(log,
+                "SPKI pin check: failed to extract SPKI from peer certificate");
+            return std::unexpected("spki_pin: failed to extract SPKI");
+        }
+        (void)pubkey_handle; // only spki is needed
+
+        // Serialize SPKI to DER
+        uint8_t* der_buf = nullptr;
+        int der_len = i2d_X509_PUBKEY(spki, &der_buf);
+        if (der_len <= 0 || !der_buf) {
+            X509_free(cert);
+            SPDLOG_LOGGER_ERROR(log,
+                "SPKI pin check: i2d_X509_PUBKEY failed (der_len={})", der_len);
+            return std::unexpected("spki_pin: SPKI DER serialization failed");
+        }
+
+        // Compute base64-encoded SHA-256 hash
+        auto actual_hash = spki_pin::compute_spki_sha256_b64(
+            der_buf, static_cast<size_t>(der_len));
+        OPENSSL_free(der_buf);
+        X509_free(cert);
+
+        if (actual_hash.empty()) {
+            SPDLOG_LOGGER_ERROR(log,
+                "SPKI pin check: SHA-256 hash computation failed");
+            return std::unexpected("spki_pin: hash computation failed");
+        }
+
+        SPDLOG_LOGGER_DEBUG(log,
+            "SPKI pin check: actual_hash={}, pin_count={}",
+            actual_hash, config_.pinned_spki_sha256.size());
+
+        // Check against pin list
+        if (spki_pin::matches_any_pin(actual_hash, config_.pinned_spki_sha256)) {
+            SPDLOG_LOGGER_INFO(log,
+                "SPKI pin check: peer certificate matches pinned hash");
+            return {};
+        }
+
+        // Mismatch — invoke callback or apply default soft-pin behavior
+        SPDLOG_LOGGER_WARN(log,
+            "SPKI pin MISMATCH: peer_hash={}, expected one of [{}]",
+            actual_hash,
+            [&] {
+                std::string joined;
+                for (size_t i = 0; i < config_.pinned_spki_sha256.size(); ++i) {
+                    if (i > 0) joined += ", ";
+                    joined += config_.pinned_spki_sha256[i];
+                }
+                return joined;
+            }());
+
+        if (config_.on_pin_mismatch) {
+            bool allow = config_.on_pin_mismatch(actual_hash);
+            if (!allow) {
+                SPDLOG_LOGGER_WARN(log,
+                    "SPKI pin mismatch: on_pin_mismatch callback rejected connection");
+                return std::unexpected(std::format(
+                    "spki_pin: mismatch rejected by callback (actual={})",
+                    actual_hash));
+            }
+            SPDLOG_LOGGER_WARN(log,
+                "SPKI pin mismatch: on_pin_mismatch callback allowed connection to continue");
+        } else {
+            SPDLOG_LOGGER_WARN(log,
+                "SPKI pin mismatch: no callback set, continuing (soft-pin default)");
+        }
+        return {};
+    }
 
     SSL*                          ssl_   = nullptr;
     SSL_CTX*                      ctx_   = nullptr;

@@ -403,3 +403,107 @@ TEST(TlsRecordConstants, ReconnectThresholdIs95Percent) {
     EXPECT_EQ(tls_record::kSequenceReconnectThreshold,
               tls_record::kMaxSequenceNumber * 95 / 100);
 }
+
+// =======================================================================
+// SPKI pin utilities — compute_spki_sha256_b64, matches_any_pin
+// =======================================================================
+
+TEST(SpkiPin, ComputeHashProducesNonEmptyBase64) {
+    // Use a synthetic SPKI blob (content doesn't matter for testing the
+    // hash-then-base64 pipeline — any bytes will do).
+    const uint8_t fake_spki[] = {
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
+        0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+        0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+        0x42, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04, 0x05,
+    };
+    auto hash = spki_pin::compute_spki_sha256_b64(fake_spki, sizeof(fake_spki));
+    EXPECT_FALSE(hash.empty());
+    // Base64 of SHA-256 (32 bytes) should be 44 characters
+    EXPECT_EQ(hash.size(), 44u);
+}
+
+TEST(SpkiPin, ComputeHashDeterministic) {
+    const uint8_t data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
+    auto h1 = spki_pin::compute_spki_sha256_b64(data, sizeof(data));
+    auto h2 = spki_pin::compute_spki_sha256_b64(data, sizeof(data));
+    EXPECT_EQ(h1, h2);
+}
+
+TEST(SpkiPin, DifferentInputProducesDifferentHash) {
+    const uint8_t data1[] = {0x01, 0x02, 0x03};
+    const uint8_t data2[] = {0x04, 0x05, 0x06};
+    auto h1 = spki_pin::compute_spki_sha256_b64(data1, sizeof(data1));
+    auto h2 = spki_pin::compute_spki_sha256_b64(data2, sizeof(data2));
+    EXPECT_NE(h1, h2);
+}
+
+TEST(SpkiPin, ComputeHashEmptyInputReturnsNonEmpty) {
+    // Even empty input should produce a valid SHA-256 hash
+    auto hash = spki_pin::compute_spki_sha256_b64(nullptr, 0);
+    // EVP_Digest with 0 length is valid — produces hash of empty string
+    // SHA-256("") = 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=
+    EXPECT_FALSE(hash.empty());
+    EXPECT_EQ(hash.size(), 44u);
+}
+
+TEST(SpkiPin, MatchesAnyPinFindsExactMatch) {
+    std::vector<std::string> pins = {"abc123", "def456", "ghi789"};
+    EXPECT_TRUE(spki_pin::matches_any_pin("def456", pins));
+}
+
+TEST(SpkiPin, MatchesAnyPinReturnsFalseOnNoMatch) {
+    std::vector<std::string> pins = {"abc123", "def456"};
+    EXPECT_FALSE(spki_pin::matches_any_pin("xyz000", pins));
+}
+
+TEST(SpkiPin, MatchesAnyPinReturnsFalseOnEmptyList) {
+    std::vector<std::string> pins;
+    EXPECT_FALSE(spki_pin::matches_any_pin("anything", pins));
+}
+
+TEST(SpkiPin, MatchesAnyPinFirstElement) {
+    std::vector<std::string> pins = {"first", "second", "third"};
+    EXPECT_TRUE(spki_pin::matches_any_pin("first", pins));
+}
+
+TEST(SpkiPin, MatchesAnyPinLastElement) {
+    std::vector<std::string> pins = {"first", "second", "third"};
+    EXPECT_TRUE(spki_pin::matches_any_pin("third", pins));
+}
+
+TEST(SpkiPin, ComputeAndMatchRoundTrip) {
+    // Compute a hash, then verify it matches itself in a pin list
+    const uint8_t data[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    auto hash = spki_pin::compute_spki_sha256_b64(data, sizeof(data));
+    ASSERT_FALSE(hash.empty());
+
+    std::vector<std::string> pins = {"wrong_pin", hash, "another_wrong"};
+    EXPECT_TRUE(spki_pin::matches_any_pin(hash, pins));
+
+    std::vector<std::string> no_match_pins = {"wrong1", "wrong2"};
+    EXPECT_FALSE(spki_pin::matches_any_pin(hash, no_match_pins));
+}
+
+// =======================================================================
+// TlsConfig — pinned_spki_sha256 equality
+// =======================================================================
+
+TEST(TlsConfigEquality, DifferentPinsAreNotEqual) {
+    TlsConfig a, b;
+    a.pinned_spki_sha256 = {"pin1"};
+    b.pinned_spki_sha256 = {"pin2"};
+    EXPECT_NE(a, b);
+}
+
+TEST(TlsConfigEquality, SamePinsAreEqual) {
+    TlsConfig a, b;
+    a.pinned_spki_sha256 = {"pin1", "pin2"};
+    b.pinned_spki_sha256 = {"pin1", "pin2"};
+    EXPECT_EQ(a, b);
+}
+
+TEST(TlsConfigEquality, EmptyPinsAreEqual) {
+    TlsConfig a, b;
+    EXPECT_EQ(a, b);  // both have empty pin lists
+}
