@@ -94,21 +94,21 @@ public:
     bool is_hugepage = false;
     size_t allocated_size = 0;
 
-    // 分配内存（可能是大页或普通内存）
+    // Allocate memory (may be huge-page or regular memory)
     void *mem = allocate(size, alignment, is_hugepage, allocated_size);
     if (!mem) {
       throw std::bad_alloc();
     }
 
     try {
-      // 在分配的内存上构造对象（placement new）
+      // Construct object via placement new
       T *obj = new (mem) T(std::forward<Args>(args)...);
 
-      // 返回带有自定义删除器的 unique_ptr
-      // 删除器使用实际分配大小（对齐后），确保正确释放
+      // Return unique_ptr with custom deleter that tracks actual
+      // allocated size (post-alignment) for correct deallocation
       return std::unique_ptr<T, Deleter<T>>(obj, Deleter<T>{allocated_size, is_hugepage});
     } catch (...) {
-      // 确保如果构造函数抛异常，能正确释放刚分配的内存避免泄露
+      // If constructor throws, free the raw memory to prevent leaks
       deallocate(mem, allocated_size, is_hugepage);
       throw;
     }
@@ -147,22 +147,22 @@ public:
         return nullptr;
     }
 
-    // 确保对齐值至少为系统的基本最大对齐
+    // Ensure alignment is at least the system's fundamental max alignment
     size_t actual_alignment = alignment > alignof(std::max_align_t)
                                   ? alignment
                                   : alignof(std::max_align_t);
-    // std::aligned_alloc 强制要求申请的内存大小必须是对齐值的整数倍
+    // std::aligned_alloc requires size to be a multiple of alignment
     size_t actual_size =
         (size + actual_alignment - 1) & ~(actual_alignment - 1);
 
-    // 输出实际分配大小，供 deallocate 使用
+    // Record actual allocated size for deallocate()
     out_allocated_size = actual_size;
 
 #if defined(__linux__)
-    // Linux: 尝试使用 mmap 分配 2MB 大页
-    // MAP_HUGETLB: 请求大页内存
-    // MAP_ANONYMOUS: 不关联文件，初始化为零
-    // MAP_PRIVATE: 进程私有映射
+    // Linux: try mmap with 2MB huge pages
+    // MAP_HUGETLB: request huge-page memory
+    // MAP_ANONYMOUS: no file backing, zero-initialized
+    // MAP_PRIVATE: process-private mapping
     void *ptr = mmap(nullptr, actual_size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 
@@ -180,17 +180,17 @@ public:
       return ptr;
     }
 
-    // 大页分配失败，回退到普通内存
+    // Huge-page allocation failed, fall back to regular memory
     SPDLOG_LOGGER_WARN(detail::hugepage_logger(),
         "Hugepage allocation failed for {} bytes, falling back to aligned_alloc",
         actual_size);
     return std::aligned_alloc(actual_alignment, actual_size);
 
 #elif defined(_WIN32)
-    // Windows: 尝试使用 VirtualAlloc 分配大页
+    // Windows: try VirtualAlloc with large pages
     SIZE_T min_large = GetLargePageMinimum();
 
-    // 只有请求大小 >= 最小大页尺寸时才尝试
+    // Only attempt when requested size >= minimum large-page size
     if (min_large > 0 && actual_size >= min_large) {
       void *ptr = VirtualAlloc(nullptr, actual_size,
                                MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES,
@@ -201,11 +201,11 @@ public:
       }
     }
 
-    // 大页不可用或分配失败，回退到普通内存
+    // Large pages unavailable or allocation failed, fall back to regular memory
     return std::aligned_alloc(actual_alignment, actual_size);
 
 #else
-    // 其他平台不支持大页，直接使用标准分配
+    // Other platforms: no huge-page support, use standard allocation
     return std::aligned_alloc(actual_alignment, actual_size);
 #endif
   }
@@ -230,28 +230,28 @@ public:
 
 #if defined(__linux__)
     if (is_hugepage) {
-      // 释放 mmap 分配的大页内存
+      // Free mmap-allocated huge-page memory
       if (munmap(ptr, size) != 0) [[unlikely]] {
         SPDLOG_LOGGER_ERROR(detail::hugepage_logger(),
             "munmap failed for hugepage at {}, size={}, errno={}",
             ptr, size, errno);
       }
     } else {
-      // 释放 aligned_alloc 分配的普通内存
+      // Free aligned_alloc-allocated regular memory
       std::free(ptr);
     }
 
 #elif defined(_WIN32)
     if (is_hugepage) {
-      // 释放 VirtualAlloc 分配的大页内���
-      // MEM_RELEASE: 释放整个区域，size 参数必须为 0
+      // Free VirtualAlloc-allocated large-page memory
+      // MEM_RELEASE: free entire region, size must be 0
       VirtualFree(ptr, 0, MEM_RELEASE);
     } else {
       std::free(ptr);
     }
 
 #else
-    // 其他平台只使用了 aligned_alloc
+    // Other platforms only use aligned_alloc
     std::free(ptr);
 #endif
   }
@@ -280,10 +280,10 @@ private:
     /// @param ptr Pointer to the managed object.
     void operator()(T *ptr) const noexcept {
       if (ptr) {
-        // 显式调用析构函数（因为对象是通过 placement new 创建的）
+        // Explicit destructor call (object created via placement new)
         ptr->~T();
 
-        // 释放底层内存
+        // Free the underlying memory
         deallocate(ptr, size, is_hugepage);
       }
     }
