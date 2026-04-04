@@ -18,7 +18,7 @@ namespace eph::net::detail {
 /// Callers should cache the result in a function-local static to
 /// avoid repeated registry lookups on the hot path.
 ///
-/// @param name  Logger name (e.g., "net.transport", "net.tls_enc")
+/// @param name  Logger name (e.g., "transport.core", "transport.tls_enc")
 /// @return Shared pointer to the logger (never null)
 inline std::shared_ptr<spdlog::logger> get_or_create_logger(const char* name) {
     auto lg = spdlog::get(name);

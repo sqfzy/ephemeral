@@ -144,8 +144,8 @@ TEST(TlsRecordConstants, ReconnectThresholdIs95Percent) {
               tls_record::kMaxSequenceNumber * 95 / 100);
 }
 
-TEST(TlsRecordConstants, MaxSequenceNumberIs2Pow24) {
-    EXPECT_EQ(tls_record::kMaxSequenceNumber, 1ULL << 24);
+TEST(TlsRecordConstants, MaxSequenceNumberIs2Pow32) {
+    EXPECT_EQ(tls_record::kMaxSequenceNumber, 1ULL << 32);
 }
 
 TEST(TlsRecordConstants, AuthTagLenIs16) {

@@ -1,7 +1,7 @@
 set_project("eph")
 set_version("1.0.0")
 
-add_rules("mode.debug", "mode.release")
+add_rules("mode.debug", "mode.release", "mode.asan", "mode.tsan")
 set_languages("c++23")
 set_warnings("all", "extra")
 set_policy("build.ccache", true)
@@ -10,6 +10,22 @@ add_rules("plugin.compile_commands.autoupdate", { outputdir = "build" })
 
 if is_mode("release") then
     set_optimize("fastest")
+end
+
+-- Sanitizer modes: xmake f -m asan / xmake f -m tsan
+if is_mode("asan") then
+    set_optimize("none")
+    set_symbols("debug")
+    add_cxflags("-fsanitize=address,undefined", "-fno-omit-frame-pointer", { force = true })
+    add_ldflags("-fsanitize=address,undefined", { force = true })
+    add_defines("EPH_ASAN_ENABLED")
+end
+if is_mode("tsan") then
+    set_optimize("none")
+    set_symbols("debug")
+    add_cxflags("-fsanitize=thread", "-fno-omit-frame-pointer", { force = true })
+    add_ldflags("-fsanitize=thread", { force = true })
+    add_defines("EPH_TSAN_ENABLED")
 end
 
 -- GCC 14 on Amazon Linux 2023: add libstdc++ path for __cxa_call_terminate etc.

@@ -24,11 +24,11 @@ namespace eph::net {
 
 namespace detail {
 /// Lazily-initialized logger for TLS encryption operations.
-/// @return Pointer to the "net.tls_enc" spdlog logger.
+/// @return Pointer to the "transport.tls_enc" spdlog logger.
 inline spdlog::logger* tls_enc_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.tls_enc");
-        if (!lg) lg = spdlog::stdout_color_mt("net.tls_enc");
+        auto lg = spdlog::get("transport.tls_enc");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.tls_enc");
         return lg;
     }();
     return l.get();

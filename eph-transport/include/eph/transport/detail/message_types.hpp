@@ -62,8 +62,8 @@ struct alignas(eph::utils::CACHE_LINE_SIZE) RxMessage {
 ///       the lifetime of the process.
 inline spdlog::logger* transport_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.transport");
-        if (!lg) lg = spdlog::stdout_color_mt("net.transport");
+        auto lg = spdlog::get("transport.core");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.core");
         // Inherit level from spdlog global default
         return lg;
     }();

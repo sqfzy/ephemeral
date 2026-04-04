@@ -18,8 +18,8 @@ namespace eph::net {
 namespace detail {
 inline spdlog::logger* raw_framer_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.raw_framer");
-        if (!lg) lg = spdlog::stdout_color_mt("net.raw_framer");
+        auto lg = spdlog::get("transport.raw_framer");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.raw_framer");
         return lg;
     }();
     return l.get();

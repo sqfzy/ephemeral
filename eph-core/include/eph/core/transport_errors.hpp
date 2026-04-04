@@ -34,7 +34,13 @@ enum class ConnectionError : uint8_t {
     kTlsKeyExportFailed, ///< TLS AEAD key export failed
     kWsUpgradeFailed,    ///< WebSocket HTTP upgrade failed (parse error, timeout)
     kWsUpgradeRejected,  ///< Server rejected upgrade (non-101 status code)
-    kWsAcceptInvalid,    ///< Sec-WebSocket-Accept validation failed
+    kWsAcceptInvalid,        ///< Sec-WebSocket-Accept validation failed
+    kDnsResolveFailed,       ///< DNS resolution failed (timeout, NXDOMAIN, etc.)
+    kArpResolveFailed,       ///< ARP resolution failed (DPDK only)
+    kTcpConnectTimeout,      ///< TCP connect timed out
+    kTcpConnectRefused,      ///< TCP connect refused by peer
+    kProxyHandshakeFailed,   ///< SOCKS5 or HTTP CONNECT proxy handshake failed
+    kPlatformInitFailed,     ///< DPDK platform initialization failed (EAL, NIC, mempool)
 };
 
 /// @brief Return a human-readable name for a ConnectionError value.
@@ -50,7 +56,13 @@ enum class ConnectionError : uint8_t {
         case ConnectionError::kTlsKeyExportFailed: return "TLS_KEY_EXPORT_FAILED";
         case ConnectionError::kWsUpgradeFailed:    return "WS_UPGRADE_FAILED";
         case ConnectionError::kWsUpgradeRejected:  return "WS_UPGRADE_REJECTED";
-        case ConnectionError::kWsAcceptInvalid:    return "WS_ACCEPT_INVALID";
+        case ConnectionError::kWsAcceptInvalid:      return "WS_ACCEPT_INVALID";
+        case ConnectionError::kDnsResolveFailed:     return "DNS_RESOLVE_FAILED";
+        case ConnectionError::kArpResolveFailed:     return "ARP_RESOLVE_FAILED";
+        case ConnectionError::kTcpConnectTimeout:    return "TCP_CONNECT_TIMEOUT";
+        case ConnectionError::kTcpConnectRefused:    return "TCP_CONNECT_REFUSED";
+        case ConnectionError::kProxyHandshakeFailed: return "PROXY_HANDSHAKE_FAILED";
+        case ConnectionError::kPlatformInitFailed:   return "PLATFORM_INIT_FAILED";
     }
     return "UNKNOWN";
 }

@@ -15,8 +15,8 @@ namespace eph::net {
 namespace detail {
 inline spdlog::logger* ws_framer_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.ws_framer");
-        if (!lg) lg = spdlog::stdout_color_mt("net.ws_framer");
+        auto lg = spdlog::get("transport.ws_framer");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.ws_framer");
         return lg;
     }();
     return l.get();

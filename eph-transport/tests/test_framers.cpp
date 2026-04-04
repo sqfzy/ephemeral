@@ -284,6 +284,12 @@ TEST(ConnectionError, AllEnumValuesHaveNames) {
     EXPECT_EQ(connection_error_name(ConnectionError::kWsUpgradeFailed), "WS_UPGRADE_FAILED");
     EXPECT_EQ(connection_error_name(ConnectionError::kWsUpgradeRejected), "WS_UPGRADE_REJECTED");
     EXPECT_EQ(connection_error_name(ConnectionError::kWsAcceptInvalid), "WS_ACCEPT_INVALID");
+    EXPECT_EQ(connection_error_name(ConnectionError::kDnsResolveFailed), "DNS_RESOLVE_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kArpResolveFailed), "ARP_RESOLVE_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kTcpConnectTimeout), "TCP_CONNECT_TIMEOUT");
+    EXPECT_EQ(connection_error_name(ConnectionError::kTcpConnectRefused), "TCP_CONNECT_REFUSED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kProxyHandshakeFailed), "PROXY_HANDSHAKE_FAILED");
+    EXPECT_EQ(connection_error_name(ConnectionError::kPlatformInitFailed), "PLATFORM_INIT_FAILED");
 }
 
 TEST(ConnectionError, FormatAsString) {

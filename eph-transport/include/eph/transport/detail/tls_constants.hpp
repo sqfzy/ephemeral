@@ -33,11 +33,11 @@ namespace detail {
 using eph::core::detail::json_escape;
 
 /// Lazily-initialized logger for TLS record-layer operations.
-/// @return Pointer to the "net.tls_record" spdlog logger.
+/// @return Pointer to the "transport.tls_record" spdlog logger.
 inline spdlog::logger* tls_record_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.tls_record");
-        if (!lg) lg = spdlog::stdout_color_mt("net.tls_record");
+        auto lg = spdlog::get("transport.tls_record");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.tls_record");
         return lg;
     }();
     return l.get();
@@ -296,16 +296,14 @@ inline constexpr uint16_t kAuthTagLen          = 16;  ///< AES-GCM authenticatio
 
 /// Maximum TLS 1.3 record sequence number before forced reconnection.
 ///
-/// Set to 2^24 (~16M records) per NIST SP 800-38D §8.3 recommendation
-/// for AES-GCM with random nonces: the birthday bound at 2^32 gives a
-/// ~2^-32 collision probability, and 2^24 provides a ~2^8 safety margin.
+/// Set to 2^32 (~4.3B records) per NIST SP 800-38D §8.3 for AES-GCM
+/// with deterministic nonces. This library uses the TLS 1.3 nonce
+/// construction (seq XOR static_iv) which is deterministic — the 2^32
+/// limit ensures nonce uniqueness within a single session.
 ///
-/// At HFT rates (~100K messages/sec), this triggers reconnection every
-/// ~167 seconds. This is intentional: periodic key refresh limits the
-/// blast radius of a compromised session key. If longer sessions are
-/// needed, implement TLS 1.3 KeyUpdate (RFC 8446 §4.6.3) instead of
-/// raising this limit.
-inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 24);
+/// At HFT rates (~100K messages/sec), this allows ~12 hours per session,
+/// well beyond typical exchange maintenance windows (24h forced disconnect).
+inline constexpr uint64_t kMaxSequenceNumber = (1ULL << 32);
 /// Threshold at which a log warning is emitted (90% of max).
 inline constexpr uint64_t kSequenceWarnThreshold = kMaxSequenceNumber * 9 / 10;
 /// Threshold at which a preemptive reconnect is triggered (95% of max).

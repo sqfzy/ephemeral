@@ -43,11 +43,11 @@ namespace eph::net {
 
 namespace detail {
 
-/// @return Pointer to the "net.tls" spdlog logger.
+/// @return Pointer to the "transport.tls" spdlog logger.
 inline spdlog::logger* tls_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.tls");
-        if (!lg) lg = spdlog::stdout_color_mt("net.tls");
+        auto lg = spdlog::get("transport.tls");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.tls");
         return lg;
     }();
     return l.get();

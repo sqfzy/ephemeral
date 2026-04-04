@@ -34,11 +34,11 @@ namespace detail {
 // with proxy.hpp and other modules that need base64 encoding.
 using eph::core::detail::base64_encode;
 
-/// @return Pointer to the "net.http" spdlog logger.
+/// @return Pointer to the "transport.http" spdlog logger.
 inline spdlog::logger* http_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.http");
-        if (!lg) lg = spdlog::stdout_color_mt("net.http");
+        auto lg = spdlog::get("transport.http");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.http");
         return lg;
     }();
     return l.get();

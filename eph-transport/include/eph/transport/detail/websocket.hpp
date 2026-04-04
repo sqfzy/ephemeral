@@ -175,11 +175,11 @@ inline constexpr size_t kMaxControlPayloadLen = 125; ///< Max control frame payl
 
 namespace detail {
 
-/// @return Pointer to the "net.websocket" spdlog logger.
+/// @return Pointer to the "transport.websocket" spdlog logger.
 inline spdlog::logger* ws_logger() {
     static auto l = [] {
-        auto lg = spdlog::get("net.websocket");
-        if (!lg) lg = spdlog::stdout_color_mt("net.websocket");
+        auto lg = spdlog::get("transport.websocket");
+        if (!lg) lg = spdlog::stdout_color_mt("transport.websocket");
         return lg;
     }();
     return l.get();
