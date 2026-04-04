@@ -16,7 +16,6 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
-#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -36,7 +35,6 @@
 #include "eph/transport/detail/transport_core.hpp"
 #include "eph/transport/detail/rx_worker.hpp"
 #include "eph/transport/reconnect_policy.hpp"
-#include "eph/transport/detail/tls_encryptor.hpp"
 #include "eph/transport/detail/tls_record.hpp"
 #include "eph/transport/transport_types.hpp"
 #include "eph/transport/detail/websocket.hpp"
