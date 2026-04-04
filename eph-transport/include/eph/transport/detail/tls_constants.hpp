@@ -54,8 +54,6 @@ inline spdlog::logger* tls_record_logger() {
 /// and the AES-GCM AEAD algorithm (NIST SP 800-38D).
 namespace tls_const {
 
-inline constexpr uint16_t kRecordHeaderLen   = 5;     ///< TLS record header size: content_type(1) + version(2) + length(2)
-inline constexpr uint16_t kAuthTagLen        = 16;    ///< AES-GCM authentication tag length in bytes
 inline constexpr uint16_t kMaxRecordPayload  = 16384; ///< Maximum TLS plaintext fragment size (2^14, RFC 8446 section 5.1)
 inline constexpr uint16_t kTls13NonceLen     = 12;    ///< AES-GCM nonce length in bytes (96 bits)
 inline constexpr uint16_t kAes256KeyLen      = 32;    ///< AES-256 key length in bytes (256 bits)
