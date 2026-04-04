@@ -315,6 +315,33 @@ struct TransportConfig {
     /// established before any RX thread starts polling.
     bool deferred_start = false;
 
+    // -- Performance threshold monitoring --
+
+    /// Configuration for periodic threshold breach detection.
+    ///
+    /// When enabled, the RX worker periodically samples transport stats and
+    /// compares against configured thresholds. Breaches invoke the on_breach
+    /// callback with the metric name, current value, and threshold.
+    ///
+    /// @note The callback runs on the RX thread — must be non-blocking.
+    struct ThresholdConfig {
+        uint64_t rx_drop_threshold = 0;   ///< Cumulative RX drops to trigger (0 = disable)
+        uint64_t rtt_p99_ns_threshold = 0; ///< RTT P99 in nanoseconds to trigger (0 = disable)
+
+        /// Called when a metric breaches its threshold.
+        /// @param metric     Metric name ("rx_drops", "rtt_p99_ns")
+        /// @param value      Current metric value
+        /// @param threshold  Configured threshold
+        /// @warning Called from the RX thread — must be non-blocking.
+        std::function<void(std::string_view metric, uint64_t value, uint64_t threshold)>
+            on_breach{};
+
+        /// Check interval in RX loop iterations (default 1024).
+        /// Lower values increase responsiveness but add overhead.
+        uint32_t check_interval = 1024;
+    };
+    ThresholdConfig thresholds{};
+
     /// Multi-line formatted dump for logging/debugging.
     /// Callbacks are shown as set/unset (closures cannot be serialized).
     [[nodiscard]] std::string dump() const {

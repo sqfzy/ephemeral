@@ -34,6 +34,7 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
+#include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/core/tcp_concept.hpp"
 #include "eph/utils/time.hpp"
@@ -642,6 +643,163 @@ public:
         return len;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // TX batch send
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Result of a batch send operation.
+    struct BatchSendResult {
+        uint16_t sent = 0;       ///< Number of segments successfully transmitted
+        uint16_t requested = 0;  ///< Total segments requested
+    };
+
+    /// Send multiple data segments in a single rte_eth_tx_burst call.
+    ///
+    /// Allocates mbufs from the mempool, fills TCP headers and payloads, then
+    /// submits all packets to the NIC in one burst. On partial TX (NIC backpressure),
+    /// unsent mbufs are freed and snd_nxt_ is only advanced for successfully sent
+    /// segments.
+    ///
+    /// @param segments  Array of {data, len} pairs. Each len must be <= MSS.
+    /// @param count     Number of segments (clamped to 32)
+    /// @return Number of segments sent vs requested
+    /// @pre state == Established; all segment lengths <= MSS
+    [[nodiscard]] BatchSendResult
+    send_batch(const std::pair<const void*, uint16_t>* segments, uint16_t count) {
+        [[maybe_unused]] auto log = detail::tcp_logger();
+
+        if (state_ != TcpState::Established) {
+            SPDLOG_LOGGER_WARN(log, "send_batch: not established (state={})",
+                               tcp_state_name(state_));
+            return {0, count};
+        }
+
+        static constexpr uint16_t kMaxBatchSize = 32;
+        count = std::min(count, kMaxBatchSize);
+
+        rte_mbuf* mbufs[kMaxBatchSize];
+        uint32_t seg_lengths[kMaxBatchSize];  // track per-segment payload length
+        uint16_t prepared = 0;
+
+        // Phase 1: allocate and fill all mbufs
+        for (uint16_t i = 0; i < count; ++i) {
+            if (segments[i].second > config_.mss) {
+                SPDLOG_LOGGER_WARN(log,
+                    "send_batch: segment[{}] too large ({} > MSS {})",
+                    i, segments[i].second, config_.mss);
+                break;
+            }
+
+            auto* mbuf = pkt_template_.build_packet(
+                pool_, snd_nxt_ + total_payload_len_(seg_lengths, prepared),
+                rcv_nxt_,
+                net::kTcpAck | net::kTcpPsh,
+                rcv_wnd_, segments[i].first, segments[i].second);
+            if (!mbuf) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "send_batch: mbuf alloc failed at segment {}/{}", i, count);
+                break;
+            }
+
+            mbufs[prepared] = mbuf;
+            seg_lengths[prepared] = segments[i].second;
+            ++prepared;
+        }
+
+        if (prepared == 0) return {0, count};
+
+        // Phase 2: single burst send
+        uint16_t sent = rte_eth_tx_burst(
+            config_.port_id, config_.tx_queue_id, mbufs, prepared);
+
+        // Advance snd_nxt_ only for successfully sent segments
+        uint32_t sent_bytes = total_payload_len_(seg_lengths, sent);
+        snd_nxt_ += sent_bytes;
+        stats_.tx_packets += sent;
+        stats_.tx_bytes += sent_bytes;
+
+        // Free unsent mbufs
+        if (sent < prepared) {
+            SPDLOG_LOGGER_DEBUG(log,
+                "send_batch: partial tx_burst {}/{} (NIC backpressure)",
+                sent, prepared);
+            for (uint16_t i = sent; i < prepared; ++i) {
+                rte_pktmbuf_free(mbufs[i]);
+            }
+        }
+
+        SPDLOG_LOGGER_TRACE(log,
+            "send_batch: sent {}/{} segments, {} bytes",
+            sent, count, sent_bytes);
+
+        return {sent, count};
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ARP cache refresh
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Enable periodic ARP cache refresh (gratuitous ARP request).
+    ///
+    /// Sends a unicast ARP request to the gateway at the configured interval
+    /// to prevent ARP cache expiry on intermediate switches and the gateway.
+    /// Call this after connect() with the gateway IP used during ARP resolution.
+    ///
+    /// @param gateway_ip  Gateway IPv4 address (host byte order)
+    /// @param interval    Refresh interval (default 60s, 0 = disable)
+    void set_arp_refresh(uint32_t gateway_ip,
+                         std::chrono::seconds interval = std::chrono::seconds{60}) noexcept {
+        arp_refresh_gateway_ip_ = gateway_ip;
+        arp_refresh_interval_ = interval;
+        if (interval.count() > 0) {
+            arp_next_refresh_ = std::chrono::steady_clock::now() + interval;
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "ARP refresh enabled: gateway={}, interval={}s",
+                net::format_ipv4(gateway_ip).data(), interval.count());
+        } else {
+            arp_next_refresh_ = std::chrono::steady_clock::time_point::max();
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(), "ARP refresh disabled");
+        }
+    }
+
+    /// Check if ARP refresh is due and send if needed.
+    /// Call from the poll loop (e.g., after poll_rx). Non-blocking:
+    /// sends a single ARP request without waiting for reply.
+    void maybe_refresh_arp() noexcept {
+        if (arp_refresh_interval_.count() == 0) return;
+
+        auto now = std::chrono::steady_clock::now();
+        if (now < arp_next_refresh_) return;
+
+        [[maybe_unused]] auto log = detail::tcp_logger();
+
+        auto* req = arp::build_arp_request(
+            pool_, config_.src_mac, config_.tuple.src_ip,
+            arp_refresh_gateway_ip_);
+        if (!req) {
+            SPDLOG_LOGGER_WARN(log, "ARP refresh: mbuf alloc failed");
+            // Retry next interval
+            arp_next_refresh_ = now + arp_refresh_interval_;
+            return;
+        }
+
+        uint16_t sent = rte_eth_tx_burst(
+            config_.port_id, config_.tx_queue_id, &req, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(req);
+            SPDLOG_LOGGER_WARN(log, "ARP refresh: tx_burst failed");
+        } else {
+            SPDLOG_LOGGER_DEBUG(log, "ARP refresh sent for gateway {}",
+                net::format_ipv4(arp_refresh_gateway_ip_).data());
+        }
+
+        arp_next_refresh_ = now + arp_refresh_interval_;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Data transfer (single segment)
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// Build a data packet into a pre-allocated mbuf (hot path, no alloc).
     /// Returns the mbuf ready for tx_burst, or nullptr on error.
     /// @warning snd_nxt_ is advanced immediately. Caller MUST transmit the
@@ -1110,6 +1268,13 @@ private:
         return delivered;
     }
 
+    /// Sum payload lengths for the first N segments (used by send_batch).
+    static uint32_t total_payload_len_(const uint32_t* lengths, uint16_t n) noexcept {
+        uint32_t total = 0;
+        for (uint16_t i = 0; i < n; ++i) total += lengths[i];
+        return total;
+    }
+
     TcpConfig           config_;
     rte_mempool*        pool_;
     TcpState            state_;
@@ -1144,6 +1309,12 @@ private:
     // alignas(64): placed on its own cache line to avoid false sharing with
     // stats_ (written by the RX path) when a separate thread reads the TSC.
     alignas(64) std::atomic<uint64_t> last_rx_burst_tsc_{0};
+
+    // ── ARP cache refresh state ──
+    uint32_t arp_refresh_gateway_ip_ = 0;
+    std::chrono::seconds arp_refresh_interval_{0};
+    std::chrono::steady_clock::time_point arp_next_refresh_{
+        std::chrono::steady_clock::time_point::max()};
 
     /// Enter TIME_WAIT state and start the 2MSL timer (RFC 793 §3.5).
     /// MSL = 60s; 2MSL = 120s. This prevents old duplicate segments from

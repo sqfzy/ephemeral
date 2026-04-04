@@ -28,5 +28,6 @@
 | 2026-04-03 07:38 | /design 项目组织重构 | 10模块xmake.lua+tests/benchmarks跟随模块+transport detail/分层+rules/ccache/PCH基础设施 | 9f5c271 | design-20260403-073807.md |
 | 2026-04-03 07:38 | /plan 项目组织重构 | 已完成归档 | 9f5c271 | project-reorg-20260403.plan.md |
 | 2026-04-03 08:37 | /bench transport baseline | build_nonce 0.47ns, twophase 424-661ns, from_url 87-101ns, validate 14-18ns | 5e20ef3 | eph-transport/.artifacts/bench-data-20260403-083736.txt |
+| 2026-04-03 16:49 | /repeat improve+test+bench | 20轮（19有效）：159 commits, 101 files, +10683/-397 lines | 03fedff | repeat-20260403-164926.md |
 | 2026-04-04 18:51 | /discuss 生产就绪性分析 | 5角色7轮：Gateway降级=#1差距,错误码统一=#1债务,fuzzing+ASan最优起点,soft pin安全折中 | 3cfbb97 | discuss-20260404-185159.md |
 | 2026-04-04 19:00 | /plan+/design 生产就绪改造 | 5阶段计划+实施：TLS 2^32, 错误码+6, Gateway降级, soft pin, FakeTcp, 3 fuzzer, HWM | 6cec402 | production-readiness-20260404.plan.md |

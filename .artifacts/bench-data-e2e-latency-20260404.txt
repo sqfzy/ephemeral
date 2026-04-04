@@ -1,0 +1,20 @@
+2026-04-04T14:07:46+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_e2e_latency
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 1.54, 1.53, 0.91
+---------------------------------------------------------------------------------
+Benchmark                       Time             CPU   Iterations UserCounters...
+---------------------------------------------------------------------------------
+BM_E2E_SendEnqueue/32        59.4 ns         59.4 ns     10323651 bytes_per_second=513.868Mi/s items_per_second=16.8384M/s
+BM_E2E_SendEnqueue/128       54.8 ns         54.8 ns     10187350 bytes_per_second=2.17696Gi/s items_per_second=18.2617M/s
+BM_E2E_SendEnqueue/512       13.1 ns         13.1 ns     57266021 bytes_per_second=36.4184Gi/s items_per_second=76.3749M/s
+BM_E2E_TransportCreate       51.4 us         47.4 us        14701 items_per_second=21.1018k/s
+BM_E2E_StatsSnapshot         65.1 ns         65.1 ns     10736428 items_per_second=15.3534M/s
+BM_E2E_SendBurst/1          0.336 us        0.336 us      2096341 bytes_per_second=181.466Mi/s items_per_second=2.97314M/s
+BM_E2E_SendBurst/8           1.02 us         1.02 us       598884 bytes_per_second=480.232Mi/s items_per_second=7.86812M/s
+BM_E2E_SendBurst/32          2.15 us         2.15 us       257377 bytes_per_second=907.993Mi/s items_per_second=14.8766M/s

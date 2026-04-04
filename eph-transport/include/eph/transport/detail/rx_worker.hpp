@@ -666,7 +666,25 @@ private:
         auto ws_reassembly_storage = std::make_unique<uint8_t[]>(kWsReassemblyBufSize);
         size_t ws_reassembly_len = 0;
 
+        // Threshold monitoring state — checked every N iterations (default 1024).
+        uint32_t threshold_counter = 0;
+        const bool thresholds_enabled =
+            core_.config.thresholds.on_breach &&
+            (core_.config.thresholds.rx_drop_threshold > 0 ||
+             core_.config.thresholds.rtt_p99_ns_threshold > 0);
+        const uint32_t threshold_interval =
+            core_.config.thresholds.check_interval > 0
+                ? core_.config.thresholds.check_interval : 1024;
+
         while (core_.running.load(std::memory_order_acquire)) {
+            // -- Periodic threshold check --
+            if (thresholds_enabled) [[unlikely]] {
+                if (++threshold_counter >= threshold_interval) {
+                    threshold_counter = 0;
+                    check_thresholds_();
+                }
+            }
+
             // After a server Close frame, stop receiving -- TX will
             // drain the Close response and set running=false.
             if (core_.closing.load(std::memory_order_acquire)) [[unlikely]] {
@@ -922,6 +940,36 @@ private:
         }
 
         SPDLOG_LOGGER_DEBUG(log, "RX loop exited");
+    }
+
+    // -----------------------------------------------------------------------
+    // Threshold monitoring
+    // -----------------------------------------------------------------------
+
+    /// Check transport stats against configured thresholds and invoke on_breach.
+    void check_thresholds_() {
+        const auto& tc = core_.config.thresholds;
+        [[maybe_unused]] auto log = detail::transport_logger();
+
+        // RX drop threshold
+        if (tc.rx_drop_threshold > 0) {
+            uint64_t drops = rx_stats_.dropped.load(std::memory_order_relaxed);
+            if (drops >= tc.rx_drop_threshold) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "Threshold breach: rx_drops={} >= {}", drops, tc.rx_drop_threshold);
+                tc.on_breach("rx_drops", drops, tc.rx_drop_threshold);
+            }
+        }
+
+        // RTT P99 threshold (requires timestamps and RTT histogram data)
+        if (tc.rtt_p99_ns_threshold > 0) {
+            uint64_t p99 = rtt_histogram_.get_value_at_percentile(99.0);
+            if (p99 >= tc.rtt_p99_ns_threshold) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "Threshold breach: rtt_p99_ns={} >= {}", p99, tc.rtt_p99_ns_threshold);
+                tc.on_breach("rtt_p99_ns", p99, tc.rtt_p99_ns_threshold);
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
