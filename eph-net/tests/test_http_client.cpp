@@ -154,6 +154,33 @@ TEST(HttpClientRequest, ExtraHeadersWithBlankLineRejectsInjection) {
     EXPECT_NE(result.error().find("injection"), std::string::npos);
 }
 
+TEST(HttpClientRequest, BareLFInExtraHeadersRejected) {
+    // Bare \n (without \r) can be interpreted as a line terminator by some
+    // proxies, enabling header injection. Verify rejection at various positions.
+    auto r1 = build_http_request("GET", "host.com", "/path",
+        {}, {}, "X-Evil: val\nX-Smuggled: yes\r\n");
+    EXPECT_FALSE(r1.has_value());
+    EXPECT_NE(r1.error().find("bare"), std::string::npos);
+
+    // Bare LF at the start
+    auto r2 = build_http_request("GET", "host.com", "/path",
+        {}, {}, "\nX-Bad: yes\r\n");
+    EXPECT_FALSE(r2.has_value());
+
+    // Bare LF at the end (no \r before final \n)
+    auto r3 = build_http_request("GET", "host.com", "/path",
+        {}, {}, "X-Ok: yes\n");
+    EXPECT_FALSE(r3.has_value());
+}
+
+TEST(HttpClientRequest, ProperCRLFInExtraHeadersAccepted) {
+    // Proper \r\n line endings should pass
+    auto result = build_http_request("GET", "host.com", "/path",
+        {}, {}, "X-Custom: value\r\n");
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_NE(result->find("X-Custom: value\r\n"), std::string::npos);
+}
+
 TEST(HttpClientRequest, ExtraHeadersWithoutBlankLineAccepted) {
     // Normal multi-header extra_headers should work fine
     auto result = build_http_request("GET", "host.com", "/path",
@@ -1236,4 +1263,65 @@ TEST(HttpClientConfigUrlRoundTrip, PathStrippedInRoundTrip) {
     auto cfg = HttpClient::Config::from_url("https://api.io/v1/ticker");
     ASSERT_TRUE(cfg.has_value()) << cfg.error();
     EXPECT_EQ(cfg->to_url(), "https://api.io");
+}
+
+// =============================================================================
+// is_http_response_complete
+// =============================================================================
+
+TEST(HttpResponseComplete, IncompleteWithoutHeaderTerminator) {
+    EXPECT_FALSE(is_http_response_complete("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"));
+}
+
+TEST(HttpResponseComplete, CompleteWithContentLength) {
+    std::string resp = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, IncompleteBodyShorterThanContentLength) {
+    std::string resp = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, CompleteWithZeroContentLength) {
+    std::string resp = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, ChunkedCompleteWithFinalChunk) {
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, ChunkedIncompleteNoFinalChunk) {
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "5\r\nhello\r\n";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, NoContentLengthNoChunkedReturnsFalse) {
+    // Without Content-Length or chunked, relies on connection close.
+    // Should return false (more data may come).
+    std::string resp = "HTTP/1.1 200 OK\r\nX-Custom: val\r\n\r\nsome body";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, EmptyStringReturnsFalse) {
+    EXPECT_FALSE(is_http_response_complete(""));
+}
+
+TEST(HttpResponseComplete, ContentLengthCaseInsensitive) {
+    // find_header should handle case-insensitive lookup
+    std::string resp = "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabc";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(HttpResponseComplete, InvalidContentLengthReturnsFalse) {
+    std::string resp = "HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n";
+    EXPECT_FALSE(is_http_response_complete(resp));
 }
