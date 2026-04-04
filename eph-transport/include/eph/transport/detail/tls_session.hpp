@@ -13,6 +13,7 @@
 /// Data-plane I/O uses TlsRecordCrypto (EVP_AEAD) — no SSL_write/SSL_read.
 
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -393,7 +394,8 @@ class TlsSession {
             remaining -= *result;
         }
 
-        return static_cast<int>(total_sent);
+        // Cap to INT_MAX to avoid signed overflow on the int return.
+        return static_cast<int>(std::min(total_sent, static_cast<size_t>(INT_MAX)));
     }
 
     /// Custom BIO read: reads data from TCP session rx buffer.

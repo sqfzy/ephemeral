@@ -218,6 +218,16 @@ build_http_request(std::string_view method,
             return std::unexpected(std::string(
                 "extra_headers must not contain \\r\\n\\r\\n (header injection risk)"));
         }
+        // Reject bare newlines (\n without preceding \r) — some proxies treat
+        // lone \n as a line terminator, enabling header injection.
+        for (size_t i = 0; i < extra_headers.size(); ++i) {
+            if (extra_headers[i] == '\n' && (i == 0 || extra_headers[i - 1] != '\r')) {
+                SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+                    "build_http_request: extra_headers contains bare LF (potential injection)");
+                return std::unexpected(std::string(
+                    "extra_headers must not contain bare \\n (header injection risk)"));
+            }
+        }
         req.append(extra_headers);
     }
 

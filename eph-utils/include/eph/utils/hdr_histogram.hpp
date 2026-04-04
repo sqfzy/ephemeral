@@ -1169,6 +1169,12 @@ struct Stats {
         };
     }
 
+    /// Subtract counts between two snapshots (delegates to count_delta).
+    /// Enables `auto delta = current - previous;` for interval monitoring.
+    [[nodiscard]] friend Stats operator-(const Stats& lhs, const Stats& rhs) noexcept {
+        return count_delta(lhs, rhs);
+    }
+
     [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
 };
 
