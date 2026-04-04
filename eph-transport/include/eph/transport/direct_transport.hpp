@@ -503,10 +503,87 @@ public:
 
     /// Self-driven poll: burst from TCP + feed + process in one call.
     /// Convenience for direct mode without Reactor.
+    ///
+    /// Plain WS fast-path: when TLS is disabled AND the reassembly buffer
+    /// is empty, WS frame decode runs inline during poll_rx's data callback
+    /// — zero memcpy. Falls back to feed_rx + process_pending when the
+    /// frame spans multiple TCP segments or TLS is enabled.
     [[nodiscard]] std::expected<uint16_t, std::string> poll() noexcept {
         if (!core_.running.load(std::memory_order_acquire))
             return std::unexpected(std::string("transport not running"));
 
+        auto& rx = direct_rx_;
+
+        // Lazy-init (same as feed_rx, but we may skip feed_rx on fast-path)
+        if (!rx.initialized) [[unlikely]] {
+            if constexpr (kEnableTimestamps) {
+                auto npc = eph::utils::TSC::get_ns_per_cycle();
+                core_.ns_per_cycle = npc.value_or(0.0);
+            }
+            rx.initialized = true;
+        }
+
+        // Plain WS zero-copy fast-path: decode directly from TCP payload
+        // pointer within the poll_rx callback, avoiding the memcpy into
+        // ws_reassembly_storage. This is safe because DPDK mbufs remain
+        // valid until process_rx returns (batch-freed after all callbacks).
+        //
+        // Fallback condition: if ws_reassembly has leftover data from a
+        // prior partial frame, we must use the reassembly path.
+        if (!core_.config.use_tls && rx.ws_reassembly_len == 0) {
+            bool had_leftover = false;
+
+            auto rx_result = core_.tcp->poll_rx(
+                [this, &had_leftover](const uint8_t* data, uint16_t len) {
+                    auto& rx2 = direct_rx_;
+
+                    // Set arrival TSC for latency measurement
+                    if constexpr (kEnableTimestamps) {
+                        if constexpr (requires { core_.tcp->last_rx_burst_tsc(); }) {
+                            core_.current_arrival_tsc = core_.tcp->last_rx_burst_tsc();
+                        }
+                    }
+
+                    // If a previous segment in this burst left a partial frame,
+                    // fall back to reassembly path for the rest of the burst.
+                    if (had_leftover) {
+                        feed_rx(data, len);
+                        return;
+                    }
+
+                    // Try zero-copy: process WS frames directly on TCP payload
+                    size_t consumed = fp_->process(data, len);
+                    size_t remaining = len - std::min(consumed, static_cast<size_t>(len));
+
+                    if (remaining > 0) {
+                        // Partial frame: copy leftover into reassembly buffer
+                        std::memcpy(rx2.ws_reassembly_storage.get(),
+                                    data + consumed, remaining);
+                        rx2.ws_reassembly_len = remaining;
+                        had_leftover = true;
+                    }
+                });
+
+            if (!rx_result) {
+                core_.running.store(false, std::memory_order_release);
+                return std::unexpected(std::format("TCP rx error: {}", rx_result.error()));
+            }
+
+            if (*rx_result == 0) return uint16_t{0};
+
+            // If leftover accumulated, process the reassembly buffer
+            if (rx.ws_reassembly_len > 0) {
+                process_pending();
+            }
+
+            if constexpr (requires { core_.tcp->flush_pending_ack(); }) {
+                core_.tcp->flush_pending_ack();
+            }
+
+            return *rx_result;
+        }
+
+        // Standard path: TLS mode or reassembly buffer has leftover data
         auto rx_result = core_.tcp->poll_rx(
             [this](const uint8_t* data, uint16_t len) {
                 feed_rx(data, len);
