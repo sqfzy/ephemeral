@@ -633,6 +633,10 @@ private:
                             core_.tcp->reset();
                             break;
                         }
+                        SPDLOG_LOGGER_WARN(log,
+                            "TLS encrypt failed: write_seq={}, "
+                            "msg_len={}, opcode=0x{:02X}",
+                            wseq, batch[i].len, batch[i].opcode);
                     } else {
                         coalesced_len += enc_len;
                         batch_packets++;
@@ -787,10 +791,19 @@ private:
             std::memory_order_relaxed);
 
         if (core_.config.use_tls) {
-            if (!core_.crypto) return false;
+            if (!core_.crypto) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "WS ping skipped: crypto context unavailable (reconnecting?)");
+                return false;
+            }
             uint16_t tls_len = core_.crypto->encrypt(
                 ws_buf, static_cast<uint16_t>(ping_len), tls_buf);
-            if (tls_len == 0) return false;
+            if (tls_len == 0) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "WS ping encrypt failed: write_seq={}",
+                    core_.crypto ? core_.crypto->write_seq() : 0);
+                return false;
+            }
 
             auto result = core_.tcp->send(tls_buf, tls_len);
             if (!result) {
