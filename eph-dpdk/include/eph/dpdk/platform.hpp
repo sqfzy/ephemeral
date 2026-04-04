@@ -28,8 +28,9 @@
 #include <thread>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
+
+#include "eph/dpdk/detail/logger.hpp"
 
 #include <rte_errno.h>
 #include <rte_ethdev.h>

@@ -14,8 +14,7 @@
 #include <rte_eal.h>
 #include <rte_errno.h>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/dpdk/detail/logger.hpp"
 
 namespace eph::dpdk {
 

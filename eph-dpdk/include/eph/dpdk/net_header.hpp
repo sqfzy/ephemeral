@@ -7,7 +7,6 @@
 /// Provides constexpr checksum computation and header template building
 /// for zero-copy packet construction on mbufs.
 
-#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -15,54 +14,14 @@
 #include <format>
 #include <string>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
-
 #include <rte_byteorder.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 
-namespace eph::dpdk {
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Logger factory — eliminates the 9x duplicated get-or-create pattern
-// ─────────────────────────────────────────────────────────────────────────────
-
-namespace detail {
-
-/// Get-or-create a named spdlog logger with colored stdout sink.
-///
-/// Each unique Name produces a separate static local, so loggers are
-/// created once per process (thread-safe via C++11 static-local guarantee).
-/// Using a C++20 NTTP (non-type template parameter) string literal avoids
-/// the runtime map lookup that a std::string_view parameter would need.
-///
-/// Usage: auto* log = get_logger<"dpdk.tcp">();
-template <auto Name>
-    requires requires { { Name.sv() } -> std::same_as<std::string_view>; }
-[[nodiscard]] inline spdlog::logger* get_logger() {
-    static auto l = [] {
-        constexpr auto name = Name.sv();
-        auto lg = spdlog::get(std::string{name});
-        if (!lg) lg = spdlog::stdout_color_mt(std::string{name});
-        return lg;
-    }();
-    return l.get();
-}
-
-/// Compile-time string literal wrapper for NTTP logger names.
-/// Enables `get_logger<"dpdk.tcp">()` syntax with C++20 class NTTP.
-template <size_t N>
-struct LoggerName {
-    char data[N]{};
-    constexpr LoggerName(const char (&s)[N]) { std::copy_n(s, N, data); }
-    [[nodiscard]] constexpr std::string_view sv() const { return {data, N - 1}; }
-};
-
-} // namespace detail
-} // namespace eph::dpdk
+// Logger factory (LoggerName, get_logger) — re-exported for backward compat.
+#include "eph/dpdk/detail/logger.hpp"
 
 namespace eph::dpdk::net {
 
