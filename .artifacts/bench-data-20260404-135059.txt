@@ -1,0 +1,263 @@
+# Benchmark Baseline Data
+# Date: 2026-04-04 13:50:59
+# Commit: 1d8b08d (dirty)
+# Branch: dev
+# OS: Linux 6.6.87.2-microsoft-standard-WSL2
+# CPU: 12th Gen Intel(R) Core(TM) i7-12700H
+# Compiler: g++ (GCC) 15.2.1 20260209
+# Build: xmake release mode (fastest)
+# Source: /bench baseline
+
+## eph-net
+=== bench_http_client ===
+BM_BuildHttpRequest_Get                                51.8 ns         51.8 ns     13920650
+BM_BuildHttpRequest_Post                                137 ns          137 ns      5189021
+BM_BuildHttpRequest_ManyHeaders                         571 ns          571 ns      1265483
+BM_ParseHttpResponse_Json                              46.8 ns         46.8 ns     15182197
+BM_ParseHttpResponse_LargeBody                         48.8 ns         48.8 ns     13332253
+BM_FindHeader                                          71.8 ns         71.8 ns      9877074
+BM_FindHeader_LastHeader                               67.9 ns         67.9 ns     11191453
+BM_FindHeaderOpt                                       76.6 ns         76.6 ns      8923117
+BM_FindHeader_Miss                                     16.5 ns         16.5 ns     45992314
+BM_HttpResponse_ToJson                                  216 ns          216 ns      2976830
+BM_HttpClientConfig_Validate                           5.90 ns         5.90 ns    115064713
+BM_IsResponseComplete_ContentLength                    74.5 ns         74.5 ns      9332464
+BM_IsResponseComplete_Chunked                           103 ns          103 ns      6947213
+BM_IsResponseComplete_Incomplete                       73.7 ns         73.7 ns      9374741
+BM_HttpClientConfig_FromUrl_Https                      29.0 ns         29.0 ns     24062061
+BM_HttpClientConfig_FromUrl_HttpsWithPortAndPath       30.2 ns         30.2 ns     23176975
+BM_HttpClientConfig_FromUrl_Http                       29.5 ns         29.5 ns     23801393
+BM_HttpClientConfig_FromUrl_Ipv6                       27.7 ns         27.7 ns     25591365
+BM_HttpClientConfig_ToUrl_DefaultPort                  51.3 ns         51.3 ns     13956193
+BM_HttpClientConfig_ToUrl_NonDefaultPort               76.3 ns         76.3 ns      8714061
+BM_HttpClientConfig_ToUrl_Ipv6                         76.8 ns         76.8 ns      9461021
+
+=== bench_circuit_breaker ===
+BM_CircuitBreaker_Allow_Closed            3.57 ns         3.57 ns    195135030
+BM_CircuitBreaker_Allow_Open              19.7 ns         19.7 ns     34841983
+BM_CircuitBreaker_RecordFailure           4.56 ns         4.56 ns    150121118
+BM_CircuitBreaker_RecordSuccess           3.28 ns         3.28 ns    214293223
+BM_CircuitBreaker_State                   3.08 ns         3.08 ns    233059235
+BM_CircuitBreaker_FailureCount            2.97 ns         2.97 ns    242338604
+BM_CircuitBreaker_IsTripped_Closed        3.21 ns         3.21 ns    225680924
+BM_CircuitBreaker_IsTripped_Open          19.8 ns         19.8 ns     35798903
+BM_CircuitBreaker_ToJson                   219 ns          219 ns      3309066
+BM_CircuitBreaker_TimeUntilHalfOpen       20.0 ns         20.0 ns     35069649
+BM_CircuitBreaker_Dump                     206 ns          206 ns      3395488
+BM_CircuitBreaker_TripAndReset            1238 ns         1238 ns       604553
+
+=== bench_rate_limiter ===
+BM_RateLimiter_TryAcquire_Available          23.1 ns         23.1 ns     30512870
+BM_RateLimiter_TryAcquire_Exhausted          22.6 ns         22.6 ns     30620803
+BM_RateLimiter_TryAcquireBatch/1             22.9 ns         22.9 ns     31122756
+BM_RateLimiter_TryAcquireBatch/10            22.6 ns         22.6 ns     31456700
+BM_RateLimiter_TryAcquireBatch/100           23.5 ns         23.5 ns     30176080
+BM_RateLimiter_Available                     22.2 ns         22.2 ns     31849343
+BM_RateLimiter_IsExhausted                   22.6 ns         22.6 ns     31129321
+BM_RateLimiter_ToJson                         263 ns          263 ns      2670919
+BM_RateLimiter_Dump                           253 ns          253 ns      2619116
+BM_RateLimiter_Reset                         19.7 ns         19.7 ns     35819196
+BM_RateLimiter_BurstDrainAndReset/10          244 ns          244 ns      2835881 items_per_second=40.9367M/s
+BM_RateLimiter_BurstDrainAndReset/100        2467 ns         2467 ns       302310 items_per_second=40.5399M/s
+BM_RateLimiter_BurstDrainAndReset/1000      22581 ns        22581 ns        29313 items_per_second=44.2856M/s
+
+=== bench_hmac ===
+BM_HmacSha256Hex_BinanceQuery         278 ns          278 ns      2457944 bytes_per_second=377.15Mi/s
+BM_HmacSha256_Raw                     223 ns          223 ns      3155528 bytes_per_second=162.319Mi/s
+BM_HmacVerify                         227 ns          227 ns      3120889
+BM_HmacVerifyHex                      253 ns          253 ns      2824417
+BM_ToHex_32Bytes                     23.4 ns         23.4 ns     30701329
+BM_ToBase64_32Bytes                   128 ns          128 ns      5283227
+BM_HmacSha256Base64_OkxPrehash        357 ns          357 ns      1976683 bytes_per_second=133.65Mi/s
+BM_HmacVerifyBase64                   365 ns          365 ns      1966800
+BM_HmacSha256_MessageSize/16          225 ns          225 ns      3128301 bytes_per_second=67.7787Mi/s
+BM_HmacSha256_MessageSize/64          265 ns          265 ns      2770426 bytes_per_second=230.365Mi/s
+BM_HmacSha256_MessageSize/512         483 ns          483 ns      1360895 bytes_per_second=1009.91Mi/s
+BM_HmacSha256_MessageSize/4096       2150 ns         2150 ns       318139 bytes_per_second=1.77415Gi/s
+
+=== bench_gateway ===
+BM_Gateway_Add                       1401 ns         1408 ns       526355
+BM_Gateway_FindByTag/1               4.83 ns         4.83 ns    145833936
+BM_Gateway_FindByTag/4               16.6 ns         16.6 ns     43197424
+BM_Gateway_FindByTag/8               25.5 ns         25.5 ns     27512201
+BM_Gateway_FindByTag/16              24.6 ns         24.6 ns     28757748
+BM_Gateway_Health                    3.21 ns         3.21 ns    218850167
+BM_Gateway_HealthyCount/1            3.77 ns         3.77 ns    190641168
+BM_Gateway_HealthyCount/4            4.17 ns         4.17 ns    167272813
+BM_Gateway_HealthyCount/8            5.04 ns         5.04 ns    149876893
+BM_Gateway_HealthyCount/16           8.75 ns         8.75 ns     69221386
+BM_Gateway_CheckHealth/1             7.84 ns         7.84 ns     90902009
+BM_Gateway_CheckHealth/4             13.0 ns         13.0 ns     54843344
+BM_Gateway_CheckHealth/8             20.4 ns         20.4 ns     35432469
+BM_Gateway_CheckHealth/16            34.9 ns         34.9 ns     20612132
+BM_Gateway_ForEach/1                 3.23 ns         3.23 ns    209937823
+BM_Gateway_ForEach/4                 3.48 ns         3.48 ns    208720509
+BM_Gateway_ForEach/8                 3.65 ns         3.65 ns    190654075
+BM_Gateway_ForEach/16                3.83 ns         3.83 ns    181197505
+BM_Gateway_RemoveByTag                912 ns          913 ns       784581
+BM_Gateway_ReconnectByTag/1           567 ns          567 ns      1270485
+BM_Gateway_ReconnectByTag/4           613 ns          613 ns      1138423
+BM_Gateway_ReconnectByTag/8           587 ns          587 ns      1070563
+BM_Gateway_ReconnectByTag/16          585 ns          585 ns      1228894
+BM_Gateway_ConnectionTags/1          14.5 ns         14.5 ns     48704654
+BM_Gateway_ConnectionTags/4          24.1 ns         24.1 ns     28723128
+BM_Gateway_ConnectionTags/8          40.3 ns         40.3 ns     18082829
+BM_Gateway_ConnectionTags/16         64.1 ns         64.1 ns     11529123
+BM_Gateway_Dump/1                     230 ns          230 ns      2797886
+BM_Gateway_Dump/4                     730 ns          730 ns       924720
+BM_Gateway_Dump/8                    1365 ns         1365 ns       480637
+
+=== bench_tls ===
+BM_TlsEncrypt/64          107 ns          107 ns      6687759 bytes_per_second=571.923Mi/s
+BM_TlsEncrypt/128         117 ns          117 ns      5579903 bytes_per_second=1.01654Gi/s
+BM_TlsEncrypt/256         134 ns          134 ns      5153846 bytes_per_second=1.7771Gi/s
+BM_TlsEncrypt/512         205 ns          205 ns      3621384 bytes_per_second=2.32423Gi/s
+BM_TlsEncrypt/1024        256 ns          256 ns      2729340 bytes_per_second=3.72505Gi/s
+BM_TlsEncrypt/2048        427 ns          427 ns      1656141 bytes_per_second=4.4623Gi/s
+BM_TlsEncrypt/4096        777 ns          777 ns       941651 bytes_per_second=4.90781Gi/s
+BM_TlsDecrypt/64          121 ns          121 ns      5926791 bytes_per_second=506.136Mi/s
+BM_TlsDecrypt/128         133 ns          133 ns      5468780 bytes_per_second=920.667Mi/s
+BM_TlsDecrypt/256         144 ns          144 ns      4827289 bytes_per_second=1.65019Gi/s
+BM_TlsDecrypt/512         186 ns          186 ns      3715759 bytes_per_second=2.55887Gi/s
+BM_TlsDecrypt/1024        273 ns          273 ns      2453902 bytes_per_second=3.49674Gi/s
+BM_TlsDecrypt/2048        442 ns          442 ns      1391272 bytes_per_second=4.31647Gi/s
+BM_TlsDecrypt/4096        762 ns          762 ns       904449 bytes_per_second=5.00465Gi/s
+
+=== bench_socket_config ===
+BM_SocketConfig_FromUrl_Simple          32.6 ns         32.6 ns     21853052
+BM_SocketConfig_FromUrl_TcpScheme       34.6 ns         34.6 ns     20369839
+BM_SocketConfig_FromUrl_IPv6            25.7 ns         25.7 ns     28478659
+BM_SocketConfig_ToUrl                   62.0 ns         62.0 ns     10095643
+BM_SocketConfig_Validate                8.27 ns         8.27 ns     89665430
+BM_SocketConfig_ToJson                   307 ns          307 ns      2288409
+BM_SocketConfig_Dump                     298 ns          298 ns      2420287
+
+=== bench_kill_switch ===
+BM_KillSwitch_IsShutdownRequested      0.230 ns        0.230 ns   2928277139
+BM_KillSwitch_Register                  2172 ns         2179 ns       329314
+BM_KillSwitch_Unregister                 216 ns          218 ns      3226435
+BM_KillSwitch_TransportCount           0.226 ns        0.226 ns   3048313323
+BM_KillSwitch_RunningCount              5.82 ns         5.82 ns    120249046
+BM_KillSwitch_RequestShutdown          0.224 ns        0.224 ns   3045645781
+BM_KillSwitch_ToJson                     116 ns          116 ns      6127798
+BM_KillSwitch_Dump                       126 ns          126 ns      5830909
+
+## eph-transport
+=== bench_transport_types ===
+BM_BuildNonce                                 0.523 ns        0.523 ns   1000000000 items_per_second=1.91307G/s
+BM_TwophaseFilter_16Frames_4Symbols             255 ns          255 ns      2758435 items_per_second=62.6972M/s
+BM_TwophaseFilter_64Frames_16Symbols            343 ns          343 ns      2067393 items_per_second=186.597M/s
+BM_TwophaseFilter_128Frames_32Symbols           472 ns          472 ns      1567637 items_per_second=271.031M/s
+BM_TwophaseFilter_64Frames_AllUnique            362 ns          362 ns      1811543 items_per_second=176.884M/s
+BM_TwophaseFilter_64Frames_SingleSymbol         313 ns          313 ns      2182087 items_per_second=204.51M/s
+BM_FromUrl_Simple                              70.5 ns         70.5 ns      9971312 items_per_second=14.182M/s
+BM_FromUrl_WithPort                            78.0 ns         78.0 ns      8961382 items_per_second=12.8226M/s
+BM_FromUrl_Ipv6                                67.6 ns         67.6 ns     10699467 items_per_second=14.7989M/s
+BM_Validate_Valid                              12.4 ns         12.4 ns     58886599 items_per_second=80.5229M/s
+BM_Validate_WithAllOptionalFields              16.7 ns         16.7 ns     36735495 items_per_second=59.739M/s
+BM_ConfigToJson                                 731 ns          731 ns       864319 items_per_second=1.36888M/s
+BM_StatsToJson                                 4537 ns         4537 ns       168515 items_per_second=220.392k/s
+BM_StatsDump                                   1959 ns         1959 ns       344141 items_per_second=510.504k/s
+BM_ConfigToUrl                                  102 ns          102 ns      6891038 items_per_second=9.77248M/s
+BM_ConfigDump                                   871 ns          871 ns       808218 items_per_second=1.14822M/s
+BM_RttStatsToJson                               475 ns          475 ns      1525616 items_per_second=2.10344M/s
+BM_Warnings_Clean                              1.85 ns         1.85 ns    391633027 items_per_second=541.365M/s
+BM_Warnings_WithIssues                          124 ns          124 ns      5649741 items_per_second=8.0733M/s
+BM_ConnectionInfoToJson                         203 ns          203 ns      3448236 items_per_second=4.9232M/s
+BM_StatsDelta                                  16.1 ns         16.1 ns     44721928 items_per_second=62.0477M/s
+BM_RttStatsDump                                 411 ns          411 ns      1708584 items_per_second=2.43285M/s
+BM_Utf8Validate_AsciiOnly                       484 ns          484 ns      1454982 bytes_per_second=504.831Mi/s
+BM_Utf8Validate_Mixed                          2209 ns         2209 ns       316284 bytes_per_second=483.628Mi/s
+BM_Utf8Validate_Invalid                         292 ns          292 ns      2473817 bytes_per_second=836.78Mi/s
+BM_OpcodeName_Known                           0.225 ns        0.225 ns   3180787245 items_per_second=4.43601G/s
+BM_OpcodeName_Unknown                          2.90 ns         2.90 ns    243698563 items_per_second=344.972M/s
+BM_EncodeFrame_Small                           3.59 ns         3.59 ns    196952882 bytes_per_second=16.5963Gi/s
+BM_EncodeFrame_512                             15.0 ns         15.0 ns     46624935 bytes_per_second=31.6859Gi/s
+BM_DecodeFrame_SmallUnmasked                   6.77 ns         6.77 ns    102889853 bytes_per_second=8.80261Gi/s
+BM_DecodeFrame_MaskedPayload                   7.39 ns         7.39 ns     95569563 bytes_per_second=8.06166Gi/s
+BM_DecodeFrame_CloseWithReason                 7.48 ns         7.48 ns     94104080 items_per_second=133.61M/s
+BM_DecodeFrame_CloseStatusCodeExtraction      0.738 ns        0.738 ns    969820166 items_per_second=1.35501G/s
+BM_MaskedCopy_64                              0.552 ns        0.552 ns   1245814043 bytes_per_second=108.038Gi/s
+BM_MaskedCopy_512                              8.39 ns         8.39 ns     83419116 bytes_per_second=56.8231Gi/s
+BM_ParseUpgradeResponse_Valid101                397 ns          397 ns      1767301 items_per_second=2.51691M/s
+BM_ParseUpgradeResponse_ManyHeaders             429 ns          429 ns      1758989 items_per_second=2.33245M/s
+BM_ValidateWsAccept                             154 ns          154 ns      4872812 items_per_second=6.49496M/s
+BM_BuildUpgradeRequest                          108 ns          108 ns      6877450 items_per_second=9.28307M/s
+BM_TlsEncrypt_64B                            106287 ns       106287 ns         6780 bytes_per_second=574.249Mi/s items_per_second=9.4085M/s
+BM_TlsEncrypt_512B                           220804 ns       220802 ns         3110 bytes_per_second=2.15957Gi/s items_per_second=4.52895M/s
+BM_TlsEncryptDecrypt_64B                     220029 ns       220030 ns         3200 bytes_per_second=277.395Mi/s items_per_second=4.54484M/s
+
+## eph-utils
+=== bench_time ===
+BM_TSCNow             11.0 ns         11.0 ns     64298457
+BM_TSCToNs            4.46 ns         4.46 ns    156878164 items_per_second=223.989M/s
+BM_TSCToCycles        4.72 ns         4.72 ns    148540361 items_per_second=211.964M/s
+BM_TSCDeltaPair       22.1 ns         22.1 ns     32227446
+
+=== bench_timestamp ===
+BM_MsToNs                 0.231 ns        0.231 ns   3156412818 items_per_second=4.32225G/s
+BM_NsToMs                 0.302 ns        0.302 ns   2287892771 items_per_second=3.30781G/s
+BM_NowNs                   14.8 ns         14.8 ns     47006646 items_per_second=67.448M/s
+BM_NowMs                   15.6 ns         15.6 ns     44808051 items_per_second=64.1968M/s
+BM_FeedLatencyNs           15.1 ns         15.1 ns     45305974 items_per_second=66.0126M/s
+BM_FormatTimestampNs        364 ns          364 ns      2099640 items_per_second=2.74811M/s
+BM_FormatTimestampMs        320 ns          320 ns      2018273 items_per_second=3.12501M/s
+
+=== bench_hdr_histogram ===
+BM_HdrRecord_Constant               0.174 ns        0.174 ns   4061325834 items_per_second=5.75189G/s
+BM_HdrRecord_Sequential              1.60 ns         1.60 ns    428530886 items_per_second=623.192M/s
+BM_HdrRecord_Random                  1.58 ns         1.58 ns    435978731 items_per_second=632.556M/s
+BM_HdrPercentile_P50                 3276 ns         3276 ns       202905 items_per_second=305.218k/s
+BM_HdrPercentile_P99                 3139 ns         3139 ns       217273 items_per_second=318.53k/s
+BM_HdrPercentile_P999                3402 ns         3402 ns       204047 items_per_second=293.927k/s
+BM_HdrMean                          20227 ns        20227 ns        33288 items_per_second=49.4378k/s
+BM_HdrReset                          2787 ns         2782 ns       251263 items_per_second=359.446k/s
+BM_HdrGetPercentiles_Batch          17704 ns        17704 ns        38158 items_per_second=56.4852k/s
+BM_HdrReport                        80905 ns        80903 ns         8433 items_per_second=12.3605k/s
+BM_HdrToJson                        80387 ns        80387 ns         8302 items_per_second=12.4398k/s
+BM_HdrForEachLinear_HighOffset       7554 ns         7553 ns        90894 items_per_second=132.389k/s
+
+=== bench_ema ===
+BM_EmaUpdate                 3.32 ns         3.32 ns    210396096 items_per_second=301.469M/s
+BM_EmaUpdate_Random          2.68 ns         2.68 ns    260442363 items_per_second=373.599M/s
+BM_EmaCrossover_Update       1.91 ns         1.91 ns    380402647 items_per_second=522.642M/s
+
+=== bench_recorder ===
+BM_RecorderRecord                              2.82 ns         2.82 ns    237080653 items_per_second=355.018M/s
+BM_RecorderRecordValues                        2.85 ns         2.85 ns    243294439 items_per_second=3.50469G/s
+BM_ConcurrentRecorderRecord_1Thread            6.20 ns         6.20 ns    117244820 items_per_second=161.171M/s
+BM_ConcurrentRecorderRecord_MT/threads:1       6.15 ns         6.15 ns    112870128 items_per_second=162.661M/s
+BM_ConcurrentRecorderRecord_MT/threads:2       6.79 ns         6.79 ns    110422696 items_per_second=294.689M/s
+BM_ConcurrentRecorderRecord_MT/threads:4       8.09 ns         8.09 ns     97800584 items_per_second=494.643M/s
+
+=== bench_hugepage ===
+BM_HugePage_Make_4KB                       6135 ns         6087 ns       108368 items_per_second=164.278k/s
+BM_StdUnique_Make_4KB                      32.6 ns         32.6 ns     21429898 items_per_second=30.6945M/s
+BM_HugePage_Make_1MB                      30970 ns        30737 ns        23605 items_per_second=32.5341k/s
+BM_StdUnique_Make_1MB                     14965 ns        14965 ns        47142 items_per_second=66.8209k/s
+BM_HugePage_Allocate_Deallocate_64KB       6096 ns         6055 ns       127853 items_per_second=165.155k/s
+BM_HugePage_SequentialAccess_4MB          95347 ns        95346 ns         7142 bytes_per_second=40.9692Gi/s
+BM_StdUnique_SequentialAccess_4MB         93385 ns        93385 ns         6927 bytes_per_second=41.8297Gi/s
+
+=== bench_audit_log ===
+BM_AuditRecord_SingleWriter       12.7 ns         12.7 ns     54799168 items_per_second=78.9702M/s
+BM_AuditRecord_WithFill           12.7 ns         12.7 ns     51071563 items_per_second=78.5522M/s
+BM_AuditRecordMt/threads:1        19.5 ns         19.5 ns     37006785 items_per_second=51.1772M/s
+BM_AuditRecordMt/threads:2        60.9 ns         60.9 ns     11444130 items_per_second=32.843M/s
+BM_AuditRecordMt/threads:4         109 ns          109 ns      5434040 items_per_second=36.5597M/s
+BM_AuditLatest                   0.426 ns        0.426 ns   1690092622 items_per_second=2.35002G/s
+BM_AuditDump                     11882 ns        11882 ns        56616 items_per_second=84.161k/s
+BM_AuditEntryDump                  496 ns          496 ns      1425717 items_per_second=2.01811M/s
+BM_AuditEventName                0.668 ns        0.668 ns   1092749502 items_per_second=1.49641G/s
+
+=== bench_system_stats ===
+BM_SystemStatsSnapshot            11459 ns        11357 ns        59835 items_per_second=88.052k/s
+BM_SystemStatsReset                 258 ns          258 ns      2755131 items_per_second=3.87555M/s
+BM_SystemResourceStatsDump          384 ns          384 ns      1834742 items_per_second=2.60212M/s
+BM_SystemResourceStatsToJson        406 ns          406 ns      1736029 items_per_second=2.46474M/s
+BM_SystemResourceStatsFormat        345 ns          345 ns      2000961 items_per_second=2.89475M/s
+
+=== bench_cpu ===
+BM_CpuRelax        37.1 ns         37.1 ns     18994416 items_per_second=26.9302M/s
+BM_EmptyLoop      0.112 ns        0.112 ns   6376039209 items_per_second=8.95744G/s
+

@@ -41,6 +41,22 @@ static void BM_BuildHttpRequest_Post(benchmark::State& state) {
 }
 BENCHMARK(BM_BuildHttpRequest_Post);
 
+/// Build a POST with many extra headers — exercises the bare-LF validation loop.
+static void BM_BuildHttpRequest_ManyHeaders(benchmark::State& state) {
+    // 20 valid headers ≈ typical signed API request
+    std::string headers;
+    for (int i = 0; i < 20; ++i)
+        headers += std::format("X-Custom-Header-{}: value-{}\r\n", i, i);
+    std::string_view body = R"({"symbol":"ETHUSDT"})";
+    for (auto _ : state) {
+        auto req = build_http_request("POST", "api.binance.com",
+                                       "/api/v3/order", body,
+                                       "application/json", headers);
+        benchmark::DoNotOptimize(req);
+    }
+}
+BENCHMARK(BM_BuildHttpRequest_ManyHeaders);
+
 // ---------------------------------------------------------------------------
 // parse_http_response — response parsing
 // ---------------------------------------------------------------------------
