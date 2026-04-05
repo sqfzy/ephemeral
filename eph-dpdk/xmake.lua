@@ -17,6 +17,10 @@ target("eph-dpdk")
     -- ARM64: DPDK headers need RTE_FORCE_INTRINSICS before rte_config.h.
     add_defines("RTE_FORCE_INTRINSICS", { public = true })
     add_cxflags("-include", "rte_config.h", { public = true, force = true })
+    -- DPDK's rte_memcpy uses SSSE3 intrinsics (_mm_alignr_epi8) which
+    -- GCC requires -mssse3 to enable. On toolchains where this isn't
+    -- implied by the baseline target, the intrinsic fails to inline.
+    add_cxflags("-mssse3", { public = true, force = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")

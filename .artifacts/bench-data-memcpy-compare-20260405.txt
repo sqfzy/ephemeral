@@ -1,0 +1,45 @@
+# Reproduced: 2026-04-05 13:12
+# Commit: 9b5f365 (dirty)
+# Compiler: gcc 15.2.1
+# Build: xmake build bench_memcpy_compare
+# Bench: xmake run bench_memcpy_compare --benchmark_min_time=0.3s
+# Profile: -O3 -march=native -mssse3 -include rte_config.h -DRTE_FORCE_INTRINSICS
+# CPU: 12 X 2688 MHz, L1 48KiB, L2 1280KiB, L3 24576KiB
+# ---
+2026-04-05T13:12:58+08:00
+Running /home/sqfzy/work_space/work_code/cpp/ephemeral/build/linux/x86_64/release/bench_memcpy_compare
+Run on (12 X 2688 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB (x6)
+  L1 Instruction 32 KiB (x6)
+  L2 Unified 1280 KiB (x6)
+  L3 Unified 24576 KiB (x1)
+--------------------------------------------------------------------------------------
+Benchmark                            Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------
+BM_StdMemcpy/16                   1.05 ns         1.05 ns    400588075 bytes_per_second=14.152Gi/s
+BM_StdMemcpy/20                   1.10 ns         1.10 ns    384359877 bytes_per_second=16.8824Gi/s
+BM_StdMemcpy/52                   1.40 ns         1.40 ns    315091045 bytes_per_second=34.6341Gi/s
+BM_StdMemcpy/64                   1.41 ns         1.41 ns    309038648 bytes_per_second=42.3503Gi/s
+BM_StdMemcpy/128                  2.23 ns         2.23 ns    192842350 bytes_per_second=53.4874Gi/s
+BM_StdMemcpy/256                  2.53 ns         2.53 ns    170014763 bytes_per_second=94.3949Gi/s
+BM_StdMemcpy/512                  4.94 ns         4.94 ns     80403662 bytes_per_second=96.5624Gi/s
+BM_StdMemcpy/1024                 8.54 ns         8.54 ns     48620704 bytes_per_second=111.69Gi/s
+BM_StdMemcpy/4096                 31.3 ns         31.3 ns     13783863 bytes_per_second=121.93Gi/s
+BM_StdMemcpy/16384                98.0 ns         98.0 ns      4326843 bytes_per_second=155.716Gi/s
+BM_RteMemcpy/16                  0.565 ns        0.565 ns    701572622 bytes_per_second=26.3712Gi/s
+BM_RteMemcpy/20                  0.608 ns        0.608 ns    803507548 bytes_per_second=30.6423Gi/s
+BM_RteMemcpy/52                  0.915 ns        0.915 ns    485588682 bytes_per_second=52.9234Gi/s
+BM_RteMemcpy/64                  0.907 ns        0.907 ns    500494137 bytes_per_second=65.6954Gi/s
+BM_RteMemcpy/128                  2.03 ns         2.03 ns    213941816 bytes_per_second=58.7204Gi/s
+BM_RteMemcpy/256                  3.44 ns         3.44 ns    122860631 bytes_per_second=69.2951Gi/s
+BM_RteMemcpy/512                  6.23 ns         6.23 ns     70877042 bytes_per_second=76.5863Gi/s
+BM_RteMemcpy/1024                 13.0 ns         13.0 ns     31935198 bytes_per_second=73.1713Gi/s
+BM_RteMemcpy/4096                 51.3 ns         51.3 ns      7261377 bytes_per_second=74.3735Gi/s
+BM_RteMemcpy/16384                 188 ns          188 ns      2207768 bytes_per_second=81.0369Gi/s
+BM_StdMemcpy_Unaligned/64         1.51 ns         1.51 ns    296809613 bytes_per_second=39.4928Gi/s
+BM_StdMemcpy_Unaligned/512        5.28 ns         5.28 ns     73412039 bytes_per_second=90.2965Gi/s
+BM_StdMemcpy_Unaligned/4096       39.5 ns         39.5 ns     11287292 bytes_per_second=96.5369Gi/s
+BM_RteMemcpy_Unaligned/64         1.38 ns         1.38 ns    292720483 bytes_per_second=43.3138Gi/s
+BM_RteMemcpy_Unaligned/512        11.0 ns         11.0 ns     42666996 bytes_per_second=43.391Gi/s
+BM_RteMemcpy_Unaligned/4096       50.9 ns         50.9 ns      8923848 bytes_per_second=74.9619Gi/s
