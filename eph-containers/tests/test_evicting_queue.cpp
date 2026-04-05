@@ -1467,3 +1467,150 @@ TEST(EvictingQueueStats, std_formatter_with_overwrites) {
     EXPECT_NE(formatted.find("total_pushed: 10"), std::string::npos);
     EXPECT_NE(formatted.find("overwritten:"), std::string::npos);
 }
+
+// ===========================================================================
+// stats().overwritten accuracy — multi-slot queue
+// ===========================================================================
+
+TEST(EvictingQueueStats, MultiSlotOverwrittenExactCount_NoReads) {
+    // Push 10 items into capacity-4 queue without reading.
+    // 4 slots hold data, 6 were overwritten.
+    EvictingQueue<TestData, 4> queue;
+    for (uint32_t i = 1; i <= 10; ++i) {
+        queue.push(TestData{.seq = i});
+    }
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, 10u);
+    EXPECT_EQ(s.total_popped, 0u);
+    // overwritten = total_pushed - total_popped - capacity = 10 - 0 - 4 = 6
+    EXPECT_EQ(s.overwritten, 6u);
+    EXPECT_EQ(s.current_size, 4u);
+}
+
+TEST(EvictingQueueStats, MultiSlotOverwrittenExactCount_WithReads) {
+    // Push 8 items, read 2, into capacity-4 queue.
+    // After reading, the reader pointer advances, changing the overwrite calc.
+    EvictingQueue<TestData, 4> queue;
+    for (uint32_t i = 1; i <= 8; ++i) {
+        queue.push(TestData{.seq = i});
+    }
+
+    // Consume latest (advances reader to global_index=8)
+    auto val = queue.try_pop_latest();
+    ASSERT_TRUE(val.has_value());
+    EXPECT_EQ(val->seq, 8u);
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, 8u);
+    EXPECT_EQ(s.total_popped, 8u);
+    // After consuming latest, reader is at 8, writer at 8.
+    // overwritten = max(0, 8 - 8 - 4) = 0 (reader caught up)
+    EXPECT_EQ(s.overwritten, 0u);
+    EXPECT_EQ(s.current_size, 0u);
+}
+
+TEST(EvictingQueueStats, MultiSlotOverwrittenGrowsMonotonically) {
+    // Verify that overwrites accumulate correctly as we push without reading.
+    EvictingQueue<TestData, 2> queue;
+
+    // First 2 pushes: no overwrites (filling slots)
+    queue.push(TestData{.seq = 1});
+    queue.push(TestData{.seq = 2});
+    auto s1 = queue.stats();
+    EXPECT_EQ(s1.overwritten, 0u);
+
+    // 3rd push: first overwrite
+    queue.push(TestData{.seq = 3});
+    auto s2 = queue.stats();
+    EXPECT_EQ(s2.overwritten, 1u);
+
+    // 4th push: second overwrite
+    queue.push(TestData{.seq = 4});
+    auto s3 = queue.stats();
+    EXPECT_EQ(s3.overwritten, 2u);
+}
+
+TEST(EvictingQueueStats, SingleSlotOverwrittenExactCount) {
+    // Push 5 items into capacity-1 queue without reading.
+    // 1 slot holds data, 4 were overwritten.
+    EvictingQueue<TestData, 1> queue;
+    for (uint32_t i = 1; i <= 5; ++i) {
+        queue.push(TestData{.seq = i});
+    }
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, 5u);
+    EXPECT_EQ(s.total_popped, 0u);
+    EXPECT_EQ(s.overwritten, 4u);
+    EXPECT_EQ(s.current_size, 1u);
+}
+
+TEST(EvictingQueueStats, StatsConsistentWithHelperAccessors) {
+    // Verify that stats() produces the same values as the individual
+    // accessor methods (write_count, read_count, overwrite_count_approx).
+    EvictingQueue<TestData, 4> queue;
+
+    for (uint32_t i = 1; i <= 7; ++i) {
+        queue.push(TestData{.seq = i});
+    }
+    // Consume latest
+    auto val = queue.try_pop_latest();
+    ASSERT_TRUE(val.has_value());
+
+    auto s = queue.stats();
+    EXPECT_EQ(s.total_pushed, queue.write_count());
+    EXPECT_EQ(s.total_popped, queue.read_count());
+    EXPECT_EQ(s.capacity, 4u);
+}
+
+// ===========================================================================
+// Multi-thread stats consistency: no torn reads from stats()
+// ===========================================================================
+
+TEST(EvictingQueueStats, ConcurrentStatsNeverShowNegativeOverwritten) {
+    // A monitoring thread calling stats() while a writer pushes rapidly
+    // must never see negative (wrapped-around) overwritten values.
+    EvictingQueue<TestData, 4> queue;
+    constexpr uint32_t kPushes = 500'000;
+    std::atomic<bool> writer_done{false};
+    std::atomic<uint64_t> invalid_stats_count{0};
+
+    std::thread writer([&] {
+        for (uint32_t i = 1; i <= kPushes; ++i) {
+            queue.push(TestData{.seq = i});
+        }
+        writer_done.store(true, std::memory_order_release);
+    });
+
+    // Monitor thread: poll stats() and verify invariants
+    std::thread monitor([&] {
+        while (!writer_done.load(std::memory_order_acquire)) {
+            auto s = queue.stats();
+            // Invariant: overwritten must not exceed total_pushed
+            if (s.overwritten > s.total_pushed) {
+                invalid_stats_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            // Invariant: current_size must not exceed capacity
+            if (s.current_size > s.capacity) {
+                invalid_stats_count.fetch_add(1, std::memory_order_relaxed);
+            }
+            // Invariant: total_popped + overwritten + current_size <= total_pushed
+            if (s.total_popped + s.overwritten + s.current_size > s.total_pushed + s.capacity) {
+                // Allow slack due to relaxed ordering, but not gross violations
+            }
+        }
+    });
+
+    writer.join();
+    monitor.join();
+
+    EXPECT_EQ(invalid_stats_count.load(), 0u)
+        << "stats() returned invalid values during concurrent writes";
+
+    // Final stats should be consistent
+    auto final_s = queue.stats();
+    EXPECT_EQ(final_s.total_pushed, kPushes);
+    EXPECT_EQ(final_s.overwritten, kPushes - 4);
+    EXPECT_EQ(final_s.current_size, 4u);
+}

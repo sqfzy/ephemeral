@@ -498,3 +498,101 @@ TEST(KillSwitch, FormatterComposableInFormat) {
     auto s = std::format("status: {}", ks);
     EXPECT_NE(s.find("status: KillSwitch"), std::string::npos);
 }
+
+// ── Boundary: register after unregister at capacity ─────────────────────────
+
+TEST(KillSwitch, RegisterAfterUnregisterAtCapacity) {
+    // Fill to max capacity, unregister one, then re-register a new transport.
+    // Verifies the slot freed by unregister is reusable.
+    KillSwitch ks;
+    std::array<MockTransport, kKillSwitchMaxTransports> transports;
+    for (size_t i = 0; i < kKillSwitchMaxTransports; ++i) {
+        ASSERT_TRUE(ks.register_transport(&transports[i]));
+    }
+    EXPECT_EQ(ks.transport_count(), kKillSwitchMaxTransports);
+
+    // At capacity, new registration must fail
+    MockTransport extra;
+    EXPECT_FALSE(ks.register_transport(&extra));
+
+    // Unregister one transport to free a slot
+    ks.unregister_transport(&transports[0]);
+    EXPECT_EQ(ks.transport_count(), kKillSwitchMaxTransports - 1);
+
+    // Now registration should succeed again
+    MockTransport replacement;
+    EXPECT_TRUE(ks.register_transport(&replacement));
+    EXPECT_EQ(ks.transport_count(), kKillSwitchMaxTransports);
+
+    // Shutdown should stop the replacement but not the unregistered one
+    ks.shutdown();
+    EXPECT_FALSE(replacement.is_running());
+    EXPECT_TRUE(transports[0].is_running());  // was unregistered before shutdown
+}
+
+TEST(KillSwitch, DoubleUnregisterIsHarmless) {
+    // Unregistering the same transport twice must not corrupt the array
+    // or cause a count underflow.
+    KillSwitch ks;
+    MockTransport tp1, tp2, tp3;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    ASSERT_TRUE(ks.register_transport(&tp3));
+    EXPECT_EQ(ks.transport_count(), 3);
+
+    ks.unregister_transport(&tp2);
+    EXPECT_EQ(ks.transport_count(), 2);
+
+    // Second unregister of tp2 should be a no-op
+    ks.unregister_transport(&tp2);
+    EXPECT_EQ(ks.transport_count(), 2);
+
+    // Remaining transports should still be managed correctly
+    ks.shutdown();
+    EXPECT_FALSE(tp1.is_running());
+    EXPECT_TRUE(tp2.is_running());   // was unregistered
+    EXPECT_FALSE(tp3.is_running());
+}
+
+TEST(KillSwitch, UnregisterAllThenReregister) {
+    // Unregister all transports, then register new ones — verify the
+    // array is properly cleaned up and reusable.
+    KillSwitch ks;
+    MockTransport tp1, tp2;
+    ASSERT_TRUE(ks.register_transport(&tp1));
+    ASSERT_TRUE(ks.register_transport(&tp2));
+    EXPECT_EQ(ks.transport_count(), 2);
+
+    ks.unregister_transport(&tp1);
+    ks.unregister_transport(&tp2);
+    EXPECT_EQ(ks.transport_count(), 0);
+
+    // Register fresh transports
+    MockTransport tp3, tp4;
+    ASSERT_TRUE(ks.register_transport(&tp3));
+    ASSERT_TRUE(ks.register_transport(&tp4));
+    EXPECT_EQ(ks.transport_count(), 2);
+
+    ks.shutdown();
+    EXPECT_FALSE(tp3.is_running());
+    EXPECT_FALSE(tp4.is_running());
+    // Original transports were unregistered; they should not be stopped
+    EXPECT_TRUE(tp1.is_running());
+    EXPECT_TRUE(tp2.is_running());
+}
+
+TEST(KillSwitch, RegisterSameTransportTwice) {
+    // Registering the same pointer twice is a user error but must not crash.
+    // Both registrations succeed (no duplicate detection) but shutdown
+    // calls stop() once for each handle entry.
+    KillSwitch ks;
+    MockTransport tp;
+    ASSERT_TRUE(ks.register_transport(&tp));
+    ASSERT_TRUE(ks.register_transport(&tp));
+    EXPECT_EQ(ks.transport_count(), 2);
+
+    ks.shutdown();
+    // stop() called twice (once per handle entry)
+    EXPECT_EQ(tp.stop_count.load(), 1);
+    // Second call sees is_running() == false and skips
+}

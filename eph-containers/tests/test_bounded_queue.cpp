@@ -20,8 +20,12 @@ struct BoundedTestData {
 template <typename T>
 class BoundedQueueTest : public ::testing::Test {};
 
-// 测试容量为 2, 1024 的队列
+// 测试容量为 1, 2, 1024 的队列
+// Capacity=1 is the degenerate case where mask_=0 and the queue is
+// immediately full after a single push. This exercises the boundary
+// where every element maps to index 0 in the ring buffer.
 using BoundedQueueTypes = ::testing::Types<
+    BoundedQueue<BoundedTestData, 1>,
     BoundedQueue<BoundedTestData, 2>,
     BoundedQueue<BoundedTestData, 1024>
 >;
@@ -202,10 +206,11 @@ TYPED_TEST(BoundedQueueTest, BatchPopPartial) {
 TYPED_TEST(BoundedQueueTest, BatchMultiThreadStress) {
     TypeParam queue;
     const uint32_t total_batches = 100'000;
-    constexpr size_t batch_size = 2;  // 使用最小容量兼容的批量大小
+    // Batch size must not exceed queue capacity (Capacity=1 is valid).
+    constexpr size_t batch_size = std::min(size_t{2}, TypeParam::capacity());
 
     std::thread producer([&]() {
-        std::array<BoundedTestData, batch_size> batch{};
+        std::vector<BoundedTestData> batch(batch_size);
         for (uint32_t i = 0; i < total_batches; ++i) {
             for (size_t j = 0; j < batch_size; ++j) {
                 batch[j].seq = i * batch_size + static_cast<uint32_t>(j) + 1;
@@ -219,7 +224,7 @@ TYPED_TEST(BoundedQueueTest, BatchMultiThreadStress) {
 
     uint32_t next_expected = 1;
     std::thread consumer([&]() {
-        std::array<BoundedTestData, batch_size> out{};
+        std::vector<BoundedTestData> out(batch_size);
         uint32_t remaining = total_batches * batch_size;
         while (remaining > 0) {
             size_t got = queue.try_pop_n(std::span<BoundedTestData>{out});
@@ -643,20 +648,23 @@ TEST(BoundedQueueBlocking, PushN_SpinsUntilSpaceAvailable) {
 
 TYPED_TEST(BoundedQueueTest, TimedBatchPushSuccess) {
     TypeParam queue;
-    std::vector<BoundedTestData> batch(2);
-    batch[0].seq = 42;
-    batch[1].seq = 43;
+    // Batch size must not exceed capacity (Capacity=1 caps batch at 1).
+    const size_t n = std::min<size_t>(2, TypeParam::capacity());
+    std::vector<BoundedTestData> batch(n);
+    for (size_t i = 0; i < n; ++i) {
+        batch[i].seq = static_cast<uint32_t>(42 + i);
+    }
 
     bool ok = queue.try_push_n_for(
         std::span<const BoundedTestData>{batch},
         std::chrono::milliseconds(10));
     EXPECT_TRUE(ok);
-    EXPECT_EQ(queue.size(), 2u);
+    EXPECT_EQ(queue.size(), n);
 
-    auto v0 = queue.pop();
-    auto v1 = queue.pop();
-    EXPECT_EQ(v0.seq, 42u);
-    EXPECT_EQ(v1.seq, 43u);
+    for (size_t i = 0; i < n; ++i) {
+        auto v = queue.pop();
+        EXPECT_EQ(v.seq, static_cast<uint32_t>(42 + i));
+    }
 }
 
 TYPED_TEST(BoundedQueueTest, TimedBatchPushTimeoutOnFull) {
@@ -873,17 +881,18 @@ TYPED_TEST(BoundedQueueTest, TryConsumeN_ZeroCount) {
 TYPED_TEST(BoundedQueueTest, TryConsumeN_MoreThanAvailable) {
     TypeParam queue;
 
-    // Push 2 items, request 100
-    for (uint32_t i = 0; i < 2; ++i) {
+    // Push up to 2 items (capped at capacity), request 100
+    const size_t pushed = std::min<size_t>(2, TypeParam::capacity());
+    for (uint32_t i = 0; i < pushed; ++i) {
         BoundedTestData d;
         d.seq = i;
-        queue.try_push(d);
+        ASSERT_TRUE(queue.try_push(d));
     }
 
     size_t n = queue.try_consume_n(100, [](const BoundedTestData& slot, size_t idx) {
         EXPECT_EQ(slot.seq, static_cast<uint32_t>(idx));
     });
-    EXPECT_EQ(n, 2u);
+    EXPECT_EQ(n, pushed);
     EXPECT_TRUE(queue.empty());
 }
 
