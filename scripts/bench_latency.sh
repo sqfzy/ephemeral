@@ -207,12 +207,13 @@ preflight() {
     # Required binaries
     local missing=false
     if [[ "$SKIP_SOCKET" == false ]]; then
-        for bin in bench_mock_server bench_market bench_order_rtt; do
+        for bin in bench_mock_server bench_market bench_order_rtt \
+                   bench_udp_echo_server bench_udp_rtt; do
             [[ -x "$BUILD_DIR/$bin" ]] || { log_error "Missing: $BUILD_DIR/$bin"; missing=true; }
         done
     fi
     if [[ "$SKIP_DPDK" == false ]]; then
-        for bin in bench_market_dpdk bench_order_rtt_dpdk; do
+        for bin in bench_market_dpdk bench_order_rtt_dpdk bench_udp_rtt_dpdk; do
             [[ -x "$BUILD_DIR/$bin" ]] || { log_error "Missing: $BUILD_DIR/$bin"; missing=true; }
         done
         command -v dpdk-devbind.py &>/dev/null || { log_error "dpdk-devbind.py not in PATH"; missing=true; }
@@ -220,7 +221,7 @@ preflight() {
         [[ -x "$SCRIPT_DIR/dpdk-teardown.sh" ]] || { log_error "Missing: $SCRIPT_DIR/dpdk-teardown.sh"; missing=true; }
     fi
     [[ "$missing" == true ]] && die "Missing required files" \
-        "Build: xmake build bench_mock_server bench_market bench_order_rtt bench_market_dpdk bench_order_rtt_dpdk"
+        "Build: xmake build bench_mock_server bench_market bench_order_rtt bench_udp_echo_server bench_udp_rtt bench_market_dpdk bench_order_rtt_dpdk bench_udp_rtt_dpdk"
     log_info "All binaries found"
 
     # Connectivity
@@ -258,6 +259,8 @@ run_socket_benchmarks() {
         echo "[DRY RUN] ip netns exec bench_ns bench_market ${common_args[*]} --port 9999"
         echo "[DRY RUN] bench_mock_server --bind-ip $SERVER_IP --port 9998 --order-mode"
         echo "[DRY RUN] ip netns exec bench_ns bench_order_rtt ${common_args[*]} --port 9998"
+        echo "[DRY RUN] bench_udp_echo_server --bind-ip $SERVER_IP --port 9997"
+        echo "[DRY RUN] ip netns exec bench_ns bench_udp_rtt --server-ip $SERVER_IP --port 9997"
         echo "[DRY RUN] restore $NIC_B to host namespace"
         return
     fi
@@ -293,6 +296,22 @@ run_socket_benchmarks() {
 
     kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
 
+    # UDP RTT (kernel socket)
+    log_info "Starting UDP echo server..."
+    "$BUILD_DIR/bench_udp_echo_server" \
+        --bind-ip "$SERVER_IP" --port 9997 --cpu "$MOCK_CPU" &
+    local echo_pid=$!
+    sleep 1
+
+    log_info "Running bench_udp_rtt (socket)..."
+    ip netns exec bench_ns \
+        "$BUILD_DIR/bench_udp_rtt" \
+        --server-ip "$SERVER_IP" --port 9997 \
+        --msg-size 64 --count 100000 --poll-cpu "$POLL_CPU" 2>&1
+    echo
+
+    kill "$echo_pid" 2>/dev/null || true; wait "$echo_pid" 2>/dev/null || true
+
     # Restore NIC-B
     log_info "Restoring $NIC_B to host namespace..."
     ip netns exec bench_ns ip link set "$NIC_B" netns 1
@@ -320,6 +339,7 @@ run_dpdk_benchmarks() {
         echo "[DRY RUN] $SCRIPT_DIR/dpdk-setup.sh (bind $nic_b_pci to vfio-pci)"
         echo "[DRY RUN] bench_market_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
         echo "[DRY RUN] bench_order_rtt_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
+        echo "[DRY RUN] bench_udp_rtt_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
         echo "[DRY RUN] $SCRIPT_DIR/dpdk-teardown.sh (restore $NIC_B)"
         return
     fi
@@ -354,6 +374,14 @@ run_dpdk_benchmarks() {
         "${common_args[@]}" --order-interval-us 1000 2>&1
     echo
 
+    log_info "Running bench_udp_rtt_dpdk..."
+    # shellcheck disable=SC2086
+    "$BUILD_DIR/bench_udp_rtt_dpdk" $eal_args -- \
+        --server-ip "$SERVER_IP" --local-ip "$LOCAL_IP" --gateway-ip "$GATEWAY_IP" \
+        --port 9997 --msg-size 64 --count 100000 \
+        --poll-cpu "$POLL_CPU" --mock-cpu "$MOCK_CPU" 2>&1
+    echo
+
     log_phase 4 "Restore NIC-B"
 
     DPDK_PCI="$nic_b_pci" DPDK_IFACE="$NIC_B" \
@@ -374,6 +402,7 @@ cleanup_on_exit() {
     fi
     # Kill lingering mock servers
     pkill -f bench_mock_server 2>/dev/null || true
+    pkill -f bench_udp_echo_server 2>/dev/null || true
     return "$exit_code"
 }
 
