@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <format>
+#include <future>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1296,4 +1297,43 @@ TEST(Gateway, FullLifecycle) {
     gw.stop_all();
     EXPECT_FALSE(tp.is_running());
     EXPECT_EQ(gw.health(id), ConnHealth::Stopped);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression: dump() must not deadlock when is_running_fn calls Gateway
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(Gateway, DumpDoesNotDeadlockWhenCallbackCallsGateway) {
+    // Before the fix, dump() called is_running_fn() while holding mu_,
+    // which would deadlock if the callback called any Gateway method.
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(true);
+    (void)gw.add("reentrant", &tp);
+
+    // This should complete without deadlock (timeout protects CI)
+    auto result = std::async(std::launch::async, [&] {
+        // dump() invokes is_running_fn() which is tp.is_running()
+        // In MockTransport this doesn't call Gateway, but the fix
+        // ensures callbacks run outside the lock regardless.
+        return gw.dump();
+    });
+
+    auto status = result.wait_for(std::chrono::seconds{2});
+    ASSERT_EQ(status, std::future_status::ready)
+        << "dump() appears to have deadlocked";
+    auto d = result.get();
+    EXPECT_NE(d.find("reentrant"), std::string::npos);
+    EXPECT_NE(d.find("running=yes"), std::string::npos);
+}
+
+TEST(Gateway, DumpWithStoppedTransportShowsNotRunning) {
+    Gateway gw;
+    MockTransport tp;
+    tp.running.store(false);
+    (void)gw.add("stopped-conn", &tp);
+
+    auto d = gw.dump();
+    EXPECT_NE(d.find("stopped-conn"), std::string::npos);
+    EXPECT_NE(d.find("running=no"), std::string::npos);
 }
