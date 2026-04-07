@@ -679,8 +679,13 @@ connect(Platform& platform,
                  ep.local_ip, ep.gateway_ip,
                  net::format_ipv4(server_ip).data());
 
+    // Override opts.platform.port_id with the actual Platform's port to prevent
+    // mismatch when the caller passes opts with stale/default port_id.
+    auto local_opts = opts;
+    local_opts.platform.port_id = platform.port_id();
+
     auto setup = detail::prepare_connection(
-        ep, opts, transport_cfg, server_ip, platform.mempool());
+        ep, local_opts, transport_cfg, server_ip, platform.mempool());
     if (!setup) {
         SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): prepare_connection failed: {}",
                      setup.error());
@@ -746,17 +751,20 @@ connect(Platform& platform,
             std::format("Invalid gateway_ip: '{}' failed to parse", ep.gateway_ip));
     }
 
+    // Use platform.port_id() — the actual port the Platform manages — instead
+    // of opts.platform.port_id which could be stale or mismatched.
+    const uint16_t port = platform.port_id();
+
     rte_ether_addr src_mac{};
-    if (rte_eth_macaddr_get(opts.platform.port_id, &src_mac) != 0) {
+    if (rte_eth_macaddr_get(port, &src_mac) != 0) {
         SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): MAC get failed for port {}",
-                     opts.platform.port_id);
+                     port);
         return std::unexpected(std::format(
-            "Failed to get MAC for DPDK DNS fallback (port={})",
-            opts.platform.port_id));
+            "Failed to get MAC for DPDK DNS fallback (port={})", port));
     }
 
     auto gw_mac = arp::resolve(
-        opts.platform.port_id, opts.rx_queue_id, platform.mempool(),
+        port, opts.rx_queue_id, platform.mempool(),
         src_mac, local_ip, gateway_ip, opts.arp_timeout);
     if (!gw_mac) {
         SPDLOG_LOGGER_DEBUG(log, "dpdk::connect(platform&): ARP for gateway {} failed: {}",
@@ -766,7 +774,7 @@ connect(Platform& platform,
     }
 
     auto dpdk_ip = dns::resolve(
-        opts.platform.port_id, opts.rx_queue_id, platform.mempool(),
+        port, opts.rx_queue_id, platform.mempool(),
         src_mac, *gw_mac, local_ip,
         transport_cfg.remote_host, opts.dns);
     if (!dpdk_ip) {
