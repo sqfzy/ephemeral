@@ -146,4 +146,30 @@ static void BM_RateLimiter_BurstDrainAndReset(benchmark::State& state) {
 }
 BENCHMARK(BM_RateLimiter_BurstDrainAndReset)->Arg(10)->Arg(100)->Arg(1000);
 
+// ---------------------------------------------------------------------------
+// Const-ref queries — verify no perf regression from mutable refactoring
+// ---------------------------------------------------------------------------
+
+static void BM_RateLimiter_ConstAvailable(benchmark::State& state) {
+    RateLimiter rl(1000.0, 100);
+    const RateLimiter& crl = rl;
+
+    for (auto _ : state) {
+        double a = crl.available();
+        benchmark::DoNotOptimize(a);
+    }
+}
+BENCHMARK(BM_RateLimiter_ConstAvailable);
+
+static void BM_RateLimiter_ConstToJson(benchmark::State& state) {
+    RateLimiter rl(1200.0, 50);
+    const RateLimiter& crl = rl;
+
+    for (auto _ : state) {
+        auto j = crl.to_json();
+        benchmark::DoNotOptimize(j);
+    }
+}
+BENCHMARK(BM_RateLimiter_ConstToJson);
+
 BENCHMARK_MAIN();
