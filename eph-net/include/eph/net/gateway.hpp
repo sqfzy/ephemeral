@@ -765,17 +765,39 @@ public:
     /// @brief Formatted status dump of all connections.
     /// @return Multi-line string listing each connection's tag, health, running
     ///         state, and priority.
+    ///
+    /// Callbacks (is_running_fn) are invoked OUTSIDE the lock to prevent
+    /// deadlock if they call back into Gateway methods.
     [[nodiscard]] std::string dump() const {
-        std::lock_guard lock(mu_);
-        bool monitoring = monitor_running_.load(std::memory_order_relaxed);
+        struct ConnSnap {
+            std::string tag;
+            ConnHealth health;
+            uint8_t priority;
+            std::function<bool()> is_running_fn;
+        };
+        std::vector<ConnSnap> snap;
+        bool monitoring;
+        {
+            std::lock_guard lock(mu_);
+            monitoring = monitor_running_.load(std::memory_order_relaxed);
+            snap.reserve(connections_.size());
+            for (const auto& c : connections_) {
+                snap.push_back({c.tag, c.health, c.priority, c.is_running_fn});
+            }
+        }
+        // Build string outside lock — is_running_fn may call Gateway methods
         std::string result = std::format("Gateway: {} connections, monitor={}\n",
-            connections_.size(), monitoring ? "running" : "stopped");
-        for (size_t i = 0; i < connections_.size(); ++i) {
-            auto& c = connections_[i];
-            bool running = c.is_running_fn ? c.is_running_fn() : false;
+            snap.size(), monitoring ? "running" : "stopped");
+        for (size_t i = 0; i < snap.size(); ++i) {
+            auto& s = snap[i];
+            bool running = false;
+            if (s.is_running_fn) {
+                try { running = s.is_running_fn(); }
+                catch (...) { /* is_running_fn threw — treat as not running */ }
+            }
             result += std::format("  [{}] {} — health={} running={} priority={}\n",
-                                  i, c.tag, conn_health_name(c.health),
-                                  running ? "yes" : "no", c.priority);
+                                  i, s.tag, conn_health_name(s.health),
+                                  running ? "yes" : "no", s.priority);
         }
         return result;
     }
