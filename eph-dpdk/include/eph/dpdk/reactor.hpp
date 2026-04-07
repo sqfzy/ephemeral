@@ -86,8 +86,8 @@ struct ReactorEntry {
     /// This is essential because incoming packets have swapped src/dst
     /// relative to the registered connection tuple.
     [[nodiscard]] static uint64_t hash_tuple(const net::ConnectionTuple& t) noexcept {
-        uint64_t h = 14695981039346656037ULL;
-        auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
+        uint64_t h = 14695981039346656037ULL;  // FNV-1a 64-bit offset basis
+        auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; /* FNV prime */ };
         mix(t.src_ip ^ t.dst_ip);
         mix(static_cast<uint64_t>(t.src_ip) + t.dst_ip);
         mix(t.src_port ^ t.dst_port);

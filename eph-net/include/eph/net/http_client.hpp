@@ -435,6 +435,7 @@ private:
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
+        hints.ai_flags = AI_ADDRCONFIG;  // Only return addresses the host can reach
 
         auto port_str = std::to_string(config_.port);
 

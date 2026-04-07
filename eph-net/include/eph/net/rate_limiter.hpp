@@ -183,7 +183,7 @@ public:
     /// Performs a refill before checking, same as available().
     ///
     /// @return true if available tokens < 1.0 (cannot satisfy try_acquire(1)).
-    [[nodiscard]] bool is_exhausted() noexcept {
+    [[nodiscard]] bool is_exhausted() const noexcept {
         return available() < 1.0;
     }
 
@@ -191,10 +191,11 @@ public:
     ///
     /// Performs a refill before reading -- the value is approximate because
     /// another thread may consume tokens between the read and the caller
-    /// acting on the result. Non-const because refill mutates internal state.
+    /// acting on the result. Logically const (refill is an internal cache
+    /// update, not an observable state change).
     ///
     /// @return Fractional token count (>= 0.0, <= burst).
-    [[nodiscard]] double available() noexcept {
+    [[nodiscard]] double available() const noexcept {
         std::lock_guard<std::mutex> lock(mu_);
         refill_locked();
         return tokens_;
@@ -216,7 +217,7 @@ public:
     ///
     /// Includes configuration and live state. Consistent with Gateway::dump().
     /// Thread-safe: takes a lock to read consistent state.
-    [[nodiscard]] std::string dump() {
+    [[nodiscard]] std::string dump() const {
         std::lock_guard<std::mutex> lock(mu_);
         refill_locked();
         return std::format(
@@ -231,7 +232,7 @@ public:
     ///
     /// Includes both configuration and live state (available tokens).
     /// Thread-safe: takes a lock to read consistent state.
-    [[nodiscard]] std::string to_json() {
+    [[nodiscard]] std::string to_json() const {
         std::lock_guard<std::mutex> lock(mu_);
         refill_locked();
         return std::format(
@@ -255,8 +256,8 @@ private:
     using TimePoint = Clock::time_point;
 
     /// Refill tokens based on elapsed time since last refill.
-    /// MUST be called with mu_ held.
-    void refill_locked() noexcept {
+    /// MUST be called with mu_ held. Const-safe: only mutates mutable cache state.
+    void refill_locked() const noexcept {
         const auto now = Clock::now();
         // P1-4: Guard against clock rewind (NTP adjustment, etc.)
         // steady_clock should be monotonic, but defensive coding for edge cases.
@@ -269,13 +270,13 @@ private:
         last_refill_ = now;
     }
 
-    Config    config_;        ///< Limiter configuration (immutable after construction).
-    double    rate_per_ns_;   ///< Tokens generated per nanosecond
-    double    burst_;         ///< Maximum token capacity
-    double    tokens_;        ///< Current available tokens (fractional for smooth accumulation)
-    TimePoint last_refill_;   ///< Timestamp of last token refill
+    Config    config_;              ///< Limiter configuration (immutable after construction).
+    double    rate_per_ns_;         ///< Tokens generated per nanosecond
+    double    burst_;               ///< Maximum token capacity
+    mutable double    tokens_;      ///< Current available tokens (mutable: cache for time-based refill)
+    mutable TimePoint last_refill_; ///< Timestamp of last token refill (mutable: cache state)
 
-    mutable std::mutex mu_;   ///< Protects all mutable state
+    mutable std::mutex mu_;         ///< Protects all mutable state
 };
 
 } // namespace eph::net
@@ -297,10 +298,10 @@ struct std::formatter<eph::net::RateLimiter::Config> : std::formatter<std::strin
 /// @brief std::formatter for RateLimiter -- compact one-line state summary.
 ///
 /// Shows available tokens and configuration. Consistent with other eph::net formatters.
-/// Note: calls available() which performs a refill, so the instance must be non-const.
+/// Now const-safe: available() performs a logically-const refill via mutable state.
 template <>
 struct std::formatter<eph::net::RateLimiter> : std::formatter<std::string> {
-    auto format(eph::net::RateLimiter& rl, auto& ctx) const {
+    auto format(const eph::net::RateLimiter& rl, auto& ctx) const {
         return std::formatter<std::string>::format(
             std::format("RateLimiter(available={:.1f}/{}, rate={:.2f}/s)",
                 rl.available(), rl.burst(), rl.config().rate_per_sec),
