@@ -151,12 +151,12 @@ struct ParsedPacket {
 
     /// Human-readable one-line summary for diagnostics/logging.
     /// Returns "(invalid)" if the packet was not successfully parsed.
-    /// Defined after format_ipv4() (see below).
+    /// Defined below — deferred to keep struct definition compact.
     [[nodiscard]] inline std::string dump() const;
 
     /// JSON-formatted packet summary for monitoring/logging.
     /// Returns "{\"valid\":false}" if the packet was not parsed.
-    /// Defined after format_ipv4() (see below).
+    /// Defined below — deferred to keep struct definition compact.
     [[nodiscard]] inline std::string to_json() const;
 };
 
@@ -256,11 +256,11 @@ struct ParsedUdpPacket {
     }
 
     /// Human-readable one-line summary.
-    /// Defined after format_ipv4() (see below).
+    /// Defined below — deferred to keep struct definition compact.
     [[nodiscard]] inline std::string dump() const;
 
     /// JSON-formatted packet summary.
-    /// Defined after format_ipv4() (see below).
+    /// Defined below — deferred to keep struct definition compact.
     [[nodiscard]] inline std::string to_json() const;
 };
 

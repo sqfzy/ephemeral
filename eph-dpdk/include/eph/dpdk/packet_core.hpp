@@ -7,7 +7,6 @@
 /// all protocol header lengths, byte-order conversion, Internet/TCP/UDP checksum
 /// computation, IPv4 address formatting, and the protocol-agnostic ConnectionTuple.
 
-
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -312,8 +311,8 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
 struct ConnectionTuple {
     uint32_t src_ip    = 0;  ///< Source IPv4 address (host byte order)
     uint32_t dst_ip    = 0;  ///< Destination IPv4 address (host byte order)
-    uint16_t src_port  = 0;  ///< Source TCP port (host byte order)
-    uint16_t dst_port  = 0;  ///< Destination TCP port (host byte order)
+    uint16_t src_port  = 0;  ///< Source port (host byte order)
+    uint16_t dst_port  = 0;  ///< Destination port (host byte order)
 
     /// @brief Defaulted equality comparison over all four fields.
     [[nodiscard]] bool operator==(const ConnectionTuple&) const = default;

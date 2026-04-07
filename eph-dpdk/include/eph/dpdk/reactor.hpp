@@ -416,7 +416,7 @@ private:
                 if constexpr (EnableUdp) {
                     auto ip_hdr = net::parse_ip_header(pkts[i]);
                     if (ip_hdr && ip_hdr.proto == net::kIpProtoUdp) {
-                        dispatch_udp_packet(pkts[i]);
+                        dispatch_udp_packet(pkts[i], ip_hdr);
                         continue;
                     }
                 }
@@ -506,8 +506,9 @@ private:
     }
 
     /// Dispatch a UDP packet to the matching registered UDP entry.
-    void dispatch_udp_packet(rte_mbuf* mbuf) {
-        auto parsed = net::parse_udp_packet(mbuf);
+    /// Accepts pre-parsed IP header to avoid redundant L2/L3 parsing.
+    void dispatch_udp_packet(rte_mbuf* mbuf, const net::ParsedIpHeader& ip_hdr) {
+        auto parsed = net::parse_udp_from_ip(mbuf, ip_hdr);
         if (!parsed) {
             rte_pktmbuf_free(mbuf);
             return;
