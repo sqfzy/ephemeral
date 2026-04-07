@@ -1,5 +1,5 @@
 /// @file bench_tcp_header.cpp
-/// DPDK TCP/IP header layer benchmarks — checksum, header build/parse.
+/// DPDK TCP/UDP/IP header layer benchmarks — checksum, header build/parse.
 ///
 /// Requires DPDK (eph-dpdk).
 
@@ -648,5 +648,254 @@ static void BM_FlowRuleToJson(benchmark::State& state) {
     rule.handle = nullptr;
 }
 BENCHMARK(BM_FlowRuleToJson);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UDP checksum
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_UdpChecksum(benchmark::State& state) {
+    auto sz = static_cast<size_t>(state.range(0));
+    // Build a fake UDP segment: 8-byte header + payload
+    uint16_t total_udp_len = eph::dpdk::net::kUdpHeaderLen + static_cast<uint16_t>(sz);
+    std::vector<uint8_t> udp_seg(total_udp_len);
+    auto* udp = reinterpret_cast<eph::dpdk::net::UdpHeader*>(udp_seg.data());
+    udp->src_port = eph::dpdk::net::hton16(12345);
+    udp->dst_port = eph::dpdk::net::hton16(5000);
+    udp->length   = eph::dpdk::net::hton16(total_udp_len);
+    udp->checksum = 0;
+    fill_random(udp_seg.data() + eph::dpdk::net::kUdpHeaderLen, sz, 77);
+
+    uint32_t src_ip_net = eph::dpdk::net::hton32(
+        eph::dpdk::net::parse_ipv4("10.0.0.1"));
+    uint32_t dst_ip_net = eph::dpdk::net::hton32(
+        eph::dpdk::net::parse_ipv4("10.0.0.2"));
+
+    for (auto _ : state) {
+        auto c = eph::dpdk::net::udp_checksum(
+            src_ip_net, dst_ip_net, udp_seg.data(), total_udp_len);
+        benchmark::DoNotOptimize(c);
+    }
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(total_udp_len));
+}
+BENCHMARK(BM_UdpChecksum)->Apply(PayloadSizeArgs);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UDP packet parse — layered API (parse_ip_header → parse_udp_from_ip)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParseUdpPacket(benchmark::State& state) {
+    auto payload_sz = static_cast<uint16_t>(state.range(0));
+    uint16_t total_pkt_len = eph::dpdk::net::kEtherHeaderLen +
+                             eph::dpdk::net::kIpv4HeaderLen +
+                             eph::dpdk::net::kUdpHeaderLen + payload_sz;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen +
+        eph::dpdk::net::kUdpHeaderLen + payload_sz);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoUdp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* udp = reinterpret_cast<eph::dpdk::net::UdpHeader*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    udp->src_port = eph::dpdk::net::hton16(12345);
+    udp->dst_port = eph::dpdk::net::hton16(5000);
+    udp->length   = eph::dpdk::net::hton16(
+        eph::dpdk::net::kUdpHeaderLen + payload_sz);
+
+    fill_random(pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+                eph::dpdk::net::kIpv4HeaderLen +
+                eph::dpdk::net::kUdpHeaderLen,
+                payload_sz, 88);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    for (auto _ : state) {
+        auto parsed = eph::dpdk::net::parse_udp_packet(&mbuf);
+        benchmark::DoNotOptimize(parsed);
+    }
+    state.SetBytesProcessed(state.iterations() * total_pkt_len);
+}
+BENCHMARK(BM_ParseUdpPacket)->Apply(PayloadSizeArgs);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UDP layered parse — parse_ip_header + parse_udp_from_ip (two-step)
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParseUdpLayered(benchmark::State& state) {
+    auto payload_sz = static_cast<uint16_t>(state.range(0));
+    uint16_t total_pkt_len = eph::dpdk::net::kEtherHeaderLen +
+                             eph::dpdk::net::kIpv4HeaderLen +
+                             eph::dpdk::net::kUdpHeaderLen + payload_sz;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen +
+        eph::dpdk::net::kUdpHeaderLen + payload_sz);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoUdp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* udp = reinterpret_cast<eph::dpdk::net::UdpHeader*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    udp->src_port = eph::dpdk::net::hton16(12345);
+    udp->dst_port = eph::dpdk::net::hton16(5000);
+    udp->length   = eph::dpdk::net::hton16(
+        eph::dpdk::net::kUdpHeaderLen + payload_sz);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    for (auto _ : state) {
+        auto ip_hdr = eph::dpdk::net::parse_ip_header(&mbuf);
+        auto parsed = eph::dpdk::net::parse_udp_from_ip(&mbuf, ip_hdr);
+        benchmark::DoNotOptimize(parsed);
+    }
+    state.SetBytesProcessed(state.iterations() * total_pkt_len);
+}
+BENCHMARK(BM_ParseUdpLayered)->Apply(PayloadSizeArgs);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UdpPacketTemplate fill — hot-path template stamping
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_UdpTemplateFill(benchmark::State& state) {
+    auto payload_sz = static_cast<uint16_t>(state.range(0));
+
+    eph::dpdk::net::UdpPacketTemplate tmpl;
+    tmpl.init(
+        rte_ether_addr{{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x23}},
+        rte_ether_addr{{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}},
+        eph::dpdk::net::parse_ipv4("10.0.0.1"),
+        eph::dpdk::net::parse_ipv4("10.0.0.2"),
+        12345, 5000, false);
+
+    uint16_t total_len = eph::dpdk::net::kEtherHeaderLen +
+                         eph::dpdk::net::kIpv4HeaderLen +
+                         eph::dpdk::net::kUdpHeaderLen + payload_sz;
+    std::vector<uint8_t> pkt_buf(total_len, 0);
+    std::vector<uint8_t> payload(payload_sz);
+    fill_random(payload.data(), payload_sz, 33);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.buf_len  = static_cast<uint16_t>(pkt_buf.size());
+
+    for (auto _ : state) {
+        auto len = tmpl.fill(&mbuf, payload.data(), payload_sz);
+        benchmark::DoNotOptimize(len);
+    }
+    state.SetBytesProcessed(state.iterations() * total_len);
+}
+BENCHMARK(BM_UdpTemplateFill)->Apply(PayloadSizeArgs);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ParsedUdpPacket dump/to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void BM_ParsedUdpPacketDump(benchmark::State& state) {
+    uint16_t total_pkt_len = eph::dpdk::net::kEtherHeaderLen +
+                             eph::dpdk::net::kIpv4HeaderLen +
+                             eph::dpdk::net::kUdpHeaderLen + 100;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen + eph::dpdk::net::kUdpHeaderLen + 100);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoUdp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* udp = reinterpret_cast<eph::dpdk::net::UdpHeader*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    udp->src_port = eph::dpdk::net::hton16(12345);
+    udp->dst_port = eph::dpdk::net::hton16(5000);
+    udp->length   = eph::dpdk::net::hton16(
+        eph::dpdk::net::kUdpHeaderLen + 100);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    auto parsed = eph::dpdk::net::parse_udp_packet(&mbuf);
+
+    for (auto _ : state) {
+        auto s = parsed.dump();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ParsedUdpPacketDump);
+
+static void BM_ParsedUdpPacketToJson(benchmark::State& state) {
+    uint16_t total_pkt_len = eph::dpdk::net::kEtherHeaderLen +
+                             eph::dpdk::net::kIpv4HeaderLen +
+                             eph::dpdk::net::kUdpHeaderLen + 100;
+    std::vector<uint8_t> pkt_buf(total_pkt_len, 0);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt_buf.data());
+    eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->total_length = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpv4HeaderLen + eph::dpdk::net::kUdpHeaderLen + 100);
+    ip->next_proto_id = eph::dpdk::net::kIpProtoUdp;
+    ip->src_addr = eph::dpdk::net::hton32(0x0A000001);
+    ip->dst_addr = eph::dpdk::net::hton32(0x0A000002);
+
+    auto* udp = reinterpret_cast<eph::dpdk::net::UdpHeader*>(
+        pkt_buf.data() + eph::dpdk::net::kEtherHeaderLen +
+        eph::dpdk::net::kIpv4HeaderLen);
+    udp->src_port = eph::dpdk::net::hton16(12345);
+    udp->dst_port = eph::dpdk::net::hton16(5000);
+    udp->length   = eph::dpdk::net::hton16(
+        eph::dpdk::net::kUdpHeaderLen + 100);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = pkt_buf.data();
+    mbuf.data_off = 0;
+    mbuf.data_len = total_pkt_len;
+    mbuf.pkt_len  = total_pkt_len;
+
+    auto parsed = eph::dpdk::net::parse_udp_packet(&mbuf);
+
+    for (auto _ : state) {
+        auto s = parsed.to_json();
+        benchmark::DoNotOptimize(s.data());
+    }
+}
+BENCHMARK(BM_ParsedUdpPacketToJson);
 
 BENCHMARK_MAIN();
