@@ -1333,3 +1333,189 @@ TEST(NetHeader, ChecksumConsistencyAcrossSizes) {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layered parse API: parse_tcp_from_ip / parse_udp_from_ip
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Build a minimal valid TCP packet in a FakeMbuf-style buffer.
+/// Returns total packet length.
+uint16_t build_fake_tcp_packet(uint8_t* buf, uint32_t src_ip, uint32_t dst_ip,
+                               uint16_t src_port, uint16_t dst_port,
+                               const uint8_t* payload, uint16_t plen) {
+    constexpr uint16_t eth_len = kEtherHeaderLen;
+    constexpr uint16_t ip_len = kIpv4HeaderLen;
+    constexpr uint16_t tcp_len = kTcpHeaderLen;
+    uint16_t total = eth_len + ip_len + tcp_len + plen;
+    std::memset(buf, 0, total);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+    ip->version_ihl = 0x45;
+    ip->next_proto_id = kIpProtoTcp;
+    ip->total_length = hton16(ip_len + tcp_len + plen);
+    ip->src_addr = hton32(src_ip);
+    ip->dst_addr = hton32(dst_ip);
+
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + eth_len + ip_len);
+    tcp->src_port = hton16(src_port);
+    tcp->dst_port = hton16(dst_port);
+    tcp->data_off = (tcp_len / 4) << 4;
+    tcp->sent_seq = hton32(100);
+    tcp->recv_ack = hton32(200);
+
+    if (payload && plen > 0)
+        std::memcpy(buf + eth_len + ip_len + tcp_len, payload, plen);
+
+    return total;
+}
+
+uint16_t build_fake_udp_packet_raw(uint8_t* buf, uint32_t src_ip, uint32_t dst_ip,
+                                   uint16_t src_port, uint16_t dst_port,
+                                   const uint8_t* payload, uint16_t plen) {
+    constexpr uint16_t eth_len = kEtherHeaderLen;
+    constexpr uint16_t ip_len = kIpv4HeaderLen;
+    uint16_t total = eth_len + ip_len + kUdpHeaderLen + plen;
+    std::memset(buf, 0, total);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+    ip->version_ihl = 0x45;
+    ip->next_proto_id = kIpProtoUdp;
+    ip->total_length = hton16(ip_len + kUdpHeaderLen + plen);
+    ip->src_addr = hton32(src_ip);
+    ip->dst_addr = hton32(dst_ip);
+
+    auto* udp = reinterpret_cast<UdpHeader*>(buf + eth_len + ip_len);
+    udp->src_port = hton16(src_port);
+    udp->dst_port = hton16(dst_port);
+    udp->length = hton16(kUdpHeaderLen + plen);
+    udp->checksum = 0;
+
+    if (payload && plen > 0)
+        std::memcpy(buf + eth_len + ip_len + kUdpHeaderLen, payload, plen);
+
+    return total;
+}
+
+struct LayeredMbuf {
+    uint8_t buf[512]{};
+    rte_mbuf mbuf{};
+
+    LayeredMbuf() {
+        std::memset(&mbuf, 0, sizeof(mbuf));
+        mbuf.buf_addr = buf;
+        mbuf.buf_len = sizeof(buf);
+    }
+    void set_len(uint16_t len) { mbuf.data_off = 0; mbuf.data_len = len; mbuf.pkt_len = len; }
+};
+
+} // namespace
+
+TEST(ParseTcpFromIp, ValidPacket) {
+    LayeredMbuf m;
+    uint8_t payload[] = {0xDE, 0xAD};
+    uint16_t len = build_fake_tcp_packet(m.buf, 0x0A000001, 0x0A000002, 12345, 443, payload, 2);
+    m.set_len(len);
+
+    auto ip_hdr = parse_ip_header(&m.mbuf);
+    ASSERT_TRUE(static_cast<bool>(ip_hdr));
+    EXPECT_EQ(ip_hdr.proto, kIpProtoTcp);
+
+    auto parsed = parse_tcp_from_ip(&m.mbuf, ip_hdr);
+    ASSERT_NE(parsed.tcp, nullptr);
+    EXPECT_EQ(parsed.src_ip(), 0x0A000001u);
+    EXPECT_EQ(parsed.dst_ip(), 0x0A000002u);
+    EXPECT_EQ(parsed.src_port(), 12345u);
+    EXPECT_EQ(parsed.dst_port(), 443u);
+    EXPECT_EQ(parsed.payload_len, 2u);
+}
+
+TEST(ParseTcpFromIp, MatchesParsePacket) {
+    // parse_tcp_from_ip should produce identical results to parse_packet
+    LayeredMbuf m;
+    uint8_t payload[] = {1, 2, 3, 4, 5};
+    uint16_t len = build_fake_tcp_packet(m.buf, 0xC0A80001, 0xC0A80002, 8080, 443, payload, 5);
+    m.set_len(len);
+
+    auto direct = parse_packet(&m.mbuf);
+    ASSERT_NE(direct.tcp, nullptr);
+
+    auto ip_hdr = parse_ip_header(&m.mbuf);
+    auto layered = parse_tcp_from_ip(&m.mbuf, ip_hdr);
+    ASSERT_NE(layered.tcp, nullptr);
+
+    EXPECT_EQ(direct.src_ip(), layered.src_ip());
+    EXPECT_EQ(direct.dst_ip(), layered.dst_ip());
+    EXPECT_EQ(direct.src_port(), layered.src_port());
+    EXPECT_EQ(direct.dst_port(), layered.dst_port());
+    EXPECT_EQ(direct.seq(), layered.seq());
+    EXPECT_EQ(direct.payload_len, layered.payload_len);
+}
+
+TEST(ParseTcpFromIp, WrongProtoReturnsEmpty) {
+    LayeredMbuf m;
+    uint16_t len = build_fake_udp_packet_raw(m.buf, 0x0A000001, 0x0A000002, 5000, 8080, nullptr, 0);
+    m.set_len(len);
+
+    auto ip_hdr = parse_ip_header(&m.mbuf);
+    ASSERT_TRUE(static_cast<bool>(ip_hdr));
+    EXPECT_EQ(ip_hdr.proto, kIpProtoUdp);
+
+    auto parsed = parse_tcp_from_ip(&m.mbuf, ip_hdr);
+    EXPECT_EQ(parsed.tcp, nullptr);
+}
+
+TEST(ParseUdpFromIp, ValidPacket) {
+    LayeredMbuf m;
+    uint8_t payload[] = {0xBE, 0xEF};
+    uint16_t len = build_fake_udp_packet_raw(m.buf, 0x0A000001, 0x0A000002, 5000, 8080, payload, 2);
+    m.set_len(len);
+
+    auto ip_hdr = parse_ip_header(&m.mbuf);
+    ASSERT_TRUE(static_cast<bool>(ip_hdr));
+
+    auto parsed = parse_udp_from_ip(&m.mbuf, ip_hdr);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    EXPECT_EQ(parsed.src_ip(), 0x0A000001u);
+    EXPECT_EQ(parsed.dst_ip(), 0x0A000002u);
+    EXPECT_EQ(parsed.src_port(), 5000u);
+    EXPECT_EQ(parsed.dst_port(), 8080u);
+    EXPECT_EQ(parsed.payload_len, 2u);
+}
+
+TEST(ParseUdpFromIp, MatchesParseUdpPacket) {
+    LayeredMbuf m;
+    uint8_t payload[] = {1, 2, 3};
+    uint16_t len = build_fake_udp_packet_raw(m.buf, 0xC0A80001, 0xC0A80002, 9000, 53, payload, 3);
+    m.set_len(len);
+
+    auto direct = parse_udp_packet(&m.mbuf);
+    ASSERT_TRUE(static_cast<bool>(direct));
+
+    auto ip_hdr = parse_ip_header(&m.mbuf);
+    auto layered = parse_udp_from_ip(&m.mbuf, ip_hdr);
+    ASSERT_TRUE(static_cast<bool>(layered));
+
+    EXPECT_EQ(direct.src_ip(), layered.src_ip());
+    EXPECT_EQ(direct.dst_ip(), layered.dst_ip());
+    EXPECT_EQ(direct.src_port(), layered.src_port());
+    EXPECT_EQ(direct.dst_port(), layered.dst_port());
+    EXPECT_EQ(direct.payload_len, layered.payload_len);
+}
+
+TEST(ParseUdpFromIp, WrongProtoReturnsEmpty) {
+    LayeredMbuf m;
+    uint16_t len = build_fake_tcp_packet(m.buf, 0x0A000001, 0x0A000002, 12345, 443, nullptr, 0);
+    m.set_len(len);
+
+    auto ip_hdr = parse_ip_header(&m.mbuf);
+    auto parsed = parse_udp_from_ip(&m.mbuf, ip_hdr);
+    EXPECT_FALSE(static_cast<bool>(parsed));
+}
