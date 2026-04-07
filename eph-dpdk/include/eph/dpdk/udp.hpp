@@ -86,6 +86,27 @@ struct UdpConfig {
             net::format_ipv4(dst_ip).data(), dst_port,
             port_id, tx_queue_id, hw_cksum ? "true" : "false");
     }
+
+    /// Equality comparison (pool pointer compared by identity, MACs by memcmp).
+    [[nodiscard]] friend bool operator==(const UdpConfig& a,
+                                          const UdpConfig& b) noexcept {
+        return a.src_ip == b.src_ip && a.dst_ip == b.dst_ip
+            && a.src_port == b.src_port && a.dst_port == b.dst_port
+            && std::memcmp(&a.src_mac, &b.src_mac, sizeof(rte_ether_addr)) == 0
+            && std::memcmp(&a.dst_mac, &b.dst_mac, sizeof(rte_ether_addr)) == 0
+            && a.port_id == b.port_id && a.tx_queue_id == b.tx_queue_id
+            && a.rx_queue_id == b.rx_queue_id && a.pool == b.pool
+            && a.hw_cksum == b.hw_cksum;
+    }
+
+    /// Check for non-fatal misconfigurations. Unlike validate() which blocks
+    /// construction, these are advisory.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (hw_cksum)
+            w.emplace_back("hw_cksum=true — ensure NIC supports UDP checksum offload");
+        return w;
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -338,6 +359,14 @@ public:
 // ─────────────────────────────────────────────────────────────────────────────
 // std::formatter specialization
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief std::formatter for UdpConfig — uses dump() for human-readable output.
+template <>
+struct std::formatter<eph::dpdk::UdpConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::UdpConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(c.dump(), ctx);
+    }
+};
 
 /// @brief std::formatter for UdpSenderStats.
 template <>

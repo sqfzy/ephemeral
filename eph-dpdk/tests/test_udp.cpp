@@ -683,3 +683,73 @@ TEST(ParsedUdpPacket, DumpValid) {
     EXPECT_NE(json.find("\"src_port\":50000"), std::string::npos);
     EXPECT_NE(json.find("\"dst_port\":8080"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UdpConfig: operator==, formatter, warnings
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(UdpConfig, EqualityIdenticalConfigs) {
+    rte_mempool fake_pool{};
+    UdpConfig a{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 5000,
+        .pool = &fake_pool, .hw_cksum = false};
+    UdpConfig b = a;
+    EXPECT_EQ(a, b);
+}
+
+TEST(UdpConfig, EqualityDifferentPort) {
+    rte_mempool fake_pool{};
+    UdpConfig a{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 5000,
+        .pool = &fake_pool};
+    UdpConfig b = a;
+    b.dst_port = 6000;
+    EXPECT_NE(a, b);
+}
+
+TEST(UdpConfig, EqualityDifferentPool) {
+    rte_mempool pool1{}, pool2{};
+    UdpConfig a{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 5000,
+        .pool = &pool1};
+    UdpConfig b = a;
+    b.pool = &pool2;
+    EXPECT_NE(a, b);
+}
+
+TEST(UdpConfig, FormatterContainsKeyFields) {
+    rte_mempool fake_pool{};
+    UdpConfig cfg{
+        .src_ip = parse_ipv4("10.0.0.1"),
+        .dst_ip = parse_ipv4("10.0.0.2"),
+        .src_port = 12345, .dst_port = 5000,
+        .pool = &fake_pool, .hw_cksum = true};
+    auto s = std::format("{}", cfg);
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(s.find("12345"), std::string::npos);
+    EXPECT_NE(s.find("5000"), std::string::npos);
+    EXPECT_NE(s.find("hw_cksum"), std::string::npos);
+}
+
+TEST(UdpConfig, WarningsHwCksum) {
+    rte_mempool fake_pool{};
+    UdpConfig cfg{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 5000,
+        .pool = &fake_pool, .hw_cksum = true};
+    auto w = cfg.warnings();
+    EXPECT_EQ(w.size(), 1);
+    EXPECT_NE(w[0].find("hw_cksum"), std::string::npos);
+}
+
+TEST(UdpConfig, WarningsEmptyNoHwCksum) {
+    rte_mempool fake_pool{};
+    UdpConfig cfg{
+        .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
+        .src_port = 12345, .dst_port = 5000,
+        .pool = &fake_pool, .hw_cksum = false};
+    EXPECT_TRUE(cfg.warnings().empty());
+}
