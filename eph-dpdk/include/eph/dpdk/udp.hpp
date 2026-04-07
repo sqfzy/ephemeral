@@ -67,6 +67,24 @@ struct UdpConfig {
         if (pool == nullptr) return "pool must not be null";
         return {};
     }
+
+    /// Human-readable dump for logging/diagnostics.
+    [[nodiscard]] std::string dump() const {
+        return std::format("UdpConfig({}:{} -> {}:{}, port={}, tx_q={}, hw_cksum={})",
+                           net::format_ipv4(src_ip).data(), src_port,
+                           net::format_ipv4(dst_ip).data(), dst_port,
+                           port_id, tx_queue_id, hw_cksum);
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{},"
+            "\"port_id\":{},\"tx_queue_id\":{},\"hw_cksum\":{}}}",
+            net::format_ipv4(src_ip).data(), src_port,
+            net::format_ipv4(dst_ip).data(), dst_port,
+            port_id, tx_queue_id, hw_cksum ? "true" : "false");
+    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,11 +195,7 @@ public:
                 cfg.rx_queue_id.value());
         }
 
-        SPDLOG_LOGGER_INFO(log,
-            "UdpSender created: {}:{} -> {}:{}, port={}, tx_queue={}, hw_cksum={}",
-            net::format_ipv4(cfg.src_ip).data(), cfg.src_port,
-            net::format_ipv4(cfg.dst_ip).data(), cfg.dst_port,
-            cfg.port_id, cfg.tx_queue_id, cfg.hw_cksum);
+        SPDLOG_LOGGER_INFO(log, "UdpSender created: {}", cfg.dump());
 
         return sender;
     }
@@ -231,11 +245,16 @@ public:
         count = std::min(count, kMaxBatchSize);
 
         rte_mbuf* mbufs[kMaxBatchSize]{};
+        // Track payload lengths of successfully built packets, so stats
+        // remain correct even when some segments fail to build (which
+        // causes mbufs[] indices to diverge from segs[] indices).
+        uint16_t built_lens[kMaxBatchSize]{};
         uint16_t built = 0;
 
         for (uint16_t i = 0; i < count; ++i) {
             mbufs[built] = tmpl_.build(pool_, segs[i].data, segs[i].len);
             if (mbufs[built]) {
+                built_lens[built] = segs[i].len;
                 ++built;
             } else {
                 ++stats_.tx_errors;
@@ -255,7 +274,7 @@ public:
         // Accumulate stats for sent packets
         for (uint16_t i = 0; i < sent; ++i) {
             ++stats_.tx_packets;
-            stats_.tx_bytes += segs[i].len;
+            stats_.tx_bytes += built_lens[i];
         }
 
         return sent;

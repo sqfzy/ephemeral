@@ -324,7 +324,7 @@ TEST(UdpPacketTemplate, FillHwCksumOffloadFlags) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UdpPacketTemplate::build (needs real mempool — skip, tested via fill)
+// UdpPacketTemplate::build
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(UdpPacketTemplate, BuildNullPoolReturnsNull) {
@@ -343,6 +343,31 @@ TEST(UdpPacketTemplate, DumpContainsAddresses) {
     EXPECT_NE(s.find("10.0.0.2"), std::string::npos);
     EXPECT_NE(s.find("50000"), std::string::npos);
     EXPECT_NE(s.find("8080"), std::string::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UdpPacketTemplate — ip_id wraparound
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(UdpPacketTemplate, IpIdWrapsAroundAt65535) {
+    auto tmpl = make_template();
+    tmpl.ip_id_ = 65534;  // Start near wraparound
+
+    FakeMbuf fake1;
+    tmpl.fill(&fake1.mbuf, nullptr, 0);
+    auto* ip1 = reinterpret_cast<const rte_ipv4_hdr*>(fake1.data() + kEtherHeaderLen);
+    EXPECT_EQ(ntoh16(ip1->packet_id), 65534u);
+
+    FakeMbuf fake2;
+    tmpl.fill(&fake2.mbuf, nullptr, 0);
+    auto* ip2 = reinterpret_cast<const rte_ipv4_hdr*>(fake2.data() + kEtherHeaderLen);
+    EXPECT_EQ(ntoh16(ip2->packet_id), 65535u);
+
+    // Next packet wraps to 0
+    FakeMbuf fake3;
+    tmpl.fill(&fake3.mbuf, nullptr, 0);
+    auto* ip3 = reinterpret_cast<const rte_ipv4_hdr*>(fake3.data() + kEtherHeaderLen);
+    EXPECT_EQ(ntoh16(ip3->packet_id), 0u);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,6 +436,53 @@ TEST(UdpConfig, ValidateNullPoolFails) {
     auto err = cfg.validate();
     EXPECT_FALSE(err.empty());
     EXPECT_NE(err.find("pool"), std::string_view::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UdpConfig::dump / to_json
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(UdpConfig, DumpContainsFields) {
+    rte_mempool fake_pool{};
+    UdpConfig cfg{
+        .src_ip = kTestSrcIp, .dst_ip = kTestDstIp,
+        .src_port = kTestSrcPort, .dst_port = kTestDstPort,
+        .port_id = 1, .tx_queue_id = 3,
+        .pool = &fake_pool, .hw_cksum = true,
+    };
+    auto s = cfg.dump();
+    EXPECT_NE(s.find("10.0.0.1"), std::string::npos) << s;
+    EXPECT_NE(s.find("10.0.0.2"), std::string::npos) << s;
+    EXPECT_NE(s.find("50000"), std::string::npos) << s;
+    EXPECT_NE(s.find("8080"), std::string::npos) << s;
+    EXPECT_NE(s.find("hw_cksum=true"), std::string::npos) << s;
+}
+
+TEST(UdpConfig, ToJsonFormat) {
+    rte_mempool fake_pool{};
+    UdpConfig cfg{
+        .src_ip = kTestSrcIp, .dst_ip = kTestDstIp,
+        .src_port = kTestSrcPort, .dst_port = kTestDstPort,
+        .port_id = 0, .tx_queue_id = 0,
+        .pool = &fake_pool, .hw_cksum = false,
+    };
+    auto json = cfg.to_json();
+    EXPECT_NE(json.find("\"src_port\":50000"), std::string::npos) << json;
+    EXPECT_NE(json.find("\"dst_port\":8080"), std::string::npos) << json;
+    EXPECT_NE(json.find("\"hw_cksum\":false"), std::string::npos) << json;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// build_udp_packet convenience function
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(BuildUdpPacket, NullPoolReturnsNull) {
+    auto src = make_mac(0x01);
+    auto dst = make_mac(0x02);
+    EXPECT_EQ(build_udp_packet(nullptr, src, dst,
+                               kTestSrcIp, kTestDstIp,
+                               kTestSrcPort, kTestDstPort,
+                               nullptr, 0), nullptr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
