@@ -58,6 +58,7 @@ struct UdpConfig {
     bool hw_cksum{false};           ///< Enable NIC checksum offload (IP + UDP)
 
     /// Validate that all required fields are set.
+    /// constexpr for compile-time validation of IP/port fields; pool check is runtime-only.
     /// @return Empty string_view if valid, error description otherwise.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (src_ip == 0) return "src_ip must not be zero";
@@ -212,7 +213,9 @@ public:
         rte_mbuf* mbuf = tmpl_.build(pool_, data, len);
         if (!mbuf) [[unlikely]] {
             ++stats_.tx_errors;
-            SPDLOG_LOGGER_TRACE(detail::udp_logger(), "send: mbuf alloc failed");
+            SPDLOG_LOGGER_TRACE(detail::udp_logger(),
+                "send: mbuf alloc failed, payload_len={}, port={}, queue={}",
+                len, port_id_, tx_queue_id_);
             return false;
         }
 
@@ -220,7 +223,9 @@ public:
         if (sent == 0) [[unlikely]] {
             rte_pktmbuf_free(mbuf);
             ++stats_.tx_errors;
-            SPDLOG_LOGGER_TRACE(detail::udp_logger(), "send: tx_burst returned 0");
+            SPDLOG_LOGGER_TRACE(detail::udp_logger(),
+                "send: tx_burst returned 0, payload_len={}, port={}, queue={}",
+                len, port_id_, tx_queue_id_);
             return false;
         }
 

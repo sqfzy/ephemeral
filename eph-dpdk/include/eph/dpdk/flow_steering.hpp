@@ -352,14 +352,13 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     ipv4_mask.hdr.src_addr = 0xFFFFFFFF;
     ipv4_mask.hdr.dst_addr = 0xFFFFFFFF;
 
-    // L4 match: protocol-specific header
-    // Both TCP and UDP use the same port field layout in rte_flow, but
-    // different item types to match the IP protocol field.
+    // L4 match: protocol-specific header.
+    // Declared in outer scope so pointers in l4_item remain valid for
+    // rte_flow_create below. Only the active branch's fields are initialized.
     rte_flow_item_tcp tcp_spec{};
     rte_flow_item_tcp tcp_mask{};
     rte_flow_item_udp udp_spec{};
     rte_flow_item_udp udp_mask{};
-
     rte_flow_item l4_item{};
 
     if (proto == FlowProtocol::Tcp) {

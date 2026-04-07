@@ -581,7 +581,7 @@ struct PacketTemplate {
 ///       instance (ip_id_ is incremented per packet without synchronization).
 struct UdpPacketTemplate {
     /// Precomputed 42-byte header: Ethernet(14) + IPv4(20) + UDP(8).
-    /// Cache-line aligned to avoid false sharing with neighboring fields.
+    /// Cache-line aligned for optimal memcpy performance on the TX hot path.
     alignas(64) uint8_t header_[kUdpAllHeadersLen]{};
 
     /// IP identification field, incremented per packet.
