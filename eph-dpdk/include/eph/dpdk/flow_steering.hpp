@@ -27,6 +27,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_flow.h>
+#include <rte_udp.h>
 
 #include "eph/dpdk/net_header.hpp"
 
@@ -35,6 +36,25 @@ namespace eph::dpdk {
 namespace detail {
 inline spdlog::logger* flow_logger() { return get_logger<LoggerName{"dpdk.flow"}>(); }
 } // namespace detail
+
+// ---------------------------------------------------------------------------
+// Flow rule protocol type
+// ---------------------------------------------------------------------------
+
+/// Protocol type for flow rule pattern matching.
+enum class FlowProtocol : uint8_t {
+    Tcp,  ///< Match TCP 4-tuple (default, backward compatible)
+    Udp,  ///< Match UDP 4-tuple
+};
+
+/// Human-readable name for FlowProtocol.
+[[nodiscard]] constexpr std::string_view flow_protocol_name(FlowProtocol p) noexcept {
+    switch (p) {
+    case FlowProtocol::Tcp: return "TCP";
+    case FlowProtocol::Udp: return "UDP";
+    }
+    return "unknown";
+}
 
 // ---------------------------------------------------------------------------
 // RX dispatch mode
@@ -306,16 +326,19 @@ struct FlowRule {
     }
 };
 
-/// Install a rte_flow rule that steers packets matching a TCP 5-tuple
-/// to a specific RX queue. Returns RAII FlowRule handle.
+/// Install a rte_flow rule that steers packets matching a 4-tuple
+/// to a specific RX queue. Supports both TCP and UDP protocols.
+/// Returns RAII FlowRule handle.
 ///
 /// @param port_id  DPDK port ID
 /// @param queue_id Target RX queue for matching packets
-/// @param tuple    TCP 4-tuple (src/dst IP + port) in HOST byte order
+/// @param tuple    4-tuple (src/dst IP + port) in HOST byte order
+/// @param proto    Protocol to match (default: TCP for backward compatibility)
 /// @return FlowRule handle on success, error string on failure
 [[nodiscard]] inline std::expected<FlowRule, std::string>
 install_flow_rule(uint16_t port_id, uint16_t queue_id,
-                  const net::ConnectionTuple& tuple) noexcept {
+                  const net::ConnectionTuple& tuple,
+                  FlowProtocol proto = FlowProtocol::Tcp) noexcept {
     [[maybe_unused]] auto* log = detail::flow_logger();
 
     rte_flow_attr attr{};
@@ -329,20 +352,37 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     ipv4_mask.hdr.src_addr = 0xFFFFFFFF;
     ipv4_mask.hdr.dst_addr = 0xFFFFFFFF;
 
-    // TCP match: remote port → src, local port → dst
+    // L4 match: protocol-specific header
+    // Both TCP and UDP use the same port field layout in rte_flow, but
+    // different item types to match the IP protocol field.
     rte_flow_item_tcp tcp_spec{};
-    tcp_spec.hdr.src_port = rte_cpu_to_be_16(tuple.dst_port);
-    tcp_spec.hdr.dst_port = rte_cpu_to_be_16(tuple.src_port);
     rte_flow_item_tcp tcp_mask{};
-    tcp_mask.hdr.src_port = 0xFFFF;
-    tcp_mask.hdr.dst_port = 0xFFFF;
+    rte_flow_item_udp udp_spec{};
+    rte_flow_item_udp udp_mask{};
+
+    rte_flow_item l4_item{};
+
+    if (proto == FlowProtocol::Tcp) {
+        tcp_spec.hdr.src_port = rte_cpu_to_be_16(tuple.dst_port);
+        tcp_spec.hdr.dst_port = rte_cpu_to_be_16(tuple.src_port);
+        tcp_mask.hdr.src_port = 0xFFFF;
+        tcp_mask.hdr.dst_port = 0xFFFF;
+        l4_item = {.type = RTE_FLOW_ITEM_TYPE_TCP,
+                   .spec = &tcp_spec, .last = nullptr, .mask = &tcp_mask};
+    } else {
+        udp_spec.hdr.src_port = rte_cpu_to_be_16(tuple.dst_port);
+        udp_spec.hdr.dst_port = rte_cpu_to_be_16(tuple.src_port);
+        udp_mask.hdr.src_port = 0xFFFF;
+        udp_mask.hdr.dst_port = 0xFFFF;
+        l4_item = {.type = RTE_FLOW_ITEM_TYPE_UDP,
+                   .spec = &udp_spec, .last = nullptr, .mask = &udp_mask};
+    }
 
     rte_flow_item pattern[] = {
         {.type = RTE_FLOW_ITEM_TYPE_ETH, .spec = nullptr, .last = nullptr, .mask = nullptr},
         {.type = RTE_FLOW_ITEM_TYPE_IPV4,
          .spec = &ipv4_spec, .last = nullptr, .mask = &ipv4_mask},
-        {.type = RTE_FLOW_ITEM_TYPE_TCP,
-         .spec = &tcp_spec, .last = nullptr, .mask = &tcp_mask},
+        l4_item,
         {.type = RTE_FLOW_ITEM_TYPE_END, .spec = nullptr, .last = nullptr, .mask = nullptr},
     };
 
@@ -358,15 +398,16 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     auto* flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
     if (!flow) {
         auto msg = std::format(
-            "rte_flow_create failed: port={}, queue={}, error={}",
-            port_id, queue_id,
+            "rte_flow_create failed: port={}, queue={}, proto={}, error={}",
+            port_id, queue_id, flow_protocol_name(proto),
             error.message ? error.message : "unknown");
         SPDLOG_LOGGER_WARN(log, "{}", msg);
         return std::unexpected(msg);
     }
 
     SPDLOG_LOGGER_INFO(log,
-        "Flow rule installed: {}:{} -> {}:{} queue={} (NIC src/dst swapped)",
+        "{} flow rule installed: {}:{} -> {}:{} queue={} (NIC src/dst swapped)",
+        flow_protocol_name(proto),
         net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
         net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
         queue_id);
@@ -392,6 +433,15 @@ struct std::formatter<eph::dpdk::RxDispatchMode> : std::formatter<std::string_vi
     auto format(eph::dpdk::RxDispatchMode m, auto& ctx) const {
         return std::formatter<std::string_view>::format(
             eph::dpdk::rx_dispatch_mode_name(m), ctx);
+    }
+};
+
+/// @brief std::formatter specialization for FlowProtocol.
+template <>
+struct std::formatter<eph::dpdk::FlowProtocol> : std::formatter<std::string_view> {
+    auto format(eph::dpdk::FlowProtocol p, auto& ctx) const {
+        return std::formatter<std::string_view>::format(
+            eph::dpdk::flow_protocol_name(p), ctx);
     }
 };
 

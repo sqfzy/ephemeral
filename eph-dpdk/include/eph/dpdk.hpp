@@ -9,4 +9,5 @@
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/connector.hpp"
+#include "eph/dpdk/udp.hpp"
 #include "eph/dpdk/types.hpp"

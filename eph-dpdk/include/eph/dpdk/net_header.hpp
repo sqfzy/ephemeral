@@ -43,6 +43,7 @@ inline constexpr uint16_t kTcpHeaderLen    = 20;  ///< TCP header without option
 inline constexpr uint16_t kEtherHeaderLen  = 14;  ///< Ethernet II header (dst + src + type)
 inline constexpr uint16_t kUdpHeaderLen    = 8;   ///< UDP header without options (RFC 768)
 inline constexpr uint16_t kAllHeadersLen   = kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;  ///< Combined Eth+IP+TCP header length (54 bytes)
+inline constexpr uint16_t kUdpAllHeadersLen = kEtherHeaderLen + kIpv4HeaderLen + kUdpHeaderLen;  ///< Combined Eth+IP+UDP header length (42 bytes)
 /// @}
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +228,45 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
     return static_cast<uint16_t>(~sum);
+}
+
+/// @brief Compute the full UDP checksum including the pseudo-header.
+///
+/// Combines the pseudo-header sum with the UDP segment checksum per RFC 768.
+/// Primarily useful for test verification of NIC checksum offload correctness.
+///
+/// @param src_ip_net     Source IP in network byte order
+/// @param dst_ip_net     Destination IP in network byte order
+/// @param udp_seg        Pointer to the UDP header (followed by payload)
+/// @param total_udp_len  Total length of UDP header + payload in bytes
+/// @return UDP checksum in network byte order, ready to store in udp->checksum
+[[nodiscard]] inline uint16_t udp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
+                              const void* udp_seg, uint16_t total_udp_len) noexcept {
+    uint32_t sum = pseudo_header_sum(src_ip_net, dst_ip_net, kIpProtoUdp, total_udp_len);
+
+    auto ptr = static_cast<const uint8_t*>(udp_seg);
+    size_t len = total_udp_len;
+
+    while (len > 1) {
+        uint16_t word;
+        std::memcpy(&word, ptr, 2);
+        sum += word;
+        ptr += 2;
+        len -= 2;
+    }
+    if (len == 1) {
+        uint16_t word = 0;
+        std::memcpy(&word, ptr, 1);
+        sum += word;
+    }
+
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    // RFC 768: if computed checksum is zero, transmit as 0xFFFF
+    auto result = static_cast<uint16_t>(~sum);
+    return result == 0 ? static_cast<uint16_t>(0xFFFF) : result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -526,6 +566,164 @@ struct PacketTemplate {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// UDP packet template — precomputed Eth+IP+UDP header for fast TX
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Precomputed Ethernet + IPv4 + UDP header template for fast packet construction.
+///
+/// All static fields (MAC addresses, IP addresses, ports) are pre-converted to
+/// network byte order and stored in a 42-byte header array at init() time.
+/// Each send only updates 3 dynamic fields: ip_total_length, ip_id, udp_length.
+///
+/// TX hot path (fill): 1x memcpy(42B) + 3 stores + 1x memcpy(payload) + checksum.
+///
+/// @note Not thread-safe. Each TX thread must use its own UdpPacketTemplate
+///       instance (ip_id_ is incremented per packet without synchronization).
+struct UdpPacketTemplate {
+    /// Precomputed 42-byte header: Ethernet(14) + IPv4(20) + UDP(8).
+    /// Cache-line aligned to avoid false sharing with neighboring fields.
+    alignas(64) uint8_t header_[kUdpAllHeadersLen]{};
+
+    /// IP identification field, incremented per packet.
+    uint16_t ip_id_{0};
+
+    /// Enable NIC TX checksum offload (IP + UDP).
+    /// When true: sets ol_flags, IP checksum = 0 (NIC fills), UDP checksum = pseudo-header.
+    /// When false: IP checksum = software, UDP checksum = 0 (optional for IPv4, RFC 768).
+    bool hw_cksum_{false};
+
+    /// Initialize the precomputed header template from connection parameters.
+    ///
+    /// Pre-fills all static fields in network byte order. Dynamic fields
+    /// (ip_total_length, ip_id, udp_length) are set to placeholder values
+    /// and updated per-packet in fill()/build().
+    ///
+    /// @param src_mac   Source Ethernet address
+    /// @param dst_mac   Destination Ethernet address (usually gateway MAC)
+    /// @param src_ip    Source IPv4 address (host byte order)
+    /// @param dst_ip    Destination IPv4 address (host byte order)
+    /// @param src_port  Source UDP port (host byte order)
+    /// @param dst_port  Destination UDP port (host byte order)
+    /// @param hw_cksum  Enable NIC checksum offload
+    void init(const rte_ether_addr& src_mac, const rte_ether_addr& dst_mac,
+              uint32_t src_ip, uint32_t dst_ip,
+              uint16_t src_port, uint16_t dst_port,
+              bool hw_cksum = false) noexcept {
+        hw_cksum_ = hw_cksum;
+
+        auto* pkt = header_;
+
+        // ── Ethernet header (14 bytes) ──
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(pkt);
+        rte_ether_addr_copy(&dst_mac, &eth->dst_addr);
+        rte_ether_addr_copy(&src_mac, &eth->src_addr);
+        eth->ether_type = hton16(kEtherTypeIpv4);
+
+        // ── IPv4 header (20 bytes) ──
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(pkt + kEtherHeaderLen);
+        std::memset(ip, 0, kIpv4HeaderLen);
+        ip->version_ihl     = kIpv4VersionIhl5;
+        ip->type_of_service  = 0;
+        ip->total_length     = 0;  // Updated per packet in fill()
+        ip->packet_id        = 0;  // Updated per packet in fill()
+        ip->fragment_offset  = hton16(kIpDontFragment);
+        ip->time_to_live     = kDefaultTtl;
+        ip->next_proto_id    = kIpProtoUdp;
+        ip->hdr_checksum     = 0;  // Computed per packet in fill()
+        ip->src_addr         = hton32(src_ip);
+        ip->dst_addr         = hton32(dst_ip);
+
+        // ── UDP header (8 bytes) ──
+        auto* udp = reinterpret_cast<UdpHeader*>(pkt + kEtherHeaderLen + kIpv4HeaderLen);
+        udp->src_port = hton16(src_port);
+        udp->dst_port = hton16(dst_port);
+        udp->length   = 0;  // Updated per packet in fill()
+        udp->checksum = 0;
+    }
+
+    /// Fill a pre-allocated mbuf with a UDP packet (hot path, zero-alloc).
+    ///
+    /// The mbuf must have at least kUdpAllHeadersLen + payload_len bytes
+    /// of available space. The mbuf is reset before filling.
+    ///
+    /// @param mbuf         Pre-allocated mbuf (must not be null)
+    /// @param payload      Payload data to copy after UDP header
+    /// @param payload_len  Payload length in bytes
+    /// @return Total bytes written (42 + payload_len), or 0 on failure
+    uint16_t fill(rte_mbuf* mbuf,
+                  const void* payload, uint16_t payload_len) noexcept {
+        if (!mbuf) [[unlikely]] return 0;
+
+        const uint16_t total_len = kUdpAllHeadersLen + payload_len;
+
+        rte_pktmbuf_reset(mbuf);
+        auto* pkt = reinterpret_cast<uint8_t*>(rte_pktmbuf_append(mbuf, total_len));
+        if (!pkt) [[unlikely]] return 0;
+
+        // Copy precomputed 42-byte header template
+        std::memcpy(pkt, header_, kUdpAllHeadersLen);
+
+        // Update dynamic fields
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(pkt + kEtherHeaderLen);
+        ip->total_length = hton16(kIpv4HeaderLen + kUdpHeaderLen + payload_len);
+        ip->packet_id    = hton16(ip_id_++);
+
+        auto* udp = reinterpret_cast<UdpHeader*>(pkt + kEtherHeaderLen + kIpv4HeaderLen);
+        udp->length = hton16(kUdpHeaderLen + payload_len);
+
+        // Copy payload
+        if (payload && payload_len > 0) {
+            std::memcpy(pkt + kUdpAllHeadersLen, payload, payload_len);
+        }
+
+        // Checksum handling
+        if (hw_cksum_) {
+            // NIC computes both checksums — set offload metadata
+            mbuf->ol_flags = RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_UDP_CKSUM;
+            mbuf->l2_len = kEtherHeaderLen;
+            mbuf->l3_len = kIpv4HeaderLen;
+            mbuf->l4_len = kUdpHeaderLen;
+            ip->hdr_checksum = 0;
+            udp->checksum = rte_ipv4_phdr_cksum(ip, mbuf->ol_flags);
+        } else {
+            mbuf->ol_flags = 0;
+            // IPv4 UDP checksum is optional (RFC 768) — set to 0 for lowest latency.
+            // IP header checksum computed in software.
+            udp->checksum = 0;
+            ip->hdr_checksum = 0;
+            ip->hdr_checksum = internet_checksum(ip, kIpv4HeaderLen);
+        }
+
+        return total_len;
+    }
+
+    /// Allocate an mbuf from the pool and fill it with a UDP packet.
+    ///
+    /// Convenience wrapper around fill() for callers who don't pre-allocate mbufs.
+    ///
+    /// @param pool         Mempool to allocate from (must not be null)
+    /// @param payload      Payload data
+    /// @param payload_len  Payload length in bytes
+    /// @return Filled mbuf on success, nullptr on allocation failure
+    rte_mbuf* build(rte_mempool* pool,
+                    const void* payload, uint16_t payload_len) noexcept {
+        if (!pool) [[unlikely]] return nullptr;
+        rte_mbuf* mbuf = rte_pktmbuf_alloc(pool);
+        if (!mbuf) [[unlikely]] return nullptr;
+
+        if (fill(mbuf, payload, payload_len) == 0) {
+            rte_pktmbuf_free(mbuf);
+            return nullptr;
+        }
+        return mbuf;
+    }
+
+    /// Human-readable dump for logging/diagnostics.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string dump() const;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Packet parser — extract headers from received mbufs
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -795,6 +993,17 @@ inline std::string PacketTemplate::to_json() const {
         format_ipv4(tuple.src_ip).data(), format_ipv4(tuple.dst_ip).data(),
         tuple.src_port, tuple.dst_port,
         mss, ip_id, hw_cksum ? "true" : "false");
+}
+
+inline std::string UdpPacketTemplate::dump() const {
+    auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(header_ + kEtherHeaderLen);
+    auto* udp = reinterpret_cast<const UdpHeader*>(header_ + kEtherHeaderLen + kIpv4HeaderLen);
+    return std::format("UdpPacketTemplate({}:{} -> {}:{}, hw_cksum={})",
+                       format_ipv4(ntoh32(ip->src_addr)).data(),
+                       ntoh16(udp->src_port),
+                       format_ipv4(ntoh32(ip->dst_addr)).data(),
+                       ntoh16(udp->dst_port),
+                       hw_cksum_);
 }
 
 inline std::string ParsedPacket::dump() const {
