@@ -235,58 +235,6 @@ public:
         return send(sv.data(), sv.size(), ws::opcode::kBinary);
     }
 
-    /// @deprecated Timeout is ignored in direct-TX mode (no queue to wait on).
-    ///   Use send() instead — it has identical behavior without the misleading
-    ///   timeout parameter that silently changes semantics vs Transport::send_for().
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send()")]]
-    [[nodiscard]] SendError send_for(const void* data, size_t len,
-                       std::chrono::duration<Rep, Period> /*timeout*/,
-                       uint8_t opcode = ws::opcode::kBinary) noexcept {
-        return send(data, len, opcode);
-    }
-
-    /// @deprecated Timeout is ignored in direct-TX mode. Use send() instead.
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send()")]]
-    [[nodiscard]] SendError send_for(std::span<const uint8_t> data,
-                       std::chrono::duration<Rep, Period> /*timeout*/,
-                       uint8_t opcode = ws::opcode::kBinary) noexcept {
-        return send(data, opcode);
-    }
-
-    /// @deprecated Timeout is ignored in direct-TX mode. Use send_text() instead.
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send_text()")]]
-    [[nodiscard]] SendError send_text_for(const void* data, size_t len,
-                            std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
-        return send_text(data, len);
-    }
-
-    /// @deprecated Timeout is ignored in direct-TX mode. Use send_text() instead.
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send_text()")]]
-    [[nodiscard]] SendError send_text_for(std::string_view sv,
-                            std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
-        return send_text(sv);
-    }
-
-    /// @deprecated Timeout is ignored in direct-TX mode. Use send_binary() instead.
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send_binary()")]]
-    [[nodiscard]] SendError send_binary_for(const void* data, size_t len,
-                              std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
-        return send_binary(data, len);
-    }
-
-    /// @deprecated Timeout is ignored in direct-TX mode. Use send_binary() instead.
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send_binary()")]]
-    [[nodiscard]] SendError send_binary_for(std::span<const uint8_t> data,
-                              std::chrono::duration<Rep, Period> /*timeout*/) noexcept {
-        return send_binary(data.data(), data.size());
-    }
-
     /// Send a WebSocket Close frame with a custom status code and reason.
     /// Delegates to TransportCore::send_close_direct() (shared with DirectTransport).
     [[nodiscard]] SendError send_close(uint16_t status_code,
@@ -325,15 +273,6 @@ public:
             }
         }
         return SendError::kOk;
-    }
-
-    /// @deprecated Timeout is ignored in direct-TX mode. Use send_n() instead.
-    template <typename Rep, typename Period>
-    [[deprecated("timeout ignored in direct-TX mode, use send_n()")]]
-    SendError send_n_for(const std::span<const uint8_t>* payloads, size_t count,
-                         std::chrono::duration<Rep, Period> /*timeout*/,
-                         uint8_t opcode = ws::opcode::kBinary) noexcept {
-        return send_n(payloads, count, opcode);
     }
 
     // -----------------------------------------------------------------------
