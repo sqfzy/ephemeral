@@ -556,7 +556,7 @@ http_connect_handshake(SocketTransport& tcp,
 
     if (status_code != 200) {
         // Extract reason phrase for better error message
-        auto reason_start = first_space + 5;  // skip "NNN "
+        auto reason_start = first_space + 5;  // skip " NNN " (space + 3 digits + space)
         auto reason_end = response.find("\r\n");
         std::string_view reason = (reason_start < reason_end)
             ? std::string_view(response).substr(reason_start, reason_end - reason_start)
