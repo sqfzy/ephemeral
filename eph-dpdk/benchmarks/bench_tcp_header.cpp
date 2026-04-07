@@ -457,7 +457,7 @@ BENCHMARK(BM_PacketTemplateToJson);
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void BM_ReactorConfigDump(benchmark::State& state) {
-    eph::dpdk::Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
+    eph::dpdk::ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
     for (auto _ : state) {
         auto s = cfg.dump();
         benchmark::DoNotOptimize(s.data());
@@ -466,7 +466,7 @@ static void BM_ReactorConfigDump(benchmark::State& state) {
 BENCHMARK(BM_ReactorConfigDump);
 
 static void BM_ReactorConfigToJson(benchmark::State& state) {
-    eph::dpdk::Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
+    eph::dpdk::ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
     for (auto _ : state) {
         auto s = cfg.to_json();
         benchmark::DoNotOptimize(s.data());

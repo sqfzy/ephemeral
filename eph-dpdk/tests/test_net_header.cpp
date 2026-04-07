@@ -1181,6 +1181,139 @@ TEST(NetHeader, EphemeralPortConstants) {
 // Constexpr checksum matches runtime for various payload sizes
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parse_ip_header
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Fake mbuf for parse_ip_header tests (no EAL required).
+struct FakeMbufIp {
+    alignas(64) uint8_t buf[256]{};
+    rte_mbuf mbuf{};
+
+    FakeMbufIp() {
+        std::memset(&mbuf, 0, sizeof(mbuf));
+        mbuf.buf_addr = buf;
+        mbuf.buf_len = sizeof(buf);
+        mbuf.data_off = 0;
+        mbuf.data_len = 0;
+        mbuf.pkt_len = 0;
+    }
+
+    /// Prepare a minimal Ethernet+IPv4 header with given protocol.
+    void prepare(uint8_t proto, uint16_t total_pkt_len = 54) {
+        std::memset(buf, 0, sizeof(buf));
+        // Ethernet header
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+        eth->ether_type = hton16(kEtherTypeIpv4);
+
+        // IPv4 header
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+        ip->version_ihl = 0x45;  // version=4, IHL=5 (20 bytes)
+        ip->next_proto_id = proto;
+        ip->total_length = hton16(total_pkt_len - kEtherHeaderLen);
+        ip->src_addr = hton32(0x0A000001);
+        ip->dst_addr = hton32(0x0A000002);
+
+        mbuf.data_len = total_pkt_len;
+        mbuf.pkt_len = total_pkt_len;
+    }
+};
+
+} // namespace
+
+TEST(ParseIpHeader, ValidTcp) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoTcp, 54);  // Eth(14)+IP(20)+TCP(20)
+
+    auto result = parse_ip_header(&fake.mbuf);
+    ASSERT_TRUE(static_cast<bool>(result));
+    EXPECT_EQ(result.proto, kIpProtoTcp);
+    EXPECT_EQ(result.ihl, 20u);
+    EXPECT_NE(result.eth, nullptr);
+    EXPECT_NE(result.ip, nullptr);
+    EXPECT_EQ(result.src_ip(), 0x0A000001u);
+    EXPECT_EQ(result.dst_ip(), 0x0A000002u);
+}
+
+TEST(ParseIpHeader, ValidUdp) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoUdp, 42);  // Eth(14)+IP(20)+UDP(8)
+
+    auto result = parse_ip_header(&fake.mbuf);
+    ASSERT_TRUE(static_cast<bool>(result));
+    EXPECT_EQ(result.proto, kIpProtoUdp);
+    EXPECT_EQ(result.ihl, 20u);
+}
+
+TEST(ParseIpHeader, TooShort) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoTcp, 33);  // Less than Eth+IP minimum (34)
+    fake.mbuf.data_len = 33;
+    fake.mbuf.pkt_len = 33;
+
+    auto result = parse_ip_header(&fake.mbuf);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+TEST(ParseIpHeader, NotIpv4) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoTcp, 54);
+    // Overwrite EtherType to ARP
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(fake.buf);
+    eth->ether_type = hton16(0x0806);
+
+    auto result = parse_ip_header(&fake.mbuf);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+TEST(ParseIpHeader, NullMbuf) {
+    auto result = parse_ip_header(nullptr);
+    EXPECT_FALSE(static_cast<bool>(result));
+    EXPECT_EQ(result.eth, nullptr);
+    EXPECT_EQ(result.ip, nullptr);
+    EXPECT_EQ(result.src_ip(), 0u);
+    EXPECT_EQ(result.dst_ip(), 0u);
+}
+
+TEST(ParseIpHeader, OperatorBool) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoTcp, 54);
+
+    auto valid = parse_ip_header(&fake.mbuf);
+    EXPECT_TRUE(static_cast<bool>(valid));
+
+    auto invalid = parse_ip_header(nullptr);
+    EXPECT_FALSE(static_cast<bool>(invalid));
+}
+
+TEST(ParseIpHeader, BadIpVersion) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoTcp, 54);
+    // Corrupt IPv4 version to 6
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(fake.buf + kEtherHeaderLen);
+    ip->version_ihl = 0x65;  // version=6, IHL=5
+
+    auto result = parse_ip_header(&fake.mbuf);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+TEST(ParseIpHeader, BadIhl) {
+    FakeMbufIp fake;
+    fake.prepare(kIpProtoTcp, 54);
+    // Set IHL to 3 (12 bytes, below minimum 20)
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(fake.buf + kEtherHeaderLen);
+    ip->version_ihl = 0x43;
+
+    auto result = parse_ip_header(&fake.mbuf);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constexpr checksum matches runtime for various payload sizes
+// ─────────────────────────────────────────────────────────────────────────────
+
 TEST(NetHeader, ChecksumConsistencyAcrossSizes) {
     // Verify the constexpr-safe byte-reconstruction approach produces the
     // same results as the old memcpy approach for a range of buffer sizes.

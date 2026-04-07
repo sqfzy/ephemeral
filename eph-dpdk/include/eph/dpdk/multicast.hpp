@@ -66,8 +66,12 @@ using net::UdpHeader;
 using net::kUdpHeaderLen;
 
 /// Minimum Ethernet + IPv4 + UDP header length for a valid multicast packet.
-inline constexpr uint16_t kMinUdpPacketLen =
-    net::kEtherHeaderLen + net::kIpv4HeaderLen + kUdpHeaderLen;
+inline constexpr uint16_t kMinUdpPacketLen = net::kUdpAllHeadersLen;
+
+// ParsedUdpPacket and parse_udp_packet moved to net_header.hpp.
+// Aliases preserved for backward compatibility.
+using net::ParsedUdpPacket;
+using net::parse_udp_packet;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Multicast MAC computation (RFC 1112)
@@ -98,113 +102,6 @@ inline constexpr uint16_t kMinUdpPacketLen =
 [[nodiscard]] constexpr bool is_multicast_ip(uint32_t ip) noexcept {
     // Multicast range: 224.0.0.0 to 239.255.255.255 (high nibble == 0xE)
     return (ip >> 28) == 0x0E;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Parsed UDP packet view
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Zero-copy view into a parsed UDP/IPv4/Ethernet packet.
-struct ParsedUdpPacket {
-    const rte_ether_hdr* eth     = nullptr;
-    const rte_ipv4_hdr*  ip      = nullptr;
-    const UdpHeader*     udp     = nullptr;
-    const uint8_t*       payload = nullptr;
-    uint16_t             payload_len = 0;
-
-    /// Extract source IP (host byte order).
-    [[nodiscard]] uint32_t src_ip() const noexcept {
-        return ip ? net::ntoh32(ip->src_addr) : 0;
-    }
-
-    /// Extract destination IP (host byte order).
-    [[nodiscard]] uint32_t dst_ip() const noexcept {
-        return ip ? net::ntoh32(ip->dst_addr) : 0;
-    }
-
-    /// Extract source port (host byte order).
-    [[nodiscard]] uint16_t src_port() const noexcept {
-        return udp ? net::ntoh16(udp->src_port) : 0;
-    }
-
-    /// Extract destination port (host byte order).
-    [[nodiscard]] uint16_t dst_port() const noexcept {
-        return udp ? net::ntoh16(udp->dst_port) : 0;
-    }
-
-    /// Check if the packet is valid (all headers parsed successfully).
-    [[nodiscard]] explicit operator bool() const noexcept {
-        return eth != nullptr && ip != nullptr && udp != nullptr;
-    }
-
-    /// Human-readable one-line summary for diagnostics/logging.
-    /// Returns "(invalid)" if the packet was not successfully parsed.
-    [[nodiscard]] std::string dump() const {
-        if (!udp) return "(invalid)";
-        return std::format("UDP {}:{} -> {}:{} payload={}B",
-            net::format_ipv4(src_ip()).data(), src_port(),
-            net::format_ipv4(dst_ip()).data(), dst_port(),
-            payload_len);
-    }
-
-    /// JSON-formatted packet summary for monitoring/logging.
-    /// Returns "{\"valid\":false}" if the packet was not parsed.
-    [[nodiscard]] std::string to_json() const {
-        if (!udp) return "{\"valid\":false}";
-        return std::format(
-            "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{},"
-            "\"payload_len\":{}}}",
-            net::format_ipv4(src_ip()).data(), src_port(),
-            net::format_ipv4(dst_ip()).data(), dst_port(),
-            payload_len);
-    }
-};
-
-/// Parse a UDP/IPv4/Ethernet packet from an mbuf.
-///
-/// Returns an empty ParsedUdpPacket (all nullptrs) if the packet is not a
-/// valid IPv4/UDP packet or is too short.
-[[nodiscard]] inline ParsedUdpPacket parse_udp_packet(const rte_mbuf* mbuf) noexcept {
-    if (!mbuf) [[unlikely]] return {};
-    const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
-    if (pkt_len < kMinUdpPacketLen) return {};
-
-    const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
-
-    // Ethernet header
-    auto* eth = reinterpret_cast<const rte_ether_hdr*>(data);
-    if (net::ntoh16(eth->ether_type) != net::kEtherTypeIpv4) return {};
-
-    // IPv4 header
-    auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + net::kEtherHeaderLen);
-    if ((ip->version_ihl >> 4) != 4) return {};
-    uint8_t ihl = (ip->version_ihl & 0x0F) << 2; // IHL * 4
-    if (ihl < net::kIpv4HeaderLen) return {};
-    if (ip->next_proto_id != net::kIpProtoUdp) return {};
-
-    // UDP header — validate IHL doesn't overshoot the packet
-    uint16_t udp_offset = net::kEtherHeaderLen + ihl;
-    if (udp_offset + kUdpHeaderLen > pkt_len) return {};
-
-    auto* udp = reinterpret_cast<const UdpHeader*>(data + udp_offset);
-    uint16_t udp_len = net::ntoh16(udp->length);
-    if (udp_len < kUdpHeaderLen) return {};
-
-    // Verify buffer has enough data for the claimed UDP length
-    if (udp_offset + udp_len > pkt_len) return {};
-
-    ParsedUdpPacket result;
-    result.eth = eth;
-    result.ip  = ip;
-    result.udp = udp;
-
-    uint16_t payload_offset = udp_offset + kUdpHeaderLen;
-    result.payload_len = udp_len - kUdpHeaderLen;
-    if (result.payload_len > 0) {
-        result.payload = data + payload_offset;
-    }
-
-    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -891,13 +788,7 @@ make_moldudp64_adapter(ParseFn&& parse_fn, MsgCb&& msg_callback) {
 // std::formatter specializations
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief std::formatter for ParsedUdpPacket.
-template <>
-struct std::formatter<eph::dpdk::ParsedUdpPacket> : std::formatter<std::string> {
-    auto format(const eph::dpdk::ParsedUdpPacket& p, auto& ctx) const {
-        return std::formatter<std::string>::format(p.dump(), ctx);
-    }
-};
+// std::formatter for ParsedUdpPacket is in net_header.hpp (canonical location).
 
 /// @brief std::formatter for MulticastGroup — compact "ip:port" summary.
 template <>

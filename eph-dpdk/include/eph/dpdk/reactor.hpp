@@ -96,6 +96,66 @@ struct ReactorEntry {
     }
 };
 
+/// Maximum UDP entries a single Reactor can service.
+inline constexpr size_t kReactorMaxUdpEntries = 8;
+
+/// Callback invoked for each received UDP payload.
+/// @param data    Pointer to UDP payload (valid only during callback)
+/// @param len     Payload length in bytes
+/// @param udp_id  UDP entry index in the reactor (0-based)
+using UdpReactorCallback =
+    std::function<void(const uint8_t* data, uint16_t len, size_t udp_id)>;
+
+/// Per-UDP-entry in the Reactor's fixed-size table.
+struct UdpReactorEntry {
+    net::ConnectionTuple tuple{};
+    UdpReactorCallback on_data{};
+};
+
+/// @brief Reactor configuration: which port/queue to poll and optional CPU pinning.
+///
+/// Defined outside the Reactor template so that Reactor<false>::Config and
+/// Reactor<true>::Config are the same type, avoiding template-dependent
+/// std::formatter issues.
+struct ReactorConfig {
+    uint16_t port_id      = 0;     ///< DPDK port ID to poll
+    uint16_t rx_queue_id  = 0;     ///< RX queue index on the port
+    int      rx_cpu       = -1;    ///< CPU affinity for RX thread (-1 = no pin)
+
+    /// Validate configuration, returning an error description or empty string on success.
+    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        if (rx_cpu < -1)
+            return "rx_cpu must be >= -1 (-1 = no pinning)";
+        return {};
+    }
+
+    /// Multi-line formatted dump for logging/debugging.
+    [[nodiscard]] std::string dump() const {
+        return std::format("ReactorConfig(port={}, queue={}, cpu={})",
+                           port_id, rx_queue_id, rx_cpu);
+    }
+
+    /// JSON-formatted config for monitoring system integration.
+    [[nodiscard]] std::string to_json() const {
+        return std::format(
+            "{{\"port_id\":{},\"rx_queue_id\":{},\"rx_cpu\":{}}}",
+            port_id, rx_queue_id, rx_cpu);
+    }
+
+    /// Check for non-fatal contradictions or likely misconfigurations.
+    [[nodiscard]] std::vector<std::string> warnings() const {
+        std::vector<std::string> w;
+        if (rx_cpu == -1)
+            w.emplace_back("rx_cpu=-1 (no pinning) -- Reactor RX thread "
+                           "may migrate across cores, increasing tail latency");
+        return w;
+    }
+
+    /// Defaulted equality -- all fields must match exactly.
+    [[nodiscard]] friend bool operator==(const ReactorConfig&,
+                                         const ReactorConfig&) = default;
+};
+
 /// Epoll-style single-thread multiplexed RX for up to kReactorMaxConnections
 /// DPDK connections. Zero ring overhead — packets dispatch directly to
 /// TcpSession::process_rx via inline callback.
@@ -104,47 +164,15 @@ struct ReactorEntry {
 ///   - One RX thread (owned by Reactor) polls NIC and processes all connections
 ///   - TX threads remain per-connection (owned by Transport or user)
 ///   - Data delivery via callback (on_data) in the RX thread context
+///
+/// @tparam EnableUdp  When true, the RX loop checks IP protocol and dispatches
+///                    UDP packets to registered UDP entries via add_udp().
+///                    When false (default), identical codegen to the non-template version.
+template <bool EnableUdp = false>
 class Reactor {
 public:
-    /// @brief Reactor configuration: which port/queue to poll and optional CPU pinning.
-    struct Config {
-        uint16_t port_id      = 0;     ///< DPDK port ID to poll
-        uint16_t rx_queue_id  = 0;     ///< RX queue index on the port
-        int      rx_cpu       = -1;    ///< CPU affinity for RX thread (-1 = no pin)
-
-        /// Validate configuration, returning an error description or empty string on success.
-        [[nodiscard]] constexpr std::string_view validate() const noexcept {
-            if (rx_cpu < -1)
-                return "rx_cpu must be >= -1 (-1 = no pinning)";
-            return {};
-        }
-
-        /// Multi-line formatted dump for logging/debugging.
-        [[nodiscard]] std::string dump() const {
-            return std::format("Reactor::Config(port={}, queue={}, cpu={})",
-                               port_id, rx_queue_id, rx_cpu);
-        }
-
-        /// JSON-formatted config for monitoring system integration.
-        [[nodiscard]] std::string to_json() const {
-            return std::format(
-                "{{\"port_id\":{},\"rx_queue_id\":{},\"rx_cpu\":{}}}",
-                port_id, rx_queue_id, rx_cpu);
-        }
-
-        /// Check for non-fatal contradictions or likely misconfigurations.
-        [[nodiscard]] std::vector<std::string> warnings() const {
-            std::vector<std::string> w;
-            if (rx_cpu == -1)
-                w.emplace_back("rx_cpu=-1 (no pinning) -- Reactor RX thread "
-                               "may migrate across cores, increasing tail latency");
-            return w;
-        }
-
-        /// Defaulted equality -- all fields must match exactly.
-        [[nodiscard]] friend bool operator==(const Config&,
-                                             const Config&) = default;
-    };
+    /// Reactor configuration — alias to the standalone ReactorConfig struct.
+    using Config = ReactorConfig;
 
     explicit Reactor(Config config) noexcept
         : config_(config) {}
@@ -282,6 +310,65 @@ public:
         return true;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // UDP entry management (only available when EnableUdp=true)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Add a UDP entry. Must be called BEFORE start().
+    /// Returns UDP entry index (0-based) or error string.
+    [[nodiscard]] std::expected<size_t, std::string>
+    add_udp(const net::ConnectionTuple& tuple, UdpReactorCallback on_data)
+        requires (EnableUdp)
+    {
+        if (running_.load(std::memory_order_acquire)) {
+            return std::unexpected("add_udp() must be called before start()");
+        }
+        if (!on_data) return std::unexpected("on_data callback is null");
+        auto err = tuple.validate();
+        if (!err.empty()) return std::unexpected(std::string(err));
+
+        size_t idx = udp_count_.load(std::memory_order_relaxed);
+        if (idx >= kReactorMaxUdpEntries) {
+            return std::unexpected(std::format(
+                "reactor UDP entries full ({}/{})", idx, kReactorMaxUdpEntries));
+        }
+        udp_entries_[idx].tuple = tuple;
+        udp_entries_[idx].on_data = std::move(on_data);
+        udp_hashes_[idx] = ReactorEntry::hash_tuple(tuple);
+        udp_active_[idx].store(true, std::memory_order_relaxed);
+
+        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+            "Added UDP entry {}: {}:{} -> {}:{}",
+            idx,
+            net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
+            net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port);
+
+        udp_count_.store(idx + 1, std::memory_order_release);
+        return idx;
+    }
+
+    /// Enable or disable a UDP entry. Safe to call while reactor is running.
+    void set_udp_active(size_t udp_id, bool active) noexcept
+        requires (EnableUdp)
+    {
+        if (udp_id >= udp_count_.load(std::memory_order_acquire)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+                "set_udp_active: udp_id={} out of range (count={})",
+                udp_id, udp_count_.load(std::memory_order_relaxed));
+            return;
+        }
+        udp_active_[udp_id].store(active, std::memory_order_release);
+        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+            "UDP entry {} set active={}", udp_id, active);
+    }
+
+    /// Number of registered UDP entries.
+    [[nodiscard]] size_t udp_count() const noexcept
+        requires (EnableUdp)
+    {
+        return udp_count_.load(std::memory_order_acquire);
+    }
+
     /// @brief Number of registered connections (may include disconnected entries).
     [[nodiscard]] size_t connection_count() const noexcept {
         return count_.load(std::memory_order_acquire);
@@ -324,6 +411,16 @@ private:
             const uint64_t burst_tsc = eph::utils::TSC::now();
 
             for (uint16_t i = 0; i < nb_rx; ++i) {
+                // UDP dispatch: check IP protocol before TCP parse.
+                // if constexpr ensures this branch is compiled away for Reactor<false>.
+                if constexpr (EnableUdp) {
+                    auto ip_hdr = net::parse_ip_header(pkts[i]);
+                    if (ip_hdr && ip_hdr.proto == net::kIpProtoUdp) {
+                        dispatch_udp_packet(pkts[i]);
+                        continue;
+                    }
+                }
+
                 auto parsed = net::parse_packet(pkts[i]);
                 if (!parsed.tcp) {
                     rte_pktmbuf_free(pkts[i]);
@@ -408,6 +505,39 @@ private:
         SPDLOG_LOGGER_DEBUG(log, "Reactor RX loop exited");
     }
 
+    /// Dispatch a UDP packet to the matching registered UDP entry.
+    void dispatch_udp_packet(rte_mbuf* mbuf) {
+        auto parsed = net::parse_udp_packet(mbuf);
+        if (!parsed) {
+            rte_pktmbuf_free(mbuf);
+            return;
+        }
+
+        net::ConnectionTuple pkt_tuple{
+            .src_ip = parsed.src_ip(), .dst_ip = parsed.dst_ip(),
+            .src_port = parsed.src_port(), .dst_port = parsed.dst_port()};
+        const uint64_t pkt_hash = ReactorEntry::hash_tuple(pkt_tuple);
+
+        const size_t n = udp_count_.load(std::memory_order_acquire);
+        for (size_t j = 0; j < n; ++j) {
+            if (!udp_active_[j].load(std::memory_order_acquire)) continue;
+            if (udp_hashes_[j] != pkt_hash) continue;
+            // Incoming packets have swapped src/dst relative to registered tuple
+            const auto& t = udp_entries_[j].tuple;
+            if (pkt_tuple.src_ip != t.dst_ip || pkt_tuple.dst_ip != t.src_ip ||
+                pkt_tuple.src_port != t.dst_port || pkt_tuple.dst_port != t.src_port)
+                continue;
+
+            if (parsed.payload && parsed.payload_len > 0) {
+                udp_entries_[j].on_data(parsed.payload, parsed.payload_len, j);
+            }
+            rte_pktmbuf_free(mbuf);
+            return;
+        }
+
+        rte_pktmbuf_free(mbuf);
+    }
+
     Config config_;
     std::array<ReactorEntry, kReactorMaxConnections> entries_{};
     std::array<uint64_t, kReactorMaxConnections> hashes_{};
@@ -415,20 +545,23 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     BurstCompleteCallback on_burst_complete_{};
+
+    // UDP entries — always declared for uniform sizeof, only used when EnableUdp=true
+    std::array<UdpReactorEntry, kReactorMaxUdpEntries> udp_entries_{};
+    std::array<uint64_t, kReactorMaxUdpEntries> udp_hashes_{};
+    std::array<std::atomic<bool>, kReactorMaxUdpEntries> udp_active_{};
+    std::atomic<size_t> udp_count_{0};
 };
 
 } // namespace eph::dpdk
 
 // ─────────────────────────────────────────────────────────────────────────────
-// std::formatter specialization for Reactor::Config
+// std::formatter specialization for ReactorConfig
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <>
-struct std::formatter<eph::dpdk::Reactor::Config> : std::formatter<std::string> {
-    auto format(const eph::dpdk::Reactor::Config& c, auto& ctx) const {
-        return std::formatter<std::string>::format(
-            std::format("Reactor::Config(port={}, queue={}, cpu={})",
-                c.port_id, c.rx_queue_id, c.rx_cpu),
-            ctx);
+struct std::formatter<eph::dpdk::ReactorConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::ReactorConfig& c, auto& ctx) const {
+        return std::formatter<std::string>::format(c.dump(), ctx);
     }
 };

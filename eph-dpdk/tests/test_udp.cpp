@@ -542,3 +542,144 @@ TEST(FlowProtocol, FormatUdp) {
     auto s = std::format("{}", FlowProtocol::Udp);
     EXPECT_EQ(s, "UDP");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// net::ParsedUdpPacket (moved from multicast.hpp to net_header.hpp)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ParsedUdpPacket, NetNamespaceAccessible) {
+    // Verify ParsedUdpPacket is accessible via the net namespace
+    net::ParsedUdpPacket pkt{};
+    EXPECT_FALSE(static_cast<bool>(pkt));
+    EXPECT_EQ(pkt.src_ip(), 0u);
+    EXPECT_EQ(pkt.dst_ip(), 0u);
+    EXPECT_EQ(pkt.src_port(), 0u);
+    EXPECT_EQ(pkt.dst_port(), 0u);
+}
+
+TEST(ParsedUdpPacket, InvalidDump) {
+    net::ParsedUdpPacket pkt{};
+    EXPECT_EQ(pkt.dump(), "(invalid)");
+}
+
+TEST(ParsedUdpPacket, InvalidToJson) {
+    net::ParsedUdpPacket pkt{};
+    EXPECT_EQ(pkt.to_json(), "{\"valid\":false}");
+}
+
+TEST(ParseUdpPacket, NullMbufReturnsInvalid) {
+    auto result = net::parse_udp_packet(nullptr);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+TEST(ParseUdpPacket, ValidPacket) {
+    // Build a valid Eth+IP+UDP packet in a fake mbuf
+    FakeMbuf fake;
+    auto* data = fake.buf;
+
+    // Ethernet header
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(data);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    // IPv4 header
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->next_proto_id = kIpProtoUdp;
+    const uint16_t payload_size = 4;
+    ip->total_length = hton16(kIpv4HeaderLen + kUdpHeaderLen + payload_size);
+    ip->src_addr = hton32(kTestSrcIp);
+    ip->dst_addr = hton32(kTestDstIp);
+
+    // UDP header
+    auto* udp = reinterpret_cast<UdpHeader*>(data + kEtherHeaderLen + kIpv4HeaderLen);
+    udp->src_port = hton16(kTestSrcPort);
+    udp->dst_port = hton16(kTestDstPort);
+    udp->length = hton16(kUdpHeaderLen + payload_size);
+    udp->checksum = 0;
+
+    // Payload
+    data[kUdpAllHeadersLen]     = 0xDE;
+    data[kUdpAllHeadersLen + 1] = 0xAD;
+    data[kUdpAllHeadersLen + 2] = 0xBE;
+    data[kUdpAllHeadersLen + 3] = 0xEF;
+
+    fake.mbuf.data_len = kUdpAllHeadersLen + payload_size;
+    fake.mbuf.pkt_len = fake.mbuf.data_len;
+
+    auto result = net::parse_udp_packet(&fake.mbuf);
+    ASSERT_TRUE(static_cast<bool>(result));
+    EXPECT_EQ(result.src_ip(), kTestSrcIp);
+    EXPECT_EQ(result.dst_ip(), kTestDstIp);
+    EXPECT_EQ(result.src_port(), kTestSrcPort);
+    EXPECT_EQ(result.dst_port(), kTestDstPort);
+    EXPECT_EQ(result.payload_len, payload_size);
+    ASSERT_NE(result.payload, nullptr);
+    EXPECT_EQ(result.payload[0], 0xDE);
+    EXPECT_EQ(result.payload[3], 0xEF);
+}
+
+TEST(ParseUdpPacket, TooShortPacket) {
+    FakeMbuf fake;
+    // Set data_len to less than minimum UDP packet
+    fake.mbuf.data_len = kUdpAllHeadersLen - 1;
+    fake.mbuf.pkt_len = fake.mbuf.data_len;
+
+    auto result = net::parse_udp_packet(&fake.mbuf);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+TEST(ParseUdpPacket, NotUdpProtocol) {
+    FakeMbuf fake;
+    auto* data = fake.buf;
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(data);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->next_proto_id = kIpProtoTcp;  // TCP, not UDP
+    ip->total_length = hton16(kIpv4HeaderLen + kTcpHeaderLen);
+
+    fake.mbuf.data_len = kAllHeadersLen;
+    fake.mbuf.pkt_len = fake.mbuf.data_len;
+
+    auto result = net::parse_udp_packet(&fake.mbuf);
+    EXPECT_FALSE(static_cast<bool>(result));
+}
+
+TEST(ParsedUdpPacket, DumpValid) {
+    // Use the FakeMbuf approach to create a valid parsed packet
+    FakeMbuf fake;
+    auto* data = fake.buf;
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(data);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    ip->version_ihl = 0x45;
+    ip->next_proto_id = kIpProtoUdp;
+    ip->total_length = hton16(kIpv4HeaderLen + kUdpHeaderLen);
+    ip->src_addr = hton32(kTestSrcIp);
+    ip->dst_addr = hton32(kTestDstIp);
+
+    auto* udp = reinterpret_cast<UdpHeader*>(data + kEtherHeaderLen + kIpv4HeaderLen);
+    udp->src_port = hton16(kTestSrcPort);
+    udp->dst_port = hton16(kTestDstPort);
+    udp->length = hton16(kUdpHeaderLen);
+    udp->checksum = 0;
+
+    fake.mbuf.data_len = kUdpAllHeadersLen;
+    fake.mbuf.pkt_len = fake.mbuf.data_len;
+
+    auto result = net::parse_udp_packet(&fake.mbuf);
+    ASSERT_TRUE(static_cast<bool>(result));
+
+    auto dump = result.dump();
+    EXPECT_NE(dump.find("UDP"), std::string::npos);
+    EXPECT_NE(dump.find("10.0.0.1"), std::string::npos);
+    EXPECT_NE(dump.find("50000"), std::string::npos);
+
+    auto json = result.to_json();
+    EXPECT_NE(json.find("\"src_port\":50000"), std::string::npos);
+    EXPECT_NE(json.find("\"dst_port\":8080"), std::string::npos);
+}

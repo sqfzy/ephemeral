@@ -92,19 +92,19 @@ TEST(ReactorHash, NonSymmetricIpsDifferentHash) {
 // ---------------------------------------------------------------------------
 
 TEST(Reactor, AddConnectionNullSessionFails) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     auto result = reactor.add_connection(nullptr, [](auto*, auto, auto){});
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("null"), std::string::npos);
 }
 
 TEST(Reactor, ConnectionCountStartsAtZero) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
 TEST(Reactor, IsRunningInitiallyFalse) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     EXPECT_FALSE(reactor.is_running());
 }
 
@@ -131,23 +131,23 @@ TEST(ReactorEntry, HashIsConstexprSafe) {
 }
 
 // ---------------------------------------------------------------------------
-// Reactor::Config validate/dump
+// ReactorConfig validate/dump
 // ---------------------------------------------------------------------------
 
 TEST(ReactorConfig, DefaultConfigIsValid) {
-    Reactor::Config cfg;
+    ReactorConfig cfg;
     EXPECT_TRUE(cfg.validate().empty());
 }
 
 TEST(ReactorConfig, NegativeCpuAffinity) {
-    Reactor::Config cfg{.rx_cpu = -2};
+    ReactorConfig cfg{.rx_cpu = -2};
     auto err = cfg.validate();
     EXPECT_FALSE(err.empty());
     EXPECT_NE(err.find("rx_cpu"), std::string_view::npos);
 }
 
 TEST(ReactorConfig, DumpContainsFields) {
-    Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
     auto d = cfg.dump();
     EXPECT_NE(d.find("port=1"), std::string::npos);
     EXPECT_NE(d.find("queue=2"), std::string::npos);
@@ -155,7 +155,7 @@ TEST(ReactorConfig, DumpContainsFields) {
 }
 
 TEST(ReactorConfig, ToJsonValidStructure) {
-    Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
     auto j = cfg.to_json();
     EXPECT_EQ(j.front(), '{');
     EXPECT_EQ(j.back(), '}');
@@ -165,28 +165,28 @@ TEST(ReactorConfig, ToJsonValidStructure) {
 }
 
 TEST(ReactorConfig, Equality) {
-    Reactor::Config a{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
-    Reactor::Config b{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
-    Reactor::Config c{.port_id = 0, .rx_queue_id = 2, .rx_cpu = 3};
+    ReactorConfig a{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    ReactorConfig b{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    ReactorConfig c{.port_id = 0, .rx_queue_id = 2, .rx_cpu = 3};
     EXPECT_EQ(a, b);
     EXPECT_NE(a, c);
 }
 
 TEST(ReactorConfig, WarningUnpinnedCpu) {
-    Reactor::Config cfg{.rx_cpu = -1};
+    ReactorConfig cfg{.rx_cpu = -1};
     auto w = cfg.warnings();
     ASSERT_FALSE(w.empty());
     EXPECT_NE(w[0].find("no pinning"), std::string::npos);
 }
 
 TEST(ReactorConfig, NoWarningPinnedCpu) {
-    Reactor::Config cfg{.rx_cpu = 3};
+    ReactorConfig cfg{.rx_cpu = 3};
     auto w = cfg.warnings();
     EXPECT_TRUE(w.empty());
 }
 
 TEST(ReactorConfig, FormatterContainsKeyFields) {
-    Reactor::Config cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
     auto s = std::format("{}", cfg);
     EXPECT_NE(s.find("Reactor"), std::string::npos);
     EXPECT_NE(s.find("port=1"), std::string::npos);
@@ -197,7 +197,7 @@ TEST(ReactorConfig, FormatterContainsKeyFields) {
 // ---------------------------------------------------------------------------
 
 TEST(Reactor, EntryOutOfBoundsReturnsEmpty) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     // No connections added, any index should return the static empty entry
     const auto& e = reactor.entry(0);
     EXPECT_EQ(e.session, nullptr);
@@ -210,7 +210,7 @@ TEST(Reactor, EntryOutOfBoundsReturnsEmpty) {
 }
 
 TEST(Reactor, MarkDisconnectedOutOfBoundsIsSafe) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     // Should not crash, just log a warning
     reactor.mark_disconnected(0);
     reactor.mark_disconnected(999);
@@ -218,14 +218,14 @@ TEST(Reactor, MarkDisconnectedOutOfBoundsIsSafe) {
 }
 
 TEST(Reactor, MarkReconnectedNullSessionIsSafe) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     // Should not crash, null session is logged
     reactor.mark_reconnected(0, nullptr);
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
 TEST(Reactor, MarkReconnectedOutOfBoundsIsSafe) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     // Fake non-null session pointer for testing out-of-bounds
     TcpSession<>* fake_session = reinterpret_cast<TcpSession<>*>(0xDEAD);
     // Should not crash, just log a warning (does not dereference pointer
@@ -237,13 +237,13 @@ TEST(Reactor, MarkReconnectedOutOfBoundsIsSafe) {
 TEST(Reactor, AddConnectionWhileRunningFails) {
     // Cannot test start()/stop() without EAL, but can verify the running
     // check logic indirectly via the atomic flag
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     EXPECT_FALSE(reactor.is_running());
     // The actual "running" rejection test would require mocking the thread
 }
 
 TEST(Reactor, StopWhileNotRunningIsSafe) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     reactor.stop(); // Should not crash
     reactor.stop(); // Double stop should be idempotent
     EXPECT_FALSE(reactor.is_running());
@@ -254,7 +254,7 @@ TEST(Reactor, StopWhileNotRunningIsSafe) {
 // ---------------------------------------------------------------------------
 
 TEST(Reactor, AddConnectionNullCallbackFails) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     // Fake non-null session pointer for testing callback validation
     TcpSession<>* fake_session = reinterpret_cast<TcpSession<>*>(0xBEEF);
     ReactorDataCallback empty_cb;  // default-constructed = empty
@@ -269,7 +269,7 @@ TEST(Reactor, AddConnectionNullCallbackFails) {
 // ---------------------------------------------------------------------------
 
 TEST(Reactor, StartWithNoConnectionsReturnsFalse) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     EXPECT_FALSE(reactor.start());
     EXPECT_FALSE(reactor.is_running());
 }
@@ -279,32 +279,32 @@ TEST(Reactor, StartWithNoConnectionsReturnsFalse) {
 // ---------------------------------------------------------------------------
 
 TEST(Reactor, SetOnBurstCompleteReturnsTrue) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     bool result = reactor.set_on_burst_complete([]() {});
     EXPECT_TRUE(result);
 }
 
 TEST(Reactor, SetOnBurstCompleteNullCallbackReturnsTrue) {
-    Reactor reactor(Reactor::Config{});
+    Reactor<> reactor(ReactorConfig{});
     // Clearing the callback is a valid operation
     bool result = reactor.set_on_burst_complete(nullptr);
     EXPECT_TRUE(result);
 }
 
 // ---------------------------------------------------------------------------
-// Reactor::Config — to_json with negative rx_cpu
+// ReactorConfig — to_json with negative rx_cpu
 // ---------------------------------------------------------------------------
 
 TEST(ReactorConfig, ToJsonNegativeCpu) {
-    Reactor::Config cfg{.port_id = 0, .rx_queue_id = 0, .rx_cpu = -1};
+    ReactorConfig cfg{.port_id = 0, .rx_queue_id = 0, .rx_cpu = -1};
     auto json = cfg.to_json();
     EXPECT_NE(json.find("\"rx_cpu\":-1"), std::string::npos);
 }
 
 TEST(ReactorConfig, DumpDefaultConfig) {
-    Reactor::Config cfg{};
+    ReactorConfig cfg{};
     auto d = cfg.dump();
-    EXPECT_NE(d.find("Reactor::Config"), std::string::npos);
+    EXPECT_NE(d.find("ReactorConfig"), std::string::npos);
     EXPECT_NE(d.find("port=0"), std::string::npos);
 }
 
@@ -331,4 +331,97 @@ TEST(ReactorHash, SingleBitDifferencePortDifferentHash) {
     auto t1 = make_tuple(0x0A000001, 0x0A000002, 1, 443);
     auto t2 = make_tuple(0x0A000001, 0x0A000002, 2, 443);
     EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+}
+
+// ---------------------------------------------------------------------------
+// Reactor — default template parameter compiles
+// ---------------------------------------------------------------------------
+
+TEST(Reactor, DefaultTemplateParam) {
+    // Reactor<> (EnableUdp=false) must compile and behave identically
+    // to the pre-template Reactor.
+    Reactor<> reactor(ReactorConfig{});
+    EXPECT_FALSE(reactor.is_running());
+    EXPECT_EQ(reactor.connection_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Reactor<true> — UDP entry management
+// ---------------------------------------------------------------------------
+
+TEST(ReactorUdp, AddUdpBeforeStart) {
+    Reactor<true> reactor(ReactorConfig{});
+    auto tuple = make_tuple(0x0A000001, 0x0A000002, 50000, 8080);
+    auto result = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), 0u);
+    EXPECT_EQ(reactor.udp_count(), 1u);
+}
+
+TEST(ReactorUdp, AddUdpNullCallback) {
+    Reactor<true> reactor(ReactorConfig{});
+    auto tuple = make_tuple(0x0A000001, 0x0A000002, 50000, 8080);
+    UdpReactorCallback empty_cb;
+    auto result = reactor.add_udp(tuple, empty_cb);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("null"), std::string::npos);
+}
+
+TEST(ReactorUdp, AddUdpInvalidTuple) {
+    Reactor<true> reactor(ReactorConfig{});
+    net::ConnectionTuple bad_tuple{};  // all zeros = invalid
+    auto result = reactor.add_udp(bad_tuple, [](const uint8_t*, uint16_t, size_t){});
+    ASSERT_FALSE(result.has_value());
+}
+
+TEST(ReactorUdp, AddUdpFull) {
+    Reactor<true> reactor(ReactorConfig{});
+    for (size_t i = 0; i < kReactorMaxUdpEntries; ++i) {
+        auto tuple = make_tuple(0x0A000001, 0x0A000002, static_cast<uint16_t>(50000 + i), 8080);
+        auto result = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
+        ASSERT_TRUE(result.has_value()) << "Failed at entry " << i;
+        EXPECT_EQ(result.value(), i);
+    }
+    // Next add should fail
+    auto tuple = make_tuple(0x0A000001, 0x0A000002, 60000, 8080);
+    auto result = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("full"), std::string::npos);
+}
+
+TEST(ReactorUdp, SetUdpActiveToggle) {
+    Reactor<true> reactor(ReactorConfig{});
+    auto tuple = make_tuple(0x0A000001, 0x0A000002, 50000, 8080);
+    auto id = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
+    ASSERT_TRUE(id.has_value());
+
+    // Disable
+    reactor.set_udp_active(id.value(), false);
+    // Enable
+    reactor.set_udp_active(id.value(), true);
+    // Out of bounds — should not crash
+    reactor.set_udp_active(999, true);
+}
+
+TEST(ReactorUdp, UdpCountStartsAtZero) {
+    Reactor<true> reactor(ReactorConfig{});
+    EXPECT_EQ(reactor.udp_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// UdpReactorEntry — defaults
+// ---------------------------------------------------------------------------
+
+TEST(UdpReactorEntry, Defaults) {
+    UdpReactorEntry entry;
+    EXPECT_EQ(entry.tuple.src_ip, 0u);
+    EXPECT_EQ(entry.tuple.dst_ip, 0u);
+    EXPECT_EQ(entry.tuple.src_port, 0u);
+    EXPECT_EQ(entry.tuple.dst_port, 0u);
+    EXPECT_FALSE(entry.on_data);  // default-constructed = empty
+}
+
+TEST(ReactorUdp, MaxUdpEntriesConstant) {
+    EXPECT_GE(kReactorMaxUdpEntries, 4u);
+    EXPECT_LE(kReactorMaxUdpEntries, 64u);
 }

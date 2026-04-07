@@ -303,7 +303,7 @@ inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
 // Connection tuple
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Identifies a TCP connection by its 4-tuple (source/destination IP and port).
+/// @brief Identifies a network connection by its 4-tuple (source/destination IP and port).
 ///
 /// All fields are stored in HOST byte order. Conversion to/from network byte
 /// order happens at the packet construction/parsing boundary (PacketTemplate,
@@ -724,6 +724,62 @@ struct UdpPacketTemplate {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// IP header parser — protocol-agnostic L2+L3 parsing
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Minimal L2+L3 parse result for protocol dispatch.
+///
+/// Extracts Ethernet + IPv4 headers and IP protocol number without parsing
+/// L4 (TCP/UDP). Used by Reactor to determine protocol before committing
+/// to a full L4 parse, avoiding redundant IP header parsing.
+///
+/// @note Zero-copy — all pointers reference the original mbuf data buffer.
+struct ParsedIpHeader {
+    const rte_ether_hdr* eth{nullptr};  ///< Ethernet header
+    const rte_ipv4_hdr*  ip{nullptr};   ///< IPv4 header
+    uint8_t ihl{0};                     ///< IP header length in bytes (typically 20)
+    uint8_t proto{0};                   ///< IP protocol number (kIpProtoTcp=6, kIpProtoUdp=17)
+
+    /// Check if parse succeeded (valid IPv4 packet).
+    [[nodiscard]] explicit operator bool() const noexcept { return ip != nullptr; }
+
+    /// Extract source IP (host byte order).
+    [[nodiscard]] uint32_t src_ip() const noexcept {
+        return ip ? ntoh32(ip->src_addr) : 0;
+    }
+    /// Extract destination IP (host byte order).
+    [[nodiscard]] uint32_t dst_ip() const noexcept {
+        return ip ? ntoh32(ip->dst_addr) : 0;
+    }
+};
+
+/// @brief Parse L2+L3 headers from an mbuf without L4 parsing.
+///
+/// Validates Ethernet type (IPv4) and IPv4 version/IHL. Does NOT check the
+/// L4 protocol — callers use the returned proto field to dispatch to
+/// parse_packet() (TCP) or parse_udp_packet() (UDP).
+///
+/// @param mbuf  Received packet mbuf (must not be null)
+/// @return ParsedIpHeader with eth/ip populated on success, all-null on failure
+[[nodiscard]] inline ParsedIpHeader parse_ip_header(const rte_mbuf* mbuf) noexcept {
+    if (!mbuf) [[unlikely]] return {};
+    const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
+    if (pkt_len < kEtherHeaderLen + kIpv4HeaderLen) return {};
+
+    const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
+
+    auto* eth = reinterpret_cast<const rte_ether_hdr*>(data);
+    if (ntoh16(eth->ether_type) != kEtherTypeIpv4) return {};
+
+    auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    if ((ip->version_ihl >> 4) != 4) return {};
+    uint8_t ihl = (ip->version_ihl & 0x0F) << 2;
+    if (ihl < kIpv4HeaderLen) return {};
+
+    return {.eth = eth, .ip = ip, .ihl = ihl, .proto = ip->next_proto_id};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Packet parser — extract headers from received mbufs
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -883,6 +939,93 @@ struct ParsedPacket {
     return result;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UDP packet parser — extract headers from received mbufs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Zero-copy parsed view of an Ethernet/IPv4/UDP packet.
+///
+/// All pointers reference memory within the original mbuf data buffer.
+/// The view is valid only as long as the underlying mbuf is alive.
+/// Returned by parse_udp_packet().
+struct ParsedUdpPacket {
+    const rte_ether_hdr* eth     = nullptr;
+    const rte_ipv4_hdr*  ip      = nullptr;
+    const UdpHeader*     udp     = nullptr;
+    const uint8_t*       payload = nullptr;
+    uint16_t             payload_len = 0;
+
+    [[nodiscard]] uint32_t src_ip() const noexcept {
+        return ip ? ntoh32(ip->src_addr) : 0;
+    }
+    [[nodiscard]] uint32_t dst_ip() const noexcept {
+        return ip ? ntoh32(ip->dst_addr) : 0;
+    }
+    [[nodiscard]] uint16_t src_port() const noexcept {
+        return udp ? ntoh16(udp->src_port) : 0;
+    }
+    [[nodiscard]] uint16_t dst_port() const noexcept {
+        return udp ? ntoh16(udp->dst_port) : 0;
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return eth != nullptr && ip != nullptr && udp != nullptr;
+    }
+
+    /// Human-readable one-line summary.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string dump() const;
+
+    /// JSON-formatted packet summary.
+    /// Defined after format_ipv4() (see below).
+    [[nodiscard]] inline std::string to_json() const;
+};
+
+/// @brief Parse a UDP/IPv4/Ethernet packet from an mbuf (zero-copy).
+///
+/// Validates Ethernet type, IPv4 version/IHL, IP protocol (must be UDP),
+/// and UDP length field. Uses IP total_length for payload computation.
+///
+/// @param mbuf  Received packet mbuf (must not be null)
+/// @return ParsedUdpPacket with all fields on success, all-null if not valid UDP
+[[nodiscard]] inline ParsedUdpPacket parse_udp_packet(const rte_mbuf* mbuf) noexcept {
+    if (!mbuf) [[unlikely]] return {};
+    const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
+    if (pkt_len < kUdpAllHeadersLen) return {};
+
+    const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
+
+    auto* eth = reinterpret_cast<const rte_ether_hdr*>(data);
+    if (ntoh16(eth->ether_type) != kEtherTypeIpv4) return {};
+
+    auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    if ((ip->version_ihl >> 4) != 4) return {};
+    uint8_t ihl = (ip->version_ihl & 0x0F) << 2;
+    if (ihl < kIpv4HeaderLen) return {};
+    if (ip->next_proto_id != kIpProtoUdp) return {};
+
+    uint16_t udp_offset = kEtherHeaderLen + ihl;
+    if (udp_offset + kUdpHeaderLen > pkt_len) return {};
+
+    auto* udp = reinterpret_cast<const UdpHeader*>(data + udp_offset);
+    uint16_t udp_len = ntoh16(udp->length);
+    if (udp_len < kUdpHeaderLen) return {};
+    if (udp_offset + udp_len > pkt_len) return {};
+
+    ParsedUdpPacket result;
+    result.eth = eth;
+    result.ip  = ip;
+    result.udp = udp;
+
+    uint16_t payload_offset = udp_offset + kUdpHeaderLen;
+    result.payload_len = udp_len - kUdpHeaderLen;
+    if (result.payload_len > 0) {
+        result.payload = data + payload_offset;
+    }
+
+    return result;
+}
+
 /// @brief Parse a dotted-decimal IPv4 address string "a.b.c.d" to host-order uint32_t.
 ///
 /// Validates each octet is in [0, 255] and rejects trailing characters.
@@ -1034,6 +1177,28 @@ inline std::string ParsedPacket::to_json() const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ParsedUdpPacket method definitions (deferred because format_ipv4 is above)
+// ─────────────────────────────────────────────────────────────────────────────
+
+inline std::string ParsedUdpPacket::dump() const {
+    if (!udp) return "(invalid)";
+    return std::format("UDP {}:{} -> {}:{} payload={}B",
+        format_ipv4(src_ip()).data(), src_port(),
+        format_ipv4(dst_ip()).data(), dst_port(),
+        payload_len);
+}
+
+inline std::string ParsedUdpPacket::to_json() const {
+    if (!udp) return "{\"valid\":false}";
+    return std::format(
+        "{{\"src_ip\":\"{}\",\"src_port\":{},\"dst_ip\":\"{}\",\"dst_port\":{},"
+        "\"payload_len\":{}}}",
+        format_ipv4(src_ip()).data(), src_port(),
+        format_ipv4(dst_ip()).data(), dst_port(),
+        payload_len);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Ephemeral port generation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1073,5 +1238,13 @@ template <>
 struct std::formatter<eph::dpdk::net::PacketTemplate> : std::formatter<std::string> {
     auto format(const eph::dpdk::net::PacketTemplate& t, auto& ctx) const {
         return std::formatter<std::string>::format(t.dump(), ctx);
+    }
+};
+
+/// @brief std::formatter specialization for ParsedUdpPacket.
+template <>
+struct std::formatter<eph::dpdk::net::ParsedUdpPacket> : std::formatter<std::string> {
+    auto format(const eph::dpdk::net::ParsedUdpPacket& p, auto& ctx) const {
+        return std::formatter<std::string>::format(p.dump(), ctx);
     }
 };
