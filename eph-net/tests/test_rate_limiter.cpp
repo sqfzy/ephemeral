@@ -527,3 +527,56 @@ TEST(RateLimiter, DumpAfterReset) {
     auto d = rl.dump();
     EXPECT_NE(d.find("available: 10.00/10 tokens"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Const-correctness: query methods must work through const reference
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(RateLimiter, ConstRefAvailableWorks) {
+    RateLimiter rl(100.0, 10);
+    const RateLimiter& crl = rl;
+    EXPECT_DOUBLE_EQ(crl.available(), 10.0);
+}
+
+TEST(RateLimiter, ConstRefIsExhaustedWorks) {
+    RateLimiter rl(0.0, 3);
+    EXPECT_TRUE(rl.try_acquire(3));
+    const RateLimiter& crl = rl;
+    EXPECT_TRUE(crl.is_exhausted());
+}
+
+TEST(RateLimiter, ConstRefDumpWorks) {
+    RateLimiter rl(100.0, 10);
+    const RateLimiter& crl = rl;
+    auto d = crl.dump();
+    EXPECT_NE(d.find("RateLimiter:"), std::string::npos);
+    EXPECT_NE(d.find("rate=100.00/s"), std::string::npos);
+}
+
+TEST(RateLimiter, ConstRefToJsonWorks) {
+    RateLimiter rl(100.0, 10);
+    const RateLimiter& crl = rl;
+    auto j = crl.to_json();
+    EXPECT_EQ(j.front(), '{');
+    EXPECT_EQ(j.back(), '}');
+    EXPECT_NE(j.find("\"available_tokens\":"), std::string::npos);
+}
+
+TEST(RateLimiter, ConstRefFormatterWorks) {
+    RateLimiter rl(100.0, 10);
+    const RateLimiter& crl = rl;
+    auto s = std::format("{}", crl);
+    EXPECT_NE(s.find("RateLimiter"), std::string::npos);
+    EXPECT_NE(s.find("rate=100.00/s"), std::string::npos);
+}
+
+TEST(RateLimiter, ConstRefAvailableRefillsTokens) {
+    // available() on const ref should still perform time-based refill
+    RateLimiter rl(100000.0, 5);
+    EXPECT_TRUE(rl.try_acquire(5));
+    std::this_thread::sleep_for(10ms);
+
+    const RateLimiter& crl = rl;
+    // Const available() should return refilled tokens
+    EXPECT_GT(crl.available(), 0.0);
+}
