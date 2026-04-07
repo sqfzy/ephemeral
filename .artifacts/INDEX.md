@@ -35,5 +35,7 @@
 | 2026-04-05 00:23 | /discuss 生产级差距(utils+core) | 4轮5角色：测试缺口为主(LPF/json/base64/string_checks),AuditLog assert,5c简化 | ed61cd2 | discuss-20260405-002336.md |
 | 2026-04-05 00:23 | /repeat discuss+plan+design | 4轮：92+新测试, json_escape/timestamp溢出修复, AuditLog assert, 翻译 | 7152e4f | repeat-20260405-002336.md |
 | 2026-04-05 13:12 | /bench compare memcpy | rte_memcpy <128B 快30-45%, >128B glibc 胜出21-48%; 顺手修复eph-dpdk SSE编译 | 9b5f365 | bench-memcpy-compare-20260405.md |
+| 2026-04-05 13:20 | /plan rte_ring vs BQ | 5场景SPSC对比(pushpop/throughput/pingpong/batch/full), EAL --no-huge | dfbc756 | plan-rte-ring-vs-bq-20260405-132000.md |
+| 2026-04-07 10:27 | /bench rte_ring vs BQ | 交叉64B: BQ小payload快37-2.3×, rte_ring大payload快1.5-4.1× | dfbc756 | bench-rte-ring-vs-bq-20260407.md |
 | 2026-04-04 14:15 | /discuss 生产级别差距分析 | 5角色6轮：12个CRITICAL/HIGH，P0=5项(stop竞态/TLS RX seq/pin/assert/RST)，三阶段修复 | — | discuss-20260404-production-level.md |
 | 2026-04-04 14:50 | /plan+/design 生产加固 | 10项修复(5P0+5P1)：stop竞态guard/RX seq reconnect/hard pin/timestamp/RST/Gateway/AuditLog/HttpClient/RateLimiter/Histogram | 6d68627 | plan-production-hardening-20260404.md |

@@ -1,0 +1,742 @@
+# Reproduced: 2026-04-07 10:27
+# Commit: dfbc756 (dirty)
+# Compiler: gcc 15.2.1
+# Build: xmake build bench_rte_ring_vs_bq
+# Bench: xmake run bench_rte_ring_vs_bq --benchmark_min_time=0.3s
+# Profile: -O3 -march=native -mssse3 -include rte_config.h -DRTE_FORCE_INTRINSICS
+# CPU: 12 X 2688 MHz, L1 48KiB, L2 1280KiB, L3 24576KiB
+# ---
+EAL: Detected CPU lcores: 12
+EAL: Detected NUMA nodes: 1
+EAL: Static memory layout is selected, amount of reserved memory can be adjusted with -m or --socket-mem
+EAL: Detected static linkage of DPDK
+EAL: Selected IOVA mode 'VA'
+EAL: Detected CPU lcores: 12
+EAL: Detected NUMA nodes: 1
+EAL: Static memory layout is selected, amount of reserved memory can be adjusted with -m or --socket-mem
+EAL: Detected static linkage of DPDK
+EAL: Selected IOVA mode 'VA'
+2026-04-07T10:27:17+08:00
+Running /home/sqfzy/work_space/work_code/cpp/ephemeral/build/linux/x86_64/release/bench_rte_ring_vs_bq
+Run on (12 X 2688.01 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB (x6)
+  L1 Instruction 32 KiB (x6)
+  L2 Unified 1280 KiB (x6)
+  L3 Unified 24576 KiB (x1)
+Load Average: 0.79, 0.48, 0.20
+----------------------------------------------------------------------------------------------------------------
+Benchmark                                                      Time             CPU   Iterations UserCounters...
+----------------------------------------------------------------------------------------------------------------
+BM_BQ_PushPop/P:8/B:1                                      0.939 ns        0.939 ns    441433740 items_per_second=2.13004G/s
+BM_BQ_PushPop/P:8/B:8                                      0.935 ns        0.935 ns    450952132 items_per_second=2.13935G/s
+BM_BQ_PushPop/P:8/B:64                                     0.988 ns        0.988 ns    429051638 items_per_second=2.02486G/s
+BM_BQ_PushPop/P:8/B:512                                    0.856 ns        0.856 ns    487575995 items_per_second=2.33624G/s
+BM_BQ_PushPop/P:64/B:1                                      1.90 ns         1.90 ns    221773552 items_per_second=1.05466G/s
+BM_BQ_PushPop/P:64/B:8                                      1.84 ns         1.84 ns    241548989 items_per_second=1.08623G/s
+BM_BQ_PushPop/P:64/B:64                                     1.68 ns         1.68 ns    248036415 items_per_second=1.19091G/s
+BM_BQ_PushPop/P:64/B:512                                    1.67 ns         1.67 ns    251658694 items_per_second=1.19598G/s
+BM_BQ_PushPop/P:512/B:1                                     19.3 ns         19.3 ns     21557000 items_per_second=103.488M/s
+BM_BQ_PushPop/P:512/B:8                                     20.3 ns         20.3 ns     20086298 items_per_second=98.5508M/s
+BM_BQ_PushPop/P:512/B:64                                    20.8 ns         20.8 ns     20571111 items_per_second=96.0325M/s
+BM_BQ_PushPop/P:512/B:512                                   20.7 ns         20.7 ns     20259829 items_per_second=96.6383M/s
+BM_RteRing_PushPop/P:8/B:1                                  1.50 ns         1.50 ns    281194595 items_per_second=1.33189G/s
+BM_RteRing_PushPop/P:8/B:8                                  1.33 ns         1.33 ns    317333293 items_per_second=1.49913G/s
+BM_RteRing_PushPop/P:8/B:64                                 1.35 ns         1.35 ns    307714447 items_per_second=1.47602G/s
+BM_RteRing_PushPop/P:8/B:512                                1.65 ns         1.65 ns    254992811 items_per_second=1.20948G/s
+BM_RteRing_PushPop/P:64/B:1                                 1.04 ns         1.04 ns    404145245 items_per_second=1.91869G/s
+BM_RteRing_PushPop/P:64/B:8                                 1.33 ns         1.33 ns    316769162 items_per_second=1.50818G/s
+BM_RteRing_PushPop/P:64/B:64                                1.25 ns         1.25 ns    336238097 items_per_second=1.59487G/s
+BM_RteRing_PushPop/P:64/B:512                               1.30 ns         1.30 ns    319387868 items_per_second=1.5355G/s
+BM_RteRing_PushPop/P:512/B:1                                1.05 ns         1.05 ns    403119276 items_per_second=1.89942G/s
+BM_RteRing_PushPop/P:512/B:8                                1.32 ns         1.32 ns    321519997 items_per_second=1.5151G/s
+BM_RteRing_PushPop/P:512/B:64                               1.27 ns         1.27 ns    333247268 items_per_second=1.57367G/s
+BM_RteRing_PushPop/P:512/B:512                              1.26 ns         1.26 ns    332325490 items_per_second=1.59093G/s
+[2026-04-07 10:27:31.693] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:31.693] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.694] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.695] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.695] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.698] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.698] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.723] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.723] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:8/B:8/real_time/threads:2                20.5 ns         20.5 ns     16829046 items_per_second=97.7341M/s
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.896] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.897] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.897] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.897] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.897] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.897] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.897] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.898] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.898] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:31.912] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:31.912] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.036] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.036] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:8/B:64/real_time/threads:2               11.3 ns         11.3 ns     33978120 items_per_second=177.133M/s
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.228] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.230] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.230] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.233] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.233] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.267] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.267] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:8/B:512/real_time/threads:2              3.38 ns         3.38 ns    126381102 items_per_second=591.656M/s
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.481] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.482] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.482] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.486] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.486] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.512] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.512] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:64/B:8/real_time/threads:2               19.8 ns         19.8 ns     15848534 items_per_second=101.021M/s
+[2026-04-07 10:27:32.669] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.670] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.671] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.671] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.673] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.673] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.697] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:64/B:64/real_time/threads:2              22.9 ns         22.9 ns     18339804 items_per_second=87.3722M/s
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.907] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.908] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.908] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.911] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.911] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:32.940] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:32.940] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:64/B:512/real_time/threads:2             23.4 ns         23.4 ns     14764334 items_per_second=85.3848M/s
+[2026-04-07 10:27:33.113] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.114] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.115] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.116] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.116] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.125] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.125] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.210] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.210] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:512/B:8/real_time/threads:2              81.9 ns         81.9 ns      4960966 items_per_second=24.4342M/s
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.413] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.414] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.414] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.415] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.415] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.422] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.422] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.500] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.501] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:512/B:64/real_time/threads:2             72.0 ns         72.0 ns      5403074 items_per_second=27.7825M/s
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.696] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.697] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.697] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.697] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.697] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.701] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.701] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.738] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.738] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_Throughput/P:512/B:512/real_time/threads:2            44.2 ns         44.2 ns     11429662 items_per_second=45.2244M/s
+[2026-04-07 10:27:33.991] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:33.991] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.991] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.991] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.992] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:33.994] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:33.994] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.015] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.015] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.158] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.158] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:8/B:8/real_time/threads:2           12.1 ns         12.1 ns     30316354 items_per_second=164.657M/s
+[2026-04-07 10:27:34.342] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:34.342] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.342] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.343] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.344] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.344] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.344] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.352] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.352] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.450] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.450] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:8/B:64/real_time/threads:2          15.1 ns         15.1 ns     42768582 items_per_second=132.424M/s
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.774] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.775] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.775] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.776] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.776] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.786] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.786] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:34.885] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:34.885] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:8/B:512/real_time/threads:2         7.87 ns         7.87 ns     42336594 items_per_second=254.079M/s
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.053] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.054] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.054] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.057] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.057] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.084] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.085] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:64/B:8/real_time/threads:2          28.7 ns         28.7 ns     15176638 items_per_second=69.5779M/s
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.303] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.304] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.304] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.304] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.304] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.304] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.304] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.306] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.306] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.320] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.320] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.403] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.404] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:64/B:64/real_time/threads:2         11.7 ns         11.7 ns     50676184 items_per_second=171.514M/s
+[2026-04-07 10:27:35.699] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:35.699] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.699] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.700] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.702] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.702] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.712] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.712] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:64/B:512/real_time/threads:2        15.4 ns         15.4 ns     20000000 items_per_second=130.028M/s
+[2026-04-07 10:27:35.866] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:35.866] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.866] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.867] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.868] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.871] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.871] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.900] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.900] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:35.995] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:35.995] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.113] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.113] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:512/B:8/real_time/threads:2         10.7 ns         10.7 ns     57544168 items_per_second=187.684M/s
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.420] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.421] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.421] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.421] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.421] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.422] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.423] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.433] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.433] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.573] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.573] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:36.678] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:36.678] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:512/B:64/real_time/threads:2        14.6 ns         14.6 ns     60471738 items_per_second=137.255M/s
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.119] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.120] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.120] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.120] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.120] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.120] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.121] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.121] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.139] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.139] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.279] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.279] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_Throughput/P:512/B:512/real_time/threads:2       10.9 ns         10.9 ns     36067614 items_per_second=183.873M/s
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.477] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.477] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.478] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.478] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.495] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.495] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.620] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.620] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:8/B:8/real_time/threads:2                   157 ns          157 ns      4373804
+[2026-04-07 10:27:37.964] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:37.964] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.964] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.965] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.965] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.965] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.965] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.965] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.965] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.966] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.966] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.967] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.968] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:37.983] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:37.983] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:8/B:64/real_time/threads:2                  148 ns          148 ns      2694368
+[2026-04-07 10:27:38.183] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:38.183] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.183] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.183] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.183] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.184] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.184] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.184] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.184] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.184] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.184] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.186] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.186] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.202] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.202] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:8/B:512/real_time/threads:2                 119 ns          119 ns      2660084
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.361] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.362] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.362] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.362] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.364] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.364] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.376] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.376] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.460] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.460] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:64/B:8/real_time/threads:2                  144 ns          144 ns      5014256
+[2026-04-07 10:27:38.821] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:38.821] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.821] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.822] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.824] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.824] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:38.841] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:38.841] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:64/B:64/real_time/threads:2                 156 ns          156 ns      2578730
+[2026-04-07 10:27:39.042] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:39.042] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.043] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.045] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.045] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.061] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.062] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:64/B:512/real_time/threads:2                158 ns          158 ns      2629734
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.270] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.271] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.271] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.271] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.271] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.275] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.275] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.310] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.310] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:512/B:8/real_time/threads:2                 335 ns          335 ns      1191868
+[2026-04-07 10:27:39.510] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:39.510] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.511] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.512] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.512] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.516] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.516] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.548] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.548] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:512/B:64/real_time/threads:2                326 ns          326 ns      1331310
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.766] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.767] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.767] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.770] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.770] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.805] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.805] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_BQ_PingPong/P:512/B:512/real_time/threads:2               298 ns          298 ns      1215138
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.987] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.988] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.988] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:39.990] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:39.990] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.011] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.011] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:8/B:8/real_time/threads:2              204 ns          204 ns      2057028
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.221] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.222] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.222] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.222] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.222] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.224] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.224] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.247] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.247] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:8/B:64/real_time/threads:2             164 ns          164 ns      1848048
+[2026-04-07 10:27:40.399] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:40.399] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.399] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.399] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.399] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.400] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.400] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.400] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.400] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.400] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.400] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.403] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.403] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.422] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.422] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:8/B:512/real_time/threads:2            229 ns          229 ns      2167474
+[2026-04-07 10:27:40.671] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:40.671] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.671] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.671] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.671] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.672] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.672] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.672] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.672] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.672] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.672] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.674] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.675] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.698] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.698] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:40.763] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:40.763] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:64/B:8/real_time/threads:2             179 ns          179 ns      5906968
+[2026-04-07 10:27:41.292] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:41.292] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.292] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.292] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.292] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.292] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.293] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.293] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.293] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.293] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.293] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.296] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.296] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.318] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.318] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:64/B:64/real_time/threads:2            164 ns          164 ns      1894522
+[2026-04-07 10:27:41.474] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:41.474] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.474] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.474] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.475] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.475] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.475] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.475] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.475] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.476] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.478] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.478] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.502] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.502] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:64/B:512/real_time/threads:2           230 ns          230 ns      1804914
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.710] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.711] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.713] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.713] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.735] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.736] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:512/B:8/real_time/threads:2            237 ns          237 ns      1914958
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.963] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.964] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.964] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.964] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.964] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.967] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.967] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:41.990] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:41.990] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:512/B:64/real_time/threads:2           231 ns          231 ns      1847064
+[2026-04-07 10:27:42.203] [utils.cpu] [info] [cpu.hpp:204] Detected 12 CPUs
+[2026-04-07 10:27:42.203] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.204] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:42.205] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.205] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:42.207] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.207] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+[2026-04-07 10:27:42.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=0
+[2026-04-07 10:27:42.229] [utils.cpu] [info] [cpu.hpp:243] thread pinned to cpu_id=1
+BM_RteRing_PingPong/P:512/B:512/real_time/threads:2          211 ns          211 ns      1929618
+BM_BQ_Batch/P:8/B:1                                        0.951 ns        0.951 ns    435754942 items_per_second=2.1026G/s
+BM_BQ_Batch/P:8/B:8                                         3.55 ns         3.55 ns    117009488 items_per_second=4.50858G/s
+BM_BQ_Batch/P:8/B:64                                        47.0 ns         47.0 ns      8794673 items_per_second=2.72512G/s
+BM_BQ_Batch/P:8/B:512                                        273 ns          273 ns      1587191 items_per_second=3.74659G/s
+BM_BQ_Batch/P:64/B:1                                        1.90 ns         1.90 ns    220285095 items_per_second=1.05337G/s
+BM_BQ_Batch/P:64/B:8                                        9.04 ns         9.04 ns     46811413 items_per_second=1.77003G/s
+BM_BQ_Batch/P:64/B:64                                       80.9 ns         80.9 ns      5056417 items_per_second=1.58254G/s
+BM_BQ_Batch/P:64/B:512                                       887 ns          887 ns       481460 items_per_second=1.15482G/s
+BM_BQ_Batch/P:512/B:1                                       20.2 ns         20.2 ns     20432882 items_per_second=98.9338M/s
+BM_BQ_Batch/P:512/B:8                                        153 ns          153 ns      2744254 items_per_second=104.487M/s
+BM_BQ_Batch/P:512/B:64                                      1339 ns         1339 ns       309785 items_per_second=95.6095M/s
+BM_BQ_Batch/P:512/B:512                                    11847 ns        11847 ns        37181 items_per_second=86.4363M/s
+BM_RteRing_Batch/P:8/B:1                                    1.43 ns         1.43 ns    287094362 items_per_second=1.39523G/s
+BM_RteRing_Batch/P:8/B:8                                    6.71 ns         6.71 ns     64040264 items_per_second=2.38532G/s
+BM_RteRing_Batch/P:8/B:64                                   37.5 ns         37.5 ns     11451897 items_per_second=3.41412G/s
+BM_RteRing_Batch/P:8/B:512                                   307 ns          307 ns      1335262 items_per_second=3.33605G/s
+BM_RteRing_Batch/P:64/B:1                                   1.41 ns         1.41 ns    297635785 items_per_second=1.41432G/s
+BM_RteRing_Batch/P:64/B:8                                   5.68 ns         5.68 ns     77013972 items_per_second=2.81803G/s
+BM_RteRing_Batch/P:64/B:64                                  37.1 ns         37.1 ns     10486307 items_per_second=3.454G/s
+BM_RteRing_Batch/P:64/B:512                                  300 ns          300 ns      1400202 items_per_second=3.41826G/s
+BM_RteRing_Batch/P:512/B:1                                  1.40 ns         1.40 ns    296166132 items_per_second=1.42497G/s
+BM_RteRing_Batch/P:512/B:8                                  5.59 ns         5.59 ns     71988929 items_per_second=2.86087G/s
+BM_RteRing_Batch/P:512/B:64                                 36.8 ns         36.8 ns     11285312 items_per_second=3.48129G/s
+BM_RteRing_Batch/P:512/B:512                                 303 ns          303 ns      1355348 items_per_second=3.38449G/s
+BM_BQ_TryPushFull/P:8/B:1                                  0.351 ns        0.351 ns   1192602220
+BM_BQ_TryPushFull/P:8/B:8                                  0.473 ns        0.473 ns    883283581
+BM_BQ_TryPushFull/P:8/B:64                                 0.471 ns        0.471 ns    892337827
+BM_BQ_TryPushFull/P:8/B:512                                0.475 ns        0.475 ns    899630901
+BM_BQ_TryPushFull/P:64/B:1                                 0.446 ns        0.446 ns    957439206
+BM_BQ_TryPushFull/P:64/B:8                                 0.474 ns        0.474 ns    890131456
+BM_BQ_TryPushFull/P:64/B:64                                0.475 ns        0.475 ns    882990642
+BM_BQ_TryPushFull/P:64/B:512                               0.663 ns        0.663 ns    633665470
+BM_BQ_TryPushFull/P:512/B:1                                0.351 ns        0.351 ns   1179145531
+BM_BQ_TryPushFull/P:512/B:8                                0.637 ns        0.637 ns    631487510
+BM_BQ_TryPushFull/P:512/B:64                               0.659 ns        0.659 ns    667808205
+BM_BQ_TryPushFull/P:512/B:512                              0.483 ns        0.483 ns    888922941
+BM_RteRing_TryEnqueueFull/P:8/B:1                          0.348 ns        0.348 ns   1164159907
+BM_RteRing_TryEnqueueFull/P:8/B:8                          0.390 ns        0.390 ns   1211559175
+BM_RteRing_TryEnqueueFull/P:8/B:64                         0.326 ns        0.326 ns   1285614349
+BM_RteRing_TryEnqueueFull/P:8/B:512                        0.332 ns        0.332 ns   1236684005
+BM_RteRing_TryEnqueueFull/P:64/B:1                         0.413 ns        0.413 ns   1004428189
+BM_RteRing_TryEnqueueFull/P:64/B:8                         0.382 ns        0.382 ns   1124918323
+BM_RteRing_TryEnqueueFull/P:64/B:64                        0.345 ns        0.345 ns   1228691383
+BM_RteRing_TryEnqueueFull/P:64/B:512                       0.325 ns        0.325 ns   1297308758
+BM_RteRing_TryEnqueueFull/P:512/B:1                        0.357 ns        0.357 ns   1136359978
+BM_RteRing_TryEnqueueFull/P:512/B:8                        0.347 ns        0.347 ns   1228121060
+BM_RteRing_TryEnqueueFull/P:512/B:64                       0.313 ns        0.313 ns   1341834001
+BM_RteRing_TryEnqueueFull/P:512/B:512                      0.395 ns        0.395 ns   1074022528
