@@ -83,6 +83,13 @@ UdpEchoServer start_udp_echo(const std::string& bind_ip, uint16_t port, int cpu)
             ssize_t n = recvfrom(sockfd, buf, sizeof(buf), 0,
                                  reinterpret_cast<sockaddr*>(&client), &clen);
             if (n > 0) {
+                // Embed server timestamps for single-leg measurement
+                if (n >= 24) {
+                    uint64_t srv_recv = eph::utils::TSC::now();
+                    std::memcpy(buf + 8, &srv_recv, 8);
+                    uint64_t srv_send = eph::utils::TSC::now();
+                    std::memcpy(buf + 16, &srv_send, 8);
+                }
                 sendto(sockfd, buf, static_cast<size_t>(n), 0,
                        reinterpret_cast<sockaddr*>(&client), clen);
             }
@@ -146,8 +153,8 @@ int main(int argc, char** argv) {
         spdlog::error("--server-ip, --local-ip, --gateway-ip are all required");
         return 1;
     }
-    if (msg_size < 8) {
-        spdlog::error("--msg-size must be >= 8");
+    if (msg_size < 24) {
+        spdlog::error("--msg-size must be >= 24 (need 24 bytes for 3 TSC timestamps)");
         return 1;
     }
 
@@ -209,28 +216,43 @@ int main(int argc, char** argv) {
     if (auto r = eph::utils::set_thread_affinity(poll_cpu, "udp-rtt-dpdk"); !r)
         spdlog::warn("Failed to pin to core {}", poll_cpu);
 
-    // RTT measurement loop
+    auto to_ns = [](uint64_t cycles) -> uint64_t {
+        auto opt = eph::utils::TSC::to_ns(cycles);
+        return static_cast<uint64_t>(opt.value_or(0.0));
+    };
+
+    auto report_hist = [](const char* label, eph::utils::HdrHistogram& h) {
+        spdlog::info("  {:<12s} p50={:.1f}us  p99={:.1f}us  p999={:.1f}us  max={:.1f}us",
+                     label,
+                     h.get_value_at_percentile(50.0) / 1000.0,
+                     h.get_value_at_percentile(99.0) / 1000.0,
+                     h.get_value_at_percentile(99.9) / 1000.0,
+                     h.get_max_value() / 1000.0);
+    };
+
+    // Latency measurement loop
     eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram tx_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram rx_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram srv_hist{10, 1'000'000'000ULL, 3};
     std::vector<uint8_t> payload(msg_size, 0xAB);
     uint64_t timeouts = 0;
     auto bench_start = std::chrono::steady_clock::now();
 
-    for (size_t i = 0; i < count && g_running.load(std::memory_order_relaxed); ++i) {
-        // Embed send TSC
-        uint64_t send_tsc = eph::utils::TSC::now();
-        std::memcpy(payload.data(), &send_tsc, 8);
+    // Precompute timeout in TSC cycles (~2 seconds)
+    auto cycles_per_ns = eph::utils::TSC::to_ns(1);
+    uint64_t timeout_cycles = static_cast<uint64_t>(2'000'000'000.0 / cycles_per_ns.value_or(1.0));
 
-        // Send via DPDK
+    for (size_t i = 0; i < count && g_running.load(std::memory_order_relaxed); ++i) {
+        uint64_t client_send_tsc = eph::utils::TSC::now();
+        std::memcpy(payload.data(), &client_send_tsc, 8);
+
         if (!sender->send(payload.data(), static_cast<uint16_t>(msg_size))) {
-            spdlog::warn("send failed at {}", i);
             continue;
         }
 
-        // Poll RX for reply (busy-wait with timeout)
         bool got_reply = false;
-        // Timeout after ~2 seconds worth of TSC cycles
-        auto cycles_per_ns = eph::utils::TSC::to_ns(1);
-        uint64_t deadline = send_tsc + static_cast<uint64_t>(2'000'000'000.0 / cycles_per_ns.value_or(1.0));
+        uint64_t deadline = client_send_tsc + timeout_cycles;
 
         while (!got_reply && eph::utils::TSC::now() < deadline) {
             rte_mbuf* pkts[32];
@@ -238,10 +260,18 @@ int main(int argc, char** argv) {
             for (uint16_t j = 0; j < nb_rx; ++j) {
                 auto parsed = eph::dpdk::net::parse_udp_packet(pkts[j]);
                 if (parsed && parsed.dst_port() == local_udp_port) {
-                    uint64_t recv_tsc = eph::utils::TSC::now();
-                    auto rtt_ns_opt = eph::utils::TSC::to_ns(recv_tsc - send_tsc);
-                    uint64_t rtt_ns = static_cast<uint64_t>(rtt_ns_opt.value_or(0.0));
-                    [[maybe_unused]] auto _ = rtt_hist.record(rtt_ns);
+                    uint64_t client_recv_tsc = eph::utils::TSC::now();
+                    [[maybe_unused]] auto _ = rtt_hist.record(to_ns(client_recv_tsc - client_send_tsc));
+
+                    // Extract server timestamps for single-leg breakdown
+                    if (parsed.payload_len >= 24) {
+                        uint64_t server_recv_tsc, server_send_tsc;
+                        std::memcpy(&server_recv_tsc, parsed.payload + 8, 8);
+                        std::memcpy(&server_send_tsc, parsed.payload + 16, 8);
+                        [[maybe_unused]] auto _tx = tx_hist.record(to_ns(server_recv_tsc - client_send_tsc));
+                        [[maybe_unused]] auto _rx = rx_hist.record(to_ns(client_recv_tsc - server_send_tsc));
+                        [[maybe_unused]] auto _sv = srv_hist.record(to_ns(server_send_tsc - server_recv_tsc));
+                    }
                     got_reply = true;
                 }
                 rte_pktmbuf_free(pkts[j]);
@@ -253,16 +283,13 @@ int main(int argc, char** argv) {
     auto elapsed = std::chrono::steady_clock::now() - bench_start;
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
-    // Report
     spdlog::info("──────────────────────────────────────────");
-    spdlog::info("UDP RTT (DPDK):");
-    spdlog::info("  samples: {}  timeouts: {}  elapsed: {}ms",
+    spdlog::info("UDP Latency (DPDK):  samples={}  timeouts={}  elapsed={}ms",
                  rtt_hist.get_total_count(), timeouts, elapsed_ms);
-    spdlog::info("  p50:  {:.1f}us", rtt_hist.get_value_at_percentile(50.0) / 1000.0);
-    spdlog::info("  p90:  {:.1f}us", rtt_hist.get_value_at_percentile(90.0) / 1000.0);
-    spdlog::info("  p99:  {:.1f}us", rtt_hist.get_value_at_percentile(99.0) / 1000.0);
-    spdlog::info("  p999: {:.1f}us", rtt_hist.get_value_at_percentile(99.9) / 1000.0);
-    spdlog::info("  max:  {:.1f}us", rtt_hist.get_max_value() / 1000.0);
+    report_hist("RTT", rtt_hist);
+    report_hist("TX (c→s)", tx_hist);
+    report_hist("RX (s→c)", rx_hist);
+    report_hist("Server", srv_hist);
     spdlog::info("──────────────────────────────────────────");
 
     // Cleanup

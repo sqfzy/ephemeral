@@ -1,9 +1,14 @@
 /// @file bench_udp_echo_server.cpp
 /// Raw UDP echo server for latency benchmarks.
 ///
-/// Receives UDP datagrams, writes server TSC into payload[0:8], echoes back.
-/// Protocol: payload first 8 bytes = uint64_t client send TSC (little-endian).
-/// Server overwrites bytes [8:16] with server timestamp before echo.
+/// Receives UDP datagrams, embeds server-side timestamps, echoes back.
+///
+/// Timestamp protocol (all uint64_t little-endian):
+///   [0:8]   client_send_tsc   — written by client, preserved by server
+///   [8:16]  server_recv_tsc   — written by server on recvfrom
+///   [16:24] server_send_tsc   — written by server just before sendto
+///
+/// Requires msg_size >= 24. Smaller packets are echoed without timestamps.
 ///
 /// Usage: bench_udp_echo_server --bind-ip IP [--port PORT] [--cpu N]
 
@@ -107,7 +112,16 @@ int main(int argc, char** argv) {
             break;
         }
 
-        // Echo back immediately
+        // Embed server timestamps for single-leg latency measurement.
+        // TSC is shared across all cores on the same CPU, so client and
+        // server (both on this machine) can compute one-way latency directly.
+        if (n >= 24) {
+            uint64_t server_recv_tsc = eph::utils::TSC::now();
+            std::memcpy(buf + 8, &server_recv_tsc, 8);
+            uint64_t server_send_tsc = eph::utils::TSC::now();
+            std::memcpy(buf + 16, &server_send_tsc, 8);
+        }
+
         sendto(sockfd, buf, static_cast<size_t>(n), 0,
                reinterpret_cast<sockaddr*>(&client_addr), client_len);
         ++echo_count;
