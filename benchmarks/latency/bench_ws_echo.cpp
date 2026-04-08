@@ -103,42 +103,35 @@ static void run_ws_echo_loop(TransportT& transport, bench::BenchConfig& cfg,
         eph::utils::HdrHistogram rx_hist{10, 1'000'000'000ULL, 3};
         eph::utils::HdrHistogram srv_hist{10, 1'000'000'000ULL, 3};
 
-        uint64_t last_send_tsc = 0;
         uint64_t send_count = 0, recv_count = 0;
-        bool in_warmup = true;
+
+        // Synchronous ping-pong state. The on_message callback is invoked
+        // from inside transport.poll(); it sets `got_response` and parses
+        // out the timestamps. The main loop sends one frame, polls until
+        // got_response, records the sample, then loops.
+        //
+        // Synchronous design avoids the in-flight problem (RTT > send
+        // interval ⇒ last_send_tsc gets overwritten before response
+        // arrives) and matches the raw TCP/UDP echo bench design.
+        bool got_response = false;
+        uint64_t pending_send_tsc = 0;
+        uint64_t resp_t_send = 0;   // server's send TSC ("T")
+        uint64_t resp_t_recv = 0;   // server's recv TSC ("T_recv")
+        uint64_t resp_recv_tsc = 0; // client's recv TSC
 
         auto& tc = const_cast<eph::net::TransportConfig&>(transport.config());
         tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
+            // Filter: only count actual echo responses. Defensive — mock
+            // is patched not to push ticks in echo_mode, but this guard
+            // handles any other spurious messages safely.
+            std::string_view json(reinterpret_cast<const char*>(data), len);
+            if (json.find("\"echo\":true") == std::string_view::npos) return;
+
             ++recv_count;
-            if (in_warmup) return;
-
-            uint64_t client_recv_tsc = eph::utils::TSC::now();
-
-            // RTT: client_send → client_recv
-            if (last_send_tsc > 0 && client_recv_tsc > last_send_tsc) {
-                [[maybe_unused]] auto _ = rtt_hist.record(
-                    tsc_to_ns(client_recv_tsc - last_send_tsc));
-            }
-
-            // RX: server_send (T) → client_recv
-            uint64_t t_send = parse_tsc_T(data, len);
-            if (t_send > 0 && client_recv_tsc > t_send) {
-                [[maybe_unused]] auto _ = rx_hist.record(
-                    tsc_to_ns(client_recv_tsc - t_send));
-            }
-
-            // TX: client_send → server_recv (T_recv)
-            uint64_t t_recv = parse_tsc_T_recv(data, len);
-            if (t_recv > 0 && last_send_tsc > 0 && t_recv > last_send_tsc) {
-                [[maybe_unused]] auto _ = tx_hist.record(
-                    tsc_to_ns(t_recv - last_send_tsc));
-            }
-
-            // Server: recv → send
-            if (t_recv > 0 && t_send > 0 && t_send > t_recv) {
-                [[maybe_unused]] auto _ = srv_hist.record(
-                    tsc_to_ns(t_send - t_recv));
-            }
+            resp_recv_tsc = eph::utils::TSC::now();
+            resp_t_send = parse_tsc_T(data, len);
+            resp_t_recv = parse_tsc_T_recv(data, len);
+            got_response = true;
         };
 
         // Build payload padding string
@@ -147,28 +140,48 @@ static void run_ws_echo_loop(TransportT& transport, bench::BenchConfig& cfg,
         bench::BenchTimer timer;
         timer.start(cfg.warmup, cfg.duration);
 
-        constexpr auto send_interval = std::chrono::microseconds{100};
-        auto next_send = std::chrono::steady_clock::now();
-
         while (timer.is_running() && bench::g_running.load(std::memory_order_relaxed)
                && transport.is_running()) {
-            in_warmup = timer.is_warmup();
+            // Send one frame
+            pending_send_tsc = eph::utils::TSC::now();
+            char buf[2048];
+            int n = std::snprintf(buf, sizeof(buf),
+                R"({"d":"%.*s","T_send":%llu})",
+                static_cast<int>(padding.size()), padding.c_str(),
+                static_cast<unsigned long long>(pending_send_tsc));
+            [[maybe_unused]] auto err = transport.send_text(
+                std::string_view(buf, static_cast<size_t>(n)));
+            ++send_count;
 
-            auto now = std::chrono::steady_clock::now();
-            if (now >= next_send) {
-                last_send_tsc = eph::utils::TSC::now();
-                char buf[2048];
-                int n = std::snprintf(buf, sizeof(buf),
-                    R"({"d":"%.*s","T_send":%llu})",
-                    static_cast<int>(padding.size()), padding.c_str(),
-                    static_cast<unsigned long long>(last_send_tsc));
-                [[maybe_unused]] auto err = transport.send_text(
-                    std::string_view(buf, static_cast<size_t>(n)));
-                ++send_count;
-                next_send += send_interval;
+            // Poll until response (or timer expires / transport down)
+            got_response = false;
+            while (!got_response && timer.is_running()
+                   && bench::g_running.load(std::memory_order_relaxed)
+                   && transport.is_running()) {
+                [[maybe_unused]] auto poll_result = transport.poll();
             }
+            if (!got_response) break;  // exited via timer/shutdown
 
-            [[maybe_unused]] auto poll_result = transport.poll();
+            // Skip sample during warmup
+            if (timer.is_warmup()) continue;
+
+            // Record measurements (now safe — exactly one in-flight message)
+            if (resp_recv_tsc > pending_send_tsc) {
+                [[maybe_unused]] auto _ = rtt_hist.record(
+                    tsc_to_ns(resp_recv_tsc - pending_send_tsc));
+            }
+            if (resp_t_recv > 0 && resp_t_recv > pending_send_tsc) {
+                [[maybe_unused]] auto _ = tx_hist.record(
+                    tsc_to_ns(resp_t_recv - pending_send_tsc));
+            }
+            if (resp_t_send > 0 && resp_recv_tsc > resp_t_send) {
+                [[maybe_unused]] auto _ = rx_hist.record(
+                    tsc_to_ns(resp_recv_tsc - resp_t_send));
+            }
+            if (resp_t_send > 0 && resp_t_recv > 0 && resp_t_send > resp_t_recv) {
+                [[maybe_unused]] auto _ = srv_hist.record(
+                    tsc_to_ns(resp_t_send - resp_t_recv));
+            }
         }
 
         auto result = bench::BenchResult{

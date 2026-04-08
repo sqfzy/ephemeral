@@ -99,7 +99,10 @@ static int run_kernel(bench::BenchConfig& cfg) {
         return 1;
     }
 
-    timeval tv{.tv_sec = 2, .tv_usec = 0};
+    // Short recv timeout: a single dropped packet should not stall the
+    // measurement loop for seconds. 100ms is far longer than any healthy
+    // RTT but short enough to keep throughput stable on packet loss.
+    timeval tv{.tv_sec = 0, .tv_usec = 100'000};
     ::setsockopt(recv_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     sockaddr_in relay_addr{};

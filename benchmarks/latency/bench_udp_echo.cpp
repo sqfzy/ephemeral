@@ -70,7 +70,9 @@ static int run_kernel(bench::BenchConfig& cfg) {
     }
 
     // 2-second recv timeout as safety valve
-    timeval tv{.tv_sec = 2, .tv_usec = 0};
+    // Short recv timeout: a single dropped packet should not stall for
+    // seconds. 100ms is far longer than any healthy RTT.
+    timeval tv{.tv_sec = 0, .tv_usec = 100'000};
     ::setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     sockaddr_in server_addr{};

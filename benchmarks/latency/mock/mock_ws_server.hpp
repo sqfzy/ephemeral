@@ -429,8 +429,11 @@ inline void run_mock_ws_server(const MockServerConfig& config,
         }
 
         // ── 4b. Push market data if tick interval elapsed ────────────
+        // Skip in pure echo_mode: pushing ticks would pollute the
+        // client-side RTT measurement (every received tick increments
+        // last_send_tsc correlation, breaking RTT calculation).
         now = std::chrono::steady_clock::now();
-        if (now - last_tick >= config.tick_interval) {
+        if (!config.echo_mode && now - last_tick >= config.tick_interval) {
             last_tick = now;
             ++tick_count;
 
