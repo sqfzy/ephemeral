@@ -355,3 +355,6 @@
 | 2026-04-08 09:30 | /bench full validation (post-refactor) | order_rtt dpdk RTT p50 | 22.0 µs | **−33% vs kernel (33.0)** | 2392f39 | full_dpdk_20260408.txt |
 | 2026-04-08 09:30 | /bench full validation (post-refactor) | udp_relay kernel TX p50 (64B) | 11.1 µs | — | 2392f39 | full_kernel_20260408.txt |
 | 2026-04-08 09:30 | /bench full validation (post-refactor) | udp_relay dpdk TX p50 (64B) | 10.3 µs | **−7% vs kernel** | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 11:08 | /bench optimize ws_echo (clean run) | ws_echo kernel TX p50 (64B) | 11.6 µs | — | e7ec8e7 | wsecho_clean_kernel_20260408.txt |
+| 2026-04-08 11:08 | /bench optimize ws_echo (clean run) | ws_echo dpdk TX p50 (64B) | 10.6 µs | **−9% vs kernel** | e7ec8e7 | wsecho_clean_dpdk_20260408.txt |
+| 2026-04-08 11:08 | /bench optimize ws_echo (clean run) | ws_echo dpdk TX p50 (1024B) | 12.9 µs | **−6% vs kernel (13.7 µs)** | e7ec8e7 | wsecho_clean_dpdk_20260408.txt |
