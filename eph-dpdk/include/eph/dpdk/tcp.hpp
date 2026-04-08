@@ -1096,6 +1096,12 @@ public:
         const uint64_t elapsed = eph::utils::TSC::now() - ack_pending_since_tsc_;
         if (elapsed < ack_delay_cycles_()) return;  // defer — wait for piggyback
         ack_pending_since_tsc_ = 0;
+        // TRACE: useful for diagnosing RX-only flows where the timer
+        // (rather than piggyback) is what's keeping the connection alive.
+        // Compiled out at most levels via SPDLOG_ACTIVE_LEVEL.
+        SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
+            "delayed ACK fired after {}ns (cycles={})",
+            eph::utils::TSC::to_ns(elapsed).value_or(0.0), elapsed);
         auto r = send_ack();
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_logger(),
