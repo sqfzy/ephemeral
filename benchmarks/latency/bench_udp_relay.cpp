@@ -60,45 +60,42 @@ static uint64_t tsc_to_ns(uint64_t cycles) {
 #if !defined(EPH_USE_DPDK)
 
 static int run_kernel(bench::BenchConfig& cfg) {
-    // Start in-process relay (both kernel and DPDK variants use in-process relay
-    // since the relay itself is the measured component)
-    auto relay_mock = bench::mock::start_udp_relay(
-        {.bind_ip = cfg.server_ip, .listen_port = kRelayListenPort,
-         .forward_ip = cfg.server_ip, .forward_port = kClientRecvPort},
-        cfg.mock_cpu);
+    // Kernel mode: relay runs as an external process (started by
+    // bench_latency.sh in the host namespace). The bench client runs
+    // inside a network namespace and:
+    //   - sends to server_ip:kRelayListenPort (NIC-A, host namespace)
+    //   - receives on 0.0.0.0:kClientRecvPort (NIC-B in this netns)
 
     bench::pin_or_die(cfg.poll_cpu, "bench-poll");
 
-    // Client send socket (sends to relay)
+    // Client send socket
     int send_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (send_fd < 0) {
         spdlog::error("socket() failed: {}", std::strerror(errno));
-        bench::stop_mock(relay_mock);
         return 1;
     }
 
-    // Client recv socket (receives forwarded data from relay)
+    // Client recv socket
     int recv_fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (recv_fd < 0) {
         spdlog::error("socket() failed: {}", std::strerror(errno));
         ::close(send_fd);
-        bench::stop_mock(relay_mock);
         return 1;
     }
 
     int reuse = 1;
     ::setsockopt(recv_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
+    // Bind recv to INADDR_ANY (any interface in this netns, i.e. NIC-B)
     sockaddr_in recv_addr{};
     recv_addr.sin_family = AF_INET;
     recv_addr.sin_port = htons(kClientRecvPort);
-    ::inet_pton(AF_INET, cfg.server_ip.c_str(), &recv_addr.sin_addr);
+    recv_addr.sin_addr.s_addr = INADDR_ANY;
 
     if (::bind(recv_fd, reinterpret_cast<sockaddr*>(&recv_addr), sizeof(recv_addr)) < 0) {
         spdlog::error("bind() recv port failed: {}", std::strerror(errno));
         ::close(send_fd);
         ::close(recv_fd);
-        bench::stop_mock(relay_mock);
         return 1;
     }
 
@@ -182,7 +179,6 @@ static int run_kernel(bench::BenchConfig& cfg) {
 
     ::close(send_fd);
     ::close(recv_fd);
-    bench::stop_mock(relay_mock);
     return 0;
 }
 

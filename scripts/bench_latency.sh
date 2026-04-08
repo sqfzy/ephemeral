@@ -197,8 +197,13 @@ parse_args() {
         IFS=',' read -ra TRANSPORT_LIST <<< "$TRANSPORTS"
     fi
 
-    [[ "$SKIP_KERNEL" == true ]] && TRANSPORT_LIST=("${TRANSPORT_LIST[@]/kernel}")
-    [[ "$SKIP_DPDK" == true ]]   && TRANSPORT_LIST=("${TRANSPORT_LIST[@]/dpdk}")
+    if [[ "$SKIP_KERNEL" == true ]]; then
+        TRANSPORT_LIST=("${TRANSPORT_LIST[@]/kernel}")
+    fi
+    if [[ "$SKIP_DPDK" == true ]]; then
+        TRANSPORT_LIST=("${TRANSPORT_LIST[@]/dpdk}")
+    fi
+    return 0
 }
 
 # ── Payload sizes per scenario ────────────────────────────────────────────
