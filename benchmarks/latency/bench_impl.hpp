@@ -310,4 +310,115 @@ void run_order_rtt_bench(
     (*result)->stop();
 }
 
+// ── Market TX Benchmark (client → server single-leg) ──────────────────────
+
+/// Run market TX bench: client sends WS messages at tick_interval, mock
+/// server (order_mode) echoes with T_recv/T timestamps, client computes
+/// TX (client_send → server_recv) and RX (server_send → client_recv).
+///
+/// Simulates a market maker pushing quotes to an exchange.
+template <typename TransportT>
+void run_market_tx_poll_loop(TransportT& transport, const BenchConfig& cfg,
+                             const char* label = "Market TX Benchmark Results") {
+    eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram tx_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram rx_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram srv_hist{10, 1'000'000'000ULL, 3};
+    uint64_t send_count = 0, recv_count = 0;
+    uint64_t last_send_tsc = 0;
+
+    auto& tc = const_cast<eph::net::TransportConfig&>(transport.config());
+    tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
+        uint64_t client_recv_tsc = eph::utils::TSC::now();
+
+        // RTT
+        if (last_send_tsc > 0 && client_recv_tsc > last_send_tsc) {
+            auto ns = eph::utils::TSC::to_ns(client_recv_tsc - last_send_tsc);
+            if (ns) rtt_hist.record(static_cast<uint64_t>(*ns));
+        }
+
+        // RX: server_send (T) → client_recv
+        uint64_t t_send = parse_tsc_field(data, len);
+        if (t_send > 0 && client_recv_tsc > t_send) {
+            auto ns = eph::utils::TSC::to_ns(client_recv_tsc - t_send);
+            if (ns) rx_hist.record(static_cast<uint64_t>(*ns));
+        }
+
+        // TX: client_send → server_recv (T_recv)
+        uint64_t t_recv = parse_tsc_recv_field(data, len);
+        if (t_recv > 0 && last_send_tsc > 0 && t_recv > last_send_tsc) {
+            auto ns = eph::utils::TSC::to_ns(t_recv - last_send_tsc);
+            if (ns) tx_hist.record(static_cast<uint64_t>(*ns));
+        }
+
+        // Server processing
+        if (t_recv > 0 && t_send > 0 && t_send > t_recv) {
+            auto ns = eph::utils::TSC::to_ns(t_send - t_recv);
+            if (ns) srv_hist.record(static_cast<uint64_t>(*ns));
+        }
+
+        ++recv_count;
+    };
+
+    pin_or_die(cfg.poll_cpu, "bench-poll");
+
+    spdlog::info("Market TX bench started: interval={}us, duration={}s",
+                 cfg.tick_interval.count(), cfg.duration.count());
+
+    auto start = std::chrono::steady_clock::now();
+    auto next_send = start;
+
+    while (g_running.load(std::memory_order_acquire) && transport.is_running()) {
+        auto now_tp = std::chrono::steady_clock::now();
+        if (now_tp - start >= cfg.duration) break;
+
+        if (now_tp >= next_send) {
+            last_send_tsc = eph::utils::TSC::now();
+            char buf[256];
+            int n = std::snprintf(buf, sizeof(buf),
+                R"({"method":"quote.update","symbol":"BTCUSDT",)"
+                R"("bid":"50000.00","ask":"50001.00","T_send":%llu})",
+                static_cast<unsigned long long>(last_send_tsc));
+            [[maybe_unused]] auto err = transport.send_text(
+                std::string_view(buf, static_cast<size_t>(n)));
+            ++send_count;
+            next_send += cfg.tick_interval;
+        }
+
+        [[maybe_unused]] auto poll_result = transport.poll();
+    }
+
+    auto duration_s = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    spdlog::info("=== {} ===", label);
+    spdlog::info("Duration: {}s, Sent: {}, Recv: {}, Rate: {} msg/s",
+                 duration_s, send_count, recv_count,
+                 duration_s > 0 ? send_count / static_cast<uint64_t>(duration_s) : 0);
+    print_latency("TX (client send -> server recv)", hdr_to_stats(tx_hist));
+    print_latency("RX (server send -> client recv)", hdr_to_stats(rx_hist));
+    print_latency("RTT (send -> response recv)", hdr_to_stats(rtt_hist));
+    print_latency("Server (recv -> send)", hdr_to_stats(srv_hist));
+}
+
+/// Socket market TX bench.
+template <eph::net::TcpTransport TcpImpl>
+void run_market_tx_bench(
+    std::function<std::expected<std::unique_ptr<TcpImpl>, std::string>()> tcp_factory,
+    const BenchConfig& cfg)
+{
+    using Transport = eph::net::DirectTransport<TcpImpl, eph::net::WsFramer, 4096>;
+
+    auto tc = make_bench_transport_config(cfg);
+
+    auto result = Transport::create(std::move(tcp_factory), tc);
+    if (!result) {
+        spdlog::error("Transport create failed: {}", result.error().message());
+        return;
+    }
+
+    run_market_tx_poll_loop(**result, cfg);
+    (*result)->stop();
+}
+
 } // namespace bench

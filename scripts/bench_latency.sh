@@ -207,13 +207,13 @@ preflight() {
     # Required binaries
     local missing=false
     if [[ "$SKIP_SOCKET" == false ]]; then
-        for bin in bench_mock_server bench_market bench_order_rtt \
+        for bin in bench_mock_server bench_market bench_market_tx bench_order_rtt \
                    bench_udp_echo_server bench_udp_rtt; do
             [[ -x "$BUILD_DIR/$bin" ]] || { log_error "Missing: $BUILD_DIR/$bin"; missing=true; }
         done
     fi
     if [[ "$SKIP_DPDK" == false ]]; then
-        for bin in bench_market_dpdk bench_order_rtt_dpdk bench_udp_rtt_dpdk; do
+        for bin in bench_market_dpdk bench_market_tx_dpdk bench_order_rtt_dpdk bench_udp_rtt_dpdk; do
             [[ -x "$BUILD_DIR/$bin" ]] || { log_error "Missing: $BUILD_DIR/$bin"; missing=true; }
         done
         command -v dpdk-devbind.py &>/dev/null || { log_error "dpdk-devbind.py not in PATH"; missing=true; }
@@ -257,6 +257,7 @@ run_socket_benchmarks() {
         echo "[DRY RUN] ip netns add bench_ns; ip link set $NIC_B netns bench_ns"
         echo "[DRY RUN] bench_mock_server --bind-ip $SERVER_IP --port 9999"
         echo "[DRY RUN] ip netns exec bench_ns bench_market ${common_args[*]} --port 9999"
+        echo "[DRY RUN] ip netns exec bench_ns bench_market_tx --server-ip $SERVER_IP --port 9999"
         echo "[DRY RUN] bench_mock_server --bind-ip $SERVER_IP --port 9998 --order-mode"
         echo "[DRY RUN] ip netns exec bench_ns bench_order_rtt ${common_args[*]} --port 9998"
         echo "[DRY RUN] bench_udp_echo_server --bind-ip $SERVER_IP --port 9997"
@@ -285,6 +286,15 @@ run_socket_benchmarks() {
     log_info "Running bench_market (socket)..."
     ip netns exec bench_ns \
         "$BUILD_DIR/bench_market" "${common_args[@]}" --port 9999 2>&1
+    echo
+
+    sleep 1  # wait for mock to re-accept
+
+    log_info "Running bench_market_tx (socket)..."
+    ip netns exec bench_ns \
+        "$BUILD_DIR/bench_market_tx" \
+        --server-ip "$SERVER_IP" --port 9999 \
+        --tick-us "$TICK_US" --duration "$DURATION" --poll-cpu "$POLL_CPU" 2>&1
     echo
 
     sleep 1  # wait for mock to re-accept
@@ -338,6 +348,7 @@ run_dpdk_benchmarks() {
     if [[ "$DRY_RUN" == true ]]; then
         echo "[DRY RUN] $SCRIPT_DIR/dpdk-setup.sh (bind $nic_b_pci to vfio-pci)"
         echo "[DRY RUN] bench_market_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
+        echo "[DRY RUN] bench_market_tx_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
         echo "[DRY RUN] bench_order_rtt_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
         echo "[DRY RUN] bench_udp_rtt_dpdk -a $nic_b_pci -l $EAL_CORES -- ..."
         echo "[DRY RUN] $SCRIPT_DIR/dpdk-teardown.sh (restore $NIC_B)"
@@ -366,6 +377,12 @@ run_dpdk_benchmarks() {
     log_info "Running bench_market_dpdk..."
     # shellcheck disable=SC2086
     "$BUILD_DIR/bench_market_dpdk" $eal_args -- "${common_args[@]}" 2>&1
+    echo
+
+    log_info "Running bench_market_tx_dpdk..."
+    # shellcheck disable=SC2086
+    "$BUILD_DIR/bench_market_tx_dpdk" $eal_args -- \
+        "${common_args[@]}" --tick-us "$TICK_US" 2>&1
     echo
 
     log_info "Running bench_order_rtt_dpdk..."
