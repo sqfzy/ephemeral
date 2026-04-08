@@ -88,21 +88,6 @@ inline constexpr uint16_t kSynOptionsLen = 12;
 /// @brief TCP header length for SYN packets (standard header + SYN options = 32 bytes).
 inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
 
-/// @brief SYN options length WITH TCP timestamps:
-/// MSS(4) + SACK_PERM(2) + Timestamps(10) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) = 22 bytes.
-/// Padded with NOPs to maintain 4-byte alignment → 24 bytes on the wire.
-inline constexpr uint16_t kSynOptionsLenWithTs = 24;
-
-/// @brief TCP header length for SYN packets WITH timestamps option = 44 bytes.
-inline constexpr uint16_t kSynTcpHeaderLenWithTs = kTcpHeaderLen + kSynOptionsLenWithTs;
-
-/// @brief Data segment options length when TCP timestamps are enabled:
-/// NOP(1) + NOP(1) + Timestamps(10) = 12 bytes (matches Linux kernel layout).
-inline constexpr uint16_t kTcpDataOptionsLenWithTs = 12;
-
-/// @brief TCP header length for data packets WITH timestamps = 32 bytes.
-inline constexpr uint16_t kTcpHeaderLenWithTs = kTcpHeaderLen + kTcpDataOptionsLenWithTs;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte order helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,74 +297,6 @@ inline constexpr uint16_t kTcpHeaderLenWithTs = kTcpHeaderLen + kTcpDataOptionsL
     buf[11] = 1;                           // Kind: NOP
 
     return kSynOptionsLen;
-}
-
-/// Write TCP SYN options WITH timestamps into buffer.
-/// Matches Linux kernel SYN option layout to enable receiver-side fast path.
-///
-/// Layout: MSS(4) + SACK_PERM(2) + TS(10) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1)
-///         + 2 NOPs for 4-byte alignment = 24 bytes
-///
-/// @param buf     Pointer to option area (right after 20-byte TCP header)
-/// @param mss     MSS value in host byte order
-/// @param ts_val  TCP timestamps "value" field (host byte order, monotonically increasing)
-/// @param ts_ecr  TCP timestamps "echo reply" field (host byte order; 0 for SYN)
-/// @return Number of bytes written (always kSynOptionsLenWithTs = 24)
-[[nodiscard]] inline uint16_t write_syn_options_with_ts(uint8_t* buf, uint16_t mss,
-                                                         uint32_t ts_val, uint32_t ts_ecr) noexcept {
-    // MSS (4 bytes)
-    buf[0] = 2;                            // Kind: MSS
-    buf[1] = 4;                            // Length
-    uint16_t mss_net = hton16(mss);
-    std::memcpy(&buf[2], &mss_net, 2);
-
-    // SACK Permitted (2 bytes)
-    buf[4] = 4;                            // Kind: SACK Permitted
-    buf[5] = 2;                            // Length
-
-    // Timestamps (10 bytes) — TSval + TSecr in network byte order
-    buf[6] = 8;                            // Kind: Timestamps
-    buf[7] = 10;                           // Length
-    uint32_t tsv_net = hton32(ts_val);
-    uint32_t tse_net = hton32(ts_ecr);
-    std::memcpy(&buf[8], &tsv_net, 4);
-    std::memcpy(&buf[12], &tse_net, 4);
-
-    // NOP (1 byte)
-    buf[16] = 1;                           // Kind: NOP
-
-    // Window Scale (3 bytes)
-    buf[17] = 3;                           // Kind: Window Scale
-    buf[18] = 3;                           // Length
-    buf[19] = 0;                           // Shift count (2^0 = 1, no scaling)
-
-    // 4 NOPs for 4-byte alignment
-    buf[20] = 1;
-    buf[21] = 1;
-    buf[22] = 1;
-    buf[23] = 1;
-
-    return kSynOptionsLenWithTs;
-}
-
-/// Write data-segment TCP timestamp option into buffer.
-/// Layout: NOP(1) + NOP(1) + Timestamps(10) = 12 bytes (matches Linux kernel).
-///
-/// @param buf     Pointer to option area (right after 20-byte TCP header)
-/// @param ts_val  TCP timestamps "value" field (host byte order)
-/// @param ts_ecr  TCP timestamps "echo reply" field (host byte order)
-/// @return Number of bytes written (always kTcpDataOptionsLenWithTs = 12)
-[[nodiscard]] inline uint16_t write_tcp_ts_option(uint8_t* buf,
-                                                   uint32_t ts_val, uint32_t ts_ecr) noexcept {
-    buf[0] = 1;                            // NOP (padding)
-    buf[1] = 1;                            // NOP (padding)
-    buf[2] = 8;                            // Kind: Timestamps
-    buf[3] = 10;                           // Length
-    uint32_t tsv_net = hton32(ts_val);
-    uint32_t tse_net = hton32(ts_ecr);
-    std::memcpy(&buf[4], &tsv_net, 4);
-    std::memcpy(&buf[8], &tse_net, 4);
-    return kTcpDataOptionsLenWithTs;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
