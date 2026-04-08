@@ -191,40 +191,45 @@ target("bench_market_tx_dpdk")
     set_symbols("debug")
     apply_dpdk_pmd_linkgroups()
 
-target("bench_udp_echo_server")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_udp_echo_server.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
+-- ── New table-driven latency bench targets ──────────────────────────────
+-- Each scenario compiles the same .cpp twice: kernel (no define) and
+-- DPDK (EPH_USE_DPDK=1). This replaces the old N×2 hand-written targets.
+local bench_latency = {
+    {name="udp_echo", kernel_deps={"eph-utils"}, dpdk_deps={"eph-dpdk", "eph-utils"}},
+    -- Phase 2: tcp_echo, udp_relay will be added here
+    -- Phase 3: ws_echo, market_rx, order_rtt will be added here
+}
 
-target("bench_udp_rtt")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_udp_rtt.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
+local bench_latency_flags = {"-fno-omit-frame-pointer", "-march=native"}
 
-target("bench_udp_rtt_dpdk")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_udp_rtt_dpdk.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-dpdk", "eph-utils")
-    add_packages("spdlog")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-    apply_dpdk_pmd_linkgroups()
+for _, s in ipairs(bench_latency) do
+    -- Kernel variant
+    target("bench_" .. s.name)
+        set_kind("binary")
+        set_group("benchmarks")
+        set_default(false)
+        add_files("benchmarks/latency/bench_" .. s.name .. ".cpp")
+        add_includedirs("benchmarks", "benchmarks/latency")
+        for _, d in ipairs(s.kernel_deps) do add_deps(d) end
+        add_packages("spdlog")
+        add_defines("EPH_ENABLE_TIMESTAMPS=1")
+        add_cxflags(table.unpack(bench_latency_flags))
+        set_symbols("debug")
+
+    -- DPDK variant
+    target("bench_" .. s.name .. "_dpdk")
+        set_kind("binary")
+        set_group("benchmarks")
+        set_default(false)
+        add_files("benchmarks/latency/bench_" .. s.name .. ".cpp")
+        add_includedirs("benchmarks", "benchmarks/latency")
+        for _, d in ipairs(s.dpdk_deps) do add_deps(d) end
+        add_packages("spdlog")
+        add_defines("EPH_ENABLE_TIMESTAMPS=1", "EPH_USE_DPDK=1")
+        add_cxflags(table.unpack(bench_latency_flags))
+        set_symbols("debug")
+        apply_dpdk_pmd_linkgroups()
+end
 
 -- ===========================================================================
 -- Examples (centralized, user-facing)
