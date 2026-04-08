@@ -342,3 +342,16 @@
 | 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk TX p99 | 17.4 µs | **−40% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |
 | 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk RTT p50 | 22.1 µs | **−21% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |
 | 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk throughput | 33.9k/s | **+33% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | tcp_echo kernel TX p50 (64B) | 12.2 µs | — | 2392f39 | full_kernel_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | tcp_echo dpdk TX p50 (64B) | 11.6 µs | **−5% vs kernel** | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | udp_echo kernel TX p50 (64B) | 11.5 µs | — | 2392f39 | full_kernel_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | udp_echo dpdk TX p50 (64B) | 10.7 µs | **−7% vs kernel** | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | ws_echo kernel TX p50 (64B) | 11.8 µs | — | 2392f39 | full_kernel_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | ws_echo dpdk TX p50 (64B) | 13.3 µs | +13% vs kernel (server blocking poll) | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | market_rx kernel RTT p50 | 14.5 µs | — | 2392f39 | full_kernel_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | market_rx dpdk RTT p50 | 8.1 µs | **−44% vs kernel** | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | order_rtt kernel TX p50 | 15.1 µs | — | 2392f39 | full_kernel_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | order_rtt dpdk TX p50 | 14.0 µs | **−7% vs kernel** | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | order_rtt dpdk RTT p50 | 22.0 µs | **−33% vs kernel (33.0)** | 2392f39 | full_dpdk_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | udp_relay kernel TX p50 (64B) | 11.1 µs | — | 2392f39 | full_kernel_20260408.txt |
+| 2026-04-08 09:30 | /bench full validation (post-refactor) | udp_relay dpdk TX p50 (64B) | 10.3 µs | **−7% vs kernel** | 2392f39 | full_dpdk_20260408.txt |

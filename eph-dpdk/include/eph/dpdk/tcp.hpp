@@ -1061,11 +1061,12 @@ public:
             rte_pktmbuf_free_bulk(free_list, free_count);
         }
 
-        // Defer ACK emission — record the first-unacked time only if we
-        // weren't already owing an ACK, so the delayed-ACK timer measures
-        // from the earliest pending segment (not the latest batch).
-        // flush_pending_ack() will either emit a bare ACK on timer expiry
-        // or piggyback via the next outgoing data send.
+        // Defer ACK emission. Records the time of the *first* burst that
+        // left data un-ACK'd; subsequent bursts within the timer window
+        // keep the original timestamp so the delayed-ACK timer measures
+        // from the earliest pending burst, not the latest. flush_pending_ack
+        // will either emit a bare ACK on timer expiry or piggyback via the
+        // next outgoing data send.
         if (need_ack && ack_pending_since_tsc_ == 0) {
             ack_pending_since_tsc_ = eph::utils::TSC::now();
         }
@@ -1330,12 +1331,29 @@ private:
     ///   - RX-only flows (e.g., market data subscriptions) emit a bare ACK
     ///     at most every 40 µs of received activity, keeping the peer's
     ///     retransmission timer at bay without adding measurable overhead.
-    /// Linux's corresponding constant is ATO=40 ms (quickack/delack) for
-    ///   public internet; we tighten to 40 µs because we target datacenter.
+    /// Linux's TCP_DELACK_MIN is ~4 ms and TCP_DELACK_MAX is 200 ms
+    /// (HZ-dependent) for public internet; we tighten to 40 µs because we
+    /// target datacenter.
+    ///
+    /// Implementation note: we cache the computed value via an atomic, but
+    /// only AFTER TSC::to_cycles() succeeds. If TSC::init() has not yet run
+    /// when first called, we return the 40k-cycle fallback (correct on the
+    /// 1 GHz Graviton system counter, suboptimal on x86 with rdtsc) WITHOUT
+    /// caching — so a subsequent call after TSC::init() picks up the
+    /// calibrated value. This avoids permanently caching a wrong fallback
+    /// when the first call races with TSC initialization.
     static uint64_t ack_delay_cycles_() noexcept {
-        static const uint64_t v = eph::utils::TSC::to_cycles(40'000.0 /* ns */)
-                                      .value_or(40'000);  // fallback: 40k cycles @1GHz
-        return v;
+        static std::atomic<uint64_t> cached{0};
+        uint64_t v = cached.load(std::memory_order_relaxed);
+        if (v != 0) [[likely]] return v;
+        auto opt = eph::utils::TSC::to_cycles(40'000.0 /* ns */);
+        if (!opt) [[unlikely]] {
+            // TSC not initialised yet — use the 1 GHz fallback but DON'T
+            // cache it; let a later call (post TSC::init) refresh.
+            return 40'000;
+        }
+        cached.store(*opt, std::memory_order_relaxed);
+        return *opt;
     }
 
     TcpConfig           config_;
