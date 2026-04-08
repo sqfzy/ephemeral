@@ -159,10 +159,6 @@ int main(int argc, char** argv) {
     }
 
 #if defined(EPH_USE_DPDK)
-    spdlog::info("Initializing DPDK EAL...");
-    auto eal = eph::dpdk::EalGuard::init(argc, argv);
-    if (!eal) { spdlog::error("EAL init failed: {}", eal.error()); return 1; }
-
     int app_argc = 0;
     char** app_argv = nullptr;
     for (int i = 0; i < argc; ++i) {
@@ -172,6 +168,10 @@ int main(int argc, char** argv) {
             break;
         }
     }
+
+    spdlog::info("Initializing DPDK EAL...");
+    auto eal = eph::dpdk::EalGuard::init(argc, argv);
+    if (!eal) { spdlog::error("EAL init failed: {}", eal.error()); return 1; }
 
     auto cfg = bench::parse_bench_config(app_argc, app_argv);
     if (cfg.server_ip.empty() || cfg.local_ip.empty() || cfg.gateway_ip.empty()) {

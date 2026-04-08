@@ -80,10 +80,19 @@ inline std::vector<size_t> parse_sizes(std::string_view sv) {
 /// Parse CLI arguments into BenchConfig.
 /// Unrecognized arguments are silently skipped (DPDK EAL args are consumed
 /// by EalGuard::init before this function is called).
+///
+/// @param argc  Number of arguments. Pass `argc` from main() in kernel mode,
+///              or `app_argc` (count after "--") in DPDK mode.
+/// @param argv  Argument vector. In kernel mode, pass main()'s argv directly
+///              (loop starts at index 0; the program name argv[0] is harmless
+///              because it never matches a "--xxx" pattern). In DPDK mode,
+///              pass `app_argv` pointing at the first arg after "--".
 inline BenchConfig parse_bench_config(int argc, char** argv) {
     BenchConfig cfg;
 
-    for (int i = 1; i < argc; ++i) {
+    // Start at i=0: we don't assume argv[0] is the program name. Program
+    // names never start with "--" so the loop body will skip them naturally.
+    for (int i = 0; i < argc; ++i) {
         std::string_view arg = argv[i];
 
         if (arg == "--server-ip" && i + 1 < argc) {

@@ -155,14 +155,8 @@ static int run_kernel(bench::BenchConfig& cfg) {
 #if defined(EPH_USE_DPDK)
 
 static int run_dpdk(int argc, char** argv) {
-    spdlog::info("Initializing DPDK EAL...");
-    auto eal = eph::dpdk::EalGuard::init(argc, argv);
-    if (!eal) {
-        spdlog::error("EAL init failed: {}", eal.error());
-        return 1;
-    }
-
-    // Split EAL args from app args at "--"
+    // Split EAL args from app args at "--" BEFORE EalGuard::init, since
+    // EalGuard consumes EAL portion of argv.
     int app_argc = 0;
     char** app_argv = nullptr;
     for (int i = 0; i < argc; ++i) {
@@ -171,6 +165,13 @@ static int run_dpdk(int argc, char** argv) {
             app_argv = argv + i + 1;
             break;
         }
+    }
+
+    spdlog::info("Initializing DPDK EAL...");
+    auto eal = eph::dpdk::EalGuard::init(argc, argv);
+    if (!eal) {
+        spdlog::error("EAL init failed: {}", eal.error());
+        return 1;
     }
 
     auto cfg = bench::parse_bench_config(app_argc, app_argv);

@@ -19,7 +19,10 @@
 
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <vector>
+
+#include <unistd.h>
 
 #include <spdlog/spdlog.h>
 
@@ -180,14 +183,6 @@ static int run_kernel(bench::BenchConfig& cfg) {
 #if defined(EPH_USE_DPDK)
 
 static int run_dpdk(int argc, char** argv) {
-    spdlog::info("Initializing DPDK EAL...");
-    auto eal = eph::dpdk::EalGuard::init(argc, argv);
-    if (!eal) {
-        spdlog::error("EAL init failed: {}", eal.error());
-        return 1;
-    }
-
-    // Split EAL args from app args at "--"
     int app_argc = 0;
     char** app_argv = nullptr;
     for (int i = 0; i < argc; ++i) {
@@ -196,6 +191,13 @@ static int run_dpdk(int argc, char** argv) {
             app_argv = argv + i + 1;
             break;
         }
+    }
+
+    spdlog::info("Initializing DPDK EAL...");
+    auto eal = eph::dpdk::EalGuard::init(argc, argv);
+    if (!eal) {
+        spdlog::error("EAL init failed: {}", eal.error());
+        return 1;
     }
 
     auto cfg = bench::parse_bench_config(app_argc, app_argv);
@@ -246,6 +248,16 @@ static int run_dpdk(int argc, char** argv) {
     bench::pin_or_die(cfg.poll_cpu, "bench-poll");
     bench::JsonlWriter jsonl(cfg.output_path);
 
+    // Use a different src_port per payload iteration to avoid TIME_WAIT
+    // collisions on the kernel-side mock (SO_REUSEADDR alone is insufficient
+    // because the 5-tuple is in TIME_WAIT after each disconnect). The base
+    // is randomized from PID + time so consecutive runs of the bench don't
+    // collide with their own previous TIME_WAIT entries.
+    uint16_t src_port_base = static_cast<uint16_t>(
+        40000 + (static_cast<unsigned>(getpid()) +
+                 static_cast<unsigned>(std::time(nullptr))) % 20000);
+    int iter = 0;
+
     for (size_t payload : cfg.payload_sizes) {
         spdlog::info("TCP echo (DPDK): server={}:{}, payload={}B, warmup={}s, duration={}s",
                      cfg.server_ip, cfg.server_port, payload,
@@ -257,15 +269,17 @@ static int run_dpdk(int argc, char** argv) {
              .msg_size = payload},
             cfg.mock_cpu);
 
-        // Create DPDK TCP session
+        // Create DPDK TCP session with rotating src_port
         eph::dpdk::TcpConfig tcp_cfg{
             .tuple = {
                 .src_ip = src_ip, .dst_ip = dst_ip,
-                .src_port = 44444, .dst_port = cfg.server_port,
+                .src_port = static_cast<uint16_t>(src_port_base + iter),
+                .dst_port = cfg.server_port,
             },
             .src_mac = src_mac, .dst_mac = *gw_mac,
             .port_id = cfg.dpdk_port_id,
         };
+        ++iter;
 
         eph::dpdk::TcpSession tcp(tcp_cfg, pool);
         auto conn_result = tcp.connect(std::chrono::milliseconds{3000});

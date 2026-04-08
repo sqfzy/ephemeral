@@ -225,11 +225,22 @@ preflight() {
     log_info "Root privileges"
 
     ip link show "$NIC_A" &>/dev/null || die "NIC-A '$NIC_A' not found"
-    ip link show "$NIC_B" &>/dev/null || die "NIC-B '$NIC_B' not found"
-    log_info "NICs: $NIC_A (server) + $NIC_B (client)"
+    if ip link show "$NIC_B" &>/dev/null; then
+        log_info "NICs: $NIC_A (server) + $NIC_B (client, kernel)"
+    else
+        # NIC-B may already be bound to DPDK (vfio-pci) — check via .dpdk_state
+        # or assume DPDK-only mode is intended.
+        if [[ " ${TRANSPORT_LIST[*]} " == *" kernel "* ]]; then
+            die "NIC-B '$NIC_B' not found in kernel" \
+                "Kernel mode requires NIC-B to be kernel-managed. Run dpdk-teardown.sh first or use --transports dpdk."
+        fi
+        log_info "NICs: $NIC_A (server) + $NIC_B (client, already DPDK-bound)"
+    fi
 
-    local default_dev
-    default_dev=$(ip route show default | awk '{print $5}' | head -1)
+    local default_dev=""
+    if ip link show "$NIC_B" &>/dev/null; then
+        default_dev=$(ip route show default | awk '{print $5}' | head -1)
+    fi
     if [[ "$default_dev" == "$NIC_B" ]]; then
         log_warn "NIC-B ($NIC_B) carries the default route"
         log_warn "Moving it to a namespace will disconnect SSH if you're using this NIC!"
@@ -400,7 +411,7 @@ run_bench() {
 
     case "$scenario" in
         ws_echo|market_rx|order_rtt)
-            common_args+=(--port 9999 --symbols "$SYMBOLS" --tick-us "$TICK_US")
+            common_args+=(--port 9999 --symbols "$SYMBOLS" --tick-interval "$TICK_US")
             [[ "$scenario" == "order_rtt" ]] && common_args+=(--order-interval "$ORDER_INTERVAL_US")
             ;;
         udp_echo) common_args+=(--port 9997) ;;
@@ -417,8 +428,13 @@ run_bench() {
         fi
     else
         log_info "Running bench_${scenario} (DPDK)"
-        local nic_b_pci
-        nic_b_pci=$(basename "$(readlink -f "/sys/class/net/${NIC_B}/device" 2>/dev/null)" 2>/dev/null || echo "")
+        local nic_b_pci="${NIC_B_PCI:-}"
+        if [[ -z "$nic_b_pci" ]]; then
+            nic_b_pci=$(basename "$(readlink -f "/sys/class/net/${NIC_B}/device" 2>/dev/null)" 2>/dev/null || echo "")
+        fi
+        if [[ -z "$nic_b_pci" || "$nic_b_pci" == "device" ]]; then
+            log_error "Cannot determine PCI for $NIC_B"; return
+        fi
         local eal_args="-a ${nic_b_pci} -l ${EAL_CORES}"
         local dpdk_args=("${common_args[@]}" --local-ip "$LOCAL_IP" --gateway-ip "$GATEWAY_IP")
 
@@ -475,16 +491,31 @@ run_all_scenarios() {
             sleep 1
         fi
 
+        # Try to detect PCI from kernel sysfs first; if NIC is already bound
+        # to DPDK, fall back to .dpdk_state file.
+        WE_BOUND_DPDK=false
         nic_b_pci=$(basename "$(readlink -f "/sys/class/net/${NIC_B}/device" 2>/dev/null)" 2>/dev/null || echo "")
-        [[ -z "$nic_b_pci" || "$nic_b_pci" == "device" ]] && die "Cannot detect PCI for $NIC_B"
-        log_info "NIC-B PCI: $nic_b_pci"
-
-        if [[ -x "$SCRIPT_DIR/dpdk-setup.sh" ]]; then
-            DPDK_PCI="$nic_b_pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-setup.sh" -y
-            log_info "NIC-B bound to DPDK"
+        if [[ -z "$nic_b_pci" || "$nic_b_pci" == "device" ]]; then
+            if [[ -f "$PROJECT_DIR/.dpdk_state" ]]; then
+                # shellcheck source=/dev/null
+                source "$PROJECT_DIR/.dpdk_state"
+                nic_b_pci="$DPDK_PCI"
+                log_info "NIC-B already bound to DPDK (PCI: $nic_b_pci from .dpdk_state)"
+            else
+                die "Cannot detect PCI for $NIC_B" "Bind manually with dpdk-setup.sh first"
+            fi
         else
-            log_warn "scripts/dpdk-setup.sh not found, assuming NIC-B already bound"
+            log_info "NIC-B PCI: $nic_b_pci"
+            if [[ -x "$SCRIPT_DIR/dpdk-setup.sh" ]]; then
+                DPDK_PCI="$nic_b_pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-setup.sh" -y
+                WE_BOUND_DPDK=true
+                log_info "NIC-B bound to DPDK"
+            else
+                log_warn "scripts/dpdk-setup.sh not found, assuming NIC-B already bound"
+            fi
         fi
+        # Export for run_bench
+        export NIC_B_PCI="$nic_b_pci"
     fi
 
     # Run scenarios — kernel first if in list
@@ -532,8 +563,8 @@ run_all_scenarios() {
         done
     fi
 
-    # Restore NIC from DPDK
-    if [[ "$need_dpdk" == true && "$DRY_RUN" == false && -n "$nic_b_pci" ]]; then
+    # Restore NIC from DPDK only if WE bound it (leave it alone if pre-bound)
+    if [[ "$need_dpdk" == true && "$DRY_RUN" == false && -n "$nic_b_pci" && "${WE_BOUND_DPDK:-false}" == true ]]; then
         log_phase 5 "Restore NIC-B"
         if [[ -x "$SCRIPT_DIR/dpdk-teardown.sh" ]]; then
             DPDK_PCI="$nic_b_pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-teardown.sh" || true
