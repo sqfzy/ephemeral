@@ -29,4 +29,11 @@ perf/
 perf.data
 perf.data.old
 
+# Bench output (raw data files, not artifacts/reports)
+.bench/
+**/.bench/
+
+# DPDK runtime state (per-host, set by scripts/dpdk-setup.sh)
+.dpdk_state
+
 # .discuss/

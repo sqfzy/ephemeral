@@ -3,7 +3,7 @@
 > 通过 4 项精准改动消除 TCP 绑定遗留：新增 parse_ip_header、搬移 ParsedUdpPacket、模板化 Reactor、修正注释。
 
 创建时间：2026-04-07
-状态：已确认
+状态：已完成
 设计参考：
 - .artifacts/discuss-20260407-reactor-udp.md
 - .artifacts/discuss-20260407-udp-redesign.md
