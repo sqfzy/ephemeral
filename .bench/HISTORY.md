@@ -334,3 +334,11 @@
 | 2026-03-29 07:08 | /bench baseline (binance 3h) | market_multi kernel Feed p50 | 2399232 ns | — | ac225dd | bench-data-20260329-054515.txt |
 | 2026-03-29 07:53 | /bench baseline (binance 3h) | market_multi dpdk RX p50 | 452 ns | — | ac225dd | bench-data-20260329-054515.txt |
 | 2026-03-29 07:53 | /bench baseline (binance 3h) | market_multi dpdk Feed p50 | 2403328 ns | — | ac225dd | bench-data-20260329-054515.txt |
+| 2026-04-08 08:51 | /bench optimize (order_rtt baseline) | order_rtt kernel TX p50 | 15.1 µs | — | 0d431af | order_rtt_kernel_final_20260408.txt |
+| 2026-04-08 08:51 | /bench optimize (order_rtt baseline) | order_rtt kernel TX p99 | 29.1 µs | — | 0d431af | order_rtt_kernel_final_20260408.txt |
+| 2026-04-08 08:51 | /bench optimize (order_rtt baseline) | order_rtt kernel RTT p50 | 28.0 µs | — | 0d431af | order_rtt_kernel_final_20260408.txt |
+| 2026-04-08 08:51 | /bench optimize (DPDK before fix) | order_rtt dpdk TX p50 | 16.5 µs | +9.3% vs kernel | 0d431af | latency_results_20260408_065153.jsonl |
+| 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk TX p50 | 13.6 µs | **−9.9% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |
+| 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk TX p99 | 17.4 µs | **−40% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |
+| 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk RTT p50 | 22.1 µs | **−21% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |
+| 2026-04-08 08:51 | /bench optimize (DPDK + ack_piggyback) | order_rtt dpdk throughput | 33.9k/s | **+33% vs kernel** | (this commit) | order_rtt_dpdk_piggyback_20260408.txt |

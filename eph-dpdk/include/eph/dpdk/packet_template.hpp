@@ -47,6 +47,29 @@ struct PacketTemplate {
     /// silently corrupt packets.
     bool hw_cksum = false;
 
+    /// Enable TCP timestamps option in SYN and data segments.
+    /// When true, every emitted TCP packet includes the Timestamps option
+    /// (10 bytes), making the packet layout match Linux kernel TCP
+    /// expectations. The Linux receiver-side fast path
+    /// (`tcp_rcv_established` header prediction) requires the connection
+    /// to have negotiated TS at SYN time and every data packet to carry
+    /// TS — without TS, packets fall to `tcp_data_queue` (slow path),
+    /// adding ~1-3 µs of receive latency on Linux.
+    ///
+    /// Caller must update `ts_val` (monotonically increasing) and
+    /// `ts_ecr` (last received peer TSval) before each call to
+    /// build_packet/fill_packet. SYN segments use ts_ecr=0.
+    bool enable_timestamps = false;
+
+    /// Outgoing TS value for the next packet (host byte order).
+    /// Caller is responsible for incrementing this between sends so it
+    /// stays monotonic — PAWS will discard packets where TS goes backwards.
+    uint32_t ts_val = 0;
+
+    /// TS echo-reply value: the most recent TSval received from the peer.
+    /// 0 is acceptable for SYN; non-zero is recommended for data.
+    uint32_t ts_ecr = 0;
+
     /// Validate template fields. Returns empty string_view if valid.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (tuple.src_ip == 0) return "src_ip must not be zero";
@@ -86,8 +109,16 @@ struct PacketTemplate {
 
         // SYN packets include TCP options (MSS, SACK, WinScale) to avoid
         // being dropped by middleboxes that expect standard TCP options.
+        // When `enable_timestamps` is set, both SYN and data segments also
+        // carry the TCP Timestamps option (NOP NOP TS) so the receiver-side
+        // Linux TCP fast path matches.
         const bool is_syn = (flags & kTcpSyn) != 0;
-        const uint16_t tcp_hdr_len = is_syn ? kSynTcpHeaderLen : kTcpHeaderLen;
+        uint16_t tcp_hdr_len;
+        if (is_syn) {
+            tcp_hdr_len = enable_timestamps ? kSynTcpHeaderLenWithTs : kSynTcpHeaderLen;
+        } else {
+            tcp_hdr_len = enable_timestamps ? kTcpHeaderLenWithTs : kTcpHeaderLen;
+        }
         const uint16_t total_len = kEtherHeaderLen + kIpv4HeaderLen + tcp_hdr_len + payload_len;
 
         auto* pkt = reinterpret_cast<uint8_t*>(
@@ -130,10 +161,20 @@ struct PacketTemplate {
         tcp->cksum      = 0;
         tcp->tcp_urp    = 0;
 
-        // Write SYN options (MSS, SACK Permitted, Window Scale)
+        // Write SYN options (MSS, SACK Permitted, Window Scale, optionally Timestamps)
         if (is_syn) {
             auto* opt_ptr = pkt + kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;
-            [[maybe_unused]] auto syn_opt_len = write_syn_options(opt_ptr, mss);
+            if (enable_timestamps) {
+                [[maybe_unused]] auto syn_opt_len =
+                    write_syn_options_with_ts(opt_ptr, mss, ts_val, /*ts_ecr=*/0);
+            } else {
+                [[maybe_unused]] auto syn_opt_len = write_syn_options(opt_ptr, mss);
+            }
+        } else if (enable_timestamps) {
+            // Data segment: NOP NOP TS option
+            auto* opt_ptr = pkt + kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen;
+            [[maybe_unused]] auto opt_len =
+                write_tcp_ts_option(opt_ptr, ts_val, ts_ecr);
         }
 
         // Copy payload if present

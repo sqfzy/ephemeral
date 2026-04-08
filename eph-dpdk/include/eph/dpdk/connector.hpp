@@ -166,6 +166,18 @@ struct ConnectorOptions {
     std::chrono::milliseconds connect_timeout{5000};
     dns::DnsConfig dns{};  ///< DNS config for DPDK DNS fallback (default: 8.8.8.8)
 
+    /// Forward to TcpConfig::enable_timestamps. When true, the created
+    /// TcpSession emits TCP packets with the Timestamps option (RFC 7323),
+    /// matching Linux kernel layout so the receiver-side TCP fast path
+    /// applies. See TcpConfig::enable_timestamps for details.
+    bool enable_timestamps = false;
+
+    /// Forward to TcpConfig::enable_ack_piggyback. When true, the TcpSession
+    /// defers bare ACK transmission and lets the next outgoing data send
+    /// carry the cumulative ACK number — eliminates the bare-ACK overhead
+    /// in request/response workloads. See TcpConfig::enable_ack_piggyback.
+    bool enable_ack_piggyback = false;
+
     /// Validate options, returning error description or empty on success.
     ///
     /// @return empty string_view if valid; otherwise a diagnostic pointing to
@@ -449,11 +461,13 @@ prepare_connection(const DpdkEndpoint& ep,
             .src_port = src_port,
             .dst_port = transport_cfg.remote_port,
         },
-        .src_mac     = src_mac,
-        .dst_mac     = dst_mac,
-        .port_id     = opts.platform.port_id,
-        .tx_queue_id = opts.tx_queue_id,
-        .rx_queue_id = opts.rx_queue_id,
+        .src_mac              = src_mac,
+        .dst_mac              = dst_mac,
+        .port_id              = opts.platform.port_id,
+        .tx_queue_id          = opts.tx_queue_id,
+        .rx_queue_id          = opts.rx_queue_id,
+        .enable_timestamps    = opts.enable_timestamps,
+        .enable_ack_piggyback = opts.enable_ack_piggyback,
     };
 
     auto connect_timeout = opts.connect_timeout;

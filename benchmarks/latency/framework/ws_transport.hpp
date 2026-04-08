@@ -114,6 +114,32 @@ ws_connect_dpdk(DpdkBenchEnv& env, const BenchConfig& cfg) {
     // Reuse the gateway MAC already resolved by DpdkBenchEnv to skip ARP.
     opts.gateway_mac = env.gw_mac;
 
+    // [TS-OPT] Optionally enable TCP Timestamps option in emitted DPDK
+    // packets. Linux receiver-side TCP fast path (`tcp_rcv_established`
+    // header prediction) requires the connection to have TS in both SYN
+    // and every data segment; without it, packets fall to `tcp_data_queue`
+    // (slow path), adding ~1-3 µs of receive latency.
+    if (const char* ts_env = std::getenv("BENCH_DPDK_TCP_TS")) {
+        if (ts_env[0] == '1' || ts_env[0] == 't' || ts_env[0] == 'T') {
+            opts.enable_timestamps = true;
+            std::fprintf(stderr,
+                "[TS-OPT] DPDK TCP Timestamps option ENABLED (env BENCH_DPDK_TCP_TS=%s)\n",
+                ts_env);
+        }
+    }
+    // [ACK-PIGGYBACK] Optionally suppress bare ACK transmission and rely
+    // on the next outgoing data packet to carry the cumulative ACK.
+    // Eliminates the per-round bare ACK packet that triggers Linux TCP
+    // slow-path on the server side.
+    if (const char* ap_env = std::getenv("BENCH_DPDK_ACK_PIGGYBACK")) {
+        if (ap_env[0] == '1' || ap_env[0] == 't' || ap_env[0] == 'T') {
+            opts.enable_ack_piggyback = true;
+            std::fprintf(stderr,
+                "[ACK-PIGGYBACK] DPDK ACK piggybacking ENABLED (env BENCH_DPDK_ACK_PIGGYBACK=%s)\n",
+                ap_env);
+        }
+    }
+
     auto conn = eph::dpdk::connect<BenchWsTransport>(
         env.platform, ep, tc, server_ip, opts);
     if (!conn) {

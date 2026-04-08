@@ -66,6 +66,33 @@ struct TcpConfig {
     uint16_t             tx_queue_id  = 0;    ///< TX queue index on the port
     uint16_t             rx_queue_id  = 0;    ///< RX queue index on the port
 
+    /// Enable TCP Timestamps option (RFC 7323) on emitted packets.
+    /// When true, every SYN and data segment carries a Timestamps option
+    /// matching Linux kernel layout (NOP NOP TSval TSecr). This is required
+    /// for the receiver-side Linux TCP fast path (`tcp_rcv_established`
+    /// header prediction) to match — without TS, packets fall to the
+    /// `tcp_data_queue` slow path on Linux 5.x+, adding ~1-3 µs of receive
+    /// latency. The minimal TCP state machine here does NOT track peer
+    /// TSval, so ts_ecr is always 0; this is informational only and does
+    /// not affect connection correctness.
+    bool                 enable_timestamps = false;
+
+    /// Enable ACK piggybacking (delayed-ACK style). When true, the deferred
+    /// ACK from process_rx() is NOT immediately sent by flush_pending_ack();
+    /// instead, the next outgoing data send() carries the latest cumulative
+    /// ACK number, eliminating the bare ACK round-trip overhead.
+    ///
+    /// This dramatically reduces server-side TCP slow-path hits in
+    /// request/response workloads: without piggybacking, every received
+    /// response triggers a bare ACK packet to the server, and Linux's
+    /// receiver-side fast path has stricter conditions for pure ACKs that
+    /// our minimal TCP often fails to satisfy → tcp_data_queue slow path.
+    ///
+    /// Trade-off: if the application receives data but never sends, the
+    /// peer never sees an ACK and may retransmit. For request/response
+    /// patterns this is fine; for one-way streaming, leave disabled.
+    bool                 enable_ack_piggyback = false;
+
     /// Maximum packets per rte_eth_rx_burst call. 0 = auto-calculate from
     /// kDefaultRxBudgetBytes / mss (22 for standard MTU, 3 for jumbo).
     /// Non-zero overrides the auto value (clamped to [1, 32]).
@@ -370,6 +397,11 @@ public:
         pkt_template_.dst_mac = config.dst_mac;
         pkt_template_.tuple   = config.tuple;
         pkt_template_.mss     = config.mss;
+        pkt_template_.enable_timestamps = config.enable_timestamps;
+        // ts_val starts at 1 (not 0) so SYN's TSval is unambiguous; subsequent
+        // packets are advanced before each build_packet call by next_tsval_().
+        pkt_template_.ts_val  = 1;
+        pkt_template_.ts_ecr  = 0;
 
         SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
             "TcpSession created: {}:{} -> {}:{}, pool={}",
@@ -487,6 +519,7 @@ public:
 
         // Send SYN
         SPDLOG_LOGGER_DEBUG(log, "Sending SYN, isn={}", snd_nxt_);
+        next_tsval_();
         auto* syn = pkt_template_.build_packet(
             pool_, snd_nxt_, 0, net::kTcpSyn, rcv_wnd_);
         if (!syn) {
@@ -516,6 +549,7 @@ public:
             // Retransmit SYN if interval elapsed without SYN-ACK
             auto now = std::chrono::steady_clock::now();
             if (now >= next_syn_retransmit) {
+                next_tsval_();
                 auto* resyn = pkt_template_.build_packet(
                     pool_, snd_nxt_ - 1, 0, net::kTcpSyn, rcv_wnd_);
                 if (resyn) {
@@ -618,6 +652,12 @@ public:
                 "Payload too large: {} > MSS {}", len, config_.mss));
         }
 
+        next_tsval_();
+        // [TS-OPT] Outgoing data packet carries the latest cumulative ACK
+        // number (rcv_nxt_), so any deferred ACK is now satisfied. Clear
+        // ack_pending_ to avoid a redundant bare ACK from a later
+        // flush_pending_ack() call.
+        ack_pending_ = false;
         auto* mbuf = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_,
             net::kTcpAck | net::kTcpPsh,
@@ -690,6 +730,7 @@ public:
                 break;
             }
 
+            next_tsval_();
             auto* mbuf = pkt_template_.build_packet(
                 pool_, snd_nxt_ + total_payload_len_(seg_lengths, prepared),
                 rcv_nxt_,
@@ -1065,6 +1106,11 @@ public:
     /// the ACK's rte_eth_tx_burst off the RX latency measurement path.
     void flush_pending_ack() noexcept {
         if (!ack_pending_) return;
+        // [TS-OPT] When ACK piggybacking is enabled, defer the bare ACK —
+        // it will be carried by the next outgoing data packet's ACK number.
+        // This eliminates the bare ACK round-trip and avoids triggering
+        // Linux receiver-side TCP slow path on pure-ACK packets.
+        if (config_.enable_ack_piggyback) return;
         ack_pending_ = false;
         auto r = send_ack();
         if (!r) {
@@ -1144,6 +1190,7 @@ public:
         }
 
         SPDLOG_LOGGER_DEBUG(log, "Sending FIN");
+        next_tsval_();
         auto* fin = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_,
             net::kTcpFin | net::kTcpAck, rcv_wnd_);
@@ -1178,6 +1225,7 @@ public:
         [[maybe_unused]] auto log = detail::tcp_logger();
         SPDLOG_LOGGER_DEBUG(log, "Sending RST");
 
+        next_tsval_();
         auto* rst = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpRst | net::kTcpAck, 0);
         if (rst) {
@@ -1288,6 +1336,15 @@ private:
         return total;
     }
 
+    /// Advance the outgoing TCP timestamp counter so each emitted packet
+    /// carries a strictly monotonic TSval. PAWS will discard packets with
+    /// non-monotonic TS, so we always increment.
+    void next_tsval_() noexcept {
+        if (pkt_template_.enable_timestamps) {
+            ++pkt_template_.ts_val;
+        }
+    }
+
     TcpConfig           config_;
     rte_mempool*        pool_;
     TcpState            state_;
@@ -1364,6 +1421,7 @@ private:
 
     /// Send a bare ACK packet.
     [[nodiscard]] std::expected<void, std::string> send_ack() {
+        next_tsval_();
         auto* ack_pkt = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!ack_pkt) {
