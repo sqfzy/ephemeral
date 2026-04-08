@@ -204,6 +204,36 @@ namespace detail {
 
 inline spdlog::logger* tcp_logger() { return get_logger<LoggerName{"dpdk.tcp"}>(); }
 
+/// Pure delayed-ACK timer expiry check (RFC 1122 §4.2.3.2 style).
+///
+/// Returns `true` iff a deferred ACK is owed AND the delay window has
+/// elapsed — i.e., the caller should emit a bare ACK now. Returns `false`
+/// in all other cases (no pending ACK, or pending but still inside the
+/// delay window where the next outgoing data send can piggyback).
+///
+/// This is the core logic of `TcpSession::flush_pending_ack()`, factored
+/// out as a free function so it can be unit-tested without constructing
+/// a real TcpSession (which requires a DPDK mempool and is otherwise
+/// hard to drive deterministically).
+///
+/// @param pending_since_tsc  TSC at which the first un-ACK'd segment
+///                            arrived; 0 means "no ACK owed".
+/// @param now_tsc            Current TSC reading.
+/// @param delay_cycles       Delayed-ACK window in CPU cycles (e.g.,
+///                            40 µs converted via TSC::to_cycles).
+/// @return `true` iff `pending_since_tsc != 0 && (now_tsc - pending_since_tsc) >= delay_cycles`.
+///
+/// @note Subtraction is unsigned and wraparound-safe: `cntvct_el0` is
+///       a 64-bit monotonic counter that won't wrap for ~500 years at
+///       1 GHz, but the function works correctly even at the wrap point
+///       because `(now - pending) mod 2^64` gives the right elapsed.
+[[nodiscard]] inline bool ack_timer_expired(uint64_t pending_since_tsc,
+                                             uint64_t now_tsc,
+                                             uint64_t delay_cycles) noexcept {
+    if (pending_since_tsc == 0) return false;
+    return (now_tsc - pending_since_tsc) >= delay_cycles;
+}
+
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1092,9 +1122,12 @@ public:
     /// path precondition (bare ACK packets hit `tcp_data_queue` slow
     /// path and add ~1-3 µs of server-side processing per packet).
     void flush_pending_ack() noexcept {
-        if (ack_pending_since_tsc_ == 0) return;
-        const uint64_t elapsed = eph::utils::TSC::now() - ack_pending_since_tsc_;
-        if (elapsed < ack_delay_cycles_()) return;  // defer — wait for piggyback
+        const uint64_t now = eph::utils::TSC::now();
+        if (!detail::ack_timer_expired(ack_pending_since_tsc_, now,
+                                        ack_delay_cycles_())) {
+            return;  // no-op: no pending ACK, or timer not yet expired
+        }
+        const uint64_t elapsed = now - ack_pending_since_tsc_;
         ack_pending_since_tsc_ = 0;
         // TRACE: useful for diagnosing RX-only flows where the timer
         // (rather than piggyback) is what's keeping the connection alive.

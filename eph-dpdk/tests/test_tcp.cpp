@@ -615,3 +615,79 @@ TEST(TcpStats, DumpSkipsZeroBuckets) {
     EXPECT_EQ(dump.find("gap[2^4..2^5)"), std::string::npos);
     EXPECT_EQ(dump.find("gap[2^6..2^7)"), std::string::npos);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Delayed-ACK timer logic (eph::dpdk::detail::ack_timer_expired)
+//
+// Pure-function tests for the core delayed-ACK timer expiry check used by
+// TcpSession::flush_pending_ack(). Validates the four-quadrant truth table
+// (pending × elapsed) plus the unsigned-wraparound edge case.
+//
+// Integration of the timer with the full TcpSession state machine is
+// covered by the latency benchmark suite (`benchmarks/latency/order_rtt`)
+// — running 500k+ rounds with the production mock confirms that
+// `tcp_data_queue` slow-path counts stay near zero on the receiver side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(DelayedAckTimer, NotPendingNeverFires) {
+    // pending_since_tsc == 0 means "no ACK owed" — must always return false
+    // regardless of elapsed time or delay.
+    EXPECT_FALSE(detail::ack_timer_expired(/*pending=*/0, /*now=*/0,        /*delay=*/100));
+    EXPECT_FALSE(detail::ack_timer_expired(/*pending=*/0, /*now=*/1'000'000,/*delay=*/100));
+    EXPECT_FALSE(detail::ack_timer_expired(/*pending=*/0, /*now=*/UINT64_MAX,/*delay=*/0));
+}
+
+TEST(DelayedAckTimer, PendingButInsideDelayWindowDefersFire) {
+    // elapsed = 0 (instant) — must defer
+    EXPECT_FALSE(detail::ack_timer_expired(/*pending=*/100, /*now=*/100, /*delay=*/50));
+    // elapsed = 49 < delay 50 — must defer
+    EXPECT_FALSE(detail::ack_timer_expired(/*pending=*/100, /*now=*/149, /*delay=*/50));
+    // Realistic datacenter scenario: 20 µs RTT = ~20k cycles, well under 40k delay
+    EXPECT_FALSE(detail::ack_timer_expired(
+        /*pending=*/1'000'000, /*now=*/1'020'000, /*delay=*/40'000));
+}
+
+TEST(DelayedAckTimer, FiresAtExactDelayBoundary) {
+    // elapsed == delay → fire (>= comparison is correct boundary)
+    EXPECT_TRUE(detail::ack_timer_expired(/*pending=*/100, /*now=*/150, /*delay=*/50));
+}
+
+TEST(DelayedAckTimer, FiresWellAfterDelay) {
+    // elapsed >> delay → fire
+    EXPECT_TRUE(detail::ack_timer_expired(
+        /*pending=*/100, /*now=*/1'000'000, /*delay=*/50));
+    // RX-only stream scenario: server idle for 1 ms, ACK long overdue
+    EXPECT_TRUE(detail::ack_timer_expired(
+        /*pending=*/1'000'000, /*now=*/2'000'000, /*delay=*/40'000));
+}
+
+TEST(DelayedAckTimer, ZeroDelayFiresImmediatelyWhenPending) {
+    // delay_cycles == 0 (degenerate config: timer always expired if pending)
+    EXPECT_TRUE(detail::ack_timer_expired(/*pending=*/100, /*now=*/100, /*delay=*/0));
+    EXPECT_TRUE(detail::ack_timer_expired(/*pending=*/100, /*now=*/200, /*delay=*/0));
+    // But still no-op when there's nothing pending
+    EXPECT_FALSE(detail::ack_timer_expired(/*pending=*/0,   /*now=*/100, /*delay=*/0));
+}
+
+TEST(DelayedAckTimer, UnsignedSubtractionHandlesTscWraparound) {
+    // cntvct_el0 is a 64-bit monotonic counter; at 1 GHz it won't wrap for
+    // ~500 years. But the function MUST work correctly across the wrap point
+    // because it relies on `(now - pending) mod 2^64`. Verify both directions.
+
+    // Case 1: pending and now both pre-wrap, normal arithmetic
+    EXPECT_TRUE(detail::ack_timer_expired(
+        /*pending=*/UINT64_MAX - 100, /*now=*/UINT64_MAX - 50, /*delay=*/40));
+
+    // Case 2: pending pre-wrap, now post-wrap. Elapsed should compute correctly:
+    //   pending = 2^64 - 50
+    //   now     = 49     (so 100 cycles after pending, modulo 2^64)
+    //   elapsed = 49 - (2^64 - 50) = 49 + 50 + 1 ≡ 100 (mod 2^64)
+    // expected fire because 100 >= 40
+    EXPECT_TRUE(detail::ack_timer_expired(
+        /*pending=*/UINT64_MAX - 50, /*now=*/49, /*delay=*/40));
+
+    // Case 3: same setup, but delay > elapsed → still defer
+    //   elapsed = 100, delay = 200 → defer
+    EXPECT_FALSE(detail::ack_timer_expired(
+        /*pending=*/UINT64_MAX - 50, /*now=*/49, /*delay=*/200));
+}
