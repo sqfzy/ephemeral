@@ -363,6 +363,9 @@ inline void run_mock_ws_server(const MockServerConfig& config,
             }
 
             if (plen > 0 && config.order_mode) {
+                // Record recv TSC immediately for TX latency measurement
+                uint64_t recv_tsc = eph::utils::TSC::now();
+
                 // Parse the order request and respond with ExecutionReport
                 std::string_view order_json(
                     reinterpret_cast<const char*>(client_payload), plen);
@@ -374,12 +377,12 @@ inline void run_mock_ws_server(const MockServerConfig& config,
                 if (symbol.empty()) symbol = "BTCUSDT";
                 if (side.empty()) side = "BUY";
 
-                // Stamp raw TSC cycles at response generation time
-                // (bench computes diff in cycles, converts to ns)
-                uint64_t ts = eph::utils::TSC::now();
+                // Stamp response generation TSC (for RX latency) +
+                // order recv TSC (for TX latency)
+                uint64_t send_tsc = eph::utils::TSC::now();
 
                 size_t json_len = generate_execution_report(
-                    json_buf, kJsonBufSize, symbol, side, ts);
+                    json_buf, kJsonBufSize, symbol, side, send_tsc, recv_tsc);
 
                 if (json_len > 0) {
                     size_t frame_len = detail::build_server_ws_frame(

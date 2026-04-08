@@ -45,27 +45,37 @@ struct BenchConfig {
     int mock_cpu = 4;
 };
 
-/// Parse "T" field (raw TSC cycles) from JSON.
-/// Searches for ,"T": to avoid matching "T_send" or other T-prefixed fields.
-/// Also matches {"T": at the start of JSON.
-inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
-    std::string_view json(reinterpret_cast<const char*>(data), len);
-    // Search for ,"T": (mid-object) or {"T": (start of object, unlikely but safe)
-    auto pos = json.find(",\"T\":");
-    if (pos == std::string_view::npos) {
-        pos = json.find("{\"T\":");
-        if (pos == std::string_view::npos) return 0;
-        pos += 5; // skip {"T":
-    } else {
-        pos += 5; // skip ,"T":
-    }
-    while (pos < len && json[pos] == ' ') ++pos;
+/// Parse a named TSC field from JSON. Returns 0 if not found.
+inline uint64_t parse_json_tsc(std::string_view json, std::string_view key) {
+    auto pos = json.find(key);
+    if (pos == std::string_view::npos) return 0;
+    pos += key.size();
+    while (pos < json.size() && json[pos] == ' ') ++pos;
     uint64_t val = 0;
-    while (pos < len && json[pos] >= '0' && json[pos] <= '9') {
-        val = val * 10 + (json[pos] - '0');
+    while (pos < json.size() && json[pos] >= '0' && json[pos] <= '9') {
+        val = val * 10 + static_cast<uint64_t>(json[pos] - '0');
         ++pos;
     }
     return val;
+}
+
+/// Parse "T" field (raw TSC cycles) from JSON.
+/// Searches for ,"T": to avoid matching "T_send" or "T_recv".
+/// Also matches {"T": at the start of JSON.
+inline uint64_t parse_tsc_field(const uint8_t* data, size_t len) {
+    std::string_view json(reinterpret_cast<const char*>(data), len);
+    // Try ,"T": first (most common, mid-object)
+    uint64_t val = parse_json_tsc(json, ",\"T\":");
+    if (val > 0) return val;
+    // Fallback: {"T": (start of object)
+    return parse_json_tsc(json, "{\"T\":");
+}
+
+/// Parse "T_recv" field from ExecutionReport JSON.
+/// Server stamps this at the moment it receives the client's order.
+inline uint64_t parse_tsc_recv_field(const uint8_t* data, size_t len) {
+    std::string_view json(reinterpret_cast<const char*>(data), len);
+    return parse_json_tsc(json, "\"T_recv\":");
 }
 
 /// Pin current thread to cpu. Exits process on failure.
@@ -197,7 +207,9 @@ template <typename TransportT>
 void run_order_rtt_poll_loop(TransportT& transport, const BenchConfig& cfg,
                               const char* label = "Order RTT Benchmark Results") {
     eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
-    eph::utils::HdrHistogram resp_latency_hist{10, 1'000'000'000ULL, 3};
+    eph::utils::HdrHistogram tx_hist{10, 1'000'000'000ULL, 3};   // client_send → server_recv
+    eph::utils::HdrHistogram rx_hist{10, 1'000'000'000ULL, 3};   // server_send → client_recv
+    eph::utils::HdrHistogram srv_hist{10, 1'000'000'000ULL, 3};  // server_recv → server_send
     uint64_t last_order_tsc = 0;
     uint64_t order_count = 0, response_count = 0;
 
@@ -205,21 +217,34 @@ void run_order_rtt_poll_loop(TransportT& transport, const BenchConfig& cfg,
     tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
         std::string_view json(reinterpret_cast<const char*>(data), len);
         if (json.find("\"e\":\"executionReport\"") != std::string_view::npos) {
-            if (last_order_tsc > 0) {
-                uint64_t now = eph::utils::TSC::now();
-                if (now > last_order_tsc) {
-                    auto ns = eph::utils::TSC::to_ns(now - last_order_tsc);
-                    if (ns) rtt_hist.record(static_cast<uint64_t>(*ns));
-                }
+            uint64_t client_recv_tsc = eph::utils::TSC::now();
+
+            // RTT: client_send → client_recv
+            if (last_order_tsc > 0 && client_recv_tsc > last_order_tsc) {
+                auto ns = eph::utils::TSC::to_ns(client_recv_tsc - last_order_tsc);
+                if (ns) rtt_hist.record(static_cast<uint64_t>(*ns));
             }
-            uint64_t t_mock = parse_tsc_field(data, len);
-            if (t_mock > 0) {
-                uint64_t now = eph::utils::TSC::now();
-                if (now > t_mock) {
-                    auto ns = eph::utils::TSC::to_ns(now - t_mock);
-                    if (ns) resp_latency_hist.record(static_cast<uint64_t>(*ns));
-                }
+
+            // RX: server_send (T field) → client_recv
+            uint64_t t_send = parse_tsc_field(data, len);
+            if (t_send > 0 && client_recv_tsc > t_send) {
+                auto ns = eph::utils::TSC::to_ns(client_recv_tsc - t_send);
+                if (ns) rx_hist.record(static_cast<uint64_t>(*ns));
             }
+
+            // TX: client_send → server_recv (T_recv field)
+            uint64_t t_recv = parse_tsc_recv_field(data, len);
+            if (t_recv > 0 && last_order_tsc > 0 && t_recv > last_order_tsc) {
+                auto ns = eph::utils::TSC::to_ns(t_recv - last_order_tsc);
+                if (ns) tx_hist.record(static_cast<uint64_t>(*ns));
+            }
+
+            // Server processing: server_recv → server_send
+            if (t_recv > 0 && t_send > 0 && t_send > t_recv) {
+                auto ns = eph::utils::TSC::to_ns(t_send - t_recv);
+                if (ns) srv_hist.record(static_cast<uint64_t>(*ns));
+            }
+
             ++response_count;
         }
     };
@@ -260,7 +285,9 @@ void run_order_rtt_poll_loop(TransportT& transport, const BenchConfig& cfg,
                  duration_s, order_count, response_count,
                  duration_s > 0 ? order_count / static_cast<uint64_t>(duration_s) : 0);
     print_latency("Order RTT (send -> response recv)", hdr_to_stats(rtt_hist));
-    print_latency("Response Latency (mock send -> app recv)", hdr_to_stats(resp_latency_hist));
+    print_latency("TX (client send -> server recv)", hdr_to_stats(tx_hist));
+    print_latency("RX (server send -> client recv)", hdr_to_stats(rx_hist));
+    print_latency("Server (recv -> send)", hdr_to_stats(srv_hist));
 }
 
 /// Socket order RTT bench: create DirectTransport + run poll loop.
