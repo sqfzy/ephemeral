@@ -12,7 +12,7 @@
 #include "bench_config.hpp"
 #include "signal.hpp"
 #include "mock/mock_handle.hpp"
-#include "mock/mock_ws_server.hpp"
+#include "mock/ws_server.hpp"
 
 namespace bench {
 

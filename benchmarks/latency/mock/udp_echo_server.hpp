@@ -33,7 +33,7 @@
 
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/time.hpp"
-#include "../bench_loop.hpp"
+#include "mock_handle.hpp"
 
 namespace bench::mock {
 

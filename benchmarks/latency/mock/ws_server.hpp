@@ -1,4 +1,4 @@
-/// @file mock_ws_server.hpp
+/// @file mock/ws_server.hpp
 /// Mock WebSocket server for benchmarks.
 ///
 /// Runs in-process on a dedicated thread, using kernel TCP (POSIX sockets)

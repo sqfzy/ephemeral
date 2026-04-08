@@ -19,7 +19,7 @@
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/time.hpp"
 #include "bench_common.hpp"
-#include "mock/mock_ws_server.hpp"
+#include "mock/ws_server.hpp"
 
 int main(int argc, char** argv) {
     signal(SIGINT, sig);
