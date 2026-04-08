@@ -406,6 +406,15 @@ private:
             uint16_t nb_rx = rte_eth_rx_burst(
                 config_.port_id, config_.rx_queue_id, pkts, 32);
 
+            // NOTE: Empty bursts skip dispatch entirely. RX-only sessions
+            // with long idle gaps will NOT have their delayed-ACK timer
+            // (TcpSession::flush_pending_ack()) fired during the idle
+            // window — the bare ACK gets emitted on the *next* incoming
+            // packet's process_rx() / flush_pending_ack() pair instead.
+            // This matches Linux NAPI-driven RX semantics: no NIC traffic
+            // means no softirq, means no scheduled ACK. For request/
+            // response and continuous-stream workloads (the reactor's
+            // target use cases) this is correct and zero-cost.
             if (nb_rx == 0) continue;
 
             const uint64_t burst_tsc = eph::utils::TSC::now();
