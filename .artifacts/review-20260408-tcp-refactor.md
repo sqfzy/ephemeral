@@ -24,12 +24,22 @@
 
 ### 问题统计
 - 🔴 Critical：0
-- 🟡 Major：2（1 已修复，1 follow-up）
-- 🔵 Minor：3（1 已修复）
-- 💬 Nit：1
+- 🟡 Major：2（**全部已修复**）
+- 🔵 Minor：3（**全部已修复**）
+- 💬 Nit：1（**已修复**）
 
 ### 结论
-**APPROVE (post-fix)**：Major #1 已就地修复并重新验证；Major #2 是 pre-existing test 缺口，不阻塞本次 push 但应跟踪。
+**APPROVE — 所有 6 项 review 推荐已通过 4 个增量 commit 全部修复**：
+- Major 1 → b7f8770 (TSC race)
+- Major 2 → 541e027 (delayed-ACK timer 单元测试 +6)
+- Minor 1 → b7f8770 (Linux ATO 文档)
+- Minor 2 → 6f12e85 (reactor empty-burst 注释)
+- Minor 3 → b7f8770 (process_rx 注释)
+- Nit    → e0f9ef6 (TRACE log)
+
+测试覆盖从 158 → 164 (+6 新 delayed-ACK timer 测试)。最终全量 bench 已通过：
+6 scenarios × 2 transports，DPDK 在 5/6 场景胜出（ws_echo 是 server-side blocking-poll
+特性，与 refactor 无关）。
 
 ---
 
@@ -76,7 +86,7 @@ static uint64_t ack_delay_cycles_() noexcept {
 
 ---
 
-## 🟡 Major 2 — 零单元测试覆盖  *(follow-up，不阻塞)*
+## 🟡 Major 2 — 零单元测试覆盖  *(已修复 — commit 541e027)*
 
 **文件**：`eph-dpdk/tests/test_tcp.cpp`
 **类型**：测试
@@ -117,7 +127,7 @@ static uint64_t ack_delay_cycles_() noexcept {
 
 ---
 
-## 🔵 Minor 2 — Reactor empty-burst path 不调 `flush_pending_ack`  *(可接受，未修)*
+## 🔵 Minor 2 — Reactor empty-burst path 不调 `flush_pending_ack`  *(已修复 — commit 6f12e85)*
 
 **文件**：`eph-dpdk/include/eph/dpdk/reactor.hpp:409`
 **类型**：设计
@@ -148,7 +158,7 @@ reactor 主循环 `if (nb_rx == 0) continue;` 直接跳过分发，没调用任�
 
 ---
 
-## 💬 Nit — 缺 TRACE 级日志  *(未修)*
+## 💬 Nit — 缺 TRACE 级日志  *(已修复 — commit e0f9ef6)*
 
 **文件**：`eph-dpdk/include/eph/dpdk/tcp.hpp:1093-1101`
 **类型**：可观测性
