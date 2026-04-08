@@ -42,6 +42,7 @@ struct MockServerConfig {
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     std::chrono::microseconds tick_interval{100}; // market data push frequency
     bool order_mode = false; // true = wait for orders and respond with ExecutionReport
+    bool echo_mode = false;  // true = echo client messages back with TSC timestamps (for ws_echo bench)
 };
 
 // ── WebSocket frame helpers (server-side) ────────────────────────────────────
@@ -230,10 +231,10 @@ inline bool send_all(int fd, const uint8_t* buf, size_t len) {
 /// @param running  Atomic flag — set to false to gracefully stop the server.
 inline void run_mock_ws_server(const MockServerConfig& config,
                                std::atomic<bool>& running) {
-    spdlog::info("mock_ws_server: starting on {}:{} (order_mode={}, symbols={}, "
-                 "tick_interval={}us)",
+    spdlog::info("mock_ws_server: starting on {}:{} (order_mode={}, echo_mode={}, "
+                 "symbols={}, tick_interval={}us)",
                  config.bind_ip, config.port, config.order_mode,
-                 config.symbols.size(),
+                 config.echo_mode, config.symbols.size(),
                  config.tick_interval.count());
 
     // ── 1. Create TCP server socket ──────────────────────────────────────
@@ -362,7 +363,32 @@ inline void run_mock_ws_server(const MockServerConfig& config,
                 break;
             }
 
-            if (plen > 0 && config.order_mode) {
+            if (plen > 0 && config.echo_mode) {
+                // Echo mode: stamp TSC timestamps and echo payload back.
+                // Protocol: client sends arbitrary payload with T_send field,
+                // server echoes with T_recv (server recv) and T (server send).
+                uint64_t recv_tsc = eph::utils::TSC::now();
+                uint64_t send_tsc = eph::utils::TSC::now();
+
+                // Build echo response JSON with timestamps
+                int n = std::snprintf(json_buf, kJsonBufSize,
+                    R"({"echo":true,"T":%llu,"T_recv":%llu,"len":%zu})",
+                    static_cast<unsigned long long>(send_tsc),
+                    static_cast<unsigned long long>(recv_tsc),
+                    plen);
+
+                if (n > 0 && static_cast<size_t>(n) < kJsonBufSize) {
+                    size_t frame_len = detail::build_server_ws_frame(
+                        frame_buf, 0x01,
+                        reinterpret_cast<const uint8_t*>(json_buf),
+                        static_cast<size_t>(n));
+
+                    if (!detail::send_all(client_fd, frame_buf, frame_len)) {
+                        spdlog::error("mock_ws_server: failed to send echo");
+                        break;
+                    }
+                }
+            } else if (plen > 0 && config.order_mode) {
                 // Record recv TSC immediately for TX latency measurement
                 uint64_t recv_tsc = eph::utils::TSC::now();
 

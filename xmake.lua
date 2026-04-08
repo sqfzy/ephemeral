@@ -122,83 +122,16 @@ target("bench_mock_server")
     add_defines("EPH_ENABLE_TIMESTAMPS=1")
     set_symbols("debug")
 
-target("bench_market")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_market.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-net")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-
-target("bench_order_rtt")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_order_rtt.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-net")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-
-target("bench_market_dpdk")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_market_dpdk.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-net", "eph-dpdk", "eph-fix")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-    apply_dpdk_pmd_linkgroups()
-
-target("bench_order_rtt_dpdk")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_order_rtt_dpdk.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-net", "eph-dpdk", "eph-fix")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-    apply_dpdk_pmd_linkgroups()
-
-target("bench_market_tx")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_market_tx.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-net")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-
-target("bench_market_tx_dpdk")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_market_tx_dpdk.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-net", "eph-dpdk", "eph-fix")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-    apply_dpdk_pmd_linkgroups()
-
--- ── New table-driven latency bench targets ──────────────────────────────
+-- ── Table-driven latency bench targets ──────────────────────────────
 -- Each scenario compiles the same .cpp twice: kernel (no define) and
 -- DPDK (EPH_USE_DPDK=1). This replaces the old N×2 hand-written targets.
 local bench_latency = {
     {name="udp_echo",  kernel_deps={"eph-utils"}, dpdk_deps={"eph-dpdk", "eph-utils"}},
     {name="tcp_echo",  kernel_deps={"eph-utils"}, dpdk_deps={"eph-dpdk", "eph-utils"}},
-    {name="udp_relay", kernel_deps={"eph-utils"}, dpdk_deps={"eph-dpdk", "eph-utils"}},
-    -- Phase 3: ws_echo, market_rx, order_rtt will be added here
+    {name="udp_relay",  kernel_deps={"eph-utils"}, dpdk_deps={"eph-dpdk", "eph-utils"}},
+    {name="ws_echo",    kernel_deps={"eph-net"},   dpdk_deps={"eph-net", "eph-dpdk", "eph-fix"}},
+    {name="market_rx",  kernel_deps={"eph-net"},   dpdk_deps={"eph-net", "eph-dpdk", "eph-fix"}},
+    {name="order_rtt",  kernel_deps={"eph-net"},   dpdk_deps={"eph-net", "eph-dpdk", "eph-fix"}},
 }
 
 local bench_latency_flags = {"-fno-omit-frame-pointer", "-march=native"}

@@ -1,23 +1,19 @@
-/// @file bench_order_rtt.cpp
-/// WS order submit + execution report RTT benchmark with 4-leg breakdown.
+/// @file bench_market_rx.cpp
+/// WS market data RX benchmark — server pushes bookTicker, client measures
+/// pipeline latency (mock_send → app_recv).
 ///
-/// Client sends order requests at order_interval, mock server responds with
-/// ExecutionReport containing T_recv/T timestamps for 4-leg decomposition:
-///   - RTT:    client_send → client_recv
-///   - TX:     client_send → server_recv
-///   - RX:     server_send → client_recv
-///   - Server: server_recv → server_send
+/// This is a 1-leg benchmark: only RTT (pipeline latency) is reported.
+/// TX/RX/Server legs have samples=0.
 ///
 /// Compiled twice by xmake:
-///   - bench_order_rtt:      kernel SocketTransport
-///   - bench_order_rtt_dpdk: DPDK TcpSession
+///   - bench_market_rx:      kernel SocketTransport
+///   - bench_market_rx_dpdk: DPDK TcpSession
 ///
 /// Usage (kernel):
-///   bench_order_rtt --server-ip IP [--order-interval 1000]
+///   bench_market_rx --server-ip IP [--symbols SYM1,SYM2]
 ///       [--duration 10] [--warmup 2] [--poll-cpu 2] [--output FILE.jsonl]
 
 #include <cstdint>
-#include <cstdio>
 #include <string_view>
 
 #include <spdlog/spdlog.h>
@@ -64,15 +60,6 @@ static uint64_t parse_tsc_T(const uint8_t* data, size_t len) {
     return parse_json_tsc(json, "{\"T\":");
 }
 
-static uint64_t parse_tsc_T_recv(const uint8_t* data, size_t len) {
-    std::string_view json(reinterpret_cast<const char*>(data), len);
-    return parse_json_tsc(json, "\"T_recv\":");
-}
-
-static uint64_t tsc_to_ns(uint64_t cycles) {
-    return static_cast<uint64_t>(eph::utils::TSC::to_ns(cycles).value_or(0.0));
-}
-
 static eph::net::TransportConfig make_bench_tc(const bench::BenchConfig& cfg) {
     eph::net::TransportConfig tc;
     tc.remote_host = cfg.server_ip;
@@ -85,111 +72,71 @@ static eph::net::TransportConfig make_bench_tc(const bench::BenchConfig& cfg) {
     return tc;
 }
 
-// ── Order RTT poll loop ──────────────────────────────────────────────────
+// ── Market RX poll loop ──────────────────────────────────────────────────
 
 template <typename TransportT>
-static void run_order_rtt_loop(TransportT& transport, bench::BenchConfig& cfg,
+static void run_market_rx_loop(TransportT& transport, bench::BenchConfig& cfg,
                                 const char* label, bench::JsonlWriter& jsonl,
                                 const char* transport_name) {
-    eph::utils::HdrHistogram rtt_hist{10, 1'000'000'000ULL, 3};
-    eph::utils::HdrHistogram tx_hist{10, 1'000'000'000ULL, 3};
-    eph::utils::HdrHistogram rx_hist{10, 1'000'000'000ULL, 3};
-    eph::utils::HdrHistogram srv_hist{10, 1'000'000'000ULL, 3};
-
-    uint64_t last_order_tsc = 0;
-    uint64_t order_count = 0, response_count = 0;
+    eph::utils::HdrHistogram pipeline_hist{10, 1'000'000'000ULL, 3};
+    uint64_t msg_count = 0;
     bool in_warmup = true;
 
     auto& tc = const_cast<eph::net::TransportConfig&>(transport.config());
     tc.on_message = [&](const uint8_t* data, uint16_t len, uint8_t) {
-        std::string_view json(reinterpret_cast<const char*>(data), len);
-        if (json.find("\"e\":\"executionReport\"") == std::string_view::npos) return;
-
-        ++response_count;
+        ++msg_count;
         if (in_warmup) return;
 
-        uint64_t client_recv_tsc = eph::utils::TSC::now();
-
-        // RTT
-        if (last_order_tsc > 0 && client_recv_tsc > last_order_tsc) {
-            [[maybe_unused]] auto _ = rtt_hist.record(
-                tsc_to_ns(client_recv_tsc - last_order_tsc));
-        }
-
-        // RX: server_send (T) → client_recv
         uint64_t t_send = parse_tsc_T(data, len);
-        if (t_send > 0 && client_recv_tsc > t_send) {
-            [[maybe_unused]] auto _ = rx_hist.record(
-                tsc_to_ns(client_recv_tsc - t_send));
-        }
-
-        // TX: client_send → server_recv (T_recv)
-        uint64_t t_recv = parse_tsc_T_recv(data, len);
-        if (t_recv > 0 && last_order_tsc > 0 && t_recv > last_order_tsc) {
-            [[maybe_unused]] auto _ = tx_hist.record(
-                tsc_to_ns(t_recv - last_order_tsc));
-        }
-
-        // Server: recv → send
-        if (t_recv > 0 && t_send > 0 && t_send > t_recv) {
-            [[maybe_unused]] auto _ = srv_hist.record(
-                tsc_to_ns(t_send - t_recv));
+        if (t_send > 0) {
+            uint64_t now = eph::utils::TSC::now();
+            if (now > t_send) {
+                auto ns = eph::utils::TSC::to_ns(now - t_send);
+                if (ns) [[maybe_unused]] auto _ = pipeline_hist.record(
+                    static_cast<uint64_t>(*ns));
+            }
         }
     };
 
     bench::pin_or_die(cfg.poll_cpu, "bench-poll");
 
-    spdlog::info("{}: order_interval={}us, warmup={}s, duration={}s",
-                 label, cfg.order_interval.count(),
+    spdlog::info("{}: symbols={}, tick_interval={}us, warmup={}s, duration={}s",
+                 label, cfg.symbols.size(), cfg.tick_interval.count(),
                  cfg.warmup.count(), cfg.duration.count());
 
     bench::BenchTimer timer;
     timer.start(cfg.warmup, cfg.duration);
 
-    auto next_order = std::chrono::steady_clock::now();
-
     while (timer.is_running() && bench::g_running.load(std::memory_order_relaxed)
            && transport.is_running()) {
         in_warmup = timer.is_warmup();
-
-        auto now = std::chrono::steady_clock::now();
-        if (now >= next_order) {
-            last_order_tsc = eph::utils::TSC::now();
-            char buf[256];
-            int n = std::snprintf(buf, sizeof(buf),
-                R"({"method":"order.place","symbol":"BTCUSDT",)"
-                R"("side":"BUY","price":"50000.00",)"
-                R"("quantity":"0.001","T_send":%llu})",
-                static_cast<unsigned long long>(last_order_tsc));
-            [[maybe_unused]] auto err = transport.send_text(
-                std::string_view(buf, static_cast<size_t>(n)));
-            ++order_count;
-            next_order += cfg.order_interval;
-        }
-
         [[maybe_unused]] auto poll_result = transport.poll();
     }
 
+    auto pipeline_stats = bench::compute_stats(pipeline_hist);
+
+    // 1-leg result: only RTT (pipeline latency), others empty
     auto result = bench::BenchResult{
-        bench::compute_stats(rtt_hist), bench::compute_stats(tx_hist),
-        bench::compute_stats(rx_hist), bench::compute_stats(srv_hist),
+        .rtt = pipeline_stats,
+        .tx = {},
+        .rx = {},
+        .srv = {},
     };
     bench::print_bench_result(label, 0, result);
-    jsonl.write("order_rtt", transport_name, 0, result);
-    spdlog::info("  orders: {}, responses: {}", order_count, response_count);
+    jsonl.write("market_rx", transport_name, 0, result);
+    spdlog::info("  messages: {}", msg_count);
 }
 
 // ── DPDK mock helper ─────────────────────────────────────────────────────
 
 #if defined(EPH_USE_DPDK)
-static bench::MockHandle start_order_mock(const bench::BenchConfig& cfg) {
+static bench::MockHandle start_market_mock(const bench::BenchConfig& cfg) {
     bench::MockHandle h;
     bench::mock::MockServerConfig mock_cfg{
         .bind_ip = cfg.server_ip,
         .port = cfg.server_port,
         .symbols = cfg.symbols,
         .tick_interval = cfg.tick_interval,
-        .order_mode = true,
     };
     int cpu = cfg.mock_cpu;
     h.thread = std::thread([mock_cfg, cpu, &running = *h.running] {
@@ -232,7 +179,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto mock = start_order_mock(cfg);
+    auto mock = start_market_mock(cfg);
 
     using BenchTransport = eph::net::DirectTransport<BenchTcpImpl, eph::net::WsFramer, 4096>;
     auto tc = make_bench_tc(cfg);
@@ -247,7 +194,7 @@ int main(int argc, char** argv) {
     }
 
     bench::JsonlWriter jsonl(cfg.output_path);
-    run_order_rtt_loop(*conn->transport, cfg, "Order RTT (DPDK)", jsonl, "dpdk");
+    run_market_rx_loop(*conn->transport, cfg, "Market RX (DPDK)", jsonl, "dpdk");
     conn->transport->stop();
     bench::stop_mock(mock);
 
@@ -277,7 +224,7 @@ int main(int argc, char** argv) {
     }
 
     bench::JsonlWriter jsonl(cfg.output_path);
-    run_order_rtt_loop(**result, cfg, "Order RTT (kernel)", jsonl, "kernel");
+    run_market_rx_loop(**result, cfg, "Market RX (kernel)", jsonl, "kernel");
     (*result)->stop();
 #endif
 
