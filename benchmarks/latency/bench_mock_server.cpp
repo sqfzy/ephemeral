@@ -35,6 +35,7 @@ int main(int argc, char** argv) {
         else if (arg == "--symbols" && i+1 < argc) cfg.symbols = bench::split(argv[++i], ',');
         else if (arg == "--tick-us" && i+1 < argc) cfg.tick_interval = std::chrono::microseconds{std::stoi(argv[++i])};
         else if (arg == "--order-mode") cfg.order_mode = true;
+        else if (arg == "--echo-mode") cfg.echo_mode = true;
         else if (arg == "--cpu" && i+1 < argc) cpu = std::stoi(argv[++i]);
     }
 
