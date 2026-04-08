@@ -348,12 +348,25 @@ inline void run_mock_ws_server(const MockServerConfig& config,
         pfd.fd = client_fd;
         pfd.events = POLLIN;
 
-        // Short poll: 0ms if we need to send a tick soon, otherwise up to 1ms
-        auto until_tick = std::chrono::duration_cast<std::chrono::microseconds>(
-            (last_tick + config.tick_interval) - now);
-        int poll_ms = (until_tick.count() <= 0) ? 0 : 1;
-
-        int ret = ::poll(&pfd, 1, poll_ms);
+        // Busy-wait only: poll(0) is non-blocking — if data is ready,
+        // process it immediately; otherwise fall through to the tick-push
+        // path. This burns 100% of `MOCK_CPU` but eliminates kernel wake-up
+        // latency from the bench measurement, which is exactly what we
+        // want: the mock server should never be the source of TX-leg
+        // variance. Pin the mock to a dedicated core so it doesn't steal
+        // cycles from the bench client.
+        //
+        // Side effect of switching from poll(1ms) → poll(0): the tick
+        // generator below ran at the loop iteration rate, which used to
+        // be throttled by the 1 ms blocking poll to ~1 kHz. With busy
+        // wait, ticks now fire at the configured `tick_interval` rate
+        // (10 kHz at the 100 µs default). Bench clients that can't drain
+        // RX at that rate (notably the kernel client in `order_rtt`) will
+        // see TX/RX-leg degradation due to tick congestion on the client's
+        // recv path. This is a real workload characteristic, not a bug —
+        // the bench is now an honest stress test of how each transport
+        // copes with the configured tick density.
+        int ret = ::poll(&pfd, 1, /*timeout_ms=*/0);
         if (ret > 0 && (pfd.revents & POLLIN)) {
             size_t plen = detail::read_client_ws_frame(
                 client_fd, client_payload, kClientBufSize, 50);
