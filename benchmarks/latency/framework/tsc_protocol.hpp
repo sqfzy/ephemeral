@@ -71,4 +71,17 @@ inline uint64_t cycles_to_ns(uint64_t cycles) noexcept {
     return static_cast<uint64_t>(opt.value_or(0.0));
 }
 
+/// Convert nanoseconds to TSC cycles (inverse of cycles_to_ns).
+/// Returns 0 if calibration failed.
+inline uint64_t ns_to_cycles(uint64_t ns) noexcept {
+    auto cycles_per_ns = eph::utils::TSC::to_ns(1).value_or(1.0);
+    return static_cast<uint64_t>(static_cast<double>(ns) / cycles_per_ns);
+}
+
 } // namespace bench::tsc
+
+namespace bench {
+// Re-export for convenience (callers spell `bench::ns_to_cycles(2'000'000'000ULL)`)
+using tsc::cycles_to_ns;
+using tsc::ns_to_cycles;
+} // namespace bench

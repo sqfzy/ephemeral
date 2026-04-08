@@ -53,7 +53,11 @@ concept ScenarioLike = requires(T& s, size_t payload, RoundTrip& rt) {
 };
 
 /// Runner: manages histograms, timer, warmup, reporting for a scenario.
-template <ScenarioLike Scenario>
+///
+/// This is a non-templated class so callers can write
+/// `BenchRunner runner{cfg, ...}` without specifying the scenario type.
+/// `run_sweep` and `run_single` are member templates so the compiler
+/// still inlines `do_one_round` calls into the measurement loop.
 class BenchRunner {
 public:
     BenchRunner(const BenchConfig& cfg,
@@ -72,6 +76,7 @@ public:
 
     /// Run a payload sweep. For each payload size, do pre-warmup → warmup
     /// → measure → report → reset histograms.
+    template <ScenarioLike Scenario>
     void run_sweep(Scenario& scenario, const std::vector<size_t>& payloads) {
         for (size_t payload : payloads) {
             if (!g_running.load(std::memory_order_relaxed)) break;
@@ -82,11 +87,13 @@ public:
     /// For 1-leg / no-payload-sweep scenarios (market_rx, order_rtt) that
     /// run a single measurement window. The scenario's prepare() will be
     /// called with payload=0.
+    template <ScenarioLike Scenario>
     void run_single(Scenario& scenario) {
         run_one_payload(scenario, 0);
     }
 
 private:
+    template <ScenarioLike Scenario>
     void run_one_payload(Scenario& scenario, size_t payload) {
         if (!scenario.prepare(payload)) {
             spdlog::error("{} ({}): prepare({}) failed",
