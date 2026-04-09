@@ -26,9 +26,32 @@
 
 namespace eph::utils {
 
+/// @brief Two-phase TSC deadline timer: a warmup window followed by a
+///        measurement window, both checked without syscalls.
+///
+/// Useful for benchmarks that must discard cold-cache / JIT / power-state
+/// transients before recording samples. `is_warmup()` tells the caller
+/// whether to skip recording; `is_running()` tells it whether the combined
+/// (warmup + measurement) window is still open.
+///
+/// @note Not thread-safe — each thread needs its own instance. The timer
+///       is a plain POD so copies and moves are trivial.
+/// @note `TSC::init()` must have been called before `start()` or deadlines
+///       fall back to 0 and the hot loop will exit immediately.
 class PhasedTimer {
 public:
-    /// Record the warmup and measurement deadlines as TSC cycle counts.
+    /// @brief Arm both deadlines relative to the current TSC reading.
+    ///
+    /// Captures `TSC::now()`, adds `warmup` to it for the warmup end, then
+    /// adds `measurement` on top for the measurement end. Safe to call
+    /// multiple times to restart the timer.
+    ///
+    /// @param warmup      Duration to discard samples for. 0 = no warmup.
+    /// @param measurement Duration to collect samples for after warmup ends.
+    ///
+    /// @note If TSC is uncalibrated, `TSC::to_cycles` returns `nullopt`
+    ///       and both windows collapse to 0 cycles — `is_running()` will
+    ///       return `false` on the first check.
     void start(std::chrono::nanoseconds warmup,
                std::chrono::nanoseconds measurement) noexcept {
         const uint64_t now = TSC::now();

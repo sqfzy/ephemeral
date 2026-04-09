@@ -856,6 +856,8 @@ public:
         SPDLOG_LOGGER_INFO(log, "Transport stopped");
     }
 
+    /// True between successful create() and stop() — does not distinguish
+    /// connected vs reconnecting. Use is_connected() or state() for finer-grained status.
     [[nodiscard]] bool is_running() const noexcept {
         return core_.running.load(std::memory_order_acquire);
     }

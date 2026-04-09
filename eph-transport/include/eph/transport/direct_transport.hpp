@@ -679,14 +679,17 @@ public:
         SPDLOG_LOGGER_INFO(log, "Direct transport stopped");
     }
 
+    /// True when the transport has been created successfully and not yet stopped.
     [[nodiscard]] bool is_running() const noexcept {
         return core_.running.load(std::memory_order_acquire);
     }
 
+    /// Read-only access to the TransportConfig owned by this transport.
     [[nodiscard]] const TransportConfig& config() const noexcept {
         return core_.config;
     }
 
+    /// Current high-level lifecycle state (Connected / Reconnecting / Stopped).
     [[nodiscard]] TransportState state() const noexcept {
         if (!core_.running.load(std::memory_order_acquire))
             return TransportState::kStopped;
@@ -695,6 +698,7 @@ public:
         return TransportState::kConnected;
     }
 
+    /// Shorthand for state() == kConnected.
     [[nodiscard]] bool is_connected() const noexcept {
         return state() == TransportState::kConnected;
     }
@@ -703,22 +707,27 @@ public:
     // Stats & diagnostics
     // -----------------------------------------------------------------------
 
+    /// Negotiated TLS protocol version (e.g., "TLSv1.3") or "none" if disabled.
     [[nodiscard]] std::string_view tls_version() const noexcept {
         return core_.tls_version;
     }
 
+    /// Negotiated TLS cipher suite (e.g., "TLS_AES_128_GCM_SHA256") or "none".
     [[nodiscard]] std::string_view cipher_name() const noexcept {
         return core_.cipher_name;
     }
 
+    /// WebSocket subprotocol negotiated via Sec-WebSocket-Protocol, or empty.
     [[nodiscard]] std::string_view ws_subprotocol() const noexcept {
         return core_.ws_subprotocol;
     }
 
+    /// Resolved remote IP address of the established TCP connection.
     [[nodiscard]] std::string_view remote_ip() const noexcept {
         return core_.remote_ip;
     }
 
+    /// Aggregate snapshot of connection metadata (TLS + WS + remote endpoint).
     [[nodiscard]] ConnectionInfo connection_info() const {
         return ConnectionInfo{
             .tls_version    = std::string(core_.tls_version),
@@ -730,52 +739,69 @@ public:
         };
     }
 
+    /// Round-trip time stats collected from WebSocket ping/pong probes.
     [[nodiscard]] RttStats rtt_stats() const noexcept {
         return histogram_to_stats(rtt_histogram_);
     }
 
+    /// Total TX latency: send() entry → TCP send() complete (all stages).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_latency_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "tx_latency_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(tx_latency_histogram_);
     }
 
+    /// TX queue wait: time spent between enqueue and dequeue (always 0 in DirectTransport).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_queue_wait_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "tx_queue_wait_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(tx_queue_wait_histogram_);
     }
 
+    /// TX encode stage: frame build + TLS encrypt duration.
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats tx_encode_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "tx_encode_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(tx_encode_histogram_);
     }
 
+    /// Total RX latency: TCP arrival → application delivery (all stages).
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_latency_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_latency_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(rx_latency_histogram_);
     }
 
+    /// RX decrypt stage: arrival → TLS record decrypted.
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_decrypt_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_decrypt_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(rx_decrypt_histogram_);
     }
 
+    /// RX decode stage: decrypt done → WS frame decoded.
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] RttStats rx_decode_stats() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_decode_stats() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return histogram_to_stats(rx_decode_histogram_);
     }
 
+    /// Snapshot the RX latency histogram (by value) for windowed measurement.
+    /// Requires -DEPH_ENABLE_TIMESTAMPS=1 at compile time.
     [[nodiscard]] eph::utils::HdrHistogram rx_latency_histogram_snapshot() const noexcept {
         static_assert(kEnableTimestamps,
             "rx_latency_histogram_snapshot() requires -DEPH_ENABLE_TIMESTAMPS=1");
         return rx_latency_histogram_;
     }
 
+    /// Reset all per-stream counters and histograms to zero.
+    /// Call from a single thread (no internal synchronisation with workers).
     void reset_stats() noexcept {
         tx_stats_.reset();
         rx_stats_.reset();
@@ -786,6 +812,9 @@ public:
         rtt_histogram_.reset();
     }
 
+    /// Aggregate transport statistics snapshot (TX/RX/TLS/RTT/uptime).
+    /// Queue-related fields (queue_full_count, tx_queue_hwm, rx_queue_hwm) are
+    /// always zero in DirectTransport because no queues exist in this variant.
     [[nodiscard]] TransportStats stats() const noexcept {
         auto now = std::chrono::steady_clock::now();
         auto uptime = std::chrono::duration_cast<std::chrono::nanoseconds>(

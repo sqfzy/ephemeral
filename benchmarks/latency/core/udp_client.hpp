@@ -21,11 +21,19 @@
 
 namespace bench::udp_client {
 
+/// A connected UDP client: one socket fd plus the pre-built peer
+/// `sockaddr_in` that `sendto_one` feeds into every send. Kept as POD so
+/// hot-path callers can stamp the struct on the stack without heap alloc.
 struct Endpoint {
     int fd = -1;
     sockaddr_in peer{};
 };
 
+/// Open a UDP client socket connected (conceptually — we use `sendto`,
+/// not `connect`) to `server_ip:port`. Installs a 100 ms recv timeout so a
+/// single dropped datagram does not stall the measurement loop forever.
+/// Returns the endpoint on success or an error string on socket / parse
+/// failure. Caller must `close_endpoint()` the result.
 [[nodiscard]] inline std::expected<Endpoint, std::string>
 open_udp(std::string_view server_ip, uint16_t port) {
     int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -47,6 +55,9 @@ open_udp(std::string_view server_ip, uint16_t port) {
     return ep;
 }
 
+/// Send one UDP datagram to the endpoint's peer. Returns true on success.
+/// A partial send is impossible for UDP — the kernel either takes the
+/// whole datagram or rejects it.
 inline bool sendto_one(const Endpoint& ep, const void* data, size_t len) noexcept {
     ssize_t n = ::sendto(ep.fd, data, len, 0,
                          reinterpret_cast<const sockaddr*>(&ep.peer),
@@ -54,10 +65,14 @@ inline bool sendto_one(const Endpoint& ep, const void* data, size_t len) noexcep
     return n >= 0;
 }
 
+/// Receive one UDP datagram into `buf[0..cap)`. Returns the number of
+/// bytes received, or -1 on error / timeout (`errno == EAGAIN` after the
+/// 100 ms recv timeout installed in `open_udp`).
 inline ssize_t recvfrom_one(const Endpoint& ep, void* buf, size_t cap) noexcept {
     return ::recvfrom(ep.fd, buf, cap, 0, nullptr, nullptr);
 }
 
+/// Close the endpoint's socket and clear the fd. Idempotent.
 inline void close_endpoint(Endpoint& ep) noexcept {
     if (ep.fd >= 0) { ::close(ep.fd); ep.fd = -1; }
 }

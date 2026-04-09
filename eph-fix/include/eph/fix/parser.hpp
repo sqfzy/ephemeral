@@ -1077,32 +1077,36 @@ size_t parse_all(const uint8_t* data, size_t len, Fn&& callback, ParserStats& st
 // Tag types for type-safe dispatch
 // ---------------------------------------------------------------------------
 
-/// Tag types — empty structs used for compile-time MsgType discrimination.
-/// Mirrors the eph::itch::msg pattern for zero-overhead dispatch.
+/// @brief Empty tag structs used for compile-time MsgType discrimination.
+///
+/// Each struct corresponds to a FIX 4.4 MsgType (tag 35) value and is used
+/// as an overload tag by dispatch(). They carry no runtime state — overload
+/// resolution selects the correct handler at compile time with zero runtime
+/// cost. Mirrors the eph::itch::msg pattern.
 namespace msg {
-struct Heartbeat {};
-struct TestRequest {};
-struct Logon {};
-struct Logout {};
-struct NewOrderSingle {};
-struct OrderCancelRequest {};
-struct OrderCancelReplace {};
-struct ExecutionReport {};
-struct OrderCancelReject {};
-struct MarketDataRequest {};
-struct MarketDataSnapshot {};
-struct MarketDataIncRefresh {};
+struct Heartbeat {};             ///< MsgType '0' — session heartbeat (tag 35=0).
+struct TestRequest {};           ///< MsgType '1' — session TestRequest (tag 35=1).
+struct Logon {};                 ///< MsgType 'A' — session Logon (tag 35=A).
+struct Logout {};                ///< MsgType '5' — session Logout (tag 35=5).
+struct NewOrderSingle {};        ///< MsgType 'D' — new single-instrument order (tag 35=D).
+struct OrderCancelRequest {};    ///< MsgType 'F' — cancel request (tag 35=F).
+struct OrderCancelReplace {};    ///< MsgType 'G' — cancel/replace request (tag 35=G).
+struct ExecutionReport {};       ///< MsgType '8' — execution/ack report (tag 35=8).
+struct OrderCancelReject {};     ///< MsgType '9' — cancel/replace reject (tag 35=9).
+struct MarketDataRequest {};     ///< MsgType 'V' — market data subscription request (tag 35=V).
+struct MarketDataSnapshot {};    ///< MsgType 'W' — market data snapshot / full refresh (tag 35=W).
+struct MarketDataIncRefresh {};  ///< MsgType 'X' — market data incremental refresh (tag 35=X).
 // Multi-character MsgType (FIX 4.4+)
-struct TradeCaptureReport {};
-struct TradeCaptureReportAck {};
-struct SecurityDefinition {};
-struct SecurityStatus {};
-struct PositionReport {};
-struct MassQuote {};
-struct QuoteCancel {};
-struct SecurityList {};
-struct SecurityListRequest {};
-struct Unknown {};
+struct TradeCaptureReport {};    ///< MsgType "AE" — trade capture report (FIX 4.4+).
+struct TradeCaptureReportAck {}; ///< MsgType "AR" — trade capture report ack (FIX 4.4+).
+struct SecurityDefinition {};    ///< MsgType 'd' — security definition (FIX 4.4+).
+struct SecurityStatus {};        ///< MsgType 'f' — security status (FIX 4.4+).
+struct PositionReport {};        ///< MsgType "AP" — position report (FIX 4.4+).
+struct MassQuote {};             ///< MsgType 'i' — mass quote (FIX 4.4+).
+struct QuoteCancel {};           ///< MsgType 'Z' — quote cancel (FIX 4.4+).
+struct SecurityList {};          ///< MsgType 'y' — security list response (FIX 4.4+).
+struct SecurityListRequest {};   ///< MsgType 'x' — security list request (FIX 4.4+).
+struct Unknown {};               ///< Fallback tag for missing or unrecognized MsgType values.
 } // namespace msg
 
 // ---------------------------------------------------------------------------

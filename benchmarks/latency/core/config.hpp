@@ -58,11 +58,18 @@ struct DpdkConfig {
 
 namespace config_detail {
 
+/// Read an environment variable and return its value if set and non-empty.
+/// Returns `std::nullopt` otherwise — callers use this to decide whether to
+/// fall back to a hard-coded default.
 inline std::optional<std::string> env(const char* name) {
     if (const char* v = std::getenv(name); v && *v) return std::string{v};
     return std::nullopt;
 }
 
+/// Parse a decimal integer from `s`. Returns `fallback` on any parse error
+/// (empty, non-digit characters). Accepts an optional leading `+`/`-`.
+/// `noexcept` because the bench parses untrusted CLI input on the hot
+/// boot path and must never throw.
 inline int parse_int(std::string_view s, int fallback) noexcept {
     int v = 0;
     bool any = false;
@@ -80,6 +87,9 @@ inline int parse_int(std::string_view s, int fallback) noexcept {
     return any ? (neg ? -v : v) : fallback;
 }
 
+/// Split `s` on `delim`. Adjacent delimiters collapse (empty fields are
+/// dropped), which matches the "comma list" style used throughout bench.conf
+/// (`TCP_PAYLOADS=64,128,256`).
 inline std::vector<std::string> split(std::string_view s, char delim) {
     std::vector<std::string> out;
     size_t start = 0;
@@ -93,6 +103,8 @@ inline std::vector<std::string> split(std::string_view s, char delim) {
     return out;
 }
 
+/// Parse a comma-separated list of unsigned decimal integers into a vector.
+/// Used for payload sweep axes (`64,128,256,...`).
 inline std::vector<size_t> parse_size_list(std::string_view s) {
     std::vector<size_t> out;
     for (auto& p : split(s, ',')) {
@@ -101,6 +113,8 @@ inline std::vector<size_t> parse_size_list(std::string_view s) {
     return out;
 }
 
+/// Parse a comma-separated list of signed decimal integers. Used for the
+/// `INFLIGHTS=1,4,16,64` sweep axis consumed by `lat_ex_order`.
 inline std::vector<int> parse_int_list(std::string_view s) {
     std::vector<int> out;
     for (auto& p : split(s, ',')) {
@@ -220,6 +234,8 @@ struct BenchConfig {
 
 namespace config_detail {
 
+/// Trim ASCII whitespace from both ends of `s` and return the result as a
+/// freshly-owned string.
 inline std::string strip(std::string_view s) {
     size_t b = 0;
     while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
@@ -293,6 +309,8 @@ inline std::optional<std::filesystem::path> find_bench_conf() {
     return std::nullopt;
 }
 
+/// Apply a single KEY=VALUE pair from `bench.conf` to `cfg`. Unknown keys
+/// are silently ignored so older binaries tolerate newer config files.
 inline void apply_kv(BenchConfig& cfg, const std::string& k,
                      const std::string& v) {
     if      (k == "NIC_A")           cfg.nic_a = v;

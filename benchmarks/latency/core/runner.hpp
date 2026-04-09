@@ -31,6 +31,17 @@
 
 namespace bench {
 
+/// Orchestrates a latency benchmark from warmup through measurement and
+/// result reporting. Holds 5 `Recorder` instances (4 RTT legs + 1 oneway)
+/// and feeds each scenario sample into the right recorders. All hot-path
+/// dispatch goes through template member functions so scenarios can be
+/// fully inlined into the measurement loop.
+///
+/// Construction captures the warmup/duration from `CommonConfig` or
+/// `BenchConfig`; after that the caller picks one of:
+///   - `run_rtt_sweep`          for tcp / udp / ws / exchange/md_udp
+///   - `run_rtt_inflight_sweep` for exchange/order
+///   - `run_oneway`             for exchange/market
 class BenchRunner {
 public:
     BenchRunner(CommonConfig cfg,

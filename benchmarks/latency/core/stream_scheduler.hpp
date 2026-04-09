@@ -43,6 +43,12 @@ struct StreamCompare {
     }
 };
 
+/// Priority-queue scheduler for multi-stream mock dispatch. Each `tick()`
+/// call fires at most one stream whose `next_fire_tsc` has elapsed; the
+/// caller drives it in a hot loop, interleaving ticks with other work.
+///
+/// Not thread-safe — designed for single-threaded mock loops where the
+/// enclosing process already pins the thread to a dedicated core.
 class StreamScheduler {
 public:
     /// Register a fixed-period stream. Returns the entry id.

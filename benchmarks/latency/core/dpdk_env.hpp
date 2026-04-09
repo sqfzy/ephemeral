@@ -38,6 +38,13 @@
 
 namespace bench {
 
+/// Move-only bundle of all DPDK resources needed by a bench client:
+/// EAL guard, platform (port + mempool + queues), resolved src/dst/gw
+/// IPs in host byte order, the local MAC, the gateway MAC (ARP-resolved
+/// at startup), and the port/pool handles used by sender factory methods.
+///
+/// Construct via `create_full()`. The resulting object owns its EAL and
+/// must outlive any UdpSender / TcpSession built from it.
 struct DpdkBenchEnv {
     eph::dpdk::EalGuard  eal;
     eph::dpdk::Platform  platform;
