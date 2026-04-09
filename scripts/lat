@@ -174,7 +174,15 @@ host_to_dpdk() {
     pci=$(basename "$(readlink -f "/sys/class/net/${NIC_B}/device" 2>/dev/null)" 2>/dev/null || true)
     [[ -n "$pci" && "$pci" != "device" ]] || \
         die "cannot determine PCI for $NIC_B"
-    DPDK_PCI="$pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-setup.sh" -y
+    if ! DPDK_PCI="$pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-setup.sh" -y; then
+        die "dpdk-setup.sh failed" \
+            "Check the output above. Run 'sudo ./scripts/dpdk-setup.sh --check-only' to diagnose."
+    fi
+    # Post-condition: NIC_B must NOT be visible as a kernel interface.
+    if ip link show "$NIC_B" &>/dev/null; then
+        die "dpdk-setup reported success but $NIC_B is still a kernel interface" \
+            "Check 'dpdk-devbind.py --status' — the bind may have partially completed."
+    fi
     log_info "$NIC_B (PCI $pci) bound to vfio-pci"
 }
 
@@ -182,7 +190,22 @@ dpdk_to_host() {
     log_step "NIC-B: vfio-pci → host"
     [[ -x "$SCRIPT_DIR/dpdk-teardown.sh" ]] || \
         die "dpdk-teardown.sh not found at $SCRIPT_DIR/dpdk-teardown.sh"
-    "$SCRIPT_DIR/dpdk-teardown.sh" || true
+    # Do NOT swallow failures: dpdk-teardown.sh refuses to unbind when a
+    # live DPDK process (possibly a third-party one) is holding the PCI
+    # device. Silently ignoring that turns the next transition into a
+    # confusing "Cannot find device <NIC_B>" from `ip link set netns`.
+    if ! "$SCRIPT_DIR/dpdk-teardown.sh"; then
+        die "dpdk-teardown.sh failed — NIC-B still bound to vfio-pci" \
+            "A DPDK process may be holding the device. Check with:
+   ps -ef | grep -i dpdk
+   sudo ./scripts/dpdk-teardown.sh           # re-run to see which process
+After killing the blocker (or using --force at your own risk), retry this command."
+    fi
+    # Post-condition: NIC_B must now be a kernel interface again.
+    if ! ip link show "$NIC_B" &>/dev/null; then
+        die "teardown reported success but $NIC_B is not back in the host ns" \
+            "Check 'dpdk-devbind.py --status' and 'ip link' to diagnose."
+    fi
 }
 
 # ── Drive transitions toward the desired state ──────────────────────
