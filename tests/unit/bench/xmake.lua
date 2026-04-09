@@ -1,6 +1,6 @@
--- Unit tests for bench-specific headers under benchmarks/latency/core +
--- mock/lib/. General-purpose pieces (cpu_pin, spin_for_ns, PhasedTimer)
--- live in eph-utils and are tested there.
+-- Unit tests for bench-specific headers under benchmarks/latency/core/.
+-- General-purpose pieces (cpu_pin, spin_for_ns, PhasedTimer) live in
+-- eph-utils and are tested there.
 
 target("test_bench_tsc_protocol")
     add_rules("eph-test")

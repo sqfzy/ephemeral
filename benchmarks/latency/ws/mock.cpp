@@ -32,11 +32,10 @@
 #include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
 #include "../core/tsc_protocol.hpp"
-#include "../mock/lib/busy_poll.hpp"
-#include "../mock/lib/tcp_bind.hpp"
+#include "../core/socket_bind.hpp"
 #include "eph/utils/cpu.hpp"
-#include "../mock/lib/ws_frame.hpp"
-#include "../mock/lib/ws_handshake.hpp"
+#include "../core/ws_framing.hpp"
+#include "../core/ws_handshake.hpp"
 
 using namespace bench;
 
@@ -87,7 +86,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto listen_fd = mock::tcp_bind_listen(cfg.server_ip, cfg.server_port);
+    auto listen_fd = bench::tcp_bind_listen(cfg.server_ip, cfg.server_port);
     if (!listen_fd) { spdlog::error("{}", listen_fd.error()); return 1; }
     spdlog::info("mock_ws: listening on {}:{} work_ns={}",
                  cfg.server_ip, cfg.server_port, cfg.server_work_ns);
@@ -98,12 +97,12 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> tx_frame(1024 + 16);
 
     while (g_running.load(std::memory_order_acquire)) {
-        auto cfd = mock::accept_one(*listen_fd, g_running);
+        auto cfd = bench::accept_one(*listen_fd, g_running);
         if (!cfd) { spdlog::error("{}", cfd.error()); break; }
         if (*cfd < 0) break;
         int client_fd = *cfd;
 
-        if (auto h = mock::ws_server_handshake(client_fd); !h) {
+        if (auto h = bench::ws_server_handshake(client_fd); !h) {
             spdlog::error("ws handshake: {}", h.error());
             ::close(client_fd);
             continue;
@@ -131,7 +130,7 @@ int main(int argc, char** argv) {
             if (!ok) break;
 
             // Try to parse one frame.
-            auto frame = mock::parse_client_frame_inplace(rx.data(), buffered, kRxBufCap);
+            auto frame = ws_framing::parse_client_frame_inplace(rx.data(), buffered, kRxBufCap);
             while (!frame.has_value() && buffered < kRxBufCap) {
                 pollfd p{}; p.fd = client_fd; p.events = POLLIN;
                 int rv = ::poll(&p, 1, 100);
@@ -140,7 +139,7 @@ int main(int argc, char** argv) {
                                    rx.size() - buffered, 0);
                 if (n <= 0) { ok = false; break; }
                 buffered += static_cast<size_t>(n);
-                frame = mock::parse_client_frame_inplace(rx.data(), buffered, kRxBufCap);
+                frame = ws_framing::parse_client_frame_inplace(rx.data(), buffered, kRxBufCap);
             }
             if (!ok || !frame.has_value()) { ok = false; break; }
 
@@ -162,7 +161,7 @@ int main(int argc, char** argv) {
             if (n <= 0) { ok = false; break; }
 
             tx_frame.resize(static_cast<size_t>(n) + 16);
-            size_t flen = mock::build_server_frame(tx_frame.data(), mock::kOpText,
+            size_t flen = ws_framing::build_server_frame(tx_frame.data(), ws_framing::kOpText,
                                                    tx_payload.data(),
                                                    static_cast<size_t>(n));
             if (!send_all_fd(client_fd, tx_frame.data(), flen)) { ok = false; break; }

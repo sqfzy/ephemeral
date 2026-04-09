@@ -40,8 +40,7 @@
 #include "../core/config.hpp"
 #include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
-#include "../mock/lib/busy_poll.hpp"
-#include "../mock/lib/tcp_bind.hpp"
+#include "../core/socket_bind.hpp"
 #include "eph/utils/cpu.hpp"
 
 using namespace bench;
@@ -99,7 +98,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto listen_fd = mock::tcp_bind_listen(cfg.server_ip, cfg.server_port);
+    auto listen_fd = bench::tcp_bind_listen(cfg.server_ip, cfg.server_port);
     if (!listen_fd) {
         spdlog::error("{}", listen_fd.error());
         return 1;
@@ -110,7 +109,7 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> buf(msg_size);
 
     while (g_running.load(std::memory_order_acquire)) {
-        auto cfd = mock::accept_one(*listen_fd, g_running);
+        auto cfd = bench::accept_one(*listen_fd, g_running);
         if (!cfd) { spdlog::error("{}", cfd.error()); break; }
         if (*cfd < 0) break; // shutdown
         int client_fd = *cfd;

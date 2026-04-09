@@ -1,4 +1,4 @@
-/// @file mock/lib/ws_handshake.hpp
+/// @file core/ws_handshake.hpp
 /// Server-side WebSocket HTTP Upgrade handshake.
 ///
 /// Reads the HTTP request, extracts `Sec-WebSocket-Key`, computes the
@@ -28,7 +28,7 @@
 
 #include "eph/core/detail/base64.hpp"
 
-namespace bench::mock {
+namespace bench {
 
 namespace handshake_detail {
 
@@ -205,4 +205,4 @@ ws_server_handshake(int fd, std::chrono::milliseconds timeout =
     return {};
 }
 
-} // namespace bench::mock
+} // namespace bench

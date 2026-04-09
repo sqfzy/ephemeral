@@ -47,12 +47,11 @@
 #include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
 #include "../core/tsc_protocol.hpp"
-#include "../mock/lib/busy_poll.hpp"
-#include "../mock/lib/stream_scheduler.hpp"
-#include "../mock/lib/tcp_bind.hpp"
+#include "../core/socket_bind.hpp"
+#include "../core/stream_scheduler.hpp"
 #include "eph/utils/cpu.hpp"
-#include "../mock/lib/ws_frame.hpp"
-#include "../mock/lib/ws_handshake.hpp"
+#include "../core/ws_framing.hpp"
+#include "../core/ws_handshake.hpp"
 
 using namespace bench;
 
@@ -143,7 +142,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto listen_fd = mock::tcp_bind_listen(cfg.server_ip, cfg.server_port);
+    auto listen_fd = bench::tcp_bind_listen(cfg.server_ip, cfg.server_port);
     if (!listen_fd) { spdlog::error("{}", listen_fd.error()); return 1; }
     spdlog::info("mock_lat_exchange_ws: listening on {}:{} symbols={} "
                  "bookticker={}us depth={}ms trade_mean={}ms kline={}s "
@@ -159,12 +158,12 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> rx(kRxBufCap);
 
     while (g_running.load(std::memory_order_acquire)) {
-        auto cfd = mock::accept_one(*listen_fd, g_running);
+        auto cfd = bench::accept_one(*listen_fd, g_running);
         if (!cfd) { spdlog::error("{}", cfd.error()); break; }
         if (*cfd < 0) break;
         int client_fd = *cfd;
 
-        if (auto h = mock::ws_server_handshake(client_fd); !h) {
+        if (auto h = bench::ws_server_handshake(client_fd); !h) {
             spdlog::error("ws handshake: {}", h.error());
             ::close(client_fd);
             continue;
@@ -175,7 +174,7 @@ int main(int argc, char** argv) {
         // buffers across all stream emit closures (single-threaded).
         // The closure captures `client_fd` by value and the shared buffers
         // by reference (the buffers outlive the scheduler).
-        mock::StreamScheduler sched;
+        bench::StreamScheduler sched;
         uint64_t bookticker_count = 0;
 
         auto emit_book = [&](uint32_t sym_idx) -> bool {
@@ -186,7 +185,7 @@ int main(int argc, char** argv) {
                 R"({"e":"bookTicker","s":"%s","b":"50000.00","a":"50001.00","T":%llu})",
                 sym.c_str(), static_cast<unsigned long long>(ts));
             if (n <= 0) return false;
-            size_t flen = mock::build_server_frame(tx_frame.data(), mock::kOpText,
+            size_t flen = ws_framing::build_server_frame(tx_frame.data(), ws_framing::kOpText,
                                                    json_buf.data(),
                                                    static_cast<size_t>(n));
             if (!send_all_fd(client_fd, tx_frame.data(), flen)) return false;
@@ -211,7 +210,7 @@ int main(int argc, char** argv) {
             if (cur + 2 > json_buf.size()) cur = json_buf.size() - 2;
             json_buf[cur++] = '"';
             json_buf[cur++] = '}';
-            size_t flen = mock::build_server_frame(tx_frame.data(), mock::kOpText,
+            size_t flen = ws_framing::build_server_frame(tx_frame.data(), ws_framing::kOpText,
                                                    json_buf.data(), cur);
             return send_all_fd(client_fd, tx_frame.data(), flen);
         };
@@ -223,7 +222,7 @@ int main(int argc, char** argv) {
                 R"({"e":"trade","s":"%s","T":%llu,"p":"50000.50","q":"0.001"})",
                 sym.c_str(), static_cast<unsigned long long>(ts));
             if (n <= 0) return false;
-            size_t flen = mock::build_server_frame(tx_frame.data(), mock::kOpText,
+            size_t flen = ws_framing::build_server_frame(tx_frame.data(), ws_framing::kOpText,
                                                    json_buf.data(),
                                                    static_cast<size_t>(n));
             return send_all_fd(client_fd, tx_frame.data(), flen);
@@ -236,7 +235,7 @@ int main(int argc, char** argv) {
                 R"({"e":"kline","s":"%s","T":%llu,"k":{"o":"50000","h":"50100","l":"49900","c":"50050"}})",
                 sym.c_str(), static_cast<unsigned long long>(ts));
             if (n <= 0) return false;
-            size_t flen = mock::build_server_frame(tx_frame.data(), mock::kOpText,
+            size_t flen = ws_framing::build_server_frame(tx_frame.data(), ws_framing::kOpText,
                                                    json_buf.data(),
                                                    static_cast<size_t>(n));
             return send_all_fd(client_fd, tx_frame.data(), flen);
@@ -293,7 +292,7 @@ int main(int argc, char** argv) {
 
             // ── 2. Try to consume one full client frame.
             while (buffered >= 2) {
-                auto frame = mock::parse_client_frame_inplace(
+                auto frame = ws_framing::parse_client_frame_inplace(
                     rx.data(), buffered, rx.size());
                 if (!frame.has_value()) break;
 
@@ -318,8 +317,8 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(recv_tsc),
                     static_cast<unsigned long long>(send_tsc));
                 if (n > 0) {
-                    size_t flen = mock::build_server_frame(tx_frame.data(),
-                        mock::kOpText, json_buf.data(),
+                    size_t flen = ws_framing::build_server_frame(tx_frame.data(),
+                        ws_framing::kOpText, json_buf.data(),
                         static_cast<size_t>(n));
                     if (!send_all_fd(client_fd, tx_frame.data(), flen)) {
                         ok = false; break;

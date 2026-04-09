@@ -1,4 +1,4 @@
-/// @file mock/lib/stream_scheduler.hpp
+/// @file core/stream_scheduler.hpp
 /// Delta-timer priority queue for multi-stream mock dispatch.
 ///
 /// Used by the exchange WS mock to fire one of N streams (bookTicker,
@@ -23,9 +23,9 @@
 
 #include "eph/utils/time.hpp"
 
-#include "../../core/tsc_protocol.hpp"
+#include "tsc_protocol.hpp"
 
-namespace bench::mock {
+namespace bench {
 
 /// One scheduled stream — opaque id + emit callback + interval policy.
 struct StreamEntry {
@@ -140,4 +140,4 @@ private:
     std::mt19937_64 rng_{0xC0FFEE'CAFE'BABEull};
 };
 
-} // namespace bench::mock
+} // namespace bench

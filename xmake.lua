@@ -109,8 +109,7 @@ includes("eph-dpdk/xmake.lua")
 includes("tests/integration/xmake.lua")
 
 -- Unit tests for the bench shared layer (header-only library under
--- benchmarks/latency/{core,mock/lib}). Added by phase 2 of the bench
--- rewrite plan.
+-- benchmarks/latency/core/).
 includes("tests/unit/bench/xmake.lua")
 
 -- ===========================================================================

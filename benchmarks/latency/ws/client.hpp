@@ -3,7 +3,7 @@
 /// frame send + unmasked frame parse.
 ///
 /// Plain WS (no TLS). The mock server speaks the same protocol via
-/// `mock/lib/ws_handshake.hpp` + `mock/lib/ws_frame.hpp`.
+/// `core/ws_handshake.hpp` + `core/ws_framing.hpp`.
 ///
 /// We do NOT use eph-net::Transport here because that wraps WSS-over-TLS
 /// with worker threads, which doesn't fit a controlled bench loop. The

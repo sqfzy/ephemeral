@@ -15,9 +15,9 @@
 #include <gtest/gtest.h>
 
 #include "eph/utils/time.hpp"
-#include "mock/lib/stream_scheduler.hpp"
+#include "core/stream_scheduler.hpp"
 
-using namespace bench::mock;
+using namespace bench;
 
 struct StreamFixture : ::testing::Test {
     void SetUp() override { ASSERT_TRUE(eph::utils::TSC::init()); }

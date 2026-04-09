@@ -11,9 +11,9 @@
 
 #include <gtest/gtest.h>
 
-#include "mock/lib/ws_frame.hpp"
+#include "core/ws_framing.hpp"
 
-using namespace bench::mock;
+using namespace bench::ws_framing;
 
 // ── Server frame build ───────────────────────────────────────────────────
 

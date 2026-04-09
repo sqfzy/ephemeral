@@ -29,7 +29,7 @@
 #include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
 #include "../core/tsc_protocol.hpp"
-#include "../mock/lib/udp_bind.hpp"
+#include "../core/socket_bind.hpp"
 #include "eph/utils/cpu.hpp"
 
 using namespace bench;
@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto fd = mock::udp_bind(cfg.server_ip, cfg.server_port);
+    auto fd = bench::udp_bind(cfg.server_ip, cfg.server_port);
     if (!fd) { spdlog::error("{}", fd.error()); return 1; }
     spdlog::info("mock_lat_exchange_md_udp: bound {}:{} work_ns={}",
                  cfg.server_ip, cfg.server_port, cfg.server_work_ns);
