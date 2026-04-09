@@ -4,10 +4,15 @@
 /// Single connection at a time. Drives a delta-timer scheduler that pushes
 /// 4 stream classes per symbol:
 ///
-///   bookTicker  every  --bookticker-us  µs (default 100)
+///   bookTicker  every  --bookticker-us  µs (default 1000 = 1kHz/symbol)
 ///   depth       every  --depth-ms       ms (default 10)
 ///   trade       Poisson mean --trade-mean-ms ms (default 5)
 ///   kline       every  --kline-s        s  (default 1)
+///
+/// The default rates are deliberately close to real Binance (which pushes
+/// bookTicker at ~100-500 Hz per symbol) so that kernel-transport numbers
+/// reflect production behaviour. Crank --bookticker-us down to 100 for a
+/// 30kHz/total stress test that hits kernel TCP queueing limits.
 ///
 /// In the same loop iteration the mock also non-blocking-recvs from the
 /// client; if a complete frame arrives it parses an order JSON and writes
@@ -56,7 +61,8 @@ namespace {
 // CLI extras for the exchange mock.
 struct ExchangeMockOpts {
     std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
-    long bookticker_us  = 100;
+    long bookticker_us  = 1000;  ///< 1 kHz per symbol — close to Binance's real push rate
+
     long depth_ms       = 10;
     long trade_mean_ms  = 5;
     long kline_s        = 1;

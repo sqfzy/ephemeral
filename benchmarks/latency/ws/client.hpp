@@ -180,8 +180,79 @@ inline size_t build_masked_text_frame(uint8_t* out, const void* payload, size_t 
     return cursor + len;
 }
 
-/// Read one server→client (unmasked) frame's payload into `out` (capacity `cap`).
-/// Returns the payload length on success or 0 on failure / non-data frame.
+/// Buffered server→client WebSocket frame reader.
+///
+/// The naive "one recv() per header byte + one recv() per payload" pattern
+/// adds 2-3 syscalls per frame. A real HFT client amortizes across hundreds
+/// of frames by reading a large buffer in one syscall, then parsing frames
+/// from that buffer. At 30k frames/sec (3 symbols × 10kHz bookTicker)
+/// this drops syscall count from ~60k/sec to ~100/sec.
+///
+/// `next_frame()` returns a pointer INTO the internal buffer, valid until
+/// the next call. Callers must consume or copy before calling again.
+/// Returns {nullptr, 0} on socket error / disconnect.
+class FrameReader {
+public:
+    explicit FrameReader(int fd) : fd_(fd) {}
+
+    /// Blocking read: return the next complete data frame's payload.
+    std::pair<const uint8_t*, size_t> next_frame() {
+        for (;;) {
+            if (auto f = try_parse(); f.first) return f;
+            if (!fill()) return {nullptr, 0};
+        }
+    }
+
+private:
+    bool fill() {
+        // Compact if we'd run off the end.
+        if (end_ == sizeof(buf_)) {
+            std::memmove(buf_, buf_ + pos_, end_ - pos_);
+            end_ -= pos_;
+            pos_ = 0;
+        }
+        ssize_t n = ::recv(fd_, buf_ + end_, sizeof(buf_) - end_, 0);
+        if (n <= 0) return false;
+        end_ += static_cast<size_t>(n);
+        return true;
+    }
+
+    /// Try to parse one complete unmasked server frame at `buf_[pos_..end_]`.
+    /// Returns {payload, len} and advances pos_ on success; {nullptr, 0}
+    /// if the buffer holds only a partial frame.
+    std::pair<const uint8_t*, size_t> try_parse() noexcept {
+        const size_t avail = end_ - pos_;
+        if (avail < 2) return {nullptr, 0};
+        const uint8_t* h = buf_ + pos_;
+        // Servers MUST NOT mask (RFC 6455); skip anything that claims to be masked.
+        if ((h[1] & 0x80) != 0) return {nullptr, 0};
+        uint64_t plen = h[1] & 0x7F;
+        size_t hdr_len = 2;
+        if (plen == 126) {
+            if (avail < 4) return {nullptr, 0};
+            plen = (uint64_t(h[2]) << 8) | h[3];
+            hdr_len = 4;
+        } else if (plen == 127) {
+            if (avail < 10) return {nullptr, 0};
+            plen = 0;
+            for (int i = 0; i < 8; ++i) plen = (plen << 8) | h[2 + i];
+            hdr_len = 10;
+        }
+        if (avail < hdr_len + plen) return {nullptr, 0};
+        const uint8_t* payload = buf_ + pos_ + hdr_len;
+        pos_ += hdr_len + static_cast<size_t>(plen);
+        return {payload, static_cast<size_t>(plen)};
+    }
+
+    int fd_;
+    uint8_t buf_[65536];
+    size_t pos_ = 0;
+    size_t end_ = 0;
+};
+
+/// Legacy: read one frame with 2-3 syscalls. Kept for the simple ws echo
+/// scenario where frame rate is low (1 per RTT) so syscall overhead is
+/// negligible. High-rate paths should use `FrameReader` instead.
 inline size_t recv_one_frame(int fd, uint8_t* out, size_t cap) noexcept {
     uint8_t hdr[2];
     if (!detail::recv_exact(fd, hdr, 2)) return 0;
