@@ -358,3 +358,7 @@
 | 2026-04-08 11:08 | /bench optimize ws_echo (clean run) | ws_echo kernel TX p50 (64B) | 11.6 µs | — | e7ec8e7 | wsecho_clean_kernel_20260408.txt |
 | 2026-04-08 11:08 | /bench optimize ws_echo (clean run) | ws_echo dpdk TX p50 (64B) | 10.6 µs | **−9% vs kernel** | e7ec8e7 | wsecho_clean_dpdk_20260408.txt |
 | 2026-04-08 11:08 | /bench optimize ws_echo (clean run) | ws_echo dpdk TX p50 (1024B) | 12.9 µs | **−6% vs kernel (13.7 µs)** | e7ec8e7 | wsecho_clean_dpdk_20260408.txt |
+| 2026-04-09 02:08 | /bench optimize udp_tx (3-run median) | udp_relay kernel TX p50 (64B) | 12.0 µs | — | db5b3b3 | udprelay_kernel_run{1,2,3}_20260408.txt |
+| 2026-04-09 02:08 | /bench optimize udp_tx (3-run median) | udp_relay dpdk TX p50 (64B) | 10.9 µs | **−9% vs kernel** | db5b3b3 | udprelay_dpdk_run{1,2,3}_20260408.txt |
+| 2026-04-09 02:08 | /bench optimize udp_tx (instrumented) | udp_relay kernel sendto CPU mean | 1050 ns | — | db5b3b3 | udprelay_kernel_run1_20260408.txt |
+| 2026-04-09 02:08 | /bench optimize udp_tx (instrumented) | udp_relay dpdk send CPU mean | 100 ns | **−10× vs kernel** | db5b3b3 | udprelay_dpdk_run1_20260408.txt |
