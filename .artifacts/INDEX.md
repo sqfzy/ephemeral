@@ -39,3 +39,6 @@
 | 2026-04-07 10:27 | /bench rte_ring vs BQ | 交叉64B: BQ小payload快37-2.3×, rte_ring大payload快1.5-4.1× | dfbc756 | bench-rte-ring-vs-bq-20260407.md |
 | 2026-04-04 14:15 | /discuss 生产级别差距分析 | 5角色6轮：12个CRITICAL/HIGH，P0=5项(stop竞态/TLS RX seq/pin/assert/RST)，三阶段修复 | — | discuss-20260404-production-level.md |
 | 2026-04-04 14:50 | /plan+/design 生产加固 | 10项修复(5P0+5P1)：stop竞态guard/RX seq reconnect/hard pin/timestamp/RST/Gateway/AuditLog/HttpClient/RateLimiter/Histogram | 6d68627 | plan-production-hardening-20260404.md |
+| 2026-04-09 17:38 | /discuss | 确认 TransportCore::do_connect 在 do_ws_upgrade 前 snapshot TLS seq 是 P0 真 bug，给出 4-callsite 修复方案 | afaceba | discuss-20260409-173817.md |
+| 2026-04-09 17:53 | /plan | TLS hot-path AEAD ordering fix — 5 阶段计划：症状记录→fix 4 callsites→e2e 测试→文档→PR | afaceba | plan-tls-aead-ordering-fix-20260409-175353.md |
+| 2026-04-09 18:13 | /repeat (plan execution) | TLS AEAD ordering hotfix shipped — fix + 5 e2e tests, regression-validated, plan complete | 4751ad7 | fix-tls-aead-ordering-20260409-175353.md |

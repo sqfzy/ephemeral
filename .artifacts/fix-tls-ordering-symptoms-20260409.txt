@@ -1,0 +1,93 @@
+# TLS hot-path AEAD ordering bug — pre-fix symptom capture
+
+Captured: 2026-04-09 17:59:55
+Commit:   afaceba (clean working tree at time of capture, modulo new artifacts)
+Binary:   simple_hft (release build)
+Endpoint: wss://echo.websocket.org:443/ws/foo (public TLS+WS echo server)
+Command:  xmake run simple_hft --host echo.websocket.org --port 443 --symbol foo --count 3 --ping-interval 500
+
+## Bug fingerprint
+
+For each connection (initial + every reconnect attempt):
+
+  1. TCP connect succeeds:
+     [net.socket]   Connected to 66.241.124.119 (echo.websocket.org:443, mss=1168)
+
+  2. TLS handshake succeeds:
+     [transport.tls] Starting TLS 1.3 handshake with echo.websocket.org
+     [transport.tls] TLS handshake complete: version=TLSv1.3, cipher=TLS_AES_128_GCM_SHA256
+
+  3. extract_hot_state SNAPSHOTS BOTH SEQS AS ZERO:
+     [transport.tls] TLS traffic keys extracted: cipher=TLS_AES_128_GCM_SHA256,
+                     key_len=16, write_seq=0, read_seq=0
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     this happens BEFORE do_ws_upgrade() — this is the bug
+
+  4. Connection reported established:
+     [transport.core] Connection established: echo.websocket.org:443
+
+  5. (do_ws_upgrade runs internally — handshake_write(GET) + handshake_read(101)
+       advance SSL's internal application traffic seq numbers, but the hot-path
+       crypto context is frozen at the snapshot from step 3)
+
+  6. First inbound application record arrives — hot path tries to decrypt with
+     seq=0 but the record on the wire is at seq=1+ → AEAD tag mismatch:
+     [transport.tls_dec] EVP_AEAD_CTX_open failed: record_len=24, seq=0
+
+  7. RX worker triggers reconnect:
+     [rx_worker.hpp:879] TLS decrypt failed -- triggering reconnect
+     [STATE] DISCONNECTED — echo.websocket.org
+     [STATE] RECONNECTING — 1/3
+
+  8. Reconnect succeeds at TCP+TLS+WS layer, but the SAME bug repeats in
+     transport.hpp:1244's reconnect path. Loop forever.
+
+## Final stats after 2.8s session (3 pings, 3 reconnects)
+
+  TX: 3 packets, 0 bytes successfully delivered (all queued, none acked at app layer)
+  RX: 0 packets, 4 decrypt errors  ← key indicator
+  Reconnections: 4 (1 initial + 3 reconnects)
+  TLS seq counters from hot-path crypto: write=1, read=0
+  Pings sent: 3
+  Pongs received: 0
+  Market data messages: 0
+
+## Why "0 received" rather than "many corrupted"
+
+Because EVP_AEAD_CTX_open is fail-closed: as soon as the AEAD tag verification
+fails, the record is dropped and the connection torn down. The first record on
+every connection always fails because it's the FIRST one with the wrong nonce
+(seq=0 hot-path vs seq=1 actual). Server-side echo never even gets a chance to
+respond because the client-side TX may also be encrypted with wrong nonce
+(server fails to decrypt and closes connection from its end).
+
+## Affected code path (Transport variant — confirmed on this run)
+
+  examples/simple_hft.cpp:53
+    using HftTransport = eph::net::Transport<
+        eph::net::SocketTransport,
+        eph::net::WsFramer,
+        ...
+    >;
+
+  → eph::net::Transport (= eph::net::DefaultTransport via presets.hpp:29)
+  → Transport::create() at transport.hpp:188
+    → core_.do_connect()              ← extract_hot_state inside, snapshots seq=0
+    → core_.do_ws_upgrade<WsFramer>() ← advances SSL seq via handshake_write/read
+    → [hot path begins with stale seq=0]
+
+  Reconnect path: transport.hpp:1244 — same bug, same symptoms.
+
+## Post-fix expectation
+
+After the planned fix:
+  - Step 3 above moves to AFTER step 5 (do_ws_upgrade) and snapshots the
+    correct seq numbers.
+  - simple_hft connecting to echo.websocket.org should:
+    * complete TLS handshake (same)
+    * complete WS upgrade (same)
+    * start hot path with correctly synced seq counters
+    * receive echo responses to its 3 pings
+    * Reconnections: 0 (no spurious reconnect from decrypt failure)
+    * RX decrypt errors: 0
+    * Pongs received: > 0
