@@ -14,9 +14,9 @@
 #include "eph/utils/time.hpp"
 
 #include "../core/dpdk_env.hpp"
-#include "../core/dpdk_ws_util.hpp"
 #include "../core/sample.hpp"
 #include "../core/tsc_protocol.hpp"
+#include "../core/ws_framing.hpp"
 
 namespace bench::ws {
 
@@ -87,7 +87,7 @@ public:
         json_buf_[prefix_len + pad_len + 1] = '}';
 
         frame_buf_.resize(target_payload_ + 16);
-        size_t frame_len = dpdk_ws::build_masked_frame(
+        size_t frame_len = ws_framing::build_masked_text_frame(
             frame_buf_.data(), json_buf_.data(), target_payload_, mask_seed_++);
 
         size_t sent = 0;
@@ -108,7 +108,8 @@ public:
                     rx_accum_.insert(rx_accum_.end(), data, data + len);
                 });
             if (!r) return false;
-            auto [hdr, plen] = dpdk_ws::consume_frame(rx_accum_);
+            auto [hdr, plen] = ws_framing::parse_server_frame(
+                rx_accum_.data(), rx_accum_.size());
             if (plen > 0) {
                 out.client_recv_tsc = eph::utils::TSC::now();
                 const uint8_t* payload = rx_accum_.data() + hdr;

@@ -16,6 +16,7 @@
 #include "client.hpp"
 #include "../core/sample.hpp"
 #include "../core/tsc_protocol.hpp"
+#include "../core/ws_framing.hpp"
 #include "eph/utils/time.hpp"
 
 namespace bench::ws {
@@ -52,7 +53,7 @@ public:
         json_buf_[prefix_len + pad_len + 1] = '}';
 
         frame_buf_.resize(target_payload_ + 16);
-        size_t frame_len = build_masked_text_frame(
+        size_t frame_len = ws_framing::build_masked_text_frame(
             frame_buf_.data(), json_buf_.data(), target_payload_, mask_seed_++);
 
         if (!detail::send_all(fd_, frame_buf_.data(), frame_len)) return false;

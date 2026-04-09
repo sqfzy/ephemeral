@@ -30,6 +30,7 @@
 
 #include "../core/sample.hpp"
 #include "../core/tsc_protocol.hpp"
+#include "../core/ws_framing.hpp"
 #include "../udp/client.hpp"
 #include "../ws/client.hpp"
 #include "eph/utils/time.hpp"
@@ -38,22 +39,18 @@ namespace bench::exchange {
 
 // ── 1. MarketRxScenario ─────────────────────────────────────────────────
 
-/// 1-leg pipeline scenario: receive the next pushed frame from a
-/// connected WS fd, parse the server's "T" field, yield one sample.
-///
-/// Uses `FrameReader` so we amortize syscalls across hundreds of frames
-/// when the mock pushes at 30k frames/sec — matches what any real HFT
-/// client does.
+/// 1-leg pipeline scenario: receive the next pushed frame from the WS
+/// connection, parse the server's "T" field, yield one sample.
 class MarketRxScenario {
 public:
-    explicit MarketRxScenario(int fd) : reader_(fd) {}
+    explicit MarketRxScenario(int fd) : fd_(fd), buf_(2048) {}
 
     bool prepare() { return true; }
 
     bool do_one_recv(OneWaySample& out) {
-        auto [payload, len] = reader_.next_frame();
-        if (!payload) return false;
-        uint64_t t = bench::tsc::parse_T(payload, len);
+        size_t n = bench::ws::recv_one_frame(fd_, buf_.data(), buf_.size());
+        if (n == 0) return false;
+        uint64_t t = bench::tsc::parse_T(buf_.data(), n);
         if (t == 0) return false;
         out.producer_tsc = t;
         out.consumer_tsc = eph::utils::TSC::now();
@@ -63,7 +60,8 @@ public:
     void cleanup() {}
 
 private:
-    bench::ws::FrameReader reader_;
+    int fd_;
+    std::vector<uint8_t> buf_;
 };
 
 // ── 2. OrderRttScenario ─────────────────────────────────────────────────
@@ -84,7 +82,7 @@ class OrderRttScenario {
 public:
     static constexpr size_t kMaxInflight = 128;
 
-    explicit OrderRttScenario(int fd) : fd_(fd), reader_(fd) {}
+    explicit OrderRttScenario(int fd) : fd_(fd) {}
 
     bool prepare(size_t inflight) {
         if (inflight == 0 || inflight > kMaxInflight) return false;
@@ -122,7 +120,7 @@ private:
         if (n <= 0) return false;
 
         std::vector<uint8_t> frame(static_cast<size_t>(n) + 16);
-        size_t flen = bench::ws::build_masked_text_frame(
+        size_t flen = bench::ws_framing::build_masked_text_frame(
             frame.data(), body, static_cast<size_t>(n), mask_seed_++);
         if (!bench::ws::detail::send_all(fd_, frame.data(), flen)) return false;
         ++in_flight_;
@@ -130,14 +128,15 @@ private:
     }
 
     bool wait_for_one(RttSample& out) {
+        std::array<uint8_t, 2048> buf{};
         for (;;) {
-            auto [payload, len] = reader_.next_frame();
-            if (!payload) return false;
+            size_t n = bench::ws::recv_one_frame(fd_, buf.data(), buf.size());
+            if (n == 0) return false;
 
-            // Match by echoed id — bookTicker pushes interleaved on the
-            // same connection are silently dropped (their id is 0).
+            // Match by echoed id — bookTicker pushes on the same connection
+            // are silently skipped (their id is 0).
             uint64_t id = bench::tsc::detail::parse_uint64_after(
-                std::string_view{reinterpret_cast<const char*>(payload), len},
+                std::string_view{reinterpret_cast<const char*>(buf.data()), n},
                 "\"id\":");
             if (id == 0) continue;
 
@@ -146,8 +145,8 @@ private:
             slots_[id % kMaxInflight] = 0;
 
             out.client_send_tsc = slot;
-            out.server_recv_tsc = bench::tsc::parse_T_recv(payload, len);
-            out.server_send_tsc = bench::tsc::parse_T(payload, len);
+            out.server_recv_tsc = bench::tsc::parse_T_recv(buf.data(), n);
+            out.server_send_tsc = bench::tsc::parse_T(buf.data(), n);
             out.client_recv_tsc = eph::utils::TSC::now();
             --in_flight_;
             return true;
@@ -155,7 +154,6 @@ private:
     }
 
     int fd_;
-    bench::ws::FrameReader reader_;
     size_t inflight_target_ = 1;
     size_t in_flight_ = 0;
     uint64_t next_id_ = 1;

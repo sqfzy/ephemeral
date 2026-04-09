@@ -1,13 +1,10 @@
 /// @file mock/lib/busy_poll.hpp
-/// Generic accept + single-connection busy-poll loop skeleton.
+/// Single-connection accept helper shared by the TCP/WS mocks.
 ///
-/// `accept_one(listen_fd)` blocks (with poll-driven shutdown polling)
-/// until a client connects. The bench mocks each handle exactly one
-/// client at a time — when the client disconnects, we go back to accept.
-///
-/// `serve_busy_poll(client_fd, on_iteration)` runs the per-iteration
-/// callback until shutdown. The callback is responsible for any
-/// `recv(MSG_DONTWAIT)` / `send` work and returning false on disconnect.
+/// `accept_one(listen_fd)` blocks until a client connects, polling
+/// `running` every 100 ms so SIGTERM can interrupt the wait. The caller
+/// drives the per-connection receive loop itself — we do not abstract
+/// that because the three mocks' hot loops look nothing alike.
 #pragma once
 
 #include <atomic>
@@ -59,17 +56,6 @@ accept_one(int listen_fd, std::atomic<bool>& running) {
         return cfd;
     }
     return -1;
-}
-
-/// Run `iter(fd)` repeatedly until shutdown or `iter` returns false.
-/// `iter` is the busy-poll body — it should do any non-blocking RX +
-/// any time-driven work + any TX. Returning false signals "client
-/// disconnected, close fd and go back to accept".
-template <typename Iter>
-inline void serve_busy_poll(int fd, std::atomic<bool>& running, Iter&& iter) {
-    while (running.load(std::memory_order_acquire)) {
-        if (!iter(fd)) break;
-    }
 }
 
 } // namespace bench::mock

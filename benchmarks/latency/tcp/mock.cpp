@@ -116,42 +116,42 @@ int main(int argc, char** argv) {
         int client_fd = *cfd;
         spdlog::info("mock_tcp: client connected fd={}", client_fd);
 
-        // Per-round echo loop. Returns false on disconnect/error.
-        mock::serve_busy_poll(client_fd, g_running, [&](int fd) -> bool {
+        // Per-round echo loop.
+        while (g_running.load(std::memory_order_acquire)) {
             // Read N bytes (blocking — TCP is byte-stream).
             size_t got = 0;
+            bool ok = true;
             while (got < msg_size) {
-                ssize_t n = ::recv(fd, buf.data() + got, msg_size - got, 0);
+                ssize_t n = ::recv(client_fd, buf.data() + got, msg_size - got, 0);
                 if (n < 0) {
                     if (errno == EINTR) continue;
-                    return false;
+                    ok = false; break;
                 }
-                if (n == 0) return false;
+                if (n == 0) { ok = false; break; }
                 got += static_cast<size_t>(n);
             }
-            // Stamp server_recv into bytes [8..16).
+            if (!ok) break;
+
+            // Stamp server_recv, spin business work, stamp server_send.
             uint64_t recv_tsc = eph::utils::TSC::now();
             std::memcpy(buf.data() + 8, &recv_tsc, 8);
-
-            // Simulate business work.
             eph::utils::spin_for_ns(cfg.server_work_ns);
-
-            // Stamp server_send into bytes [16..24).
             uint64_t send_tsc = eph::utils::TSC::now();
             std::memcpy(buf.data() + 16, &send_tsc, 8);
 
             // Send N back.
             size_t sent = 0;
             while (sent < msg_size) {
-                ssize_t n = ::send(fd, buf.data() + sent, msg_size - sent, MSG_NOSIGNAL);
+                ssize_t n = ::send(client_fd, buf.data() + sent,
+                                   msg_size - sent, MSG_NOSIGNAL);
                 if (n < 0) {
                     if (errno == EINTR) continue;
-                    return false;
+                    ok = false; break;
                 }
                 sent += static_cast<size_t>(n);
             }
-            return true;
-        });
+            if (!ok) break;
+        }
         ::close(client_fd);
         spdlog::info("mock_tcp: client disconnected");
     }

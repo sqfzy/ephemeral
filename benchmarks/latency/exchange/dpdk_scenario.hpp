@@ -27,9 +27,9 @@
 #include "eph/utils/time.hpp"
 
 #include "../core/dpdk_env.hpp"
-#include "../core/dpdk_ws_util.hpp"
 #include "../core/sample.hpp"
 #include "../core/tsc_protocol.hpp"
+#include "../core/ws_framing.hpp"
 
 namespace bench::exchange {
 
@@ -56,12 +56,11 @@ public:
 
             // Try to find a complete server frame.
             while (rx_accum_.size() >= 2) {
-                size_t plen = dpdk_ws::try_parse_server_frame(rx_accum_.data(), rx_accum_.size());
+                auto [hdr, plen] = ws_framing::parse_server_frame(
+                    rx_accum_.data(), rx_accum_.size());
                 if (plen == 0) break;
-                size_t hdr = dpdk_ws::frame_header_size(rx_accum_.data(), rx_accum_.size());
                 const uint8_t* payload = rx_accum_.data() + hdr;
                 uint64_t t = tsc::parse_T(payload, plen);
-                // Consume the frame.
                 rx_accum_.erase(rx_accum_.begin(),
                                 rx_accum_.begin() + static_cast<long>(hdr + plen));
                 if (t > 0) {
@@ -123,7 +122,7 @@ private:
         if (n <= 0) return false;
 
         frame_buf_.resize(static_cast<size_t>(n) + 16);
-        size_t flen = dpdk_ws::build_masked_frame(
+        size_t flen = ws_framing::build_masked_text_frame(
             frame_buf_.data(), body, static_cast<size_t>(n), mask_seed_++);
 
         size_t sent = 0;
@@ -150,9 +149,9 @@ private:
 
             // Try to parse frames and match order id.
             while (rx_accum_.size() >= 2) {
-                size_t plen = dpdk_ws::try_parse_server_frame(rx_accum_.data(), rx_accum_.size());
+                auto [hdr, plen] = ws_framing::parse_server_frame(
+                    rx_accum_.data(), rx_accum_.size());
                 if (plen == 0) break;
-                size_t hdr = dpdk_ws::frame_header_size(rx_accum_.data(), rx_accum_.size());
                 const uint8_t* payload = rx_accum_.data() + hdr;
 
                 uint64_t id = tsc::detail::parse_uint64_after(
