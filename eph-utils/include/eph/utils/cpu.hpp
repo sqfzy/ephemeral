@@ -453,6 +453,35 @@ inline void cpu_relax() noexcept {
 
 } // namespace eph::utils
 
+// `spin_for_ns` needs TSC::now() which lives in time.hpp. The include
+// lives at the bottom so callers that only want cpu_relax don't pay for
+// TSC calibration symbols.
+#include "eph/utils/time.hpp"
+
+namespace eph::utils {
+
+/// @brief Busy-wait for approximately `ns` nanoseconds using TSC + cpu_relax.
+///
+/// Intended for simulating CPU-bound work (e.g. spinning a mock server's
+/// "business logic" for 200 ns) or micro-delays shorter than what any
+/// syscall-based sleep can deliver. Requires `TSC::init()` to have run.
+///
+/// @note `ns <= 0` is a no-op. Accuracy is bounded by TSC read overhead
+///       (~20 cycles) and the cpu_relax granularity — suitable for
+///       hundreds of ns and up; for sub-100ns delays a hand-unrolled loop
+///       will be more precise.
+inline void spin_for_ns(long ns) noexcept {
+    if (ns <= 0) return;
+    auto target = TSC::to_cycles(static_cast<double>(ns));
+    if (!target || *target == 0) return;
+    uint64_t deadline = TSC::now() + *target;
+    while (TSC::now() < deadline) {
+        cpu_relax();
+    }
+}
+
+} // namespace eph::utils
+
 /// @brief `std::format` support for CpuTopologyInfo.
 ///
 /// Example: `std::format("{}", info)` produces `"socket=0 core=2 thread=4"`.

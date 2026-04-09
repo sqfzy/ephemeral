@@ -26,11 +26,11 @@
 #include "eph/utils/time.hpp"
 
 #include "../core/config.hpp"
-#include "../core/cpu_pin.hpp"
+#include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
 #include "../core/tsc_protocol.hpp"
 #include "../mock/lib/udp_bind.hpp"
-#include "../mock/lib/work_spin.hpp"
+#include "eph/utils/cpu.hpp"
 
 using namespace bench;
 
@@ -57,9 +57,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    CpuPinPolicy policy;
+    eph::utils::CpuPinPolicy policy;
     if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = pin_thread_strict(cfg.mock_cpu, "mock_ex_md", policy); !p) {
+    if (auto p = eph::utils::pin_thread_strict(cfg.mock_cpu, "mock_ex_md", policy); !p) {
         spdlog::error("pin_thread_strict failed: {}", p.error());
         return 1;
     }
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
 
         uint64_t recv_tsc = eph::utils::TSC::now();
         std::memcpy(buf.data() + 8, &recv_tsc, 8);
-        bench::mock::work_spin(cfg.server_work_ns);
+        eph::utils::spin_for_ns(cfg.server_work_ns);
         uint64_t send_tsc = eph::utils::TSC::now();
         std::memcpy(buf.data() + 16, &send_tsc, 8);
 

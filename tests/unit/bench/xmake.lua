@@ -1,25 +1,10 @@
--- Unit tests for the bench shared layer (benchmarks/latency/core + mock/lib).
--- Header-only library, so each test target just adds its own .cpp + the
--- include path under benchmarks/latency. Depends on eph-utils for TSC,
--- HdrHistogram and CPU helpers.
+-- Unit tests for bench-specific headers under benchmarks/latency/core +
+-- mock/lib/. General-purpose pieces (cpu_pin, spin_for_ns, PhasedTimer)
+-- live in eph-utils and are tested there.
 
 target("test_bench_tsc_protocol")
     add_rules("eph-test")
     add_files("test_tsc_protocol.cpp")
-    add_includedirs("$(projectdir)/benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-
-target("test_bench_cpu_pin")
-    add_rules("eph-test")
-    add_files("test_cpu_pin.cpp")
-    add_includedirs("$(projectdir)/benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-
-target("test_bench_work_spin")
-    add_rules("eph-test")
-    add_files("test_work_spin.cpp")
     add_includedirs("$(projectdir)/benchmarks/latency")
     add_deps("eph-utils")
     add_packages("spdlog")

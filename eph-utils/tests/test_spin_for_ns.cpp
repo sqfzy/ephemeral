@@ -1,20 +1,15 @@
-/// @file tests/unit/bench/test_work_spin.cpp
-/// Verify that `work_spin(N ns)` busy-waits ≈ N ns (TSC-measured) within
-/// a tolerant 30% band. The plan calls for ±10%, but at the unit level
-/// we run on shared CI hardware where occasional scheduler hiccups make
-/// 10% too tight; an end-to-end DPDK bench is the right place to assert
-/// the tighter bound.
+/// @file eph-utils/tests/test_spin_for_ns.cpp
+/// Verify `eph::utils::spin_for_ns(N)` busy-waits ≈ N ns measured via TSC.
+/// The band is deliberately loose (30%) because unit tests run on shared
+/// CI hardware where occasional scheduler hiccups make a tight bound flaky.
+/// Tighter accuracy is validated end-to-end by the latency bench.
 
-#include <chrono>
 #include <cstdint>
 
 #include <gtest/gtest.h>
 
+#include "eph/utils/cpu.hpp"
 #include "eph/utils/time.hpp"
-#include "mock/lib/work_spin.hpp"
-
-using namespace bench::mock;
-using bench::tsc::cycles_to_ns;
 
 namespace {
 
@@ -26,21 +21,21 @@ struct TscFixture : ::testing::Test {
 
 uint64_t measured_ns(long target_ns) {
     auto t0 = eph::utils::TSC::now();
-    work_spin(target_ns);
+    eph::utils::spin_for_ns(target_ns);
     auto t1 = eph::utils::TSC::now();
-    return cycles_to_ns(t1 - t0);
+    return static_cast<uint64_t>(
+        eph::utils::TSC::to_ns(t1 - t0).value_or(0.0));
 }
 
 } // namespace
 
 TEST_F(TscFixture, ZeroIsNoop) {
-    EXPECT_LT(measured_ns(0), 100u);  // a few cycles of overhead at most
+    EXPECT_LT(measured_ns(0), 100u);
     EXPECT_LT(measured_ns(-1), 100u);
 }
 
 TEST_F(TscFixture, OneMicrosecond) {
-    // First call: warm caches.
-    (void)measured_ns(1000);
+    (void)measured_ns(1000); // warm caches
     auto m = measured_ns(1000);
     EXPECT_GE(m, 700u);
     EXPECT_LE(m, 1500u);

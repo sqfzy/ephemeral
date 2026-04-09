@@ -39,13 +39,13 @@
 #include "eph/utils/time.hpp"
 
 #include "../core/config.hpp"
-#include "../core/cpu_pin.hpp"
+#include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
 #include "../core/tsc_protocol.hpp"
 #include "../mock/lib/busy_poll.hpp"
 #include "../mock/lib/stream_scheduler.hpp"
 #include "../mock/lib/tcp_bind.hpp"
-#include "../mock/lib/work_spin.hpp"
+#include "eph/utils/cpu.hpp"
 #include "../mock/lib/ws_frame.hpp"
 #include "../mock/lib/ws_handshake.hpp"
 
@@ -130,9 +130,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    CpuPinPolicy policy;
+    eph::utils::CpuPinPolicy policy;
     if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = pin_thread_strict(cfg.mock_cpu, "mock_ex_ws", policy); !p) {
+    if (auto p = eph::utils::pin_thread_strict(cfg.mock_cpu, "mock_ex_ws", policy); !p) {
         spdlog::error("pin_thread_strict failed: {}", p.error());
         return 1;
     }
@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
                 uint64_t id = bench::tsc::detail::parse_uint64_after(body, "\"id\":");
                 uint64_t client_send = bench::tsc::parse_T_send(payload, frame->payload_len);
 
-                bench::mock::work_spin(cfg.server_work_ns);
+                eph::utils::spin_for_ns(cfg.server_work_ns);
                 uint64_t send_tsc = eph::utils::TSC::now();
 
                 // Build ExecutionReport response.

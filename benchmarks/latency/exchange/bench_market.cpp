@@ -12,7 +12,7 @@
 #include "eph/utils/time.hpp"
 
 #include "../core/config.hpp"
-#include "../core/cpu_pin.hpp"
+#include "eph/utils/cpu_pin.hpp"
 #include "../core/runner.hpp"
 #include "../core/signal.hpp"
 
@@ -49,9 +49,9 @@ int main(int argc, char** argv) {
         cfg.server_ip, dcfg.local_ip, dcfg.gateway_ip, dcfg.dpdk_port_id);
     if (!env) { spdlog::error("DPDK env: {}", env.error()); return 1; }
 
-    CpuPinPolicy policy;
+    eph::utils::CpuPinPolicy policy;
     if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = pin_thread_strict(cfg.client_cpu, "bench_ex_mk", policy); !p) {
+    if (auto p = eph::utils::pin_thread_strict(cfg.client_cpu, "bench_ex_mk", policy); !p) {
         spdlog::error("pin: {}", p.error()); return 1;
     }
 
@@ -87,9 +87,9 @@ int main(int argc, char** argv) {
         spdlog::error("TSC calibration failed"); return 1;
     }
 
-    CpuPinPolicy policy;
+    eph::utils::CpuPinPolicy policy;
     if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = pin_thread_strict(cfg.client_cpu, "bench_ex_mk", policy); !p) {
+    if (auto p = eph::utils::pin_thread_strict(cfg.client_cpu, "bench_ex_mk", policy); !p) {
         spdlog::error("pin: {}", p.error()); return 1;
     }
 

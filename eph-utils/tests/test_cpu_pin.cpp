@@ -1,46 +1,40 @@
-/// @file tests/unit/bench/test_cpu_pin.cpp
-/// Unit tests for the strict CPU pinning helper.
+/// @file eph-utils/tests/test_cpu_pin.cpp
+/// Contract tests for eph::utils::pin_thread_strict and friends.
 ///
-/// These tests are intentionally permissive about absolute outcomes
-/// (whether pinning succeeds depends entirely on the host's isolcpus
-/// configuration). They lock down the *contracts*:
+/// These tests are intentionally permissive about absolute outcomes —
+/// whether pinning succeeds depends entirely on the host's isolcpus
+/// configuration. They lock down the *contracts*:
 ///   - require_isolcpus=true on a non-isolated cpu must FAIL
 ///   - relaxing require_isolcpus must allow that same cpu to succeed
 ///   - sibling-conflict detection rejects subsequent pin to a sibling
-///   - registry can be cleared by tests via reset_pin_registry_for_tests()
+///   - registry can be cleared between test cases via reset_pin_registry_for_tests()
 
-#include <fstream>
 #include <set>
-#include <sstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
 
 #include <gtest/gtest.h>
 
-#include "core/cpu_pin.hpp"
+#include "eph/utils/cpu_pin.hpp"
 
-using namespace bench;
+using namespace eph::utils;
 
 namespace {
 
-// Read the same isolated set the production helper reads.
 std::set<int> isolated_cpus() {
     return cpu_pin_detail::read_cpu_list_file(
         "/sys/devices/system/cpu/isolated");
 }
 
-// Find any cpu that is NOT in the isolated set (and is online).
 int pick_non_isolated_cpu() {
     auto iso = isolated_cpus();
     int n = static_cast<int>(std::thread::hardware_concurrency());
     for (int c = 0; c < n; ++c) {
-        if (iso.find(c) == iso.end()) return c;
+        if (!iso.contains(c)) return c;
     }
     return -1;
 }
 
-// Find a sibling of `cpu` (or -1 if cpu has no SMT sibling).
 int sibling_of(int cpu) {
     auto siblings = cpu_pin_detail::read_cpu_list_file(
         "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
@@ -51,34 +45,33 @@ int sibling_of(int cpu) {
 
 } // namespace
 
-TEST(BenchCpuPin, RequireIsolcpusFailsOnNonIsolatedCpu) {
+TEST(CpuPinStrict, RequireIsolcpusFailsOnNonIsolatedCpu) {
     reset_pin_registry_for_tests();
     int cpu = pick_non_isolated_cpu();
     if (cpu < 0) {
-        GTEST_SKIP() << "All cpus are in isolated set on this host; "
-                        "cannot test the negative path.";
+        GTEST_SKIP() << "all cpus are in isolated set — cannot test negative path";
     }
     CpuPinPolicy strict;
-    auto result = pin_thread_strict(cpu, "test-strict", strict);
-    EXPECT_FALSE(result.has_value());
-    if (!result.has_value()) {
-        EXPECT_NE(result.error().find("isolated"), std::string::npos);
+    auto r = pin_thread_strict(cpu, "test-strict", strict);
+    EXPECT_FALSE(r.has_value());
+    if (!r.has_value()) {
+        EXPECT_NE(r.error().find("isolated"), std::string::npos);
     }
 }
 
-TEST(BenchCpuPin, NonIsolatedCpuSucceedsWhenPolicyRelaxed) {
+TEST(CpuPinStrict, NonIsolatedCpuSucceedsWhenPolicyRelaxed) {
     reset_pin_registry_for_tests();
     int cpu = pick_non_isolated_cpu();
     if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
 
     CpuPinPolicy relaxed;
     relaxed.require_isolcpus = false;
-    relaxed.warn_irq_overlap = false; // tests should not log noise
-    auto result = pin_thread_strict(cpu, "test-relaxed", relaxed);
-    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error());
+    relaxed.warn_irq_overlap = false;
+    auto r = pin_thread_strict(cpu, "test-relaxed", relaxed);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error());
 }
 
-TEST(BenchCpuPin, RegistryDetectsSiblingConflict) {
+TEST(CpuPinStrict, RegistryDetectsSiblingConflict) {
     reset_pin_registry_for_tests();
     int cpu = pick_non_isolated_cpu();
     if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
@@ -91,11 +84,9 @@ TEST(BenchCpuPin, RegistryDetectsSiblingConflict) {
     relaxed.require_isolcpus = false;
     relaxed.warn_irq_overlap = false;
 
-    // First pin succeeds.
     auto a = pin_thread_strict(cpu, "test-sibA", relaxed);
     ASSERT_TRUE(a.has_value()) << (a ? "" : a.error());
 
-    // Pinning to the SMT sibling must fail.
     auto b = pin_thread_strict(sib, "test-sibB", relaxed);
     EXPECT_FALSE(b.has_value());
     if (!b.has_value()) {
@@ -103,7 +94,7 @@ TEST(BenchCpuPin, RegistryDetectsSiblingConflict) {
     }
 }
 
-TEST(BenchCpuPin, NegativeCpuRejected) {
+TEST(CpuPinStrict, NegativeCpuRejected) {
     reset_pin_registry_for_tests();
     auto r = pin_thread_strict(-1, "neg");
     EXPECT_FALSE(r.has_value());

@@ -1,19 +1,15 @@
 /// @file core/runner.hpp
 /// BenchRunner — drives every scenario through warmup → measurement → report.
 ///
-/// Three sweep entry points correspond to the three sweep dimensions:
-///
+/// Three sweep entry points:
 ///   - run_rtt_sweep(payloads)        : tcp / udp / ws / exchange/md_udp
 ///   - run_rtt_inflight_sweep(N list) : exchange/order
 ///   - run_oneway()                   : exchange/market
 ///
-/// All three call the same internal `run_one_window()` skeleton:
-///   prepare → pre-warmup (kPreWarmupRounds dummy rounds) → BenchTimer
-///   warmup → measurement loop → report → reset histograms → cleanup.
-///
-/// Hot-path dispatch is template-driven (no virtual / no std::function),
-/// so the compiler inlines `do_one_*()` straight into the measurement
-/// loop body.
+/// All three share the same skeleton: prepare → pre-warmup → PhasedTimer
+/// warmup/measurement → print → reset → cleanup. Latency samples are fed
+/// into 4 `eph::utils::Recorder` instances (one per leg) that own the
+/// HdrHistogram and cycle→ns conversion.
 #pragma once
 
 #include <chrono>
@@ -21,19 +17,17 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include <spdlog/spdlog.h>
 
-#include "eph/utils/hdr_histogram.hpp"
+#include "eph/utils/phased_timer.hpp"
+#include "eph/utils/recorder.hpp"
+#include "eph/utils/time.hpp"
 
 #include "config.hpp"
-#include "hist_report.hpp"
 #include "sample.hpp"
 #include "scenario_concept.hpp"
 #include "signal.hpp"
-#include "timer.hpp"
-#include "tsc_protocol.hpp"
 
 namespace bench {
 
@@ -43,32 +37,29 @@ public:
                 std::string_view scenario_name,
                 std::string_view transport_name)
         : cfg_(std::move(cfg))
-        , scenario_name_(scenario_name)
-        , transport_name_(transport_name)
-        , rtt_(kHistMin, kHistMax, kHistSig)
-        , tx_(kHistMin, kHistMax, kHistSig)
-        , rx_(kHistMin, kHistMax, kHistSig)
-        , srv_(kHistMin, kHistMax, kHistSig)
-        , oneway_(kHistMin, kHistMax, kHistSig)
+        , label_(std::string(scenario_name) + " (" + std::string(transport_name) + ")")
+        , rtt_(std::string(scenario_name) + "/rtt")
+        , tx_ (std::string(scenario_name) + "/tx")
+        , rx_ (std::string(scenario_name) + "/rx")
+        , srv_(std::string(scenario_name) + "/srv")
+        , oneway_(std::string(scenario_name) + "/rx")
     {}
 
     /// RTT sweep over payload sizes — used by tcp / udp / ws / md_udp.
     template <RttScenario S>
     void run_rtt_sweep(S& scenario, std::span<const size_t> payloads) {
-        for (size_t payload : payloads) {
+        for (size_t p : payloads) {
             if (!g_running.load(std::memory_order_relaxed)) break;
-            run_one_rtt_window(scenario, payload, /*inflight*/ -1);
+            run_rtt_window(scenario, p, /*inflight*/ -1);
         }
     }
 
     /// RTT sweep over inflight values — used by exchange/order.
-    /// `prepare(inflight)` is called with the inflight value as the
-    /// "payload" parameter so the scenario can size its in-flight buffer.
     template <RttScenario S>
     void run_rtt_inflight_sweep(S& scenario, std::span<const int> inflights) {
         for (int n : inflights) {
             if (!g_running.load(std::memory_order_relaxed)) break;
-            run_one_rtt_window(scenario, static_cast<size_t>(n), n);
+            run_rtt_window(scenario, static_cast<size_t>(n), n);
         }
     }
 
@@ -76,13 +67,12 @@ public:
     template <OneWayScenario S>
     void run_oneway(S& scenario) {
         if (!scenario.prepare()) {
-            spdlog::error("{} ({}): prepare() failed",
-                          scenario_name_, transport_name_);
+            spdlog::error("{}: prepare() failed", label_);
             return;
         }
-        spdlog::info("{} ({}): pre_warmup={} warmup={}s duration={}s (oneway)",
-                     scenario_name_, transport_name_,
-                     kPreWarmupRounds, cfg_.warmup.count(), cfg_.duration.count());
+        spdlog::info("{}: pre_warmup={} warmup={}s duration={}s (oneway)",
+                     label_, kPreWarmupRounds,
+                     cfg_.warmup.count(), cfg_.duration.count());
 
         OneWaySample sample{};
         for (size_t i = 0; i < kPreWarmupRounds; ++i) {
@@ -93,111 +83,111 @@ public:
             (void)scenario.do_one_recv(sample);
         }
 
-        BenchTimer timer;
+        eph::utils::PhasedTimer timer;
         timer.start(cfg_.warmup, cfg_.duration);
         while (timer.is_running() && g_running.load(std::memory_order_relaxed)) {
             if (!scenario.do_one_recv(sample)) continue;
             if (timer.is_warmup()) continue;
-            record_oneway(sample);
+            if (sample.consumer_tsc > sample.producer_tsc) {
+                (void)oneway_.record(sample.consumer_tsc - sample.producer_tsc);
+            }
         }
 
-        BenchResult result{};
-        result.rx = compute_stats(oneway_); // report oneway latency in RX leg slot
-        std::string label = std::string(scenario_name_) + " (" +
-                            std::string(transport_name_) + ", oneway)";
-        print_bench_result(label, 0, result);
+        spdlog::info("== BENCH {} (oneway) ==", label_);
+        print_leg("RX", oneway_);
         oneway_.reset();
         scenario.cleanup();
     }
 
 private:
     template <RttScenario S>
-    void run_one_rtt_window(S& scenario, size_t payload_or_inflight,
-                            int inflight_marker) {
-        if (!scenario.prepare(payload_or_inflight)) {
-            spdlog::error("{} ({}): prepare({}) failed",
-                          scenario_name_, transport_name_, payload_or_inflight);
+    void run_rtt_window(S& scenario, size_t sweep_value, int inflight_marker) {
+        if (!scenario.prepare(sweep_value)) {
+            spdlog::error("{}: prepare({}) failed", label_, sweep_value);
             return;
         }
-
         if (inflight_marker >= 0) {
-            spdlog::info("{} ({}): inflight={} pre_warmup={} warmup={}s duration={}s",
-                         scenario_name_, transport_name_, inflight_marker,
-                         kPreWarmupRounds, cfg_.warmup.count(), cfg_.duration.count());
+            spdlog::info("{}: inflight={} pre_warmup={} warmup={}s duration={}s",
+                         label_, inflight_marker, kPreWarmupRounds,
+                         cfg_.warmup.count(), cfg_.duration.count());
         } else {
-            spdlog::info("{} ({}): payload={}B pre_warmup={} warmup={}s duration={}s",
-                         scenario_name_, transport_name_, payload_or_inflight,
-                         kPreWarmupRounds, cfg_.warmup.count(), cfg_.duration.count());
+            spdlog::info("{}: payload={}B pre_warmup={} warmup={}s duration={}s",
+                         label_, sweep_value, kPreWarmupRounds,
+                         cfg_.warmup.count(), cfg_.duration.count());
         }
 
-        // Pre-warmup: discard kPreWarmupRounds rounds to absorb cold-start
-        // (route cache miss, ARP, scheduler placement, NIC ring fill).
-        RttSample sample{};
+        // Pre-warmup absorbs route cache / ARP / scheduler cold start.
+        RttSample s{};
         for (size_t i = 0; i < kPreWarmupRounds; ++i) {
             if (!g_running.load(std::memory_order_relaxed)) {
                 scenario.cleanup();
                 return;
             }
-            (void)scenario.do_one_rtt(sample);
+            (void)scenario.do_one_rtt(s);
         }
 
-        // Timer-driven warmup + measurement.
-        BenchTimer timer;
+        eph::utils::PhasedTimer timer;
         timer.start(cfg_.warmup, cfg_.duration);
         while (timer.is_running() && g_running.load(std::memory_order_relaxed)) {
-            if (!scenario.do_one_rtt(sample)) continue;
+            if (!scenario.do_one_rtt(s)) continue;
             if (timer.is_warmup()) continue;
-            record_rtt(sample);
+            record_rtt(s);
         }
 
-        BenchResult result{
-            compute_stats(rtt_), compute_stats(tx_),
-            compute_stats(rx_),  compute_stats(srv_),
-        };
-        std::string label = std::string(scenario_name_) + " (" +
-                            std::string(transport_name_) + ")";
-        print_bench_result(label, inflight_marker >= 0 ? 0 : payload_or_inflight, result);
+        // Report: "== BENCH tcp (kernel) payload=64B ==" then 4 legs.
+        if (inflight_marker >= 0) {
+            spdlog::info("== BENCH {} inflight={} ==", label_, inflight_marker);
+        } else {
+            spdlog::info("== BENCH {} payload={}B ==", label_, sweep_value);
+        }
+        print_leg("RTT", rtt_);
+        print_leg("TX ", tx_);
+        print_leg("RX ", rx_);
+        print_leg("SRV", srv_);
 
         rtt_.reset(); tx_.reset(); rx_.reset(); srv_.reset();
         scenario.cleanup();
     }
 
     void record_rtt(const RttSample& s) noexcept {
+        // Each leg is a TSC cycle delta; Recorder converts to ns at
+        // compute_stats time.
         if (s.client_recv_tsc > s.client_send_tsc) {
-            (void)rtt_.record(tsc::cycles_to_ns(
-                s.client_recv_tsc - s.client_send_tsc));
+            (void)rtt_.record(s.client_recv_tsc - s.client_send_tsc);
         }
         if (s.server_recv_tsc > 0 && s.server_recv_tsc > s.client_send_tsc) {
-            (void)tx_.record(tsc::cycles_to_ns(
-                s.server_recv_tsc - s.client_send_tsc));
+            (void)tx_.record(s.server_recv_tsc - s.client_send_tsc);
         }
         if (s.server_send_tsc > 0 && s.client_recv_tsc > s.server_send_tsc) {
-            (void)rx_.record(tsc::cycles_to_ns(
-                s.client_recv_tsc - s.server_send_tsc));
+            (void)rx_.record(s.client_recv_tsc - s.server_send_tsc);
         }
         if (s.server_recv_tsc > 0 && s.server_send_tsc > s.server_recv_tsc) {
-            (void)srv_.record(tsc::cycles_to_ns(
-                s.server_send_tsc - s.server_recv_tsc));
+            (void)srv_.record(s.server_send_tsc - s.server_recv_tsc);
         }
     }
 
-    void record_oneway(const OneWaySample& s) noexcept {
-        if (s.consumer_tsc > s.producer_tsc) {
-            (void)oneway_.record(tsc::cycles_to_ns(
-                s.consumer_tsc - s.producer_tsc));
+    static void print_leg(std::string_view leg, const eph::utils::Recorder& r) {
+        auto stats = r.compute_stats();
+        if (!stats) {
+            spdlog::info("    {} (no samples)", leg);
+            return;
         }
+        spdlog::info("    {} n={:>9} min={:>7.0f} p50={:>7.0f} p99={:>7.0f} "
+                     "p999={:>7.0f} max={:>7.0f}",
+                     leg, stats->count,
+                     stats->min_ns, stats->p50_ns, stats->p99_ns,
+                     stats->p999_ns, stats->max_ns);
     }
 
     static constexpr size_t kPreWarmupRounds = 2000;
 
     CommonConfig cfg_;
-    std::string_view scenario_name_;
-    std::string_view transport_name_;
-    eph::utils::HdrHistogram rtt_;
-    eph::utils::HdrHistogram tx_;
-    eph::utils::HdrHistogram rx_;
-    eph::utils::HdrHistogram srv_;
-    eph::utils::HdrHistogram oneway_;
+    std::string  label_;
+    eph::utils::Recorder rtt_;
+    eph::utils::Recorder tx_;
+    eph::utils::Recorder rx_;
+    eph::utils::Recorder srv_;
+    eph::utils::Recorder oneway_;
 };
 
 } // namespace bench
