@@ -1,239 +1,504 @@
-# eph-utils 项目摘要
+# Project: eph-utils
 
-## 1. 概述
+> Header-only C++23 foundation library for the `ephemeral_dev` low-latency
+> networking / trading monorepo: TSC timing, HDR histograms, CPU pinning,
+> huge pages, audit trail, and other hot-path primitives.
 
-eph-utils 是 ephemeral 项目的底层工具库，提供高性能系统编程所需的基础设施。它是一个纯头文件（header-only）的 C++23 库，所有代码位于 `include/eph/utils/` 目录下，通过 xmake 构建系统管理。
+**Language**: C++23 (header-only) | **Build**: xmake | **Logging**: spdlog
+| **Tests**: GoogleTest | **Bench**: Google Benchmark
 
-该库围绕四个核心关注点设计：**CPU 拓扑与亲和性管理**、**纳秒级高精度计时**、**大页内存分配**、**性能统计与记录**。所有模块均使用 spdlog 进行结构化日志输出，支持 Linux/macOS/Windows 多平台（Linux 支持最完整），并大量使用 x86 和 ARM64 的硬件指令实现低开销操作。
+---
 
-eph-utils 是 ephemeral 生态中最底层的依赖，被 eph-containers、eph-net 等上层模块直接依赖。它的设计目标是为高频交易、网络中间件等延迟敏感场景提供零开销的系统原语抽象。
+## Table of Contents
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Module Map](#module-map)
+4. [Data Flow](#data-flow)
+5. [Key Components](#key-components)
+6. [Entry Points & APIs](#entry-points--apis)
+7. [Dependencies](#dependencies)
+8. [Testing](#testing)
 
-## 2. 架构
+---
 
-```
-+----------------------------------------------------------+
-|                    eph/utils.hpp                         |
-|              (便捷聚合头文件，包含所有模块)                |
-+----------------------------------------------------------+
-     |            |             |            |
-     v            v             v            v
-+---------+ +-----------+ +-----------+ +-----------+
-| align-  | |  cpu.hpp   | | time.hpp  | | record.hpp|
-| ment.hpp| |            | |           | |           |
-+---------+ +-----------+ +-----------+ +-----------+
-|CACHE_   | |CpuTopology | |TSC        | |HdrHisto-  |
-|LINE_SIZE| |Info        | |(rdtscp/   | |gram       |
-|Align<T> | |get_cpu_    | | cntvct)   | |Recorder   |
-|         | |topology()  | |init()     | |Concurrent-|
-|         | |set_thread_ | |now()      | |Recorder   |
-|         | |affinity()  | |to_ns()    | |ScopedTSC  |
-|         | |cpu_relax() | |to_cycles()| |SystemStats|
-+---------+ +-----------+ +-----------+ +-----------+
-                                ^              |
-                                |  depends on  |
-                                +--------------+
-```
+## Overview
 
-## 3. 模块映射
+`eph-utils` is the shared foundation library consumed by every other
+`eph-*` subproject in the `ephemeral_dev` monorepo (`eph-core`,
+`eph-containers`, `eph-transport`, `eph-net`, `eph-dpdk`, `eph-fix`,
+`eph-itch`, `eph-json`, `eph-book`). It sits one layer above `eph-core`
+(which owns the pure concepts and error types) and provides the
+platform-specific primitives that latency-sensitive code needs: reading
+the hardware timestamp counter, computing HDR latency histograms,
+pinning threads to isolated cores, allocating on huge pages, building
+regulatory audit trails, and measuring system resource usage.
 
-| 模块/文件 | 职责 | 关键类型/函数 | 依赖 |
-|-----------|------|---------------|------|
-| `alignment.hpp` | 缓存行对齐常量与模板 | `CACHE_LINE_SIZE`, `Align<T>` | 无 |
-| `cpu.hpp` | CPU 拓扑检测、线程亲和性、自旋等待 | `CpuTopologyInfo`, `get_cpu_topology()`, `set_thread_affinity()`, `cpu_relax()` | spdlog, immintrin.h |
-| `time.hpp` | 基于硬件 TSC 的纳秒级计时器 | `TSC` (静态类) | spdlog, immintrin.h/x86intrin.h, arm_neon.h |
-| `record.hpp` | 性能基准测试与延迟统计框架 | `HdrHistogram`, `Recorder`, `ConcurrentRecorder`, `ScopedTSC`, `SystemStats`, `Stats` | `time.hpp`, spdlog |
-| `utils.hpp` | 聚合头文件 | - | 所有上述模块 |
+The library is header-only — `xmake.lua` declares it as
+`set_kind("headeronly")` with `add_includedirs("include", { public =
+true })` and pulls `spdlog` in as a public package. Consumers get the
+symbols by `#include <eph/utils/...>`; nothing needs to be linked.
+Every translation unit that uses logging gets its level filtered at
+compile time via `SPDLOG_ACTIVE_LEVEL` set from the root-level
+`net_log_level` variable (`SPDLOG_LEVEL_TRACE` in debug, `_INFO` in
+release).
 
-## 4. 数据流
+The API surface is organised by concern: one header per primitive
+(`time.hpp`, `cpu.hpp`, `hugepage.hpp`, ...), plus two aggregation
+headers (`utils.hpp` includes every public header, `record.hpp` groups
+the three recording-related ones). Prefer including the specific header
+for build-time reasons; the `utils.hpp` shortcut exists for prototypes.
 
-### 典型性能测量流程
+---
 
-```
-程序启动
-  |
-  v
-TSC::init()  ──> 预热 CPU ──> 多轮采样校准
-  |                            steady_clock
-  |                            对比 rdtscp
-  v
-ns_per_cycle_ 确定
-  |
-  v
-热路径循环:
-  TSC::now() ──> rdtscp/cntvct ──> start_cycles
-  [被测代码]
-  TSC::now() ──────────────────> end_cycles
-  |
-  v
-Recorder::record(end - start)
-  |
-  v
-HdrHistogram::record(cycles)
-  ├── counts_index_for(value) ──> 对数桶定位
-  └── counts_[idx]++
-  |
-  v
-Recorder::compute_stats()
-  ├── get_percentiles({50, 90, 99, 99.9})
-  ├── cycles * ns_per_cycle_ ──> 转换为纳秒
-  └── 返回 Stats 结构体
-  |
-  v
-输出: print_report() / export_json() / export_csv()
-```
+## Architecture
 
-### ConcurrentRecorder 多线程数据流
+Classic loosely-coupled header library: each module is independent
+except for a few explicit edges (recording depends on timing,
+`cpu.hpp::spin_for_ns` depends on `time.hpp`, `audit_log.hpp` depends on
+`time.hpp`). No global state beyond `TSC`'s `call_once` calibration and
+`cpu_pin.hpp`'s process-wide pinned-cpu registry.
+
+### Component Diagram
 
 ```
-Thread 1 ──> thread_local HdrHistogram ──┐
-Thread 2 ──> thread_local HdrHistogram ──┤ merge_all()
-Thread N ──> thread_local HdrHistogram ──┤────────────> Stats
-                                         |
-线程退出 ──> retire_local() ──> retired_  |
-             histogram (mutex保护) ───────┘
+                   +----------------------------+
+                   |     eph/utils.hpp          |
+                   | (aggregation of all below) |
+                   +----------------------------+
+                              |
+   +-------+-------+-------+--+----+-------+-------+-------+-------+
+   v       v       v       v       v       v       v       v       v
+ align   audit  console   cpu   cpu_pin   ema    huge-  phased  system
+ ment    _log   _sink     .hpp  .hpp              page  _timer  _stats
+ 0deps   deps:  deps:    deps: deps:     0deps   deps:  deps:   0deps
+         time   core     +time +logs             logs   time
+         +core  +logs
+
+        time.hpp (TSC)                          record.hpp
+          ^                                     (aggregator)
+          |                                     includes:
+        hdr_histogram / recorder                hdr_histogram
+          (nanos <-> cycles, percentile,        recorder
+           per-thread merge, JSON/CSV)          system_stats
+
+  timestamp.hpp (wall-clock, ISO8601): 0 internal deps
 ```
 
-## 5. 关键组件
+All modules emit logs via a per-module spdlog logger name
+(`utils.tsc`, `utils.cpu`, `utils.hugepage`, `utils.ema`, ...), created
+lazily inside a `detail::xxx_logger()` helper. This keeps logger
+creation out of the hot path while letting operators filter by
+subsystem.
 
-### 5.1 TSC (时间戳计数器)
-- **文件**: `include/eph/utils/time.hpp`
-- **用途**: 提供约 20 cycles 开销的纳秒级计时，基于 x86 `rdtscp` 或 ARM64 `cntvct_el0`
-- **接口**:
-  ```cpp
-  static bool init(std::chrono::milliseconds duration = 200ms);
-  static uint64_t now() noexcept;
-  static std::optional<double> to_ns(uint64_t cycles) noexcept;
-  static std::optional<uint64_t> to_cycles(Rep ns) noexcept;
-  ```
-- **注意**: 校准采用 5 轮采样取中位数，变异系数超过 1% 会发出警告。非线程安全的 `init()` 必须在并发使用前调用一次。
+---
 
-### 5.2 HdrHistogram (高动态范围直方图)
-- **文件**: `include/eph/utils/record.hpp` (第 89-507 行)
-- **用途**: 在宽范围内（如 1ns-10s）以恒定相对精度记录延迟分布，基于 Gil Tene 算法
-- **接口**:
-  ```cpp
-  bool record(uint64_t value) noexcept;          // ~5-10ns/次
-  uint64_t get_value_at_percentile(double p) const noexcept;
-  std::vector<uint64_t> get_percentiles(const std::vector<double>&) const;
-  bool merge(const HdrHistogram& other) noexcept;
-  std::string report(std::string_view title, std::string_view unit) const;
-  ```
-- **注意**: 非线程安全。内部使用对数桶映射 (`counts_index_for`)，内存约 ~20KB（3位有效数字，1-34G cycles 范围）。
+## Module Map
 
-### 5.3 Recorder (单线程性能记录器)
-- **文件**: `include/eph/utils/record.hpp` (第 674-1028 行)
-- **用途**: 封装 HdrHistogram + TSC 转换，提供完整的基准测试工作流
-- **接口**:
-  ```cpp
-  bool record(uint64_t cycles) noexcept;
-  std::optional<Stats> compute_stats() const noexcept;
-  void print_report() const;
-  bool export_json(const std::string& dir = "outputs") const;
-  bool export_csv(const std::string& dir = "outputs") const;
-  ```
+| Module / File                      | Responsibility                                                                 | Key Types                                                                 | Depends On                           |
+|------------------------------------|---------------------------------------------------------------------------------|---------------------------------------------------------------------------|--------------------------------------|
+| `alignment.hpp`                    | `CACHE_LINE_SIZE`, `Align<T>` for false-sharing prevention                     | `Align<T>`                                                                | `<cstddef>`                          |
+| `time.hpp`                         | TSC calibration and reads; ns <-> cycle conversion                             | `TSC`                                                                     | spdlog, `<atomic>`, intrinsics       |
+| `timestamp.hpp`                    | Constexpr unit conversions, wall-clock `now_ns/ms`, ISO 8601 format            | -                                                                         | `<ctime>`, `<format>`                |
+| `cpu.hpp`                          | Topology discovery, affinity, real-time scheduling, `cpu_relax`, `spin_for_ns` | `CpuTopologyInfo`, `RealtimePolicy`                                       | spdlog, pthread, `time.hpp`          |
+| `cpu_pin.hpp`                      | Strict pinning with isolcpus / SMT / NUMA / IRQ validation                     | `CpuPinPolicy`                                                            | spdlog, pthread, `<filesystem>`      |
+| `hugepage.hpp`                     | `mmap(MAP_HUGETLB)` + fallback allocator                                       | `HugePage`, `HugePage::Deleter<T>`                                        | spdlog, `<sys/mman.h>`               |
+| `ema.hpp`                          | O(1) EMA + dual-EMA crossover detector with NaN/Inf guards                     | `Ema`, `EmaCrossover`, `EmaCrossover::Signal`                             | spdlog                               |
+| `audit_log.hpp`                    | Fixed-size ring buffer audit trail with single- and multi-writer modes         | `AuditEvent`, `Side`, `AuditEntry`, `AuditLog<Capacity>`                  | spdlog, `time.hpp`                   |
+| `console_sink.hpp`                 | `core::MetricsSink` impl that logs structured metric lines                     | `ConsoleSink`                                                             | spdlog, `eph/core/metrics_concept.hpp` |
+| `system_stats.hpp`                 | RAII `getrusage` profiler with delta / JSON / `std::format` support            | `SystemResourceStats`, `SystemStats`                                      | spdlog, `<sys/resource.h>`           |
+| `hdr_histogram.hpp`                | Gil Tene HDR histogram + `measure_tsc` + `ScopedTSC` + `Stats` struct          | `HdrHistogram`, `ScopedTSC`, `Stats`, `measure_tsc`                       | `eph/core/detail/json_escape.hpp`, `time.hpp` |
+| `recorder.hpp`                     | `Recorder` + `ConcurrentRecorder` (TSC -> HDR -> JSON/CSV)                     | `Recorder`, `ConcurrentRecorder`                                          | `hdr_histogram.hpp`, `time.hpp`      |
+| `record.hpp`                       | Aggregation header (hdr + recorder + system_stats)                             | -                                                                         | the three above                      |
+| `phased_timer.hpp`                 | Two-phase TSC deadline timer (warmup + measurement window)                     | `PhasedTimer`                                                             | `time.hpp`                           |
+| `utils.hpp`                        | Top-level aggregation of every public header                                   | -                                                                         | all of the above                     |
 
-### 5.4 ConcurrentRecorder (多线程性能记录器)
-- **文件**: `include/eph/utils/record.hpp` (第 1059-1360 行)
-- **用途**: 通过 thread_local HdrHistogram 实现零竞争的多线程延迟记录
-- **接口**: 与 Recorder 基本一致 (`record`, `compute_stats`, `print_report`)
-- **注意**: 使用 `shared_ptr<SharedState>` 管理生命周期，确保 thread_local 析构器在 ConcurrentRecorder 销毁后仍能安全 merge 数据到退役缓冲区。`record()` 热路径仅检查一次指针，无锁无竞争。
+---
 
-### 5.5 get_cpu_topology / set_thread_affinity
-- **文件**: `include/eph/utils/cpu.hpp`
-- **用途**: 检测 CPU Socket/Core/Thread 拓扑，绑定线程到指定核心
-- **接口**:
-  ```cpp
-  std::vector<CpuTopologyInfo> get_cpu_topology();  // 解析 /proc/cpuinfo
-  void set_thread_affinity(unsigned cpu_id);         // pthread_setaffinity_np
-  void cpu_relax() noexcept;                         // PAUSE/YIELD 指令
-  ```
-- **注意**: ARM 上 /proc/cpuinfo 缺少 `physical id`/`core id` 字段时自动降级为简化拓扑。
+## Data Flow
 
-### 5.6 HugePage (大页内存分配器)
-- **文件**: `include/eph/utils/hugepage.hpp`
-- **用途**: 尝试分配 2MB 大页内存（Linux mmap MAP_HUGETLB），失败自动回退到 aligned_alloc
-- **接口**:
-  ```cpp
-  template<typename T, typename... Args>
-  static auto make(Args&&... args);  // 返回 unique_ptr<T, Deleter<T>>
-  static void* allocate(size_t size, size_t alignment,
-                        bool& is_hugepage, size_t& out_allocated_size);
-  static void deallocate(void* ptr, size_t size, bool is_hugepage);
-  ```
-- **注意**: 自定义 `Deleter<T>` 捕获分配元数据（大小、是否大页），通过 placement new 构造对象并在析构时正确调用析构函数和释放内存。
+The canonical hot path is: read TSC -> run the code under test -> read
+TSC again -> record the delta into a per-thread histogram -> merge ->
+format as JSON/CSV/console.
 
-### 5.7 SystemStats (系统资源采集器)
-- **文件**: `include/eph/utils/record.hpp` (第 560-649 行)
-- **用途**: RAII 风格的 `getrusage` 封装，采集缺页、上下文切换、CPU 时间
-- **接口**:
-  ```cpp
-  SystemResourceStats snapshot() const noexcept;
-  void print_report() const;
-  void reset() noexcept;
-  ```
-
-### 5.8 Align<T> / CACHE_LINE_SIZE
-- **文件**: `include/eph/utils/alignment.hpp`
-- **用途**: 编译期缓存行对齐计算，`Align<T>` 取 `alignof(T)` 和 64 的较大值
-- **注意**: 纯 constexpr，零运行时开销。
-
-## 6. 入口点与 API
-
-| 入口 | 类型 | 说明 |
-|------|------|------|
-| `#include <eph/utils.hpp>` | 聚合头文件 | 包含所有模块 |
-| `TSC::init()` | 初始化 | 必须在程序启动时调用一次 |
-| `TSC::now()` | 热路径 | 读取硬件时间戳，~20 cycles |
-| `Recorder::record()` | 热路径 | 记录延迟样本 |
-| `ConcurrentRecorder::record()` | 热路径(多线程) | 零竞争延迟记录 |
-| `HugePage::make<T>()` | 工厂函数 | 大页内存对象创建 |
-| `get_cpu_topology()` | 初始化 | CPU 拓扑检测 |
-| `set_thread_affinity()` | 初始化 | 线程绑核 |
-| `Recorder::export_json/csv()` | 输出 | 导出性能数据 |
-
-## 7. 依赖关系
-
-### 内部模块依赖图
+### Flow Diagram
 
 ```
-alignment.hpp    cpu.hpp    time.hpp
-     |              |          |
-     |              |          |
-     v              v          v
-     +-------- utils.hpp ------+
-                               |
-                    time.hpp <-+
-                       ^
-                       |
-                  record.hpp
+ startup                                hot path                          teardown
+ ----------                             ----------                        ---------
+
+ TSC::init() ---> do_init_() ----+
+                                 |
+        rdtscp vs steady_clock   |
+        5 samples, median        |
+        CV check (<1% stable)    |
+        publish ns_per_cycle_    |
+            (atomic release)     |
+                                 v
+                        initialized_=true
+                                 |
+                                 |
+ thread_local guard ----> register_local (one-time)
+                                 |
+                                 |
+                    Loop:  TSC::now() -- rdtscp / cntvct -----> t0
+                           [code under test]
+                           TSC::now() -------------------------> t1
+                                 |
+                                 v
+                           Recorder::record(t1 - t0)
+                                 |
+                                 v
+                           HdrHistogram.record(cycles)
+                                 |                         TSC::to_ns(cycles)
+                                 v                          (1 x multiply)
+                           counts_[counts_index_for(cycles)]++
+                                 |
+                                 v
+ (thread exits)  ----> retire_local() merges into
+                       retired_histogram (mutex)
+                                                           compute_stats()
+                                                           merge_all()
+                                                           (retired + active)
+                                                                  |
+                                                                  v
+                                                           get_percentiles(...)
+                                                           apply ns_per_cycle_
+                                                           -> Stats
+                                                                  |
+                                                                  v
+                                                      print_report / export_json
+                                                      / export_csv to outputs/
 ```
 
-### 外部依赖
+The key design choice: cycle deltas are stored as-is in the histogram,
+and conversion to nanoseconds happens only at report time. This keeps
+`record()` at the cost of one `std::min`, one `std::max`, one `bit_width`
+and one array increment — no floating-point multiplication on the hot
+path.
 
-| 包名 | 用途 | 引入模块 |
-|------|------|----------|
-| spdlog | 结构化日志 | cpu.hpp, time.hpp, hugepage.hpp |
-| immintrin.h / x86intrin.h | x86 SIMD/TSC 指令 | cpu.hpp, time.hpp |
-| arm_neon.h | ARM64 NEON 指令 | time.hpp |
-| sys/mman.h | mmap 大页分配 | hugepage.hpp (Linux) |
-| sys/resource.h | getrusage 系统资源 | record.hpp |
-| pthread | 线程亲和性 | cpu.hpp (Linux) |
+---
 
-## 8. 测试
+## Key Components
 
-本库为头文件库，无独立的测试目录。测试通过上层模块（eph-containers、eph-net 的示例和基准测试）间接覆盖。
+### `TSC`
 
-| 可测场景 | 对应组件 | 说明 |
-|----------|----------|------|
-| TSC 校准精度 | `TSC::init()` | 验证 CV < 1%，频率在 0.5-10 GHz |
-| TSC 单调性 | `TSC::now()` | 连续调用应单调递增 |
-| HdrHistogram 百分位精度 | `HdrHistogram` | 已知分布输入验证 p50/p99 |
-| Recorder JSON/CSV 导出 | `Recorder` | 文件格式验证 |
-| ConcurrentRecorder 线程安全 | `ConcurrentRecorder` | 多线程并发 record + merge |
-| 大页回退 | `HugePage` | 无大页配置时应回退到 aligned_alloc |
-| CPU 拓扑 ARM 降级 | `get_cpu_topology()` | 无 physical id 时简化拓扑 |
-| 对齐计算 | `Align<T>` | 编译期 static_assert 验证 |
+**File**: `include/eph/utils/time.hpp`
+**Purpose**: Nanosecond-precision timing based on the CPU hardware
+timestamp counter. Reads `rdtscp` on x86-64, `cntvct_el0` on ARM64, falls
+back to `std::chrono::steady_clock` elsewhere.
+**Interface**:
+```cpp
+static bool     init(std::chrono::milliseconds = 200ms);
+static uint64_t now() noexcept;                       // ~20 cycles
+static std::optional<double>   to_ns(uint64_t cycles);
+static std::optional<uint64_t> to_cycles(double ns);
+static std::optional<uint64_t> to_cycles(chrono::duration d);
+static std::optional<double>   delta_ns(uint64_t start, uint64_t end);
+static bool                    is_initialized() noexcept;
+static std::optional<double>   get_ns_per_cycle() noexcept;
+static std::optional<double>   get_calibration_cv() noexcept;
+```
+**Notes**:
+- `init()` is guarded by `std::call_once`; subsequent calls are cheap.
+- Calibration takes 5 samples and uses the median, rejecting outliers.
+- Emits an ERROR log if the CV exceeds 1% — the result is still
+  published, but caller is warned the clock may be unstable.
+- Checks `/proc/cpuinfo` for `constant_tsc` / `nonstop_tsc` /
+  `tsc_reliable` flags and warns if missing.
+- `to_cycles` rejects NaN via `!(ns >= 0)` — a direct `< 0` check would
+  let NaN through (all NaN comparisons are false).
 
-**模板复杂度说明**: 模板使用较为克制，主要集中在 `HugePage::make<T>` (完美转发 + placement new + 自定义删除器)、`TSC::to_cycles` (duration 重载) 和 `Recorder` 的 `measure_tsc` (concepts constrained)。无深层模板元编程。
+### `HdrHistogram`
 
-**平台差异边界**: 所有平台相关代码通过 `#if defined(__linux__)` / `#if defined(__x86_64__)` / `#if defined(__aarch64__)` 条件编译隔离，非支持平台均有合理的 fallback 实现。
+**File**: `include/eph/utils/hdr_histogram.hpp`
+**Purpose**: Gil Tene's HDR Histogram algorithm — records value
+distributions over a wide dynamic range (e.g. 1 ns to 10 s) with
+constant relative precision (default 3 significant figures).
+**Interface**:
+```cpp
+HdrHistogram(uint64_t lowest, uint64_t highest, int sig_figs = 3);
+bool record(uint64_t value);                            // ~5-10 ns
+bool record_values(uint64_t value, uint64_t count);
+bool record_corrected(uint64_t value, uint64_t expected_interval);
+uint64_t             get_value_at_percentile(double p);
+std::vector<uint64_t> get_percentiles(std::vector<double>);
+double               get_percentile_at_or_below(uint64_t value);
+bool merge(const HdrHistogram& other);
+bool subtract(const HdrHistogram& other);
+void for_each_recorded_value(Func);
+void for_each_linear(uint64_t step, Func);
+void for_each_percentile(Func, int ticks_per_half = 5);
+std::string report(title, unit);
+std::string to_json();
+std::string output_percentile_distribution(double scale);
+```
+**Notes**:
+- Not thread-safe. Use `ConcurrentRecorder` for multi-threaded cases.
+- `record_corrected` implements Gil Tene's coordinated-omission
+  correction: for a periodic workload, a stall produces one high sample
+  and hides the samples that would have been taken during the stall —
+  this method back-fills them.
+- `subtract()` validates that no bucket underflows before mutating, so
+  a failed call leaves the histogram untouched.
+- Memory use is bounded by `kMaxCountsLen = 10'000'000`; wider ranges
+  or higher precision trigger `std::invalid_argument`.
+
+### `Recorder` / `ConcurrentRecorder`
+
+**File**: `include/eph/utils/recorder.hpp`
+**Purpose**: Wrap an HdrHistogram with TSC-aware recording, Stats
+computation, console reports, and JSON/CSV export. `Recorder` is
+single-threaded; `ConcurrentRecorder` maintains one `thread_local`
+histogram per thread.
+**Interface** (same shape for both):
+```cpp
+explicit Recorder(std::string name,
+                  uint64_t lowest_cycles = 1,
+                  uint64_t highest_cycles = 0, // auto = ~10s
+                  int precision = 3);
+
+bool record(uint64_t cycles);
+bool record_values(uint64_t cycles, uint64_t count);
+std::optional<Stats> compute_stats() const;
+void print_report() const;
+bool export_json(const std::string& dir = "outputs");
+bool export_csv (const std::string& dir = "outputs");
+bool export_all (const std::string& dir = "outputs");
+void reset();
+```
+**Notes**:
+- Constructors ensure TSC is initialized (call `TSC::init()` on demand)
+  and throw `std::runtime_error` on failure.
+- `record_values` saturates at `UINT64_MAX` on `cycles * count` overflow
+  rather than silently wrapping — corrupted averages were a real bug.
+- `ConcurrentRecorder` uses `std::shared_ptr<SharedState>` so the
+  `thread_local` retirement hook can safely merge data into the shared
+  buffer even if the `ConcurrentRecorder` instance has already been
+  destroyed. Each thread holds an `unordered_map<SharedState*, ...>`
+  keyed by recorder, so interleaved use of multiple recorders from the
+  same thread doesn't thrash the guard.
+- `compute_and_reset()` does the merge + reset atomically under one
+  lock acquisition, avoiding the lost-sample gap of separate
+  `compute_stats()` + `reset()` calls.
+
+### `CpuPinPolicy` / `pin_thread_strict`
+
+**File**: `include/eph/utils/cpu_pin.hpp`
+**Purpose**: Low-latency and HFT workloads need more than bare affinity
+— the pinned core should also be isolated from the scheduler, not share
+an SMT sibling with another pinned thread, stay on the same NUMA node
+as peers, and ideally be free of NIC IRQ storms. `pin_thread_strict`
+enforces all of that.
+**Interface**:
+```cpp
+struct CpuPinPolicy {
+    bool require_isolcpus            = true;
+    bool require_no_sibling_conflict = true;
+    bool require_same_numa           = true;
+    bool warn_irq_overlap            = true;
+};
+std::expected<void, std::string>
+pin_thread_strict(int cpu, std::string_view name, CpuPinPolicy = {});
+void reset_pin_registry_for_tests() noexcept;
+```
+**Notes**:
+- Maintains a process-wide `std::set<int>` of already-pinned cpus,
+  guarded by a mutex, so SMT / NUMA checks are cross-thread aware.
+- isolcpus check parses `/sys/devices/system/cpu/isolated`.
+- SMT check parses `/sys/.../cpuN/topology/thread_siblings_list`.
+- NUMA check probes `/sys/.../cpuN/node*` up to node 63.
+- IRQ check parses `/proc/interrupts`, warns only — doesn't fail the
+  call (rebinding NIC IRQs typically needs root).
+- After `pthread_setaffinity_np` it calls `pthread_getaffinity_np` and
+  verifies the mask is exactly `{cpu}` — catches silent quota failures.
+
+### `HugePage`
+
+**File**: `include/eph/utils/hugepage.hpp`
+**Purpose**: Allocate long-lived hot-path objects on 2 MB huge pages to
+reduce TLB misses. Transparent fallback to `std::aligned_alloc` on
+failure, so callers don't have to handle the no-huge-pages case.
+**Interface**:
+```cpp
+template <class T, class... Args>
+static auto make(Args&&... args);  // unique_ptr<T, Deleter<T>>
+
+static void* allocate(size_t size, size_t alignment,
+                      bool& is_hugepage,
+                      size_t& out_allocated_size) noexcept;
+static void  deallocate(void* ptr, size_t size, bool is_hugepage) noexcept;
+```
+**Notes**:
+- Linux: `mmap(MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB)`; on failure
+  falls back to `std::aligned_alloc` and logs a WARN.
+- Windows: `VirtualAlloc(MEM_LARGE_PAGES)`, gated on
+  `GetLargePageMinimum`.
+- Other platforms go straight to `std::aligned_alloc`.
+- `Deleter<T>` captures both `size` (rounded up to the huge-page
+  boundary so `munmap` gets the right length) and `is_hugepage` (to
+  pick the right release path), and calls `ptr->~T()` before freeing.
+- Zero-size allocations return `nullptr` rather than undefined behavior.
+
+### `AuditLog<Capacity>`
+
+**File**: `include/eph/utils/audit_log.hpp`
+**Purpose**: Regulatory audit trail (MiFID II / Reg NMS) — every order
+lifecycle event gets a TSC-timestamped entry in a fixed 64-byte slot.
+**Interface**:
+```cpp
+enum class AuditEvent : uint8_t { NewOrder, ..., KillSwitch };
+enum class Side : uint8_t { Buy = 1, Sell = 2 };
+struct alignas(64) AuditEntry { ...; std::string dump() const; };
+
+template <size_t Capacity = 65536>
+  requires (std::has_single_bit(Capacity))
+class AuditLog {
+    bool record   (AuditEvent, order_id, price, qty, Side, venue);
+    bool record_mt(AuditEvent, order_id, price, qty, Side, venue);
+    const AuditEntry* at(size_t offset) const;   // 0 = newest
+    const AuditEntry* latest() const;
+    size_t flush_to_file(std::string_view path) const;
+    std::string dump(size_t max_entries = 20) const;
+};
+```
+**Notes**:
+- `Capacity` must be a power of two (enforced via `std::has_single_bit`
+  concept).
+- Single-writer `record()` asserts in debug that it's always called
+  from the same thread — accidental cross-thread use is a silent data
+  race otherwise.
+- Multi-writer `record_mt()` uses `fetch_add` on the head index, then
+  publishes the slot via a per-slot `committed_[idx]` atomic flag so
+  readers can distinguish "being written" from "fully written".
+- Wrap-around is logged exactly once per full wrap to avoid flooding
+  hot-path logs.
+
+### `SystemStats`
+
+**File**: `include/eph/utils/system_stats.hpp`
+**Purpose**: RAII wrapper around `getrusage` — captures CPU user/sys
+time, major/minor page faults, voluntary/involuntary context switches,
+peak and current RSS, and thread count. Deltas computed in
+`snapshot()`.
+**Notes**: POSIX-only (static_assert at top of file). `std::formatter`
+specialization produces a single-line summary for logging. Move
+semantics correctly transfer the auto-log responsibility and clear the
+source's flag to avoid duplicate logs on destruction.
+
+---
+
+## Entry Points & APIs
+
+| Entrypoint                         | Type          | Description                                                         |
+|------------------------------------|---------------|---------------------------------------------------------------------|
+| `#include <eph/utils.hpp>`         | aggregator    | Pulls in every public header                                        |
+| `TSC::init()`                      | init-once     | Must run before any `to_ns`/`to_cycles` call                        |
+| `TSC::now()`                       | hot path      | 20-cycle hardware timestamp                                         |
+| `Recorder::record(cycles)`         | hot path      | Record a single latency sample                                      |
+| `ConcurrentRecorder::record(c)`    | hot path      | Zero-contention per-thread record                                   |
+| `HugePage::make<T>(args...)`       | factory       | Construct `T` on huge-page memory                                   |
+| `pin_thread_strict(cpu, name, p)`  | init          | Strict pinning with topology validation                             |
+| `AuditLog<N>::record(...)`         | hot path      | Single-writer audit entry                                           |
+| `AuditLog<N>::record_mt(...)`      | hot path      | CAS multi-writer audit entry                                        |
+| `spin_for_ns(n)`                   | hot path      | Busy-wait ~n ns via TSC + `cpu_relax`                               |
+| `ConsoleSink::push_counter(...)`   | sink          | `core::MetricsSink` implementation                                  |
+| `SystemStats::snapshot()`          | sampling      | `getrusage` delta                                                   |
+
+---
+
+## Dependencies
+
+### Internal (module graph within eph-utils)
+
+```
+                 alignment.hpp   timestamp.hpp
+                    (0 dep)        (0 dep)
+
+                       time.hpp ----+
+                       (TSC)        |
+                          ^         |
+                          |         |
+                     +----+---+-----+-----+-------+
+                     |        |           |       |
+                 cpu.hpp   audit_log  hdr_histogram  phased_timer
+                 (uses     .hpp       .hpp           .hpp
+                 time for             ^
+                 spin_for_ns)         |
+                                   recorder.hpp
+                                   (Recorder, ConcurrentRecorder)
+                                       ^
+                                       |
+                                   record.hpp (aggregator)
+                                   includes hdr_histogram,
+                                   recorder, system_stats
+
+ cpu_pin.hpp, ema.hpp, hugepage.hpp, console_sink.hpp — all independent
+ (console_sink pulls eph/core/metrics_concept.hpp from eph-core)
+
+ utils.hpp aggregates *all* of the above.
+```
+
+### External
+
+| Package                   | Version  | Purpose                                   |
+|---------------------------|----------|-------------------------------------------|
+| spdlog                    | any      | All leveled logging (public dep)          |
+| eph-core                  | sibling  | `core::MetricsSink`, `core::detail::json_escape` |
+| gtest                     | any      | Unit tests (`rule("eph-test")`)           |
+| benchmark                 | any      | Microbenchmarks (`rule("eph-bench")`)     |
+
+### System headers (conditionally included)
+
+| Header                              | Used by                       | Platform          |
+|-------------------------------------|-------------------------------|-------------------|
+| `<immintrin.h>`, `<x86intrin.h>`    | `time.hpp`, `cpu.hpp`         | x86-64            |
+| `<arm_neon.h>`                      | `time.hpp`                    | ARM64             |
+| `<sched.h>`, `<pthread.h>`          | `cpu.hpp`, `cpu_pin.hpp`      | Linux             |
+| `<sys/mman.h>`                      | `hugepage.hpp`                | Linux             |
+| `<mach/mach.h>`                     | `cpu.hpp` (realtime QoS)      | macOS             |
+| `<memoryapi.h>`                     | `hugepage.hpp`                | Windows           |
+| `<sys/resource.h>`                  | `system_stats.hpp`            | POSIX             |
+
+---
+
+## Testing
+
+| Test Suite                        | Location                                | Coverage Focus                                       |
+|-----------------------------------|-----------------------------------------|------------------------------------------------------|
+| `test_alignment`                  | `tests/test_alignment.cpp`              | Compile-time `Align<T>` values                       |
+| `test_audit_log`                  | `tests/test_audit_log.cpp`              | Ring wrap, CAS multi-writer, dump, flush_to_file     |
+| `test_console_sink`               | `tests/test_console_sink.cpp`           | Counter/gauge/histogram formatting, tag quoting      |
+| `test_cpu`                        | `tests/test_cpu.cpp`                    | Topology parsing, affinity, `CpuTopologyInfo` format |
+| `test_cpu_pin`                    | `tests/test_cpu_pin.cpp`                | isolcpus / SMT / NUMA / IRQ checks                   |
+| `test_ema`                        | `tests/test_ema.cpp`                    | alpha bounds, NaN/Inf rejection, crossover edge cases|
+| `test_hdr_histogram`              | `tests/test_hdr_histogram.cpp`          | Percentiles, merge, subtract, coordinated omission   |
+| `test_hugepage`                   | `tests/test_hugepage.cpp`               | Zero-size guard, fallback, deleter                   |
+| `test_record`                     | `tests/test_record.cpp`                 | `Stats::dump` / `to_json` / `operator-`              |
+| `test_recorder`                   | `tests/test_recorder.cpp`               | Record, merge, JSON/CSV export, overflow saturation  |
+| `test_spin_for_ns`                | `tests/test_spin_for_ns.cpp`            | 1us / 10us / 100us busy-wait accuracy                |
+| `test_system_stats`               | `tests/test_system_stats.cpp`           | Delta, move semantics, format                        |
+| `test_time`                       | `tests/test_time.cpp`                   | TSC calibration, CV, NaN/Inf edge cases              |
+| `test_timestamp`                  | `tests/test_timestamp.cpp`              | ms/us/ns conversions, ISO 8601, Y2K38 guard          |
+| `test_version`                    | `tests/test_version.cpp`                | Version string                                       |
+
+Key test scenarios:
+- **Boundary values**: zero-size HugePage allocate, zero-cycle Recorder,
+  empty histogram reports, NaN inputs to `TSC::to_cycles` /
+  `Ema::update` / `HdrHistogram::output_percentile_distribution`.
+- **Overflow saturation**: `Recorder::record_values` with cycles * count
+  exceeding `UINT64_MAX` must saturate, not wrap.
+- **Race-adjacent**: `AuditLog::record_mt` under concurrent writers
+  verified to never expose partially-written entries to readers.
+- **TOCTOU**: `recorder_detail::ensure_directory` no longer races
+  between `fs::exists` and `fs::create_directories`.
+- **Format edge cases**: `format_timestamp_ms` with negative epoch ms
+  uses Euclidean division for the correct "1969-12-31T23:59:59.999Z"
+  result.
+
+Historical production hardening (from git log): NaN rejection in
+`TSC::to_cycles` and `HdrHistogram::output_percentile_distribution`,
+`HdrHistogram::subtract` now accounts for `dropped_count_`,
+`SystemStats` move semantics reset `auto_log_` on the source to avoid
+duplicate logs, `ConsoleSink` quotes tag values containing special
+characters, `sanitize_filename` casts to unsigned char before
+`std::isalnum` to avoid UB on UTF-8 continuation bytes.

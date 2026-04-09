@@ -1,89 +1,138 @@
 # eph-dpdk
 
-Header-only C++23 library for ultra-low-latency networking over DPDK, bypassing the kernel network stack entirely. Provides a full user-space TCP/IP stack, UDP unicast/multicast, ARP and DNS resolution, NIC flow steering, and a high-level connector API for one-call connection setup.
+Header-only C++23 library wrapping DPDK with a safer, higher-level interface for
+ultra-low-latency networking. Bypasses the kernel network stack entirely and
+provides a full user-space TCP/IP stack, UDP unicast/multicast, ARP/DNS
+resolution, NIC flow steering, and a one-call connector for typical HFT
+connection setup.
 
-Part of the **eph** HFT library ecosystem. Serves as the DPDK backend for the generic `eph-transport` layer, replacing kernel sockets with direct NIC I/O via DPDK poll-mode drivers.
+Part of the **eph** ecosystem. Serves as the DPDK backend for the generic
+`eph-transport` layer, replacing kernel sockets with direct NIC I/O via DPDK
+poll-mode drivers. Also provides the real DPDK client used by the latency
+benchmarks at the repository root.
 
-## Key Components
+## Features
 
-All headers are under `include/eph/dpdk/`:
+- **Full user-space TCP**: three-way handshake, seq/ack tracking, out-of-order
+  reordering, FIN/RST, TIME_WAIT, CSPRNG ISN generation, delayed ACKs. No
+  retransmission, Nagle, congestion control, or SACK (designed for data-center
+  environments where packet loss triggers immediate reconnect).
+- **UDP unicast sender** with precomputed 42-byte packet template for
+  deterministic-latency TX, batch send, and optional NIC checksum offload.
+- **UDP multicast receiver** for equity market data feeds (CME MDP3.0, Nasdaq
+  TotalView/MoldUDP64), with zero-copy payload delivery and RFC 1112 MAC filter
+  management.
+- **Protocol-aware Reactor**: `Reactor<bool EnableUdp>` multiplexes up to 16 TCP
+  and 8 UDP connections on a single NIC queue. `if constexpr` guarantees
+  `Reactor<false>` has zero UDP overhead.
+- **Layered zero-copy parsing**: `parse_ip_header()` (L2+L3 only) + separate
+  `parse_tcp_from_ip()` / `parse_udp_from_ip()` for zero-redundancy dispatch.
+- **ARP and DNS over DPDK**: blocking resolvers that work in exclusive-mode PMDs
+  where the kernel network stack is unavailable.
+- **NIC hardware RX dispatch**: runtime detection of RSS / Flow Director
+  capability and `install_flow_rule()` supporting both TCP and UDP 4-tuple rules
+  via RAII `FlowRule` handles.
+- **High-level connector**: single `connect()` call that collapses
+  Platform → MAC → ARP → DNS → TCP → Transport setup. Multiple overloads from
+  simplest (hostname + endpoint) to full control (pre-resolved IP + custom
+  TransportConfig).
+- **Compile-time validation** of platform config, MSS, pool sizes (must be
+  `2^n - 1`), and descriptor counts where possible.
 
-### Layer 0: DPDK Platform
+## Quick Start
 
-- **eal.hpp** -- EAL lifecycle management. `eal_init()` / `eal_cleanup()` free functions plus `EalGuard` RAII wrapper.
-- **platform.hpp** -- Per-port NIC initialization: mempool creation, port/queue configuration, descriptor clamping, link-up polling. `PlatformConfig` is constexpr-validatable.
+### Prerequisites
 
-### Layer 1: Packet Processing
+- Linux (for DPDK poll-mode drivers and hugepages)
+- C++23 compiler (GCC 14+ or Clang 18+)
+- [xmake](https://xmake.io) build system
+- [DPDK](https://www.dpdk.org/) runtime (vcpkg package used by the parent project)
+- [aws-lc](https://github.com/aws/aws-lc) for CSPRNG
+- [spdlog](https://github.com/gabime/spdlog) for structured logging
 
-Split into 3 focused files by change frequency (umbrella `net_header.hpp` includes all):
+ARM64 builds are supported — DPDK uses NEON intrinsics in place of the x86 SSSE3
+`rte_memcpy` path, and the `RTE_FORCE_INTRINSICS` define is set unconditionally
+for the `eph-dpdk` target.
 
-- **packet_core.hpp** -- Constants, `UdpHeader`, byte-order helpers (`hton16/32`, `ntoh16/32`), RFC 1071 `internet_checksum()`, `tcp_checksum()`, `udp_checksum()`, `ConnectionTuple` (protocol-agnostic 4-tuple), IPv4/MAC formatting, ephemeral port generation.
-- **packet_parse.hpp** -- Zero-copy packet parsing with layered API:
-  - `parse_ip_header()` -- L2+L3 only (protocol dispatch, ~3ns)
-  - `parse_tcp_from_ip()` / `parse_udp_from_ip()` -- L4 from pre-parsed IP (zero redundancy)
-  - `parse_packet()` / `parse_udp_packet()` -- convenience wrappers (L2+L3+L4 in one call)
-  - `ParsedIpHeader`, `ParsedPacket` (TCP), `ParsedUdpPacket` (UDP)
-- **packet_template.hpp** -- Precomputed header templates for fast TX:
-  - `PacketTemplate` -- TCP: pre-fill Eth+IP+TCP, update seq/ack/flags per packet
-  - `UdpPacketTemplate` -- UDP: pre-fill 42-byte header, update 3 fields per packet
+### Build
 
-### Layer 2: Protocol Stack
+From the repository root:
 
-- **tcp.hpp** -- Minimal user-space TCP state machine (`TcpSession<ReorderSlots>`). Three-way handshake, seq/ack tracking, ACK generation, window management, FIN/RST, out-of-order reordering. Does NOT implement retransmission, Nagle, congestion control, or SACK. Loss strategy: detect gap, immediate reconnect (~2ms).
-- **udp.hpp** -- UDP unicast sender (`UdpSender`). Fixed-peer design with precomputed `UdpPacketTemplate`. `send()` / `send_batch()` with NIC checksum offload support. `build_udp_packet()` convenience function for one-shot sends.
-- **arp.hpp** -- Stateless blocking ARP resolution (`arp::resolve()`).
-- **dns.hpp** -- User-space DNS A-record resolution over DPDK (`dns::resolve()`). Essential for exclusive-mode PMDs where `getaddrinfo()` is unavailable.
+```bash
+xmake build eph-dpdk     # header-only target, verifies headers compile
+xmake build               # build the whole workspace including tests/benches
+```
 
-### Layer 3: Transport & Dispatch
+### Test
 
-- **reactor.hpp** -- `template <bool EnableUdp = false> class Reactor`. Epoll-style multiplexed RX for up to 16 TCP + 8 UDP connections on a single NIC queue. Single RX thread polls NIC, dispatches via 4-tuple hash match. `if constexpr` guarantees TCP-only mode has zero UDP code overhead. `Reactor<true>` uses layered parse API (`parse_ip_header` -> proto dispatch -> `parse_tcp_from_ip` / `parse_udp_from_ip`) for zero-redundancy packet processing.
-- **flow_steering.hpp** -- NIC hardware RX dispatch: `detect_rx_dispatch_mode()` probes for FlowDirector/RSS/Software. `install_flow_rule()` supports both TCP and UDP 4-tuple rules via `FlowProtocol` enum. RAII `FlowRule` handle.
-- **connector.hpp** -- High-level connection helper. `connect()` collapses Platform -> MAC -> ARP -> DNS -> TCP -> Transport into one call.
-- **multicast.hpp** -- UDP multicast receiver for equity market data feeds. `MulticastReceiver` manages NIC MAC filters (RFC 1112), delivers zero-copy UDP payloads via callback. MoldUDP64 adapter for eph-itch integration.
-- **types.hpp** -- DPDK-specific Transport type aliases (`DpdkTransport`, `DpdkRawTransport`, etc.).
+All tests run without DPDK EAL using fake mbufs and mock structures — no
+root privileges and no NIC required:
 
-### Convenience Header
+```bash
+xmake run test_net_header      # 102 tests — headers, checksum, parse, ConnectionTuple
+xmake run test_tcp             # 62 tests — TcpSession state machine
+xmake run test_reactor         # 45 tests — Reactor hash, TCP/UDP dispatch
+xmake run test_multicast       # 64 tests — MulticastReceiver, MAC derivation
+xmake run test_udp             # 48 tests — UdpSender, UdpConfig, template
+xmake run test_connector       # 67 tests — endpoint validation, DNS fallback
+xmake run test_dns             # 61 tests — DNS codec, security validation
+xmake run test_flow_steering   # 25 tests — FlowRule RAII, dispatch mode
+xmake run test_dpdk_platform   # 48 tests — config validation, clamp_desc
+xmake run test_arp             # 20 tests — ARP constants, packet layout
+xmake run test_eal             # 8  tests — EalGuard traits
+```
 
-- **dpdk.hpp** -- Includes `eal.hpp`, `platform.hpp`, `connector.hpp`, `udp.hpp`, and `types.hpp`.
+## Project Structure
 
-## Public API Quick Reference
+```
+include/eph/dpdk/
+  detail/logger.hpp          compile-time named spdlog factory
+  packet_core.hpp            constants, byte order, checksum, ConnectionTuple
+  packet_parse.hpp           ParsedIpHeader/ParsedPacket/ParsedUdpPacket + parse functions
+  packet_template.hpp        PacketTemplate (TCP) + UdpPacketTemplate
+  net_header.hpp             umbrella header — includes the three above
+  eal.hpp                    EAL lifecycle + EalGuard RAII
+  platform.hpp               PlatformConfig + Platform (port/mempool)
+  tcp.hpp                    TcpSession<ReorderSlots> state machine
+  udp.hpp                    UdpSender + UdpConfig + build_udp_packet()
+  arp.hpp                    ArpPacket + blocking arp::resolve()
+  dns.hpp                    DnsHeader + blocking dns::resolve()
+  multicast.hpp              MulticastReceiver + MoldUDP64 adapter
+  flow_steering.hpp          RxDispatchMode, FlowProtocol, FlowRule, install_flow_rule()
+  reactor.hpp                Reactor<EnableUdp> multiplexed RX
+  connector.hpp              connect() — one-call connection setup
+  types.hpp                  Transport type aliases (DpdkTransport, DpdkRawTransport, ...)
+  dpdk.hpp                   convenience umbrella (eal + platform + connector + udp + types)
 
-### UDP Support (New)
+tests/                       unit tests (run without EAL)
+benchmarks/                  micro-benchmarks (tcp header, udp, memcpy, rte_ring, pipeline)
+fuzzers/                     libFuzzer targets (DNS reply parser)
+scripts/                     dpdk-setup.sh / dpdk-teardown.sh (hugepages, VFIO binding)
+```
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `UdpConfig` | Struct | Fixed-peer TX config: 4-tuple + MAC + port/queue + pool + hw_cksum. `validate()`, `dump()`, `to_json()`. |
-| `UdpSender` | Class | Connected UDP TX handle. `create(cfg)` factory, `send(data, len)`, `send_batch(segs, count)`. |
-| `UdpSenderStats` | Struct | `tx_packets`, `tx_bytes`, `tx_errors`. |
-| `build_udp_packet(...)` | Function | One-shot UDP packet construction without UdpSender. |
-| `UdpPacketTemplate` | Struct | Precomputed 42-byte Eth+IP+UDP header. `fill(mbuf, payload, len)` / `build(pool, payload, len)`. |
-| `udp_checksum(...)` | Function | Full UDP checksum including pseudo-header (for test verification). |
-
-### Layered Parse API (New)
-
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `ParsedIpHeader` | Struct | Minimal L2+L3 parse result: `eth`, `ip`, `ihl`, `proto`. |
-| `parse_ip_header(mbuf)` | Function | L2+L3 only -- protocol dispatch without L4 parsing. |
-| `parse_tcp_from_ip(mbuf, ip_hdr)` | Function | TCP L4 from pre-parsed IP. Zero-redundancy. |
-| `parse_udp_from_ip(mbuf, ip_hdr)` | Function | UDP L4 from pre-parsed IP. Zero-redundancy. |
-
-### Reactor UDP Support (New)
-
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `Reactor<bool EnableUdp>` | Class template | `Reactor<false>` = TCP-only (identical codegen to old Reactor). `Reactor<true>` = TCP + UDP. |
-| `UdpReactorCallback` | Type alias | `function<void(const uint8_t*, uint16_t, size_t)>`. |
-| `UdpReactorEntry` | Struct | UDP entry: `tuple` + `on_data`. |
-| `add_udp(tuple, cb)` | Method | Register UDP entry (requires `EnableUdp`). Before `start()`. |
-| `set_udp_active(id, active)` | Method | Enable/disable UDP entry at runtime. |
-| `FlowProtocol` | Enum | `Tcp` / `Udp` -- for `install_flow_rule()` protocol selection. |
-
-### Core API (Unchanged)
-
-See full API tables for: [eal.hpp](#), [platform.hpp](#), [tcp.hpp](#), [arp.hpp](#), [dns.hpp](#), [types.hpp](#), [connector.hpp](#), [multicast.hpp](#) in the previous documentation or source headers.
+Layers flow strictly downward: packet_* is the foundation, protocol modules
+(tcp/udp/arp/dns/multicast) build on it, and application-level modules
+(reactor/connector/flow_steering/types) live on top. `dpdk.hpp` and
+`net_header.hpp` are umbrella headers for common include patterns.
 
 ## Usage Examples
+
+### Simplest TCP connection (one call)
+
+```cpp
+#include <eph/dpdk.hpp>
+
+auto eal = eph::dpdk::EalGuard::init(argc, argv);
+if (!eal) return 1;
+
+auto result = eph::dpdk::connect(
+    "stream.example.com",
+    eph::dpdk::DpdkEndpoint{"10.0.0.100", "10.0.0.1"});
+if (!result) return 2;
+
+auto& transport = *result->transport;
+transport.send_text(msg, msg_len);
+```
 
 ### UDP unicast sender
 
@@ -91,114 +140,150 @@ See full API tables for: [eal.hpp](#), [platform.hpp](#), [tcp.hpp](#), [arp.hpp
 #include <eph/dpdk/udp.hpp>
 
 auto sender = eph::dpdk::UdpSender::create({
-    .src_ip = local_ip, .dst_ip = remote_ip,
-    .src_port = 50000, .dst_port = 8080,
-    .src_mac = my_mac, .dst_mac = gw_mac,
-    .port_id = 0, .tx_queue_id = 0,
-    .pool = platform.mempool(),
+    .src_ip   = local_ip,  .dst_ip   = remote_ip,
+    .src_port = 50000,     .dst_port = 8080,
+    .src_mac  = my_mac,    .dst_mac  = gw_mac,
+    .port_id  = 0,         .tx_queue_id = 0,
+    .pool     = platform.mempool(),
+    .hw_cksum = true,      // NIC checksum offload
 });
 sender->send(payload, payload_len);
 ```
 
-### Reactor with TCP + UDP on shared queue
+### Reactor with mixed TCP + UDP on a shared queue
 
 ```cpp
 #include <eph/dpdk/reactor.hpp>
 
 eph::dpdk::Reactor<true> reactor({.port_id = 0, .rx_queue_id = 0});
-
-// TCP connections
 reactor.add_connection(&tcp_session, on_tcp_data);
-
-// UDP entries
-reactor.add_udp(
-    {.src_ip = local_ip, .dst_ip = remote_ip,
-     .src_port = 50000, .dst_port = 8080},
-    [](const uint8_t* data, uint16_t len, size_t id) {
-        // Process UDP payload
-    });
-
+reactor.add_udp(udp_tuple,
+    [](const uint8_t* data, uint16_t len, size_t id) { /* process UDP */ });
+reactor.set_on_burst_complete([]{ /* flush per-burst work */ });
 reactor.start();
 ```
 
-### Flow steering with UDP
+### Multicast market data feed
 
 ```cpp
-auto rule = eph::dpdk::install_flow_rule(
-    port_id, queue_id, tuple,
-    eph::dpdk::FlowProtocol::Udp);  // UDP 4-tuple rule
-```
+#include <eph/dpdk/multicast.hpp>
 
-### Simple TCP connection (one call)
-
-```cpp
-#include <eph/dpdk.hpp>
-
-auto eal = eph::dpdk::EalGuard::init(argc, argv);
-auto result = eph::dpdk::connect(
-    "stream.example.com",
-    eph::dpdk::DpdkEndpoint{"10.0.0.100", "10.0.0.1"});
-auto& transport = *result->transport;
-transport.send_text(msg, strlen(msg));
-```
-
-### Multicast feed reception
-
-```cpp
 eph::dpdk::MulticastReceiver receiver({.port_id = 0, .rx_queue_id = 0});
-receiver.join_group({.group_ip = eph::dpdk::net::parse_ipv4("233.54.12.111"),
-                     .group_port = 26477});
-receiver.on_packet([](const uint8_t* data, size_t len) { /* ... */ });
+receiver.join_group({
+    .group_ip   = eph::dpdk::net::parse_ipv4("233.54.12.111"),
+    .group_port = 26477,
+});
+receiver.on_packet([](const uint8_t* data, size_t len) {
+    // parse MoldUDP64 or exchange-specific framing
+});
 receiver.start();
 ```
+
+### NIC flow steering (per-connection RX queue)
+
+```cpp
+#include <eph/dpdk/flow_steering.hpp>
+
+auto mode = eph::dpdk::detect_rx_dispatch_mode(port_id);
+if (mode == eph::dpdk::RxDispatchMode::FlowDirector) {
+    auto rule = eph::dpdk::install_flow_rule(
+        port_id, queue_id, tuple,
+        eph::dpdk::FlowProtocol::Tcp);   // or ::Udp
+    // RAII — rule is destroyed on scope exit
+}
+```
+
+## Public API Overview
+
+### Core modules
+
+| Module | Key types | Notes |
+|---|---|---|
+| `eal.hpp` | `EalGuard`, `eal_init`, `eal_cleanup` | Process-level EAL lifetime |
+| `platform.hpp` | `Platform`, `PlatformConfig`, `Platform::Stats` | Per-port init, constexpr-validatable config |
+| `tcp.hpp` | `TcpSession<ReorderSlots>`, `TcpConfig`, `TcpState`, `Stats` | Client-side TCP; not thread-safe |
+| `udp.hpp` | `UdpSender`, `UdpConfig`, `UdpSegment`, `UdpSenderStats`, `build_udp_packet` | Fixed-peer TX, hw checksum optional |
+| `arp.hpp` | `ArpPacket`, `arp::resolve` | Blocking, retries 3× within timeout |
+| `dns.hpp` | `DnsHeader`, `DnsConfig`, `dns::resolve` | Over-DPDK A-record; CSPRNG tx_id |
+| `multicast.hpp` | `MulticastReceiver`, `MulticastGroup`, `make_moldudp64_adapter` | Up to 8 groups, RFC 1112 MAC |
+| `reactor.hpp` | `Reactor<bool>`, `ReactorConfig`, `ReactorEntry`, `UdpReactorEntry` | 16 TCP + 8 UDP, single RX thread |
+| `flow_steering.hpp` | `FlowRule`, `FlowProtocol`, `RxDispatchMode`, `install_flow_rule` | RAII rule handle |
+| `connector.hpp` | `DpdkEndpoint`, `ConnectorOptions`, `ConnectResult<T>`, `connect<...>()` | 7 `connect()` overloads |
+| `types.hpp` | `DpdkTransport`, `DpdkRawTransport`, `DpdkLargeTransport`, ... | Transport type aliases |
+
+### Packet processing (`net::` namespace)
+
+| Header | Contents |
+|---|---|
+| `packet_core.hpp` | `UdpHeader`, `ConnectionTuple`, `hton*/ntoh*`, `internet_checksum`, `tcp_checksum`, `udp_checksum`, `parse_ipv4`, `format_ipv4`, `format_mac` |
+| `packet_parse.hpp` | `ParsedIpHeader`, `ParsedPacket` (TCP), `ParsedUdpPacket`, `parse_ip_header`, `parse_tcp_from_ip`, `parse_udp_from_ip`, `parse_packet`, `parse_udp_packet` |
+| `packet_template.hpp` | `PacketTemplate` (TCP), `UdpPacketTemplate` |
+
+All parse functions are zero-copy — the returned views reference memory inside
+the original mbuf and are valid only until the mbuf is freed.
 
 ## Architecture
 
 ```
-Layer 0: eal.hpp, platform.hpp           (DPDK resource management)
-Layer 1: packet_core/parse/template.hpp  (wire-format packet processing)
-Layer 2: tcp.hpp, udp.hpp, arp.hpp, dns.hpp, multicast.hpp  (protocol impl)
-Layer 3: reactor.hpp, connector.hpp, flow_steering.hpp, types.hpp  (app entry)
+Layer 3 (application entry)
+  reactor.hpp  connector.hpp  flow_steering.hpp  types.hpp
+
+Layer 2 (protocol implementation)
+  tcp.hpp  udp.hpp  arp.hpp  dns.hpp  multicast.hpp
+
+Layer 1 (packet processing — net:: namespace)
+  packet_core.hpp  packet_parse.hpp  packet_template.hpp  (+ net_header.hpp umbrella)
+
+Layer 0 (DPDK resource management)
+  eal.hpp  platform.hpp
 ```
 
-Dependencies flow strictly downward. `net_header.hpp` is an umbrella for Layer 1.
+Dependencies flow strictly downward. Each layer only includes headers from the
+same or lower layers.
+
+## TCP Design
+
+The TCP session is intentionally minimal — it targets deterministic latency on
+trusted data-center links, not general-purpose networking.
+
+| Implements | Does NOT implement |
+|---|---|
+| Three-way handshake (SYN/SYN-ACK/ACK) | Retransmission |
+| Seq/ack tracking, window management | Nagle algorithm |
+| Delayed ACK (40 µs window, piggyback-first) | Congestion control |
+| Out-of-order reordering (configurable slots) | SACK / DSACK |
+| FIN/RST handling, TIME_WAIT (2MSL) | TCP timestamps |
+| CSPRNG ISN, ephemeral port generation | Fast retransmit, RTO backoff |
+| ARP refresh on idle connections | Zero-window probes |
+| RFC 5961 RST validation | Keepalive |
+
+**Loss strategy**: out-of-order segments are buffered in a fixed-size reorder
+buffer (`ReorderSlots`, default 64). On buffer overflow the session signals
+`process_rx` error and the caller triggers reconnect (~2 ms).
 
 ## Dependencies
 
 | Package | Purpose |
-|---------|---------|
-| **eph-core** | TCP session concept, JSON utilities |
-| **eph-transport** | Generic Transport layer, presets |
-| **eph-utils** | TSC timestamps, CPU affinity |
-| [DPDK](https://www.dpdk.org/) | NIC PMD, mbuf, EAL, ethdev, rte_flow |
-| [aws-lc](https://github.com/aws/aws-lc) | CSPRNG for ephemeral ports and DNS txids |
-| [spdlog](https://github.com/gabime/spdlog) | Structured logging with compile-time level filtering |
-
-## Build
-
-```bash
-xmake build eph-dpdk
-
-# Tests (no DPDK EAL required)
-xmake run test_net_header   # 102 tests — packet parsing, checksum, layered API
-xmake run test_udp          # 42 tests — UdpSender, UdpPacketTemplate, UdpConfig
-xmake run test_reactor      # 45 tests — Reactor TCP + UDP dispatch
-xmake run test_multicast    # 64 tests — multicast receiver, ParsedUdpPacket
-xmake run test_tcp          # 56 tests — TCP session state machine
-```
-
-## TCP Design
-
-Minimal user-space TCP for low-latency exchange feeds, not general-purpose networking.
-
-| Implements | Does NOT Implement |
 |---|---|
-| seq/ack tracking, ACK generation | Retransmission, Nagle |
-| Window management, FIN/RST | Congestion control, SACK |
-| Out-of-order reordering (configurable slots) | TCP timestamps |
+| `eph-core` | `TcpTransport` concept, JSON escape / string check utilities |
+| `eph-transport` | Generic Transport layer and presets (`DefaultTransport`, `RawTransport`, etc.) |
+| `eph-utils` | TSC timestamps, CPU affinity |
+| `eph-containers` | Bounded queues used by Transport |
+| DPDK (vcpkg) | PMD, mbuf, EAL, ethdev, rte_flow |
+| aws-lc | CSPRNG (`RAND_bytes`) for ISN, ephemeral ports, DNS transaction IDs |
+| spdlog | Structured logging with compile-time level filtering via `SPDLOG_ACTIVE_LEVEL` |
+| fmt | Explicitly linked because vcpkg DPDK bundles fmt headers that shadow spdlog's vendored fmt |
 
-**Loss strategy**: detect gap -> immediate reconnect (~2ms). Acceptable for datacenter environments with near-zero packet loss.
+On ARM64, `RTE_FORCE_INTRINSICS` is defined and the x86-only `-mssse3` flag is
+skipped. `rte_config.h` is force-included for all targets so DPDK ARM intrinsics
+are visible.
+
+## Scripts
+
+`scripts/dpdk-setup.sh` and `scripts/dpdk-teardown.sh` handle hugepage
+allocation and NIC driver binding. They require root and touch real NIC state;
+they are not invoked by the test suite.
 
 ## License
 
-Part of the [ephemeral](https://github.com/sqfzy/ephemeral) project.
+Part of the ephemeral project. See the parent repository for licensing.

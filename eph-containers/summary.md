@@ -1,224 +1,339 @@
-# eph-containers 项目总结
+# Project: eph-containers
 
-## 1. 概述
+> Header-only C++23 library of lock-free SPSC queues and a lookback
+> ring buffer for ultra-low-latency inter-thread communication.
 
-eph-containers 是 ephemeral 项目中的高性能无锁容器库，使用 C++23 编写，采用 header-only 风格。该库提供了两大类 SPSC（Single-Producer Single-Consumer）无锁队列：**有界队列（BoundedQueue）** 和 **可丢弃队列（EvictingQueue）**，并各自附带面向字节流的适配器变体（BoundedQueueBytes / EvictingQueueBytes）。
+**Language**: C++23 &nbsp;|&nbsp; **Build**: xmake &nbsp;|&nbsp; **License**: unspecified
 
-所有容器均针对 CPU-pinned 线程间低延迟通信场景设计。核心设计理念包括：cache line 对齐避免 false sharing、影子索引减少跨核原子读取、2 的幂容量实现位掩码取模、零拷贝 Visitor 模式避免中间拷贝。数据类型受 `TrivialData` concept 约束——必须是 trivially copyable 且 default initializable 的类型。
+---
 
-库依赖同项目的 `eph-utils` 包，使用其中的 `Align<T>` cache line 对齐工具和 `cpu_relax()` 自旋等待指令（x86 PAUSE / ARM64 YIELD）。整个库无外部第三方依赖，纯标准库 + 内联汇编。
+## Table of Contents
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Module Map](#module-map)
+4. [Data Flow](#data-flow)
+5. [Key Components](#key-components)
+6. [Entry Points & APIs](#entry-points--apis)
+7. [Dependencies](#dependencies)
+8. [Testing](#testing)
 
-## 2. 架构
+---
 
-```
-+-------------------------------------------------------+
-|                  eph/containers.hpp                    |
-|              (Convenience umbrella header)             |
-+-------------------------------------------------------+
-        |           |            |            |
-        v           v            v            v
-+-------------+ +----------+ +-------------+ +----------+
-| bounded_    | | evicting_| | bounded_    | | evicting_|
-| queue.hpp   | | queue.hpp| | queue_      | | queue_   |
-|             | |          | | bytes.hpp   | | bytes.hpp|
-| BoundedQueue| | Evicting | | BoundedQueue| | Evicting |
-| <T,Cap>     | | Queue    | | Bytes       | | Queue    |
-|             | | <T,Cap>  | | <Max,Cap>   | | Bytes    |
-+------+------+ +----+-----+ +------+------+ +----+-----+
-       |              |              |              |
-       v              v              |              |
-  +----------+   +----------+       |              |
-  |concepts. |   |concepts. |  (wraps BoundedQueue) |
-  |hpp       |   |hpp       |       |    (wraps EvictingQueue)
-  +----------+   +----------+       |              |
-       |              |              v              v
-       v              v         +----------+  +----------+
-  +---------+   +---------+    |bounded_  |  |evicting_ |
-  |eph-utils|   |eph-utils|    |queue.hpp |  |queue.hpp |
-  |alignment|   |cpu.hpp  |    +----------+  +----------+
-  +---------+   +---------+
-```
+## Overview
 
-## 3. 模块映射
+`eph-containers` is a header-only C++23 library that provides the core
+inter-thread data structures for the parent `ephemeral_dev` high-
+frequency trading / networking stack. Every container is fixed-
+capacity, allocation-free on the hot path, and optimised for the
+single-producer / single-consumer (SPSC) scenario that dominates HFT
+pipelines: one network / feed thread writes, one strategy or logger
+thread reads.
 
-| 模块/文件 | 职责 | 关键类型 | 依赖 |
-|-----------|------|----------|------|
-| `include/eph/containers.hpp` | 便捷 umbrella header，包含所有子模块 | (无) | 所有子模块 |
-| `include/eph/containers/concepts.hpp` | 定义数据类型约束 | `TrivialData<T>` concept | `<concepts>`, `<type_traits>` |
-| `include/eph/containers/bounded_queue.hpp` | SPSC 有界无锁队列（队满阻塞/失败） | `BoundedQueue<T, Capacity>` | `concepts.hpp`, `eph-utils` |
-| `include/eph/containers/evicting_queue.hpp` | SPSC 可丢弃队列（队满覆盖旧数据） | `EvictingQueue<T, Capacity>`, `EvictingQueue<T, 1>` 特化 | `concepts.hpp`, `eph-utils` |
-| `include/eph/containers/bounded_queue_bytes.hpp` | BoundedQueue 的字节流适配器 | `BoundedQueueBytes<MaxDataSize, Capacity>` | `bounded_queue.hpp` |
-| `include/eph/containers/evicting_queue_bytes.hpp` | EvictingQueue 的字节流适配器 | `EvictingQueueBytes<MaxDataSize, Capacity>` | `evicting_queue.hpp` |
+Two queue families are offered:
 
-## 4. 数据流
+- **Bounded** queues apply back-pressure — `try_push` returns `false`
+  when the queue is full and `push` spins until space is available. No
+  data is silently dropped. Used for reliable streams between pinned
+  threads (e.g. order submissions, WebSocket send queues).
+- **Evicting** queues are **wait-free** on the writer side and
+  overwrite the oldest unread entry when the queue is full. Reads are
+  lock-free, validated by per-slot sequence locks (SeqLock). Used for
+  feed-handler tick streams where stale data is worthless anyway.
 
-### BoundedQueue 数据流
+A companion `RingBuffer<T, Capacity>` provides single-writer / any-
+reader lookback (e.g. "the price 5 ticks ago") without acquiring a
+lock. Byte-oriented envelope wrappers (`BoundedQueueBytes`,
+`EvictingQueueBytes`) sit on top of the typed queues and carry
+variable-length binary payloads plus an optional user timestamp.
 
-生产者写入元素到环形缓冲区，消费者按 FIFO 顺序读取。队列满时写入失败（try 系列）或自旋等待（阻塞系列）。
+All containers are gated by the `TrivialData<T>` concept (trivially
+copyable, trivially destructible, default initialisable) so that the
+underlying `memcpy`-style semantics of the ring buffers are sound.
 
-```
-Producer Thread                    Consumer Thread
-     |                                  |
-     v                                  v
- try_push/produce                  try_pop/consume
-     |                                  |
-     v                                  v
- check shadow_head_              check shadow_tail_
- (local cached head)             (local cached tail)
-     |                                  |
-     |  [cache miss? reload]            |  [cache miss? reload]
-     v                                  v
- write buffer_[tail & mask]      read buffer_[head & mask]
-     |                                  |
-     v                                  v
- tail_.store(release)            head_.store(release)
-```
+---
 
-### EvictingQueue 数据流
+## Architecture
 
-生产者 wait-free 写入，队满时覆盖旧数据。消费者通过 SeqLock 乐观读取最新数据，读取失败（被写入者打断）时重试。
+Layered, header-only, compile-time-driven. No runtime configuration;
+all sizing is template-parametric.
+
+### Component Diagram
 
 ```
-Producer Thread                    Consumer Thread
-     |                                  |
-     v                                  v
- produce(writer_func)            try_consume_latest(visitor)
-     |                                  |
-     v                                  v
- slot.seq = odd (locked)         load global_index_ (acquire)
-     |                                  |
-     v                                  v
- fence(release)                  load slot.seq (acquire)
-     |                                  |
-     v                                  v
- write slot.data                 if odd -> return false
-     |                                  |
-     v                                  v
- fence(release)                  read slot.data
-     |                                  |
-     v                                  v
- slot.seq = even (unlocked)      fence(acquire)
-     |                                  |
-     v                                  v
- global_index_.store(release)    re-check slot.seq
-                                 seq1 == seq2 ? success : retry
+              +-----------------------------+
+              |  eph/containers.hpp         |
+              |  (umbrella header)          |
+              +--+-------------+----------+-+
+                 |             |          |
+                 v             v          v
+     +-----------------+ +-------------+ +-----------+
+     | ring_buffer.hpp | | bounded_    | | evicting_ |
+     | RingBuffer<T,N> | | queue.hpp   | | queue.hpp |
+     +--------+--------+ | BoundedQueue| | Evicting  |
+              |          | <T,N>       | | Queue<T,N>|
+              |          +------+------+ | + <T,1>   |
+              |                 ^        +-----+-----+
+              |                 |              ^
+              |          +------+------+ +-----+-------+
+              |          | bounded_    | | evicting_   |
+              |          | queue_bytes | | queue_bytes |
+              |          | <Max,N>     | | <Max,N>     |
+              |          +-------------+ +-------------+
+              |
+              v
+     +-----------------+
+     | concepts.hpp    |   (TrivialData<T>)
+     +-----------------+
+
+All files ultimately depend on eph-utils (alignment, cpu_relax).
 ```
 
-## 5. 关键组件
+---
 
-### 5.1 BoundedQueue<T, Capacity>
+## Module Map
 
-- **文件**: `include/eph/containers/bounded_queue.hpp`
-- **用途**: SPSC 有界无锁环形队列，元素按 FIFO 顺序消费，队满时写入失败或阻塞
-- **内存布局**: WriterLine (cache line) + ReaderLine (cache line) + buffer_[Capacity]
-- **关键接口**:
-  ```cpp
-  bool try_push(U&& data) noexcept;
-  bool try_produce(F&& writer_func) noexcept;     // 零拷贝写入
-  bool try_push_n(std::span<const T> data) noexcept; // 批量 all-or-nothing
-  bool try_pop(T& out) noexcept;
-  bool try_consume(F&& visitor) noexcept;          // 零拷贝读取
-  size_t try_pop_n(std::span<T> out) noexcept;     // 批量尽力而为
-  // 阻塞版: push/produce/pop/consume (cpu_relax 自旋)
-  // 超时版: try_*_for (deadline 自旋)
-  ```
-- **设计要点**: 影子索引（shadow_head_/shadow_tail_）缓存对端指针，大幅减少跨核 cache line 读取。批量操作单次 atomic store 发布，摊销原子操作开销。
+| Module / File | Responsibility | Key Types | Depends On |
+|---|---|---|---|
+| `include/eph/containers.hpp` | Umbrella header — pulls in every public type. | — | all sub-headers |
+| `include/eph/containers/concepts.hpp` | Element-type constraint. | `TrivialData<T>` | `<concepts>`, `<type_traits>` |
+| `include/eph/containers/ring_buffer.hpp` | Single-writer / any-reader lookback buffer. | `RingBuffer<T, Capacity>` | `<array>`, `<atomic>`, `<bit>`, `<optional>` |
+| `include/eph/containers/bounded_queue.hpp` | Lock-free SPSC FIFO with back-pressure. | `BoundedQueue<T, Capacity>`, `BoundedQueueStats` | `concepts.hpp`, `eph-utils`, `spdlog` |
+| `include/eph/containers/bounded_queue_bytes.hpp` | Byte-envelope wrapper over `BoundedQueue`. | `BoundedQueueBytes<MaxDataSize, Capacity>`, `BoundedQueueBytesStats` | `bounded_queue.hpp` |
+| `include/eph/containers/evicting_queue.hpp` | Wait-free-write, lock-free-read SPSC via SeqLock. | `EvictingQueue<T, Capacity>`, `EvictingQueue<T, 1>` specialisation, `EvictingQueueStats` | `concepts.hpp`, `eph-utils` |
+| `include/eph/containers/evicting_queue_bytes.hpp` | Byte-envelope wrapper over `EvictingQueue`. | `EvictingQueueBytes<MaxDataSize, Capacity>`, `EvictingQueueBytesStats` | `evicting_queue.hpp` |
 
-### 5.2 EvictingQueue<T, Capacity>
+All sources live under `include/eph/`. The xmake target is header-only
+(`set_kind("headeronly")`) and simply installs these headers.
 
-- **文件**: `include/eph/containers/evicting_queue.hpp`
-- **用途**: SPSC 可丢弃队列，Writer wait-free（永不阻塞，满时覆盖），Reader lock-free（乐观 SeqLock 读取最新数据）
-- **内存布局**: global_index_ (cache line) + WriterLine (cache line) + ReaderLine (cache line) + Slot[Capacity]（每个 Slot 含 seq 原子序列号 + data）
-- **关键接口**:
-  ```cpp
-  void produce(F&& writer_func) noexcept;          // wait-free 写入
-  void push(U&& val) noexcept;
-  bool try_consume_latest(F&& visitor) noexcept;    // 乐观读取
-  T pop_latest() noexcept;                          // 阻塞读取
-  ```
-- **设计要点**: seq 低 1 位为 lock flag，高 63 位为 global index。写入时先锁定 slot（seq 置奇），写完解锁（seq 置偶）。读取时双重检查 seq 一致性验证数据完整性。
+---
 
-### 5.3 EvictingQueue<T, 1> (SeqLock 特化)
+## Data Flow
 
-- **文件**: `include/eph/containers/evicting_queue.hpp`（同文件，模板偏特化）
-- **用途**: 单槽位 SeqLock，最简化的"总是保留最新值"语义
-- **内存布局**: seq_ (cache line) + last_seq_ (cache line) + data_ (cache line)
-- **设计要点**: seq 偶数 = 空闲，奇数 = 写入中。每次写入 seq += 2。比通用版更紧凑，适用于"最新行情/状态"等场景。
+### BoundedQueue
 
-### 5.4 BoundedQueueBytes<MaxDataSize, Capacity>
-
-- **文件**: `include/eph/containers/bounded_queue_bytes.hpp`
-- **用途**: BoundedQueue 的字节流适配器，将变长字节数据封装为定长 DataWrap 存入队列
-- **DataWrap 结构**: `{ uint64_t ts; uint32_t len; std::array<uint8_t, MaxDataSize> data; }`
-- **关键接口**: `try_push/try_pop/try_consume`（纯字节流 + 可选时间戳）、`try_push_n/try_consume_n`（批量）
-- **设计要点**: 底层委托 `BoundedQueue<DataWrap, Capacity>`。读取时 `safe_len = min(msg.len, MaxDataSize)` 防止脏数据越界。
-
-### 5.5 EvictingQueueBytes<MaxDataSize, Capacity>
-
-- **文件**: `include/eph/containers/evicting_queue_bytes.hpp`
-- **用途**: EvictingQueue 的字节流适配器，附加消息 ID 用于丢包统计
-- **DataWrap 结构**: `{ uint64_t id; uint64_t ts; uint32_t len; std::array<uint8_t, MaxDataSize> data; }`
-- **关键接口**: `try_consume_latest_wts(visitor)` 回调签名 `void(span<const uint8_t>, uint64_t ts, uint32_t discarded)`
-- **设计要点**: Writer 端维护 push_count_（cache line 隔离），Reader 端维护 last_pop_id_，通过 `id - last_pop_id_ - 1` 计算被覆盖丢弃的消息数。
-
-### 5.6 TrivialData concept
-
-- **文件**: `include/eph/containers/concepts.hpp`
-- **定义**: `std::is_trivially_copyable_v<T> && std::default_initializable<T>`
-- **用途**: 所有队列的类型约束，确保元素可安全 memcpy 且有默认构造函数
-
-## 6. 入口点与 API
-
-| 入口 | 类型 | 说明 |
-|------|------|------|
-| `#include "eph/containers.hpp"` | umbrella header | 包含所有容器 |
-| `BoundedQueue<T, Cap>` | 类模板 | SPSC FIFO 有界无锁队列 |
-| `EvictingQueue<T, Cap>` | 类模板 | SPSC 可丢弃队列 (SeqLock) |
-| `EvictingQueue<T, 1>` | 偏特化 | 单槽位 SeqLock |
-| `BoundedQueueBytes<MaxSize, Cap>` | 类模板 | 字节流有界队列 |
-| `EvictingQueueBytes<MaxSize, Cap>` | 类模板 | 字节流可丢弃队列 |
-| `TrivialData<T>` | concept | 类型约束 |
-
-## 7. 依赖
-
-### 内部模块依赖图
+Classic two-index ring buffer. Writer increments `tail_`, reader
+increments `head_`; both maintain a **shadow** copy of the peer's
+index in their own cache line to avoid a cross-core atomic read on the
+fast path.
 
 ```
-containers.hpp
-  +-- bounded_queue.hpp ------+-- concepts.hpp
-  +-- evicting_queue.hpp -----+-- concepts.hpp
-  +-- bounded_queue_bytes.hpp -- bounded_queue.hpp
-  +-- evicting_queue_bytes.hpp - evicting_queue.hpp
+  Producer                        Consumer
+  --------                        --------
+  tail = writer.tail_             head = reader.head_
+  fast path: tail - shadow_head   fast path: shadow_tail - head
+      < Capacity  ?                   > 0  ?
+      |                               |
+      +- yes: write slot              +- yes: read slot
+      |       release(tail+1)         |       release(head+1)
+      |                               |
+      +- no: acquire(head)            +- no: acquire(tail)
+              refresh shadow_head             refresh shadow_tail
 ```
 
-### 外部依赖
+### EvictingQueue (primary template, Capacity > 1)
 
-| 包 | 模块 | 用途 |
-|----|------|------|
-| `eph-utils` | `eph/utils/alignment.hpp` | `CACHE_LINE_SIZE` (64), `Align<T>` cache line 对齐常量 |
-| `eph-utils` | `eph/utils/cpu.hpp` | `cpu_relax()` 自旋等待指令 (x86 PAUSE / ARM64 YIELD) |
-| C++ 标准库 | `<atomic>`, `<array>`, `<span>`, `<optional>`, `<chrono>`, `<bit>`, `<concepts>` 等 | 原子操作、容器、时间、类型约束 |
+Writer is wait-free: compute next global index, lock slot (seq → odd),
+write, unlock (seq → even, release), publish global index. Reader is
+optimistic: acquire global_index, acquire slot seq, copy data,
+re-load seq, retry on mismatch.
 
-无第三方外部依赖（eph-utils 中的 spdlog 仅在 cpu.hpp 的拓扑检测函数中使用，容器本身不引入日志）。
+```
+  Writer (wait-free)               Reader (lock-free)
+  ------------------               ------------------
+  idx = shadow + 1                 idx = global_index.load(acq)
+  s = slots[idx & mask]            if idx <= last_read -> nothing
+  s.seq = odd(idx)                 s = slots[idx & mask]
+  fence(release)                   seq1 = s.seq.load(acq)
+  write s.data                     if locked(seq1) -> retry
+  s.seq = even(idx)   (release)    copy data
+  global_index = idx  (release)    fence(acq)
+  shadow = idx                     seq2 = s.seq.load(rel)
+                                   if seq1 == seq2 -> commit
+                                   else -> retry
+```
 
-## 8. 测试
+The single-slot specialisation (`EvictingQueue<T, 1>`) collapses this
+to a classic SeqLock over a single data element — no ring, no
+per-slot state.
 
-本子项目目录下未发现独立测试文件。测试可能位于上层 ephemeral 项目的统一测试目录中。
+### Byte envelopes
 
-| 场景 | 覆盖状态 | 说明 |
-|------|----------|------|
-| BoundedQueue SPSC 基本读写 | 未知 | 需检查上层测试目录 |
-| BoundedQueue 队满/队空边界 | 未知 | try_push 返回 false / try_pop 返回 nullopt |
-| BoundedQueue 批量读写 | 未知 | try_push_n / try_pop_n |
-| EvictingQueue 覆盖旧数据 | 未知 | Writer 连续写入超过 Capacity |
-| EvictingQueue SeqLock 脏读重试 | 未知 | Reader 读取期间被 Writer 打断 |
-| EvictingQueue<T,1> 单槽特化 | 未知 | SeqLock 最简场景 |
-| Bytes 适配器丢包统计 | 未知 | EvictingQueueBytes discarded 计数 |
-| 超时接口 | 未知 | try_*_for 系列 |
+Both `BoundedQueueBytes` and `EvictingQueueBytes` wrap the typed queue
+around a fixed-size `DataWrap` struct holding
+`{ id?, ts, len, data[MaxDataSize] }`. Writers `memcpy` the payload
+into the slot; readers compute `safe_len = min(msg.len, MaxDataSize)`
+to defend against torn SeqLock reads and hand a
+`std::span<const uint8_t>` to a visitor. `EvictingQueueBytes`
+additionally tracks a monotonic per-message `id` so that readers can
+observe the number of messages that were silently overwritten between
+successive reads (`discarded` out-parameter).
 
-### 模板复杂度说明
+---
 
-- 所有容器均为类模板，Capacity 要求 2 的幂（编译期 `static_assert` 检查）
-- 大量使用 C++20/23 特性：concepts 约束、`requires` 子句、`std::invocable`、`std::span`、`[[nodiscard]]`、`[[unlikely]]`
-- 零拷贝接口通过 Visitor 模式（回调 lambda）实现，避免模板返回类型问题
-- 无 unsafe/FFI 边界，纯 C++ 实现；使用内联汇编仅限 `cpu_relax()` 中的 PAUSE/YIELD 指令
+## Key Components
+
+### `BoundedQueue<T, Capacity>`
+
+**File**: `include/eph/containers/bounded_queue.hpp`
+**Purpose**: Lock-free SPSC FIFO with back-pressure.
+**Notes**: Writer and reader zones each occupy their own cache line
+(enforced by `alignas(Align<T>)` and `static_assert`). Shadow
+indices eliminate cross-core reads on the fast path; a full index
+refresh only happens when the local cache predicts full/empty.
+Capacity must be a power of two (compile-time checked) so the modulo
+reduces to a bitmask. Exposes `try_produce`/`produce` visitor-based
+zero-copy writes, `try_push`/`push`/`try_emplace` value helpers, batch
+`try_push_n`/`try_produce_n`, `try_peek` (non-advancing), `try_pop`,
+`try_pop_n`, `try_consume_all` drain helper, and `*_for` timed
+variants for every operation.
+
+### `EvictingQueue<T, Capacity>` and `EvictingQueue<T, 1>`
+
+**File**: `include/eph/containers/evicting_queue.hpp`
+**Purpose**: Wait-free-write, lock-free-read SPSC queue. Writer never
+blocks; instead it silently overwrites the oldest unread entry.
+Intended for market-data / telemetry streams where stale data is
+worthless.
+**Notes**: Per-slot `seq_` encodes `{global_index << 1 | lock_flag}`.
+Writer emits `stlr` on ARM64 to unlock + publish in one instruction.
+Readers detect torn reads via `seq1 == seq2` validation. The
+`Capacity == 1` specialisation avoids the slot array entirely and
+uses a classic SeqLock over a single data element for minimum
+footprint and latency. Observability counters include
+`write_count()`, `read_count()`, `overwrite_count_approx()` and a
+full `EvictingQueueStats` snapshot with loss-rate computation.
+
+### `BoundedQueueBytes<MaxDataSize, Capacity>`
+
+**File**: `include/eph/containers/bounded_queue_bytes.hpp`
+**Purpose**: Byte-oriented envelope on top of `BoundedQueue`, for
+reliable streaming of variable-length binary frames.
+**Notes**: Oversized payloads (`> MaxDataSize`) cause `try_push` to
+return `false` without enqueuing. On the read side the visitor
+always receives `span<const uint8_t>` clamped to
+`safe_len = min(msg.len, MaxDataSize)` — defence-in-depth even
+though the bounded queue is not subject to SeqLock tearing.
+
+### `EvictingQueueBytes<MaxDataSize, Capacity>`
+
+**File**: `include/eph/containers/evicting_queue_bytes.hpp`
+**Purpose**: Byte envelope on top of `EvictingQueue`. Adds a 1-based
+monotonic `id` per message so consumers can observe silent drops.
+**Notes**: `discarded = read_id − last_pop_id − 1` (clamped to
+`uint32_t`), computed on every consume. `total_pushed` is tracked by
+a writer-side atomic because the underlying `EvictingQueue` counts
+slots, not unique messages. The read path clamps `msg.len` to
+`MaxDataSize` specifically because SeqLock tearing can produce
+garbage lengths.
+
+### `RingBuffer<T, Capacity>`
+
+**File**: `include/eph/containers/ring_buffer.hpp`
+**Purpose**: Fixed-size circular buffer for tick-history lookback
+("price N ticks ago", "VWAP over last N ticks"). Single writer,
+any-reader (no mutex).
+**Notes**: Much thinner than the SPSC queues — only `head_` and
+`count_` are atomic; element copies are plain array reads. Readers
+may briefly observe a stale element when the writer races past, but
+never an invalid index. Capacity must be a power of two; enforced at
+compile time via `std::has_single_bit`.
+
+### `BoundedQueueStats` / `EvictingQueueStats` (+ *Bytes* variants)
+
+**Files**: standalone structs at the top of each queue header.
+**Purpose**: Point-in-time counter snapshots separated from the queue
+type so that a `std::formatter` specialisation can be provided
+without template parameters. Each header ends with a
+`std::formatter<StatsType>` specialisation that delegates to
+`.dump()`. Snapshots support `operator-` (delta), `throughput(ns)`,
+`to_json()`, `dump()` (multi-line text), and for the evicting
+variants `loss_rate()`.
+
+---
+
+## Entry Points & APIs
+
+| Entrypoint | Type | Description |
+|---|---|---|
+| `eph::containers::BoundedQueue<T, N>` | template class | Reliable SPSC FIFO |
+| `eph::containers::BoundedQueueBytes<Max, N>` | template class | Reliable byte-envelope SPSC |
+| `eph::containers::EvictingQueue<T, N>` | template class | Wait-free write / lock-free read SPSC |
+| `eph::containers::EvictingQueue<T, 1>` | template specialisation | Single-slot SeqLock (latest-value) |
+| `eph::containers::EvictingQueueBytes<Max, N>` | template class | Wait-free byte envelope with discard tracking |
+| `eph::containers::RingBuffer<T, N>` | template class | Lookback tick history |
+| `eph::containers::TrivialData<T>` | concept | Element-type constraint |
+| `eph::containers::BoundedQueueStats` / `EvictingQueueStats` (+ *Bytes*) | POD structs | Observability snapshots (also `std::formatter`) |
+
+This sub-project has no `main()`; it is a header-only library consumed
+by the rest of `ephemeral_dev` (feed handlers, order gateways, latency
+benchmarks, etc.).
+
+---
+
+## Dependencies
+
+### Internal (in-tree)
+
+```
+  eph-containers
+        |
+        v
+    eph-utils   <-- Align<T>, cpu_relax, CACHE_LINE_SIZE
+```
+
+`eph-containers` depends **only** on `eph-utils` from the parent
+workspace (declared as `add_deps("eph-utils", { public = true })`).
+
+### External (xmake packages)
+
+| Package           | Purpose                                                        |
+|-------------------|----------------------------------------------------------------|
+| `spdlog`          | Internal DEBUG logging from `BoundedQueue::stats()` clamp path |
+| `tabulate`        | Benchmark-only; pretty result tables                           |
+| `gtest` / `gmock` | Test-only                                                      |
+| `benchmark`       | Benchmark-only (Google Benchmark)                              |
+
+`spdlog` is used via `SPDLOG_LOGGER_DEBUG` with `SPDLOG_ACTIVE_LEVEL`
+so the call sites compile away when the parent build defines a higher
+minimum log level.
+
+---
+
+## Testing
+
+| Test Binary | Source | Size | Coverage Focus |
+|---|---|---:|---|
+| `test_ring_buffer` | `tests/test_ring_buffer.cpp` | 366 lines | Push ordering, lookback indexing, overflow, concurrent read/write |
+| `test_bounded_queue` | `tests/test_bounded_queue.cpp` | 1421 lines | All capacity boundary sizes (1 / 2 / 1024), try_* and blocking paths, batch ops, peek, timed, drain, stats |
+| `test_bounded_queue_bytes` | `tests/test_bounded_queue_bytes.cpp` | 634 lines | Byte envelope push/pop, ts variants, batch, oversized rejection, stats |
+| `test_evicting_queue` | `tests/test_evicting_queue.cpp` | 1616 lines | Multi-slot SeqLock race patterns, `Capacity==1` specialisation, overwrite counting, peek, loss-rate |
+| `test_evicting_queue_bytes` | `tests/test_evicting_queue_bytes.cpp` | 818 lines | Byte envelope wait-free writes, discard counter, ts variants, stats, peek semantics |
+
+Total: **389 tests** across 5 binaries. All passed against the
+current head-of-tree at the time of this documentation run
+(2026-04-09).
+
+Key test scenarios:
+
+- **Boundary capacities** — `BoundedQueue<T, 1>` (mask = 0; every push
+  must overwrite index 0) and `BoundedQueue<T, 2>` stress the minimal
+  ring.
+- **Concurrent SPSC** — dedicated writer/reader threads pinned via
+  `std::thread` push millions of elements and validate strict
+  FIFO / monotonic sequence numbers.
+- **Torn-read defence** — evicting-queue byte tests deliberately read
+  while writers are overwriting and verify that no invalid
+  `msg.len > MaxDataSize` leaks to the visitor.
+- **Stats correctness** — `total_pushed - total_popped = current_size`
+  invariants are checked after each phase; `operator-` delta snapshots
+  are verified against direct counter math.
+- **Drain / consume_all** — `try_consume_all` / `try_consume_n` drain
+  helpers are tested for best-effort semantics (no guarantee the
+  queue is empty after return, but everything visible at call time is
+  consumed).
+
+Benchmarks (`benchmarks/bench_*.cpp`) are not part of CI and must be
+built + run explicitly via xmake. They iterate the
+`REGISTER_MATRIX(FUNC)` macro over payload sizes {8, 64, 512} bytes
+and buffer sizes {1, 8, 64, 512} slots to quantify single-thread
+throughput, ping-pong latency, and batch efficiency.

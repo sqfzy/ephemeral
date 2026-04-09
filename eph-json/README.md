@@ -1,31 +1,100 @@
 # eph-json
 
-Header-only C++23 library for zero-copy JSON parsing and typed adapter extraction, optimized for flat market data payloads from cryptocurrency exchanges. Part of the eph HFT ecosystem.
+Header-only C++23 library for zero-copy JSON parsing and typed adapter extraction, tuned for flat market-data payloads from cryptocurrency exchanges (Binance, OKX, Bybit). Part of the `ephemeral` HFT networking stack.
 
-## Overview
+## Features
 
-eph-json sits between the network transport layer (eph-net/eph-transport) and the application logic (eph-book, trading strategies). It provides:
+- **Zero-copy, zero-allocation parser** for flat JSON objects. Single-pass O(n) parse; field lookup is O(n) linear scan with a first-char + length pre-filter (faster than hashing for the 5–15 field messages typical in exchange feeds, thanks to cache locality).
+- **Compile-time lookup tables** for whitespace skipping and value-terminator scanning — single indexed load per byte instead of chained comparisons.
+- **Nested objects/arrays captured as opaque `string_view`s** — the core parser does not descend into them, allowing downstream code to re-parse only when needed.
+- **Typed exchange adapters** for Binance (`BookTicker`, `CombinedStream`), OKX (`OkxPushMessage`, `OkxBookTicker`), and Bybit (`BybitPushMessage`, `BybitBookTicker`) that project raw JSON into structs with descriptive field names and cached parsed prices where applicable.
+- **FNV-1a symbol hash extractors** (`binance::symbol_hash`, `okx::inst_id_hash`, `bybit::symbol_hash`) that fast-scan the raw bytes without invoking the full parser — designed for use with Transport's two-phase frame filter (latest-per-symbol deduplication).
+- **Pass-through `JsonFramer`** satisfying `eph::net::MessageFramer`, for JSON-over-WebSocket Transport type aliases.
+- **Binance REST client** (`BinanceRestClient`) for `/api/v3/depth` and `/api/v3/time` — post-reconnect orderbook snapshot recovery and clock drift validation.
+- **`std::expected`-based error handling** throughout, with a `ParseError` enum formattable via `std::format`.
+- **Observability**: each adapter uses a named `spdlog` logger (`json.binance`, `json.binance_rest`, `json.okx`, `json.bybit`); verbosity controlled at compile time via `SPDLOG_ACTIVE_LEVEL`.
 
-- A **zero-copy, zero-allocation JSON parser** tuned for the 5-15 field flat objects typical of exchange WebSocket feeds. Single-pass O(n) parse with O(n) linear-scan field lookup that outperforms hash maps due to cache locality.
-- **Typed exchange adapters** for Binance, OKX, and Bybit that map raw JSON into structs with descriptive field names, pre-parsed prices, and computed mid/spread.
-- **FNV-1a symbol hash extractors** for each exchange, designed for Transport's two-phase frame filter (latest-per-symbol deduplication without full JSON parsing).
-- A **pass-through JSON framer** satisfying the `eph::net::MessageFramer` concept for WebSocket transport type aliases.
-
-All string_view members in parsed results point into the original buffer -- the caller must ensure the buffer outlives the view.
+All `string_view` members in parsed results point into the original input buffer. The caller must ensure that buffer outlives the view.
 
 ## Key Components
 
-All headers are under `include/eph/json/`:
+All headers live under `include/eph/json/`:
 
-- **parser.hpp** -- Zero-copy, zero-allocation JSON parser for flat key-value objects. Single-pass O(n) parse with O(n) linear-scan field lookup (faster than hash maps for typical 5-15 field exchange messages due to cache locality). Returns a `JsonView` of string_view fields pointing into the original buffer. Nested objects/arrays are captured as opaque string_views for downstream re-parsing. Uses compile-time LUTs for whitespace skipping and value termination.
-- **framer.hpp** -- Pass-through `JsonFramer` satisfying the `eph::net::MessageFramer` concept. Since WebSocket already provides message boundaries, this is a semantic identity framer for Transport type aliases. `encode()` is a plain memcpy, `decode()` wraps the buffer as a `DecodedFrame` with zero overhead.
-- **adapters/binance.hpp** -- Typed structs for Binance WebSocket feeds (`BookTicker`, `CombinedStream`) with zero-copy field extraction from `JsonView`. Includes FNV-1a `symbol_hash` for Transport two-phase frame filtering (fast pattern scan of `"s":"` without full JSON parse), and helpers for building WebSocket paths (`ws_path`, `combined_ws_path`) and SUBSCRIBE/UNSUBSCRIBE messages.
-- **adapters/binance_depth_types.hpp** -- Lightweight data types (`DepthLevel`, `DepthSnapshot`, `ServerTime`) for Binance orderbook depth snapshots. Separated from binance_rest.hpp so consumers that need only the types (e.g., eph-book's BinanceBookAdapter) can avoid pulling in eph-net and HTTP client dependencies.
-- **adapters/binance_rest.hpp** -- Typed Binance REST client (`BinanceRestClient`) for read-only public endpoints: orderbook snapshots (`GET /api/v3/depth`) and clock sync (`GET /api/v3/time`). Used for post-reconnect recovery. Exposes `parse_depth_response()` and `parse_server_time_response()` as free functions for testability. No authentication required.
-- **adapters/okx.hpp** -- OKX WebSocket adapters handling the `{"arg":{...},"data":[{...}]}` wrapper format. `OkxPushMessage` extracts channel routing info by re-parsing the nested "arg" object. `OkxBookTicker` navigates into `data[0]` to extract bbo-tbt fields. Includes FNV-1a `inst_id_hash` for two-phase frame filtering.
-- **adapters/bybit.hpp** -- Bybit WebSocket adapters handling the `{"topic":"...","type":"snapshot|delta","data":{...}}` wrapper format. `BybitPushMessage` extracts topic/type routing. `BybitBookTicker` re-parses the nested data object for tickers fields (`bid1Price`/`bid1Size`/`ask1Price`/`ask1Size`). Includes FNV-1a `symbol_hash` for two-phase frame filtering.
+- **`parser.hpp`** — Zero-copy `JsonView` + `parse()` entry point. Handles strings (with escape awareness, but without escape-sequence normalization), numbers, booleans, null, and captures nested objects/arrays as opaque substrings. `JsonView::kMaxFields = 32`; additional fields trigger `ParseError::kFieldOverflow`. Nested-structure depth is capped at 64 inside the parser.
+- **`framer.hpp`** — `JsonFramer` pass-through framer. `encode()` is a memcpy; `decode()` wraps the whole buffer as a single `DecodedFrame`. `max_overhead()` is always `0`. Asserts satisfaction of the `eph::net::MessageFramer` concept at compile time.
+- **`adapters/binance.hpp`** — Binance WebSocket adapters: `BookTicker` (pre-caches parsed bid/ask into `cached_bid` / `cached_ask`), `CombinedStream` wrapper, `symbol_hash` FNV-1a pattern scanner, and URL / SUBSCRIBE / UNSUBSCRIBE builders.
+- **`adapters/binance_depth_types.hpp`** — Lightweight `DepthLevel`, `DepthSnapshot`, `ServerTime`. Kept separate so consumers needing only the types (e.g., `eph-book`) can avoid transitively pulling in `eph-net` and the HTTP client.
+- **`adapters/binance_rest.hpp`** — `BinanceRestClient` built on `eph::net::HttpClient`, plus free-function response parsers (`parse_depth_response`, `parse_server_time_response`) exposed for testability. Validates depth `limit` against Binance's accepted set (5, 10, 20, 50, 100, 500, 1000, 5000) before any network I/O.
+- **`adapters/okx.hpp`** — OKX WebSocket adapters for the `{"arg":{...},"data":[{...}]}` envelope: `OkxPushMessage` re-parses `arg` for channel/instId, `OkxBookTicker` extracts the first element of `data[]` and parses it. `inst_id_hash` for two-phase filtering.
+- **`adapters/bybit.hpp`** — Bybit WebSocket adapters for the `{"topic":..., "type":"snapshot|delta", "data":{...}}` envelope: `BybitPushMessage`, `BybitBookTicker` (re-parses the nested `data` object), and `symbol_hash` for two-phase filtering.
 
-The aggregate header `json.hpp` includes parser, framer, and the Binance WebSocket adapter.
+The aggregate header `json.hpp` includes the parser, framer, and Binance WebSocket adapter. Consumers wanting only the parser should include `eph/json/parser.hpp` directly to minimize compile-time dependencies.
+
+## Requirements
+
+- **Compiler**: C++23 (GCC 14+ or Clang with `-std=c++23`); uses `std::expected`, `std::format`, designated initializers, and `[[nodiscard]]` extensively.
+- **Build system**: [xmake](https://xmake.io/).
+- **Dependencies**:
+  - `eph-core` — error traits (`error_traits.hpp`), number parsing (`parse_number.hpp`), framer concept (`framer_concept.hpp`).
+  - `spdlog` — structured logging (adapters only; parser itself has no logger).
+  - `eph-net` — only required when using `binance_rest.hpp` (provides `HttpClient`).
+  - `gtest` — unit test framework (tests only).
+  - `google/benchmark` — microbenchmarks only.
+
+## Build
+
+This subproject is built from the parent repo root:
+
+```bash
+# Build the header-only library target
+xmake build eph-json
+
+# Build every target in the repo (includes eph-json tests and benchmarks)
+xmake build
+```
+
+## Test
+
+```bash
+# Run all eph-json tests
+xmake run test_json       # core parser tests
+xmake run test_binance    # Binance adapter tests
+xmake run test_okx        # OKX adapter tests
+xmake run test_bybit      # Bybit adapter tests
+```
+
+## Benchmark
+
+```bash
+xmake run bench_json_parse
+```
+
+Microbenchmarks cover three scenarios over a representative Binance bookTicker payload: (1) `parse()` alone, (2) `parse()` + `BookTicker::from()` extraction, (3) `symbol_hash()` on the raw bytes.
+
+## Project Structure
+
+```
+eph-json/
+├── include/eph/
+│   ├── json.hpp                     # Aggregate header (parser + framer + binance)
+│   └── json/
+│       ├── parser.hpp               # Core zero-copy parser + JsonView + ParseError
+│       ├── framer.hpp               # JsonFramer pass-through MessageFramer
+│       └── adapters/
+│           ├── binance.hpp          # Binance WS: BookTicker, CombinedStream, symbol_hash, ws_path, subscribe
+│           ├── binance_depth_types.hpp  # DepthLevel, DepthSnapshot, ServerTime
+│           ├── binance_rest.hpp     # BinanceRestClient (depth + server time)
+│           ├── okx.hpp              # OKX WS: OkxPushMessage, OkxBookTicker, inst_id_hash
+│           └── bybit.hpp            # Bybit WS: BybitPushMessage, BybitBookTicker, symbol_hash
+├── tests/
+│   ├── test_json.cpp                # Parser + JsonView tests
+│   ├── test_binance.cpp             # Binance adapter tests
+│   ├── test_okx.cpp                 # OKX adapter tests
+│   └── test_bybit.cpp               # Bybit adapter tests
+├── benchmarks/
+│   └── bench_json_parse.cpp         # google/benchmark microbenchmarks
+└── xmake.lua                        # Header-only target + test/bench rules
+```
 
 ## Public API Reference
 
@@ -33,114 +102,103 @@ The aggregate header `json.hpp` includes parser, framer, and the Binance WebSock
 
 | Symbol | Description |
 |--------|-------------|
-| `parse(const uint8_t* data, size_t len)` | Parse flat JSON object into a `JsonView`. Returns `std::expected<JsonView, ParseError>`. |
-| `ParseError` | Enum: `kIncomplete` (no closing brace), `kInvalidFormat` (malformed JSON), `kFieldOverflow` (more than 32 fields). |
-| `parse_error_name(ParseError)` | Human-readable name for a `ParseError` value. |
-| `Field` | Zero-copy field: `key` (`string_view`), `value` (`string_view`), `is_string` (`bool`). |
-| `JsonView` | Zero-copy view into a flat JSON object (max 32 fields via `kMaxFields`). |
-| `JsonView::get(key)` | Get raw value as `string_view` (empty if missing). |
-| `JsonView::get_string(key)` | Get string value as `optional<string_view>` (nullopt if missing). |
-| `JsonView::get_int(key)` | Parse value as `optional<int64_t>` via `eph::core::parse_int`. |
-| `JsonView::get_double(key)` | Parse value as `optional<double>` via `eph::core::parse_number`. |
-| `JsonView::get_bool(key)` | Parse value as `optional<bool>` ("true"/"false" literals only). |
-| `JsonView::has(key)` | Check if a key exists. |
-| `JsonView::field_count()` | Number of parsed fields (0 to `kMaxFields`). |
-| `JsonView::field_at(i)` | Access field by index for iteration. Returns static empty Field if out of bounds. |
+| `parse(const uint8_t* data, size_t len)` | Parse a flat JSON object into a `JsonView`. Returns `std::expected<JsonView, ParseError>`. |
+| `ParseError` | `kIncomplete` (no closing brace / truncated), `kInvalidFormat` (missing quotes/colons, etc.), `kFieldOverflow` (> `kMaxFields`). |
+| `parse_error_name(ParseError)` / `error_name(ParseError)` | Human-readable `string_view` name. |
+| `Field` | `{ string_view key; string_view value; bool is_string; }`. |
+| `JsonView` | Zero-copy view. `kMaxFields = 32`. |
+| `JsonView::get(key)` | Raw value as `string_view` (empty if missing; empty also possible for legitimately empty values). |
+| `JsonView::get_string(key)` | `optional<string_view>` (nullopt if the key is absent). |
+| `JsonView::get_int(key)` | `optional<int64_t>` via `eph::core::parse_int`. |
+| `JsonView::get_double(key)` | `optional<double>` via `eph::core::parse_number`. |
+| `JsonView::get_bool(key)` | `optional<bool>` — accepts literal `true`/`false` only. |
+| `JsonView::has(key)` | Key presence check. |
+| `JsonView::field_count()` / `field_at(i)` | Positional iteration helpers. `field_at(i)` returns a static empty `Field` when `i` is out of bounds. |
 
 ### Framer (`eph::json`)
 
 | Symbol | Description |
 |--------|-------------|
-| `JsonFramer` | Pass-through framer for JSON-over-WebSocket. Satisfies `eph::net::MessageFramer`. |
-| `JsonFramer::max_overhead()` | Always returns 0 (no framing overhead). |
-| `JsonFramer::encode(out, data, len, msg_type)` | Identity copy. Returns bytes written, or 0 on null/empty input. |
-| `JsonFramer::decode(data, len)` | Wraps entire buffer as `DecodedFrame`. Returns `FrameError::kIncomplete` if len is 0. |
+| `JsonFramer` | Pass-through framer satisfying `eph::net::MessageFramer`. |
+| `JsonFramer::max_overhead()` | Always `0`. |
+| `JsonFramer::encode(out, data, len, msg_type)` | Identity memcpy. Returns `len`, or `0` if any pointer is null or `len == 0`. |
+| `JsonFramer::decode(data, len)` | Wraps the buffer as a single `DecodedFrame{ msg_type = 0, is_control = false }`. Returns `FrameError::kIncomplete` if `len == 0`. |
 
 ### Binance WebSocket Adapter (`eph::json::binance`)
 
 | Symbol | Description |
 |--------|-------------|
-| `BookTicker` | Zero-copy view of a bookTicker message. Fields: `symbol`, `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `update_id`, `event_time`, `txn_time`. Pre-caches parsed bid/ask doubles. |
-| `BookTicker::from(JsonView)` | Extract from parsed JSON. Returns `optional<BookTicker>`. Requires fields: s, b, B, a, A. |
-| `BookTicker::mid_price()` | `(bid + ask) / 2` as `optional<double>`. Uses cached parsed values. |
-| `BookTicker::spread()` | `ask - bid` as `optional<double>`. Uses cached parsed values. |
-| `CombinedStream` | Zero-copy view of a combined stream wrapper (`{"stream":"...","data":{...}}`). Fields: `stream`, `symbol`, `data_raw`. |
-| `CombinedStream::from(JsonView)` | Extract from parsed JSON. Returns `optional<CombinedStream>`. |
-| `extract_symbol(stream)` | Extract symbol from stream suffix: `"btcusdt@bookTicker"` -> `"btcusdt"`. Splits on first `@`. |
-| `symbol_hash(data, len)` | FNV-1a hash of the `"s"` field value. Fast pattern scan without full JSON parse. Returns 0 if not found. |
-| `ws_path(symbol, stream_type)` | Build single-stream WebSocket path: `"/ws/btcusdt@bookTicker"`. |
-| `combined_ws_path(symbols, stream_type)` | Build multi-symbol combined stream path: `"/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"`. |
-| `subscribe_message(symbols, stream_type, id)` | Build `{"method":"SUBSCRIBE","params":[...],"id":N}` JSON message. |
-| `unsubscribe_message(symbols, stream_type, id)` | Build `{"method":"UNSUBSCRIBE","params":[...],"id":N}` JSON message. |
+| `BookTicker` | Typed view of a bookTicker push. String views for `symbol`/`bid_price`/`bid_qty`/`ask_price`/`ask_qty`; integer `update_id`/`event_time`/`txn_time`; `cached_bid`/`cached_ask` populated by `from()`. |
+| `BookTicker::from(JsonView)` | Factory. Requires `s`, `b`, `B`, `a`, `A`; optional `u`, `E`, `T`. |
+| `BookTicker::mid_price()` / `spread()` | `optional<double>`; uses cached values when available. |
+| `CombinedStream` | Typed view of `{"stream":..., "data":{...}}`. `data_raw` is the opaque inner object (caller re-parses it). |
+| `CombinedStream::from(JsonView)` | Factory; requires `stream` and non-empty `data`. |
+| `extract_symbol(stream)` | Splits on first `'@'`: `"btcusdt@bookTicker"` → `"btcusdt"`. Returns the full input when no `'@'` is present. |
+| `symbol_hash(data, len)` | Fast-scans for `"s":"` and FNV-1a hashes the value. Returns `0` if not found. |
+| `ws_path(symbol, stream_type)` | Builds `"/ws/<sym>@<stream>"`. |
+| `combined_ws_path(symbols, stream_type)` | Builds `"/stream?streams=<sym1>@<s>/<sym2>@<s>/..."`. |
+| `subscribe_message(symbols, stream_type, id)` | `{"method":"SUBSCRIBE","params":[...],"id":N}`. |
+| `unsubscribe_message(symbols, stream_type, id)` | `{"method":"UNSUBSCRIBE","params":[...],"id":N}`. |
 
 ### Binance Depth Types (`eph::json::binance`)
 
 | Symbol | Description |
 |--------|-------------|
-| `DepthLevel` | Price/quantity pair: `double price`, `double qty`. |
-| `DepthSnapshot` | Orderbook snapshot: `int64_t last_update_id`, `vector<DepthLevel> bids` (descending), `vector<DepthLevel> asks` (ascending). |
-| `ServerTime` | Server time: `int64_t server_time_ms` (milliseconds since epoch). |
+| `DepthLevel` | `{ double price; double qty; }`. |
+| `DepthSnapshot` | `{ int64_t last_update_id; vector<DepthLevel> bids, asks; }`. |
+| `ServerTime` | `{ int64_t server_time_ms; }`. |
 
 ### Binance REST Client (`eph::json::binance`)
 
 | Symbol | Description |
 |--------|-------------|
-| `BinanceRestConfig` | Config struct: `string host` (default `"api.binance.com"`), `uint16_t port` (default 443), `chrono::milliseconds timeout` (default 5000ms). |
-| `BinanceRestClient` | Typed REST client for public read-only endpoints. No authentication. Constructed with `BinanceRestConfig`. |
-| `BinanceRestClient::kValidDepthLimits` | `constexpr array<int, 8>`: valid depth limit values (5, 10, 20, 50, 100, 500, 1000, 5000). |
-| `BinanceRestClient::get_depth(symbol, limit)` | GET `/api/v3/depth`. Returns `expected<DepthSnapshot, string>`. Validates limit before request. |
-| `BinanceRestClient::get_server_time()` | GET `/api/v3/time`. Returns `expected<ServerTime, string>`. |
-| `parse_depth_response(body)` | Parse depth JSON body into `DepthSnapshot`. Public for testability. |
-| `parse_server_time_response(body)` | Parse server time JSON body into `ServerTime`. Public for testability. |
+| `BinanceRestConfig` | `host` (default `"api.binance.com"`), `port` (443), `timeout` (5000 ms). Provides `validate()`, `dump()`, `to_json()`, `warnings()`, and defaulted `operator==`. |
+| `BinanceRestClient::Config` | Alias for `BinanceRestConfig`. |
+| `BinanceRestClient(Config = {})` | Constructs an `HttpClient` configured for HTTPS with the given host/port/timeout. |
+| `BinanceRestClient::kValidDepthLimits` | `constexpr array<int,8>` = `{5, 10, 20, 50, 100, 500, 1000, 5000}`. |
+| `BinanceRestClient::get_depth(symbol, limit = 20)` | Validates `limit` before request; returns `expected<DepthSnapshot, string>`. |
+| `BinanceRestClient::get_server_time()` | Returns `expected<ServerTime, string>`. |
+| `parse_depth_response(body)` | Free function — parses a raw JSON body. Public for testability. |
+| `parse_server_time_response(body)` | Free function — parses a raw JSON body. Public for testability. |
+| `std::formatter<BinanceRestConfig>` | Delegates to `BinanceRestConfig::dump()`. |
 
 ### OKX Adapter (`eph::json::okx`)
 
 | Symbol | Description |
 |--------|-------------|
-| `OkxPushMessage` | Zero-copy envelope: `channel`, `inst_id`, `data_raw`. Re-parses the nested `"arg"` object to extract channel and instId. |
-| `OkxPushMessage::from(JsonView)` | Extract from parsed JSON. Returns `optional<OkxPushMessage>`. Requires arg and data fields. |
-| `OkxBookTicker` | Zero-copy view of bbo-tbt data. Fields: `inst_id`, `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `timestamp_ms`. Navigates `data[0]` automatically. |
-| `OkxBookTicker::from(JsonView)` | Extract from outer push message JSON. Returns `optional<OkxBookTicker>`. Requires instId, bidPx, bidSz, askPx, askSz. |
-| `OkxBookTicker::mid_price()` | `(bid + ask) / 2` as `optional<double>`. |
-| `OkxBookTicker::spread()` | `ask - bid` as `optional<double>`. |
-| `inst_id_hash(data, len)` | FNV-1a hash of `"instId"` field value. Fast pattern scan without full JSON parse. Returns 0 if not found. |
-| `subscribe_message(channel, inst_ids, id)` | Build `{"op":"subscribe","args":[{"channel":"...","instId":"..."},...],"id":"N"}` JSON. |
-| `unsubscribe_message(channel, inst_ids, id)` | Build `{"op":"unsubscribe","args":[...],"id":"N"}` JSON. |
+| `OkxPushMessage` | `{ channel, inst_id, data_raw }`. `from()` re-parses the nested `arg` to extract `channel` and `instId`. |
+| `OkxBookTicker` | `{ inst_id, bid_price, bid_qty, ask_price, ask_qty, timestamp_ms }`. `from()` pulls `data[0]` and re-parses it. |
+| `OkxBookTicker::mid_price()` / `spread()` | On-demand string→double parse each call (no cache). |
+| `inst_id_hash(data, len)` | Fast-scans for `"instId":"` and FNV-1a hashes the value. |
+| `subscribe_message(channel, inst_ids, id)` | `{"op":"subscribe","args":[{"channel":...,"instId":...},...],"id":"N"}`. |
+| `unsubscribe_message(channel, inst_ids, id)` | `{"op":"unsubscribe","args":[...],"id":"N"}`. |
 
 ### Bybit Adapter (`eph::json::bybit`)
 
 | Symbol | Description |
 |--------|-------------|
-| `BybitPushMessage` | Zero-copy envelope: `topic`, `type` ("snapshot"/"delta"), `data_raw`. |
-| `BybitPushMessage::from(JsonView)` | Extract from parsed JSON. Returns `optional<BybitPushMessage>`. Requires topic, type, and data fields. |
-| `BybitBookTicker` | Zero-copy view of tickers data. Fields: `symbol`, `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `last_price`, `timestamp_ms`. Re-parses nested data object. |
-| `BybitBookTicker::from(JsonView)` | Extract from outer push message JSON. Returns `optional<BybitBookTicker>`. Requires symbol, bid1Price, bid1Size, ask1Price, ask1Size. |
-| `BybitBookTicker::mid_price()` | `(bid + ask) / 2` as `optional<double>`. |
-| `BybitBookTicker::spread()` | `ask - bid` as `optional<double>`. |
-| `symbol_hash(data, len)` | FNV-1a hash of `"symbol"` field value. Fast pattern scan without full JSON parse. Returns 0 if not found. |
-| `subscribe_message(channel, symbols, req_id)` | Build `{"op":"subscribe","args":["channel.SYMBOL",...],"req_id":"N"}` JSON. |
-| `unsubscribe_message(channel, symbols, req_id)` | Build `{"op":"unsubscribe","args":["channel.SYMBOL",...],"req_id":"N"}` JSON. |
-
-## Dependencies
-
-- **eph-core** -- Error traits (`error_traits.hpp`), number parsing (`parse_number.hpp`), framer concept (`framer_concept.hpp`)
-- **spdlog** -- Logging (adapters only, compile-time filtered via `SPDLOG_ACTIVE_LEVEL`)
-- **eph-net** (optional) -- Required only when using `binance_rest.hpp` (HTTP client via `eph::net::HttpClient`)
+| `BybitPushMessage` | `{ topic, type, data_raw }` (`type` is `"snapshot"` or `"delta"`). |
+| `BybitBookTicker` | `{ symbol, bid_price, bid_qty, ask_price, ask_qty, last_price, timestamp_ms }`. `from()` re-parses the nested `data` object. `last_price` and `ts` are optional (may be absent in deltas). |
+| `BybitBookTicker::mid_price()` / `spread()` | On-demand string→double parse each call (no cache). |
+| `symbol_hash(data, len)` | Fast-scans for `"symbol":"` and FNV-1a hashes the value. |
+| `subscribe_message(channel, symbols, req_id)` | `{"op":"subscribe","args":["<channel>.<SYMBOL>",...],"req_id":"N"}`. |
+| `unsubscribe_message(channel, symbols, req_id)` | `{"op":"unsubscribe","args":[...],"req_id":"N"}`. |
 
 ## Usage Examples
 
 ### Parse raw JSON and extract fields
 
 ```cpp
+#include <cstring>
+#include <print>
 #include <eph/json/parser.hpp>
 
-// Zero-copy parse of a flat JSON object
 const char* raw = R"({"price":"87245.30","qty":"1.5","side":"buy"})";
 auto result = eph::json::parse(
     reinterpret_cast<const uint8_t*>(raw), std::strlen(raw));
 
 if (!result) {
-    // result.error() is a ParseError -- formattable via std::format
+    // ParseError is std::format-able via the provided formatter specialization.
     std::println("parse failed: {}", result.error());
     return;
 }
@@ -148,9 +206,8 @@ if (!result) {
 auto price = result->get_string("price");  // optional<string_view>("87245.30")
 auto qty   = result->get_double("qty");    // optional<double>(1.5)
 auto side  = result->get_string("side");   // optional<string_view>("buy")
-auto miss  = result->get_string("foo");    // nullopt (key absent)
+auto miss  = result->get_string("foo");    // nullopt
 
-// Iterate all fields
 for (size_t i = 0; i < result->field_count(); ++i) {
     auto& f = result->field_at(i);
     // f.key, f.value, f.is_string
@@ -166,36 +223,32 @@ for (size_t i = 0; i < result->field_count(); ++i) {
 auto result = eph::json::parse(data, len);
 if (!result) { /* handle error */ }
 
-// Extract typed BookTicker from a Binance bookTicker message
 if (auto ticker = eph::json::binance::BookTicker::from(*result)) {
     auto sym = ticker->symbol;       // "BTCUSDT" (string_view into buffer)
-    auto bid = ticker->bid_price;    // "87245.30" (string_view)
-    auto mid = ticker->mid_price();  // optional<double> -- uses cached parse
+    auto bid = ticker->bid_price;    // "87245.30"
+    auto mid = ticker->mid_price();  // optional<double> — uses cached parse
     auto spr = ticker->spread();     // optional<double>
 }
 
-// Two-phase frame filter hash (no full JSON parse needed)
-uint32_t hash = eph::json::binance::symbol_hash(data, len);
+// Two-phase filter hash — no full JSON parse needed
+uint32_t h = eph::json::binance::symbol_hash(data, len);
 ```
 
 ### Binance combined stream
 
 ```cpp
+#include <array>
 #include <eph/json/adapters/binance.hpp>
 
-// Build subscription path for multiple symbols
 std::array<std::string_view, 2> syms = {"btcusdt", "ethusdt"};
 auto path = eph::json::binance::combined_ws_path(syms, "bookTicker");
 // -> "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker"
 
 auto sub_msg = eph::json::binance::subscribe_message(syms, "bookTicker", 1);
-// -> {"method":"SUBSCRIBE","params":["btcusdt@bookTicker","ethusdt@bookTicker"],"id":1}
 
-// Parse a combined stream wrapper
 auto result = eph::json::parse(data, len);
 if (auto cs = eph::json::binance::CombinedStream::from(*result)) {
-    auto sym = cs->symbol;  // "btcusdt" (extracted from stream name)
-    // Re-parse cs->data_raw for the inner message
+    auto sym = cs->symbol;  // "btcusdt" extracted from stream name
     auto inner = eph::json::parse(
         reinterpret_cast<const uint8_t*>(cs->data_raw.data()),
         cs->data_raw.size());
@@ -213,18 +266,13 @@ if (auto cs = eph::json::binance::CombinedStream::from(*result)) {
 auto result = eph::json::parse(data, len);
 if (auto push = eph::json::okx::OkxPushMessage::from(*result)) {
     if (push->channel == "bbo-tbt") {
-        // OkxBookTicker::from navigates data[0] and re-parses automatically
         if (auto ticker = eph::json::okx::OkxBookTicker::from(*result)) {
-            auto bid  = ticker->bid_price;    // "87000.0"
-            auto inst = ticker->inst_id;      // "BTC-USDT"
-            auto ts   = ticker->timestamp_ms; // int64_t ms since epoch
+            auto bid  = ticker->bid_price;     // "87000.0"
+            auto inst = ticker->inst_id;       // "BTC-USDT"
+            auto ts   = ticker->timestamp_ms;  // int64_t ms since epoch
         }
     }
 }
-
-// Build subscription messages
-std::array<std::string_view, 2> ids = {"BTC-USDT", "ETH-USDT"};
-auto sub = eph::json::okx::subscribe_message("bbo-tbt", ids, 1);
 ```
 
 ### Bybit tickers feed
@@ -235,18 +283,13 @@ auto sub = eph::json::okx::subscribe_message("bbo-tbt", ids, 1);
 auto result = eph::json::parse(data, len);
 if (auto push = eph::json::bybit::BybitPushMessage::from(*result)) {
     if (push->topic.starts_with("tickers.") && push->type == "snapshot") {
-        // BybitBookTicker::from re-parses the nested data object
         if (auto ticker = eph::json::bybit::BybitBookTicker::from(*result)) {
-            auto bid  = ticker->bid_price;    // "87000.0"
-            auto last = ticker->last_price;   // "87000.5"
-            auto mid  = ticker->mid_price();  // optional<double>
+            auto bid  = ticker->bid_price;   // "87000.0"
+            auto last = ticker->last_price;  // "87000.5"
+            auto mid  = ticker->mid_price();
         }
     }
 }
-
-// Build subscription messages
-std::array<std::string_view, 2> syms = {"BTCUSDT", "ETHUSDT"};
-auto sub = eph::json::bybit::subscribe_message("tickers", syms, 1);
 ```
 
 ### Binance REST: orderbook snapshot recovery
@@ -254,23 +297,31 @@ auto sub = eph::json::bybit::subscribe_message("tickers", syms, 1);
 ```cpp
 #include <eph/json/adapters/binance_rest.hpp>
 
-// Default config: api.binance.com:443, 5s timeout
-eph::json::binance::BinanceRestClient client;
+eph::json::binance::BinanceRestClient client;  // defaults to api.binance.com:443
 
 auto depth = client.get_depth("BTCUSDT", 20);
 if (depth) {
-    // depth->last_update_id for sequencing with WebSocket depth updates
-    for (auto& bid : depth->bids) {
-        // bid.price (double), bid.qty (double)
-    }
-    for (auto& ask : depth->asks) {
-        // ask.price (double), ask.qty (double)
-    }
+    // Use depth->last_update_id to align with WebSocket depth updates
+    for (auto& bid : depth->bids) { /* bid.price, bid.qty */ }
+    for (auto& ask : depth->asks) { /* ask.price, ask.qty */ }
 }
 
-// Clock drift validation
-auto time = client.get_server_time();
-if (time) {
-    auto drift_ms = local_time_ms - time->server_time_ms;
+auto now = client.get_server_time();
+if (now) {
+    auto drift = local_ms - now->server_time_ms;
 }
 ```
+
+## Design Notes
+
+- **Why linear field lookup?** For 5–15 fields, a small contiguous array with a first-char + length pre-filter beats hash-map lookup (which would incur pointer chasing and a hash computation). Confirmed by benchmarks on representative Binance / OKX payloads.
+- **Why byte-at-a-time string scanning?** Typical key/value strings are 1–10 bytes. SIMD (`memchr`) call overhead dominates the body for strings this short.
+- **Escape sequence handling.** The parser recognizes `\` so the string scanner doesn't terminate prematurely on `\"`, but it does NOT normalize `\n`, `\uXXXX`, etc. — the field value is a raw slice of the input. Callers needing strict RFC 8259 normalization must re-process the slice.
+- **Nested objects/arrays** are captured as opaque `string_view`s spanning `{...}` or `[...]`. Parsing depth is bounded at 64 to prevent stack/iteration runaway on pathological inputs.
+- **`get()` vs `get_string()`.** `get()` returns an empty `string_view` for BOTH missing keys and present-but-empty values; `get_string()` distinguishes them with `optional`.
+- **`CombinedStream::from()` requires a non-empty `data_raw`.** An empty nested object (`"data":{}`) would be reported as missing; this is an intentional simplification for HFT payloads, which never have empty `data`.
+- **Price caching in `BookTicker`.** Prices are pre-parsed once inside `BookTicker::from()` into `cached_bid`/`cached_ask`, so `mid_price()` / `spread()` are branch-light even when called repeatedly per message. `OkxBookTicker` and `BybitBookTicker` do NOT cache — their prices are re-parsed on every `mid_price()`/`spread()` call.
+
+## License
+
+See repository root.

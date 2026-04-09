@@ -1,264 +1,208 @@
 # eph-net
 
-Header-only C++23 networking library for low-latency WebSocket transport, HTTP REST clients, and connection infrastructure. Provides the POSIX socket backend for the `Transport<>` template, along with supporting components for exchange connectivity (rate limiting, circuit breaking, proxy tunneling, emergency shutdown).
+Header-only C++23 networking library that provides the POSIX/kernel-side
+backend of the eph trading ecosystem. It implements the `TcpTransport` concept
+(from `eph-core`) on top of non-blocking sockets + `poll()` so any
+`Transport<SocketTransport, Framer, ...>` combination from `eph-transport`
+works without DPDK, and ships the exchange-facing building blocks that sit
+around the raw transport: a synchronous HTTP/1.1 + TLS client, HMAC-SHA256
+signing, circuit breakers, rate limiters, a multi-connection gateway, SOCKS5 /
+HTTP CONNECT proxies, and an emergency kill switch.
 
-## Overview
+The DPDK / kernel-bypass backend lives in a sibling subproject (`eph-dpdk`);
+`eph-net` is the portable Linux-native path.
 
-`eph-net` is the network layer of the eph ecosystem. It bridges the protocol-agnostic `Transport<>` engine (from `eph-transport`) with the Linux kernel TCP stack, providing:
+## Features
 
-- A `SocketTransport` class satisfying the `TcpTransport` concept, so any `Transport<SocketTransport, Framer, ...>` combo works out of the box.
-- One-liner connect functions (`connect()`, `socket_wss_connect()`) that eliminate factory boilerplate.
-- A synchronous `HttpClient` for off-hot-path REST API calls (order placement, balance queries, snapshots).
-- HMAC-SHA256 signing for authenticated exchange APIs (Binance, Bybit, OKX).
-- Infrastructure components: circuit breaker, rate limiter, multi-connection gateway, proxy tunneling, and emergency kill switch.
+- `SocketTransport` — non-blocking POSIX TCP satisfying `eph::core::TcpTransport`,
+  with DNS-timeout-protected connect, deadline-capped `send()`, callback-driven
+  `poll_rx()` / `poll_rx_for()`, graceful `close()` (FIN) and forced `reset()`
+  (RST via `SO_LINGER`), and optional `SO_TIMESTAMPING` for kernel RX/TX
+  latency histograms.
+- `connect(url, ...)` / `socket_wss_connect()` / `socket_ws_connect()` —
+  one-liner factories that parse a URL, apply user-provided config
+  modifications, validate, and hand back a fully-connected
+  `Transport<SocketTransport, WsFramer, ...>`.
+- Preset `Socket*Transport` aliases for WSS / WS / raw TCP, small/large/evict
+  queue variants, plus direct-TX and fully-direct (zero background thread)
+  modes.
+- `HttpClient` — synchronous HTTP/1.1 client (`GET` / `POST` / `PUT` /
+  `DELETE` / generic `request`) with aws-lc TLS, SNI + hostname verification,
+  Content-Length **and** chunked transfer-encoding response detection, and a
+  hardened request builder (rejects `\r\n\r\n` and bare-LF injection in
+  extra headers).
+- `hmac_sha256*` — HMAC-SHA256 with hex (Binance, Bybit), base64 (OKX), raw
+  digest, and `CRYPTO_memcmp`-based constant-time verifiers for all three.
+- `CircuitBreaker` — thread-safe three-state (Closed / Open / HalfOpen)
+  breaker with a `Config` struct that carries `validate()` / `warnings()` /
+  `dump()` / `to_json()`, plus `is_tripped()` and `time_until_half_open()`
+  for monitoring dashboards.
+- `RateLimiter` — token-bucket limiter with a `Config` struct, `try_acquire()`
+  / `acquire(timeout)` (yield-spin, bounded), `is_exhausted()`, and a const
+  `available()` that refills through `mutable` cache state.
+- `Gateway` — multi-connection lifecycle manager with background health
+  monitor thread, `ConnHealth` state machine (Healthy / Degraded /
+  Disconnected / Stopped), `degraded_threshold` based on transport
+  `stats().rx_packets` deltas (detected via `if constexpr`), atomic
+  `remove_by_tag()` / `reconnect_by_tag()`, and a `for_each` template that
+  avoids `std::function` overhead.
+- `KillSwitch` — fixed-size (32-transport) signal-safe shutdown coordinator
+  with `register_transport` / `unregister_transport` (constrained by
+  `Stoppable` concept), `request_shutdown` (lock-free, signal-safe),
+  graceful `shutdown()`, emergency `kill()`, `reset()`, `running_count()`,
+  and `install_signal_handlers()` (SIGINT / SIGTERM, with second-ctrl-C
+  escape hatch).
+- `proxy::{ProxyConfig, socks5_handshake, http_connect_handshake,
+  make_proxied_factory, parse_proxy_url}` — SOCKS5 (RFC 1928 / 1929) and
+  HTTP CONNECT (RFC 7231 §4.3.6) tunneling. SOCKS5 uses ATYP=0x03
+  (domain name) for remote-side DNS resolution — no DNS leak — and
+  passwords are never logged.
 
-All headers live under `include/eph/net/`. The convenience header `include/eph/net.hpp` pulls in the socket transport, connect functions, framer types, and transport engine.
+All components use spdlog with `SPDLOG_ACTIVE_LEVEL` for compile-time log
+filtering (`SPDLOG_LEVEL_TRACE` in debug, `SPDLOG_LEVEL_INFO` in release).
+All `Config` structs expose `validate()`, `warnings()`, `dump()`, `to_json()`,
+and defaulted `operator==` so they plug into monitoring and persistence
+trivially.
 
-## Key Components
+## Layout
 
-### Socket Transport
+```
+eph-net/
+├── include/eph/
+│   ├── net.hpp                     # umbrella: socket backend + Transport templates + framers
+│   └── net/
+│       ├── socket_config.hpp       # SocketConfig (URL parse, validate, warnings, JSON)
+│       ├── socket_transport.hpp    # SocketTransport (TcpTransport concept impl)
+│       ├── socket_connect.hpp      # connect() / socket_wss_connect() + Socket*Transport aliases
+│       ├── http_message.hpp        # pure HttpResponse + build_http_request + parse_http_response
+│       ├── http_client.hpp         # synchronous HTTP/1.1 + aws-lc TLS client
+│       ├── hmac.hpp                # HMAC-SHA256 hex/base64/verify (aws-lc)
+│       ├── circuit_breaker.hpp     # three-state CircuitBreaker
+│       ├── rate_limiter.hpp        # token-bucket RateLimiter
+│       ├── gateway.hpp             # multi-connection Gateway + ConnHealth monitor
+│       ├── kill_switch.hpp         # signal-safe KillSwitch
+│       └── proxy.hpp               # SOCKS5 + HTTP CONNECT tunneling
+├── tests/                          # 15 GoogleTest test files (~600 KB source)
+├── benchmarks/                     # 13 google-benchmark binaries
+├── fuzzers/                        # libFuzzer harnesses (currently: fuzz_http_parse)
+└── xmake.lua                       # headeronly target + per-file test/bench targets
+```
 
-- **socket_config.hpp** -- `SocketConfig` struct for POSIX socket TCP connections. Fields for host, port, TCP_NODELAY, SO_RCVBUF/SO_SNDBUF, keepalive tuning, SO_BINDTODEVICE, and send timeout. URL parser (`from_url()`), early validation (`validate()`), and serialization (`dump()`, `to_json()`, `to_url()`). Compile-time `kEnableSocketTimestamps` switch for SO_TIMESTAMPING support.
-- **socket_transport.hpp** -- `SocketTransport` class implementing the `TcpTransport` concept with non-blocking POSIX sockets and `poll()` for I/O multiplexing. DNS resolution with timeout via `std::async`, non-blocking `send()` with deadline-capped retries, callback-driven `poll_rx()` / `poll_rx_for()`, graceful `close()` (FIN), and forced `reset()` (RST). Tracks MSS, resolved IP, DNS/connect latency, and optional kernel RX/TX timestamps.
-- **socket_connect.hpp** -- Convenience connect functions and preset-based type aliases. `socket_wss_connect()`, `socket_ws_connect()`, and `connect(url)` one-liner factories. Type aliases for all transport variants.
+## Build
 
-### HTTP and Crypto
+`eph-net` is a sub-project of the `ephemeral_dev` monorepo. Build from the
+repo root:
 
-- **http_client.hpp** -- Synchronous HTTP/1.1 client for REST API calls. One connection per request, POSIX sockets + aws-lc TLS. `HttpClient` class with `get()` and `post()`. Standalone `build_http_request()`, `parse_http_response()`, and `find_header()` utilities.
-- **hmac.hpp** -- HMAC-SHA256 signing for authenticated exchange REST APIs. Hex output (`hmac_sha256_hex()`) for Binance/Bybit, base64 output (`to_base64()`) for OKX. Constant-time verification (`hmac_verify()`, `hmac_verify_hex()`). Uses aws-lc as the cryptographic backend.
+```bash
+# Debug (SPDLOG_LEVEL_TRACE):
+xmake f -m debug
+xmake build eph-net
 
-### Infrastructure
+# Release (SPDLOG_LEVEL_INFO):
+xmake f -m release
+xmake build eph-net
 
-- **circuit_breaker.hpp** -- Three-state circuit breaker (Closed/Open/HalfOpen) for endpoint protection. Prevents hammering broken endpoints with configurable failure threshold and backoff. Thread-safe via `std::mutex`.
-- **rate_limiter.hpp** -- Token bucket rate limiter for exchange API request throttling. Configurable sustained rate and burst capacity. Non-blocking `try_acquire()` and blocking `acquire()`. Thread-safe, nanosecond-precision refill.
-- **gateway.hpp** -- Multi-connection lifecycle manager. Type-erased connection storage with per-connection tagging and priority. Background health monitor thread with configurable check interval and health-change callbacks.
-- **proxy.hpp** -- SOCKS5 (RFC 1928/1929) and HTTP CONNECT (RFC 7231) proxy tunneling. `ProxyConfig` struct, handshake functions, `make_proxied_factory()` for `Transport::create()`, and `parse_proxy_url()` URL parser. DNS resolution on the proxy side (no DNS leak).
-- **kill_switch.hpp** -- Centralized emergency shutdown coordinator. Fixed-size registration (up to 32 transports, no heap). Graceful `shutdown()` and emergency `kill()`. Signal-safe `request_shutdown()` via lock-free atomic. `install_signal_handlers()` for SIGINT/SIGTERM.
+# Sanitizer modes (from top-level xmake.lua):
+xmake f -m asan    # AddressSanitizer + UBSan
+xmake f -m tsan    # ThreadSanitizer
+```
 
-## Public API Reference
+Because the target is `set_kind("headeronly")`, `xmake build eph-net` only
+installs headers and validates metadata — the actual compilation happens when
+a dependent test, benchmark, or example pulls the headers in.
 
-### `eph::net` namespace
+## Test
 
-#### SocketConfig (`socket_config.hpp`)
+Each `tests/test_*.cpp` file becomes its own xmake target via the `eph-test`
+rule. Run the whole suite or a single test:
 
-| Member | Description |
-|--------|-------------|
-| `std::string host` | Target hostname or IP address |
-| `uint16_t port` | Target port number |
-| `bool tcp_nodelay` | Disable Nagle's algorithm (default `true`) |
-| `int recv_buf_size` | SO_RCVBUF size in bytes (0 = OS default) |
-| `int send_buf_size` | SO_SNDBUF size in bytes (0 = OS default) |
-| `bool tcp_keepalive` | Enable TCP keepalive probes |
-| `int keepalive_idle` | Seconds before first probe (default 60) |
-| `int keepalive_interval` | Seconds between probes (default 10) |
-| `int keepalive_count` | Probes before declaring dead (default 3) |
-| `int send_timeout_ms` | Timeout for individual send() poll waits in ms (default 1000) |
-| `std::string bind_device` | SO_BINDTODEVICE NIC name (requires CAP_NET_RAW) |
-| `static from_url(string_view) -> expected<SocketConfig, string>` | Parse `tcp://host:port` or `host:port` into a SocketConfig |
-| `to_url() -> string` | Serialize as `tcp://host:port` |
-| `validate() -> string_view` | Return error description or empty on valid config |
-| `dump() -> string` | Multi-line human-readable format |
-| `to_json() -> string` | Compact JSON serialization |
+```bash
+xmake build                              # build everything (tests + benches)
+xmake run test_socket_transport
+xmake run test_gateway
+xmake run test_rate_limiter
+```
 
-Compile-time constant: `inline constexpr bool kEnableSocketTimestamps` (set via `-DEPH_ENABLE_TIMESTAMPS=1`).
+Coverage highlights (by file):
 
-#### SocketTransport (`socket_transport.hpp`)
+| File | Focus |
+|---|---|
+| `test_socket_transport.cpp` | Non-blocking connect, send/recv, close, reset, MSS query |
+| `test_http.cpp` / `test_http_client.cpp` | Builder injection guards, parser, TLS path, chunked / CL detection |
+| `test_tls_record.cpp` | TLS record-layer edge cases |
+| `test_hmac.cpp` | HMAC determinism, large messages, hex/base64, constant-time verify |
+| `test_circuit_breaker.cpp` | State transitions, concurrent access, warnings |
+| `test_rate_limiter.cpp` | Refill precision, const-correctness, exhaustion, burst |
+| `test_gateway.cpp` | Add/remove, health transitions, monitor thread, `dump()` deadlock regression |
+| `test_kill_switch.cpp` | Capacity limits, signal-safe flag, formatter, register/unregister race |
+| `test_proxy.cpp` | SOCKS5 handshake phases, HTTP CONNECT auth, URL parser |
+| `test_websocket.cpp` / `test_framer.cpp` | WS framing + length-prefix framer |
+| `test_transport.cpp` / `test_transport_types.cpp` | Transport<> integration with SocketTransport |
+| `test_tcp_concept.cpp` | `TcpTransport` concept compliance |
 
-| Method | Description |
-|--------|-------------|
-| `SocketTransport(const SocketConfig&)` | Construct (does not connect) |
-| `connect(timeout) -> expected<void, string>` | Establish TCP connection with DNS timeout protection |
-| `send(data, len) -> expected<size_t, string>` | Non-blocking send with deadline-capped retries |
-| `poll_rx(callback) -> expected<uint16_t, string>` | Non-blocking receive, delivers data via callback |
-| `poll_rx_for(callback, timeout) -> expected<uint16_t, string>` | Timed receive with poll() wait |
-| `close() -> expected<void, string>` | Graceful shutdown (send FIN) |
-| `reset()` | Forceful reset (send RST via SO_LINGER) |
-| `state() -> TcpState` | Current TCP state |
-| `mss() -> uint16_t` | Negotiated Maximum Segment Size |
-| `is_established() -> bool` | Check if connected |
-| `config() -> const SocketConfig&` | Access socket configuration |
-| `fd() -> int` | Underlying file descriptor |
-| `resolved_ip() -> string_view` | IP address from last connect |
-| `dns_latency_ns() -> uint64_t` | DNS resolution time |
-| `connect_latency_ns() -> uint64_t` | Total connect time (DNS + TCP handshake) |
-| `rx_latency() -> RttStats` | Kernel RX stack latency histogram (timestamps mode) |
-| `tx_latency() -> RttStats` | Kernel TX stack latency histogram (timestamps mode) |
-| `last_rx_burst_tsc() -> uint64_t` | TSC captured after recvmsg returns data |
-| `last_kernel_rx_delay_ns() -> uint64_t` | Per-call kernel RX delay (timestamps mode) |
-| `last_kernel_tx_delay_ns() -> uint64_t` | Per-call kernel TX delay (timestamps mode) |
-| `local_port() -> uint16_t` | Ephemeral port number of connected socket |
+## Benchmark
 
-#### Connect Functions (`socket_connect.hpp`)
+```bash
+xmake run bench_socket_config
+xmake run bench_hmac
+xmake run bench_circuit_breaker
+xmake run bench_rate_limiter
+xmake run bench_gateway
+xmake run bench_kill_switch
+xmake run bench_http_client
+xmake run bench_proxy
+xmake run bench_ws
+xmake run bench_tls
+xmake run bench_rx_pipeline
+xmake run bench_transport_pipeline
+xmake run bench_control_plane
+```
 
-| Function | Description |
-|----------|-------------|
-| `connect(url, modifier?, sock_cfg?) -> expected<unique_ptr<Transport<...>>, ConnectionErrorInfo>` | One-liner: parse URL, create transport, connect |
-| `socket_wss_connect(config, sock_cfg?) -> expected<unique_ptr<Transport<...>>, ConnectionErrorInfo>` | Create WSS transport from TransportConfig |
-| `socket_ws_connect(config, sock_cfg?) -> expected<unique_ptr<Transport<...>>, ConnectionErrorInfo>` | Create plain WS transport (no TLS) |
+Per the project-wide benchmarking discipline, establish a baseline before
+modifying any benchmarked hot path and re-run after changes to catch
+regressions.
 
-#### Transport Type Aliases (`socket_connect.hpp`)
-
-| Alias | Description |
-|-------|-------------|
-| `SocketWssTransport` | Standard WSS, 512B payload, 1024-deep queues |
-| `SocketWssSmallTransport` | Small WSS, 64B payload, 256-deep queues |
-| `SocketWssLargeTransport` | Large WSS, 4KB payload, 512-deep queues |
-| `SocketWssEvictTransport` | WSS with evicting RX queue (drops stale) |
-| `SocketWsTransport` | Plain WS (no TLS) |
-| `SocketRawTransport` | Raw TCP (no WebSocket framing) |
-| `SocketDirectTxTransport` | Direct TX mode (send on caller thread) |
-| `SocketDirectTxSmallTransport` | Direct TX, small-payload variant |
-| `SocketDirectTxRawTransport` | Direct TX, raw variant |
-| `SocketDirectTransport` | Full direct mode (no background threads) |
-| `SocketDirectSmallTransport` | Full direct, small-payload variant |
-| `SocketDirectRawTransport` | Full direct, raw variant |
-
-#### HttpClient (`http_client.hpp`)
-
-| Type / Function | Description |
-|----------------|-------------|
-| `HttpResponse` | Struct: `int status_code`, `string body`, `string headers_raw` |
-| `HttpClient(Config)` | Construct with host, port, TLS, timeout, max_response_size |
-| `HttpClient::get(path, extra_headers?) -> expected<HttpResponse, string>` | Send GET request |
-| `HttpClient::post(path, body, content_type?, extra_headers?) -> expected<HttpResponse, string>` | Send POST request |
-| `HttpClient::config() -> const Config&` | Access client configuration |
-| `HttpClient::is_response_complete(buf) -> bool` | Check if raw response has full headers + body (static, public for testing) |
-| `build_http_request(method, host, path, body?, content_type?, extra_headers?) -> expected<string, string>` | Build raw HTTP/1.1 request string |
-| `parse_http_response(data) -> expected<HttpResponse, string>` | Parse raw HTTP response bytes |
-| `find_header(headers_raw, name) -> string` | Case-insensitive header value lookup |
-
-#### HMAC (`hmac.hpp`)
-
-| Function | Description |
-|----------|-------------|
-| `hmac_sha256(key, message) -> expected<array<uint8_t, 32>, string>` | Raw 32-byte HMAC-SHA256 digest |
-| `hmac_sha256_hex(key, message) -> expected<string, string>` | HMAC-SHA256 as 64-char lowercase hex (Binance/Bybit) |
-| `hmac_verify(key, message, expected) -> bool` | Constant-time HMAC verification (raw bytes) |
-| `hmac_verify_hex(key, message, expected_hex) -> bool` | Constant-time HMAC verification (hex string) |
-| `to_hex(bytes) -> string` | Encode byte span as lowercase hex |
-| `to_base64(bytes) -> expected<string, string>` | Encode byte span as base64 (OKX) |
-
-#### CircuitBreaker (`circuit_breaker.hpp`)
-
-| Type / Method | Description |
-|--------------|-------------|
-| `CircuitState` | Enum: `Closed`, `Open`, `HalfOpen` |
-| `CircuitBreaker::Config` | Struct: `failure_threshold`, `open_duration`, `half_open_max_calls` |
-| `CircuitBreaker(Config)` | Construct with failure_threshold, open_duration, half_open_max_calls |
-| `allow() -> bool` | Check if a call is permitted |
-| `record_success()` | Record successful call (may close circuit) |
-| `record_failure()` | Record failed call (may trip circuit) |
-| `state() -> CircuitState` | Query current state |
-| `failure_count() -> size_t` | Consecutive failure count |
-| `reset()` | Force-reset to Closed |
-
-#### RateLimiter (`rate_limiter.hpp`)
-
-| Method | Description |
-|--------|-------------|
-| `RateLimiter(rate_per_sec, burst)` | Construct with sustained rate and burst capacity |
-| `try_acquire(n?) -> bool` | Non-blocking token consumption |
-| `acquire(n?)` | Blocking token consumption (spins with yield) |
-| `available() -> double` | Approximate available tokens |
-| `reset()` | Refill to full burst capacity |
-
-#### Gateway (`gateway.hpp`)
-
-| Type / Method | Description |
-|--------------|-------------|
-| `ConnHealth` | Enum: `Healthy`, `Degraded`, `Disconnected`, `Stopped` |
-| `conn_health_name(ConnHealth) -> string_view` | Human-readable health status |
-| `GatewayConnection` | Type-erased connection with tag, health, priority |
-| `Gateway::Config` | Struct: `health_check_interval`, `degraded_threshold`, `on_health_change` callback |
-| `Gateway(Config?)` | Construct with health monitoring and callback configuration |
-| `add(tag, transport*, priority?) -> size_t` | Register a transport, returns connection index |
-| `connection_count() -> size_t` | Number of managed connections |
-| `health(id) -> ConnHealth` | Query connection health by index |
-| `tag(id) -> string` | Query connection tag by index |
-| `start_all()` | Start all stopped connections |
-| `stop_all()` | Stop all running connections |
-| `reconnect(id)` | Force reconnect a specific connection |
-| `start_monitor()` | Start background health monitor thread |
-| `stop_monitor()` | Stop health monitor thread |
-| `check_health()` | Run one health check cycle |
-| `dump() -> string` | Formatted status of all connections |
-
-### `eph::net::proxy` namespace (`proxy.hpp`)
-
-| Type / Function | Description |
-|----------------|-------------|
-| `ProxyType` | Enum: `kSocks5`, `kHttpConnect` |
-| `ProxyConfig` | Struct: host, port, type, username, password, timeout, `validate()` |
-| `socks5_handshake(tcp, target_host, target_port, cfg) -> expected<void, string>` | Execute SOCKS5 tunnel on connected socket |
-| `http_connect_handshake(tcp, target_host, target_port, cfg) -> expected<void, string>` | Execute HTTP CONNECT tunnel on connected socket |
-| `make_proxied_factory(sock_cfg, proxy_cfg, host, port) -> function<...>` | Build a TcpFactory that connects through a proxy |
-| `parse_proxy_url(url) -> expected<ProxyConfig, string>` | Parse `socks5://` or `http://` proxy URL |
-
-#### KillSwitch (`kill_switch.hpp`)
-
-| Type / Method | Description |
-|--------------|-------------|
-| `kKillSwitchMaxTransports` | Compile-time constant: max 32 registered transports |
-| `TransportHandle` | Type-erased transport wrapper (ptr + stop_fn + is_running_fn) |
-| `KillSwitch()` | Construct (one per application) |
-| `register_transport(tp*) -> bool` | Register transport for coordinated shutdown |
-| `unregister_transport(tp*)` | Remove transport before destruction |
-| `transport_count() -> size_t` | Number of registered transports |
-| `is_shutdown_requested() -> bool` | Check shutdown flag (main loop condition) |
-| `request_shutdown()` | Set shutdown flag (signal-safe, lock-free) |
-| `shutdown()` | Graceful: stop all transports, block until done |
-| `kill()` | Emergency: set flag without blocking |
-| `install_signal_handlers()` | Hook SIGINT/SIGTERM to trigger shutdown |
-
-## Dependencies
-
-- **eph-core** -- `TcpTransport` concept (`tcp_concept.hpp`), framer concepts, length-prefix framer, JSON escape utility
-- **eph-transport** -- Transport engine (`transport.hpp`), transport types/config/stats, WS framer, raw framer, presets, direct transport variants
-- **eph-utils** -- HDR histogram, TSC timing
-- **eph-containers** -- SPSC bounded queue (used by Transport)
-- **aws-lc** (OpenSSL-compatible) -- TLS handshake/encryption (via Transport), HMAC-SHA256 (`hmac.hpp`), base64 encoding
-- **spdlog** -- Leveled logging throughout all components
-
-## Usage Examples
+## Examples
 
 ### One-liner WebSocket connection
 
 ```cpp
 #include <eph/net.hpp>
 
-auto result = eph::net::connect("wss://stream.binance.com:9443/ws/btcusdt@bookTicker",
+auto result = eph::net::connect(
+    "wss://stream.binance.com:9443/ws/btcusdt@bookTicker",
     [](auto& cfg) {
-        cfg.on_message = [](const uint8_t* data, uint16_t len, uint8_t opcode) {
-            // Handle incoming WebSocket message
+        cfg.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+            // handle frame
         };
     });
-if (!result) { /* handle error */ }
+if (!result) {
+    spdlog::error("connect failed: {}", result.error().detail);
+    return 1;
+}
 auto& transport = *result;
-
-transport->send_text(R"({"method":"SUBSCRIBE","params":["btcusdt@bookTicker"]})");
-
-// Graceful shutdown
+transport->send_text(
+    R"({"method":"SUBSCRIBE","params":["btcusdt@bookTicker"]})");
 transport->stop();
 ```
 
-### REST API call with HMAC signing
+### Signed REST call (Binance)
 
 ```cpp
 #include <eph/net/http_client.hpp>
 #include <eph/net/hmac.hpp>
 
-// Create an HTTP client for Binance REST API
-eph::net::HttpClient client({.host = "api.binance.com", .port = 443});
+eph::net::HttpClient client(
+    eph::net::HttpClient::Config{.host = "api.binance.com", .port = 443});
 
-// Sign the query string
 std::string query = "timestamp=1234567890000&recvWindow=5000";
 auto sig = eph::net::hmac_sha256_hex(api_secret, query);
 if (!sig) { /* handle error */ }
 
-// Send authenticated request
-auto resp = client.get(std::format("/api/v3/account?{}&signature={}", query, *sig));
-if (resp && resp->status_code == 200) {
-    // Parse resp->body (JSON)
+auto resp = client.get(
+    std::format("/api/v3/account?{}&signature={}", query, *sig));
+if (resp && resp->is_success()) {
+    // resp->body has the JSON
 }
 ```
 
@@ -268,39 +212,21 @@ if (resp && resp->status_code == 200) {
 #include <eph/net/circuit_breaker.hpp>
 #include <eph/net/rate_limiter.hpp>
 
-// 5 failures trips the breaker, 30s cooldown, 1 probe call
-eph::net::CircuitBreaker breaker({5, std::chrono::seconds{30}, 1});
+eph::net::CircuitBreaker breaker({
+    .failure_threshold   = 5,
+    .open_duration       = std::chrono::seconds{30},
+    .half_open_max_calls = 1,
+});
 
-// 20 requests/sec sustained, burst of 5
-eph::net::RateLimiter limiter(20.0, 5);
+eph::net::RateLimiter limiter(
+    eph::net::RateLimiter::Config{.rate_per_sec = 20.0, .burst = 5});
 
-void send_order(/* ... */) {
-    if (!breaker.allow()) { /* endpoint is down, skip */ return; }
-    if (!limiter.try_acquire()) { /* rate limited, back off */ return; }
+if (!breaker.allow())            { return; }
+if (!limiter.try_acquire())      { return; }
 
-    auto resp = client.post("/api/v3/order", order_json);
-    if (resp) {
-        breaker.record_success();
-    } else {
-        breaker.record_failure();
-    }
-}
-```
-
-### Emergency shutdown coordination
-
-```cpp
-#include <eph/net/kill_switch.hpp>
-
-eph::net::KillSwitch ks;
-ks.register_transport(transport1.get());
-ks.register_transport(transport2.get());
-ks.install_signal_handlers();  // SIGINT, SIGTERM
-
-while (!ks.is_shutdown_requested()) {
-    // Main event loop
-}
-ks.shutdown();  // Graceful: stops all transports and joins threads
+auto resp = client.post("/api/v3/order", order_json);
+if (resp && resp->is_success()) breaker.record_success();
+else                            breaker.record_failure();
 ```
 
 ### Multi-connection gateway
@@ -310,9 +236,11 @@ ks.shutdown();  // Graceful: stops all transports and joins threads
 
 eph::net::Gateway gw({
     .health_check_interval = std::chrono::milliseconds{5000},
-    .on_health_change = [](std::string_view tag, auto old_h, auto new_h) {
-        spdlog::warn("Connection '{}' health: {} -> {}",
-                     tag, conn_health_name(old_h), conn_health_name(new_h));
+    .degraded_threshold    = std::chrono::milliseconds{30000},
+    .on_health_change      = [](std::string_view tag, auto old_h, auto new_h) {
+        spdlog::warn("{}: {} -> {}", tag,
+                     eph::net::conn_health_name(old_h),
+                     eph::net::conn_health_name(new_h));
     },
 });
 
@@ -320,19 +248,34 @@ auto id1 = gw.add("binance-btcusdt", transport1.get());
 auto id2 = gw.add("binance-ethusdt", transport2.get(), /*priority=*/1);
 gw.start_all();
 gw.start_monitor();
-
-// ... run application ...
-
+// ...
 gw.stop_monitor();
 gw.stop_all();
 ```
 
-### Proxy tunneling (SOCKS5)
+### Emergency shutdown
+
+```cpp
+#include <eph/net/kill_switch.hpp>
+
+eph::net::KillSwitch ks;
+(void)ks.register_transport(transport1.get());
+(void)ks.register_transport(transport2.get());
+ks.install_signal_handlers();
+
+while (!ks.is_shutdown_requested()) {
+    // main loop
+}
+ks.shutdown();  // graceful; blocks until every registered transport stops
+```
+
+### Proxy tunneling
 
 ```cpp
 #include <eph/net/proxy.hpp>
 
-auto proxy_cfg = eph::net::proxy::parse_proxy_url("socks5://user:pass@proxy.example.com:1080");
+auto proxy_cfg = eph::net::proxy::parse_proxy_url(
+    "socks5://user:pass@proxy.example.com:1080");
 if (!proxy_cfg) { /* handle error */ }
 
 auto factory = eph::net::proxy::make_proxied_factory(
@@ -340,6 +283,29 @@ auto factory = eph::net::proxy::make_proxied_factory(
     *proxy_cfg,
     "stream.binance.com", 9443);
 
-// Use factory with Transport::create()
-auto result = eph::net::SocketWssTransport::create(std::move(factory), transport_config);
+auto result = eph::net::SocketWssTransport::create(
+    std::move(factory), transport_config);
 ```
+
+## Dependencies
+
+Internal (from the `ephemeral_dev` monorepo):
+
+- **eph-core** — `TcpTransport` concept, framer concepts, length-prefix
+  framer, json_escape / base64 / string-check detail helpers
+- **eph-transport** — `Transport<>`, `DirectTxTransport<>`, `DirectTransport<>`,
+  `TransportConfig`, `ConnectionErrorInfo`, WS framer, raw framer, presets,
+  `RttStats`, `TcpState`
+- **eph-utils** — HDR histogram, TSC timing
+- **eph-containers** — SPSC bounded queue (consumed through `Transport<>`)
+
+External:
+
+- **aws-lc** (OpenSSL-compatible) — TLS handshake / encryption in
+  `HttpClient`, HMAC-SHA256 + base64 in `hmac.hpp`
+- **spdlog** — leveled logging everywhere, `SPDLOG_ACTIVE_LEVEL` filtered at
+  compile time
+
+## License
+
+See the repository root for the project-wide license.

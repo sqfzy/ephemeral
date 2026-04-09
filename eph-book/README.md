@@ -1,238 +1,246 @@
 # eph-book
 
-Header-only C++23 library for L2/L3 order book maintenance and market microstructure signal computation, designed for HFT market data processing.
+Header-only C++23 library for L2/L3 order-book maintenance and market-microstructure signal computation. Part of the `eph` HFT / market-data toolkit.
 
-## Overview
+All symbols live in namespace `eph::book`. The library is entirely header-only and allocation-free on the hot path (`ArrayBook` and signal calculators). All core mutators are `noexcept`.
 
-eph-book is the order book layer of the eph ecosystem. It provides two book implementations -- a fixed-capacity `ArrayBook` optimized for shallow, latency-critical L2 feeds and a dynamic-depth `MapBook` for deep L3/full-depth books -- together with pure-function trading signal calculators and feed-specific adapters for Binance and ITCH 5.0 protocols.
+## Features
 
-All components live in namespace `eph::book`. The library is entirely header-only, allocation-free on the hot path (ArrayBook + signals), and uses `noexcept` throughout for deterministic performance.
+- **`ArrayBook<MaxLevels>`** — fixed-capacity, zero-allocation sorted L2 book backed by `std::array`. Cache-friendly for shallow books (5-20 levels).
+- **`MapBook`** — dynamic-depth sorted L3 book backed by `std::map` with `std::greater` on the bid side. Handles 1000+ levels at O(log n) insert/delete.
+- **Signal calculators** (`signals.hpp`) — pure function templates for order imbalance, weighted mid / microprice, spread (bps), VWAP, and depth ratio. Generic over any book exposing the expected BBO interface.
+- **`BinanceBookAdapter<MaxLevels>`** — bridges Binance WebSocket `bookTicker` and REST depth snapshots into `ArrayBook`. Tracks `last_update_id` for gap detection during reconnect.
+- **`ItchBookBuilder<MaxLevels>`** — translates order-level ITCH 5.0 events (AddOrder, Executed, Cancel, Delete, Replace) into an aggregated L2 `ArrayBook`. Maintains an internal order map and per-price accumulators for O(1) incremental updates.
 
-## Key Components
+## Requirements
 
-All headers are under `include/eph/book/`:
+- C++23 compiler (GCC 14 or Clang 18+).
+- [xmake](https://xmake.io/) for building tests and benchmarks.
+- Package dependencies (pulled in by the parent `ephemeral_dev` xmake project):
+  - `spdlog` — leveled logging, compile-time filtered via `SPDLOG_ACTIVE_LEVEL`.
+  - `gtest` — unit tests.
+  - `benchmark` — micro-benchmarks.
 
-| Header | Description |
-|--------|-------------|
-| `array_book.hpp` | Fixed-size, zero-allocation L2 order book backed by sorted `std::array`. Cache-friendly for shallow books (5-20 levels) typical of crypto L2 feeds and equity top-of-book. Template parameter `MaxLevels` caps each side independently (default 20). Defines the shared `PriceLevel` struct used throughout the library. |
-| `map_book.hpp` | Deep L3 order book backed by `std::map` with O(log n) insert/delete/lookup for 1000+ price levels. Bids sorted descending (`std::greater`), asks ascending, so `begin()` always yields BBO. Prices quantized to 1e-9 multiples to prevent near-duplicate keys. Includes `top_bids(n)` / `top_asks(n)` for display/logging. |
-| `signals.hpp` | Pure function templates computing trading signals from any book type: order imbalance, weighted mid / microprice, spread (bps), VWAP, and depth ratio. All noexcept, allocation-free on the hot path. |
-| `binance_adapter.hpp` | Bridges Binance `bookTicker` BBO snapshots and REST depth snapshots into ArrayBook. Handles string-to-double parsing internally and tracks `last_update_id` for sequence validation. Requires eph-json on the include path. |
-| `itch_adapter.hpp` | Bridges ITCH 5.0 order-level events into aggregated L2 price levels in ArrayBook. Maintains an internal order map (`order_ref -> {price, qty, side}`) with incremental per-price-level quantity tracking for O(1) book updates. Handles AddOrder, AddOrderMPID, OrderExecuted, OrderExecutedWithPrice, OrderCancel, OrderDelete, and OrderReplace. Requires eph-itch on the include path. |
+## Build
 
-The convenience header `include/eph/book.hpp` includes both `array_book.hpp` and `map_book.hpp`.
+From the repository root (`ephemeral_dev/`):
 
-## Public API Reference
+```bash
+# Build just the header-only library target (noop — header only).
+xmake build eph-book
 
-### Types
+# Build unit tests.
+xmake build test_array_book test_map_book test_signals
 
-| Type | Header | Description |
-|------|--------|-------------|
-| `PriceLevel` | `array_book.hpp` | `{double price, double qty}` -- a single price level on one side of the book. Canonical level representation used by all book types and signal functions. |
-| `Order` | `itch_adapter.hpp` | `{double price, double remaining_qty, char side}` -- per-order state for ITCH aggregation. Side is `'B'` (buy) or `'S'` (sell). |
+# Build benchmarks.
+xmake build bench_array_book bench_map_book
+```
 
-### ArrayBook\<MaxLevels\>
+## Test
 
-Fixed-capacity sorted L2 book. Namespace: `eph::book`. Default `MaxLevels = 20`.
+```bash
+xmake run test_array_book
+xmake run test_map_book
+xmake run test_signals
+```
 
-Compile-time constant: `ArrayBook::max_levels` exposes the template parameter.
+The test suite covers: sort-order invariants, BBO extraction, mid/spread math, in-place updates, level removal (`qty == 0`), overflow eviction, empty-book edge cases, NaN rejection, deep-book paths (100+ levels), `top_n` extraction, and ArrayBook/MapBook cross-validation on identical input sequences.
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `update_bid(price, qty)` | `void` | Insert/update bid level; qty=0 removes. NaN prices rejected, negative qty clamped to 0. |
-| `update_ask(price, qty)` | `void` | Insert/update ask level; same semantics as `update_bid`. |
-| `best_bid()` | `optional<PriceLevel>` | Highest bid, or `nullopt` if empty. |
-| `best_ask()` | `optional<PriceLevel>` | Lowest ask, or `nullopt` if empty. |
-| `mid_price()` | `optional<double>` | `(best_bid + best_ask) / 2`, or `nullopt` when either side is empty. |
-| `spread()` | `optional<double>` | `best_ask - best_bid` in native price units. Negative means crossed. |
-| `bids()` | `span<const PriceLevel>` | Active bid levels, descending by price. Invalidated by mutation. |
-| `asks()` | `span<const PriceLevel>` | Active ask levels, ascending by price. Invalidated by mutation. |
-| `bid_depth()` | `size_t` | Number of active bid levels, in `[0, MaxLevels]`. |
-| `ask_depth()` | `size_t` | Number of active ask levels, in `[0, MaxLevels]`. |
-| `total_bid_qty()` | `double` | Sum of quantities across all bid levels. |
-| `total_ask_qty()` | `double` | Sum of quantities across all ask levels. |
-| `level_count()` | `size_t` | Total active levels (bid + ask), in `[0, 2 * MaxLevels]`. |
-| `is_crossed()` | `bool` | True if best bid > best ask (anomalous state). |
-| `is_locked()` | `bool` | True if best bid == best ask within epsilon. |
-| `clear()` | `void` | Remove all levels from both sides. |
+## Benchmark
 
-### MapBook
+```bash
+xmake run bench_array_book
+xmake run bench_map_book
+```
 
-Dynamic-depth sorted book. Namespace: `eph::book`. Same query interface as ArrayBook with the following differences:
+Benchmarks use a realistic Binance `bookTicker` JSON payload and exercise single-level updates, BBO queries, and a full parse-to-book-update cycle.
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `update_bid(price, qty)` | `void` | Insert/update bid level; price is quantized to 1e-9 before insertion. |
-| `update_ask(price, qty)` | `void` | Insert/update ask level; price quantized. |
-| `best_bid()` | `optional<PriceLevel>` | Highest bid, or `nullopt` if empty. |
-| `best_ask()` | `optional<PriceLevel>` | Lowest ask, or `nullopt` if empty. |
+## Project Layout
+
+```
+eph-book/
+├── include/eph/
+│   ├── book.hpp                 # Convenience header (pulls ArrayBook + MapBook)
+│   └── book/
+│       ├── array_book.hpp       # ArrayBook<N> + PriceLevel
+│       ├── map_book.hpp         # MapBook (std::map-backed)
+│       ├── signals.hpp          # order_imbalance, weighted_mid, vwap, ...
+│       ├── binance_adapter.hpp  # BinanceBookAdapter<N> (needs eph-json)
+│       └── itch_adapter.hpp     # ItchBookBuilder<N>   (needs eph-itch)
+├── tests/                       # GoogleTest unit tests
+├── benchmarks/                  # Google Benchmark micro-benchmarks
+└── xmake.lua                    # header-only target + tests/benchmarks
+```
+
+## Public API at a Glance
+
+### `PriceLevel` (defined in `array_book.hpp`)
+
+```cpp
+struct PriceLevel {
+    double price = 0.0;  // price in native exchange units
+    double qty   = 0.0;  // aggregate quantity at this price
+};
+```
+
+Canonical level representation shared by `ArrayBook`, `MapBook`, and the signal calculators.
+
+### `ArrayBook<MaxLevels = 20>`
+
+| Method | Returns | Behavior |
+|---|---|---|
+| `update_bid(price, qty)` / `update_ask(price, qty)` | `void` | Insert/update a level. `qty == 0` removes; NaN prices are rejected; negative `qty` is clamped to 0 with a warning. Full book + worse price is silently dropped. |
+| `best_bid()` / `best_ask()` | `optional<PriceLevel>` | Top-of-book, `nullopt` if side empty. |
 | `mid_price()` | `optional<double>` | `(best_bid + best_ask) / 2`. |
-| `spread()` | `optional<double>` | `best_ask - best_bid`. |
-| `bids()` | `vector<PriceLevel>` | Full depth copy, descending by price. Allocates on every call. |
-| `asks()` | `vector<PriceLevel>` | Full depth copy, ascending by price. Allocates on every call. |
-| `top_bids(n)` | `vector<PriceLevel>` | Top N bid levels (descending). Prefer over `bids()` on the hot path. |
-| `top_asks(n)` | `vector<PriceLevel>` | Top N ask levels (ascending). Prefer over `asks()` on the hot path. |
-| `bid_depth()` | `size_t` | Number of active bid levels. |
-| `ask_depth()` | `size_t` | Number of active ask levels. |
-| `level_count()` | `size_t` | Total active levels (bid + ask). |
-| `total_bid_qty()` | `double` | Sum of quantities across all bid levels. |
-| `total_ask_qty()` | `double` | Sum of quantities across all ask levels. |
-| `is_crossed()` | `bool` | True if best bid > best ask. |
-| `is_locked()` | `bool` | True if best bid == best ask within epsilon. |
-| `clear()` | `void` | Remove all levels from both sides. |
+| `spread()` | `optional<double>` | `best_ask - best_bid` (may be negative if crossed). |
+| `bids()` / `asks()` | `span<const PriceLevel>` | Active levels, sorted best-first. Invalidated by any mutating call. |
+| `bid_depth()` / `ask_depth()` / `level_count()` | `size_t` | Active level counts. |
+| `total_bid_qty()` / `total_ask_qty()` | `double` | Summed across all active levels. |
+| `is_crossed()` | `bool` | `best_bid > best_ask + 1e-12`. |
+| `is_locked()` | `bool` | `|best_bid - best_ask| <= 1e-12`. |
+| `clear()` | `void` | Reset both sides. |
+| `max_levels` | `static constexpr size_t` | Exposes the `MaxLevels` template parameter. |
 
-### Signal Functions
+### `MapBook`
 
-All in namespace `eph::book`. Templates accept any book type with the expected interface (`best_bid()`, `best_ask()`, `total_bid_qty()`, `total_ask_qty()`).
+Same query surface as `ArrayBook` (`best_bid`, `best_ask`, `mid_price`, `spread`, `is_crossed`, `is_locked`, `bid_depth`, `ask_depth`, `level_count`, `total_bid_qty`, `total_ask_qty`, `clear`), with the following differences:
+
+- **Price quantization**: inputs are snapped to multiples of `1e-9` on insertion to prevent near-duplicate keys from different floating-point rounding paths.
+- `bids()` / `asks()` return `std::vector<PriceLevel>` (owning copies) rather than spans — `std::map` is node-based and cannot expose a contiguous span. **Avoid on the hot path.**
+- `top_bids(n)` / `top_asks(n)` return a `std::vector<PriceLevel>` containing at most `min(n, depth)` best levels. Prefer these over `bids()` / `asks()` when full depth is not needed.
+
+### Signal Functions (in `signals.hpp`)
+
+All templates accept any book exposing `best_bid()`, `best_ask()`, `total_bid_qty()`, `total_ask_qty()`. All are `noexcept` and allocation-free.
 
 | Function | Returns | Description |
-|----------|---------|-------------|
-| `order_imbalance(book)` | `double` | Normalized buy/sell pressure: `(bid_qty - ask_qty) / (bid_qty + ask_qty)`. Range [-1, 1]. Returns 0.0 if the book is empty. |
-| `weighted_mid(book)` | `optional<double>` | BBO size-weighted fair value: `(bid * ask_qty + ask * bid_qty) / (bid_qty + ask_qty)`. |
-| `microprice(book)` | `optional<double>` | Top-of-book microprice (same formula as `weighted_mid`; semantically reserved for future multi-level extensions). |
-| `spread_bps(book)` | `optional<double>` | Bid-ask spread in basis points: `(ask - bid) / mid * 10000`. |
-| `vwap(span<PriceLevel>)` | `optional<double>` | Volume-weighted average price over a contiguous range of levels. Works with ArrayBook spans or any PriceLevel vector. |
-| `depth_ratio(book)` | `double` | `total_bid_qty / total_ask_qty`. Returns 0.0 if the ask side is empty. |
+|---|---|---|
+| `order_imbalance(book)` | `double` | `(bid_qty - ask_qty) / (bid_qty + ask_qty)`, range `[-1, 1]`. Returns 0.0 if both sides are empty. |
+| `weighted_mid(book)` | `optional<double>` | BBO-level size-weighted mid: `(bid * ask_qty + ask * bid_qty) / (bid_qty + ask_qty)`. |
+| `microprice(book)` | `optional<double>` | Currently delegates to `weighted_mid`; semantically reserved for future multi-level extensions. |
+| `spread_bps(book)` | `optional<double>` | `(ask - bid) / mid * 10000`; `nullopt` if mid <= 0. |
+| `vwap(span<const PriceLevel>)` | `optional<double>` | Sum of `price * qty` over `sum of qty`. `nullopt` if empty or total qty <= 0. |
+| `depth_ratio(book)` | `double` | `total_bid_qty / total_ask_qty`. Returns 0.0 if the ask side is empty (no divide-by-zero). |
 
-### BinanceBookAdapter\<MaxLevels\>
+### `BinanceBookAdapter<MaxLevels = 20>`
 
-Adapts Binance WebSocket and REST data into ArrayBook. Namespace: `eph::book`. Default `MaxLevels = 20`.
+| Method | Returns | Behavior |
+|---|---|---|
+| `update_from_ticker(BookTicker)` | `bool` | Parses the four string price/qty fields and updates the top-of-book on each side. Returns `false` on parse failure. |
+| `load_snapshot(DepthSnapshot)` | `size_t` | Clears the book, loads every level from a REST depth response, and stores `last_update_id`. Returns `bid_depth + ask_depth` (clamped by `MaxLevels` per side via ArrayBook eviction). |
+| `last_update_id()` | `int64_t` | Sequence ID from the most recent `load_snapshot` (0 if never loaded). Use to drop stale incremental updates (`U <= last_update_id()`). |
+| `book()` | `ArrayBook<MaxLevels>&` | Const and mutable access to the underlying book. |
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `update_from_ticker(ticker)` | `bool` | Apply BBO from a parsed `BookTicker`; returns `false` on parse failure (non-numeric price/qty strings). |
-| `load_snapshot(snapshot)` | `size_t` | Bulk-load a `DepthSnapshot` (clears book first); returns levels loaded. Stores `last_update_id` for gap detection. |
-| `last_update_id()` | `int64_t` | Sequence ID from last snapshot. Incremental updates with `U <= last_update_id()` should be dropped. |
-| `book()` | `ArrayBook&` | Access underlying book (const and mutable overloads). |
+Requires `eph-json` to be on the include path (for `BookTicker` / `DepthSnapshot`). The `eph-book` target does **not** link `eph-json`; callers must include both.
 
-### ItchBookBuilder\<MaxLevels\>
+### `ItchBookBuilder<MaxLevels = 20>`
 
-Converts order-level ITCH 5.0 events into aggregated L2 price levels. Namespace: `eph::book`. Default `MaxLevels = 20`.
+Handles ITCH 5.0 message types `'A'` AddOrder, `'F'` AddOrderMPID, `'E'` OrderExecuted, `'C'` OrderExecutedWithPrice, `'X'` OrderCancel, `'D'` OrderDelete, `'U'` OrderReplace. Other message types are silently ignored.
 
-Supported ITCH message types: `'A'` AddOrder, `'F'` AddOrderMPID, `'E'` OrderExecuted, `'C'` OrderExecutedWithPrice, `'X'` OrderCancel, `'D'` OrderDelete, `'U'` OrderReplace. All others are silently ignored.
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `process(msg)` | `bool` | Dispatch an ITCH `MessageView` to the appropriate handler; returns `true` if the book was modified. |
-| `book()` | `ArrayBook&` | Access underlying book (const and mutable overloads). |
+| Method | Returns | Behavior |
+|---|---|---|
+| `process(MessageView)` | `bool` | Dispatches to the handler for `msg.msg_type`. Returns `true` if the book was mutated. |
+| `book()` | `ArrayBook<MaxLevels>&` | Const and mutable access. |
 | `order_count()` | `size_t` | Number of tracked live orders. |
-| `clear()` | `void` | Clear all orders, quantity accumulators, and the book. |
+| `clear()` | `void` | Resets tracked orders, per-price accumulators, and the underlying book. |
 
-## Dependencies
+Internally maintains `order_ref -> {price, remaining_qty, side}` plus per-price `std::map<double, double>` accumulators (one per side) so that add / execute / cancel operations are O(1) against the L2 book. Executed and cancelled shares are clamped to the order's remaining quantity to protect against exchange-side over-execution races (logged at WARN level when clamping fires).
 
-| Dependency | Required by | Description |
-|------------|-------------|-------------|
-| **eph-core** | All components | Number parsing (`parse_number.hpp`) used by BinanceBookAdapter. |
-| **spdlog** | All components | Leveled logging throughout (compile-time filtered via `SPDLOG_ACTIVE_LEVEL`). |
-| **eph-json** | `binance_adapter.hpp` only | Binance JSON types (`BookTicker`, `DepthSnapshot`, parser). Optional -- not needed if you only use the core book types and signals. |
-| **eph-itch** | `itch_adapter.hpp` only | ITCH 5.0 message parsing (`MessageView`, field accessors). Optional -- not needed if you only use the core book types and signals. |
+Requires `eph-itch` on the include path.
 
-## Usage Examples
+## Usage
 
-### Basic L2 Book with Signals
+### Basic L2 book with signals
 
 ```cpp
 #include <eph/book/array_book.hpp>
 #include <eph/book/signals.hpp>
 
-// Create a 20-level L2 book
 eph::book::ArrayBook<20> book;
+book.update_bid(50000.0, 1.5);
+book.update_ask(50001.0, 0.8);
+book.update_bid(49999.0, 2.0);
 
-// Apply price-level updates (crypto exchange style)
-book.update_bid(50000.0, 1.5);   // bid at 50000, qty 1.5
-book.update_ask(50001.0, 0.8);   // ask at 50001, qty 0.8
-book.update_bid(49999.0, 2.0);   // second bid level
+auto best_bid = book.best_bid();   // PriceLevel{50000.0, 1.5}
+auto mid      = book.mid_price();  // 50000.5
 
-// Query BBO
-auto best_bid = book.best_bid();  // -> PriceLevel{50000.0, 1.5}
-auto best_ask = book.best_ask();  // -> PriceLevel{50001.0, 0.8}
-auto mid      = book.mid_price(); // -> 50000.5
+book.update_bid(49999.0, 0.0);     // remove the 49999 level
 
-// Remove a level by setting qty to 0
-book.update_bid(49999.0, 0.0);   // removes the 49999 bid level
-
-// Compute trading signals
-double imbalance = eph::book::order_imbalance(book);   // [-1, 1]
-auto wmid        = eph::book::weighted_mid(book);       // size-adjusted mid
-auto spd         = eph::book::spread_bps(book);         // spread in bps
-auto bid_vwap    = eph::book::vwap(book.bids());        // VWAP across bid depth
-double dr        = eph::book::depth_ratio(book);        // bid/ask qty ratio
+double imbalance = eph::book::order_imbalance(book);
+auto   wmid      = eph::book::weighted_mid(book);
+auto   spd_bps   = eph::book::spread_bps(book);
+auto   bid_vwap  = eph::book::vwap(book.bids());
 ```
 
-### Deep Book with MapBook
+### Deep book with MapBook
 
 ```cpp
 #include <eph/book/map_book.hpp>
 #include <eph/book/signals.hpp>
 
 eph::book::MapBook book;
+for (const auto& [px, q] : bids_feed) book.update_bid(px, q);
+for (const auto& [px, q] : asks_feed) book.update_ask(px, q);
 
-// Populate from a deep order book feed (no capacity limit)
-for (const auto& [price, qty] : depth_feed_bids) {
-    book.update_bid(price, qty);
-}
-for (const auto& [price, qty] : depth_feed_asks) {
-    book.update_ask(price, qty);
-}
-
-// Extract top 5 levels for display
-auto top5_bids = book.top_bids(5);
+auto top5_bids = book.top_bids(5);       // std::vector<PriceLevel>
 auto top5_asks = book.top_asks(5);
 
-// Signals work with any book type
-double imbalance = eph::book::order_imbalance(book);
-auto wmid        = eph::book::weighted_mid(book);
+double imbalance = eph::book::order_imbalance(book);  // works on any book type
 ```
 
-### Binance Adapter
+### Binance adapter (reconnection flow)
 
 ```cpp
 #include <eph/book/binance_adapter.hpp>
-#include <eph/book/signals.hpp>
 
 eph::book::BinanceBookAdapter<20> adapter;
 
-// Load initial state from REST depth snapshot (reconnection recovery)
-auto snapshot = eph::json::binance::parse_depth_response(buf, len);
-if (snapshot) {
-    adapter.load_snapshot(*snapshot);
-    // Use last_update_id() to validate subsequent incremental updates
-    int64_t seq = adapter.last_update_id();
+// 1. REST snapshot for initial state.
+if (auto snap = eph::json::binance::parse_depth_response(buf, len)) {
+    adapter.load_snapshot(*snap);
+    auto base_seq = adapter.last_update_id();
+    // drop incoming deltas with U <= base_seq
 }
 
-// Apply live BBO updates from WebSocket bookTicker stream
-auto ticker = eph::json::binance::BookTicker::from(json_view);
-if (ticker) {
-    adapter.update_from_ticker(*ticker);
+// 2. Incremental BBO updates from the WebSocket bookTicker stream.
+if (auto tk = eph::json::binance::BookTicker::from(json_view)) {
+    adapter.update_from_ticker(*tk);
 }
-
-// Query the book and compute signals
-const auto& book = adapter.book();
-auto mid = book.mid_price();
-auto spd = eph::book::spread_bps(book);
 ```
 
-### ITCH 5.0 Adapter
+### ITCH 5.0 adapter
 
 ```cpp
 #include <eph/book/itch_adapter.hpp>
-#include <eph/book/signals.hpp>
 
 eph::book::ItchBookBuilder<20> builder;
-
-// Feed ITCH messages from parser
 for (const auto& msg : itch_messages) {
     if (builder.process(msg)) {
-        // Book was modified -- recompute signals
-        auto bid = builder.book().best_bid();
-        auto ask = builder.book().best_ask();
-        double imbalance = eph::book::order_imbalance(builder.book());
+        // book was modified — recompute signals if needed
     }
 }
-
-// Inspect adapter state
-std::size_t live_orders = builder.order_count();
-
-// Reset for a new trading session
-builder.clear();
+std::size_t live = builder.order_count();
+builder.clear();  // for a new trading session
 ```
+
+## Logging
+
+Every translation unit uses a named `spdlog` logger under the `book.*` namespace:
+
+| Component | Logger name |
+|---|---|
+| `ArrayBook` | `book.array_book` |
+| `MapBook` | `book.map_book` |
+| `BinanceBookAdapter` | `book.binance_adapter` |
+| `ItchBookBuilder` | `book.itch_adapter` |
+
+Loggers are lazily constructed via `spdlog::stdout_color_mt` (with a `spdlog::get` fallback if the name is already registered — safe against duplicate-registration on TU re-initialization). Log levels are compile-time filtered via `SPDLOG_ACTIVE_LEVEL`, set by the parent project to `TRACE` in debug builds and `INFO` in release. Warning logs include the actual offending values (e.g., clamped quantities, NaN prices) so they are actionable in production.
+
+## Dependencies
+
+| Dependency | Required by | Notes |
+|---|---|---|
+| `eph-core` | all components | `parse_number.hpp` is used by `BinanceBookAdapter`. Declared as a public dep in `xmake.lua`. |
+| `spdlog` | all components | Public package dep. |
+| `eph-json` | `binance_adapter.hpp` only | Not linked by `eph-book`; callers must include it. |
+| `eph-itch` | `itch_adapter.hpp` only | Not linked by `eph-book`; callers must include it. |

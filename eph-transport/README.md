@@ -1,359 +1,176 @@
 # eph-transport
 
-Header-only C++23 library for low-latency WebSocket and raw TCP transport with TLS 1.3 encryption, designed for HFT market data feeds. Provides three transport variants with different threading models, all sharing the same connection lifecycle, TLS crypto, and WebSocket protocol implementation.
+Header-only C++23 WebSocket / raw TCP transport with TLS 1.3 encryption,
+designed for HFT market-data feeds and low-latency trading applications.
+Unifies kernel-socket and DPDK poll-mode backends behind a single generic
+`TcpTransport` concept and offers three transport variants with different
+threading models, all sharing the same TLS stack, WebSocket state machine,
+and reconnection policy.
 
 ## Overview
 
-eph-transport is the network transport layer of the eph ecosystem. It sits between a TCP backend (e.g., `eph-net` kernel sockets, `eph-dpdk` DPDK poll-mode) and application-level protocol parsers (e.g., `eph-fix`, `eph-itch`, `eph-json`). Its job is to establish encrypted WebSocket connections, manage connection lifecycle (handshake, reconnection, graceful close), and move data between the wire and the application with minimal latency.
+`eph-transport` is the network transport layer of the `eph` ecosystem.
+It sits between a TCP backend (`eph-net` kernel sockets, `eph-dpdk`
+poll-mode) and application-level protocol parsers (e.g. FIX, ITCH, JSON
+market data). Its responsibilities:
 
-The library is generic over the TCP backend via the `TcpTransport` concept (defined in `eph-core`) and over the wire framing via the `MessageFramer` concept, making it usable with any socket implementation or custom protocol framer.
+- Establish encrypted WebSocket connections (TCP connect, TLS 1.3
+  handshake via aws-lc, RFC 6455 HTTP Upgrade).
+- Run the WebSocket state machine: frame encode/decode, masking, ping/pong,
+  graceful close, fragmentation reassembly.
+- Carry application payloads over TLS 1.3 with a custom AEAD fast path
+  (AES-128/256-GCM) that bypasses `SSL_read`/`SSL_write` and touches only
+  exported session keys on the hot path.
+- Manage connection lifecycle: exponential-backoff reconnection with
+  ±25% jitter, state-change callbacks, pluggable frame filters.
+- Deliver per-stage latency observability (TSC timestamps, HdrHistogram
+  for queue-wait / encode / decrypt / decode / total pipeline).
 
-### Architecture
+The library is fully generic:
+
+- Over the TCP backend, through the `TcpTransport` concept from
+  `eph-core` — any socket implementation that satisfies the concept
+  plugs in unchanged (kernel, DPDK, testing mock, etc.).
+- Over the wire framer, through the `MessageFramer` concept —
+  `WsFramer` for WebSocket, `RawFramer` for SOH-delimited or
+  length-prefixed protocols that manage their own boundaries.
+
+## Transport variants
+
+Three top-level class templates address different latency / threading
+tradeoffs. All share `TransportCore` (connection state, TLS handshake,
+WS upgrade), `FrameProcessor` / `RxWorker` (RX decode pipeline), and
+`ReconnectPolicy` (backoff state machine).
+
+| Class | TX path | RX path | When to use |
+|---|---|---|---|
+| `Transport` | TX thread + TX SPSC queue | RX thread + RX SPSC queue | Default — non-blocking `send()`/`recv()`, decoupled app thread |
+| `DirectTxTransport` | Direct from app thread (no TX queue) | RX thread + RX SPSC queue | Lowest TX latency; async RX |
+| `DirectTransport` | Direct from app thread | Direct from app thread (no threads) | Single-threaded event loops: Reactor, io_uring, DPDK poll-mode |
+
+All three are non-movable, non-copyable, RAII-owned via `std::unique_ptr`
+returned from the `create(tcp_factory, config)` static factory.
+
+### Threaded `Transport` data flow
 
 ```
-Application thread          TX thread              Network
-     |                         |                      |
-     |-- send() --> [TX SPSC] --> frame+encrypt+send --|
-     |                                                 |
-     |-- recv() <-- [RX SPSC] <-- recv+decrypt+parse --|
-     |                         |                      |
-                            RX thread
+App thread               TX thread            Network
+    |                        |                    |
+    |-- send() --> [TX SPSC] --> WS encode -------|
+    |                        |    TLS encrypt     |
+    |                        |    TCP send        |
+    |                                              |
+    |-- recv() <-- [RX SPSC] <-- WS decode --------|
+    |                        |    TLS decrypt     |
+    |                        |    TCP poll        |
+    |                        |                    |
+                        RX thread
 ```
 
-Three transport variants address different latency/complexity tradeoffs:
+`DirectTxTransport` removes the TX thread and TX queue, running
+`send()` synchronously on the caller's thread.
+`DirectTransport` also removes the RX thread: the caller drives
+`poll()` (or `feed_rx()` + `process_pending()`) from its own event loop.
 
-| Variant | TX Path | RX Path | Use Case |
-|---------|---------|---------|----------|
-| `Transport` | TX thread + SPSC queue | RX thread + SPSC queue | General-purpose, non-blocking send/recv |
-| `DirectTxTransport` | Direct from app thread | RX thread + SPSC queue | Lowest TX latency, async receive |
-| `DirectTransport` | Direct from app thread | Direct from app thread | Single-threaded event loops (Reactor, io_uring, DPDK) |
+## Directory layout
 
-## Key Components
-
-All headers are under `include/eph/transport/`:
-
-### Transport Variants
-
-- **transport.hpp** -- Threaded transport with dedicated TX and RX threads connected via lock-free SPSC queues. Application thread calls non-blocking `send()`/`recv()`. Supports push-mode delivery via `on_message` callback, batch frame filtering for multi-symbol streams, and automatic reconnection with exponential backoff. Template parameters control `TcpImpl`, `Framer`, `MaxPayload`, `QueueDepth`, `RxQueueTmpl`, and `LastOnlyDeliver`.
-- **direct_transport.hpp** -- Threadless, queueless transport for single-threaded event loops (Reactor, io_uring, DPDK poll-mode). Application thread does everything: `send()` for TX, `feed_rx()`/`process_pending()`/`poll()` for RX. Minimal latency path with no SPSC overhead.
-- **direct_tx_transport.hpp** -- Hybrid: direct TX from the application thread (no TX queue), background RX thread with RX queue. Eliminates TX queue latency while keeping asynchronous receive.
-
-### Presets
-
-- **presets.hpp** -- Canonical type aliases combining payload size, queue depth, and framer. `DefaultTransport` (512B/1024), `SmallTransport` (64B/256), `LargeTransport` (4096B/512), `EvictTransport` (evicting RX queue), `RawTransport` (no WebSocket framing). Matching `DirectTx*` and `Direct*` variants for each.
-
-### Configuration and Types
-
-- **transport_types.hpp** -- `TransportConfig` (connection target, TLS settings, timeouts, reconnect policy, CPU affinity, callbacks), `TransportEvent`/`TransportState` enums, `TransportStats`/`RttStats` aggregate snapshots, `FrameView`/`FrameFilterFn` for batch frame filtering, and `make_twophase_filter()` for latest-per-symbol deduplication using a two-phase hash scan.
-- **reconnect_policy.hpp** -- `ReconnectPolicy` implementing exponential backoff with +/-25% jitter. Independent, testable component that tracks attempt count and backoff state.
-
-### Internal Workers
-
-- **tx_worker.hpp** -- `TxWorker`: owns the TX thread, TX SPSC queue, ping/pong scheduling, TLS sequence monitoring, and TX stats/histograms. Busy-polls the queue, builds WS frames, encrypts via AEAD, and sends over TCP.
-- **rx_worker.hpp** -- `RxWorker`: owns the RX thread, RX SPSC queue, and RX stats/histograms. Busy-polls TCP, reassembles TLS records, decrypts, parses WS frames via `FrameProcessor`, and pushes to the RX queue or invokes `on_message`.
-- **transport_core.hpp** -- `TransportCore<TcpImpl>`: shared connection state (TCP socket, TLS crypto, config, lifecycle atomics, connection metadata). Implements `do_connect()` (TCP + TLS 1.3 handshake + key export) and `do_ws_upgrade()` (RFC 6455 HTTP Upgrade).
-- **frame_processor.hpp** -- `FrameProcessor`: decodes WS/generic frames, handles fragmentation reassembly, delivers data frames via a `DeliverPolicy`, and sends control frame responses (pong/close) via a `SendFn`.
-
-### Protocol Implementations
-
-- **websocket.hpp** -- RFC 6455 WebSocket protocol: frame encoding/decoding with client masking, ping/pong, close handshake, frame header precomputation. Opcodes, close codes, and `opcode_name()` utility.
-- **ws_framer.hpp** -- `WsFramer`: adapts `ws::encode_frame`/`ws::decode_frame` to the `MessageFramer` concept for use with Transport.
-- **raw_framer.hpp** -- `RawFramer`: pass-through framer with zero overhead. For protocols that handle their own message boundaries (e.g., FIX).
-- **http.hpp** -- Minimal HTTP/1.1 for WebSocket Upgrade only: `build_upgrade_request()`, `parse_upgrade_response()`, `validate_ws_accept()`, `generate_ws_key()`. Not a general-purpose HTTP library.
-
-### TLS 1.3 Stack
-
-- **tls_session.hpp** -- `TlsSession<TcpImpl>`: TLS 1.3 handshake via aws-lc (BoringSSL-compatible) with custom BIO backed by any `TcpTransport`. Extracts session keys for hot-path AEAD; does NOT do data-plane I/O.
-- **tls_record.hpp** -- `TlsRecordCrypto`: backward-compatible composition of `TlsEncryptor` + `TlsDecryptor`. Thread-safe for split TX/RX thread ownership.
-- **tls_encryptor.hpp** -- `TlsEncryptor`: AES-128/256-GCM record-level encryption (write direction). Owns AEAD context, write IV, and sequence number.
-- **tls_decryptor.hpp** -- `TlsDecryptor`: AES-128/256-GCM record-level decryption (read direction). Owns AEAD context, read IV, and sequence number.
-- **tls_constants.hpp** -- TLS record constants, nonce construction (`build_nonce`), header read/write, sequence number limits (2^24 per NIST SP 800-38D with forced reconnection).
-
-### Internal
-
-- **detail/message_types.hpp** -- Cache-line-aligned `TxMessage`/`RxMessage` structs for SPSC queues, with optional TSC timestamps.
-
-## Public API Reference
-
-### Transport Class (threaded)
-
-```cpp
-template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
-          size_t MaxPayload = 512, size_t QueueDepth = 1024,
-          template <typename, size_t> class RxQueueTmpl = BoundedQueue,
-          bool LastOnlyDeliver = false>
-class Transport;
 ```
-
-| Method | Description |
-|--------|-------------|
-| `static create(TcpFactory, TransportConfig) -> expected<unique_ptr<Transport>, ConnectionErrorInfo>` | Factory: blocking TCP + TLS + WS handshake, returns owning pointer |
-| `send(data, len, opcode) -> SendError` | Non-blocking enqueue to TX thread (binary frame by default) |
-| `send(span<uint8_t>, opcode) -> SendError` | Span overload of send |
-| `send_binary(data, len) -> SendError` | Explicit binary frame send |
-| `send_text(data, len) -> SendError` | Text frame with UTF-8 validation |
-| `send_text(string_view) -> SendError` | Text frame from string_view |
-| `send_text_unchecked(data, len) -> SendError` | Text frame without UTF-8 validation (hot path) |
-| `send_for(data, len, timeout, opcode) -> SendError` | Send with backpressure wait |
-| `send_n(payloads, count, opcode) -> SendError` | Batch send (all-or-nothing, amortized atomics) |
-| `send_close(status_code, reason) -> SendError` | Send WebSocket Close frame |
-| `send_ping(payload, len) -> SendError` | Send WebSocket Ping frame |
-| `recv(callback) -> bool` | Non-blocking poll: `(data*, len)`, `(data*, len, opcode)`, or `(data*, len, opcode, tsc)` |
-| `try_recv() -> optional<vector<uint8_t>>` | Copy-out receive (convenience) |
-| `try_recv_msg() -> optional<ReceivedMessage>` | Receive with opcode metadata |
-| `recv_peek(callback) -> bool` | Peek without consuming |
-| `recv_n(callback, max_count) -> size_t` | Batch receive (amortized atomics) |
-| `drain_recv(callback) -> size_t` | Drain all available messages |
-| `wait_recv(callback, timeout) -> bool` | Blocking receive with timeout |
-| `close_gracefully(code, reason, timeout) -> bool` | RFC 6455 graceful close handshake |
-| `stop()` | Immediate shutdown (sends Close, joins threads) |
-| `start_threads()` | Start workers (only when `deferred_start=true`) |
-| `is_running() -> bool` | Check if transport is operational |
-| `state() -> TransportState` | Current state: Connected / Reconnecting / Stopped |
-| `is_connected() -> bool` | Shorthand for `state() == kConnected` |
-| `reconnect_now() -> bool` | Force immediate reconnection |
-| `stats() -> TransportStats` | Aggregated TX/RX/TLS/RTT statistics snapshot |
-| `tx_stats() -> TxWorkerStats` | TX-only statistics |
-| `rx_stats() -> RxWorkerStats` | RX-only statistics |
-| `connection_info() -> ConnectionInfo` | TLS version, cipher, IP, subprotocol |
-| `tx_queue_size() -> size_t` | Approximate TX queue occupancy |
-| `rx_queue_size() -> size_t` | Approximate RX queue occupancy |
-| `tx_queue_fill_ratio() -> double` | TX queue fill [0.0, 1.0] |
-| `rx_queue_fill_ratio() -> double` | RX queue fill [0.0, 1.0] |
-| `config() -> const TransportConfig&` | Read-only access to configuration |
-
-### DirectTransport Class (threadless)
-
-```cpp
-template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
-          size_t MaxPayload = 512>
-class DirectTransport;
+eph-transport/
+├── include/eph/transport/
+│   ├── transport.hpp              # Transport<>        — threaded variant
+│   ├── direct_tx_transport.hpp    # DirectTxTransport<> — direct TX + RX thread
+│   ├── direct_transport.hpp       # DirectTransport<>   — threadless
+│   ├── presets.hpp                # Default/Small/Large/Evict/Raw aliases
+│   ├── transport_types.hpp        # TransportConfig, TransportStats, enums, RttStats
+│   ├── reconnect_policy.hpp       # ReconnectPolicy (exponential backoff + jitter)
+│   ├── ws_framer.hpp              # MessageFramer adapter for WebSocket
+│   ├── raw_framer.hpp             # Pass-through framer
+│   └── detail/
+│       ├── transport_core.hpp     # Shared connection state (TCP + TLS + config)
+│       ├── tx_worker.hpp          # TX thread, TX SPSC queue, TX stats, ping scheduling
+│       ├── rx_worker.hpp          # RX thread, RX SPSC queue, RX stats, FrameProcessor host
+│       ├── frame_processor.hpp    # WS decode pipeline, fragmentation reassembly
+│       ├── frame_filter.hpp       # FrameView / make_twophase_filter
+│       ├── websocket.hpp          # RFC 6455 encode/decode, mask cache, opcode helpers
+│       ├── http.hpp               # Minimal HTTP/1.1 for WS Upgrade only
+│       ├── tls_session.hpp        # TLS 1.3 handshake via aws-lc BIO
+│       ├── tls_record.hpp         # TlsRecordCrypto (split enc/dec)
+│       ├── tls_encryptor.hpp      # AES-GCM write-side AEAD
+│       ├── tls_decryptor.hpp      # AES-GCM read-side AEAD
+│       ├── tls_constants.hpp      # TLS record layout, nonce construction
+│       ├── message_types.hpp      # TxMessage / RxMessage (cache-aligned)
+│       └── logger.hpp             # Shared spdlog logger helper
+├── tests/                         # Unit and integration tests (GoogleTest)
+├── benchmarks/                    # Micro-benchmarks (nanobench)
+├── fuzzers/                       # libFuzzer harnesses (WS decode)
+├── docs/ONBOARDING.md             # Developer onboarding guide
+├── summary.md                     # Architecture + component map + data flow
+└── xmake.lua                      # Build rules (header-only + tests + benches)
 ```
-
-| Method | Description |
-|--------|-------------|
-| `static create(TcpFactory, TransportConfig) -> expected<unique_ptr, ConnectionErrorInfo>` | Factory (no threads started) |
-| `send(data, len, opcode) -> SendError` | Synchronous: frame + encrypt + TCP send on calling thread |
-| `poll()` | TCP poll + decrypt + decode (all-in-one for simple loops) |
-| `feed_rx(data, len)` | Feed raw TCP bytes for Reactor integration |
-| `process_pending()` | Decrypt + decode buffered data |
-| `stop()` | Shutdown (no threads to join) |
-
-### DirectTxTransport Class (hybrid)
-
-```cpp
-template <TcpTransport TcpImpl, MessageFramer Framer = WsFramer,
-          size_t MaxPayload = 512, size_t QueueDepth = 1024,
-          template <typename, size_t> class RxQueueTmpl = BoundedQueue,
-          bool LastOnlyDeliver = false>
-class DirectTxTransport;
-```
-
-| Method | Description |
-|--------|-------------|
-| `static create(TcpFactory, TransportConfig) -> expected<unique_ptr, ConnectionErrorInfo>` | Factory: blocking handshake, starts RX thread |
-| `send(data, len, opcode) -> SendError` | Synchronous send from app thread (no TX queue) |
-| `recv(callback) -> bool` | Non-blocking poll from RX SPSC queue |
-| `stop()` | Shutdown (joins RX thread) |
-
-### Preset Aliases
-
-All presets are parameterized on `TcpImpl`:
-
-| Alias | Base Class | Payload | Queue | Framer |
-|-------|-----------|---------|-------|--------|
-| `DefaultTransport<T>` | `Transport` | 512B | 1024 | WsFramer |
-| `SmallTransport<T>` | `Transport` | 64B | 256 | WsFramer |
-| `LargeTransport<T>` | `Transport` | 4096B | 512 | WsFramer |
-| `EvictTransport<T>` | `Transport` | 512B | 1024 | WsFramer (EvictingQueue) |
-| `RawTransport<T>` | `Transport` | 512B | 1024 | RawFramer |
-| `DirectTxDefaultTransport<T>` | `DirectTxTransport` | 512B | 1024 | WsFramer |
-| `DirectTxSmallTransport<T>` | `DirectTxTransport` | 64B | 256 | WsFramer |
-| `DirectTxRawTransport<T>` | `DirectTxTransport` | 512B | 1024 | RawFramer |
-| `DirectDefaultTransport<T>` | `DirectTransport` | 512B | -- | WsFramer |
-| `DirectSmallTransport<T>` | `DirectTransport` | 64B | -- | WsFramer |
-| `DirectRawTransport<T>` | `DirectTransport` | 512B | -- | RawFramer |
-
-### TransportConfig
-
-```cpp
-struct TransportConfig {
-    // Connection target
-    std::string remote_host;              // Hostname (TLS SNI + HTTP Host)
-    uint16_t    remote_port = 443;        // TCP port
-    std::string ws_path     = "/";        // WebSocket upgrade URI path
-    std::string ws_subprotocol;           // Sec-WebSocket-Protocol header
-    std::string extra_headers;            // Additional HTTP headers (must end with \r\n)
-
-    // TLS
-    bool        use_tls     = true;       // Enable TLS 1.3
-    std::string ca_cert_path;             // CA cert (PEM), empty = system default
-    bool        verify_peer = true;       // Verify server certificate
-    std::string client_cert_path;         // mTLS client cert (PEM)
-    std::string client_key_path;          // mTLS client key (PEM)
-
-    // Timeouts
-    milliseconds tcp_timeout{3000};
-    milliseconds tls_timeout{5000};
-    milliseconds ws_timeout{3000};
-
-    // Performance tuning
-    uint16_t tx_burst_size = 32;          // Max messages drained per TX loop
-    uint16_t rx_burst_size = 32;          // Max TCP segments polled per RX loop
-    bool skip_utf8_validation = true;     // Skip UTF-8 check on text frames
-
-    // Reconnection (exponential backoff with jitter)
-    milliseconds reconnect_interval{100}; // Base backoff
-    milliseconds max_reconnect_backoff{0};// Cap (0 = 16x base)
-    int max_reconnect_attempts = 10;      // 0 = disable auto-reconnect
-
-    // WebSocket keepalive
-    seconds ping_interval{30};            // 0 = disable
-    seconds pong_timeout{0};              // 0 = disable pong timeout
-
-    // CPU affinity
-    int tx_cpu = -1;                      // -1 = no pinning
-    int rx_cpu = -1;
-
-    // Callbacks (all called from worker threads, must be non-blocking)
-    TransportStateCallback on_state_change;
-    function<void(const uint8_t*, uint16_t, uint8_t)> on_message;
-    function<void(uint16_t code, string_view reason)> on_close;
-    function<void(const uint8_t*, uint16_t)> on_ping;
-    function<void(const uint8_t*, uint16_t)> on_pong;
-    function<void(uint64_t total_dropped)> on_rx_drop;
-    function<bool(int attempt, int max, string_view err)> on_reconnect_attempt;
-    function<void(int attempt, uint64_t downtime_ns, uint64_t total)> on_reconnected;
-    FrameFilterFn on_frame_filter;        // Batch frame filter for symbol dedup
-    function<void()> on_connected_before_threads;
-    bool deferred_start = false;          // Don't start threads in create()
-
-    // Utility
-    string_view validate() const;              // Early validation (empty = OK)
-    vector<string> warnings() const;           // Non-fatal advisories
-    string dump() const;                       // Multi-line formatted dump
-    string to_json() const;                    // JSON serialization
-    string to_url() const;                     // Reconstruct ws(s):// URL
-    static expected<TransportConfig, string> from_url(string_view);  // Parse ws(s):// URL
-};
-```
-
-### Enums
-
-| Enum | Values | Description |
-|------|--------|-------------|
-| `TransportEvent` | `kConnected`, `kDisconnected`, `kReconnecting`, `kStopped` | Lifecycle events for `on_state_change` |
-| `TransportState` | `kConnected`, `kReconnecting`, `kStopped` | Pollable connection state |
-| `SendError` | `kOk`, `kNotConnected`, `kQueueFull`, `kMessageTooLarge`, `kNullData`, `kInvalidUtf8`, `kInvalidCloseCode` | Send result codes |
-| `ConnectionError` | `kInvalidConfig`, `kFactoryFailed`, `kTlsHandshakeFailed`, `kWsUpgradeRejected`, ... | Connection failure categories |
-| `ws::DecodeError` | `kIncomplete`, `kReservedBits`, `kFragmentedControl`, `kControlPayloadTooLarge`, `kInvalidOpcode` | Frame decode errors |
-
-### Statistics Types
-
-| Type | Description |
-|------|-------------|
-| `TransportStats` | Aggregated snapshot: TX/RX packets/bytes/drops, TLS seq numbers, queue HWMs, handshake timings, RTT, uptime. Supports `operator-` for windowed metrics and `dump()`/`to_json()` for serialization. Rate helpers: `tx_pps()`, `rx_pps()`, `tx_mbps()`, `rx_mbps()`. |
-| `TxWorkerStats` | TX-specific: packets, bytes, drops, crypto errors, queue HWM, latency histograms (total TX, queue wait, encode+encrypt). |
-| `RxWorkerStats` | RX-specific: packets, bytes, drops, decrypt errors, WS pings/pongs, queue HWM, latency histograms (total RX, decrypt, decode). |
-| `RttStats` | Ping/pong round-trip: count, min, max, mean, p50, p99, p999 in nanoseconds. Convenience `*_us()` methods. |
-| `ConnectionInfo` | TLS version, cipher suite, WebSocket subprotocol, remote IP. `dump()` and `to_json()`. |
-
-### WebSocket Protocol (`ws::` namespace)
-
-| Symbol | Description |
-|--------|-------------|
-| `ws::opcode::kText`, `kBinary`, `kClose`, `kPing`, `kPong`, `kContinuation` | RFC 6455 frame opcodes |
-| `ws::close_code::kNormal`, `kGoingAway`, `kProtocolError`, ... | RFC 6455 close status codes |
-| `ws::encode_frame(out, opcode, payload, len) -> size_t` | Encode a masked WebSocket frame |
-| `ws::decode_frame(data, len) -> expected<DecodedFrame, DecodeError>` | Decode a WebSocket frame |
-| `ws::encode_frame_header(out, opcode, len, fin, mask) -> size_t` | Encode frame header only |
-| `ws::build_close_frame(out, code, reason) -> size_t` | Build a Close frame payload |
-| `ws::opcode_name(uint8_t) -> string_view` | Human-readable opcode name |
-| `ws::close_code_name(uint16_t) -> string_view` | Human-readable close code name |
-| `ws::is_valid_close_code(uint16_t) -> bool` | Validate close code for sending |
-| `ws::is_valid_utf8(data, len) -> bool` | DFA-based UTF-8 validation |
-| `ws::apply_mask(data, len, mask)` | In-place XOR masking |
-| `ws::masked_copy(dst, src, len, mask)` | Fused copy + mask (64-bit blocks) |
-| `ws::frame_header_size(payload_len) -> size_t` | Compute header size for payload |
-| `ws::total_frame_size(payload_len) -> size_t` | Header + payload size |
-| `ws::build_ping_frame(out, payload, len) -> size_t` | Build a Ping frame |
-| `ws::build_pong_frame(out, payload, len) -> size_t` | Build a Pong response frame |
-| `ws::is_valid_payload_len(opcode, len) -> bool` | Validate payload length for opcode |
-| `ws::generate_mask_key(mask)` | Generate random 4-byte mask key (uses batch cache) |
-| `ws::FrameTemplate` | Precomputed frame template for hot-path encode (`for_binary()`, `for_text()`) |
-| `ws::Opcode` | Lightweight wrapper for `std::format` support |
-| `ws::CloseCode` | Lightweight wrapper for `std::format` support |
-| `MaskKeyCache` | CSPRNG batch-pregenerated mask key pool (1024 keys, ~2ns/key) |
-
-### HTTP (`http::` namespace)
-
-| Function | Description |
-|----------|-------------|
-| `http::generate_ws_key() -> expected<string, string>` | Random 16-byte base64 WebSocket key |
-| `http::build_upgrade_request(host, path, key, extra) -> expected<string, string>` | Build HTTP/1.1 Upgrade request |
-| `http::parse_upgrade_response(data, len) -> expected<UpgradeResponse, string>` | Parse 101 Switching Protocols |
-| `http::validate_ws_accept(key, accept) -> bool` | Validate Sec-WebSocket-Accept (SHA-1 + base64) |
-
-### TLS Types
-
-| Type | Description |
-|------|-------------|
-| `TlsSession<TcpImpl>` | TLS 1.3 handshake + key export via aws-lc custom BIO. Not used on data path. |
-| `TlsRecordCrypto` | Composed `TlsEncryptor` + `TlsDecryptor`. Thread-safe for split TX/RX ownership. |
-| `TlsEncryptor` | AES-GCM write-direction AEAD. `create(state, key_len)`, `encrypt(plaintext, len, out)`. |
-| `TlsDecryptor` | AES-GCM read-direction AEAD. `create(state, key_len)`, `decrypt(record, len, out, out_len)`. |
-| `TlsHotState` | 4-cache-line key material: write key/IV/seq + read key/IV/seq. Scrubbed on destruction. |
-| `TlsKeyMaterial` | Per-direction: key+IV (cache line 1, read-only) + seq number (cache line 2, hot write). |
-| `tls_record::build_nonce(out, iv, seq)` | RFC 8446 nonce = IV XOR big-endian seq |
-| `tls_record::write_record_header(dst, type, len)` | Write 5-byte TLS record header |
-| `tls_record::parse_record_header(src, type, len) -> bool` | Parse and validate TLS record header |
-| `tls_record::kMaxSequenceNumber` | 2^24 records before forced reconnect (NIST SP 800-38D) |
-
-### Frame Filter
-
-| Symbol | Description |
-|--------|-------------|
-| `FrameView` | Lightweight view of a decoded frame: payload, len, opcode, deliver flag |
-| `FrameFilterFn` | `function<void(span<FrameView>)>` batch filter callback |
-| `make_twophase_filter(extractor) -> FrameFilterFn` | Two-phase forward scan: keeps only latest frame per symbol hash |
-
-### Reconnect Policy
-
-| Method | Description |
-|--------|-------------|
-| `ReconnectPolicy(config)` | Construct from TransportConfig |
-| `attempt(connect_fn) -> bool` | Sleep (backoff + jitter), call connect_fn, update state |
-| `exhausted() -> bool` | True if max attempts reached |
-| `reset()` | Reset after successful connection |
-| `attempts() -> int` | Current attempt count |
-| `total_reconnects() -> uint64_t` | Lifetime successful reconnection count |
 
 ## Dependencies
 
-- **eph-core** -- `TcpTransport` concept (`tcp_concept.hpp`), `MessageFramer` concept (`framer_concept.hpp`), transport error types (`transport_errors.hpp`), JSON escape utility
-- **eph-containers** -- `BoundedQueue` and `EvictingQueue` (lock-free SPSC queues)
-- **eph-utils** -- HDR histogram, TSC/time utilities, CPU affinity, cache-line alignment
-- **spdlog** -- Structured logging throughout
-- **OpenSSL / aws-lc** -- TLS 1.3 handshake (libssl) and AES-GCM AEAD encryption (libcrypto)
+- **eph-core** — `TcpTransport` / `MessageFramer` concepts, transport
+  error types (`ConnectionError`, `SendError`, `FrameError`), shared
+  JSON escape and control-char checks.
+- **eph-containers** — `BoundedQueue` and `EvictingQueue` (lock-free
+  SPSC queues for TX and RX paths).
+- **eph-utils** — `HdrHistogram`, `TSC`, cache-line alignment, CPU
+  affinity helpers.
+- **spdlog** — leveled logging via `SPDLOG_LOGGER_*` macros, subject to
+  `SPDLOG_ACTIVE_LEVEL` compile-time filtering.
+- **aws-lc** — TLS 1.3 handshake (libssl-compatible) and AES-GCM AEAD
+  (libcrypto-compatible).
 
-## Usage Examples
+All dependencies are propagated as public xmake packages — consumers
+link `eph-transport` only.
 
-### Threaded Transport (default)
+## Build
+
+`eph-transport` is header-only and part of the top-level `ephemeral_dev`
+xmake build.
+
+```bash
+# From the repo root
+xmake build eph-transport          # no-op, header-only (validates deps)
+xmake build test_transport_types   # build a specific test binary
+xmake build -g tests               # build all tests
+xmake build -g benchmarks          # build all benchmarks
+```
+
+The `xmake.lua` in this directory declares:
+
+- `target("eph-transport")` — header-only, public includes, public
+  deps on `eph-core`, `eph-utils`, `eph-containers`, and public
+  packages `spdlog`, `aws-lc`.
+- One test target per file under `tests/`, using the `eph-test` rule
+  and adding `eph-net` as a dependency (tests rely on the kernel
+  backend for end-to-end assertions).
+- One benchmark target per file under `benchmarks/`, using the
+  `eph-bench` rule.
+
+Optional compile-time knob: pass `-DEPH_ENABLE_TIMESTAMPS=1` to enable
+per-message TSC timestamps and the HdrHistogram latency breakdowns.
+Disabled by default — when off, the `tsc` fields in `TxMessage`/`RxMessage`
+are unused and histogram calls compile to no-ops.
+
+## Quick examples
+
+### Threaded transport (default)
 
 ```cpp
 #include <eph/transport/transport.hpp>
 #include <eph/transport/presets.hpp>
 
-// TransportConfig from a WebSocket URL
 auto cfg = eph::net::TransportConfig::from_url(
     "wss://stream.binance.com:9443/ws/btcusdt@bookTicker");
-assert(cfg);
-cfg->on_message = [](const uint8_t* data, uint16_t len, uint8_t opcode) {
-    // Push-mode: called directly from RX thread -- must be non-blocking
+if (!cfg) { /* handle URL parse error */ }
+
+cfg->on_message = [](const uint8_t* data, uint16_t len, uint8_t /*op*/) {
+    // Called from the RX thread — must be non-blocking.
     process_market_data(data, len);
 };
 
-// Factory creates a fresh TCP socket on each (re)connect
 auto factory = [&]() -> std::expected<std::unique_ptr<MyTcp>, std::string> {
     auto tcp = std::make_unique<MyTcp>();
     if (auto r = tcp->connect(std::chrono::milliseconds{3000}); !r)
@@ -361,115 +178,288 @@ auto factory = [&]() -> std::expected<std::unique_ptr<MyTcp>, std::string> {
     return tcp;
 };
 
-// Blocking handshake: TCP + TLS 1.3 + WebSocket Upgrade
 auto result = eph::net::DefaultTransport<MyTcp>::create(
     std::move(factory), *cfg);
 if (!result) {
-    spdlog::error("Connect failed: {}", result.error().message());
+    spdlog::error("connect failed: {}", result.error().message());
     return 1;
 }
 auto& transport = *result;
 
-// Non-blocking send (enqueues to TX thread)
-auto err = transport->send(R"({"method":"SUBSCRIBE"})", 23);
+// Non-blocking send (enqueued to TX thread)
+(void)transport->send(payload.data(), payload.size());
 
-// Pull-mode receive (alternative to on_message callback)
+// Or pull-mode receive
 transport->recv([](const uint8_t* data, size_t len, uint8_t opcode) {
-    // data is valid only during this callback
+    // Pointer valid only during this callback.
 });
 
-// Windowed statistics
-auto s1 = transport->stats();
+// Windowed statistics (subtract snapshots)
+auto s0 = transport->stats();
 std::this_thread::sleep_for(std::chrono::seconds{10});
-auto delta = transport->stats() - s1;
-spdlog::info("RX rate: {:.0f} msg/s, p99 RTT: {:.1f}us",
-    delta.rx_pps(), delta.rtt.p99_us());
+auto delta = transport->stats() - s0;
+spdlog::info("rx {:.0f} msg/s, p99 RTT {:.1f}us",
+             delta.rx_pps(), delta.rtt.p99_us());
 
-// Graceful shutdown
-transport->close_gracefully();
+// RFC 6455 graceful close
+(void)transport->close_gracefully();
 ```
 
-### Direct Transport (threadless)
-
-```cpp
-#include <eph/transport/direct_transport.hpp>
-
-auto result = eph::net::DirectTransport<MyTcp>::create(
-    std::move(factory), config);
-auto& dt = *result;
-
-// Application thread does everything
-dt->send(data, len);          // frame + encrypt + TCP send
-dt->poll();                   // TCP poll + decrypt + decode
-
-// Or split for Reactor integration:
-dt->feed_rx(raw_data, len);   // feed raw TCP bytes
-dt->process_pending();        // decrypt + decode buffered data
-```
-
-### DirectTx Transport (hybrid)
+### Direct-TX transport (lowest TX latency)
 
 ```cpp
 #include <eph/transport/presets.hpp>
 
 auto result = eph::net::DirectTxDefaultTransport<MyTcp>::create(
-    std::move(factory), config);
+    std::move(factory), *cfg);
 auto& dtx = *result;
 
-// TX is synchronous on app thread (lowest TX latency)
-dtx->send(order_bytes.data(), order_bytes.size());
+// TX is synchronous on the calling thread (no SPSC enqueue)
+(void)dtx->send(order_bytes.data(), order_bytes.size());
 
-// RX is async via background thread + SPSC queue
-dtx->recv([](const uint8_t* data, size_t len, uint8_t opcode) {
+// RX still runs on a background thread; poll the RX queue
+dtx->recv([](const uint8_t* data, size_t len, uint8_t) {
     handle_response(data, len);
 });
 ```
 
-### Evicting Transport (latest-value semantics)
+Thread-safety note: on `DirectTxTransport` the app thread exclusively
+owns `crypto->enc` (write direction), while the RX thread exclusively
+owns `crypto->dec` (read direction). Do not call `send()` concurrently
+with `stop()`.
+
+### Threadless direct transport (Reactor / DPDK poll-mode)
 
 ```cpp
-#include <eph/transport/presets.hpp>
+#include <eph/transport/direct_transport.hpp>
 
-// EvictTransport overwrites oldest unread message on RX overflow
-// Ideal for market data where only the latest quote matters
-auto result = eph::net::EvictTransport<MyTcp>::create(
-    std::move(factory), config);
+auto result = eph::net::DirectTransport<MyTcp>::create(
+    std::move(factory), *cfg);
+auto& dt = *result;
+
+// Everything runs on the caller's thread
+(void)dt->send(data, len);   // encode + encrypt + TCP send, inline
+dt->poll();                  // TCP poll + decrypt + decode + deliver
+
+// Or split for Reactor integration:
+dt->feed_rx(raw_bytes, len); // accumulate only, no work
+dt->process_pending();       // decrypt + decode + deliver for buffered data
 ```
 
-### Batch Frame Filter (multi-symbol dedup)
+### Presets (payload / queue depth / framer)
 
 ```cpp
-// Keep only the latest message per symbol in combined streams
-config.on_frame_filter = eph::net::make_twophase_filter(
+// Parameterise any variant on your TCP backend
+using Tx  = eph::net::DefaultTransport<MyTcp>;         // 512B / 1024 / WS
+using Tx2 = eph::net::SmallTransport<MyTcp>;           //  64B /  256 / WS
+using Tx3 = eph::net::LargeTransport<MyTcp>;           // 4096B /  512 / WS
+using Tx4 = eph::net::EvictTransport<MyTcp>;           // evicting RX queue
+using Tx5 = eph::net::RawTransport<MyTcp>;             // RawFramer (no WS)
+using Tx6 = eph::net::DirectTxDefaultTransport<MyTcp>; // DirectTx + defaults
+using Tx7 = eph::net::DirectDefaultTransport<MyTcp>;   // Direct + defaults
+```
+
+### Batch frame filter (multi-symbol dedup)
+
+```cpp
+// Deliver only the latest frame per symbol in a combined stream.
+cfg->on_frame_filter = eph::net::make_twophase_filter(
     [](const uint8_t* data, size_t len) -> uint32_t {
-        // Extract a symbol hash from the JSON payload
-        // Return 0 for unrecognized payloads (always delivered)
-        return extract_symbol_hash(data, len);
+        return extract_symbol_hash(data, len); // return 0 for unknown
     });
 ```
 
-### Reconnection with Subscription Replay
+The two-phase filter uses an open-addressed 256-slot hash table on the
+stack, runs in O(n) on batches of up to `kMaxFramesPerBatch = 128`
+frames, and mutates the `deliver` flag on each `FrameView`. Control and
+fragmented frames bypass filtering.
+
+### Reconnection and subscription replay
 
 ```cpp
-config.on_reconnected = [&](int attempt, uint64_t downtime_ns, uint64_t total) {
-    spdlog::info("Reconnected (attempt {}, downtime {:.1f}ms, total {})",
-        attempt, downtime_ns / 1e6, total);
-    // Replay subscriptions after reconnection
-    transport->send_text(R"({"method":"SUBSCRIBE","params":["btcusdt@bookTicker"]})");
+cfg->on_reconnect_attempt = [](int n, int max, std::string_view err) {
+    spdlog::warn("reconnect {}/{}: {}", n, max, err);
+    return true; // keep trying; return false to abort
 };
 
-config.on_reconnect_attempt = [](int attempt, int max, std::string_view err) -> bool {
-    spdlog::warn("Reconnect attempt {}/{}: {}", attempt, max, err);
-    return true; // Continue retrying (return false to abort)
+cfg->on_reconnected = [&](int attempt, uint64_t downtime_ns, uint64_t total) {
+    spdlog::info("reconnected (attempt {}, down {:.1f}ms, total {})",
+                 attempt, downtime_ns / 1e6, total);
+    // Replay subscriptions
+    (void)transport->send_text(R"({"method":"SUBSCRIBE","params":[...]})");
 };
 ```
 
-### URL Parsing
+`ReconnectPolicy` doubles the backoff after each failure (up to
+`max_reconnect_backoff`, or 16x `reconnect_interval` if unset) and
+applies ±25% jitter so reconnecting fleets don't synchronise.
 
-```cpp
-auto cfg = eph::net::TransportConfig::from_url("wss://api.example.com:8443/v1/ws?token=abc");
-// cfg->remote_host = "api.example.com"
-// cfg->remote_port = 8443
-// cfg->ws_path     = "/v1/ws?token=abc"
-// cfg->use_tls     = true
+## Public API surface (abbreviated)
+
+See the Doxygen-style `///` comments on each header for the
+authoritative contract. A high-level summary:
+
+### `Transport<TcpImpl, Framer, MaxPayload, QueueDepth, RxQueueTmpl, LastOnlyDeliver>`
+
+- `create(TcpFactory, TransportConfig) -> expected<unique_ptr, ConnectionErrorInfo>`
+- Send: `send`, `send_binary`, `send_text`, `send_text_unchecked`,
+  `send_for`, `send_text_for`, `send_binary_for`, `send_n`, `send_n_for`,
+  `send_close`, `send_ping`
+- Receive: `recv`, `try_recv`, `try_recv_msg`, `recv_peek`,
+  `peek_recv_msg`, `recv_n`, `drain_recv`, `wait_recv`, `wait_recv_msg`
+- Lifecycle: `close_gracefully`, `stop`, `start_threads`,
+  `is_running`, `state`, `is_connected`, `reconnect_now`
+- Queue occupancy: `tx_queue_size`, `rx_queue_size`,
+  `tx_queue_fill_ratio`, `rx_queue_fill_ratio`, `tx_queue_hwm`,
+  `rx_queue_hwm`
+- Stats: `stats`, `tx_stats`, `rx_stats`, `reset_stats`,
+  `connection_info`, `tls_version`, `cipher_name`, `remote_ip`
+- Configuration: `config`, `max_payload`, `queue_depth`,
+  `timestamps_enabled`
+
+### `DirectTxTransport<...>`
+
+Same API as `Transport<>`, minus TX-queue observability
+(`tx_queue_*` methods), plus direct-TX semantics: `send()` is
+synchronous — `kOk` means handed to the TCP layer, not merely
+enqueued. `tx_queue_hwm` is always 0 in `TransportStats`.
+
+### `DirectTransport<TcpImpl, Framer, MaxPayload>`
+
+No threads, no queues. API is:
+
+- `create`, `stop`, `is_running`, `state`, `is_connected`
+- Send: `send`, `send_binary`, `send_text`, `send_text_unchecked`,
+  `send_n`, `send_close`, `send_ping`
+- Receive driver: `poll()` (all-in-one TCP poll + decrypt + decode) or
+  `feed_rx()` + `process_pending()` (Reactor split)
+- Diagnostics: `stats`, `rtt_stats`, `rx_latency_stats`,
+  `rx_decrypt_stats`, `rx_decode_stats`,
+  `rx_latency_histogram_snapshot`, `connection_info`, `reset_stats`
+
+Data is delivered to the `on_message` callback configured on the
+`TransportConfig`; there is no RX queue to poll.
+
+### `TransportConfig`
+
+All fields are documented inline in `transport_types.hpp`. Highlights:
+
+- Connection target: `remote_host`, `remote_port`, `ws_path`,
+  `ws_subprotocol`, `extra_headers`
+- TLS: `use_tls`, `ca_cert_path`, `verify_peer`, `client_cert_path`,
+  `client_key_path`, `pinned_spki_sha256`, `on_pin_mismatch`
+- Timeouts: `tcp_timeout`, `tls_timeout`, `ws_timeout`
+- Performance: `tx_burst_size`, `rx_burst_size`, `skip_utf8_validation`
+- Reconnection: `reconnect_interval`, `max_reconnect_backoff`,
+  `max_reconnect_attempts`
+- WebSocket keepalive: `ping_interval`, `pong_timeout`
+- CPU affinity: `tx_cpu`, `rx_cpu`
+- Callbacks: `on_state_change`, `on_message`, `on_close`, `on_ping`,
+  `on_pong`, `on_rx_drop`, `on_reconnect_attempt`, `on_reconnected`,
+  `on_frame_filter`, `on_connected_before_threads`, `thresholds.on_breach`
+- Utilities: `validate()`, `warnings()`, `dump()`, `to_json()`,
+  `to_url()`, `from_url()`, `operator==`
+
+### `ReconnectPolicy`
+
+Standalone, testable exponential-backoff state machine:
+
+- `ReconnectPolicy(const TransportConfig&)`
+- `attempt(connect_fn) -> bool` — sleeps for current backoff with
+  ±25% jitter, invokes `connect_fn`, updates state, fires
+  `on_reconnect_attempt`
+- `exhausted() -> bool`, `attempts() -> int`, `reset()`,
+  `total_reconnects() -> uint64_t`
+
+### WebSocket protocol (`ws::` namespace)
+
+Defined in `detail/websocket.hpp`, also re-exported implicitly by
+`Transport<>`:
+
+- Opcodes: `ws::opcode::kText`, `kBinary`, `kClose`, `kPing`, `kPong`,
+  `kContinuation`
+- Close codes: `ws::close_code::kNormal`, `kGoingAway`,
+  `kProtocolError`, …
+- Encode/decode: `encode_frame`, `decode_frame`, `encode_frame_header`,
+  `build_close_frame`, `build_ping_frame`, `build_pong_frame`
+- Validation: `is_valid_utf8`, `is_valid_close_code`,
+  `is_valid_payload_len`
+- Masking: `apply_mask`, `masked_copy`, `generate_mask_key`,
+  `MaskKeyCache`
+- Sizes: `frame_header_size`, `total_frame_size`, `kMaxFrameHeaderLen`
+- Naming: `opcode_name`, `close_code_name`
+- Formatters: `Opcode`, `CloseCode` (for `std::format`)
+- Template: `FrameTemplate` (precomputed header for hot-path encode)
+
+### HTTP (`http::` namespace)
+
+Minimal HTTP/1.1 **only** for WebSocket Upgrade:
+
+- `http::generate_ws_key() -> expected<string, string>`
+- `http::build_upgrade_request(host, path, key, extra) -> expected<string, string>`
+- `http::parse_upgrade_response(data, len) -> expected<UpgradeResponse, string>`
+- `http::validate_ws_accept(key, accept) -> bool` (SHA-1 + base64)
+
+### TLS types
+
+- `TlsSession<TcpImpl>` — TLS 1.3 handshake via aws-lc custom BIO
+  bound to a `TcpTransport`. Exports session keys then steps off
+  the data path.
+- `TlsRecordCrypto` — composed `TlsEncryptor` + `TlsDecryptor`,
+  thread-safe for split TX/RX ownership (TX thread writes, RX
+  thread reads; no crossover).
+- `TlsEncryptor` / `TlsDecryptor` — AES-128/256-GCM AEAD,
+  direction-specific, each owns key/IV/sequence.
+- `tls_record::build_nonce`, `write_record_header`,
+  `parse_record_header`, `kMaxSequenceNumber` (2^24, NIST SP 800-38D —
+  forces reconnection before key reuse).
+
+## Observability
+
+All non-trivial functions emit leveled `SPDLOG_LOGGER_*` output.
+Filters apply at compile-time via `SPDLOG_ACTIVE_LEVEL` (propagated
+from the top-level xmake option `net_log_level`). Log messages
+include actionable context: remote host, attempt number, error
+details, byte counts.
+
+`TransportStats` aggregates per-stream counters, TLS sequence numbers,
+queue HWMs, handshake timings (TCP / TLS / WS breakdown), RTT
+statistics, and — when timestamps are enabled at compile time — HdrHistogram-
+based latency distributions for TX (total, queue-wait, encode+encrypt)
+and RX (total, decrypt, decode). Snapshots support `operator-` for
+windowed metrics and `dump()` / `to_json()` for logging and monitoring
+integration. Rate helpers: `tx_pps()`, `rx_pps()`, `tx_mbps()`,
+`rx_mbps()`.
+
+## Tests and benchmarks
+
+Unit and integration tests live under `tests/`:
+
 ```
+tests/
+├── test_framers.cpp              # WsFramer / RawFramer contracts
+├── test_http.cpp                 # HTTP/1.1 upgrade encode/parse
+├── test_reconnect_policy.cpp     # Exponential backoff + jitter bounds
+├── test_tls_config.cpp           # TlsConfig validation and warnings
+├── test_tls_record.cpp           # AEAD roundtrip, record header, seq limits
+├── test_transport_config.cpp     # TransportConfig validate/dump/to_url/from_url
+├── test_transport_types.cpp      # Stats delta, ConnectionInfo, formatters
+└── test_websocket.cpp            # Encode/decode, close handshake, masking
+```
+
+Benchmarks (`benchmarks/bench_transport_types.cpp`) cover the hot-path
+types: `encode_frame` (64B/512B), `apply_mask`, AES-GCM encrypt/decrypt,
+HKDF, stats `dump`/`to_json`, `from_url`, and TLS record parse.
+
+Fuzzing (`fuzzers/fuzz_ws_decode.cpp`) targets `ws::decode_frame` with
+libFuzzer.
+
+```bash
+xmake build -g tests && xmake run -g tests
+xmake build -g benchmarks && xmake run bench_transport_types
+```
+
+## License
+
+Part of the `ephemeral_dev` monorepo. See the top-level `LICENSE`
+file for licensing terms.
