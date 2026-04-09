@@ -79,14 +79,16 @@ xmake run bench_itch_parse
 xmake run bench_json_parse
 xmake run bench_array_book
 
-# End-to-end latency benchmarks (self-contained, no exchange dependency)
-# Uses a mock WS server in benchmarks/latency/
-xmake build bench_mock_server bench_market bench_order_rtt
-xmake build bench_market_dpdk bench_order_rtt_dpdk   # DPDK variants
+# End-to-end latency benchmarks (self-contained, dual-NIC back-to-back)
+# Each lat_* binary forks its own kernel mock and runs the bench client.
+xmake build lat_tcp lat_udp lat_ws lat_ex_market lat_ex_order lat_ex_md_udp
+xmake build lat_tcp_dpdk lat_udp_dpdk lat_ws_dpdk \
+            lat_ex_market_dpdk lat_ex_order_dpdk lat_ex_md_udp_dpdk
 
-# Fair Socket vs DPDK comparison (dual-NIC setup, network namespace isolation)
-sudo ./scripts/bench_latency.sh --nic-a ens34 --nic-b ens35 \
-    --server-ip 172.31.21.173 --gateway-ip 172.31.16.1
+# Edit benchmarks/latency/bench.conf once with your NIC/IP/CPU layout, then:
+sudo ./scripts/lat tcp                # raw TCP RTT (kernel client)
+sudo ./scripts/lat udp --dpdk         # raw UDP RTT (DPDK client)
+sudo ./scripts/lat ex_market          # exchange bookTicker push
 ```
 
 ## Modules
@@ -260,11 +262,12 @@ add_deps("eph-net")  -- pulls in eph-transport, eph-core, eph-utils, eph-contain
 
 Microbenchmarks live in `benchmarks/` and use Google Benchmark. End-to-end latency benchmarks are self-contained in `benchmarks/latency/` with a built-in mock WebSocket server (no Binance or other exchange dependency required).
 
-Latency benchmarks:
-- `bench_mock_server` -- mock WS server that echoes market data
-- `bench_market` / `bench_market_dpdk` -- market data feed latency (Socket / DPDK)
-- `bench_order_rtt` / `bench_order_rtt_dpdk` -- order round-trip latency (Socket / DPDK)
-- `scripts/bench_latency.sh` -- orchestrates a fair Socket vs DPDK comparison using network namespace isolation on a dual-NIC setup
+Latency benchmarks (one binary per scenario, kernel + DPDK client variants):
+- `lat_tcp` / `lat_udp` / `lat_ws` -- raw TCP / UDP / plain WebSocket RTT
+- `lat_ex_market` -- exchange bookTicker push (1-leg)
+- `lat_ex_order` -- exchange order RTT (N-inflight pipeline)
+- `lat_ex_md_udp` -- exchange UDP market data RTT
+- `scripts/lat <scenario> [--dpdk]` -- single-command runner that owns NIC-B state transitions (host kernel ↔ bench_ns ↔ vfio-pci) and execs the binary; the binary itself forks the kernel mock and runs the bench client
 
 See [`benchmarks/METRICS.md`](benchmarks/METRICS.md) for the measurement methodology covering TX latency, RX latency, RTT, and feed latency.
 

@@ -553,19 +553,19 @@ Key test scenarios:
 | `bench_itch_parse` | `benchmarks/itch/` | ITCH message parse throughput |
 | `bench_json_parse` | `benchmarks/json/` | JSON parse throughput |
 | `bench_array_book` | `benchmarks/book/` | ArrayBook update/query performance |
-| `bench_market` / `_dpdk` | `benchmarks/latency/` | Single-symbol market data latency (Socket / DPDK), DirectTransport-based |
-| `bench_order_rtt` / `_dpdk` | `benchmarks/latency/` | Order round-trip time measurement (Socket / DPDK) |
-| `bench_mock_server` | `benchmarks/latency/` | In-process mock WS server for latency benchmarks |
-| `bench_impl.hpp` | `benchmarks/latency/` | Shared benchmark logic (DirectTransport, no threads/queues) |
-| `mock/mock_ws_server.hpp` | `benchmarks/latency/mock/` | Mock WS server (market tick + order response modes) |
-| `mock/mock_ws_handshake.hpp` | `benchmarks/latency/mock/` | WS upgrade handshake for mock server |
-| `mock/mock_data_gen.hpp` | `benchmarks/latency/mock/` | Synthetic market data generator |
+| `lat_tcp` / `lat_tcp_dpdk`             | `benchmarks/latency/tcp/`      | Raw TCP RTT — single binary that forks its own kernel echo mock |
+| `lat_udp` / `lat_udp_dpdk`             | `benchmarks/latency/udp/`      | Raw UDP RTT — same pattern |
+| `lat_ws` / `lat_ws_dpdk`               | `benchmarks/latency/ws/`       | Plain WebSocket RTT — same pattern |
+| `lat_ex_market` / `_dpdk`              | `benchmarks/latency/exchange/` | Multi-symbol bookTicker push (1-leg), shared `mock_ws.hpp` |
+| `lat_ex_order` / `_dpdk`               | `benchmarks/latency/exchange/` | N-inflight order RTT, shared `mock_ws.hpp` |
+| `lat_ex_md_udp` / `_dpdk`              | `benchmarks/latency/exchange/` | UDP market-data echo, `mock_md_udp.hpp` |
+| `core/{config,runner,socket_bind,...}` | `benchmarks/latency/core/`     | Shared header library (config, runner, ws framing/client, netns, stream scheduler) |
 
 ### Tools
 
 | Tool | Location | Purpose |
 |------|----------|--------|
 | `mock_binance_server.py` | `tools/` | Mock Binance WebSocket server with configurable batch-size/rate/jitter |
-| `bench_latency.sh` | `scripts/` | Latency benchmark runner (network namespace, PCI detection) |
+| `lat` | `scripts/` | Single-command latency benchmark runner (manages NIC-B state transitions, exec's lat_<scenario>[_dpdk]) |
 | `dpdk-setup.sh` | `scripts/` | DPDK environment setup (hugepages, device binding) |
 | `dpdk-teardown.sh` | `scripts/` | DPDK environment teardown |

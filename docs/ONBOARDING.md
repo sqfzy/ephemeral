@@ -316,15 +316,14 @@ xmake run bench_fix_parse
 #   book:       bench_array_book
 #
 # End-to-end latency benchmarks (benchmarks/latency/):
-#   bench_market       -- mock WS server -> market data parse latency
-#   bench_order_rtt    -- mock WS server -> order round-trip latency
-#   (DPDK variants: bench_market_dpdk, bench_order_rtt_dpdk)
+#   lat_tcp / lat_udp / lat_ws                       -- raw protocol RTT
+#   lat_ex_market / lat_ex_order / lat_ex_md_udp     -- exchange scenarios
+#   (each has a _dpdk variant that swaps the client transport to DPDK;
+#    the mock is always kernel so the comparison is fair)
 #
-# These use a self-contained mock WS server (benchmarks/latency/mock/)
-# and have no external dependencies (no live exchange connection needed).
-#
-# For dual-NIC fair comparison (POSIX vs DPDK on same machine):
-#   scripts/bench_latency.sh
+# Each binary forks its own kernel mock, so there is no separate orchestrator.
+# Edit benchmarks/latency/bench.conf once with your NIC/IP/CPU layout, then:
+#   sudo ./scripts/lat <scenario> [--dpdk]
 ```
 
 **Important**: Before modifying performance-critical code, run the relevant benchmarks to establish a baseline. After your change, re-run and compare. See `benchmarks/METRICS.md` for baseline data.
