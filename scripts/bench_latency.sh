@@ -471,21 +471,26 @@ common_mock_args() {
     printf '%s\n' "${out[@]}"
 }
 
-# Run the bench client. In netns mode it goes through bench_ns.
+# Run the bench client. Kernel transport uses bench_ns (NIC-B lives there);
+# DPDK transport + loopback run directly in the host namespace.
+CURRENT_TRANSPORT=""
 run_client() {
     local cmd=("$@")
+    local use_netns=false
+    [[ "$LOOPBACK" == false && "$CURRENT_TRANSPORT" == "kernel" ]] && use_netns=true
+
     if [[ "$DRY_RUN" == true ]]; then
-        if [[ "$LOOPBACK" == true ]]; then
-            log_verb "[dry-run] client: ${cmd[*]}"
-        else
+        if [[ "$use_netns" == true ]]; then
             log_verb "[dry-run] client: ip netns exec bench_ns ${cmd[*]}"
+        else
+            log_verb "[dry-run] client: ${cmd[*]}"
         fi
         return
     fi
-    if [[ "$LOOPBACK" == true ]]; then
-        "${cmd[@]}" || log_warn "client returned $?"
-    else
+    if [[ "$use_netns" == true ]]; then
         ip netns exec bench_ns "${cmd[@]}" || log_warn "client returned $?"
+    else
+        "${cmd[@]}" || log_warn "client returned $?"
     fi
 }
 
@@ -608,6 +613,8 @@ run_one_transport() {
         setup_dpdk
     fi
 
+    # Track current transport for run_client (netns decision).
+    CURRENT_TRANSPORT="$transport"
     # Local guard so the next transport starts fresh.
     EX_WS_MOCK_RUNNING=false
 
