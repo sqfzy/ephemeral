@@ -448,7 +448,8 @@ stop_mock() {
     sleep 0.2
 }
 
-# Build the array of common bench client args.
+# Build the array of common bench client args. For DPDK transport we also
+# pass --local-ip / --gateway-ip (required by DpdkBenchEnv::create_full).
 common_client_args() {
     local out=(
         --server-ip "$SERVER_IP"
@@ -457,6 +458,9 @@ common_client_args() {
         --duration "$DURATION"
     )
     [[ "$ALLOW_NON_ISOLATED" == true ]] && out+=(--allow-non-isolated)
+    if [[ "$CURRENT_TRANSPORT" == "dpdk" && "$LOOPBACK" == false ]]; then
+        out+=(--local-ip "$LOCAL_IP" --gateway-ip "$GATEWAY_IP")
+    fi
     printf '%s\n' "${out[@]}"
 }
 
@@ -472,12 +476,31 @@ common_mock_args() {
 }
 
 # Run the bench client. Kernel transport uses bench_ns (NIC-B lives there);
-# DPDK transport + loopback run directly in the host namespace.
+# DPDK transport needs EAL args prepended; loopback runs directly.
+#
+# Expected cmd shape: <binary> --server-ip ... --port ... [other app args]
+# For DPDK, we splice EAL args between the binary and the app args:
+#   <binary> -a <pci> -l <cores> -- --server-ip ... ...
 CURRENT_TRANSPORT=""
 run_client() {
     local cmd=("$@")
     local use_netns=false
     [[ "$LOOPBACK" == false && "$CURRENT_TRANSPORT" == "kernel" ]] && use_netns=true
+
+    if [[ "$CURRENT_TRANSPORT" == "dpdk" && "$LOOPBACK" == false ]]; then
+        # Find NIC-B PCI address (saved by setup_dpdk or read from .dpdk_state).
+        local pci="$NIC_B_PCI"
+        if [[ -z "$pci" && -f "$PROJECT_DIR/.dpdk_state" ]]; then
+            # shellcheck disable=SC1091
+            source "$PROJECT_DIR/.dpdk_state"
+            pci="$DPDK_PCI"
+        fi
+        # Splice EAL args between binary and app args.
+        local binary="${cmd[0]}"
+        local app_args=("${cmd[@]:1}")
+        cmd=("$binary" -a "$pci" -l "$EAL_CORES" --)
+        cmd+=("${app_args[@]}")
+    fi
 
     if [[ "$DRY_RUN" == true ]]; then
         if [[ "$use_netns" == true ]]; then
@@ -509,7 +532,8 @@ run_tcp() {
     IFS=',' read -ra payloads <<< "$TCP_PAYLOADS"
     for p in "${payloads[@]}"; do
         log_info "tcp $transport payload=$p"
-        start_mock "$BUILD_DIR/mock_lat_tcp${suffix}" "${mock_args[@]}" \
+        # Mock always runs as kernel POSIX (plan D-2 fair comparison).
+        start_mock "$BUILD_DIR/mock_lat_tcp" "${mock_args[@]}" \
             --port "$PORT_TCP" --msg-size "$p"
         run_client "$BUILD_DIR/bench_lat_tcp${suffix}" "${cli_args[@]}" \
             --port "$PORT_TCP" --payload-sizes "$p"
@@ -524,7 +548,7 @@ run_udp() {
     local mock_args; mapfile -t mock_args < <(common_mock_args)
     local cli_args;  mapfile -t cli_args  < <(common_client_args)
 
-    start_mock "$BUILD_DIR/mock_lat_udp${suffix}" "${mock_args[@]}" --port "$PORT_UDP"
+    start_mock "$BUILD_DIR/mock_lat_udp" "${mock_args[@]}" --port "$PORT_UDP"
     run_client "$BUILD_DIR/bench_lat_udp${suffix}" "${cli_args[@]}" \
         --port "$PORT_UDP" --payload-sizes "$UDP_PAYLOADS"
     stop_mock
@@ -537,7 +561,7 @@ run_ws() {
     local mock_args; mapfile -t mock_args < <(common_mock_args)
     local cli_args;  mapfile -t cli_args  < <(common_client_args)
 
-    start_mock "$BUILD_DIR/mock_lat_ws${suffix}" "${mock_args[@]}" --port "$PORT_WS"
+    start_mock "$BUILD_DIR/mock_lat_ws" "${mock_args[@]}" --port "$PORT_WS"
     run_client "$BUILD_DIR/bench_lat_ws${suffix}" "${cli_args[@]}" \
         --port "$PORT_WS" --payload-sizes "$WS_PAYLOADS"
     stop_mock
@@ -547,11 +571,11 @@ run_ws() {
 EX_WS_MOCK_RUNNING=false
 
 ensure_ex_ws_mock() {
-    local transport="$1" suffix=""
-    [[ "$transport" == "dpdk" ]] && suffix="_dpdk"
+    local transport="$1"
     [[ "$EX_WS_MOCK_RUNNING" == true ]] && return
     local mock_args; mapfile -t mock_args < <(common_mock_args)
-    start_mock "$BUILD_DIR/mock_lat_exchange_ws${suffix}" "${mock_args[@]}" \
+    # Mock always kernel POSIX — plan D-2.
+    start_mock "$BUILD_DIR/mock_lat_exchange_ws" "${mock_args[@]}" \
         --port "$PORT_EX_WS" \
         --symbols "$SYMBOLS" \
         --bookticker-us "$BOOKTICKER_US" \
@@ -594,7 +618,8 @@ run_exchange_md_udp() {
     log_phase "exchange/md_udp ($transport)"
     local mock_args; mapfile -t mock_args < <(common_mock_args)
     local cli_args;  mapfile -t cli_args  < <(common_client_args)
-    start_mock "$BUILD_DIR/mock_lat_exchange_md_udp${suffix}" "${mock_args[@]}" \
+    # Mock always kernel POSIX — plan D-2.
+    start_mock "$BUILD_DIR/mock_lat_exchange_md_udp" "${mock_args[@]}" \
         --port "$PORT_EX_MD_UDP"
     run_client "$BUILD_DIR/bench_lat_exchange_md_udp${suffix}" \
         "${cli_args[@]}" --port "$PORT_EX_MD_UDP" --payload-sizes "$MD_UDP_PAYLOADS"
