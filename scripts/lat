@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# scripts/lat — single-command runner for the latency benchmark.
+#
+#     sudo ./scripts/lat <scenario> [--dpdk]
+#
+# Reads benchmarks/latency/bench.conf, manages NIC-B state transitions
+# (host kernel ↔ bench_ns kernel ↔ vfio-pci) idempotently, and execs the
+# matching lat_<scenario>[_dpdk] binary. The binary itself does the
+# fork-mock + setns + run-client dance — this script is just the host-
+# level state machine that gets the network into the right shape first.
+#
+# State transitions are detected and announced; reruns of the same
+# scenario take the fast path (no transition).
+
+set -euo pipefail
+
+# ── Paths ────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_FILE="${BENCH_CONFIG:-$PROJECT_DIR/benchmarks/latency/bench.conf}"
+
+# ── Color & logging ──────────────────────────────────────────────────
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; NC=''
+fi
+log_info()  { printf '%s✓%s  %s\n' "$GREEN" "$NC" "$*"; }
+log_warn()  { printf '%s⚠%s  %s\n' "$YELLOW" "$NC" "$*" >&2; }
+log_error() { printf '%s✗%s  %s%s%s\n' "$RED" "$NC" "$BOLD" "$*" "$NC" >&2; }
+log_step()  { printf '%sℹ%s  %s\n' "$CYAN" "$NC" "$*"; }
+die() { log_error "$1"; [[ -n "${2:-}" ]] && printf '   %s\n' "$2" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+${BOLD}lat${NC} — single-command latency benchmark runner
+
+  ${BOLD}sudo ./scripts/lat <scenario> [--dpdk]${NC}
+
+Scenarios:
+  tcp           raw TCP RTT
+  udp           raw UDP RTT
+  ws            plain WebSocket RTT
+  ex_market     exchange bookTicker push (1-leg)
+  ex_order      exchange order RTT (N-inflight pipeline)
+  ex_md_udp     exchange UDP market data RTT
+
+Flags:
+  --dpdk        use the DPDK client variant (kernel mock unchanged)
+  -h, --help    show this help
+
+All other settings (NIC names, IPs, CPUs, payload sweeps, exchange tuning)
+live in ${CONFIG_FILE#$PROJECT_DIR/}.
+
+NIC-B state is managed automatically: first run sets up bench_ns or binds
+to vfio-pci as needed; subsequent runs in the same mode reuse it. Switching
+modes triggers an announced transition.
+EOF
+}
+
+# ── Parse args ───────────────────────────────────────────────────────
+SCENARIO=""
+DPDK=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --dpdk)    DPDK=true; shift ;;
+        -*)        die "unknown flag: $1" "Run $0 --help" ;;
+        *)         [[ -z "$SCENARIO" ]] || die "unexpected positional: $1"
+                   SCENARIO="$1"; shift ;;
+    esac
+done
+[[ -n "$SCENARIO" ]] || { usage; exit 1; }
+
+case "$SCENARIO" in
+    tcp|udp|ws|ex_market|ex_order|ex_md_udp) ;;
+    *) die "unknown scenario: $SCENARIO" "Run $0 --help" ;;
+esac
+
+[[ $EUID -eq 0 ]] || die "must run as root" "sudo $0 $SCENARIO $*"
+[[ -f "$CONFIG_FILE" ]] || die "config not found: $CONFIG_FILE"
+
+# ── Load config (just the network/NIC fields — payload tuning is read by
+#    the binary directly) ─────────────────────────────────────────────
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+[[ -n "${NIC_A:-}"      ]] || die "NIC_A is not set in $CONFIG_FILE"
+[[ -n "${NIC_B:-}"      ]] || die "NIC_B is not set in $CONFIG_FILE"
+[[ -n "${LOCAL_IP:-}"   ]] || die "LOCAL_IP is not set in $CONFIG_FILE"
+[[ -n "${GATEWAY_IP:-}" ]] || die "GATEWAY_IP is not set in $CONFIG_FILE"
+
+# ── Locate the binary ────────────────────────────────────────────────
+detect_build_dir() {
+    for d in \
+        "$PROJECT_DIR/build/linux/arm64/release" \
+        "$PROJECT_DIR/build/linux/aarch64/release" \
+        "$PROJECT_DIR/build/linux/x86_64/release"; do
+        if [[ -d "$d" ]]; then echo "$d"; return; fi
+    done
+    die "cannot find xmake build dir under $PROJECT_DIR/build/"
+}
+BUILD_DIR=$(detect_build_dir)
+
+BINARY_NAME="lat_${SCENARIO}"
+[[ "$DPDK" == true ]] && BINARY_NAME="${BINARY_NAME}_dpdk"
+BINARY="$BUILD_DIR/$BINARY_NAME"
+[[ -x "$BINARY" ]] || die "binary not found: $BINARY" \
+    "Build with: xmake build $BINARY_NAME"
+
+# ── Detect current NIC-B state ───────────────────────────────────────
+#
+#   host       — NIC_B exists in the host ns and is not in any netns
+#   bench_ns   — NIC_B exists inside bench_ns
+#   dpdk       — NIC_B is bound to vfio-pci (no longer a kernel iface)
+#
+# bench_ns existence + the link list inside it disambiguates kernel vs
+# host. The dpdk path is detected via .dpdk_state created by dpdk-setup.sh.
+detect_nic_b_state() {
+    if [[ -f "$PROJECT_DIR/.dpdk_state" ]] && \
+       grep -q "DPDK_IFACE=\"$NIC_B\"" "$PROJECT_DIR/.dpdk_state" 2>/dev/null; then
+        # NIC bound by us via dpdk-setup. Verify it's actually still bound.
+        # shellcheck source=/dev/null
+        local pci; pci=$(grep -oP 'DPDK_PCI="\K[^"]+' "$PROJECT_DIR/.dpdk_state")
+        local drv
+        drv=$(basename "$(readlink -f "/sys/bus/pci/devices/$pci/driver" 2>/dev/null)" 2>/dev/null || echo "")
+        if [[ "$drv" == "vfio-pci" ]]; then
+            echo "dpdk"; return
+        fi
+    fi
+    if ip netns list 2>/dev/null | grep -qw bench_ns && \
+       ip netns exec bench_ns ip link show "$NIC_B" &>/dev/null; then
+        echo "bench_ns"; return
+    fi
+    if ip link show "$NIC_B" &>/dev/null; then
+        echo "host"; return
+    fi
+    echo "unknown"
+}
+
+# ── State transitions (idempotent) ───────────────────────────────────
+host_to_bench_ns() {
+    log_step "NIC-B: host → bench_ns"
+    local prefix
+    prefix=$(ip -4 addr show "$NIC_B" 2>/dev/null \
+        | grep -oE 'inet [0-9./]+' | head -1 | awk '{print $2}' \
+        | grep -oE '/[0-9]+' || true)
+    local cidr="${LOCAL_IP}${prefix:-/20}"
+
+    ip netns add bench_ns 2>/dev/null || true
+    ip link set "$NIC_B" netns bench_ns
+    ip netns exec bench_ns ip addr add "$cidr" dev "$NIC_B"
+    ip netns exec bench_ns ip link set "$NIC_B" up
+    ip netns exec bench_ns ip link set lo up
+    # Default route via the configured gateway so the bench client can
+    # reach SERVER_IP (which lives on NIC-A in the host ns).
+    ip netns exec bench_ns ip route add default via "$GATEWAY_IP" dev "$NIC_B" \
+        2>/dev/null || true
+    log_info "bench_ns ready ($NIC_B = $cidr → $GATEWAY_IP)"
+}
+
+bench_ns_to_host() {
+    log_step "NIC-B: bench_ns → host"
+    ip netns exec bench_ns ip link set "$NIC_B" netns 1 2>/dev/null || true
+    ip netns del bench_ns 2>/dev/null || true
+    ip link set "$NIC_B" up 2>/dev/null || true
+}
+
+host_to_dpdk() {
+    log_step "NIC-B: host → vfio-pci"
+    [[ -x "$SCRIPT_DIR/dpdk-setup.sh" ]] || \
+        die "dpdk-setup.sh not found at $SCRIPT_DIR/dpdk-setup.sh"
+    local pci
+    pci=$(basename "$(readlink -f "/sys/class/net/${NIC_B}/device" 2>/dev/null)" 2>/dev/null || true)
+    [[ -n "$pci" && "$pci" != "device" ]] || \
+        die "cannot determine PCI for $NIC_B"
+    DPDK_PCI="$pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-setup.sh" -y
+    log_info "$NIC_B (PCI $pci) bound to vfio-pci"
+}
+
+dpdk_to_host() {
+    log_step "NIC-B: vfio-pci → host"
+    [[ -x "$SCRIPT_DIR/dpdk-teardown.sh" ]] || \
+        die "dpdk-teardown.sh not found at $SCRIPT_DIR/dpdk-teardown.sh"
+    "$SCRIPT_DIR/dpdk-teardown.sh" || true
+}
+
+# ── Drive transitions toward the desired state ──────────────────────
+DESIRED="bench_ns"
+[[ "$DPDK" == true ]] && DESIRED="dpdk"
+
+current=$(detect_nic_b_state)
+log_info "NIC-B current state: $current  →  desired: $DESIRED"
+
+case "$current,$DESIRED" in
+    bench_ns,bench_ns|dpdk,dpdk)
+        : # already in the right state
+        ;;
+    host,bench_ns)
+        host_to_bench_ns
+        ;;
+    host,dpdk)
+        host_to_dpdk
+        ;;
+    bench_ns,dpdk)
+        bench_ns_to_host
+        host_to_dpdk
+        ;;
+    dpdk,bench_ns)
+        dpdk_to_host
+        # dpdk-teardown.sh re-binds to the kernel driver and brings the
+        # link back up; from there we go host → bench_ns.
+        host_to_bench_ns
+        ;;
+    unknown,*)
+        die "$NIC_B not visible in host, bench_ns, or as a vfio device" \
+            "Did dpdk-setup or netns get partially torn down? Check 'ip link' and '.dpdk_state'."
+        ;;
+    *)
+        die "unhandled transition: $current → $DESIRED"
+        ;;
+esac
+
+# ── Exec the bench binary ────────────────────────────────────────────
+printf '\n%s%s── lat %s%s ──%s\n' "$BOLD" "$BLUE" "$SCENARIO" \
+    "$([ "$DPDK" == true ] && echo " --dpdk")" "$NC"
+printf '   binary : %s\n\n' "$BINARY"
+
+# Pass BENCH_CONFIG through so the binary loads the same file we just read.
+exec env BENCH_CONFIG="$CONFIG_FILE" "$BINARY"
