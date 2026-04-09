@@ -22,7 +22,7 @@
 #include "../core/dpdk_env.hpp"
 #include "dpdk_scenario.hpp"
 #else
-#include "../udp/client.hpp"
+#include "../core/udp_client.hpp"
 #include "scenario.hpp"
 #endif
 
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
         spdlog::error("pin: {}", p.error()); return 1;
     }
 
-    auto ep = udp::open_udp(cfg.server_ip, cfg.server_port);
+    auto ep = udp_client::open_udp(cfg.server_ip, cfg.server_port);
     if (!ep) { spdlog::error("open_udp: {}", ep.error()); return 1; }
     spdlog::info("bench_lat_exchange_md_udp: peer {}:{}", cfg.server_ip, cfg.server_port);
 
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     exchange::MdUdpScenario scenario{*ep};
     BenchRunner runner{cfg, "exchange/md_udp", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));
-    udp::close_endpoint(*ep);
+    udp_client::close_endpoint(*ep);
 #endif
     return 0;
 }

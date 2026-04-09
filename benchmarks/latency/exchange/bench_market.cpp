@@ -18,10 +18,10 @@
 
 #if defined(EPH_USE_DPDK)
 #include "../core/dpdk_env.hpp"
-#include "../ws/dpdk_scenario.hpp"
+#include "../core/ws_client.hpp"
 #include "dpdk_scenario.hpp"
 #else
-#include "../ws/client.hpp"
+#include "../core/ws_client.hpp"
 #include "scenario.hpp"
 #endif
 
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
         spdlog::error("TCP connect: {}", r.error()); return 1;
     }
     std::string host = cfg.server_ip + ":" + std::to_string(cfg.server_port);
-    if (auto h = ws::dpdk_ws_handshake(session, host); !h) {
+    if (auto h = ws_client::dpdk_ws_handshake(session, host); !h) {
         spdlog::error("WS handshake: {}", h.error()); return 1;
     }
     spdlog::info("bench_lat_exchange_market (dpdk): connected to {}:{}",
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
         spdlog::error("pin: {}", p.error()); return 1;
     }
 
-    auto fd = ws::connect_ws(cfg.server_ip, cfg.server_port);
+    auto fd = ws_client::connect_ws(cfg.server_ip, cfg.server_port);
     if (!fd) { spdlog::error("connect_ws: {}", fd.error()); return 1; }
     spdlog::info("bench_lat_exchange_market: connected to {}:{}",
                  cfg.server_ip, cfg.server_port);

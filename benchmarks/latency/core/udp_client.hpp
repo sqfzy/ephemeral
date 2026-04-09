@@ -1,6 +1,9 @@
-/// @file udp/client.hpp
-/// Tiny POSIX UDP client used by `bench.cpp`. See tcp/client.hpp for the
-/// rationale on why DPDK builds currently still use POSIX.
+/// @file core/udp_client.hpp
+/// Tiny POSIX UDP client used by the exchange/md_udp scenario.
+///
+/// `lat_udp.cpp` inlines its own UDP socket setup; this header exists so
+/// the exchange/md_udp scenario can share the same low-level helpers
+/// without depending on the lat_udp.cpp translation unit.
 #pragma once
 
 #include <cerrno>
@@ -16,7 +19,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-namespace bench::udp {
+namespace bench::udp_client {
 
 struct Endpoint {
     int fd = -1;
@@ -28,9 +31,8 @@ open_udp(std::string_view server_ip, uint16_t port) {
     int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return std::unexpected(std::string("socket: ") + std::strerror(errno));
 
-    // 100 ms recv timeout — a single dropped packet should not stall.
     timeval tv{};
-    tv.tv_usec = 100'000;
+    tv.tv_usec = 100'000;  // 100 ms recv timeout — single drops shouldn't stall
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     Endpoint ep{};
@@ -60,4 +62,4 @@ inline void close_endpoint(Endpoint& ep) noexcept {
     if (ep.fd >= 0) { ::close(ep.fd); ep.fd = -1; }
 }
 
-} // namespace bench::udp
+} // namespace bench::udp_client

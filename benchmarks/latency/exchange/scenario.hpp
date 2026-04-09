@@ -30,9 +30,9 @@
 
 #include "../core/sample.hpp"
 #include "../core/tsc_protocol.hpp"
+#include "../core/udp_client.hpp"
+#include "../core/ws_client.hpp"
 #include "../core/ws_framing.hpp"
-#include "../udp/client.hpp"
-#include "../ws/client.hpp"
 #include "eph/utils/time.hpp"
 
 namespace bench::exchange {
@@ -48,7 +48,7 @@ public:
     bool prepare() { return true; }
 
     bool do_one_recv(OneWaySample& out) {
-        size_t n = bench::ws::recv_one_frame(fd_, buf_.data(), buf_.size());
+        size_t n = bench::ws_client::recv_one_frame(fd_, buf_.data(), buf_.size());
         if (n == 0) return false;
         uint64_t t = bench::tsc::parse_T(buf_.data(), n);
         if (t == 0) return false;
@@ -122,7 +122,7 @@ private:
         std::vector<uint8_t> frame(static_cast<size_t>(n) + 16);
         size_t flen = bench::ws_framing::build_masked_text_frame(
             frame.data(), body, static_cast<size_t>(n), mask_seed_++);
-        if (!bench::ws::detail::send_all(fd_, frame.data(), flen)) return false;
+        if (!bench::ws_client::detail::send_all(fd_, frame.data(), flen)) return false;
         ++in_flight_;
         return true;
     }
@@ -130,7 +130,7 @@ private:
     bool wait_for_one(RttSample& out) {
         std::array<uint8_t, 2048> buf{};
         for (;;) {
-            size_t n = bench::ws::recv_one_frame(fd_, buf.data(), buf.size());
+            size_t n = bench::ws_client::recv_one_frame(fd_, buf.data(), buf.size());
             if (n == 0) return false;
 
             // Match by echoed id — bookTicker pushes on the same connection
@@ -171,7 +171,7 @@ private:
 /// reflects the quant business intent.
 class MdUdpScenario {
 public:
-    explicit MdUdpScenario(bench::udp::Endpoint& ep) : ep_(ep) {}
+    explicit MdUdpScenario(bench::udp_client::Endpoint& ep) : ep_(ep) {}
 
     bool prepare(size_t payload) {
         if (payload < bench::tsc::kBinaryHeaderSize) return false;
@@ -194,8 +194,8 @@ public:
         out.client_send_tsc = eph::utils::TSC::now();
         std::memcpy(send_buf_.data(), &out.client_send_tsc, 8);
 
-        if (!bench::udp::sendto_one(ep_, send_buf_.data(), send_buf_.size())) return false;
-        ssize_t n = bench::udp::recvfrom_one(ep_, recv_buf_.data(), recv_buf_.size());
+        if (!bench::udp_client::sendto_one(ep_, send_buf_.data(), send_buf_.size())) return false;
+        ssize_t n = bench::udp_client::recvfrom_one(ep_, recv_buf_.data(), recv_buf_.size());
         if (n < static_cast<ssize_t>(bench::tsc::kBinaryHeaderSize)) return false;
 
         out.client_recv_tsc = eph::utils::TSC::now();
@@ -207,7 +207,7 @@ public:
     void cleanup() {}
 
 private:
-    bench::udp::Endpoint& ep_;
+    bench::udp_client::Endpoint& ep_;
     std::vector<uint8_t> send_buf_;
     std::vector<uint8_t> recv_buf_;
 };

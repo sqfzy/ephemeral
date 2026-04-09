@@ -115,66 +115,35 @@ includes("tests/unit/bench/xmake.lua")
 -- ===========================================================================
 -- Latency benchmarks (cross-module, root-managed)
 -- ===========================================================================
--- Plan reference: .artifacts/plan-bench-latency-rewrite-20260409-023700.md
+-- Plan reference: .artifacts/plan-bench-latency-simplify-20260409-065640.md
 --
--- Stage 3 ships the 3 raw-protocol scenarios (tcp / udp / ws), each with
--- 4 binaries: mock_<proto>, mock_<proto>_dpdk, bench_<proto>, bench_<proto>_dpdk.
--- The DPDK variants currently compile the same source with EPH_USE_DPDK
--- defined; the source uses POSIX sockets but emits a startup warning so
--- it is obvious when a real DPDK transport is missing. A follow-up phase
--- will plumb eph-dpdk's UDP / TCP primitives into these binaries.
---
--- Stage 4 will add the exchange/* scenarios. The xmake table below grows
--- per stage; each entry is one scenario directory.
+-- Stage 4: each tcp/udp/ws scenario is a single `lat_<scenario>.cpp` that
+-- forks the mock + runs the client in one binary, reading all configuration
+-- from `bench.conf` via `bench::load_bench_conf()`. Two targets per scenario:
+-- the kernel build and the DPDK build (EPH_USE_DPDK selects the transport).
 
 local bench_latency_scenarios = {"tcp", "udp", "ws"}
 local bench_latency_flags = {"-fno-omit-frame-pointer", "-march=native"}
 
 for _, s in ipairs(bench_latency_scenarios) do
-    -- Mock server (kernel)
-    target("mock_lat_" .. s)
+    -- Kernel build: fork the mock + run kernel client.
+    target("lat_" .. s)
         set_kind("binary")
         set_group("benchmarks")
         set_default(false)
-        add_files("benchmarks/latency/" .. s .. "/mock.cpp")
+        add_files("benchmarks/latency/" .. s .. "/lat_" .. s .. ".cpp")
         add_includedirs("benchmarks/latency")
         add_deps("eph-utils")
         add_packages("spdlog")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
 
-    -- Mock server (DPDK build — currently POSIX stub)
-    target("mock_lat_" .. s .. "_dpdk")
+    -- DPDK build: fork the kernel mock + run DPDK client (NIC-B in vfio-pci).
+    target("lat_" .. s .. "_dpdk")
         set_kind("binary")
         set_group("benchmarks")
         set_default(false)
-        add_files("benchmarks/latency/" .. s .. "/mock.cpp")
-        add_includedirs("benchmarks/latency")
-        add_deps("eph-utils", "eph-dpdk")
-        add_packages("spdlog")
-        add_defines("EPH_USE_DPDK=1")
-        add_cxflags(table.unpack(bench_latency_flags))
-        set_symbols("debug")
-        apply_dpdk_pmd_linkgroups()
-
-    -- Bench client (kernel)
-    target("bench_lat_" .. s)
-        set_kind("binary")
-        set_group("benchmarks")
-        set_default(false)
-        add_files("benchmarks/latency/" .. s .. "/bench.cpp")
-        add_includedirs("benchmarks/latency")
-        add_deps("eph-utils")
-        add_packages("spdlog")
-        add_cxflags(table.unpack(bench_latency_flags))
-        set_symbols("debug")
-
-    -- Bench client (DPDK build — currently POSIX stub)
-    target("bench_lat_" .. s .. "_dpdk")
-        set_kind("binary")
-        set_group("benchmarks")
-        set_default(false)
-        add_files("benchmarks/latency/" .. s .. "/bench.cpp")
+        add_files("benchmarks/latency/" .. s .. "/lat_" .. s .. ".cpp")
         add_includedirs("benchmarks/latency")
         add_deps("eph-utils", "eph-dpdk")
         add_packages("spdlog")

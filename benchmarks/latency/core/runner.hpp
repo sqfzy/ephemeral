@@ -36,7 +36,23 @@ public:
     BenchRunner(CommonConfig cfg,
                 std::string_view scenario_name,
                 std::string_view transport_name)
-        : cfg_(std::move(cfg))
+        : warmup_(cfg.warmup)
+        , duration_(cfg.duration)
+        , label_(std::string(scenario_name) + " (" + std::string(transport_name) + ")")
+        , rtt_(std::string(scenario_name) + "/rtt")
+        , tx_ (std::string(scenario_name) + "/tx")
+        , rx_ (std::string(scenario_name) + "/rx")
+        , srv_(std::string(scenario_name) + "/srv")
+        , oneway_(std::string(scenario_name) + "/rx")
+    {}
+
+    /// BenchConfig overload — used by stage-4+ lat_*.cpp scenarios that
+    /// load all configuration from bench.conf instead of CLI flags.
+    BenchRunner(const BenchConfig& cfg,
+                std::string_view scenario_name,
+                std::string_view transport_name)
+        : warmup_(cfg.warmup)
+        , duration_(cfg.duration)
         , label_(std::string(scenario_name) + " (" + std::string(transport_name) + ")")
         , rtt_(std::string(scenario_name) + "/rtt")
         , tx_ (std::string(scenario_name) + "/tx")
@@ -72,7 +88,7 @@ public:
         }
         spdlog::info("{}: pre_warmup={} warmup={}s duration={}s (oneway)",
                      label_, kPreWarmupRounds,
-                     cfg_.warmup.count(), cfg_.duration.count());
+                     warmup_.count(), duration_.count());
 
         OneWaySample sample{};
         for (size_t i = 0; i < kPreWarmupRounds; ++i) {
@@ -84,7 +100,7 @@ public:
         }
 
         eph::utils::PhasedTimer timer;
-        timer.start(cfg_.warmup, cfg_.duration);
+        timer.start(warmup_, duration_);
         while (timer.is_running() && g_running.load(std::memory_order_relaxed)) {
             if (!scenario.do_one_recv(sample)) continue;
             if (timer.is_warmup()) continue;
@@ -109,11 +125,11 @@ private:
         if (inflight_marker >= 0) {
             spdlog::info("{}: inflight={} pre_warmup={} warmup={}s duration={}s",
                          label_, inflight_marker, kPreWarmupRounds,
-                         cfg_.warmup.count(), cfg_.duration.count());
+                         warmup_.count(), duration_.count());
         } else {
             spdlog::info("{}: payload={}B pre_warmup={} warmup={}s duration={}s",
                          label_, sweep_value, kPreWarmupRounds,
-                         cfg_.warmup.count(), cfg_.duration.count());
+                         warmup_.count(), duration_.count());
         }
 
         // Pre-warmup absorbs route cache / ARP / scheduler cold start.
@@ -127,7 +143,7 @@ private:
         }
 
         eph::utils::PhasedTimer timer;
-        timer.start(cfg_.warmup, cfg_.duration);
+        timer.start(warmup_, duration_);
         while (timer.is_running() && g_running.load(std::memory_order_relaxed)) {
             if (!scenario.do_one_rtt(s)) continue;
             if (timer.is_warmup()) continue;
@@ -181,7 +197,8 @@ private:
 
     static constexpr size_t kPreWarmupRounds = 2000;
 
-    CommonConfig cfg_;
+    std::chrono::seconds warmup_;
+    std::chrono::seconds duration_;
     std::string  label_;
     eph::utils::Recorder rtt_;
     eph::utils::Recorder tx_;

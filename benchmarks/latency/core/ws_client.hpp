@@ -1,17 +1,19 @@
-/// @file ws/client.hpp
-/// Client-side WebSocket helper: TCP connect + HTTP Upgrade + masked
-/// frame send + unmasked frame parse.
+/// @file core/ws_client.hpp
+/// Client-side WebSocket helpers shared by `lat_ws.cpp` and the exchange
+/// market/order scenarios.
 ///
-/// Plain WS (no TLS). The mock server speaks the same protocol via
-/// `core/ws_handshake.hpp` + `core/ws_framing.hpp`.
+/// Two transport variants:
+///   * POSIX (`connect_ws`, `recv_one_frame`)
+///   * DPDK   (`dpdk_ws_handshake`, plus `WsRxAccumulator` helper for the
+///             receive side which uses `eph::dpdk::TcpSession::poll_rx`)
 ///
-/// We do NOT use eph-net::Transport here because that wraps WSS-over-TLS
-/// with worker threads, which doesn't fit a controlled bench loop. The
-/// plan explicitly allows raw client implementations when eph-net does
-/// not fit cleanly.
+/// Shared low-level send/recv helpers live in `bench::ws_client::detail`.
+/// They mirror the inlined `send_all_fd` / `recv_exact_fd` helpers used in
+/// the lat_*.cpp scenario files but are kept in this header so the
+/// exchange WS scenarios can include them without an unrelated dependency
+/// on `lat_ws.cpp`.
 #pragma once
 
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -29,7 +31,15 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-namespace bench::ws {
+#include "tsc_protocol.hpp"
+#include "ws_framing.hpp"
+
+#ifdef EPH_USE_DPDK
+#include "eph/dpdk/tcp.hpp"
+#include "eph/utils/time.hpp"
+#endif
+
+namespace bench::ws_client {
 
 namespace detail {
 
@@ -44,16 +54,6 @@ inline bool send_all(int fd, const void* data, size_t len) noexcept {
         }
         sent += static_cast<size_t>(n);
     }
-    return true;
-}
-
-inline bool recv_some(int fd, void* buf, size_t want, size_t* got_out) noexcept {
-    ssize_t n = ::recv(fd, buf, want, 0);
-    if (n <= 0) {
-        if (n < 0 && errno == EINTR) { *got_out = 0; return true; }
-        return false;
-    }
-    *got_out = static_cast<size_t>(n);
     return true;
 }
 
@@ -73,8 +73,8 @@ inline bool recv_exact(int fd, void* buf, size_t len) noexcept {
 
 } // namespace detail
 
-/// Connect a plain TCP socket and perform the client-side WebSocket
-/// upgrade handshake. Returns the connected fd on success.
+/// Open a TCP connection to (ip, port) and perform the client-side
+/// WebSocket Upgrade handshake. Returns the connected fd on success.
 [[nodiscard]] inline std::expected<int, std::string>
 connect_ws(std::string_view ip, uint16_t port) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -97,10 +97,6 @@ connect_ws(std::string_view ip, uint16_t port) {
         return std::unexpected(std::move(e));
     }
 
-    // Send a minimal WS upgrade request. The mock validates the
-    // Sec-WebSocket-Key field exists and computes the accept digest.
-    // This key is fixed because the bench is single-shot — TLS / random
-    // key generation are not required for a localhost mock.
     char host[64];
     std::snprintf(host, sizeof(host), "%s:%u", ip_str.c_str(), port);
     std::string req =
@@ -113,7 +109,6 @@ connect_ws(std::string_view ip, uint16_t port) {
         return std::unexpected("ws upgrade send failed");
     }
 
-    // Read response until we see "\r\n\r\n".
     char resp[4096];
     size_t got = 0;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -141,10 +136,9 @@ connect_ws(std::string_view ip, uint16_t port) {
     return fd;
 }
 
-/// Read one server→client (unmasked) frame's payload into `out` (capacity `cap`).
-/// Returns the payload length on success or 0 on failure / non-data frame.
-/// Uses 2-3 recv() syscalls per frame; amortization across multiple frames
-/// is not needed at the current default push rates (~1 kHz per symbol).
+/// Read one server→client (unmasked) frame's payload into `out` (capacity
+/// `cap`). Returns the payload length on success or 0 on failure / control
+/// frame. Uses 2–3 recv() syscalls per frame.
 inline size_t recv_one_frame(int fd, uint8_t* out, size_t cap) noexcept {
     uint8_t hdr[2];
     if (!detail::recv_exact(fd, hdr, 2)) return 0;
@@ -163,8 +157,48 @@ inline size_t recv_one_frame(int fd, uint8_t* out, size_t cap) noexcept {
     }
     if (plen > cap) return 0;
     if (plen > 0 && !detail::recv_exact(fd, out, plen)) return 0;
-    if (opcode != 0x01 && opcode != 0x02) return 0; // ignore control frames
+    if (opcode != ws_framing::kOpText && opcode != ws_framing::kOpBinary) return 0;
     return static_cast<size_t>(plen);
 }
 
-} // namespace bench::ws
+#ifdef EPH_USE_DPDK
+/// Send the WS Upgrade request through a connected DPDK TcpSession and
+/// drain the 101 response. The fixed Sec-WebSocket-Key is fine because the
+/// mock just verifies presence and computes the accept digest.
+[[nodiscard]] inline std::expected<void, std::string>
+dpdk_ws_handshake(eph::dpdk::TcpSession<>& session, std::string_view host) {
+    std::string req =
+        std::string("GET / HTTP/1.1\r\nHost: ") + std::string(host) +
+        "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n";
+
+    size_t sent = 0;
+    while (sent < req.size()) {
+        size_t chunk = std::min(req.size() - sent, size_t{1460});
+        auto r = session.send(
+            reinterpret_cast<const uint8_t*>(req.data()) + sent,
+            static_cast<uint16_t>(chunk));
+        if (!r) return std::unexpected("ws handshake send: " + r.error());
+        sent += *r;
+    }
+
+    std::string resp;
+    resp.reserve(512);
+    uint64_t deadline = eph::utils::TSC::now() + tsc::ns_to_cycles(2'000'000'000ULL);
+    while (eph::utils::TSC::now() < deadline) {
+        auto r = session.poll_rx(
+            [&](const uint8_t* data, uint16_t len) {
+                resp.append(reinterpret_cast<const char*>(data), len);
+            });
+        if (!r) return std::unexpected("ws handshake recv: " + r.error());
+        if (resp.find("\r\n\r\n") != std::string::npos) break;
+    }
+    if (resp.find("101") == std::string::npos) {
+        return std::unexpected("ws handshake rejected (no 101)");
+    }
+    return {};
+}
+#endif // EPH_USE_DPDK
+
+} // namespace bench::ws_client
