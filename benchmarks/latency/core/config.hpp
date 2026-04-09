@@ -13,14 +13,21 @@
 /// silently.
 #pragma once
 
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <unistd.h>
 
 namespace bench {
 
@@ -159,6 +166,211 @@ effective_inflights(const CommonConfig& cfg,
     return cfg.inflights.empty()
         ? fallback
         : std::span<const int>{cfg.inflights};
+}
+
+// ─── BenchConfig (single-source config from bench.conf) ─────────────────
+//
+// Stage 3 of the simplify plan. The legacy `parse_common` API stays for
+// the still-CLI-driven stage-2 binaries; new binaries (stage 4-5) read
+// `BenchConfig` directly via `load_bench_conf()`.
+
+/// Single struct holding every field a latency benchmark binary may need.
+/// Each binary reads only the fields it cares about; unused fields are
+/// silently kept at their defaults.
+struct BenchConfig {
+    // --- Networking ---
+    std::string nic_a;            ///< NIC_A (informational, for log)
+    std::string nic_b;            ///< NIC_B (informational, for log)
+    std::string server_ip;        ///< mock bind address
+    std::string local_ip;         ///< client local IP (DPDK needs it)
+    std::string gateway_ip;       ///< NIC-B default gateway
+
+    // --- CPU pinning ---
+    // Defaults are -1 (sentinel) so `load_bench_conf` can detect that
+    // CLIENT_CPU / MOCK_CPU were not set in bench.conf and raise an
+    // error. The plan calls them required fields.
+    int  client_cpu = -1;
+    int  mock_cpu   = -1;
+    std::string eal_cores = "0,1";
+    bool allow_non_isolated = false;
+
+    // --- Measurement window ---
+    std::chrono::seconds warmup{2};
+    std::chrono::seconds duration{10};
+    long server_work_ns = 200;
+
+    // --- Payload sweeps ---
+    std::vector<size_t> tcp_payloads;
+    std::vector<size_t> udp_payloads;
+    std::vector<size_t> ws_payloads;
+    std::vector<size_t> md_udp_payloads;
+    std::vector<int>    inflights;
+
+    // --- Exchange mock tuning ---
+    std::vector<std::string> symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
+    long   bookticker_us = 1000;
+    long   depth_ms      = 10;
+    long   trade_mean_ms = 5;
+    long   kline_s       = 1;
+    size_t depth_bytes   = 1024;
+
+    // --- Server TCP listen port (used by stage-4+ scenarios) ---
+    uint16_t server_port = 9000;
+};
+
+namespace config_detail {
+
+inline std::string strip(std::string_view s) {
+    size_t b = 0;
+    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+    size_t e = s.size();
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    return std::string{s.substr(b, e - b)};
+}
+
+/// Strip surrounding single or double quotes (bash-style).
+inline std::string unquote(std::string s) {
+    if (s.size() >= 2 &&
+        ((s.front() == '"' && s.back() == '"') ||
+         (s.front() == '\'' && s.back() == '\''))) {
+        return s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+/// Parse a single bash-style KEY=VALUE line. Trailing `# comment` is
+/// stripped (only when `#` is preceded by whitespace, to allow `#` inside
+/// quoted values). Returns false on syntactic error.
+inline bool parse_kv_line(std::string_view line,
+                          std::string* key, std::string* val) {
+    auto l = strip(line);
+    if (l.empty() || l[0] == '#') return false;
+    auto eq = l.find('=');
+    if (eq == std::string::npos) return false;
+    *key = strip(std::string_view{l}.substr(0, eq));
+    auto rest = std::string_view{l}.substr(eq + 1);
+    // Strip trailing inline comment ` #...` (but keep `#` inside quotes).
+    bool in_squote = false, in_dquote = false;
+    for (size_t i = 0; i < rest.size(); ++i) {
+        char c = rest[i];
+        if (c == '\'' && !in_dquote) in_squote = !in_squote;
+        else if (c == '"' && !in_squote) in_dquote = !in_dquote;
+        else if (c == '#' && !in_squote && !in_dquote &&
+                 i > 0 && std::isspace(static_cast<unsigned char>(rest[i - 1]))) {
+            rest = rest.substr(0, i);
+            break;
+        }
+    }
+    *val = unquote(strip(rest));
+    return true;
+}
+
+/// Locate `bench.conf`. Order:
+///   1. $BENCH_CONFIG (absolute path)
+///   2. ./bench.conf in cwd
+///   3. walk up from /proc/self/exe to find benchmarks/latency/bench.conf
+inline std::optional<std::filesystem::path> find_bench_conf() {
+    namespace fs = std::filesystem;
+    if (auto v = env("BENCH_CONFIG")) {
+        fs::path p{*v};
+        if (fs::exists(p)) return p;
+        return std::nullopt;
+    }
+    if (fs::path cwd = "bench.conf"; fs::exists(cwd)) return cwd;
+
+    // Walk up from /proc/self/exe.
+    char buf[4096];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        fs::path exe{buf};
+        for (fs::path d = exe.parent_path(); !d.empty() && d != d.root_path();
+             d = d.parent_path()) {
+            fs::path candidate = d / "benchmarks" / "latency" / "bench.conf";
+            if (fs::exists(candidate)) return candidate;
+        }
+    }
+    return std::nullopt;
+}
+
+inline void apply_kv(BenchConfig& cfg, const std::string& k,
+                     const std::string& v) {
+    if      (k == "NIC_A")           cfg.nic_a = v;
+    else if (k == "NIC_B")           cfg.nic_b = v;
+    else if (k == "SERVER_IP")       cfg.server_ip = v;
+    else if (k == "LOCAL_IP")        cfg.local_ip = v;
+    else if (k == "GATEWAY_IP")      cfg.gateway_ip = v;
+    else if (k == "CLIENT_CPU")      cfg.client_cpu = parse_int(v, -1);
+    else if (k == "MOCK_CPU")        cfg.mock_cpu = parse_int(v, -1);
+    else if (k == "EAL_CORES")       cfg.eal_cores = v;
+    else if (k == "ALLOW_NON_ISOLATED") {
+        cfg.allow_non_isolated = (v == "true" || v == "1" || v == "yes");
+    }
+    else if (k == "WARMUP")          cfg.warmup = std::chrono::seconds{parse_int(v, 2)};
+    else if (k == "DURATION")        cfg.duration = std::chrono::seconds{parse_int(v, 10)};
+    else if (k == "SERVER_WORK_NS")  cfg.server_work_ns = parse_int(v, 200);
+    else if (k == "SERVER_PORT")     cfg.server_port = static_cast<uint16_t>(parse_int(v, 9000));
+    else if (k == "TCP_PAYLOADS")    cfg.tcp_payloads = parse_size_list(v);
+    else if (k == "UDP_PAYLOADS")    cfg.udp_payloads = parse_size_list(v);
+    else if (k == "WS_PAYLOADS")     cfg.ws_payloads = parse_size_list(v);
+    else if (k == "MD_UDP_PAYLOADS") cfg.md_udp_payloads = parse_size_list(v);
+    else if (k == "INFLIGHTS")       cfg.inflights = parse_int_list(v);
+    else if (k == "SYMBOLS") {
+        cfg.symbols.clear();
+        for (auto& s : split(v, ',')) cfg.symbols.push_back(s);
+    }
+    else if (k == "BOOKTICKER_US")   cfg.bookticker_us = parse_int(v, 1000);
+    else if (k == "DEPTH_MS")        cfg.depth_ms = parse_int(v, 10);
+    else if (k == "TRADE_MEAN_MS")   cfg.trade_mean_ms = parse_int(v, 5);
+    else if (k == "KLINE_S")         cfg.kline_s = parse_int(v, 1);
+    else if (k == "DEPTH_BYTES")     cfg.depth_bytes = static_cast<size_t>(parse_int(v, 1024));
+    // Unknown keys are silently ignored — bench.conf may grow new keys
+    // that older binaries don't understand.
+}
+
+} // namespace config_detail
+
+/// Read `bench.conf` (bash-style KEY=VALUE) and return a populated
+/// BenchConfig. Lookup order: $BENCH_CONFIG → ./bench.conf → walk up from
+/// /proc/self/exe to <project>/benchmarks/latency/bench.conf.
+///
+/// Returns an error if no config file is found or any required field is
+/// missing. Required: NIC_B, SERVER_IP, LOCAL_IP, GATEWAY_IP, CLIENT_CPU,
+/// MOCK_CPU.
+[[nodiscard]] inline std::expected<BenchConfig, std::string>
+load_bench_conf() {
+    using namespace config_detail;
+    auto path = find_bench_conf();
+    if (!path) {
+        return std::unexpected(
+            "bench.conf not found (checked $BENCH_CONFIG, ./bench.conf, "
+            "and walking up from /proc/self/exe)");
+    }
+
+    std::ifstream in{*path};
+    if (!in) {
+        return std::unexpected("failed to open bench.conf at " + path->string());
+    }
+
+    BenchConfig cfg;
+    std::string line, key, val;
+    size_t lineno = 0;
+    while (std::getline(in, line)) {
+        ++lineno;
+        if (parse_kv_line(line, &key, &val)) {
+            apply_kv(cfg, key, val);
+        }
+    }
+
+    // Required fields.
+    if (cfg.nic_b.empty())      return std::unexpected("bench.conf: NIC_B is required");
+    if (cfg.server_ip.empty())  return std::unexpected("bench.conf: SERVER_IP is required");
+    if (cfg.local_ip.empty())   return std::unexpected("bench.conf: LOCAL_IP is required");
+    if (cfg.gateway_ip.empty()) return std::unexpected("bench.conf: GATEWAY_IP is required");
+    if (cfg.client_cpu < 0)     return std::unexpected("bench.conf: CLIENT_CPU is required");
+    if (cfg.mock_cpu < 0)       return std::unexpected("bench.conf: MOCK_CPU is required");
+
+    return cfg;
 }
 
 #ifdef EPH_USE_DPDK
