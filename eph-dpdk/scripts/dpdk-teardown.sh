@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dpdk-teardown.sh — 恢复 DPDK 网卡到内核驱动
 # 生成时间：2026-03-23
-# 用法：sudo ./scripts/dpdk-teardown.sh [选项]
+# 用法：sudo ./eph-dpdk/scripts/dpdk-teardown.sh [选项]
 
 set -euo pipefail
 
@@ -33,7 +33,17 @@ separator() { echo -e "\n${BOLD}────────────────
 # 默认配置
 # ──────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Repo root, regardless of where this script lives. .dpdk_state lives at
+# the top level of the checkout (so scripts/lat can read it).
+if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
+    :
+else
+    PROJECT_DIR="$SCRIPT_DIR"
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+        PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+    done
+    [[ "$PROJECT_DIR" == "/" ]] && { echo "cannot locate project root from $SCRIPT_DIR" >&2; exit 1; }
+fi
 STATE_FILE="$PROJECT_DIR/.dpdk_state"
 
 # 默认值（可被 .dpdk_state 或环境变量覆盖）
@@ -52,7 +62,7 @@ FORCE=false
 
 usage() {
     cat <<EOF
-${BOLD}用法${RESET}：sudo ./scripts/dpdk-teardown.sh [选项]
+${BOLD}用法${RESET}：sudo ./eph-dpdk/scripts/dpdk-teardown.sh [选项]
 
 ${BOLD}恢复 DPDK 网卡到内核驱动，可选释放 hugepages。${RESET}
 自动读取 .dpdk_state 获取 setup 时的配置。
@@ -70,9 +80,9 @@ ${BOLD}环境变量${RESET}（覆盖 .dpdk_state 中的值）：
   KERNEL_DRIVER     恢复到的内核驱动
 
 ${BOLD}示例${RESET}：
-  sudo ./scripts/dpdk-teardown.sh                       # 恢复网卡
-  sudo ./scripts/dpdk-teardown.sh --release-hugepages   # 恢复 + 释放 hugepages
-  sudo ./scripts/dpdk-teardown.sh -f                    # 强制恢复（即使有进程在用）
+  sudo ./eph-dpdk/scripts/dpdk-teardown.sh                       # 恢复网卡
+  sudo ./eph-dpdk/scripts/dpdk-teardown.sh --release-hugepages   # 恢复 + 释放 hugepages
+  sudo ./eph-dpdk/scripts/dpdk-teardown.sh -f                    # 强制恢复（即使有进程在用）
 EOF
 }
 
@@ -83,7 +93,7 @@ while [[ $# -gt 0 ]]; do
         --release-hugepages)    RELEASE_HUGEPAGES=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
         -h|--help)              usage; exit 0 ;;
-        *)                      die "未知选项：$1" "  查看帮助：sudo ./scripts/dpdk-teardown.sh --help" ;;
+        *)                      die "未知选项：$1" "  查看帮助：sudo ./eph-dpdk/scripts/dpdk-teardown.sh --help" ;;
     esac
 done
 
@@ -157,7 +167,7 @@ pre_check() {
 
     if [[ $EUID -ne 0 ]]; then
         die "需要 root 权限" \
-            "  运行方式：sudo ./scripts/dpdk-teardown.sh"
+            "  运行方式：sudo ./eph-dpdk/scripts/dpdk-teardown.sh"
     fi
     ok "root 权限"
 
@@ -224,7 +234,7 @@ check_running_processes() {
             warn "使用 --force，继续恢复（进程可能崩溃）"
         else
             die "有 DPDK 进程正在运行，解绑网卡可能导致崩溃" \
-                "  先停止进程：kill ${dpdk_pids[*]}\n  或强制恢复：sudo ./scripts/dpdk-teardown.sh --force"
+                "  先停止进程：kill ${dpdk_pids[*]}\n  或强制恢复：sudo ./eph-dpdk/scripts/dpdk-teardown.sh --force"
         fi
     else
         ok "没有 DPDK 进程在运行"
@@ -393,7 +403,7 @@ report_results() {
     if [[ "$hp_total" -gt 0 && "$RELEASE_HUGEPAGES" != true ]]; then
         echo ""
         suggest "Hugepages 仍保留（下次 DPDK 启动更快）"
-        info "  释放方式：sudo ./scripts/dpdk-teardown.sh --release-hugepages"
+        info "  释放方式：sudo ./eph-dpdk/scripts/dpdk-teardown.sh --release-hugepages"
     fi
 }
 

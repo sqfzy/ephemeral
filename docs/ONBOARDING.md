@@ -323,7 +323,7 @@ xmake run bench_fix_parse
 #
 # Each binary forks its own kernel mock, so there is no separate orchestrator.
 # Edit benchmarks/latency/bench.conf once with your NIC/IP/CPU layout, then:
-#   sudo ./scripts/lat <scenario> [--dpdk]
+#   sudo ./benchmarks/latency/lat <scenario> [--dpdk]
 ```
 
 **Important**: Before modifying performance-critical code, run the relevant benchmarks to establish a baseline. After your change, re-run and compare.

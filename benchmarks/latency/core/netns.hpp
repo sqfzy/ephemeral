@@ -4,8 +4,8 @@
 /// Used by the bench client parent process to move into `bench_ns` AFTER
 /// forking off the mock child (the child inherits the original host
 /// namespace — that's where NIC-A lives). The wrapper script
-/// (`scripts/lat`) has already created `bench_ns` and moved NIC-B into
-/// it; we just need to join.
+/// (`benchmarks/latency/lat`) has already created `bench_ns` and moved
+/// NIC-B into it; we just need to join.
 ///
 /// Requires CAP_SYS_ADMIN (run as root).
 #pragma once

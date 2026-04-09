@@ -566,6 +566,6 @@ Key test scenarios:
 | Tool | Location | Purpose |
 |------|----------|--------|
 | `mock_binance_server.py` | `tools/` | Mock Binance WebSocket server with configurable batch-size/rate/jitter |
-| `lat` | `scripts/` | Single-command latency benchmark runner (manages NIC-B state transitions, exec's lat_<scenario>[_dpdk]) |
-| `dpdk-setup.sh` | `scripts/` | DPDK environment setup (hugepages, device binding) |
-| `dpdk-teardown.sh` | `scripts/` | DPDK environment teardown |
+| `lat`            | `benchmarks/latency/` | Single-command latency benchmark runner (manages NIC-B state transitions, exec's lat_<scenario>[_dpdk]) |
+| `dpdk-setup.sh`    | `eph-dpdk/scripts/` | DPDK environment setup (hugepages, vfio-pci binding) |
+| `dpdk-teardown.sh` | `eph-dpdk/scripts/` | DPDK environment teardown (rebind to kernel, optionally release hugepages) |

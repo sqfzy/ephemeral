@@ -16,8 +16,20 @@ set -euo pipefail
 
 # ── Paths ────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Resolve repo root so build/ + bench.conf + .dpdk_state stay correct no
+# matter where this script lives.
+if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
+    :
+else
+    PROJECT_DIR="$SCRIPT_DIR"
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+        PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+    done
+    [[ "$PROJECT_DIR" == "/" ]] && { echo "cannot locate project root from $SCRIPT_DIR" >&2; exit 1; }
+fi
 CONFIG_FILE="${BENCH_CONFIG:-$PROJECT_DIR/benchmarks/latency/bench.conf}"
+DPDK_SETUP="$PROJECT_DIR/eph-dpdk/scripts/dpdk-setup.sh"
+DPDK_TEARDOWN="$PROJECT_DIR/eph-dpdk/scripts/dpdk-teardown.sh"
 
 # ── Color & logging ──────────────────────────────────────────────────
 if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
@@ -36,7 +48,7 @@ usage() {
     cat <<EOF
 ${BOLD}lat${NC} — single-command latency benchmark runner
 
-  ${BOLD}sudo ./scripts/lat <scenario> [--dpdk]${NC}
+  ${BOLD}sudo ./benchmarks/latency/lat <scenario> [--dpdk]${NC}
 
 Scenarios:
   tcp           raw TCP RTT
@@ -168,15 +180,15 @@ bench_ns_to_host() {
 
 host_to_dpdk() {
     log_step "NIC-B: host → vfio-pci"
-    [[ -x "$SCRIPT_DIR/dpdk-setup.sh" ]] || \
-        die "dpdk-setup.sh not found at $SCRIPT_DIR/dpdk-setup.sh"
+    [[ -x "$DPDK_SETUP" ]] || \
+        die "dpdk-setup.sh not found at $DPDK_SETUP"
     local pci
     pci=$(basename "$(readlink -f "/sys/class/net/${NIC_B}/device" 2>/dev/null)" 2>/dev/null || true)
     [[ -n "$pci" && "$pci" != "device" ]] || \
         die "cannot determine PCI for $NIC_B"
-    if ! DPDK_PCI="$pci" DPDK_IFACE="$NIC_B" "$SCRIPT_DIR/dpdk-setup.sh" -y; then
+    if ! DPDK_PCI="$pci" DPDK_IFACE="$NIC_B" "$DPDK_SETUP" -y; then
         die "dpdk-setup.sh failed" \
-            "Check the output above. Run 'sudo ./scripts/dpdk-setup.sh --check-only' to diagnose."
+            "Check the output above. Run 'sudo $DPDK_SETUP --check-only' to diagnose."
     fi
     # Post-condition: NIC_B must NOT be visible as a kernel interface.
     if ip link show "$NIC_B" &>/dev/null; then
@@ -188,17 +200,17 @@ host_to_dpdk() {
 
 dpdk_to_host() {
     log_step "NIC-B: vfio-pci → host"
-    [[ -x "$SCRIPT_DIR/dpdk-teardown.sh" ]] || \
-        die "dpdk-teardown.sh not found at $SCRIPT_DIR/dpdk-teardown.sh"
+    [[ -x "$DPDK_TEARDOWN" ]] || \
+        die "dpdk-teardown.sh not found at $DPDK_TEARDOWN"
     # Do NOT swallow failures: dpdk-teardown.sh refuses to unbind when a
     # live DPDK process (possibly a third-party one) is holding the PCI
     # device. Silently ignoring that turns the next transition into a
     # confusing "Cannot find device <NIC_B>" from `ip link set netns`.
-    if ! "$SCRIPT_DIR/dpdk-teardown.sh"; then
+    if ! "$DPDK_TEARDOWN"; then
         die "dpdk-teardown.sh failed — NIC-B still bound to vfio-pci" \
             "A DPDK process may be holding the device. Check with:
    ps -ef | grep -i dpdk
-   sudo ./scripts/dpdk-teardown.sh           # re-run to see which process
+   sudo $DPDK_TEARDOWN           # re-run to see which process
 After killing the blocker (or using --force at your own risk), retry this command."
     fi
     # Post-condition: NIC_B must now be a kernel interface again.

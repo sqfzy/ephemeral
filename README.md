@@ -86,9 +86,9 @@ xmake build lat_tcp_dpdk lat_udp_dpdk lat_ws_dpdk \
             lat_ex_market_dpdk lat_ex_order_dpdk lat_ex_md_udp_dpdk
 
 # Edit benchmarks/latency/bench.conf once with your NIC/IP/CPU layout, then:
-sudo ./scripts/lat tcp                # raw TCP RTT (kernel client)
-sudo ./scripts/lat udp --dpdk         # raw UDP RTT (DPDK client)
-sudo ./scripts/lat ex_market          # exchange bookTicker push
+sudo ./benchmarks/latency/lat tcp                # raw TCP RTT (kernel client)
+sudo ./benchmarks/latency/lat udp --dpdk         # raw UDP RTT (DPDK client)
+sudo ./benchmarks/latency/lat ex_market          # exchange bookTicker push
 ```
 
 ## Modules
@@ -267,7 +267,7 @@ Latency benchmarks (one binary per scenario, kernel + DPDK client variants):
 - `lat_ex_market` -- exchange bookTicker push (1-leg)
 - `lat_ex_order` -- exchange order RTT (N-inflight pipeline)
 - `lat_ex_md_udp` -- exchange UDP market data RTT
-- `scripts/lat <scenario> [--dpdk]` -- single-command runner that owns NIC-B state transitions (host kernel ↔ bench_ns ↔ vfio-pci) and execs the binary; the binary itself forks the kernel mock and runs the bench client
+- `benchmarks/latency/lat <scenario> [--dpdk]` -- single-command runner that owns NIC-B state transitions (host kernel ↔ bench_ns ↔ vfio-pci) and execs the binary; the binary itself forks the kernel mock and runs the bench client
 
 Each `lat_*` binary reports a 4-leg breakdown (RTT / TX / RX / SRV) in TSC nanoseconds, computed from four timestamps stamped into the payload: `client_send`, `server_recv`, `server_send`, `client_recv`. See `benchmarks/latency/core/tsc_protocol.hpp` and `core/runner.hpp` for the exact measurement points.
 
