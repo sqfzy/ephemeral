@@ -206,6 +206,16 @@ public:
             }
         }
 
+        // Phase 3: arm hot-path AEAD crypto AFTER all handshake-phase
+        // SSL_write/SSL_read are complete (do_ws_upgrade above uses
+        // SSL_write/SSL_read internally which advances SSL's seq counters).
+        // Snapshotting earlier would desync the hot-path nonce from SSL.
+        if (auto armed = t->core_.arm_aead_crypto(); !armed) {
+            SPDLOG_LOGGER_ERROR(log, "Hot-path crypto arm failed: {}",
+                                armed.error().message());
+            return std::unexpected(armed.error());
+        }
+
         t->core_.created_at = std::chrono::steady_clock::now();
         t->core_.running.store(true, std::memory_order_release);
         t->core_.notify_state(TransportEvent::kConnected, config.remote_host);
@@ -1245,9 +1255,13 @@ private:
                 if (!result) return result;
 
                 if constexpr (kIsWebSocket) {
-                    return core_.template do_ws_upgrade<Framer>();
+                    auto ws = core_.template do_ws_upgrade<Framer>();
+                    if (!ws) return ws;
                 }
-                return {};
+                // Arm hot-path AEAD AFTER WS upgrade so the snapshot
+                // captures SSL's post-upgrade application seq counters.
+                // (Same ordering invariant as the initial create() path.)
+                return core_.arm_aead_crypto();
             });
 
             if (success) {

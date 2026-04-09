@@ -135,6 +135,14 @@ public:
             return std::unexpected(ws_result.error());
         }
 
+        // Arm hot-path AEAD crypto AFTER WS upgrade (do_ws_upgrade uses
+        // SSL_write/SSL_read internally which advances SSL's seq counters).
+        if (auto armed = t->core_.arm_aead_crypto(); !armed) {
+            SPDLOG_LOGGER_ERROR(log, "Hot-path crypto arm failed: {}",
+                                armed.error().message());
+            return std::unexpected(armed.error());
+        }
+
         t->core_.created_at = std::chrono::steady_clock::now();
         t->core_.running.store(true, std::memory_order_release);
         t->core_.notify_state(TransportEvent::kConnected, config.remote_host);
@@ -730,7 +738,11 @@ private:
                 -> std::expected<void, ConnectionErrorInfo> {
                 auto conn = core_.do_connect();
                 if (!conn) return conn;
-                return core_.template do_ws_upgrade<Framer>();
+                auto ws = core_.template do_ws_upgrade<Framer>();
+                if (!ws) return ws;
+                // Arm hot-path AEAD AFTER WS upgrade (same ordering
+                // invariant as create()).
+                return core_.arm_aead_crypto();
             });
 
             if (ok) {

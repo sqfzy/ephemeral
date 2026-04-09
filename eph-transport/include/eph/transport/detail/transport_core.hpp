@@ -152,22 +152,8 @@ struct TransportCore {
             last_tls_handshake_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(tls_elapsed).count());
 
-            // Extract traffic keys for hot-path AEAD
-            auto hot = tls->extract_hot_state();
-            if (!hot) {
-                return std::unexpected(ConnectionErrorInfo{
-                    ConnectionError::kTlsKeyExportFailed, hot.error()});
-            }
-
-            size_t key_len = tls->cipher_key_len();
-            auto crypto_result = TlsRecordCrypto::create(*hot, key_len);
-            if (!crypto_result) {
-                return std::unexpected(ConnectionErrorInfo{
-                    ConnectionError::kTlsKeyExportFailed,
-                    std::format("TLS AEAD init failed: {}", crypto_result.error())});
-            }
-            crypto = std::make_unique<TlsRecordCrypto>(std::move(*crypto_result));
-
+            // Record TLS metadata; hot-path AEAD crypto is initialized later
+            // by arm_aead_crypto() — see that method's pre-condition.
             tls_version = tls->tls_version();
             cipher_name = tls->cipher_name();
 
@@ -341,6 +327,61 @@ struct TransportCore {
             ConnectionError::kWsUpgradeFailed,
             std::format("WS upgrade timeout after {}ms",
                 config.ws_timeout.count())});
+    }
+
+    /// Snapshot the TLS application traffic state from the SSL session and
+    /// initialize the hot-path AEAD crypto context (`TlsRecordCrypto`).
+    ///
+    /// **Pre-condition**: this method MUST be called after **all**
+    /// `SSL_write` / `SSL_read` application-data operations on this session
+    /// are complete (e.g., after the WebSocket HTTP Upgrade exchange has
+    /// fully finished). After this call, no further `SSL_write` / `SSL_read`
+    /// may occur on this session — all subsequent application data must
+    /// flow through the hot-path `TlsRecordCrypto`. Violating this
+    /// pre-condition causes TLS sequence number desynchronization and
+    /// immediate `bad_record_mac` AEAD failure on the first hot-path
+    /// record (the SSL session and the hot-path crypto would be using
+    /// different next-record seq counters).
+    ///
+    /// **No-op** when `config.use_tls == false`.
+    ///
+    /// **Idempotency**: not idempotent. Reconnect paths must call this
+    /// exactly once after each successful handshake + WS upgrade cycle,
+    /// on a freshly-built `TlsSession`.
+    ///
+    /// @return success on hot-path crypto initialized,
+    ///         `ConnectionErrorInfo{kTlsKeyExportFailed, ...}` on key
+    ///         extraction or AEAD context construction failure.
+    [[nodiscard]] std::expected<void, ConnectionErrorInfo>
+    arm_aead_crypto() noexcept {
+        if (!config.use_tls) return {};
+        if (!tls) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kTlsKeyExportFailed,
+                "arm_aead_crypto called without an active TLS session"});
+        }
+
+        [[maybe_unused]] auto log = detail::transport_logger();
+
+        auto hot = tls->extract_hot_state();
+        if (!hot) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kTlsKeyExportFailed, hot.error()});
+        }
+
+        size_t key_len = tls->cipher_key_len();
+        auto crypto_result = TlsRecordCrypto::create(*hot, key_len);
+        if (!crypto_result) {
+            return std::unexpected(ConnectionErrorInfo{
+                ConnectionError::kTlsKeyExportFailed,
+                std::format("TLS AEAD init failed: {}", crypto_result.error())});
+        }
+        crypto = std::make_unique<TlsRecordCrypto>(std::move(*crypto_result));
+
+        SPDLOG_LOGGER_DEBUG(log,
+            "AEAD crypto armed: cipher={}, key_len={}",
+            cipher_name, key_len);
+        return {};
     }
 
     // -----------------------------------------------------------------------

@@ -571,8 +571,22 @@ public:
     ///
     /// Uses aws-lc SSL_get_{read,write}_traffic_secret (NOT exporter keys)
     /// to obtain the REAL application traffic secrets, then derives key/IV
-    /// via HKDF-Expand-Label. Reads current seq numbers from SSL so
-    /// TlsRecordCrypto stays in sync after any SSL_write/SSL_read usage.
+    /// via HKDF-Expand-Label. Reads the current seq numbers from SSL into
+    /// the returned `TlsHotState` so the hot-path crypto starts from the
+    /// SSL session's current next-record sequence.
+    ///
+    /// **Pre-condition**: the caller MUST guarantee that no further
+    /// `SSL_write` / `SSL_read` will occur on this session after this call.
+    /// This is a one-shot snapshot — once a `TlsRecordCrypto` built from
+    /// the returned state is in use, any subsequent SSL operation will
+    /// silently advance the SSL session's internal seq counters while the
+    /// hot-path counters stay frozen at the snapshot, causing immediate
+    /// `bad_record_mac` AEAD failures on the very next record.
+    ///
+    /// Concretely: when the WebSocket framer is in use, this must be
+    /// called AFTER the WS HTTP Upgrade request/response (which goes
+    /// through `handshake_write`/`handshake_read` and therefore
+    /// `SSL_write`/`SSL_read`).
     ///
     /// Key length is determined dynamically from the negotiated cipher:
     ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key

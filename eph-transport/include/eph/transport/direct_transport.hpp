@@ -971,6 +971,15 @@ private:
             core_.last_tls_handshake_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - tls_phase_start).count());
+
+            // Record TLS metadata; hot-path AEAD crypto is armed in Phase 4
+            // (after WS upgrade, so the snapshot captures the post-upgrade
+            // application traffic seq counters).
+            core_.tls_version = core_.tls->tls_version();
+            core_.cipher_name = core_.tls->cipher_name();
+        } else {
+            core_.tls_version = "none";
+            core_.cipher_name = "none";
         }
 
         // Phase 3: WebSocket upgrade (only for WsFramer)
@@ -985,29 +994,12 @@ private:
                     std::chrono::steady_clock::now() - ws_phase_start).count());
         }
 
-        if (core_.config.use_tls) {
-            // Phase 4: Extract keys for AEAD hot path
-            auto hot_state = core_.tls->extract_hot_state();
-            if (!hot_state) {
-                return std::unexpected(ConnectionErrorInfo{
-                    ConnectionError::kTlsKeyExportFailed,
-                    std::format("TLS key export failed: {}", hot_state.error())});
-            }
-
-            size_t key_len = core_.tls->cipher_key_len();
-            auto crypto = TlsRecordCrypto::create(*hot_state, key_len);
-            if (!crypto) {
-                return std::unexpected(ConnectionErrorInfo{
-                    ConnectionError::kTlsKeyExportFailed,
-                    std::format("TLS AEAD init failed: {}", crypto.error())});
-            }
-            core_.crypto = std::make_unique<TlsRecordCrypto>(std::move(*crypto));
-
-            core_.tls_version = core_.tls->tls_version();
-            core_.cipher_name = core_.tls->cipher_name();
-        } else {
-            core_.tls_version = "none";
-            core_.cipher_name = "none";
+        // Phase 4: Arm hot-path AEAD crypto (now that all SSL_write/SSL_read
+        // application-data calls during the WS upgrade are complete).
+        // Delegates to TransportCore::arm_aead_crypto for a single shared
+        // implementation across all 3 transport variants.
+        if (auto armed = core_.arm_aead_crypto(); !armed) {
+            return std::unexpected(armed.error());
         }
 
         // Extract resolved IP if the TCP backend exposes it
