@@ -7,7 +7,7 @@
 #   3. ws_echo   — WebSocket echo (multi-payload)
 #   4. market_rx — WS market data RX (pipeline latency)
 #   5. order_rtt — WS order submit + execution report RTT
-#   6. udp_relay — UDP store-and-forward relay latency
+#   6. udp_relay — UDP send+recv latency on a different port (echo, port 9996)
 #
 # Each scenario runs in two transports:
 #   - kernel: bench client in network namespace, mock in host namespace
@@ -278,7 +278,7 @@ preflight() {
             case "$s" in
                 udp_echo)   needed+=("bench_udp_echo_server") ;;
                 tcp_echo)   needed+=("bench_tcp_echo_server") ;;
-                udp_relay)  needed+=("bench_udp_relay_server") ;;
+                udp_relay)  needed+=("bench_udp_echo_server") ;;
                 ws_echo|market_rx|order_rtt) needed+=("bench_mock_server") ;;
             esac
         done
@@ -374,10 +374,10 @@ start_mock_for_scenario() {
             MOCK_PID=$!
             ;;
         udp_relay)
-            "$BUILD_DIR/bench_udp_relay_server" \
-                --bind-ip "$SERVER_IP" --listen-port 9996 \
-                --forward-ip "$LOCAL_IP" --forward-port 9995 \
-                --cpu "$MOCK_CPU" &>>"$OUTPUT_DIR/mock.log" &
+            # udp_relay is now a single-port echo (same fair-comparison shape as
+            # udp_echo, just on a different port). Reuses bench_udp_echo_server.
+            "$BUILD_DIR/bench_udp_echo_server" \
+                --bind-ip "$SERVER_IP" --port 9996 --cpu "$MOCK_CPU" &>>"$OUTPUT_DIR/mock.log" &
             MOCK_PID=$!
             ;;
     esac
@@ -416,7 +416,7 @@ run_bench() {
             ;;
         udp_echo) common_args+=(--port 9997) ;;
         tcp_echo) common_args+=(--port 9998) ;;
-        udp_relay) ;;  # uses fixed ports 9996/9995
+        udp_relay) ;;  # port hardcoded to 9996 in bench_udp_relay.cpp
     esac
 
     if [[ "$transport" == "kernel" ]]; then
@@ -587,7 +587,6 @@ cleanup_on_exit() {
     pkill -f bench_mock_server 2>/dev/null || true
     pkill -f bench_udp_echo_server 2>/dev/null || true
     pkill -f bench_tcp_echo_server 2>/dev/null || true
-    pkill -f bench_udp_relay_server 2>/dev/null || true
     return "$exit_code"
 }
 

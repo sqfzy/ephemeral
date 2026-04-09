@@ -145,17 +145,6 @@ target("bench_tcp_echo_server")
     add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
     set_symbols("debug")
 
-target("bench_udp_relay_server")
-    set_kind("binary")
-    set_group("benchmarks")
-    set_default(false)
-    add_files("benchmarks/latency/bench_udp_relay_server.cpp")
-    add_includedirs("benchmarks", "benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-
 -- ── Table-driven latency bench targets ──────────────────────────────
 -- Each scenario compiles the same .cpp twice: kernel (no define) and
 -- DPDK (EPH_USE_DPDK=1). This replaces the old N×2 hand-written targets.
