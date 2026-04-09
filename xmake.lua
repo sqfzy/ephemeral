@@ -108,13 +108,18 @@ includes("eph-dpdk/xmake.lua")
 -- Cross-module integration tests
 includes("tests/integration/xmake.lua")
 
+-- Unit tests for the bench shared layer (header-only library under
+-- benchmarks/latency/{core,mock/lib}). Added by phase 2 of the bench
+-- rewrite plan.
+includes("tests/unit/bench/xmake.lua")
+
 -- ===========================================================================
 -- Latency benchmarks (cross-module, root-managed)
 -- ===========================================================================
--- Targets are added incrementally by phases 2-4 of the bench rewrite plan
--- (.artifacts/plan-bench-latency-rewrite-20260409-023700.md). Phase 1
--- intentionally leaves this section empty — only the directory skeleton
--- under benchmarks/latency/ exists at this point.
+-- Client/mock binary targets are added incrementally by phases 3-4 of the
+-- bench rewrite plan (.artifacts/plan-bench-latency-rewrite-20260409-023700.md).
+-- Phase 2 only landed the header-only library + its unit tests under
+-- tests/unit/bench/, so this section is still empty.
 
 -- ===========================================================================
 -- Examples (centralized, user-facing)
