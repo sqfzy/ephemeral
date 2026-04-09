@@ -43,6 +43,6 @@ for _, file in ipairs(os.files("benchmarks/**.cpp")) do
         add_rules("eph-bench")
         add_files(file)
         add_deps("eph-dpdk")
-        add_includedirs(path.join(os.projectdir(), "benchmarks"))
+        add_includedirs(path.join(os.scriptdir(), "benchmarks"))
         apply_dpdk_pmd_linkgroups()
 end

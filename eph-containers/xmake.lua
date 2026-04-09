@@ -21,5 +21,5 @@ for _, file in ipairs(os.files("benchmarks/**.cpp")) do
         add_files(file)
         add_deps("eph-containers")
         add_packages("tabulate")
-        add_includedirs(path.join(os.projectdir(), "benchmarks"))
+        add_includedirs(path.join(os.scriptdir(), "benchmarks"))
 end

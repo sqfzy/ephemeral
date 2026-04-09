@@ -326,7 +326,7 @@ xmake run bench_fix_parse
 #   sudo ./scripts/lat <scenario> [--dpdk]
 ```
 
-**Important**: Before modifying performance-critical code, run the relevant benchmarks to establish a baseline. After your change, re-run and compare. See `benchmarks/METRICS.md` for baseline data.
+**Important**: Before modifying performance-critical code, run the relevant benchmarks to establish a baseline. After your change, re-run and compare.
 
 ### Debugging
 
@@ -509,4 +509,3 @@ xmake -m debug
 | Multi-connection patterns | `docs/multi-connection.md` |
 | Custom framer guide | `docs/custom-framer.md` |
 | Binance protocol notes | `docs/binance-protocols.md` |
-| Benchmark metrics baseline | `benchmarks/METRICS.md` |
