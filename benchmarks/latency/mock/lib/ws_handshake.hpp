@@ -3,9 +3,11 @@
 ///
 /// Reads the HTTP request, extracts `Sec-WebSocket-Key`, computes the
 /// `Sec-WebSocket-Accept` digest (SHA-1 of key + RFC magic string, base64
-/// encoded), and writes the 101 response. Self-contained: bundles a
-/// minimal SHA-1 + base64 implementation so we don't pull in OpenSSL or
-/// any other dep just for the mock.
+/// encoded), and writes the 101 response.
+///
+/// Bundles a minimal SHA-1 implementation (80 lines) because the bench
+/// mock has no link dependency on aws-lc/openssl. Base64 reuses
+/// `eph::core::detail::base64_encode` (standalone, no TLS deps).
 ///
 /// Blocking reads with a millisecond-level deadline. Suitable for the
 /// mock's bootstrap path; not suitable for the hot loop.
@@ -23,6 +25,8 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include "eph/core/detail/base64.hpp"
 
 namespace bench::mock {
 
@@ -104,29 +108,11 @@ inline std::array<uint8_t, 20> sha1(std::string_view input) {
     return digest;
 }
 
-// ── Base64 encode (no padding stripped) ──────────────────────────────────
-inline std::string base64_encode(const uint8_t* data, size_t len) {
-    static constexpr char tbl[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve(((len + 2) / 3) * 4);
-    for (size_t i = 0; i < len; i += 3) {
-        uint32_t v = uint32_t(data[i]) << 16;
-        if (i + 1 < len) v |= uint32_t(data[i+1]) << 8;
-        if (i + 2 < len) v |= uint32_t(data[i+2]);
-        out.push_back(tbl[(v >> 18) & 0x3F]);
-        out.push_back(tbl[(v >> 12) & 0x3F]);
-        out.push_back(i + 1 < len ? tbl[(v >> 6) & 0x3F] : '=');
-        out.push_back(i + 2 < len ? tbl[v & 0x3F]        : '=');
-    }
-    return out;
-}
-
 inline std::string compute_accept(std::string_view key) {
     std::string concat(key);
     concat += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     auto digest = sha1(concat);
-    return base64_encode(digest.data(), 20);
+    return eph::core::detail::base64_encode(digest.data(), 20);
 }
 
 inline bool read_with_deadline(int fd, void* out, size_t want,

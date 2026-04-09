@@ -1,8 +1,10 @@
 /// @file core/hist_report.hpp
-/// HdrHistogram → percentile stats → spdlog reporter.
+/// Thin reporter over eph::utils::HdrHistogram → eph::utils::Stats.
 ///
-/// Stats are nanoseconds. Histogram tracks 10 ns to 1 s with 3 sigfigs,
-/// covering the entire realistic range of intra-process to LAN latency.
+/// Reuses the Stats struct from eph-utils (recorder.hpp produces it too).
+/// Our compute_stats() is needed because we record *nanoseconds* directly
+/// into the histogram rather than TSC cycles, so Recorder's cycle-based
+/// compute_stats would over-convert.
 #pragma once
 
 #include <cstdint>
@@ -18,26 +20,26 @@ inline constexpr uint64_t kHistMin = 10;
 inline constexpr uint64_t kHistMax = 1'000'000'000ULL;
 inline constexpr int      kHistSig = 3;
 
-struct LegStats {
-    uint64_t count   = 0;
-    uint64_t min_ns  = 0;
-    uint64_t max_ns  = 0;
-    uint64_t p50_ns  = 0;
-    uint64_t p99_ns  = 0;
-    uint64_t p999_ns = 0;
-    double   mean_ns = 0.0;
-};
+using LegStats = eph::utils::Stats;
 
-inline LegStats compute_stats(const eph::utils::HdrHistogram& h) noexcept {
+/// Build a Stats directly from an HdrHistogram whose values are already
+/// in nanoseconds. Fields not meaningful for ns-direct recording (p90,
+/// stddev) are populated when cheap, zero otherwise.
+inline LegStats compute_stats(const eph::utils::HdrHistogram& h,
+                              std::string_view name = {}) noexcept {
     LegStats s;
+    s.name = std::string{name};
     s.count = h.get_total_count();
     if (s.count == 0) return s;
-    s.min_ns  = h.get_min_value();
-    s.max_ns  = h.get_max_value();
-    s.mean_ns = h.get_mean();
-    s.p50_ns  = h.get_value_at_percentile(50.0);
-    s.p99_ns  = h.get_value_at_percentile(99.0);
-    s.p999_ns = h.get_value_at_percentile(99.9);
+    s.avg_ns  = h.get_mean();
+    s.min_ns  = static_cast<double>(h.get_min_value());
+    s.max_ns  = static_cast<double>(h.get_max_value());
+    auto pct = h.get_percentiles({50.0, 90.0, 99.0, 99.9});
+    s.p50_ns  = static_cast<double>(pct[0]);
+    s.p90_ns  = static_cast<double>(pct[1]);
+    s.p99_ns  = static_cast<double>(pct[2]);
+    s.p999_ns = static_cast<double>(pct[3]);
+    s.stddev_ns = h.get_std_deviation();
     return s;
 }
 
@@ -55,14 +57,13 @@ inline void print_one_leg(std::string_view label, const LegStats& s) {
         spdlog::info("    {:<6} (no samples)", label);
         return;
     }
-    spdlog::info("    {:<6} n={:>9} min={:>7} p50={:>7} p99={:>7} p999={:>7} max={:>7}",
+    spdlog::info("    {:<6} n={:>9} min={:>7.0f} p50={:>7.0f} p99={:>7.0f} p999={:>7.0f} max={:>7.0f}",
                  label, s.count, s.min_ns, s.p50_ns, s.p99_ns, s.p999_ns, s.max_ns);
 }
 
 } // namespace detail
 
-/// Print 4 legs of a single bench result line. `payload` may be 0 (1-leg
-/// scenarios). `label` typically combines scenario + transport.
+/// Print 4-leg report line. `payload=0` hides the payload tag (for 1-leg scenarios).
 inline void print_bench_result(std::string_view label,
                                size_t payload,
                                const BenchResult& r) {
