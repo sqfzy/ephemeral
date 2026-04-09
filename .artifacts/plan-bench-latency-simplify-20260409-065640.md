@@ -3,7 +3,8 @@
 > 每个场景一个 self-contained binary（mock + client + main 合为单文件）+ 一个 `scripts/lat` wrapper 透明管理 NIC 状态。用户永远只敲一条命令 `sudo ./scripts/lat <scenario> [--dpdk]`。
 
 创建时间：2026-04-09
-状态：已确认
+状态：已完成（2026-04-09）
+完成记录：.artifacts/bench-simplify-e2e-20260409.md
 
 ---
 
