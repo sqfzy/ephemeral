@@ -153,62 +153,29 @@ for _, s in ipairs(bench_latency_scenarios) do
         apply_dpdk_pmd_linkgroups()
 end
 
--- Stage 4: exchange (quant business) scenarios — 2 mocks + 3 bench clients,
--- each in kernel + DPDK variants. Same naming convention as stage 3
--- (bench_lat_exchange_*, mock_lat_exchange_*).
-local bench_latency_exchange_mocks = {
-    {name = "exchange_ws",      file = "mock_ws.cpp"},
-    {name = "exchange_md_udp",  file = "mock_md_udp.cpp"},
-}
-local bench_latency_exchange_clients = {
-    {name = "exchange_market",  file = "bench_market.cpp"},
-    {name = "exchange_order",   file = "bench_order.cpp"},
-    {name = "exchange_md_udp",  file = "bench_md_udp.cpp"},
-}
+-- Stage 5: exchange scenarios — same single-binary fork pattern as the
+-- raw protocol scenarios. Three scenarios (market / order / md_udp), each
+-- in a kernel and a DPDK build. Mocks (mock_ws.hpp, mock_md_udp.hpp) are
+-- always kernel — DPDK only changes the client transport.
+local bench_latency_exchange_scenarios = {"ex_market", "ex_order", "ex_md_udp"}
 
-for _, m in ipairs(bench_latency_exchange_mocks) do
-    target("mock_lat_" .. m.name)
+for _, s in ipairs(bench_latency_exchange_scenarios) do
+    target("lat_" .. s)
         set_kind("binary")
         set_group("benchmarks")
         set_default(false)
-        add_files("benchmarks/latency/exchange/" .. m.file)
+        add_files("benchmarks/latency/exchange/lat_" .. s .. ".cpp")
         add_includedirs("benchmarks/latency")
         add_deps("eph-utils")
         add_packages("spdlog")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
 
-    target("mock_lat_" .. m.name .. "_dpdk")
+    target("lat_" .. s .. "_dpdk")
         set_kind("binary")
         set_group("benchmarks")
         set_default(false)
-        add_files("benchmarks/latency/exchange/" .. m.file)
-        add_includedirs("benchmarks/latency")
-        add_deps("eph-utils", "eph-dpdk")
-        add_packages("spdlog")
-        add_defines("EPH_USE_DPDK=1")
-        add_cxflags(table.unpack(bench_latency_flags))
-        set_symbols("debug")
-        apply_dpdk_pmd_linkgroups()
-end
-
-for _, c in ipairs(bench_latency_exchange_clients) do
-    target("bench_lat_" .. c.name)
-        set_kind("binary")
-        set_group("benchmarks")
-        set_default(false)
-        add_files("benchmarks/latency/exchange/" .. c.file)
-        add_includedirs("benchmarks/latency")
-        add_deps("eph-utils")
-        add_packages("spdlog")
-        add_cxflags(table.unpack(bench_latency_flags))
-        set_symbols("debug")
-
-    target("bench_lat_" .. c.name .. "_dpdk")
-        set_kind("binary")
-        set_group("benchmarks")
-        set_default(false)
-        add_files("benchmarks/latency/exchange/" .. c.file)
+        add_files("benchmarks/latency/exchange/lat_" .. s .. ".cpp")
         add_includedirs("benchmarks/latency")
         add_deps("eph-utils", "eph-dpdk")
         add_packages("spdlog")

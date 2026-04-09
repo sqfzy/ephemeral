@@ -1,17 +1,13 @@
-/// @file exchange/mock_md_udp.cpp
-/// mock_lat_exchange_md_udp / *_dpdk — UDP echo with the same wire format
-/// as mock_lat_udp. The only thing that differs from the raw UDP mock is
-/// the binary name (so the bench script can address them separately) and
-/// the labelled scenario in the report. The transport-level behavior is
-/// identical: receive a 24-byte-prefixed datagram, stamp recv/send TSCs,
-/// echo it back.
+/// @file exchange/mock_md_udp.hpp
+/// Exchange UDP market-data echo mock — same wire format as the raw UDP
+/// mock (24-byte TSC header + payload). The separate target exists so the
+/// report label says "exchange/md_udp" instead of "udp"; transport-level
+/// behaviour is identical.
+#pragma once
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -23,50 +19,28 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/utils/cpu.hpp"
+#include "eph/utils/cpu_pin.hpp"
 #include "eph/utils/time.hpp"
 
 #include "../core/config.hpp"
-#include "eph/utils/cpu_pin.hpp"
 #include "../core/signal.hpp"
-#include "../core/tsc_protocol.hpp"
 #include "../core/socket_bind.hpp"
-#include "eph/utils/cpu.hpp"
+#include "../core/tsc_protocol.hpp"
 
-using namespace bench;
+namespace bench::exchange {
 
-int main(int argc, char** argv) {
-#ifdef EPH_USE_DPDK
-    std::fprintf(stderr,
-        "[mock_lat_exchange_md_udp_dpdk] WARNING: DPDK transport not yet "
-        "implemented; this binary currently uses POSIX sockets identical "
-        "to mock_lat_exchange_md_udp.\n");
-#endif
-
-    install_signal_handlers();
-    auto cfg = parse_common(argc, argv);
-    if (cfg.server_ip.empty() || cfg.server_port == 0) {
-        spdlog::error("--server-ip and --port are required");
-        return 1;
-    }
-    if (cfg.mock_cpu < 0) {
-        spdlog::error("--mock-cpu <cpu> is required");
-        return 1;
-    }
-    if (!eph::utils::TSC::init()) {
-        spdlog::error("TSC calibration failed");
-        return 1;
-    }
-
+inline int run_exchange_md_udp_mock(const BenchConfig& cfg) {
     eph::utils::CpuPinPolicy policy;
     if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = eph::utils::pin_thread_strict(cfg.mock_cpu, "mock_ex_md", policy); !p) {
-        spdlog::error("pin_thread_strict failed: {}", p.error());
+    if (auto p = eph::utils::pin_thread_strict(cfg.mock_cpu, "mock_lat_ex_md", policy); !p) {
+        spdlog::error("mock_lat_ex_md: pin failed: {}", p.error());
         return 1;
     }
 
     auto fd = bench::udp_bind(cfg.server_ip, cfg.server_port);
-    if (!fd) { spdlog::error("{}", fd.error()); return 1; }
-    spdlog::info("mock_lat_exchange_md_udp: bound {}:{} work_ns={}",
+    if (!fd) { spdlog::error("mock_lat_ex_md: {}", fd.error()); return 1; }
+    spdlog::info("mock_lat_ex_md: bound {}:{} work_ns={}",
                  cfg.server_ip, cfg.server_port, cfg.server_work_ns);
 
     constexpr size_t kMaxPayload = 65536;
@@ -96,3 +70,5 @@ int main(int argc, char** argv) {
     ::close(*fd);
     return 0;
 }
+
+} // namespace bench::exchange
