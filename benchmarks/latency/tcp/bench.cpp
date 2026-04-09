@@ -1,6 +1,7 @@
 /// @file tcp/bench.cpp
 /// bench_lat_tcp / bench_lat_tcp_dpdk — TCP RTT bench client.
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -29,16 +30,11 @@
 
 using namespace bench;
 
-namespace {
-std::vector<size_t> parse_payloads_or_default(int argc, char** argv) {
-    for (int i = 0; i < argc - 1; ++i) {
-        if (std::string_view{argv[i]} == "--payload-sizes") {
-            return config_detail::parse_size_list(argv[i + 1]);
-        }
-    }
-    return {64, 128, 256, 512, 1024, 1460, 4096, 16384};
-}
-} // namespace
+// TCP payloads: 64..16384. 1460 hits MTU single-segment boundary;
+// 4096/16384 exercise multi-segment TCP send/recv paths.
+static constexpr std::array<size_t, 8> kDefaultPayloads{
+    64, 128, 256, 512, 1024, 1460, 4096, 16384
+};
 
 int main(int argc, char** argv) {
     install_signal_handlers();
@@ -77,7 +73,7 @@ int main(int argc, char** argv) {
     }
     spdlog::info("bench_tcp (dpdk): connected to {}:{}", cfg.server_ip, cfg.server_port);
 
-    auto payloads = parse_payloads_or_default(argc, argv);
+    auto payloads = effective_payloads(cfg, kDefaultPayloads);
     tcp::TcpDpdkRttScenario scenario{session};
     BenchRunner runner{cfg, "tcp", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));
@@ -107,7 +103,7 @@ int main(int argc, char** argv) {
     if (!fd) { spdlog::error("connect: {}", fd.error()); return 1; }
     spdlog::info("bench_tcp: connected to {}:{}", cfg.server_ip, cfg.server_port);
 
-    auto payloads = parse_payloads_or_default(argc, argv);
+    auto payloads = effective_payloads(cfg, kDefaultPayloads);
     tcp::TcpRttScenario scenario{*fd};
     BenchRunner runner{cfg, "tcp", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));

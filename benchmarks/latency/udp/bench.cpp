@@ -1,6 +1,7 @@
 /// @file udp/bench.cpp
 /// bench_lat_udp / bench_lat_udp_dpdk — UDP RTT bench client.
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -27,16 +28,11 @@
 
 using namespace bench;
 
-namespace {
-std::vector<size_t> parse_payloads_or_default(int argc, char** argv) {
-    for (int i = 0; i < argc - 1; ++i) {
-        if (std::string_view{argv[i]} == "--payload-sizes") {
-            return config_detail::parse_size_list(argv[i + 1]);
-        }
-    }
-    return {64, 128, 256, 512, 1024, 1472};
-}
-} // namespace
+// UDP payloads: 64..1472 (1472 = 1500 MTU - IP(20) - UDP(8)).
+// UDP never fragments above this, so larger values would be nonsense.
+static constexpr std::array<size_t, 6> kDefaultPayloads{
+    64, 128, 256, 512, 1024, 1472
+};
 
 int main(int argc, char** argv) {
     install_signal_handlers();
@@ -75,7 +71,7 @@ int main(int argc, char** argv) {
     if (!sender) { spdlog::error("UdpSender: {}", sender.error()); return 1; }
     spdlog::info("bench_udp (dpdk): peer {}:{}", cfg.server_ip, cfg.server_port);
 
-    auto payloads = parse_payloads_or_default(argc, argv);
+    auto payloads = effective_payloads(cfg, kDefaultPayloads);
     udp::UdpDpdkRttScenario scenario{*sender, env->port_id, 0, kLocalPort};
     BenchRunner runner{cfg, "udp", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));
@@ -103,7 +99,7 @@ int main(int argc, char** argv) {
     if (!ep) { spdlog::error("open_udp: {}", ep.error()); return 1; }
     spdlog::info("bench_udp: peer {}:{}", cfg.server_ip, cfg.server_port);
 
-    auto payloads = parse_payloads_or_default(argc, argv);
+    auto payloads = effective_payloads(cfg, kDefaultPayloads);
     udp::UdpRttScenario scenario{*ep};
     BenchRunner runner{cfg, "udp", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));

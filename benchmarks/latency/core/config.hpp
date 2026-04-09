@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +33,11 @@ struct CommonConfig {
     int  mock_cpu   = -1;          ///< mock server thread cpu
     long server_work_ns = 0;       ///< spin N ns inside mock to model business work
     bool allow_non_isolated = false;
+
+    /// Sweep axes. Empty = scenario falls back to its compiled-in default.
+    /// Use `effective_payloads(cfg, fallback)` helper below to resolve.
+    std::vector<size_t> payload_sizes;  ///< --payload-sizes 64,128,...
+    std::vector<int>    inflights;      ///< --inflights 1,4,16,...
 };
 
 #ifdef EPH_USE_DPDK
@@ -115,15 +121,12 @@ inline CommonConfig parse_common(int argc, char** argv) {
     if (auto v = env("BENCH_CLIENT_CPU"))  cfg.client_cpu = parse_int(*v, -1);
     if (auto v = env("BENCH_MOCK_CPU"))    cfg.mock_cpu = parse_int(*v, -1);
     if (auto v = env("BENCH_SERVER_WORK_NS")) cfg.server_work_ns = parse_int(*v, 0);
+    if (auto v = env("BENCH_PAYLOAD_SIZES")) cfg.payload_sizes = parse_size_list(*v);
+    if (auto v = env("BENCH_INFLIGHTS"))   cfg.inflights = parse_int_list(*v);
 
     // CLI overrides.
     for (int i = 0; i < argc; ++i) {
         std::string_view a = argv[i];
-        auto next = [&](auto& field, auto convert) {
-            if (i + 1 < argc) {
-                field = convert(std::string_view{argv[++i]});
-            }
-        };
         if      (a == "--server-ip"           && i + 1 < argc) cfg.server_ip = argv[++i];
         else if (a == "--port"                && i + 1 < argc) cfg.server_port = static_cast<uint16_t>(parse_int(argv[++i], 0));
         else if (a == "--warmup"              && i + 1 < argc) cfg.warmup = std::chrono::seconds{parse_int(argv[++i], 2)};
@@ -131,10 +134,31 @@ inline CommonConfig parse_common(int argc, char** argv) {
         else if (a == "--client-cpu"          && i + 1 < argc) cfg.client_cpu = parse_int(argv[++i], -1);
         else if (a == "--mock-cpu"            && i + 1 < argc) cfg.mock_cpu = parse_int(argv[++i], -1);
         else if (a == "--server-work-ns"      && i + 1 < argc) cfg.server_work_ns = parse_int(argv[++i], 0);
+        else if (a == "--payload-sizes"       && i + 1 < argc) cfg.payload_sizes = parse_size_list(argv[++i]);
+        else if (a == "--inflights"           && i + 1 < argc) cfg.inflights = parse_int_list(argv[++i]);
         else if (a == "--allow-non-isolated") cfg.allow_non_isolated = true;
-        (void)next;
     }
     return cfg;
+}
+
+/// Resolve the sweep axis for RTT scenarios. Returns `cfg.payload_sizes`
+/// if the user passed `--payload-sizes`, otherwise returns the compiled-in
+/// fallback unchanged.
+inline std::span<const size_t>
+effective_payloads(const CommonConfig& cfg,
+                   std::span<const size_t> fallback) noexcept {
+    return cfg.payload_sizes.empty()
+        ? fallback
+        : std::span<const size_t>{cfg.payload_sizes};
+}
+
+/// Resolve the sweep axis for the exchange/order scenario.
+inline std::span<const int>
+effective_inflights(const CommonConfig& cfg,
+                    std::span<const int> fallback) noexcept {
+    return cfg.inflights.empty()
+        ? fallback
+        : std::span<const int>{cfg.inflights};
 }
 
 #ifdef EPH_USE_DPDK

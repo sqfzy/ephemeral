@@ -1,6 +1,7 @@
 /// @file ws/bench.cpp
 /// bench_lat_ws / bench_lat_ws_dpdk — plain WebSocket RTT bench client.
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -29,16 +30,11 @@
 
 using namespace bench;
 
-namespace {
-std::vector<size_t> parse_payloads_or_default(int argc, char** argv) {
-    for (int i = 0; i < argc - 1; ++i) {
-        if (std::string_view{argv[i]} == "--payload-sizes") {
-            return config_detail::parse_size_list(argv[i + 1]);
-        }
-    }
-    return {64, 128, 256, 512, 1024, 4096};
-}
-} // namespace
+// WS payloads: cover both the ≤125 single-byte length encoding and the
+// 126..65535 two-byte extended encoding (boundary at payload 126).
+static constexpr std::array<size_t, 6> kDefaultPayloads{
+    64, 128, 256, 512, 1024, 4096
+};
 
 int main(int argc, char** argv) {
     install_signal_handlers();
@@ -81,7 +77,7 @@ int main(int argc, char** argv) {
     }
     spdlog::info("bench_ws (dpdk): connected to {}:{}", cfg.server_ip, cfg.server_port);
 
-    auto payloads = parse_payloads_or_default(argc, argv);
+    auto payloads = effective_payloads(cfg, kDefaultPayloads);
     ws::WsDpdkRttScenario scenario{session};
     BenchRunner runner{cfg, "ws", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));
@@ -111,7 +107,7 @@ int main(int argc, char** argv) {
     if (!fd) { spdlog::error("connect_ws: {}", fd.error()); return 1; }
     spdlog::info("bench_ws: connected to {}:{}", cfg.server_ip, cfg.server_port);
 
-    auto payloads = parse_payloads_or_default(argc, argv);
+    auto payloads = effective_payloads(cfg, kDefaultPayloads);
     ws::WsRttScenario scenario{*fd};
     BenchRunner runner{cfg, "ws", kTransport};
     runner.run_rtt_sweep(scenario, std::span<const size_t>(payloads));

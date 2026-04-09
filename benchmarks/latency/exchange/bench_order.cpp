@@ -1,6 +1,7 @@
 /// @file exchange/bench_order.cpp
 /// bench_lat_exchange_order / *_dpdk — order RTT bench with N inflight.
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -30,16 +31,8 @@
 
 using namespace bench;
 
-namespace {
-std::vector<int> parse_inflights_or_default(int argc, char** argv) {
-    for (int i = 0; i < argc - 1; ++i) {
-        if (std::string_view{argv[i]} == "--inflights") {
-            return config_detail::parse_int_list(argv[i + 1]);
-        }
-    }
-    return {1, 4, 16, 64};
-}
-} // namespace
+// Order inflight sweep: 1 = synchronous baseline, 4/16/64 = pipelined.
+static constexpr std::array<int, 4> kDefaultInflights{1, 4, 16, 64};
 
 int main(int argc, char** argv) {
     install_signal_handlers();
@@ -82,7 +75,7 @@ int main(int argc, char** argv) {
     spdlog::info("bench_lat_exchange_order (dpdk): connected to {}:{}",
                  cfg.server_ip, cfg.server_port);
 
-    auto inflights = parse_inflights_or_default(argc, argv);
+    auto inflights = effective_inflights(cfg, kDefaultInflights);
     exchange::OrderRttDpdkScenario scenario{session};
     BenchRunner runner{cfg, "exchange/order", kTransport};
     runner.run_rtt_inflight_sweep(scenario, std::span<const int>(inflights));
@@ -113,7 +106,7 @@ int main(int argc, char** argv) {
     spdlog::info("bench_lat_exchange_order: connected to {}:{}",
                  cfg.server_ip, cfg.server_port);
 
-    auto inflights = parse_inflights_or_default(argc, argv);
+    auto inflights = effective_inflights(cfg, kDefaultInflights);
     exchange::OrderRttScenario scenario{*fd};
     BenchRunner runner{cfg, "exchange/order", kTransport};
     runner.run_rtt_inflight_sweep(scenario, std::span<const int>(inflights));
