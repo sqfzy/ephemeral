@@ -430,9 +430,56 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
         // No Content-Length — check for chunked transfer encoding.
         auto te = find_header(headers_raw, "Transfer-Encoding");
         if (te.find("chunked") != std::string_view::npos) {
-            // Chunked: complete when final chunk marker "0\r\n\r\n" is present
-            return buf.find("0\r\n\r\n", body_start) != std::string_view::npos
-                || buf.find("\r\n0\r\n\r\n", body_start) != std::string_view::npos;
+            // RFC 7230 §4.1: properly walk the chunk stream rather
+            // than substring-matching for "0\r\n\r\n".  A naïve
+            // substring search produces false positives whenever
+            // chunk DATA happens to contain those bytes — and a
+            // matching "\r\n0\r\n\r\n" can ALSO occur inside data
+            // (a chunk-size line ending in "\r\n" followed by chunk
+            // data starting with "0\r\n\r\n" looks identical to a
+            // legitimate boundary).  The only safe path is parsing
+            // chunk sizes.
+            size_t pos = body_start;
+            while (pos < buf.size()) {
+                auto crlf = buf.find("\r\n", pos);
+                if (crlf == std::string_view::npos) return false;
+                // chunk-size [ ; chunk-extensions ]
+                auto size_str = buf.substr(pos, crlf - pos);
+                auto semi = size_str.find(';');
+                if (semi != std::string_view::npos) {
+                    size_str = size_str.substr(0, semi);
+                }
+                // Trim trailing whitespace per RFC 7230 §4.1.1
+                while (!size_str.empty() &&
+                       (size_str.back() == ' ' || size_str.back() == '\t')) {
+                    size_str.remove_suffix(1);
+                }
+                if (size_str.empty()) return false;
+                size_t chunk_size = 0;
+                auto [pp, ec] = std::from_chars(
+                    size_str.data(),
+                    size_str.data() + size_str.size(),
+                    chunk_size, /*base=*/16);
+                if (ec != std::errc{} || pp != size_str.data() + size_str.size()) {
+                    return false;
+                }
+                pos = crlf + 2; // past size-line CRLF
+                if (chunk_size == 0) {
+                    // Last chunk: walk optional trailer headers until
+                    // we hit an empty line (the final CRLF terminator).
+                    while (pos < buf.size()) {
+                        auto tend = buf.find("\r\n", pos);
+                        if (tend == std::string_view::npos) return false;
+                        if (tend == pos) return true; // empty line → done
+                        pos = tend + 2;
+                    }
+                    return false;
+                }
+                // Skip chunk data + its trailing CRLF.
+                if (pos + chunk_size + 2 > buf.size()) return false;
+                pos += chunk_size + 2;
+            }
+            return false;
         }
         // Neither Content-Length nor chunked — rely on connection close.
         // Cap total buffer to prevent unbounded growth.

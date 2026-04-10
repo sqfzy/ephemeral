@@ -504,14 +504,19 @@ TEST(HttpClientComplete, ChunkedTransferIncomplete) {
     EXPECT_FALSE(HttpClient::is_response_complete(buf));
 }
 
-TEST(HttpClientComplete, ChunkedTransferWithTrailingCrlf) {
-    // Final chunk with preceding \r\n before "0\r\n\r\n"
+TEST(HttpClientComplete, ChunkedTransferWithSpuriousEmptyLineRejected) {
+    // Body has a spurious blank line between the data chunk and the
+    // terminator: "5\r\nhello\r\n" + "\r\n" + "0\r\n\r\n".  RFC 7230
+    // does not allow this — the bytes between chunks must be a valid
+    // chunk-size line, and an empty line is not.  The proper chunked
+    // walker (added in test_http_response_complete_adv.cpp) rejects
+    // it; the old substring matcher accepted it as a side effect.
     std::string buf =
         "HTTP/1.1 200 OK\r\n"
         "Transfer-Encoding: chunked\r\n"
         "\r\n"
         "5\r\nhello\r\n\r\n0\r\n\r\n";
-    EXPECT_TRUE(HttpClient::is_response_complete(buf));
+    EXPECT_FALSE(HttpClient::is_response_complete(buf));
 }
 
 TEST(HttpClientComplete, InvalidContentLengthReturnsFalse) {
