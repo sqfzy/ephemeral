@@ -603,9 +603,21 @@ private:
             return std::unexpected(std::format("SSL_set_fd failed: {}", err));
         }
 
-        // Perform handshake (may require multiple iterations for non-blocking)
+        // Perform handshake (may require multiple iterations for non-blocking).
+        // Bound the iteration count in addition to the deadline as a safety
+        // net against pathological poll/SSL state machines that could
+        // otherwise spin indefinitely (e.g. spurious POLLIN with no progress).
         auto deadline = std::chrono::steady_clock::now() + config_.timeout;
+        constexpr int kMaxHandshakeIterations = 1024;
+        int iterations = 0;
         while (true) {
+            if (++iterations > kMaxHandshakeIterations) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "TLS handshake exceeded max iterations ({}); aborting "
+                    "to prevent infinite loop", kMaxHandshakeIterations);
+                return std::unexpected(std::string(
+                    "TLS handshake exceeded max iterations"));
+            }
             ERR_clear_error();
             int ret = SSL_connect(ssl);
             if (ret == 1) {
