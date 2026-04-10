@@ -244,6 +244,46 @@ build_http_request(std::string_view method,
                     "extra_headers must not contain bare \\n (header injection risk)"));
             }
         }
+        // Reject user-supplied Content-Length and Transfer-Encoding in
+        // extra_headers.  Both are managed by build_http_request itself
+        // (Content-Length is auto-generated from body.size() above; this
+        // function does NOT support chunked request bodies).  Allowing
+        // either via extra_headers creates a CL/CL or CL/TE desync
+        // vector on the request side, mirroring the smuggling attacks
+        // we defend against on the response side via
+        // is_http_response_complete.
+        //
+        // The check is case-insensitive (RFC 7230 §3.2 — header names
+        // are case-insensitive) and matches at the start of any line
+        // inside extra_headers.
+        auto starts_with_ci = [](std::string_view haystack, size_t pos,
+                                  std::string_view needle) {
+            if (pos + needle.size() > haystack.size()) return false;
+            for (size_t i = 0; i < needle.size(); ++i) {
+                char a = static_cast<char>(std::tolower(static_cast<unsigned char>(haystack[pos + i])));
+                char b = static_cast<char>(std::tolower(static_cast<unsigned char>(needle[i])));
+                if (a != b) return false;
+            }
+            return true;
+        };
+        size_t scan = 0;
+        while (scan < extra_headers.size()) {
+            // We are at the start of a header line.
+            if (starts_with_ci(extra_headers, scan, "content-length:") ||
+                starts_with_ci(extra_headers, scan, "transfer-encoding:")) {
+                SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+                    "build_http_request: extra_headers contains "
+                    "Content-Length or Transfer-Encoding (managed by "
+                    "build_http_request itself — supplying them via "
+                    "extra_headers creates a CL/TE desync risk)");
+                return std::unexpected(std::string(
+                    "extra_headers must not contain Content-Length or "
+                    "Transfer-Encoding (managed internally — desync risk)"));
+            }
+            auto eol = extra_headers.find("\r\n", scan);
+            if (eol == std::string_view::npos) break;
+            scan = eol + 2;
+        }
         req.append(extra_headers);
     }
 
