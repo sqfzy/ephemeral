@@ -108,6 +108,10 @@ includes("eph-dpdk/xmake.lua")
 -- Depends only on eph-core + eph-itch; lives alongside the old eph-transport
 -- framers until Phase 7 deletes them.
 includes("eph-codec/xmake.lua")
+-- v3.3 Phase 3: new eph-net-kernel module (epoll-based Stream/Datagram/Poller).
+-- Depends only on eph-core + eph-net; coexists with the legacy
+-- eph-net/socket_transport.hpp until Phase 7.
+includes("eph-net-kernel/xmake.lua")
 
 -- Cross-module integration tests
 includes("tests/integration/xmake.lua")
