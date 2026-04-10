@@ -1305,6 +1305,46 @@ public:
         return pkt_template_;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Test-only API
+    // ─────────────────────────────────────────────────────────────────────
+    //
+    // Production code drives state_ via connect() / process_rx() /
+    // close() / RST handling.  Unit tests need to fast-forward into a
+    // particular state without going through a real handshake against
+    // a real peer — these helpers are the controlled escape hatch.
+    //
+    // The functions are named *_for_testing to make every call site
+    // unmistakably visible in code review and grep.  They are not
+    // private because tests live in a separate translation unit and
+    // friend declarations get tangled with the template parameter.
+
+    /// @brief Test-only: jump the session into a specific TCP state.
+    /// @warning Production code MUST NOT call this.
+    void inject_state_for_testing(TcpState state) noexcept {
+        state_ = state;
+    }
+
+    /// @brief Test-only: set send sequence numbers (SND.NXT, SND.UNA).
+    /// @warning Production code MUST NOT call this.
+    void inject_send_seq_for_testing(uint32_t snd_nxt, uint32_t snd_una) noexcept {
+        snd_nxt_ = snd_nxt;
+        snd_una_ = snd_una;
+    }
+
+    /// @brief Test-only: set receive next sequence (RCV.NXT) and window.
+    /// @warning Production code MUST NOT call this.
+    void inject_recv_seq_for_testing(uint32_t rcv_nxt, uint16_t rcv_wnd) noexcept {
+        rcv_nxt_ = rcv_nxt;
+        rcv_wnd_ = rcv_wnd;
+    }
+
+    /// @brief Test-only: expose the static seq comparator.
+    /// @warning Production code uses the private overload directly.
+    [[nodiscard]] static bool seq_after_for_testing(uint32_t a, uint32_t b) noexcept {
+        return seq_after(a, b);
+    }
+
 private:
     // ── Reorder buffer ──
     // Buffers out-of-order segments (payload copied from mbuf) so they can be
