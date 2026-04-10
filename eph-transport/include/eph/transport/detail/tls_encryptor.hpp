@@ -16,6 +16,7 @@
 #include <spdlog/spdlog.h>
 
 #include <openssl/aead.h>
+#include <openssl/err.h>
 #include <openssl/mem.h>
 
 #include "eph/transport/detail/tls_constants.hpp"
@@ -167,8 +168,18 @@ public:
                                      out, tls_record::kRecordHeaderLen);
 
         if (!ok) {
+            // Pull the OpenSSL/AWS-LC error queue for actionable diagnosis.
+            char err_buf[256] = {0};
+            unsigned long err_code = ERR_get_error();
+            if (err_code != 0) {
+                ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
+            }
             SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
-                "EVP_AEAD_CTX_seal failed: plaintext_len={}, seq={}", plaintext_len, seq_);
+                "EVP_AEAD_CTX_seal failed: plaintext_len={}, seq={}, "
+                "openssl_err=0x{:08x} ({})",
+                plaintext_len, seq_, err_code,
+                err_buf[0] ? err_buf : "no error in queue");
+            while (ERR_get_error() != 0) { /* drain */ }
             return 0;
         }
 
