@@ -1,0 +1,110 @@
+#pragma once
+
+/// @file raw_datagram_codec.hpp
+/// Identity datagram codec — one datagram in, one frame out.
+///
+/// For UDP use cases where each datagram is a single application message
+/// (e.g. a pre-formatted market-data tick, a DNS reply). The codec emits
+/// exactly one frame per `decode()` call via the `sink` callback and
+/// consumes the entire datagram.
+///
+/// This is the datagram counterpart to `RawStreamCodec`. There is no
+/// per-datagram framing overhead.
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <expected>
+#include <functional>
+#include <span>
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+
+#include "eph/codec/detail/span_packet_view.hpp"
+#include "eph/core/codec.hpp"
+#include "eph/core/error.hpp"
+
+namespace eph::codec {
+
+namespace detail {
+
+/// @brief Lazily-initialised logger for the raw datagram codec.
+inline spdlog::logger* raw_datagram_codec_logger() {
+    static auto* l = [] {
+        auto lg = spdlog::get("codec.raw_datagram");
+        if (!lg) {
+            try {
+                lg = spdlog::stdout_color_mt("codec.raw_datagram");
+            } catch (const spdlog::spdlog_ex&) {
+                lg = spdlog::get("codec.raw_datagram");
+            }
+        }
+        return lg.get();
+    }();
+    return l;
+}
+
+} // namespace detail
+
+/// @brief Identity datagram codec: 1 datagram = 1 frame.
+class RawDatagramCodec {
+public:
+    /// Zero-copy view into the datagram payload.
+    using Frame         = std::span<const uint8_t>;
+    using PacketViewRef = SpanPacketView&;
+
+    static constexpr std::size_t max_overhead = 0;
+    static constexpr bool        is_streaming = false;
+
+    constexpr RawDatagramCodec() noexcept = default;
+
+    /// @brief Emit exactly one frame spanning the whole datagram.
+    ///
+    /// Zero-length datagrams are rejected with `CodecBad` — there is no
+    /// meaningful frame to emit. The datagram is fully consumed on return.
+    ///
+    /// @return the number of frames emitted (always 1 on success).
+    template <class PacketView>
+    [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
+    decode(PacketView& dgram, core::OutputBuffer& /*out*/,
+           const std::function<void(Frame)>& sink) noexcept {
+        const std::size_t n = dgram.length();
+        if (n == 0) {
+            SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
+                "RawDatagramCodec::decode: empty datagram rejected");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad,
+                "RawDatagramCodec: empty datagram"});
+        }
+        Frame frame{dgram.data(), n};
+        // Datagram codecs must fully consume the input before returning.
+        dgram.trim_front(n);
+        sink(frame);
+        SPDLOG_LOGGER_TRACE(detail::raw_datagram_codec_logger(),
+            "RawDatagramCodec::decode: delivered {} bytes", n);
+        return std::size_t{1};
+    }
+
+    /// @brief Encode a frame as a bare copy into `buf`.
+    [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
+    encode(uint8_t* buf, std::size_t cap, Frame payload) noexcept {
+        if (payload.size() > cap) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
+                "RawDatagramCodec::encode: buffer too small (need {}, have {})",
+                payload.size(), cap);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "RawDatagramCodec::encode: destination buffer too small"});
+        }
+        if (!payload.empty()) {
+            std::memcpy(buf, payload.data(), payload.size());
+        }
+        return payload.size();
+    }
+};
+
+static_assert(core::DatagramCodec<RawDatagramCodec>,
+              "RawDatagramCodec must satisfy the DatagramCodec concept");
+
+} // namespace eph::codec

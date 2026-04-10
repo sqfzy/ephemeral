@@ -104,6 +104,10 @@ includes("eph-json/xmake.lua")
 includes("eph-book/xmake.lua")
 includes("eph-net/xmake.lua")
 includes("eph-dpdk/xmake.lua")
+-- v3.3 Phase 1: new eph-codec module (stateful Codec implementations).
+-- Depends only on eph-core + eph-itch; lives alongside the old eph-transport
+-- framers until Phase 7 deletes them.
+includes("eph-codec/xmake.lua")
 
 -- Cross-module integration tests
 includes("tests/integration/xmake.lua")
