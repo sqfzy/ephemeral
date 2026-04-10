@@ -32,9 +32,9 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/net/posix_io.hpp"
 #include "eph/net/posix_listener.hpp"
 
-#include "../../../benchmarks/latency/core/socket_io.hpp"
 #include "../../../benchmarks/latency/core/ws_framing.hpp"
 #include "../../../benchmarks/latency/core/ws_handshake.hpp"
 
@@ -71,7 +71,7 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
         while (true) {
             ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
             if (n <= 0) break;
-            if (!bench::send_all_fd(cfd, buf.data(), static_cast<size_t>(n))) break;
+            if (!eph::net::posix::send_all(cfd, buf.data(), static_cast<size_t>(n))) break;
         }
         ::close(cfd);
     }
@@ -168,7 +168,7 @@ inline void tcp_fin_mock_thread(const std::string& ip, uint16_t port,
         // Read one chunk, echo it, then half-close so the client sees FIN.
         ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
         if (n > 0) {
-            (void)bench::send_all_fd(cfd, buf.data(), static_cast<size_t>(n));
+            (void)eph::net::posix::send_all(cfd, buf.data(), static_cast<size_t>(n));
         }
         ::shutdown(cfd, SHUT_WR);
         // Drain anything the client sends after our FIN, then close fully.
@@ -251,7 +251,7 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                 size_t out_len = bench::ws_framing::build_server_frame(
                     out, bench::ws_framing::kOpClose, payload,
                     static_cast<size_t>(f.payload_len));
-                bench::send_all_fd(cfd, out, out_len);
+                eph::net::posix::send_all(cfd, out, out_len);
                 conn_alive = false;
                 break;
             }
@@ -261,14 +261,14 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                 size_t out_len = bench::ws_framing::build_server_frame(
                     out.data(), bench::ws_framing::kOpPong, payload,
                     static_cast<size_t>(f.payload_len));
-                if (!bench::send_all_fd(cfd, out.data(), out_len)) break;
+                if (!eph::net::posix::send_all(cfd, out.data(), out_len)) break;
             } else {
                 // Data frame → echo unmasked, same opcode.
                 std::vector<uint8_t> out(10 + f.payload_len);
                 size_t out_len = bench::ws_framing::build_server_frame(
                     out.data(), f.opcode, payload,
                     static_cast<size_t>(f.payload_len));
-                if (!bench::send_all_fd(cfd, out.data(), out_len)) break;
+                if (!eph::net::posix::send_all(cfd, out.data(), out_len)) break;
             }
 
             // Compact: drop the consumed frame from the read buffer.
