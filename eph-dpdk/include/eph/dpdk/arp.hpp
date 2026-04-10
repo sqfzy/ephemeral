@@ -92,6 +92,15 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
                                     const rte_ether_addr& src_mac,
                                     uint32_t src_ip,
                                     uint32_t target_ip) noexcept {
+    // Defensive: rte_pktmbuf_alloc dereferences pool with no NULL check
+    // and segfaults on nullptr.  Match the contract of
+    // PacketTemplate::build_packet (returns nullptr on null pool) so
+    // callers can fail fast without a crash.
+    if (!pool) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(detail::arp_logger(),
+            "ARP request: null mempool — cannot allocate");
+        return nullptr;
+    }
     auto* mbuf = rte_pktmbuf_alloc(pool);
     if (!mbuf) {
         SPDLOG_LOGGER_ERROR(detail::arp_logger(),
