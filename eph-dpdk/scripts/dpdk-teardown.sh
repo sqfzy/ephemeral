@@ -1,6 +1,30 @@
 #!/usr/bin/env bash
-# dpdk-teardown.sh — 恢复 DPDK 网卡到内核驱动
-# 生成时间：2026-03-23
+# dpdk-teardown.sh — undo dpdk-setup.sh: rebind NIC to kernel, optionally free hugepages
+#
+# ┌── Script roles in this repo ────────────────────────────────────────┐
+# │ eph-dpdk/scripts/dpdk-setup.sh    one-shot host env: vfio + hugepg  │
+# │ eph-dpdk/scripts/dpdk-teardown.sh this script — restore kernel NIC  │
+# │ scripts/setup_coalescing.sh       NIC RX coalescing tuning          │
+# │ benchmarks/latency/lat            per-run bench wrapper             │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# This script ONLY undoes dpdk-setup.sh:
+#   - Rebind the vfio-pci NIC back to its kernel driver (typically ena/ixgbe)
+#   - Wait for the kernel netdev to reappear and DHCP to assign an IP
+#   - Optionally release hugepages (--release-hugepages)
+#   - Delete .dpdk_state
+#
+# It does NOT:
+#   - Unload the vfio-pci kernel module (intentional — reload has cost)
+#   - Restore NIC coalescing settings (use scripts/setup_coalescing.sh
+#     --restore for that — they are independent concerns)
+#   - Move the NIC into any netns (use `ip link set <nic> netns <ns>` or
+#     run benchmarks/latency/lat which manages the bench_ns transitions)
+#
+# If the NIC is currently in a non-default netns (e.g. bench_ns from a
+# previous `lat` run), it is already on the kernel driver and this script
+# has nothing to undo — it will exit cleanly.
+#
 # 用法：sudo ./eph-dpdk/scripts/dpdk-teardown.sh [选项]
 
 set -euo pipefail

@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
-# dpdk-setup.sh — 配置 DPDK 独占网卡环境（hugepages + VFIO + NIC 绑定）
-# 生成时间：2026-03-23
+# dpdk-setup.sh — one-shot host environment preparation for DPDK
+#
+# ┌── Script roles in this repo ────────────────────────────────────────┐
+# │ eph-dpdk/scripts/dpdk-setup.sh    this script — host env prep       │
+# │ eph-dpdk/scripts/dpdk-teardown.sh undo dpdk-setup, restore kernel   │
+# │ scripts/setup_coalescing.sh       NIC RX coalescing tuning          │
+# │ benchmarks/latency/lat            per-run bench wrapper             │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# This script does ONLY host-level one-shot preparation:
+#   1. Load the vfio-pci kernel module (with noiommu mode for cloud VMs)
+#   2. Allocate 2 MB hugepages (default 256 = 512 MB)
+#   3. Bind the auto-detected non-SSH NIC to vfio-pci
+#   4. Save state to .dpdk_state for dpdk-teardown.sh
+#
+# It does NOT:
+#   - Handle netns (the NIC must be in default ns to be detected)
+#   - Tune NIC coalescing (that's scripts/setup_coalescing.sh)
+#   - Per-run bench orchestration (that's benchmarks/latency/lat)
+#
+# After this script runs once (typically right after a fresh boot), bench
+# tools like benchmarks/latency/lat can switch the NIC between vfio-pci and
+# bench_ns kernel mode without re-running setup.
+#
 # 用法：sudo ./eph-dpdk/scripts/dpdk-setup.sh [选项]
 
 set -euo pipefail
@@ -59,6 +81,7 @@ VERBOSE=false
 CHECK_ONLY=false
 DRY_RUN=false
 SKIP_CONFIRM=false
+SCRIPT_ARGS_DISPLAY="$*"  # cached for retry hints in error messages
 
 usage() {
     cat <<EOF
@@ -215,6 +238,28 @@ detect_nic() {
     fi
 
     if [[ ${#dpdk_candidates[@]} -eq 0 ]]; then
+        # No candidate NIC in the default netns. The most common cause on a
+        # bench-tooling host is that the candidate NIC has been moved into
+        # bench_ns (or another netns) by an earlier `lat` run that didn't
+        # tear down. Look there before giving up — the user almost certainly
+        # just needs to move it back to default ns.
+        local found_ns="" found_nic=""
+        if command -v ip &>/dev/null; then
+            local ns ns_nics ns_nic
+            for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
+                [[ -e "/var/run/netns/$ns" ]] || continue
+                ns_nics=$(ip netns exec "$ns" ls /sys/class/net/ 2>/dev/null | grep -v '^lo$' || true)
+                for ns_nic in $ns_nics; do
+                    if [[ "$ns_nic" != "$ssh_iface" ]]; then
+                        found_ns="$ns"; found_nic="$ns_nic"; break 2
+                    fi
+                done
+            done
+        fi
+        if [[ -n "$found_ns" ]]; then
+            die "found candidate NIC ${found_nic} but it lives in netns ${found_ns} (dpdk-setup only sees default ns)" \
+                "  Move it back to default ns and re-run setup:\n    sudo ip netns exec ${found_ns} ip link set ${found_nic} netns 1\n    sudo $0 ${SCRIPT_ARGS_DISPLAY:-}"
+        fi
         die "没有找到可用于 DPDK 的网卡（只有 SSH 网卡 ${ssh_iface}）" \
             "  至少需要 2 张网卡：一张 SSH，一张 DPDK\n  当前网卡：${all_nics[*]}"
     fi
@@ -457,43 +502,6 @@ EOF
 }
 
 # ──────────────────────────────────────────
-# 5. 快速验证 EAL 能否初始化
-# ──────────────────────────────────────────
-verify_eal() {
-    step "验证 DPDK EAL"
-    verbose "用 dpdk-quickstart 的 --help 快速测试 EAL 能否初始化（不建立连接）。"
-
-    local arch
-    arch=$(uname -m)
-    local test_bin="$PROJECT_DIR/build/linux/${arch}/release/dpdk_quickstart"
-    if [[ ! -x "$test_bin" ]]; then
-        info "跳过 EAL 验证（未找到 ${test_bin}）"
-        info "构建：xmake build dpdk_quickstart"
-        return
-    fi
-
-    if [[ "$DRY_RUN" == true ]]; then
-        info "[模拟] ${test_bin} -a ${DPDK_PCI} -- --help"
-        return
-    fi
-
-    # 用 --help 触发 EAL init 但不实际连接
-    local output
-    if output=$("$test_bin" -a "$DPDK_PCI" -- --help 2>&1); then
-        ok "EAL 初始化成功"
-    else
-        if echo "$output" | grep -q "EAL: Detected"; then
-            ok "EAL 初始化成功（程序以帮助信息退出）"
-        else
-            warn "EAL 初始化可能有问题："
-            echo "$output" | head -5 | while IFS= read -r line; do
-                info "  $line"
-            done
-        fi
-    fi
-}
-
-# ──────────────────────────────────────────
 # 结果报告
 # ──────────────────────────────────────────
 report_results() {
@@ -550,7 +558,6 @@ main() {
     setup_hugepages
     bind_nic
     save_state
-    verify_eal
     report_results
 }
 
