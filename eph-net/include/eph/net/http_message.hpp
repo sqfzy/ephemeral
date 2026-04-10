@@ -180,20 +180,30 @@ build_http_request(std::string_view method,
         return std::unexpected(std::string("Path must not be empty"));
     }
 
-    // Reject CR/LF in method/host/path. Per the same rationale that
-    // extra_headers are scrubbed below: a caller passing untrusted bytes
-    // through any of these fields could otherwise inject arbitrary
-    // request lines or headers.
-    auto has_crlf = [](std::string_view s) noexcept {
-        return s.find('\r') != std::string_view::npos
-            || s.find('\n') != std::string_view::npos;
+    // Reject any whitespace (CR, LF, space, tab) in method/host/path.
+    // RFC 7230 §3.1.1: the request-line is "method SP request-target
+    // SP HTTP-version CRLF" — the SP delimiters are LITERAL spaces.
+    // An embedded space, tab, CR, or LF in any token would either:
+    //   * Inject extra request-line tokens (method "GET POST" makes
+    //     the receiver parse method="GET", target="POST", version=...)
+    //   * Inject new headers via CR/LF (the original injection vector)
+    // Either way the on-wire request becomes ambiguous and a downstream
+    // proxy may interpret it differently — desync.
+    auto has_invalid_token_char = [](std::string_view s) noexcept {
+        for (char c : s) {
+            if (c == '\r' || c == '\n' || c == ' ' || c == '\t') return true;
+        }
+        return false;
     };
-    if (has_crlf(method) || has_crlf(host) || has_crlf(path)) {
+    if (has_invalid_token_char(method) ||
+        has_invalid_token_char(host) ||
+        has_invalid_token_char(path)) {
         SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
-            "build_http_request: method/host/path contains CR/LF "
-            "(potential header injection)");
+            "build_http_request: method/host/path contains whitespace or "
+            "CR/LF (potential header injection / request line ambiguity)");
         return std::unexpected(std::string(
-            "method/host/path must not contain CR or LF (header injection risk)"));
+            "method/host/path must not contain whitespace, CR, or LF "
+            "(injection / desync risk)"));
     }
 
     std::string req;
