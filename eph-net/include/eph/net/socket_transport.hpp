@@ -200,8 +200,10 @@ public:
         auto result_ptr = *dns_result;
         struct addrinfo* result = result_ptr.get();
 
-        // Create socket
-        fd_ = ::socket(result->ai_family, SOCK_STREAM | SOCK_NONBLOCK,
+        // Create socket. SOCK_CLOEXEC ensures fork()/exec() in another
+        // thread does not leak this fd into a child process.
+        fd_ = ::socket(result->ai_family,
+                       SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
                        IPPROTO_TCP);
         if (fd_ < 0) {
             SPDLOG_LOGGER_ERROR(log, "socket() failed: {}", strerror(errno));
@@ -330,16 +332,30 @@ public:
                 "connect() failed: {}", strerror(errno)));
         }
 
-        // Wait for connection with poll()
+        // Wait for connection with poll(), retrying on EINTR using a
+        // monotonic deadline so a signal storm cannot extend the connect
+        // budget beyond the configured timeout.
         struct pollfd pfd{};
         pfd.fd = fd_;
         pfd.events = POLLOUT;
 
-        int poll_rc = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
-        if (poll_rc < 0 && errno == EINTR) {
-            // Interrupted by signal — treat as timeout for simplicity
-            // (connect deadline should be re-checked by caller on retry)
-            SPDLOG_LOGGER_DEBUG(log, "connect poll() interrupted by signal");
+        auto poll_deadline = connect_start + timeout;
+        int poll_rc = 0;
+        for (;;) {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                poll_deadline - std::chrono::steady_clock::now());
+            if (remaining.count() <= 0) {
+                poll_rc = 0;  // treat as timeout
+                break;
+            }
+            poll_rc = ::poll(&pfd, 1, static_cast<int>(remaining.count()));
+            if (poll_rc < 0 && errno == EINTR) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "connect poll() interrupted by signal, retrying with "
+                    "remaining deadline");
+                continue;
+            }
+            break;
         }
         if (poll_rc <= 0) {
             SPDLOG_LOGGER_ERROR(log, "Connection timeout ({}ms) to {}:{}",
@@ -465,6 +481,18 @@ public:
                 continue;
             }
 
+            // Distinguish EPIPE (peer closed) from generic errors so the
+            // reconnect/diagnosis path can react accordingly.  EPIPE is
+            // expected during normal peer-initiated teardown; other errno
+            // values indicate true I/O failure.
+            if (errno == EPIPE) {
+                SPDLOG_LOGGER_INFO(detail::socket_logger(),
+                    "send() got EPIPE: peer closed connection ({}/{} bytes sent)",
+                    len - remaining, len);
+                state_ = TcpState::Closed;
+                return std::unexpected(std::string(
+                    "send() failed: peer closed connection (EPIPE)"));
+            }
             SPDLOG_LOGGER_ERROR(detail::socket_logger(),
                 "send() failed: {}", strerror(errno));
             state_ = TcpState::Closed;
@@ -797,8 +825,12 @@ private:
         if (fd_ >= 0) {
             int ret = ::close(fd_);
             if (ret != 0) [[unlikely]] {
+                // close() failure is rare but notable: indicates pending
+                // unflushed data or kernel-state inconsistency.  Use WARN
+                // (consistent with other socket error paths) so it surfaces
+                // in operational logs.
                 [[maybe_unused]] int saved_errno = errno;
-                SPDLOG_LOGGER_DEBUG(detail::socket_logger(),
+                SPDLOG_LOGGER_WARN(detail::socket_logger(),
                     "close(fd={}) failed: {} (errno={})",
                     fd_, strerror(saved_errno), saved_errno);
             }
