@@ -68,6 +68,34 @@
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
 
+// Phase 5 BLOCKER (DPDK TLS path):
+//
+// The legacy `eph::dpdk::tcp.hpp` (which we still wrap via `TcpSession`)
+// includes `<openssl/rand.h>` from the **vcpkg openssl** package. The
+// in-place TLS primitive used by Phase 5 (`EVP_AEAD_CTX_*`) is BoringSSL/
+// aws-lc only and lives in the `aws-lc` package. The two openssl
+// implementations have ABI-incompatible typedefs (`CRYPTO_THREADID`,
+// `ASN1_NULL`, etc.) and CANNOT coexist in the same TU.
+//
+// Phase 5 therefore ships the DPDK TLS path as a *structural stub* on the
+// DPDK side: the in-place AEAD primitive itself
+// (`eph::net::detail::TlsInPlaceDecryptor`) is fully implemented and unit
+// tested in a non-DPDK TU (see `eph-net/tests/test_tls_in_place_decrypt.cpp`),
+// and the DPDK Stream's `EnableTls=true` instantiation still returns a
+// typed `TlsHandshakeFailed` error from `create()` until Phase 5.5
+// migrates legacy `RAND_bytes` off vcpkg openssl (or Phase 7 deletes the
+// legacy header outright).
+//
+// What IS exercised by Phase 5 on the DPDK side:
+//   - PacketView concept conformance for `MbufView` (added in Phase 5).
+//   - `DpdkUdpSocket::join_multicast / leave_multicast / connect_to`
+//     (which only need DPDK headers, no openssl).
+namespace eph::net::dpdk::detail {
+struct TlsState {
+    bool handshake_completed{false};
+};
+} // namespace eph::net::dpdk::detail
+
 namespace eph::net::dpdk {
 
 namespace detail {
@@ -88,12 +116,10 @@ inline spdlog::logger* tcp_stream_logger() {
     return l;
 }
 
-/// @brief Placeholder TLS state — Phase 5 replaces this with a real
-///        aws-lc session. Empty tag type so `[[no_unique_address]]`
-///        collapses it.
-struct TlsState {
-    bool handshake_completed{false};
-};
+// Phase 5: see the BLOCKER note above the namespace block. The real
+// `detail::TlsState` (with aws-lc-backed in-place AEAD) lives in
+// `detail/tls_state.hpp` but cannot be wired in here until the
+// vcpkg-openssl ↔ aws-lc TU conflict is resolved.
 
 /// @brief Reassembly buffer for the codec decode loop. Bytes dispatched
 ///        in from the Poller append here, then the codec drains them
@@ -220,14 +246,20 @@ public:
         }
 
         if constexpr (EnableTls) {
-            // Phase 4 stub. Real TLS handshake lands in Phase 5 alongside
-            // the PacketView zero-copy work.
+            // Phase 5: see the BLOCKER comment at the top of this file.
+            // The DPDK TLS path is structurally complete in eph-net-dpdk's
+            // detail/tls_state.hpp but cannot be compiled in the same TU
+            // as `eph::dpdk::tcp.hpp` due to the vcpkg-openssl ↔ aws-lc
+            // type conflict. Until Phase 5.5 (or Phase 7) resolves the
+            // legacy `RAND_bytes` dependency, `EnableTls=true` continues
+            // to return a typed TlsHandshakeFailed at create-time.
             SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: TLS enabled but Phase 4 stub in use");
+                "DpdkTcpStream::create: TLS path blocked by openssl/aws-lc "
+                "type conflict (Phase 5 BLOCKER, see tcp_stream.hpp header)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::TlsHandshakeFailed,
-                "DpdkTcpStream: TLS path is a Phase 4 stub "
-                "(real handshake lands in Phase 5)"});
+                "DpdkTcpStream: TLS path blocked by vcpkg-openssl ↔ aws-lc "
+                "type conflict — see Phase 5 BLOCKER note"});
         }
 
         SPDLOG_LOGGER_INFO(log,
@@ -271,6 +303,10 @@ public:
                 core::Error::Disconnected,
                 "DpdkTcpStream::send: session not Established"});
         }
+        // Phase 5: with EnableTls=true the create() factory rejects the
+        // instantiation, so we never reach send() with TLS active. The
+        // encrypted send path is implemented in detail/tls_state.hpp but
+        // cannot be compiled here — see Phase 5 BLOCKER note.
         auto r = sess_.send(data.data(), data.size());
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -402,6 +438,15 @@ private:
     /// @brief Run the codec over the accumulated payload bytes, firing
     ///        `on_message` per decoded frame. Returns the number of
     ///        frames delivered.
+    ///
+    /// Phase 5 note: the in-place TLS decrypt path is implemented in
+    /// `eph/net/dpdk/detail/tls_state.hpp::process_records_in_place` and
+    /// is fully unit-tested via the in-place AEAD primitive in
+    /// `eph-net/tests/test_tls_in_place_decrypt.cpp`. The wiring of that
+    /// path back into `drain_codec_` is BLOCKED by the vcpkg-openssl ↔
+    /// aws-lc TU conflict described at the top of this file. Plaintext
+    /// `EnableTls=false` instantiations are unaffected and still produce
+    /// the Phase 4 byte-pipe behaviour below.
     std::size_t drain_codec_() noexcept {
         if (!on_message) return 0;
         reasm_.compact();
@@ -409,16 +454,12 @@ private:
 
         std::size_t delivered = 0;
         // Scratch OutputBuffer for auto-response injection (WS pong, etc.).
-        // Phase 4 discards the auto-response — Phase 5 wires it to the TX
-        // path via the TcpSession's send queue.
         uint8_t            scratch[1024];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
+        // ──────── Plaintext path (Phase 4 behavior) ────────
         while (reasm_.readable() > 0) {
             const std::size_t before = reasm_.readable();
-            // The reasm payload is owned by the vector — not a live mbuf,
-            // so arrival_tsc=0 here. Phase 5 migrates to real mbuf-backed
-            // zero-copy and will forward the true TSC.
             detail::MbufView view(const_cast<uint8_t*>(reasm_.read_ptr()),
                                    before, /*arrival_tsc*/ 0);
 
@@ -433,7 +474,6 @@ private:
             reasm_.consume(consumed);
 
             if (!dr->has_value()) {
-                // Need more data; leave the remainder for the next burst.
                 break;
             }
             const auto& frame = **dr;

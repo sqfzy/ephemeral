@@ -28,6 +28,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "eph/core/packet_view.hpp"
+
 namespace eph::codec {
 
 /// @brief Contiguous byte window into an externally-owned buffer.
@@ -76,5 +78,9 @@ private:
     std::size_t tail_;  ///< one past the last valid byte (offset from base_)
     uint64_t    tsc_;   ///< NIC arrival timestamp for latency tracking
 };
+
+// Phase 5: formal concept verification.
+static_assert(::eph::core::PacketView<SpanPacketView>,
+              "SpanPacketView must satisfy the eph::core::PacketView concept");
 
 } // namespace eph::codec

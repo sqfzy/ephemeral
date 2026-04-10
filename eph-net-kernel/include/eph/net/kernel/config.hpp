@@ -14,6 +14,7 @@
 
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/transport/detail/tls_constants.hpp"  // Phase 5: TlsConfig
 
 namespace eph::net::kernel {
 
@@ -41,6 +42,14 @@ struct StreamConfig {
 
     /// @brief Reconnection policy applied by higher-level recovery code.
     ReconnectPolicyConfig reconnect{};
+
+    /// @brief TLS 1.3 configuration. Only consulted when the stream is
+    ///        instantiated with `EnableTls=true`. The default value works
+    ///        for plaintext use (since the field is ignored). For TLS use,
+    ///        callers MUST set at least `tls.hostname` (SNI) and either
+    ///        `tls.ca_cert_path` or rely on the system's default trust
+    ///        store. Phase 5 wires this through the real handshake.
+    ::eph::net::TlsConfig tls{};
 };
 
 // ---------------------------------------------------------------------------

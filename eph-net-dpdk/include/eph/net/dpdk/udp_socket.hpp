@@ -33,8 +33,10 @@
 ///     that into the new API surface properly. Tests only exercise the
 ///     API surface (NotAttached, send_to after attach, etc.).
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <functional>
 #include <memory>
@@ -42,6 +44,7 @@
 #include <span>
 #include <utility>
 
+#include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
 #include <spdlog/spdlog.h>
@@ -49,6 +52,7 @@
 
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
+#include "eph/dpdk/multicast.hpp"   // Phase 5: multicast_mac_from_ip helper
 #include "eph/dpdk/packet_parse.hpp"
 #include "eph/dpdk/udp.hpp"
 #include "eph/net/concepts.hpp"
@@ -180,30 +184,81 @@ public:
         return data.size();
     }
 
+    /// @brief Subscribe to a multicast group at the NIC MAC-filter layer.
+    ///
+    /// Phase 5 implementation: derive the multicast Ethernet MAC from the
+    /// group IP per RFC 1112, append it to our per-socket MAC list, and
+    /// push the rebuilt list to the NIC via `rte_eth_dev_set_mc_addr_list`.
+    /// Per-socket connect_to / 5-tuple steering is handled separately by
+    /// `connect_to()`.
+    ///
+    /// Returns `InvalidConfig` if `group.ip` is not in the 224.0.0.0/4
+    /// multicast range, or `BufferFull` if the per-socket cap is reached.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
-    join_multicast(const SocketAddr& /*group*/) noexcept {
-        // Phase 4 stub — the legacy eph::dpdk::multicast helper uses a
-        // port-level API that we need to reinterpret for per-socket
-        // membership. Phase 5 hooks this in properly.
-        SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
-            "DpdkUdpSocket::join_multicast: Phase 4 stub (no-op)");
-        return {};
+    join_multicast(const SocketAddr& group) noexcept {
+        const uint32_t ip_be = group.ip.to_be32();
+        if (!::eph::dpdk::is_multicast_ip(ip_be)) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkUdpSocket::join_multicast: ip not in 224.0.0.0/4"});
+        }
+        if (mcast_count_ >= mcast_macs_.size()) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "DpdkUdpSocket::join_multicast: too many groups"});
+        }
+        const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_be);
+        // Idempotent — skip if already joined.
+        for (std::size_t i = 0; i < mcast_count_; ++i) {
+            if (std::memcmp(&mcast_macs_[i], &mac, sizeof(mac)) == 0) {
+                return {};
+            }
+        }
+        mcast_macs_[mcast_count_++] = mac;
+        return apply_mcast_list_();
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
-    leave_multicast(const SocketAddr& /*group*/) noexcept {
-        SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
-            "DpdkUdpSocket::leave_multicast: Phase 4 stub (no-op)");
+    leave_multicast(const SocketAddr& group) noexcept {
+        const uint32_t ip_be = group.ip.to_be32();
+        if (!::eph::dpdk::is_multicast_ip(ip_be)) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkUdpSocket::leave_multicast: ip not in 224.0.0.0/4"});
+        }
+        const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_be);
+        for (std::size_t i = 0; i < mcast_count_; ++i) {
+            if (std::memcmp(&mcast_macs_[i], &mac, sizeof(mac)) == 0) {
+                // Compact the array.
+                for (std::size_t j = i; j + 1 < mcast_count_; ++j) {
+                    mcast_macs_[j] = mcast_macs_[j + 1];
+                }
+                --mcast_count_;
+                return apply_mcast_list_();
+            }
+        }
+        // Not joined — be idempotent.
         return {};
     }
 
-    /// @brief Connect-equivalent — DPDK has no kernel connect(), so this
-    ///        is where the 5-tuple would be installed into a flow-
-    ///        steering rule. Phase 4 stub; Phase 5 wires into FlowSteering.
+    /// @brief Pin per-socket inbound to a specific source 4-tuple via NIC
+    ///        flow steering. Until a higher-level FlowSteering manager
+    ///        exists in eph-net-dpdk, this records the peer for the
+    ///        Poller's per-tuple dispatch — the existing
+    ///        `tuple_for_poller_` machinery already routes inbound
+    ///        packets by 4-tuple, so updating the configured peer is
+    ///        sufficient to redirect inbound dispatch.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
-    connect_to(const SocketAddr& /*peer*/) noexcept {
+    connect_to(const SocketAddr& peer) noexcept {
+        // The legacy UdpSender is fixed-peer (built around a precomputed
+        // packet template), so we can't change the TX peer mid-stream.
+        // What we CAN do is update the inbound dispatch tuple — the
+        // Poller's routing table keys on (src_ip, src_port, dst_ip, dst_port).
+        connected_peer_ = peer;
+        connected_     = true;
         SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
-            "DpdkUdpSocket::connect_to: Phase 4 stub (peer is fixed at create)");
+            "DpdkUdpSocket::connect_to: peer set ip_be=0x{:08x} port={}",
+            peer.ip.to_be32(), peer.port);
         return {};
     }
 
@@ -266,6 +321,16 @@ public:
                 parsed.src_port()
             };
 
+            // Phase 5: connect_to() filter — drop packets whose source
+            // does not match the configured peer.
+            if (connected_) {
+                if (src_addr.ip.to_be32() != connected_peer_.ip.to_be32() ||
+                    src_addr.port         != connected_peer_.port) {
+                    rte_pktmbuf_free(mbufs[i]);
+                    continue;
+                }
+            }
+
             // Wrap the payload in an MbufView. The memory is owned by
             // the mbuf, which stays alive for the entire on_datagram
             // callback scope. Phase 5 will let codecs mutate in place
@@ -298,10 +363,44 @@ private:
     DpdkUdpSocket(UdpConfig cfg, ::eph::dpdk::UdpSender sender) noexcept
         : cfg_(std::move(cfg)), sender_(std::move(sender)) {}
 
-    UdpConfig                           cfg_{};
-    ::eph::dpdk::UdpSender              sender_;
-    [[no_unique_address]] C             codec_{};
-    DpdkPoller<void>*                   attached_to_{nullptr};
+    /// @brief Push the current `mcast_macs_[0..mcast_count_)` list to the
+    ///        NIC via `rte_eth_dev_set_mc_addr_list`. Called from join /
+    ///        leave; safe to call when the list is empty (uninstalls).
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    apply_mcast_list_() noexcept {
+        const uint16_t port = cfg_.legacy.port_id;
+        const int rc = ::rte_eth_dev_set_mc_addr_list(
+            port,
+            mcast_count_ > 0 ? mcast_macs_.data() : nullptr,
+            static_cast<uint32_t>(mcast_count_));
+        if (rc != 0) {
+            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                "DpdkUdpSocket::apply_mcast_list_: "
+                "rte_eth_dev_set_mc_addr_list failed: rc={} count={} port={}",
+                rc, mcast_count_, port);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "rte_eth_dev_set_mc_addr_list failed"});
+        }
+        SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+            "DpdkUdpSocket::apply_mcast_list_: count={} port={}",
+            mcast_count_, port);
+        return {};
+    }
+
+    UdpConfig                              cfg_{};
+    ::eph::dpdk::UdpSender                 sender_;
+    [[no_unique_address]] C                codec_{};
+    DpdkPoller<void>*                      attached_to_{nullptr};
+    /// Per-socket multicast MAC list (max 8 groups, matches the legacy
+    /// kMaxMulticastGroups). Pushed to the NIC via
+    /// `rte_eth_dev_set_mc_addr_list` on join / leave.
+    std::array<rte_ether_addr, 8>          mcast_macs_{};
+    std::size_t                            mcast_count_{0};
+    /// connect_to() bookkeeping — when set, packets from non-matching
+    /// peers are filtered by the Poller's tuple dispatch.
+    SocketAddr                             connected_peer_{};
+    bool                                   connected_{false};
 };
 
 } // namespace eph::net::dpdk

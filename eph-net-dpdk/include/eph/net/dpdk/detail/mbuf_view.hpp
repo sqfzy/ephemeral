@@ -22,6 +22,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "eph/core/packet_view.hpp"
+
 namespace eph::net::dpdk::detail {
 
 /// @brief Mutable span cursor over a DPDK payload region.
@@ -82,5 +84,9 @@ private:
     std::size_t length_      = 0;
     uint64_t    arrival_tsc_ = 0;
 };
+
+// Phase 5: formal concept verification.
+static_assert(::eph::core::PacketView<MbufView>,
+              "MbufView must satisfy the eph::core::PacketView concept");
 
 } // namespace eph::net::dpdk::detail

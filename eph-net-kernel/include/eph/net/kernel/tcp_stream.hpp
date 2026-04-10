@@ -59,6 +59,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -73,6 +74,7 @@
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/kernel/detail/reassembly_buffer.hpp"
 #include "eph/net/kernel/detail/span_view.hpp"
+#include "eph/net/kernel/detail/tls_state.hpp"  // Phase 5: real TLS state
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
@@ -97,12 +99,8 @@ inline spdlog::logger* tcp_stream_logger() {
     return l;
 }
 
-/// @brief Placeholder TLS state — Phase 5 replaces this with a real
-///        aws-lc session. For Phase 3 it's an empty tag type so
-///        `[[no_unique_address]]` can still layout-optimize.
-struct TlsState {
-    bool handshake_completed{false};
-};
+// Phase 5: TlsState is now defined in detail/tls_state.hpp (real aws-lc
+// AEAD machinery, replacing the Phase 3 stub).
 
 } // namespace detail
 
@@ -163,14 +161,22 @@ public:
         }
 
         if constexpr (EnableTls) {
-            // Phase 3 stub. Real handshake lands in Phase 5 alongside the
-            // TLS PacketView zero-copy path.
-            SPDLOG_LOGGER_WARN(log,
-                "KernelTcpStream::create: TLS enabled but Phase 3 stub in use");
-            return std::unexpected(core::ErrorInfo{
-                core::Error::TlsHandshakeFailed,
-                "KernelTcpStream: TLS path is a Phase 3 stub "
-                "(real handshake lands in Phase 5)"});
+            // Phase 5: real TLS 1.3 handshake via aws-lc, driven through a
+            // ByteSocketTcpAdapter. After handshake the AEAD context is
+            // owned by stream->tls_ and the bare ByteSocket resumes ownership
+            // of the fd for the data plane.
+            auto h = stream->tls_.handshake(stream->sock_, stream->cfg_.tls);
+            if (!h) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::create: TLS handshake failed: {}",
+                    h.error().detail);
+                return std::unexpected(h.error());
+            }
+            stream->state_ = TcpState::Established;
+            SPDLOG_LOGGER_INFO(log,
+                "KernelTcpStream::create: TLS up fd={} remote={}",
+                stream->sock_.fd(), stream->cfg_.remote.to_string());
+            return stream;
         } else {
             stream->state_ = TcpState::Established;
             SPDLOG_LOGGER_INFO(log,
@@ -219,11 +225,24 @@ public:
                 core::Error::Disconnected,
                 "KernelTcpStream::send: state != Established"});
         }
-        // Phase 3 scope: send bytes straight through. TLS encrypt and WS
-        // encode land in Phase 5 alongside the handshake. Higher-level
-        // composers (`WsCodec::encode`) can be called at the call site if
-        // the user wants frame-oriented send semantics.
-        return sock_.send(data);
+        // Phase 5: when TLS is enabled, encrypt the bytes into one or more
+        // TLS records before forwarding to the socket. The plaintext API
+        // is still bytes-in / bytes-out — the caller has already encoded
+        // their frames via `WsCodec::encode` etc.
+        if constexpr (EnableTls) {
+            tls_send_buf_.clear();
+            auto enc = tls_.encrypt_for_send(data.data(), data.size(),
+                                              tls_send_buf_);
+            if (!enc) {
+                return std::unexpected(enc.error());
+            }
+            auto sr = sock_.send(tls_send_buf_);
+            if (!sr) return std::unexpected(sr.error());
+            // Return plaintext byte count (the API contract is plaintext-len).
+            return data.size();
+        } else {
+            return sock_.send(data);
+        }
     }
 
     /// @brief Initiate a graceful half-close (shutdown(SHUT_WR) equivalent).
@@ -347,17 +366,71 @@ private:
 
     /// @brief Feed buffered bytes through the codec until it returns
     ///        `Ok(None)`, firing `on_message` per decoded frame.
+    ///
+    /// Phase 5: when TLS is enabled the reasm buffer holds ciphertext
+    /// (raw TLS records). We decrypt complete records into `tls_plain_buf_`
+    /// and run the codec over the plaintext. Partial records stay in the
+    /// reasm buffer for the next poll.
     std::size_t drain_codec_() noexcept {
         std::size_t delivered = 0;
-        // Scratch OutputBuffer for auto-response injection. For Phase 3
-        // we discard the auto-response (WS pong etc.) — Phase 5 wires the
-        // sink back into the TX path.
+        // Scratch OutputBuffer for auto-response injection. The auto-
+        // responses are queued for the next send() call (kernel-side
+        // we don't yet plumb the sink back into the TX path automatically;
+        // a Phase 6 cleanup will hook that into the codec contract).
         uint8_t          scratch[1024];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
-        // Loop while the codec keeps making progress. Each iteration wraps
-        // the reasm buffer in a SpanView, lets the codec advance the head,
-        // then consumes exactly that many bytes from the reasm buffer.
+        if constexpr (EnableTls) {
+            // 1) Decrypt as many complete TLS records as possible.
+            auto cr = tls_.process_records(reasm_.read_ptr(),
+                                            reasm_.readable(),
+                                            tls_plain_buf_);
+            if (!cr) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "KernelTcpStream::drain_codec_: TLS process_records "
+                    "failed: {}", cr.error().detail);
+                state_ = TcpState::Closed;
+                return 0;
+            }
+            reasm_.consume(*cr);
+
+            // 2) Run the codec over the decrypted plaintext window.
+            std::size_t plain_off = 0;
+            while (plain_off < tls_plain_buf_.size()) {
+                const std::size_t before = tls_plain_buf_.size() - plain_off;
+                detail::SpanView view(tls_plain_buf_.data() + plain_off, before);
+
+                auto dr = codec_.decode(view, out_sink);
+                if (!dr) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "KernelTcpStream::drain_codec_: decode error (TLS): {}",
+                        dr.error().detail);
+                    state_ = TcpState::Closed;
+                    tls_plain_buf_.clear();
+                    return delivered;
+                }
+                const std::size_t consumed = before - view.length();
+                plain_off += consumed;
+
+                if (!dr->has_value()) break;  // need more plaintext
+
+                const auto& frame = **dr;
+                if (frame.size() > 0) {
+                    on_message(frame.data(),
+                               static_cast<uint16_t>(
+                                   frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
+                    ++delivered;
+                }
+            }
+            // Compact the plaintext buffer: drop everything we consumed.
+            if (plain_off > 0) {
+                tls_plain_buf_.erase(tls_plain_buf_.begin(),
+                                      tls_plain_buf_.begin() + plain_off);
+            }
+            return delivered;
+        }
+
+        // Plaintext path — original Phase 3 behavior.
         while (reasm_.readable() > 0) {
             const std::size_t before = reasm_.readable();
             detail::SpanView view(reasm_.read_ptr(), before);
@@ -374,11 +447,8 @@ private:
             reasm_.consume(consumed);
 
             if (!dr->has_value()) {
-                // Need more data; decoder consumed what it could (possibly 0)
-                // and is waiting for more bytes on the next poll.
                 break;
             }
-            // Frame emitted — hand it to on_message.
             const auto& frame = **dr;
             if (frame.size() > 0) {
                 on_message(frame.data(),
@@ -399,6 +469,14 @@ private:
                                               detail::TlsState,
                                               std::monostate> tls_{};
     detail::ReassemblyBuffer    reasm_;
+    // TLS plaintext staging buffer (only used when EnableTls=true). Lives
+    // here so its capacity can amortize across many polls. The empty-base
+    // size penalty for the plaintext path is one std::vector<uint8_t> —
+    // 24 bytes. Phase 6 may swap this for a SPSC ring buffer if profiling
+    // calls for it.
+    std::vector<uint8_t>        tls_plain_buf_{};
+    /// TLS encrypt staging — sized per-call so we don't realloc.
+    std::vector<uint8_t>        tls_send_buf_{};
     KernelPoller*               attached_to_{nullptr};
     ReconnectPolicy             reconnect_policy_;
     TcpState                    state_{TcpState::Closed};

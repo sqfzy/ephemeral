@@ -24,6 +24,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "eph/core/packet_view.hpp"
+
 namespace eph::net::kernel::detail {
 
 /// @brief Contiguous mutable byte window; matches the PacketView contract.
@@ -53,5 +55,9 @@ private:
     std::size_t tail_;
     uint64_t    tsc_;
 };
+
+// Phase 5: formal concept verification.
+static_assert(::eph::core::PacketView<SpanView>,
+              "SpanView must satisfy the eph::core::PacketView concept");
 
 } // namespace eph::net::kernel::detail
