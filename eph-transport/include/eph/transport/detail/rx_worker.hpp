@@ -898,14 +898,23 @@ private:
                                     decrypt_buf.get(), decrypted_len);
                         ws_reassembly_len += decrypted_len;
                     } else {
-                        SPDLOG_LOGGER_WARN(log,
+                        // Consistent with TLS decrypt failure path above:
+                        // trigger reconnect instead of silently dropping
+                        // partial frames (which would leave the WS decoder
+                        // in an inconsistent state).
+                        SPDLOG_LOGGER_ERROR(log,
                             "WS reassembly buffer overflow ({} + {} > {}), "
-                            "discarding partial frame",
+                            "triggering reconnect",
                             ws_reassembly_len, decrypted_len,
                             kWsReassemblyBufSize);
+                        reassembly_len = 0;
                         ws_reassembly_len = 0;
-                        consumed += record_total;
-                        continue;
+                        consumed = 0;
+                        frame_processor_->reset();
+                        if (!callbacks_.do_reconnect()) {
+                            core_.running.store(false, std::memory_order_release);
+                        }
+                        break;
                     }
                     ws_data = ws_reassembly_storage.get();
                     ws_data_len = ws_reassembly_len;
