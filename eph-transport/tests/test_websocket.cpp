@@ -1166,3 +1166,139 @@ TEST(EncodeFrame, ExactBoundary126BytePayload) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 126u);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// RFC 6455 §5.2 — extended length encoding rules
+// ═══════════════════════════════════════════════════════════════════════
+//
+// RFC 6455 §5.2 imposes two rules on extended payload length:
+//
+//   "If 127, the following 8 bytes interpreted as a 64-bit unsigned
+//    integer (the most significant bit MUST be 0) are the payload
+//    length."
+//
+//   "Note that in all cases, the minimal number of bytes MUST be
+//    used to encode the length, for example, the length of a
+//    124-byte-long string can't be encoded as the sequence 126, 0, 124."
+//
+// The decoder previously enforced neither.  This was a slow-loris DoS
+// surface (8-byte form with high bit pinned the receive loop in
+// kIncomplete forever) and a smuggling-class ambiguity (peers may
+// interpret non-minimal encodings differently).
+
+TEST(DecodeFrameLengthEnc, EightByteFormHighBitSetRejected) {
+    // Server frame, opcode=binary, len_byte=127, then 8 bytes
+    // 0x80 00 00 00 00 00 00 00 — high bit set, payload_len = 2^63.
+    // Without the fix this returns kIncomplete and the recv loop
+    // would wait forever for ~9 exabytes that will never arrive.
+    uint8_t data[] = {
+        0x82,                                     // FIN | binary
+        0x7F,                                     // len_byte = 127
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, EightByteFormAllOnesRejected) {
+    // payload_len = 0xFFFF...FF.  Same DoS surface.
+    uint8_t data[] = {
+        0x82, 0x7F,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, EightByteFormNonMinimalSmallRejected) {
+    // payload_len = 100 in the 8-byte form.  Should have been
+    // encoded inline (len_byte=100).
+    uint8_t data[] = {
+        0x82, 0x7F,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, // = 100
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, EightByteFormNonMinimalMediumRejected) {
+    // payload_len = 1000 in 8-byte form.  Should have used the
+    // 2-byte (126) form.
+    uint8_t data[] = {
+        0x82, 0x7F,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE8, // = 1000
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, EightByteFormBoundary65535Rejected) {
+    // 65535 still fits in the 2-byte form, so it MUST use that.
+    uint8_t data[] = {
+        0x82, 0x7F,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, EightByteFormBoundary65536Accepted) {
+    // 65536 is the smallest length that requires the 8-byte form.
+    // Build header only — full payload would be 64 KiB; the decoder
+    // will report kIncomplete which is correct (we don't supply it).
+    uint8_t data[] = {
+        0x82, 0x7F,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    // Expect kIncomplete (NOT kInvalidLengthEncoding) — the encoding
+    // is legal, we just haven't supplied the payload bytes.
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+}
+
+TEST(DecodeFrameLengthEnc, TwoByteFormNonMinimalRejected) {
+    // payload_len = 50 in 2-byte form.  Should have been inline.
+    uint8_t data[] = {
+        0x82, 0x7E,        // FIN|binary, len_byte=126
+        0x00, 0x32,        // 50
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, TwoByteFormBoundary125Rejected) {
+    // 125 fits in the inline form — non-minimal.
+    uint8_t data[] = {
+        0x82, 0x7E,
+        0x00, 0x7D,        // 125
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
+}
+
+TEST(DecodeFrameLengthEnc, TwoByteFormBoundary126Accepted) {
+    // 126 is the smallest length that requires the 2-byte form.
+    uint8_t data[] = {
+        0x82, 0x7E,
+        0x00, 0x7E,        // 126
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kIncomplete); // payload absent
+}
+
+TEST(DecodeFrameLengthEnc, InlineFormZeroAccepted) {
+    // 0-byte payload uses inline form — always legal.
+    uint8_t data[] = {0x82, 0x00};
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 0u);
+}

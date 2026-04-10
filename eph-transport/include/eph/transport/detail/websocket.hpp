@@ -147,6 +147,7 @@ enum class DecodeError : uint8_t {
     kFragmentedControl,     ///< Control frame with FIN=0
     kControlPayloadTooLarge,///< Control frame payload > 125 bytes
     kInvalidOpcode,         ///< Reserved opcode (0x3-0x7, 0xB-0xF per RFC 6455 §5.2)
+    kInvalidLengthEncoding, ///< Non-minimal extended length, or 8-byte form with high bit set (RFC 6455 §5.2)
 };
 
 /// Human-readable name for a DecodeError value.
@@ -157,6 +158,7 @@ enum class DecodeError : uint8_t {
     case DecodeError::kFragmentedControl:      return "fragmented control frame";
     case DecodeError::kControlPayloadTooLarge: return "control frame payload exceeds 125 bytes";
     case DecodeError::kInvalidOpcode:          return "reserved opcode (RFC 6455 §5.2)";
+    case DecodeError::kInvalidLengthEncoding:  return "invalid extended length encoding (RFC 6455 §5.2)";
     }
     return "unknown";
 }
@@ -535,6 +537,21 @@ decode_frame(const uint8_t* data, size_t len) {
     pos++;
 
     // Extended payload length
+    // RFC 6455 §5.2 imposes two constraints we must enforce:
+    //   1. The 8-byte (127) form's high bit MUST be 0
+    //      ("the most significant bit MUST be 0").  Without this
+    //      check, a peer can advertise payload_len = 2^63 .. 2^64-1
+    //      and pin our decoder in kIncomplete forever (slow-loris
+    //      DoS — we wait for bytes that will never arrive).
+    //   2. The minimal number of bytes MUST be used to encode the
+    //      length.  Specifically:
+    //        - len_byte == 126 with extended value < 126 is illegal
+    //          (should have been encoded inline)
+    //        - len_byte == 127 with extended value <= 65535 is illegal
+    //          (should have used the 2-byte form)
+    //      Non-minimal encodings are an ambiguity surface — different
+    //      decoders may treat them differently, identical to the
+    //      smuggling pattern we've fixed for HTTP framing.
     if (len_byte < 126) {
         frame.payload_len = len_byte;
     } else if (len_byte == 126) {
@@ -542,6 +559,13 @@ decode_frame(const uint8_t* data, size_t len) {
         frame.payload_len = static_cast<uint64_t>(data[pos]) << 8 |
                             static_cast<uint64_t>(data[pos + 1]);
         pos += 2;
+        if (frame.payload_len < 126) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: non-minimal 2-byte length encoding "
+                "(value {} fits in 7-bit form, RFC 6455 §5.2)",
+                frame.payload_len);
+            return std::unexpected(DecodeError::kInvalidLengthEncoding);
+        }
     } else { // 127
         if (len < pos + 8) return std::unexpected(DecodeError::kIncomplete);
         frame.payload_len = 0;
@@ -549,6 +573,22 @@ decode_frame(const uint8_t* data, size_t len) {
             frame.payload_len = (frame.payload_len << 8) | data[pos + i];
         }
         pos += 8;
+        // High bit MUST be 0 per RFC 6455 §5.2.  Equivalently:
+        // payload_len > kMaxPayloadLen ⇔ MSB set.
+        if (frame.payload_len > kMaxPayloadLen) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: 8-byte length form with high bit set "
+                "(payload_len=0x{:016X}, RFC 6455 §5.2)",
+                frame.payload_len);
+            return std::unexpected(DecodeError::kInvalidLengthEncoding);
+        }
+        if (frame.payload_len <= 65535) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: non-minimal 8-byte length encoding "
+                "(value {} fits in 2-byte form, RFC 6455 §5.2)",
+                frame.payload_len);
+            return std::unexpected(DecodeError::kInvalidLengthEncoding);
+        }
     }
 
     // Masking key (if present — server frames are typically unmasked)

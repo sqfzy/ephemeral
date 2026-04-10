@@ -175,7 +175,11 @@ TEST(WsDecode, TruncatedPayloadReturnsIncomplete) {
 }
 
 TEST(WsDecode, IntegerOverflowProtection) {
-    // Craft a frame with 8-byte extended length = UINT64_MAX
+    // Craft a frame with 8-byte extended length = UINT64_MAX.
+    // Per RFC 6455 §5.2 the high bit MUST be 0; the decoder rejects
+    // such frames with kInvalidLengthEncoding.  Pre-fix the decoder
+    // returned kIncomplete and the recv loop would wait forever for
+    // bytes that never arrive — slow-loris DoS surface.
     uint8_t data[14] = {};
     data[0] = 0x82; // FIN + binary
     data[1] = 127;  // 8-byte extended length
@@ -184,7 +188,7 @@ TEST(WsDecode, IntegerOverflowProtection) {
 
     auto result = decode_frame(data, sizeof(data));
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error(), DecodeError::kIncomplete);
+    EXPECT_EQ(result.error(), DecodeError::kInvalidLengthEncoding);
 }
 
 TEST(WsDecode, UnmaskedServerFrame) {
