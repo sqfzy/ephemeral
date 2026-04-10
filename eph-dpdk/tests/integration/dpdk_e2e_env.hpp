@@ -133,8 +133,38 @@ public:
             return;
         }
         env_.emplace(std::move(*env_r));
+
+        // ── 6. Cold-start warmup ─────────────────────────────────────
+        // The first TCP connect after EAL bring-up always fails or
+        // stalls: AWS VPC route cache, gateway ARP for our DPDK source
+        // IP, and the ENA driver's RX queue priming all need 1-2
+        // round-trips to settle.  Mirror runner.hpp's "pre_warmup
+        // absorbs route cache / ARP / scheduler cold start" pattern by
+        // doing a throw-away TCP connect to the kernel echo port.
+        // Result is intentionally ignored.
+        warmup_connect_();
+
         ready_ = true;
         spdlog::info("DpdkE2ETestEnv: ready");
+    }
+
+    /// Best-effort warmup: open a TCP connection to the echo mock and
+    /// immediately close it.  Suppresses cold-start failures so the
+    /// real test cases see a steady-state path.
+    void warmup_connect_() noexcept {
+        try {
+            auto tcfg = env_->make_tcp_config(/*src*/55555, kTcpEchoPort);
+            eph::dpdk::TcpSession<> warmup_sess(tcfg, env_->pool);
+            // Use a longer deadline than the test default since this is
+            // the cold path; ignore the result either way.
+            (void)warmup_sess.connect(std::chrono::seconds{5});
+            (void)warmup_sess.close();
+        } catch (...) {
+            // Even if connect threw, the side-effect of priming the
+            // route cache and gateway ARP table is what we care about.
+        }
+        // Also do a small idle gap to let the close fully drain.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     void TearDown() override {
