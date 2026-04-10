@@ -41,6 +41,7 @@
 #include "../core/sample.hpp"
 #include "../core/signal.hpp"
 #include "../core/socket_bind.hpp"
+#include "../core/socket_io.hpp"
 #include "../core/tsc_protocol.hpp"
 #include "../core/ws_framing.hpp"
 #include "../core/ws_handshake.hpp"
@@ -58,33 +59,7 @@ constexpr std::array<size_t, 6> kDefaultWsPayloads{
     64, 128, 256, 512, 1024, 4096
 };
 
-bool send_all_fd(int fd, const void* data, size_t len) noexcept {
-    size_t sent = 0;
-    while (sent < len) {
-        ssize_t n = ::send(fd, static_cast<const uint8_t*>(data) + sent,
-                           len - sent, MSG_NOSIGNAL);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        sent += static_cast<size_t>(n);
-    }
-    return true;
-}
-
-bool recv_exact_fd(int fd, void* buf, size_t len) noexcept {
-    size_t got = 0;
-    while (got < len) {
-        ssize_t n = ::recv(fd, static_cast<uint8_t*>(buf) + got, len - got, 0);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        if (n == 0) return false;
-        got += static_cast<size_t>(n);
-    }
-    return true;
-}
+// send_all_fd / recv_exact_fd live in core/socket_io.hpp now.
 
 /// Read one server→client (unmasked) frame's payload into `out` (capacity
 /// `cap`). Returns payload length on success, 0 on failure / control frame.
