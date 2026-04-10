@@ -9,6 +9,7 @@
 ///
 /// For the synchronous HTTP client that uses these types, see http_client.hpp.
 
+#include <cctype>
 #include <charconv>
 #include <expected>
 #include <format>
@@ -364,17 +365,30 @@ parse_http_response(std::string_view data) noexcept {
             ? space2 - code_start
             : std::string_view::npos);
 
+    // RFC 7230 §3.1.2: status-code = 3DIGIT.  Enforcing the strict
+    // grammar at parse time rejects in one shot:
+    //   - trailing garbage  ("200xyz")          — desync via ambiguous interpretation
+    //   - leading sign      ("+200", "-1")      — int from_chars accepts both
+    //   - short / long codes ("20", "2000")     — out of spec
+    //   - non-digit chars   ("XYZ")
+    // Different intermediaries interpret malformed status lines
+    // differently — that's the foundation of response-smuggling
+    // attacks.  Same defense as transport/detail/http.hpp gained
+    // in earlier rounds.
     HttpResponse resp;
-    auto [ptr, ec] = std::from_chars(
-        code_str.data(), code_str.data() + code_str.size(),
-        resp.status_code);
-    if (ec != std::errc{}) {
+    if (code_str.size() != 3 ||
+        !std::isdigit(static_cast<unsigned char>(code_str[0])) ||
+        !std::isdigit(static_cast<unsigned char>(code_str[1])) ||
+        !std::isdigit(static_cast<unsigned char>(code_str[2]))) {
         SPDLOG_LOGGER_WARN(log,
-            "parse_http_response: invalid status code: '{}'",
+            "parse_http_response: invalid status code (not 3 digits): '{}'",
             std::string(code_str));
         return std::unexpected(std::format(
             "Invalid HTTP status code: '{}'", code_str));
     }
+    resp.status_code = (code_str[0] - '0') * 100 +
+                       (code_str[1] - '0') * 10 +
+                       (code_str[2] - '0');
 
     // Extract raw headers (between status line and the blank line)
     resp.headers_raw = std::string(

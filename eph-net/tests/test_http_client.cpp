@@ -341,6 +341,58 @@ TEST(HttpClientResponse, ParseEmptyInput) {
     EXPECT_FALSE(result.has_value());
 }
 
+// RFC 7230 §3.1.2: status-code = 3DIGIT.  parse_http_response previously
+// passed the token to from_chars and only checked errc — it accepted
+// "200xyz" (trailing garbage), "+200" (sign prefix), "20" / "2000"
+// (out-of-spec length).  Different intermediaries interpret malformed
+// status lines differently — that is the foundation of response-
+// smuggling attacks.  Mirrors the parse_upgrade_response fix in
+// transport/detail/http.hpp.
+
+TEST(HttpClientResponse, ParseStatusCodeTrailingGarbageRejected) {
+    std::string raw = "HTTP/1.1 200xyz OK\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value())
+        << "status code with trailing garbage must be rejected";
+}
+
+TEST(HttpClientResponse, ParseStatusCodeLeadingPlusRejected) {
+    std::string raw = "HTTP/1.1 +200 OK\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(HttpClientResponse, ParseStatusCodeNegativeRejected) {
+    std::string raw = "HTTP/1.1 -1 Bad\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(HttpClientResponse, ParseStatusCodeTwoDigitsRejected) {
+    std::string raw = "HTTP/1.1 20 OK\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(HttpClientResponse, ParseStatusCodeFourDigitsRejected) {
+    std::string raw = "HTTP/1.1 2000 OK\r\n\r\n";
+    auto result = parse_http_response(raw);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(HttpClientResponse, ParseStatusCodeAllValidThreeDigitCodesAccepted) {
+    // Spot-check the boundary codes — every 3-digit value should still
+    // parse, including 1xx informational, 2xx success, 3xx redirect,
+    // 4xx client error, 5xx server error.
+    for (int code : {100, 200, 204, 301, 404, 500, 599}) {
+        std::string raw = std::format("HTTP/1.1 {} OK\r\n\r\n", code);
+        auto result = parse_http_response(raw);
+        ASSERT_TRUE(result.has_value())
+            << "code " << code << ": " << result.error();
+        EXPECT_EQ(result->status_code, code);
+    }
+}
+
 // =============================================================================
 // parse_http_response — edge cases
 // =============================================================================
