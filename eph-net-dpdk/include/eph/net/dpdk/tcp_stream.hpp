@@ -62,6 +62,7 @@
 #include "eph/dpdk/packet_parse.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/net/detail/ws_handshake.hpp"   // Sub-phase 9.5
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
@@ -150,6 +151,193 @@ private:
     std::vector<uint8_t> buf_;
     std::size_t          head_{0};
     std::size_t          tail_{0};
+};
+
+// ---------------------------------------------------------------------------
+// WS-handshake ByteSink adapters (Sub-phase 9.5)
+// ---------------------------------------------------------------------------
+//
+// Mirrors the kernel variants: the DPDK byte pipe is `eph::dpdk::TcpSession<>`
+// and its `send` + `poll_rx` return legacy string-typed errors, so the
+// adapters translate into `core::ErrorInfo` before handing the bytes to
+// `eph::net::detail::perform_ws_handshake`.
+//
+// Send path:
+//   * TcpSession::send has an MSS cap — we chunk larger payloads on its
+//     behalf (the handshake request is typically under one MSS so this
+//     loop normally iterates once).
+//
+// Recv path:
+//   * TcpSession::poll_rx drives a single rte_eth_rx_burst and dispatches
+//     each payload segment via a callback. We accumulate segments into a
+//     per-sink scratch vector and drain as many complete TLS records /
+//     HTTP bytes as possible before returning.
+//
+// For the TLS variant we additionally run `tls.process_records_in_place`
+// on the decoded ciphertext to produce plaintext staging before serving
+// the handshake reader.
+
+class PlainDpdkWsSink {
+public:
+    explicit PlainDpdkWsSink(::eph::dpdk::TcpSession<>* sess) noexcept
+        : sess_(sess) {}
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    send(std::span<const uint8_t> data) noexcept {
+        const std::size_t mss = sess_->mss();
+        std::size_t off = 0;
+        while (off < data.size()) {
+            const std::size_t chunk =
+                std::min<std::size_t>(mss, data.size() - off);
+            auto r = sess_->send(data.data() + off, chunk);
+            if (!r) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::Disconnected,
+                    "PlainDpdkWsSink::send: TcpSession::send failed"});
+            }
+            off += *r;
+        }
+        return data.size();
+    }
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    recv(uint8_t* buf, std::size_t cap) noexcept {
+        // Drain any bytes still staged from a previous poll_rx burst.
+        if (staged_off_ < staged_.size()) {
+            const std::size_t n =
+                std::min(cap, staged_.size() - staged_off_);
+            std::memcpy(buf, staged_.data() + staged_off_, n);
+            staged_off_ += n;
+            if (staged_off_ == staged_.size()) {
+                staged_.clear();
+                staged_off_ = 0;
+            }
+            return n;
+        }
+        // Pull one burst; accept multiple recv loops if the burst was empty.
+        for (int iter = 0; iter < 16; ++iter) {
+            auto r = sess_->poll_rx(
+                [this](const uint8_t* p, uint16_t len) {
+                    staged_.insert(staged_.end(), p, p + len);
+                });
+            if (!r) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::Disconnected,
+                    "PlainDpdkWsSink::recv: TcpSession::poll_rx failed"});
+            }
+            if (!staged_.empty()) {
+                const std::size_t n = std::min(cap, staged_.size());
+                std::memcpy(buf, staged_.data(), n);
+                staged_off_ = n;
+                if (staged_off_ == staged_.size()) {
+                    staged_.clear();
+                    staged_off_ = 0;
+                }
+                return n;
+            }
+            // Empty burst — tiny pause avoided; rely on the caller's
+            // outer deadline (WouldBlock triggers a retry there).
+        }
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::WouldBlock,
+            "PlainDpdkWsSink::recv: no data after bounded retry"});
+    }
+
+private:
+    ::eph::dpdk::TcpSession<>* sess_{nullptr};
+    std::vector<uint8_t>        staged_{};
+    std::size_t                 staged_off_{0};
+};
+
+class TlsDpdkWsSink {
+public:
+    TlsDpdkWsSink(::eph::dpdk::TcpSession<>* sess, TlsState* tls) noexcept
+        : sess_(sess), tls_(tls) {}
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    send(std::span<const uint8_t> data) noexcept {
+        tx_scratch_.clear();
+        auto enc = tls_->encrypt_for_send(data.data(), data.size(), tx_scratch_);
+        if (!enc) return std::unexpected(enc.error());
+
+        const std::size_t mss = sess_->mss();
+        std::size_t off = 0;
+        while (off < tx_scratch_.size()) {
+            const std::size_t chunk =
+                std::min<std::size_t>(mss, tx_scratch_.size() - off);
+            auto r = sess_->send(tx_scratch_.data() + off, chunk);
+            if (!r) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::Disconnected,
+                    "TlsDpdkWsSink::send: TcpSession::send failed"});
+            }
+            off += *r;
+        }
+        return data.size();
+    }
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    recv(uint8_t* buf, std::size_t cap) noexcept {
+        // Serve from plaintext stage first.
+        if (plain_off_ < plain_.size()) {
+            const std::size_t n = std::min(cap, plain_.size() - plain_off_);
+            std::memcpy(buf, plain_.data() + plain_off_, n);
+            plain_off_ += n;
+            if (plain_off_ == plain_.size()) {
+                plain_.clear();
+                plain_off_ = 0;
+            }
+            return n;
+        }
+
+        for (int iter = 0; iter < 16; ++iter) {
+            auto r = sess_->poll_rx(
+                [this](const uint8_t* p, uint16_t len) {
+                    cipher_.insert(cipher_.end(), p, p + len);
+                });
+            if (!r) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::Disconnected,
+                    "TlsDpdkWsSink::recv: TcpSession::poll_rx failed"});
+            }
+            if (cipher_.empty()) continue;
+
+            // In-place decrypt over a mutable copy: we need a contiguous
+            // buffer we can write through. plain_ accumulates the emitted
+            // plaintext slices copied out of the in-place buffer.
+            auto cr = tls_->process_records_in_place(
+                cipher_.data(), cipher_.size(),
+                [this](uint8_t* p, std::size_t len) {
+                    plain_.insert(plain_.end(), p, p + len);
+                });
+            if (!cr) return std::unexpected(cr.error());
+            if (*cr > 0) {
+                cipher_.erase(cipher_.begin(), cipher_.begin() + *cr);
+            }
+
+            if (!plain_.empty()) {
+                const std::size_t n = std::min(cap, plain_.size());
+                std::memcpy(buf, plain_.data(), n);
+                plain_off_ = n;
+                if (plain_off_ == plain_.size()) {
+                    plain_.clear();
+                    plain_off_ = 0;
+                }
+                return n;
+            }
+        }
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::WouldBlock,
+            "TlsDpdkWsSink::recv: no plaintext after bounded retry"});
+    }
+
+private:
+    ::eph::dpdk::TcpSession<>* sess_{nullptr};
+    TlsState*                   tls_{nullptr};
+    std::vector<uint8_t>        tx_scratch_{};
+    std::vector<uint8_t>        cipher_{};
+    std::vector<uint8_t>        plain_{};
+    std::size_t                 plain_off_{0};
 };
 
 } // namespace detail
@@ -244,6 +432,76 @@ public:
             }
             SPDLOG_LOGGER_INFO(log,
                 "DpdkTcpStream::create: TLS 1.3 handshake complete");
+        }
+
+        // ── Sub-phase 9.5: optional WebSocket HTTP Upgrade ───────────────
+        //
+        // Same contract as KernelTcpStream: empty ws_path skips entirely.
+        if (!stream->cfg_.ws_path.empty()) {
+            std::string host_storage;
+            std::string_view host_sv;
+            if (!stream->cfg_.ws_host.empty()) {
+                host_sv = stream->cfg_.ws_host;
+            } else if constexpr (EnableTls) {
+                if (!stream->cfg_.tls.hostname.empty()) {
+                    host_sv = stream->cfg_.tls.hostname;
+                }
+            }
+            if (host_sv.empty()) {
+                // Fall back to a synthesized IP:port from the 4-tuple.
+                // dst_ip is stored in network byte order in TcpConfig.
+                const auto& t = stream->cfg_.legacy.tuple;
+                uint32_t ip_be = t.dst_ip;
+                host_storage =
+                    std::to_string((ip_be >>  0) & 0xFFu) + "." +
+                    std::to_string((ip_be >>  8) & 0xFFu) + "." +
+                    std::to_string((ip_be >> 16) & 0xFFu) + "." +
+                    std::to_string((ip_be >> 24) & 0xFFu) + ":" +
+                    std::to_string(t.dst_port);
+                host_sv = host_storage;
+            }
+
+            std::vector<uint8_t> leftover;
+            std::expected<void, core::ErrorInfo> hs_result;
+            if constexpr (EnableTls) {
+                detail::TlsDpdkWsSink sink(&stream->sess_, &stream->tls_);
+                hs_result = ::eph::net::detail::perform_ws_handshake(
+                    sink, host_sv, stream->cfg_.ws_path,
+                    std::span<const ::eph::net::HttpHeader>(
+                        stream->cfg_.ws_extra_headers),
+                    stream->cfg_.ws_timeout,
+                    &leftover);
+            } else {
+                detail::PlainDpdkWsSink sink(&stream->sess_);
+                hs_result = ::eph::net::detail::perform_ws_handshake(
+                    sink, host_sv, stream->cfg_.ws_path,
+                    std::span<const ::eph::net::HttpHeader>(
+                        stream->cfg_.ws_extra_headers),
+                    stream->cfg_.ws_timeout,
+                    &leftover);
+            }
+            if (!hs_result) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::create: WS handshake failed: {}",
+                    hs_result.error().detail);
+                return std::unexpected(hs_result.error());
+            }
+            if (!leftover.empty()) {
+                if (!stream->reasm_.append(leftover.data(), leftover.size())) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "DpdkTcpStream::create: reasm append {}B leftover failed",
+                        leftover.size());
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::BufferFull,
+                        "DpdkTcpStream::create: ws leftover exceeds reasm capacity"});
+                }
+                SPDLOG_LOGGER_DEBUG(log,
+                    "DpdkTcpStream::create: seeded {}B post-handshake bytes "
+                    "into reasm buffer", leftover.size());
+            }
+            SPDLOG_LOGGER_INFO(log,
+                "DpdkTcpStream::create: WS upgrade OK path='{}'",
+                stream->cfg_.ws_path);
         }
 
         SPDLOG_LOGGER_INFO(log,

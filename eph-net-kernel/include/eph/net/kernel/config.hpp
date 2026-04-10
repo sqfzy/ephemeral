@@ -11,7 +11,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
+#include "eph/net/http.hpp"  // HttpHeader (for ws_extra_headers)
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/detail/tls_constants.hpp"  // Phase 5: TlsConfig
@@ -50,6 +53,37 @@ struct StreamConfig {
     ///        `tls.ca_cert_path` or rely on the system's default trust
     ///        store. Phase 5 wires this through the real handshake.
     ::eph::net::TlsConfig tls{};
+
+    // ── WebSocket upgrade (Sub-phase 9.5) ────────────────────────────────
+    //
+    // When `ws_path` is non-empty, `KernelTcpStream::create` will run a
+    // WebSocket HTTP Upgrade handshake after the TCP (and optional TLS)
+    // handshake completes. An empty `ws_path` disables the upgrade — the
+    // stream behaves exactly like plain TCP / TLS (backward-compat for all
+    // pre-9.5 call sites).
+    //
+    // See D-2 in .artifacts/plan-phase-9-recovery-20260410-180306.md for
+    // why this is config-driven rather than a separate `connect_websocket()`
+    // factory.
+
+    /// @brief WebSocket request-target (e.g. "/ws/btcusdt@bookTicker").
+    ///        Empty = no upgrade.
+    std::string ws_path{};
+
+    /// @brief Value to emit as the `Host:` header. If empty, the handshake
+    ///        falls back to `tls.hostname` (for TLS) or the numeric
+    ///        `remote.to_string()` (for plaintext).
+    std::string ws_host{};
+
+    /// @brief Optional caller-supplied headers appended AFTER the mandatory
+    ///        WebSocket upgrade headers (Host / Upgrade / Connection /
+    ///        Sec-WebSocket-Key / Sec-WebSocket-Version). Values are
+    ///        non-owning views; callers must keep backing storage alive
+    ///        until `create()` returns.
+    std::vector<::eph::net::HttpHeader> ws_extra_headers{};
+
+    /// @brief Cumulative deadline for the WS HTTP handshake phase.
+    std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
 };
 
 // ---------------------------------------------------------------------------

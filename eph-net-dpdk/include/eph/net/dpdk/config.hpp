@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "eph/dpdk/reactor.hpp"   // ReactorConfig (lcore / port / queue)
 #include "eph/dpdk/tcp.hpp"       // TcpConfig
@@ -25,6 +27,7 @@
                                   // the legacy type in eph::dpdk::UdpConfig,
                                   // and our config wrapper names it
                                   // LegacyUdpConfig at its single use-site).
+#include "eph/net/http.hpp"                   // Sub-phase 9.5: HttpHeader
 #include "eph/net/detail/tls_constants.hpp"   // Phase 7: TlsConfig
 #include "eph/net/reconnect_policy.hpp"
 
@@ -76,6 +79,28 @@ struct StreamConfig {
     /// @brief TLS 1.3 handshake configuration. Ignored when the template
     /// parameter `EnableTls=false`.
     ::eph::net::TlsConfig tls{};
+
+    // ── WebSocket upgrade (Sub-phase 9.5) ────────────────────────────────
+    //
+    // Same contract as `eph::net::kernel::StreamConfig`: non-empty `ws_path`
+    // enables a WS HTTP Upgrade handshake after TCP (and optional TLS)
+    // completes. Empty = plain TCP/TLS byte stream.
+
+    /// @brief WebSocket request-target (e.g. "/ws/btcusdt@bookTicker").
+    ///        Empty = no upgrade.
+    std::string ws_path{};
+
+    /// @brief Value for the `Host:` header. If empty, falls back to
+    ///        `tls.hostname` when TLS is enabled, otherwise a synthesized
+    ///        `IP:port` string from the legacy TCP 4-tuple.
+    std::string ws_host{};
+
+    /// @brief Extra headers appended after the five mandatory upgrade
+    ///        headers. Non-owning views — keep backing storage alive.
+    std::vector<::eph::net::HttpHeader> ws_extra_headers{};
+
+    /// @brief WS handshake deadline.
+    std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
 };
 
 // ---------------------------------------------------------------------------

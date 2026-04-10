@@ -70,6 +70,7 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/net/detail/ws_handshake.hpp"   // Sub-phase 9.5: WS HTTP handshake
 #include "eph/net/kernel/config.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/kernel/detail/reassembly_buffer.hpp"
@@ -101,6 +102,142 @@ inline spdlog::logger* tcp_stream_logger() {
 
 // Phase 5: TlsState is now defined in detail/tls_state.hpp (real aws-lc
 // AEAD machinery, replacing the Phase 3 stub).
+
+// ---------------------------------------------------------------------------
+// WS-handshake ByteSink adapters (Sub-phase 9.5)
+// ---------------------------------------------------------------------------
+//
+// `eph::net::detail::perform_ws_handshake<ByteSink>` is duck-typed on an
+// object providing:
+//     std::expected<size_t, core::ErrorInfo> send(std::span<const uint8_t>);
+//     std::expected<size_t, core::ErrorInfo> recv(uint8_t*, size_t);
+//
+// The kernel stream has two different byte pipes at handshake time:
+//
+//   1. Plaintext: raw ByteSocket — `send`/`recv` already match the shape.
+//      A trivial reference wrapper is used so the template parameter type
+//      is consistent between the two branches.
+//
+//   2. TLS-wrapped: ByteSocket + TlsState. We must encrypt outbound bytes
+//      into TLS records before `sock.send`, and on the inbound side we
+//      must loop `sock.recv` + `tls.process_records` until at least one
+//      plaintext byte becomes available. The `TlsWsSink` adapter owns a
+//      scratch vector for the encrypt path and a small plaintext staging
+//      vector for the decrypt path (both persist for the lifetime of the
+//      handshake, which is a single-digit-milliseconds window).
+
+struct PlainWsSink {
+    ByteSocket* sock;
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    send(std::span<const uint8_t> data) noexcept {
+        return sock->send(data);
+    }
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    recv(uint8_t* buf, std::size_t cap) noexcept {
+        return sock->recv(buf, cap);
+    }
+};
+
+struct TlsWsSink {
+    ByteSocket*    sock;
+    TlsState*      tls;
+
+    // Scratch for outbound TLS records (reused across multiple send() calls).
+    std::vector<uint8_t> tx_scratch{};
+
+    // Inbound plaintext staging: accumulates decrypted bytes so that
+    // `recv()` can return them incrementally while the underlying socket
+    // may deliver multiple TLS records per recv(2) call.
+    std::vector<uint8_t> rx_plain{};
+    std::size_t          rx_plain_off{0};
+
+    // Ciphertext accumulator: a TLS record may arrive in fragments across
+    // multiple recv(2) calls, so we must hold partial records between calls.
+    std::vector<uint8_t> rx_cipher{};
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    send(std::span<const uint8_t> data) noexcept {
+        tx_scratch.clear();
+        auto enc = tls->encrypt_for_send(data.data(), data.size(), tx_scratch);
+        if (!enc) return std::unexpected(enc.error());
+        // Drain the encrypted payload to the wire. The wrapper returns
+        // "plaintext byte count" so the caller's byte accounting stays
+        // plaintext-relative (mirrors KernelTcpStream::send's contract).
+        std::size_t off = 0;
+        while (off < tx_scratch.size()) {
+            auto sr = sock->send(
+                std::span<const uint8_t>(tx_scratch.data() + off,
+                                          tx_scratch.size() - off));
+            if (!sr) {
+                if (sr.error().code == ::eph::core::Error::WouldBlock) continue;
+                return std::unexpected(sr.error());
+            }
+            off += *sr;
+        }
+        return data.size();
+    }
+
+    [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
+    recv(uint8_t* buf, std::size_t cap) noexcept {
+        // Fast path: any staged plaintext from a previous call?
+        if (rx_plain_off < rx_plain.size()) {
+            const std::size_t avail = rx_plain.size() - rx_plain_off;
+            const std::size_t n     = std::min(cap, avail);
+            std::memcpy(buf, rx_plain.data() + rx_plain_off, n);
+            rx_plain_off += n;
+            if (rx_plain_off == rx_plain.size()) {
+                rx_plain.clear();
+                rx_plain_off = 0;
+            }
+            return n;
+        }
+
+        // No plaintext staged — pull ciphertext from the socket, decrypt
+        // as many complete records as possible, then serve from the staged
+        // plaintext. Loop at most a handful of times to stay bounded.
+        for (int iter = 0; iter < 8; ++iter) {
+            uint8_t tmp[4096];
+            auto rr = sock->recv(tmp, sizeof(tmp));
+            if (!rr) {
+                // Propagate WouldBlock so the handshake driver can re-poll.
+                return std::unexpected(rr.error());
+            }
+            if (*rr == 0) {
+                // Spurious (ByteSocket never returns 0 per its contract),
+                // but be defensive.
+                continue;
+            }
+            rx_cipher.insert(rx_cipher.end(), tmp, tmp + *rr);
+
+            // Decrypt complete records.
+            auto cr = tls->process_records(rx_cipher.data(), rx_cipher.size(),
+                                            rx_plain);
+            if (!cr) return std::unexpected(cr.error());
+            // Drop consumed ciphertext; partial record (if any) stays.
+            if (*cr > 0) {
+                rx_cipher.erase(rx_cipher.begin(),
+                                 rx_cipher.begin() + *cr);
+            }
+
+            if (!rx_plain.empty()) {
+                const std::size_t n = std::min(cap, rx_plain.size());
+                std::memcpy(buf, rx_plain.data(), n);
+                rx_plain_off = n;
+                if (rx_plain_off == rx_plain.size()) {
+                    rx_plain.clear();
+                    rx_plain_off = 0;
+                }
+                return n;
+            }
+            // No full record yet — loop and try another recv.
+        }
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::WouldBlock,
+            "TlsWsSink::recv: no plaintext after bounded retry"});
+    }
+};
 
 } // namespace detail
 
@@ -172,18 +309,94 @@ public:
                     h.error().detail);
                 return std::unexpected(h.error());
             }
-            stream->state_ = TcpState::Established;
             SPDLOG_LOGGER_INFO(log,
                 "KernelTcpStream::create: TLS up fd={} remote={}",
                 stream->sock_.fd(), stream->cfg_.remote.to_string());
-            return stream;
-        } else {
-            stream->state_ = TcpState::Established;
+        }
+
+        // ── Sub-phase 9.5: optional WebSocket HTTP Upgrade ───────────────
+        //
+        // When cfg.ws_path is non-empty, drive the RFC 6455 handshake
+        // through either a plaintext (PlainWsSink) or TLS-wrapped
+        // (TlsWsSink) byte sink. Any post-handshake bytes that arrived in
+        // the same recv(2) as the 101 response are seeded into the
+        // reassembly buffer so the codec sees them on the first poll.
+        if (!stream->cfg_.ws_path.empty()) {
+            // Pick the Host header: prefer an explicit ws_host, fall back
+            // to the TLS SNI hostname (for wss://), then to the numeric
+            // remote address (for ws://).
+            std::string host_storage;
+            std::string_view host_sv;
+            if (!stream->cfg_.ws_host.empty()) {
+                host_sv = stream->cfg_.ws_host;
+            } else if constexpr (EnableTls) {
+                if (!stream->cfg_.tls.hostname.empty()) {
+                    host_sv = stream->cfg_.tls.hostname;
+                }
+            }
+            if (host_sv.empty()) {
+                host_storage = stream->cfg_.remote.to_string();
+                host_sv      = host_storage;
+            }
+
+            std::vector<uint8_t> leftover;
+            std::expected<void, core::ErrorInfo> hs_result;
+            if constexpr (EnableTls) {
+                detail::TlsWsSink sink{&stream->sock_, &stream->tls_};
+                hs_result = ::eph::net::detail::perform_ws_handshake(
+                    sink, host_sv, stream->cfg_.ws_path,
+                    std::span<const ::eph::net::HttpHeader>(
+                        stream->cfg_.ws_extra_headers),
+                    stream->cfg_.ws_timeout,
+                    &leftover);
+            } else {
+                detail::PlainWsSink sink{&stream->sock_};
+                hs_result = ::eph::net::detail::perform_ws_handshake(
+                    sink, host_sv, stream->cfg_.ws_path,
+                    std::span<const ::eph::net::HttpHeader>(
+                        stream->cfg_.ws_extra_headers),
+                    stream->cfg_.ws_timeout,
+                    &leftover);
+            }
+            if (!hs_result) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::create: WS handshake failed: {}",
+                    hs_result.error().detail);
+                return std::unexpected(hs_result.error());
+            }
+
+            // Seed any post-handshake over-read into the reasm buffer so
+            // the codec sees it on the first poll_once_() call.
+            if (!leftover.empty()) {
+                if (stream->reasm_.writable_capacity() < leftover.size()) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "KernelTcpStream::create: reasm cannot hold {}B "
+                        "of post-handshake over-read",
+                        leftover.size());
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::BufferFull,
+                        "KernelTcpStream::create: ws leftover exceeds reasm capacity"});
+                }
+                std::memcpy(stream->reasm_.writable_ptr(),
+                            leftover.data(), leftover.size());
+                stream->reasm_.commit_write(leftover.size());
+                SPDLOG_LOGGER_DEBUG(log,
+                    "KernelTcpStream::create: seeded {}B of post-handshake "
+                    "bytes into reasm buffer", leftover.size());
+            }
+
+            SPDLOG_LOGGER_INFO(log,
+                "KernelTcpStream::create: WS upgrade OK path='{}' fd={}",
+                stream->cfg_.ws_path, stream->sock_.fd());
+        }
+
+        stream->state_ = TcpState::Established;
+        if constexpr (!EnableTls) {
             SPDLOG_LOGGER_INFO(log,
                 "KernelTcpStream::create: connected fd={} remote={}",
                 stream->sock_.fd(), stream->cfg_.remote.to_string());
-            return stream;
         }
+        return stream;
     }
 
     ~KernelTcpStream() {
