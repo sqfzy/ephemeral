@@ -1909,6 +1909,144 @@ TEST_F(TransportTest, OnCloseCallbackFires) {
     (*result)->stop();
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// RFC 6455 §7.4.1 — invalid received close code MUST NOT be echoed back
+// ───────────────────────────────────────────────────────────────────────
+//
+// RFC 6455 §7.4.1 lists 1004, 1005, 1006, and 1015 as codes that
+// "MUST NOT be set as a status code in a Close control frame by an
+// endpoint."  If a peer sends one anyway and we echo it back, we
+// commit the same violation — and turn ourselves into a protocol-
+// violation amplifier.  Per Autobahn §7.9.x the correct response is
+// kProtocolError (1002).
+
+namespace {
+
+// Pull the most recent close frame the client sent and return its code,
+// or std::nullopt if no close frame is present in sent_data.
+[[nodiscard]] std::optional<uint16_t>
+last_sent_close_code(WsMockTcpTransport& mock) {
+    std::lock_guard lock(mock.mtx);
+    for (auto it = mock.sent_data.rbegin(); it != mock.sent_data.rend(); ++it) {
+        const auto& buf = *it;
+        if (buf.size() < 2) continue;
+        // Skip handshake (HTTP request)
+        if (buf[0] == 'G' || buf[0] == 'P') continue;
+        // Client frame: FIN | opcode in byte 0
+        uint8_t opcode = buf[0] & 0x0F;
+        if (opcode != ws::opcode::kClose) continue;
+        // Decode and unmask
+        auto frame = ws::decode_frame(buf.data(), buf.size());
+        if (!frame) continue;
+        if (frame->payload_len < 2) return uint16_t{0}; // no code
+        uint8_t b0 = frame->payload[0];
+        uint8_t b1 = frame->payload[1];
+        if (frame->masked) {
+            b0 ^= frame->mask_key[0];
+            b1 ^= frame->mask_key[1];
+        }
+        return static_cast<uint16_t>((b0 << 8) | b1);
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+// Sanity: a valid received close code (1000) is echoed back unchanged.
+TEST_F(TransportTest, ServerCloseValidCodeEchoedBack) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+    std::this_thread::sleep_for(10ms);
+
+    uint8_t close_payload[2] = {
+        static_cast<uint8_t>(1000 >> 8),
+        static_cast<uint8_t>(1000 & 0xFF),
+    };
+    last_mock_->inject_server_frame(ws::opcode::kClose,
+                                    close_payload, sizeof(close_payload));
+
+    EXPECT_TRUE(wait_for([&] {
+        return last_sent_close_code(*last_mock_).has_value();
+    }));
+    auto sent_code = last_sent_close_code(*last_mock_);
+    ASSERT_TRUE(sent_code.has_value());
+    EXPECT_EQ(*sent_code, 1000u);
+    tp->stop();
+}
+
+// 1006 (kAbnormalClosure) MUST NOT appear in a Close frame.  If a
+// peer sends it, we MUST respond with a different valid code, not
+// echo 1006 back.
+TEST_F(TransportTest, ServerCloseForbidden1006NotEchoedBack) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+    std::this_thread::sleep_for(10ms);
+
+    uint8_t close_payload[2] = {
+        static_cast<uint8_t>(1006 >> 8),
+        static_cast<uint8_t>(1006 & 0xFF),
+    };
+    last_mock_->inject_server_frame(ws::opcode::kClose,
+                                    close_payload, sizeof(close_payload));
+
+    EXPECT_TRUE(wait_for([&] {
+        return last_sent_close_code(*last_mock_).has_value();
+    }));
+    auto sent_code = last_sent_close_code(*last_mock_);
+    ASSERT_TRUE(sent_code.has_value());
+    EXPECT_NE(*sent_code, 1006u)
+        << "MUST NOT echo back forbidden code 1006";
+    EXPECT_EQ(*sent_code, ws::close_code::kProtocolError)
+        << "expect kProtocolError per Autobahn §7.9.x";
+    tp->stop();
+}
+
+// 1004, 1005, 1015, and any code in 0-999 / 1016-2999 should likewise
+// be replaced with kProtocolError.
+TEST_F(TransportTest, ServerCloseForbidden1015NotEchoedBack) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+    std::this_thread::sleep_for(10ms);
+
+    uint8_t close_payload[2] = {
+        static_cast<uint8_t>(1015 >> 8),
+        static_cast<uint8_t>(1015 & 0xFF),
+    };
+    last_mock_->inject_server_frame(ws::opcode::kClose,
+                                    close_payload, sizeof(close_payload));
+
+    EXPECT_TRUE(wait_for([&] {
+        return last_sent_close_code(*last_mock_).has_value();
+    }));
+    auto sent_code = last_sent_close_code(*last_mock_);
+    ASSERT_TRUE(sent_code.has_value());
+    EXPECT_EQ(*sent_code, ws::close_code::kProtocolError);
+    tp->stop();
+}
+
+TEST_F(TransportTest, ServerCloseForbidden0NotEchoedBack) {
+    auto result = create_transport();
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    auto& tp = *result;
+    std::this_thread::sleep_for(10ms);
+
+    // Code 0 is in the 0-999 reserved range — must be rejected.
+    uint8_t close_payload[2] = {0x00, 0x00};
+    last_mock_->inject_server_frame(ws::opcode::kClose,
+                                    close_payload, sizeof(close_payload));
+
+    EXPECT_TRUE(wait_for([&] {
+        return last_sent_close_code(*last_mock_).has_value();
+    }));
+    auto sent_code = last_sent_close_code(*last_mock_);
+    ASSERT_TRUE(sent_code.has_value());
+    EXPECT_EQ(*sent_code, ws::close_code::kProtocolError);
+    tp->stop();
+}
+
 // ===========================================================================
 // Batch receive tests
 // ===========================================================================

@@ -305,9 +305,24 @@ private:
                                   static_cast<uint16_t>(frame->payload_len),
                                   ws::opcode::kClose);
                 }
-                // RFC 6455 section 5.5.1: respond with a Close frame echoing
-                // the status code before shutting down.
-                handle_close(code);
+                // RFC 6455 section 5.5.1: respond with a Close frame.
+                // §7.4.1 forbids codes 0-999, 1004, 1005, 1006, 1015,
+                // 1016-2999 from appearing in a Close frame — if the
+                // peer sent one anyway, we MUST NOT echo it back (that
+                // would also be a violation, and turns us into a
+                // protocol-violation amplifier).  Override to
+                // kProtocolError per Autobahn §7.9.x.
+                uint16_t response_code = code;
+                if (frame->payload_len == 0) {
+                    response_code = ws::close_code::kNormal;
+                } else if (!ws::is_valid_close_code(code)) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "Received Close frame with invalid status code {} "
+                        "(RFC 6455 §7.4.1) — responding with kProtocolError",
+                        code);
+                    response_code = ws::close_code::kProtocolError;
+                }
+                handle_close(response_code);
                 // Signal TX to drain the Close response before exiting.
                 core().closing.store(true, std::memory_order_release);
                 break;
@@ -733,7 +748,25 @@ private:
                               static_cast<uint16_t>(frame.payload_len),
                               ws::opcode::kClose);
             }
-            handle_close(code);
+            // RFC 6455 §7.4.1: codes 0-999, 1004, 1005, 1006, 1015, and
+            // 1016-2999 MUST NOT appear in a Close frame.  If the peer
+            // sent one anyway, we MUST NOT echo it back — that would
+            // violate the same MUST NOT, and would let the peer use us
+            // as a protocol-violation amplifier.  Override the response
+            // code to kProtocolError (1002) per Autobahn §7.9.x.
+            // Code == 0 means the frame had no body, which is legal:
+            // respond with kNormal in that case (any send-valid code).
+            uint16_t response_code = code;
+            if (frame.payload_len == 0) {
+                response_code = ws::close_code::kNormal;
+            } else if (!ws::is_valid_close_code(code)) {
+                SPDLOG_LOGGER_WARN(detail::transport_logger(),
+                    "Received Close frame with invalid status code {} "
+                    "(RFC 6455 §7.4.1) — responding with kProtocolError",
+                    code);
+                response_code = ws::close_code::kProtocolError;
+            }
+            handle_close(response_code);
             core().closing.store(true, std::memory_order_release);
             return;
         }
