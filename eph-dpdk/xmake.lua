@@ -27,8 +27,11 @@ target("eph-dpdk")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
--- Module tests (need PMD whole-archive linking)
-for _, file in ipairs(os.files("tests/**.cpp")) do
+-- Module unit tests (need PMD whole-archive linking).
+-- The integration/ subdirectory is excluded — those tests use real PCI
+-- (NIC_B bound to vfio-pci) and cannot share an EAL with --no-pci unit
+-- tests, so they are built as a single separate target below.
+for _, file in ipairs(os.files("tests/*.cpp")) do
     target(path.basename(file))
         add_rules("eph-test")
         add_files(file)
@@ -36,6 +39,26 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         add_deps("eph-dpdk")
         apply_dpdk_pmd_linkgroups()
 end
+
+-- DPDK end-to-end integration test binary (real-NIC). Single target
+-- containing all 7 P0+P1 test cases — see plan-dpdk-integration-tests-
+-- 20260410-053355.md for design rationale.  Requires NIC_B bound to
+-- vfio-pci at run time; tests SKIP if not.
+target("test_dpdk_e2e")
+    add_rules("eph-test")
+    add_files("tests/integration/test_dpdk_e2e.cpp")
+    add_includedirs("tests/integration")
+    add_deps("eph-dpdk")
+    -- The fixture reuses bench's DpdkBenchEnv via #include of
+    -- benchmarks/latency/core/dpdk_env.hpp, which needs the latency
+    -- include root for "core/config.hpp" etc.
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_defines("EPH_USE_DPDK=1")
+    -- Compile-time absolute path to bench.conf so the fixture can find it
+    -- regardless of the test runner's cwd.
+    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
+        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
+    apply_dpdk_pmd_linkgroups()
 
 -- Module benchmarks (need PMD whole-archive linking)
 for _, file in ipairs(os.files("benchmarks/**.cpp")) do
