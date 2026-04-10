@@ -30,11 +30,14 @@
 #include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
 
-// Reuse the bench infrastructure in place — same precedent as
-// tests/unit/bench/ which already includes from benchmarks/latency/.
+// bench.conf parsing still lives in latency/core/ — that header is
+// bench-specific (it knows about scenario sweeps, payload lists, etc.).
+// DpdkBenchEnv has been promoted to eph::dpdk::test, so we include it
+// from its canonical home rather than reverse-including via the bench
+// shim.
 #define EPH_USE_DPDK 1
 #include "../../../benchmarks/latency/core/config.hpp"
-#include "../../../benchmarks/latency/core/dpdk_env.hpp"
+#include "eph/dpdk/test/dpdk_env.hpp"
 
 #include "mock_dispatcher.hpp"
 
@@ -49,7 +52,7 @@ public:
     static const std::string& skip_reason() noexcept { return skip_reason_; }
 
     /// Access the bench environment (EAL guard, Platform, ARP-resolved gateway MAC).
-    static bench::DpdkBenchEnv& env() {
+    static ::eph::dpdk::test::DpdkBenchEnv& env() {
         return *env_;
     }
 
@@ -122,7 +125,7 @@ public:
         };
         int argc = 3;
 
-        auto env_r = bench::DpdkBenchEnv::create_full(
+        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create_full(
             argc, argv,
             cfg_.server_ip, cfg_.local_ip, cfg_.gateway_ip,
             /*dpdk_port_id=*/0);
@@ -261,7 +264,7 @@ private:
     static inline std::string skip_reason_;
     static inline std::string nic_b_pci_;
     static inline pid_t mock_pid_ = -1;
-    static inline std::optional<bench::DpdkBenchEnv> env_;
+    static inline std::optional<::eph::dpdk::test::DpdkBenchEnv> env_;
     static inline bench::BenchConfig cfg_;
 };
 
