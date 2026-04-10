@@ -358,6 +358,49 @@ TEST(IsCompleteAdv, ContentLengthCommaListDifferentValuesRejected) {
     EXPECT_FALSE(is_http_response_complete(resp));
 }
 
+TEST(IsCompleteAdv, ContentLengthEmbeddedWhitespaceRejected) {
+    // Adversarial: "5 0" with embedded space.  RFC 7230 §3.2 disallows
+    // whitespace inside field values (only leading/trailing OWS).  A
+    // proxy might accept it as 50 while we accept it as something
+    // else — desync.  Reject.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5 0\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthEmbeddedTabRejected) {
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5\t0\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthHexValueRejected) {
+    // "0x05" is not a valid decimal CL.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0x05\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthLeadingZerosAccepted) {
+    // Leading zeros are syntactically a decimal number.
+    // Pin current behavior so any future tightening is intentional.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 005\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Boundary: header buffer exactly at \r\n\r\n
 // ═══════════════════════════════════════════════════════════════════════

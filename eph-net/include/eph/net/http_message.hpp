@@ -660,7 +660,14 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
         cl_value.data(),
         cl_value.data() + cl_value.size(),
         content_length);
-    if (ec != std::errc{}) return false;
+    // Require from_chars to consume the ENTIRE value — partial
+    // consumption (e.g. "0x05" parses as 0 with ptr at 'x') means
+    // the value contains non-digit garbage and a downstream proxy
+    // may interpret it differently.  Reject as desync defense.
+    if (ec != std::errc{} ||
+        ptr != cl_value.data() + cl_value.size()) {
+        return false;
+    }
 
     // Reject absurdly large Content-Length to prevent OOM (256 MiB limit for REST responses)
     constexpr size_t kMaxContentLength = 256 * 1024 * 1024;
