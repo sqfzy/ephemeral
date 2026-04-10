@@ -18,8 +18,8 @@
 #include <cassert>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
-#include <ctime>
 #include <expected>
 #include <format>
 #include <string>
@@ -266,30 +266,28 @@ public:
 
 private:
     void refill() noexcept {
-        if (RAND_bytes(pool_, sizeof(pool_)) != 1) {
-            SPDLOG_LOGGER_ERROR(detail::ws_logger(),
-                "RAND_bytes failed for mask key cache, using fallback");
-            // Fallback: use a seeded LCG with TSC entropy (not crypto-secure,
-            // but masking is only an anti-cache-poisoning measure per RFC 6455 §5.3)
-#if defined(__x86_64__) || defined(_M_X64)
-            uint64_t seed = __builtin_ia32_rdtsc();
-#elif defined(__aarch64__)
-            uint64_t seed; asm volatile("mrs %0, cntvct_el0" : "=r"(seed));
-#else
-            uint64_t seed = static_cast<uint64_t>(time(nullptr));
-#endif
-            // SplitMix64 — well-distributed, passes BigCrush statistical tests
-            for (size_t i = 0; i < sizeof(pool_); i += 8) {
-                seed += 0x9e3779b97f4a7c15ULL;
-                uint64_t z = seed;
-                z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-                z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-                z = z ^ (z >> 31);
-                size_t n = std::min(sizeof(pool_) - i, size_t{8});
-                std::memcpy(pool_ + i, &z, n);
+        // Retry RAND_bytes up to 3 times before giving up. AWS-LC's RAND_bytes
+        // is extremely unlikely to fail in practice (it falls through to the
+        // kernel CSPRNG); a persistent failure indicates a system-level issue
+        // (FIPS misconfig, exhausted entropy, etc.) where silently producing
+        // predictable mask keys would violate RFC 6455 §5.3 — every key in
+        // the same pool would be derivable from any one observed key.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (RAND_bytes(pool_, sizeof(pool_)) == 1) {
+                pos_ = 0;
+                return;
             }
+            SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+                "RAND_bytes failed for WS mask key cache (attempt {}/3); "
+                "retrying", attempt + 1);
         }
-        pos_ = 0;
+
+        // All retries exhausted. Abort rather than emit predictable mask keys
+        // — anti-cache-poisoning is the WHOLE POINT of RFC 6455 client masking.
+        SPDLOG_LOGGER_CRITICAL(detail::ws_logger(),
+            "RAND_bytes failed 3x for WS mask key cache; aborting to avoid "
+            "emitting predictable mask keys (RFC 6455 §5.3 violation)");
+        std::abort();
     }
 
     uint8_t pool_[kPoolSize * 4]{};
