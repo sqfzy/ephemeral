@@ -46,6 +46,15 @@ xmake run -g tests            # run every test in the group
 
 Cross-module integration tests live in `tests/integration/` (e.g. `test_transport_e2e`, `test_binance_adapter`). Per CLAUDE rules: after modifying any code, run the tests that cover it before declaring done.
 
+DPDK end-to-end integration tests live in `eph-dpdk/tests/integration/test_dpdk_e2e.cpp` (single binary, all 7 P0+P1 cases). They drive a real `TcpSession`/`UdpSender` over NIC_B against kernel echo mocks bound to NIC_A, and require NIC_B bound to vfio-pci at run time. Use the wrapper for the friendly path:
+
+```bash
+sudo benchmarks/latency/lat tcp --dpdk     # transition NIC_B to vfio-pci once
+sudo tests/integration/dpdk_e2e            # run all 7 E2E tests
+```
+
+When NIC_B is on the kernel driver, all 7 tests SKIP cleanly with a diagnostic — safe to run on any host.
+
 ## Benchmarks
 
 Two distinct benchmark systems:
