@@ -439,6 +439,14 @@ find_header_opt(std::string_view headers_raw, std::string_view name) noexcept {
         if (colon == std::string_view::npos) continue;
 
         auto hdr_name = line.substr(0, colon);
+        // RFC 7230 §3.2.4: trim trailing OWS in header field-name so
+        // "Content-Length : 5" matches the same lookup as
+        // "Content-Length: 5".  See is_http_response_complete for the
+        // smuggling rationale — both parsers must agree.
+        while (!hdr_name.empty() &&
+               (hdr_name.back() == ' ' || hdr_name.back() == '\t')) {
+            hdr_name.remove_suffix(1);
+        }
         if (!std::ranges::equal(hdr_name, name, {}, to_lower, to_lower))
             continue;
 
@@ -521,6 +529,17 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
             auto colon = line.find(':');
             if (colon == std::string_view::npos) continue;
             auto hdr_name = line.substr(0, colon);
+            // RFC 7230 §3.2.4: a proxy MUST remove any whitespace
+            // between header field-name and colon before forwarding.
+            // We're a client and an exact-length match would silently
+            // skip "Content-Length : 5" — but a downstream proxy that
+            // strips the SP would honor it.  Trim trailing OWS so we
+            // see what an RFC-compliant proxy forwards; that closes
+            // the framing-disagreement smuggling channel.
+            while (!hdr_name.empty() &&
+                   (hdr_name.back() == ' ' || hdr_name.back() == '\t')) {
+                hdr_name.remove_suffix(1);
+            }
             constexpr std::string_view kClName = "Content-Length";
             if (hdr_name.size() != kClName.size()) continue;
             bool name_match = true;
@@ -584,6 +603,12 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
             auto colon = line.find(':');
             if (colon == std::string_view::npos) continue;
             auto hdr_name = line.substr(0, colon);
+            // Trim trailing OWS — see Content-Length walker above for
+            // the rationale (RFC 7230 §3.2.4 smuggling defense).
+            while (!hdr_name.empty() &&
+                   (hdr_name.back() == ' ' || hdr_name.back() == '\t')) {
+                hdr_name.remove_suffix(1);
+            }
             // Case-insensitive name match against "Transfer-Encoding".
             constexpr std::string_view kTeName = "Transfer-Encoding";
             if (hdr_name.size() != kTeName.size()) continue;

@@ -438,3 +438,83 @@ TEST(IsCompleteAdv, BodyContainingCrlfCrlfBytes) {
         "\r\n" + body;
     EXPECT_TRUE(is_http_response_complete(resp));
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// RFC 7230 §3.2.4 — whitespace between header field-name and colon
+// ═══════════════════════════════════════════════════════════════════════
+//
+// RFC 7230 §3.2.4:
+//   "No whitespace is allowed between the header field-name and colon.
+//    In the past, differences in the handling of such whitespace have
+//    led to security vulnerabilities in request routing and response
+//    handling.  A server MUST reject [requests] with [whitespace
+//    between field-name and colon].  A proxy MUST remove any such
+//    whitespace from a response message before forwarding the message
+//    downstream."
+//
+// is_http_response_complete previously matched header names with an
+// EXACT byte-length comparison (`hdr_name.size() != kClName.size()`),
+// which means a header line `Content-Length : 5\r\n` (with SP before
+// the colon) was silently ignored.  Combined with a downstream proxy
+// that strips the whitespace and DOES use the value, this is a clean
+// smuggling primitive: we and the proxy disagree on framing.
+//
+// Defense: trim trailing OWS (SP / HTAB) from header names so we see
+// what an RFC-compliant proxy would forward.
+
+TEST(IsCompleteAdv, ContentLengthWithSpaceBeforeColonStillHonored) {
+    // 5-byte body announced via "Content-Length : 5" — must be
+    // recognized as complete, NOT silently ignored.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length : 5\r\n"
+        "\r\n"
+        "12345";
+    EXPECT_TRUE(is_http_response_complete(resp))
+        << "header name with trailing SP must be honored (RFC 7230 §3.2.4)";
+}
+
+TEST(IsCompleteAdv, ContentLengthWithSpaceBeforeColonShortBodyIncomplete) {
+    // Confirm completion logic still uses the announced length:
+    // declared 10 bytes, only 3 received → incomplete.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length : 10\r\n"
+        "\r\n"
+        "abc";
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthWithTabBeforeColonStillHonored) {
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length\t: 4\r\n"
+        "\r\n"
+        "abcd";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, TransferEncodingWithSpaceBeforeColonStillTriggersChunkedPath) {
+    // The chunked walker must also see "Transfer-Encoding : chunked"
+    // — otherwise we'd ignore TE, also ignore CL (if any), and fall
+    // back to read-until-close while a downstream proxy correctly
+    // frames each chunk.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding : chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthAndTeBothSpacedTeWins) {
+    // Per RFC 7230 §3.3.3: TE wins over CL.  This must hold even
+    // when both header NAMES carry whitespace before the colon.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length : 100\r\n"
+        "Transfer-Encoding : chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
