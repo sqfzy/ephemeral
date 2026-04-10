@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # dpdk-teardown.sh — undo dpdk-setup.sh: rebind NIC to kernel, optionally free hugepages
 #
-# ┌── Script roles in this repo ────────────────────────────────────────┐
-# │ eph-dpdk/scripts/dpdk-setup.sh    one-shot host env: vfio + hugepg  │
-# │ eph-dpdk/scripts/dpdk-teardown.sh this script — restore kernel NIC  │
-# │ scripts/setup_coalescing.sh       NIC RX coalescing tuning          │
-# │ benchmarks/latency/lat            per-run bench wrapper             │
-# └─────────────────────────────────────────────────────────────────────┘
+# ┌── Script roles in this repo ────────────────────────────────────────────┐
+# │ eph-dpdk/scripts/dpdk-setup.sh         one-shot host env: vfio + hugepg │
+# │ eph-dpdk/scripts/dpdk-teardown.sh      this script — restore kernel NIC │
+# │ benchmarks/latency/scripts/            NIC RX coalescing tuning         │
+# │   setup_coalescing.sh                                                   │
+# │ benchmarks/latency/lat                 per-run bench wrapper            │
+# └─────────────────────────────────────────────────────────────────────────┘
 #
 # This script ONLY undoes dpdk-setup.sh:
 #   - Rebind the vfio-pci NIC back to its kernel driver (typically ena/ixgbe)
@@ -16,8 +17,9 @@
 #
 # It does NOT:
 #   - Unload the vfio-pci kernel module (intentional — reload has cost)
-#   - Restore NIC coalescing settings (use scripts/setup_coalescing.sh
-#     --restore for that — they are independent concerns)
+#   - Restore NIC coalescing settings (use
+#     benchmarks/latency/scripts/setup_coalescing.sh --restore for that —
+#     they are independent concerns)
 #   - Move the NIC into any netns (use `ip link set <nic> netns <ns>` or
 #     run benchmarks/latency/lat which manages the bench_ns transitions)
 #

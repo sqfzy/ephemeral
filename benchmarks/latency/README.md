@@ -195,6 +195,19 @@ The bench controls CPU pinning and TSC measurement, but several other
 variance sources are the operator's job. For repeatable runs (e.g.
 publishing numbers or comparing branches):
 
+0. **Disable adaptive RX coalescing on NIC-A and NIC-B** (the single most
+   impactful tuning on AWS ena, where the default `adaptive-rx=on` adds a
+   ~270 us "NAPI shoulder" to kernel `recvmsg` latency under sustained
+   load). The bundled helper auto-detects which netns NIC-B is in and
+   tunes both:
+   ```bash
+   sudo ./benchmarks/latency/scripts/setup_coalescing.sh
+   sudo ./benchmarks/latency/scripts/setup_coalescing.sh --check  # verify
+   ```
+   Re-run after any vfio-pci bind/unbind cycle (the rebind resets the
+   coalescing state to driver defaults). See the script header for
+   why and the discovery context.
+
 1. **Lock CPU frequency**:
    ```bash
    for c in $(seq 0 $(nproc -all --ignore=1)); do

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # dpdk-setup.sh — one-shot host environment preparation for DPDK
 #
-# ┌── Script roles in this repo ────────────────────────────────────────┐
-# │ eph-dpdk/scripts/dpdk-setup.sh    this script — host env prep       │
-# │ eph-dpdk/scripts/dpdk-teardown.sh undo dpdk-setup, restore kernel   │
-# │ scripts/setup_coalescing.sh       NIC RX coalescing tuning          │
-# │ benchmarks/latency/lat            per-run bench wrapper             │
-# └─────────────────────────────────────────────────────────────────────┘
+# ┌── Script roles in this repo ────────────────────────────────────────────┐
+# │ eph-dpdk/scripts/dpdk-setup.sh         this script — host env prep      │
+# │ eph-dpdk/scripts/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
+# │ benchmarks/latency/scripts/            NIC RX coalescing tuning         │
+# │   setup_coalescing.sh                                                   │
+# │ benchmarks/latency/lat                 per-run bench wrapper            │
+# └─────────────────────────────────────────────────────────────────────────┘
 #
 # This script does ONLY host-level one-shot preparation:
 #   1. Load the vfio-pci kernel module (with noiommu mode for cloud VMs)
@@ -16,7 +17,7 @@
 #
 # It does NOT:
 #   - Handle netns (the NIC must be in default ns to be detected)
-#   - Tune NIC coalescing (that's scripts/setup_coalescing.sh)
+#   - Tune NIC coalescing (that's benchmarks/latency/scripts/setup_coalescing.sh)
 #   - Per-run bench orchestration (that's benchmarks/latency/lat)
 #
 # After this script runs once (typically right after a fresh boot), bench

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# scripts/setup_coalescing.sh — tune NIC RX coalescing for reproducible bench latency
+# benchmarks/latency/scripts/setup_coalescing.sh
+#   — tune NIC RX coalescing for reproducible bench latency
 #
-# ┌── Script roles in this repo ────────────────────────────────────────┐
-# │ eph-dpdk/scripts/dpdk-setup.sh    one-shot host env: vfio + hugepg  │
-# │ eph-dpdk/scripts/dpdk-teardown.sh undo dpdk-setup, restore kernel   │
-# │ scripts/setup_coalescing.sh       this script — RX coalescing tune  │
-# │ benchmarks/latency/lat            per-run bench wrapper             │
-# └─────────────────────────────────────────────────────────────────────┘
+# ┌── Script roles in this repo ────────────────────────────────────────────┐
+# │ eph-dpdk/scripts/dpdk-setup.sh         one-shot host env: vfio + hugepg │
+# │ eph-dpdk/scripts/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
+# │ benchmarks/latency/scripts/            this script — RX coalescing tune │
+# │   setup_coalescing.sh                                                   │
+# │ benchmarks/latency/lat                 per-run bench wrapper            │
+# └─────────────────────────────────────────────────────────────────────────┘
 #
 # Why: AWS ena (and some other NIC drivers) ship with Adaptive RX coalescing
 # enabled by default. Under sustained UDP load the adaptive algorithm settles
@@ -92,7 +94,7 @@ VERBOSE=false
 
 usage() {
     cat <<EOF
-${BOLD}Usage${NC}: sudo ./scripts/setup_coalescing.sh [options] [<nic> [<netns>]]
+${BOLD}Usage${NC}: sudo ./benchmarks/latency/scripts/setup_coalescing.sh [options] [<nic> [<netns>]]
 
 ${BOLD}Tune NIC RX coalescing to a fixed (adaptive=off, rx-usecs=0) workpoint${NC}
 so kernel-vs-DPDK latency benchmarks measure the stack itself, not the
@@ -112,9 +114,9 @@ ${BOLD}Options${NC}:
   -h, --help       Show this help
 
 ${BOLD}Single-NIC mode${NC} (positional args override bench.conf):
-  sudo ./scripts/setup_coalescing.sh ens34                # default ns
-  sudo ./scripts/setup_coalescing.sh ens35 $BENCH_NS_NAME             # in $BENCH_NS_NAME
-  sudo ./scripts/setup_coalescing.sh ens5 my_custom_ns    # any netns
+  sudo ./benchmarks/latency/scripts/setup_coalescing.sh ens34                # default ns
+  sudo ./benchmarks/latency/scripts/setup_coalescing.sh ens35 $BENCH_NS_NAME             # in $BENCH_NS_NAME
+  sudo ./benchmarks/latency/scripts/setup_coalescing.sh ens5 my_custom_ns    # any netns
 
 ${BOLD}Environment variables${NC}:
   BENCH_CONFIG       Override bench.conf path (default: $BENCH_CONFIG)
@@ -123,10 +125,10 @@ ${BOLD}Environment variables${NC}:
   TARGET_ADAPTIVE    adaptive-rx setting (default: off)
 
 ${BOLD}Examples${NC}:
-  sudo ./scripts/setup_coalescing.sh                # tune both NICs from bench.conf
-  sudo ./scripts/setup_coalescing.sh --check        # inspect current state
-  sudo ./scripts/setup_coalescing.sh --restore      # back to driver defaults
-  sudo TARGET_RX_USECS=8 ./scripts/setup_coalescing.sh  # use 8 us instead of 0
+  sudo ./benchmarks/latency/scripts/setup_coalescing.sh                # tune both NICs from bench.conf
+  sudo ./benchmarks/latency/scripts/setup_coalescing.sh --check        # inspect current state
+  sudo ./benchmarks/latency/scripts/setup_coalescing.sh --restore      # back to driver defaults
+  sudo TARGET_RX_USECS=8 ./benchmarks/latency/scripts/setup_coalescing.sh  # use 8 us instead of 0
 EOF
 }
 
