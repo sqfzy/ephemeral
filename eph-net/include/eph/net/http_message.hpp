@@ -431,9 +431,53 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
     // (A stricter interpretation would reject the response entirely;
     // we choose the lenient form so legitimate servers that
     // accidentally include both still parse.)
+    //
+    // RFC 7230 §3.3.1: transfer codings are case-insensitive ("chunked"
+    // and "CHUNKED" are equivalent).  We also walk ALL header lines
+    // (RFC §3.2.2: multiple headers with the same name combine as if
+    // comma-separated) so a response that splits Transfer-Encoding
+    // across two lines like "Transfer-Encoding: gzip\r\nTransfer-
+    // Encoding: chunked" is still detected.
     auto cl_value = find_header(headers_raw, "Content-Length");
-    auto te_value = find_header(headers_raw, "Transfer-Encoding");
-    const bool te_chunked = te_value.find("chunked") != std::string_view::npos;
+    bool te_chunked = false;
+    {
+        // Walk all Transfer-Encoding headers, case-insensitive on
+        // both name and value, looking for the "chunked" coding token.
+        size_t scan = 0;
+        while (scan < headers_raw.size()) {
+            auto line_end = headers_raw.find("\r\n", scan);
+            if (line_end == std::string_view::npos) line_end = headers_raw.size();
+            auto line = headers_raw.substr(scan, line_end - scan);
+            scan = (line_end == headers_raw.size()) ? line_end : line_end + 2;
+
+            auto colon = line.find(':');
+            if (colon == std::string_view::npos) continue;
+            auto hdr_name = line.substr(0, colon);
+            // Case-insensitive name match against "Transfer-Encoding".
+            constexpr std::string_view kTeName = "Transfer-Encoding";
+            if (hdr_name.size() != kTeName.size()) continue;
+            bool name_match = true;
+            for (size_t i = 0; i < kTeName.size(); ++i) {
+                char a = static_cast<char>(std::tolower(static_cast<unsigned char>(hdr_name[i])));
+                char b = static_cast<char>(std::tolower(static_cast<unsigned char>(kTeName[i])));
+                if (a != b) { name_match = false; break; }
+            }
+            if (!name_match) continue;
+
+            // Case-insensitive substring search for "chunked" in value.
+            auto value = line.substr(colon + 1);
+            for (size_t i = 0; i + 7 <= value.size(); ++i) {
+                bool match = true;
+                static constexpr char k[] = "chunked";
+                for (size_t j = 0; j < 7; ++j) {
+                    char c = static_cast<char>(std::tolower(static_cast<unsigned char>(value[i + j])));
+                    if (c != k[j]) { match = false; break; }
+                }
+                if (match) { te_chunked = true; break; }
+            }
+            if (te_chunked) break;
+        }
+    }
     if (te_chunked) {
         // Force chunked path even when Content-Length is also set.
         cl_value = std::string{};
