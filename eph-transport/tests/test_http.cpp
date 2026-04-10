@@ -155,6 +155,53 @@ TEST(ParseUpgradeResponse, MalformedStatusCodeReturnsError) {
     EXPECT_NE(result.error().find("Malformed"), std::string::npos);
 }
 
+TEST(ParseUpgradeResponse, StatusCodeWithTrailingGarbageRejected) {
+    // "101xyz" — from_chars parses 101 successfully but leaves 'x'
+    // unconsumed.  The fixed parser requires the entire token to
+    // be consumed, otherwise rejects.
+    std::string response =
+        "HTTP/1.1 101xyz Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: foo\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_FALSE(result.has_value())
+        << "status code with trailing garbage must be rejected";
+}
+
+TEST(ParseUpgradeResponse, StatusCodeWithLeadingPlusRejected) {
+    // from_chars rejects leading '+' for unsigned types — already
+    // covered, but pin behavior.
+    std::string response =
+        "HTTP/1.1 +101 Switching Protocols\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_FALSE(result.has_value());
+}
+
+TEST(ParseUpgradeResponse, StatusCodeNegativeRejected) {
+    std::string response =
+        "HTTP/1.1 -1 Bad\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_FALSE(result.has_value());
+}
+
+TEST(ParseUpgradeResponse, StatusCodeMissingReasonPhraseAccepted) {
+    // "HTTP/1.1 101\r\n" — no reason phrase, no second space.
+    // The token is just "101", entirely numeric, accepted.
+    std::string response =
+        "HTTP/1.1 101\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: foo\r\n"
+        "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->status_code, 101);
+}
+
 // =======================================================================
 // parse_upgrade_response — Connection header token parsing
 // =======================================================================

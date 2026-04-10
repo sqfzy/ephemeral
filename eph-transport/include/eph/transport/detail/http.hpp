@@ -6,7 +6,7 @@
 /// Builds HTTP Upgrade requests and parses 101 Switching Protocols responses.
 /// Not a general-purpose HTTP library — intentionally minimal for low latency.
 
-#include <charconv>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -208,17 +208,26 @@ parse_upgrade_response(const char* data, size_t len) {
     auto code_str = status_line.substr(code_start,
         (space2 != std::string_view::npos) ? space2 - code_start : std::string_view::npos);
 
-    result.status_code = 0;
-    auto [ptr, ec] = std::from_chars(
-        code_str.data(), code_str.data() + code_str.size(),
-        result.status_code);
-    if (ec != std::errc{}) {
+    // RFC 7230 §3.1.2: status-code = 3DIGIT.  Enforcing the strict
+    // grammar at parse time rejects in one shot:
+    //   - trailing garbage  ("101xyz")    — desync via ambiguous interpretation
+    //   - leading sign      ("+101", "-1") — int from_chars accepts both
+    //   - short / long codes ("12", "1010") — out of spec
+    // Different intermediaries interpret malformed status lines
+    // differently, which is the foundation of response-smuggling attacks.
+    if (code_str.size() != 3 ||
+        !std::isdigit(static_cast<unsigned char>(code_str[0])) ||
+        !std::isdigit(static_cast<unsigned char>(code_str[1])) ||
+        !std::isdigit(static_cast<unsigned char>(code_str[2]))) {
         SPDLOG_LOGGER_WARN(log,
-            "Failed to parse HTTP status code from '{}'",
+            "Malformed HTTP status code (not 3 digits): '{}'",
             std::string(code_str));
         return std::unexpected(std::format(
             "Malformed HTTP status code: '{}'", code_str));
     }
+    result.status_code = (code_str[0] - '0') * 100 +
+                         (code_str[1] - '0') * 10 +
+                         (code_str[2] - '0');
 
     SPDLOG_LOGGER_DEBUG(log, "HTTP response status: {}", result.status_code);
 
