@@ -1,0 +1,34 @@
+#pragma once
+
+/// @file eal.hpp
+/// DPDK EAL RAII guard re-exported under `eph::net::dpdk`. Part of Phase 4
+/// of the v3.3 refactor.
+///
+/// The underlying implementation lives in `eph-dpdk/include/eph/dpdk/eal.hpp`
+/// (legacy module). Phase 4 adds a typedef so v3.3 user code can write
+///
+///     eph::net::dpdk::Eal eal = ...;
+///
+/// without including the legacy namespace. Phase 7 migrates the source
+/// into this module and drops the alias.
+
+#include "eph/dpdk/eal.hpp"
+
+namespace eph::net::dpdk {
+
+/// @brief Move-only RAII guard for DPDK EAL lifetime.
+///
+/// Same semantics as `eph::dpdk::EalGuard::init(argc, argv)`:
+/// returns `std::expected<Eal, std::string>` from the static factory and
+/// calls `eal_cleanup()` on destruction.
+using Eal = ::eph::dpdk::EalGuard;
+
+/// @brief Free-function EAL initializer (stateless). Prefer `Eal::init`
+///        for RAII safety; this alias exists for parity with the design
+///        doc example which calls the bare function.
+using ::eph::dpdk::eal_init;
+
+/// @brief Free-function EAL teardown (stateless). Prefer `Eal` RAII.
+using ::eph::dpdk::eal_cleanup;
+
+} // namespace eph::net::dpdk

@@ -13,41 +13,25 @@
 #include <format>
 #include <string>
 
+// v3.3 Phase 4 prerequisite: forward TcpState + tcp_state_name to the
+// canonical definition in `eph/core/tcp_state.hpp`. The legacy enum used
+// to live inline in this header, but Phase 2 introduced
+// `eph/net/tcp_state.hpp` (which now also forwards to the same canonical
+// header). The dual definition was an ODR conflict in any TU that
+// included both — Phase 4's eph-net-dpdk module is the first to do so,
+// and the breakage surfaced there. Pulling the enum into one shared
+// header in eph-core resolves the conflict without changing anyone's
+// public API.
+//
+// Phase 7 deletes this header outright.
+#include "eph/core/tcp_state.hpp"
+
 namespace eph::net {
 
-/// @brief TCP connection states (client-side only).
-///
-/// This library does not implement server accept. States follow the
-/// RFC 793 active-open path for client-initiated connections.
-enum class TcpState : uint8_t {
-    Closed,
-    SynSent,
-    Established,
-    FinWait1,
-    FinWait2,
-    Closing,   ///< RFC 793: simultaneous close — both sides sent FIN before receiving peer's FIN
-    TimeWait,
-    CloseWait,
-    LastAck,
-};
-
-/// @brief Return the RFC 793 name for a TCP state as a C string.
-/// @param s  The TcpState value to convert.
-/// @return A null-terminated string (e.g., "ESTABLISHED", "SYN_SENT").
-[[nodiscard]] constexpr const char* tcp_state_name(TcpState s) noexcept {
-    switch (s) {
-        case TcpState::Closed:      return "CLOSED";
-        case TcpState::SynSent:     return "SYN_SENT";
-        case TcpState::Established: return "ESTABLISHED";
-        case TcpState::FinWait1:    return "FIN_WAIT_1";
-        case TcpState::FinWait2:    return "FIN_WAIT_2";
-        case TcpState::Closing:     return "CLOSING";
-        case TcpState::TimeWait:    return "TIME_WAIT";
-        case TcpState::CloseWait:   return "CLOSE_WAIT";
-        case TcpState::LastAck:     return "LAST_ACK";
-    }
-    return "UNKNOWN";
-}
+// `TcpState` and `tcp_state_name` are now provided by
+// `eph/core/tcp_state.hpp`. We deliberately do NOT redefine them here
+// to avoid the ODR violation. The names are still in `eph::net::` so
+// all legacy callers resolve unchanged.
 
 /// @brief Concept for a TCP transport backend.
 ///

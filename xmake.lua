@@ -112,6 +112,11 @@ includes("eph-codec/xmake.lua")
 -- Depends only on eph-core + eph-net; coexists with the legacy
 -- eph-net/socket_transport.hpp until Phase 7.
 includes("eph-net-kernel/xmake.lua")
+-- v3.3 Phase 4: new eph-net-dpdk module (DPDK lcore Stream/Datagram/Poller).
+-- Pragmatically reuses eph-dpdk internals (TcpSession, UdpSender, Eal) until
+-- Phase 7 migrates the source files into this module's own detail/ subdir
+-- and removes the eph-dpdk dependency.
+includes("eph-net-dpdk/xmake.lua")
 
 -- Cross-module integration tests
 includes("tests/integration/xmake.lua")

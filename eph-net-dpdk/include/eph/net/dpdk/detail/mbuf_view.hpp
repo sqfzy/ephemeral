@@ -1,0 +1,86 @@
+#pragma once
+
+/// @file mbuf_view.hpp
+/// `PacketView` implementation backed by the payload slice of a DPDK
+/// `rte_mbuf`. Part of Phase 4 of the v3.3 refactor.
+///
+/// Phase 4 scope: the view is a thin cursor over a contiguous byte range
+/// already extracted by `packet_parse::parse_packet()` / `parse_udp_packet()`.
+/// It satisfies the minimum PacketView surface the Codec concept relies on:
+///
+///     const uint8_t* data() const noexcept;
+///     uint8_t*       writable_data() noexcept;
+///     size_t         length() const noexcept;
+///     void           trim_front(size_t n) noexcept;
+///     void           trim_back(size_t n) noexcept;
+///     uint64_t       arrival_tsc() const noexcept;
+///
+/// Phase 5 upgrades this to a real zero-copy mbuf chain view supporting
+/// segmented payloads and in-place TLS decrypt. For now the parser hands us
+/// a single contiguous pointer so the simple cursor form is sufficient.
+
+#include <cstddef>
+#include <cstdint>
+
+namespace eph::net::dpdk::detail {
+
+/// @brief Mutable span cursor over a DPDK payload region.
+///
+/// Movement of `data_` / `length_` is done via `trim_front` / `trim_back`;
+/// the underlying memory is not copied or freed by this type. Ownership of
+/// the backing mbuf lives at the enclosing `DpdkTcpStream::process_burst_`
+/// scope, which frees the mbuf after the codec drain loop completes.
+class MbufView {
+public:
+    constexpr MbufView() noexcept = default;
+
+    /// @brief Construct from a payload pointer + length + arrival TSC.
+    /// @param payload     Pointer to the first payload byte (writable; TLS
+    ///                    decrypt will mutate in place in Phase 5).
+    /// @param len         Payload length in bytes.
+    /// @param arrival_tsc TSC reading captured at `rte_eth_rx_burst` return.
+    constexpr MbufView(uint8_t* payload, std::size_t len,
+                       uint64_t arrival_tsc = 0) noexcept
+        : data_(payload), length_(len), arrival_tsc_(arrival_tsc) {}
+
+    /// @name PacketView concept API
+    /// @{
+
+    [[nodiscard]] const uint8_t* data() const noexcept { return data_; }
+
+    [[nodiscard]] uint8_t* writable_data() noexcept { return data_; }
+
+    [[nodiscard]] std::size_t length() const noexcept { return length_; }
+
+    /// @brief Advance the head cursor by `n` bytes (skb_pull equivalent).
+    ///        If `n` exceeds `length_` the view becomes empty.
+    void trim_front(std::size_t n) noexcept {
+        if (n >= length_) {
+            data_  += length_;
+            length_ = 0;
+        } else {
+            data_  += n;
+            length_ -= n;
+        }
+    }
+
+    /// @brief Shrink the tail by `n` bytes (skb_trim equivalent).
+    void trim_back(std::size_t n) noexcept {
+        if (n >= length_) {
+            length_ = 0;
+        } else {
+            length_ -= n;
+        }
+    }
+
+    [[nodiscard]] uint64_t arrival_tsc() const noexcept { return arrival_tsc_; }
+
+    /// @}
+
+private:
+    uint8_t*    data_        = nullptr;
+    std::size_t length_      = 0;
+    uint64_t    arrival_tsc_ = 0;
+};
+
+} // namespace eph::net::dpdk::detail
