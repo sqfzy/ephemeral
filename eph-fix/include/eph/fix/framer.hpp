@@ -133,8 +133,18 @@ public:
 
         // Overflow-safe bounds check: verify len >= header_len + body_length + 7
         // without computing a sum that could wrap.
-        if (body_length > len || header_len > len - body_length || header_len + body_length > len - 7)
+        //
+        // The previous form `header_len + body_length > len - 7` underflows
+        // size_t when len < 7, evaluating len - 7 to SIZE_MAX and silently
+        // passing the check.  A peer can reach this site with len=6 by
+        // sending "8=\x019=\x01" — empty BeginString, empty BodyLength —
+        // which leaves header_len=6, body_length=0 and triggers an OOB
+        // read at cs[0..6].  Use the same len-floor-then-subtract pattern
+        // that fix/parser.hpp::parse already uses.
+        if (len < header_len + 7 ||
+            body_length > len - header_len - 7) {
             return std::unexpected(eph::net::FrameError::kIncomplete);
+        }
 
         size_t total = header_len + body_length + 7;
 

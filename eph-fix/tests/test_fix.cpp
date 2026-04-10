@@ -932,6 +932,59 @@ TEST(FixFramer, decode_checksum_mismatch) {
     EXPECT_EQ(result.error(), eph::net::FrameError::kInvalidFormat);
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// Bounds-check regression: short buffer with empty BeginString and
+// empty BodyLength previously triggered size_t underflow in the
+// "header_len + body_length > len - 7" check, evaluating len-7 to
+// SIZE_MAX and silently passing.  Decode would then read 7 bytes past
+// end-of-buffer at cs[0..6].  Build the input as a fixed-size array
+// inside a guard buffer so AddressSanitizer would catch any OOB read.
+// ───────────────────────────────────────────────────────────────────────
+
+TEST(FixFramer, decode_minimum_header_no_body_no_checksum_incomplete) {
+    // Exactly 6 bytes — empty BeginString, empty BodyLength.  Walk
+    // succeeds (header_len=6, body_length=0), then the bounds check
+    // must reject this as incomplete; checksum field cannot fit.
+    constexpr uint8_t kInput[6] = {'8', '=', 0x01, '9', '=', 0x01};
+    auto result = FixFramer{}.decode(kInput, sizeof(kInput));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), eph::net::FrameError::kIncomplete);
+}
+
+TEST(FixFramer, decode_short_buffer_just_below_checksum_size_incomplete) {
+    // 12 bytes: "8=A\x019=0\x01" + 5 bytes of garbage.
+    // header_len=7, body_length=0, total needed = 7+0+7=14, available 12.
+    // Old code: 7 > 12-7=5 → true → reject.  Verify still rejected.
+    constexpr uint8_t kInput[12] = {
+        '8','=','A',0x01,'9','=','0',0x01,'1','0','=',0x00
+    };
+    auto result = FixFramer{}.decode(kInput, sizeof(kInput));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), eph::net::FrameError::kIncomplete);
+}
+
+TEST(FixFramer, decode_exact_minimum_complete_message_with_zero_body) {
+    // 14 bytes — minimum-size complete frame: "8=A\x019=0\x0110=NNN\x01"
+    // header_len=7, body_length=0, total = 14.  Bounds check must
+    // pass and checksum must verify.
+    std::vector<uint8_t> raw = {'8','=','A',0x01,'9','=','0',0x01};
+    // Compute checksum over first 8 bytes
+    uint32_t sum = 0;
+    for (auto b : raw) sum += b;
+    uint8_t cs = static_cast<uint8_t>(sum & 0xFF);
+    char cs_str[4];
+    std::snprintf(cs_str, sizeof(cs_str), "%03u", cs);
+    raw.push_back('1'); raw.push_back('0'); raw.push_back('=');
+    raw.push_back(static_cast<uint8_t>(cs_str[0]));
+    raw.push_back(static_cast<uint8_t>(cs_str[1]));
+    raw.push_back(static_cast<uint8_t>(cs_str[2]));
+    raw.push_back(0x01);
+
+    auto result = FixFramer{}.decode(raw.data(), raw.size());
+    ASSERT_TRUE(result.has_value()) << "minimum-size frame should decode";
+    EXPECT_EQ(result->total_len, raw.size());
+}
+
 TEST(FixFramer, encode_passthrough) {
     uint8_t in[] = {1, 2, 3, 4};
     uint8_t out[8];
