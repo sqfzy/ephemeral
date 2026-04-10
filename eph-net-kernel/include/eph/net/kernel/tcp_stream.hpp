@@ -70,6 +70,7 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/net/detail/http_connect.hpp"   // Sub-phase 9.6: HTTP CONNECT proxy
 #include "eph/net/detail/ws_handshake.hpp"   // Sub-phase 9.5: WS HTTP handshake
 #include "eph/net/kernel/config.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
@@ -280,21 +281,140 @@ public:
                 "KernelTcpStream::create: reasm_capacity must be > 0"});
         }
 
+        // ── Sub-phase 9.6: validate optional proxy config up-front ────────
+        //
+        // Catching this before we allocate the stream avoids constructing
+        // (and then immediately tearing down) a ByteSocket on a bad config.
+        if (cfg.proxy.has_value()) {
+            auto pv = cfg.proxy->validate();
+            if (!pv) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::create: ProxyConfig invalid: {}",
+                    pv.error().detail);
+                return std::unexpected(pv.error());
+            }
+        }
+
         // Allocate first so the ByteSocket lives inside the returned object
         // and the ReassemblyBuffer's vector is not copied around.
         auto stream = std::unique_ptr<KernelTcpStream>(
             new KernelTcpStream(std::move(cfg)));
 
-        auto cr = stream->sock_.connect(stream->cfg_.remote,
+        // ── TCP connect target: proxy (if set) vs direct upstream ────────
+        //
+        // When a proxy is configured, the initial TCP connect targets the
+        // *proxy*, not the ultimate upstream. After the CONNECT handshake
+        // succeeds the socket is tunneled to `cfg.remote`, which TLS / WS
+        // (and the application) will then see transparently.
+        SocketAddr connect_target = stream->cfg_.remote;
+        if (stream->cfg_.proxy.has_value()) {
+            auto proxy_ip_r = Ipv4Addr::parse(stream->cfg_.proxy->host);
+            if (!proxy_ip_r) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::create: ProxyConfig.host='{}' "
+                    "must be a dotted-quad IPv4 literal: {}",
+                    stream->cfg_.proxy->host, proxy_ip_r.error().detail);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "KernelTcpStream::create: proxy.host must be IPv4 literal"});
+            }
+            connect_target = SocketAddr{*proxy_ip_r, stream->cfg_.proxy->port};
+            SPDLOG_LOGGER_DEBUG(log,
+                "KernelTcpStream::create: routing via proxy {}",
+                connect_target.to_string());
+        }
+
+        auto cr = stream->sock_.connect(connect_target,
                                         stream->cfg_.connect_timeout);
         if (!cr) {
             SPDLOG_LOGGER_WARN(log,
                 "KernelTcpStream::create: connect failed: {}", cr.error().detail);
+            // Distinguish proxy-TCP-connect failure from direct connect
+            // failure so callers can handle it separately (the plan's
+            // Error triad: ProxyConnectFailed vs ConnectFailed).
+            if (stream->cfg_.proxy.has_value()) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::ProxyConnectFailed,
+                    "KernelTcpStream::create: TCP connect to proxy failed"});
+            }
             return std::unexpected(cr.error());
         }
 
         if (stream->cfg_.tcp_nodelay) {
             (void)stream->sock_.set_no_delay(true);
+        }
+
+        // ── Sub-phase 9.6: HTTP CONNECT handshake (before TLS) ───────────
+        //
+        // At this point we are TCP-connected to the proxy. Drive the
+        // CONNECT handshake over a plain ByteSocket sink; the proxy
+        // either returns 200 (tunnel established) or an error status.
+        if (stream->cfg_.proxy.has_value()) {
+            detail::PlainWsSink plain_sink{&stream->sock_};
+            std::vector<uint8_t> connect_leftover;
+            auto connect_r = ::eph::net::detail::perform_http_connect(
+                plain_sink,
+                *stream->cfg_.proxy,
+                stream->cfg_.remote.ip.to_string(),
+                stream->cfg_.remote.port,
+                &connect_leftover);
+            if (!connect_r) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::create: CONNECT handshake failed: {}",
+                    connect_r.error().detail);
+                return std::unexpected(connect_r.error());
+            }
+            // Rare: proxy sent extra bytes after the 200. For a plaintext
+            // post-proxy stream (no TLS, no WS) we seed them into the
+            // reasm buffer. For TLS / WS they'd have to survive through
+            // aws-lc's BIO, which our TlsState::handshake doesn't expose —
+            // so we refuse the stream with a diagnostic rather than
+            // silently desync.
+            if (!connect_leftover.empty()) {
+                if constexpr (EnableTls) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "KernelTcpStream::create: {}B over-read from proxy "
+                        "cannot be threaded through TLS handshake input; "
+                        "refusing the stream",
+                        connect_leftover.size());
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::ProxyHandshakeFailed,
+                        "KernelTcpStream::create: proxy over-read before TLS "
+                        "is not supported"});
+                } else if (!stream->cfg_.ws_path.empty()) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "KernelTcpStream::create: {}B over-read from proxy "
+                        "cannot be threaded through WS handshake input; "
+                        "refusing the stream",
+                        connect_leftover.size());
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::ProxyHandshakeFailed,
+                        "KernelTcpStream::create: proxy over-read before WS "
+                        "is not supported"});
+                } else {
+                    // Pure plaintext TCP post-CONNECT: seed into reasm.
+                    if (stream->reasm_.writable_capacity() <
+                        connect_leftover.size()) {
+                        return std::unexpected(core::ErrorInfo{
+                            core::Error::BufferFull,
+                            "KernelTcpStream::create: proxy leftover exceeds "
+                            "reasm capacity"});
+                    }
+                    std::memcpy(stream->reasm_.writable_ptr(),
+                                connect_leftover.data(),
+                                connect_leftover.size());
+                    stream->reasm_.commit_write(connect_leftover.size());
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "KernelTcpStream::create: seeded {}B post-CONNECT "
+                        "bytes into reasm buffer",
+                        connect_leftover.size());
+                }
+            }
+            SPDLOG_LOGGER_INFO(log,
+                "KernelTcpStream::create: HTTP CONNECT tunnel established "
+                "via {}:{} -> {}",
+                stream->cfg_.proxy->host, stream->cfg_.proxy->port,
+                stream->cfg_.remote.to_string());
         }
 
         if constexpr (EnableTls) {

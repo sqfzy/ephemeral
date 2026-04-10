@@ -395,6 +395,22 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: pool must not be null"});
         }
+        // Sub-phase 9.6: HTTP CONNECT proxies are unsupported on DPDK.
+        // HFT colo deployments don't use proxies, and a DPDK client
+        // bypasses the kernel userland stack that would otherwise be the
+        // natural vehicle for reaching one. Reject up-front with a clear
+        // diagnostic so users who accidentally reuse a kernel StreamConfig
+        // get an actionable error rather than a silent data-plane stall.
+        if (cfg.proxy.has_value()) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::create: HTTP CONNECT proxy not supported "
+                "on DPDK backend (host={}, port={})",
+                cfg.proxy->host, cfg.proxy->port);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkTcpStream::create: HTTP CONNECT proxy not supported "
+                "on DPDK backend"});
+        }
 
         // Construct the stream first so the TcpSession is rooted inside
         // its final storage location (TcpSession is move-constructible

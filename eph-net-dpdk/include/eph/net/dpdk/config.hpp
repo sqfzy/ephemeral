@@ -27,7 +27,10 @@
                                   // the legacy type in eph::dpdk::UdpConfig,
                                   // and our config wrapper names it
                                   // LegacyUdpConfig at its single use-site).
+#include <optional>
+
 #include "eph/net/http.hpp"                   // Sub-phase 9.5: HttpHeader
+#include "eph/net/proxy.hpp"                  // Sub-phase 9.6: ProxyConfig
 #include "eph/net/detail/tls_constants.hpp"   // Phase 7: TlsConfig
 #include "eph/net/reconnect_policy.hpp"
 
@@ -101,6 +104,21 @@ struct StreamConfig {
 
     /// @brief WS handshake deadline.
     std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
+
+    // ── HTTP CONNECT proxy (Sub-phase 9.6) ───────────────────────────────
+    //
+    // The DPDK backend does NOT support HTTP CONNECT proxies — HFT colo
+    // deployments never use proxies, and a DPDK client by definition bypasses
+    // the kernel's userland TCP stack that a proxy would be reachable
+    // through. Nevertheless this field exists on the DPDK `StreamConfig` so
+    // user code can write one config-construction helper that targets both
+    // backends.
+    //
+    // `DpdkTcpStream::create` rejects any non-empty `proxy` with
+    // `Error::InvalidConfig` at factory time.
+
+    /// @brief Unsupported on DPDK — always rejected if set.
+    std::optional<::eph::net::ProxyConfig> proxy{};
 };
 
 // ---------------------------------------------------------------------------

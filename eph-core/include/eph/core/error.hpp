@@ -65,6 +65,15 @@ enum class Error : uint8_t {
     // ── Internal ──────────────────────────────────────────────────────────
     InvalidConfig,       ///< config struct failed validation
     OutOfMemory,         ///< allocation failed (or pool exhausted)
+
+    // ── HTTP CONNECT proxy (Sub-phase 9.6) ─────────────────────────────────
+    //
+    // Appended at the end of the enum on purpose: older switch statements
+    // that predate 9.6 keep compiling without re-order churn, and the
+    // underlying integer values of pre-9.6 errors stay stable.
+    ProxyConnectFailed,   ///< TCP connect to the proxy server itself failed
+    ProxyHandshakeFailed, ///< proxy returned a non-200 / malformed response
+    ProxyAuthRequired,    ///< proxy returned 407 — missing/wrong Basic auth
 };
 
 // ---------------------------------------------------------------------------
@@ -135,6 +144,9 @@ struct ErrorInfo {
         case Error::BufferFull:          return "BUFFER_FULL";
         case Error::InvalidConfig:       return "INVALID_CONFIG";
         case Error::OutOfMemory:         return "OUT_OF_MEMORY";
+        case Error::ProxyConnectFailed:  return "PROXY_CONNECT_FAILED";
+        case Error::ProxyHandshakeFailed:return "PROXY_HANDSHAKE_FAILED";
+        case Error::ProxyAuthRequired:   return "PROXY_AUTH_REQUIRED";
     }
     return "UNKNOWN";
 }

@@ -14,7 +14,10 @@
 #include <string>
 #include <vector>
 
+#include <optional>
+
 #include "eph/net/http.hpp"  // HttpHeader (for ws_extra_headers)
+#include "eph/net/proxy.hpp" // Sub-phase 9.6: ProxyConfig (HTTP CONNECT)
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/detail/tls_constants.hpp"  // Phase 5: TlsConfig
@@ -84,6 +87,22 @@ struct StreamConfig {
 
     /// @brief Cumulative deadline for the WS HTTP handshake phase.
     std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
+
+    // ── HTTP CONNECT proxy (Sub-phase 9.6) ───────────────────────────────
+    //
+    // When `proxy` is set, `KernelTcpStream::create` will:
+    //   1. TCP-connect to `proxy->host:proxy->port` (instead of `remote`)
+    //   2. Drive an HTTP CONNECT handshake through the proxy targeting
+    //      `remote.to_string()` (or the explicit Host from the upstream
+    //      config)
+    //   3. If TLS is enabled, run the TLS handshake inside the tunnel
+    //   4. If ws_path is set, run the WS upgrade inside the TLS tunnel
+    //
+    // See `eph/net/proxy.hpp` for the validation semantics and
+    // `eph/net/detail/http_connect.hpp` for the wire format.
+
+    /// @brief Optional HTTP CONNECT proxy. Empty = direct connect.
+    std::optional<::eph::net::ProxyConfig> proxy{};
 };
 
 // ---------------------------------------------------------------------------
