@@ -261,12 +261,25 @@ TEST(ParseUpgradeResponse, HeaderEndOffsetPointsAfterTerminator) {
 // parse_upgrade_response — header injection defense
 // =======================================================================
 
-TEST(ParseUpgradeResponse, HeaderWithEmbeddedCRLFSkipped) {
-    // A header line that somehow contains an embedded \r or \n in its
-    // value should be skipped (defense against header injection).
-    // Note: the parser splits by \r\n, so an embedded bare \n in a value
-    // would only happen if the line itself were split oddly. This test
-    // verifies that colon-containing lines with normal headers still work.
+TEST(ParseUpgradeResponse, HeaderWithEmbeddedCRLFAborts) {
+    // A header containing embedded CR or LF must fail-fast the entire parse
+    // (not silently skip) to prevent header injection attacks.
+    // Construct a response where a header value contains a bare \n:
+    std::string response =
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n";
+    // Inject a header with embedded \n in the value
+    response += "X-Evil: foo\nbar\r\n";
+    response += "Sec-WebSocket-Accept: validvalue\r\n";
+    response += "\r\n";
+    auto result = parse_upgrade_response(response.data(), response.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("injection"), std::string::npos);
+}
+
+TEST(ParseUpgradeResponse, CleanHeadersStillWork) {
+    // Verify clean headers without embedded CR/LF parse correctly.
     std::string response =
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"

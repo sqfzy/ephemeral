@@ -205,14 +205,18 @@ parse_upgrade_response(const char* data, size_t len) {
             value.remove_suffix(1);
         }
 
-        // Reject header values containing bare CR or LF (header injection defense)
+        // Reject header values containing bare CR or LF (header injection defense).
+        // Fail-fast: abort the entire handshake rather than silently skipping the
+        // injected header — partial header sets break integrity assumptions.
         if (name.find('\r') != std::string_view::npos ||
             name.find('\n') != std::string_view::npos ||
             value.find('\r') != std::string_view::npos ||
             value.find('\n') != std::string_view::npos) {
-            SPDLOG_LOGGER_WARN(log,
-                "Header injection attempt detected: header name or value contains embedded CR/LF");
-            continue;
+            SPDLOG_LOGGER_ERROR(log,
+                "Header injection attempt: header name or value contains "
+                "embedded CR/LF, aborting handshake");
+            return std::unexpected(std::string(
+                "HTTP header injection detected: embedded CR/LF in header"));
         }
 
         if (detail::iequals(name, "Upgrade")) {
