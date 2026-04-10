@@ -95,6 +95,52 @@ inline spdlog::logger* http_logger() {
         return std::unexpected(std::move(msg));
     }
 
+    // Reject any whitespace or CR/LF in host, path, or ws_key.  These
+    // are interpolated into the request line and Sec-WebSocket-Key
+    // header — embedded SP/HT splits the request line into the wrong
+    // tokens; embedded CR/LF injects new headers (smuggling).  Same
+    // defense build_http_request gained in earlier rounds.
+    auto has_invalid_token_char = [](std::string_view s) noexcept {
+        for (char c : s) {
+            if (c == '\r' || c == '\n' || c == ' ' || c == '\t') return true;
+        }
+        return false;
+    };
+    if (has_invalid_token_char(host) ||
+        has_invalid_token_char(path) ||
+        has_invalid_token_char(ws_key)) {
+        SPDLOG_LOGGER_ERROR(detail::http_logger(),
+            "build_upgrade_request: host/path/ws_key contains whitespace "
+            "or CR/LF (header injection / desync risk)");
+        return std::unexpected(std::string(
+            "host/path/ws_key must not contain whitespace, CR, or LF"));
+    }
+
+    // Reject blank-line and bare LF in extra_headers (mirrors
+    // build_http_request).  RFC 7230 §3.2.4 deprecates obs-fold so
+    // every header line must end with proper \r\n; a blank line
+    // (\r\n\r\n) terminates headers early and would let an attacker
+    // append a smuggled body.
+    if (!extra_headers.empty()) {
+        if (extra_headers.find("\r\n\r\n") != std::string_view::npos) {
+            SPDLOG_LOGGER_ERROR(detail::http_logger(),
+                "build_upgrade_request: extra_headers contains blank line "
+                "(potential injection)");
+            return std::unexpected(std::string(
+                "extra_headers must not contain \\r\\n\\r\\n (header injection risk)"));
+        }
+        for (size_t i = 0; i < extra_headers.size(); ++i) {
+            if (extra_headers[i] == '\n' &&
+                (i == 0 || extra_headers[i - 1] != '\r')) {
+                SPDLOG_LOGGER_ERROR(detail::http_logger(),
+                    "build_upgrade_request: extra_headers contains bare LF "
+                    "(potential injection)");
+                return std::unexpected(std::string(
+                    "extra_headers must not contain bare \\n (header injection risk)"));
+            }
+        }
+    }
+
     return std::format(
         "GET {} HTTP/1.1\r\n"
         "Host: {}\r\n"
