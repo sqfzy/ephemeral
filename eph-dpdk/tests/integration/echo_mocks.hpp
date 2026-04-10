@@ -1,19 +1,21 @@
 #pragma once
 
 /// @file echo_mocks.hpp
-/// Simple kernel-side echo servers for the DPDK E2E test suite.
+/// Kernel-side echo servers for the DPDK E2E test suite.
 ///
-/// These are intentionally separate from `benchmarks/latency/core/`'s
-/// mock_fn::run, which has bench-specific framing (4-byte msg_size header
-/// + TSC stamps in bytes 8-16).  Here we want plain echo with no protocol
-/// coupling so that the DPDK client can be a vanilla TcpSession / UdpSender
-/// driving raw bytes.
+/// All five mock variants below (TCP echo, UDP echo, RST, FIN, WS echo)
+/// run inside the dispatcher's child process — one thread each, all
+/// bound to NIC_A in the host network namespace.  They reuse the bench
+/// socket helpers from `core/socket_bind.hpp` and `core/socket_io.hpp`
+/// so the kernel-side I/O paths are byte-identical to the lat_*_dpdk
+/// benchmarks (which is what makes the comparison fair in the first
+/// place).
 ///
-/// Each mock function:
-///   * binds to (cfg.server_ip, port) on NIC_A in the host network namespace
-///   * polls the listen fd with a 100ms timeout to remain responsive to
-///     `running` flips even when no client is connecting
-///   * is called from a thread inside the dispatcher's child process
+/// Shutdown semantics: the dispatcher catches SIGTERM, flips its
+/// running flag, and immediately `_exit(0)`s.  Worker threads are not
+/// joined — process death tears them down.  This means inner recv
+/// loops are allowed to block on EINTR retry without compromising
+/// clean shutdown.
 
 #include <atomic>
 #include <cerrno>
@@ -25,190 +27,84 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
 
+#include "../../../benchmarks/latency/core/socket_bind.hpp"
+#include "../../../benchmarks/latency/core/socket_io.hpp"
+
 namespace eph::dpdk::test_e2e {
-
-/// Poll a file descriptor for readability with a millisecond timeout.
-/// Returns 1 if readable, 0 on timeout, -1 on error.  EINTR is auto-retried.
-inline int poll_readable(int fd, int timeout_ms) noexcept {
-    struct pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLIN;
-    int rc;
-    do { rc = ::poll(&pfd, 1, timeout_ms); }
-    while (rc < 0 && errno == EINTR);
-    return rc;
-}
-
-/// Bind a TCP listening socket to (ip, port) with SO_REUSEADDR + TCP_NODELAY.
-/// Returns the fd, or -1 on error (logs the failure).
-inline int tcp_bind_listen(const std::string& ip, uint16_t port) noexcept {
-    int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
-        spdlog::error("test_e2e mock: socket() failed: {}", ::strerror(errno));
-        return -1;
-    }
-    int yes = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    int nodelay = 1;
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-        spdlog::error("test_e2e mock: inet_pton({}) failed", ip);
-        ::close(fd);
-        return -1;
-    }
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        spdlog::error("test_e2e mock: bind({}:{}) failed: {}",
-                      ip, port, ::strerror(errno));
-        ::close(fd);
-        return -1;
-    }
-    if (::listen(fd, 16) != 0) {
-        spdlog::error("test_e2e mock: listen failed: {}", ::strerror(errno));
-        ::close(fd);
-        return -1;
-    }
-    return fd;
-}
-
-/// Bind a UDP socket to (ip, port) with SO_REUSEADDR.
-inline int udp_bind(const std::string& ip, uint16_t port) noexcept {
-    int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) {
-        spdlog::error("test_e2e mock: udp socket() failed: {}", ::strerror(errno));
-        return -1;
-    }
-    int yes = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-        ::close(fd);
-        return -1;
-    }
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        spdlog::error("test_e2e mock: udp bind({}:{}) failed: {}",
-                      ip, port, ::strerror(errno));
-        ::close(fd);
-        return -1;
-    }
-    return fd;
-}
-
-/// recv exactly `n` bytes from `fd` into `buf`.  Returns false on EOF or error.
-inline bool recv_exact(int fd, void* buf, size_t n) noexcept {
-    size_t got = 0;
-    auto* p = static_cast<uint8_t*>(buf);
-    while (got < n) {
-        ssize_t r = ::recv(fd, p + got, n - got, 0);
-        if (r == 0) return false;  // EOF
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        got += static_cast<size_t>(r);
-    }
-    return true;
-}
-
-/// send exactly `n` bytes from `buf` to `fd`.
-inline bool send_exact(int fd, const void* buf, size_t n) noexcept {
-    size_t sent = 0;
-    auto* p = static_cast<const uint8_t*>(buf);
-    while (sent < n) {
-        ssize_t r = ::send(fd, p + sent, n - sent, MSG_NOSIGNAL);
-        if (r < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        sent += static_cast<size_t>(r);
-    }
-    return true;
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 // TCP echo mock — generic byte-stream echo, no framing.
 //
-// Reads up to 16 KiB chunks and echoes them back verbatim until the peer
-// closes the connection.  The accept loop polls the listen fd with a
-// 100 ms timeout so the thread checks `running` ten times per second
-// even when idle, and shuts down promptly on dispatcher SIGTERM.
+// recv up to 16 KiB chunks and echo verbatim until the client closes.
 // ─────────────────────────────────────────────────────────────────────────
 inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
                                   std::atomic<bool>& running) noexcept {
-    int listen_fd = tcp_bind_listen(ip, port);
-    if (listen_fd < 0) return;
+    auto listen_r = bench::tcp_bind_listen(ip, port);
+    if (!listen_r) {
+        spdlog::error("test_e2e tcp_echo_mock {}:{} bind: {}",
+                      ip, port, listen_r.error());
+        return;
+    }
+    int listen_fd = *listen_r;
     spdlog::info("test_e2e tcp_echo_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 16384;
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        int pr = poll_readable(listen_fd, 100);
-        if (pr <= 0) continue;
-        int cfd = ::accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
-        if (cfd < 0) {
-            if (errno == EINTR || errno == EBADF) break;
-            spdlog::warn("test_e2e tcp_echo accept: {}", ::strerror(errno));
+        auto cfd_r = bench::accept_one(listen_fd, running);
+        if (!cfd_r) {
+            spdlog::warn("test_e2e tcp_echo accept: {}", cfd_r.error());
             continue;
         }
-        int nodelay = 1;
-        ::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+        if (*cfd_r < 0) break; // shutdown requested
+        int cfd = *cfd_r;
 
-        // Echo loop — also polls so we exit promptly on shutdown.
-        while (running.load(std::memory_order_acquire)) {
-            int rr = poll_readable(cfd, 100);
-            if (rr == 0) continue;
-            if (rr < 0) break;
+        while (true) {
             ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
             if (n <= 0) break;
-            if (!send_exact(cfd, buf.data(), static_cast<size_t>(n))) break;
+            if (!bench::send_all_fd(cfd, buf.data(), static_cast<size_t>(n))) break;
         }
         ::close(cfd);
     }
     ::close(listen_fd);
-    spdlog::info("test_e2e tcp_echo_mock @ :{} exiting", port);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// UDP echo mock — recvfrom + sendto in a poll loop.
+// UDP echo mock — recvfrom + sendto.
 // ─────────────────────────────────────────────────────────────────────────
 inline void udp_echo_mock_thread(const std::string& ip, uint16_t port,
                                   std::atomic<bool>& running) noexcept {
-    int fd = udp_bind(ip, port);
-    if (fd < 0) return;
+    auto fd_r = bench::udp_bind(ip, port);
+    if (!fd_r) {
+        spdlog::error("test_e2e udp_echo_mock {}:{} bind: {}",
+                      ip, port, fd_r.error());
+        return;
+    }
+    int fd = *fd_r;
     spdlog::info("test_e2e udp_echo_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 2048;
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        int pr = poll_readable(fd, 100);
-        if (pr <= 0) continue;
         sockaddr_in src{};
         socklen_t srclen = sizeof(src);
         ssize_t n = ::recvfrom(fd, buf.data(), kBufSize, 0,
                                 reinterpret_cast<sockaddr*>(&src), &srclen);
         if (n < 0) {
-            if (errno == EINTR || errno == EBADF) break;
-            spdlog::warn("test_e2e udp_echo recvfrom: {}", ::strerror(errno));
-            continue;
+            if (errno == EINTR) continue;
+            break;
         }
         ::sendto(fd, buf.data(), static_cast<size_t>(n), MSG_NOSIGNAL,
                  reinterpret_cast<sockaddr*>(&src), srclen);
     }
     ::close(fd);
-    spdlog::info("test_e2e udp_echo_mock @ :{} exiting", port);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -217,18 +113,21 @@ inline void udp_echo_mock_thread(const std::string& ip, uint16_t port,
 // ─────────────────────────────────────────────────────────────────────────
 inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
-    int listen_fd = tcp_bind_listen(ip, port);
-    if (listen_fd < 0) return;
+    auto listen_r = bench::tcp_bind_listen(ip, port);
+    if (!listen_r) {
+        spdlog::error("test_e2e tcp_rst_mock {}:{} bind: {}",
+                      ip, port, listen_r.error());
+        return;
+    }
+    int listen_fd = *listen_r;
     spdlog::info("test_e2e tcp_rst_mock listening on {}:{}", ip, port);
 
     while (running.load(std::memory_order_acquire)) {
-        int pr = poll_readable(listen_fd, 100);
-        if (pr <= 0) continue;
-        int cfd = ::accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
-        if (cfd < 0) {
-            if (errno == EINTR || errno == EBADF) break;
-            continue;
-        }
+        auto cfd_r = bench::accept_one(listen_fd, running);
+        if (!cfd_r) continue;
+        if (*cfd_r < 0) break;
+        int cfd = *cfd_r;
+
         // SO_LINGER {on=1, linger=0} → close() drops the socket and
         // sends RST instead of going through FIN/ACK.
         struct linger lg{1, 0};
@@ -236,7 +135,6 @@ inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
         ::close(cfd);
     }
     ::close(listen_fd);
-    spdlog::info("test_e2e tcp_rst_mock @ :{} exiting", port);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -246,41 +144,38 @@ inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
 // ─────────────────────────────────────────────────────────────────────────
 inline void tcp_fin_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
-    int listen_fd = tcp_bind_listen(ip, port);
-    if (listen_fd < 0) return;
+    auto listen_r = bench::tcp_bind_listen(ip, port);
+    if (!listen_r) {
+        spdlog::error("test_e2e tcp_fin_mock {}:{} bind: {}",
+                      ip, port, listen_r.error());
+        return;
+    }
+    int listen_fd = *listen_r;
     spdlog::info("test_e2e tcp_fin_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 4096;
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        int pr = poll_readable(listen_fd, 100);
-        if (pr <= 0) continue;
-        int cfd = ::accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
-        if (cfd < 0) {
-            if (errno == EINTR || errno == EBADF) break;
-            continue;
-        }
-        // Wait briefly for the client's first chunk.
-        if (poll_readable(cfd, 1000) > 0) {
-            ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
-            if (n > 0) {
-                (void)send_exact(cfd, buf.data(), static_cast<size_t>(n));
-            }
+        auto cfd_r = bench::accept_one(listen_fd, running);
+        if (!cfd_r) continue;
+        if (*cfd_r < 0) break;
+        int cfd = *cfd_r;
+
+        // Read one chunk, echo it, then half-close so the client sees FIN.
+        ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
+        if (n > 0) {
+            (void)bench::send_all_fd(cfd, buf.data(), static_cast<size_t>(n));
         }
         ::shutdown(cfd, SHUT_WR);
         // Drain anything the client sends after our FIN, then close fully.
-        while (running.load(std::memory_order_acquire)) {
-            int rr = poll_readable(cfd, 100);
-            if (rr == 0) continue;
-            if (rr < 0) break;
+        while (true) {
             ssize_t d = ::recv(cfd, buf.data(), kBufSize, 0);
             if (d <= 0) break;
         }
         ::close(cfd);
     }
     ::close(listen_fd);
-    spdlog::info("test_e2e tcp_fin_mock @ :{} exiting", port);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -383,28 +278,27 @@ inline std::string find_header(const std::string& req, const std::string& name) 
 
 inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
-    int listen_fd = tcp_bind_listen(ip, port);
-    if (listen_fd < 0) return;
+    auto listen_r = bench::tcp_bind_listen(ip, port);
+    if (!listen_r) {
+        spdlog::error("test_e2e ws_echo_mock {}:{} bind: {}",
+                      ip, port, listen_r.error());
+        return;
+    }
+    int listen_fd = *listen_r;
     spdlog::info("test_e2e ws_echo_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 65536;
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        int pr = poll_readable(listen_fd, 100);
-        if (pr <= 0) continue;
-        int cfd = ::accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
-        if (cfd < 0) {
-            if (errno == EINTR || errno == EBADF) break;
-            continue;
-        }
-        int nodelay = 1;
-        ::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+        auto cfd_r = bench::accept_one(listen_fd, running);
+        if (!cfd_r) continue;
+        if (*cfd_r < 0) break;
+        int cfd = *cfd_r;
 
-        // ── Phase 1: read the HTTP upgrade request ────────────────────
+        // ── Step 1: read HTTP upgrade request ─────────────────────────
         std::string req;
         while (req.find("\r\n\r\n") == std::string::npos && req.size() < 8192) {
-            if (poll_readable(cfd, 2000) <= 0) { req.clear(); break; }
             ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
             if (n <= 0) { req.clear(); break; }
             req.append(reinterpret_cast<char*>(buf.data()), static_cast<size_t>(n));
@@ -418,7 +312,7 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
             continue;
         }
 
-        // ── Phase 2: compute accept hash and send 101 ─────────────────
+        // ── Step 2: compute accept hash and send 101 ──────────────────
         constexpr const char kGuid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         std::string concat = key + kGuid;
         uint8_t hash[20];
@@ -431,42 +325,40 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Accept: " + accept_b64 + "\r\n\r\n";
-        if (!send_exact(cfd, resp.data(), resp.size())) {
+        if (!bench::send_all_fd(cfd, resp.data(), resp.size())) {
             ::close(cfd);
             continue;
         }
 
-        // ── Phase 3: frame echo loop ──────────────────────────────────
+        // ── Step 3: frame echo loop ───────────────────────────────────
         // Read RFC 6455 client frames (always masked) and echo unmasked
-        // with FIN=1, same opcode.
+        // with FIN=1, same opcode.  Single-frame messages only — no
+        // fragment reassembly.
         bool conn_alive = true;
-        while (conn_alive && running.load(std::memory_order_acquire)) {
-            if (poll_readable(cfd, 100) == 0) continue;
+        while (conn_alive) {
             uint8_t hdr[2];
-            if (!recv_exact(cfd, hdr, 2)) break;
+            if (!bench::recv_exact_fd(cfd, hdr, 2)) break;
             uint8_t opcode = hdr[0] & 0x0F;
-            bool fin    = (hdr[0] & 0x80) != 0;
             bool masked = (hdr[1] & 0x80) != 0;
             uint64_t plen = hdr[1] & 0x7F;
 
             if (plen == 126) {
                 uint8_t ext[2];
-                if (!recv_exact(cfd, ext, 2)) break;
+                if (!bench::recv_exact_fd(cfd, ext, 2)) break;
                 plen = (uint64_t(ext[0]) << 8) | ext[1];
             } else if (plen == 127) {
                 uint8_t ext[8];
-                if (!recv_exact(cfd, ext, 8)) break;
+                if (!bench::recv_exact_fd(cfd, ext, 8)) break;
                 plen = 0;
                 for (int i = 0; i < 8; ++i) plen = (plen << 8) | ext[i];
             }
 
             uint8_t mask[4] = {0};
-            if (masked) {
-                if (!recv_exact(cfd, mask, 4)) break;
-            }
+            if (masked && !bench::recv_exact_fd(cfd, mask, 4)) break;
             if (plen > kBufSize) break;
             if (plen > 0) {
-                if (!recv_exact(cfd, buf.data(), static_cast<size_t>(plen))) break;
+                if (!bench::recv_exact_fd(cfd, buf.data(),
+                                           static_cast<size_t>(plen))) break;
                 if (masked) {
                     for (uint64_t i = 0; i < plen; ++i) {
                         buf[i] ^= mask[i & 3];
@@ -477,16 +369,20 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
             // Close frame from client → echo close back, then exit.
             if (opcode == 0x8) {
                 uint8_t close_hdr[2] = {0x88, static_cast<uint8_t>(plen)};
-                send_exact(cfd, close_hdr, 2);
-                if (plen > 0) send_exact(cfd, buf.data(), static_cast<size_t>(plen));
+                bench::send_all_fd(cfd, close_hdr, 2);
+                if (plen > 0) {
+                    bench::send_all_fd(cfd, buf.data(), static_cast<size_t>(plen));
+                }
                 conn_alive = false;
                 break;
             }
             // Ping → reply with Pong, same payload.
             if (opcode == 0x9) {
                 uint8_t pong_hdr[2] = {0x8A, static_cast<uint8_t>(plen)};
-                send_exact(cfd, pong_hdr, 2);
-                if (plen > 0) send_exact(cfd, buf.data(), static_cast<size_t>(plen));
+                bench::send_all_fd(cfd, pong_hdr, 2);
+                if (plen > 0) {
+                    bench::send_all_fd(cfd, buf.data(), static_cast<size_t>(plen));
+                }
                 continue;
             }
 
@@ -509,14 +405,14 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                 }
                 hdr_len = 10;
             }
-            if (!send_exact(cfd, out_hdr, hdr_len)) break;
-            if (plen > 0 && !send_exact(cfd, buf.data(), static_cast<size_t>(plen))) break;
-            (void)fin; // single-frame messages only — no fragment reassembly
+            if (!bench::send_all_fd(cfd, out_hdr, hdr_len)) break;
+            if (plen > 0 &&
+                !bench::send_all_fd(cfd, buf.data(),
+                                     static_cast<size_t>(plen))) break;
         }
         ::close(cfd);
     }
     ::close(listen_fd);
-    spdlog::info("test_e2e ws_echo_mock @ :{} exiting", port);
 }
 
 } // namespace eph::dpdk::test_e2e

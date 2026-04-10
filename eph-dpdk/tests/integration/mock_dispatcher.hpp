@@ -96,15 +96,14 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
         ::sigsuspend(&mask);  // returns -1 EINTR; loop checks the flag
     }
 
-    spdlog::info("dispatcher: shutdown signaled, joining threads");
-    // Threads may be blocked in accept()/recvfrom() — closing the listen
-    // socket inside each thread on EINTR is what frees them.  We rely on
-    // the signal already having interrupted those syscalls.
-    for (auto& t : threads) {
-        if (t.joinable()) t.join();
-    }
-    spdlog::info("dispatcher: clean exit");
-    return 0;
+    // Threads may be blocked in inner recv loops on a half-open client
+    // socket; rather than wire SIGTERM through every blocking call, we
+    // just _exit() the entire child process.  Process death tears all
+    // threads down deterministically — std::thread::detach() prevents
+    // their destructors from std::terminate()ing.
+    spdlog::info("dispatcher: shutdown signaled, _exit(0)");
+    for (auto& t : threads) t.detach();
+    ::_exit(0);
 }
 
 } // namespace eph::dpdk::test_e2e
