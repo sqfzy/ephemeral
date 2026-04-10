@@ -424,12 +424,23 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
     // Extract raw headers (between status line end and blank line)
     auto headers_raw = buf.substr(0, header_end);
 
-    // Use case-insensitive find_header instead of manual substring search
+    // RFC 7230 §3.3.3: if BOTH Content-Length and Transfer-Encoding
+    // are present, the Transfer-Encoding overrides Content-Length and
+    // such a message MAY indicate request smuggling.  We honor RFC
+    // semantics: Transfer-Encoding wins, Content-Length is ignored.
+    // (A stricter interpretation would reject the response entirely;
+    // we choose the lenient form so legitimate servers that
+    // accidentally include both still parse.)
     auto cl_value = find_header(headers_raw, "Content-Length");
+    auto te_value = find_header(headers_raw, "Transfer-Encoding");
+    const bool te_chunked = te_value.find("chunked") != std::string_view::npos;
+    if (te_chunked) {
+        // Force chunked path even when Content-Length is also set.
+        cl_value = std::string{};
+    }
     if (cl_value.empty()) {
         // No Content-Length — check for chunked transfer encoding.
-        auto te = find_header(headers_raw, "Transfer-Encoding");
-        if (te.find("chunked") != std::string_view::npos) {
+        if (te_chunked) {
             // RFC 7230 §4.1: properly walk the chunk stream rather
             // than substring-matching for "0\r\n\r\n".  A naïve
             // substring search produces false positives whenever

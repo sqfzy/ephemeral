@@ -258,6 +258,57 @@ TEST(IsCompleteAdv, NoCLNoChunkedExceedingCapReturnsTrue) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Content-Length + Transfer-Encoding: chunked together (RFC 7230 §3.3.3)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// RFC 7230 §3.3.3:
+//   "If a message is received with both a Transfer-Encoding and a
+//    Content-Length header field, the Transfer-Encoding overrides the
+//    Content-Length.  Such a message might indicate an attempt to
+//    perform request smuggling (Section 9.5) or response splitting
+//    (Section 9.4)..."
+//
+// We honor TE precedence so a malicious or buggy server cannot trick
+// the client by setting an inconsistent CL.
+
+TEST(IsCompleteAdv, BothCLAndChunkedUsesChunked_Complete) {
+    // Content-Length lies (says 100), but the chunked stream is
+    // properly terminated.  RFC 7230: TE wins → complete.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 100\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, BothCLAndChunkedUsesChunked_Incomplete) {
+    // Content-Length says 5 (matches the body bytes if we used CL).
+    // But the chunked terminator is NOT present yet — TE precedence
+    // means we report incomplete despite the CL match.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "5\r\nhello"; // missing trailing \r\n + 0\r\n\r\n
+    EXPECT_FALSE(is_http_response_complete(resp))
+        << "Transfer-Encoding overrides Content-Length per RFC 7230 §3.3.3";
+}
+
+TEST(IsCompleteAdv, BothCLAndChunkedHeaderOrderIndependent) {
+    // Same as above but Transfer-Encoding appears BEFORE Content-Length.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Content-Length: 100\r\n"
+        "\r\n"
+        "5\r\nhello\r\n0\r\n\r\n";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Multiple Content-Length headers
 // ═══════════════════════════════════════════════════════════════════════
 
