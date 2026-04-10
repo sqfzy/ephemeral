@@ -2,39 +2,71 @@
 
 Header-only C++23 ultra-low-latency library for high-frequency trading.
 
-Dual networking backends -- POSIX sockets and DPDK kernel-bypass -- behind compile-time templated transports. Three transport variants for different latency/threading tradeoffs: `Transport` (threaded TX+RX), `DirectTxTransport` (direct TX, threaded RX), and `DirectTransport` (no threads, app polls). Zero virtual dispatch.
+Dual networking backends — POSIX sockets (**eph-net-kernel**) and DPDK kernel-bypass
+(**eph-net-dpdk**) — behind a single `Stream` / `Datagram` / `Poller` concept layer.
+Every per-connection type is a monomorphized `TcpStream<Codec>` or `UdpSocket<Codec>`
+that owns its wire state, TLS state, and codec state inline. Zero virtual dispatch on
+the hot path.
 
 ## Why ephemeral
 
-- **Zero-copy everywhere** -- FIX, ITCH, and JSON parsers operate directly on receive buffers with no intermediate allocations.
-- **Compile-time polymorphism** -- Concepts and templates replace virtual dispatch. The `TcpTransport` concept lets you swap Socket/DPDK backends without touching application logic. Three transport variants (`Transport`, `DirectTxTransport`, `DirectTransport`) let you choose the threading model that fits your latency budget.
-- **Production building blocks** -- Circuit breakers, kill switches, rate limiters, HMAC signing, audit logs, and risk checks are included, not bolted on.
-- **Single-header modules** -- Each module is header-only with clean dependency edges. Use only what you need.
+- **Zero-copy everywhere.** FIX, ITCH, JSON, and WebSocket codecs all work against a
+  `PacketView` that allows in-place mutation. The DPDK path TLS-decrypts straight into
+  the mbuf so the codec sees plaintext without a single memcpy.
+- **Compile-time polymorphism.** C++20 concepts replace virtual dispatch. The
+  `eph::net::Stream` concept lets you swap kernel / DPDK / test backends without
+  touching application code. One `Poller` drives any mix of `TcpStream` and `UdpSocket`
+  instances — single-connection and multi-connection programs use the same API.
+- **Tokio-aligned naming.** `TcpStream` / `UdpSocket` / `Poller` mirror
+  `tokio::net::{TcpStream,UdpSocket}` / `mio::Poll`. The concept names and lifetimes
+  read the same way in Rust and C++.
+- **Production building blocks.** TLS 1.3 (aws-lc), WebSocket (RFC 6455), HTTP/1.1,
+  MoldUDP64, FIX 4.4, ITCH 5.0, OUCH, order books, latency histograms, CPU pinning,
+  hugepage allocators, audit logs — all header-only and composable.
+- **Physical kernel/DPDK separation.** The DPDK build weight lives entirely in
+  `eph-net-dpdk`. CI hosts never need DPDK installed to build or test the kernel path.
 
-## Performance
+## Architecture
 
-Measured on AWS Graviton (ARM64), 6-round average +/- sigma:
+```
+                        ┌───────────────┐
+                        │   eph-core    │  StreamCodec / DatagramCodec / ErrorInfo
+                        └───────┬───────┘
+                                │
+                    ┌───────────┼───────────┐
+                    ↓           ↓           ↓
+             ┌─────────┐  ┌──────────┐  ┌─────────────────────┐
+             │eph-codec│  │ eph-net  │  │ eph-fix / eph-itch  │
+             │WsCodec  │  │Stream /  │  │ eph-json / eph-book │
+             │Mold64   │  │Datagram /│  │ (satisfy Codec      │
+             │Raw/…    │  │Poller    │  │  concept)           │
+             └─────────┘  │concepts  │  └─────────────────────┘
+                          │+ test    │
+                          │ mocks    │
+                          └────┬─────┘
+                               │
+                      ┌────────┴────────┐
+                      ↓                 ↓
+              ┌──────────────┐   ┌───────────────┐
+              │eph-net-kernel│   │ eph-net-dpdk  │
+              │  epoll +     │   │  lcore burst +│
+              │  KernelTcp/  │   │  DpdkTcp/Udp/ │
+              │  Udp/Poller  │   │  Poller + Eal │
+              └──────────────┘   └───────────────┘
+```
 
-| Metric | Socket | DPDK | Speedup |
-|--------|--------|------|---------|
-| TX queue (p50) | 2,544 +/- 431 ns | 360 +/- 14 ns | **7.1x** |
-| RX pipeline (p50) | 3,369 +/- 130 ns | 423 +/- 12 ns | **8.0x** |
-| Handshake | 47.4 +/- 1.2 ms | 13.5 +/- 1.6 ms | **3.5x** |
-| JSON parse (bookTicker) | 104 ns | -- | -- |
-| JSON -> Book -> BBO | 163 ns | -- | -- |
-| FIX parse (NewOrder) | 22.5 ns | -- | -- |
-| ITCH parse | 1.4 ns | -- | -- |
-| Book update | 2.9 ns | -- | -- |
+See [`docs/architecture.md`](docs/architecture.md) for the full story and
+[`summary.md`](summary.md) for the module-by-module breakdown.
 
 ## Quick Start
 
 ### Prerequisites
 
-- **GCC >= 13** or **Clang >= 17** (C++23: `std::expected`, `std::format`)
+- **GCC ≥ 13** or **Clang ≥ 17** (C++23: `std::expected`, `std::format`)
 - [xmake](https://xmake.io) build system
-- **Optional:** DPDK (via vcpkg) for kernel-bypass backend
-- **Optional:** aws-lc for TLS support
-- **Optional:** numactl for NUMA-aware allocation
+- `aws-lc` (auto-fetched via xmake) for TLS / HMAC / CSPRNG
+- **Optional**: DPDK (via vcpkg) for `eph-net-dpdk` + `*_dpdk` targets
+- **Optional**: `numactl` for NUMA-aware allocation
 
 ### Build
 
@@ -42,246 +74,184 @@ Measured on AWS Graviton (ARM64), 6-round average +/- sigma:
 git clone https://github.com/sqfzy/ephemeral.git
 cd ephemeral
 
-# Release build
-xmake -m release
-
-# Debug build
-xmake -m debug
+xmake -m release          # release build
+xmake -m debug            # debug build (SPDLOG_LEVEL_TRACE)
+xmake build -g tests      # build all tests
+xmake run  -g tests       # run all tests
+xmake build -g examples   # build all examples
+xmake build -g benchmarks # build all microbenchmarks
 ```
 
-### Run Tests
+DPDK builds need the gcc14 wrapper (`/tmp/gcc14-wrap/g++`) to reorder `-isystem` /
+`-L` flags so aws-lc resolves before vcpkg's bundled libssl. See
+[`docs/dpdk-setup.md`](docs/dpdk-setup.md).
 
-```bash
-xmake build -g tests
-xmake run test_fix
-xmake run test_websocket
+## Usage Examples
 
-# Run all non-DPDK tests:
-for t in test_alignment test_bounded_queue test_bounded_queue_bytes \
-         test_cpu test_evicting_queue test_evicting_queue_bytes \
-         test_fix test_framer test_hdr_histogram test_http test_itch \
-         test_proxy test_record test_recorder test_socket_transport \
-         test_system_stats test_tcp_concept test_time test_tls_record \
-         test_transport test_transport_types test_version test_websocket \
-         test_hugepage test_audit_log test_gateway test_kill_switch \
-         test_metrics_concept test_itch_adapter test_binance_adapter; do
-  xmake run $t
-done
+### Example 1 — kernel WebSocket client (CI / dev / test hosts)
+
+Connect to a TLS WebSocket endpoint, hand the bytes to `WsCodec`, emit frames on a user
+callback.
+
+```cpp
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/codec/ws_codec.hpp"
+
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
+
+int main() {
+    auto poller = en::KernelPoller::create({}).value();
+
+    auto stream = en::KernelTcpStream<ec::WsCodec>::create({
+        .remote_host = "fstream.binance.com",
+        .remote_port = 443,
+        .ws_path     = "/ws/btcusdt@bookTicker",
+        .use_tls     = true,
+    }).value();
+
+    stream->on_message = [](const uint8_t* data, uint16_t len) {
+        std::string_view msg{reinterpret_cast<const char*>(data), len};
+        spdlog::info("market data ({} bytes): {}", len, msg);
+    };
+
+    poller->add(stream.get()).value();
+
+    while (running) {
+        poller->poll(100ms);        // epoll_wait under the hood
+    }
+}
 ```
 
-### Run Benchmarks
+### Example 2 — DPDK HFT client with TCP order channel + UDP market data
 
-```bash
-# Microbenchmarks (Google Benchmark)
-xmake build -g benchmarks
-xmake run bench_fix_parse
-xmake run bench_itch_parse
-xmake run bench_json_parse
-xmake run bench_array_book
+One `DpdkPoller` drives a TLS WebSocket `TcpStream` (order channel) and a multicast
+`UdpSocket` running a `Mold64Codec` (ITCH feed) on the same lcore.
 
-# End-to-end latency benchmarks (self-contained, dual-NIC back-to-back)
-# Each lat_* binary forks its own kernel mock and runs the bench client.
-xmake build lat_tcp lat_udp lat_ws lat_ex_market lat_ex_order lat_ex_md_udp
-xmake build lat_tcp_dpdk lat_udp_dpdk lat_ws_dpdk \
-            lat_ex_market_dpdk lat_ex_order_dpdk lat_ex_md_udp_dpdk
+```cpp
+#include "eph/net/dpdk/eal.hpp"
+#include "eph/net/dpdk/poller.hpp"
+#include "eph/net/dpdk/tcp_stream.hpp"
+#include "eph/net/dpdk/udp_socket.hpp"
+#include "eph/codec/ws_codec.hpp"
+#include "eph/codec/mold64_codec.hpp"
 
-# Edit benchmarks/latency/bench.conf once with your NIC/IP/CPU layout, then:
-sudo ./benchmarks/latency/lat tcp                # raw TCP RTT (kernel client)
-sudo ./benchmarks/latency/lat udp --dpdk         # raw UDP RTT (DPDK client)
-sudo ./benchmarks/latency/lat ex_market          # exchange bookTicker push
+namespace en = eph::net::dpdk;
+namespace ec = eph::codec;
+
+int main(int argc, char** argv) {
+    en::Eal eal{argc, argv};      // RAII DPDK EAL init
+
+    auto poller = en::DpdkPoller<>::create({
+        .port_id  = 0,
+        .queue_id = 0,
+        .lcore    = 4,
+    }).value();
+
+    // Order channel — TLS 1.3 WebSocket over DPDK TCP
+    auto order_ch = en::DpdkTcpStream<ec::WsCodec>::create({
+        .remote_host = "fix.exchange.example",
+        .remote_port = 443,
+    }).value();
+    order_ch->on_message = handle_exec_report;
+    poller->add(order_ch.get()).value();
+
+    // Market data — CME ITCH multicast
+    auto md = en::DpdkUdpSocket<ec::Mold64Codec>::create({
+        .bind_addr = eph::net::SocketAddr{{0,0,0,0}, 30000},
+    }).value();
+    md->on_datagram = handle_itch_message;
+    md->join_multicast({{233,54,12,111}, 30001}).value();
+    poller->add(md.get()).value();
+
+    // Single loop drives both TCP and UDP on the same lcore
+    while (running) {
+        poller->poll();
+    }
+}
 ```
+
+### Example 3 — unit-testing codec + app logic without syscalls
+
+```cpp
+#include "eph/net/test/fake_stream.hpp"
+#include "eph/net/test/test_poller.hpp"
+
+namespace ent = eph::net::test;
+
+TEST(MyApp, RoutesWsPingToPong) {
+    auto poller = ent::TestPoller<ent::FakeStream>::create();
+    auto fake   = ent::FakeStream::create();
+    poller->add(fake.get());
+
+    fake->inject_rx({0x89, 0x00});      // WS ping frame
+    poller->poll();
+
+    auto tx = fake->collect_tx();
+    EXPECT_EQ(tx[0], 0x8A);              // WS pong frame emitted by codec
+}
+```
+
+More examples live under `examples/` and the canonical v3.3 integration tests under
+`tests/integration/`. See [`docs/poller-guide.md`](docs/poller-guide.md) for
+multi-connection patterns and heterogeneous `TcpStream` + `UdpSocket` on one poller.
 
 ## Modules
 
 | Module | Headers | Description |
-|--------|---------|-------------|
-| **eph-core** | `tcp_concept`, `framer_concept`, `metrics_concept`, `error_traits`, `transport_errors` | Shared concepts and traits -- `TcpTransport`, `MessageFramer`, `ErrorEnum` |
-| **eph-utils** | `time`, `cpu`, `hugepage`, `hdr_histogram`, `audit_log`, `recorder`, `system_stats`, `ema`, `alignment` | TSC timing, CPU pinning, hugepage allocator, histogram, audit logging |
-| **eph-containers** | `bounded_queue`, `evicting_queue`, `ring_buffer`, `*_bytes` variants | Lock-free SPSC queues: `BoundedQueue` (backpressure), `EvictingQueue` (drop-oldest) |
-| **eph-transport** | `transport`, `direct_tx_transport`, `direct_transport`, `transport_core`, `tx_worker`, `rx_worker`, `frame_processor`, `reconnect_policy`, `tls_session`, `websocket`, `http`, `transport_types`, `presets` | Composable WebSocket/TLS transport with 3 threading variants, built from independent components (TransportCore, TxWorker, RxWorker, FrameProcessor, ReconnectPolicy) |
-| **eph-net** | `socket_transport`, `socket_config`, `http_client`, `gateway`, `circuit_breaker`, `kill_switch`, `rate_limiter`, `proxy`, `hmac` | Socket backend, HTTP client, HMAC signing, connection lifecycle management |
-| **eph-dpdk** | `tcp`, `arp`, `dns`, `reactor`, `flow_steering`, `eal`, `connector` | DPDK kernel-bypass TCP backend (same Transport API) |
-| **eph-fix** | `parser`, `builder`, `framer`, `session`, `orders`, `order_manager`, `risk_check`, `position`, `execution_report`, `tags` | FIX 4.4 zero-copy parser/builder, session management, order helpers, risk checks |
-| **eph-itch** | `parser`, `framer`, `messages`, `moldudp64`, `soupbintcp`, `ouch` | ITCH 5.0 / OUCH zero-copy parser, MoldUDP64 and SoupBinTCP framers |
-| **eph-json** | `parser`, `framer`, adapters: `binance`, `bybit`, `okx` | Zero-copy JSON parser with exchange-specific adapters |
-| **eph-book** | `array_book`, `map_book`, `binance_adapter`, `itch_adapter`, `signals` | L2 order book (array and map variants), exchange adapters |
-
-### Dependency Graph
-
-```
-eph-core  (concepts, error traits)
-  |
-  +-- eph-utils  (time, cpu, hugepage, histogram, audit)
-  |     |
-  |     +-- eph-containers  (SPSC queues, ring buffer)
-  |           |
-  |           +-- eph-transport  (Transport, DirectTxTransport, DirectTransport, TLS, WebSocket)
-  |           |     |
-  |           |     +-- eph-net  (socket backend, HTTP client, gateway)
-  |           |     |
-  |           |     +-- eph-dpdk  (DPDK kernel-bypass backend)
-  |           |
-  |           (eph-net and eph-dpdk provide TcpTransport implementations for eph-transport)
-  |
-  +-- eph-fix  (FIX protocol)
-  +-- eph-itch  (ITCH/OUCH protocol)
-  +-- eph-json  (JSON parser, exchange adapters)
-
-eph-book  (order book -- standalone, integrates with eph-json and eph-itch)
-```
-
-## Usage Examples
-
-### Minimal WebSocket Client
-
-Connect to a WebSocket server, send a message, receive the echo:
-
-```cpp
-#include "eph/net/socket_transport.hpp"
-#include "eph/transport/transport.hpp"
-
-int main() {
-    // 1. Configure
-    eph::net::SocketConfig sock_cfg{
-        .host = "echo.websocket.org", .port = 443, .tcp_nodelay = true,
-        .bind_device = "",  // set to e.g. "ens35" for SO_BINDTODEVICE (NIC pinning)
-    };
-    eph::transport::TransportConfig transport_cfg{
-        .remote_host = "echo.websocket.org",
-        .remote_port = 443,
-        .use_tls     = true,
-    };
-
-    // 2. TCP factory
-    auto tcp_factory = [&sock_cfg]()
-        -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
-        auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
-        auto result = tcp->connect(std::chrono::milliseconds{5000});
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
-
-    // 3. Connect (TCP -> TLS handshake -> WebSocket upgrade)
-    //    Transport: threaded TX+RX (also available: DirectTxTransport, DirectTransport)
-    auto result = eph::transport::Transport<eph::net::SocketTransport>::create(
-        std::move(tcp_factory), transport_cfg);
-    if (!result) return 1;
-    auto& tp = **result;
-
-    // 4. Send and receive
-    std::string msg = "hello ephemeral";
-    tp.send_text(msg.data(), msg.size());
-    tp.recv([](const uint8_t* data, size_t len) {
-        spdlog::info("Received: {}", std::string_view(
-            reinterpret_cast<const char*>(data), len));
-    });
-
-    tp.stop();
-}
-```
-
-### Binance Order Book (WebSocket -> JSON -> Book -> BBO)
-
-```cpp
-#include "eph/net/socket_transport.hpp"
-#include "eph/json/parser.hpp"
-#include "eph/json/adapters/binance.hpp"
-#include "eph/book/binance_adapter.hpp"
-
-// ... transport setup same as above, connecting to fstream.binance.com ...
-
-eph::book::BinanceBookAdapter<5> adapter;
-
-tp.recv([&](const uint8_t* data, size_t len) {
-    auto json   = eph::json::parse(data, len);
-    auto ticker = eph::json::binance::BookTicker::from(json.value());
-    if (!ticker) return;
-
-    adapter.update_from_ticker(*ticker);
-
-    const auto& book = adapter.book();
-    auto mid    = book.mid_price();
-    auto spread = book.spread();
-    // mid and spread are std::optional<double>
-});
-```
-
-## Examples
-
-| Example | Backend | Description |
-|---------|---------|-------------|
-| `minimal_ws_client` | Socket | Simplest possible WebSocket client |
-| `binance_book` | Socket | JSON -> BookTicker -> ArrayBook -> BBO (full pipeline) |
-| `production_client` | Socket | Reconnection, latency histogram, CPU pinning |
-| `simple_hft` | Socket | Binance market data with nanosecond timing |
-| `simple_hft_dpdk` | DPDK | Same as above, kernel-bypass |
-| `fix_trading_demo` | -- | FIX session, order management, risk checks |
-| `itch_feed_demo` | -- | ITCH 5.0 message parsing |
-| `ws_echo_client` | Socket | Full-featured echo client with CLI |
-| `ws_echo_client_dpdk` | DPDK | DPDK variant of echo client |
-| `dpdk_quickstart` | DPDK | DPDK connection helper with DNS resolution |
-| `ws_via_proxy` | Socket | WebSocket through HTTP proxy |
-| `spsc_queue_demo` | -- | BoundedQueue + EvictingQueue usage |
-| `framer_showcase` | -- | WsFramer, RawFramer, LengthPrefixFramer |
-| `perf_tuning_basics` | -- | TSC calibration, CPU affinity, hugepages |
-
-Build and run any example:
-
-```bash
-xmake build minimal_ws_client
-xmake run minimal_ws_client
-xmake run minimal_ws_client --host myserver.com --port 8080 --no-tls
-```
-
-## Integration
-
-ephemeral is header-only. Add the include paths to your build system:
-
-```lua
--- xmake.lua
-add_requires("spdlog", "aws-lc")
-target("my_app")
-    set_kind("binary")
-    add_files("src/*.cpp")
-    add_includedirs(
-        "path/to/ephemeral/eph-core/include",
-        "path/to/ephemeral/eph-utils/include",
-        "path/to/ephemeral/eph-containers/include",
-        "path/to/ephemeral/eph-transport/include",
-        "path/to/ephemeral/eph-net/include")
-    add_packages("spdlog", "aws-lc")
-```
-
-Or use xmake's dependency mechanism within a monorepo:
-
-```lua
-add_deps("eph-net")  -- pulls in eph-transport, eph-core, eph-utils, eph-containers transitively
-```
+|---|---|---|
+| **eph-core** | `error`, `codec`, `error_traits`, `metrics_concept`, `framer_concept`, `length_prefix_framer`, `parse_number`, `packet_view` | `Error` / `ErrorInfo` / `StreamCodec` / `DatagramCodec` / `PacketView` contract plus legacy framer primitives still consumed by the parser modules. |
+| **eph-utils** | `time` (TSC), `cpu`, `hugepage`, `hdr_histogram`, `audit_log`, `recorder`, `system_stats`, `ema`, `alignment` | TSC timing, CPU pinning, hugepage allocator, histograms, audit logging, recorders. |
+| **eph-containers** | `bounded_queue`, `evicting_queue`, `ring_buffer`, `*_bytes` variants | Lock-free SPSC queues and byte-level variants used by the transports. |
+| **eph-codec** | `ws_codec`, `raw_stream_codec`, `length_prefix_codec`, `raw_datagram_codec`, `mold64_codec` | Stateful codecs satisfying `StreamCodec` / `DatagramCodec`. WS auto-responds ping/close; Mold64 emits N ITCH frames per datagram. |
+| **eph-net** | `concepts`, `socket_addr`, `reconnect_policy`, `tcp_state`, `test/fake_stream`, `test/test_poller`, `test/fake_datagram`, `detail/tls_session`, `detail/websocket` | The `Stream` / `Datagram` / `Pollable` / `Poller` concepts, shared value types, test mocks, and the shared TLS / WS wire helpers both backends use. |
+| **eph-net-kernel** | `tcp_stream`, `udp_socket`, `poller`, `config` | `KernelTcpStream<C,Tls>`, `KernelUdpSocket<C>`, `KernelPoller` (epoll). Contiguous `SpanView` `PacketView`. |
+| **eph-net-dpdk** | `tcp_stream`, `udp_socket`, `poller`, `eal`, `config`, plus internal `dpdk/*` primitives (arp, dns, flow_steering, packet templates, net_header, multicast) | `DpdkTcpStream<C,Tls>`, `DpdkUdpSocket<C>`, `DpdkPoller<>`, `Eal`. `MbufView` `PacketView` with in-place TLS decrypt. |
+| **eph-fix** | `parser`, `builder`, `framer`, `session`, `orders`, `order_manager`, `risk_check`, `position`, `execution_report`, `tags` | FIX 4.4 zero-copy parser/builder, session management, order helpers, risk checks. |
+| **eph-itch** | `parser`, `framer`, `messages`, `moldudp64`, `soupbintcp`, `ouch` | ITCH 5.0 / OUCH zero-copy parser, MoldUDP64 and SoupBinTCP framers. |
+| **eph-json** | `parser`, `framer`, adapters: `binance`, `bybit`, `okx` | Zero-copy JSON parser with exchange-specific adapters. |
+| **eph-book** | `array_book`, `map_book`, `binance_adapter`, `itch_adapter`, `signals` | L2 order books (array / map), exchange adapters, signals. |
 
 ## Benchmarks
 
-Microbenchmarks live in `benchmarks/` and use Google Benchmark. End-to-end latency benchmarks are self-contained in `benchmarks/latency/` with a built-in mock WebSocket server (no Binance or other exchange dependency required).
+Microbenchmarks use Google Benchmark and live per-module under `<module>/benchmarks/`.
+End-to-end latency benchmarks are self-contained in `benchmarks/latency/` — each
+`lat_<scenario>[_dpdk]` binary forks its own kernel mock server and runs the bench
+client, so the kernel-vs-DPDK comparison is inherently fair (see
+[`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md)).
 
-Latency benchmarks (one binary per scenario, kernel + DPDK client variants):
-- `lat_tcp` / `lat_udp` / `lat_ws` -- raw TCP / UDP / plain WebSocket RTT
-- `lat_ex_market` -- exchange bookTicker push (1-leg)
-- `lat_ex_order` -- exchange order RTT (N-inflight pipeline)
-- `lat_ex_md_udp` -- exchange UDP market data RTT
-- `benchmarks/latency/lat <scenario> [--dpdk]` -- single-command runner that owns NIC-B state transitions (host kernel ↔ bench_ns ↔ vfio-pci) and execs the binary; the binary itself forks the kernel mock and runs the bench client
+```bash
+xmake build lat_tcp lat_udp lat_ws lat_ex_market lat_ex_order lat_ex_md_udp
+xmake build lat_tcp_dpdk lat_udp_dpdk lat_ws_dpdk \
+            lat_ex_market_dpdk lat_ex_order_dpdk lat_ex_md_udp_dpdk
 
-Each `lat_*` binary reports a 4-leg breakdown (RTT / TX / RX / SRV) in TSC nanoseconds, computed from four timestamps stamped into the payload: `client_send`, `server_recv`, `server_send`, `client_recv`. See `benchmarks/latency/core/tsc_protocol.hpp` and `core/runner.hpp` for the exact measurement points.
+# Edit benchmarks/latency/bench.conf once, then:
+sudo ./benchmarks/latency/lat tcp                # raw TCP RTT, kernel client
+sudo ./benchmarks/latency/lat udp --dpdk         # raw UDP RTT, DPDK client
+sudo ./benchmarks/latency/lat ex_market          # exchange bookTicker push
+```
+
+Each `lat_*` binary reports a 4-leg breakdown (RTT / TX / RX / SRV) in TSC nanoseconds,
+computed from four timestamps stamped into the payload: `client_send`, `server_recv`,
+`server_send`, `client_recv`. See `benchmarks/latency/core/tsc_protocol.hpp` and
+`core/runner.hpp` for the exact measurement points.
 
 ## Documentation
 
-- [`summary.md`](summary.md) -- Architecture overview, module map, data flow
-- [`docs/dpdk-setup.md`](docs/dpdk-setup.md) -- DPDK environment setup
-- [`docs/production-config.md`](docs/production-config.md) -- Production deployment configuration
-- [`docs/operations-runbook.md`](docs/operations-runbook.md) -- Operations runbook
-- [`docs/troubleshooting.md`](docs/troubleshooting.md) -- Troubleshooting guide
-- [`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md) -- Socket vs DPDK benchmark methodology
-- [`docs/multi-connection.md`](docs/multi-connection.md) -- Multi-connection patterns
-- [`docs/custom-framer.md`](docs/custom-framer.md) -- Writing custom message framers
-- [`docs/binance-protocols.md`](docs/binance-protocols.md) -- Binance protocol details
+- [`summary.md`](summary.md) — architecture overview, module map, data flow
+- [`docs/architecture.md`](docs/architecture.md) — v3.3 concept model for new contributors
+- [`docs/poller-guide.md`](docs/poller-guide.md) — the Poller concept with examples
+- [`docs/custom-codec.md`](docs/custom-codec.md) — writing a new Codec
+- [`docs/dpdk-setup.md`](docs/dpdk-setup.md) — DPDK environment setup
+- [`docs/production-config.md`](docs/production-config.md) — production deployment
+- [`docs/operations-runbook.md`](docs/operations-runbook.md) — operations runbook
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — troubleshooting guide
+- [`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md) — kernel-vs-DPDK methodology
+- [`docs/multi-connection.md`](docs/multi-connection.md) — multi-connection patterns
+- [`docs/binance-protocols.md`](docs/binance-protocols.md) — Binance protocol details
+- `.artifacts/design-eph-v3.3-architecture-20260410.md` — frozen design spec for the v3.3 refactor
 
 ## License
 

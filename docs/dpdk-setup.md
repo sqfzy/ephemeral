@@ -103,16 +103,12 @@ DPDK's Environment Abstraction Layer (EAL) must be initialized before any DPDK A
 ### In ephemeral
 
 ```cpp
-#include "eph/dpdk/eal.hpp"
+#include "eph/net/dpdk/eal.hpp"
 
 int main(int argc, char** argv) {
-    // EalGuard initializes EAL and cleans up on destruction
-    auto eal = eph::dpdk::EalGuard::init(argc, argv);
-    if (!eal) {
-        spdlog::error("EAL init failed: {}", eal.error());
-        return 1;
-    }
-    // DPDK is now ready — create Platform, TcpSession, etc.
+    // eph::net::dpdk::Eal is an RAII wrapper — init on construction, cleanup on destruction.
+    eph::net::dpdk::Eal eal{argc, argv};
+    // DPDK is now ready — create DpdkPoller, DpdkTcpStream, DpdkUdpSocket, etc.
 }
 ```
 
@@ -131,7 +127,7 @@ For consistent low-latency, isolate CPU cores from the OS scheduler.
 ### Kernel boot parameter
 
 ```
-isolcpus=2,3,4,5    # Cores reserved for DPDK + Transport threads
+isolcpus=2,3,4,5    # Cores reserved for DPDK lcores
 ```
 
 ### Verify isolation
@@ -144,17 +140,20 @@ taskset -cp $$
 
 ### In ephemeral
 
+`DpdkPoller` pins itself to the lcore passed in its config. The v3.3 architecture has
+no TX worker thread — `send()` runs synchronously on the caller, so you typically
+only have one lcore per Poller:
+
 ```cpp
-eph::net::TransportConfig cfg{
-    .tx_cpu = 2,   // Pin TX thread to core 2
-    .rx_cpu = 3,   // Pin RX thread to core 3
-};
+auto poller = eph::net::dpdk::DpdkPoller<>::create({
+    .port_id  = 0,
+    .queue_id = 0,
+    .lcore    = 4,   // pin this poller's busy-loop to lcore 4
+}).value();
 ```
 
-Use `perf_tuning_basics` example to discover NUMA topology:
-```bash
-xmake build perf_tuning_basics && xmake run perf_tuning_basics
-```
+Use `eph::utils::cpu::topology()` (see `eph-utils/include/eph/utils/cpu.hpp`) to
+discover NUMA topology from code, or run `lscpu --extended` for a quick overview.
 
 ## 5. NUMA Locality
 
@@ -178,24 +177,30 @@ xmake f -m release -y
 # Or use system DPDK
 xmake f -m release --dpdk=/usr/local -y
 
-# Build DPDK examples
-xmake build dpdk_quickstart
+# Build DPDK examples (see examples/ and eph-net-dpdk/tests/)
 xmake build simple_hft_dpdk
 xmake build ws_echo_client_dpdk
 ```
+
+Note: DPDK builds need the `/tmp/gcc14-wrap/g++` wrapper on hosts where vcpkg brings
+its own libssl — the wrapper reorders `-isystem` / `-L` so aws-lc resolves first. See
+the Phase 7 commit message (`c2a0ca4`) for the root cause.
 
 ## 7. Verification
 
 ### Quick smoke test
 
 ```bash
-# Build and run the quickstart example
-xmake build dpdk_quickstart
+# Build a DPDK example
+xmake build simple_hft_dpdk
 
 # Run with EAL args (adjust for your setup)
-sudo xmake run dpdk_quickstart \
+sudo xmake run simple_hft_dpdk \
     -l 2,3 --huge-dir /dev/hugepages -- \
     --host echo.websocket.org --local-ip 10.0.0.2 --gateway 10.0.0.1
+
+# Or use the latency benchmark wrapper (handles NIC-B state transitions)
+sudo ./benchmarks/latency/lat tcp --dpdk
 ```
 
 ### Troubleshooting

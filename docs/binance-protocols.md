@@ -228,18 +228,22 @@ ephemeral provides a **complementary client-side mechanism**:
 
 Combined usage:
 ```cpp
-// Use EvictingQueue for latest-only semantics
-using SbeTransport = eph::net::Transport<
-    eph::net::SocketTransport,
-    eph::net::WsFramer,
-    512, 1,  // MaxPayload=512, QueueDepth=1
-    eph::containers::EvictingQueue,
-    true     // LastOnlyDeliver
->;
+// v3.3: the Stream owns its codec; the user feeds frames into an
+// EvictingQueue when the consumer thread is slower than the poller.
+using WsStream = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec, true>;
+
+eph::containers::EvictingQueueBytes<512> latest_tick{};
+
+auto stream = WsStream::create(cfg).value();
+stream->on_message = [&](const uint8_t* data, uint16_t len) {
+    // Drop older ticks — keep only the newest
+    latest_tick.push(std::span{data, len});
+};
 
 // Server auto-culls during overload → fewer messages on wire
 // EvictingQueue keeps only latest → consumer always reads freshest data
-// on_frame_filter selects latest per symbol in multi-stream connections
+// Filter inside on_message to pick only the symbols you care about
 ```
 
-This triple-layer filtering (server → transport filter → queue) ensures the application never processes stale data, regardless of where the bottleneck occurs.
+This triple-layer filtering (server → codec → queue) ensures the application never
+processes stale data, regardless of where the bottleneck occurs.

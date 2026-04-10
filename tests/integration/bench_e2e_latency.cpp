@@ -1,14 +1,7 @@
-/// @file bench_e2e_latency_v3.cpp
-/// v3.3 rewrite of bench_e2e_latency.cpp.
-///
+/// @file bench_e2e_latency.cpp
 /// Microbenchmarks the v3.3 `KernelTcpStream<RawStreamCodec, false>` API
-/// against an in-process loopback echo server. Replaces the legacy
-/// `Transport<FakeTcpTransport, RawFramer>` benchmark — the v3.3 backend
-/// is real I/O (epoll loopback) which is what the design doc Phase 5
-/// performance verification gate cares about.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
+/// against an in-process loopback echo server. Real I/O (epoll loopback)
+/// so PacketView / TLS work is exercised, not just the codec fast path.
 
 #include <atomic>
 #include <chrono>

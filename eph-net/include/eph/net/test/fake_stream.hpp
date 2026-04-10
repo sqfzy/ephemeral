@@ -3,13 +3,12 @@
 /// @file test/fake_stream.hpp
 /// In-memory `Stream` concept mock for unit tests.
 ///
-/// Part of Phase 2 of the v3.3 refactor (see
+/// Introduced in Phase 2 of the v3.3 refactor (see
 /// `.artifacts/design-eph-v3.3-architecture-20260410.md`). `FakeStream`
 /// satisfies `eph::net::Stream` without any syscalls — tests can drive a
 /// Poller against it, inject bytes via `inject_rx()`, and inspect the
-/// resulting TX via `collect_tx()`. The legacy
-/// `eph::core::FakeTcpTransport` will eventually be retired in favor of
-/// this type once Phase 7 lands.
+/// resulting TX via `collect_tx()`. This is the v3.3 replacement for the
+/// legacy `eph::core::FakeTcpTransport` (deleted in Phase 8).
 ///
 /// Intended usage pattern:
 ///

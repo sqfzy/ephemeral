@@ -1,189 +1,188 @@
-# Multi-Connection Patterns
+# Multi-connection patterns
 
-How to coordinate multiple Transport instances for multi-symbol HFT feeds.
+In v3.3 a single `Poller` hosts any number of streams — kernel or DPDK, TCP or UDP,
+different codecs, different TLS settings. This document covers the three common
+layouts for multi-symbol HFT feeds.
 
-## Architecture Overview
+For a reminder of the `Poller` concept and basic usage, see `docs/poller-guide.md`.
 
-```
-                          ┌─────────────┐
-  Stream 1 (AAPL) ───────│ Transport 1  │──┐
-                          └─────────────┘  │
-                          ┌─────────────┐  │   ┌──────────────┐
-  Stream 2 (MSFT) ───────│ Transport 2  │──┼──→│  Application  │
-                          └─────────────┘  │   │  (Aggregator) │
-                          ┌─────────────┐  │   └──────────────┘
-  Stream 3 (GOOG) ───────│ Transport 3  │──┘
-                          └─────────────┘
-```
+## Layout 1 — single Poller, N TcpStreams, one thread
 
-Each symbol gets its own Transport instance. The application aggregates updates from all streams.
-
-## Pattern 1: Push-Mode Aggregation (Recommended)
-
-Use `on_message` callback to push updates directly from each RX thread into a shared aggregation queue.
+This is the default. All streams share a Poller on a single thread. The thread calls
+`poller->poll(timeout)` in a loop and each stream's `on_message` fires synchronously
+in that thread.
 
 ```cpp
-#include "eph/containers/bounded_queue.hpp"
-#include "eph/net/socket_transport.hpp"
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/codec/ws_codec.hpp"
 
-// Shared aggregation queue: all RX threads push here, app thread consumes
-struct AggMsg {
-    uint16_t stream_id;
-    uint8_t  data[512];
-    uint16_t len;
-};
-eph::containers::BoundedQueue<AggMsg, 4096> agg_queue;
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
 
-// Create N transports with push-mode delivery into the shared queue
-std::vector<std::unique_ptr<Transport<SocketTransport>>> transports;
+auto poller = en::KernelPoller::create({}).value();
 
-for (uint16_t i = 0; i < num_symbols; ++i) {
-    auto cfg = make_transport_config(symbols[i]);
+using WsStream = en::KernelTcpStream<ec::WsCodec>;
+std::vector<std::unique_ptr<WsStream>> streams;
 
-    // Push-mode: RX thread delivers directly, no per-transport queue polling
-    cfg.on_message = [i, &agg_queue](const uint8_t* data, uint16_t len, uint8_t) {
-        agg_queue.try_produce([&](AggMsg& msg) {
-            msg.stream_id = i;
-            msg.len = std::min(len, uint16_t{512});
-            std::memcpy(msg.data, data, msg.len);
-        });
+for (auto& symbol : symbols) {
+    auto s = WsStream::create({
+        .remote_host = "fstream.binance.com",
+        .remote_port = 443,
+        .ws_path     = std::format("/ws/{}@bookTicker", symbol),
+        .use_tls     = true,
+    }).value();
+
+    s->on_message = [sym = symbol](const uint8_t* d, uint16_t n) {
+        route_tick(sym, d, n);      // runs on the poller thread
     };
 
-    auto result = Transport<SocketTransport>::create(make_factory(symbols[i]), cfg);
-    if (result) transports.push_back(std::move(*result));
+    poller->add(s.get()).value();
+    streams.push_back(std::move(s));
 }
 
-// Application thread: consume from aggregation queue
 while (running) {
-    agg_queue.try_consume([](const AggMsg& msg) {
-        process_update(msg.stream_id, msg.data, msg.len);
-    });
+    poller->poll(100ms);
 }
 ```
 
-**Pros**: Minimal latency (no intermediate queue hop), simple aggregation.
-**Cons**: All RX threads contend on `agg_queue` (but BoundedQueue is SPSC — see Pattern 2 for MPSC).
+**Pros**: Simple. Zero cross-thread synchronization. `route_tick` runs on the same
+thread that did the TLS decrypt, so cache lines are still hot.
 
-## Pattern 2: Per-Stream Queue + Round-Robin Poll
+**Cons**: If `route_tick` is slow, it blocks every other stream on the same poller.
 
-Each Transport uses its own RX queue. Application polls them in round-robin.
+## Layout 2 — Poller thread + BoundedQueue → application thread
+
+When `on_message` must hand off expensive work to a different thread (trading logic,
+order management, persistence), use an `eph-containers` SPSC queue. The poller thread
+becomes a pure I/O and codec thread; the consumer thread does the heavy lifting.
 
 ```cpp
-std::vector<std::unique_ptr<Transport<SocketTransport>>> transports;
+#include "eph/containers/bounded_queue_bytes.hpp"
 
-// Create N transports (default queue-based delivery)
-for (auto& sym : symbols) {
-    auto cfg = make_transport_config(sym);
-    // No on_message — use default queue delivery
-    auto result = Transport<SocketTransport>::create(make_factory(sym), cfg);
-    if (result) transports.push_back(std::move(*result));
-}
+struct TickMsg {
+    uint16_t symbol_id;
+    uint16_t len;
+    uint8_t  data[512];
+};
+eph::containers::BoundedQueue<TickMsg, 4096> tick_queue;
 
-// Application thread: round-robin poll
-while (running) {
-    for (size_t i = 0; i < transports.size(); ++i) {
-        transports[i]->recv([&](const uint8_t* data, size_t len) {
-            process_update(i, data, len);
+for (size_t i = 0; i < symbols.size(); ++i) {
+    auto s = WsStream::create(make_cfg(symbols[i])).value();
+    s->on_message = [i](const uint8_t* d, uint16_t n) {
+        tick_queue.try_produce([&](TickMsg& m) {
+            m.symbol_id = static_cast<uint16_t>(i);
+            m.len       = std::min<uint16_t>(n, 512);
+            std::memcpy(m.data, d, m.len);
         });
-    }
-}
-```
-
-**Pros**: No contention between RX threads. Simple mental model.
-**Cons**: Round-robin introduces up to `N × recv_overhead` latency for the last stream polled.
-
-## Pattern 3: EvictingQueue (Latest-Only Per Symbol)
-
-For market data where only the latest price matters, use EvictingQueue to automatically discard stale updates.
-
-```cpp
-// Use EvictingQueue RX queue — latest update per symbol, no backpressure
-using LatestTransport = eph::net::Transport<
-    eph::net::SocketTransport,
-    eph::net::WsFramer,
-    512,   // MaxPayload
-    1,     // QueueDepth = 1 (only latest)
-    eph::containers::EvictingQueue,  // RxQueueTmpl
-    true   // LastOnlyDeliver = true
->;
-
-for (auto& sym : symbols) {
-    auto cfg = make_transport_config(sym);
-    auto result = LatestTransport::create(make_factory(sym), cfg);
-    if (result) transports.push_back(std::move(*result));
+    };
+    poller->add(s.get()).value();
+    streams.push_back(std::move(s));
 }
 
-// Poll: always gets the latest update, intermediate frames are dropped
-for (auto& tp : transports) {
-    tp->recv([](const uint8_t* data, size_t len) {
-        // This is the LATEST data — no stale intermediate updates
-    });
-}
-```
-
-## Pattern 4: DPDK Reactor (Shared NIC)
-
-When multiple sessions share a single NIC (common on AWS ENA), use Reactor
-for zero-ring direct dispatch.
-
-```cpp
-#include "eph/dpdk/reactor.hpp"
-
-// Create reactor for port 0, queue 0
-eph::dpdk::Reactor reactor({
-    .port_id = 0, .rx_queue_id = 0, .rx_cpu = 2,
+// Poller thread
+std::thread io_thread([&] {
+    pin_to_cpu(2);
+    while (running) poller->poll(100ms);
 });
 
-// Register each connected session with a data callback
-for (size_t i = 0; i < tcp_sessions.size(); ++i) {
-    reactor.add_connection(&tcp_sessions[i],
-        [i](const uint8_t* data, uint16_t len, size_t conn_id) {
-            process_data(i, data, len);
-        });
+// Application thread
+pin_to_cpu(3);
+while (running) {
+    tick_queue.try_consume([](const TickMsg& m) {
+        process_update(m.symbol_id, m.data, m.len);
+    });
 }
-
-// Start reactor thread (polls NIC, dispatches directly to process_rx)
-reactor.start();
-
-// Reactor stamps burst TSC for accurate timing — no ring latency overhead
 ```
 
-See `bench_market_persymbol_dpdk.cpp` for a complete implementation.
+**Pros**: Isolates I/O cost from processing cost. Each thread can be pinned to its
+own core. Backpressure is explicit (`try_produce` returns false when full).
 
-## CPU Pinning Strategy
+**Cons**: One memcpy per tick into the queue. Use `EvictingQueue` instead for
+latest-only semantics (below).
 
-For N symbols on a multi-core system:
+## Layout 3 — EvictingQueue for latest-only market data
 
-```
-Core 0:   OS / monitoring
-Core 1:   Application thread (aggregation + processing)
-Core 2:   Reactor RX thread (DPDK) or spare
-Core 3:   Transport 1 TX
-Core 4:   Transport 1 RX
-Core 5:   Transport 2 TX
-Core 6:   Transport 2 RX
-...
-```
+For top-of-book data where only the latest price matters, use `EvictingQueue` —
+producing overwrites the oldest unconsumed entry, so the consumer always sees the
+freshest tick.
 
-With push-mode (Pattern 1), TX/RX threads are per-transport. For 50 symbols, this requires 100+ cores — impractical. Solutions:
-
-1. **Shared TX/RX threads** (not yet built in — application-level): Multiplex multiple symbols onto fewer Transport instances using combined streams + frame filtering.
-2. **Combined stream + filter**: Connect to one multi-symbol endpoint (e.g., Binance combined stream) and use `on_frame_filter` to select latest-per-symbol.
-3. **Per-symbol isolation only for critical symbols**: Pin 2-3 critical symbols to dedicated cores, aggregate the rest.
-
-## Backpressure Handling
-
-When the application can't keep up:
-
-| Queue Type | Behavior | Use Case |
-|------------|----------|----------|
-| `BoundedQueue` | Blocks RX thread (backpressure) | Order execution (no data loss) |
-| `EvictingQueue` | Drops oldest, keeps latest | Market data (latest price is all that matters) |
-| `on_message` push | Depends on callback implementation | Custom logic (selective drop, priority queue) |
-
-Monitor `on_rx_drop` callback to detect when drops occur:
 ```cpp
-cfg.on_rx_drop = [](size_t dropped) {
-    metrics.increment("rx_drops", dropped);
-};
+#include "eph/containers/evicting_queue.hpp"
+
+eph::containers::EvictingQueue<TickMsg, 16> latest;
+// ... same producer shape as Layout 2 ...
+
+while (running) {
+    poller->poll(100ms);
+    latest.try_consume([](const TickMsg& m) { process_latest(m); });
+}
 ```
+
+`EvictingQueue` never drops the producer — it drops the oldest waiting entry
+instead. No backpressure, no queue-full checks. Use when "stale data is worse than
+dropped data."
+
+## Heterogeneous: TcpStream + UdpSocket on one Poller
+
+The Poller doesn't care whether the Pollable is a TCP stream or a UDP socket, or
+whether the codec is `WsCodec`, `RawStreamCodec`, or `Mold64Codec`. Mix them freely:
+
+```cpp
+#include "eph/net/dpdk/poller.hpp"
+#include "eph/net/dpdk/tcp_stream.hpp"
+#include "eph/net/dpdk/udp_socket.hpp"
+#include "eph/codec/ws_codec.hpp"
+#include "eph/codec/mold64_codec.hpp"
+
+auto poller = eph::net::dpdk::DpdkPoller<>::create({
+    .port_id = 0, .queue_id = 0, .lcore = 4,
+}).value();
+
+// Order channel: TLS WebSocket over DPDK TCP
+auto orders = eph::net::dpdk::DpdkTcpStream<eph::codec::WsCodec>::create(order_cfg).value();
+orders->on_message = handle_exec_report;
+poller->add(orders.get()).value();
+
+// Market data: MoldUDP64 over DPDK UDP multicast
+auto md = eph::net::dpdk::DpdkUdpSocket<eph::codec::Mold64Codec>::create(md_cfg).value();
+md->on_datagram = handle_itch_message;
+md->join_multicast(mcast_group).value();
+poller->add(md.get()).value();
+
+while (running) poller->poll();
+```
+
+Type erase at `add()` time uses P2 function-pointer tables — no virtual dispatch,
+no vtable. The DPDK burst poll walks `rte_eth_rx_burst` output through flow
+steering, picks the right Pollable's `process_burst_fn` per packet, and calls it
+directly.
+
+## CPU pinning strategy
+
+| Role | Where | Typical core |
+|---|---|---|
+| OS / housekeeping | any | 0 |
+| Poller thread(s) | `std::thread` or `DpdkPoller::create({.lcore=…})` | isolated cores (e.g. 2–3) |
+| Application logic | `std::thread` consuming from queue | isolated cores (e.g. 4–5) |
+
+Use `isolcpus=2-5` at boot and `eph::utils::cpu::pin_to_cpu()` at runtime. See
+`examples/perf_tuning_basics.cpp` for a worked example.
+
+## Backpressure
+
+| Pattern | Behavior | Use case |
+|---|---|---|
+| `BoundedQueue::try_produce` | Returns false when full — the poller thread drops | Critical data where the consumer is expected to keep up |
+| `EvictingQueue::try_produce` | Overwrites oldest — never drops producer | Latest-tick market data |
+| Direct `on_message` work | Blocks the poller — backpressure propagates to TCP via the kernel/DPDK send window | Simple apps with tight latency budgets and fast handlers |
+
+Instrument drop counters with an `eph::utils::MetricsSink` (e.g. `ConsoleSink` in
+development) so you notice when a consumer starts falling behind.
+
+## See also
+
+- `docs/poller-guide.md` — single-connection and basic multi-connection patterns
+- `docs/architecture.md` — why the Poller is heterogeneous by design
+- `examples/perf_tuning_basics.cpp` — TSC calibration + CPU pinning

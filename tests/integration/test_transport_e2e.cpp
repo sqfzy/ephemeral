@@ -1,13 +1,8 @@
-/// @file test_transport_e2e_v3.cpp
-/// v3.3 rewrite of test_transport_e2e.cpp.
-///
+/// @file test_transport_e2e.cpp
 /// End-to-end test of `KernelTcpStream<RawStreamCodec, false>` against a
-/// localhost echo server driven by `KernelPoller`. The legacy file uses
-/// `Transport<FakeTcpTransport, RawFramer>`; the v3.3 design replaces both
-/// with the new concept-driven types.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
+/// localhost echo server driven by `KernelPoller`. Exercises the full v3.3
+/// stack (Stream concept, Poller concept, RawStreamCodec) across a real
+/// loopback socket.
 
 #include <atomic>
 #include <chrono>

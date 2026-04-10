@@ -1,141 +1,100 @@
-# Latency Benchmark Fairness Audit
+# Latency Benchmark Fairness
 
-Socket (kernel) vs DPDK (kernel-bypass) 延迟对比方案的公平性审计报告。
+How the kernel-vs-DPDK latency comparison in `benchmarks/latency/` is structured so
+that the numbers are apples-to-apples.
 
-## 背景
+## The setup
 
-Transport 库提供两个后端：
-- **SocketTransport**: POSIX socket，数据经过内核协议栈
-- **DPDK TcpSession**: 内核旁路，用户态 TCP 直接操作 NIC
+`benchmarks/latency/` contains one `lat_<scenario>[_dpdk]` binary per test scenario:
 
-两个后端共用同一个 `Transport<>` 模板，延迟打点代码完全相同。
-核心挑战：Socket 版的内核协议栈延迟（NIC→recv, send→wire）在 Transport 层不可见，
-需要通过 `SO_TIMESTAMPING` 补齐才能实现公平对比。
+| Scenario | Kernel client | DPDK client | Measures |
+|---|---|---|---|
+| `tcp` | `lat_tcp` | `lat_tcp_dpdk` | raw TCP round-trip latency |
+| `udp` | `lat_udp` | `lat_udp_dpdk` | raw UDP round-trip latency |
+| `ws`  | `lat_ws`  | `lat_ws_dpdk`  | plain WebSocket RTT (no TLS) |
+| `ex_market` | `lat_ex_market` | `lat_ex_market_dpdk` | one-leg exchange bookTicker push |
+| `ex_order`  | `lat_ex_order`  | `lat_ex_order_dpdk`  | N-inflight order RTT pipeline |
+| `ex_md_udp` | `lat_ex_md_udp` | `lat_ex_md_udp_dpdk` | exchange UDP market data RTT |
 
-## 四个延迟指标
+Each binary:
 
-| # | 指标 | 物理含义 | 起点 | 终点 |
-|---|------|---------|------|------|
-| 1 | TX Queue | ping(模拟订单)产生 → tx_burst 发出 | `send_ping()` 入队时 `msg.tsc = TSC::now()` | TX loop 编码加密后 `flush_tsc = TSC::now()` |
-| 2 | RX Pong Pipeline | rx_burst 收到数据 → pong(模拟响应)解码完成 | `poll_rx()` 返回后 `current_arrival_tsc_ = TSC::now()` | WS frame decode 后 `record_rx_latency()` |
-| 3 | RX Data Pipeline | rx_burst 收到数据 → 行情消息解码完成 | 同上 | 同上（同一个 `record_rx_latency()` 入口） |
-| 4 | RTT | ping tx_burst → pong rx_burst 端到端 | TX loop 发送 ping 前 `last_ping_tsc_ = TSC::now()` | pong 解码时 `pong_tsc = TSC::now()` |
+1. **Forks a kernel-side mock echo server** (always kernel — same mock, same `recv()`
+   and `send()` sequence, bound to NIC_A).
+2. **Runs the bench client on the other side of the wire**. For `lat_*` that's a
+   `KernelTcpStream` / `KernelUdpSocket` over NIC_B. For `lat_*_dpdk` that's a
+   `DpdkTcpStream` / `DpdkUdpSocket` over the same NIC_B bound to vfio-pci.
+3. **Reports a 4-leg TSC-nanosecond breakdown** (RTT / TX / RX / SRV) from four
+   timestamps stamped into the payload: `client_send`, `server_recv`, `server_send`,
+   `client_recv`.
+4. **Writes no files** — everything goes to stdout.
 
-## 公平性机制
+Both client paths share identical config, identical codec (`WsCodec` / `RawStreamCodec`),
+identical histogram infrastructure (`eph::utils::HdrHistogram`), identical TSC
+calibration (`eph::utils::TSC`). The *only* thing that changes between `lat_tcp` and
+`lat_tcp_dpdk` is which namespace's `TcpStream` is instantiated.
 
-### EnableTimestamps 编译期开关
+## Why forking a kernel mock is the fair choice
 
-```cpp
-// Transport 层：消息结构自带 TSC 字段，内部 histogram 记录延迟
-template <..., bool EnableTimestamps = false, ...>
-class Transport;
+Alternatives considered and rejected:
 
-// SocketTransport 层：SO_TIMESTAMPING 获取内核栈延迟
-template <bool EnableTimestamps = false>
-class SocketTransport;
+| Alternative | Problem |
+|---|---|
+| Use a DPDK mock for DPDK runs | Would need a full DPDK echo server; small bugs there can masquerade as client-side wins or losses. Also doubles the test surface. |
+| Use two DPDK clients (loopback inside one EAL) | DPDK loopback is not realistic — no PCIe, no NIC DMA, no flow-steering path. |
+| Round-trip to a real exchange | Network jitter dominates; can't isolate kernel-vs-DPDK cost of the stack. |
 
-// 一个 const 统一控制
-constexpr bool kTimestamps = true;
-using HftTransport = Transport<SocketTransport<kTimestamps>, WsFramer, 512, 1024, kTimestamps, EvictingQueue>;
+The fair move is: **always use the same kernel mock as the "server"**. The mock's
+latency contribution is identical across both client paths, so when we subtract the
+`SRV` leg (`server_send - server_recv`) from the RTT, the *difference* between
+`lat_tcp` and `lat_tcp_dpdk` numbers is exactly the difference between the kernel and
+DPDK client paths. The per-leg `TX` (`server_recv - client_send`) and
+`RX` (`client_recv - server_send`) legs let you see where in the client stack the
+cost lives.
+
+## Clock domains
+
+All four timestamps are `eph::utils::TSC::now()` — a calibrated `rdtsc`-based clock.
+The client and server run on the same box (mock is forked as a child process), so
+TSC is coherent across cores on modern x86 (`invariant_tsc` CPUID bit) and ARM
+(virtual counter). No cross-clock conversion is needed.
+
+The bench config in `benchmarks/latency/bench.conf` pins the client and server to
+separate isolated cores so they don't fight for the same CPU.
+
+## The wrapper
+
+Running the bench by hand requires transitioning NIC_B between three states:
+
+- `host kernel` — bound to ENA, visible in `ip link`
+- `bench_ns` — moved into a dedicated namespace for the kernel client
+- `vfio-pci` — bound to the DPDK driver for the DPDK client
+
+The wrapper script `benchmarks/latency/lat` handles all three transitions idempotently:
+
+```bash
+sudo ./benchmarks/latency/lat tcp           # host kernel client
+sudo ./benchmarks/latency/lat tcp --dpdk    # transitions to vfio-pci, runs DPDK client
+sudo ./benchmarks/latency/lat ex_market     # exchange scenario
 ```
 
-`EnableTimestamps = false` 时全路径 `if constexpr` 消除，零开销。
+You can run `lat` on any host — if vfio-pci isn't available (no IOMMU, or the NIC
+isn't supported), the script prints a diagnostic and exits cleanly. The actual
+`lat_*` binaries also skip gracefully when the required NIC state is missing.
 
-### Socket 内核栈延迟补齐
+## Verification
 
-`SocketTransport<true>` 在 `connect()` 时设置 `SO_TIMESTAMPING`：
-- `SOF_TIMESTAMPING_RX_SOFTWARE`：内核在 `netif_receive_skb()` 打时间戳（NIC 驱动交付包到内核）
-- `SOF_TIMESTAMPING_TX_SOFTWARE`：内核在 packet 实际离开时打时间戳
-- `SOF_TIMESTAMPING_OPT_TSONLY`：不拷贝原始包到 error queue，减少开销
+`tests/unit/bench/` contains unit tests for the shared bench infrastructure
+(`core/runner.hpp`, `core/tsc_protocol.hpp`, `core/histogram_io.hpp`). Running
+`xmake run -g tests` exercises them on every CI build.
 
-`poll_rx()` 使用 `recvmsg()` + cmsg 提取 RX 内核时间戳，顺带 poll error queue 获取 TX 内核时间戳。
+`benchmarks/latency/core/runner.hpp` is the single source of truth for "where in the
+code we take each of the four timestamps." Both kernel and DPDK clients call into the
+same runner template, so the four measurement points are physically the same
+instructions — only the underlying `Stream` / `Datagram` implementation differs.
 
-Transport 通过 `if constexpr (requires { tcp_->last_kernel_rx_delay_ns(); })` 读取内核栈延迟，
-自动加到 pipeline 延迟上：
+## See also
 
-```
-Socket stats().rx_latency = kernel_rx_delay + pipeline_delay  (全路径)
-DPDK   stats().rx_latency = pipeline_delay                    (本身就是全路径)
-```
-
-### 延迟记录路径
-
-每个 histogram 全局唯一记录点：
-
-```
-tx_latency_histogram_.record()   — TX loop per-message，编码加密后
-rx_latency_histogram_.record()   — record_rx_latency() helper，每个 decoded frame
-rtt_histogram_.record()          — pong 处理分支
-```
-
-`record_rx_latency()` 是所有帧类型（data/pong/ping/close）的统一入口，
-在 `process_ws_data` 和 `process_generic_data` 的 decode loop 中调用。
-
-## 逐指标公平性验证
-
-### 指标 1: TX Queue (ping → tx_burst)
-
-| 环节 | Socket | DPDK |
-|------|--------|------|
-| enqueue_tsc | `msg.tsc = TSC::now()` in `send_ping()` | 同一代码 |
-| flush_tsc | `TSC::now()` in TX loop | 同一代码 |
-| kernel TX delay | `+ tcp_->last_kernel_tx_delay_ns()` (send→wire) | `requires` = false → +0 |
-| **total** | **pipeline + kernel_tx** | **pipeline** |
-
-- per-message: tsc 嵌入 TxMessage，每条消息独立 ✅
-- 公平: Socket 补齐 kernel TX delay ✅
-
-### 指标 2 & 3: RX Pipeline (rx_burst → pong/data)
-
-| 环节 | Socket | DPDK |
-|------|--------|------|
-| arrival_tsc | `TSC::now()` after `poll_rx()` returns | 同一代码 |
-| decode_tsc | `TSC::now()` in `record_rx_latency()` | 同一代码 |
-| kernel RX delay | `+ tcp_->last_kernel_rx_delay_ns()` (NIC→recv) | `requires` = false → +0 |
-| **total** | **kernel_rx + pipeline** | **pipeline** |
-
-- per-message: 每个 decoded frame 调一次 `record_rx_latency()` ✅
-- 所有帧类型（data/pong/ping/close）走同一路径 ✅
-- 公平: Socket 补齐 kernel RX delay ✅
-
-### 指标 4: RTT (ping tx_burst → pong decode)
-
-| 环节 | Socket | DPDK |
-|------|--------|------|
-| ping_tsc | `TSC::now()` before `tcp_->send()` in TX loop | 同一代码 |
-| pong_tsc | `TSC::now()` at pong decode | 同一代码 |
-| kernel delays | `+ kernel_tx_delay + kernel_rx_delay` | `requires` = false → +0+0 |
-| **total** | **rtt + kernel_tx + kernel_rx** | **rtt** |
-
-- per-message: `last_ping_tsc_` atomic，顺序 ping 模式下 1:1 配对 ✅
-- 公平: Socket 补齐双向 kernel delay ✅
-
-## 共享打点检查
-
-| 资源 | 写入方 | 读取方 | 共享？ |
-|------|--------|--------|--------|
-| `TxMessage.tsc` | App 线程 per-message | TX 线程 per-message | ❌ 嵌入消息，不共享 |
-| `current_arrival_tsc_` | RX 线程 per-poll_rx | RX 线程 `record_rx_latency()` | 同一 poll_rx 的多 frame 共享（物理事实：同一次 recv/rx_burst 到达） |
-| `last_ping_tsc_` | TX 线程 | RX 线程 | atomic，顺序 ping 下 1:1 配对 |
-
-`current_arrival_tsc_` 在同一 poll_rx 的多 frame 间共享是物理事实，非设计缺陷——
-这些数据确实在同一次 `recv()`/`rte_eth_rx_burst()` 中到达。两个后端行为完全一致。
-
-## 时钟域
-
-| 度量 | 时钟域 | 闭环？ |
-|------|--------|--------|
-| TX/RX pipeline delay | TSC (rdtsc) | ✅ 两端都是 TSC::now() |
-| Kernel RX/TX delay | CLOCK_REALTIME | ✅ 两端都是 clock_gettime(CLOCK_REALTIME) |
-| 合并 | pipeline_ns (from TSC) + kernel_ns (from CLOCK_REALTIME) | ⚠️ 跨域相加，两者都已转为纳秒 |
-
-跨域相加的误差来源：TSC→ns 转换精度（取决于 TSC 校准质量，通常 <1ns 误差）。
-对于 μs 级的延迟测量，此误差可忽略。
-
-## 结论
-
-**四指标全部满足要求：**
-- ✅ 绝对公平（Socket 通过 SO_TIMESTAMPING 补齐内核栈延迟）
-- ✅ Per-message（每条消息独立打点）
-- ✅ 无设计级共享（物理共享除外）
-- ✅ 零开销路径（EnableTimestamps=false 时 if constexpr 消除一切）
+- `benchmarks/latency/core/tsc_protocol.hpp` — the 4-timestamp payload layout
+- `benchmarks/latency/core/runner.hpp` — the shared bench loop
+- `benchmarks/latency/bench.conf` — NIC / IP / CPU / namespace config
+- `docs/dpdk-setup.md` — how to prepare NIC_B for DPDK binding
