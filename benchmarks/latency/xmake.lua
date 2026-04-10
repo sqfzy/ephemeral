@@ -25,7 +25,10 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         set_default(false)
         add_files(file)
         add_includedirs(os.scriptdir())
-        add_deps("eph-utils")
+        -- core/{signal,socket_bind,socket_io}.hpp are now thin shims that
+        -- forward to eph-utils / eph-net implementations.  Add the deps
+        -- so the shims can resolve their includes.
+        add_deps("eph-utils", "eph-net")
         add_packages("spdlog")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
@@ -37,7 +40,7 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         set_default(false)
         add_files(file)
         add_includedirs(os.scriptdir())
-        add_deps("eph-utils", "eph-dpdk")
+        add_deps("eph-utils", "eph-net", "eph-dpdk")
         add_packages("spdlog")
         add_defines("EPH_USE_DPDK=1")
         add_cxflags(table.unpack(bench_latency_flags))

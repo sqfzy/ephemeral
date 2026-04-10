@@ -32,7 +32,8 @@
 
 #include <spdlog/spdlog.h>
 
-#include "../../../benchmarks/latency/core/socket_bind.hpp"
+#include "eph/net/posix_listener.hpp"
+
 #include "../../../benchmarks/latency/core/socket_io.hpp"
 #include "../../../benchmarks/latency/core/ws_framing.hpp"
 #include "../../../benchmarks/latency/core/ws_handshake.hpp"
@@ -46,7 +47,7 @@ namespace eph::dpdk::test_e2e {
 // ─────────────────────────────────────────────────────────────────────────
 inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
                                   std::atomic<bool>& running) noexcept {
-    auto listen_r = bench::tcp_bind_listen(ip, port);
+    auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
         spdlog::error("test_e2e tcp_echo_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
@@ -59,7 +60,7 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        auto cfd_r = bench::accept_one(listen_fd, running);
+        auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
         if (!cfd_r) {
             spdlog::warn("test_e2e tcp_echo accept: {}", cfd_r.error());
             continue;
@@ -82,7 +83,7 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
 // ─────────────────────────────────────────────────────────────────────────
 inline void udp_echo_mock_thread(const std::string& ip, uint16_t port,
                                   std::atomic<bool>& running) noexcept {
-    auto fd_r = bench::udp_bind(ip, port);
+    auto fd_r = eph::net::posix::udp_bind(ip, port);
     if (!fd_r) {
         spdlog::error("test_e2e udp_echo_mock {}:{} bind: {}",
                       ip, port, fd_r.error());
@@ -115,7 +116,7 @@ inline void udp_echo_mock_thread(const std::string& ip, uint16_t port,
 // ─────────────────────────────────────────────────────────────────────────
 inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
-    auto listen_r = bench::tcp_bind_listen(ip, port);
+    auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
         spdlog::error("test_e2e tcp_rst_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
@@ -125,7 +126,7 @@ inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
     spdlog::info("test_e2e tcp_rst_mock listening on {}:{}", ip, port);
 
     while (running.load(std::memory_order_acquire)) {
-        auto cfd_r = bench::accept_one(listen_fd, running);
+        auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
         if (!cfd_r) continue;
         if (*cfd_r < 0) break;
         int cfd = *cfd_r;
@@ -146,7 +147,7 @@ inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
 // ─────────────────────────────────────────────────────────────────────────
 inline void tcp_fin_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
-    auto listen_r = bench::tcp_bind_listen(ip, port);
+    auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
         spdlog::error("test_e2e tcp_fin_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
@@ -159,7 +160,7 @@ inline void tcp_fin_mock_thread(const std::string& ip, uint16_t port,
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        auto cfd_r = bench::accept_one(listen_fd, running);
+        auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
         if (!cfd_r) continue;
         if (*cfd_r < 0) break;
         int cfd = *cfd_r;
@@ -193,7 +194,7 @@ inline void tcp_fin_mock_thread(const std::string& ip, uint16_t port,
 // ─────────────────────────────────────────────────────────────────────────
 inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
-    auto listen_r = bench::tcp_bind_listen(ip, port);
+    auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
         spdlog::error("test_e2e ws_echo_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
@@ -207,7 +208,7 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
     std::vector<uint8_t> buf(kBufSize);
 
     while (running.load(std::memory_order_acquire)) {
-        auto cfd_r = bench::accept_one(listen_fd, running);
+        auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
         if (!cfd_r) continue;
         if (*cfd_r < 0) break;
         int cfd = *cfd_r;

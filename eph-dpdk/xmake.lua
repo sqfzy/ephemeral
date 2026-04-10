@@ -48,7 +48,8 @@ target("test_dpdk_e2e")
     add_rules("eph-test")
     add_files("tests/integration/test_dpdk_e2e.cpp")
     add_includedirs("tests/integration")
-    add_deps("eph-dpdk")
+    -- eph-net for posix_listener / posix_io helpers used by echo_mocks.hpp
+    add_deps("eph-dpdk", "eph-net")
     -- The fixture reuses bench's DpdkBenchEnv via #include of
     -- benchmarks/latency/core/dpdk_env.hpp, which needs the latency
     -- include root for "core/config.hpp" etc.
