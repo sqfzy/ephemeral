@@ -1,0 +1,63 @@
+# Reproduced: 2026-04-10 04:52:59
+# Commit: 57e90b2 (post-cleanup, with setup_coalescing.sh applied)
+# Compiler: gcc14 (Amazon Linux 2023, aarch64)
+# Bench: sudo ./scripts/setup_coalescing.sh && sudo ./benchmarks/latency/lat ex_order --dpdk
+# Coalescing: adaptive-rx=off rx-usecs=0 on NIC-A (NIC-B on vfio-pci)
+# ---
+✓  NIC-B current state: dpdk  →  desired: dpdk
+
+── lat ex_order --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_order_dpdk
+
+[2026-04-10 04:52:59.514] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 04:53:00.534] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 04:53:00.535] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:53:00.535] [info] pin_thread_strict: 'mock_lat_ex_ws' pinned to cpu 4 (verified)
+[2026-04-10 04:53:00.535] [info] mock_lat_ex_ws: listening on 172.31.21.173:9000 symbols=3 bookticker=1000us depth=10ms trade_mean=5ms kline=1s depth_bytes=1024 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 04:53:00.997] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 04:53:00.998] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 04:53:00.998] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 04:53:00.998] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 04:53:00.998] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 04:53:00.998] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 04:53:00.999] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:53:00.999] [info] pin_thread_strict: 'bench_lat_ex_or' pinned to cpu 2 (verified)
+[2026-04-10 04:53:01.031] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55900 -> 172.31.21.173:9000
+[2026-04-10 04:53:01.031] [info] accept: client 172.31.23.112:55900
+[2026-04-10 04:53:01.031] [info] mock_lat_ex_ws: handshake complete
+[2026-04-10 04:53:01.031] [info] lat_ex_order (dpdk): connected to 172.31.21.173:9000
+[2026-04-10 04:53:01.031] [info] exchange/order (dpdk): inflight=1 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:53:13.068] [info] == BENCH exchange/order (dpdk) inflight=1 ==
+[2026-04-10 04:53:13.068] [info]     RTT n=   546792 min=  15669 p50=  17207 p99=  57774 p999=  71966 max= 153158
+[2026-04-10 04:53:13.068] [info]     TX  n=   546792 min=   8250 p50=   9236 p99=  11740 p999=  14468 max= 145093
+[2026-04-10 04:53:13.068] [info]     RX  n=   546792 min=   6826 p50=   7598 p99=  46415 p999=  60878 max=  71152
+[2026-04-10 04:53:13.068] [info]     SRV n=   546792 min=    286 p50=    309 p99=    324 p999=    328 max=   6367
+[2026-04-10 04:53:13.068] [info] exchange/order (dpdk): inflight=4 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:53:25.081] [info] == BENCH exchange/order (dpdk) inflight=4 ==
+[2026-04-10 04:53:25.081] [info]     RTT n=  1534545 min=  16521 p50=  24935 p99=  37999 p999=  41839 max= 130203
+[2026-04-10 04:53:25.081] [info]     TX  n=  1534545 min=   8334 p50=  11604 p99=  17287 p999=  19943 max= 106546
+[2026-04-10 04:53:25.081] [info]     RX  n=  1534545 min=   7132 p50=  12876 p99=  23399 p999=  26535 max= 101708
+[2026-04-10 04:53:25.081] [info]     SRV n=  1534545 min=    284 p50=    305 p99=    319 p999=    324 max=  22190
+[2026-04-10 04:53:25.081] [info] exchange/order (dpdk): inflight=16 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:53:37.086] [info] == BENCH exchange/order (dpdk) inflight=16 ==
+[2026-04-10 04:53:37.086] [info]     RTT n=  4030406 min=  21430 p50=  39215 p99=  53134 p999=  59374 max= 172781
+[2026-04-10 04:53:37.086] [info]     TX  n=  4030406 min=   9427 p50=  22663 p99=  34959 p999=  40015 max= 148022
+[2026-04-10 04:53:37.086] [info]     RX  n=  4030406 min=   7571 p50=  15924 p99=  25671 p999=  29799 max= 117313
+[2026-04-10 04:53:37.086] [info]     SRV n=  4030406 min=    283 p50=    303 p99=    316 p999=    321 max=  24419
+[2026-04-10 04:53:37.086] [info] exchange/order (dpdk): inflight=64 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:53:49.090] [info] == BENCH exchange/order (dpdk) inflight=64 ==
+[2026-04-10 04:53:49.090] [info]     RTT n=  6054893 min=  59094 p50= 105501 p99= 130780 p999= 144828 max= 320425
+[2026-04-10 04:53:49.090] [info]     TX  n=  6054893 min=  18144 p50=  79006 p99= 108445 p999= 122972 max= 294526
+[2026-04-10 04:53:49.090] [info]     RX  n=  6054893 min=   8111 p50=  25607 p99=  41487 p999=  48335 max= 213554
+[2026-04-10 04:53:49.090] [info]     SRV n=  6054893 min=    283 p50=    302 p99=    315 p999=    320 max=  12654
+[2026-04-10 04:53:49.090] [info] mock_lat_ex_ws: client disconnected (sent 144177 bookTicker frames)
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

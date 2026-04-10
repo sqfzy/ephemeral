@@ -1,0 +1,58 @@
+# Reproduced: 2026-04-10 03:36:11
+# Commit: c88e1dc (clean)
+# Bench: sudo ./benchmarks/latency/lat ws
+# Profile: kernel client, kernel mock, NIC-B in bench_ns
+# Host: EC2 ARM64
+# ---
+✓  NIC-B current state: bench_ns  →  desired: bench_ns
+
+── lat ws ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ws
+
+[2026-04-10 03:36:11.147] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 03:36:12.167] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 03:36:12.167] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:36:12.167] [info] pin_thread_strict: 'bench_lat_ws' pinned to cpu 2 (verified)
+[2026-04-10 03:36:12.167] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:36:12.167] [info] pin_thread_strict: 'mock_lat_ws' pinned to cpu 4 (verified)
+[2026-04-10 03:36:12.167] [info] mock_lat_ws: listening on 172.31.21.173:9000 work_ns=200
+[2026-04-10 03:36:12.188] [info] accept: client 172.31.23.112:33960
+[2026-04-10 03:36:12.188] [info] mock_lat_ws: handshake complete
+[2026-04-10 03:36:12.188] [info] lat_ws (kernel): connected to 172.31.21.173:9000
+[2026-04-10 03:36:12.188] [info] ws (kernel): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:36:24.240] [info] == BENCH ws (kernel) payload=64B ==
+[2026-04-10 03:36:24.240] [info]     RTT n=   377167 min=  24053 p50=  26103 p99=  29415 p999=  69022 max=1011434
+[2026-04-10 03:36:24.240] [info]     TX  n=   377167 min=  11613 p50=  12732 p99=  15044 p999=  17751 max= 224202
+[2026-04-10 03:36:24.240] [info]     RX  n=   377167 min=  11777 p50=  12972 p99=  15380 p999=  55598 max= 998163
+[2026-04-10 03:36:24.240] [info]     SRV n=   377167 min=    264 p50=    286 p99=    303 p999=    310 max=   7005
+[2026-04-10 03:36:24.240] [info] ws (kernel): payload=128B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:36:36.293] [info] == BENCH ws (kernel) payload=128B ==
+[2026-04-10 03:36:36.293] [info]     RTT n=   374846 min=  24378 p50=  26391 p99=  29255 p999=  32119 max=  87739
+[2026-04-10 03:36:36.293] [info]     TX  n=   374846 min=  11833 p50=  12948 p99=  15180 p999=  17543 max=  47828
+[2026-04-10 03:36:36.293] [info]     RX  n=   374846 min=  11894 p50=  13036 p99=  15260 p999=  17751 max=  72020
+[2026-04-10 03:36:36.294] [info]     SRV n=   374846 min=    266 p50=    287 p99=    303 p999=    305 max=   6296
+[2026-04-10 03:36:36.294] [info] ws (kernel): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:36:48.348] [info] == BENCH ws (kernel) payload=256B ==
+[2026-04-10 03:36:48.348] [info]     RTT n=   363867 min=  25201 p50=  27191 p99=  30759 p999=  35279 max=  61633
+[2026-04-10 03:36:48.348] [info]     TX  n=   363867 min=  12635 p50=  13788 p99=  16276 p999=  21591 max=  48260
+[2026-04-10 03:36:48.348] [info]     RX  n=   363867 min=  11890 p50=  13020 p99=  15164 p999=  17783 max=  43221
+[2026-04-10 03:36:48.348] [info]     SRV n=   363867 min=    266 p50=    282 p99=    298 p999=    301 max=   7426
+[2026-04-10 03:36:48.348] [info] ws (kernel): payload=512B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:37:00.404] [info] == BENCH ws (kernel) payload=512B ==
+[2026-04-10 03:37:00.404] [info]     RTT n=   358875 min=  25424 p50=  27527 p99=  31655 p999=  37711 max=2710411
+[2026-04-10 03:37:00.404] [info]     TX  n=   358875 min=  12943 p50=  14108 p99=  16855 p999=  22087 max= 374792
+[2026-04-10 03:37:00.404] [info]     RX  n=   358875 min=  11906 p50=  13036 p99=  15324 p999=  18919 max=2695176
+[2026-04-10 03:37:00.404] [info]     SRV n=   358875 min=    269 p50=    293 p99=    303 p999=    358 max=  12198
+[2026-04-10 03:37:00.404] [info] ws (kernel): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:37:12.461] [info] == BENCH ws (kernel) payload=1024B ==
+[2026-04-10 03:37:12.461] [info]     RTT n=   347337 min=  26084 p50=  28231 p99=  35823 p999=  69150 max=2516559
+[2026-04-10 03:37:12.461] [info]     TX  n=   347337 min=  13548 p50=  14772 p99=  18215 p999=  33711 max=2473353
+[2026-04-10 03:37:12.461] [info]     RX  n=   347337 min=  11744 p50=  13076 p99=  16116 p999=  54062 max= 405298
+[2026-04-10 03:37:12.461] [info]     SRV n=   347337 min=    267 p50=    294 p99=    304 p999=    364 max=   9355
+[2026-04-10 03:37:12.461] [info] ws (kernel): payload=4096B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:37:24.527] [info] == BENCH ws (kernel) payload=4096B ==
+[2026-04-10 03:37:24.528] [info]     RTT n=   267954 min=  30699 p50=  32943 p99=  69214 p999=  99741 max=9810145
+[2026-04-10 03:37:24.528] [info]     TX  n=   267954 min=  17628 p50=  19079 p99=  25607 p999=  43599 max=9761985
+[2026-04-10 03:37:24.528] [info]     RX  n=   267954 min=  12179 p50=  13468 p99=  49998 p999=  54254 max= 673137
+[2026-04-10 03:37:24.528] [info]     SRV n=   267954 min=    272 p50=    295 p99=    303 p999=    370 max=   7519
+[2026-04-10 03:37:24.528] [info] mock_lat_ws: client disconnected

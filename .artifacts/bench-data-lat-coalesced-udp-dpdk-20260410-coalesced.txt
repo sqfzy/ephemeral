@@ -1,0 +1,72 @@
+# Reproduced: 2026-04-10 04:50:16
+# Commit: 57e90b2 (post-cleanup, with setup_coalescing.sh applied)
+# Compiler: gcc14 (Amazon Linux 2023, aarch64)
+# Bench: sudo ./scripts/setup_coalescing.sh && sudo ./benchmarks/latency/lat udp --dpdk
+# Coalescing: adaptive-rx=off rx-usecs=0 on NIC-A (NIC-B on vfio-pci)
+# ---
+✓  NIC-B current state: dpdk  →  desired: dpdk
+
+── lat udp --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_udp_dpdk
+
+[2026-04-10 04:50:16.885] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 04:50:17.905] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 04:50:17.905] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:50:17.905] [info] pin_thread_strict: 'mock_lat_udp' pinned to cpu 4 (verified)
+[2026-04-10 04:50:17.906] [info] mock_lat_udp: bound 172.31.21.173:9000 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 04:50:18.357] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 04:50:18.358] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 04:50:18.358] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 04:50:18.358] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 04:50:18.358] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 04:50:18.358] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 04:50:18.358] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:50:18.358] [info] pin_thread_strict: 'bench_lat_udp' pinned to cpu 2 (verified)
+[2026-04-10 04:50:18.359] [dpdk.udp] [info] [udp.hpp:220] UdpSender created: UdpConfig(172.31.23.112:55500 -> 172.31.21.173:9000, port=0, tx_q=0, hw_cksum=false)
+[2026-04-10 04:50:18.359] [info] lat_udp (dpdk): peer 172.31.21.173:9000
+[2026-04-10 04:50:18.359] [info] udp (dpdk): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:50:30.397] [info] == BENCH udp (dpdk) payload=64B ==
+[2026-04-10 04:50:30.397] [info]     RTT n=   523694 min=  16998 p50=  18807 p99=  23335 p999=  27687 max=1181496
+[2026-04-10 04:50:30.397] [info]     TX  n=   523694 min=   9888 p50=  11132 p99=  13844 p999=  18727 max=1166193
+[2026-04-10 04:50:30.397] [info]     RX  n=   523694 min=   6471 p50=   7286 p99=   9500 p999=  11756 max=  63367
+[2026-04-10 04:50:30.397] [info]     SRV n=   523694 min=    242 p50=    258 p99=    266 p999=    272 max=  15667
+[2026-04-10 04:50:30.397] [info] udp (dpdk): payload=128B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:50:42.435] [info] == BENCH udp (dpdk) payload=128B ==
+[2026-04-10 04:50:42.435] [info]     RTT n=   524380 min=  17138 p50=  18791 p99=  23399 p999=  27799 max= 566506
+[2026-04-10 04:50:42.435] [info]     TX  n=   524380 min=  10112 p50=  11084 p99=  13772 p999=  18935 max= 554612
+[2026-04-10 04:50:42.435] [info]     RX  n=   524380 min=   6519 p50=   7322 p99=   9556 p999=  11780 max=  37707
+[2026-04-10 04:50:42.435] [info]     SRV n=   524380 min=    242 p50=    258 p99=    266 p999=    272 max=   7734
+[2026-04-10 04:50:42.436] [info] udp (dpdk): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:50:54.476] [info] == BENCH udp (dpdk) payload=256B ==
+[2026-04-10 04:50:54.476] [info]     RTT n=   487815 min=  18223 p50=  20247 p99=  24471 p999=  35791 max= 117779
+[2026-04-10 04:50:54.476] [info]     TX  n=   487815 min=  10228 p50=  11908 p99=  15092 p999=  24583 max= 109382
+[2026-04-10 04:50:54.476] [info]     RX  n=   487815 min=   7116 p50=   7962 p99=   9852 p999=  12132 max=  42854
+[2026-04-10 04:50:54.476] [info]     SRV n=   487815 min=    244 p50=    263 p99=    268 p999=    274 max=  12935
+[2026-04-10 04:50:54.476] [info] udp (dpdk): payload=512B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:51:06.518] [info] == BENCH udp (dpdk) payload=512B ==
+[2026-04-10 04:51:06.518] [info]     RTT n=   482989 min=  18791 p50=  20439 p99=  24535 p999=  35951 max= 119691
+[2026-04-10 04:51:06.518] [info]     TX  n=   482989 min=  10960 p50=  11972 p99=  15124 p999=  24887 max= 110965
+[2026-04-10 04:51:06.518] [info]     RX  n=   482989 min=   7248 p50=   8098 p99=   9908 p999=  12092 max=  37734
+[2026-04-10 04:51:06.518] [info]     SRV n=   482989 min=    245 p50=    263 p99=    267 p999=    274 max=   7912
+[2026-04-10 04:51:06.518] [info] udp (dpdk): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:51:18.560] [info] == BENCH udp (dpdk) payload=1024B ==
+[2026-04-10 04:51:18.560] [info]     RTT n=   476137 min=  18868 p50=  20711 p99=  25351 p999=  43023 max= 893353
+[2026-04-10 04:51:18.560] [info]     TX  n=   476137 min=  11057 p50=  12068 p99=  15604 p999=  32087 max= 879902
+[2026-04-10 04:51:18.560] [info]     RX  n=   476137 min=   7348 p50=   8236 p99=  10124 p999=  12556 max=  87561
+[2026-04-10 04:51:18.560] [info]     SRV n=   476137 min=    246 p50=    263 p99=    271 p999=    275 max=   9582
+[2026-04-10 04:51:18.560] [info] udp (dpdk): payload=1472B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:51:30.602] [info] == BENCH udp (dpdk) payload=1472B ==
+[2026-04-10 04:51:30.602] [info]     RTT n=   471537 min=  19113 p50=  20903 p99=  25431 p999=  43663 max= 333972
+[2026-04-10 04:51:30.602] [info]     TX  n=   471537 min=  11114 p50=  12156 p99=  15692 p999=  32503 max= 323005
+[2026-04-10 04:51:30.602] [info]     RX  n=   471537 min=   7441 p50=   8356 p99=  10212 p999=  12492 max=  66923
+[2026-04-10 04:51:30.602] [info]     SRV n=   471537 min=    244 p50=    262 p99=    271 p999=    274 max=   9109
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

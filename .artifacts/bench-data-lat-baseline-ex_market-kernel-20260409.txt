@@ -1,0 +1,25 @@
+# Reproduced: 2026-04-10 03:37:29
+# Commit: c88e1dc (clean)
+# Bench: sudo ./benchmarks/latency/lat ex_market
+# Profile: kernel client, kernel mock
+# Host: EC2 ARM64
+# ---
+✓  NIC-B current state: bench_ns  →  desired: bench_ns
+
+── lat ex_market ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_market
+
+[2026-04-10 03:37:29.813] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 03:37:30.833] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 03:37:30.833] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:37:30.833] [info] pin_thread_strict: 'bench_lat_ex_mk' pinned to cpu 2 (verified)
+[2026-04-10 03:37:30.833] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:37:30.833] [info] pin_thread_strict: 'mock_lat_ex_ws' pinned to cpu 4 (verified)
+[2026-04-10 03:37:30.833] [info] mock_lat_ex_ws: listening on 172.31.21.173:9000 symbols=3 bookticker=1000us depth=10ms trade_mean=5ms kline=1s depth_bytes=1024 work_ns=200
+[2026-04-10 03:37:30.833] [info] accept: client 172.31.23.112:60136
+[2026-04-10 03:37:30.834] [info] mock_lat_ex_ws: handshake complete
+[2026-04-10 03:37:30.834] [info] lat_ex_market (kernel): connected to 172.31.21.173:9000
+[2026-04-10 03:37:30.834] [info] exchange/market (kernel): pre_warmup=2000 warmup=2s duration=10s (oneway)
+[2026-04-10 03:37:43.348] [info] == BENCH exchange/market (kernel) (oneway) ==
+[2026-04-10 03:37:43.348] [info]     RX n=    39061 min=  10809 p50=  20999 p99= 193850 p999= 267128 max= 643457
+[2026-04-10 03:37:43.348] [info] mock_lat_ex_ws: client disconnected (sent 37542 bookTicker frames)

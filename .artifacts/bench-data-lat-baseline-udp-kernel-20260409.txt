@@ -1,0 +1,55 @@
+# Reproduced: 2026-04-10 03:34:57
+# Commit: c88e1dc (clean)
+# Bench: sudo ./benchmarks/latency/lat udp
+# Profile: kernel client, kernel mock, NIC-B in bench_ns
+# Host: EC2 ARM64
+# ---
+✓  NIC-B current state: bench_ns  →  desired: bench_ns
+
+── lat udp ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_udp
+
+[2026-04-10 03:34:57.764] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 03:34:58.784] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 03:34:58.784] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:34:58.784] [info] pin_thread_strict: 'bench_lat_udp' pinned to cpu 2 (verified)
+[2026-04-10 03:34:58.784] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:34:58.784] [info] pin_thread_strict: 'mock_lat_udp' pinned to cpu 4 (verified)
+[2026-04-10 03:34:58.785] [info] lat_udp (kernel): peer 172.31.21.173:9000
+[2026-04-10 03:34:58.785] [info] mock_lat_udp: bound 172.31.21.173:9000 work_ns=200
+[2026-04-10 03:34:58.785] [info] udp (kernel): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:35:10.836] [info] == BENCH udp (kernel) payload=64B ==
+[2026-04-10 03:35:10.836] [info]     RTT n=   411028 min=  21718 p50=  23927 p99=  28263 p999=  32295 max= 111770
+[2026-04-10 03:35:10.836] [info]     TX  n=   411028 min=  10855 p50=  11980 p99=  15396 p999=  18343 max=  91955
+[2026-04-10 03:35:10.836] [info]     RX  n=   411028 min=  10181 p50=  11508 p99=  14796 p999=  17527 max=  99861
+[2026-04-10 03:35:10.836] [info]     SRV n=   411028 min=    244 p50=    262 p99=    270 p999=    274 max=   6775
+[2026-04-10 03:35:10.836] [info] udp (kernel): payload=128B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:35:22.888] [info] == BENCH udp (kernel) payload=128B ==
+[2026-04-10 03:35:22.888] [info]     RTT n=   408823 min=  21681 p50=  24007 p99=  28791 p999=  41327 max=1189958
+[2026-04-10 03:35:22.888] [info]     TX  n=   408823 min=  10876 p50=  12020 p99=  15652 p999=  19287 max= 149645
+[2026-04-10 03:35:22.888] [info]     RX  n=   408823 min=  10238 p50=  11548 p99=  14972 p999=  19511 max=1175223
+[2026-04-10 03:35:22.888] [info]     SRV n=   408823 min=    247 p50=    263 p99=    270 p999=    273 max=  12865
+[2026-04-10 03:35:22.888] [info] udp (kernel): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:35:34.942] [info] == BENCH udp (kernel) payload=256B ==
+[2026-04-10 03:35:34.942] [info]     RTT n=   385690 min=  22919 p50=  25383 p99=  31975 p999=  68958 max=1615767
+[2026-04-10 03:35:34.942] [info]     TX  n=   385690 min=  11454 p50=  12772 p99=  16791 p999=  26247 max=1133768
+[2026-04-10 03:35:34.942] [info]     RX  n=   385690 min=  10874 p50=  12244 p99=  15348 p999=  48239 max=1602480
+[2026-04-10 03:35:34.942] [info]     SRV n=   385690 min=    244 p50=    262 p99=    271 p999=    274 max=  18345
+[2026-04-10 03:35:34.942] [info] udp (kernel): payload=512B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:35:46.994] [info] == BENCH udp (kernel) payload=512B ==
+[2026-04-10 03:35:46.994] [info]     RTT n=   382384 min=  23631 p50=  25639 p99=  31351 p999=  45679 max= 131620
+[2026-04-10 03:35:46.994] [info]     TX  n=   382384 min=  11577 p50=  12868 p99=  16727 p999=  26455 max= 101925
+[2026-04-10 03:35:46.994] [info]     RX  n=   382384 min=  11086 p50=  12388 p99=  15396 p999=  29607 max= 118127
+[2026-04-10 03:35:46.994] [info]     SRV n=   382384 min=    243 p50=    262 p99=    266 p999=    273 max=   7384
+[2026-04-10 03:35:46.994] [info] udp (kernel): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:35:59.050] [info] == BENCH udp (kernel) payload=1024B ==
+[2026-04-10 03:35:59.050] [info]     RTT n=   374503 min=  23700 p50=  26135 p99=  34511 p999=  71198 max= 123286
+[2026-04-10 03:35:59.050] [info]     TX  n=   374503 min=  11732 p50=  13052 p99=  17303 p999=  30199 max= 105542
+[2026-04-10 03:35:59.050] [info]     RX  n=   374503 min=  11204 p50=  12644 p99=  15780 p999=  32455 max= 109196
+[2026-04-10 03:35:59.050] [info]     SRV n=   374503 min=    247 p50=    262 p99=    271 p999=    275 max=   8758
+[2026-04-10 03:35:59.050] [info] udp (kernel): payload=1472B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:36:11.107] [info] == BENCH udp (kernel) payload=1472B ==
+[2026-04-10 03:36:11.107] [info]     RTT n=   370769 min=  23727 p50=  26391 p99=  36431 p999=  70174 max=1367357
+[2026-04-10 03:36:11.107] [info]     TX  n=   370769 min=  11891 p50=  13172 p99=  17527 p999=  30759 max=1342643
+[2026-04-10 03:36:11.107] [info]     RX  n=   370769 min=  11277 p50=  12764 p99=  16076 p999=  53966 max= 859270
+[2026-04-10 03:36:11.107] [info]     SRV n=   370769 min=    247 p50=    262 p99=    270 p999=    274 max=   9712

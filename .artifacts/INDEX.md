@@ -42,3 +42,10 @@
 | 2026-04-09 17:38 | /discuss | 确认 TransportCore::do_connect 在 do_ws_upgrade 前 snapshot TLS seq 是 P0 真 bug，给出 4-callsite 修复方案 | afaceba | discuss-20260409-173817.md |
 | 2026-04-09 17:53 | /plan | TLS hot-path AEAD ordering fix — 5 阶段计划：症状记录→fix 4 callsites→e2e 测试→文档→PR | afaceba | plan-tls-aead-ordering-fix-20260409-175353.md |
 | 2026-04-09 18:13 | /repeat (plan execution) | TLS AEAD ordering hotfix shipped — fix + 5 e2e tests, regression-validated, plan complete | 4751ad7 | fix-tls-aead-ordering-20260409-175353.md |
+| 2026-04-09 18:14 | /repeat (plan execution) | 5 阶段全部完成：fix + tests + docs；870 测试全绿；待用户授权 push/PR | 81c766d | repeat-20260409-175500.md |
+| 2026-04-10 03:40 | /cleanup baseline | benchmarks/latency baseline — 12 scenarios (6 × kernel/dpdk), aggregated to bench-lat-baseline-20260409.md | c88e1dc | bench-lat-baseline-20260409.md |
+| 2026-04-10 04:40 | /cleanup bench/latency | benchmarks/latency cleanup — 5 commits, robustness fixes + tests + docs, perf parity verified | 57e90b2 | cleanup-bench-latency-20260409.md |
+| 2026-04-10 03:42 | /cleanup audit pass 1 | structural audit (mostly false positives, see deep audit corrections) | c88e1dc | audit-bench-latency-20260409.md |
+| 2026-04-10 03:50 | /cleanup audit pass 2 | deep audit — 3 HIGH bugs in lat wrapper + 4 doc/test gaps | c88e1dc | audit-bench-latency-deep-20260409.md |
+| 2026-04-10 03:55 | /cleanup discussion | 5-role redesign discussion — converged on temperate cleanup scope | c88e1dc | discuss-cleanup-bench-latency-20260409.md |
+| 2026-04-10 04:40 | /cleanup verify | postclean baseline rerun + comparison | 57e90b2 | bench-lat-postclean-compare-20260410.md |

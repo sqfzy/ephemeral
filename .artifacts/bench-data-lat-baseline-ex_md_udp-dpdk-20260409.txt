@@ -1,0 +1,59 @@
+# Reproduced: 2026-04-10 03:32:11
+# Commit: c88e1dc (clean)
+# Bench: sudo ./benchmarks/latency/lat ex_md_udp --dpdk
+# Host: EC2 ARM64
+# ---
+✓  NIC-B current state: dpdk  →  desired: dpdk
+
+── lat ex_md_udp --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_md_udp_dpdk
+
+[2026-04-10 03:32:11.421] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 03:32:12.441] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 03:32:12.442] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:32:12.442] [info] pin_thread_strict: 'mock_lat_ex_md' pinned to cpu 4 (verified)
+[2026-04-10 03:32:12.442] [info] mock_lat_ex_md: bound 172.31.21.173:9000 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 03:32:12.897] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 03:32:12.898] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 03:32:12.898] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 03:32:12.898] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 03:32:12.898] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 03:32:12.898] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 03:32:12.899] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:32:12.899] [info] pin_thread_strict: 'bench_lat_ex_md' pinned to cpu 2 (verified)
+[2026-04-10 03:32:12.899] [dpdk.udp] [info] [udp.hpp:220] UdpSender created: UdpConfig(172.31.23.112:55550 -> 172.31.21.173:9000, port=0, tx_q=0, hw_cksum=false)
+[2026-04-10 03:32:12.899] [info] lat_ex_md_udp (dpdk): peer 172.31.21.173:9000
+[2026-04-10 03:32:12.899] [info] exchange/md_udp (dpdk): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:32:24.937] [info] == BENCH exchange/md_udp (dpdk) payload=64B ==
+[2026-04-10 03:32:24.937] [info]     RTT n=   528716 min=  17184 p50=  18679 p99=  21591 p999=  26487 max= 114187
+[2026-04-10 03:32:24.937] [info]     TX  n=   528716 min=  10146 p50=  11020 p99=  13516 p999=  18183 max= 106080
+[2026-04-10 03:32:24.937] [info]     RX  n=   528716 min=   6550 p50=   7254 p99=   8932 p999=  10956 max=  35050
+[2026-04-10 03:32:24.937] [info]     SRV n=   528716 min=    241 p50=    257 p99=    261 p999=    262 max=  12815
+[2026-04-10 03:32:24.937] [info] exchange/md_udp (dpdk): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:32:36.978] [info] == BENCH exchange/md_udp (dpdk) payload=256B ==
+[2026-04-10 03:32:36.978] [info]     RTT n=   486589 min=  18594 p50=  20295 p99=  23991 p999=  35887 max= 820255
+[2026-04-10 03:32:36.978] [info]     TX  n=   486589 min=  10274 p50=  11852 p99=  15020 p999=  26295 max= 808990
+[2026-04-10 03:32:36.978] [info]     RX  n=   486589 min=   7208 p50=   8030 p99=   9612 p999=  12436 max=  61124
+[2026-04-10 03:32:36.978] [info]     SRV n=   486589 min=    241 p50=    257 p99=    264 p999=    268 max=   7131
+[2026-04-10 03:32:36.978] [info] exchange/md_udp (dpdk): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:32:49.020] [info] == BENCH exchange/md_udp (dpdk) payload=1024B ==
+[2026-04-10 03:32:49.020] [info]     RTT n=   475782 min=  19013 p50=  20759 p99=  24759 p999=  40207 max= 403845
+[2026-04-10 03:32:49.020] [info]     TX  n=   475782 min=  11041 p50=  12092 p99=  15524 p999=  31223 max= 392834
+[2026-04-10 03:32:49.020] [info]     RX  n=   475782 min=   7378 p50=   8252 p99=   9828 p999=  12252 max=  84406
+[2026-04-10 03:32:49.020] [info]     SRV n=   475782 min=    242 p50=    257 p99=    266 p999=    269 max=  12919
+[2026-04-10 03:32:49.020] [info] exchange/md_udp (dpdk): payload=1400B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:33:01.063] [info] == BENCH exchange/md_udp (dpdk) payload=1400B ==
+[2026-04-10 03:33:01.063] [info]     RTT n=   472910 min=  19277 p50=  20855 p99=  24679 p999=  39951 max= 120639
+[2026-04-10 03:33:01.063] [info]     TX  n=   472910 min=  11130 p50=  12148 p99=  15380 p999=  31159 max= 111075
+[2026-04-10 03:33:01.063] [info]     RX  n=   472910 min=   7483 p50=   8332 p99=   9924 p999=  12172 max=  46846
+[2026-04-10 03:33:01.063] [info]     SRV n=   472910 min=    241 p50=    257 p99=    266 p999=    269 max=   7093
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

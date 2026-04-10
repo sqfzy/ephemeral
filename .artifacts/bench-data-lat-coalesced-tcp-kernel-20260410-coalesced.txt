@@ -1,0 +1,90 @@
+# Reproduced: 2026-04-10 04:56:41
+# Commit: 57e90b2 (post-cleanup, with setup_coalescing.sh applied)
+# Bench: sudo ./scripts/setup_coalescing.sh && sudo ./benchmarks/latency/lat tcp
+# Coalescing: adaptive-rx=off rx-usecs=0 on NIC-A (default ns) AND NIC-B (bench_ns)
+# ---
+✓  NIC-B current state: bench_ns  →  desired: bench_ns
+
+── lat tcp ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_tcp
+
+[2026-04-10 04:56:41.341] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 04:56:42.361] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 04:56:42.361] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:56:42.361] [info] pin_thread_strict: 'bench_lat_tcp' pinned to cpu 2 (verified)
+[2026-04-10 04:56:42.361] [info] lat_tcp (kernel): peer 172.31.21.173:9000
+[2026-04-10 04:56:42.361] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:56:42.361] [info] pin_thread_strict: 'mock_lat_tcp' pinned to cpu 4 (verified)
+[2026-04-10 04:56:42.361] [info] mock_lat_tcp: listening on 172.31.21.173:9000 work_ns=200
+[2026-04-10 04:56:42.362] [info] tcp (kernel): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:56:42.362] [info] accept: client 172.31.23.112:56164
+[2026-04-10 04:56:42.362] [info] mock_lat_tcp: client connected, msg_size=64
+[2026-04-10 04:56:54.413] [info] == BENCH tcp (kernel) payload=64B ==
+[2026-04-10 04:56:54.413] [info]     RTT n=   381682 min=  23445 p50=  25655 p99=  30855 p999=  63566 max=3157744
+[2026-04-10 04:56:54.413] [info]     TX  n=   381682 min=  11542 p50=  12788 p99=  16236 p999=  28807 max= 934433
+[2026-04-10 04:56:54.413] [info]     RX  n=   381682 min=  11140 p50=  12484 p99=  15836 p999=  31495 max=3140549
+[2026-04-10 04:56:54.413] [info]     SRV n=   381682 min=    243 p50=    259 p99=    265 p999=    269 max=   8077
+[2026-04-10 04:56:54.413] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:56:54.414] [info] tcp (kernel): payload=128B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:56:54.414] [info] accept: client 172.31.23.112:34054
+[2026-04-10 04:56:54.414] [info] mock_lat_tcp: client connected, msg_size=128
+[2026-04-10 04:57:06.459] [info] == BENCH tcp (kernel) payload=128B ==
+[2026-04-10 04:57:06.459] [info]     RTT n=   430487 min=  20633 p50=  22903 p99=  26119 p999=  32263 max=14528492
+[2026-04-10 04:57:06.459] [info]     TX  n=   430487 min=   9107 p50=  10316 p99=  12556 p999=  16316 max=14482199
+[2026-04-10 04:57:06.459] [info]     RX  n=   430487 min=  10959 p50=  12228 p99=  14852 p999=  17879 max= 247135
+[2026-04-10 04:57:06.459] [info]     SRV n=   430487 min=    242 p50=    259 p99=    264 p999=    266 max=  17248
+[2026-04-10 04:57:06.459] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:57:06.459] [info] tcp (kernel): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:57:06.459] [info] accept: client 172.31.23.112:33394
+[2026-04-10 04:57:06.459] [info] mock_lat_tcp: client connected, msg_size=256
+[2026-04-10 04:57:18.512] [info] == BENCH tcp (kernel) payload=256B ==
+[2026-04-10 04:57:18.512] [info]     RTT n=   369402 min=  24538 p50=  26791 p99=  31863 p999=  38159 max= 583417
+[2026-04-10 04:57:18.512] [info]     TX  n=   369402 min=  12036 p50=  13276 p99=  16276 p999=  21991 max= 562119
+[2026-04-10 04:57:18.513] [info]     RX  n=   369402 min=  11847 p50=  13164 p99=  16220 p999=  21559 max= 372035
+[2026-04-10 04:57:18.513] [info]     SRV n=   369402 min=    244 p50=    260 p99=    265 p999=    266 max=   7881
+[2026-04-10 04:57:18.513] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:57:18.513] [info] tcp (kernel): payload=512B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:57:18.513] [info] accept: client 172.31.23.112:59538
+[2026-04-10 04:57:18.513] [info] mock_lat_tcp: client connected, msg_size=512
+[2026-04-10 04:57:30.566] [info] == BENCH tcp (kernel) payload=512B ==
+[2026-04-10 04:57:30.566] [info]     RTT n=   368778 min=  24461 p50=  26727 p99=  32743 p999=  54734 max=3018011
+[2026-04-10 04:57:30.566] [info]     TX  n=   368778 min=  12000 p50=  13292 p99=  16648 p999=  24439 max=2415420
+[2026-04-10 04:57:30.566] [info]     RX  n=   368778 min=  11791 p50=  13076 p99=  16536 p999=  27015 max=2998951
+[2026-04-10 04:57:30.566] [info]     SRV n=   368778 min=    243 p50=    259 p99=    264 p999=   1329 max=   7624
+[2026-04-10 04:57:30.566] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:57:30.566] [info] tcp (kernel): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:57:30.566] [info] accept: client 172.31.23.112:51948
+[2026-04-10 04:57:30.566] [info] mock_lat_tcp: client connected, msg_size=1024
+[2026-04-10 04:57:42.620] [info] == BENCH tcp (kernel) payload=1024B ==
+[2026-04-10 04:57:42.620] [info]     RTT n=   361161 min=  24840 p50=  27175 p99=  34479 p999=  68318 max=6317750
+[2026-04-10 04:57:42.620] [info]     TX  n=   361161 min=  12240 p50=  13564 p99=  17815 p999=  27239 max=5295889
+[2026-04-10 04:57:42.621] [info]     RX  n=   361161 min=  11882 p50=  13276 p99=  17511 p999=  32815 max=5613057
+[2026-04-10 04:57:42.621] [info]     SRV n=   361161 min=    244 p50=    259 p99=    263 p999=    268 max=  10501
+[2026-04-10 04:57:42.621] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:57:42.621] [info] tcp (kernel): payload=1460B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:57:42.621] [info] accept: client 172.31.23.112:36936
+[2026-04-10 04:57:42.621] [info] mock_lat_tcp: client connected, msg_size=1460
+[2026-04-10 04:57:54.676] [info] == BENCH tcp (kernel) payload=1460B ==
+[2026-04-10 04:57:54.676] [info]     RTT n=   359630 min=  25338 p50=  27527 p99=  33423 p999=  38287 max=1806607
+[2026-04-10 04:57:54.676] [info]     TX  n=   359630 min=  12352 p50=  13580 p99=  16424 p999=  22247 max=1779884
+[2026-04-10 04:57:54.676] [info]     RX  n=   359630 min=  12195 p50=  13596 p99=  16632 p999=  23495 max=  86705
+[2026-04-10 04:57:54.676] [info]     SRV n=   359630 min=    244 p50=    259 p99=    263 p999=    266 max=  19196
+[2026-04-10 04:57:54.676] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:57:54.676] [info] tcp (kernel): payload=4096B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:57:54.676] [info] accept: client 172.31.23.112:35096
+[2026-04-10 04:57:54.676] [info] mock_lat_tcp: client connected, msg_size=4096
+[2026-04-10 04:58:06.735] [info] == BENCH tcp (kernel) payload=4096B ==
+[2026-04-10 04:58:06.736] [info]     RTT n=   329862 min=  27138 p50=  29783 p99=  37327 p999=  51022 max=4717400
+[2026-04-10 04:58:06.736] [info]     TX  n=   329862 min=  13212 p50=  14796 p99=  21095 p999=  25719 max=4674300
+[2026-04-10 04:58:06.736] [info]     RX  n=   329862 min=  13093 p50=  14636 p99=  20791 p999=  25767 max=1248061
+[2026-04-10 04:58:06.736] [info]     SRV n=   329862 min=    243 p50=    258 p99=    263 p999=   1622 max=  17489
+[2026-04-10 04:58:06.736] [info] mock_lat_tcp: client disconnected
+[2026-04-10 04:58:06.736] [info] accept: client 172.31.23.112:53024
+[2026-04-10 04:58:06.736] [info] mock_lat_tcp: client connected, msg_size=16384
+[2026-04-10 04:58:06.736] [info] tcp (kernel): payload=16384B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:58:18.816] [info] == BENCH tcp (kernel) payload=16384B ==
+[2026-04-10 04:58:18.816] [info]     RTT n=   253437 min=  34443 p50=  38447 p99=  48367 p999=  59342 max=2214407
+[2026-04-10 04:58:18.816] [info]     TX  n=   253437 min=  17268 p50=  19303 p99=  27831 p999=  32679 max=2187867
+[2026-04-10 04:58:18.816] [info]     RX  n=   253437 min=  16587 p50=  18615 p99=  27239 p999=  31239 max= 843520
+[2026-04-10 04:58:18.816] [info]     SRV n=   253437 min=    243 p50=    260 p99=    264 p999=    268 max=  10375
+[2026-04-10 04:58:18.816] [info] mock_lat_tcp: client disconnected

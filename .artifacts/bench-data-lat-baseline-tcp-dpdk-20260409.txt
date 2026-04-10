@@ -1,0 +1,189 @@
+# Reproduced: 2026-04-10 03:28:09
+# Commit: c88e1dc (clean)
+# Compiler: gcc14 (Amazon Linux 2023, aarch64)
+# Build: xmake build lat_tcp_dpdk
+# Bench: sudo ./benchmarks/latency/lat tcp --dpdk
+# Profile: release, -march=native, -fno-omit-frame-pointer, set_symbols=debug
+# Host: EC2 ARM64, ens34=kernel (172.31.21.173), ens35=vfio-pci 0000:28:00.0 (172.31.23.112)
+# bench.conf: DURATION=10 WARMUP=2 SERVER_WORK_NS=200
+#   TCP_PAYLOADS=64,128,256,512,1024,1460,4096,16384
+# ---
+✓  NIC-B current state: host  →  desired: dpdk
+ℹ  NIC-B: host → vfio-pci
+
+────────────────────────────────────────
+dpdk-setup.sh — 配置 DPDK 独占网卡环境
+
+▶  前置检查
+✓  Linux 系统
+✓  root 权限
+✓  vfio-pci 模块可用
+✓  dpdk-devbind.py 可用
+⚠  检测到可能正在运行的 DPDK 进程
+ℹ    查看：ls -la /var/run/dpdk/
+ℹ    如果是残留文件，可以忽略（setup 会正常覆盖）
+
+▶  自动检测网卡
+✓  SSH/管理网卡：ens34
+ℹ    ens34  PCI=0000:27:00.0  驱动=ena  IP=172.31.21.173  MAC=0e:66:ac:b1:1b:bb  ← SSH
+ℹ    ens35  PCI=0000:28:00.0  驱动=ena  IP=172.31.23.112  MAC=0e:36:67:f2:5f:15
+
+────────────────────────────────────────
+网卡选择
+  SSH 网卡（保留）：ens34
+  DPDK 网卡（绑定）：ens35  PCI=0000:28:00.0  驱动=ena
+  DPDK 网卡 IP  ：172.31.23.112（绑定后 DPDK 程序使用此 IP）
+
+────────────────────────────────────────
+
+────────────────────────────────────────
+📋 环境报告
+  操作系统      ：Linux 6.1.163-186.299.amzn2023.aarch64 (aarch64)
+  DPDK 网卡     ：ens35 (0000:28:00.0)
+  当前驱动      ：ena
+  Hugepages     ：256 已分配 / 245 空闲（目标：256）
+  VFIO noiommu  ：Y
+
+────────────────────────────────────────
+
+▶  加载 VFIO 模块
+✓  vfio-pci 模块已加载
+✓  noiommu 模式已开启（已是）
+
+▶  分配 Hugepages
+✓  Hugepages：已分配=256 空闲=245（512MB）
+
+▶  绑定网卡 ens35 (0000:28:00.0) 到 vfio-pci
+✓  网卡已绑定到 vfio-pci
+✓  状态已保存到 /home/ec2-user/ephemeral_dev/.dpdk_state
+
+────────────────────────────────────────
+✅ DPDK 环境就绪
+
+Network devices using DPDK-compatible driver
+0000:28:00.0 'Elastic Network Adapter (ENA) ec20' numa_node=0 drv=vfio-pci unused=ena
+0000:27:00.0 'Elastic Network Adapter (ENA) ec20' numa_node=0 if=ens34 drv=ena unused=vfio-pci *Active*
+
+────────────────────────────────────────
+💡 运行示例：
+
+  sudo /home/ec2-user/ephemeral_dev/build/linux/aarch64/release/ws_echo_client \
+      -a 0000:28:00.0 \
+      -- \
+      --backend dpdk \
+      --host echo.websocket.org \
+      --local-ip 172.31.23.112 \
+      --gateway-ip 172.31.16.1 \
+      --count 3 --msg 'hello dpdk'
+
+💡 恢复网卡：
+ℹ    sudo ./eph-dpdk/scripts/dpdk-teardown.sh
+✓  ens35 (PCI 0000:28:00.0) bound to vfio-pci
+
+── lat tcp --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_tcp_dpdk
+
+[2026-04-10 03:26:14.979] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 03:26:16.000] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 03:26:16.001] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:26:16.001] [info] pin_thread_strict: 'mock_lat_tcp' pinned to cpu 4 (verified)
+[2026-04-10 03:26:16.001] [info] mock_lat_tcp: listening on 172.31.21.173:9000 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 03:26:16.458] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 03:26:16.460] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 03:26:16.460] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 03:26:16.460] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 03:26:16.460] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 03:26:16.460] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 03:26:16.460] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:26:16.460] [info] pin_thread_strict: 'bench_lat_tcp' pinned to cpu 2 (verified)
+[2026-04-10 03:26:16.460] [info] lat_tcp (dpdk): peer 172.31.21.173:9000
+[2026-04-10 03:26:16.500] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55600 -> 172.31.21.173:9000
+[2026-04-10 03:26:16.500] [info] tcp (dpdk): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:26:16.500] [info] accept: client 172.31.23.112:55600
+[2026-04-10 03:26:16.500] [info] mock_lat_tcp: client connected, msg_size=64
+[2026-04-10 03:26:28.539] [info] == BENCH tcp (dpdk) payload=64B ==
+[2026-04-10 03:26:28.539] [info]     RTT n=   518711 min=  17433 p50=  19047 p99=  22887 p999=  26167 max= 443350
+[2026-04-10 03:26:28.539] [info]     TX  n=   518711 min=  10390 p50=  11412 p99=  13724 p999=  16324 max= 432892
+[2026-04-10 03:26:28.539] [info]     RX  n=   518711 min=   6547 p50=   7246 p99=   9484 p999=  11892 max=  87710
+[2026-04-10 03:26:28.539] [info]     SRV n=   518711 min=    242 p50=    259 p99=    269 p999=    270 max=   6199
+[2026-04-10 03:26:28.539] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:26:28.539] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55601 -> 172.31.21.173:9000
+[2026-04-10 03:26:28.540] [info] tcp (dpdk): payload=128B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:26:28.540] [info] accept: client 172.31.23.112:55601
+[2026-04-10 03:26:28.540] [info] mock_lat_tcp: client connected, msg_size=128
+[2026-04-10 03:26:40.578] [info] == BENCH tcp (dpdk) payload=128B ==
+[2026-04-10 03:26:40.578] [info]     RTT n=   512461 min=  17618 p50=  19271 p99=  21735 p999=  24279 max=13729579
+[2026-04-10 03:26:40.578] [info]     TX  n=   512461 min=  10420 p50=  11484 p99=  13668 p999=  15852 max=13706946
+[2026-04-10 03:26:40.578] [info]     RX  n=   512461 min=   6639 p50=   7398 p99=   9116 p999=  10700 max=  36996
+[2026-04-10 03:26:40.578] [info]     SRV n=   512461 min=    242 p50=    259 p99=    262 p999=    263 max=   5948
+[2026-04-10 03:26:40.578] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:26:40.578] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55602 -> 172.31.21.173:9000
+[2026-04-10 03:26:40.578] [info] tcp (dpdk): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:26:40.578] [info] accept: client 172.31.23.112:55602
+[2026-04-10 03:26:40.578] [info] mock_lat_tcp: client connected, msg_size=256
+[2026-04-10 03:26:52.620] [info] == BENCH tcp (dpdk) payload=256B ==
+[2026-04-10 03:26:52.620] [info]     RTT n=   474077 min=  18923 p50=  20887 p99=  24663 p999=  27447 max= 334882
+[2026-04-10 03:26:52.620] [info]     TX  n=   474077 min=  11101 p50=  12380 p99=  15988 p999=  18487 max= 325062
+[2026-04-10 03:26:52.620] [info]     RX  n=   474077 min=   7280 p50=   8134 p99=   9700 p999=  11988 max=  53057
+[2026-04-10 03:26:52.620] [info]     SRV n=   474077 min=    243 p50=    259 p99=    262 p999=    264 max=  14528
+[2026-04-10 03:26:52.620] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:26:52.620] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55603 -> 172.31.21.173:9000
+[2026-04-10 03:26:52.620] [info] tcp (dpdk): payload=512B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:26:52.620] [info] accept: client 172.31.23.112:55603
+[2026-04-10 03:26:52.620] [info] mock_lat_tcp: client connected, msg_size=512
+[2026-04-10 03:27:04.662] [info] == BENCH tcp (dpdk) payload=512B ==
+[2026-04-10 03:27:04.662] [info]     RTT n=   469054 min=  19177 p50=  21079 p99=  24119 p999=  29543 max=10564699
+[2026-04-10 03:27:04.662] [info]     TX  n=   469054 min=  11281 p50=  12500 p99=  15036 p999=  20727 max=10540756
+[2026-04-10 03:27:04.662] [info]     RX  n=   469054 min=   7325 p50=   8186 p99=   9804 p999=  12092 max=  61101
+[2026-04-10 03:27:04.662] [info]     SRV n=   469054 min=    242 p50=    259 p99=    262 p999=    266 max=   6581
+[2026-04-10 03:27:04.662] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:27:04.662] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55604 -> 172.31.21.173:9000
+[2026-04-10 03:27:04.662] [info] tcp (dpdk): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:27:04.662] [info] accept: client 172.31.23.112:55604
+[2026-04-10 03:27:04.662] [info] mock_lat_tcp: client connected, msg_size=1024
+[2026-04-10 03:27:16.707] [info] == BENCH tcp (dpdk) payload=1024B ==
+[2026-04-10 03:27:16.707] [info]     RTT n=   448283 min=  19532 p50=  22023 p99=  25895 p999=  31207 max=  99994
+[2026-04-10 03:27:16.707] [info]     TX  n=   448283 min=  11514 p50=  13004 p99=  16356 p999=  21575 max=  91263
+[2026-04-10 03:27:16.707] [info]     RX  n=   448283 min=   7432 p50=   8572 p99=  10988 p999=  12596 max=  57298
+[2026-04-10 03:27:16.707] [info]     SRV n=   448283 min=    251 p50=    259 p99=    261 p999=    263 max=   7600
+[2026-04-10 03:27:16.707] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:27:16.707] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55605 -> 172.31.21.173:9000
+[2026-04-10 03:27:16.707] [info] tcp (dpdk): payload=1460B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:27:16.707] [info] accept: client 172.31.23.112:55605
+[2026-04-10 03:27:16.707] [info] mock_lat_tcp: client connected, msg_size=1460
+[2026-04-10 03:27:28.750] [info] == BENCH tcp (dpdk) payload=1460B ==
+[2026-04-10 03:27:28.750] [info]     RTT n=   459225 min=  19593 p50=  21575 p99=  25575 p999=  28983 max= 468376
+[2026-04-10 03:27:28.750] [info]     TX  n=   459225 min=  11547 p50=  12804 p99=  16348 p999=  19767 max= 455826
+[2026-04-10 03:27:28.750] [info]     RX  n=   459225 min=   7540 p50=   8388 p99=  10028 p999=  12508 max=  65910
+[2026-04-10 03:27:28.750] [info]     SRV n=   459225 min=    241 p50=    258 p99=    261 p999=    263 max=   7705
+[2026-04-10 03:27:28.750] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:27:28.750] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55606 -> 172.31.21.173:9000
+[2026-04-10 03:27:28.750] [info] tcp (dpdk): payload=4096B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:27:28.750] [info] accept: client 172.31.23.112:55606
+[2026-04-10 03:27:28.750] [info] mock_lat_tcp: client connected, msg_size=4096
+[2026-04-10 03:27:40.810] [info] == BENCH tcp (dpdk) payload=4096B ==
+[2026-04-10 03:27:40.810] [info]     RTT n=   327542 min=  25600 p50=  30231 p99=  36463 p999=  39567 max= 961167
+[2026-04-10 03:27:40.810] [info]     TX  n=   327542 min=  14674 p50=  18247 p99=  24231 p999=  26519 max= 945758
+[2026-04-10 03:27:40.810] [info]     RX  n=   327542 min=  10025 p50=  11676 p99=  13988 p999=  16356 max=  60599
+[2026-04-10 03:27:40.811] [info]     SRV n=   327542 min=    243 p50=    259 p99=    263 p999=    266 max=   7308
+[2026-04-10 03:27:40.811] [info] mock_lat_tcp: client disconnected
+[2026-04-10 03:27:40.811] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55607 -> 172.31.21.173:9000
+[2026-04-10 03:27:40.811] [info] tcp (dpdk): payload=16384B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:27:40.811] [info] accept: client 172.31.23.112:55607
+[2026-04-10 03:27:40.811] [info] mock_lat_tcp: client connected, msg_size=16384
+[2026-04-10 03:27:52.916] [info] == BENCH tcp (dpdk) payload=16384B ==
+[2026-04-10 03:27:52.916] [info]     RTT n=   189859 min=  45447 p50=  52238 p99=  61614 p999=  66398 max= 488395
+[2026-04-10 03:27:52.916] [info]     TX  n=   189859 min=  24944 p50=  30023 p99=  38863 p999=  42927 max= 462154
+[2026-04-10 03:27:52.916] [info]     RX  n=   189859 min=  18736 p50=  21927 p99=  25287 p999=  28439 max=  93488
+[2026-04-10 03:27:52.916] [info]     SRV n=   189859 min=    243 p50=    259 p99=    264 p999=    267 max=   8755
+[2026-04-10 03:27:52.916] [info] mock_lat_tcp: client disconnected
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

@@ -1,0 +1,46 @@
+# Reproduced: 2026-04-10 03:37:43
+# Commit: c88e1dc (clean)
+# Bench: sudo ./benchmarks/latency/lat ex_order
+# Profile: kernel client, kernel mock
+# Host: EC2 ARM64
+# ---
+✓  NIC-B current state: bench_ns  →  desired: bench_ns
+
+── lat ex_order ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_order
+
+[2026-04-10 03:37:43.386] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 03:37:44.406] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 03:37:44.407] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:37:44.407] [info] pin_thread_strict: 'bench_lat_ex_or' pinned to cpu 2 (verified)
+[2026-04-10 03:37:44.407] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 03:37:44.407] [info] pin_thread_strict: 'mock_lat_ex_ws' pinned to cpu 4 (verified)
+[2026-04-10 03:37:44.407] [info] mock_lat_ex_ws: listening on 172.31.21.173:9000 symbols=3 bookticker=1000us depth=10ms trade_mean=5ms kline=1s depth_bytes=1024 work_ns=200
+[2026-04-10 03:37:44.407] [info] accept: client 172.31.23.112:48336
+[2026-04-10 03:37:44.407] [info] mock_lat_ex_ws: handshake complete
+[2026-04-10 03:37:44.407] [info] lat_ex_order (kernel): connected to 172.31.21.173:9000
+[2026-04-10 03:37:44.407] [info] exchange/order (kernel): inflight=1 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:37:56.465] [info] == BENCH exchange/order (kernel) inflight=1 ==
+[2026-04-10 03:37:56.465] [info]     RTT n=   363711 min=  21241 p50=  23415 p99=  69790 p999=  91421 max= 143668
+[2026-04-10 03:37:56.465] [info]     TX  n=   363711 min=   9060 p50=  10180 p99=  12836 p999=  15004 max=  88308
+[2026-04-10 03:37:56.465] [info]     RX  n=   363711 min=  10433 p50=  12860 p99=  58926 p999=  79326 max= 133046
+[2026-04-10 03:37:56.465] [info]     SRV n=   363711 min=    283 p50=    302 p99=    321 p999=    330 max=   8867
+[2026-04-10 03:37:56.465] [info] exchange/order (kernel): inflight=4 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:38:08.494] [info] == BENCH exchange/order (kernel) inflight=4 ==
+[2026-04-10 03:38:08.494] [info]     RTT n=   695685 min=  22850 p50=  50894 p99= 138172 p999= 140476 max=1925596
+[2026-04-10 03:38:08.494] [info]     TX  n=   695685 min=   9247 p50=  23175 p99=  68894 p999=  74142 max= 326025
+[2026-04-10 03:38:08.494] [info]     RX  n=   695685 min=  10737 p50=  28567 p99= 116252 p999= 126556 max=1911675
+[2026-04-10 03:38:08.494] [info]     SRV n=   695685 min=    281 p50=    300 p99=    317 p999=    325 max=  12120
+[2026-04-10 03:38:08.494] [info] exchange/order (kernel): inflight=16 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:38:20.500] [info] == BENCH exchange/order (kernel) inflight=16 ==
+[2026-04-10 03:38:20.500] [info]     RTT n=  2549160 min=  21811 p50=  55054 p99= 138428 p999= 142012 max=1091402
+[2026-04-10 03:38:20.500] [info]     TX  n=  2549160 min=   9231 p50=  22599 p99=  70366 p999=  76702 max= 239893
+[2026-04-10 03:38:20.500] [info]     RX  n=  2549160 min=  10876 p50=  32215 p99= 103645 p999= 118556 max=1042120
+[2026-04-10 03:38:20.500] [info]     SRV n=  2549160 min=    283 p50=    300 p99=    308 p999=    319 max=  15890
+[2026-04-10 03:38:20.500] [info] exchange/order (kernel): inflight=64 pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 03:38:32.503] [info] == BENCH exchange/order (kernel) inflight=64 ==
+[2026-04-10 03:38:32.503] [info]     RTT n=  5851262 min=  79620 p50= 104029 p99= 148283 p999= 177595 max= 284014
+[2026-04-10 03:38:32.503] [info]     TX  n=  5851262 min=  10343 p50=  23399 p99=  61006 p999=  74398 max= 250600
+[2026-04-10 03:38:32.503] [info]     RX  n=  5851262 min=  17515 p50=  80158 p99= 111389 p999= 132796 max= 184484
+[2026-04-10 03:38:32.503] [info]     SRV n=  5851262 min=    282 p50=    300 p99=    308 p999=    315 max=  12086
+[2026-04-10 03:38:32.503] [info] mock_lat_ex_ws: client disconnected (sent 144288 bookTicker frames)

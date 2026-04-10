@@ -1,0 +1,42 @@
+# Reproduced: 2026-04-10 04:52:44
+# Commit: 57e90b2 (post-cleanup, with setup_coalescing.sh applied)
+# Compiler: gcc14 (Amazon Linux 2023, aarch64)
+# Bench: sudo ./scripts/setup_coalescing.sh && sudo ./benchmarks/latency/lat ex_market --dpdk
+# Coalescing: adaptive-rx=off rx-usecs=0 on NIC-A (NIC-B on vfio-pci)
+# ---
+✓  NIC-B current state: dpdk  →  desired: dpdk
+
+── lat ex_market --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_market_dpdk
+
+[2026-04-10 04:52:44.983] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 04:52:46.003] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 04:52:46.004] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:52:46.004] [info] pin_thread_strict: 'mock_lat_ex_ws' pinned to cpu 4 (verified)
+[2026-04-10 04:52:46.004] [info] mock_lat_ex_ws: listening on 172.31.21.173:9000 symbols=3 bookticker=1000us depth=10ms trade_mean=5ms kline=1s depth_bytes=1024 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 04:52:46.457] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 04:52:46.458] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 04:52:46.458] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 04:52:46.458] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 04:52:46.458] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 04:52:46.458] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 04:52:46.458] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:52:46.459] [info] pin_thread_strict: 'bench_lat_ex_mk' pinned to cpu 2 (verified)
+[2026-04-10 04:52:46.491] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55800 -> 172.31.21.173:9000
+[2026-04-10 04:52:46.491] [info] accept: client 172.31.23.112:55800
+[2026-04-10 04:52:46.491] [info] mock_lat_ex_ws: handshake complete
+[2026-04-10 04:52:46.491] [info] lat_ex_market (dpdk): connected to 172.31.21.173:9000
+[2026-04-10 04:52:46.491] [info] exchange/market (dpdk): pre_warmup=2000 warmup=2s duration=10s (oneway)
+[2026-04-10 04:52:59.216] [info] == BENCH exchange/market (dpdk) (oneway) ==
+[2026-04-10 04:52:59.216] [info]     RX n=    27730 min=   6823 p50=   8420 p99=  59886 p999=  63758 max=  71890
+[2026-04-10 04:52:59.216] [info] mock_lat_ex_ws: client disconnected (sent 38175 bookTicker frames)
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

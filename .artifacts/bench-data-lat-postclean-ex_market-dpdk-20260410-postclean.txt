@@ -1,0 +1,110 @@
+# Reproduced: 2026-04-10 04:37:58
+# Commit: 57e90b2 (post-cleanup)
+# Bench: sudo ./benchmarks/latency/lat ex_market --dpdk
+# ---
+✓  NIC-B current state: bench_ns  →  desired: dpdk
+ℹ  NIC-B: bench_ns → host
+ℹ  NIC-B: host → vfio-pci
+
+────────────────────────────────────────
+dpdk-setup.sh — 配置 DPDK 独占网卡环境
+
+▶  前置检查
+✓  Linux 系统
+✓  root 权限
+✓  vfio-pci 模块可用
+✓  dpdk-devbind.py 可用
+⚠  检测到可能正在运行的 DPDK 进程
+ℹ    查看：ls -la /var/run/dpdk/
+ℹ    如果是残留文件，可以忽略（setup 会正常覆盖）
+
+▶  自动检测网卡
+✓  SSH/管理网卡：ens34
+ℹ    ens34  PCI=0000:27:00.0  驱动=ena  IP=172.31.21.173  MAC=0e:66:ac:b1:1b:bb  ← SSH
+ℹ    ens35  PCI=0000:28:00.0  驱动=ena  IP=无 IP  MAC=0e:36:67:f2:5f:15
+
+────────────────────────────────────────
+网卡选择
+  SSH 网卡（保留）：ens34
+  DPDK 网卡（绑定）：ens35  PCI=0000:28:00.0  驱动=ena
+
+────────────────────────────────────────
+
+────────────────────────────────────────
+📋 环境报告
+  操作系统      ：Linux 6.1.163-186.299.amzn2023.aarch64 (aarch64)
+  DPDK 网卡     ：ens35 (0000:28:00.0)
+  当前驱动      ：ena
+  Hugepages     ：256 已分配 / 254 空闲（目标：256）
+  VFIO noiommu  ：Y
+
+────────────────────────────────────────
+
+▶  加载 VFIO 模块
+✓  vfio-pci 模块已加载
+✓  noiommu 模式已开启（已是）
+
+▶  分配 Hugepages
+✓  Hugepages：已分配=256 空闲=254（512MB）
+
+▶  绑定网卡 ens35 (0000:28:00.0) 到 vfio-pci
+✓  网卡已绑定到 vfio-pci
+✓  状态已保存到 /home/ec2-user/ephemeral_dev/.dpdk_state
+
+────────────────────────────────────────
+✅ DPDK 环境就绪
+
+Network devices using DPDK-compatible driver
+0000:28:00.0 'Elastic Network Adapter (ENA) ec20' numa_node=0 drv=vfio-pci unused=ena
+0000:27:00.0 'Elastic Network Adapter (ENA) ec20' numa_node=0 if=ens34 drv=ena unused=vfio-pci *Active*
+
+────────────────────────────────────────
+💡 运行示例：
+
+  sudo /home/ec2-user/ephemeral_dev/build/linux/aarch64/release/ws_echo_client \
+      -a 0000:28:00.0 \
+      -- \
+      --backend dpdk \
+      --host echo.websocket.org \
+      --local-ip <DPDK网卡IP> \
+      --gateway-ip 172.31.16.1 \
+      --count 3 --msg 'hello dpdk'
+
+💡 恢复网卡：
+ℹ    sudo ./eph-dpdk/scripts/dpdk-teardown.sh
+✓  ens35 (PCI 0000:28:00.0) bound to vfio-pci
+
+── lat ex_market --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_market_dpdk
+
+[2026-04-10 04:37:59.671] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 04:38:00.691] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 04:38:00.692] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:38:00.692] [info] pin_thread_strict: 'mock_lat_ex_ws' pinned to cpu 4 (verified)
+[2026-04-10 04:38:00.692] [info] mock_lat_ex_ws: listening on 172.31.21.173:9000 symbols=3 bookticker=1000us depth=10ms trade_mean=5ms kline=1s depth_bytes=1024 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 04:38:01.157] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 04:38:01.159] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 04:38:01.159] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 04:38:01.159] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 04:38:01.159] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 04:38:01.159] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 04:38:01.159] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:38:01.159] [info] pin_thread_strict: 'bench_lat_ex_mk' pinned to cpu 2 (verified)
+[2026-04-10 04:38:01.191] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55800 -> 172.31.21.173:9000
+[2026-04-10 04:38:01.191] [info] accept: client 172.31.23.112:55800
+[2026-04-10 04:38:01.191] [info] mock_lat_ex_ws: handshake complete
+[2026-04-10 04:38:01.191] [info] lat_ex_market (dpdk): connected to 172.31.21.173:9000
+[2026-04-10 04:38:01.191] [info] exchange/market (dpdk): pre_warmup=2000 warmup=2s duration=10s (oneway)
+[2026-04-10 04:38:13.911] [info] == BENCH exchange/market (dpdk) (oneway) ==
+[2026-04-10 04:38:13.911] [info]     RX n=    27710 min=   6883 p50=   8452 p99=  63982 p999=  75870 max=  88407
+[2026-04-10 04:38:13.911] [info] mock_lat_ex_ws: client disconnected (sent 38160 bookTicker frames)
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released

@@ -1,0 +1,75 @@
+# Reproduced: 2026-04-10 04:51:30
+# Commit: 57e90b2 (post-cleanup, with setup_coalescing.sh applied)
+# Compiler: gcc14 (Amazon Linux 2023, aarch64)
+# Bench: sudo ./scripts/setup_coalescing.sh && sudo ./benchmarks/latency/lat ws --dpdk
+# Coalescing: adaptive-rx=off rx-usecs=0 on NIC-A (NIC-B on vfio-pci)
+# ---
+✓  NIC-B current state: dpdk  →  desired: dpdk
+
+── lat ws --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ws_dpdk
+
+[2026-04-10 04:51:30.905] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-10 04:51:31.925] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-10 04:51:31.926] [warning] pin_thread_strict: cpu 4 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:51:31.926] [info] pin_thread_strict: 'mock_lat_ws' pinned to cpu 4 (verified)
+[2026-04-10 04:51:31.926] [info] mock_lat_ws: listening on 172.31.21.173:9000 work_ns=200
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: VFIO support initialized
+EAL: Using IOMMU type 8 (No-IOMMU)
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-10 04:51:32.377] [dpdk.platform] [info] [platform.hpp:369] Available DPDK ports: 1
+[2026-04-10 04:51:32.378] [dpdk.platform] [info] [platform.hpp:554] port=0 link up: 0 Mbps full-duplex
+[2026-04-10 04:51:32.378] [dpdk.platform] [info] [platform.hpp:645] Platform ready (port=0)
+[2026-04-10 04:51:32.378] [info] dpdk_env: local MAC 0e:36:67:f2:5f:15
+[2026-04-10 04:51:32.378] [dpdk.arp] [info] [arp.hpp:264] ARP resolved: 172.31.16.1 -> 0e:b2:8f:81:81:93 (after 1 request(s))
+[2026-04-10 04:51:32.378] [info] dpdk_env: gateway MAC 0e:b2:8f:81:81:93
+[2026-04-10 04:51:32.379] [warning] pin_thread_strict: cpu 2 has active IRQs in /proc/interrupts (rebind NIC IRQs via /proc/irq/N/smp_affinity)
+[2026-04-10 04:51:32.379] [info] pin_thread_strict: 'bench_lat_ws' pinned to cpu 2 (verified)
+[2026-04-10 04:51:32.411] [dpdk.tcp] [info] [tcp.hpp:612] TCP connection established: 172.31.23.112:55700 -> 172.31.21.173:9000
+[2026-04-10 04:51:32.411] [info] accept: client 172.31.23.112:55700
+[2026-04-10 04:51:32.411] [info] mock_lat_ws: handshake complete
+[2026-04-10 04:51:32.411] [info] lat_ws (dpdk): connected to 172.31.21.173:9000
+[2026-04-10 04:51:32.411] [info] ws (dpdk): payload=64B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:51:44.452] [info] == BENCH ws (dpdk) payload=64B ==
+[2026-04-10 04:51:44.452] [info]     RTT n=   491243 min=  18349 p50=  19975 p99=  23783 p999=  27031 max=  54354
+[2026-04-10 04:51:44.452] [info]     TX  n=   491243 min=  11000 p50=  12028 p99=  15556 p999=  18423 max=  46013
+[2026-04-10 04:51:44.452] [info]     RX  n=   491243 min=   6739 p50=   7514 p99=   9348 p999=  11308 max=  41531
+[2026-04-10 04:51:44.452] [info]     SRV n=   491243 min=    279 p50=    293 p99=    308 p999=    310 max=   6688
+[2026-04-10 04:51:44.452] [info] ws (dpdk): payload=128B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:51:56.493] [info] == BENCH ws (dpdk) payload=128B ==
+[2026-04-10 04:51:56.493] [info]     RTT n=   496177 min=  18283 p50=  19895 p99=  22375 p999=  25063 max= 101654
+[2026-04-10 04:51:56.493] [info]     TX  n=   496177 min=  11010 p50=  11980 p99=  14140 p999=  16392 max=  91793
+[2026-04-10 04:51:56.493] [info]     RX  n=   496177 min=   6733 p50=   7510 p99=   9284 p999=  11092 max=  50620
+[2026-04-10 04:51:56.493] [info]     SRV n=   496177 min=    278 p50=    294 p99=    307 p999=    309 max=   6499
+[2026-04-10 04:51:56.493] [info] ws (dpdk): payload=256B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:52:08.535] [info] == BENCH ws (dpdk) payload=256B ==
+[2026-04-10 04:52:08.535] [info]     RTT n=   469882 min=  19157 p50=  20999 p99=  24359 p999=  28167 max= 153205
+[2026-04-10 04:52:08.535] [info]     TX  n=   469882 min=  11867 p50=  12940 p99=  15788 p999=  19671 max= 143063
+[2026-04-10 04:52:08.535] [info]     RX  n=   469882 min=   6779 p50=   7630 p99=   9660 p999=  11380 max=  66200
+[2026-04-10 04:52:08.535] [info]     SRV n=   469882 min=    276 p50=    294 p99=    306 p999=    309 max=   6980
+[2026-04-10 04:52:08.535] [info] ws (dpdk): payload=512B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:52:20.578] [info] == BENCH ws (dpdk) payload=512B ==
+[2026-04-10 04:52:20.578] [info]     RTT n=   463162 min=  19494 p50=  21303 p99=  24679 p999=  28263 max= 976139
+[2026-04-10 04:52:20.578] [info]     TX  n=   463162 min=  12235 p50=  13276 p99=  16068 p999=  19895 max= 962806
+[2026-04-10 04:52:20.579] [info]     RX  n=   463162 min=   6778 p50=   7614 p99=   9588 p999=  11324 max=  66872
+[2026-04-10 04:52:20.579] [info]     SRV n=   463162 min=    275 p50=    303 p99=    310 p999=    312 max=  10905
+[2026-04-10 04:52:20.579] [info] ws (dpdk): payload=1024B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:52:32.623] [info] == BENCH ws (dpdk) payload=1024B ==
+[2026-04-10 04:52:32.623] [info]     RTT n=   447658 min=  20277 p50=  21959 p99=  26983 p999=  50990 max= 144086
+[2026-04-10 04:52:32.623] [info]     TX  n=   447658 min=  12842 p50=  13988 p99=  17927 p999=  31175 max=  92910
+[2026-04-10 04:52:32.623] [info]     RX  n=   447658 min=   6789 p50=   7586 p99=   9652 p999=  26215 max=  81998
+[2026-04-10 04:52:32.623] [info]     SRV n=   447658 min=    278 p50=    303 p99=    309 p999=    311 max=  16510
+[2026-04-10 04:52:32.623] [info] ws (dpdk): payload=4096B pre_warmup=2000 warmup=2s duration=10s
+[2026-04-10 04:52:44.685] [info] == BENCH ws (dpdk) payload=4096B ==
+[2026-04-10 04:52:44.685] [info]     RTT n=   322143 min=  26196 p50=  30711 p99=  37711 p999=  61422 max= 153222
+[2026-04-10 04:52:44.685] [info]     TX  n=   322143 min=  18908 p50=  22519 p99=  28727 p999=  41199 max= 104275
+[2026-04-10 04:52:44.685] [info]     RX  n=   322143 min=   6636 p50=   7818 p99=   9980 p999=  30295 max= 101313
+[2026-04-10 04:52:44.685] [info]     SRV n=   322143 min=    276 p50=    293 p99=    307 p999=    409 max=   8351
+[2026-04-10 04:52:44.685] [info] mock_lat_ws: client disconnected
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released
