@@ -180,6 +180,22 @@ build_http_request(std::string_view method,
         return std::unexpected(std::string("Path must not be empty"));
     }
 
+    // Reject CR/LF in method/host/path. Per the same rationale that
+    // extra_headers are scrubbed below: a caller passing untrusted bytes
+    // through any of these fields could otherwise inject arbitrary
+    // request lines or headers.
+    auto has_crlf = [](std::string_view s) noexcept {
+        return s.find('\r') != std::string_view::npos
+            || s.find('\n') != std::string_view::npos;
+    };
+    if (has_crlf(method) || has_crlf(host) || has_crlf(path)) {
+        SPDLOG_LOGGER_ERROR(detail::http_client_logger(),
+            "build_http_request: method/host/path contains CR/LF "
+            "(potential header injection)");
+        return std::unexpected(std::string(
+            "method/host/path must not contain CR or LF (header injection risk)"));
+    }
+
     std::string req;
     // Pre-allocate a reasonable size to avoid reallocations
     req.reserve(256 + body.size() + extra_headers.size());
