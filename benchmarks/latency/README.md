@@ -93,7 +93,6 @@ benchmarks/latency/
 │   ├── tsc_protocol.hpp   24-byte binary header + JSON T/T_recv/T_send
 │   ├── dpdk_env.hpp       DpdkBenchEnv (EAL + Platform + ARP)
 │   ├── stream_scheduler.hpp   priority-queue for multi-stream mocks
-│   ├── udp_client.hpp     POSIX UDP client helper
 │   ├── ws_client.hpp      client-side WS handshake + frame reader
 │   ├── ws_framing.hpp     RFC 6455 masked/unmasked frame build/parse
 │   └── ws_handshake.hpp   server-side WS Upgrade (bundled SHA-1)
@@ -138,6 +137,95 @@ server stamps `T_recv` / `T_send` inside the mock, the SRV leg is a
 baseline that both transports share. TX and RX leg deltas (`c_send →
 s_recv` and `s_send → c_recv`) are what actually change when you flip
 to DPDK, and they isolate the client-side transport cost.
+
+## Interpreting the output
+
+Each scenario logs four legs per measurement window:
+
+```
+== BENCH tcp (dpdk) payload=64B ==
+    RTT n=  526931 min= 17027 p50= 18711 p99= 22951 p999= 26199 max= 111264
+    TX  n=  526931 min= 10069 p50= 11004 p99= 13652 p999= 17831 max= 103575
+    RX  n=  526931 min=  6508 p50=  7318 p99=  9564 p999= 11556 max=  36530
+    SRV n=  526931 min=   243 p50=   260 p99=   264 p999=   273 max=   8093
+```
+
+All values are **nanoseconds**. Legs:
+
+- **RTT** — `client_recv_tsc − client_send_tsc` (full round-trip)
+- **TX**  — `server_recv_tsc − client_send_tsc` (client → server one-way)
+- **RX**  — `client_recv_tsc − server_send_tsc` (server → client one-way)
+- **SRV** — `server_send_tsc − server_recv_tsc` (server in-handler time)
+
+`RTT ≈ TX + RX + SRV` modulo TSC noise. The SRV leg is the **per-payload
+mock work** controlled by `SERVER_WORK_NS` plus echo overhead — it's
+the symmetric baseline both transports share.
+
+### Why `max` is sometimes huge
+
+`max` is the worst single sample observed in the window, **not a
+percentile**. On any host that isn't fully real-time isolated, you'll
+see occasional `max` values that are 10×–1000× higher than `p999`:
+
+| Sample baseline       | p99      | p999     | max         |
+|-----------------------|----------|----------|-------------|
+| `tcp/kernel/64B`      | 55 µs    | 69 µs    | **1.97 ms** |
+| `ex_md_udp/kernel/256B`| 33 µs   | 69 µs    | **15.3 ms** |
+
+These outliers are **not bench bugs**. They're real OS / hardware jitter:
+scheduler preemption by background kthreads, hypervisor steal, IRQ
+coalescing flushes, page faults, cache pollution from another core, NIC
+descriptor ring stalls, ENA reset, etc. HDR histograms record them
+faithfully because they're real samples.
+
+**What to use for comparisons**:
+
+- `p50` / `p99` — fair comparison points across runs and across
+  transports. Stable with sample counts ≥ 100k.
+- `p999` — useful for "is the tail well-bounded?" judgement. Less stable
+  below ~1M samples.
+- `max` — only useful for spotting catastrophic outliers. Do not use
+  in regression comparisons or averages.
+- `p999 / p99 ratio` — gauges tail weight. A ratio < 2× means a tight
+  distribution; > 5× means there's a fat tail you may want to investigate.
+
+## Reproducibility checklist
+
+The bench controls CPU pinning and TSC measurement, but several other
+variance sources are the operator's job. For repeatable runs (e.g.
+publishing numbers or comparing branches):
+
+1. **Lock CPU frequency**:
+   ```bash
+   for c in $(seq 0 $(nproc -all --ignore=1)); do
+     echo performance | sudo tee /sys/devices/system/cpu/cpu$c/cpufreq/scaling_governor
+   done
+   ```
+2. **Disable C-states** (boot parameter `intel_idle.max_cstate=1
+   processor.max_cstate=1` or runtime via `cpupower idle-set -D 1`).
+3. **Pin NIC IRQs off the bench CPUs**:
+   ```bash
+   # NIC-A IRQs off CLIENT_CPU and MOCK_CPU
+   grep ens34 /proc/interrupts | awk '{print $1}' | tr -d : | while read irq; do
+     echo 1 | sudo tee /proc/irq/$irq/smp_affinity
+   done
+   ```
+4. **Reserve hugepages up front** (DPDK runs):
+   ```bash
+   echo 256 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+   ```
+5. **Use `isolcpus`** for `CLIENT_CPU` and `MOCK_CPU` in the kernel
+   cmdline. The bench warns if it can't pin to an isolated CPU; set
+   `ALLOW_NON_ISOLATED=true` in `bench.conf` to suppress the warning,
+   but expect noisier `p999` and `max`.
+6. **Quiesce background load**: `sudo systemctl stop docker
+   containerd cron`, kill all interactive sessions, etc.
+7. **Warm the bench** before recording results: throw away the first
+   1–2 runs after a host reboot or after switching transports.
+
+The bench's own warmup window (`WARMUP=2` seconds, plus 2000 pre-warmup
+rounds per payload) handles cache cold-start, but it can't compensate
+for `cpufreq` ramping or first-touch hugepage faults.
 
 ## See also
 

@@ -120,7 +120,6 @@ the single `lat_<name>.cpp` file.
 | `core/tsc_protocol.hpp`               | 24-B binary header + JSON `T`/`T_recv`/`T_send`                 | `stamp_binary`, `parse_T*`               | `eph::utils::TSC`            |
 | `core/dpdk_env.hpp`                   | DPDK bootstrap (EAL + Platform + ARP)                           | `DpdkBenchEnv`                           | `eph::dpdk::*` (guarded)     |
 | `core/stream_scheduler.hpp`           | Priority-queue multi-stream dispatch                            | `StreamScheduler`, `StreamEntry`         | `eph::utils::TSC`            |
-| `core/udp_client.hpp`                 | Minimal POSIX UDP client helper                                 | `Endpoint`, `open_udp`, `sendto_one`     | `<sys/socket.h>`             |
 | `core/ws_client.hpp`                  | Client-side WS handshake + frame reader (POSIX + DPDK)          | `connect_ws`, `recv_one_frame`, `dpdk_ws_handshake` | `ws_framing.hpp`, `eph::dpdk::tcp` |
 | `core/ws_framing.hpp`                 | RFC 6455 masked/unmasked frame build/parse                      | `build_masked_text_frame`, `parse_client_frame_inplace` | - |
 | `core/ws_handshake.hpp`               | Server-side WS Upgrade + bundled SHA-1                          | `ws_server_handshake`                    | `eph::core::detail::base64`  |
@@ -342,28 +341,44 @@ All public APIs are header-only under `core/`.
 
 ## Testing
 
-The latency suite is a benchmark, not a test harness, and therefore has
-no formal unit tests under this directory. Correctness is validated by:
+The latency suite has unit tests for its core building blocks under
+`tests/unit/bench/`, plus end-to-end validation by running the
+binaries themselves. Coverage:
 
-| Check                         | How                                                             |
+| Component                     | Coverage                                                        |
 |-------------------------------|-----------------------------------------------------------------|
-| Scenario concepts             | `requires` clauses in `scenario_concept.hpp`                    |
-| `BenchConfig` parsing         | Covered by the parent `eph-utils` / config-level tests          |
-| WS framing                    | Covered by `eph` WebSocket unit tests in `tests/`               |
+| `core/config.hpp` (load_bench_conf) | `tests/unit/bench/test_load_bench_conf.cpp` (215 LOC)     |
+| `core/stream_scheduler.hpp`   | `tests/unit/bench/test_stream_scheduler.cpp` (88 LOC)           |
+| `core/tsc_protocol.hpp`       | `tests/unit/bench/test_tsc_protocol.cpp` (93 LOC)               |
+| `core/ws_framing.hpp`         | `tests/unit/bench/test_ws_frame.cpp` (131 LOC)                  |
+| Scenario concepts             | `requires` clauses in `scenario_concept.hpp` (compile-time)     |
 | TSC calibration               | `eph::utils::TSC::init()` fail-fast at bench startup            |
-| End-to-end mock + client      | Manually via `scripts/lat <scenario>`; spdlog output is the log |
-| `scripts/lat` state machine   | Idempotent by design; same-mode reruns are a fast path no-op    |
+| End-to-end mock + client      | Manually via `./benchmarks/latency/lat <scenario>`              |
+| `lat` script state machine    | Verified manually; auto-recovery from wedged NIC tested live    |
 
-Key verification scenarios:
+**Untested core/** (no unit tests, only e2e validation):
+
+- `core/runner.hpp` (BenchRunner sweep loops)
+- `core/socket_bind.hpp` (poll/accept retry)
+- `core/dpdk_env.hpp` (EAL + Platform + ARP bootstrap)
+- `core/netns.hpp` (`setns(2)` wrapper)
+- `core/signal.hpp` (SIGINT/SIGTERM handlers — trivial)
+- `core/sample.hpp` (POD types — no logic to test)
+- `core/ws_handshake.hpp` (server-side Sec-WebSocket-Accept)
+- `core/ws_client.hpp` (client-side WS handshake)
+
+Key sanity scenarios when running by hand:
 
 - A kernel run followed immediately by a DPDK run in the same shell
-  should produce one NIC-B transition (bench_ns -> vfio-pci) and an
+  should produce one NIC-B transition (bench_ns → vfio-pci) and an
   announced transition log line.
-- All six scenarios should print non-empty per-leg histograms - if any
+- All six scenarios should print non-empty per-leg histograms — if any
   leg has `n=0`, the scenario's TSC stamping is broken.
-- Swapping `SERVER_WORK_NS=200 -> 1000` should widen the SRV leg by
-  ~800 ns while leaving TX/RX roughly unchanged - sanity check that
+- Swapping `SERVER_WORK_NS=200 → 1000` should widen the SRV leg by
+  ~800 ns while leaving TX / RX roughly unchanged — sanity check that
   server-side timing is isolated from transport timing.
+- A re-run in the same mode (`./lat tcp` twice in a row) should print
+  `bench_ns,bench_ns` and skip every transition step (idempotency).
 
 The suite deliberately writes no files; capture spdlog output with
 shell redirection when persistence is wanted.
