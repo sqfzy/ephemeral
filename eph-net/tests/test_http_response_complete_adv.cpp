@@ -312,18 +312,50 @@ TEST(IsCompleteAdv, BothCLAndChunkedHeaderOrderIndependent) {
 // Multiple Content-Length headers
 // ═══════════════════════════════════════════════════════════════════════
 
-TEST(IsCompleteAdv, DuplicateContentLengthUsesFirst) {
-    // RFC 7230 §3.3.3 requires duplicate Content-Length to be rejected
-    // (or all values must agree).  The current parser uses find_header
-    // which returns the FIRST occurrence — pin this behavior.
+TEST(IsCompleteAdv, DuplicateContentLengthDifferentValuesRejected) {
+    // RFC 7230 §3.3.2: multiple Content-Length headers with
+    // conflicting values MUST be rejected (smuggling defense).
     std::string resp =
         "HTTP/1.1 200 OK\r\n"
         "Content-Length: 5\r\n"
         "Content-Length: 99\r\n"
         "\r\n"
         "hello";
-    // First CL=5, body has 5 bytes — complete by first value.
+    EXPECT_FALSE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, DuplicateContentLengthIdenticalValuesAccepted) {
+    // RFC 7230 §3.3.2: identical duplicates MAY be accepted as if
+    // a single header (lenient interpretation).
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "hello";
     EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthCommaListIdenticalValuesAccepted) {
+    // RFC 7230 §3.3.2: a single header with comma-separated identical
+    // values is equivalent to multiple identical headers.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5, 5\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_TRUE(is_http_response_complete(resp));
+}
+
+TEST(IsCompleteAdv, ContentLengthCommaListDifferentValuesRejected) {
+    // The classic CL/CL desync attack: "5, 99" — proxy and server
+    // disagree on which value to honor.  Reject.
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5, 99\r\n"
+        "\r\n"
+        "hello";
+    EXPECT_FALSE(is_http_response_complete(resp));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

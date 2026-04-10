@@ -438,7 +438,74 @@ find_header(std::string_view headers_raw, std::string_view name) noexcept {
     // comma-separated) so a response that splits Transfer-Encoding
     // across two lines like "Transfer-Encoding: gzip\r\nTransfer-
     // Encoding: chunked" is still detected.
-    auto cl_value = find_header(headers_raw, "Content-Length");
+    // RFC 7230 §3.3.2: multiple Content-Length headers (or a single
+    // header with comma-separated values) MUST be rejected unless all
+    // values are identical.  Silently picking the first opens
+    // smuggling attacks where a downstream proxy uses a different
+    // value than the client.  Walk all headers and confirm uniqueness.
+    std::string cl_value;
+    {
+        size_t scan = 0;
+        bool first_cl = true;
+        bool conflict = false;
+        while (scan < headers_raw.size()) {
+            auto line_end = headers_raw.find("\r\n", scan);
+            if (line_end == std::string_view::npos) line_end = headers_raw.size();
+            auto line = headers_raw.substr(scan, line_end - scan);
+            scan = (line_end == headers_raw.size()) ? line_end : line_end + 2;
+
+            auto colon = line.find(':');
+            if (colon == std::string_view::npos) continue;
+            auto hdr_name = line.substr(0, colon);
+            constexpr std::string_view kClName = "Content-Length";
+            if (hdr_name.size() != kClName.size()) continue;
+            bool name_match = true;
+            for (size_t i = 0; i < kClName.size(); ++i) {
+                char a = static_cast<char>(std::tolower(static_cast<unsigned char>(hdr_name[i])));
+                char b = static_cast<char>(std::tolower(static_cast<unsigned char>(kClName[i])));
+                if (a != b) { name_match = false; break; }
+            }
+            if (!name_match) continue;
+
+            auto value = line.substr(colon + 1);
+            while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+                value.remove_prefix(1);
+            while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+                value.remove_suffix(1);
+            // Comma-separated list (e.g. "42, 42") inside ONE header.
+            // Per RFC 7230 §3.3.2 these are equivalent to multiple
+            // headers and must be checked for identity.
+            std::string normalized;
+            normalized.reserve(value.size());
+            for (size_t i = 0; i < value.size(); ++i) {
+                if (value[i] == ' ' || value[i] == '\t') continue;
+                normalized.push_back(value[i]);
+            }
+            // Walk comma-separated values inside this single header.
+            size_t prev = 0;
+            while (prev < normalized.size()) {
+                auto comma = normalized.find(',', prev);
+                std::string one = normalized.substr(prev,
+                    comma == std::string::npos ? std::string::npos : comma - prev);
+                if (first_cl) {
+                    cl_value = one;
+                    first_cl = false;
+                } else if (one != cl_value) {
+                    conflict = true;
+                    break;
+                }
+                if (comma == std::string::npos) break;
+                prev = comma + 1;
+            }
+            if (conflict) break;
+        }
+        if (conflict) {
+            SPDLOG_LOGGER_WARN(detail::http_client_logger(),
+                "Multiple Content-Length headers with conflicting values "
+                "(RFC 7230 §3.3.2 — possible request smuggling)");
+            return false;
+        }
+    }
     bool te_chunked = false;
     {
         // Walk all Transfer-Encoding headers, case-insensitive on
