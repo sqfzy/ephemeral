@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# tests/integration/dpdk_e2e — wrapper for the eph-dpdk E2E test binary.
+#
+# Usage:
+#   sudo tests/integration/dpdk_e2e [--gtest_filter='TcpE2E.*' ...]
+#
+# Reads benchmarks/latency/bench.conf for NIC_B layout, performs a preflight
+# check that NIC_B is bound to vfio-pci, then exec's test_dpdk_e2e with any
+# extra arguments forwarded to gtest.
+#
+# This wrapper deliberately does NOT manipulate NIC state — to transition
+# NIC_B onto vfio-pci, run `sudo benchmarks/latency/lat tcp --dpdk` once
+# first (its NIC state machine is the canonical source of truth).  We just
+# fail fast with an actionable message if the NIC is in the wrong state.
+
+set -euo pipefail
+
+# ── Locate project root ──────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
+    :
+else
+    PROJECT_DIR="$SCRIPT_DIR"
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+        PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+    done
+    [[ "$PROJECT_DIR" == "/" ]] && {
+        echo "ERROR: cannot locate project root from $SCRIPT_DIR" >&2
+        exit 1
+    }
+fi
+CONFIG_FILE="${BENCH_CONFIG:-$PROJECT_DIR/benchmarks/latency/bench.conf}"
+
+# ── Color logging ────────────────────────────────────────────────────
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''
+fi
+log_info()  { printf '%s✓%s  %s\n' "$GREEN"  "$NC" "$*"; }
+log_warn()  { printf '%s⚠%s  %s\n' "$YELLOW" "$NC" "$*" >&2; }
+log_error() { printf '%s✗%s  %s%s%s\n' "$RED" "$NC" "$BOLD" "$*" "$NC" >&2; }
+log_step()  { printf '%sℹ%s  %s\n' "$CYAN"  "$NC" "$*"; }
+die() {
+    log_error "$1"
+    [[ -n "${2:-}" ]] && printf '   %s\n' "$2" >&2
+    exit 1
+}
+
+# ── Preflight: bench.conf exists ─────────────────────────────────────
+[[ -r "$CONFIG_FILE" ]] || die "bench.conf not found" "expected at $CONFIG_FILE"
+
+# Parse a KEY=value line, stripping inline comments and whitespace.
+# Usage: parse_conf_var KEY  → echoes the value (or empty)
+parse_conf_var() {
+    local key="$1"
+    grep -E "^${key}=" "$CONFIG_FILE" \
+        | head -1 \
+        | sed -E "s/^${key}=//;s/[[:space:]]*#.*//;s/[[:space:]]*$//"
+}
+
+NIC_B=$(parse_conf_var NIC_B)
+NIC_B_PCI=$(parse_conf_var NIC_B_PCI)
+
+[[ -n "$NIC_B" ]] || die "NIC_B not set in bench.conf"
+[[ -n "$NIC_B_PCI" ]] || die "NIC_B_PCI not set in bench.conf"
+
+log_step "NIC_B = $NIC_B (PCI $NIC_B_PCI)"
+
+# ── Preflight: root ──────────────────────────────────────────────────
+if [[ $EUID -ne 0 ]]; then
+    die "must run as root" \
+        "DPDK EAL needs root for vfio-pci access; re-run with sudo"
+fi
+
+# ── Preflight: NIC_B currently bound to vfio-pci ─────────────────────
+if [[ ! -e "/sys/bus/pci/drivers/vfio-pci/$NIC_B_PCI" ]]; then
+    log_error "NIC_B ($NIC_B_PCI) is not bound to vfio-pci"
+    cat <<EOF >&2
+   Current driver:
+$(readlink "/sys/bus/pci/devices/$NIC_B_PCI/driver" 2>/dev/null || echo "   (none)")
+
+   To transition NIC_B onto vfio-pci, run any DPDK lat scenario once first:
+
+       sudo $PROJECT_DIR/benchmarks/latency/lat tcp --dpdk
+
+   The lat wrapper handles the host kernel ↔ vfio-pci state machine.
+EOF
+    exit 1
+fi
+log_info "NIC_B bound to vfio-pci"
+
+# ── Locate the test binary ───────────────────────────────────────────
+# xmake conventional layout: build/<plat>/<arch>/<mode>/test_dpdk_e2e
+BIN=""
+for cand in \
+    "$PROJECT_DIR/build/linux/arm64/release/test_dpdk_e2e" \
+    "$PROJECT_DIR/build/linux/x86_64/release/test_dpdk_e2e" \
+    "$PROJECT_DIR/build/linux/arm64/debug/test_dpdk_e2e" \
+    "$PROJECT_DIR/build/linux/x86_64/debug/test_dpdk_e2e"; do
+    if [[ -x "$cand" ]]; then BIN="$cand"; break; fi
+done
+
+if [[ -z "$BIN" ]]; then
+    die "test_dpdk_e2e binary not found" \
+        "build it first: cd $PROJECT_DIR && xmake build test_dpdk_e2e"
+fi
+log_step "binary: $BIN"
+
+# ── Export NIC_B_PCI as env var so the fixture's BDF resolver picks
+#    it up immediately (no bench.conf parse needed) ──────────────────
+export EPH_TEST_NIC_B_PCI="$NIC_B_PCI"
+
+# ── Exec — gtest will see any forwarded arguments ────────────────────
+log_info "running E2E suite: $BIN $*"
+exec "$BIN" "$@"
