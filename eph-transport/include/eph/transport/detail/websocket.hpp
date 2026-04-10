@@ -148,6 +148,7 @@ enum class DecodeError : uint8_t {
     kControlPayloadTooLarge,///< Control frame payload > 125 bytes
     kInvalidOpcode,         ///< Reserved opcode (0x3-0x7, 0xB-0xF per RFC 6455 §5.2)
     kInvalidLengthEncoding, ///< Non-minimal extended length, or 8-byte form with high bit set (RFC 6455 §5.2)
+    kInvalidCloseFrame,     ///< Close frame with payload of exactly 1 byte (RFC 6455 §5.5.1)
 };
 
 /// Human-readable name for a DecodeError value.
@@ -159,6 +160,7 @@ enum class DecodeError : uint8_t {
     case DecodeError::kControlPayloadTooLarge: return "control frame payload exceeds 125 bytes";
     case DecodeError::kInvalidOpcode:          return "reserved opcode (RFC 6455 §5.2)";
     case DecodeError::kInvalidLengthEncoding:  return "invalid extended length encoding (RFC 6455 §5.2)";
+    case DecodeError::kInvalidCloseFrame:      return "close frame payload must be 0 or >= 2 bytes (RFC 6455 §5.5.1)";
     }
     return "unknown";
 }
@@ -628,6 +630,19 @@ decode_frame(const uint8_t* data, size_t len) {
                 "exceeds 125-byte limit (RFC 6455 §5.5)",
                 frame.opcode, frame.payload_len);
             return std::unexpected(DecodeError::kControlPayloadTooLarge);
+        }
+
+        // RFC 6455 §5.5.1: a Close frame's body, if present, MUST be at
+        // least 2 bytes (the status code).  A 1-byte body is malformed
+        // — there is no valid encoding that produces it.  Without this
+        // check, close_status_code() silently returns 0 and the close
+        // frame is delivered as if it had no code, masking the protocol
+        // violation and corrupting close-reason logging.
+        if (frame.opcode == opcode::kClose && frame.payload_len == 1) {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: close frame with 1-byte payload "
+                "(must be 0 or >= 2, RFC 6455 §5.5.1)");
+            return std::unexpected(DecodeError::kInvalidCloseFrame);
         }
     }
 

@@ -1302,3 +1302,74 @@ TEST(DecodeFrameLengthEnc, InlineFormZeroAccepted) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->payload_len, 0u);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// RFC 6455 §5.5.1 — Close frame body length constraints
+// ═══════════════════════════════════════════════════════════════════════
+//
+// RFC 6455 §5.5.1:
+//   "The Close frame MAY contain a body (the 'Application data' portion
+//    of the frame) that indicates a reason for closing... If there is
+//    a body, the first two bytes of the body MUST be a 2-byte unsigned
+//    integer (in network byte order) representing a status code..."
+//
+// A close frame body of EXACTLY 1 byte has no valid encoding — there
+// is no way to represent half a status code.  decode_frame previously
+// accepted 1-byte close frames; downstream close_status_code() then
+// silently returned 0 and the on_close callback fired with code=0,
+// masking the protocol violation and corrupting reason logging.
+
+TEST(DecodeCloseFrame, ZeroByteCloseAccepted) {
+    // 0-byte body — legal: "no status code provided".
+    uint8_t data[] = {0x88, 0x00}; // FIN | close, payload_len=0
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->is_close());
+    EXPECT_EQ(result->payload_len, 0u);
+}
+
+TEST(DecodeCloseFrame, OneByteCloseRejected) {
+    // 1-byte body — illegal per RFC 6455 §5.5.1.
+    uint8_t data[] = {0x88, 0x01, 0x03}; // payload_len=1, single byte
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), DecodeError::kInvalidCloseFrame);
+}
+
+TEST(DecodeCloseFrame, TwoByteCloseAccepted) {
+    // 2 bytes — status code only, no reason.  1000 = normal closure.
+    uint8_t data[] = {
+        0x88, 0x02,        // FIN | close, payload_len=2
+        0x03, 0xE8,        // 1000 (kNormal)
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->is_close());
+    EXPECT_EQ(result->close_status_code(), 1000u);
+}
+
+TEST(DecodeCloseFrame, ThreeByteCloseWithReasonAccepted) {
+    // 3 bytes — status code + 1 byte of reason.
+    uint8_t data[] = {
+        0x88, 0x03,
+        0x03, 0xE9,        // 1001 (kGoingAway)
+        'A',
+    };
+    auto result = decode_frame(data, sizeof(data));
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->close_status_code(), 1001u);
+    EXPECT_EQ(result->close_reason(), std::string_view("A"));
+}
+
+TEST(DecodeCloseFrame, MaxLengthCloseAccepted) {
+    // 125 bytes — max allowed for control frames.
+    std::vector<uint8_t> data;
+    data.push_back(0x88);
+    data.push_back(0x7D);  // payload_len=125
+    data.push_back(0x03);
+    data.push_back(0xE8);  // 1000
+    for (int i = 0; i < 123; ++i) data.push_back('R');
+    auto result = decode_frame(data.data(), data.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->payload_len, 125u);
+}
