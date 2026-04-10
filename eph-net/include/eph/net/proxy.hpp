@@ -473,6 +473,17 @@ http_connect_handshake(SocketTransport& tcp,
     [[maybe_unused]] auto log = detail::proxy_logger();
     SPDLOG_LOGGER_DEBUG(log, "HTTP CONNECT to {}:{}", target_host, target_port);
 
+    // Reject control characters in target_host to prevent header injection
+    // in the CONNECT request line (target_host is interpolated into HTTP text).
+    // Consistent with ProxyConfig::validate() which checks the proxy host.
+    if (eph::core::detail::contains_control_chars(target_host)) {
+        SPDLOG_LOGGER_ERROR(log,
+            "HTTP CONNECT target_host contains control characters, "
+            "rejecting to prevent header injection");
+        return std::unexpected(std::string(
+            "HTTP CONNECT: target_host contains control characters"));
+    }
+
     // Build CONNECT request
     std::string request = std::format(
         "CONNECT {}:{} HTTP/1.1\r\n"
