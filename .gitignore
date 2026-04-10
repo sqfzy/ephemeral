@@ -23,6 +23,7 @@ wheels/
 *.json
 *.html
 /temp/
+.temp/
 notes/
 outputs/
 perf/

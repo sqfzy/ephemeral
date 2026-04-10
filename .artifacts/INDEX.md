@@ -49,3 +49,7 @@
 | 2026-04-10 03:50 | /cleanup audit pass 2 | deep audit — 3 HIGH bugs in lat wrapper + 4 doc/test gaps | c88e1dc | audit-bench-latency-deep-20260409.md |
 | 2026-04-10 03:55 | /cleanup discussion | 5-role redesign discussion — converged on temperate cleanup scope | c88e1dc | discuss-cleanup-bench-latency-20260409.md |
 | 2026-04-10 04:40 | /cleanup verify | postclean baseline rerun + comparison | 57e90b2 | bench-lat-postclean-compare-20260410.md |
+| 2026-04-10 05:00 | /review last 7 | bench/latency cleanup commits — APPROVE, 0 critical, 4 minor, 4 nit | 2d37eff | review-cleanup-bench-latency-20260410.md |
+| 2026-04-10 11:16 | /discuss eph-dpdk Reactor/Transport 收敛 | 5 角色 4 轮：删 DirectTxTransport + preset 11→4 + 新增 Reactor example；保留三个核心类 | 54b056f | discuss-20260410-111612.md |
+| 2026-04-10 11:46 | /discuss eph 新架构设计 | 5 角色 12 轮：3 concept (Endpoint/Codec/Reactor) + Channel<E,C,Tls> + PacketView 零拷贝；模块切 eph-net/dpdk/codec/channel；13 名字 + 4 alias | 54b056f | discuss-20260410-114659.md |
+| 2026-04-10 12:43 | /design eph v3.3 架构 final spec | FROZEN：11 模块切法 B（eph-net + eph-net-kernel + eph-net-dpdk + eph-codec + eph-core 瘦身），TcpStream/UdpSocket/Poller，Tokio 命名对齐，Codec 双概念，PacketView 零拷贝，9 phase 重构计划 | 54b056f | design-eph-v3.3-architecture-20260410.md |
