@@ -82,11 +82,20 @@ struct Sha1 {
     }
 
     void finalize(uint8_t out[20]) {
+        // RFC 3174: encode the ORIGINAL message length (in bits) at the
+        // tail of the padded buffer.  Save it BEFORE any padding bytes
+        // get fed through update() — update() unconditionally bumps
+        // `length` by 8 bits per byte, so by the time we finish padding
+        // `length` already counts the 0x80 byte plus all the zero
+        // bytes, not just the original input.  The previous version
+        // tried to subtract just the pad byte (`length - 8`) which
+        // missed the zero-padding contribution and produced wrong
+        // hashes for any input not aligned to 56 mod 64.
+        uint64_t len_bits = length;
         uint8_t pad = 0x80;
         update(&pad, 1);
         uint8_t zero = 0;
         while (buffer_used != 56) update(&zero, 1);
-        uint64_t len_bits = length - 8; // exclude the 0x80 we just appended
         for (int i = 7; i >= 0; --i) {
             uint8_t b = static_cast<uint8_t>((len_bits >> (i * 8)) & 0xFF);
             update(&b, 1);
