@@ -343,6 +343,12 @@ inline bool hkdf_expand_label(const EVP_MD* digest,
 inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
                            uint8_t* key, size_t key_len,
                            uint8_t* iv, size_t iv_len) noexcept {
+    // Only TLS 1.3's two defined hash sizes are valid here. Reject anything
+    // else explicitly rather than silently defaulting to SHA-256, which would
+    // mask a programming error or a downgrade attempt.
+    if (secret_len != 32 && secret_len != 48) {
+        return false;
+    }
     const EVP_MD* md = (secret_len == 48) ? EVP_sha384() : EVP_sha256();
     return hkdf_expand_label(md, secret, secret_len, "key", 3, key, key_len) &&
            hkdf_expand_label(md, secret, secret_len, "iv",  2, iv,  iv_len);
