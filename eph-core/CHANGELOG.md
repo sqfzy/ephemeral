@@ -1,5 +1,16 @@
 # eph-core changelog
 
+## [Unreleased] — Phase 9 Recovery (2026-04-10)
+
+### Added
+- Three new values in `enum class Error` (`eph/core/error.hpp`) used by
+  the `eph-net` HTTP CONNECT proxy path:
+  - `ProxyConnectFailed` — TCP connect to proxy host failed.
+  - `ProxyHandshakeFailed` — proxy returned non-2xx on CONNECT, or the
+    response body was malformed.
+  - `ProxyAuthRequired` — proxy returned `407 Proxy Authentication
+    Required` and the supplied credentials were rejected (or absent).
+
 ## v3.3 (2026-04-10) — architecture refactor
 
 The v3.3 architecture refactor (see

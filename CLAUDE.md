@@ -18,6 +18,27 @@ The v3.3 architecture is the result of a large refactor that finished in April 2
 frozen design spec is at `.artifacts/design-eph-v3.3-architecture-20260410.md` — refer to
 it when reasoning about module boundaries or concept contracts.
 
+A subsequent Phase 9 recovery pass (2026-04-10, 9 sub-phases) restored an HFT-pragmatic
+subset of functionality that the v3.3 refactor had dropped. The scope decisions are
+archived in `.artifacts/phase-9-scope-decision.md`. Newly (re)available public surface:
+
+- `eph::net::parse_http_request` / `parse_http_response` / `build_http_request` —
+  incremental zero-heap HTTP/1.1 parser subset. Explicitly rejects chunked /
+  `Transfer-Encoding` / cookies / redirect / `Expect: 100-continue` — HFT exchanges
+  do not use them and they are substantial attack surface.
+- `eph::net::HmacSha256` with typed `Key` (RAII-clearing) and `Tag` wrappers.
+- `eph::net::HttpConnectConfig` + `StreamConfig::proxy` — HTTP CONNECT proxy, kernel
+  backend only (DPDK rejects with `Error::InvalidConfig`).
+- `StreamConfig::ws_path` / `ws_extra_headers` / `ws_timeout` — non-empty `ws_path`
+  transparently performs the RFC 6455 client handshake inside `TcpStream::create()`
+  on both backends.
+- `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
+- `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
+
+Deliberately **not** migrated from pre-v3.3 baseline: `Gateway`, `CircuitBreaker`,
+chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
+and recovery guidance if a future need surfaces.
+
 ## Build
 
 Build system is **xmake**. Compiler must be GCC ≥ 13 or Clang ≥ 17 (uses `std::expected`,

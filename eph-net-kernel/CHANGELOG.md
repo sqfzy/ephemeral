@@ -1,5 +1,25 @@
 # eph-net-kernel changelog
 
+## [Unreleased] — Phase 9 Recovery (2026-04-10)
+
+### Added
+- `StreamConfig` grew four new fields (all optional, defaulted to
+  empty):
+  - `std::string ws_path` — non-empty activates RFC 6455 client
+    handshake inside `KernelTcpStream::create()` (decision D-2).
+  - `std::vector<std::pair<std::string,std::string>> ws_extra_headers`
+    — arbitrary headers the caller wants injected into the upgrade
+    request.
+  - `std::chrono::milliseconds ws_timeout` — deadline for the upgrade
+    exchange; hits `Error::Timeout` on expiry.
+  - `std::optional<eph::net::HttpConnectConfig> proxy` — non-empty
+    routes the initial TCP connect through an HTTP CONNECT proxy via
+    `eph::net::detail::perform_http_connect`.
+- `KernelTcpStream::create()` now transparently performs the proxy
+  CONNECT (if configured) before TLS, and the WS upgrade (if
+  configured) after TLS. Behaviour with all four fields empty is
+  identical to pre-Phase 9.
+
 ## v3.3 (2026-04-10) — module introduced
 
 `eph-net-kernel` was created during v3.3 Phase 3 to host the kernel-side

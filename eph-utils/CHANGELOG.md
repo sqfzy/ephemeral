@@ -5,6 +5,21 @@ All notable changes to `eph-utils` are documented here. Format based on
 tag `eph-utils` independently, so this log is derived from git history
 on the `dev` branch touching `eph-utils/`.
 
+## [Unreleased] — Phase 9 Recovery (2026-04-10)
+
+### Added
+
+- `eph::utils::KillSwitch` (`include/eph/utils/kill_switch.hpp`) —
+  single-fire atomic safety primitive with optional post-trip callback.
+  Non-copyable, non-movable. Irreversible by design (no `reset()` /
+  `untrip()` / `clear()`) — matches HFT compliance semantics where a
+  tripped switch requires process restart + human review. See Phase 9
+  decision record D-3 in `plan-phase-9-recovery-20260410-180306.md`.
+- `eph::utils::TokenBucket` (`include/eph/utils/token_bucket.hpp`) —
+  thread-safe rate limiter with weighted `try_acquire(n)` support. Fixed
+  capacity + refill rate set at construction; mutex-guarded state for
+  correct multi-producer use (per Phase 9 decision D-4).
+
 ## [Unreleased]
 
 ### Added

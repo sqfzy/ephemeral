@@ -1,5 +1,20 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — Phase 9 Recovery (2026-04-10)
+
+### Added
+- `StreamConfig` mirrors the new `eph-net-kernel` fields so that the
+  same user-facing config struct shape drives both backends:
+  - `ws_path`, `ws_extra_headers`, `ws_timeout` — active: the DPDK
+    backend performs the RFC 6455 handshake over its own byte-sink
+    adapter just as the kernel backend does.
+  - `proxy` — **rejected**: `DpdkTcpStream::create()` returns
+    `Error::InvalidConfig` with detail
+    `"HTTP CONNECT proxy not supported on DPDK backend"` when `proxy`
+    is non-empty. Kernel-only because the CONNECT tunnel requires a
+    prior kernel TCP session that the DPDK path by design does not
+    own.
+
 ## v3.3 (2026-04-10) — module introduced
 
 `eph-net-dpdk` is the v3.3 successor to the legacy `eph-dpdk` module. Phase 4
