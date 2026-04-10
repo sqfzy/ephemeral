@@ -9,12 +9,15 @@ target("eph-transport")
     add_rules("utils.install.pkgconfig_importfiles")
 
 -- Module tests
--- Note: test_reconnect_policy depends on eph-net (higher layer) for testing.
+-- Tests depend only on eph-transport itself.  The `using namespace eph::net`
+-- declarations in some test files refer to types defined in eph-transport
+-- (which lives in the eph::net namespace for historical reasons), not to
+-- the eph-net library, so no reverse dependency is required.
 for _, file in ipairs(os.files("tests/**.cpp")) do
     target(path.basename(file))
         add_rules("eph-test")
         add_files(file)
-        add_deps("eph-net")
+        add_deps("eph-transport")
 end
 
 -- Module benchmarks
