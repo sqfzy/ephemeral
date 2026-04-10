@@ -1,22 +1,15 @@
 #pragma once
 
 /// @file adapters/binance_rest.hpp
-/// Typed Binance REST API client for orderbook snapshots and clock sync.
+/// Typed response parsers for Binance public REST endpoints.
 ///
-/// Combines eph::net::HttpClient with eph::json::parse to provide typed
-/// access to Binance's public REST endpoints needed for HFT recovery:
-///   - GET /api/v3/depth   — orderbook snapshot (post-reconnect recovery)
-///   - GET /api/v3/time    — server time (clock drift validation)
-///
-/// Order placement uses the FIX API (eph-fix), not REST, so only read-only
-/// public endpoints are provided here. No authentication required.
-///
-/// Usage:
-///   auto client = eph::json::binance::BinanceRestClient({});
-///   auto depth = client.get_depth("BTCUSDT", 20);
-///   if (depth) {
-///       for (auto& bid : depth->bids) { ... }
-///   }
+/// Provides `parse_depth_response`, `parse_server_time_response`, and
+/// `parse_depth_levels` — pure functions that turn raw JSON response bodies
+/// into typed values. Transport (HTTPS GET) is the caller's responsibility;
+/// Phase 7 removed the legacy `BinanceRestClient` wrapper because the
+/// legacy `eph::net::HttpClient` was deleted alongside `eph-transport`.
+/// Callers should perform the GET via their own `eph-net-kernel` +
+/// `eph-codec` stack and pass the response body into the parsers here.
 
 #include <algorithm>
 #include <array>
@@ -29,11 +22,11 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/core/parse_number.hpp"
 #include "eph/json/adapters/binance_depth_types.hpp"
 #include "eph/json/parser.hpp"
-#include "eph/net/http_client.hpp"
 
 namespace eph::json::binance {
 
@@ -282,201 +275,5 @@ parse_server_time_response(std::string_view body) noexcept {
     return ServerTime{*server_time};
 }
 
-// ---------------------------------------------------------------------------
-// REST client
-// ---------------------------------------------------------------------------
-
-/// @brief Configuration for BinanceRestClient.
-///
-/// Defined outside the class to allow aggregate initialization as a
-/// default argument. All fields have sensible defaults for Binance
-/// production.
-struct BinanceRestConfig {
-    std::string host = "api.binance.com";          ///< Binance REST API hostname
-    uint16_t port = 443;                           ///< HTTPS port
-    std::chrono::milliseconds timeout{5000};       ///< HTTP request timeout
-
-    /// Validate configuration, returning an error description or empty string on success.
-    [[nodiscard]] constexpr std::string_view validate() const noexcept {
-        if (host.empty())
-            return "host must not be empty";
-        if (port == 0)
-            return "port must be > 0";
-        if (timeout.count() <= 0)
-            return "timeout must be positive";
-        return {};
-    }
-
-    /// Multi-line formatted dump for logging/debugging.
-    [[nodiscard]] std::string dump() const {
-        return std::format("BinanceRestConfig(host={}, port={}, timeout={}ms)",
-                           host, port, timeout.count());
-    }
-
-    /// JSON-formatted config for monitoring system integration.
-    [[nodiscard]] std::string to_json() const {
-        // Minimal JSON escape — eph-json does not depend on eph-core's json_escape.
-        auto esc = [](std::string_view s) -> std::string {
-            std::string out;
-            out.reserve(s.size());
-            for (char c : s) {
-                if (c == '"')       out += "\\\"";
-                else if (c == '\\') out += "\\\\";
-                else                out += c;
-            }
-            return out;
-        };
-        return std::format(
-            "{{\"host\":\"{}\",\"port\":{},\"timeout_ms\":{}}}",
-            esc(host), port, timeout.count());
-    }
-
-    /// Check for non-fatal contradictions or likely misconfigurations.
-    [[nodiscard]] std::vector<std::string> warnings() const {
-        std::vector<std::string> w;
-        if (port != 443)
-            w.emplace_back(std::format(
-                "port={} differs from standard HTTPS (443) -- "
-                "Binance REST API requires HTTPS", port));
-        if (timeout.count() < 1000)
-            w.emplace_back(std::format(
-                "timeout={}ms is very short -- Binance REST API may "
-                "take >1s under load", timeout.count()));
-        if (timeout.count() > 30000)
-            w.emplace_back(std::format(
-                "timeout={}ms is unusually large (>30s) -- may cause "
-                "slow failure detection", timeout.count()));
-        if (host != "api.binance.com" && host != "testnet.binance.vision")
-            w.emplace_back(std::format(
-                "host=\"{}\" is not a recognized Binance endpoint -- "
-                "expected api.binance.com or testnet.binance.vision", host));
-        return w;
-    }
-
-    /// Defaulted equality -- all fields must match exactly.
-    [[nodiscard]] friend bool operator==(const BinanceRestConfig&,
-                                          const BinanceRestConfig&) = default;
-};
-
-/// Typed Binance REST client for public read-only endpoints.
-///
-/// Uses eph::net::HttpClient for HTTPS transport and eph::json::parse for
-/// response parsing. Designed for off-hot-path use: orderbook snapshot
-/// recovery after WebSocket reconnect, clock drift validation.
-///
-/// No authentication — these are all public endpoints.
-class BinanceRestClient {
-public:
-    using Config = BinanceRestConfig;  ///< Alias for BinanceRestConfig.
-
-    /// @brief Construct a BinanceRestClient with the given configuration.
-    /// @param config  Connection parameters (host, port, timeout). Defaults to
-    ///                Binance production (api.binance.com:443, 5s timeout).
-    explicit BinanceRestClient(Config config = {})
-        : http_(eph::net::HttpClient::Config{
-              .host = config.host,
-              .port = config.port,
-              .use_tls = true,
-              .timeout = config.timeout,
-          }) {
-        SPDLOG_LOGGER_DEBUG(detail::binance_rest_logger(),
-            "BinanceRestClient created: host={}, port={}, timeout={}ms",
-            config.host, config.port, config.timeout.count());
-    }
-
-    /// @brief Binance accepts only specific depth limit values.
-    ///
-    /// Passing any other value to get_depth() will return an error before
-    /// making a network request.
-    static constexpr std::array<int, 8> kValidDepthLimits = {5, 10, 20, 50, 100, 500, 1000, 5000};
-
-    /// Get orderbook depth snapshot.
-    ///
-    /// Calls GET /api/v3/depth?symbol=<symbol>&limit=<limit>.
-    /// Valid limit values: 5, 10, 20, 50, 100, 500, 1000, 5000.
-    ///
-    /// @param symbol  Trading pair (e.g., "BTCUSDT")
-    /// @param limit   Number of levels per side (default 20)
-    /// @return DepthSnapshot on success, error string on failure
-    [[nodiscard]] std::expected<DepthSnapshot, std::string>
-    get_depth(std::string_view symbol, int limit = 20) noexcept {
-        auto* log = detail::binance_rest_logger();
-
-        // Validate limit against Binance's accepted values
-        if (std::ranges::find(kValidDepthLimits, limit) == kValidDepthLimits.end()) {
-            SPDLOG_LOGGER_WARN(log,
-                "get_depth: invalid limit={} for symbol={}. "
-                "Binance accepts: 5, 10, 20, 50, 100, 500, 1000, 5000",
-                limit, symbol);
-            return std::unexpected(std::format(
-                "Invalid depth limit {}. Binance accepts: 5, 10, 20, 50, 100, 500, 1000, 5000",
-                limit));
-        }
-
-        SPDLOG_LOGGER_DEBUG(log, "get_depth: symbol={}, limit={}", symbol, limit);
-
-        auto path = std::format("/api/v3/depth?symbol={}&limit={}", symbol, limit);
-        auto resp = http_.get(path);
-        if (!resp) {
-            SPDLOG_LOGGER_ERROR(log,
-                "get_depth: HTTP request failed: {}", resp.error());
-            return std::unexpected(std::format(
-                "HTTP request failed: {}", resp.error()));
-        }
-
-        if (resp->status_code != 200) {
-            SPDLOG_LOGGER_WARN(log,
-                "get_depth: HTTP {}: {}", resp->status_code, resp->body);
-            return std::unexpected(std::format(
-                "HTTP {}: {}", resp->status_code, resp->body));
-        }
-
-        return parse_depth_response(resp->body);
-    }
-
-    /// Get server time for clock drift validation.
-    ///
-    /// Calls GET /api/v3/time.
-    ///
-    /// @return ServerTime on success, error string on failure
-    [[nodiscard]] std::expected<ServerTime, std::string>
-    get_server_time() noexcept {
-        auto* log = detail::binance_rest_logger();
-
-        SPDLOG_LOGGER_DEBUG(log, "get_server_time: requesting");
-
-        auto resp = http_.get("/api/v3/time");
-        if (!resp) {
-            SPDLOG_LOGGER_ERROR(log,
-                "get_server_time: HTTP request failed: {}", resp.error());
-            return std::unexpected(std::format(
-                "HTTP request failed: {}", resp.error()));
-        }
-
-        if (resp->status_code != 200) {
-            SPDLOG_LOGGER_WARN(log,
-                "get_server_time: HTTP {}: {}", resp->status_code, resp->body);
-            return std::unexpected(std::format(
-                "HTTP {}: {}", resp->status_code, resp->body));
-        }
-
-        return parse_server_time_response(resp->body);
-    }
-
-private:
-    eph::net::HttpClient http_;  ///< Underlying HTTPS transport client.
-};
 
 } // namespace eph::json::binance
-
-// ─────────────────────────────────────────────────────────────────────────────
-// std::formatter specialization for BinanceRestConfig
-// ─────────────────────────────────────────────────────────────────────────────
-
-template <>
-struct std::formatter<eph::json::binance::BinanceRestConfig>
-    : std::formatter<std::string> {
-    auto format(const eph::json::binance::BinanceRestConfig& c, auto& ctx) const {
-        return std::formatter<std::string>::format(c.dump(), ctx);
-    }
-};

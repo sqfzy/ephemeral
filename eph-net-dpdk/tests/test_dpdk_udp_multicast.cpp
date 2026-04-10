@@ -29,11 +29,11 @@
 #include "eph/net/dpdk/udp_socket.hpp"
 #include "eph/net/socket_addr.hpp"
 
-namespace end = eph::net::dpdk;
+namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
 namespace en  = eph::net;
 
-using McastSock = end::DpdkUdpSocket<ec::RawDatagramCodec>;
+using McastSock = edpk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
 // Concept conformance still holds with the new method bodies.
 static_assert(en::Datagram<McastSock>,

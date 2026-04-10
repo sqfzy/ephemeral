@@ -1,211 +1,206 @@
-/// @file test_transport_e2e.cpp
-/// E2E integration tests for Transport<FakeTcpTransport, RawFramer>.
+/// @file test_transport_e2e_v3.cpp
+/// v3.3 rewrite of test_transport_e2e.cpp.
 ///
-/// Tests the Transport layer with a mock TCP backend (no real network I/O).
-/// WebSocket and TLS scenarios are intentionally excluded — this exercises
-/// the raw TCP-level transport path only.
+/// End-to-end test of `KernelTcpStream<RawStreamCodec, false>` against a
+/// localhost echo server driven by `KernelPoller`. The legacy file uses
+/// `Transport<FakeTcpTransport, RawFramer>`; the v3.3 design replaces both
+/// with the new concept-driven types.
+///
+/// Part of Phase 6 of the v3.3 architecture refactor
+/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <expected>
-#include <memory>
-#include <string>
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
-#include "eph/core/fake_tcp_transport.hpp"
-#include "eph/core/transport_errors.hpp"
-#include "eph/transport/raw_framer.hpp"
-#include "eph/transport/transport.hpp"
-#include "eph/transport/transport_types.hpp"
+#include "eph/codec/raw_stream_codec.hpp"
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/socket_addr.hpp"
+
+namespace ek = eph::net::kernel;
+namespace en = eph::net;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
 
 namespace {
 
-using namespace eph::net;
-using eph::net::testing::FakeTcpTransport;
+using PlainStream = ek::KernelTcpStream<ec::RawStreamCodec, /*Tls=*/false>;
 
-/// Concrete Transport type under test: FakeTcp, RawFramer, 512B payload, 64-depth queue.
-using TestTransport = Transport<FakeTcpTransport, RawFramer, 512, 64>;
+/// Bind a TCP listener on 127.0.0.1:0 and return (fd, port).
+std::pair<int, uint16_t> bind_loopback_listener() {
+    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    EXPECT_GE(lfd, 0);
+    int one = 1;
+    (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
-/// Build a minimal TransportConfig suitable for FakeTcpTransport (no TLS, no WS).
-TransportConfig make_test_config() {
-    TransportConfig cfg;
-    cfg.remote_host = "fake.test.local";
-    cfg.remote_port = 9999;
-    cfg.use_tls     = false;
-    cfg.verify_peer = false;
-    // Disable auto-reconnect so tests don't hang on disconnect
-    cfg.max_reconnect_attempts = 0;
-    return cfg;
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    addr.sin_port        = 0;
+    EXPECT_EQ(0, ::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)));
+    EXPECT_EQ(0, ::listen(lfd, 1));
+
+    socklen_t alen = sizeof(addr);
+    EXPECT_EQ(0, ::getsockname(lfd,
+                               reinterpret_cast<sockaddr*>(&addr), &alen));
+    return {lfd, ::ntohs(addr.sin_port)};
 }
 
-/// Build a TcpFactory that creates a connected FakeTcpTransport.
-/// Optionally stores a raw pointer to the underlying fake for test inspection.
-TestTransport::TcpFactory make_factory(FakeTcpTransport** out_raw = nullptr) {
-    return [out_raw]() -> std::expected<std::unique_ptr<FakeTcpTransport>, std::string> {
-        auto tcp = std::make_unique<FakeTcpTransport>();
-        auto result = tcp->connect(std::chrono::milliseconds{100});
-        if (!result) return std::unexpected(result.error());
-        if (out_raw) *out_raw = tcp.get();
-        return tcp;
-    };
+/// Single-connection echo server that runs in a thread. Echoes every byte
+/// it receives until the client closes the socket.
+void run_echo_server(int lfd) {
+    int cfd = ::accept(lfd, nullptr, nullptr);
+    if (cfd < 0) return;
+    char buf[2048];
+    for (;;) {
+        ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = ::send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+            if (w <= 0) { off = n; break; }
+            off += w;
+        }
+    }
+    ::close(cfd);
 }
-
-// ---------------------------------------------------------------------------
-// Test: HappyPath — create transport, verify it's running
-// ---------------------------------------------------------------------------
-TEST(TransportE2E, HappyPath) {
-    auto cfg = make_test_config();
-    auto result = TestTransport::create(make_factory(), cfg);
-
-    ASSERT_TRUE(result.has_value())
-        << "create() failed: " << result.error().message();
-
-    auto& transport = *result;
-    EXPECT_TRUE(transport->is_running());
-    EXPECT_EQ(transport->state(), TransportState::kConnected);
-
-    transport->stop();
-    EXPECT_FALSE(transport->is_running());
-    EXPECT_EQ(transport->state(), TransportState::kStopped);
-}
-
-// ---------------------------------------------------------------------------
-// Test: FactoryConnectFails — connect() error propagates through create()
-// ---------------------------------------------------------------------------
-TEST(TransportE2E, FactoryConnectFails) {
-    auto cfg = make_test_config();
-
-    // Factory that always fails at connect()
-    auto factory = []() -> std::expected<std::unique_ptr<FakeTcpTransport>, std::string> {
-        auto tcp = std::make_unique<FakeTcpTransport>();
-        tcp->set_connect_error("simulated connect failure");
-        auto result = tcp->connect(std::chrono::milliseconds{100});
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
-
-    auto result = TestTransport::create(std::move(factory), cfg);
-    ASSERT_FALSE(result.has_value());
-
-    const auto& err = result.error();
-    EXPECT_EQ(err.code, ConnectionError::kFactoryFailed);
-    EXPECT_NE(err.detail.find("simulated connect failure"), std::string::npos)
-        << "Expected error detail to contain factory error, got: " << err.detail;
-}
-
-// ---------------------------------------------------------------------------
-// Test: FactoryReturnsNonEstablished — TCP not established after factory
-// ---------------------------------------------------------------------------
-TEST(TransportE2E, FactoryReturnsNonEstablished) {
-    auto cfg = make_test_config();
-
-    // Factory returns a FakeTcpTransport that is NOT connected
-    auto factory = []() -> std::expected<std::unique_ptr<FakeTcpTransport>, std::string> {
-        auto tcp = std::make_unique<FakeTcpTransport>();
-        // Don't call connect() — state remains Closed
-        return tcp;
-    };
-
-    auto result = TestTransport::create(std::move(factory), cfg);
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, ConnectionError::kTcpNotEstablished);
-}
-
-// ---------------------------------------------------------------------------
-// Test: SendWhenNotConnected — send after stop() returns kNotConnected
-// ---------------------------------------------------------------------------
-TEST(TransportE2E, SendWhenNotConnected) {
-    auto cfg = make_test_config();
-    auto result = TestTransport::create(make_factory(), cfg);
-    ASSERT_TRUE(result.has_value())
-        << "create() failed: " << result.error().message();
-
-    auto& transport = *result;
-    transport->stop();
-
-    const uint8_t payload[] = {0x01, 0x02, 0x03};
-    EXPECT_EQ(transport->send(payload, sizeof(payload)), SendError::kNotConnected);
-    EXPECT_EQ(transport->send_binary(payload, sizeof(payload)), SendError::kNotConnected);
-    EXPECT_EQ(transport->send_text("hello"), SendError::kNotConnected);
-}
-
-// ---------------------------------------------------------------------------
-// Test: SendData — verify data reaches FakeTcpTransport::sent_data()
-// ---------------------------------------------------------------------------
-TEST(TransportE2E, SendData) {
-    FakeTcpTransport* raw_tcp = nullptr;
-    auto cfg = make_test_config();
-    auto result = TestTransport::create(make_factory(&raw_tcp), cfg);
-    ASSERT_TRUE(result.has_value())
-        << "create() failed: " << result.error().message();
-    ASSERT_NE(raw_tcp, nullptr);
-
-    auto& transport = *result;
-
-    // Send binary data
-    const uint8_t binary_payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
-    auto send_err = transport->send_binary(binary_payload, sizeof(binary_payload));
-    EXPECT_EQ(send_err, SendError::kOk);
-
-    // Send text data
-    std::string_view text_payload = "hello world";
-    send_err = transport->send_text(text_payload);
-    EXPECT_EQ(send_err, SendError::kOk);
-
-    // Give the TX thread time to drain the queue and send data to the fake TCP
-    // The TX worker polls the SPSC queue and writes to TCP asynchronously.
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
-
-    // Verify data arrived at the fake TCP layer.
-    // RawFramer passes data through unchanged, so sent_data() should contain
-    // the exact payloads (RawFramer::encode is a memcpy).
-    const auto& sent = raw_tcp->sent_data();
-    ASSERT_GE(sent.size(), 2u)
-        << "Expected at least 2 sent packets, got " << sent.size();
-
-    // First packet: binary payload
-    EXPECT_EQ(sent[0].size(), sizeof(binary_payload));
-    EXPECT_EQ(std::memcmp(sent[0].data(), binary_payload, sizeof(binary_payload)), 0);
-
-    // Second packet: text payload
-    EXPECT_EQ(sent[1].size(), text_payload.size());
-    EXPECT_EQ(std::memcmp(sent[1].data(), text_payload.data(), text_payload.size()), 0);
-
-    transport->stop();
-}
-
-// ---------------------------------------------------------------------------
-// Test: SendMessageTooLarge — payload exceeding MaxPayload is rejected
-// ---------------------------------------------------------------------------
-TEST(TransportE2E, SendMessageTooLarge) {
-    auto cfg = make_test_config();
-    auto result = TestTransport::create(make_factory(), cfg);
-    ASSERT_TRUE(result.has_value())
-        << "create() failed: " << result.error().message();
-
-    auto& transport = *result;
-
-    // MaxPayload is 512 — send 513 bytes
-    std::vector<uint8_t> oversized(513, 0xAA);
-    auto send_err = transport->send(oversized.data(), oversized.size());
-    EXPECT_EQ(send_err, SendError::kMessageTooLarge);
-
-    transport->stop();
-}
-
-// ---------------------------------------------------------------------------
-// Note on recv testing:
-// Testing recv() with FakeTcpTransport is non-trivial because the RX worker
-// thread busy-polls FakeTcpTransport::poll_rx() in a tight loop. Injecting
-// data via inject_rx() would require careful synchronization with the RX
-// thread's polling cycle, and the data must pass through the framer's decode
-// path. Additionally, the RX thread may spin-consume injected data before the
-// test can call recv(). This level of thread coordination complexity is better
-// suited for dedicated RX worker unit tests rather than E2E integration tests.
-// ---------------------------------------------------------------------------
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// HappyPath: connect → send → receive → close gracefully
+// ---------------------------------------------------------------------------
+TEST(TransportE2EV3, HappyPath) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+    std::thread server([lfd] { run_echo_server(lfd); });
+
+    auto poller = ek::KernelPoller::create({}).value();
+
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity  = 16 * 1024;
+    cfg.connect_timeout = 1s;
+
+    auto sr = PlainStream::create(cfg);
+    ASSERT_TRUE(sr.has_value()) << "create failed: " << sr.error().detail;
+    auto stream = std::move(*sr);
+
+    std::vector<uint8_t> captured;
+    stream->on_message = [&](const uint8_t* p, uint16_t n) {
+        captured.insert(captured.end(), p, p + n);
+    };
+
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+    ASSERT_TRUE(stream->is_attached());
+    EXPECT_EQ(stream->state(), en::TcpState::Established);
+
+    // Send a frame, wait for the echo.
+    const uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
+    auto tx = stream->send(payload);
+    ASSERT_TRUE(tx.has_value());
+    EXPECT_EQ(*tx, sizeof(payload));
+
+    auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (captured.size() < sizeof(payload)
+           && std::chrono::steady_clock::now() < deadline) {
+        poller->poll(50ms);
+    }
+    ASSERT_EQ(captured.size(), sizeof(payload));
+    EXPECT_EQ(0, std::memcmp(captured.data(), payload, sizeof(payload)));
+
+    // Graceful close — half-close sends FIN, server thread exits.
+    EXPECT_TRUE(stream->close_gracefully().has_value());
+
+    EXPECT_TRUE(poller->remove(stream.get()).has_value());
+    stream.reset();
+    server.join();
+    ::close(lfd);
+}
+
+// ---------------------------------------------------------------------------
+// SendBeforeAttachFails: send() must return NotAttached prior to poller add
+// ---------------------------------------------------------------------------
+TEST(TransportE2EV3, SendBeforeAttachFails) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+    std::thread server([lfd] { run_echo_server(lfd); });
+
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity  = 4096;
+    cfg.connect_timeout = 1s;
+
+    auto sr = PlainStream::create(cfg);
+    ASSERT_TRUE(sr.has_value());
+    auto stream = std::move(*sr);
+
+    const uint8_t payload[] = {'X'};
+    auto tx = stream->send(payload);
+    ASSERT_FALSE(tx.has_value());
+    EXPECT_EQ(tx.error().code, eph::core::Error::NotAttached);
+
+    // Now attach and gracefully close so the server thread can exit.
+    auto poller = ek::KernelPoller::create({}).value();
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+    ASSERT_TRUE(stream->close_gracefully().has_value());
+    ASSERT_TRUE(poller->remove(stream.get()).has_value());
+    stream.reset();
+    server.join();
+    ::close(lfd);
+}
+
+// ---------------------------------------------------------------------------
+// MultipleEchoes: drives several round-trips through the same poller loop
+// ---------------------------------------------------------------------------
+TEST(TransportE2EV3, MultipleEchoes) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+    std::thread server([lfd] { run_echo_server(lfd); });
+
+    auto poller = ek::KernelPoller::create({}).value();
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity  = 16 * 1024;
+    cfg.connect_timeout = 1s;
+    auto stream = PlainStream::create(cfg).value();
+
+    std::size_t bytes_in = 0;
+    stream->on_message = [&](const uint8_t*, uint16_t n) { bytes_in += n; };
+
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+
+    constexpr int kRounds = 8;
+    constexpr int kPayload = 32;
+    uint8_t buf[kPayload];
+    for (int i = 0; i < kPayload; ++i) buf[i] = static_cast<uint8_t>(i);
+
+    std::size_t expected = 0;
+    for (int r = 0; r < kRounds; ++r) {
+        ASSERT_TRUE(stream->send(buf).has_value());
+        expected += kPayload;
+        auto deadline = std::chrono::steady_clock::now() + 1s;
+        while (bytes_in < expected
+               && std::chrono::steady_clock::now() < deadline) {
+            poller->poll(50ms);
+        }
+        EXPECT_EQ(bytes_in, expected) << "round " << r;
+    }
+
+    ASSERT_TRUE(stream->close_gracefully().has_value());
+    ASSERT_TRUE(poller->remove(stream.get()).has_value());
+    stream.reset();
+    server.join();
+    ::close(lfd);
+}

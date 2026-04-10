@@ -20,10 +20,10 @@
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/udp_socket.hpp"
 
-namespace end = eph::net::dpdk;
+namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
 
-using RawUdpSocket = end::DpdkUdpSocket<ec::RawDatagramCodec>;
+using RawUdpSocket = edpk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
@@ -39,7 +39,7 @@ static_assert(eph::net::Datagram<RawUdpSocket>,
 // ---------------------------------------------------------------------------
 
 TEST(DpdkUdpSocket, ZeroSrcIpFailsInvalidConfig) {
-    end::UdpConfig cfg{};
+    edpk::UdpConfig cfg{};
     // Default-init: src_ip == 0, dst_ip == 0, pool == nullptr.
     // Validation should reject before any DPDK call.
     auto r = RawUdpSocket::create(cfg);
@@ -48,7 +48,7 @@ TEST(DpdkUdpSocket, ZeroSrcIpFailsInvalidConfig) {
 }
 
 TEST(DpdkUdpSocket, NullPoolFailsInvalidConfig) {
-    end::UdpConfig cfg{};
+    edpk::UdpConfig cfg{};
     cfg.legacy.src_ip   = 0x0A000001;
     cfg.legacy.dst_ip   = 0x0A000002;
     cfg.legacy.src_port = 12345;
@@ -64,6 +64,6 @@ TEST(DpdkUdpSocket, NullPoolFailsInvalidConfig) {
 TEST(DpdkUdpSocket, AssociatedTypesPresent) {
     using S = RawUdpSocket;
     static_assert(std::is_same_v<S::CodecType, ec::RawDatagramCodec>);
-    static_assert(std::is_same_v<S::PacketView, end::detail::MbufView>);
+    static_assert(std::is_same_v<S::PacketView, edpk::detail::MbufView>);
     EXPECT_TRUE((eph::net::Datagram<S>));
 }

@@ -12,12 +12,15 @@
 --
 -- The mock is always kernel — only the client transport differs, which
 -- is the "echo bench is inherently fair" property recorded in the plan.
+--
+-- Phase 7: all lat_*.cpp now target the v3.3 eph-net-kernel / eph-net-dpdk
+-- + eph-codec API. The legacy eph-transport / eph-dpdk dependencies have
+-- been removed now that those modules no longer exist.
 
 local bench_latency_flags = {"-fno-omit-frame-pointer", "-march=native"}
 
 for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
-    local name    = path.basename(file)  -- e.g. "lat_tcp", "lat_ex_market"
-    local is_v3   = name:endswith("_v3")  -- Phase 6 v3.3 variants
+    local name = path.basename(file)  -- e.g. "lat_tcp", "lat_ex_market"
 
     -- Kernel build
     target(name)
@@ -26,13 +29,9 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         set_default(false)
         add_files(file)
         add_includedirs(os.scriptdir())
-        -- core/{signal,socket_bind,socket_io}.hpp are now thin shims that
-        -- forward to eph-utils / eph-net implementations.  Add the deps
-        -- so the shims can resolve their includes.
-        add_deps("eph-utils", "eph-net")
-        if is_v3 then
-            add_deps("eph-net-kernel", "eph-codec")
-        end
+        -- core/{signal,socket_bind,socket_io}.hpp are header-only shims
+        -- that forward to eph-utils / eph-net helpers.
+        add_deps("eph-utils", "eph-net", "eph-net-kernel", "eph-codec")
         add_packages("spdlog")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
@@ -44,14 +43,7 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         set_default(false)
         add_files(file)
         add_includedirs(os.scriptdir())
-        add_deps("eph-utils", "eph-net", "eph-dpdk")
-        if is_v3 then
-            -- v3 DPDK build: pull eph-net-dpdk only. Do NOT pull
-            -- eph-net-kernel here — its config.hpp transitively includes
-            -- eph-transport TLS constants which collide with vcpkg-openssl
-            -- inside the same TU as eph-dpdk. Phase 7 will resolve this.
-            add_deps("eph-net-dpdk", "eph-codec")
-        end
+        add_deps("eph-utils", "eph-net", "eph-net-dpdk", "eph-codec")
         add_packages("spdlog")
         add_defines("EPH_USE_DPDK=1")
         add_cxflags(table.unpack(bench_latency_flags))

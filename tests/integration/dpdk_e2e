@@ -21,7 +21,7 @@ if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); th
     :
 else
     PROJECT_DIR="$SCRIPT_DIR"
-    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-net-dpdk" ]]; do
         PROJECT_DIR="$(dirname "$PROJECT_DIR")"
     done
     [[ "$PROJECT_DIR" == "/" ]] && {

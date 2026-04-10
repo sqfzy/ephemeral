@@ -14,53 +14,37 @@ target("test_binance_adapter")
 target("test_binance_rest")
     add_rules("eph-test")
     add_files("test_binance_rest.cpp")
-    add_deps("eph-json", "eph-net")
+    add_deps("eph-json")
 
 target("test_metrics_concept")
     add_rules("eph-test")
     add_files("test_metrics_concept.cpp")
     add_deps("eph-core", "eph-utils")
 
+-- ============================================================================
+-- Phase 7: the v3.3 kernel + codec integration tests (formerly _v3 variants;
+-- legacy suffix removed once the old eph-transport / eph-dpdk modules were
+-- deleted).
+-- ============================================================================
+
 target("test_transport_e2e")
     add_rules("eph-test")
     add_files("test_transport_e2e.cpp")
-    add_deps("eph-transport")
+    add_deps("eph-net-kernel", "eph-codec")
 
 target("test_transport_tls_ws_e2e")
     add_rules("eph-test")
     add_files("test_transport_tls_ws_e2e.cpp")
     add_includedirs(path.join(os.projectdir(), "tests", "support"))
-    add_deps("eph-net")
+    add_deps("eph-net-kernel", "eph-codec")
     add_packages("aws-lc")
+
+target("test_kernel_udp")
+    add_rules("eph-test")
+    add_files("test_kernel_udp.cpp")
+    add_deps("eph-net-kernel", "eph-codec")
 
 target("bench_e2e_latency")
     add_rules("eph-bench")
     add_files("bench_e2e_latency.cpp")
-    add_deps("eph-transport")
-
--- ============================================================================
--- v3.3 Phase 6: integration tests / benchmark for the new
---               eph::net::kernel + eph::codec API.
--- ============================================================================
-
-target("test_transport_e2e_v3")
-    add_rules("eph-test")
-    add_files("test_transport_e2e_v3.cpp")
-    add_deps("eph-net-kernel", "eph-codec")
-
-target("test_transport_tls_ws_e2e_v3")
-    add_rules("eph-test")
-    add_files("test_transport_tls_ws_e2e_v3.cpp")
-    add_includedirs(path.join(os.projectdir(), "tests", "support"))
-    add_deps("eph-net-kernel", "eph-codec")
-    add_packages("aws-lc")
-
-target("test_kernel_udp_v3")
-    add_rules("eph-test")
-    add_files("test_kernel_udp_v3.cpp")
-    add_deps("eph-net-kernel", "eph-codec")
-
-target("bench_e2e_latency_v3")
-    add_rules("eph-bench")
-    add_files("bench_e2e_latency_v3.cpp")
     add_deps("eph-net-kernel", "eph-codec")

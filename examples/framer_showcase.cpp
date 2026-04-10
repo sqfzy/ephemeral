@@ -1,178 +1,112 @@
-/// @file framer_showcase.cpp
-/// Framer showcase — encode/decode comparison of all three MessageFramer
-/// implementations: WsFramer, RawFramer, and LengthPrefixFramer.
+/// @file framer_showcase_v3.cpp
+/// v3.3 rewrite of framer_showcase.cpp.
 ///
-/// Demonstrates:
-///   1. The MessageFramer concept and how framers add wire-format headers
-///   2. Encode/decode round-trip for each framer
-///   3. How to instantiate Transport with a non-default framer
+/// Demonstrates the stateful Codec interface introduced in Phase 1 of the
+/// v3.3 refactor. All three codecs (WsCodec, RawStreamCodec,
+/// LengthPrefixCodec) share the same
 ///
-/// No network dependency — this example runs entirely in-process,
-/// encoding and decoding buffers to show the wire format differences.
+///     encode(buf, cap, Frame)  ->  expected<size_t, ErrorInfo>
+///     decode(view, OutputBuffer&) -> expected<optional<Frame>, ErrorInfo>
 ///
-/// Usage:
-///   ./framer_showcase
+/// shape. This example runs entirely in-process — no sockets, no DPDK —
+/// and simply encodes a payload, then feeds the bytes back through
+/// decode() to recover it.
 ///
-/// Related examples:
-///   - minimal_ws_client.cpp  — uses WsFramer (the default)
-///   - ws_echo_client.cpp     — full client with default WsFramer
+/// Part of Phase 6 of the v3.3 architecture refactor
+/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
-#include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <format>
-#include <iostream>
+#include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include <spdlog/spdlog.h>
 
-#include "eph/core/framer_concept.hpp"
-#include "eph/core/length_prefix_framer.hpp"
-#include "eph/transport/raw_framer.hpp"
-#include "eph/transport/ws_framer.hpp"
+#include "eph/codec/detail/span_packet_view.hpp"
+#include "eph/codec/length_prefix_codec.hpp"
+#include "eph/codec/raw_stream_codec.hpp"
+#include "eph/codec/ws_codec.hpp"
+#include "eph/core/codec.hpp"
+#include "eph/core/error.hpp"
 
-// Also include transport types to show type alias examples
-#include "eph/net/socket_transport.hpp"
-#include "eph/transport/transport.hpp"
+namespace ec = eph::codec;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: hex dump of encoded bytes
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Helper: hex dump ───────────────────────────────────────────────────────
 
-static std::string hex_dump(const uint8_t* data, size_t len) {
-    std::string result;
-    result.reserve(len * 3);
-    for (size_t i = 0; i < len; ++i) {
-        if (i > 0) result += ' ';
-        result += std::format("{:02x}", data[i]);
+static std::string hex_dump(const uint8_t* data, std::size_t len) {
+    std::string out;
+    out.reserve(len * 3);
+    for (std::size_t i = 0; i < len; ++i) {
+        if (i > 0) out += ' ';
+        out += std::format("{:02x}", data[i]);
     }
-    return result;
+    return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Generic encode/decode round-trip test for any MessageFramer
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Generic round-trip driver ──────────────────────────────────────────────
 
-template <eph::net::MessageFramer Framer>
-static void demo_framer(std::string_view name, Framer& framer) {
-    spdlog::info("=== {} (max overhead: {} bytes) ===", name, Framer::max_overhead());
+template <class Codec>
+static void demo(std::string_view name, Codec& codec,
+                 std::span<const uint8_t> payload) {
+    spdlog::info("=== {} ===", name);
+    spdlog::info("  plaintext  : {}", hex_dump(payload.data(), payload.size()));
 
-    const std::string payload = "Hello, ephemeral!";
-    auto payload_bytes = reinterpret_cast<const uint8_t*>(payload.data());
-    size_t payload_len = payload.size();
-
-    // Encode
-    std::vector<uint8_t> wire(payload_len + Framer::max_overhead() + 16);
-    size_t encoded_len = framer.encode(
-        wire.data(), payload_bytes, payload_len, 0x01 /* msg_type */);
-
-    if (encoded_len == 0) {
-        spdlog::error("  Encode failed!");
+    uint8_t wire[1024];
+    auto enc = codec.encode(wire, sizeof(wire), payload);
+    if (!enc) {
+        spdlog::error("  encode failed: {}", enc.error().detail);
         return;
     }
+    spdlog::info("  wire ({:>3}) : {}", *enc, hex_dump(wire, *enc));
 
-    spdlog::info("  Payload:  \"{}\" ({} bytes)", payload, payload_len);
-    spdlog::info("  Encoded:  {} bytes", encoded_len);
-    spdlog::info("  Overhead: {} bytes", encoded_len - payload_len);
-    spdlog::info("  Wire hex: {}", hex_dump(wire.data(), encoded_len));
+    // Decode: feed `wire[0..*enc]` back through the codec.
+    ec::SpanPacketView view(wire, *enc);
+    uint8_t scratch[128];
+    eph::core::OutputBuffer sink(scratch, sizeof(scratch));
 
-    // Decode
-    auto decoded = framer.decode(wire.data(), encoded_len);
-    if (!decoded) {
-        spdlog::error("  Decode failed: {}",
-                      eph::net::frame_error_name(decoded.error()));
+    auto dec = codec.decode(view, sink);
+    if (!dec) {
+        spdlog::error("  decode failed: {}", dec.error().detail);
         return;
     }
-
-    std::string_view decoded_payload(
-        reinterpret_cast<const char*>(decoded->payload), decoded->payload_len);
-    spdlog::info("  Decoded:  \"{}\" ({} bytes, msg_type=0x{:02x})",
-                 decoded_payload, decoded->payload_len, decoded->msg_type);
-    spdlog::info("  Control:  {}", decoded->is_control ? "yes" : "no");
-
-    // Verify round-trip integrity
-    // Note: WsFramer applies client-side masking (RFC 6455 §5.3), so the
-    // decoded payload from our own encoded frame will appear masked.
-    // In real use, the server sends unmasked frames back to the client,
-    // and decode() returns the original payload correctly.
-    bool match = (decoded->payload_len == payload_len) &&
-                 std::equal(decoded->payload, decoded->payload + decoded->payload_len,
-                            payload_bytes);
-    if (match) {
-        spdlog::info("  Round-trip: OK");
-    } else {
-        spdlog::info("  Round-trip: payload differs (expected for WsFramer — "
-                     "client frames are masked per RFC 6455)");
+    if (!dec->has_value()) {
+        spdlog::warn("  decode returned nullopt (need more bytes)");
+        return;
     }
+    const auto& frame = **dec;
+    spdlog::info("  decoded    : {}", hex_dump(frame.data(), frame.size()));
+    const bool match = (frame.size() == payload.size()
+        && std::memcmp(frame.data(), payload.data(), payload.size()) == 0);
+    spdlog::info("  round-trip : {}", match ? "OK" : "MISMATCH");
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Show how to define Transport type aliases with different framers
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void demo_transport_aliases() {
-    spdlog::info("=== Transport Type Aliases with Different Framers ===");
-
-    // Default: WebSocket framing (used by minimal_ws_client, production_client)
-    using WsTransport = eph::net::Transport<eph::net::SocketTransport>;
-    // Equivalent to: Transport<SocketTransport, WsFramer, 512, 1024>
-
-    // Raw transport: no framing overhead — for protocols with own boundaries
-    using RawTransport = eph::net::Transport<
-        eph::net::SocketTransport, eph::net::RawFramer>;
-
-    // Length-prefix transport: 2-byte BE header — for binary protocols (ITCH, etc.)
-    using LenPrefixTransport = eph::net::Transport<
-        eph::net::SocketTransport, eph::net::LengthPrefixFramer>;
-
-    // Custom payload/queue sizes
-    using SmallWsTransport = eph::net::Transport<
-        eph::net::SocketTransport, eph::net::WsFramer, 64, 256>;
-    using LargeRawTransport = eph::net::Transport<
-        eph::net::SocketTransport, eph::net::RawFramer, 4096, 512>;
-
-    spdlog::info("  WsTransport:         max_payload={}, queue_depth={}",
-                 WsTransport::max_payload(), WsTransport::queue_depth());
-    spdlog::info("  RawTransport:        max_payload={}, queue_depth={}",
-                 RawTransport::max_payload(), RawTransport::queue_depth());
-    spdlog::info("  LenPrefixTransport:  max_payload={}, queue_depth={}",
-                 LenPrefixTransport::max_payload(), LenPrefixTransport::queue_depth());
-    spdlog::info("  SmallWsTransport:    max_payload={}, queue_depth={}",
-                 SmallWsTransport::max_payload(), SmallWsTransport::queue_depth());
-    spdlog::info("  LargeRawTransport:   max_payload={}, queue_depth={}",
-                 LargeRawTransport::max_payload(), LargeRawTransport::queue_depth());
-
-    spdlog::info("");
-    spdlog::info("  To use a non-default framer, just change the type alias:");
-    spdlog::info("    auto result = RawTransport::create(tcp_factory, config);");
-    spdlog::info("  The send/recv API is identical — only wire encoding differs.");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────────────────────────────────────────
 
 int main() {
     spdlog::set_level(spdlog::level::info);
 
-    // Note: WsFramer adds masking (random 4-byte key per frame), so the wire
-    // hex will differ on each run. RawFramer and LengthPrefixFramer are
-    // deterministic.
+    const std::string msg = "v3.3 codec round-trip";
+    std::span<const uint8_t> payload(
+        reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
 
-    eph::net::WsFramer ws_framer;
-    demo_framer("WsFramer (RFC 6455 WebSocket)", ws_framer);
-    std::cout << "\n";
+    // 1) RawStreamCodec — pass-through.
+    {
+        ec::RawStreamCodec codec{};
+        demo("RawStreamCodec", codec, payload);
+    }
 
-    eph::net::RawFramer raw_framer;
-    demo_framer("RawFramer (pass-through, zero overhead)", raw_framer);
-    std::cout << "\n";
+    // 2) LengthPrefixCodec — 4-byte LE length header.
+    {
+        ec::LengthPrefixCodec codec{};
+        demo("LengthPrefixCodec", codec, payload);
+    }
 
-    eph::net::LengthPrefixFramer lp_framer;
-    demo_framer("LengthPrefixFramer (2-byte BE header)", lp_framer);
-    std::cout << "\n";
-
-    demo_transport_aliases();
+    // 3) WsCodec — full WebSocket binary frame.
+    {
+        ec::WsCodec codec{};
+        demo("WsCodec", codec, payload);
+    }
 
     return 0;
 }

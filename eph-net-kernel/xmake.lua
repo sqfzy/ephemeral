@@ -3,9 +3,6 @@
 --                   concept layer.
 -- ============================================================================
 --
--- Phase 3 of the v3.3 architecture refactor (see
--- .artifacts/design-eph-v3.3-architecture-20260410.md).
---
 -- Provides concrete types satisfying the `eph::net::Stream`, `eph::net::Datagram`
 -- and `eph::net::Poller` concepts using the Linux epoll + POSIX socket API:
 --
@@ -13,14 +10,9 @@
 --   * eph::net::kernel::KernelUdpSocket<C>             — Datagram impl
 --   * eph::net::kernel::KernelPoller                   — Poller impl
 --
--- Dependency rule (target, post-Phase-7): eph-net-kernel depends ONLY on
--- eph-core and eph-net. Codec concrete types are supplied by users via
--- template parameters; the module itself never #includes a specific codec.
---
--- Phase 3 is ADDITIVE: the legacy `eph-net/include/eph/net/socket_transport.hpp`
--- stays in place and is only removed in Phase 7. The new kernel backend lives
--- here in its own `eph::net::kernel` namespace so it can coexist with the
--- legacy `eph::net::SocketTransport` until then.
+-- Dependency rule (post-Phase-7): eph-net-kernel depends ONLY on eph-core and
+-- eph-net. The TLS detail headers moved into `eph-net/include/eph/net/detail/`
+-- in Phase 7, so the pragmatic dependency on eph-transport has been removed.
 
 target("eph-net-kernel")
     set_kind("headeronly")
@@ -28,7 +20,7 @@ target("eph-net-kernel")
     add_headerfiles("include/(eph/net/kernel/**.hpp)")
     add_deps("eph-core", { public = true })
     add_deps("eph-net",  { public = true })
-    add_packages("spdlog", { public = true })
+    add_packages("spdlog", "aws-lc", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")

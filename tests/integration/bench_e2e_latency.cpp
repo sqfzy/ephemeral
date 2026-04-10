@@ -1,187 +1,187 @@
-/// @file bench_e2e_latency.cpp
-/// E2E latency benchmark: measures Transport framework overhead using
-/// FakeTcpTransport as the backend.
+/// @file bench_e2e_latency_v3.cpp
+/// v3.3 rewrite of bench_e2e_latency.cpp.
 ///
-/// Benchmarks:
-///   1. Send enqueue throughput (measures SPSC queue + TX thread processing)
-///   2. Transport creation overhead (connect + thread start)
-///   3. Stats snapshot overhead (atomic reads aggregation)
+/// Microbenchmarks the v3.3 `KernelTcpStream<RawStreamCodec, false>` API
+/// against an in-process loopback echo server. Replaces the legacy
+/// `Transport<FakeTcpTransport, RawFramer>` benchmark — the v3.3 backend
+/// is real I/O (epoll loopback) which is what the design doc Phase 5
+/// performance verification gate cares about.
 ///
-/// These establish the floor overhead of the Transport framework itself,
-/// independent of any real network backend.
+/// Part of Phase 6 of the v3.3 architecture refactor
+/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <string>
 #include <thread>
-#include <vector>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <benchmark/benchmark.h>
 
-#include "eph/core/fake_tcp_transport.hpp"
-#include "eph/transport/raw_framer.hpp"
-#include "eph/transport/transport.hpp"
-#include "eph/transport/transport_types.hpp"
+#include "eph/codec/raw_stream_codec.hpp"
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/socket_addr.hpp"
 
-using namespace eph::net;
-using eph::net::testing::FakeTcpTransport;
-
-/// Transport type: FakeTcp, RawFramer, 512B max payload, 256-depth queue.
-using BenchTransport = Transport<FakeTcpTransport, RawFramer, 512, 256>;
+namespace ek = eph::net::kernel;
+namespace en = eph::net;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
 
 namespace {
 
-TransportConfig make_bench_config() {
-    TransportConfig cfg;
-    cfg.remote_host = "bench.local";
-    cfg.remote_port = 9999;
-    cfg.use_tls     = false;
-    cfg.verify_peer = false;
-    cfg.max_reconnect_attempts = 0;
-    cfg.ping_interval = std::chrono::seconds{0};
-    return cfg;
+using PlainStream = ek::KernelTcpStream<ec::RawStreamCodec, /*Tls=*/false>;
+
+/// Helper: bind a loopback listener and return (fd, port).
+std::pair<int, uint16_t> bind_loopback() {
+    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int one = 1;
+    (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    addr.sin_port        = 0;
+    ::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    ::listen(lfd, 1);
+    socklen_t alen = sizeof(addr);
+    ::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen);
+    return {lfd, ::ntohs(addr.sin_port)};
 }
 
-BenchTransport::TcpFactory make_factory() {
-    return []() -> std::expected<std::unique_ptr<FakeTcpTransport>, std::string> {
-        auto tcp = std::make_unique<FakeTcpTransport>();
-        auto result = tcp->connect(std::chrono::milliseconds{100});
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
+/// Single-connection echo loop.
+void echo_serve(int lfd, std::atomic<bool>& stop) {
+    int cfd = ::accept(lfd, nullptr, nullptr);
+    if (cfd < 0) return;
+    char buf[2048];
+    while (!stop.load(std::memory_order_acquire)) {
+        ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = ::send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+            if (w <= 0) { off = n; break; }
+            off += w;
+        }
+    }
+    ::close(cfd);
 }
 
 } // namespace
 
 // ---------------------------------------------------------------------------
-// BM_E2E_SendEnqueue — measures send() enqueue latency (SPSC push)
+// BM_V3_StreamCreate — measure cost of constructing a Stream + handshake
+// against the loopback echo server.
 //
-// The actual TCP send happens asynchronously on the TX thread. This measures
-// how fast the application thread can submit messages to the TX queue.
+// Each iteration accepts a fresh connection and immediately closes it. To
+// avoid TIME_WAIT exhaustion under high iteration counts the listener uses
+// SO_REUSEADDR (already set by bind_loopback) and the client side sets
+// SO_LINGER=0 via close — but the v3.3 KernelTcpStream destroys via plain
+// close(2). The benchmark therefore caps iterations at a sane value via
+// `Iterations()`.
 // ---------------------------------------------------------------------------
+static void BM_V3_StreamCreate(benchmark::State& state) {
+    auto [lfd, port] = bind_loopback();
+    std::atomic<bool> stop{false};
+    std::thread server([lfd, &stop] {
+        while (!stop.load(std::memory_order_acquire)) {
+            int cfd = ::accept(lfd, nullptr, nullptr);
+            if (cfd < 0) break;
+            ::close(cfd);
+        }
+    });
 
-static void BM_E2E_SendEnqueue(benchmark::State& state) {
-    auto cfg = make_bench_config();
-    auto transport = BenchTransport::create(make_factory(), cfg);
-    if (!transport) {
-        state.SkipWithError("Transport::create failed");
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity  = 16 * 1024;
+    cfg.connect_timeout = 1s;
+
+    std::size_t failures = 0;
+    for (auto _ : state) {
+        auto sr = PlainStream::create(cfg);
+        if (!sr) {
+            // Best-effort: under heavy load the kernel may briefly fail to
+            // establish a fresh connection. Count and continue rather than
+            // skipping the entire benchmark — the surviving samples are
+            // still meaningful.
+            ++failures;
+            continue;
+        }
+        benchmark::DoNotOptimize(sr);
+        sr->reset();
+    }
+    state.counters["create_failures"] = static_cast<double>(failures);
+
+    stop.store(true, std::memory_order_release);
+    ::shutdown(lfd, SHUT_RDWR);
+    ::close(lfd);
+    server.join();
+}
+BENCHMARK(BM_V3_StreamCreate)->Unit(benchmark::kMicrosecond)->Iterations(200);
+
+// ---------------------------------------------------------------------------
+// BM_V3_RoundTrip — measure send + poll + receive RTT through the v3.3
+// API on a loopback fd.
+// ---------------------------------------------------------------------------
+static void BM_V3_RoundTrip(benchmark::State& state) {
+    auto [lfd, port] = bind_loopback();
+    std::atomic<bool> stop{false};
+    std::thread server([lfd, &stop] { echo_serve(lfd, stop); });
+
+    auto poller = ek::KernelPoller::create({}).value();
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity  = 16 * 1024;
+    cfg.connect_timeout = 1s;
+    auto stream_r = PlainStream::create(cfg);
+    if (!stream_r) {
+        state.SkipWithError("create failed");
+        return;
+    }
+    auto stream = std::move(*stream_r);
+
+    std::atomic<std::size_t> rx{0};
+    stream->on_message = [&](const uint8_t*, uint16_t n) {
+        rx.fetch_add(n, std::memory_order_release);
+    };
+    if (auto r = poller->add(stream.get()); !r) {
+        state.SkipWithError("attach failed");
         return;
     }
 
-    const size_t payload_len = static_cast<size_t>(state.range(0));
-    std::vector<uint8_t> payload(payload_len, 0xAB);
+    constexpr std::size_t kPayload = 64;
+    uint8_t payload[kPayload]{};
+    for (std::size_t i = 0; i < kPayload; ++i) payload[i] = static_cast<uint8_t>(i);
 
-    // Warm up TX thread
-    std::this_thread::sleep_for(std::chrono::milliseconds{5});
-
+    std::size_t expected = 0;
     for (auto _ : state) {
-        auto result = (*transport)->send(payload.data(), payload_len);
-        benchmark::DoNotOptimize(result);
-    }
-
-    (*transport)->stop();
-    state.SetItemsProcessed(state.iterations());
-    state.SetBytesProcessed(
-        static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(payload_len));
-}
-BENCHMARK(BM_E2E_SendEnqueue)
-    ->Arg(32)    // small message
-    ->Arg(128)   // medium message
-    ->Arg(512)   // max payload
-    ->Unit(benchmark::kNanosecond);
-
-// ---------------------------------------------------------------------------
-// BM_E2E_TransportCreate — measures connect + thread startup overhead
-// ---------------------------------------------------------------------------
-
-static void BM_E2E_TransportCreate(benchmark::State& state) {
-    auto cfg = make_bench_config();
-
-    for (auto _ : state) {
-        auto transport = BenchTransport::create(make_factory(), cfg);
-        benchmark::DoNotOptimize(transport);
-        if (transport) {
-            (*transport)->stop();
+        auto tx = stream->send(payload);
+        if (!tx) {
+            state.SkipWithError("send failed");
+            break;
+        }
+        expected += kPayload;
+        // Drain the loopback echo through the poller until rx catches up.
+        while (rx.load(std::memory_order_acquire) < expected) {
+            poller->poll(std::chrono::milliseconds{1});
         }
     }
+    state.SetBytesProcessed(static_cast<int64_t>(state.iterations() * kPayload));
 
-    state.SetItemsProcessed(state.iterations());
+    stop.store(true, std::memory_order_release);
+    (void)stream->close_gracefully();
+    poller->poll(50ms);
+    (void)poller->remove(stream.get());
+    stream.reset();
+    ::shutdown(lfd, SHUT_RDWR);
+    ::close(lfd);
+    server.join();
 }
-BENCHMARK(BM_E2E_TransportCreate)->Unit(benchmark::kMicrosecond);
-
-// ---------------------------------------------------------------------------
-// BM_E2E_StatsSnapshot — measures stats() aggregation cost
-//
-// The stats() call reads ~30 atomic counters with relaxed ordering and
-// computes derived metrics. This benchmark ensures the monitoring path
-// doesn't regress.
-// ---------------------------------------------------------------------------
-
-static void BM_E2E_StatsSnapshot(benchmark::State& state) {
-    auto cfg = make_bench_config();
-    auto transport = BenchTransport::create(make_factory(), cfg);
-    if (!transport) {
-        state.SkipWithError("Transport::create failed");
-        return;
-    }
-
-    // Send some data to populate stats
-    const uint8_t payload[] = "stats-bench";
-    for (int i = 0; i < 100; ++i) {
-        (*transport)->send(payload, sizeof(payload) - 1);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds{10});
-
-    for (auto _ : state) {
-        auto s = (*transport)->stats();
-        benchmark::DoNotOptimize(s);
-    }
-
-    (*transport)->stop();
-    state.SetItemsProcessed(state.iterations());
-}
-BENCHMARK(BM_E2E_StatsSnapshot)->Unit(benchmark::kNanosecond);
-
-// ---------------------------------------------------------------------------
-// BM_E2E_SendBurst — measures burst send pattern (queue N, let TX drain)
-//
-// Simulates real-world usage: burst of messages followed by a brief pause.
-// Reports items/sec as effective throughput.
-// ---------------------------------------------------------------------------
-
-static void BM_E2E_SendBurst(benchmark::State& state) {
-    auto cfg = make_bench_config();
-    auto transport = BenchTransport::create(make_factory(), cfg);
-    if (!transport) {
-        state.SkipWithError("Transport::create failed");
-        return;
-    }
-
-    const int burst_size = static_cast<int>(state.range(0));
-    const uint8_t payload[64] = {};
-
-    std::this_thread::sleep_for(std::chrono::milliseconds{5});
-
-    for (auto _ : state) {
-        for (int i = 0; i < burst_size; ++i) {
-            auto result = (*transport)->send(payload, sizeof(payload));
-            benchmark::DoNotOptimize(result);
-        }
-        // Brief yield to let TX drain
-        std::this_thread::yield();
-    }
-
-    (*transport)->stop();
-    state.SetItemsProcessed(state.iterations() * burst_size);
-    state.SetBytesProcessed(
-        state.iterations() * burst_size * static_cast<int64_t>(sizeof(payload)));
-}
-BENCHMARK(BM_E2E_SendBurst)
-    ->Arg(1)
-    ->Arg(8)
-    ->Arg(32)
-    ->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_V3_RoundTrip)->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_MAIN();

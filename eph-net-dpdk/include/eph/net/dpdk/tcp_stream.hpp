@@ -68,33 +68,16 @@
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
 
-// Phase 5 BLOCKER (DPDK TLS path):
-//
-// The legacy `eph::dpdk::tcp.hpp` (which we still wrap via `TcpSession`)
-// includes `<openssl/rand.h>` from the **vcpkg openssl** package. The
-// in-place TLS primitive used by Phase 5 (`EVP_AEAD_CTX_*`) is BoringSSL/
-// aws-lc only and lives in the `aws-lc` package. The two openssl
-// implementations have ABI-incompatible typedefs (`CRYPTO_THREADID`,
-// `ASN1_NULL`, etc.) and CANNOT coexist in the same TU.
-//
-// Phase 5 therefore ships the DPDK TLS path as a *structural stub* on the
-// DPDK side: the in-place AEAD primitive itself
-// (`eph::net::detail::TlsInPlaceDecryptor`) is fully implemented and unit
-// tested in a non-DPDK TU (see `eph-net/tests/test_tls_in_place_decrypt.cpp`),
-// and the DPDK Stream's `EnableTls=true` instantiation still returns a
-// typed `TlsHandshakeFailed` error from `create()` until Phase 5.5
-// migrates legacy `RAND_bytes` off vcpkg openssl (or Phase 7 deletes the
-// legacy header outright).
-//
-// What IS exercised by Phase 5 on the DPDK side:
-//   - PacketView concept conformance for `MbufView` (added in Phase 5).
-//   - `DpdkUdpSocket::join_multicast / leave_multicast / connect_to`
-//     (which only need DPDK headers, no openssl).
-namespace eph::net::dpdk::detail {
-struct TlsState {
-    bool handshake_completed{false};
-};
-} // namespace eph::net::dpdk::detail
+// Phase 7: the DPDK TLS path is now FULLY WIRED. Phase 5 shipped it as a
+// structural stub because `eph::dpdk::tcp.hpp` included `<openssl/rand.h>`
+// from vcpkg-openssl which collided with aws-lc in the same TU. Phase 7
+// replaced the two `RAND_bytes` call sites (TcpSession ISN generation and
+// the WS mask-key cache) with `getrandom(2)`, deleted the legacy
+// eph-transport / eph-dpdk modules, and moved the DPDK primitives into
+// eph-net-dpdk. aws-lc is now the only OpenSSL flavour in any eph-net-dpdk
+// TU, which lets us include the real `detail/tls_state.hpp` unconditionally
+// and run the TLS 1.3 handshake + in-place AEAD path for `EnableTls=true`.
+#include "eph/net/dpdk/detail/tls_state.hpp"
 
 namespace eph::net::dpdk {
 
@@ -246,20 +229,21 @@ public:
         }
 
         if constexpr (EnableTls) {
-            // Phase 5: see the BLOCKER comment at the top of this file.
-            // The DPDK TLS path is structurally complete in eph-net-dpdk's
-            // detail/tls_state.hpp but cannot be compiled in the same TU
-            // as `eph::dpdk::tcp.hpp` due to the vcpkg-openssl ↔ aws-lc
-            // type conflict. Until Phase 5.5 (or Phase 7) resolves the
-            // legacy `RAND_bytes` dependency, `EnableTls=true` continues
-            // to return a typed TlsHandshakeFailed at create-time.
-            SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: TLS path blocked by openssl/aws-lc "
-                "type conflict (Phase 5 BLOCKER, see tcp_stream.hpp header)");
-            return std::unexpected(core::ErrorInfo{
-                core::Error::TlsHandshakeFailed,
-                "DpdkTcpStream: TLS path blocked by vcpkg-openssl ↔ aws-lc "
-                "type conflict — see Phase 5 BLOCKER note"});
+            // Phase 7: real TLS 1.3 handshake via aws-lc, driven through the
+            // legacy `eph::dpdk::TcpSession<>` (which satisfies the legacy
+            // TcpTransport concept via its `send`/`poll_rx`/`state` triple).
+            // The hot-path AEAD state is extracted into the TlsState object
+            // held as a [[no_unique_address]] member of this stream; data
+            // frames decrypt in place over the reasm buffer on the RX burst.
+            auto h = stream->tls_.handshake(stream->sess_, stream->cfg_.tls);
+            if (!h) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::create: TLS handshake failed: {}",
+                    h.error().detail);
+                return std::unexpected(h.error());
+            }
+            SPDLOG_LOGGER_INFO(log,
+                "DpdkTcpStream::create: TLS 1.3 handshake complete");
         }
 
         SPDLOG_LOGGER_INFO(log,
@@ -303,19 +287,37 @@ public:
                 core::Error::Disconnected,
                 "DpdkTcpStream::send: session not Established"});
         }
-        // Phase 5: with EnableTls=true the create() factory rejects the
-        // instantiation, so we never reach send() with TLS active. The
-        // encrypted send path is implemented in detail/tls_state.hpp but
-        // cannot be compiled here — see Phase 5 BLOCKER note.
-        auto r = sess_.send(data.data(), data.size());
-        if (!r) {
-            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::send: TcpSession::send err={}", r.error());
-            return std::unexpected(core::ErrorInfo{
-                core::Error::Disconnected,
-                "DpdkTcpStream::send: TcpSession::send failed"});
+        // Phase 7: with EnableTls=true, encrypt the bytes into one or more
+        // TLS records before forwarding to the DPDK byte pipe. Mirrors the
+        // kernel-side path (KernelTcpStream::send).
+        if constexpr (EnableTls) {
+            tls_send_buf_.clear();
+            auto enc = tls_.encrypt_for_send(data.data(), data.size(),
+                                              tls_send_buf_);
+            if (!enc) {
+                return std::unexpected(enc.error());
+            }
+            auto sr = sess_.send(tls_send_buf_.data(), tls_send_buf_.size());
+            if (!sr) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "DpdkTcpStream::send(TLS): TcpSession::send err={}", sr.error());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "DpdkTcpStream::send: TcpSession::send failed"});
+            }
+            // API contract: report plaintext byte count.
+            return data.size();
+        } else {
+            auto r = sess_.send(data.data(), data.size());
+            if (!r) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "DpdkTcpStream::send: TcpSession::send err={}", r.error());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "DpdkTcpStream::send: TcpSession::send failed"});
+            }
+            return *r;
         }
-        return *r;
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
@@ -495,6 +497,10 @@ private:
     [[no_unique_address]] std::conditional_t<EnableTls,
                                               detail::TlsState,
                                               std::monostate> tls_{};
+    // Phase 7: scratch buffer for encrypting send() payloads into TLS records
+    // before handing them to the byte pipe. Persists across calls so we do not
+    // reallocate per send. Only populated when `EnableTls=true`.
+    std::vector<uint8_t>                    tls_send_buf_{};
     detail::ReasmBuffer                     reasm_;
     DpdkPoller<void>*                       attached_to_{nullptr};
     ::eph::net::ReconnectPolicy             reconnect_policy_;

@@ -25,21 +25,14 @@
                                   // the legacy type in eph::dpdk::UdpConfig,
                                   // and our config wrapper names it
                                   // LegacyUdpConfig at its single use-site).
+#include "eph/net/detail/tls_constants.hpp"   // Phase 7: TlsConfig
 #include "eph/net/reconnect_policy.hpp"
 
-// Phase 5: the DPDK-side StreamConfig deliberately does NOT carry an
-// `eph::net::TlsConfig` field because including `tls_constants.hpp`
-// (which lives in the aws-lc-using eph-transport stack) would conflict
-// with the **vcpkg openssl** that `eph::dpdk::tcp.hpp` already requires
-// for `<openssl/rand.h>`. The two openssl implementations have
-// ABI-incompatible typedefs (`CRYPTO_THREADID`, `ASN1_NULL`, ...) and
-// CANNOT coexist in the same TU. See the BLOCKER note at the top of
-// `eph/net/dpdk/tcp_stream.hpp` for the full story.
-//
-// Until Phase 5.5 / Phase 7 resolves the legacy `RAND_bytes` dependency,
-// the DPDK-side TLS path is structurally complete in
-// `eph/net/dpdk/detail/tls_state.hpp` but is not reachable from the
-// `DpdkTcpStream::create()` factory.
+// Phase 7: the StreamConfig now carries a real `eph::net::TlsConfig` field.
+// The vcpkg-openssl ↔ aws-lc TU conflict that blocked this in Phase 5 was
+// resolved by deleting the legacy eph-dpdk / eph-transport modules and
+// switching `RAND_bytes` call sites to `getrandom(2)`. See the header
+// note in `eph/net/dpdk/tcp_stream.hpp` for the full story.
 
 namespace eph::net::dpdk {
 
@@ -80,10 +73,9 @@ struct StreamConfig {
     /// @brief Reconnection policy applied by higher-level recovery code.
     ReconnectPolicyConfig reconnect{};
 
-    // Phase 5 NOTE: TLS configuration omitted from the DPDK-side
-    // StreamConfig — see the comment block at the top of this file for
-    // the openssl/aws-lc TU conflict that blocks it. The DPDK TLS path
-    // remains a structural stub until Phase 5.5.
+    /// @brief TLS 1.3 handshake configuration. Ignored when the template
+    /// parameter `EnableTls=false`.
+    ::eph::net::TlsConfig tls{};
 };
 
 // ---------------------------------------------------------------------------

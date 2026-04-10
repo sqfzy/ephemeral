@@ -45,7 +45,7 @@
 #include "eph/codec/detail/span_packet_view.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
-#include "eph/transport/detail/websocket.hpp"  // ws::decode_frame, encode_frame, opcode
+#include "eph/net/detail/websocket.hpp"  // ws::decode_frame, encode_frame, opcode
 
 namespace eph::codec {
 

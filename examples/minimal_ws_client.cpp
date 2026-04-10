@@ -1,101 +1,80 @@
-/// @file minimal_ws_client.cpp
-/// Minimal WebSocket echo client — the simplest way to use ephemeral.
+/// @file minimal_ws_client_v3.cpp
+/// v3.3 rewrite of minimal_ws_client.cpp.
 ///
-/// Connects to a WebSocket server, sends one message, prints the echo,
-/// and exits. This is the first example to read if you're new to ephemeral.
+/// The shortest possible kernel-backed WebSocket client using the new
+/// eph::net::kernel + eph::codec API. Matches the design doc's Example 1
+/// shape line-for-line.
 ///
-/// Usage:
-///   ./minimal_ws_client                             # default: wss://echo.websocket.org/
-///   ./minimal_ws_client --host myserver.com --port 8080 --no-tls
-///
-/// Related examples:
-///   - production_client.cpp  — latency measurement, reconnection, state callbacks
-///   - ws_echo_client.cpp     — full-featured client with DPDK support
+/// Part of Phase 6 of the v3.3 architecture refactor
+/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
-#include <cstdlib>
-#include <expected>
-#include <format>
-#include <iostream>
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <cstdio>
 #include <memory>
-#include <string>
-#include <string_view>
-#include <thread>
 
 #include <spdlog/spdlog.h>
 
-#include "eph/net/socket_transport.hpp"
-#include "eph/transport/transport.hpp"
+#include "eph/codec/ws_codec.hpp"
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/socket_addr.hpp"
+
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
+
+static std::atomic<bool> g_running{true};
+static void on_sigint(int) { g_running.store(false, std::memory_order_release); }
 
 int main(int argc, char** argv) {
+    std::signal(SIGINT, on_sigint);
     spdlog::set_level(spdlog::level::info);
 
-    // Minimal argument parsing
-    std::string host    = "echo.websocket.org";
-    uint16_t    port    = 443;
-    bool        use_tls = true;
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if (arg == "--host" && i + 1 < argc)  host = argv[++i];
-        else if (arg == "--port" && i + 1 < argc) port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (arg == "--no-tls") use_tls = false;
-        else if (arg == "--help") {
-            std::cerr << std::format("Usage: {} [--host H] [--port P] [--no-tls]\n", argv[0]);
-            return 0;
-        }
-    }
+    // Minimum configurable surface: target IPv4 literal + port.
+    const char* ip_str = (argc > 1) ? argv[1] : "127.0.0.1";
+    uint16_t    port   = (argc > 2) ? static_cast<uint16_t>(std::atoi(argv[2])) : 8080;
 
-    // 1. Configure the transport
-    eph::net::SocketConfig sock_cfg{ .host = host, .port = port, .tcp_nodelay = true };
-    eph::net::TransportConfig transport_cfg{
-        .remote_host = host,
-        .remote_port = port,
-        .use_tls     = use_tls,
-        .verify_peer = false,   // Relaxed for demo — enable in production
-    };
-
-    // 2. Create TCP factory (how to establish the underlying TCP connection)
-    auto tcp_factory = [&sock_cfg]()
-        -> std::expected<std::unique_ptr<eph::net::SocketTransport>, std::string> {
-        auto tcp = std::make_unique<eph::net::SocketTransport>(sock_cfg);
-        auto result = tcp->connect(std::chrono::milliseconds{5000});
-        if (!result) return std::unexpected(result.error());
-        return tcp;
-    };
-
-    // 3. Connect (TCP → TLS handshake → WebSocket upgrade)
-    auto scheme = use_tls ? "wss" : "ws";
-    spdlog::info("Connecting to {}://{}:{}/", scheme, host, port);
-
-    auto result = eph::net::Transport<eph::net::SocketTransport>::create(
-        std::move(tcp_factory), transport_cfg);
-    if (!result) {
-        spdlog::error("Connection failed: {}", result.error().message());
+    auto ip = eph::net::Ipv4Addr::parse(ip_str);
+    if (!ip) {
+        spdlog::error("minimal_ws_client_v3: bad IP literal '{}'", ip_str);
         return 1;
     }
-    auto& tp = **result;
-    spdlog::info("Connected!");
 
-    // 4. Send a message
-    std::string msg = "hello ephemeral";
-    auto rc = tp.send_text(msg.data(), msg.size());
-    if (rc != eph::net::SendError::kOk) {
-        spdlog::error("Send failed: {}", eph::net::send_error_name(rc));
-        tp.stop();
-        return 1;
+    // One poller owns the event loop.
+    auto poller = en::KernelPoller::create({}).value();
+
+    // Plaintext WS — real WS handshake is codec/helper territory.
+    using Stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+    en::StreamConfig cfg{};
+    cfg.remote          = eph::net::SocketAddr{*ip, port};
+    cfg.reasm_capacity  = 16 * 1024;
+    cfg.connect_timeout = 2s;
+
+    auto sr = Stream::create(std::move(cfg));
+    if (!sr) {
+        spdlog::error("create failed: {}", sr.error().detail);
+        return 2;
     }
-    spdlog::info(">> {}", msg);
+    auto stream = std::move(*sr);
 
-    // 5. Wait for echo
-    for (int attempts = 0; attempts < 50; ++attempts) {
-        bool got = tp.recv([](const uint8_t* data, size_t len) {
-            std::string_view echo(reinterpret_cast<const char*>(data), len);
-            spdlog::info("<< {}", echo);
-        });
-        if (got) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    stream->on_message = [](const uint8_t* data, uint16_t len) {
+        spdlog::info("<< {} bytes", len);
+        (void)data;
+    };
+
+    if (auto r = poller->add(stream.get()); !r) {
+        spdlog::error("poller->add failed: {}", r.error().detail);
+        return 3;
     }
 
-    // 6. Clean shutdown
-    tp.stop();
+    // Drive the loop until Ctrl+C.
+    while (g_running.load(std::memory_order_acquire)) {
+        (void)poller->poll(100ms);
+    }
+
+    spdlog::info("minimal_ws_client_v3: exiting");
     return 0;
 }

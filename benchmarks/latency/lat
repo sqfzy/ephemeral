@@ -55,8 +55,6 @@ Scenarios:
   udp           raw UDP RTT
   ws            plain WebSocket RTT
   ex_market     exchange bookTicker push (1-leg)
-  ex_order      exchange order RTT (N-inflight pipeline)
-  ex_md_udp     exchange UDP market data RTT
 
 Flags:
   --dpdk        use the DPDK client variant (kernel mock unchanged)
@@ -86,7 +84,7 @@ done
 [[ -n "$SCENARIO" ]] || { usage; exit 1; }
 
 case "$SCENARIO" in
-    tcp|udp|ws|ex_market|ex_order|ex_md_udp) ;;
+    tcp|udp|ws|ex_market) ;;
     *) die "unknown scenario: $SCENARIO" "Run $0 --help" ;;
 esac
 

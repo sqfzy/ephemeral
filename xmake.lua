@@ -97,25 +97,16 @@ rule("eph-bench")
 includes("eph-core/xmake.lua")
 includes("eph-utils/xmake.lua")
 includes("eph-containers/xmake.lua")
-includes("eph-transport/xmake.lua")
 includes("eph-fix/xmake.lua")
 includes("eph-itch/xmake.lua")
 includes("eph-json/xmake.lua")
 includes("eph-book/xmake.lua")
+-- Phase 7: eph-transport and eph-dpdk have been deleted. Their source
+-- files were migrated into eph-net/include/eph/net/detail/ (TLS + WS wire
+-- helpers) and eph-net-dpdk/include/eph/dpdk/ (DPDK low-level primitives).
 includes("eph-net/xmake.lua")
-includes("eph-dpdk/xmake.lua")
--- v3.3 Phase 1: new eph-codec module (stateful Codec implementations).
--- Depends only on eph-core + eph-itch; lives alongside the old eph-transport
--- framers until Phase 7 deletes them.
 includes("eph-codec/xmake.lua")
--- v3.3 Phase 3: new eph-net-kernel module (epoll-based Stream/Datagram/Poller).
--- Depends only on eph-core + eph-net; coexists with the legacy
--- eph-net/socket_transport.hpp until Phase 7.
 includes("eph-net-kernel/xmake.lua")
--- v3.3 Phase 4: new eph-net-dpdk module (DPDK lcore Stream/Datagram/Poller).
--- Pragmatically reuses eph-dpdk internals (TcpSession, UdpSender, Eal) until
--- Phase 7 migrates the source files into this module's own detail/ subdir
--- and removes the eph-dpdk dependency.
 includes("eph-net-dpdk/xmake.lua")
 
 -- Cross-module integration tests
@@ -131,192 +122,71 @@ includes("tests/unit/bench/xmake.lua")
 includes("benchmarks/latency/xmake.lua")
 
 -- ===========================================================================
--- Examples (centralized, user-facing)
+-- Examples (centralized, user-facing). Post-Phase-7 all examples target
+-- the v3.3 eph-net-kernel / eph-net-dpdk / eph-codec API.
 -- ===========================================================================
-
-target("ws_echo_client")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/ws_echo_client.cpp")
-    add_deps("eph-net")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-
-target("ws_echo_client_dpdk")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/ws_echo_client_dpdk.cpp")
-    add_deps("eph-net", "eph-dpdk", "eph-fix")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-    apply_dpdk_pmd_linkgroups()
-
-target("minimal_ws_client")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/minimal_ws_client.cpp")
-    add_deps("eph-net")
-
-target("production_client")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/production_client.cpp")
-    add_deps("eph-net")
-
-target("spsc_queue_demo")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/spsc_queue_demo.cpp")
-    add_deps("eph-containers")
-
-target("perf_tuning_basics")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/perf_tuning_basics.cpp")
-    add_deps("eph-utils")
-
-target("dpdk_quickstart")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/dpdk_quickstart.cpp")
-    add_deps("eph-net", "eph-dpdk", "eph-fix")
-    apply_dpdk_pmd_linkgroups()
-
-target("ws_via_proxy")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/ws_via_proxy.cpp")
-    add_deps("eph-net")
-
-target("framer_showcase")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/framer_showcase.cpp")
-    add_deps("eph-net")
-
-target("fix_trading_demo")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/fix_trading_demo.cpp")
-    add_deps("eph-fix", "eph-utils")
-
-target("itch_feed_demo")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/itch_feed_demo.cpp")
-    add_deps("eph-itch")
-
-target("binance_book")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/binance_book.cpp")
-    add_deps("eph-net", "eph-json", "eph-book")
 
 target("simple_hft")
     set_kind("binary")
     set_group("examples")
     set_default(false)
     add_files("examples/simple_hft.cpp")
-    add_deps("eph-net")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
+    add_deps("eph-net-kernel", "eph-codec")
 
 target("simple_hft_dpdk")
     set_kind("binary")
     set_group("examples")
     set_default(false)
     add_files("examples/simple_hft_dpdk.cpp")
-    add_deps("eph-net", "eph-dpdk", "eph-fix")
-    add_defines("EPH_ENABLE_TIMESTAMPS=1")
-    add_cxflags("-fno-omit-frame-pointer", "-march=native", { force = true })
-    set_symbols("debug")
-    apply_dpdk_pmd_linkgroups()
-
--- ===========================================================================
--- v3.3 Phase 6: v3 examples — downstream consumers migrated to the new
---               eph::net::kernel / eph::net::dpdk / eph::codec API.
--- ===========================================================================
-
-target("simple_hft_v3")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/simple_hft_v3.cpp")
-    add_deps("eph-net-kernel", "eph-codec")
-    add_packages("aws-lc")
-
-target("simple_hft_dpdk_v3")
-    set_kind("binary")
-    set_group("examples")
-    set_default(false)
-    add_files("examples/simple_hft_dpdk_v3.cpp")
     add_deps("eph-net-dpdk", "eph-codec")
     apply_dpdk_pmd_linkgroups()
 
-target("simple_hft_dpdk_reactor_v3")
+target("simple_hft_dpdk_reactor")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/simple_hft_dpdk_reactor_v3.cpp")
+    add_files("examples/simple_hft_dpdk_reactor.cpp")
     add_deps("eph-net-dpdk", "eph-codec")
     apply_dpdk_pmd_linkgroups()
 
-target("binance_book_v3")
+target("binance_book")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/binance_book_v3.cpp")
+    add_files("examples/binance_book.cpp")
     add_deps("eph-net-kernel", "eph-codec", "eph-json", "eph-book")
-    add_packages("aws-lc")
 
-target("framer_showcase_v3")
+target("framer_showcase")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/framer_showcase_v3.cpp")
+    add_files("examples/framer_showcase.cpp")
     add_deps("eph-codec")
 
-target("minimal_ws_client_v3")
+target("minimal_ws_client")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/minimal_ws_client_v3.cpp")
+    add_files("examples/minimal_ws_client.cpp")
     add_deps("eph-net-kernel", "eph-codec")
-    add_packages("aws-lc")
 
-target("production_client_v3")
+target("production_client")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/production_client_v3.cpp")
+    add_files("examples/production_client.cpp")
     add_deps("eph-net-kernel", "eph-codec")
-    add_packages("aws-lc")
 
-target("ws_echo_client_v3")
+target("ws_echo_client")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/ws_echo_client_v3.cpp")
+    add_files("examples/ws_echo_client.cpp")
     add_deps("eph-net-kernel", "eph-codec")
-    add_packages("aws-lc")
 
-target("ws_via_proxy_v3")
+target("ws_via_proxy")
     set_kind("binary")
     set_group("examples")
     set_default(false)
-    add_files("examples/ws_via_proxy_v3.cpp")
+    add_files("examples/ws_via_proxy.cpp")
     add_deps("eph-net-kernel", "eph-codec")
-    add_packages("aws-lc")

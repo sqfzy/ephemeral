@@ -24,11 +24,11 @@
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
 
-namespace end = eph::net::dpdk;
+namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
 
-using PlainRawStream = end::DpdkTcpStream<ec::RawStreamCodec, false>;
-using TlsRawStream   = end::DpdkTcpStream<ec::RawStreamCodec, true>;
+using PlainRawStream = edpk::DpdkTcpStream<ec::RawStreamCodec, false>;
+using TlsRawStream   = edpk::DpdkTcpStream<ec::RawStreamCodec, true>;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
@@ -47,8 +47,8 @@ static_assert(eph::net::Stream<TlsRawStream>,
 // Helpers
 // ---------------------------------------------------------------------------
 
-static end::StreamConfig make_config_with_pool(::rte_mempool* pool) {
-    end::StreamConfig cfg{};
+static edpk::StreamConfig make_config_with_pool(::rte_mempool* pool) {
+    edpk::StreamConfig cfg{};
     cfg.legacy.tuple.src_ip   = 0x0A000001;
     cfg.legacy.tuple.dst_ip   = 0x0A000002;
     cfg.legacy.tuple.src_port = 12345;
@@ -74,7 +74,7 @@ TEST(DpdkTcpStream, NullPoolFailsInvalidConfig) {
 }
 
 TEST(DpdkTcpStream, ZeroIpFailsInvalidConfig) {
-    end::StreamConfig cfg{};
+    edpk::StreamConfig cfg{};
     // Default-init: tuple is all zeros, pool is null. Validation should
     // catch this regardless of pool — the legacy validate() checks IPs first.
     auto r = PlainRawStream::create(cfg);

@@ -1,512 +1,209 @@
-/// @file ws/lat_ws.cpp
-/// lat_ws / lat_ws_dpdk — single-binary plain WebSocket latency benchmark.
+/// @file lat_ws_v3.cpp
+/// v3.3 WebSocket latency demonstrator using
+/// `KernelTcpStream<WsCodec, false>`.
 ///
-/// Same fork+setns layout as lat_tcp.cpp / lat_udp.cpp. Frames are
-/// self-describing so the mock handles variable client payload sizes
-/// without needing per-payload reconnects.
+/// Phase 6 of the v3.3 architecture refactor
+/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
+///
+/// **Scope**: this benchmark exercises the v3.3 codec contract for WS by
+/// driving WS-binary frames through a self-contained loopback echo loop.
+/// We do NOT perform a real HTTP/1.1 Upgrade handshake — the codec under
+/// test is the *frame* layer, not the upgrade dance. The peer is a tiny
+/// custom TCP echoer that just bounces every byte; combined with WsCodec
+/// on the client side this measures the codec's per-frame parsing cost
+/// inside the v3.3 RX pipeline.
 
 #include <algorithm>
-#include <array>
 #include <atomic>
-#include <cerrno>
 #include <chrono>
-#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <optional>
-#include <span>
-#include <string>
-#include <string_view>
+#include <thread>
 #include <vector>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
 
-#include "eph/utils/cpu.hpp"
-#include "eph/utils/cpu_pin.hpp"
+#include "eph/codec/ws_codec.hpp"
+#include "eph/net/socket_addr.hpp"
 #include "eph/utils/time.hpp"
 
-#include "../core/config.hpp"
-#include "../core/netns.hpp"
-#include "../core/runner.hpp"
-#include "../core/sample.hpp"
-#include "../core/signal.hpp"
-#include "../core/socket_bind.hpp"
-#include "../core/socket_io.hpp"
-#include "../core/tsc_protocol.hpp"
-#include "../core/ws_framing.hpp"
-#include "../core/ws_handshake.hpp"
-
 #if defined(EPH_USE_DPDK)
-#include "../core/dpdk_env.hpp"
-#include "eph/dpdk/tcp.hpp"
+// DPDK build: type-check only — vcpkg-openssl ↔ aws-lc TU clash blocks
+// pulling the kernel headers in the same TU as the DPDK headers.
+#include "eph/net/dpdk/poller.hpp"
+#include "eph/net/dpdk/tcp_stream.hpp"
+#else
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
-using namespace bench;
-
-namespace {
-
-constexpr std::array<size_t, 6> kDefaultWsPayloads{
-    64, 128, 256, 512, 1024, 4096
-};
-
-// send_all_fd / recv_exact_fd live in core/socket_io.hpp now.
-
-/// Read one server→client (unmasked) frame's payload into `out` (capacity
-/// `cap`). Returns payload length on success, 0 on failure / control frame.
-size_t recv_one_ws_frame(int fd, uint8_t* out, size_t cap) noexcept {
-    uint8_t hdr[2];
-    if (!recv_exact_fd(fd, hdr, 2)) return 0;
-    uint8_t opcode = hdr[0] & 0x0F;
-    if ((hdr[1] & 0x80) != 0) return 0;
-    uint64_t plen = hdr[1] & 0x7F;
-    if (plen == 126) {
-        uint8_t ext[2];
-        if (!recv_exact_fd(fd, ext, 2)) return 0;
-        plen = (uint64_t(ext[0]) << 8) | ext[1];
-    } else if (plen == 127) {
-        uint8_t ext[8];
-        if (!recv_exact_fd(fd, ext, 8)) return 0;
-        plen = 0;
-        for (int i = 0; i < 8; ++i) plen = (plen << 8) | ext[i];
-    }
-    if (plen > cap) return 0;
-    if (plen > 0 && !recv_exact_fd(fd, out, plen)) return 0;
-    if (opcode != ws_framing::kOpText && opcode != ws_framing::kOpBinary) return 0;
-    return static_cast<size_t>(plen);
-}
-
-} // namespace
-
-// ───────────────────────────────────────────────────────────────────────────
-// mock_fn — POSIX WebSocket echo server.
-// ───────────────────────────────────────────────────────────────────────────
-namespace bench::ws::mock_fn {
-
-int run(const BenchConfig& cfg) {
-    eph::utils::CpuPinPolicy policy;
-    if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = eph::utils::pin_thread_strict(cfg.mock_cpu, "mock_lat_ws", policy); !p) {
-        spdlog::error("mock_lat_ws: pin failed: {}", p.error());
-        return 1;
-    }
-
-    auto listen_fd = bench::tcp_bind_listen(cfg.server_ip, cfg.server_port);
-    if (!listen_fd) { spdlog::error("mock_lat_ws: {}", listen_fd.error()); return 1; }
-    spdlog::info("mock_lat_ws: listening on {}:{} work_ns={}",
-                 cfg.server_ip, cfg.server_port, cfg.server_work_ns);
-
-    constexpr size_t kRxBufCap = 65536;
-    std::vector<uint8_t> rx(kRxBufCap);
-    std::vector<uint8_t> tx_payload(1024);
-    std::vector<uint8_t> tx_frame(1024 + 16);
-
-    while (g_running.load(std::memory_order_acquire)) {
-        auto cfd = bench::accept_one(*listen_fd, g_running);
-        if (!cfd) { spdlog::error("mock_lat_ws: {}", cfd.error()); break; }
-        if (*cfd < 0) break;
-        int client_fd = *cfd;
-
-        if (auto h = bench::ws_server_handshake(client_fd); !h) {
-            spdlog::error("mock_lat_ws handshake: {}", h.error());
-            ::close(client_fd);
-            continue;
-        }
-        spdlog::info("mock_lat_ws: handshake complete");
-
-        size_t buffered = 0;
-        bool ok = true;
-        while (ok && g_running.load(std::memory_order_acquire)) {
-            // Refill until we likely have at least one frame header.
-            while (buffered < 14) {
-                pollfd p{}; p.fd = client_fd; p.events = POLLIN;
-                int rv = ::poll(&p, 1, 100);
-                if (rv < 0) { if (errno == EINTR) continue; ok = false; break; }
-                if (rv == 0) {
-                    if (!g_running.load(std::memory_order_acquire)) { ok = false; break; }
-                    continue;
-                }
-                ssize_t n = ::recv(client_fd, rx.data() + buffered,
-                                   rx.size() - buffered, 0);
-                if (n <= 0) { ok = false; break; }
-                buffered += static_cast<size_t>(n);
-            }
-            if (!ok) break;
-
-            auto frame = ws_framing::parse_client_frame_inplace(rx.data(), buffered, kRxBufCap);
-            while (!frame.has_value() && buffered < kRxBufCap) {
-                pollfd p{}; p.fd = client_fd; p.events = POLLIN;
-                int rv = ::poll(&p, 1, 100);
-                if (rv <= 0) { if (rv < 0 && errno == EINTR) continue; ok = false; break; }
-                ssize_t n = ::recv(client_fd, rx.data() + buffered,
-                                   rx.size() - buffered, 0);
-                if (n <= 0) { ok = false; break; }
-                buffered += static_cast<size_t>(n);
-                frame = ws_framing::parse_client_frame_inplace(rx.data(), buffered, kRxBufCap);
-            }
-            if (!ok || !frame.has_value()) { ok = false; break; }
-
-            uint64_t recv_tsc = eph::utils::TSC::now();
-            const uint8_t* payload = rx.data() + (frame->total_consumed - frame->payload_len);
-            uint64_t client_send_tsc = tsc::parse_T_send(payload, frame->payload_len);
-
-            eph::utils::spin_for_ns(cfg.server_work_ns);
-            uint64_t send_tsc = eph::utils::TSC::now();
-
-            int n = std::snprintf(reinterpret_cast<char*>(tx_payload.data()),
-                tx_payload.size(),
-                R"({"T":%llu,"T_recv":%llu,"T_send":%llu})",
-                static_cast<unsigned long long>(send_tsc),
-                static_cast<unsigned long long>(recv_tsc),
-                static_cast<unsigned long long>(client_send_tsc));
-            if (n <= 0) { ok = false; break; }
-
-            tx_frame.resize(static_cast<size_t>(n) + 16);
-            size_t flen = ws_framing::build_server_frame(tx_frame.data(),
-                ws_framing::kOpText, tx_payload.data(), static_cast<size_t>(n));
-            if (!send_all_fd(client_fd, tx_frame.data(), flen)) { ok = false; break; }
-
-            size_t consumed = frame->total_consumed;
-            std::memmove(rx.data(), rx.data() + consumed, buffered - consumed);
-            buffered -= consumed;
-        }
-        ::close(client_fd);
-        spdlog::info("mock_lat_ws: client disconnected");
-    }
-    ::close(*listen_fd);
-    return 0;
-}
-
-} // namespace bench::ws::mock_fn
-
-// ───────────────────────────────────────────────────────────────────────────
-// client_fn — WebSocket RTT bench (kernel + DPDK).
-// ───────────────────────────────────────────────────────────────────────────
-namespace bench::ws::client_fn {
-
-namespace {
-// Build the JSON payload `{"T_send":<tsc>,"pad":"xxx..."}` filling exactly
-// `target` bytes. Returns the actual length written (== target on success,
-// 0 on failure).
-size_t build_ws_payload(uint8_t* out, size_t target, uint64_t tsc) {
-    char prefix[80];
-    int n = std::snprintf(prefix, sizeof(prefix),
-        R"({"T_send":%llu,"pad":")",
-        static_cast<unsigned long long>(tsc));
-    if (n <= 0) return 0;
-    size_t prefix_len = static_cast<size_t>(n);
-    constexpr size_t suffix_len = 2; // "}"
-    if (prefix_len + suffix_len >= target) return 0;
-    size_t pad_len = target - prefix_len - suffix_len;
-    std::memcpy(out, prefix, prefix_len);
-    std::memset(out + prefix_len, 'x', pad_len);
-    out[prefix_len + pad_len + 0] = '"';
-    out[prefix_len + pad_len + 1] = '}';
-    return target;
-}
-} // namespace
+namespace en = eph::net;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
 
 #if !defined(EPH_USE_DPDK)
-class WsRttScenario {
-public:
-    WsRttScenario(std::string ip, uint16_t port)
-        : ip_(std::move(ip)), port_(port) {}
+namespace ek = eph::net::kernel;
+namespace {
 
-    bool open() {
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) return false;
-        int one = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+using WsStream = ek::KernelTcpStream<ec::WsCodec, /*Tls=*/false>;
 
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port_);
-        if (::inet_pton(AF_INET, ip_.c_str(), &addr.sin_addr) != 1) {
-            ::close(fd); return false;
+[[noreturn]] void echo_serve(int lfd) {
+    int cfd = ::accept(lfd, nullptr, nullptr);
+    if (cfd < 0) std::_Exit(1);
+    int one = 1;
+    (void)::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    uint8_t buf[4096];
+    for (;;) {
+        ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
+        if (n <= 0) std::_Exit(0);
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = ::send(cfd, buf + off, n - off, MSG_NOSIGNAL);
+            if (w <= 0) std::_Exit(0);
+            off += w;
         }
-        if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            ::close(fd); return false;
-        }
-
-        // Client-side WS upgrade. Sec-WebSocket-Key is fixed because the
-        // mock just validates presence and computes the accept digest.
-        char host[64];
-        std::snprintf(host, sizeof(host), "%s:%u", ip_.c_str(), port_);
-        std::string req =
-            std::string("GET / HTTP/1.1\r\nHost: ") + host +
-            "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n";
-        if (!send_all_fd(fd, req.data(), req.size())) { ::close(fd); return false; }
-
-        char resp[4096];
-        size_t got = 0;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (got < sizeof(resp)) {
-            auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if (rem.count() <= 0) { ::close(fd); return false; }
-            pollfd pfd{}; pfd.fd = fd; pfd.events = POLLIN;
-            int rv = ::poll(&pfd, 1, static_cast<int>(rem.count()));
-            if (rv <= 0) { ::close(fd); return false; }
-            ssize_t n = ::recv(fd, resp + got, sizeof(resp) - got, 0);
-            if (n <= 0) { ::close(fd); return false; }
-            got += static_cast<size_t>(n);
-            if (std::string_view{resp, got}.find("\r\n\r\n") != std::string_view::npos) break;
-        }
-        if (std::string_view{resp, got}.find("101") == std::string_view::npos) {
-            ::close(fd); return false;
-        }
-        fd_ = fd;
-        return true;
     }
+}
 
-    bool prepare(size_t payload) {
-        if (payload < 64) return false;
-        target_payload_ = payload;
-        return true;
-    }
+std::pair<int, uint16_t> bind_loopback() {
+    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int one = 1;
+    (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+    addr.sin_port        = 0;
+    ::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    ::listen(lfd, 1);
+    socklen_t alen = sizeof(addr);
+    ::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen);
+    return {lfd, ::ntohs(addr.sin_port)};
+}
 
-    bool do_one_rtt(RttSample& out) {
-        out.client_send_tsc = eph::utils::TSC::now();
-        json_buf_.resize(target_payload_);
-        if (!build_ws_payload(json_buf_.data(), target_payload_, out.client_send_tsc)) return false;
+void print_latency(const char* label, std::vector<uint64_t>& v) {
+    if (v.empty()) { spdlog::info("{}: no samples", label); return; }
+    std::sort(v.begin(), v.end());
+    auto pct = [&](double p) {
+        return v[std::min(v.size() - 1, static_cast<std::size_t>(p * (v.size() - 1)))];
+    };
+    spdlog::info("{}: count={} min={}ns p50={}ns p99={}ns max={}ns",
+                 label, v.size(), v.front(), pct(0.5), pct(0.99), v.back());
+}
 
-        frame_buf_.resize(target_payload_ + 16);
-        size_t flen = ws_framing::build_masked_text_frame(
-            frame_buf_.data(), json_buf_.data(), target_payload_, mask_seed_++);
-        if (!send_all_fd(fd_, frame_buf_.data(), flen)) return false;
+} // namespace
+#endif // !EPH_USE_DPDK
 
-        recv_buf_.resize(2048);
-        size_t plen = recv_one_ws_frame(fd_, recv_buf_.data(), recv_buf_.size());
-        if (plen == 0) return false;
-
-        out.client_recv_tsc = eph::utils::TSC::now();
-        out.server_recv_tsc = tsc::parse_T_recv(recv_buf_.data(), plen);
-        out.server_send_tsc = tsc::parse_T(recv_buf_.data(), plen);
-        return true;
-    }
-
-    void cleanup() {}
-
-    ~WsRttScenario() { if (fd_ >= 0) ::close(fd_); }
-
-private:
-    std::string ip_;
-    uint16_t    port_;
-    int         fd_ = -1;
-    size_t      target_payload_ = 0;
-    uint32_t    mask_seed_ = 0xDEADBEEF;
-    std::vector<uint8_t> json_buf_;
-    std::vector<uint8_t> frame_buf_;
-    std::vector<uint8_t> recv_buf_;
-};
-
-int run(const BenchConfig& cfg, int /*argc*/, char** /*argv*/) {
-    if (auto e = bench::enter_netns("bench_ns"); !e) {
-        spdlog::error("lat_ws: enter_netns: {}", e.error());
-        return 1;
-    }
-    eph::utils::CpuPinPolicy policy;
-    if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = eph::utils::pin_thread_strict(cfg.client_cpu, "bench_lat_ws", policy); !p) {
-        spdlog::error("lat_ws: pin failed: {}", p.error());
-        return 1;
-    }
-
-    WsRttScenario scenario{cfg.server_ip, cfg.server_port};
-    bool opened = false;
-    for (int i = 0; i < 50; ++i) {
-        if (scenario.open()) { opened = true; break; }
-        ::usleep(20'000);
-    }
-    if (!opened) {
-        spdlog::error("lat_ws: failed to connect / handshake after retries");
-        return 1;
-    }
-    spdlog::info("lat_ws (kernel): connected to {}:{}", cfg.server_ip, cfg.server_port);
-
-    std::span<const size_t> payloads =
-        cfg.ws_payloads.empty()
-            ? std::span<const size_t>{kDefaultWsPayloads}
-            : std::span<const size_t>{cfg.ws_payloads};
-
-    BenchRunner runner{cfg, "ws", "kernel"};
-    runner.run_rtt_sweep(scenario, payloads);
+#if defined(EPH_USE_DPDK)
+int main(int /*argc*/, char** /*argv*/) {
+    spdlog::set_level(spdlog::level::info);
+    spdlog::info("lat_ws_v3 (DPDK build): API surface compiled.");
+    using DpdkStream = eph::net::dpdk::DpdkTcpStream<ec::WsCodec, /*Tls=*/false>;
+    using DpdkPoller = eph::net::dpdk::DpdkPoller<>;
+    static_assert(sizeof(DpdkStream*) > 0);
+    static_assert(sizeof(DpdkPoller*) > 0);
     return 0;
 }
-
-#else // EPH_USE_DPDK
-
-[[nodiscard]] inline std::expected<void, std::string>
-dpdk_ws_handshake(eph::dpdk::TcpSession<>& session, std::string_view host) {
-    std::string req =
-        std::string("GET / HTTP/1.1\r\nHost: ") + std::string(host) +
-        "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-        "Sec-WebSocket-Version: 13\r\n\r\n";
-    size_t sent = 0;
-    while (sent < req.size()) {
-        size_t chunk = std::min(req.size() - sent, size_t{1460});
-        auto r = session.send(
-            reinterpret_cast<const uint8_t*>(req.data()) + sent,
-            static_cast<uint16_t>(chunk));
-        if (!r) return std::unexpected("ws handshake send: " + r.error());
-        sent += *r;
-    }
-    std::string resp;
-    resp.reserve(512);
-    uint64_t deadline = eph::utils::TSC::now() + tsc::ns_to_cycles(2'000'000'000ULL);
-    while (eph::utils::TSC::now() < deadline) {
-        auto r = session.poll_rx(
-            [&](const uint8_t* data, uint16_t len) {
-                resp.append(reinterpret_cast<const char*>(data), len);
-            });
-        if (!r) return std::unexpected("ws handshake recv: " + r.error());
-        if (resp.find("\r\n\r\n") != std::string::npos) break;
-    }
-    if (resp.find("101") == std::string::npos) {
-        return std::unexpected("ws handshake rejected (no 101)");
-    }
-    return {};
-}
-
-class WsDpdkRttScenario {
-public:
-    explicit WsDpdkRttScenario(eph::dpdk::TcpSession<>& session)
-        : session_(session) {}
-
-    bool prepare(size_t payload) {
-        if (payload < 64) return false;
-        target_payload_ = payload;
-        return true;
-    }
-
-    bool do_one_rtt(RttSample& out) {
-        out.client_send_tsc = eph::utils::TSC::now();
-        json_buf_.resize(target_payload_);
-        if (!build_ws_payload(json_buf_.data(), target_payload_, out.client_send_tsc)) return false;
-
-        frame_buf_.resize(target_payload_ + 16);
-        size_t flen = ws_framing::build_masked_text_frame(
-            frame_buf_.data(), json_buf_.data(), target_payload_, mask_seed_++);
-
-        size_t sent = 0;
-        while (sent < flen) {
-            size_t chunk = std::min(flen - sent, size_t{1460});
-            auto r = session_.send(frame_buf_.data() + sent,
-                                   static_cast<uint16_t>(chunk));
-            if (!r) return false;
-            sent += *r;
-        }
-
-        rx_accum_.clear();
-        uint64_t deadline = eph::utils::TSC::now() +
-                            tsc::ns_to_cycles(100'000'000ULL);
-        while (eph::utils::TSC::now() < deadline) {
-            auto r = session_.poll_rx(
-                [&](const uint8_t* data, uint16_t len) {
-                    rx_accum_.insert(rx_accum_.end(), data, data + len);
-                });
-            if (!r) return false;
-            auto [hdr, plen] = ws_framing::parse_server_frame(
-                rx_accum_.data(), rx_accum_.size());
-            if (plen > 0) {
-                out.client_recv_tsc = eph::utils::TSC::now();
-                const uint8_t* payload = rx_accum_.data() + hdr;
-                out.server_recv_tsc = tsc::parse_T_recv(payload, plen);
-                out.server_send_tsc = tsc::parse_T(payload, plen);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void cleanup() {}
-
-private:
-    eph::dpdk::TcpSession<>& session_;
-    size_t target_payload_ = 0;
-    uint32_t mask_seed_ = 0xDEADBEEF;
-    std::vector<uint8_t> json_buf_;
-    std::vector<uint8_t> frame_buf_;
-    std::vector<uint8_t> rx_accum_;
-};
-
-int run(const BenchConfig& cfg, int argc, char** argv) {
-    auto env = DpdkBenchEnv::create_full(argc, argv,
-        cfg.server_ip, cfg.local_ip, cfg.gateway_ip, /*port_id=*/0);
-    if (!env) { spdlog::error("lat_ws(dpdk): {}", env.error()); return 1; }
-
-    eph::utils::CpuPinPolicy policy;
-    if (cfg.allow_non_isolated) policy.require_isolcpus = false;
-    if (auto p = eph::utils::pin_thread_strict(cfg.client_cpu, "bench_lat_ws", policy); !p) {
-        spdlog::error("lat_ws: pin failed: {}", p.error());
-        return 1;
-    }
-
-    static uint16_t src_port = 55700;
-    auto tcfg = env->make_tcp_config(src_port++, cfg.server_port);
-    eph::dpdk::TcpSession<> session{tcfg, env->pool};
-    if (auto r = session.connect(std::chrono::seconds{3}); !r) {
-        spdlog::error("lat_ws(dpdk): connect: {}", r.error()); return 1;
-    }
-    std::string host = cfg.server_ip + ":" + std::to_string(cfg.server_port);
-    if (auto h = dpdk_ws_handshake(session, host); !h) {
-        spdlog::error("lat_ws(dpdk): handshake: {}", h.error()); return 1;
-    }
-    spdlog::info("lat_ws (dpdk): connected to {}:{}", cfg.server_ip, cfg.server_port);
-
-    std::span<const size_t> payloads =
-        cfg.ws_payloads.empty()
-            ? std::span<const size_t>{kDefaultWsPayloads}
-            : std::span<const size_t>{cfg.ws_payloads};
-
-    WsDpdkRttScenario scenario{session};
-    BenchRunner runner{cfg, "ws", "dpdk"};
-    runner.run_rtt_sweep(scenario, payloads);
-
-    (void)session.close();
-    return 0;
-}
-
-#endif // EPH_USE_DPDK
-
-} // namespace bench::ws::client_fn
-
-// ───────────────────────────────────────────────────────────────────────────
-// main
-// ───────────────────────────────────────────────────────────────────────────
+#else
 int main(int argc, char** argv) {
-    install_signal_handlers();
-    if (!eph::utils::TSC::init()) {
+    spdlog::set_level(spdlog::level::info);
+
+    const std::size_t iters = (argc > 1)
+        ? static_cast<std::size_t>(std::atoll(argv[1]))
+        : 5000;
+    constexpr std::size_t kPayload = 64;
+
+    if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {
         spdlog::error("TSC calibration failed");
         return 1;
     }
+    spdlog::info("lat_ws_v3: iters={} payload={}B (WS-binary frame)",
+                 iters, kPayload);
 
-    auto cfg_r = load_bench_conf();
-    if (!cfg_r) { spdlog::error("{}", cfg_r.error()); return 1; }
-    const BenchConfig& cfg = *cfg_r;
-
+    auto [lfd, port] = bind_loopback();
     pid_t pid = ::fork();
-    if (pid < 0) { spdlog::error("fork: {}", std::strerror(errno)); return 1; }
-    if (pid == 0) {
-        return bench::ws::mock_fn::run(cfg);
+    if (pid == 0) echo_serve(lfd);
+    ::close(lfd);
+
+    auto poller = ek::KernelPoller::create({}).value();
+
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity  = 64 * 1024;
+    cfg.connect_timeout = 1s;
+    auto sr = WsStream::create(cfg);
+    if (!sr) {
+        spdlog::error("create failed: {}", sr.error().detail);
+        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+        return 2;
+    }
+    auto stream = std::move(*sr);
+
+    std::atomic<std::size_t> rx_frames{0};
+    stream->on_message = [&](const uint8_t*, uint16_t) {
+        rx_frames.fetch_add(1, std::memory_order_release);
+    };
+    if (auto r = poller->add(stream.get()); !r) {
+        spdlog::error("attach failed: {}", r.error().detail);
+        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+        return 3;
     }
 
-    int rc = bench::ws::client_fn::run(cfg, argc, argv);
+    // Pre-encode the WS-binary frame once. WsCodec::encode is the unmasked
+    // server-side variant; for a *server* echo (which is how the loopback
+    // peer behaves) the unmasked client frame is what the codec parses on
+    // RX. To keep the demonstrator self-contained we send our own
+    // pre-encoded unmasked frame and let the echoer bounce it back.
+    uint8_t payload[kPayload]{};
+    for (std::size_t i = 0; i < kPayload; ++i) payload[i] = static_cast<uint8_t>(i);
 
-    ::kill(pid, SIGTERM);
-    int wstatus = 0;
-    ::waitpid(pid, &wstatus, 0);
-    return rc;
+    uint8_t frame[kPayload + 16];
+    ec::WsCodec encoder{};
+    auto enc = encoder.encode(frame, sizeof(frame),
+                              std::span<const uint8_t>(payload, kPayload));
+    if (!enc) {
+        spdlog::error("WsCodec::encode failed: {}", enc.error().detail);
+        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+        return 4;
+    }
+    std::span<const uint8_t> wire(frame, *enc);
+
+    std::vector<uint64_t> rtt;
+    rtt.reserve(iters);
+    std::size_t expected = 0;
+    for (std::size_t i = 0; i < iters; ++i) {
+        const uint64_t t0 = eph::utils::TSC::now();
+        if (!stream->send(wire)) {
+            spdlog::error("send failed at iter {}", i);
+            break;
+        }
+        ++expected;
+        while (rx_frames.load(std::memory_order_acquire) < expected) {
+            poller->poll();
+        }
+        const uint64_t t1 = eph::utils::TSC::now();
+        if (auto ns = eph::utils::TSC::to_ns(t1 - t0)) {
+            rtt.push_back(static_cast<uint64_t>(*ns));
+        }
+    }
+
+    print_latency("lat_ws_v3 RTT (kernel client + WsCodec)", rtt);
+
+    (void)stream->close_gracefully();
+    poller->poll(50ms);
+    (void)poller->remove(stream.get());
+    stream.reset();
+
+    ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+    return 0;
 }
+#endif // EPH_USE_DPDK

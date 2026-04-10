@@ -30,13 +30,6 @@ target("test_bench_load_bench_conf")
     add_deps("eph-utils")
     add_packages("spdlog")
 
-target("test_bench_runner")
-    add_rules("eph-test")
-    add_files("test_runner.cpp")
-    add_includedirs("$(projectdir)/benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-
 target("test_bench_no_dead_headers")
     add_rules("eph-test")
     add_files("test_no_dead_headers.cpp")

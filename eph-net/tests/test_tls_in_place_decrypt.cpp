@@ -28,8 +28,8 @@
 #include <gtest/gtest.h>
 
 #include "eph/net/detail/tls_inplace.hpp"
-#include "eph/transport/detail/tls_constants.hpp"
-#include "eph/transport/detail/tls_encryptor.hpp"
+#include "eph/net/detail/tls_constants.hpp"
+#include "eph/net/detail/tls_encryptor.hpp"
 
 namespace en  = eph::net;
 namespace end_ = eph::net::detail;

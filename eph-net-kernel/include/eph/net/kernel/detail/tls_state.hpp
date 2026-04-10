@@ -61,9 +61,9 @@
 #include "eph/core/error.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/tcp_state.hpp"
-#include "eph/transport/detail/tls_constants.hpp"
-#include "eph/transport/detail/tls_record.hpp"
-#include "eph/transport/detail/tls_session.hpp"
+#include "eph/net/detail/tls_constants.hpp"
+#include "eph/net/detail/tls_record.hpp"
+#include "eph/net/detail/tls_session.hpp"
 
 namespace eph::net::kernel::detail {
 
@@ -151,8 +151,11 @@ private:
     uint64_t    last_rx_tsc_ = 0;
 };
 
-static_assert(::eph::net::TcpTransport<ByteSocketTcpAdapter>,
-              "ByteSocketTcpAdapter must satisfy the legacy TcpTransport concept");
+// Phase 7: the legacy `eph::net::TcpTransport` concept was a compile-time
+// duck-typing check. It no longer exists as a requirement on `TlsSession`
+// (the concept header remains in eph-core for backward compatibility, but
+// `TlsSession` is now an unconstrained template). Method-set compliance is
+// enforced by ordinary template instantiation inside `TlsSession<ByteSocketTcpAdapter>`.
 
 // ---------------------------------------------------------------------------
 // TlsState — owns the post-handshake AEAD context + record parsing buffer.

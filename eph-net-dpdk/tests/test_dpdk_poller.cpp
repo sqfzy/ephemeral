@@ -23,13 +23,13 @@
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
 
-namespace end = eph::net::dpdk;
+namespace edpk = eph::net::dpdk;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
 // ---------------------------------------------------------------------------
 
-static_assert(eph::net::Poller<end::DpdkPoller<>>,
+static_assert(eph::net::Poller<edpk::DpdkPoller<>>,
               "DpdkPoller<> must satisfy eph::net::Poller");
 
 // ---------------------------------------------------------------------------
@@ -39,9 +39,9 @@ static_assert(eph::net::Poller<end::DpdkPoller<>>,
 namespace {
 
 struct SyntheticPollableA {
-    using PacketView = end::detail::MbufView;
+    using PacketView = edpk::detail::MbufView;
 
-    end::DpdkPoller<void>* attached_to = nullptr;
+    edpk::DpdkPoller<void>* attached_to = nullptr;
     uint32_t src_ip   = 0x0A000001;  // 10.0.0.1
     uint32_t dst_ip   = 0x0A000002;  // 10.0.0.2
     uint16_t src_port = 12345;
@@ -57,7 +57,7 @@ struct SyntheticPollableA {
     void*       native_handle() noexcept { return this; }
 
     // DpdkPoller-extension friend hooks
-    void notify_attached_(end::DpdkPoller<void>* p) noexcept { attached_to = p; }
+    void notify_attached_(edpk::DpdkPoller<void>* p) noexcept { attached_to = p; }
     void notify_detached_() noexcept { attached_to = nullptr; ++detach_calls; }
     void tuple_for_poller_(uint32_t* s_ip, uint32_t* d_ip,
                             uint16_t* s_port, uint16_t* d_port) noexcept {
@@ -73,9 +73,9 @@ struct SyntheticPollableA {
 // A second concrete type with a different tuple — exercises the P2
 // heterogeneous-Pollable path.
 struct SyntheticPollableB {
-    using PacketView = end::detail::MbufView;
+    using PacketView = edpk::detail::MbufView;
 
-    end::DpdkPoller<void>* attached_to = nullptr;
+    edpk::DpdkPoller<void>* attached_to = nullptr;
     uint32_t src_ip   = 0x0A000003;  // 10.0.0.3
     uint32_t dst_ip   = 0x0A000004;  // 10.0.0.4
     uint16_t src_port = 30000;
@@ -86,7 +86,7 @@ struct SyntheticPollableB {
     bool        is_attached_() const noexcept { return attached_to != nullptr; }
     void*       native_handle() noexcept { return this; }
 
-    void notify_attached_(end::DpdkPoller<void>* p) noexcept { attached_to = p; }
+    void notify_attached_(edpk::DpdkPoller<void>* p) noexcept { attached_to = p; }
     void notify_detached_() noexcept { attached_to = nullptr; ++detach_calls; }
     void tuple_for_poller_(uint32_t* s_ip, uint32_t* d_ip,
                             uint16_t* s_port, uint16_t* d_port) noexcept {
@@ -104,7 +104,7 @@ struct SyntheticPollableB {
 // ---------------------------------------------------------------------------
 
 TEST(DpdkPoller, CreateDestroyEmpty) {
-    auto p = end::DpdkPoller<>::create({});
+    auto p = edpk::DpdkPoller<>::create({});
     ASSERT_TRUE(p.has_value()) << p.error().detail;
     EXPECT_EQ((*p)->size(), 0u);
     // Empty poll: returns 0 without touching the NIC.
@@ -112,14 +112,14 @@ TEST(DpdkPoller, CreateDestroyEmpty) {
 }
 
 TEST(DpdkPoller, AddNullptrFails) {
-    auto p = end::DpdkPoller<>::create({}).value();
+    auto p = edpk::DpdkPoller<>::create({}).value();
     auto r = p->add<SyntheticPollableA>(nullptr);
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
 
 TEST(DpdkPoller, RemoveNonRegisteredFails) {
-    auto p = end::DpdkPoller<>::create({}).value();
+    auto p = edpk::DpdkPoller<>::create({}).value();
     SyntheticPollableA pa;
     auto r = p->remove<SyntheticPollableA>(&pa);
     EXPECT_FALSE(r.has_value());
@@ -127,7 +127,7 @@ TEST(DpdkPoller, RemoveNonRegisteredFails) {
 }
 
 TEST(DpdkPoller, AddRemoveCycleClearsAttached) {
-    auto p = end::DpdkPoller<>::create({}).value();
+    auto p = edpk::DpdkPoller<>::create({}).value();
     SyntheticPollableA pa;
 
     auto a = p->add<SyntheticPollableA>(&pa);
@@ -143,7 +143,7 @@ TEST(DpdkPoller, AddRemoveCycleClearsAttached) {
 }
 
 TEST(DpdkPoller, AddDuplicateFails) {
-    auto p = end::DpdkPoller<>::create({}).value();
+    auto p = edpk::DpdkPoller<>::create({}).value();
     SyntheticPollableA pa;
 
     auto a1 = p->add<SyntheticPollableA>(&pa);
@@ -158,7 +158,7 @@ TEST(DpdkPoller, P2HeterogeneousRegistration) {
     // host arbitrary Pollable types, mixed in the same entries_ table,
     // with type-specific dispatch via the captured function-pointer
     // thunks.
-    auto p = end::DpdkPoller<>::create({}).value();
+    auto p = edpk::DpdkPoller<>::create({}).value();
 
     SyntheticPollableA pa;
     SyntheticPollableB pb;
@@ -181,8 +181,8 @@ TEST(DpdkPoller, P2HeterogeneousRegistration) {
 }
 
 TEST(DpdkPoller, FillToCapacity) {
-    auto p = end::DpdkPoller<>::create({}).value();
-    constexpr std::size_t kMax = end::DpdkPoller<void>::kMaxConn;
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    constexpr std::size_t kMax = edpk::DpdkPoller<void>::kMaxConn;
     SyntheticPollableA arr[kMax];
     // Make each tuple unique so the routing keys do not collide.
     for (std::size_t i = 0; i < kMax; ++i) {

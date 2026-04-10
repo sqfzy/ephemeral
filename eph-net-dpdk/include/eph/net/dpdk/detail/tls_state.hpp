@@ -64,9 +64,9 @@
 #include "eph/core/error.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/detail/tls_inplace.hpp"
-#include "eph/transport/detail/tls_constants.hpp"
-#include "eph/transport/detail/tls_record.hpp"
-#include "eph/transport/detail/tls_session.hpp"
+#include "eph/net/detail/tls_constants.hpp"
+#include "eph/net/detail/tls_record.hpp"
+#include "eph/net/detail/tls_session.hpp"
 
 namespace eph::net::dpdk::detail {
 

@@ -1,137 +1,104 @@
-/// @file ws_via_proxy.cpp
-/// WebSocket connection through a SOCKS5 or HTTP CONNECT proxy.
+/// @file ws_via_proxy_v3.cpp
+/// v3.3 rewrite of ws_via_proxy.cpp.
 ///
-/// Demonstrates using make_proxied_factory() to tunnel a WebSocket/TLS
-/// connection through a proxy server. The proxy handshake happens during
-/// TCP establishment — the rest of the pipeline (TLS, WS upgrade, data)
-/// is identical to a direct connection.
+/// In the v3.3 design the proxy/tunnel handshake is done OUTSIDE the
+/// stream factory: user code (or a small helper above the StreamConfig)
+/// negotiates the SOCKS5 / HTTP CONNECT exchange against a connected
+/// kernel fd, then hands the now-tunnelled fd to the stream. This
+/// example demonstrates the *target shape* — the actual proxy handshake
+/// helpers will be promoted from the legacy `eph::net::proxy::*` namespace
+/// in Phase 7. For Phase 6 we keep the example self-contained: it
+/// constructs the stream against a *direct* address, but exposes the
+/// `--proxy-host` / `--proxy-port` CLI surface so a follow-up patch
+/// only needs to drop in the helper.
 ///
-/// Usage:
-///   # Via SOCKS5 proxy (default)
-///   ./ws_via_proxy --proxy-host 127.0.0.1 --proxy-port 1080
-///
-///   # Via HTTP CONNECT proxy
-///   ./ws_via_proxy --proxy-host proxy.corp.com --proxy-port 3128 --http-connect
-///
-///   # With SOCKS5 authentication
-///   ./ws_via_proxy --proxy-host proxy.corp.com --proxy-user alice --proxy-pass secret
-///
-/// Related examples:
-///   - minimal_ws_client.cpp  — direct connection (no proxy)
-///   - production_client.cpp  — reconnection + latency measurement
+/// Part of Phase 6 of the v3.3 architecture refactor
+/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstdint>
 #include <cstdlib>
-#include <format>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <thread>
 
 #include <spdlog/spdlog.h>
 
-#include "eph/net/proxy.hpp"
-#include "eph/net/socket_transport.hpp"
-#include "eph/transport/transport.hpp"
+#include "eph/codec/ws_codec.hpp"
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/socket_addr.hpp"
+
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
+using namespace std::chrono_literals;
+
+static std::atomic<bool> g_running{true};
+static void on_sigint(int) { g_running.store(false, std::memory_order_release); }
 
 int main(int argc, char** argv) {
+    std::signal(SIGINT, on_sigint);
     spdlog::set_level(spdlog::level::info);
 
-    // --- Parse arguments ---
-    std::string target_host = "echo.websocket.org";
-    uint16_t    target_port = 443;
-    std::string proxy_host  = "127.0.0.1";
-    uint16_t    proxy_port  = 1080;
-    std::string proxy_user{};
-    std::string proxy_pass{};
+    std::string target_ip   = "127.0.0.1";
+    uint16_t    target_port = 9443;
+    std::string proxy_host  = "";        // empty = no proxy
+    uint16_t    proxy_port  = 0;
     bool        http_connect = false;
 
     for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if (arg == "--host" && i + 1 < argc)       target_host = argv[++i];
-        else if (arg == "--port" && i + 1 < argc)   target_port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (arg == "--proxy-host" && i + 1 < argc) proxy_host = argv[++i];
-        else if (arg == "--proxy-port" && i + 1 < argc) proxy_port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (arg == "--proxy-user" && i + 1 < argc) proxy_user = argv[++i];
-        else if (arg == "--proxy-pass" && i + 1 < argc) proxy_pass = argv[++i];
-        else if (arg == "--http-connect") http_connect = true;
-        else if (arg == "--help") {
-            std::cerr << std::format(
-                "Usage: {} [options]\n"
-                "  --host HOST         Target WebSocket server (default: echo.websocket.org)\n"
-                "  --port PORT         Target port (default: 443)\n"
-                "  --proxy-host HOST   Proxy server address (default: 127.0.0.1)\n"
-                "  --proxy-port PORT   Proxy port (default: 1080)\n"
-                "  --proxy-user USER   SOCKS5 username (optional)\n"
-                "  --proxy-pass PASS   SOCKS5 password (optional)\n"
-                "  --http-connect      Use HTTP CONNECT instead of SOCKS5\n",
-                argv[0]);
-            return 0;
-        }
+        std::string_view a = argv[i];
+        if      (a == "--target-ip"   && i + 1 < argc) target_ip   = argv[++i];
+        else if (a == "--target-port" && i + 1 < argc) target_port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (a == "--proxy-host"  && i + 1 < argc) proxy_host  = argv[++i];
+        else if (a == "--proxy-port"  && i + 1 < argc) proxy_port  = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (a == "--http-connect")               http_connect = true;
     }
 
-    // --- Configure proxy ---
-    eph::net::proxy::ProxyConfig proxy_cfg{
-        .host     = proxy_host,
-        .port     = proxy_port,
-        .type     = http_connect ? eph::net::proxy::ProxyType::kHttpConnect
-                                 : eph::net::proxy::ProxyType::kSocks5,
-        .username = proxy_user,
-        .password = proxy_pass,
-        .timeout  = std::chrono::milliseconds{5000},
-    };
+    if (!proxy_host.empty()) {
+        spdlog::warn(
+            "ws_via_proxy_v3: proxy CLI parsed (host={}:{}, http_connect={}), "
+            "but the v3.3 proxy handshake helper is staged for Phase 7. "
+            "Falling through to a direct connection — see the file header.",
+            proxy_host, proxy_port, http_connect);
+    }
 
-    // --- Create proxied TCP factory ---
-    // make_proxied_factory() returns a TcpFactory that:
-    //   1. Connects to the proxy server
-    //   2. Performs SOCKS5/HTTP CONNECT handshake to reach target
-    //   3. Returns the tunneled socket for TLS/WS handshake
-    eph::net::SocketConfig sock_cfg{.tcp_nodelay = true};
-
-    auto factory = eph::net::proxy::make_proxied_factory(
-        sock_cfg, proxy_cfg, target_host, target_port);
-
-    // --- Transport config (identical to direct connection) ---
-    eph::net::TransportConfig transport_cfg{
-        .remote_host = target_host,
-        .remote_port = target_port,
-        .use_tls     = true,
-        .verify_peer = false,  // Relaxed for demo
-    };
-
-    // --- Connect through proxy ---
-    auto proxy_type = http_connect ? "HTTP CONNECT" : "SOCKS5";
-    spdlog::info("Connecting to wss://{}:{} via {} proxy {}:{}",
-                 target_host, target_port, proxy_type, proxy_host, proxy_port);
-
-    auto result = eph::net::Transport<eph::net::SocketTransport>::create(
-        std::move(factory), transport_cfg);
-    if (!result) {
-        spdlog::error("Connection failed: {}", result.error().message());
+    auto ip = eph::net::Ipv4Addr::parse(target_ip);
+    if (!ip) {
+        spdlog::error("bad --target-ip: '{}'", target_ip);
         return 1;
     }
-    auto& tp = **result;
-    spdlog::info("Connected through proxy!");
 
-    // --- Send and receive (same as direct connection) ---
-    std::string msg = "hello through proxy";
-    auto rc = tp.send_text(msg.data(), msg.size());
-    if (rc != eph::net::SendError::kOk) {
-        spdlog::error("Send failed: {}", eph::net::send_error_name(rc));
-        tp.stop();
-        return 1;
+    auto poller = en::KernelPoller::create({}).value();
+
+    using Stream = en::KernelTcpStream<ec::WsCodec, /*Tls=*/false>;
+    en::StreamConfig cfg{};
+    cfg.remote          = eph::net::SocketAddr{*ip, target_port};
+    cfg.reasm_capacity  = 64 * 1024;
+    cfg.connect_timeout = 3s;
+
+    auto sr = Stream::create(std::move(cfg));
+    if (!sr) {
+        spdlog::error("create failed: {}", sr.error().detail);
+        return 2;
     }
-    spdlog::info(">> {}", msg);
-
-    for (int attempts = 0; attempts < 50; ++attempts) {
-        bool got = tp.recv([](const uint8_t* data, size_t len) {
-            spdlog::info("<< {}",
-                std::string_view(reinterpret_cast<const char*>(data), len));
-        });
-        if (got) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    auto stream = std::move(*sr);
+    stream->on_message = [](const uint8_t*, uint16_t len) {
+        spdlog::info("[via-proxy] rx {} bytes", len);
+        (void)len;
+    };
+    if (auto r = poller->add(stream.get()); !r) {
+        spdlog::error("add failed: {}", r.error().detail);
+        return 3;
     }
 
-    tp.stop();
-    spdlog::info("Done.");
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (g_running.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline) {
+        (void)poller->poll(100ms);
+    }
     return 0;
 }

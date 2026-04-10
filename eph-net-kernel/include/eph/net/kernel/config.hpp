@@ -14,7 +14,7 @@
 
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
-#include "eph/transport/detail/tls_constants.hpp"  // Phase 5: TlsConfig
+#include "eph/net/detail/tls_constants.hpp"  // Phase 5: TlsConfig
 
 namespace eph::net::kernel {
 
