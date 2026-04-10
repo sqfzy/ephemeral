@@ -148,22 +148,29 @@ public:
         spdlog::info("DpdkE2ETestEnv: ready");
     }
 
+    /// Source port reserved exclusively for the cold-start warmup
+    /// connect.  Picked outside the next_src_port() range used by tests
+    /// (which starts at 40000 and grows) so the two pools cannot collide.
+    static constexpr uint16_t kWarmupSrcPort = 65530;
+
     /// Best-effort warmup: open a TCP connection to the echo mock and
-    /// immediately close it.  Suppresses cold-start failures so the
-    /// real test cases see a steady-state path.
+    /// immediately close it.  Suppresses cold-start failures (route
+    /// cache, gateway ARP, ENA RX queue priming) so the real test
+    /// cases see a steady-state path.  Mirrors runner.hpp's
+    /// "pre_warmup absorbs route cache / ARP / scheduler cold start".
     void warmup_connect_() noexcept {
         try {
-            auto tcfg = env_->make_tcp_config(/*src*/55555, kTcpEchoPort);
+            auto tcfg = env_->make_tcp_config(kWarmupSrcPort, kTcpEchoPort);
             eph::dpdk::TcpSession<> warmup_sess(tcfg, env_->pool);
-            // Use a longer deadline than the test default since this is
-            // the cold path; ignore the result either way.
+            // Longer deadline than the test default since this is the
+            // cold path; ignore the result either way.
             (void)warmup_sess.connect(std::chrono::seconds{5});
             (void)warmup_sess.close();
         } catch (...) {
             // Even if connect threw, the side-effect of priming the
             // route cache and gateway ARP table is what we care about.
         }
-        // Also do a small idle gap to let the close fully drain.
+        // Brief idle so the close fully drains before real tests run.
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 

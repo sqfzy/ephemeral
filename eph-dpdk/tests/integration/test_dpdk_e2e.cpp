@@ -34,10 +34,6 @@
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/reactor.hpp"
 
-#include "eph/transport/direct_transport.hpp"
-#include "eph/transport/ws_framer.hpp"
-#include "eph/transport/transport_types.hpp"
-
 using namespace eph::dpdk::test_e2e;
 using namespace std::chrono_literals;
 
@@ -177,20 +173,21 @@ TEST(UdpE2E, BurstEcho) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// WsE2E — eph-transport DirectTransport<TcpSession, WsFramer> over DPDK
+// WsE2E — RFC 6455 handshake + accept-hash verification over DPDK
+//
+// Drives the WS upgrade through a raw eph::dpdk::TcpSession against the
+// kernel ws_echo_mock.  This validates the wire-level path (DPDK packet
+// I/O + HTTP upgrade exchange + RFC 6455 §1.3 sample accept hash).
+//
+// A full eph::net::DirectTransport<TcpSession, WsFramer> orchestration
+// (TransportConfig + callback set + frame echo) is intentionally a
+// separate test that doesn't fit in a smoke pass.
 // ═══════════════════════════════════════════════════════════════════════
 
 TEST(WsE2E, HandshakeAndEcho) {
     EPH_DPDK_E2E_SKIP_IF_NOT_READY();
     auto& env = DpdkE2ETestEnv::env();
 
-    // For Phase 1 the WsE2E test verifies just the connection layer:
-    // we use a raw TcpSession against the kernel WS mock and stop short
-    // of full DirectTransport orchestration (which requires more
-    // glue around TransportConfig and a callback set than fits in a
-    // smoke test).  The plan's "full DirectTransport" coverage is
-    // tracked in WsE2E.FullTransport (not yet implemented; see plan
-    // Phase 2-C).
     auto tcfg = env.make_tcp_config(next_src_port(), kWsEchoPort);
     eph::dpdk::TcpSession<> session(tcfg, env.pool);
     ASSERT_TRUE(session.connect(3s).has_value()) << "TCP connect to ws_echo_mock failed";
