@@ -51,9 +51,9 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DPDK client variant: type-check only — see the same notes in lat_tcp.cpp.
-// The vcpkg-openssl ↔ aws-lc TU clash documented in the Phase 5 BLOCKER
-// notes prevents linking the kernel + DPDK TLS pieces in a single TU.
+// Phase 11.0: DpdkTcpStream<WsCodec> real measurement loop. Structure
+// mirrors lat_tcp exactly with `WsCodec` + `cfg.ws_path` set so the
+// DpdkTcpStream::create path performs the RFC 6455 handshake during setup.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -64,6 +64,9 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#if defined(EPH_USE_DPDK)
+#  include "core/dpdk_env.hpp"
+#endif
 
 namespace {
 
@@ -73,16 +76,12 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-// Phase 6 API surface check — instantiate the DPDK types so that the
-// `_dpdk` target exercises the template expansion. A real DPDK
-// measurement loop is deferred pending EAL init + vfio-pci glue.
-using DpdkStream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using DpdkPoller = ed::DpdkPoller<>;
-static_assert(sizeof(DpdkStream*) > 0);
-static_assert(sizeof(DpdkPoller*) > 0);
+using Stream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using Poller = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
 using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using Poller = ek::KernelPoller;
 #endif
 
 /// Default bench.conf path if no `--config <path>` is passed. The `lat`
@@ -104,16 +103,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 } // namespace
 
-#if defined(EPH_USE_DPDK)
-int main(int /*argc*/, char** /*argv*/) {
-    spdlog::set_level(spdlog::level::info);
-    std::printf("lat_ws_dpdk: v3.3 DpdkTcpStream<WsCodec> API compiled.\n"
-                "Real DPDK measurement loop is deferred to a follow-up phase "
-                "(EAL init + vfio-pci NIC plumbing). Use lat_ws (kernel) for "
-                "live measurements.\n");
-    return 0;
-}
-#else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
@@ -193,14 +182,37 @@ int main(int argc, char** argv) {
     // one-way lat_ex_market, but it keeps the two binaries symmetric.
     eu::Recorder rec{"lat_ws"};
 
+#if defined(EPH_USE_DPDK)
+    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    if (!env_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", env_r.error().c_str());
+        return 1;
+    }
+    auto env = std::move(*env_r);
+    bench::print_dpdk_config_echo(env);
+
+    ed::PollerConfig poller_cfg{};
+    poller_cfg.port_id     = env.port_id;
+    poller_cfg.rx_queue_id = 0;
+    auto poller_r = Poller::create(poller_cfg);
+#else
     auto poller_r = ek::KernelPoller::create({});
+#endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_ws: Poller::create failed: %s\n",
                      poller_r.error().detail);
-        return 1;
+        return 2;
     }
     auto poller = std::move(poller_r.value());
 
+#if defined(EPH_USE_DPDK)
+    ed::StreamConfig cfg{};
+    cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
+    cfg.pool            = env.pool;
+    cfg.connect_timeout = std::chrono::milliseconds{3000};
+    cfg.ws_path         = ws_path;
+    cfg.ws_timeout      = std::chrono::seconds{10};
+#else
     // StreamConfig.ws_path triggers the Phase 9.5 transparent WebSocket
     // handshake inside KernelTcpStream::create(). The returned stream is
     // already past the 101 Switching Protocols response and ready to
@@ -212,12 +224,13 @@ int main(int argc, char** argv) {
     cfg.ws_path         = ws_path;
     // ws_host left empty → handshake falls back to remote.to_string().
     cfg.ws_timeout      = std::chrono::seconds{10};
+#endif
 
     auto stream_r = Stream::create(cfg);
     if (!stream_r) {
         std::fprintf(stderr, "lat_ws: Stream::create failed: %s\n",
                      stream_r.error().detail);
-        return 2;
+        return 3;
     }
     auto stream = std::move(stream_r.value());
 
@@ -259,6 +272,7 @@ int main(int argc, char** argv) {
 
     const uint64_t t_start    = bench::monotonic_raw_ns();
     const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
+    uint64_t       t_measure_start = 0;
     // Per-sample timeout: if the mock dies we bail rather than spin.
     constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
 
@@ -289,6 +303,9 @@ int main(int argc, char** argv) {
         if (timed_out || bench::shutdown_requested()) break;
 
         const uint64_t t1 = bench::monotonic_raw_ns();
+        if (sample_idx == warmup_samples) {
+            t_measure_start = t0;
+        }
         if (sample_idx >= warmup_samples) {
             rec.record_ns(t1 - t0);
         }
@@ -301,14 +318,19 @@ int main(int argc, char** argv) {
 #else
         "kernel";
 #endif
-    bench::print_report("lat_ws", backend, rec, warmup_samples);
+    const uint64_t wall_time_ns =
+        (t_measure_start != 0)
+            ? (bench::monotonic_raw_ns() - t_measure_start)
+            : 0;
+    bench::print_report("lat_ws", backend, rec, warmup_samples, wall_time_ns);
 
     (void)stream->close_gracefully();
+#if !defined(EPH_USE_DPDK)
     poller->poll(std::chrono::milliseconds{50});
+#endif
     (void)poller->remove(stream.get());
     stream.reset();
     poller.reset();
 
     return timed_out ? 4 : 0;
 }
-#endif // EPH_USE_DPDK

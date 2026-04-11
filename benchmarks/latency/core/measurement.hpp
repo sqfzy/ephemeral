@@ -97,9 +97,13 @@ inline void install_signal_handler() noexcept {
 /// latency_ns:
 ///   min    = <min>
 ///   p50    = <p50>
+///   p90    = <p90>
 ///   p99    = <p99>
 ///   p99.9  = <p999>
 ///   max    = <max>
+///   avg    = <avg>
+///   stddev = <stddev>
+/// throughput: <N/wall_s> samples/s          ← only if wall_time_ns > 0
 /// ```
 ///
 /// The numbers come from `eph::utils::Recorder::compute_stats()` which
@@ -111,6 +115,13 @@ inline void install_signal_handler() noexcept {
 /// scenarios that discard the first N samples via `if (idx >= warmup)`
 /// gating pass `warmup` here so the report shows the effective count.
 ///
+/// `wall_time_ns` (plan Phase 11.0 §Interface): when non-zero, used to
+/// compute `throughput = s.count / wall_time_s` and print an extra
+/// `throughput: <N> samples/s` line. Scenarios pass
+/// `monotonic_raw_ns() - t_measure_start`, where `t_measure_start` is
+/// stamped when the warmup window ends. Default 0 preserves backwards
+/// compatibility for any test that still calls the old 4-arg form.
+///
 /// `print_report` intentionally does NOT format the scenario config.
 /// Scenarios that want to print their config (`port=20000, payload=256,
 /// duration=10s`) should `std::puts` it themselves before calling this —
@@ -119,7 +130,8 @@ inline void install_signal_handler() noexcept {
 inline void print_report(std::string_view scenario_name,
                          std::string_view backend,
                          eph::utils::Recorder& rec,
-                         uint64_t warmup_discarded = 0) noexcept {
+                         uint64_t warmup_discarded = 0,
+                         uint64_t wall_time_ns = 0) noexcept {
     std::printf("=== %.*s (%.*s) ===\n",
                 static_cast<int>(scenario_name.size()), scenario_name.data(),
                 static_cast<int>(backend.size()),       backend.data());
@@ -130,9 +142,12 @@ inline void print_report(std::string_view scenario_name,
         std::printf("latency_ns:\n");
         std::printf("  min    = --\n");
         std::printf("  p50    = --\n");
+        std::printf("  p90    = --\n");
         std::printf("  p99    = --\n");
         std::printf("  p99.9  = --\n");
         std::printf("  max    = --\n");
+        std::printf("  avg    = --\n");
+        std::printf("  stddev = --\n");
         std::fflush(stdout);
         return;
     }
@@ -153,12 +168,29 @@ inline void print_report(std::string_view scenario_name,
                 static_cast<unsigned long long>(s.min_ns));
     std::printf("  p50    = %llu\n",
                 static_cast<unsigned long long>(s.p50_ns));
+    std::printf("  p90    = %llu\n",
+                static_cast<unsigned long long>(s.p90_ns));
     std::printf("  p99    = %llu\n",
                 static_cast<unsigned long long>(s.p99_ns));
     std::printf("  p99.9  = %llu\n",
                 static_cast<unsigned long long>(s.p999_ns));
     std::printf("  max    = %llu\n",
                 static_cast<unsigned long long>(s.max_ns));
+    std::printf("  avg    = %llu\n",
+                static_cast<unsigned long long>(s.avg_ns));
+    std::printf("  stddev = %llu\n",
+                static_cast<unsigned long long>(s.stddev_ns));
+
+    // Throughput: samples per wall-clock second. Only printed when the
+    // scenario passes a non-zero measurement window — avoids divide-by-
+    // zero and keeps the legacy 4-arg callers (unit tests etc.) clean.
+    if (wall_time_ns > 0 && s.count > 0) {
+        const double wall_s =
+            static_cast<double>(wall_time_ns) / 1'000'000'000.0;
+        const double thr = static_cast<double>(s.count) / wall_s;
+        std::printf("throughput: %llu samples/s\n",
+                    static_cast<unsigned long long>(thr));
+    }
     std::fflush(stdout);
 }
 

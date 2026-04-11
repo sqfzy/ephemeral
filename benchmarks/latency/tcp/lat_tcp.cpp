@@ -42,11 +42,10 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DPDK client variant: Phase 6 type-check only (see Phase 5 BLOCKER notes on
-// the vcpkg-openssl ↔ aws-lc TU clash). The `_dpdk` target compiles against
-// the DPDK Stream API surface and static_asserts the instantiation, but the
-// actual measurement loop below uses the kernel API. A later phase will
-// unify both paths once the TLS TU clash is resolved.
+// Phase 11.0: real DPDK measurement loop via DpdkTcpStream + DpdkPoller over
+// NIC_B. The structure below (#if EPH_USE_DPDK branch) mirrors the kernel
+// branch 1-to-1 — only the stream/poller types differ. Fairness contract:
+// see memory/feedback_bench_no_loopback.md.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -60,6 +59,9 @@
 // `core/config.hpp` from the compiler's perspective.
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#if defined(EPH_USE_DPDK)
+#  include "core/dpdk_env.hpp"
+#endif
 
 namespace {
 
@@ -69,16 +71,12 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-// Compile-time API surface check for the DPDK stream so the `_dpdk` target
-// exercises at least the template instantiation. A real DPDK measurement
-// loop is left to a follow-up phase (needs EAL init / NIC binding glue).
-using DpdkStream = ed::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
-using DpdkPoller = ed::DpdkPoller<>;
-static_assert(sizeof(DpdkStream*) > 0);
-static_assert(sizeof(DpdkPoller*) > 0);
+using Stream = ed::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
+using Poller = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
 using Stream = ek::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
+using Poller = ek::KernelPoller;
 #endif
 
 /// Default bench.conf path if no `--config <path>` is passed. The `lat`
@@ -102,16 +100,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 } // namespace
 
-#if defined(EPH_USE_DPDK)
-int main(int /*argc*/, char** /*argv*/) {
-    spdlog::set_level(spdlog::level::info);
-    std::printf("lat_tcp_dpdk: v3.3 DpdkTcpStream API compiled.\n"
-                "Real DPDK measurement loop is deferred to a follow-up phase "
-                "(EAL init + vfio-pci NIC plumbing). Use lat_tcp (kernel) for "
-                "live measurements.\n");
-    return 0;
-}
-#else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
@@ -185,25 +173,47 @@ int main(int argc, char** argv) {
     // ── Signal handler: SIGINT/SIGTERM flip `bench::shutdown_requested()`.
     bench::install_signal_handler();
 
-    // ── Poller + Stream ──────────────────────────────────────────────────
+#if defined(EPH_USE_DPDK)
+    // ── DPDK bootstrap: EAL + Platform + ARP resolve via shared helper.
+    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    if (!env_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", env_r.error().c_str());
+        return 1;
+    }
+    auto env = std::move(*env_r);
+    bench::print_dpdk_config_echo(env);
+
+    ed::PollerConfig poller_cfg{};
+    poller_cfg.port_id     = env.port_id;
+    poller_cfg.rx_queue_id = 0;
+    auto poller_r = Poller::create(poller_cfg);
+#else
     auto poller_r = ek::KernelPoller::create({});
+#endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_tcp: Poller::create failed: %s\n",
                      poller_r.error().detail);
-        return 1;
+        return 2;
     }
     auto poller = std::move(poller_r.value());
 
+#if defined(EPH_USE_DPDK)
+    ed::StreamConfig cfg{};
+    cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
+    cfg.pool            = env.pool;
+    cfg.connect_timeout = std::chrono::milliseconds{3000};
+#else
     ek::StreamConfig cfg{};
     cfg.remote          = remote;
     cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
     cfg.connect_timeout = std::chrono::milliseconds{3000};
+#endif
 
     auto stream_r = Stream::create(cfg);
     if (!stream_r) {
         std::fprintf(stderr, "lat_tcp: Stream::create failed: %s\n",
                      stream_r.error().detail);
-        return 2;
+        return 3;
     }
     auto stream = std::move(stream_r.value());
 
@@ -225,11 +235,14 @@ int main(int argc, char** argv) {
     }
 
     // ── Measurement loop ─────────────────────────────────────────────────
+    // Literally identical between kernel and DPDK branches (per plan
+    // §实施计划 4). Only the `Stream` / `Poller` typedefs differ above.
     std::vector<uint8_t> payload(payload_size, 0xAB);
     eu::Recorder rec{"lat_tcp"};
 
     const uint64_t t_start    = bench::monotonic_raw_ns();
     const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
+    uint64_t       t_measure_start = 0;  // set once the warmup window closes
 
     // Safety: if the echo mock dies we must not spin forever.
     constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
@@ -263,6 +276,12 @@ int main(int argc, char** argv) {
         if (timed_out || bench::shutdown_requested()) break;
 
         const uint64_t t1 = bench::monotonic_raw_ns();
+        if (sample_idx == warmup_samples) {
+            // First post-warmup sample — stamp the measurement-window
+            // start so the throughput line in the final report reflects
+            // the effective measured window, not warmup bleed.
+            t_measure_start = t0;
+        }
         if (sample_idx >= warmup_samples) {
             rec.record_ns(t1 - t0);
         }
@@ -276,16 +295,21 @@ int main(int argc, char** argv) {
 #else
         "kernel";
 #endif
-    bench::print_report("lat_tcp", backend, rec, warmup_samples);
+    const uint64_t wall_time_ns =
+        (t_measure_start != 0)
+            ? (bench::monotonic_raw_ns() - t_measure_start)
+            : 0;
+    bench::print_report("lat_tcp", backend, rec, warmup_samples, wall_time_ns);
 
     // ── Graceful close. Ignore errors: the report is what the user cares
     //    about, and the Python mock will notice the FIN regardless.
     (void)stream->close_gracefully();
+#if !defined(EPH_USE_DPDK)
     poller->poll(std::chrono::milliseconds{50});
+#endif
     (void)poller->remove(stream.get());
     stream.reset();
     poller.reset();
 
     return timed_out ? 4 : 0;
 }
-#endif // EPH_USE_DPDK

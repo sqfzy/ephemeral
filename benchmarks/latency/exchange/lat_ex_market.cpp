@@ -47,6 +47,8 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
+// Phase 11.0: DpdkTcpStream<WsCodec> real one-way bookTicker measurement.
+// Same on_message + scan_json_uint_field("T") logic as the kernel branch.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -58,6 +60,9 @@
 #include "core/config.hpp"
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"
+#if defined(EPH_USE_DPDK)
+#  include "core/dpdk_env.hpp"
+#endif
 
 namespace {
 
@@ -67,13 +72,12 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using DpdkStream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using DpdkPoller = ed::DpdkPoller<>;
-static_assert(sizeof(DpdkStream*) > 0);
-static_assert(sizeof(DpdkPoller*) > 0);
+using Stream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using Poller = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
 using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using Poller = ek::KernelPoller;
 #endif
 
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
@@ -92,16 +96,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 } // namespace
 
-#if defined(EPH_USE_DPDK)
-int main(int /*argc*/, char** /*argv*/) {
-    spdlog::set_level(spdlog::level::info);
-    std::printf("lat_ex_market_dpdk: v3.3 DpdkTcpStream<WsCodec> API compiled.\n"
-                "Real DPDK measurement loop is deferred to a follow-up phase "
-                "(EAL init + vfio-pci NIC plumbing). Use lat_ex_market (kernel) "
-                "for live measurements.\n");
-    return 0;
-}
-#else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
@@ -181,14 +175,37 @@ int main(int argc, char** argv) {
     // the frames actually sat in kernel buffers for up to a second.
     eu::Recorder rec{"lat_ex_market"};
 
+#if defined(EPH_USE_DPDK)
+    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    if (!env_r) {
+        std::fprintf(stderr, "lat_ex_market: %s\n", env_r.error().c_str());
+        return 1;
+    }
+    auto env = std::move(*env_r);
+    bench::print_dpdk_config_echo(env);
+
+    ed::PollerConfig poller_cfg{};
+    poller_cfg.port_id     = env.port_id;
+    poller_cfg.rx_queue_id = 0;
+    auto poller_r = Poller::create(poller_cfg);
+#else
     auto poller_r = ek::KernelPoller::create({});
+#endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_ex_market: Poller::create failed: %s\n",
                      poller_r.error().detail);
-        return 1;
+        return 2;
     }
     auto poller = std::move(poller_r.value());
 
+#if defined(EPH_USE_DPDK)
+    ed::StreamConfig cfg{};
+    cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
+    cfg.pool            = env.pool;
+    cfg.connect_timeout = std::chrono::milliseconds{3000};
+    cfg.ws_path         = ws_path;
+    cfg.ws_timeout      = std::chrono::seconds{10};
+#else
     // Phase 9.5 transparent WS handshake: setting ws_path makes
     // `create()` drive the HTTP/1.1 Upgrade after the TCP connect.
     // At high push rates (100 kHz × 30 s ≈ 3 M samples) the reassembly
@@ -200,12 +217,13 @@ int main(int argc, char** argv) {
     cfg.connect_timeout = std::chrono::milliseconds{3000};
     cfg.ws_path         = ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
+#endif
 
     auto stream_r = Stream::create(cfg);
     if (!stream_r) {
         std::fprintf(stderr, "lat_ex_market: Stream::create failed: %s\n",
                      stream_r.error().detail);
-        return 2;
+        return 3;
     }
     auto stream = std::move(stream_r.value());
 
@@ -226,9 +244,10 @@ int main(int argc, char** argv) {
     // `rec` is declared above the poller (before Stream::create) so
     // TSC calibration doesn't steal a second of wall time between
     // "mock begins pushing" and "client begins polling".
-    uint64_t sample_idx  = 0;
-    uint64_t malformed   = 0;
-    uint64_t clock_skew  = 0;
+    uint64_t sample_idx     = 0;
+    uint64_t malformed      = 0;
+    uint64_t clock_skew     = 0;
+    uint64_t t_measure_start = 0;  // stamped at the first post-warmup sample
 
     stream->on_message = [&](const uint8_t* d, uint16_t n) {
         const uint64_t t_recv = bench::monotonic_raw_ns();
@@ -245,6 +264,9 @@ int main(int argc, char** argv) {
             return;
         }
 
+        if (sample_idx == warmup_samples) {
+            t_measure_start = t_recv;
+        }
         if (sample_idx >= warmup_samples) {
             rec.record_ns(t_recv - t_server);
         }
@@ -289,14 +311,20 @@ int main(int argc, char** argv) {
 #else
         "kernel";
 #endif
-    bench::print_report("lat_ex_market", backend, rec, warmup_samples);
+    const uint64_t wall_time_ns =
+        (t_measure_start != 0)
+            ? (bench::monotonic_raw_ns() - t_measure_start)
+            : 0;
+    bench::print_report("lat_ex_market", backend, rec,
+                        warmup_samples, wall_time_ns);
 
     (void)stream->close_gracefully();
+#if !defined(EPH_USE_DPDK)
     poller->poll(std::chrono::milliseconds{50});
+#endif
     (void)poller->remove(stream.get());
     stream.reset();
     poller.reset();
 
     return 0;
 }
-#endif // EPH_USE_DPDK

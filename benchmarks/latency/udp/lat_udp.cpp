@@ -28,6 +28,13 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
+// Phase 11.0: DpdkUdpSocket + DpdkPoller real measurement loop (see lat_tcp
+// for the template). The DPDK poller uses 4-tuple routing, so the registered
+// legacy.src/dst_port pair must match the mock's kernel socket 2-tuple.
+// UDP echo mock (udp_echo.py) binds a listener on (mock_ip, port) and
+// responds from the SAME 4-tuple (kernel recvfrom/sendto preserves peer),
+// which our registered (client_ip:src, mock_ip:port) matches after the
+// Poller's direction-symmetric swap check.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/udp_socket.hpp"
 #else
@@ -38,6 +45,9 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#if defined(EPH_USE_DPDK)
+#  include "core/dpdk_env.hpp"
+#endif
 
 namespace {
 
@@ -47,13 +57,12 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using DpdkSocket = ed::DpdkUdpSocket<ec::RawDatagramCodec>;
-using DpdkPoller = ed::DpdkPoller<>;
-static_assert(sizeof(DpdkSocket*) > 0);
-static_assert(sizeof(DpdkPoller*) > 0);
+using Socket = ed::DpdkUdpSocket<ec::RawDatagramCodec>;
+using Poller = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
 using Socket = ek::KernelUdpSocket<ec::RawDatagramCodec>;
+using Poller = ek::KernelPoller;
 #endif
 
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
@@ -72,16 +81,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 } // namespace
 
-#if defined(EPH_USE_DPDK)
-int main(int /*argc*/, char** /*argv*/) {
-    spdlog::set_level(spdlog::level::info);
-    std::printf("lat_udp_dpdk: v3.3 DpdkUdpSocket API compiled.\n"
-                "Real DPDK measurement loop is deferred to a follow-up phase "
-                "(EAL init + vfio-pci NIC plumbing). Use lat_udp (kernel) for "
-                "live measurements.\n");
-    return 0;
-}
-#else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
@@ -163,22 +162,55 @@ int main(int argc, char** argv) {
 
     bench::install_signal_handler();
 
+#if defined(EPH_USE_DPDK)
+    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    if (!env_r) {
+        std::fprintf(stderr, "lat_udp: %s\n", env_r.error().c_str());
+        return 1;
+    }
+    auto env = std::move(*env_r);
+    bench::print_dpdk_config_echo(env);
+
+    ed::PollerConfig poller_cfg{};
+    poller_cfg.port_id     = env.port_id;
+    poller_cfg.rx_queue_id = 0;
+    auto poller_r = Poller::create(poller_cfg);
+#else
     auto poller_r = ek::KernelPoller::create({});
+#endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_udp: Poller::create failed: %s\n",
                      poller_r.error().detail);
-        return 1;
+        return 2;
     }
     auto poller = std::move(poller_r.value());
 
+#if defined(EPH_USE_DPDK)
+    // DPDK UDP uses fixed-peer 4-tuple routing: choose a random client
+    // src_port and register (client_ip:src, mock_ip:port). The mock
+    // (udp_echo.py) replies from the same 4-tuple so the Poller's direction-
+    // symmetric lookup matches automatically.
+    const uint16_t local_src_port = bench::random_src_port();
+    ed::UdpConfig sock_cfg{};
+    sock_cfg.legacy.src_ip      = env.src_ip;
+    sock_cfg.legacy.dst_ip      = env.dst_ip;
+    sock_cfg.legacy.src_port    = local_src_port;
+    sock_cfg.legacy.dst_port    = port;
+    sock_cfg.legacy.src_mac     = env.src_mac;
+    sock_cfg.legacy.dst_mac     = env.gw_mac;
+    sock_cfg.legacy.port_id     = env.port_id;
+    sock_cfg.legacy.tx_queue_id = 0;
+    sock_cfg.legacy.pool        = env.pool;
+#else
     ek::UdpConfig sock_cfg{};
     sock_cfg.bind = en::SocketAddr{client_ip_r.value(), 0};
+#endif
 
     auto sock_r = Socket::create(sock_cfg);
     if (!sock_r) {
         std::fprintf(stderr, "lat_udp: Socket::create failed: %s\n",
                      sock_r.error().detail);
-        return 2;
+        return 3;
     }
     auto sock = std::move(sock_r.value());
 
@@ -202,6 +234,7 @@ int main(int argc, char** argv) {
 
     const uint64_t t_start    = bench::monotonic_raw_ns();
     const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
+    uint64_t       t_measure_start = 0;
     constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
 
     uint64_t sample_idx = 0;
@@ -231,6 +264,9 @@ int main(int argc, char** argv) {
         if (timed_out || bench::shutdown_requested()) break;
 
         const uint64_t t1 = bench::monotonic_raw_ns();
+        if (sample_idx == warmup_samples) {
+            t_measure_start = t0;
+        }
         if (sample_idx >= warmup_samples) {
             rec.record_ns(t1 - t0);
         }
@@ -243,7 +279,11 @@ int main(int argc, char** argv) {
 #else
         "kernel";
 #endif
-    bench::print_report("lat_udp", backend, rec, warmup_samples);
+    const uint64_t wall_time_ns =
+        (t_measure_start != 0)
+            ? (bench::monotonic_raw_ns() - t_measure_start)
+            : 0;
+    bench::print_report("lat_udp", backend, rec, warmup_samples, wall_time_ns);
 
     (void)poller->remove(sock.get());
     sock.reset();
@@ -251,4 +291,3 @@ int main(int argc, char** argv) {
 
     return timed_out ? 4 : 0;
 }
-#endif // EPH_USE_DPDK

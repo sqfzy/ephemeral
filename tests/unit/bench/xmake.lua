@@ -27,3 +27,18 @@ target("test_bench_measurement")
     add_includedirs("$(projectdir)/benchmarks/latency")
     add_deps("eph-utils")
     add_packages("spdlog")
+
+-- Phase 11.0: pure-function coverage for bench::synthesize_eal_argv.
+-- The source file is guarded by `#ifdef EPH_USE_DPDK` and falls back to
+-- a single SKIP-style test when DPDK is not available. Link the real
+-- DPDK backend so we exercise the live argv synthesis path on hosts
+-- that have DPDK; on other hosts the SKIP branch keeps the target
+-- building cleanly.
+target("test_bench_dpdk_env_argv")
+    add_rules("eph-test")
+    add_files("test_dpdk_env_argv.cpp")
+    add_includedirs("$(projectdir)/benchmarks/latency")
+    add_deps("eph-net-dpdk", "eph-utils")
+    add_packages("spdlog")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()

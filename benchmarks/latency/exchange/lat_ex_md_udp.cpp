@@ -49,6 +49,13 @@
 /// Measurement clock: both ends use CLOCK_MONOTONIC_RAW via vDSO, so on
 /// a single host the timestamps share a base without TSC calibration.
 /// See plan D-6 for the rationale.
+///
+/// Phase 11.0: the DPDK branch now drives a real `DpdkUdpSocket` +
+/// `DpdkPoller` measurement loop over NIC_B, structurally identical to
+/// the kernel branch's poll loop. The mock (`ex_md_udp_push.py`) binds
+/// its source to `(mock_ip, port)` so the DPDK Poller's direction-
+/// symmetric 4-tuple lookup routes inbound packets to our registered
+/// `(client_ip:port ↔ mock_ip:port)` socket. See plan §实施计划 4.
 
 #include <cstdint>
 #include <cstdio>
@@ -66,6 +73,9 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
+// Phase 11.0: DpdkUdpSocket<RawDatagramCodec> real one-way Mold64 push
+// measurement. Uses the same 20 B header + 25 B inner-message hand parse
+// as the kernel branch; only the socket/poller types differ.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/udp_socket.hpp"
 #else
@@ -76,6 +86,9 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#if defined(EPH_USE_DPDK)
+#  include "core/dpdk_env.hpp"
+#endif
 
 namespace {
 
@@ -85,13 +98,12 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using DpdkSocket = ed::DpdkUdpSocket<ec::RawDatagramCodec>;
-using DpdkPoller = ed::DpdkPoller<>;
-static_assert(sizeof(DpdkSocket*) > 0);
-static_assert(sizeof(DpdkPoller*) > 0);
+using Socket = ed::DpdkUdpSocket<ec::RawDatagramCodec>;
+using Poller = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
 using Socket = ek::KernelUdpSocket<ec::RawDatagramCodec>;
+using Poller = ek::KernelPoller;
 #endif
 
 // ── Packet layout constants (must match ex_md_udp_push.py) ───────────
@@ -137,16 +149,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 } // namespace
 
-#if defined(EPH_USE_DPDK)
-int main(int /*argc*/, char** /*argv*/) {
-    spdlog::set_level(spdlog::level::info);
-    std::printf("lat_ex_md_udp_dpdk: v3.3 DpdkUdpSocket<RawDatagramCodec> API compiled.\n"
-                "Real DPDK measurement loop is deferred to a follow-up phase "
-                "(EAL init + vfio-pci NIC plumbing). Use lat_ex_md_udp (kernel) "
-                "for live measurements.\n");
-    return 0;
-}
-#else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
@@ -223,28 +225,64 @@ int main(int argc, char** argv) {
     // pushing frames. Same 10.4 lesson applied to all 10.5 scenarios.
     eu::Recorder rec{"lat_ex_md_udp"};
 
+#if defined(EPH_USE_DPDK)
+    // ── DPDK bootstrap: EAL + Platform + ARP resolve via shared helper.
+    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    if (!env_r) {
+        std::fprintf(stderr, "lat_ex_md_udp: %s\n", env_r.error().c_str());
+        return 1;
+    }
+    auto env = std::move(*env_r);
+    bench::print_dpdk_config_echo(env);
+
+    ed::PollerConfig poller_cfg{};
+    poller_cfg.port_id     = env.port_id;
+    poller_cfg.rx_queue_id = 0;
+    auto poller_r = Poller::create(poller_cfg);
+#else
     auto poller_r = ek::KernelPoller::create({});
+#endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_ex_md_udp: Poller::create failed: %s\n",
                      poller_r.error().detail);
-        return 1;
+        return 2;
     }
     auto poller = std::move(poller_r.value());
 
+#if defined(EPH_USE_DPDK)
+    // DPDK UDP 4-tuple: the mock (ex_md_udp_push.py) binds its send
+    // socket to (mock_ip, dest_port) so src_port == dst_port == scenario
+    // `port`. The DpdkPoller's direction-symmetric swap check then
+    // matches inbound packets against our local-view registration
+    // `(src_ip=client_ip, src_port=port, dst_ip=mock_ip, dst_port=port)`.
+    // See memory/feedback_bench_no_loopback.md for why we insist on the
+    // physical NIC path rather than loopback.
+    ed::UdpConfig sock_cfg{};
+    sock_cfg.legacy.src_ip      = env.src_ip;
+    sock_cfg.legacy.dst_ip      = env.dst_ip;
+    sock_cfg.legacy.src_port    = port;
+    sock_cfg.legacy.dst_port    = port;
+    sock_cfg.legacy.src_mac     = env.src_mac;
+    sock_cfg.legacy.dst_mac     = env.gw_mac;
+    sock_cfg.legacy.port_id     = env.port_id;
+    sock_cfg.legacy.tx_queue_id = 0;
+    sock_cfg.legacy.pool        = env.pool;
+#else
     ek::UdpConfig sock_cfg{};
     sock_cfg.bind = en::SocketAddr{bind_ip_r.value(), port};
     // Generous RX buffer — at 100 kHz × 5 msgs × 145 B ≈ 72 MB/s the
     // kernel default (~200 KB) would drop packets during the brief
     // window between poller->add() and the first poll(). 4 MiB matches
     // the mock's SO_SNDBUF for symmetry.
-    sock_cfg.rcv_buf   = 4 * 1024 * 1024;
+    sock_cfg.rcv_buf    = 4 * 1024 * 1024;
     sock_cfg.reuse_addr = true;
+#endif
 
     auto sock_r = Socket::create(sock_cfg);
     if (!sock_r) {
         std::fprintf(stderr, "lat_ex_md_udp: Socket::create failed: %s\n",
                      sock_r.error().detail);
-        return 2;
+        return 3;
     }
     auto sock = std::move(sock_r.value());
 
@@ -256,6 +294,7 @@ int main(int argc, char** argv) {
     uint64_t sample_idx       = 0;  // per-inner-message counter
     uint64_t malformed_count  = 0;
     uint64_t clock_skew_count = 0;
+    uint64_t t_measure_start  = 0;  // first post-warmup sample recv time
 
     sock->on_datagram = [&](const uint8_t* d, uint16_t n,
                             const en::SocketAddr& /*src*/) {
@@ -292,6 +331,9 @@ int main(int argc, char** argv) {
                 continue;
             }
 
+            if (sample_idx == warmup_samples) {
+                t_measure_start = t_recv;
+            }
             if (sample_idx >= warmup_samples) {
                 rec.record_ns(t_recv - t_server);
             }
@@ -333,7 +375,12 @@ int main(int argc, char** argv) {
 #else
         "kernel";
 #endif
-    bench::print_report("lat_ex_md_udp", backend, rec, warmup_samples);
+    const uint64_t wall_time_ns =
+        (t_measure_start != 0)
+            ? (bench::monotonic_raw_ns() - t_measure_start)
+            : 0;
+    bench::print_report("lat_ex_md_udp", backend, rec,
+                        warmup_samples, wall_time_ns);
 
     (void)poller->remove(sock.get());
     sock.reset();
@@ -341,4 +388,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-#endif // EPH_USE_DPDK

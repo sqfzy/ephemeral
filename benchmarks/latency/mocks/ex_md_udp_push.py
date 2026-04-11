@@ -78,6 +78,18 @@ def main() -> int:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
     except OSError:
         pass
+    # Phase 11.0: bind the sender's source to (mock_ip, dest_port) so DPDK
+    # client (lat_ex_md_udp_dpdk) can register a fixed 4-tuple for inbound
+    # routing. Kernel lat_ex_md_udp doesn't care about the source port (it
+    # bind()s on (client_ip, dest_port) and receives any incoming UDP to
+    # that 2-tuple), so this change is transparent to the kernel mode.
+    try:
+        src_bind_ip = cfg.get("mock_ip", "0.0.0.0")
+        sock.bind((src_bind_ip, dest_port))
+    except OSError as e:
+        print("[ex_md_udp_push] bind(%s:%d) failed: %s — continuing with ephemeral src_port "
+              "(DPDK client routing may miss packets)"
+              % (src_bind_ip, dest_port, e), file=sys.stderr, flush=True)
 
     limiter = RateLimiter(rate_hz)
     deadline_ns = monotonic_raw_ns() + int(duration_s * 1_000_000_000)
