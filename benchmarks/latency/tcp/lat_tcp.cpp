@@ -1,225 +1,291 @@
-/// @file lat_tcp_v3.cpp
-/// v3.3 TCP latency benchmark — demonstrator using `KernelTcpStream` and
-/// (when EPH_USE_DPDK is defined) `DpdkTcpStream`.
+/// @file lat_tcp.cpp
+/// Phase 10 latency benchmark: raw TCP RTT against a kernel Python echo mock.
 ///
-/// Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
+/// Sub-phase 10.3 rewrite. Per plan-phase-10-latency-bench-20260411-040540.md
+/// §Interface design → Client API pattern:
 ///
-/// **Scope**: this is a *demonstrator* benchmark — it forks a kernel echo
-/// server, runs a tight RTT measurement loop through the v3.3 client API,
-/// and prints the resulting min/p50/p99 nanoseconds. It deliberately does
-/// NOT plug into the legacy `bench/core/` framework: the goal is to show
-/// the v3.3 API surface in a single self-contained file. The legacy
-/// `lat_tcp.cpp` remains the production benchmark until Phase 7 deletes it.
+///   * Single-file scenario binary that reads `[lat_tcp]` from bench.conf
+///     (port / payload_size / duration_seconds) plus the lowercase global
+///     `mock_ip`, `warmup_samples`.
+///   * Uses the v3.3 `KernelTcpStream<RawStreamCodec, false>` + `KernelPoller`
+///     API directly — no raw socket() calls, no legacy eph-transport.
+///   * Measurement clock is `bench::monotonic_raw_ns()` (CLOCK_MONOTONIC_RAW
+///     via vDSO, per plan D-6) — not TSC.
+///   * Samples feed `eph::utils::Recorder::record_ns(ns)` (plan D-2).
 ///
-/// Usage:
-///   ./lat_tcp_v3                # spawns localhost echo, runs 10000 round-trips
-///   ./lat_tcp_v3 50000          # explicit iteration count
+/// The binary does NOT manage mocks or NICs — the `lat` wrapper script forks
+/// the Python echo mock (`benchmarks/latency/mocks/tcp_echo.py`) and the NIC
+/// state transition before exec'ing this binary.
+///
+/// A second target `lat_tcp_dpdk` is produced by the xmake auto-glob loop with
+/// `EPH_USE_DPDK=1`. For now that build falls back to a kernel-identical code
+/// path because the v3.3 DPDK Stream API surface is still Phase 6 scaffolding
+/// (vcpkg-openssl / aws-lc TU clash, see Phase 5 notes). The `_dpdk` target
+/// therefore currently links the kernel stream as well so the build stays
+/// green — this matches the behaviour of the pre-10.3 demonstrator.
 
-#include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <thread>
+#include <memory>
+#include <span>
+#include <string>
+#include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <spdlog/spdlog.h>
 
+// eph-* headers (plan D-4: v3.3 API only).
 #include "eph/codec/raw_stream_codec.hpp"
 #include "eph/net/socket_addr.hpp"
-#include "eph/utils/time.hpp"
+#include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DPDK build: include only the DPDK headers (cannot mix with the kernel
-// TLS path due to a vcpkg-openssl ↔ aws-lc TU clash documented in the
-// Phase 5 BLOCKER notes — Phase 7 will resolve it). The DPDK build of
-// this benchmark therefore type-checks the v3.3 DpdkTcpStream API
-// surface but does not execute the kernel-loop demonstrator below.
-#include "eph/dpdk/packet_core.hpp"
-#include "eph/net/dpdk/poller.hpp"
-#include "eph/net/dpdk/tcp_stream.hpp"
+// DPDK client variant: Phase 6 type-check only (see Phase 5 BLOCKER notes on
+// the vcpkg-openssl ↔ aws-lc TU clash). The `_dpdk` target compiles against
+// the DPDK Stream API surface and static_asserts the instantiation, but the
+// actual measurement loop below uses the kernel API. A later phase will
+// unify both paths once the TLS TU clash is resolved.
+#  include "eph/net/dpdk/poller.hpp"
+#  include "eph/net/dpdk/tcp_stream.hpp"
 #else
-#include "eph/net/kernel/poller.hpp"
-#include "eph/net/kernel/tcp_stream.hpp"
+#  include "eph/net/kernel/config.hpp"
+#  include "eph/net/kernel/poller.hpp"
+#  include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
-namespace en = eph::net;
-namespace ec = eph::codec;
-using namespace std::chrono_literals;
+// benchmarks/latency/core helpers (added in sub-phase 10.1). xmake includes
+// `benchmarks/latency/` as an include dir so the header lives at
+// `core/config.hpp` from the compiler's perspective.
+#include "core/config.hpp"
+#include "core/measurement.hpp"
 
-#if !defined(EPH_USE_DPDK)
-namespace ek = eph::net::kernel;
 namespace {
 
-using PlainStream = ek::KernelTcpStream<ec::RawStreamCodec, /*Tls=*/false>;
+namespace ec = eph::codec;
+namespace eu = eph::utils;
+namespace en = eph::net;
 
-constexpr std::size_t kPayload = 64;
+#if defined(EPH_USE_DPDK)
+namespace ed = eph::net::dpdk;
+// Compile-time API surface check for the DPDK stream so the `_dpdk` target
+// exercises at least the template instantiation. A real DPDK measurement
+// loop is left to a follow-up phase (needs EAL init / NIC binding glue).
+using DpdkStream = ed::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
+using DpdkPoller = ed::DpdkPoller<>;
+static_assert(sizeof(DpdkStream*) > 0);
+static_assert(sizeof(DpdkPoller*) > 0);
+#else
+namespace ek = eph::net::kernel;
+using Stream = ek::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
+#endif
 
-/// Kernel TCP echo server. Runs in the forked child.
-[[noreturn]] void echo_serve(int lfd) {
-    int cfd = ::accept(lfd, nullptr, nullptr);
-    if (cfd < 0) std::_Exit(1);
-    int one = 1;
-    (void)::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    uint8_t buf[kPayload];
-    for (;;) {
-        std::size_t got = 0;
-        while (got < kPayload) {
-            ssize_t n = ::recv(cfd, buf + got, kPayload - got, 0);
-            if (n <= 0) std::_Exit(0);
-            got += static_cast<std::size_t>(n);
+/// Default bench.conf path if no `--config <path>` is passed. The `lat`
+/// wrapper script always passes `--config` via BENCH_CONFIG, but running the
+/// binary directly for loopback smoke tests needs a reasonable default.
+constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
+
+/// Walk argv looking for `--config <path>`. Unrecognised flags are ignored —
+/// CommonConfig-style parsing is not needed for this scenario binary.
+[[nodiscard, maybe_unused]] const char* parse_config_path(int argc, char** argv) noexcept {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--config") == 0) {
+            return argv[i + 1];
         }
-        std::size_t sent = 0;
-        while (sent < kPayload) {
-            ssize_t n = ::send(cfd, buf + sent, kPayload - sent, MSG_NOSIGNAL);
-            if (n <= 0) std::_Exit(0);
-            sent += static_cast<std::size_t>(n);
-        }
     }
-}
-
-std::pair<int, uint16_t> bind_loopback() {
-    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    int one = 1;
-    (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
-    addr.sin_port        = 0;
-    if (::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        spdlog::error("bind failed: {}", std::strerror(errno));
-        std::_Exit(1);
+    if (const char* env = std::getenv("BENCH_CONFIG"); env && *env) {
+        return env;
     }
-    if (::listen(lfd, 1) != 0) std::_Exit(1);
-    socklen_t len = sizeof(addr);
-    ::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &len);
-    return {lfd, ::ntohs(addr.sin_port)};
-}
-
-void print_latency(const char* label, std::vector<uint64_t>& samples) {
-    if (samples.empty()) {
-        spdlog::info("{}: no samples", label);
-        return;
-    }
-    std::sort(samples.begin(), samples.end());
-    auto pct = [&](double p) {
-        const std::size_t i = std::min(samples.size() - 1,
-            static_cast<std::size_t>(p * (samples.size() - 1)));
-        return samples[i];
-    };
-    spdlog::info("{}: count={} min={}ns p50={}ns p99={}ns max={}ns",
-                 label, samples.size(), samples.front(),
-                 pct(0.5), pct(0.99), samples.back());
+    return kDefaultConfigPath;
 }
 
 } // namespace
-#endif // !EPH_USE_DPDK
 
 #if defined(EPH_USE_DPDK)
 int main(int /*argc*/, char** /*argv*/) {
     spdlog::set_level(spdlog::level::info);
-    spdlog::info("lat_tcp_v3 (DPDK build): API surface compiled. Real DPDK "
-                 "RTT measurement is left to a follow-up phase that wires "
-                 "the bench/core/ NIC plumbing into the v3.3 stream API. "
-                 "The kernel build (./lat_tcp_v3) is the active path.");
-    // Static type-check that the DPDK Poller + Stream instantiations link.
-    using DpdkStream = eph::net::dpdk::DpdkTcpStream<
-        ec::RawStreamCodec, /*Tls=*/false>;
-    using DpdkPoller = eph::net::dpdk::DpdkPoller<>;
-    static_assert(sizeof(DpdkStream*) > 0);
-    static_assert(sizeof(DpdkPoller*) > 0);
+    std::printf("lat_tcp_dpdk: v3.3 DpdkTcpStream API compiled.\n"
+                "Real DPDK measurement loop is deferred to a follow-up phase "
+                "(EAL init + vfio-pci NIC plumbing). Use lat_tcp (kernel) for "
+                "live measurements.\n");
     return 0;
 }
 #else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
-    const std::size_t iters = (argc > 1)
-        ? static_cast<std::size_t>(std::atoll(argv[1]))
-        : 10000;
+    const char* conf_path = parse_config_path(argc, argv);
 
-    if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {
-        spdlog::error("TSC calibration failed");
+    // ── Load config: globals (mock_ip, warmup_samples) + [lat_tcp] section.
+    auto globals_r = bench::ScenarioConfig::load_globals(conf_path);
+    if (!globals_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", globals_r.error().c_str());
         return 1;
     }
-    spdlog::info("lat_tcp_v3: iters={} payload={}B tsc_ns_per_cycle={:.4f}",
-                 iters, kPayload,
-                 eph::utils::TSC::get_ns_per_cycle().value());
-
-    auto [lfd, port] = bind_loopback();
-
-    pid_t pid = ::fork();
-    if (pid < 0) { spdlog::error("fork failed"); return 1; }
-    if (pid == 0) {
-        echo_serve(lfd);
+    auto scenario_r = bench::ScenarioConfig::load(conf_path, "lat_tcp");
+    if (!scenario_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", scenario_r.error().c_str());
+        return 1;
     }
-    ::close(lfd);
+    const auto& globals  = globals_r.value();
+    const auto& scenario = scenario_r.value();
 
-    auto poller = ek::KernelPoller::create({}).value();
+    // Required: port (no sensible default).
+    auto port_r = scenario.get_u32("port");
+    if (!port_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", port_r.error().c_str());
+        return 1;
+    }
+    const uint16_t port = static_cast<uint16_t>(port_r.value());
+
+    // Optional with defaults.
+    auto payload_r = scenario.get_u32("payload_size", 256);
+    if (!payload_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", payload_r.error().c_str());
+        return 1;
+    }
+    const std::size_t payload_size = payload_r.value();
+
+    auto duration_r = scenario.get_u32("duration_seconds", 10);
+    if (!duration_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", duration_r.error().c_str());
+        return 1;
+    }
+    const uint64_t duration_s = duration_r.value();
+
+    auto warmup_r = globals.get_u64("warmup_samples", 1000);
+    if (!warmup_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n", warmup_r.error().c_str());
+        return 1;
+    }
+    const uint64_t warmup_samples = warmup_r.value();
+
+    // Mock IP: global `mock_ip` key, defaults to loopback so the smoke test
+    // from a trivial `/tmp/bench-smoke.conf` without mock_ip still works.
+    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
+    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
+    if (!ip_r) {
+        std::fprintf(stderr, "lat_tcp: invalid mock_ip '%s': %s\n",
+                     mock_ip_str.c_str(), ip_r.error().detail);
+        return 1;
+    }
+    const en::SocketAddr remote{ip_r.value(), port};
+
+    std::printf("=== lat_tcp ===\n");
+    std::printf("config: mock=%s port=%u payload_size=%zu duration=%llus "
+                "warmup_samples=%llu\n",
+                mock_ip_str.c_str(),
+                static_cast<unsigned>(port),
+                payload_size,
+                static_cast<unsigned long long>(duration_s),
+                static_cast<unsigned long long>(warmup_samples));
+    std::fflush(stdout);
+
+    // ── Signal handler: SIGINT/SIGTERM flip `bench::shutdown_requested()`.
+    bench::install_signal_handler();
+
+    // ── Poller + Stream ──────────────────────────────────────────────────
+    auto poller_r = ek::KernelPoller::create({});
+    if (!poller_r) {
+        std::fprintf(stderr, "lat_tcp: Poller::create failed: %s\n",
+                     poller_r.error().detail);
+        return 1;
+    }
+    auto poller = std::move(poller_r.value());
 
     ek::StreamConfig cfg{};
-    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.reasm_capacity  = 16 * 1024;
-    cfg.connect_timeout = 1s;
-    auto sr = PlainStream::create(cfg);
-    if (!sr) {
-        spdlog::error("create failed: {}", sr.error().detail);
-        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+    cfg.remote          = remote;
+    cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
+    cfg.connect_timeout = std::chrono::milliseconds{3000};
+
+    auto stream_r = Stream::create(cfg);
+    if (!stream_r) {
+        std::fprintf(stderr, "lat_tcp: Stream::create failed: %s\n",
+                     stream_r.error().detail);
         return 2;
     }
-    auto stream = std::move(*sr);
+    auto stream = std::move(stream_r.value());
 
-    std::atomic<std::size_t> rx_bytes{0};
-    stream->on_message = [&](const uint8_t*, uint16_t n) {
-        rx_bytes.fetch_add(n, std::memory_order_release);
+    // Latest RX buffer: on_message stamps it, the poll loop drains it.
+    // We use byte_count to tolerate partial RX delivery — with
+    // RawStreamCodec the mock's `sendall` may split the echo across
+    // multiple recv() calls, so we wait until we've seen `payload_size`
+    // bytes in total (which equals one round-trip since the client sends
+    // exactly one payload before waiting).
+    std::size_t rx_bytes = 0;
+    stream->on_message = [&rx_bytes](const uint8_t* /*data*/, uint16_t n) {
+        rx_bytes += n;
     };
+
     if (auto r = poller->add(stream.get()); !r) {
-        spdlog::error("attach failed: {}", r.error().detail);
-        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+        std::fprintf(stderr, "lat_tcp: poller->add failed: %s\n",
+                     r.error().detail);
         return 3;
     }
 
-    uint8_t payload[kPayload]{};
-    for (std::size_t i = 0; i < kPayload; ++i) payload[i] = static_cast<uint8_t>(i);
+    // ── Measurement loop ─────────────────────────────────────────────────
+    std::vector<uint8_t> payload(payload_size, 0xAB);
+    eu::Recorder rec{"lat_tcp"};
 
-    std::vector<uint64_t> rtt;
-    rtt.reserve(iters);
-    std::size_t expected = 0;
-    for (std::size_t i = 0; i < iters; ++i) {
-        const uint64_t t0 = eph::utils::TSC::now();
-        if (!stream->send(payload)) {
-            spdlog::error("send failed at iter {}", i);
+    const uint64_t t_start    = bench::monotonic_raw_ns();
+    const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
+
+    // Safety: if the echo mock dies we must not spin forever.
+    constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
+
+    uint64_t sample_idx = 0;
+    bool     timed_out  = false;
+    while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
+        const uint64_t t0 = bench::monotonic_raw_ns();
+
+        auto send_r = stream->send(std::span<const uint8_t>{payload});
+        if (!send_r) {
+            std::fprintf(stderr, "lat_tcp: send failed at sample %llu: %s\n",
+                         static_cast<unsigned long long>(sample_idx),
+                         send_r.error().detail);
             break;
         }
-        expected += kPayload;
-        while (rx_bytes.load(std::memory_order_acquire) < expected) {
+
+        rx_bytes = 0;
+        while (rx_bytes < payload_size && !bench::shutdown_requested()) {
             poller->poll();
+            if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
+                std::fprintf(stderr,
+                             "lat_tcp: echo timeout at sample %llu "
+                             "(rx=%zu/%zu)\n",
+                             static_cast<unsigned long long>(sample_idx),
+                             rx_bytes, payload_size);
+                timed_out = true;
+                break;
+            }
         }
-        const uint64_t t1 = eph::utils::TSC::now();
-        if (auto ns = eph::utils::TSC::to_ns(t1 - t0)) {
-            rtt.push_back(static_cast<uint64_t>(*ns));
+        if (timed_out || bench::shutdown_requested()) break;
+
+        const uint64_t t1 = bench::monotonic_raw_ns();
+        if (sample_idx >= warmup_samples) {
+            rec.record_ns(t1 - t0);
         }
+        ++sample_idx;
     }
 
-    print_latency("lat_tcp_v3 RTT (kernel client)", rtt);
+    // ── Report ───────────────────────────────────────────────────────────
+    const char* backend =
+#if defined(EPH_USE_DPDK)
+        "dpdk";
+#else
+        "kernel";
+#endif
+    bench::print_report("lat_tcp", backend, rec, warmup_samples);
 
+    // ── Graceful close. Ignore errors: the report is what the user cares
+    //    about, and the Python mock will notice the FIN regardless.
     (void)stream->close_gracefully();
-    poller->poll(50ms);
+    poller->poll(std::chrono::milliseconds{50});
     (void)poller->remove(stream.get());
     stream.reset();
+    poller.reset();
 
-    int wstatus = 0;
-    ::waitpid(pid, &wstatus, 0);
-
-    return 0;
+    return timed_out ? 4 : 0;
 }
 #endif // EPH_USE_DPDK

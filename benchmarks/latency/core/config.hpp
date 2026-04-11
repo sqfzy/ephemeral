@@ -430,6 +430,58 @@ load_bench_conf() {
 ///    Required-key validation happens at the get_*() call site.
 class ScenarioConfig {
 public:
+    /// Load the global (pre-section) `key = value` lines from `conf_path`.
+    ///
+    /// Phase 10 bench.conf has lowercase global keys (`mock_ip`,
+    /// `client_ip`, `warmup_samples`, ...) BEFORE the first `[lat_*]`
+    /// section header. They are shared by every scenario binary and the
+    /// Python mocks, so each scenario reads them via this helper:
+    /// ```cpp
+    /// auto globals = ScenarioConfig::load_globals(path).value();
+    /// auto mock_ip = globals.get_string("mock_ip");
+    /// auto warmup  = globals.get_u32("warmup_samples", 1000).value();
+    /// ```
+    ///
+    /// Lines inside any `[...]` block are ignored — those belong to the
+    /// scenario-specific `load(conf_path, "lat_foo")` call.
+    [[nodiscard]] static std::expected<ScenarioConfig, std::string>
+    load_globals(std::string_view conf_path) {
+        ScenarioConfig out;
+        std::ifstream in{std::string{conf_path}};
+        if (!in) {
+            return std::unexpected(
+                "ScenarioConfig: failed to open " + std::string{conf_path});
+        }
+
+        std::string line;
+        size_t lineno = 0;
+        while (std::getline(in, line)) {
+            ++lineno;
+            auto trimmed = config_detail::strip(line);
+            if (trimmed.empty() || trimmed[0] == '#') continue;
+
+            // Stop at the first `[...]` section header — globals are
+            // whatever comes before it.
+            if (trimmed.front() == '[') break;
+
+            // Strict `key = value` with no implicit defaults.
+            auto eq = trimmed.find('=');
+            if (eq == std::string::npos) {
+                // Tolerate stray non-KV lines: the legacy bash-style
+                // parser (`BenchConfig`) used the same file and may leave
+                // comment-like lines we should just skip.
+                continue;
+            }
+            auto key = config_detail::strip(
+                std::string_view{trimmed}.substr(0, eq));
+            auto val = config_detail::strip(
+                std::string_view{trimmed}.substr(eq + 1));
+            if (key.empty()) continue;
+            out.kv_[key] = val;
+        }
+        return out;
+    }
+
     /// Load a section from `conf_path`. Returns Ok (possibly empty) on
     /// success, Err only on I/O or syntactic error (e.g. missing `=`).
     [[nodiscard]] static std::expected<ScenarioConfig, std::string>
