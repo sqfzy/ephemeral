@@ -114,13 +114,24 @@ Two distinct benchmark systems:
    after the change and verify no regression.
 
 2. **End-to-end latency benchmarks** — `benchmarks/latency/`, one
-   `lat_<scenario>[_dpdk]` binary per scenario (`lat_tcp`, `lat_udp`, `lat_ws`,
-   `lat_ex_market`, `lat_ex_order`, `lat_ex_md_udp`, plus `_dpdk` variants). Each binary
-   forks its own kernel mock echo server and runs the bench client; the mock is
-   **always kernel** (only the client side differs between kernel and DPDK), which is
-   what makes the comparison fair. The bench writes no files. Drive everything via the
-   wrapper script — it handles NIC-B state transitions
-   (host kernel ↔ bench_ns ↔ vfio-pci) idempotently and execs the right binary:
+   `lat_<scenario>[_dpdk]` binary per scenario. Phase 10 rewrote every scenario on top of
+   the v3.3 `Stream` / `Poller` API against **Python stdlib mocks** (no pip install
+   required); the mock is **always kernel**, only the client side differs between kernel
+   and DPDK, which is what makes the comparison fair. The bench writes no files.
+
+   The six scenarios:
+
+   | Scenario        | Client                                             | Mock                    |
+   |-----------------|----------------------------------------------------|-------------------------|
+   | `lat_tcp`       | `KernelTcpStream<RawStreamCodec>` echo RTT         | `mocks/tcp_echo.py`     |
+   | `lat_udp`       | `KernelUdpSocket<RawDatagramCodec>` echo RTT       | `mocks/udp_echo.py`     |
+   | `lat_ws`        | `KernelTcpStream<WsCodec>` echo RTT (RFC 6455)     | `mocks/ws_echo.py`      |
+   | `lat_ex_market` | `WsCodec` + `core/json_scan.hpp` 1-leg oneway      | `mocks/ex_market_push.py` |
+   | `lat_ex_order`  | `WsCodec` + N-inflight JSON order RTT              | `mocks/ex_order_echo.py`|
+   | `lat_ex_md_udp` | `RawDatagramCodec` Mold64-style oneway             | `mocks/ex_md_udp_push.py` |
+
+   Drive everything via the `lat` dispatcher — it handles NIC-B state transitions
+   (host kernel ↔ `bench_ns` ↔ vfio-pci) idempotently and execs the right binary:
 
 ```bash
 sudo ./benchmarks/latency/lat tcp           # raw TCP RTT, kernel client
@@ -128,9 +139,19 @@ sudo ./benchmarks/latency/lat udp --dpdk    # raw UDP RTT, DPDK client
 sudo ./benchmarks/latency/lat ex_market     # exchange bookTicker push
 ```
 
-`benchmarks/latency/bench.conf` holds the NIC/IP/CPU layout. Shared bench infrastructure
-is a header-only library under `benchmarks/latency/core/` with its own unit tests in
-`tests/unit/bench/`.
+Configuration is a single INI-style `benchmarks/latency/bench.conf`: lowercase global
+keys (NIC/IP/CPU layout, `warmup_samples`) before the first section header, then one
+`[lat_<scenario>]` section per binary (`port`, `payload_size`, `duration_seconds`, etc.).
+Both the C++ client and the Python mock read the same file via
+`bench::ScenarioConfig` / `mocks/_conf.py`.
+
+Phase 10 override of the canonical TSC rule: bench client and mocks both read
+`clock_gettime(CLOCK_MONOTONIC_RAW)` via `bench::monotonic_raw_ns()` so the Python mock
+and C++ client share a time base on one-way scenarios. Samples feed
+`eph::utils::Recorder::record_ns()` directly (no cycle→ns conversion). Shared bench
+infrastructure is a header-only library under `benchmarks/latency/core/` with its own
+unit tests in `tests/unit/bench/`. See `benchmarks/latency/README.md` for the scenario
+list, config schema, and standalone mock debugging.
 
 ## Architecture
 
