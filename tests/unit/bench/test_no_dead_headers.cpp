@@ -68,19 +68,33 @@ std::vector<std::string> quoted_includes(const std::string& src) {
     return out;
 }
 
-/// Resolve an `#include "..."` directive against the includer's directory.
-/// Returns the absolute path of the target if it exists, or empty if it
-/// doesn't (the include points into another module — irrelevant for our
-/// dead-header check).
-fs::path resolve_include(const fs::path& includer_dir, const std::string& spec) {
+/// Resolve an `#include "..."` directive. We mimic the compile-line's
+/// `-I` search order for bench sources/tests:
+///   1. includer's own directory (`#include "foo.hpp"` next to the .cpp)
+///   2. the configured `-I` roots (benchmarks/latency, tests/unit/bench)
+///
+/// Returns the absolute path of the target if it exists under one of
+/// those roots, or empty if it doesn't (the include points into another
+/// module — irrelevant for our dead-header check).
+fs::path resolve_include(const fs::path& includer_dir,
+                         const std::string& spec,
+                         const std::vector<fs::path>& extra_roots) {
     fs::path candidate = includer_dir / spec;
     if (fs::exists(candidate)) return fs::weakly_canonical(candidate);
+    for (const auto& root : extra_roots) {
+        fs::path c = root / spec;
+        if (fs::exists(c)) return fs::weakly_canonical(c);
+    }
     return {};
 }
 
 /// Walk the include graph from a set of roots, marking every header
-/// that is transitively reachable.
-std::set<fs::path> reachable_from(const std::vector<fs::path>& roots) {
+/// that is transitively reachable. `extra_roots` mirrors the xmake
+/// `add_includedirs(...)` entries so that `#include "core/foo.hpp"`
+/// from a unit test (which lives two dirs away from benchmarks/latency)
+/// still resolves.
+std::set<fs::path> reachable_from(const std::vector<fs::path>& roots,
+                                  const std::vector<fs::path>& extra_roots) {
     std::set<fs::path> visited;
     std::vector<fs::path> stack(roots.begin(), roots.end());
     while (!stack.empty()) {
@@ -91,7 +105,7 @@ std::set<fs::path> reachable_from(const std::vector<fs::path>& roots) {
         if (!visited.insert(canon).second) continue;
 
         for (const auto& spec : quoted_includes(slurp(cur))) {
-            auto target = resolve_include(cur.parent_path(), spec);
+            auto target = resolve_include(cur.parent_path(), spec, extra_roots);
             if (!target.empty() && visited.find(target) == visited.end()) {
                 stack.push_back(target);
             }
@@ -132,7 +146,11 @@ TEST(BenchNoDeadHeaders, EveryCoreHeaderIsReachableFromAScenarioOrTest) {
     }
     ASSERT_FALSE(roots.empty()) << "found no lat_*/mock_* roots under " << bench_lat;
 
-    auto reachable = reachable_from(roots);
+    // Mirror the xmake `add_includedirs(...)` list for bench sources and
+    // unit tests. Anything that would compile is reachable here.
+    const std::vector<fs::path> extra_roots{bench_lat};
+
+    auto reachable = reachable_from(roots, extra_roots);
 
     // Now collect every header under core/ and check each one is in
     // the reachable set.

@@ -1,15 +1,22 @@
-/// @file core/ws_framing.hpp
-/// Minimal WebSocket frame helpers shared by the bench suite.
+/// @file eph-net-dpdk/tests/integration/ws_framing.hpp
+/// Minimal WebSocket frame helpers for the DPDK E2E kernel-side echo mock.
 ///
-/// The mock is always unmasked server → client; the bench client is
-/// always masked client → server (RFC 6455). These four helpers are all
-/// any scenario (or mock) needs:
+/// Previously lived at `benchmarks/latency/core/ws_framing.hpp` — moved
+/// here in Phase 10 when the bench latency suite was rewritten to rely
+/// on Python mocks instead of C++ in-process mocks. `test_dpdk_e2e.cpp`
+/// still needs a tiny in-process WS server (no framework dependency)
+/// to validate the DpdkTcpStream WS upgrade path, so the helper moves
+/// next to its only remaining caller.
 ///
-///   client side (used by bench binaries):
+/// Scope: server-side echo only. Client side (`build_masked_text_frame`
+/// / `parse_server_frame`) is retained for symmetry and because it is
+/// trivially small.
+///
+///   client side (bench → mock):
 ///     - `build_masked_text_frame`  — client → server
 ///     - `parse_server_frame`       — parse unmasked server frame
 ///
-///   server side (used by mock binaries):
+///   server side (mock → bench):
 ///     - `build_server_frame`       — server → client (unmasked)
 ///     - `parse_client_frame_inplace` — parse masked client frame,
 ///                                      unmask payload in place

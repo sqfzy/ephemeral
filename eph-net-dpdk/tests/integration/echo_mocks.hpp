@@ -5,11 +5,10 @@
 ///
 /// All five mock variants below (TCP echo, UDP echo, RST, FIN, WS echo)
 /// run inside the dispatcher's child process — one thread each, all
-/// bound to NIC_A in the host network namespace.  They reuse the bench
-/// socket helpers from `core/socket_bind.hpp` and `core/socket_io.hpp`
-/// so the kernel-side I/O paths are byte-identical to the lat_*_dpdk
-/// benchmarks (which is what makes the comparison fair in the first
-/// place).
+/// bound to NIC_A in the host network namespace.  They call the POSIX
+/// bind/listen helpers in `eph::net::posix::` (from `eph/net/posix_io.hpp`
+/// and `eph/net/posix_listener.hpp`) so the kernel-side I/O paths stay
+/// byte-identical to what a v3.3 KernelTcpStream would exercise.
 ///
 /// Shutdown semantics: the dispatcher catches SIGTERM, flips its
 /// running flag, and immediately `_exit(0)`s.  Worker threads are not
@@ -35,8 +34,8 @@
 #include "eph/net/posix_io.hpp"
 #include "eph/net/posix_listener.hpp"
 
-#include "../../../benchmarks/latency/core/ws_framing.hpp"
-#include "../../../benchmarks/latency/core/ws_handshake.hpp"
+#include "ws_framing.hpp"
+#include "ws_handshake.hpp"
 
 namespace eph::dpdk::test_e2e {
 

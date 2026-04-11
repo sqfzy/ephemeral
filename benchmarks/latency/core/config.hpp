@@ -14,7 +14,9 @@
 #pragma once
 
 #include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
@@ -25,6 +27,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <unistd.h>
@@ -390,6 +393,238 @@ load_bench_conf() {
 
     return cfg;
 }
+
+// ─── ScenarioConfig (INI [lat_*] section parser, Phase 10) ──────────────
+//
+// Phase 10 introduces per-scenario INI sections in bench.conf. Each
+// scenario binary reads the global `CommonConfig` / `BenchConfig` values
+// for NIC/IP/CPU layout AND its own `[lat_<name>]` section for port,
+// payload size, duration, etc.
+//
+// Rationale (D-1, D-2 in plan-phase-10-latency-bench-20260411-040540.md):
+// one flat-structure bench.conf keeps config local to the scenario it
+// drives while sharing the global layout. The old bash-style KEY=VALUE
+// format stays backwards-compatible for lines outside any `[...]` header.
+
+/// Parse a `[lat_<name>]` INI section from bench.conf into a key-value
+/// map. Global (pre-section) lines are ignored — use `CommonConfig` or
+/// `BenchConfig` for those.
+///
+/// Scenario binaries typically do:
+/// ```cpp
+/// auto scenario = bench::ScenarioConfig::load("bench.conf", "lat_tcp")
+///                    .value();
+/// auto port = scenario.get_u32("port").value();
+/// auto payload = scenario.get_u32("payload_size", 256);
+/// ```
+///
+/// Parser constraints:
+///  - Lines before the first `[...]` header are silently ignored (global
+///    keys belong to CommonConfig / BenchConfig).
+///  - Blank lines and `#`-prefixed comment lines are skipped.
+///  - Lines inside a `[<section>]` block are collected only when
+///    `<section>` matches `scenario_name` exactly (no prefix match, so
+///    `lat_tcp` does not leak into `lat_tcp_variant`).
+///  - `key = value`: both sides trimmed; internal whitespace preserved.
+///  - A missing section returns an empty ScenarioConfig (NOT an error).
+///    Required-key validation happens at the get_*() call site.
+class ScenarioConfig {
+public:
+    /// Load a section from `conf_path`. Returns Ok (possibly empty) on
+    /// success, Err only on I/O or syntactic error (e.g. missing `=`).
+    [[nodiscard]] static std::expected<ScenarioConfig, std::string>
+    load(std::string_view conf_path, std::string_view scenario_name) {
+        ScenarioConfig out;
+        std::ifstream in{std::string{conf_path}};
+        if (!in) {
+            return std::unexpected(
+                "ScenarioConfig: failed to open " + std::string{conf_path});
+        }
+
+        const std::string target{scenario_name};
+        std::string line;
+        bool in_target = false;
+        size_t lineno = 0;
+        while (std::getline(in, line)) {
+            ++lineno;
+            auto trimmed = config_detail::strip(line);
+            if (trimmed.empty() || trimmed[0] == '#') continue;
+
+            // Section header?
+            if (trimmed.front() == '[') {
+                auto rb = trimmed.find(']');
+                if (rb == std::string::npos) {
+                    return std::unexpected(
+                        "ScenarioConfig: malformed section header at line " +
+                        std::to_string(lineno) + ": " + trimmed);
+                }
+                auto name = config_detail::strip(
+                    std::string_view{trimmed}.substr(1, rb - 1));
+                in_target = (name == target);
+                continue;
+            }
+
+            if (!in_target) continue;
+
+            // key = value line. Do NOT use parse_kv_line — it strips
+            // trailing `# comment` conditionally and unquotes; ScenarioConfig
+            // wants raw-ish parsing with strict error reporting.
+            auto eq = trimmed.find('=');
+            if (eq == std::string::npos) {
+                return std::unexpected(
+                    "ScenarioConfig: missing '=' at line " +
+                    std::to_string(lineno) + ": " + trimmed);
+            }
+            auto key = config_detail::strip(
+                std::string_view{trimmed}.substr(0, eq));
+            auto val = config_detail::strip(
+                std::string_view{trimmed}.substr(eq + 1));
+            if (key.empty()) {
+                return std::unexpected(
+                    "ScenarioConfig: empty key at line " +
+                    std::to_string(lineno));
+            }
+            out.kv_[key] = val;
+        }
+        return out;
+    }
+
+    /// String getter with default.
+    [[nodiscard]] std::string
+    get_string(std::string_view key, std::string_view def = "") const {
+        auto it = kv_.find(std::string{key});
+        if (it == kv_.end()) return std::string{def};
+        return it->second;
+    }
+
+    /// Required u32: error if missing or unparseable.
+    [[nodiscard]] std::expected<uint32_t, std::string>
+    get_u32(std::string_view key) const {
+        auto it = kv_.find(std::string{key});
+        if (it == kv_.end()) {
+            return std::unexpected(
+                "ScenarioConfig: missing required key '" +
+                std::string{key} + "'");
+        }
+        return parse_u32(it->second, key);
+    }
+
+    /// Optional u32 with default: missing key returns default, but a
+    /// present-but-malformed value is still an error (fail-loud).
+    [[nodiscard]] std::expected<uint32_t, std::string>
+    get_u32(std::string_view key, uint32_t def) const {
+        auto it = kv_.find(std::string{key});
+        if (it == kv_.end()) return def;
+        return parse_u32(it->second, key);
+    }
+
+    [[nodiscard]] std::expected<uint64_t, std::string>
+    get_u64(std::string_view key) const {
+        auto it = kv_.find(std::string{key});
+        if (it == kv_.end()) {
+            return std::unexpected(
+                "ScenarioConfig: missing required key '" +
+                std::string{key} + "'");
+        }
+        return parse_u64(it->second, key);
+    }
+
+    [[nodiscard]] std::expected<uint64_t, std::string>
+    get_u64(std::string_view key, uint64_t def) const {
+        auto it = kv_.find(std::string{key});
+        if (it == kv_.end()) return def;
+        return parse_u64(it->second, key);
+    }
+
+    [[nodiscard]] std::expected<double, std::string>
+    get_double(std::string_view key) const {
+        auto it = kv_.find(std::string{key});
+        if (it == kv_.end()) {
+            return std::unexpected(
+                "ScenarioConfig: missing required key '" +
+                std::string{key} + "'");
+        }
+        // strtod is the least-bad stdlib option; errno must be reset
+        // per POSIX. We reject trailing garbage.
+        errno = 0;
+        const char* begin = it->second.c_str();
+        char* end = nullptr;
+        double v = std::strtod(begin, &end);
+        if (end == begin || *end != '\0' || errno == ERANGE) {
+            return std::unexpected(
+                "ScenarioConfig: key '" + std::string{key} +
+                "' value '" + it->second + "' is not a valid double");
+        }
+        return v;
+    }
+
+    /// True if the key is present (regardless of whether its value is
+    /// parseable). Useful for optional features that are "enabled when
+    /// key exists".
+    [[nodiscard]] bool has(std::string_view key) const {
+        return kv_.find(std::string{key}) != kv_.end();
+    }
+
+    /// Number of keys parsed from the section. Primarily a test helper —
+    /// production code should call has()/get_*() directly.
+    [[nodiscard]] size_t size() const noexcept { return kv_.size(); }
+
+private:
+    /// Strict unsigned decimal parser. Rejects leading `-`, `+`, any
+    /// non-digit, empty strings. Detects u32 overflow.
+    [[nodiscard]] static std::expected<uint32_t, std::string>
+    parse_u32(std::string_view s, std::string_view key) {
+        if (s.empty()) {
+            return std::unexpected(
+                "ScenarioConfig: key '" + std::string{key} +
+                "' has empty value");
+        }
+        uint64_t v = 0;
+        for (char c : s) {
+            if (c < '0' || c > '9') {
+                return std::unexpected(
+                    "ScenarioConfig: key '" + std::string{key} +
+                    "' value '" + std::string{s} + "' is not a u32");
+            }
+            v = v * 10 + uint64_t(c - '0');
+            if (v > 0xFFFFFFFFull) {
+                return std::unexpected(
+                    "ScenarioConfig: key '" + std::string{key} +
+                    "' value '" + std::string{s} + "' overflows u32");
+            }
+        }
+        return static_cast<uint32_t>(v);
+    }
+
+    /// Strict unsigned decimal parser for u64.
+    [[nodiscard]] static std::expected<uint64_t, std::string>
+    parse_u64(std::string_view s, std::string_view key) {
+        if (s.empty()) {
+            return std::unexpected(
+                "ScenarioConfig: key '" + std::string{key} +
+                "' has empty value");
+        }
+        uint64_t v = 0;
+        for (char c : s) {
+            if (c < '0' || c > '9') {
+                return std::unexpected(
+                    "ScenarioConfig: key '" + std::string{key} +
+                    "' value '" + std::string{s} + "' is not a u64");
+            }
+            // Overflow check: if v > (UINT64_MAX - digit) / 10 then overflow.
+            uint64_t digit = uint64_t(c - '0');
+            if (v > (UINT64_MAX - digit) / 10) {
+                return std::unexpected(
+                    "ScenarioConfig: key '" + std::string{key} +
+                    "' value '" + std::string{s} + "' overflows u64");
+            }
+            v = v * 10 + digit;
+        }
+        return v;
+    }
+
+    std::unordered_map<std::string, std::string> kv_;
+};
 
 #ifdef EPH_USE_DPDK
 /// Parse DPDK-specific flags from a post-`--` argv slice.

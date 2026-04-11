@@ -1,12 +1,18 @@
-/// @file core/ws_handshake.hpp
-/// Server-side WebSocket HTTP Upgrade handshake.
+/// @file eph-net-dpdk/tests/integration/ws_handshake.hpp
+/// Server-side WebSocket HTTP Upgrade handshake for the DPDK E2E echo mock.
+///
+/// Previously at `benchmarks/latency/core/ws_handshake.hpp` — moved here
+/// in Phase 10 when the bench suite migrated to Python mocks. The DPDK
+/// E2E test still needs a tiny in-process WS server to exercise the
+/// `DpdkTcpStream` upgrade path, so the helper sits next to its only
+/// remaining caller (`echo_mocks.hpp`).
 ///
 /// Reads the HTTP request, extracts `Sec-WebSocket-Key`, computes the
 /// `Sec-WebSocket-Accept` digest (SHA-1 of key + RFC magic string, base64
 /// encoded), and writes the 101 response.
 ///
-/// Bundles a minimal SHA-1 implementation (80 lines) because the bench
-/// mock has no link dependency on aws-lc/openssl. Base64 reuses
+/// Bundles a minimal SHA-1 implementation (80 lines) because this mock
+/// has no link dependency on aws-lc/openssl. Base64 reuses
 /// `eph::core::detail::base64_encode` (standalone, no TLS deps).
 ///
 /// Blocking reads with a millisecond-level deadline. Suitable for the
