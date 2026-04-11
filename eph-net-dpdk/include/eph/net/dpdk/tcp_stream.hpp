@@ -111,9 +111,10 @@ inline spdlog::logger* tcp_stream_logger() {
 ///        with a front cursor — Phase 5 can upgrade to a ring buffer.
 class ReasmBuffer {
 public:
-    explicit ReasmBuffer(std::size_t cap = 64 * 1024) { buf_.resize(cap); }
+    explicit ReasmBuffer(std::size_t cap = 256 * 1024) { buf_.resize(cap); }
 
     [[nodiscard]] std::size_t readable() const noexcept { return tail_ - head_; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return buf_.size(); }
     [[nodiscard]] std::size_t writable_capacity() const noexcept {
         return buf_.size() - tail_;
     }
@@ -630,11 +631,20 @@ public:
     ///        session-local NIC driver loop.
     std::size_t poll_once_() noexcept {
         if (!sess_.is_established()) return 0;
+        if (reasm_overflowed_) return 0;
         auto r = sess_.poll_rx([this](const uint8_t* data, uint16_t len) {
+            if (reasm_overflowed_) return;
             if (!this->reasm_.append(data, len)) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                    "DpdkTcpStream::poll_once_: reasm buffer full");
-                return;
+                // Silent drop is a reliability bug in HFT — flip the
+                // byte pipe into Closed via RST so the reconnect policy
+                // takes over on the next scheduler tick.
+                SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                    "DpdkTcpStream::poll_once_: reasm buffer overflow "
+                    "cap={} need={} readable={} — forcing reset",
+                    reasm_.capacity(), static_cast<std::size_t>(len),
+                    reasm_.readable());
+                reasm_overflowed_ = true;
+                sess_.reset();
             }
         });
         if (!r) {
@@ -642,6 +652,7 @@ public:
                 "DpdkTcpStream::poll_once_: poll_rx err={}", r.error());
             return 0;
         }
+        if (reasm_overflowed_) return 0;
         return drain_codec_();
     }
 
@@ -679,20 +690,28 @@ public:
     ///        reassembly buffer through the codec.
     void process_burst_(rte_mbuf** mbufs, uint16_t n,
                          uint64_t rx_tsc) noexcept {
-        if (!sess_.is_established()) {
+        if (!sess_.is_established() || reasm_overflowed_) {
             for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
             return;
         }
         sess_.set_last_rx_burst_tsc(rx_tsc);
         // Feed the mbufs into the TCP state machine. `process_rx` consumes
         // the mbufs (frees them internally) and invokes the callback once
-        // per decoded TCP payload segment.
+        // per decoded TCP payload segment. On reasm overflow we latch
+        // `reasm_overflowed_` so any subsequent callback from the same
+        // burst skips touching the (full) buffer, and reset the session
+        // so the reconnect loop can take over.
         auto r = sess_.process_rx(mbufs, n,
             [this](const uint8_t* data, uint16_t len) {
+                if (reasm_overflowed_) return;
                 if (!this->reasm_.append(data, len)) {
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                        "DpdkTcpStream::process_burst_: reasm full; "
-                        "dropping {} bytes", len);
+                    SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::process_burst_: reasm buffer overflow "
+                        "cap={} need={} readable={} — forcing reset",
+                        reasm_.capacity(), static_cast<std::size_t>(len),
+                        reasm_.readable());
+                    reasm_overflowed_ = true;
+                    sess_.reset();
                 }
             });
         if (!r) {
@@ -700,6 +719,7 @@ public:
                 "DpdkTcpStream::process_burst_: process_rx err={}", r.error());
             return;
         }
+        if (reasm_overflowed_) return;
         sess_.flush_pending_ack();
         (void)drain_codec_();
     }
@@ -708,7 +728,7 @@ private:
     explicit DpdkTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg))
         , sess_(cfg_.legacy, cfg_.pool)
-        , reasm_(/*cap*/ 64 * 1024)
+        , reasm_(cfg_.reasm_capacity > 0 ? cfg_.reasm_capacity : 256 * 1024)
         , reconnect_policy_(cfg_.reconnect) {}
 
     /// @brief Run the codec over the accumulated payload bytes, firing
@@ -776,6 +796,10 @@ private:
     // reallocate per send. Only populated when `EnableTls=true`.
     std::vector<uint8_t>                    tls_send_buf_{};
     detail::ReasmBuffer                     reasm_;
+    /// @brief Latch set when `reasm_.append()` reports overflow. Once
+    ///        tripped, the stream short-circuits all further RX dispatch
+    ///        and the reconnect policy is expected to tear it down.
+    bool                                    reasm_overflowed_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
     ::eph::net::ReconnectPolicy             reconnect_policy_;
 };

@@ -119,6 +119,17 @@ struct StreamConfig {
 
     /// @brief Unsupported on DPDK — always rejected if set.
     std::optional<::eph::net::ProxyConfig> proxy{};
+
+    /// @brief Reassembly buffer capacity in bytes. Raised from the legacy
+    ///        64 KiB default so typical L2 orderbook snapshots (often
+    ///        100-200 KiB in a single burst) fit without triggering the
+    ///        overflow error path. If the codec is unable to drain faster
+    ///        than the producer fills, `append()` returns false and the
+    ///        stream is forcibly reset so the reconnect policy takes over
+    ///        — silently dropping application bytes is not an option in
+    ///        HFT. Kept symmetric with `eph::net::kernel::StreamConfig`
+    ///        which carries the same field.
+    std::size_t reasm_capacity{256 * 1024};
 };
 
 // ---------------------------------------------------------------------------
