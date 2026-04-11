@@ -33,6 +33,7 @@
 /// measurement loop is Phase-<later> work (see lat_tcp.cpp for the same
 /// pattern).
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +65,7 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
@@ -140,6 +142,15 @@ int main(int argc, char** argv) {
     }
     const std::size_t payload_size = payload_r.value();
 
+    // Phase 11.1 D-7: 24 B timestamp-block header requirement.
+    if (payload_size < bench::kTimestampBlockSize) {
+        std::fprintf(stderr,
+                     "lat_ws: payload_size=%zu < kTimestampBlockSize=%zu "
+                     "(TX/RX leg protocol requires a 24 B header)\n",
+                     payload_size, bench::kTimestampBlockSize);
+        return 1;
+    }
+
     auto duration_r = scenario.get_u32("duration_seconds", 10);
     if (!duration_r) {
         std::fprintf(stderr, "lat_ws: %s\n", duration_r.error().c_str());
@@ -176,11 +187,19 @@ int main(int argc, char** argv) {
 
     bench::install_signal_handler();
 
-    // Construct the Recorder early so its TSC::init() calibration spin
-    // (~1 second on process start) happens before we hit the WS
+    // Construct the Recorders early so their TSC::init() calibration
+    // spins (~1 second on process start) happen before we hit the WS
     // handshake. For an RTT scenario this is less critical than for
     // one-way lat_ex_market, but it keeps the two binaries symmetric.
-    eu::Recorder rec{"lat_ws"};
+    const char* backend =
+#if defined(EPH_USE_DPDK)
+        "dpdk";
+#else
+        "kernel";
+#endif
+    eu::Recorder rec_rtt{std::string{"lat_ws_"} + backend + "_rtt"};
+    eu::Recorder rec_tx {std::string{"lat_ws_"} + backend + "_tx" };
+    eu::Recorder rec_rx {std::string{"lat_ws_"} + backend + "_rx" };
 
 #if defined(EPH_USE_DPDK)
     auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
@@ -240,9 +259,20 @@ int main(int argc, char** argv) {
     // counter like lat_tcp) is correct here because the codec delivers
     // the reassembled message in a single callback regardless of how
     // many TCP segments carried it.
+    //
+    // Phase 11.1: copy the first 24 B of the decoded payload into
+    // `ts_buf` for leg decomposition. `on_message` gets plaintext
+    // (post-unmask) from the WsCodec, so this is just a memcpy.
     bool got_echo = false;
-    stream->on_message = [&got_echo](const uint8_t* /*data*/, uint16_t /*n*/) {
+    std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
+    std::size_t ts_filled = 0;
+    stream->on_message = [&](const uint8_t* data, uint16_t n) {
         got_echo = true;
+        ts_filled = 0;
+        if (n >= bench::kTimestampBlockSize) {
+            std::memcpy(ts_buf.data(), data, bench::kTimestampBlockSize);
+            ts_filled = bench::kTimestampBlockSize;
+        }
     };
 
     if (auto r = poller->add(stream.get()); !r) {
@@ -251,24 +281,15 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    // Pre-encode the WS-binary frame once. `KernelTcpStream::send` passes
-    // bytes through the wire as-is (no codec encode on the TX path), so
-    // the caller is responsible for producing a well-formed frame. A WS
-    // client frame is `kMaxFrameHeaderLen (14) + payload` worst case.
+    // Phase 11.1: we must re-encode a new WS frame for every sample
+    // because the client MUST mask each frame with a fresh (or at
+    // least per-frame) masking key per RFC 6455 §5.3, and the masking
+    // interleaves with the timestamp bytes we overwrite each sample.
+    // Re-encoding is cheap (a small memcpy + XOR over payload_size B)
+    // and keeps the protocol compliant.
     std::vector<uint8_t> payload(payload_size, 0xAB);
     std::vector<uint8_t> frame(ec::WsCodec::max_overhead + payload_size);
     ec::WsCodec encoder{};
-    auto enc_r = encoder.encode(frame.data(), frame.size(),
-                                std::span<const uint8_t>{payload});
-    if (!enc_r) {
-        std::fprintf(stderr, "lat_ws: WsCodec::encode failed: %s\n",
-                     enc_r.error().detail);
-        return 4;
-    }
-    std::span<const uint8_t> wire_frame{frame.data(), *enc_r};
-
-    // `rec` is declared above (before Stream::create) so TSC::init
-    // latency does not interleave with the measurement loop.
 
     const uint64_t t_start    = bench::monotonic_raw_ns();
     const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
@@ -280,8 +301,21 @@ int main(int argc, char** argv) {
     bool     timed_out  = false;
     while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
         const uint64_t t0 = bench::monotonic_raw_ns();
+        bench::write_client_ts(
+            std::span<uint8_t>{payload.data(), bench::kTimestampBlockSize},
+            t0);
 
-        auto send_r = stream->send(wire_frame);
+        auto enc_r = encoder.encode(frame.data(), frame.size(),
+                                    std::span<const uint8_t>{payload});
+        if (!enc_r) {
+            std::fprintf(stderr, "lat_ws: WsCodec::encode failed: %s\n",
+                         enc_r.error().detail);
+            timed_out = true;
+            break;
+        }
+
+        auto send_r = stream->send(
+            std::span<const uint8_t>{frame.data(), *enc_r});
         if (!send_r) {
             std::fprintf(stderr, "lat_ws: send failed at sample %llu: %s\n",
                          static_cast<unsigned long long>(sample_idx),
@@ -289,7 +323,8 @@ int main(int argc, char** argv) {
             break;
         }
 
-        got_echo = false;
+        got_echo  = false;
+        ts_filled = 0;
         while (!got_echo && !bench::shutdown_requested()) {
             poller->poll();
             if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
@@ -306,23 +341,25 @@ int main(int argc, char** argv) {
         if (sample_idx == warmup_samples) {
             t_measure_start = t0;
         }
-        if (sample_idx >= warmup_samples) {
-            rec.record_ns(t1 - t0);
+        if (sample_idx >= warmup_samples &&
+            ts_filled == bench::kTimestampBlockSize) {
+            const auto ts  = bench::read_ts(
+                std::span<const uint8_t>{ts_buf.data(), ts_buf.size()});
+            const auto lgs = bench::compute_legs(ts, t1);
+            rec_rtt.record_ns(lgs.rtt_ns);
+            rec_tx .record_ns(lgs.tx_ns);
+            rec_rx .record_ns(lgs.rx_ns);
         }
         ++sample_idx;
     }
 
-    const char* backend =
-#if defined(EPH_USE_DPDK)
-        "dpdk";
-#else
-        "kernel";
-#endif
     const uint64_t wall_time_ns =
         (t_measure_start != 0)
             ? (bench::monotonic_raw_ns() - t_measure_start)
             : 0;
-    bench::print_report("lat_ws", backend, rec, warmup_samples, wall_time_ns);
+    bench::print_leg_report("lat_ws", backend, rec_rtt, rec_tx, rec_rx,
+                            warmup_samples, wall_time_ns);
+    (void)bench::export_legs(rec_rtt, rec_tx, rec_rx);
 
     (void)stream->close_gracefully();
 #if !defined(EPH_USE_DPDK)

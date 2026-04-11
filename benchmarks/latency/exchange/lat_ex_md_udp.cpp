@@ -1,69 +1,33 @@
 /// @file lat_ex_md_udp.cpp
-/// Phase 10 latency benchmark: one-way UDP Mold64-style market-data push
-/// against the Python mock `benchmarks/latency/mocks/ex_md_udp_push.py`.
+/// Phase 11.1 latency benchmark: UDP RTT echo with the 24 B timestamp
+/// protocol, against the Python echo mock `benchmarks/latency/mocks/
+/// ex_md_udp_echo.py`.
 ///
-/// Sub-phase 10.5. Per
-/// `.artifacts/plan-phase-10-latency-bench-20260411-040540.md` §Sub-phase
-/// 10.5 and §Interface design → "Client API pattern" (one-way variant).
+/// History: Phase 10 originally shipped this scenario as a 1-way Mold64
+/// push (client was purely passive, mock pushed at `push_rate_hz`).
+/// Phase 11.1 D-1 reverts that decision — TX/RX leg decomposition is
+/// only meaningful with a round-trip, and the "market-data" semantics
+/// were never load-bearing for bench fairness. The scenario is now
+/// structurally identical to `lat_udp` (RawDatagramCodec + 24 B TS
+/// prefix + echo); the exchange-pass suffix lives on only so users
+/// that sweep the full `lat_*` matrix get the same scenario count.
 ///
-/// Semantics:
-///
-///   * Client binds `KernelUdpSocket<RawDatagramCodec>` on
-///     `client_ip:port` (or 127.0.0.1:port for loopback smoke) BEFORE the
-///     mock starts pushing. The `lat` wrapper forks the mock after a
-///     500 ms sleep; starting the client first (via the wrapper's
-///     sequence) avoids "destination unreachable" bursts at startup.
-///   * The mock (ex_md_udp_push.py) is unilateral: it never receives, it
-///     just sendto()s Mold64 datagrams at `push_rate_hz` for
-///     `duration_seconds`. The client is purely passive — it only polls.
-///   * On each datagram the client stamps `t_recv = monotonic_raw_ns()`
-///     immediately, parses the 20-byte Mold64 header, then walks the
-///     inner 25-byte messages and records `t_recv - server_send_ns`
-///     per inner message into the Recorder (subject to warmup gate).
-///
-/// Parsing decision (plan D-5 — no eph-json, but that doesn't apply
-/// here; the question is Mold64Codec vs RawDatagramCodec):
-///
-///   We use `RawDatagramCodec` and hand-parse the packet. `Mold64Codec`
-///   expects the stock Nasdaq ITCH Mold64 framing where each inner
-///   message has its own 2-byte length prefix — the bench mock's
-///   `benchmarks/latency/mocks/ex_md_udp_push.py` does NOT emit a
-///   length prefix (each inner message is fixed 25 B and the count
-///   lives in the Mold64 header), so feeding the mock's bytes to
-///   Mold64Codec would be a mismatch. Hand-parsing keeps the client
-///   coupled to the mock format verbatim (20 B header + N × 25 B inner
-///   trade messages) with no codec impedance.
-///
-/// Packet layout (from ex_md_udp_push.py, cross-checked byte-for-byte):
-///
-///     Mold64 header (20 B):
-///       [0:10]   session_id  = "EPHBENCH\0\0"
-///       [10:18]  seq         : uint64 BE  (we don't use this)
-///       [18:20]  msg_count   : uint16 BE
-///     Inner trade (25 B, repeated `msg_count` times):
-///       [0:1]    msg_type    = 'T' (0x54)
-///       [1:9]    server_send : uint64 LE  (CLOCK_MONOTONIC_RAW ns)
-///       [9:17]   symbol      : 8 ASCII
-///       [17:25]  price       : uint64 LE  (unused)
-///
-/// Measurement clock: both ends use CLOCK_MONOTONIC_RAW via vDSO, so on
-/// a single host the timestamps share a base without TSC calibration.
-/// See plan D-6 for the rationale.
-///
-/// Phase 11.0: the DPDK branch now drives a real `DpdkUdpSocket` +
-/// `DpdkPoller` measurement loop over NIC_B, structurally identical to
-/// the kernel branch's poll loop. The mock (`ex_md_udp_push.py`) binds
-/// its source to `(mock_ip, port)` so the DPDK Poller's direction-
-/// symmetric 4-tuple lookup routes inbound packets to our registered
-/// `(client_ip:port ↔ mock_ip:port)` socket. See plan §实施计划 4.
+/// Measurement clock: both ends use CLOCK_MONOTONIC_RAW via vDSO, same
+/// as every other Phase 11 scenario. Bench client stamps bytes [0:8]
+/// before send; mock overwrites [8:24] with its recv/send timestamps.
+/// Client computes rtt / tx / rx legs and records each into its own
+/// Recorder.
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -73,9 +37,9 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.0: DpdkUdpSocket<RawDatagramCodec> real one-way Mold64 push
-// measurement. Uses the same 20 B header + 25 B inner-message hand parse
-// as the kernel branch; only the socket/poller types differ.
+// Phase 11.1: DpdkUdpSocket<RawDatagramCodec> real RTT measurement over
+// NIC_B, structurally identical to lat_udp's DPDK branch — only the
+// config section + mock script name differ.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/udp_socket.hpp"
 #else
@@ -86,6 +50,7 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
@@ -106,13 +71,6 @@ using Socket = ek::KernelUdpSocket<ec::RawDatagramCodec>;
 using Poller = ek::KernelPoller;
 #endif
 
-// ── Packet layout constants (must match ex_md_udp_push.py) ───────────
-constexpr std::size_t kMold64HeaderSize = 20;
-constexpr std::size_t kInnerMsgSize     = 25;
-constexpr uint8_t     kMsgTypeTrade     = 'T';
-constexpr std::size_t kMsgCountOffset   = 18;
-constexpr std::size_t kServerTsOffset   = 1;  // within an inner message
-
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 [[nodiscard, maybe_unused]] const char* parse_config_path(int argc, char** argv) noexcept {
@@ -125,26 +83,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
         return env;
     }
     return kDefaultConfigPath;
-}
-
-/// Read a big-endian uint16 from `p` (no bounds check — caller guarantees
-/// ≥ 2 bytes available).
-[[nodiscard]] inline uint16_t load_be_u16(const uint8_t* p) noexcept {
-    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) |
-                                  static_cast<uint16_t>(p[1]));
-}
-
-/// Read a little-endian uint64 from `p` via byte-wise memcpy. This is
-/// correct on both LE and BE hosts (the mock always writes LE via
-/// Python's `struct.pack('<Q', ...)`). On x86_64/aarch64 LE the compiler
-/// lowers this to a single mov; on a BE host it would become a bswap.
-[[nodiscard]] inline uint64_t load_le_u64(const uint8_t* p) noexcept {
-    uint64_t v = 0;
-    std::memcpy(&v, p, sizeof(v));
-#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
-    v = __builtin_bswap64(v);
-#endif
-    return v;
 }
 
 } // namespace
@@ -174,20 +112,28 @@ int main(int argc, char** argv) {
     }
     const uint16_t port = static_cast<uint16_t>(port_r.value());
 
+    auto payload_r = scenario.get_u32("payload_size", 256);
+    if (!payload_r) {
+        std::fprintf(stderr, "lat_ex_md_udp: %s\n", payload_r.error().c_str());
+        return 1;
+    }
+    const std::size_t payload_size = payload_r.value();
+
+    // Phase 11.1 D-7: 24 B timestamp-block header requirement.
+    if (payload_size < bench::kTimestampBlockSize) {
+        std::fprintf(stderr,
+                     "lat_ex_md_udp: payload_size=%zu < kTimestampBlockSize=%zu "
+                     "(TX/RX leg protocol requires a 24 B header)\n",
+                     payload_size, bench::kTimestampBlockSize);
+        return 1;
+    }
+
     auto duration_r = scenario.get_u32("duration_seconds", 30);
     if (!duration_r) {
         std::fprintf(stderr, "lat_ex_md_udp: %s\n", duration_r.error().c_str());
         return 1;
     }
     const uint64_t duration_s = duration_r.value();
-
-    // push_rate_hz and msg_per_packet are informational for the client;
-    // the mock consults them to pace its sender loop. We print them in
-    // the banner so bench logs are self-describing.
-    const uint32_t push_rate_hz =
-        scenario.get_u32("push_rate_hz", 100000).value_or(100000);
-    const uint32_t msg_per_packet =
-        scenario.get_u32("msg_per_packet", 5).value_or(5);
 
     auto warmup_r = globals.get_u64("warmup_samples", 1000);
     if (!warmup_r) {
@@ -196,37 +142,38 @@ int main(int argc, char** argv) {
     }
     const uint64_t warmup_samples = warmup_r.value();
 
-    // The client BINDS on client_ip:port — the mock sends TO that tuple.
-    // Loopback smoke uses 127.0.0.1; real NIC-B runs use the bench.conf
-    // client_ip which is the routable address on the client-side NIC.
-    const std::string bind_ip_str = globals.get_string("client_ip", "127.0.0.1");
-    auto bind_ip_r = en::Ipv4Addr::parse(bind_ip_str);
-    if (!bind_ip_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: invalid client_ip '%s': %s\n",
-                     bind_ip_str.c_str(), bind_ip_r.error().detail);
+    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
+    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
+    if (!ip_r) {
+        std::fprintf(stderr, "lat_ex_md_udp: invalid mock_ip '%s': %s\n",
+                     mock_ip_str.c_str(), ip_r.error().detail);
         return 1;
     }
 
+    const std::string client_ip_str = globals.get_string("client_ip", "0.0.0.0");
+    auto client_ip_r = en::Ipv4Addr::parse(client_ip_str);
+    if (!client_ip_r) {
+        std::fprintf(stderr, "lat_ex_md_udp: invalid client_ip '%s': %s\n",
+                     client_ip_str.c_str(), client_ip_r.error().detail);
+        return 1;
+    }
+
+    const en::SocketAddr remote{ip_r.value(), port};
+
     std::printf("=== lat_ex_md_udp ===\n");
-    std::printf("config: bind=%s:%u push_rate_hz=%u msg_per_packet=%u "
+    std::printf("config: mock=%s client_bind=%s port=%u payload_size=%zu "
                 "duration=%llus warmup_samples=%llu\n",
-                bind_ip_str.c_str(),
+                mock_ip_str.c_str(),
+                client_ip_str.c_str(),
                 static_cast<unsigned>(port),
-                static_cast<unsigned>(push_rate_hz),
-                static_cast<unsigned>(msg_per_packet),
+                payload_size,
                 static_cast<unsigned long long>(duration_s),
                 static_cast<unsigned long long>(warmup_samples));
     std::fflush(stdout);
 
     bench::install_signal_handler();
 
-    // Construct the Recorder BEFORE Socket::create so that TSC::init's
-    // calibration spin runs at startup, not while the mock is already
-    // pushing frames. Same 10.4 lesson applied to all 10.5 scenarios.
-    eu::Recorder rec{"lat_ex_md_udp"};
-
 #if defined(EPH_USE_DPDK)
-    // ── DPDK bootstrap: EAL + Platform + ARP resolve via shared helper.
     auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
     if (!env_r) {
         std::fprintf(stderr, "lat_ex_md_udp: %s\n", env_r.error().c_str());
@@ -250,17 +197,13 @@ int main(int argc, char** argv) {
     auto poller = std::move(poller_r.value());
 
 #if defined(EPH_USE_DPDK)
-    // DPDK UDP 4-tuple: the mock (ex_md_udp_push.py) binds its send
-    // socket to (mock_ip, dest_port) so src_port == dst_port == scenario
-    // `port`. The DpdkPoller's direction-symmetric swap check then
-    // matches inbound packets against our local-view registration
-    // `(src_ip=client_ip, src_port=port, dst_ip=mock_ip, dst_port=port)`.
-    // See memory/feedback_bench_no_loopback.md for why we insist on the
-    // physical NIC path rather than loopback.
+    // DPDK UDP uses fixed-peer 4-tuple routing: random local src port,
+    // mock echoes back from (mock_ip, port) → (client_ip, src_port).
+    const uint16_t local_src_port = bench::random_src_port();
     ed::UdpConfig sock_cfg{};
     sock_cfg.legacy.src_ip      = env.src_ip;
     sock_cfg.legacy.dst_ip      = env.dst_ip;
-    sock_cfg.legacy.src_port    = port;
+    sock_cfg.legacy.src_port    = local_src_port;
     sock_cfg.legacy.dst_port    = port;
     sock_cfg.legacy.src_mac     = env.src_mac;
     sock_cfg.legacy.dst_mac     = env.gw_mac;
@@ -269,13 +212,7 @@ int main(int argc, char** argv) {
     sock_cfg.legacy.pool        = env.pool;
 #else
     ek::UdpConfig sock_cfg{};
-    sock_cfg.bind = en::SocketAddr{bind_ip_r.value(), port};
-    // Generous RX buffer — at 100 kHz × 5 msgs × 145 B ≈ 72 MB/s the
-    // kernel default (~200 KB) would drop packets during the brief
-    // window between poller->add() and the first poll(). 4 MiB matches
-    // the mock's SO_SNDBUF for symmetry.
-    sock_cfg.rcv_buf    = 4 * 1024 * 1024;
-    sock_cfg.reuse_addr = true;
+    sock_cfg.bind = en::SocketAddr{client_ip_r.value(), 0};
 #endif
 
     auto sock_r = Socket::create(sock_cfg);
@@ -286,58 +223,19 @@ int main(int argc, char** argv) {
     }
     auto sock = std::move(sock_r.value());
 
-    // ── Per-datagram parse + per-inner-message record ───────────────────
-    //
-    // Captures by reference — all locals live in main() and outlive the
-    // poller loop. `rec`, `sample_idx`, and the two bad-data counters
-    // are the only mutable state touched here.
-    uint64_t sample_idx       = 0;  // per-inner-message counter
-    uint64_t malformed_count  = 0;
-    uint64_t clock_skew_count = 0;
-    uint64_t t_measure_start  = 0;  // first post-warmup sample recv time
-
-    sock->on_datagram = [&](const uint8_t* d, uint16_t n,
+    // One datagram per on_datagram callback. Copy the first 24 B for
+    // the leg decomposition; mark `ts_filled` so an undersized reply
+    // is skipped rather than contributing a bogus sample.
+    bool got_echo = false;
+    std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
+    std::size_t ts_filled = 0;
+    sock->on_datagram = [&](const uint8_t* data, uint16_t n,
                             const en::SocketAddr& /*src*/) {
-        const uint64_t t_recv = bench::monotonic_raw_ns();
-
-        if (n < kMold64HeaderSize) {
-            ++malformed_count;
-            return;
-        }
-
-        // Header: skip session_id + seq — we only need msg_count.
-        const uint16_t msg_count = load_be_u16(d + kMsgCountOffset);
-        const std::size_t expected =
-            kMold64HeaderSize + static_cast<std::size_t>(msg_count) * kInnerMsgSize;
-        if (static_cast<std::size_t>(n) < expected) {
-            ++malformed_count;
-            return;
-        }
-
-        for (uint16_t i = 0; i < msg_count; ++i) {
-            const uint8_t* msg =
-                d + kMold64HeaderSize + static_cast<std::size_t>(i) * kInnerMsgSize;
-            if (msg[0] != kMsgTypeTrade) {
-                ++malformed_count;
-                continue;
-            }
-            const uint64_t t_server = load_le_u64(msg + kServerTsOffset);
-
-            // Sanity gate: t_recv must be strictly after t_server or we
-            // have a clock skew / instrumentation bug. Drop rather than
-            // poison the histogram.
-            if (t_recv <= t_server) {
-                ++clock_skew_count;
-                continue;
-            }
-
-            if (sample_idx == warmup_samples) {
-                t_measure_start = t_recv;
-            }
-            if (sample_idx >= warmup_samples) {
-                rec.record_ns(t_recv - t_server);
-            }
-            ++sample_idx;
+        got_echo = true;
+        ts_filled = 0;
+        if (n >= bench::kTimestampBlockSize) {
+            std::memcpy(ts_buf.data(), data, bench::kTimestampBlockSize);
+            ts_filled = bench::kTimestampBlockSize;
         }
     };
 
@@ -347,44 +245,81 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    // ── Poll loop ───────────────────────────────────────────────────────
-    //
-    // The client is passive: only polls. The mock drives the rate for
-    // `duration_seconds`. We keep polling for `duration_s + 2` so a slow
-    // startup (mock waits on RateLimiter calibration, etc.) does not
-    // truncate the end of the measurement window. Early exit on SIGINT.
-    const uint64_t t_start = bench::monotonic_raw_ns();
-    const uint64_t t_deadline =
-        t_start + (duration_s + 2) * 1'000'000'000ull;
-
-    while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
-        poller->poll();
-    }
-
-    if (malformed_count > 0 || clock_skew_count > 0) {
-        std::fprintf(stderr,
-                     "lat_ex_md_udp: skipped %llu malformed + %llu clock-skew "
-                     "samples\n",
-                     static_cast<unsigned long long>(malformed_count),
-                     static_cast<unsigned long long>(clock_skew_count));
-    }
-
+    // ── Measurement loop ─────────────────────────────────────────────────
+    std::vector<uint8_t> payload(payload_size, 0xEF);
     const char* backend =
 #if defined(EPH_USE_DPDK)
         "dpdk";
 #else
         "kernel";
 #endif
+    eu::Recorder rec_rtt{std::string{"lat_ex_md_udp_"} + backend + "_rtt"};
+    eu::Recorder rec_tx {std::string{"lat_ex_md_udp_"} + backend + "_tx" };
+    eu::Recorder rec_rx {std::string{"lat_ex_md_udp_"} + backend + "_rx" };
+
+    const uint64_t t_start    = bench::monotonic_raw_ns();
+    const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
+    uint64_t       t_measure_start = 0;
+    constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
+
+    uint64_t sample_idx = 0;
+    bool     timed_out  = false;
+    while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
+        const uint64_t t0 = bench::monotonic_raw_ns();
+        bench::write_client_ts(
+            std::span<uint8_t>{payload.data(), bench::kTimestampBlockSize},
+            t0);
+
+        auto send_r = sock->send_to(std::span<const uint8_t>{payload}, remote);
+        if (!send_r) {
+            std::fprintf(stderr,
+                         "lat_ex_md_udp: send_to failed at sample %llu: %s\n",
+                         static_cast<unsigned long long>(sample_idx),
+                         send_r.error().detail);
+            break;
+        }
+
+        got_echo  = false;
+        ts_filled = 0;
+        while (!got_echo && !bench::shutdown_requested()) {
+            poller->poll();
+            if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
+                std::fprintf(stderr,
+                             "lat_ex_md_udp: echo timeout at sample %llu\n",
+                             static_cast<unsigned long long>(sample_idx));
+                timed_out = true;
+                break;
+            }
+        }
+        if (timed_out || bench::shutdown_requested()) break;
+
+        const uint64_t t1 = bench::monotonic_raw_ns();
+        if (sample_idx == warmup_samples) {
+            t_measure_start = t0;
+        }
+        if (sample_idx >= warmup_samples &&
+            ts_filled == bench::kTimestampBlockSize) {
+            const auto ts  = bench::read_ts(
+                std::span<const uint8_t>{ts_buf.data(), ts_buf.size()});
+            const auto lgs = bench::compute_legs(ts, t1);
+            rec_rtt.record_ns(lgs.rtt_ns);
+            rec_tx .record_ns(lgs.tx_ns);
+            rec_rx .record_ns(lgs.rx_ns);
+        }
+        ++sample_idx;
+    }
+
     const uint64_t wall_time_ns =
         (t_measure_start != 0)
             ? (bench::monotonic_raw_ns() - t_measure_start)
             : 0;
-    bench::print_report("lat_ex_md_udp", backend, rec,
-                        warmup_samples, wall_time_ns);
+    bench::print_leg_report("lat_ex_md_udp", backend, rec_rtt, rec_tx, rec_rx,
+                            warmup_samples, wall_time_ns);
+    (void)bench::export_legs(rec_rtt, rec_tx, rec_rx);
 
     (void)poller->remove(sock.get());
     sock.reset();
     poller.reset();
 
-    return 0;
+    return timed_out ? 4 : 0;
 }

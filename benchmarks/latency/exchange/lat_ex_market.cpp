@@ -39,6 +39,7 @@
 #include <string>
 #include <utility>
 
+
 #include <spdlog/spdlog.h>
 
 // eph-* headers (plan D-4: v3.3 API only).
@@ -173,7 +174,17 @@ int main(int argc, char** argv) {
     // buffer fills, and once polling begins we see a burst of
     // artificially-huge "latencies" (recv_time − server_time) because
     // the frames actually sat in kernel buffers for up to a second.
-    eu::Recorder rec{"lat_ex_market"};
+    //
+    // Phase 11.1: rename Recorder to `lat_ex_market_<backend>_oneway`
+    // so Recorder::export_json produces a uniquely-prefixed JSON file
+    // alongside the leg files from the other 5 RTT scenarios.
+    const char* backend =
+#if defined(EPH_USE_DPDK)
+        "dpdk";
+#else
+        "kernel";
+#endif
+    eu::Recorder rec{std::string{"lat_ex_market_"} + backend + "_oneway"};
 
 #if defined(EPH_USE_DPDK)
     auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
@@ -305,18 +316,19 @@ int main(int argc, char** argv) {
                      static_cast<unsigned long long>(clock_skew));
     }
 
-    const char* backend =
-#if defined(EPH_USE_DPDK)
-        "dpdk";
-#else
-        "kernel";
-#endif
     const uint64_t wall_time_ns =
         (t_measure_start != 0)
             ? (bench::monotonic_raw_ns() - t_measure_start)
             : 0;
     bench::print_report("lat_ex_market", backend, rec,
                         warmup_samples, wall_time_ns);
+    // Phase 11.1: oneway JSON export (1 file per backend). WARN-only
+    // on failure so disk issues don't fail the bench.
+    if (!rec.export_json("benchmarks/latency/outputs")) {
+        std::fprintf(stderr,
+                     "[WARN] lat_ex_market: export_json to "
+                     "'benchmarks/latency/outputs' failed\n");
+    }
 
     (void)stream->close_gracefully();
 #if !defined(EPH_USE_DPDK)

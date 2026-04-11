@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <string>
 #include <string_view>
 
 #include <eph/utils/recorder.hpp>
@@ -127,43 +128,18 @@ inline void install_signal_handler() noexcept {
 /// duration=10s`) should `std::puts` it themselves before calling this —
 /// keeps the helper signature stable across scenarios with different
 /// config shapes.
-inline void print_report(std::string_view scenario_name,
-                         std::string_view backend,
-                         eph::utils::Recorder& rec,
-                         uint64_t warmup_discarded = 0,
-                         uint64_t wall_time_ns = 0) noexcept {
-    std::printf("=== %.*s (%.*s) ===\n",
-                static_cast<int>(scenario_name.size()), scenario_name.data(),
-                static_cast<int>(backend.size()),       backend.data());
-
-    auto stats_opt = rec.compute_stats();
-    if (!stats_opt) {
-        std::printf("samples: 0 (no data recorded)\n");
-        std::printf("latency_ns:\n");
-        std::printf("  min    = --\n");
-        std::printf("  p50    = --\n");
-        std::printf("  p90    = --\n");
-        std::printf("  p99    = --\n");
-        std::printf("  p99.9  = --\n");
-        std::printf("  max    = --\n");
-        std::printf("  avg    = --\n");
-        std::printf("  stddev = --\n");
-        std::fflush(stdout);
-        return;
-    }
-    const auto& s = *stats_opt;
-
-    std::printf("samples: %llu",
-                static_cast<unsigned long long>(s.count));
-    if (warmup_discarded > 0) {
-        std::printf(" (warmup %llu discarded)",
-                    static_cast<unsigned long long>(warmup_discarded));
-    }
-    std::printf("\n");
-
-    // Stats fields are `double` (ns). Cast to integer for display because
-    // sub-nanosecond precision is noise.
-    std::printf("latency_ns:\n");
+/// Internal helper: print a single named stats block ("latency_ns",
+/// "RTT_ns", "TX_ns", "RX_ns"). Shared between `print_report` (1-leg)
+/// and `print_leg_report` (3-leg). Not `static` because the file is a
+/// header and every scenario TU includes it — `inline` gives linker
+/// dedup without UB.
+///
+/// `label` is the block header without the trailing colon, e.g. "RTT_ns"
+/// prints as `RTT_ns:` followed by the indented min/p50/... rows.
+inline void print_stats_block(std::string_view label,
+                              const eph::utils::Stats& s) noexcept {
+    std::printf("%.*s:\n",
+                static_cast<int>(label.size()), label.data());
     std::printf("  min    = %llu\n",
                 static_cast<unsigned long long>(s.min_ns));
     std::printf("  p50    = %llu\n",
@@ -180,6 +156,50 @@ inline void print_report(std::string_view scenario_name,
                 static_cast<unsigned long long>(s.avg_ns));
     std::printf("  stddev = %llu\n",
                 static_cast<unsigned long long>(s.stddev_ns));
+}
+
+/// Internal helper: print an empty-stats placeholder block used by both
+/// `print_report` and `print_leg_report` when the Recorder is empty.
+inline void print_stats_block_empty(std::string_view label) noexcept {
+    std::printf("%.*s:\n",
+                static_cast<int>(label.size()), label.data());
+    std::printf("  min    = --\n");
+    std::printf("  p50    = --\n");
+    std::printf("  p90    = --\n");
+    std::printf("  p99    = --\n");
+    std::printf("  p99.9  = --\n");
+    std::printf("  max    = --\n");
+    std::printf("  avg    = --\n");
+    std::printf("  stddev = --\n");
+}
+
+inline void print_report(std::string_view scenario_name,
+                         std::string_view backend,
+                         eph::utils::Recorder& rec,
+                         uint64_t warmup_discarded = 0,
+                         uint64_t wall_time_ns = 0) noexcept {
+    std::printf("=== %.*s (%.*s) ===\n",
+                static_cast<int>(scenario_name.size()), scenario_name.data(),
+                static_cast<int>(backend.size()),       backend.data());
+
+    auto stats_opt = rec.compute_stats();
+    if (!stats_opt) {
+        std::printf("samples: 0 (no data recorded)\n");
+        print_stats_block_empty("latency_ns");
+        std::fflush(stdout);
+        return;
+    }
+    const auto& s = *stats_opt;
+
+    std::printf("samples: %llu",
+                static_cast<unsigned long long>(s.count));
+    if (warmup_discarded > 0) {
+        std::printf(" (warmup %llu discarded)",
+                    static_cast<unsigned long long>(warmup_discarded));
+    }
+    std::printf("\n");
+
+    print_stats_block("latency_ns", s);
 
     // Throughput: samples per wall-clock second. Only printed when the
     // scenario passes a non-zero measurement window — avoids divide-by-
@@ -192,6 +212,116 @@ inline void print_report(std::string_view scenario_name,
                     static_cast<unsigned long long>(thr));
     }
     std::fflush(stdout);
+}
+
+/// Print a 3-leg RTT / TX / RX report to stdout (Phase 11.1).
+///
+/// Format (ASCII, stable — verification gates grep for the three block
+/// labels):
+/// ```
+/// === <scenario> (<backend>) ===
+/// samples: <N> (warmup <W> discarded)
+/// RTT_ns:
+///   min    = ...
+///   p50    = ...
+///   ...
+/// TX_ns:
+///   ...
+/// RX_ns:
+///   ...
+/// throughput: <N/wall_s> samples/s
+/// ```
+///
+/// `rec_rtt` drives the sample-count and throughput lines. `rec_tx` /
+/// `rec_rx` contribute only their stats blocks. If any of the three
+/// Recorders is empty the corresponding block prints `--` placeholders
+/// (same as the 1-leg `print_report` empty path).
+inline void print_leg_report(std::string_view scenario_name,
+                             std::string_view backend,
+                             eph::utils::Recorder& rec_rtt,
+                             eph::utils::Recorder& rec_tx,
+                             eph::utils::Recorder& rec_rx,
+                             uint64_t warmup_discarded = 0,
+                             uint64_t wall_time_ns = 0) noexcept {
+    std::printf("=== %.*s (%.*s) ===\n",
+                static_cast<int>(scenario_name.size()), scenario_name.data(),
+                static_cast<int>(backend.size()),       backend.data());
+
+    auto rtt_opt = rec_rtt.compute_stats();
+    auto tx_opt  = rec_tx.compute_stats();
+    auto rx_opt  = rec_rx.compute_stats();
+
+    // `samples:` line always reflects rec_rtt (one record per sample),
+    // so gate 5 (TX+RX sanity) grepping `p50` under RTT_ns / TX_ns / RX_ns
+    // sees a consistent sample count.
+    if (rtt_opt) {
+        std::printf("samples: %llu",
+                    static_cast<unsigned long long>(rtt_opt->count));
+        if (warmup_discarded > 0) {
+            std::printf(" (warmup %llu discarded)",
+                        static_cast<unsigned long long>(warmup_discarded));
+        }
+        std::printf("\n");
+    } else {
+        std::printf("samples: 0 (no data recorded)\n");
+    }
+
+    if (rtt_opt) print_stats_block("RTT_ns", *rtt_opt);
+    else         print_stats_block_empty("RTT_ns");
+    if (tx_opt)  print_stats_block("TX_ns",  *tx_opt);
+    else         print_stats_block_empty("TX_ns");
+    if (rx_opt)  print_stats_block("RX_ns",  *rx_opt);
+    else         print_stats_block_empty("RX_ns");
+
+    if (wall_time_ns > 0 && rtt_opt && rtt_opt->count > 0) {
+        const double wall_s =
+            static_cast<double>(wall_time_ns) / 1'000'000'000.0;
+        const double thr = static_cast<double>(rtt_opt->count) / wall_s;
+        std::printf("throughput: %llu samples/s\n",
+                    static_cast<unsigned long long>(thr));
+    }
+    std::fflush(stdout);
+}
+
+/// Dump all three leg Recorders as JSON files under `output_dir`.
+/// `Recorder::export_json` derives the filename from the Recorder's
+/// `name` + a timestamp, so three different names (`*_rtt`, `*_tx`,
+/// `*_rx`) produce three distinct files. Any individual failure emits
+/// a stderr WARN but does not abort the caller — plan D-5 says disk
+/// failures should not pollute bench results (stdout is the primary
+/// output).
+///
+/// @return true iff all three `export_json` calls succeeded.
+[[nodiscard]] inline bool
+export_legs(eph::utils::Recorder& rec_rtt,
+            eph::utils::Recorder& rec_tx,
+            eph::utils::Recorder& rec_rx,
+            const std::string& output_dir =
+                "benchmarks/latency/outputs") noexcept {
+    // Each call is independent — we run all three even if one fails so
+    // the user gets as much data on disk as the FS will take.
+    const bool ok_rtt = rec_rtt.export_json(output_dir);
+    if (!ok_rtt) {
+        std::fprintf(stderr,
+                     "[WARN] export_legs: rec_rtt (%s) export_json to '%s' "
+                     "failed\n",
+                     rec_rtt.name().c_str(), output_dir.c_str());
+    }
+    const bool ok_tx = rec_tx.export_json(output_dir);
+    if (!ok_tx) {
+        std::fprintf(stderr,
+                     "[WARN] export_legs: rec_tx (%s) export_json to '%s' "
+                     "failed\n",
+                     rec_tx.name().c_str(), output_dir.c_str());
+    }
+    const bool ok_rx = rec_rx.export_json(output_dir);
+    if (!ok_rx) {
+        std::fprintf(stderr,
+                     "[WARN] export_legs: rec_rx (%s) export_json to '%s' "
+                     "failed\n",
+                     rec_rx.name().c_str(), output_dir.c_str());
+    }
+    return ok_rtt && ok_tx && ok_rx;
 }
 
 } // namespace bench

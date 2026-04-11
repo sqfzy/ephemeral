@@ -1,44 +1,28 @@
 /// @file lat_ex_order.cpp
-/// Phase 10 latency benchmark: N-inflight pipelined WebSocket order RTT
+/// Phase 11.1 latency benchmark: strict one-at-a-time WebSocket order RTT
 /// against the Python echo mock `benchmarks/latency/mocks/ex_order_echo.py`.
-///
-/// Sub-phase 10.5. Per
-/// `.artifacts/plan-phase-10-latency-bench-20260411-040540.md` §Sub-phase
-/// 10.5 and §Interface design → "Client API pattern" (N-inflight variant).
 ///
 /// Semantics:
 ///
-///   * The client maintains up to `inflight` outstanding orders. Each
-///     order gets a unique strictly-incrementing `id` and a `t_send`
-///     CLOCK_MONOTONIC_RAW timestamp.
-///   * For each in-flight slot the client sends a WS-binary frame with
-///     payload `{"e":"NewOrder","id":N}`. `KernelTcpStream::send` does
-///     NOT run bytes through the codec encode path, so the client
-///     pre-encodes each frame via `WsCodec::encode` into a stack buffer.
-///   * The mock (ex_order_echo.py) is a plain WS server that echoes each
-///     received binary frame verbatim. The payload shape is preserved,
-///     so the `"id":N` field round-trips back intact.
-///   * On each received frame, `on_message` extracts the `id` via
-///     `scan_json_uint_field(..., "id")` (plan D-5 — no eph-json), looks
-///     up the slot in a 128-entry fixed-size table keyed by `id % 128`,
-///     and records `t_recv - slot.t_send_ns` into the Recorder when the
-///     slot is valid and past warmup.
+///   * Strict request→response: send one order, wait for its echo,
+///     record legs, send next. No pipelining, no slot table.
+///   * Each order gets a unique strictly-incrementing `id` and carries
+///     its `t_client` CLOCK_MONOTONIC_RAW timestamp as a JSON field.
+///   * The mock inserts `t_mock_recv` / `t_mock_send` around its own
+///     `json.loads` / `json.dumps`, so the client recovers all four
+///     timestamps and computes RTT / TX / RX cleanly per order.
+///   * Why strict serial: TX/RX leg decomposition assumes each order is
+///     a self-contained measurement; pipelined sends introduce queue
+///     correlation between TX and RX percentiles that breaks the
+///     `p50(TX) + p50(RX) ≤ p50(RTT)` sanity invariant even though
+///     per-sample `TX_k + SRV_k + RX_k = RTT_k` always holds. Phase 11.1
+///     decisively drops pipelining.
 ///   * Loop terminates on whichever happens first: duration deadline,
-///     `order_count + warmup_samples` orders completed, or SIGINT.
+///     `order_count + warmup_samples` orders completed, send error, or
+///     SIGINT.
 ///
-/// Measurement clock: `bench::monotonic_raw_ns()` (plan D-6). Same clock
-/// as the other 10.3/10.4 scenarios — kernel-only one-way comparison is
-/// not in scope here (this is RTT), but the clock choice keeps the
-/// timestamps consistent across the lat suite.
-///
-/// Pipelining sanity: at `inflight=1` the scenario degenerates to
-/// classic one-at-a-time RTT, which should print numbers close to
-/// lat_ws (both are WS-binary echo round-trip measurements on the same
-/// mock framework). At higher inflight the mean sample reflects the
-/// mock's server-side service time per frame plus wire time; p99
-/// exposes head-of-line blocking.
+/// Measurement clock: `bench::monotonic_raw_ns()` (plan D-6).
 
-#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -57,8 +41,7 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.0: DpdkTcpStream<WsCodec> real N-inflight order pipeline. Same
-// 128-slot id correlation table + scan_json_uint_field("id") logic as kernel.
+// Phase 11.1: DpdkTcpStream<WsCodec> serial request/response order RTT.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -70,6 +53,7 @@
 #include "core/config.hpp"
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"
+#include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
@@ -89,21 +73,6 @@ namespace ek = eph::net::kernel;
 using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
 using Poller = ek::KernelPoller;
 #endif
-
-/// Fixed-size id→slot correlation table. Size is a hard cap on inflight
-/// depth — 128 comfortably covers realistic pipeline windows (the plan
-/// puts the bench.conf default at 16 and expects users to sweep 1/4/16/64)
-/// while keeping the slot math to a single `id & 127` modulo on the hot
-/// path. Slots are re-used as orders complete; a stale slot (in_flight
-/// cleared before the response arrives) is a broken-mock signal, not a
-/// capacity issue.
-constexpr std::size_t kSlotCount = 128;
-
-struct Slot {
-    uint64_t order_id{0};    ///< zero means "free"
-    uint64_t t_send_ns{0};
-    bool     in_flight{false};
-};
 
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
@@ -149,19 +118,6 @@ int main(int argc, char** argv) {
 
     const std::string ws_path = scenario.get_string("ws_path", "/ws/order");
 
-    auto inflight_r = scenario.get_u32("inflight", 16);
-    if (!inflight_r) {
-        std::fprintf(stderr, "lat_ex_order: %s\n", inflight_r.error().c_str());
-        return 1;
-    }
-    const uint32_t inflight_cap = inflight_r.value();
-    if (inflight_cap == 0 || inflight_cap > kSlotCount) {
-        std::fprintf(stderr,
-                     "lat_ex_order: inflight=%u must be in [1, %zu]\n",
-                     static_cast<unsigned>(inflight_cap), kSlotCount);
-        return 1;
-    }
-
     auto order_count_r = scenario.get_u64("order_count", 10000);
     if (!order_count_r) {
         std::fprintf(stderr, "lat_ex_order: %s\n", order_count_r.error().c_str());
@@ -193,12 +149,11 @@ int main(int argc, char** argv) {
     const en::SocketAddr remote{ip_r.value(), port};
 
     std::printf("=== lat_ex_order ===\n");
-    std::printf("config: mock=%s port=%u ws_path=%s inflight=%u order_count=%llu "
+    std::printf("config: mock=%s port=%u ws_path=%s order_count=%llu "
                 "duration=%llus warmup_samples=%llu\n",
                 mock_ip_str.c_str(),
                 static_cast<unsigned>(port),
                 ws_path.c_str(),
-                static_cast<unsigned>(inflight_cap),
                 static_cast<unsigned long long>(order_count),
                 static_cast<unsigned long long>(duration_s),
                 static_cast<unsigned long long>(warmup_samples));
@@ -206,10 +161,24 @@ int main(int argc, char** argv) {
 
     bench::install_signal_handler();
 
-    // Construct the Recorder BEFORE Stream::create so that TSC::init's
+    // Construct the Recorders BEFORE Stream::create so that TSC::init's
     // ~1 s calibration spin runs at startup, not while the WS handshake
     // is completing. Same pattern as lat_ex_market (10.4 lesson).
-    eu::Recorder rec{"lat_ex_order"};
+    //
+    // Phase 11.1: three Recorders (RTT / TX / RX). ex_order is the
+    // only scenario that carries timestamps as JSON fields
+    // (`t_client` / `t_mock_recv` / `t_mock_send`) rather than a
+    // binary 24 B prefix — WS text-ish JSON wouldn't survive a binary
+    // header, so we extract via the existing scan_json_uint_field.
+    const char* backend =
+#if defined(EPH_USE_DPDK)
+        "dpdk";
+#else
+        "kernel";
+#endif
+    eu::Recorder rec_rtt{std::string{"lat_ex_order_"} + backend + "_rtt"};
+    eu::Recorder rec_tx {std::string{"lat_ex_order_"} + backend + "_tx" };
+    eu::Recorder rec_rx {std::string{"lat_ex_order_"} + backend + "_rx" };
 
 #if defined(EPH_USE_DPDK)
     auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
@@ -259,52 +228,70 @@ int main(int argc, char** argv) {
     }
     auto stream = std::move(stream_r.value());
 
-    // ── Correlation table + counters (captured by reference below) ──────
+    // ── Strict-serial state (captured by reference in on_message) ───────
     //
-    // All of these live on the main() stack and outlive the poller, so
-    // the on_message lambda is safe to take them by reference.
-    std::array<Slot, kSlotCount> table{};
-    uint64_t next_id         = 1;     // 0 is the "free" sentinel
-    uint32_t inflight_count  = 0;
+    // Only one order is ever in flight. `current_id` is the id of the
+    // outstanding order (0 = pipeline idle). `response_seen` flips to
+    // true when the mock's echo arrives and passes validation; the main
+    // loop polls it to advance to the next send.
+    uint64_t current_id      = 0;     // 0 = no order in flight
+    bool     response_seen   = false; // mock echoed current_id
     uint64_t sample_idx      = 0;     // completed orders, incl. warmup
     uint64_t recorded_count  = 0;     // post-warmup recorded samples
-    uint64_t stale_count     = 0;     // id matched no in-flight slot
-    uint64_t malformed_count = 0;     // payload had no "id":N field
+    uint64_t stale_count     = 0;     // id mismatch / unexpected response
+    uint64_t malformed_count = 0;     // missing "id" or timestamp fields
     uint64_t t_measure_start = 0;     // first post-warmup completion time
 
     stream->on_message = [&](const uint8_t* d, uint16_t n) {
         const uint64_t t_recv = bench::monotonic_raw_ns();
+        const std::size_t nsz = static_cast<std::size_t>(n);
 
-        auto id_opt = bench::scan_json_uint_field(d, static_cast<std::size_t>(n), "id");
+        auto id_opt = bench::scan_json_uint_field(d, nsz, "id");
         if (!id_opt) {
             ++malformed_count;
             return;
         }
-        const uint64_t id = *id_opt;
-        const std::size_t slot_idx = static_cast<std::size_t>(id % kSlotCount);
-        auto& slot = table[slot_idx];
-
-        // Guard against collisions: a response with an `id` that no
-        // longer matches the slot's in-flight order is either a
-        // duplicate echo from the mock or a stale leftover frame from
-        // a previous iteration. Skip rather than pollute the histogram.
-        if (!slot.in_flight || slot.order_id != id) {
+        if (current_id == 0 || *id_opt != current_id) {
+            // Response with no matching outstanding order — duplicate
+            // echo or out-of-order leftover. Skip without polluting the
+            // histogram.
             ++stale_count;
             return;
         }
+
+        // Pull the three timestamps from the echoed JSON. The mock
+        // (`ex_order_echo.py`) inserts `t_mock_recv` and `t_mock_send`
+        // around its `json.loads`/`json.dumps`; `t_client` comes back
+        // unchanged. Any missing field → drop the sample and move on.
+        auto tc_opt = bench::scan_json_uint_field(d, nsz, "t_client");
+        auto tr_opt = bench::scan_json_uint_field(d, nsz, "t_mock_recv");
+        auto ts_opt = bench::scan_json_uint_field(d, nsz, "t_mock_send");
 
         if (sample_idx == warmup_samples) {
             t_measure_start = t_recv;
         }
         if (sample_idx >= warmup_samples) {
-            rec.record_ns(t_recv - slot.t_send_ns);
-            ++recorded_count;
+            if (tc_opt && tr_opt && ts_opt &&
+                t_recv >= *tc_opt && *tr_opt >= *tc_opt && t_recv >= *ts_opt) {
+                const bench::TimestampBlock tsb{
+                    .client_ns    = *tc_opt,
+                    .mock_recv_ns = *tr_opt,
+                    .mock_send_ns = *ts_opt,
+                };
+                const auto lgs = bench::compute_legs(tsb, t_recv);
+                rec_rtt.record_ns(lgs.rtt_ns);
+                rec_tx .record_ns(lgs.tx_ns);
+                rec_rx .record_ns(lgs.rx_ns);
+                ++recorded_count;
+            } else {
+                ++malformed_count;
+                SPDLOG_DEBUG("lat_ex_order: dropping sample id={} — "
+                             "missing/inconsistent t_client/t_mock_*",
+                             *id_opt);
+            }
         }
         ++sample_idx;
-
-        slot.in_flight = false;
-        slot.order_id  = 0;
-        if (inflight_count > 0) --inflight_count;
+        response_seen = true;
     };
 
     if (auto r = poller->add(stream.get()); !r) {
@@ -315,98 +302,94 @@ int main(int argc, char** argv) {
 
     // ── Encode buffer for outbound WS-binary frames ─────────────────────
     //
-    // Each sample encodes `{"e":"NewOrder","id":NNNNNNNNNNNNNNNNNNNN}` —
-    // worst case is 20-digit uint64, giving 42 bytes of JSON. A 64-byte
+    // Each sample encodes
+    //   `{"e":"NewOrder","id":NNN,"t_client":NNNNNNNNNNNNNNNNNNNN}`
+    // Worst case: 20-digit id + 20-digit t_client ≈ 80 bytes. A 128-byte
     // JSON buffer plus WsCodec::max_overhead covers every case.
-    constexpr std::size_t kJsonBufSize = 64;
+    constexpr std::size_t kJsonBufSize = 128;
     char      json_buf[kJsonBufSize];
     std::vector<uint8_t> frame(ec::WsCodec::max_overhead + kJsonBufSize);
     ec::WsCodec encoder{};
 
-    // ── Measurement loop ────────────────────────────────────────────────
+    // ── Measurement loop (strict request/response) ──────────────────────
     //
-    // Total orders to issue = order_count + warmup_samples (the warmup
-    // prefix is not counted toward `order_count`). We fill the pipeline
-    // up to `inflight_cap`, poll once to drain completions, and repeat.
+    // For each order: send → poll until response_seen → record in
+    // on_message → next. Total orders issued = order_count + warmup.
     //
     // Exit conditions:
     //   1. duration_seconds deadline elapses
-    //   2. all planned orders completed AND pipeline drained
+    //   2. all planned orders completed
     //   3. SIGINT/SIGTERM sets the shutdown flag
-    //   4. send() error (mock died) — bail with a diagnostic
+    //   4. send() error (mock died)
+    //   5. per-sample recv timeout (5s — mock stuck)
     const uint64_t t_start = bench::monotonic_raw_ns();
     const uint64_t t_deadline =
         t_start + (duration_s + 2) * 1'000'000'000ull;
     const uint64_t plan_total = order_count + warmup_samples;
+    constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
 
     bool send_failed = false;
-    while (!bench::shutdown_requested()) {
-        const uint64_t now = bench::monotonic_raw_ns();
-        if (now >= t_deadline) break;
+    bool timed_out   = false;
+    uint64_t next_id = 1;
+    while (next_id <= plan_total && !bench::shutdown_requested()) {
+        if (bench::monotonic_raw_ns() >= t_deadline) break;
 
-        // Fill the pipeline up to the cap, subject to total-order bound.
-        while (inflight_count < inflight_cap && next_id <= plan_total) {
-            const uint64_t id = next_id;
-            const std::size_t slot_idx = static_cast<std::size_t>(id % kSlotCount);
-            auto& slot = table[slot_idx];
+        const uint64_t id = next_id;
+        const uint64_t t_client = bench::monotonic_raw_ns();
+        const int jn = std::snprintf(
+            json_buf, sizeof(json_buf),
+            "{\"e\":\"NewOrder\",\"id\":%llu,\"t_client\":%llu}",
+            static_cast<unsigned long long>(id),
+            static_cast<unsigned long long>(t_client));
+        if (jn <= 0 || static_cast<std::size_t>(jn) >= sizeof(json_buf)) {
+            std::fprintf(stderr,
+                         "lat_ex_order: json snprintf overflow at id=%llu\n",
+                         static_cast<unsigned long long>(id));
+            send_failed = true;
+            break;
+        }
 
-            // Should never trigger given inflight_cap <= kSlotCount, but
-            // defends against future code motion that raises the cap.
-            if (slot.in_flight) break;
+        auto enc_r = encoder.encode(
+            frame.data(), frame.size(),
+            std::span<const uint8_t>{
+                reinterpret_cast<const uint8_t*>(json_buf),
+                static_cast<std::size_t>(jn)});
+        if (!enc_r) {
+            std::fprintf(stderr, "lat_ex_order: WsCodec::encode failed: %s\n",
+                         enc_r.error().detail);
+            send_failed = true;
+            break;
+        }
 
-            const int jn = std::snprintf(
-                json_buf, sizeof(json_buf),
-                "{\"e\":\"NewOrder\",\"id\":%llu}",
-                static_cast<unsigned long long>(id));
-            if (jn <= 0 || static_cast<std::size_t>(jn) >= sizeof(json_buf)) {
+        current_id    = id;
+        response_seen = false;
+
+        auto send_r = stream->send(
+            std::span<const uint8_t>{frame.data(), *enc_r});
+        if (!send_r) {
+            std::fprintf(stderr,
+                         "lat_ex_order: send failed at id=%llu: %s\n",
+                         static_cast<unsigned long long>(id),
+                         send_r.error().detail);
+            send_failed = true;
+            break;
+        }
+
+        const uint64_t t0 = t_client;
+        while (!response_seen && !bench::shutdown_requested()) {
+            poller->poll();
+            if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
                 std::fprintf(stderr,
-                             "lat_ex_order: json snprintf overflow at id=%llu\n",
+                             "lat_ex_order: response timeout at id=%llu\n",
                              static_cast<unsigned long long>(id));
-                send_failed = true;
-                break;
-            }
-
-            auto enc_r = encoder.encode(
-                frame.data(), frame.size(),
-                std::span<const uint8_t>{
-                    reinterpret_cast<const uint8_t*>(json_buf),
-                    static_cast<std::size_t>(jn)});
-            if (!enc_r) {
-                std::fprintf(stderr, "lat_ex_order: WsCodec::encode failed: %s\n",
-                             enc_r.error().detail);
-                send_failed = true;
-                break;
-            }
-
-            // Stamp `t_send_ns` as close to the actual send as we can —
-            // but BEFORE send() returns so a slow send() call counts
-            // against that sample rather than the next one.
-            slot.order_id  = id;
-            slot.t_send_ns = bench::monotonic_raw_ns();
-            slot.in_flight = true;
-            ++inflight_count;
-            ++next_id;
-
-            auto send_r = stream->send(
-                std::span<const uint8_t>{frame.data(), *enc_r});
-            if (!send_r) {
-                std::fprintf(stderr,
-                             "lat_ex_order: send failed at id=%llu: %s\n",
-                             static_cast<unsigned long long>(id),
-                             send_r.error().detail);
-                send_failed = true;
+                timed_out = true;
                 break;
             }
         }
-        if (send_failed) break;
+        if (timed_out || bench::shutdown_requested()) break;
 
-        // Drain completions. poll() returns immediately (epoll_wait with
-        // timeout 0) so this loop body is a tight busy-spin — appropriate
-        // for a latency-sensitive bench but expensive on a shared core.
-        poller->poll();
-
-        // All planned orders issued AND drained → done.
-        if (next_id > plan_total && inflight_count == 0) break;
+        current_id = 0;
+        ++next_id;
     }
 
     if (malformed_count > 0 || stale_count > 0) {
@@ -420,18 +403,13 @@ int main(int argc, char** argv) {
                  static_cast<unsigned long long>(sample_idx),
                  static_cast<unsigned long long>(recorded_count));
 
-    const char* backend =
-#if defined(EPH_USE_DPDK)
-        "dpdk";
-#else
-        "kernel";
-#endif
     const uint64_t wall_time_ns =
         (t_measure_start != 0)
             ? (bench::monotonic_raw_ns() - t_measure_start)
             : 0;
-    bench::print_report("lat_ex_order", backend, rec,
-                        warmup_samples, wall_time_ns);
+    bench::print_leg_report("lat_ex_order", backend, rec_rtt, rec_tx, rec_rx,
+                            warmup_samples, wall_time_ns);
+    (void)bench::export_legs(rec_rtt, rec_tx, rec_rx);
 
     (void)stream->close_gracefully();
 #if !defined(EPH_USE_DPDK)
@@ -441,5 +419,7 @@ int main(int argc, char** argv) {
     stream.reset();
     poller.reset();
 
-    return send_failed ? 4 : 0;
+    if (send_failed) return 4;
+    if (timed_out)   return 5;
+    return 0;
 }

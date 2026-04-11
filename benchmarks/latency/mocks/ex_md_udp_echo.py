@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""UDP echo mock for lat_udp.
+"""UDP echo mock for lat_ex_md_udp (Phase 11.1).
 
-Reads ``[lat_udp]`` from bench.conf for ``port``. Binds to ``mock_ip``
-(from globals) and echoes each datagram back to its sender. Unlike
-TCP, there is no per-client state — one recvfrom/sendto loop.
+Reads ``[lat_ex_md_udp]`` from bench.conf for ``port``. Binds to
+``mock_ip`` (from globals) and echoes each datagram back to its
+sender. Overwrites bytes ``[8:16]`` with ``t_mock_recv`` and bytes
+``[16:24]`` with ``t_mock_send`` so the client can decompose the
+round-trip into TX / RX legs.
 
-Phase 11.1: on each datagram we overwrite bytes ``[8:16]`` with
-``t_mock_recv`` and bytes ``[16:24]`` with ``t_mock_send`` so the
-client can decompose the round-trip into TX/RX legs.
+History: Phase 10 shipped this scenario as a 1-way Mold64 push mock
+(client was passive, mock drove rate). Phase 11.1 D-1 reverted that
+decision because TX/RX leg decomposition is only meaningful with a
+round-trip — the scenario is now structurally identical to udp_echo
+with a different port/section name. The old push-loop, RateLimiter,
+Mold64 header, and inner-message construction are all removed.
 """
 
 import argparse
@@ -22,31 +27,30 @@ _TS_BLOCK_SIZE = 24
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="UDP echo mock (lat_udp)")
+    p = argparse.ArgumentParser(description="UDP echo mock (lat_ex_md_udp)")
     p.add_argument("--config", default="benchmarks/latency/bench.conf")
     p.add_argument("--host", default=None, help="override mock_ip")
     p.add_argument("--port", type=int, default=None, help="override section port")
     args = p.parse_args()
 
-    cfg = get_scenario(args.config, "lat_udp")
+    cfg = get_scenario(args.config, "lat_ex_md_udp")
     host = args.host or cfg.get("mock_ip", "127.0.0.1")
     port = args.port if args.port is not None else int(cfg["port"])
 
-    print("[udp_echo] listening on %s:%d" % (host, port), file=sys.stderr, flush=True)
+    print("[ex_md_udp_echo] listening on %s:%d" % (host, port),
+          file=sys.stderr, flush=True)
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    # Ask the kernel for a generous receive buffer so bursty traffic
-    # doesn't drop on the mock side and pollute latency measurements.
     try:
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
     except OSError:
         pass
     srv.bind((host, port))
 
-    # Pre-allocate a scratch bytearray the size of the largest datagram
-    # we might see. recvfrom_into + sendto(bytes) avoids the per-packet
-    # `bytearray(data)` copy that showed up in Phase 11.1 baseline gate.
+    # Scratch buffer to avoid per-packet allocation (same optimisation
+    # as udp_echo.py — the mock is expected to keep up with wire-speed
+    # client RTT so every saved allocation shows up in the baseline).
     scratch = bytearray(65536)
     scratch_mv = memoryview(scratch)
     try:

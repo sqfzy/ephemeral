@@ -4,14 +4,24 @@
 Reads ``[lat_ws]`` from bench.conf for ``port``. Performs an RFC 6455
 server handshake on each new connection, then echoes every binary
 frame back to the client as an unmasked binary frame.
+
+Phase 11.1: on each decoded frame payload we overwrite bytes ``[8:16]``
+with ``t_mock_recv`` and bytes ``[16:24]`` with ``t_mock_send`` before
+re-encoding and sending. The WsCodec on the client side delivers the
+plaintext (post-unmask) payload to on_message, so the client can read
+the three timestamps out of ``[0:24]`` directly.
 """
 
 import argparse
 import socket
+import struct
 import sys
 
 import _ws
+from _clock import monotonic_raw_ns
 from _conf import get_scenario
+
+_TS_BLOCK_SIZE = 24
 
 
 def handle(conn: socket.socket) -> None:
@@ -31,7 +41,15 @@ def handle(conn: socket.socket) -> None:
         if opcode == _ws.OPCODE_PING:
             conn.sendall(_ws.encode_frame(_ws.OPCODE_PONG, payload))
             continue
-        # Text/binary: echo as binary, unmasked.
+        # Text/binary: stamp mock timestamps into the head of the
+        # payload (bytes [8:24]) then echo as binary, unmasked.
+        if len(payload) >= _TS_BLOCK_SIZE:
+            t_recv = monotonic_raw_ns()
+            buf = bytearray(payload)
+            struct.pack_into("<Q", buf, 8, t_recv)
+            t_send = monotonic_raw_ns()
+            struct.pack_into("<Q", buf, 16, t_send)
+            payload = bytes(buf)
         conn.sendall(_ws.encode_frame(_ws.OPCODE_BINARY, payload))
 
 

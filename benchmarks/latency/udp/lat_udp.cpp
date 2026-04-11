@@ -11,6 +11,7 @@
 /// The Python echo mock is `benchmarks/latency/mocks/udp_echo.py`, forked by
 /// the `lat` wrapper script. This binary contains no mock / NIC plumbing.
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -45,6 +46,7 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
@@ -112,6 +114,15 @@ int main(int argc, char** argv) {
         return 1;
     }
     const std::size_t payload_size = payload_r.value();
+
+    // Phase 11.1 D-7: 24 B timestamp-block header requirement.
+    if (payload_size < bench::kTimestampBlockSize) {
+        std::fprintf(stderr,
+                     "lat_udp: payload_size=%zu < kTimestampBlockSize=%zu "
+                     "(TX/RX leg protocol requires a 24 B header)\n",
+                     payload_size, bench::kTimestampBlockSize);
+        return 1;
+    }
 
     auto duration_r = scenario.get_u32("duration_seconds", 10);
     if (!duration_r) {
@@ -217,10 +228,22 @@ int main(int argc, char** argv) {
     // RawDatagramCodec delivers one datagram per on_datagram callback —
     // each sample is a single send/receive round trip, so a bool flag
     // is sufficient (no byte accounting needed).
+    //
+    // Phase 11.1: additionally copy the first 24 B into `ts_buf` so the
+    // measurement loop can decode the mock-rewritten timestamp block
+    // and compute TX/RX legs. Undersize datagrams are flagged via
+    // `ts_filled < kTimestampBlockSize` and skipped.
     bool got_echo = false;
-    sock->on_datagram = [&got_echo](const uint8_t* /*data*/, uint16_t /*n*/,
-                                    const en::SocketAddr& /*src*/) {
+    std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
+    std::size_t ts_filled = 0;
+    sock->on_datagram = [&](const uint8_t* data, uint16_t n,
+                            const en::SocketAddr& /*src*/) {
         got_echo = true;
+        ts_filled = 0;
+        if (n >= bench::kTimestampBlockSize) {
+            std::memcpy(ts_buf.data(), data, bench::kTimestampBlockSize);
+            ts_filled = bench::kTimestampBlockSize;
+        }
     };
 
     if (auto r = poller->add(sock.get()); !r) {
@@ -230,7 +253,15 @@ int main(int argc, char** argv) {
     }
 
     std::vector<uint8_t> payload(payload_size, 0xCD);
-    eu::Recorder rec{"lat_udp"};
+    const char* backend =
+#if defined(EPH_USE_DPDK)
+        "dpdk";
+#else
+        "kernel";
+#endif
+    eu::Recorder rec_rtt{std::string{"lat_udp_"} + backend + "_rtt"};
+    eu::Recorder rec_tx {std::string{"lat_udp_"} + backend + "_tx" };
+    eu::Recorder rec_rx {std::string{"lat_udp_"} + backend + "_rx" };
 
     const uint64_t t_start    = bench::monotonic_raw_ns();
     const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
@@ -241,6 +272,9 @@ int main(int argc, char** argv) {
     bool     timed_out  = false;
     while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
         const uint64_t t0 = bench::monotonic_raw_ns();
+        bench::write_client_ts(
+            std::span<uint8_t>{payload.data(), bench::kTimestampBlockSize},
+            t0);
 
         auto send_r = sock->send_to(std::span<const uint8_t>{payload}, remote);
         if (!send_r) {
@@ -250,7 +284,8 @@ int main(int argc, char** argv) {
             break;
         }
 
-        got_echo = false;
+        got_echo  = false;
+        ts_filled = 0;
         while (!got_echo && !bench::shutdown_requested()) {
             poller->poll();
             if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
@@ -267,23 +302,25 @@ int main(int argc, char** argv) {
         if (sample_idx == warmup_samples) {
             t_measure_start = t0;
         }
-        if (sample_idx >= warmup_samples) {
-            rec.record_ns(t1 - t0);
+        if (sample_idx >= warmup_samples &&
+            ts_filled == bench::kTimestampBlockSize) {
+            const auto ts  = bench::read_ts(
+                std::span<const uint8_t>{ts_buf.data(), ts_buf.size()});
+            const auto lgs = bench::compute_legs(ts, t1);
+            rec_rtt.record_ns(lgs.rtt_ns);
+            rec_tx .record_ns(lgs.tx_ns);
+            rec_rx .record_ns(lgs.rx_ns);
         }
         ++sample_idx;
     }
 
-    const char* backend =
-#if defined(EPH_USE_DPDK)
-        "dpdk";
-#else
-        "kernel";
-#endif
     const uint64_t wall_time_ns =
         (t_measure_start != 0)
             ? (bench::monotonic_raw_ns() - t_measure_start)
             : 0;
-    bench::print_report("lat_udp", backend, rec, warmup_samples, wall_time_ns);
+    bench::print_leg_report("lat_udp", backend, rec_rtt, rec_tx, rec_rx,
+                            warmup_samples, wall_time_ns);
+    (void)bench::export_legs(rec_rtt, rec_tx, rec_rx);
 
     (void)poller->remove(sock.get());
     sock.reset();
