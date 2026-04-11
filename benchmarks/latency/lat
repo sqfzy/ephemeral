@@ -1,20 +1,47 @@
 #!/usr/bin/env bash
-# benchmarks/latency/lat — phase-10 dumb dispatcher.
+# benchmarks/latency/lat — fair-topology latency benchmark runner.
 #
 #     sudo ./benchmarks/latency/lat <scenario> [--dpdk] [--config <path>]
 #
-# Per .artifacts/plan-phase-10-latency-bench-20260411-040540.md
-# §Interface design → "lat script 职责". This wrapper is intentionally
-# minimal: it validates argv, does the host-level NIC state transition
-# (kernel ↔ vfio-pci), forks the Python echo/push mock, then execs the
-# matching `lat_<scenario>[_dpdk]` binary and cleans up on exit.
+# This wrapper drives the per-run NIC state machine + mock fork + client
+# exec. It combines the pre-v3.3 baseline's bench_ns state machine
+# (restored in the Phase-10 fairness fix) with the Phase-10 Python mock
+# fork model.
 #
-# All measurement / reporting logic lives inside the C++ binary. The
-# wrapper does *not* parse measurement output — it just runs the binary
-# and propagates its exit code.
+# ── Fairness contract ───────────────────────────────────────────────
 #
-# Idempotency: reruns of the same scenario in the same mode take the
-# fast path (NIC state matches → no transition).
+# For the kernel-vs-DPDK latency comparison to be fair, both backends
+# must traverse the *same physical path*:
+#
+#     client [ens35] --[wire]--> AWS VPC --[wire]--> [ens34] mock
+#
+# The only thing that differs between kernel and DPDK modes is the
+# client-side code path (kernel TCP/UDP stack vs DPDK PMD). The mock
+# is always kernel Python, bound to ens34's IP in the host ns.
+#
+# Kernel mode uses a Linux network namespace (`bench_ns`) to prevent
+# the kernel from shortcutting ens34 ↔ ens35 via loopback when both
+# NICs live in the same ns. Both ens34 (172.31.21.173) and ens35
+# (172.31.23.112) are on the same /20 VPC subnet; without the netns
+# split, Linux would deliver packets via the loopback input path and
+# the measured latency would not reflect reality.
+#
+# DPDK mode binds ens35 to vfio-pci so DPDK PMDs own the hardware
+# queue. The measurement is equally fair because the mock side is
+# still a kernel process serving on ens34.
+#
+# ── State machine ───────────────────────────────────────────────────
+#
+#     host      ens35 in default ns, kernel driver
+#     bench_ns  ens35 moved into netns bench_ns (kernel mode run path)
+#     dpdk      ens35 bound to vfio-pci                (dpdk mode run path)
+#     wedged    kernel driver bound but no netdev (transient race)
+#
+# Transitions are idempotent — reruns of the same scenario in the same
+# mode take the fast path (no change).
+#
+# History: Phase 7 removed the eph-dpdk module; the dpdk-setup.sh +
+# dpdk-teardown.sh helpers live at benchmarks/latency/scripts/ now.
 
 set -euo pipefail
 
@@ -27,8 +54,8 @@ else
 fi
 DEFAULT_CONFIG="$PROJECT_DIR/benchmarks/latency/bench.conf"
 MOCKS_DIR="$PROJECT_DIR/benchmarks/latency/mocks"
-DPDK_SETUP="$PROJECT_DIR/eph-dpdk/scripts/dpdk-setup.sh"
-DPDK_TEARDOWN="$PROJECT_DIR/eph-dpdk/scripts/dpdk-teardown.sh"
+DPDK_SETUP="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-setup.sh"
+DPDK_TEARDOWN="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-teardown.sh"
 
 # ── Valid scenarios + their mock script names ───────────────────────
 declare -A SCENARIO_MOCKS=(
@@ -55,27 +82,31 @@ die() { log_error "$1"; [[ -n "${2:-}" ]] && printf '     %s\n' "$2" >&2; exit 1
 
 usage() {
     cat <<EOF
-${BOLD}lat${NC} — Phase-10 latency benchmark runner
+${BOLD}lat${NC} — fair-topology latency benchmark runner
 
   ${BOLD}sudo ./benchmarks/latency/lat <scenario> [options]${NC}
 
 SCENARIOS:
   tcp           raw TCP echo RTT
   udp           raw UDP echo RTT
-  ws            plain WebSocket echo RTT           (Sub-phase 10.4+)
-  ex_market     exchange bookTicker push (one-way) (Sub-phase 10.4+)
-  ex_order      exchange N-inflight order RTT      (Sub-phase 10.5+)
-  ex_md_udp     exchange UDP market data push      (Sub-phase 10.5+)
+  ws            plain WebSocket echo RTT
+  ex_market     exchange bookTicker push (one-way)
+  ex_order      exchange N-inflight order RTT
+  ex_md_udp     exchange UDP market data push
 
 OPTIONS:
   --dpdk              use the DPDK client variant (NIC_B → vfio-pci)
   --config <path>     override bench.conf path (default: $DEFAULT_CONFIG)
   -h, --help          show this help
 
-The wrapper forks the matching Python mock from $MOCKS_DIR,
-execs the client binary built under build/linux/<arch>/release/lat_<scenario>,
-and restores NIC state on exit. All measurement numbers come from the binary's
-stdout — this script does not touch them.
+Kernel mode runs the client inside network namespace \`bench_ns\` so that
+the client NIC cannot shortcut loopback to the mock NIC — both sides
+traverse the physical wire via the AWS VPC fabric. DPDK mode binds the
+client NIC to vfio-pci. The Python mock always runs in the host ns.
+
+Loopback-only fallback: if client_nic is left unset in bench.conf, the
+wrapper skips the NIC state machine and runs the client in the host ns
+(useful for quick smoke tests on a machine without a spare NIC).
 EOF
 }
 
@@ -104,8 +135,7 @@ command -v python3 >/dev/null 2>&1 || \
 [[ -f "$CONFIG_FILE" ]] || die "config not found: $CONFIG_FILE"
 
 MOCK_SCRIPT="$MOCKS_DIR/${SCENARIO_MOCKS[$SCENARIO]}"
-[[ -f "$MOCK_SCRIPT" ]] || die "mock script missing: $MOCK_SCRIPT" \
-    "Expected benchmarks/latency/mocks/${SCENARIO_MOCKS[$SCENARIO]} (added in sub-phase 10.2)."
+[[ -f "$MOCK_SCRIPT" ]] || die "mock script missing: $MOCK_SCRIPT"
 
 # ── Locate the client binary ────────────────────────────────────────
 detect_build_dir() {
@@ -124,25 +154,17 @@ $DPDK && BIN_NAME="${BIN_NAME}_dpdk"
 BINARY="$BUILD_DIR/$BIN_NAME"
 [[ -x "$BINARY" ]] || die "binary not found: $BINARY" "Build with: xmake build $BIN_NAME"
 
-# ── Root-only (needed for NIC state transitions AND binding privileged
-#    ports; the smoke-loopback path can skip this if the user really
-#    wants to run unprivileged, but the default config uses port <1024
-#    sometimes, so we keep it strict) ───────────────────────────────
 [[ $EUID -eq 0 ]] || die "must run as root" "sudo $0 $SCENARIO $*"
 
-# ── Parse minimal fields from bench.conf ────────────────────────────
-# The binary reads the full file via --config; we only need a handful
-# of lowercase globals here for the NIC transition. Grep + cut is enough
-# (no nested sections matter because we read before the first `[...]`).
+# ── Parse minimal fields from bench.conf (lowercase globals only) ──
 conf_get() {
     local key="$1" default="${2:-}"
-    # Pick only pre-`[...]` lines, then the first `key = value` that matches.
     local val
     val=$(awk -v k="$key" '
         /^\[/ { exit }
         /^[[:space:]]*#/ { next }
         {
-            sub(/#.*$/, "")        # trim inline comments
+            sub(/#.*$/, "")
             split($0, a, "=")
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[1])
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
@@ -157,113 +179,251 @@ CLIENT_NIC=$(conf_get client_nic)
 MOCK_IP=$(conf_get mock_ip)
 CLIENT_IP=$(conf_get client_ip)
 NETMASK=$(conf_get netmask 255.255.255.0)
-NIC_B_PCI=$(conf_get NIC_B_PCI)   # uppercase — reuse existing bench.conf key
+GATEWAY_IP=$(conf_get gateway_ip)
+NIC_B_PCI=$(conf_get NIC_B_PCI)   # uppercase — reused from legacy BenchConfig
 
-# ── Decide desired NIC-B state ──────────────────────────────────────
-DESIRED="host"
-$DPDK && DESIRED="dpdk"
+# dotted mask → CIDR prefix. Supports /20 (the AWS VPC default) plus
+# the other common /8 /16 /24 /32 cases.
+netmask_to_prefix() {
+    case "$1" in
+        255.255.255.255) echo 32 ;;
+        255.255.255.0)   echo 24 ;;
+        255.255.254.0)   echo 23 ;;
+        255.255.252.0)   echo 22 ;;
+        255.255.248.0)   echo 21 ;;
+        255.255.240.0)   echo 20 ;;
+        255.255.224.0)   echo 19 ;;
+        255.255.192.0)   echo 18 ;;
+        255.255.128.0)   echo 17 ;;
+        255.255.0.0)     echo 16 ;;
+        255.0.0.0)       echo 8 ;;
+        *)               echo 24 ;;  # sensible default
+    esac
+}
+PREFIX=$(netmask_to_prefix "$NETMASK")
 
-# Helper: current state of CLIENT_NIC (or NIC_B when pulled from uppercase).
-nic_pci() {
-    # Prefer explicit NIC_B_PCI. Fall back to sysfs.
+# ── PCI / driver helpers (mirrors baseline lat semantics) ───────────
+nic_b_pci() {
     if [[ -n "$NIC_B_PCI" ]]; then
         echo "$NIC_B_PCI"; return
     fi
     if [[ -n "$CLIENT_NIC" && -e "/sys/class/net/$CLIENT_NIC/device" ]]; then
-        basename "$(readlink -f "/sys/class/net/$CLIENT_NIC/device")"
+        local pci
+        pci=$(basename "$(readlink -f "/sys/class/net/$CLIENT_NIC/device")")
+        [[ -n "$pci" && "$pci" != "device" ]] && { echo "$pci"; return; }
+    fi
+    if [[ -f "$PROJECT_DIR/.dpdk_state" ]] && \
+       grep -q "DPDK_IFACE=\"$CLIENT_NIC\"" "$PROJECT_DIR/.dpdk_state" 2>/dev/null; then
+        grep -oP 'DPDK_PCI="\K[^"]+' "$PROJECT_DIR/.dpdk_state"
         return
     fi
     echo ""
 }
 
-detect_state() {
+pci_driver() {
+    local pci="$1"
+    [[ -n "$pci" && -e "/sys/bus/pci/devices/$pci" ]] || { echo ""; return; }
+    basename "$(readlink -f "/sys/bus/pci/devices/$pci/driver" 2>/dev/null)" 2>/dev/null || echo ""
+}
+
+pci_has_netdev() {
+    local pci="$1"
+    [[ -n "$pci" ]] || return 1
+    [[ -n "$(ls "/sys/bus/pci/devices/$pci/net" 2>/dev/null)" ]]
+}
+
+unwedge_nic() {
     local pci drv
-    pci=$(nic_pci)
+    pci=$(nic_b_pci)
+    [[ -n "$pci" ]] || return 1
+    drv=$(pci_driver "$pci")
+    [[ -z "$drv" ]] && return 1
+    if pci_has_netdev "$pci"; then
+        return 0
+    fi
+    log_warn "$CLIENT_NIC (PCI $pci) is wedged: $drv bound but no netdev"
+    log_step "auto-recovery: unbind/rebind $drv on $pci"
+    echo "$pci" > "/sys/bus/pci/drivers/$drv/unbind" 2>/dev/null || true
+    sleep 1
+    echo "$pci" > "/sys/bus/pci/drivers/$drv/bind" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6; do
+        if ip link show "$CLIENT_NIC" &>/dev/null; then
+            log_info "wedge recovered: $CLIENT_NIC back in host ns"
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+detect_nic_b_state() {
+    # bench_ns first — ip link show in host ns won't see a NIC that has
+    # been moved to another netns, so we must check netns before sysfs.
+    if [[ -n "$CLIENT_NIC" ]] && \
+       ip netns list 2>/dev/null | grep -qw bench_ns && \
+       ip netns exec bench_ns ip link show "$CLIENT_NIC" &>/dev/null; then
+        echo "bench_ns"; return
+    fi
+    local pci drv
+    pci=$(nic_b_pci)
     if [[ -n "$pci" ]]; then
-        drv=$(basename "$(readlink -f "/sys/bus/pci/devices/$pci/driver" 2>/dev/null)" 2>/dev/null || echo "")
-        [[ "$drv" == "vfio-pci" ]] && { echo "dpdk"; return; }
+        drv=$(pci_driver "$pci")
+        if [[ "$drv" == "vfio-pci" ]]; then
+            echo "dpdk"; return
+        fi
+        if [[ -n "$drv" ]] && ! pci_has_netdev "$pci"; then
+            echo "wedged"; return
+        fi
     fi
     if [[ -n "$CLIENT_NIC" ]] && ip link show "$CLIENT_NIC" &>/dev/null; then
         echo "host"; return
     fi
-    # No client NIC configured at all → treat as loopback-only. The
-    # binary will send to mock_ip=127.0.0.1 if the config says so.
-    echo "loopback"
+    echo "unknown"
 }
 
-# ── State transitions ────────────────────────────────────────────────
-assign_ip_if_needed() {
-    local nic="$1" ip="$2"
-    [[ -n "$nic" && -n "$ip" ]] || return 0
-    # Skip when the NIC already has that /24 (or whatever netmask) IP.
-    if ip -4 addr show "$nic" 2>/dev/null | grep -qw "$ip"; then
-        return 0
+wait_for_link() {
+    local ns="$1" iface="$2" timeout_ds=${3:-20}
+    for _ in $(seq 1 "$timeout_ds"); do
+        if [[ -z "$ns" ]]; then
+            ip link show "$iface" &>/dev/null && return 0
+        else
+            ip netns exec "$ns" ip link show "$iface" &>/dev/null && return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+# ── State transitions (idempotent) ───────────────────────────────────
+host_to_bench_ns() {
+    log_step "NIC-B: host → bench_ns"
+    ip netns add bench_ns 2>/dev/null || true
+
+    if ! ip netns exec bench_ns ip link show "$CLIENT_NIC" &>/dev/null; then
+        # Drop any pre-existing IP on the NIC in host ns before moving it
+        # (the move preserves link state but the interface may carry stale
+        # addresses from DHCP).
+        ip addr flush dev "$CLIENT_NIC" 2>/dev/null || true
+        ip link set "$CLIENT_NIC" netns bench_ns
     fi
-    local cidr="${ip}/${NETMASK##*.}"   # crude mask → prefix; good enough for /24
-    # Fallback: derive prefix from dotted mask if the crude trick fails.
-    case "$NETMASK" in
-        255.255.255.0)   cidr="${ip}/24" ;;
-        255.255.0.0)     cidr="${ip}/16" ;;
-        255.0.0.0)       cidr="${ip}/8"  ;;
-        255.255.255.255) cidr="${ip}/32" ;;
-    esac
-    log_step "assign $cidr to $nic"
-    ip addr add "$cidr" dev "$nic" 2>/dev/null || true
-    ip link set "$nic" up 2>/dev/null || true
+
+    # Assign static IP + bring up inside bench_ns (idempotent: `ip addr add`
+    # fails if the address already exists, so `|| true`).
+    ip netns exec bench_ns ip addr add "${CLIENT_IP}/${PREFIX}" dev "$CLIENT_NIC" 2>/dev/null || true
+    ip netns exec bench_ns ip link set "$CLIENT_NIC" up
+    ip netns exec bench_ns ip link set lo up
+    # Default route via the configured gateway so packets with dst=mock_ip
+    # (which lives on NIC-A in the host ns) actually go out the wire.
+    if [[ -n "$GATEWAY_IP" ]]; then
+        ip netns exec bench_ns ip route add default via "$GATEWAY_IP" dev "$CLIENT_NIC" 2>/dev/null || true
+    fi
+    log_info "bench_ns ready ($CLIENT_NIC = ${CLIENT_IP}/${PREFIX} → ${GATEWAY_IP:-no-gw})"
+}
+
+bench_ns_to_host() {
+    log_step "NIC-B: bench_ns → host"
+    ip netns exec bench_ns ip link set "$CLIENT_NIC" netns 1 2>/dev/null || true
+    ip netns del bench_ns 2>/dev/null || true
+    ip link set "$CLIENT_NIC" up 2>/dev/null || true
 }
 
 host_to_dpdk() {
     [[ -x "$DPDK_SETUP" ]] || die "dpdk-setup.sh not found at $DPDK_SETUP"
-    local pci; pci=$(nic_pci)
-    [[ -n "$pci" ]] || die "cannot determine PCI BDF for client NIC" \
+    local pci; pci=$(nic_b_pci)
+    [[ -n "$pci" ]] || die "cannot determine PCI BDF for $CLIENT_NIC" \
         "Set NIC_B_PCI=0000:XX:YY.Z in $CONFIG_FILE."
     log_step "NIC $CLIENT_NIC → vfio-pci (PCI $pci)"
-    DPDK_PCI="$pci" DPDK_IFACE="$CLIENT_NIC" "$DPDK_SETUP" -y || \
+    if ! DPDK_PCI="$pci" DPDK_IFACE="$CLIENT_NIC" "$DPDK_SETUP" -y; then
         die "dpdk-setup.sh failed" \
-            "Run 'sudo $DPDK_SETUP --check-only' to diagnose."
-    log_info "$CLIENT_NIC bound to vfio-pci"
+            "Check the output above. Run 'sudo $DPDK_SETUP --check-only' to diagnose."
+    fi
+    local ok=false
+    for _ in 1 2 3 4 5; do
+        if ! ip link show "$CLIENT_NIC" &>/dev/null && \
+           [[ "$(pci_driver "$pci")" == "vfio-pci" ]]; then
+            ok=true; break
+        fi
+        sleep 0.2
+    done
+    $ok || die "dpdk-setup reported success but $CLIENT_NIC is still a kernel interface"
+    log_info "$CLIENT_NIC (PCI $pci) bound to vfio-pci"
 }
 
 dpdk_to_host() {
     [[ -x "$DPDK_TEARDOWN" ]] || die "dpdk-teardown.sh not found at $DPDK_TEARDOWN"
     log_step "NIC $CLIENT_NIC → kernel driver"
-    "$DPDK_TEARDOWN" || die "dpdk-teardown.sh failed" \
-        "A live DPDK process may still be holding the device."
-    log_info "$CLIENT_NIC back on kernel driver"
+    if ! "$DPDK_TEARDOWN"; then
+        die "dpdk-teardown.sh failed — NIC-B still bound to vfio-pci" \
+            "A DPDK process may be holding the device. Check 'ps -ef | grep -i dpdk'."
+    fi
+    if ! wait_for_link "" "$CLIENT_NIC" 20; then
+        if unwedge_nic && wait_for_link "" "$CLIENT_NIC" 20; then
+            :
+        else
+            die "teardown succeeded but $CLIENT_NIC is not back in host ns"
+        fi
+    fi
 }
 
-CURRENT=$(detect_state)
-log_info "client NIC state: $CURRENT → desired: $DESIRED"
+assign_mock_ip_if_needed() {
+    # Mock side: ens34 in host ns. This is typically the primary ENI and
+    # already has its DHCP address (172.31.21.173). This helper exists in
+    # case a tester is running on a one-NIC dev box and wants to stub
+    # mock_nic to lo or a dummy.
+    [[ -n "$MOCK_NIC" && -n "$MOCK_IP" ]] || return 0
+    if ip -4 addr show "$MOCK_NIC" 2>/dev/null | grep -qw "$MOCK_IP"; then
+        return 0
+    fi
+    log_step "assign ${MOCK_IP}/${PREFIX} to $MOCK_NIC"
+    ip addr add "${MOCK_IP}/${PREFIX}" dev "$MOCK_NIC" 2>/dev/null || true
+    ip link set "$MOCK_NIC" up 2>/dev/null || true
+}
 
-case "$CURRENT,$DESIRED" in
-    loopback,host|loopback,dpdk)
-        # No client NIC at all — trust bench.conf's mock_ip. If the user
-        # asked for DPDK with no NIC configured, that's an error.
-        $DPDK && die "--dpdk requested but no client NIC in $CONFIG_FILE" \
-            "Set client_nic= and NIC_B_PCI= (or keep it unset and drop --dpdk)."
-        log_warn "no client_nic configured — running loopback-only"
-        ;;
-    host,host)   : ;;   # already good
-    dpdk,dpdk)   : ;;   # already good
-    host,dpdk)   host_to_dpdk ;;
-    dpdk,host)   dpdk_to_host ;;
-    *)           die "unhandled NIC state transition: $CURRENT → $DESIRED" ;;
-esac
-
-# Assign IPs for kernel mode (mock NIC in host ns serves the mock; client NIC
-# needs its IP so the kernel routes outgoing packets to mock_ip via CLIENT_NIC).
-if [[ "$DESIRED" == "host" ]]; then
-    assign_ip_if_needed "$MOCK_NIC"   "$MOCK_IP"
-    assign_ip_if_needed "$CLIENT_NIC" "$CLIENT_IP"
+# ── Decide desired state + drive transitions ────────────────────────
+# Loopback fallback: if no client_nic is set at all, skip the state machine
+# entirely (useful for laptop smoke tests without a second NIC).
+if [[ -z "$CLIENT_NIC" ]]; then
+    $DPDK && die "--dpdk requested but no client_nic in $CONFIG_FILE"
+    log_warn "no client_nic configured — running loopback-only (NOT fair for DPDK comparison)"
+    LOOPBACK_ONLY=true
+else
+    LOOPBACK_ONLY=false
 fi
 
-# ── Fork the Python mock + exec the client binary ────────────────────
+if [[ "$LOOPBACK_ONLY" == false ]]; then
+    DESIRED="bench_ns"
+    $DPDK && DESIRED="dpdk"
+
+    CURRENT=$(detect_nic_b_state)
+    log_info "NIC-B current: $CURRENT  →  desired: $DESIRED"
+
+    if [[ "$CURRENT" == "wedged" ]]; then
+        log_warn "NIC-B wedged; attempting auto-recovery"
+        unwedge_nic || die "auto-recovery failed for $CLIENT_NIC"
+        CURRENT=$(detect_nic_b_state)
+        log_info "NIC-B post-recovery: $CURRENT"
+    fi
+
+    case "$CURRENT,$DESIRED" in
+        bench_ns,bench_ns|dpdk,dpdk) : ;;
+        host,bench_ns)     host_to_bench_ns ;;
+        host,dpdk)         host_to_dpdk ;;
+        bench_ns,dpdk)     bench_ns_to_host; host_to_dpdk ;;
+        dpdk,bench_ns)     dpdk_to_host; host_to_bench_ns ;;
+        unknown,*)         die "cannot determine $CLIENT_NIC state" \
+                               "Tried bench_ns, sysfs PCI, host kernel netdev. None matched." ;;
+        *)                 die "unhandled transition: $CURRENT → $DESIRED" ;;
+    esac
+
+    assign_mock_ip_if_needed
+fi
+
+# ── Fork the Python mock (always in host ns) + exec the client ──────
 MOCK_PID=""
 cleanup() {
     local rc=$?
     if [[ -n "$MOCK_PID" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
         kill -TERM "$MOCK_PID" 2>/dev/null || true
-        # Give it 500 ms to exit cleanly, then SIGKILL.
         for _ in 1 2 3 4 5; do
             kill -0 "$MOCK_PID" 2>/dev/null || break
             sleep 0.1
@@ -279,15 +439,16 @@ printf '\n%s── lat %s%s ──%s\n' "$BOLD" "$SCENARIO" \
     "$($DPDK && echo ' --dpdk')" "$NC"
 printf '   binary : %s\n'   "$BINARY"
 printf '   mock   : %s\n'   "$MOCK_SCRIPT"
-printf '   config : %s\n\n' "$CONFIG_FILE"
+printf '   config : %s\n'   "$CONFIG_FILE"
+printf '   topo   : %s\n\n' \
+    "$([[ "$LOOPBACK_ONLY" == true ]] && echo loopback-only || \
+       $DPDK && echo "dpdk(ens35=vfio) → VPC → mock(ens34)" || \
+       echo "bench_ns(ens35) → VPC → mock(ens34)")"
 
 log_step "forking mock: python3 $(basename "$MOCK_SCRIPT") --config $(basename "$CONFIG_FILE")"
 python3 "$MOCK_SCRIPT" --config "$CONFIG_FILE" &
 MOCK_PID=$!
 
-# Give the mock 500 ms to bind its listening socket before the client
-# tries to connect/send. A proper handshake would be better, but Python
-# stdlib servers hit `listen()` in well under that.
 sleep 0.5
 
 if ! kill -0 "$MOCK_PID" 2>/dev/null; then
@@ -295,11 +456,20 @@ if ! kill -0 "$MOCK_PID" 2>/dev/null; then
         "Check the mock output above; it probably failed to bind $MOCK_IP."
 fi
 
+# ── Exec the client ─────────────────────────────────────────────────
+# kernel mode: run the client inside bench_ns so the kernel can't take
+# the loopback shortcut between ens34 ↔ ens35 via lo.
+# dpdk mode: run in host ns (DPDK EAL needs to open vfio devices; netns
+# ownership of PCI devices would actually defeat that).
+# loopback fallback: also runs in host ns.
 log_step "exec client: $BIN_NAME --config $(basename "$CONFIG_FILE")"
 set +e
-"$BINARY" --config "$CONFIG_FILE"
+if [[ "$LOOPBACK_ONLY" == false && "$DPDK" == false ]]; then
+    ip netns exec bench_ns "$BINARY" --config "$CONFIG_FILE"
+else
+    "$BINARY" --config "$CONFIG_FILE"
+fi
 CLIENT_RC=$?
 set -e
 
-# cleanup (via trap) will reap the mock and propagate $CLIENT_RC through $?.
 exit "$CLIENT_RC"
