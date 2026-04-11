@@ -211,6 +211,46 @@ class Recorder {
         return true;
     }
 
+    /// @brief Record a single latency sample in nanoseconds.
+    ///
+    /// Converts the ns value to TSC cycles internally via the current
+    /// ns/cycle ratio, then dispatches to `record(uint64_t cycles)`. The
+    /// existing cycle-based storage and `compute_stats()` path are
+    /// preserved unchanged — the final output is still ns regardless of
+    /// whether samples entered via `record()` or `record_ns()`.
+    ///
+    /// Intended for bench helpers that measure latency via
+    /// `clock_gettime(MONOTONIC_RAW)` or receive ns timestamps from
+    /// another process (e.g., a Python mock echo server).
+    ///
+    /// @param ns Elapsed time in nanoseconds.
+    ///
+    /// @note Precision: the ns → cycles → ns round-trip loses ≤ 1 ns
+    ///       from integer truncation of the cycle count. Acceptable for
+    ///       benchmarks with p50 in the microsecond range.
+    ///
+    /// @note Thread-safety: same as `record()` (not thread-safe; one
+    ///       recorder per thread).
+    void record_ns(uint64_t ns) noexcept {
+        // Discard the bool return from record(): record_ns() has a void
+        // contract so it can be used from hot-path code that doesn't
+        // want to branch on per-sample failures. Out-of-range samples
+        // are still tallied into skipped_overflow_ for diagnostics.
+        (void)record(ns_to_cycles_(ns));
+    }
+
+    /// @brief Record the same ns latency value multiple times.
+    ///
+    /// Batched variant of `record_ns()`. Equivalent to calling
+    /// `record_ns(ns)` `count` times but faster due to the existing
+    /// `record_values()` batched path.
+    ///
+    /// @param ns    Elapsed time in nanoseconds.
+    /// @param count Number of times to record this value.
+    void record_ns_values(uint64_t ns, uint64_t count) noexcept {
+        (void)record_values(ns_to_cycles_(ns), count);
+    }
+
     /// @brief Merge another Recorder's histogram and statistics into this one.
     ///
     /// @param other The recorder to merge from (must have compatible histogram config).
@@ -466,6 +506,41 @@ class Recorder {
     [[nodiscard]] fs::path make_output_path(const std::string& dir,
                                             const std::string& ext) const {
         return recorder_detail::make_output_path(name_, dir, ext);
+    }
+
+    /// @brief Convert a nanosecond value to TSC cycles using the current
+    ///        ns/cycle ratio.
+    ///
+    /// Used by `record_ns()` / `record_ns_values()` to funnel raw-ns input
+    /// into the existing cycle-based histogram storage so the report path
+    /// (`compute_stats()`) stays unchanged.
+    ///
+    /// The ratio is cached in a function-local `static` so repeated calls
+    /// avoid the `TSC::to_ns(1)` atomic load + optional unwrap. C++11
+    /// guarantees thread-safe initialization of function-local statics,
+    /// so this is safe even if the first call races across threads.
+    ///
+    /// Caching assumes TSC calibration is stable for the lifetime of the
+    /// process (which it is: `TSC::init()` runs once and the ratio is
+    /// never recomputed). If `TSC::to_ns(1)` returns `nullopt` on the
+    /// very first call (TSC not yet initialized), we fall back to a
+    /// sentinel ratio of 1.0 ns/cycle — this yields cycle counts equal to
+    /// the ns input, which is still within the histogram's trackable
+    /// range and produces self-consistent stats (just not calibrated to
+    /// wall time). The Recorder constructor already forces TSC::init(),
+    /// so in practice this fallback path is never taken.
+    [[nodiscard]] static uint64_t ns_to_cycles_(uint64_t ns) noexcept {
+        static const double cycles_per_ns = [] {
+            auto ns_per_cycle = TSC::to_ns(1);
+            // Sentinel 1.0 avoids division-by-zero / nullopt branching on
+            // the hot path. See comment above.
+            if (!ns_per_cycle || *ns_per_cycle <= 0.0) return 1.0;
+            return 1.0 / *ns_per_cycle;
+        }();
+        // Integer truncation: loses at most 1 cycle, which on a 3 GHz
+        // machine is ≈ 0.33 ns — well within the ±1 ns round-trip budget
+        // documented on record_ns().
+        return static_cast<uint64_t>(static_cast<double>(ns) * cycles_per_ns);
     }
 
     void print_warnings() const {

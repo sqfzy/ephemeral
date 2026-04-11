@@ -1102,3 +1102,179 @@ TEST(RecorderDetailTest, MakeOutputPathSanitizesName) {
     EXPECT_EQ(filename.find('!'), std::string::npos);
     EXPECT_TRUE(filename.starts_with("my_bench_"));
 }
+
+// ============================================================================
+// Recorder — record_ns() / record_ns_values() (phase 10.0 raw-ns API)
+// ============================================================================
+//
+// These tests cover the thin ns → cycles wrapper added to Recorder so
+// bench helpers that natively measure in nanoseconds (clock_gettime,
+// external-process timestamps) can feed samples without converting to
+// TSC cycles themselves. The API is backward-compatible: the existing
+// cycle-based storage path is reused unchanged, and compute_stats()
+// continues to report ns.
+
+TEST_F(RecorderTest, RecordNsIdentityRoundTrip) {
+    // Single sample at 1 ms: after ns → cycles → ns round-trip, the
+    // reported p50 should match the input to within ±2 ns (allow a
+    // little slack for both truncation and HdrHistogram bucket width
+    // at the 3-sig-fig precision level: 1e6 ns * 1e-3 = 1000 ns, which
+    // is the histogram's raw resolution at this magnitude, but
+    // record_ns uses the cycle-domain histogram so actual quantization
+    // is finer).
+    Recorder rec("RecordNsIdentity");
+    rec.record_ns(1'000'000);
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats);
+    EXPECT_EQ(stats->count, 1u);
+    // Tolerance: cycle-domain bucket width at ~3 GHz and 3 sig figs is
+    // ~(1000us/1000) = ~1us. We allow 2000 ns to be robust across TSC
+    // frequencies; the primary goal is catching unit errors, not
+    // proving HdrHistogram precision.
+    EXPECT_NEAR(stats->p50_ns, 1'000'000.0, 2000.0);
+    EXPECT_NEAR(stats->min_ns, 1'000'000.0, 2000.0);
+    EXPECT_NEAR(stats->max_ns, 1'000'000.0, 2000.0);
+}
+
+TEST_F(RecorderTest, RecordNsMultipleValuesMinMax) {
+    Recorder rec("RecordNsMultiple");
+    // Record 100 samples ranging from 1000 ns to 100'000 ns.
+    for (uint64_t ns = 1000; ns <= 100'000; ns += 1000) {
+        rec.record_ns(ns);
+    }
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats);
+    EXPECT_EQ(stats->count, 100u);
+    // min/max should bracket the input range; tolerance covers histogram
+    // bucket width at both extremes (relative to magnitude).
+    EXPECT_GE(stats->min_ns, 900.0);
+    EXPECT_LE(stats->min_ns, 1100.0);
+    EXPECT_GE(stats->max_ns, 99'000.0);
+    EXPECT_LE(stats->max_ns, 101'000.0);
+}
+
+TEST_F(RecorderTest, RecordNsValuesBatched) {
+    // Batched input: record 5000 ns, 100 times. All percentiles should
+    // collapse to the single input value.
+    Recorder rec("RecordNsBatched");
+    rec.record_ns_values(5000, 100);
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats);
+    EXPECT_EQ(stats->count, 100u);
+    // All samples identical → every percentile must match.
+    EXPECT_NEAR(stats->p50_ns, 5000.0, 50.0);
+    EXPECT_NEAR(stats->p90_ns, 5000.0, 50.0);
+    EXPECT_NEAR(stats->p99_ns, 5000.0, 50.0);
+    EXPECT_NEAR(stats->min_ns, 5000.0, 50.0);
+    EXPECT_NEAR(stats->max_ns, 5000.0, 50.0);
+}
+
+TEST_F(RecorderTest, RecordNsSmallValuesEdgeCases) {
+    // Small and zero inputs must not corrupt counters or cause UB.
+    // - ns=0 converts to cycles=0, which record() rejects as invalid
+    //   (expected; contract carries over from the cycle-based API).
+    // - ns=1..100 should succeed (cycles rounds down to 0 for very small
+    //   inputs depending on the TSC frequency; if so, that sample is
+    //   rejected as invalid — also acceptable and symmetric with record()).
+    Recorder rec("RecordNsSmall");
+    rec.record_ns(0);
+    rec.record_ns(1);
+    rec.record_ns(10);
+    rec.record_ns(100);
+    rec.record_ns(1000);
+    // At least the largest samples must have been stored. The exact
+    // count depends on TSC frequency, but recording must not crash or
+    // produce UB. Verify no arithmetic corruption:
+    EXPECT_LE(rec.count(), 5u);
+    EXPECT_GE(rec.count() + rec.skipped_invalid_count() +
+                  rec.skipped_overflow_count(),
+              5u);
+}
+
+TEST_F(RecorderTest, RecordNsLargeValueNoOverflow) {
+    // 10 seconds in ns. Recorder default range is "≈10 seconds" so this
+    // sits at or just past the upper bound; we accept either successful
+    // storage or overflow-skip — both are OK, what matters is no UB or
+    // arithmetic wrap.
+    Recorder rec("RecordNsLarge");
+    const uint64_t ten_sec_ns = 10'000'000'000ull;
+    rec.record_ns(ten_sec_ns);
+    // Exactly one call → total tally must be 1 across all buckets.
+    EXPECT_EQ(rec.count() + rec.skipped_invalid_count() +
+                  rec.skipped_overflow_count(),
+              1u);
+}
+
+TEST_F(RecorderTest, RecordNsMixedWithCycles) {
+    // Mixing record() (cycles) and record_ns() (nanoseconds) on the
+    // same instance must be self-consistent: both paths funnel into the
+    // same cycle-domain histogram, and compute_stats() reports ns
+    // regardless. Verify count is the sum.
+    Recorder rec("RecordNsMixed");
+    for (int i = 0; i < 50; ++i) {
+        ASSERT_TRUE(rec.record(10'000));  // 10'000 cycles
+    }
+    for (int i = 0; i < 50; ++i) {
+        rec.record_ns(5000);  // 5000 ns
+    }
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats);
+    EXPECT_EQ(stats->count, 100u);
+    // Min/max must bracket both populations; we don't assert exact
+    // ordering (depends on TSC frequency — on a 3 GHz box 10k cycles ≈
+    // 3300 ns, on a 1 GHz box ≈ 10'000 ns). Only that both were stored.
+    EXPECT_GT(stats->max_ns, 0.0);
+    EXPECT_GT(stats->min_ns, 0.0);
+}
+
+TEST_F(RecorderTest, RecordNsIsNoexcept) {
+    // Contract: record_ns / record_ns_values must be noexcept so they
+    // can be used from destructors and hot-path code that forbids
+    // exception propagation.
+    static_assert(noexcept(std::declval<Recorder&>().record_ns(0ull)));
+    static_assert(
+        noexcept(std::declval<Recorder&>().record_ns_values(0ull, 0ull)));
+}
+
+TEST_F(RecorderTest, RecordNsPrecisionSweep) {
+    // Precision sweep: record a sequence of distinct ns values and
+    // verify the p50 lands near the median of the input. Uses a range
+    // (1000..10000 step 10 → 901 samples) where HdrHistogram's 3-sig-fig
+    // precision gives ≈ ±1% quantization, i.e. ≈ ±50 ns at p50 ≈ 5500.
+    Recorder rec("RecordNsPrecisionSweep");
+    uint64_t sum = 0, n = 0;
+    for (uint64_t ns = 1000; ns <= 10'000; ns += 10) {
+        rec.record_ns(ns);
+        sum += ns;
+        ++n;
+    }
+    ASSERT_EQ(rec.count(), n);
+    auto stats = rec.compute_stats();
+    ASSERT_TRUE(stats);
+    const double expected_median = 5500.0;  // midpoint of [1000, 10000]
+    // Generous tolerance (300 ns ≈ 5% of median) because HdrHistogram
+    // bucketing at 3 sig figs + cycle-domain quantization both
+    // contribute. The goal is to catch unit errors, not to verify
+    // sub-ns precision.
+    EXPECT_NEAR(stats->p50_ns, expected_median, 300.0);
+}
+
+TEST_F(RecorderTest, RecordNsConcurrentDifferentInstances) {
+    // Recorder itself is single-threaded; record_ns inherits that. But
+    // the static cache inside ns_to_cycles_() is shared across all
+    // Recorder instances, so verify that two threads each using their
+    // own Recorder don't race on first-touch initialization.
+    Recorder rec1("RecordNsThread1");
+    Recorder rec2("RecordNsThread2");
+    constexpr int kSamples = 1000;
+    std::thread t1([&] {
+        for (int i = 0; i < kSamples; ++i) rec1.record_ns(1000 + i);
+    });
+    std::thread t2([&] {
+        for (int i = 0; i < kSamples; ++i) rec2.record_ns(2000 + i);
+    });
+    t1.join();
+    t2.join();
+    EXPECT_EQ(rec1.count(), static_cast<uint64_t>(kSamples));
+    EXPECT_EQ(rec2.count(), static_cast<uint64_t>(kSamples));
+}
