@@ -1,209 +1,314 @@
-/// @file lat_ws_v3.cpp
-/// v3.3 WebSocket latency demonstrator using
-/// `KernelTcpStream<WsCodec, false>`.
+/// @file lat_ws.cpp
+/// Phase 10 latency benchmark: WebSocket RTT against a kernel Python echo
+/// mock (`benchmarks/latency/mocks/ws_echo.py`).
 ///
-/// Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
+/// Sub-phase 10.4 rewrite. Per
+/// `.artifacts/plan-phase-10-latency-bench-20260411-040540.md` §Sub-phase
+/// 10.4 and §Interface design → "Client API pattern":
 ///
-/// **Scope**: this benchmark exercises the v3.3 codec contract for WS by
-/// driving WS-binary frames through a self-contained loopback echo loop.
-/// We do NOT perform a real HTTP/1.1 Upgrade handshake — the codec under
-/// test is the *frame* layer, not the upgrade dance. The peer is a tiny
-/// custom TCP echoer that just bounces every byte; combined with WsCodec
-/// on the client side this measures the codec's per-frame parsing cost
-/// inside the v3.3 RX pipeline.
+///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
+///     (port / ws_path / payload_size / duration_seconds) plus the
+///     lowercase global `mock_ip`, `warmup_samples`.
+///   * Uses the v3.3 `KernelTcpStream<WsCodec, false>` + `KernelPoller`
+///     API directly — no legacy eph-transport, no bespoke loopback echoer,
+///     no raw socket() calls.
+///   * `StreamConfig.ws_path` is set — this triggers the Phase 9.5
+///     transparent WebSocket handshake inside `KernelTcpStream::create()`,
+///     so by the time we start the measurement loop the socket is ready
+///     to exchange WS-binary frames with the Python mock.
+///   * Measurement clock is `bench::monotonic_raw_ns()`
+///     (CLOCK_MONOTONIC_RAW via vDSO, per plan D-6) — not TSC.
+///   * Samples feed `eph::utils::Recorder::record_ns(ns)` (plan D-2).
+///
+/// Design note — WS frame encoding: `KernelTcpStream::send(bytes)` does
+/// NOT run the bytes through the codec (the codec's encode path is for
+/// user-assembled payloads), so we pre-encode a WS-binary frame once via
+/// `WsCodec::encode` and reuse that buffer for every RTT sample. Decode
+/// on the RX side IS driven through the codec (by the poller), so the
+/// `on_message` callback fires once per decoded payload.
+///
+/// A second target `lat_ws_dpdk` is produced by the xmake auto-glob loop
+/// with `EPH_USE_DPDK=1`. For now that build merely type-checks the v3.3
+/// DPDK stream API surface and prints a deferred banner — the real DPDK
+/// measurement loop is Phase-<later> work (see lat_tcp.cpp for the same
+/// pattern).
 
-#include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <thread>
+#include <memory>
+#include <span>
+#include <string>
+#include <utility>
 #include <vector>
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <signal.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <spdlog/spdlog.h>
 
+// eph-* headers (plan D-4: v3.3 API only).
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
-#include "eph/utils/time.hpp"
+#include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DPDK build: type-check only — vcpkg-openssl ↔ aws-lc TU clash blocks
-// pulling the kernel headers in the same TU as the DPDK headers.
-#include "eph/net/dpdk/poller.hpp"
-#include "eph/net/dpdk/tcp_stream.hpp"
+// DPDK client variant: type-check only — see the same notes in lat_tcp.cpp.
+// The vcpkg-openssl ↔ aws-lc TU clash documented in the Phase 5 BLOCKER
+// notes prevents linking the kernel + DPDK TLS pieces in a single TU.
+#  include "eph/net/dpdk/poller.hpp"
+#  include "eph/net/dpdk/tcp_stream.hpp"
 #else
-#include "eph/net/kernel/poller.hpp"
-#include "eph/net/kernel/tcp_stream.hpp"
+#  include "eph/net/kernel/config.hpp"
+#  include "eph/net/kernel/poller.hpp"
+#  include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
-namespace en = eph::net;
-namespace ec = eph::codec;
-using namespace std::chrono_literals;
+#include "core/config.hpp"
+#include "core/measurement.hpp"
 
-#if !defined(EPH_USE_DPDK)
-namespace ek = eph::net::kernel;
 namespace {
 
-using WsStream = ek::KernelTcpStream<ec::WsCodec, /*Tls=*/false>;
+namespace ec = eph::codec;
+namespace eu = eph::utils;
+namespace en = eph::net;
 
-[[noreturn]] void echo_serve(int lfd) {
-    int cfd = ::accept(lfd, nullptr, nullptr);
-    if (cfd < 0) std::_Exit(1);
-    int one = 1;
-    (void)::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    uint8_t buf[4096];
-    for (;;) {
-        ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
-        if (n <= 0) std::_Exit(0);
-        ssize_t off = 0;
-        while (off < n) {
-            ssize_t w = ::send(cfd, buf + off, n - off, MSG_NOSIGNAL);
-            if (w <= 0) std::_Exit(0);
-            off += w;
+#if defined(EPH_USE_DPDK)
+namespace ed = eph::net::dpdk;
+// Phase 6 API surface check — instantiate the DPDK types so that the
+// `_dpdk` target exercises the template expansion. A real DPDK
+// measurement loop is deferred pending EAL init + vfio-pci glue.
+using DpdkStream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using DpdkPoller = ed::DpdkPoller<>;
+static_assert(sizeof(DpdkStream*) > 0);
+static_assert(sizeof(DpdkPoller*) > 0);
+#else
+namespace ek = eph::net::kernel;
+using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+#endif
+
+/// Default bench.conf path if no `--config <path>` is passed. The `lat`
+/// wrapper always passes `--config` via argv; this default only applies
+/// when the binary is invoked directly (loopback smoke tests).
+constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
+
+[[nodiscard, maybe_unused]] const char* parse_config_path(int argc, char** argv) noexcept {
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--config") == 0) {
+            return argv[i + 1];
         }
     }
-}
-
-std::pair<int, uint16_t> bind_loopback() {
-    int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    int one = 1;
-    (void)::setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
-    addr.sin_port        = 0;
-    ::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    ::listen(lfd, 1);
-    socklen_t alen = sizeof(addr);
-    ::getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &alen);
-    return {lfd, ::ntohs(addr.sin_port)};
-}
-
-void print_latency(const char* label, std::vector<uint64_t>& v) {
-    if (v.empty()) { spdlog::info("{}: no samples", label); return; }
-    std::sort(v.begin(), v.end());
-    auto pct = [&](double p) {
-        return v[std::min(v.size() - 1, static_cast<std::size_t>(p * (v.size() - 1)))];
-    };
-    spdlog::info("{}: count={} min={}ns p50={}ns p99={}ns max={}ns",
-                 label, v.size(), v.front(), pct(0.5), pct(0.99), v.back());
+    if (const char* env = std::getenv("BENCH_CONFIG"); env && *env) {
+        return env;
+    }
+    return kDefaultConfigPath;
 }
 
 } // namespace
-#endif // !EPH_USE_DPDK
 
 #if defined(EPH_USE_DPDK)
 int main(int /*argc*/, char** /*argv*/) {
     spdlog::set_level(spdlog::level::info);
-    spdlog::info("lat_ws_v3 (DPDK build): API surface compiled.");
-    using DpdkStream = eph::net::dpdk::DpdkTcpStream<ec::WsCodec, /*Tls=*/false>;
-    using DpdkPoller = eph::net::dpdk::DpdkPoller<>;
-    static_assert(sizeof(DpdkStream*) > 0);
-    static_assert(sizeof(DpdkPoller*) > 0);
+    std::printf("lat_ws_dpdk: v3.3 DpdkTcpStream<WsCodec> API compiled.\n"
+                "Real DPDK measurement loop is deferred to a follow-up phase "
+                "(EAL init + vfio-pci NIC plumbing). Use lat_ws (kernel) for "
+                "live measurements.\n");
     return 0;
 }
 #else
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
-    const std::size_t iters = (argc > 1)
-        ? static_cast<std::size_t>(std::atoll(argv[1]))
-        : 5000;
-    constexpr std::size_t kPayload = 64;
+    const char* conf_path = parse_config_path(argc, argv);
 
-    if (!eph::utils::TSC::init(std::chrono::milliseconds{200})) {
-        spdlog::error("TSC calibration failed");
+    // ── Load config: globals (mock_ip, warmup_samples) + [lat_ws] section.
+    auto globals_r = bench::ScenarioConfig::load_globals(conf_path);
+    if (!globals_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", globals_r.error().c_str());
         return 1;
     }
-    spdlog::info("lat_ws_v3: iters={} payload={}B (WS-binary frame)",
-                 iters, kPayload);
+    auto scenario_r = bench::ScenarioConfig::load(conf_path, "lat_ws");
+    if (!scenario_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", scenario_r.error().c_str());
+        return 1;
+    }
+    const auto& globals  = globals_r.value();
+    const auto& scenario = scenario_r.value();
 
-    auto [lfd, port] = bind_loopback();
-    pid_t pid = ::fork();
-    if (pid == 0) echo_serve(lfd);
-    ::close(lfd);
+    // Required: port (no sensible default).
+    auto port_r = scenario.get_u32("port");
+    if (!port_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", port_r.error().c_str());
+        return 1;
+    }
+    const uint16_t port = static_cast<uint16_t>(port_r.value());
 
-    auto poller = ek::KernelPoller::create({}).value();
+    // Optional with defaults.
+    const std::string ws_path = scenario.get_string("ws_path", "/echo");
 
+    auto payload_r = scenario.get_u32("payload_size", 64);
+    if (!payload_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", payload_r.error().c_str());
+        return 1;
+    }
+    const std::size_t payload_size = payload_r.value();
+
+    auto duration_r = scenario.get_u32("duration_seconds", 10);
+    if (!duration_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", duration_r.error().c_str());
+        return 1;
+    }
+    const uint64_t duration_s = duration_r.value();
+
+    auto warmup_r = globals.get_u64("warmup_samples", 1000);
+    if (!warmup_r) {
+        std::fprintf(stderr, "lat_ws: %s\n", warmup_r.error().c_str());
+        return 1;
+    }
+    const uint64_t warmup_samples = warmup_r.value();
+
+    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
+    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
+    if (!ip_r) {
+        std::fprintf(stderr, "lat_ws: invalid mock_ip '%s': %s\n",
+                     mock_ip_str.c_str(), ip_r.error().detail);
+        return 1;
+    }
+    const en::SocketAddr remote{ip_r.value(), port};
+
+    std::printf("=== lat_ws ===\n");
+    std::printf("config: mock=%s port=%u ws_path=%s payload_size=%zu "
+                "duration=%llus warmup_samples=%llu\n",
+                mock_ip_str.c_str(),
+                static_cast<unsigned>(port),
+                ws_path.c_str(),
+                payload_size,
+                static_cast<unsigned long long>(duration_s),
+                static_cast<unsigned long long>(warmup_samples));
+    std::fflush(stdout);
+
+    bench::install_signal_handler();
+
+    // Construct the Recorder early so its TSC::init() calibration spin
+    // (~1 second on process start) happens before we hit the WS
+    // handshake. For an RTT scenario this is less critical than for
+    // one-way lat_ex_market, but it keeps the two binaries symmetric.
+    eu::Recorder rec{"lat_ws"};
+
+    auto poller_r = ek::KernelPoller::create({});
+    if (!poller_r) {
+        std::fprintf(stderr, "lat_ws: Poller::create failed: %s\n",
+                     poller_r.error().detail);
+        return 1;
+    }
+    auto poller = std::move(poller_r.value());
+
+    // StreamConfig.ws_path triggers the Phase 9.5 transparent WebSocket
+    // handshake inside KernelTcpStream::create(). The returned stream is
+    // already past the 101 Switching Protocols response and ready to
+    // exchange WS frames.
     ek::StreamConfig cfg{};
-    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.reasm_capacity  = 64 * 1024;
-    cfg.connect_timeout = 1s;
-    auto sr = WsStream::create(cfg);
-    if (!sr) {
-        spdlog::error("create failed: {}", sr.error().detail);
-        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+    cfg.remote          = remote;
+    cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
+    cfg.connect_timeout = std::chrono::milliseconds{3000};
+    cfg.ws_path         = ws_path;
+    // ws_host left empty → handshake falls back to remote.to_string().
+    cfg.ws_timeout      = std::chrono::seconds{10};
+
+    auto stream_r = Stream::create(cfg);
+    if (!stream_r) {
+        std::fprintf(stderr, "lat_ws: Stream::create failed: %s\n",
+                     stream_r.error().detail);
         return 2;
     }
-    auto stream = std::move(*sr);
+    auto stream = std::move(stream_r.value());
 
-    std::atomic<std::size_t> rx_frames{0};
-    stream->on_message = [&](const uint8_t*, uint16_t) {
-        rx_frames.fetch_add(1, std::memory_order_release);
+    // One decoded WS-binary frame per on_message call. We track a simple
+    // "got a frame" flag: each RTT sample sends exactly one frame and
+    // waits for exactly one response. Using a frame counter (vs a byte
+    // counter like lat_tcp) is correct here because the codec delivers
+    // the reassembled message in a single callback regardless of how
+    // many TCP segments carried it.
+    bool got_echo = false;
+    stream->on_message = [&got_echo](const uint8_t* /*data*/, uint16_t /*n*/) {
+        got_echo = true;
     };
+
     if (auto r = poller->add(stream.get()); !r) {
-        spdlog::error("attach failed: {}", r.error().detail);
-        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+        std::fprintf(stderr, "lat_ws: poller->add failed: %s\n",
+                     r.error().detail);
         return 3;
     }
 
-    // Pre-encode the WS-binary frame once. WsCodec::encode is the unmasked
-    // server-side variant; for a *server* echo (which is how the loopback
-    // peer behaves) the unmasked client frame is what the codec parses on
-    // RX. To keep the demonstrator self-contained we send our own
-    // pre-encoded unmasked frame and let the echoer bounce it back.
-    uint8_t payload[kPayload]{};
-    for (std::size_t i = 0; i < kPayload; ++i) payload[i] = static_cast<uint8_t>(i);
-
-    uint8_t frame[kPayload + 16];
+    // Pre-encode the WS-binary frame once. `KernelTcpStream::send` passes
+    // bytes through the wire as-is (no codec encode on the TX path), so
+    // the caller is responsible for producing a well-formed frame. A WS
+    // client frame is `kMaxFrameHeaderLen (14) + payload` worst case.
+    std::vector<uint8_t> payload(payload_size, 0xAB);
+    std::vector<uint8_t> frame(ec::WsCodec::max_overhead + payload_size);
     ec::WsCodec encoder{};
-    auto enc = encoder.encode(frame, sizeof(frame),
-                              std::span<const uint8_t>(payload, kPayload));
-    if (!enc) {
-        spdlog::error("WsCodec::encode failed: {}", enc.error().detail);
-        ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
+    auto enc_r = encoder.encode(frame.data(), frame.size(),
+                                std::span<const uint8_t>{payload});
+    if (!enc_r) {
+        std::fprintf(stderr, "lat_ws: WsCodec::encode failed: %s\n",
+                     enc_r.error().detail);
         return 4;
     }
-    std::span<const uint8_t> wire(frame, *enc);
+    std::span<const uint8_t> wire_frame{frame.data(), *enc_r};
 
-    std::vector<uint64_t> rtt;
-    rtt.reserve(iters);
-    std::size_t expected = 0;
-    for (std::size_t i = 0; i < iters; ++i) {
-        const uint64_t t0 = eph::utils::TSC::now();
-        if (!stream->send(wire)) {
-            spdlog::error("send failed at iter {}", i);
+    // `rec` is declared above (before Stream::create) so TSC::init
+    // latency does not interleave with the measurement loop.
+
+    const uint64_t t_start    = bench::monotonic_raw_ns();
+    const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
+    // Per-sample timeout: if the mock dies we bail rather than spin.
+    constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
+
+    uint64_t sample_idx = 0;
+    bool     timed_out  = false;
+    while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
+        const uint64_t t0 = bench::monotonic_raw_ns();
+
+        auto send_r = stream->send(wire_frame);
+        if (!send_r) {
+            std::fprintf(stderr, "lat_ws: send failed at sample %llu: %s\n",
+                         static_cast<unsigned long long>(sample_idx),
+                         send_r.error().detail);
             break;
         }
-        ++expected;
-        while (rx_frames.load(std::memory_order_acquire) < expected) {
+
+        got_echo = false;
+        while (!got_echo && !bench::shutdown_requested()) {
             poller->poll();
+            if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
+                std::fprintf(stderr,
+                             "lat_ws: echo timeout at sample %llu\n",
+                             static_cast<unsigned long long>(sample_idx));
+                timed_out = true;
+                break;
+            }
         }
-        const uint64_t t1 = eph::utils::TSC::now();
-        if (auto ns = eph::utils::TSC::to_ns(t1 - t0)) {
-            rtt.push_back(static_cast<uint64_t>(*ns));
+        if (timed_out || bench::shutdown_requested()) break;
+
+        const uint64_t t1 = bench::monotonic_raw_ns();
+        if (sample_idx >= warmup_samples) {
+            rec.record_ns(t1 - t0);
         }
+        ++sample_idx;
     }
 
-    print_latency("lat_ws_v3 RTT (kernel client + WsCodec)", rtt);
+    const char* backend =
+#if defined(EPH_USE_DPDK)
+        "dpdk";
+#else
+        "kernel";
+#endif
+    bench::print_report("lat_ws", backend, rec, warmup_samples);
 
     (void)stream->close_gracefully();
-    poller->poll(50ms);
+    poller->poll(std::chrono::milliseconds{50});
     (void)poller->remove(stream.get());
     stream.reset();
+    poller.reset();
 
-    ::kill(pid, SIGTERM); ::waitpid(pid, nullptr, 0);
-    return 0;
+    return timed_out ? 4 : 0;
 }
 #endif // EPH_USE_DPDK
