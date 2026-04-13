@@ -299,7 +299,6 @@ parse_header_block(std::span<const uint8_t> buf,
     // Cap headers at min(caller storage, kMaxHeaderCount).
     const size_t cap = std::min(header_storage.size(), kMaxHeaderCount);
 
-    bool seen_transfer_encoding = false;
     size_t cl_parsed_count = 0;
     size_t first_cl_value  = 0;
 
@@ -423,7 +422,6 @@ parse_header_block(std::span<const uint8_t> buf,
         header_storage[st.count++] = HttpHeader{name, value};
     }
 
-    (void)seen_transfer_encoding; // reserved (future: allow explicit whitelist)
     if (cl_parsed_count > 0) {
         st.has_content_length = true;
         st.content_length     = first_cl_value;

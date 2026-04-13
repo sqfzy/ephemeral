@@ -655,8 +655,8 @@ public:
 
     /// @brief Pollable native_handle — returns the TcpSession pointer as
     ///        a generic void* (distinct from kernel fd semantics).
-    [[nodiscard]] void* native_handle() noexcept {
-        return static_cast<void*>(&sess_);
+    [[nodiscard]] void* native_handle() const noexcept {
+        return const_cast<void*>(static_cast<const void*>(&sess_));
     }
 
     // ── Poller-facing friend hooks ───────────────────────────────────────

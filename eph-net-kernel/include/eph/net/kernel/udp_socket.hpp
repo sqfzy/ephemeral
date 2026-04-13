@@ -292,7 +292,7 @@ public:
         return attached_to_ != nullptr;
     }
 
-    [[nodiscard]] void* native_handle() noexcept {
+    [[nodiscard]] void* native_handle() const noexcept {
         return reinterpret_cast<void*>(static_cast<std::intptr_t>(fd_));
     }
 

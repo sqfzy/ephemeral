@@ -642,7 +642,7 @@ public:
     }
 
     /// @brief Pollable `native_handle` — kernel fd reinterpreted as void*.
-    [[nodiscard]] void* native_handle() noexcept {
+    [[nodiscard]] void* native_handle() const noexcept {
         return reinterpret_cast<void*>(
             static_cast<std::intptr_t>(sock_.fd()));
     }
