@@ -1,0 +1,23 @@
+----------------------------------------------------------------------------------
+Benchmark                        Time             CPU   Iterations UserCounters...
+----------------------------------------------------------------------------------
+BM_UdpChecksum/64             3.81 ns         3.81 ns    181398090 bytes_per_second=17.5802Gi/s
+BM_UdpChecksum/128            5.59 ns         5.59 ns    132016936 bytes_per_second=22.6549Gi/s
+BM_UdpChecksum/256            8.31 ns         8.31 ns     83347749 bytes_per_second=29.5733Gi/s
+BM_UdpChecksum/512            13.4 ns         13.4 ns     52772522 bytes_per_second=36.2181Gi/s
+BM_UdpChecksum/1024           25.1 ns         25.1 ns     27544530 bytes_per_second=38.2565Gi/s
+BM_ParseUdpPacket/64          1.56 ns         1.56 ns    447085825 bytes_per_second=63.2375Gi/s
+BM_ParseUdpPacket/128         1.63 ns         1.63 ns    437283403 bytes_per_second=96.8983Gi/s
+BM_ParseUdpPacket/256         1.60 ns         1.60 ns    446952852 bytes_per_second=173.587Gi/s
+BM_ParseUdpPacket/512         1.63 ns         1.63 ns    439270981 bytes_per_second=316.509Gi/s
+BM_ParseUdpPacket/1024        1.64 ns         1.64 ns    441643413 bytes_per_second=604.877Gi/s
+BM_ParseUdpLayered/64         1.59 ns         1.59 ns    445670684 bytes_per_second=61.9618Gi/s
+BM_ParseUdpLayered/128        1.58 ns         1.58 ns    439459070 bytes_per_second=100.019Gi/s
+BM_ParseUdpLayered/256        1.59 ns         1.59 ns    442767673 bytes_per_second=174.945Gi/s
+BM_ParseUdpLayered/512        1.58 ns         1.58 ns    443284635 bytes_per_second=325.756Gi/s
+BM_ParseUdpLayered/1024       1.65 ns         1.65 ns    437302236 bytes_per_second=603.156Gi/s
+BM_UdpTemplateFill/64        0.235 ns        0.235 ns   2954532272 bytes_per_second=420.54Gi/s
+BM_UdpTemplateFill/128       0.236 ns        0.236 ns   2970766831 bytes_per_second=671.243Gi/s
+BM_UdpTemplateFill/256       0.232 ns        0.232 ns   2945547366 bytes_per_second=1.17067Ti/s
+BM_UdpTemplateFill/512       0.230 ns        0.230 ns   3022687872 bytes_per_second=2.19013Ti/s
+BM_UdpTemplateFill/1024      0.232 ns        0.232 ns   3030015782 bytes_per_second=4.176Ti/s
