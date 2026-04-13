@@ -308,7 +308,7 @@ namespace tls_keygen {
 /// @param[out] out   Output buffer for derived material
 /// @param out_len    Desired output length
 /// @return true on success, false on failure
-inline bool hkdf_expand_label(const EVP_MD* digest,
+[[nodiscard]] inline bool hkdf_expand_label(const EVP_MD* digest,
                                 const uint8_t* secret, size_t secret_len,
                                 const char* label, size_t label_len,
                                 uint8_t* out, size_t out_len) noexcept {
@@ -345,7 +345,7 @@ inline bool hkdf_expand_label(const EVP_MD* digest,
 /// @param[out] iv     Output IV buffer
 /// @param iv_len      Desired IV length (typically 12 for AES-GCM)
 /// @return true if both key and IV derivations succeeded
-inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
+[[nodiscard]] inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
                            uint8_t* key, size_t key_len,
                            uint8_t* iv, size_t iv_len) noexcept {
     // Only TLS 1.3's two defined hash sizes are valid here. Reject anything
