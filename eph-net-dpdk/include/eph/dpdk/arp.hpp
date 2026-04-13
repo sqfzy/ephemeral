@@ -152,11 +152,14 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
 /// Parse an ARP reply from a received mbuf.
 /// Returns the sender MAC if the packet is a valid ARP reply for target_ip.
 ///
-/// @param mbuf       Received packet
-/// @param target_ip  The IP we're resolving (host byte order)
+/// @param mbuf          Received packet
+/// @param target_ip     The IP we're resolving (host byte order)
+/// @param expected_mac  If set, reject replies whose sender MAC differs (anti-spoof).
+///                      In HFT colo, the gateway MAC is typically static and known.
 /// @return Sender MAC if match, std::nullopt otherwise
 [[nodiscard]] inline std::optional<rte_ether_addr>
-parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
+parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
+                std::optional<rte_ether_addr> expected_mac = std::nullopt) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + sizeof(ArpPacket);
     if (mbuf->data_len < min_len) return std::nullopt;
 
@@ -180,6 +183,20 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip) noexcept {
 
     rte_ether_addr result;
     std::memcpy(result.addr_bytes, arp->sender_mac, 6);
+
+    // Optional anti-spoof: reject replies from unexpected MACs
+    if (expected_mac.has_value()) {
+        if (std::memcmp(result.addr_bytes,
+                        expected_mac->addr_bytes, 6) != 0) {
+            SPDLOG_LOGGER_WARN(detail::arp_logger(),
+                "ARP reply sender MAC mismatch: got {}, expected {} — "
+                "possible ARP spoofing, rejecting",
+                net::format_mac(result).data(),
+                net::format_mac(*expected_mac).data());
+            return std::nullopt;
+        }
+    }
+
     return result;
 }
 

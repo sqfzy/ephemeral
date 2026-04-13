@@ -287,6 +287,11 @@ public:
     [[nodiscard]] uint16_t port_id() const noexcept { return cfg_.port_id; }
     [[nodiscard]] uint16_t rx_queue_id() const noexcept { return cfg_.rx_queue_id; }
 
+    /// @brief Number of packets dropped due to hash collision (hash matched
+    ///        but full tuple compare failed). Non-zero values indicate either
+    ///        extremely unlucky hash distribution or potential attack traffic.
+    [[nodiscard]] uint64_t hash_collision_drops() const noexcept { return hash_collision_drops_; }
+
 private:
     /// @brief Per-registered-Pollable state. Pure POD — kept in a fixed-
     ///        size array so the hot path has no indirection through a
@@ -349,6 +354,8 @@ private:
                 pkt_src_port == e.dst_port && pkt_dst_port == e.src_port) {
                 return &e;
             }
+            // Hash matched but tuple didn't — genuine hash collision.
+            ++hash_collision_drops_;
         }
         return nullptr;
     }
@@ -356,6 +363,7 @@ private:
     PollerConfig                       cfg_{};
     std::array<PollableEntry, kMaxConn> entries_{};
     std::size_t                         n_entries_{0};
+    uint64_t                            hash_collision_drops_{0};
 };
 
 // ---------------------------------------------------------------------------

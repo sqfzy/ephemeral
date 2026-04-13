@@ -1194,7 +1194,7 @@ public:
         ++stats_.rx_bursts;
         // Capture TSC right after rx_burst — matches SocketTransport's
         // post-recvmsg() timing for fair cross-backend latency comparison.
-        last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
+        last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_release);
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }
 

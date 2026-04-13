@@ -341,7 +341,11 @@ struct UdpPacketTemplate {
                   const void* payload, uint16_t payload_len) noexcept {
         if (!mbuf) [[unlikely]] return 0;
 
-        const uint16_t total_len = kUdpAllHeadersLen + payload_len;
+        // Use uint32_t to detect overflow before truncating to uint16_t.
+        // kUdpAllHeadersLen (42) + payload_len could exceed 65535 with jumbo payloads.
+        const uint32_t total_len32 = static_cast<uint32_t>(kUdpAllHeadersLen) + payload_len;
+        if (total_len32 > UINT16_MAX) [[unlikely]] return 0;
+        const auto total_len = static_cast<uint16_t>(total_len32);
 
         rte_pktmbuf_reset(mbuf);
         auto* pkt = reinterpret_cast<uint8_t*>(rte_pktmbuf_append(mbuf, total_len));
