@@ -98,7 +98,13 @@ public:
     [[nodiscard]] uint8_t* writable_ptr() noexcept { return buf_.data() + tail_; }
 
     void commit_write(std::size_t n) noexcept { tail_ += n; }
-    void consume(std::size_t n) noexcept { head_ += n; }
+    void consume(std::size_t n) noexcept {
+        if (n >= readable()) {
+            head_ = tail_;  // clamp — never push head_ past tail_
+        } else {
+            head_ += n;
+        }
+    }
     void compact() noexcept {
         if (head_ == 0) return;
         if (readable() == 0) {
@@ -169,6 +175,11 @@ public:
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::Disconnected,
                     "PlainDpdkWsSink::send: TcpSession::send failed"});
+            }
+            if (*r == 0) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::BufferFull,
+                    "PlainDpdkWsSink::send: TcpSession::send returned 0 bytes"});
             }
             off += *r;
         }
@@ -245,6 +256,11 @@ public:
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::Disconnected,
                     "TlsDpdkWsSink::send: TcpSession::send failed"});
+            }
+            if (*r == 0) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::BufferFull,
+                    "TlsDpdkWsSink::send: TcpSession::send returned 0 bytes"});
             }
             off += *r;
         }
@@ -558,6 +574,13 @@ public:
                         core::Error::Disconnected,
                         "DpdkTcpStream::send: TcpSession::send failed"});
                 }
+                if (*sr == 0) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::send(TLS): TcpSession::send returned 0 bytes");
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::BufferFull,
+                        "DpdkTcpStream::send: TcpSession::send returned 0"});
+                }
                 off += *sr;
             }
             // API contract: report plaintext byte count.
@@ -763,12 +786,18 @@ private:
                     }
                 });
             if (!dec_r) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                    "DpdkTcpStream::drain_codec_(TLS): decrypt err={}",
+                SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                    "DpdkTcpStream::drain_codec_(TLS): decrypt err={} "
+                    "— forcing reset to prevent re-processing corrupt data",
                     dec_r.error().detail);
-                // Consume nothing — partial records stay in the buffer for
-                // the next burst. A hard error (bad MAC) should trigger
-                // reset via the reconnect policy.
+                // A hard AEAD failure (bad MAC, bad header) means the
+                // buffer contains unrecoverable data. If we consume nothing,
+                // the same corrupt bytes will be re-processed on every
+                // subsequent poll, causing infinite error loops. Force a
+                // reset so the reconnect policy can establish a fresh
+                // TLS session.
+                reasm_overflowed_ = true;
+                sess_.reset();
             } else {
                 reasm_.consume(*dec_r);
             }
@@ -790,6 +819,15 @@ private:
                 reasm_.consume(consumed);
 
                 if (!dr->has_value()) {
+                    break;
+                }
+                // Guard against infinite loop: if the codec returned a frame
+                // but did not advance the view, we cannot make progress.
+                // Break to avoid spinning forever on malformed codec output.
+                if (consumed == 0) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::drain_codec_: codec returned frame "
+                        "but consumed 0 bytes — breaking to avoid infinite loop");
                     break;
                 }
                 const auto& frame = **dr;

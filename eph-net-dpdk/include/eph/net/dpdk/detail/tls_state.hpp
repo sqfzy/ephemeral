@@ -67,6 +67,22 @@
 
 namespace eph::net::dpdk::detail {
 
+/// @brief Lazily-initialized logger for the DPDK TLS state subsystem.
+inline spdlog::logger* tls_state_logger() {
+    static auto* l = [] {
+        auto lg = spdlog::get("net.dpdk.tls_state");
+        if (!lg) {
+            try {
+                lg = spdlog::stdout_color_mt("net.dpdk.tls_state");
+            } catch (const spdlog::spdlog_ex&) {
+                lg = spdlog::get("net.dpdk.tls_state");
+            }
+        }
+        return lg.get();
+    }();
+    return l;
+}
+
 // ---------------------------------------------------------------------------
 // TlsState — owns the post-handshake AEAD context for DpdkTcpStream.
 // ---------------------------------------------------------------------------
@@ -188,7 +204,7 @@ public:
             if (inner_ct == 0x17 && plaintext_len > 0) {
                 emit(rec + ::eph::net::tls_record::kRecordHeaderLen, plaintext_len);
             } else {
-                SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                SPDLOG_LOGGER_DEBUG(tls_state_logger(),
                     "TlsState: skipping non-appdata record inner_ct={:#x} len={}",
                     inner_ct, plaintext_len);
             }
