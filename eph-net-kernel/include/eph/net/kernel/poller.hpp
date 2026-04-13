@@ -37,6 +37,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -79,6 +80,23 @@ inline spdlog::logger* poller_logger() {
 
 // Forward declaration so the Pollable notify hooks can reference us.
 class KernelPoller;
+
+// ---------------------------------------------------------------------------
+// KernelPollable — compile-time contract for types registered with KernelPoller.
+// ---------------------------------------------------------------------------
+
+/// @brief Concept for types that can be registered with `KernelPoller::add()`.
+///
+/// Every kernel-backend Pollable (`KernelTcpStream`, `KernelUdpSocket`) must
+/// satisfy this concept. Moves type errors from deep inside the `add()`
+/// lambda captures to the `add()` call site.
+template <class P>
+concept KernelPollable = requires(P& p, KernelPoller* poller) {
+    { p.fd() } noexcept -> std::convertible_to<int>;
+    { p.poll_once_() } noexcept -> std::convertible_to<std::size_t>;
+    { p.notify_attached_(poller) };
+    { p.notify_detached_() } noexcept;
+};
 
 // ---------------------------------------------------------------------------
 // KernelPoller
@@ -147,7 +165,7 @@ public:
     /// friend entry point. Those extensions live in the `KernelTcpStream` /
     /// `KernelUdpSocket` headers; when those headers are not included at the
     /// add() call site, a compile error surfaces immediately.
-    template <class P>
+    template <KernelPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* obj) noexcept {
         [[maybe_unused]] auto* log = detail::poller_logger();
         if (obj == nullptr) {
@@ -205,7 +223,7 @@ public:
     }
 
     /// @brief Unregister `obj`. Returns `InvalidConfig` if not registered.
-    template <class P>
+    template <KernelPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
         [[maybe_unused]] auto* log = detail::poller_logger();
         if (obj == nullptr) {
