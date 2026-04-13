@@ -165,6 +165,13 @@ public:
                 "DpdkUdpSocket::send_to: dst does not match configured peer "
                 "(fixed-peer UdpSender)"});
         }
+        // UDP maximum payload is 65535 bytes (uint16_t). Reject oversized
+        // payloads explicitly rather than silently truncating via cast.
+        if (data.size() > 0xFFFFu) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkUdpSocket::send_to: payload exceeds max UDP size (65535)"});
+        }
         if (!sender_.send(data.data(),
                            static_cast<uint16_t>(data.size()))) {
             return std::unexpected(core::ErrorInfo{

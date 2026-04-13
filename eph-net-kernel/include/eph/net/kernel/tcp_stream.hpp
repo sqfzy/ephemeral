@@ -146,6 +146,11 @@ struct TlsWsSink {
                 if (sr.error().code == ::eph::core::Error::WouldBlock) continue;
                 return std::unexpected(sr.error());
             }
+            if (*sr == 0) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::BufferFull,
+                    "TlsByteSocket::send: socket returned 0 bytes"});
+            }
             off += *sr;
         }
         return data.size();
@@ -711,6 +716,15 @@ private:
 
                 if (!dr->has_value()) break;  // need more plaintext
 
+                // Guard against infinite loop: codec returned a frame
+                // but did not advance the view.
+                if (consumed == 0) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "KernelTcpStream::drain_codec_(TLS): codec returned frame "
+                        "but consumed 0 bytes — breaking to avoid infinite loop");
+                    break;
+                }
+
                 const auto& frame = **dr;
                 if (frame.size() > 0) {
                     on_message(frame.data(),
@@ -744,6 +758,14 @@ private:
             reasm_.consume(consumed);
 
             if (!dr->has_value()) {
+                break;
+            }
+            // Guard against infinite loop: codec returned a frame
+            // but did not advance the view.
+            if (consumed == 0) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "KernelTcpStream::drain_codec_: codec returned frame "
+                    "but consumed 0 bytes — breaking to avoid infinite loop");
                 break;
             }
             const auto& frame = **dr;

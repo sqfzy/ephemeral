@@ -322,7 +322,7 @@ private:
         uint16_t pkt_src_port = 0, pkt_dst_port = 0;
 
         if (ip_hdr.proto == eph::dpdk::net::kIpProtoTcp) {
-            auto parsed = eph::dpdk::net::parse_packet(mbuf);
+            auto parsed = eph::dpdk::net::parse_tcp_from_ip(mbuf, ip_hdr);
             if (!parsed.tcp) return nullptr;
             pkt_src_ip   = parsed.src_ip();
             pkt_dst_ip   = parsed.dst_ip();

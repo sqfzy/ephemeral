@@ -304,6 +304,11 @@ perform_http_connect(
                         sr.error().detail);
             return std::unexpected(sr.error());
         }
+        if (*sr == 0) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::BufferFull,
+                "http_connect: ByteSink::send returned 0 bytes"});
+        }
         sent += *sr;
     }
     SPDLOG_DEBUG("http_connect: sent {}B CONNECT request", req_len);
