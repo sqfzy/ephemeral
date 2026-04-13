@@ -43,10 +43,14 @@ static_assert(eph::net::Pollable<PlainRawStream>,
               "KernelTcpStream<RawStreamCodec,false> must be Pollable");
 static_assert(eph::net::Stream<PlainRawStream>,
               "KernelTcpStream<RawStreamCodec,false> must be Stream");
+static_assert(eph::net::kernel::KernelPollable<PlainRawStream>,
+              "KernelTcpStream<RawStreamCodec,false> must be KernelPollable");
 static_assert(eph::net::Pollable<TlsRawStream>,
               "KernelTcpStream<RawStreamCodec,true> must be Pollable");
 static_assert(eph::net::Stream<TlsRawStream>,
               "KernelTcpStream<RawStreamCodec,true> must be Stream");
+static_assert(eph::net::kernel::KernelPollable<TlsRawStream>,
+              "KernelTcpStream<RawStreamCodec,true> must be KernelPollable");
 
 // ---------------------------------------------------------------------------
 // In-process TCP echo helper (same idea as test_byte_socket.cpp)

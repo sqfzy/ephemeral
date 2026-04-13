@@ -118,7 +118,7 @@ public:
     ///        Fails with `NotAttached` if the fake is not currently attached
     ///        to a poller, mirroring the contract documented in
     ///        `eph::core::Error::NotAttached`.
-    std::expected<std::size_t, core::ErrorInfo>
+    [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> data) {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
@@ -130,7 +130,7 @@ public:
     }
 
     /// @brief Flip the state to `Closed` and record a graceful close.
-    std::expected<void, core::ErrorInfo> close_gracefully() noexcept {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> close_gracefully() noexcept {
         state_ = TcpState::Closed;
         closed_gracefully_ = true;
         return {};

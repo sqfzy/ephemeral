@@ -46,6 +46,8 @@ static_assert(eph::net::Pollable<RawUdp>,
               "KernelUdpSocket<RawDatagramCodec> must be Pollable");
 static_assert(eph::net::Datagram<RawUdp>,
               "KernelUdpSocket<RawDatagramCodec> must be Datagram");
+static_assert(eph::net::kernel::KernelPollable<RawUdp>,
+              "KernelUdpSocket<RawDatagramCodec> must be KernelPollable");
 
 // ---------------------------------------------------------------------------
 // Tests
