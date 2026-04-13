@@ -169,3 +169,58 @@ TEST(TlsInPlaceDecrypt, TooShortRecordRejected) {
     std::size_t out_len = 0;
     EXPECT_FALSE(dec_r->open_in_place(tiny.data(), tiny.size(), &out_len));
 }
+
+// ─── Inner content type is correctly reported ──────────────────────────────
+
+TEST(TlsInPlaceDecrypt, InnerContentTypeReportedForAppData) {
+    auto state = make_test_hot_state();
+    auto enc_r = en::TlsEncryptor::create(state, 16);
+    ASSERT_TRUE(enc_r.has_value());
+    auto dec_r = end_::TlsInPlaceDecryptor::create(
+        state.read.ki.key, 16,
+        state.read.ki.iv,  12,
+        state.read.seq);
+    ASSERT_TRUE(dec_r.has_value());
+
+    // TlsEncryptor hardcodes inner_ct = 0x17 (application_data).
+    constexpr const char* kPlain = "app data";
+    const uint16_t pl = static_cast<uint16_t>(std::strlen(kPlain));
+    std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size(pl));
+    ASSERT_GT(enc_r->encrypt(reinterpret_cast<const uint8_t*>(kPlain), pl,
+                              rec.data()), 0u);
+
+    std::size_t out_len = 0;
+    uint8_t inner_ct = 0;
+    ASSERT_TRUE(dec_r->open_in_place(rec.data(), rec.size(), &out_len, &inner_ct));
+    EXPECT_EQ(inner_ct, 0x17) << "application_data records must have inner_ct=0x17";
+    EXPECT_EQ(out_len, pl);
+}
+
+// ─── Inner content type: null pointer safety ──────────────────────────────
+//
+// Note on "poison pill" testing: TlsEncryptor hardcodes inner_ct=0x17 and
+// AEAD prevents post-encryption tampering, so we can't forge a non-0x17
+// record at this layer. The inner_ct *filtering* (skip NewSessionTicket etc.)
+// is tested at the TlsState layer in tls_state.hpp, not here. This test
+// verifies that the inner_ct out-parameter works and that nullptr is safe.
+
+TEST(TlsInPlaceDecrypt, InnerCtNullptrDoesNotCrash) {
+    // Verify that passing inner_ct=nullptr (the default) still works.
+    auto state = make_test_hot_state();
+    auto enc_r = en::TlsEncryptor::create(state, 16);
+    ASSERT_TRUE(enc_r.has_value());
+    auto dec_r = end_::TlsInPlaceDecryptor::create(
+        state.read.ki.key, 16, state.read.ki.iv, 12, state.read.seq);
+    ASSERT_TRUE(dec_r.has_value());
+
+    constexpr const char* kPlain = "null ct test";
+    const uint16_t pl = static_cast<uint16_t>(std::strlen(kPlain));
+    std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size(pl));
+    ASSERT_GT(enc_r->encrypt(reinterpret_cast<const uint8_t*>(kPlain), pl,
+                              rec.data()), 0u);
+
+    std::size_t out_len = 0;
+    // inner_ct = nullptr (default) — must not crash.
+    ASSERT_TRUE(dec_r->open_in_place(rec.data(), rec.size(), &out_len));
+    EXPECT_EQ(out_len, pl);
+}
