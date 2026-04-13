@@ -460,6 +460,24 @@ perform_ws_handshake(
             "ws_handshake: Sec-WebSocket-Accept mismatch"});
     }
 
+    // ── 8.5. Reject server-initiated extensions (permessage-deflate etc.) ──
+    //
+    // We never send Sec-WebSocket-Extensions in the client request, so a
+    // compliant server must not enable any extensions (RFC 6455 §9.1).
+    // If the server does return an Extensions header, reject the handshake
+    // early — accepting would mean the server will send compressed frames
+    // (RSV1=1) that WsCodec cannot decode, causing silent data corruption
+    // or a delayed WsFrameBad error deep in the data path.
+    auto ext_hdr = ws_find_header(resp.headers, "Sec-WebSocket-Extensions");
+    if (ext_hdr) {
+        SPDLOG_WARN("ws_handshake: server enabled unsolicited extension(s) '{}' "
+                    "— rejecting (WsCodec does not support permessage-deflate)",
+                    std::string(*ext_hdr));
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::WsHandshakeFailed,
+            "ws_handshake: server enabled unsolicited Sec-WebSocket-Extensions"});
+    }
+
     // ── 9. Stash any over-read bytes for the caller's reasm buffer ────────
     const size_t consumed = parsed->consumed;
     if (leftover != nullptr && consumed < rx_len) {

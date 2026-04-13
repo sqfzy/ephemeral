@@ -85,10 +85,11 @@ std::string extract_sent_key(const std::vector<uint8_t>& tx) {
 // Build a well-formed 101 response with caller-supplied Accept, Upgrade,
 // and Connection values.
 std::vector<uint8_t> make_response(std::string_view accept,
-                                   std::string_view upgrade  = "websocket",
+                                   std::string_view upgrade    = "websocket",
                                    std::string_view connection = "Upgrade",
-                                   int              status    = 101,
-                                   std::string_view reason    = "Switching Protocols") {
+                                   int              status     = 101,
+                                   std::string_view reason     = "Switching Protocols",
+                                   std::string_view extensions = {}) {
     std::string s;
     s += "HTTP/1.1 " + std::to_string(status) + " ";
     s += std::string(reason);
@@ -96,6 +97,9 @@ std::vector<uint8_t> make_response(std::string_view accept,
     s += "Upgrade: ";  s += std::string(upgrade);    s += "\r\n";
     s += "Connection: "; s += std::string(connection); s += "\r\n";
     s += "Sec-WebSocket-Accept: "; s += std::string(accept); s += "\r\n";
+    if (!extensions.empty()) {
+        s += "Sec-WebSocket-Extensions: "; s += std::string(extensions); s += "\r\n";
+    }
     s += "\r\n";
     return std::vector<uint8_t>(s.begin(), s.end());
 }
@@ -416,4 +420,50 @@ TEST(WsHandshake, LeftoverBytesCapturedForCaller) {
     ASSERT_EQ(leftover.size(), 5u);
     EXPECT_EQ(leftover[0], 0xDE);
     EXPECT_EQ(leftover[4], 0xAA);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 12. Server-initiated extensions (permessage-deflate) rejected
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(WsHandshake, ServerExtensionsRejected) {
+    struct WithExt : FakeByteSink {
+        std::expected<size_t, ErrorInfo>
+        send(std::span<const uint8_t> data) noexcept {
+            auto r = FakeByteSink::send(data);
+            if (rx_script.empty()) {
+                rx_script = make_response(
+                    ws_compute_accept(extract_sent_key(tx)),
+                    "websocket", "Upgrade", 101,
+                    "Switching Protocols", "permessage-deflate");
+            }
+            return r;
+        }
+    };
+    WithExt sink;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                    std::chrono::seconds{1});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::WsHandshakeFailed);
+}
+
+TEST(WsHandshake, ServerExtensionsRejectedEvenUnknown) {
+    struct WithExt : FakeByteSink {
+        std::expected<size_t, ErrorInfo>
+        send(std::span<const uint8_t> data) noexcept {
+            auto r = FakeByteSink::send(data);
+            if (rx_script.empty()) {
+                rx_script = make_response(
+                    ws_compute_accept(extract_sent_key(tx)),
+                    "websocket", "Upgrade", 101,
+                    "Switching Protocols", "x-some-unknown-extension");
+            }
+            return r;
+        }
+    };
+    WithExt sink;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                    std::chrono::seconds{1});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::WsHandshakeFailed);
 }
