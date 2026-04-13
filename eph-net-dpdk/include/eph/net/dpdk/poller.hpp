@@ -103,8 +103,8 @@ concept DpdkPollable = requires(P& p, rte_mbuf** mbufs, uint16_t n,
                                 uint64_t tsc, DpdkPoller<void>* poller,
                                 uint32_t* ip, uint16_t* port) {
     { p.process_burst_(mbufs, n, tsc) } noexcept;
-    { p.notify_attached_(poller) };
-    { p.notify_detached_() };
+    { p.notify_attached_(poller) } noexcept;
+    { p.notify_detached_() } noexcept;
     { p.tuple_for_poller_(ip, ip, port, port) } noexcept;
 };
 

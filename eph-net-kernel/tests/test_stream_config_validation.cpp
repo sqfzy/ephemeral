@@ -432,52 +432,52 @@ TEST(StreamConfigValidation, Proxy_CreateWithBadProxyFails) {
 
 TEST(StreamConfigValidation, Tls_DefaultConfigValidates) {
     en::TlsConfig t;
-    EXPECT_TRUE(t.validate().empty());
+    EXPECT_TRUE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_ZeroHandshakeTimeoutRejected) {
     en::TlsConfig t;
     t.handshake_timeout = std::chrono::milliseconds{0};
-    EXPECT_FALSE(t.validate().empty());
+    EXPECT_FALSE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_NegativeHandshakeTimeoutRejected) {
     en::TlsConfig t;
     t.handshake_timeout = std::chrono::milliseconds{-1};
-    EXPECT_FALSE(t.validate().empty());
+    EXPECT_FALSE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_ClientCertWithoutKeyRejected) {
     en::TlsConfig t;
     t.client_cert_path = "/tmp/cert.pem";
     // key_path deliberately unset
-    EXPECT_FALSE(t.validate().empty());
+    EXPECT_FALSE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_ClientKeyWithoutCertRejected) {
     en::TlsConfig t;
     t.client_key_path = "/tmp/key.pem";
-    EXPECT_FALSE(t.validate().empty());
+    EXPECT_FALSE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_BothMtlsPathsSetAccepted) {
     en::TlsConfig t;
     t.client_cert_path = "/tmp/cert.pem";
     t.client_key_path  = "/tmp/key.pem";
-    EXPECT_TRUE(t.validate().empty());
+    EXPECT_TRUE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_EmptyHostnameAcceptedByValidate) {
     // Empty SNI is a warning, not a hard error (see tls warnings()).
     en::TlsConfig t;
     t.hostname = "";
-    EXPECT_TRUE(t.validate().empty());
+    EXPECT_TRUE(t.validate().has_value());
 }
 
 TEST(StreamConfigValidation, Tls_VerifyPeerFalseAccepted) {
     en::TlsConfig t;
     t.verify_peer = false;  // dangerous but not a validation error
-    EXPECT_TRUE(t.validate().empty());
+    EXPECT_TRUE(t.validate().has_value());
 }
 
 // ═══════════════════════════════════════════════════════════════════════

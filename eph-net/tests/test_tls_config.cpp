@@ -13,6 +13,7 @@
 
 #include <openssl/mem.h>
 
+#include "eph/core/error.hpp"
 #include "eph/net/detail/tls_constants.hpp"
 
 using namespace eph::net;
@@ -23,45 +24,52 @@ using namespace eph::net;
 
 TEST(TlsConfigValidate, DefaultConfigIsValid) {
     TlsConfig cfg;
-    EXPECT_TRUE(cfg.validate().empty());
+    EXPECT_TRUE(cfg.validate().has_value());
 }
 
 TEST(TlsConfigValidate, ZeroHandshakeTimeoutRejected) {
     TlsConfig cfg;
     cfg.handshake_timeout = std::chrono::milliseconds(0);
-    auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
-    EXPECT_NE(err.find("handshake_timeout"), std::string_view::npos);
+    auto r = cfg.validate();
+    EXPECT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view(r.error().detail).find("handshake_timeout"),
+              std::string_view::npos);
 }
 
 TEST(TlsConfigValidate, NegativeHandshakeTimeoutRejected) {
     TlsConfig cfg;
     cfg.handshake_timeout = std::chrono::milliseconds(-1);
-    auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
-    EXPECT_NE(err.find("handshake_timeout"), std::string_view::npos);
+    auto r = cfg.validate();
+    EXPECT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view(r.error().detail).find("handshake_timeout"),
+              std::string_view::npos);
 }
 
 TEST(TlsConfigValidate, ClientCertWithoutKeyRejected) {
     TlsConfig cfg;
     cfg.client_cert_path = "/some/cert.pem";
-    auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
-    EXPECT_NE(err.find("client_cert_path"), std::string_view::npos);
+    auto r = cfg.validate();
+    EXPECT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view(r.error().detail).find("client_cert_path"),
+              std::string_view::npos);
 }
 
 TEST(TlsConfigValidate, ClientKeyWithoutCertRejected) {
     TlsConfig cfg;
     cfg.client_key_path = "/some/key.pem";
-    auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
+    auto r = cfg.validate();
+    EXPECT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
 
 TEST(TlsConfigValidate, BothClientCertAndKeyAccepted) {
     TlsConfig cfg;
     cfg.client_cert_path = "/some/cert.pem";
     cfg.client_key_path = "/some/key.pem";
-    EXPECT_TRUE(cfg.validate().empty());
+    EXPECT_TRUE(cfg.validate().has_value());
 }
 
 // =======================================================================

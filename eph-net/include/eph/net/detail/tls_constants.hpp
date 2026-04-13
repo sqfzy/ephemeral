@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <functional>
 #include <string>
@@ -27,6 +28,7 @@
 
 #include "eph/core/detail/json_escape.hpp"
 #include "eph/core/detail/logger.hpp"
+#include "eph/core/error.hpp"
 
 namespace eph::net {
 
@@ -151,12 +153,19 @@ struct TlsConfig {
     /// nullptr = log warning only, continue connection (default soft-pin behavior).
     std::function<bool(std::string_view actual_hash)> on_pin_mismatch{};
 
-    /// Validate configuration, returning an error description or empty string on success.
-    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+    /// Validate configuration, returning an error on failure.
+    /// Consistent with ProxyConfig::validate() — both return
+    /// std::expected<void, ErrorInfo> for uniform error handling.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
+    validate() const noexcept {
         if (handshake_timeout.count() <= 0)
-            return "handshake_timeout must be positive";
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "TlsConfig: handshake_timeout must be positive"});
         if (client_cert_path.empty() != client_key_path.empty())
-            return "client_cert_path and client_key_path must both be set or both empty";
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "TlsConfig: client_cert_path and client_key_path must both be set or both empty"});
         return {};
     }
 
