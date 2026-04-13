@@ -6,13 +6,10 @@
 /// a UDP market data socket) on one lcore burst loop. This is the
 /// shape from the design doc Example 2.
 ///
-/// NOTE: TLS on DPDK pending Phase 7 legacy header removal (same
-/// vcpkg-openssl ↔ aws-lc TU clash that simple_hft_dpdk_v3.cpp documents).
-/// We use plain TCP here so the example builds and demonstrates the
-/// rx_dispatcher pattern without dragging in the legacy stack.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
+/// NOTE: TLS on DPDK is not yet available due to a vcpkg-openssl ↔ aws-lc
+/// TU clash (same issue documented in simple_hft_dpdk_v3.cpp). We use plain
+/// TCP here so the example builds and demonstrates the rx_dispatcher pattern
+/// without dragging in the legacy stack.
 
 #include <atomic>
 #include <chrono>

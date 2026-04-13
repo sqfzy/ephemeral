@@ -21,9 +21,6 @@
 /// (eph-net-kernel + eph-codec) with the parser/book layers
 /// (eph-json + eph-book) without dragging in the legacy
 /// `eph::net::Transport`.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>
@@ -96,8 +93,8 @@ int main(int argc, char** argv) {
     auto stream = std::move(*sr);
 
     // -- Wire the parser/book pipeline (the rest of the demo) ---------------
-    // Phase 6 keeps the parser binding intentionally minimal: we just count
-    // frames so the example demonstrates the *integration* surface. A full
+    // The parser binding is intentionally minimal: we just count frames so
+    // the example demonstrates the *integration* surface. A full
     // book-update path would call eph::json::binance::parse_book_ticker on
     // the payload and feed it into BinanceBookAdapter::apply(), which the
     // user can wire in once their target symbol is reachable.

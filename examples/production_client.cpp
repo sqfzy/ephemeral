@@ -5,9 +5,6 @@
 /// KernelTcpStream: TLS on, reconnect policy, TCP_NODELAY, bounded reasm
 /// buffer, signal-driven shutdown. No exchange-specific logic — the file
 /// is deliberately a template that a strategy can drop into.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>

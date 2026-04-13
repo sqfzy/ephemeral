@@ -1,9 +1,6 @@
 /// @file simple_hft_v3.cpp
 /// v3.3 rewrite of simple_hft.cpp using the new eph::net::kernel API.
 ///
-/// Part of Phase 6 of the v3.3 architecture refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
-///
 /// Demonstrates the target shape from the design doc's Example 1
 /// ("kernel-only user"):
 ///
@@ -13,17 +10,14 @@
 ///   4. poller->add(stream.get())                — attach
 ///   5. while (running) poller->poll(100ms);     — single driver loop
 ///
-/// The legacy simple_hft.cpp remains in place (and still builds) during
-/// Phase 6; Phase 7 deletes it alongside the eph-transport module.
-///
 /// Usage:
 ///   ./simple_hft_v3 [--host fstream.binance.com] [--port 443]
 ///                   [--symbol btcusdt] [--count 100] [--no-tls]
 ///
-/// NOTE: Because this uses the real kernel TLS path (Phase 5 wires aws-lc
-/// through detail/tls_state.hpp), the connection only succeeds when the
-/// OS trust store can validate the server certificate. Running against a
-/// non-TLS localhost echo works out of the box via `--no-tls`.
+/// NOTE: Because this uses the real kernel TLS path (aws-lc via
+/// detail/tls_state.hpp), the connection only succeeds when the OS trust
+/// store can validate the server certificate. Running against a non-TLS
+/// localhost echo works out of the box via `--no-tls`.
 
 #include <atomic>
 #include <chrono>
@@ -106,7 +100,7 @@ static int run_with_tls(const AppConfig& cfg) {
     }
     auto poller = std::move(*poller_r);
 
-    // 2) Resolve a dotted-quad for the target host. Phase 6 keeps DNS out
+    // 2) Resolve a dotted-quad for the target host. DNS is kept out
     //    of the hot path; a real HFT client would populate a cache at
     //    startup. For a smoke-boot of the example we pick the loopback
     //    address when `--host` is an IPv4 literal and otherwise bail with
@@ -120,8 +114,8 @@ static int run_with_tls(const AppConfig& cfg) {
         return 2;
     }
 
-    // 3) Build the stream. The v3.3 WS handshake itself is a Phase 5+
-    //    responsibility of the codec; for demo purposes we just open the
+    // 3) Build the stream. The v3.3 WS handshake is a responsibility of
+    //    the codec; for demo purposes we just open the
     //    socket. The design doc (Example 1) shows `ws_path` as a future
     //    StreamConfig field that the handshake helper will consume.
     typename en::StreamConfig scfg{};

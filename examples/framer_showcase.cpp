@@ -1,8 +1,8 @@
 /// @file framer_showcase_v3.cpp
 /// v3.3 rewrite of framer_showcase.cpp.
 ///
-/// Demonstrates the stateful Codec interface introduced in Phase 1 of the
-/// v3.3 refactor. All three codecs (WsCodec, RawStreamCodec,
+/// Demonstrates the stateful Codec interface from the v3.3 design. All
+/// three codecs (WsCodec, RawStreamCodec,
 /// LengthPrefixCodec) share the same
 ///
 ///     encode(buf, cap, Frame)  ->  expected<size_t, ErrorInfo>
@@ -11,9 +11,6 @@
 /// shape. This example runs entirely in-process — no sockets, no DPDK —
 /// and simply encodes a payload, then feeds the bytes back through
 /// decode() to recover it.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <cstdint>
 #include <cstdio>

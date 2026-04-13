@@ -5,21 +5,16 @@
 /// UDP 行情") shape: one DpdkPoller<> drives multiple Pollables on a single
 /// lcore loop.
 ///
-/// NOTE: TLS on DPDK pending Phase 7 legacy header removal.
-/// Phase 5 documented that the DPDK TLS path is structurally complete in
-/// `eph/net/dpdk/detail/tls_state.hpp` but cannot link in the same TU as
-/// `eph/dpdk/tcp.hpp` due to the vcpkg-openssl ↔ aws-lc symbol clash. Until
-/// Phase 7 deletes the legacy openssl dependency from `eph::dpdk::tcp.hpp`,
-/// this example uses `DpdkTcpStream<C, false>` (plain TCP) so it can build
-/// and run end-to-end. The shape is otherwise identical to the design doc
-/// Example 2.
+/// NOTE: TLS on DPDK is not yet available. The DPDK TLS path is
+/// structurally complete in `eph/net/dpdk/detail/tls_state.hpp` but cannot
+/// link in the same TU as `eph/dpdk/tcp.hpp` due to the vcpkg-openssl ↔
+/// aws-lc symbol clash. This example uses `DpdkTcpStream<C, false>` (plain
+/// TCP) so it can build and run end-to-end. The shape is otherwise identical
+/// to the design doc Example 2.
 ///
 /// Usage:
 ///   sudo ./simple_hft_dpdk_v3 -a 0000:28:00.0 -l 4-7 --
 ///        --dst-ip 10.0.0.20 --dst-port 30000
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>

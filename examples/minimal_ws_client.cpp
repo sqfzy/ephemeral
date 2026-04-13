@@ -4,9 +4,6 @@
 /// The shortest possible kernel-backed WebSocket client using the new
 /// eph::net::kernel + eph::codec API. Matches the design doc's Example 1
 /// shape line-for-line.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>

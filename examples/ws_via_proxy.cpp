@@ -7,13 +7,10 @@
 /// kernel fd, then hands the now-tunnelled fd to the stream. This
 /// example demonstrates the *target shape* — the actual proxy handshake
 /// helpers will be promoted from the legacy `eph::net::proxy::*` namespace
-/// in Phase 7. For Phase 6 we keep the example self-contained: it
-/// constructs the stream against a *direct* address, but exposes the
+/// in a future pass. For now the example is self-contained: it constructs
+/// the stream against a *direct* address, but exposes the
 /// `--proxy-host` / `--proxy-port` CLI surface so a follow-up patch
 /// only needs to drop in the helper.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>
@@ -61,7 +58,7 @@ int main(int argc, char** argv) {
     if (!proxy_host.empty()) {
         spdlog::warn(
             "ws_via_proxy_v3: proxy CLI parsed (host={}:{}, http_connect={}), "
-            "but the v3.3 proxy handshake helper is staged for Phase 7. "
+            "but the v3.3 proxy handshake helper is not yet available. "
             "Falling through to a direct connection — see the file header.",
             proxy_host, proxy_port, http_connect);
     }

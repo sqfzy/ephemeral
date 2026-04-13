@@ -10,9 +10,6 @@
 /// and run:
 ///
 ///   $ ./ws_echo_client_v3 127.0.0.1 9001
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>
