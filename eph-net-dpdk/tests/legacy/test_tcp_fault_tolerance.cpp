@@ -361,6 +361,101 @@ TEST(EalFaultTolerance, DoubleInitFlagPreventsSecondCall) {
     flag.store(prev, std::memory_order_release);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Sequence number wraparound — RST window at UINT32_MAX boundary
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(FaultTolerance, RstWindowWraparoundAtUint32Max) {
+    // rcv_nxt near UINT32_MAX, window wraps past zero. An RST just past
+    // the wrap point must be accepted as in-window.
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(/*rcv_nxt=*/0xFFFFFFFE, /*rcv_wnd=*/8192);
+
+    FakeTcpMbuf fake;
+    // Window wraps: [0xFFFFFFFE, 0xFFFFFFFE+8192) = [0xFFFFFFFE, 0x00001FFE)
+    // RST at 0x00000010 is within the wrapped window.
+    fake.build(/*seq=*/0x00000010, /*ack=*/1000, net::kTcpRst);
+
+    auto r = drive(s, fake);
+    EXPECT_FALSE(r.has_value()) << "RST in wrapped window must close";
+    EXPECT_EQ(s.state(), TcpState::Closed);
+}
+
+TEST(FaultTolerance, RstOutsideWrappedWindowIgnored) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(/*rcv_nxt=*/0xFFFFFFFE, /*rcv_wnd=*/8192);
+
+    FakeTcpMbuf fake;
+    // 0x80000000 is well outside the wrapped window — must be ignored.
+    fake.build(/*seq=*/0x80000000, /*ack=*/1000, net::kTcpRst);
+
+    auto r = drive(s, fake);
+    EXPECT_TRUE(r.has_value()) << "RST outside wrapped window must be ignored";
+    EXPECT_EQ(s.state(), TcpState::Established);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Adversarial packet parse — malformed inputs must not crash
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(FaultTolerance, ParsePacketWithZeroLengthMbuf) {
+    // A zero-length mbuf must be rejected without crashing.
+    alignas(8) uint8_t buf[1] = {0};
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = 0;
+    mbuf.pkt_len = 0;
+
+    auto parsed = net::parse_packet(&mbuf);
+    EXPECT_EQ(parsed.tcp, nullptr) << "Zero-length mbuf must fail parse";
+}
+
+TEST(FaultTolerance, ParsePacketWithTruncatedIpHeader) {
+    // Packet just long enough for Ethernet but not IP.
+    alignas(8) uint8_t buf[net::kEtherHeaderLen + 10] = {};
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = net::hton16(net::kEtherTypeIpv4);
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = net::kEtherHeaderLen + 10; // < 20 byte IP header
+    mbuf.pkt_len = mbuf.data_len;
+
+    auto parsed = net::parse_packet(&mbuf);
+    EXPECT_EQ(parsed.tcp, nullptr) << "Truncated IP header must fail parse";
+}
+
+TEST(FaultTolerance, ParsePacketWithIpTotalLengthZero) {
+    // Valid Ethernet + IP headers, but ip->total_length = 0.
+    constexpr size_t hdr_len = net::kEtherHeaderLen + 20 + 20;
+    alignas(8) uint8_t buf[hdr_len] = {};
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = net::hton16(net::kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + net::kEtherHeaderLen);
+    ip->version_ihl = (4 << 4) | 5;
+    ip->total_length = 0; // Malformed
+    ip->next_proto_id = net::kIpProtoTcp;
+
+    rte_mbuf mbuf{};
+    mbuf.buf_addr = buf;
+    mbuf.data_off = 0;
+    mbuf.data_len = hdr_len;
+    mbuf.pkt_len = hdr_len;
+
+    auto parsed = net::parse_packet(&mbuf);
+    // ip_total=0, data_start=40, data_start > ip_total → rejected.
+    EXPECT_EQ(parsed.payload, nullptr) << "ip_total=0 must produce no payload";
+}
+
 TEST(EalFaultTolerance, CleanupResetsFlag) {
     // After eal_cleanup(), the flag should be reset to allow re-init.
     // We can't actually call eal_cleanup() here (the test env owns EAL),
