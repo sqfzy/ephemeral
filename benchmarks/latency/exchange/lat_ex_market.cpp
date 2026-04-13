@@ -9,18 +9,19 @@
 ///     plus the lowercase global `mock_ip`, `warmup_samples`.
 ///   * Uses `KernelTcpStream<WsCodec, false>` with
 ///     `StreamConfig.ws_path` set — the transparent WS upgrade runs
-///     inside `create()`. Once connected we run the measurement loop by
-///     polling the stream; the client sends NOTHING after the handshake
-///     because the mock pushes frames unilaterally at `push_rate_hz`
-///     for `duration_seconds`.
+///     inside `create()`. Once connected we run the measurement
+///     loop by polling the stream; the client sends NOTHING after the
+///     handshake because the mock pushes frames unilaterally at
+///     `push_rate_hz` for `duration_seconds`.
 ///   * One-way latency is measured entirely inside `on_message`:
 ///     the client stamps `t_recv = monotonic_raw_ns()` on arrival and
 ///     extracts the server-stamped `T":<ns>` field from the JSON
-///     payload via `bench::scan_json_uint_field` (we do NOT pull
-///     eph-json into the bench path). Sample is `t_recv - t_server`.
+///     payload via `bench::scan_json_uint_field` (we do NOT
+///     pull eph-json into the bench path). Sample is `t_recv - t_server`.
 ///   * Measurement clock is `bench::monotonic_raw_ns()`
-///     (CLOCK_MONOTONIC_RAW via vDSO). The mock stamps `T` via the same
-///     clock, so the two ends share a time base on the same host.
+///     (CLOCK_MONOTONIC_RAW via vDSO). The mock stamps
+///     `T` via the same clock, so the two ends share a time base on
+///     the same host.
 ///
 /// Per-sample lifetime: `rec` and `sample_idx` are captured by reference
 /// in the `on_message` lambda. They are stack-local in main() and
@@ -37,14 +38,14 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers.
+// eph-* headers (v3.3 API only).
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DpdkTcpStream<WsCodec> real one-way bookTicker measurement. Same
-// on_message + scan_json_uint_field("T") logic as the kernel branch.
+// DpdkTcpStream<WsCodec> one-way bookTicker measurement. Same on_message +
+// scan_json_uint_field("T") logic as the kernel branch.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -212,8 +213,8 @@ int main(int argc, char** argv) {
     cfg.ws_path         = ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
 #else
-    // Transparent WS handshake: setting ws_path makes
-    // `create()` drive the HTTP/1.1 Upgrade after the TCP connect.
+    // Transparent WS handshake: setting ws_path makes `create()` drive
+    // the HTTP/1.1 Upgrade after the TCP connect.
     // At high push rates (100 kHz × 30 s ≈ 3 M samples) the reassembly
     // buffer needs enough slack to absorb multiple frames per poll —
     // 256 KiB is comfortable headroom for ~200-byte bookTicker JSONs.

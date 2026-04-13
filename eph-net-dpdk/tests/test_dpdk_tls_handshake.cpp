@@ -1,6 +1,6 @@
 /// @file test_dpdk_tls_handshake.cpp
-/// Verifies the DPDK TLS handshake path compiles end-to-end and that
-/// `create()` no longer bails out with a BLOCKER sentinel.
+/// Verifies the DPDK TLS handshake path compiles end-to-end and
+/// that `create()` no longer bails out with a blocker sentinel.
 ///
 /// We cannot actually drive a live TLS handshake from a `--no-pci` DPDK
 /// unit test because `TcpSession::connect()` requires a real peer reachable
@@ -35,22 +35,19 @@ namespace en  = eph::net;
 
 using TlsRawStream = edpk::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/true>;
 
-// Concept checks — these used to be impossible when including
-// `detail/tls_state.hpp` forced an aws-lc header into the TU that also
-// included vcpkg-openssl via `eph::dpdk::tcp.hpp`.
+// Concept checks — verify DpdkTcpStream<*, true> satisfies the v3.3 concepts.
 static_assert(en::Stream<TlsRawStream>,
               "DpdkTcpStream<*, true> must satisfy Stream");
 static_assert(en::Pollable<TlsRawStream>,
               "DpdkTcpStream<*, true> must satisfy Pollable");
 
-// `StreamConfig::tls` has to exist and be `eph::net::TlsConfig`.
+// `StreamConfig::tls` has to exist and be the v3.3 `eph::net::TlsConfig`.
 static_assert(std::is_same_v<decltype(edpk::StreamConfig{}.tls),
                               ::eph::net::TlsConfig>,
               "StreamConfig must carry an eph::net::TlsConfig field");
 
 TEST(DpdkTlsHandshake, TlsStreamCompilesAndInstantiates) {
-    // Purely a compile-time regression check — if this file builds, the
-    // aws-lc / vcpkg-openssl TU conflict is resolved.
+    // Purely a compile-time regression check.
     using S = TlsRawStream;
     static_assert(std::is_same_v<S::CodecType, ec::RawStreamCodec>);
     EXPECT_TRUE((en::Stream<S>));
@@ -65,7 +62,7 @@ TEST(DpdkTlsHandshake, CreateFailsInvalidConfigNotBlockerSentinel) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 
-    // Regression guard: the old stub emitted a BLOCKER sentinel string.
+    // Regression guard: a previous stub emitted a BLOCKER sentinel string.
     // If we ever go back to that behaviour, this assertion will catch it.
     const char* detail = r.error().detail ? r.error().detail : "";
     EXPECT_EQ(std::strstr(detail, "vcpkg-openssl"), nullptr)

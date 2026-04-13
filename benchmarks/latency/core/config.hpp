@@ -396,11 +396,13 @@ load_bench_conf() {
 
 // ─── ScenarioConfig (INI [lat_*] section parser) ────────────────────────
 //
-// Per-scenario INI sections in bench.conf. Each scenario binary reads the
-// global `CommonConfig` / `BenchConfig` values for NIC/IP/CPU layout AND
-// its own `[lat_<name>]` section for port, payload size, duration, etc.
+// Per-scenario INI sections in bench.conf. Each
+// scenario binary reads the global `CommonConfig` / `BenchConfig` values
+// for NIC/IP/CPU layout AND its own `[lat_<name>]` section for port,
+// payload size, duration, etc.
 //
-// One flat-structure bench.conf keeps config local to the scenario it
+// Rationale (D-1, D-2 in plan-phase-10-latency-bench-20260411-040540.md):
+// one flat-structure bench.conf keeps config local to the scenario it
 // drives while sharing the global layout. The old bash-style KEY=VALUE
 // format stays backwards-compatible for lines outside any `[...]` header.
 
@@ -430,10 +432,10 @@ class ScenarioConfig {
 public:
     /// Load the global (pre-section) `key = value` lines from `conf_path`.
     ///
-    /// bench.conf has lowercase global keys (`mock_ip`, `client_ip`,
-    /// `warmup_samples`, ...) BEFORE the first `[lat_*]` section header.
-    /// They are shared by every scenario binary and the Python mocks, so
-    /// each scenario reads them via this helper:
+    /// bench.conf has lowercase global keys (`mock_ip`,
+    /// `client_ip`, `warmup_samples`, ...) BEFORE the first `[lat_*]`
+    /// section header. They are shared by every scenario binary and the
+    /// Python mocks, so each scenario reads them via this helper:
     /// ```cpp
     /// auto globals = ScenarioConfig::load_globals(path).value();
     /// auto mock_ip = globals.get_string("mock_ip");

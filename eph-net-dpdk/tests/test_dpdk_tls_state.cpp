@@ -1,6 +1,6 @@
 /// @file test_dpdk_tls_state.cpp
 /// Surface tests for `DpdkTcpStream<C, true>` now that the
-/// vcpkg-openssl ↔ aws-lc TU conflict has been resolved (by deleting the
+/// vcpkg-openssl / aws-lc TU conflict has been resolved (by deleting the
 /// legacy eph-transport / eph-dpdk modules and switching `RAND_bytes` call
 /// sites to `getrandom(2)`).
 ///
@@ -38,8 +38,8 @@ namespace en  = eph::net;
 
 using TlsRawStream = edpk::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/true>;
 
-// Confirm the formal PacketView concept is satisfied at the test TU level
-// (the static_assert in mbuf_view.hpp covers the header).
+// Confirm the formal PacketView concept is satisfied at the
+// test TU level (the static_assert in mbuf_view.hpp covers the header).
 static_assert(eph::core::PacketView<edpk::detail::MbufView>,
               "MbufView must satisfy eph::core::PacketView");
 

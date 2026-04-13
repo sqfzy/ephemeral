@@ -1,6 +1,6 @@
 /// @file lat_ex_order.cpp
-/// Latency benchmark: strict one-at-a-time WebSocket order RTT against the
-/// Python echo mock `benchmarks/latency/mocks/ex_order_echo.py`.
+/// Latency benchmark: strict one-at-a-time WebSocket order RTT
+/// against the Python echo mock `benchmarks/latency/mocks/ex_order_echo.py`.
 ///
 /// Semantics:
 ///
@@ -20,7 +20,7 @@
 ///     `order_count + warmup_samples` orders completed, send error, or
 ///     SIGINT.
 ///
-/// Measurement clock: `bench::monotonic_raw_ns()`.
+/// Measurement clock: `bench::monotonic_raw_ns()` (CLOCK_MONOTONIC_RAW).
 
 #include <cstdint>
 #include <cstdio>
@@ -34,7 +34,7 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers.
+// eph-* headers (v3.3 API only).
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
@@ -165,10 +165,10 @@ int main(int argc, char** argv) {
     // is completing. Same pattern as lat_ex_market.
     //
     // Three Recorders (RTT / TX / RX). ex_order is the only scenario
-    // that carries timestamps as JSON fields
-    // (`t_client` / `t_mock_recv` / `t_mock_send`) rather than a
-    // binary 24 B prefix — WS text-ish JSON wouldn't survive a binary
-    // header, so we extract via the existing scan_json_uint_field.
+    // that carries timestamps as JSON fields (`t_client` /
+    // `t_mock_recv` / `t_mock_send`) rather than a binary 24 B prefix
+    // — WS text-ish JSON wouldn't survive a binary header, so we
+    // extract via the existing scan_json_uint_field.
     const char* backend =
 #if defined(EPH_USE_DPDK)
         "dpdk";

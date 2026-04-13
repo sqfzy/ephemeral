@@ -3,8 +3,8 @@
 /// `eph::net::tls_keygen` HKDF key derivation, `TlsHotState` structural
 /// invariants, TLS sequence-threshold constants, and SPKI pin utilities.
 ///
-/// This file covers the detail layer at `eph/net/detail/tls_constants.hpp`
-/// (originally baseline `eph-transport/tests/test_tls_config.cpp`, 47 cases).
+/// Covers the detail layer at `eph/net/detail/tls_constants.hpp`
+/// (originally `eph-transport/tests/test_tls_config.cpp`, 47 cases).
 
 #include <cstring>
 #include <string>

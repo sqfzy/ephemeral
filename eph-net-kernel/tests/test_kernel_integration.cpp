@@ -10,8 +10,8 @@
 ///   4. Send "bye" and do the same.
 ///   5. Close gracefully and verify the server thread exits.
 ///
-/// This test exercises the full data path: ByteSocket → epoll →
-/// codec decode → application callback → poll-driven send.
+/// This test exercises the full data path: ByteSocket → epoll → codec
+/// decode → application callback → poll-driven send.
 
 #include <gtest/gtest.h>
 

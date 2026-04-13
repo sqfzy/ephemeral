@@ -37,7 +37,7 @@ using McastSock = edpk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
 // Concept conformance still holds with the new method bodies.
 static_assert(en::Datagram<McastSock>,
-              "DpdkUdpSocket must satisfy Datagram concept");
+              "DpdkUdpSocket must still satisfy Datagram concept");
 
 TEST(DpdkUdpMulticast, MulticastIpRangeCheck) {
     EXPECT_TRUE(::eph::dpdk::is_multicast_ip(0xE0000001u));   // 224.0.0.1

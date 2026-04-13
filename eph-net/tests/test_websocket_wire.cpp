@@ -2,11 +2,13 @@
 /// Parser-level unit tests for the WebSocket wire encode/decode helpers
 /// (`eph::net::ws::encode_frame`, `decode_frame`, `is_valid_close_code`, etc.).
 ///
-/// These tests cover the wire helpers at `eph/net/detail/websocket.hpp` —
-/// the same helpers used by the stream-level WebSocket path. Stream-level
-/// behavioural tests live in their own files.
+/// These tests cover the header at `eph/net/detail/websocket.hpp` — the
+/// same wire helpers used by the
+/// stream-level `SocketTransport` / `Channel` WebSocket path. Stream-level
+/// behavioural tests (Transport, Channel, SocketTransport) are intentionally
+/// excluded — they live in their own files (9.8 territory).
 ///
-/// Critical regression cases preserved from baseline:
+/// Critical regression cases preserved from pre-v3.3 baseline:
 ///   * 1-byte Close-frame rejection per RFC 6455 §5.5.1 (commit 80d5a3b)
 ///   * 8-byte extended length encoding rules per RFC 6455 §5.2 (commit 3bed1b3)
 ///   * Forbidden close code handling / is_valid_close_code (commit 08dacb1)

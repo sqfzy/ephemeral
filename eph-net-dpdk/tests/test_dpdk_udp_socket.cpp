@@ -1,5 +1,5 @@
 /// @file test_dpdk_udp_socket.cpp
-/// Unit tests for `eph::net::dpdk::DpdkUdpSocket`. Covers:
+/// Unit tests for `eph::net::dpdk::DpdkUdpSocket`.
 ///
 ///   - concept conformance static_asserts (Pollable + Datagram)
 ///   - InvalidConfig surface: zero IPs, null pool

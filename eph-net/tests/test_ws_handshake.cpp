@@ -3,6 +3,7 @@
 /// in-memory ByteSink — no sockets, no threads. Covers the success path
 /// and every defined failure mode.
 
+
 #include <array>
 #include <chrono>
 #include <cstddef>

@@ -1,4 +1,5 @@
 /// @file test_transport_tls_ws_e2e_v3.cpp
+///
 /// Validates the TLS in-place decrypt path through the
 /// `KernelTcpStream<C, true>` API end-to-end against the in-process
 /// `TlsWsEchoServer` test helper.
@@ -47,9 +48,9 @@ ek::StreamConfig make_config(uint16_t port) {
     cfg.tcp_nodelay     = true;
     // TlsConfig defaults: no SNI, no system trust store. The in-process
     // test server uses a self-signed cert, so the kernel TLS path
-    // tolerates it via the same loopback shortcut the legacy test used
-    // (`verify_peer=false`). We leave it default and rely on the existing
-    // detail/tls_state.hpp behavior.
+    // tolerates it via the same loopback shortcut (`verify_peer=false`).
+    // We leave it default and rely on the existing detail/tls_state.hpp
+    // behavior.
     return cfg;
 }
 
@@ -69,10 +70,9 @@ TEST(TransportTlsWsE2EV3, TlsHandshakeCompletes) {
 
     auto sr = TlsRawStream::create(make_config(server.port()));
     if (!sr) {
-        // The TLS implementation may still fail to verify the ephemeral
-        // self-signed cert depending on the trust store policy. We
-        // GTEST_SKIP rather than fail the build so the test is
-        // informative on either codepath.
+        // May fail to verify the ephemeral self-signed cert depending
+        // on the trust store policy. We GTEST_SKIP rather than fail the
+        // build so the test is informative on either codepath.
         GTEST_SKIP() << "TLS handshake against the in-proc server failed: "
                      << sr.error().detail
                      << " (expected if TlsConfig requires explicit "

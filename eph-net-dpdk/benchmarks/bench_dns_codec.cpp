@@ -127,9 +127,8 @@ static void BM_SkipDnsName(benchmark::State& state) {
 }
 BENCHMARK(BM_SkipDnsName);
 
-// NOTE: the `resolve_hostname` microbenchmark was removed together with
-// the legacy `eph::dpdk::connector.hpp` header (which depended on the deleted
-// Transport / TransportConfig aliases). If a new home is needed for a
+// The `resolve_hostname` microbenchmark was removed together with the legacy
+// `eph::dpdk::connector.hpp` header. If a new home is needed for a
 // hostname-resolution benchmark, implement it against the kernel `getaddrinfo`
 // path instead — the DPDK module no longer owns a hostname resolver.
 

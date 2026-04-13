@@ -1,6 +1,6 @@
 /// @file test_kernel_tls_state.cpp
-/// Structural tests for `KernelTcpStream<C, true>`'s TLS path
-/// without dragging in a live TLS server.
+/// Structural tests for `KernelTcpStream<C, true>`'s TLS path without
+/// dragging in a live TLS server.
 ///
 /// What this test verifies:
 ///   1. The `EnableTls=true` template instantiation compiles for the
@@ -16,7 +16,7 @@
 ///
 /// A full handshake test would need a localhost mock TLS server (much
 /// like `eph-transport/tests/test_tls_session.cpp`). That coverage is
-/// orthogonal to these structural checks and is left to the legacy test for
+/// orthogonal to the v3.3 refactor and is left to the legacy test for
 /// the time being.
 
 #include <chrono>

@@ -1,17 +1,17 @@
 /// @file lat_ws.cpp
-/// Latency benchmark: WebSocket RTT against a kernel Python echo mock
-/// (`benchmarks/latency/mocks/ws_echo.py`).
+/// Latency benchmark: WebSocket RTT against a kernel Python echo
+/// mock (`benchmarks/latency/mocks/ws_echo.py`).
 ///
 ///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
 ///     (port / ws_path / payload_size / duration_seconds) plus the
 ///     lowercase global `mock_ip`, `warmup_samples`.
-///   * Uses `KernelTcpStream<WsCodec, false>` + `KernelPoller` API
-///     directly — no legacy eph-transport, no bespoke loopback echoer,
+///   * Uses the v3.3 `KernelTcpStream<WsCodec, false>` + `KernelPoller`
+///     API directly — no legacy eph-transport, no bespoke loopback echoer,
 ///     no raw socket() calls.
 ///   * `StreamConfig.ws_path` is set — this triggers the transparent
-///     WebSocket handshake inside `KernelTcpStream::create()`, so by the
-///     time we start the measurement loop the socket is ready to exchange
-///     WS-binary frames with the Python mock.
+///     WebSocket handshake inside `KernelTcpStream::create()`,
+///     so by the time we start the measurement loop the socket is ready
+///     to exchange WS-binary frames with the Python mock.
 ///   * Measurement clock is `bench::monotonic_raw_ns()`
 ///     (CLOCK_MONOTONIC_RAW via vDSO) — not TSC.
 ///   * Samples feed `eph::utils::Recorder::record_ns(ns)`.
@@ -39,13 +39,13 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers.
+// eph-* headers (v3.3 API only).
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DpdkTcpStream<WsCodec> real measurement loop. Structure mirrors lat_tcp
+// DpdkTcpStream<WsCodec> measurement loop. Structure mirrors lat_tcp
 // exactly with `WsCodec` + `cfg.ws_path` set so the DpdkTcpStream::create
 // path performs the RFC 6455 handshake during setup.
 #  include "eph/net/dpdk/poller.hpp"
@@ -275,11 +275,11 @@ int main(int argc, char** argv) {
     }
 
     // We must re-encode a new WS frame for every sample because the
-    // client MUST mask each frame with a fresh (or at least per-frame)
-    // masking key per RFC 6455 section 5.3, and the masking interleaves
-    // with the timestamp bytes we overwrite each sample. Re-encoding is
-    // cheap (a small memcpy + XOR over payload_size B) and keeps the
-    // protocol compliant.
+    // client MUST mask each frame with a fresh (or at
+    // least per-frame) masking key per RFC 6455 §5.3, and the masking
+    // interleaves with the timestamp bytes we overwrite each sample.
+    // Re-encoding is cheap (a small memcpy + XOR over payload_size B)
+    // and keeps the protocol compliant.
     std::vector<uint8_t> payload(payload_size, 0xAB);
     std::vector<uint8_t> frame(ec::WsCodec::max_overhead + payload_size);
     ec::WsCodec encoder{};

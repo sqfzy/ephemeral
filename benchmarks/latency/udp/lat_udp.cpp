@@ -29,8 +29,8 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DpdkUdpSocket + DpdkPoller real measurement loop (see lat_tcp for the
-// template). The DPDK poller uses 4-tuple routing, so the registered
+// DpdkUdpSocket + DpdkPoller measurement loop. The DPDK poller uses
+// 4-tuple routing, so the registered
 // legacy.src/dst_port pair must match the mock's kernel socket 2-tuple.
 // UDP echo mock (udp_echo.py) binds a listener on (mock_ip, port) and
 // responds from the SAME 4-tuple (kernel recvfrom/sendto preserves peer),
