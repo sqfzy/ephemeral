@@ -45,6 +45,7 @@
 #include <type_traits>
 
 #include <openssl/aead.h>
+#include <openssl/mem.h>     // OPENSSL_cleanse
 
 #include "eph/core/error.hpp"
 
@@ -107,6 +108,7 @@ public:
 
     ~TlsInPlaceDecryptor() {
         if (init_) EVP_AEAD_CTX_cleanup(&ctx_);
+        OPENSSL_cleanse(iv_, sizeof(iv_));
     }
 
     TlsInPlaceDecryptor(const TlsInPlaceDecryptor&)            = delete;
@@ -116,6 +118,7 @@ public:
         : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_) {
         std::memcpy(iv_, other.iv_, 12);
         other.init_ = false;
+        OPENSSL_cleanse(other.iv_, sizeof(other.iv_));
     }
     TlsInPlaceDecryptor& operator=(TlsInPlaceDecryptor&& other) noexcept {
         if (this != &other) {
@@ -124,7 +127,9 @@ public:
             init_ = other.init_;
             seq_  = other.seq_;
             std::memcpy(iv_, other.iv_, 12);
+            OPENSSL_cleanse(&other.ctx_, sizeof(other.ctx_));
             other.init_ = false;
+            OPENSSL_cleanse(other.iv_, sizeof(other.iv_));
         }
         return *this;
     }

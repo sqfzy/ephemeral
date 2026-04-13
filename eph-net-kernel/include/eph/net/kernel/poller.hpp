@@ -84,7 +84,7 @@ template <class P>
 concept KernelPollable = requires(P& p, KernelPoller* poller) {
     { p.fd() } noexcept -> std::convertible_to<int>;
     { p.poll_once_() } noexcept -> std::convertible_to<std::size_t>;
-    { p.notify_attached_(poller) };
+    { p.notify_attached_(poller) } noexcept;
     { p.notify_detached_() } noexcept;
 };
 

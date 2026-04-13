@@ -28,7 +28,7 @@ namespace eph::core {
 /// @tparam E  The type to check against ErrorEnum requirements.
 template <typename E>
 concept ErrorEnum = std::is_enum_v<E> && requires(E e) {
-    { error_name(e) } -> std::convertible_to<std::string_view>;
+    { error_name(e) } noexcept -> std::convertible_to<std::string_view>;
 };
 
 /// @brief Generic std::formatter base for any ErrorEnum type.

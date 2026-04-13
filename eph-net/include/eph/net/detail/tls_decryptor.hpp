@@ -102,7 +102,7 @@ public:
             init_ = other.init_;
             seq_ = other.seq_;
             std::memcpy(iv_, other.iv_, tls_const::kTls13NonceLen);
-            std::memset(&other.ctx_, 0, sizeof(other.ctx_));
+            OPENSSL_cleanse(&other.ctx_, sizeof(other.ctx_));
             other.init_ = false;
             OPENSSL_cleanse(other.iv_, sizeof(other.iv_));
         }

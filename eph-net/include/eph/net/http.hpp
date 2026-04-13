@@ -299,7 +299,6 @@ parse_header_block(std::span<const uint8_t> buf,
     // Cap headers at min(caller storage, kMaxHeaderCount).
     const size_t cap = std::min(header_storage.size(), kMaxHeaderCount);
 
-    bool seen_transfer_encoding = false;
     size_t cl_parsed_count = 0;
     size_t first_cl_value  = 0;
 
@@ -423,7 +422,6 @@ parse_header_block(std::span<const uint8_t> buf,
         header_storage[st.count++] = HttpHeader{name, value};
     }
 
-    (void)seen_transfer_encoding; // reserved (future: allow explicit whitelist)
     if (cl_parsed_count > 0) {
         st.has_content_length = true;
         st.content_length     = first_cl_value;
@@ -452,6 +450,33 @@ parse_header_block(std::span<const uint8_t> buf,
         if (u == '\r' || u == '\n' || u == '\0') return true;
     }
     return false;
+}
+
+/// @brief Shared header validation for HTTP builders (injection defense).
+///
+/// Both build_http_request and build_http_response perform identical checks:
+///   - header count within kMaxHeaderCount
+///   - each field-name is a valid RFC 7230 token
+///   - each field-value is free of CR/LF/NUL injection
+///
+/// Centralised here so the two builders cannot diverge on validation rules.
+[[nodiscard]] inline std::expected<void, core::ErrorInfo>
+validate_builder_headers(std::span<const HttpHeader> headers) noexcept {
+    if (headers.size() > kMaxHeaderCount) {
+        return std::unexpected(core::ErrorInfo{
+            core::Error::CodecOverflow, "too many headers (builder)"});
+    }
+    for (const auto& h : headers) {
+        if (h.name.empty() || !is_valid_token(h.name)) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad, "invalid header name (builder)"});
+        }
+        if (builder_reject_unsafe_value(h.value)) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad, "invalid header value (CRLF/NUL)"});
+        }
+    }
+    return {};
 }
 
 /// @brief Append raw bytes to `buf`, bounds-checked against `cap`.
@@ -787,19 +812,8 @@ build_http_request(
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "invalid target (CRLF/NUL/whitespace)"});
     }
-    if (headers.size() > kMaxHeaderCount) {
-        return std::unexpected(core::ErrorInfo{
-            core::Error::CodecOverflow, "too many headers (builder)"});
-    }
-    for (const auto& h : headers) {
-        if (h.name.empty() || !detail::is_valid_token(h.name)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header name (builder)"});
-        }
-        if (detail::builder_reject_unsafe_value(h.value)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header value (CRLF/NUL)"});
-        }
+    if (auto hv = detail::validate_builder_headers(headers); !hv) {
+        return std::unexpected(hv.error());
     }
 
     size_t off = 0;
@@ -855,19 +869,8 @@ build_http_response(
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "invalid reason phrase (CRLF/NUL)"});
     }
-    if (headers.size() > kMaxHeaderCount) {
-        return std::unexpected(core::ErrorInfo{
-            core::Error::CodecOverflow, "too many headers (builder)"});
-    }
-    for (const auto& h : headers) {
-        if (h.name.empty() || !detail::is_valid_token(h.name)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header name (builder)"});
-        }
-        if (detail::builder_reject_unsafe_value(h.value)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header value (CRLF/NUL)"});
-        }
+    if (auto hv = detail::validate_builder_headers(headers); !hv) {
+        return std::unexpected(hv.error());
     }
 
     size_t off = 0;

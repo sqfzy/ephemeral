@@ -47,10 +47,10 @@ template <typename T>
 concept MetricsSink = requires(T& sink,
     std::string_view name,
     std::span<const MetricTag> tags) {
-    { sink.push_counter(name, int64_t{}, tags) } -> std::same_as<void>;
-    { sink.push_gauge(name, double{}, tags) } -> std::same_as<void>;
-    { sink.push_histogram(name, double{}, tags) } -> std::same_as<void>;
-    { sink.flush() } -> std::same_as<void>;
+    { sink.push_counter(name, int64_t{}, tags) } noexcept -> std::same_as<void>;
+    { sink.push_gauge(name, double{}, tags) } noexcept -> std::same_as<void>;
+    { sink.push_histogram(name, double{}, tags) } noexcept -> std::same_as<void>;
+    { sink.flush() } noexcept -> std::same_as<void>;
 };
 
 /// @brief Zero-cost metrics sink — all methods are inline noexcept no-ops.

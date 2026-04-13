@@ -269,8 +269,8 @@ public:
 
     /// @brief Pollable native_handle — the UdpSender pointer (distinct
     ///        from a kernel fd).
-    [[nodiscard]] void* native_handle() noexcept {
-        return static_cast<void*>(&sender_);
+    [[nodiscard]] void* native_handle() const noexcept {
+        return const_cast<void*>(static_cast<const void*>(&sender_));
     }
 
     // ── Poller-facing friend hooks ───────────────────────────────────────

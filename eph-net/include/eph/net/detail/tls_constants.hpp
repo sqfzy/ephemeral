@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <functional>
 #include <string>
@@ -27,6 +28,7 @@
 
 #include "eph/core/detail/json_escape.hpp"
 #include "eph/core/detail/logger.hpp"
+#include "eph/core/error.hpp"
 
 namespace eph::net {
 
@@ -151,12 +153,19 @@ struct TlsConfig {
     /// nullptr = log warning only, continue connection (default soft-pin behavior).
     std::function<bool(std::string_view actual_hash)> on_pin_mismatch{};
 
-    /// Validate configuration, returning an error description or empty string on success.
-    [[nodiscard]] constexpr std::string_view validate() const noexcept {
+    /// Validate configuration, returning an error on failure.
+    /// Consistent with ProxyConfig::validate() — both return
+    /// std::expected<void, ErrorInfo> for uniform error handling.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
+    validate() const noexcept {
         if (handshake_timeout.count() <= 0)
-            return "handshake_timeout must be positive";
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "TlsConfig: handshake_timeout must be positive"});
         if (client_cert_path.empty() != client_key_path.empty())
-            return "client_cert_path and client_key_path must both be set or both empty";
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "TlsConfig: client_cert_path and client_key_path must both be set or both empty"});
         return {};
     }
 
@@ -299,7 +308,7 @@ namespace tls_keygen {
 /// @param[out] out   Output buffer for derived material
 /// @param out_len    Desired output length
 /// @return true on success, false on failure
-inline bool hkdf_expand_label(const EVP_MD* digest,
+[[nodiscard]] inline bool hkdf_expand_label(const EVP_MD* digest,
                                 const uint8_t* secret, size_t secret_len,
                                 const char* label, size_t label_len,
                                 uint8_t* out, size_t out_len) noexcept {
@@ -336,7 +345,7 @@ inline bool hkdf_expand_label(const EVP_MD* digest,
 /// @param[out] iv     Output IV buffer
 /// @param iv_len      Desired IV length (typically 12 for AES-GCM)
 /// @return true if both key and IV derivations succeeded
-inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
+[[nodiscard]] inline bool derive_key_iv(const uint8_t* secret, size_t secret_len,
                            uint8_t* key, size_t key_len,
                            uint8_t* iv, size_t iv_len) noexcept {
     // Only TLS 1.3's two defined hash sizes are valid here. Reject anything

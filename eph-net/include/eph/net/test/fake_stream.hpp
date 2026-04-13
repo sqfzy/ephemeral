@@ -119,7 +119,7 @@ public:
     ///        to a poller, mirroring the contract documented in
     ///        `eph::core::Error::NotAttached`.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send(std::span<const uint8_t> data) {
+    send(std::span<const uint8_t> data) noexcept {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -173,8 +173,8 @@ public:
     /// @brief Pollable concept contract — backend handle. For the fake this
     ///        is a stable pointer to the FakeStream instance itself; tests
     ///        can use it as a unique id.
-    [[nodiscard]] void* native_handle() noexcept {
-        return static_cast<void*>(this);
+    [[nodiscard]] void* native_handle() const noexcept {
+        return const_cast<void*>(static_cast<const void*>(this));
     }
 
 private:

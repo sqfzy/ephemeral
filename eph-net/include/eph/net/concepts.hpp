@@ -70,20 +70,24 @@ namespace eph::net {
 /// purposes we require only that they be callable on a non-const `T&`.
 /// Backends may relax/tighten the access control as needed; the concept
 /// cares only that the expressions are well-formed.
+///
+/// All three methods require `noexcept` — polling is the tightest inner loop
+/// and must not throw. Every existing implementation already satisfies this;
+/// the concept now enforces what the code guarantees.
 template <class T>
 concept Pollable = requires(T& t) {
     typename T::PacketView;
 
     // One I/O step; returns number of packets/frames processed.
-    { t.poll_once_() } -> std::convertible_to<std::size_t>;
+    { t.poll_once_() } noexcept -> std::convertible_to<std::size_t>;
 
     // Attachment probe: true iff currently registered with a Poller.
-    { t.is_attached_() } -> std::convertible_to<bool>;
+    { t.is_attached_() } noexcept -> std::convertible_to<bool>;
 
     // Backend-specific handle. Kernel: reinterpret as int. DPDK: conn-id /
     // mbuf-pool pointer. We type-erase via `void*` at the concept level so
     // eph-net does not leak kernel fd vs DPDK mbuf details into the waist.
-    { t.native_handle() } -> std::convertible_to<void*>;
+    { t.native_handle() } noexcept -> std::convertible_to<void*>;
 };
 
 // ---------------------------------------------------------------------------
@@ -109,12 +113,12 @@ concept Stream = Pollable<T> && requires(T& t, std::span<const uint8_t> data) {
     typename T::CodecType;
     typename T::OnMessage;
 
-    { t.send(data) }
+    { t.send(data) } noexcept
         -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
-    { t.close_gracefully() }
+    { t.close_gracefully() } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { t.is_attached() } -> std::convertible_to<bool>;
-    { t.state() }       -> std::same_as<TcpState>;
+    { t.is_attached() } noexcept -> std::convertible_to<bool>;
+    { t.state() } noexcept      -> std::same_as<TcpState>;
 
     // on_message must be a member field (or ref-returning accessor) convertible
     // to the associated OnMessage type. We require it be a modifiable target so
@@ -142,13 +146,13 @@ concept Datagram = Pollable<T> && requires(T& t,
     typename T::CodecType;
     typename T::OnDatagram;
 
-    { t.send_to(data, dst) }
+    { t.send_to(data, dst) } noexcept
         -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
-    { t.join_multicast(mcast) }
+    { t.join_multicast(mcast) } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { t.leave_multicast(mcast) }
+    { t.leave_multicast(mcast) } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { t.is_attached() } -> std::convertible_to<bool>;
+    { t.is_attached() } noexcept -> std::convertible_to<bool>;
     { t.on_datagram }   -> std::convertible_to<typename T::OnDatagram>;
 };
 
@@ -175,11 +179,8 @@ concept Datagram = Pollable<T> && requires(T& t,
 /// `eph::net::test::FakeStream` signature by constraining via a helper
 /// `Pollable` template parameter `P` inside the `requires` clause.
 template <class T>
-concept Poller = requires(T& p, std::chrono::milliseconds to) {
-    // We probe the add/remove/poll shape with a nullptr-typed void** to avoid
-    // hard-coding a specific Pollable type. Real callers will instantiate the
-    // add/remove templates with their own Pollable type at the call site.
-    { p.poll() } -> std::convertible_to<std::size_t>;
+concept Poller = requires(T& p) {
+    { p.poll() } noexcept -> std::convertible_to<std::size_t>;
 };
 
 /// @brief Concept-level probe that `P` can register a specific `Pollable`
@@ -192,8 +193,8 @@ concept Poller = requires(T& p, std::chrono::milliseconds to) {
 /// function-parameter constraint without knowing the Pollable type.
 template <class T, class Obj>
 concept PollerOf = Poller<T> && Pollable<Obj> && requires(T& p, Obj* obj) {
-    { p.add(obj) }    -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { p.remove(obj) } -> std::same_as<std::expected<void, core::ErrorInfo>>;
+    { p.add(obj) } noexcept    -> std::same_as<std::expected<void, core::ErrorInfo>>;
+    { p.remove(obj) } noexcept -> std::same_as<std::expected<void, core::ErrorInfo>>;
 };
 
 } // namespace eph::net

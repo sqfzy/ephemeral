@@ -626,6 +626,7 @@ public:
         // Get read (server->client) traffic secret
         uint8_t read_secret[64]; size_t rs_len = sizeof(read_secret);
         if (!SSL_get_read_traffic_secret(ssl_, read_secret, &rs_len)) {
+            OPENSSL_cleanse(write_secret, sizeof(write_secret));
             return std::unexpected("SSL_get_read_traffic_secret failed");
         }
 
@@ -634,12 +635,16 @@ public:
         if (!tls_keygen::derive_key_iv(write_secret, ws_len,
                 state.write.ki.key, key_len,
                 state.write.ki.iv, tls_const::kTls13NonceLen)) {
+            OPENSSL_cleanse(write_secret, sizeof(write_secret));
+            OPENSSL_cleanse(read_secret, sizeof(read_secret));
             return std::unexpected("HKDF derive failed for write key");
         }
 
         if (!tls_keygen::derive_key_iv(read_secret, rs_len,
                 state.read.ki.key, key_len,
                 state.read.ki.iv, tls_const::kTls13NonceLen)) {
+            OPENSSL_cleanse(write_secret, sizeof(write_secret));
+            OPENSSL_cleanse(read_secret, sizeof(read_secret));
             return std::unexpected("HKDF derive failed for read key");
         }
 
