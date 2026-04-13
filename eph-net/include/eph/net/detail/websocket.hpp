@@ -24,10 +24,11 @@
 #include <format>
 #include <string>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <sys/random.h>  // getrandom(2) for CSPRNG
+
+#include "eph/core/detail/logger.hpp"
 
 namespace eph::net::ws {
 
@@ -181,12 +182,8 @@ namespace detail {
 
 /// @return Pointer to the "transport.websocket" spdlog logger.
 inline spdlog::logger* ws_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("transport.websocket");
-        if (!lg) lg = spdlog::stdout_color_mt("transport.websocket");
-        return lg;
-    }();
-    return l.get();
+    static auto* l = ::eph::core::detail::make_logger("transport.websocket");
+    return l;
 }
 
 } // namespace detail

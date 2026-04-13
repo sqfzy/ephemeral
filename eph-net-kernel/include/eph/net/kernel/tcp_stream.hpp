@@ -37,8 +37,8 @@
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
@@ -59,17 +59,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel TcpStream subsystem.
 inline spdlog::logger* tcp_stream_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.kernel.tcp_stream");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.kernel.tcp_stream");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.kernel.tcp_stream");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.kernel.tcp_stream");
     return l;
 }
 

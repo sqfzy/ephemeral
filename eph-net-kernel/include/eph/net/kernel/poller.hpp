@@ -50,8 +50,8 @@
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/kernel/config.hpp"
@@ -62,17 +62,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel poller subsystem.
 inline spdlog::logger* poller_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.kernel.poller");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.kernel.poller");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.kernel.poller");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.kernel.poller");
     return l;
 }
 

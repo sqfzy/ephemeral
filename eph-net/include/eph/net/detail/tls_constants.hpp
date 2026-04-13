@@ -19,7 +19,6 @@
 #include <string_view>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <openssl/evp.h>
@@ -27,6 +26,7 @@
 #include <openssl/mem.h>     // OPENSSL_cleanse
 
 #include "eph/core/detail/json_escape.hpp"
+#include "eph/core/detail/logger.hpp"
 
 namespace eph::net {
 
@@ -36,12 +36,8 @@ using eph::core::detail::json_escape;
 /// Lazily-initialized logger for TLS record-layer operations.
 /// @return Pointer to the "transport.tls_record" spdlog logger.
 inline spdlog::logger* tls_record_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("transport.tls_record");
-        if (!lg) lg = spdlog::stdout_color_mt("transport.tls_record");
-        return lg;
-    }();
-    return l.get();
+    static auto* l = ::eph::core::detail::make_logger("transport.tls_record");
+    return l;
 }
 } // namespace detail
 

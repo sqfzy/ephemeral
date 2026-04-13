@@ -23,7 +23,6 @@
 #include <thread>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <openssl/bio.h>
@@ -33,6 +32,7 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>    // X509_get_X509_PUBKEY, i2d_X509_PUBKEY
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/net/detail/tls_constants.hpp"
 
 namespace eph::net {
@@ -45,12 +45,8 @@ namespace detail {
 
 /// @return Pointer to the "transport.tls" spdlog logger.
 inline spdlog::logger* tls_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("transport.tls");
-        if (!lg) lg = spdlog::stdout_color_mt("transport.tls");
-        return lg;
-    }();
-    return l.get();
+    static auto* l = ::eph::core::detail::make_logger("transport.tls");
+    return l;
 }
 
 /// Get the last OpenSSL error as a string.

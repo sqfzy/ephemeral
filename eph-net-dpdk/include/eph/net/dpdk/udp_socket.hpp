@@ -38,8 +38,8 @@
 #include <rte_mbuf.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/dpdk/multicast.hpp"   // multicast_mac_from_ip helper
@@ -57,17 +57,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the DPDK UDP socket subsystem.
 inline spdlog::logger* udp_socket_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.dpdk.udp");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.dpdk.udp");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.dpdk.udp");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.dpdk.udp_socket");
     return l;
 }
 

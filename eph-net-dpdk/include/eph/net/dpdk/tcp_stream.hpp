@@ -36,8 +36,8 @@
 #include <rte_mbuf.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/dpdk/packet_parse.hpp"
@@ -62,17 +62,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the DPDK TCP stream subsystem.
 inline spdlog::logger* tcp_stream_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.dpdk.tcp_stream");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.dpdk.tcp_stream");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.dpdk.tcp_stream");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.dpdk.tcp_stream");
     return l;
 }
 

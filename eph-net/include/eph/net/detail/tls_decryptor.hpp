@@ -12,13 +12,13 @@
 #include <string>
 #include <type_traits>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <openssl/aead.h>
 #include <openssl/err.h>
 #include <openssl/mem.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/net/detail/tls_constants.hpp"
 
 namespace eph::net {
@@ -27,12 +27,8 @@ namespace detail {
 /// Lazily-initialized logger for TLS decryption operations.
 /// @return Pointer to the "transport.tls_dec" spdlog logger.
 inline spdlog::logger* tls_dec_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("transport.tls_dec");
-        if (!lg) lg = spdlog::stdout_color_mt("transport.tls_dec");
-        return lg;
-    }();
-    return l.get();
+    static auto* l = ::eph::core::detail::make_logger("transport.tls_dec");
+    return l;
 }
 } // namespace detail
 
