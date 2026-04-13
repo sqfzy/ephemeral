@@ -727,9 +727,7 @@ private:
 
                 const auto& frame = **dr;
                 if (frame.size() > 0) {
-                    on_message(frame.data(),
-                               static_cast<uint16_t>(
-                                   frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
+                    on_message(frame.data(), saturate_u16(frame.size()));
                     ++delivered;
                 }
             }
@@ -770,9 +768,7 @@ private:
             }
             const auto& frame = **dr;
             if (frame.size() > 0) {
-                on_message(frame.data(),
-                           static_cast<uint16_t>(
-                               frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
+                on_message(frame.data(), saturate_u16(frame.size()));
                 ++delivered;
             }
         }

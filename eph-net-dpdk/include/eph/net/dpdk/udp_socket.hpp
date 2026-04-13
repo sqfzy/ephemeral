@@ -341,10 +341,7 @@ public:
 
             auto sink = [&](auto&& frame) {
                 if (frame.size() > 0 && on_datagram) {
-                    on_datagram(frame.data(),
-                                static_cast<uint16_t>(
-                                    frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()),
-                                src_addr);
+                    on_datagram(frame.data(), saturate_u16(frame.size()), src_addr);
                 }
             };
             auto dr = codec_.decode(view, out_sink, sink);
