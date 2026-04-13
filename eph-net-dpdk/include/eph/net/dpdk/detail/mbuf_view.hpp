@@ -58,7 +58,7 @@ public:
             if (data_) data_ += length_;
             length_ = 0;
         } else {
-            data_  += n;
+            if (data_) data_ += n;
             length_ -= n;
         }
     }

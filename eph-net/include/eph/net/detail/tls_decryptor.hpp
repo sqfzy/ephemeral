@@ -118,9 +118,11 @@ public:
     /// @param record_len   Total record length
     /// @param out          Output buffer for decrypted plaintext
     /// @param[out] out_len Actual decrypted plaintext length (excluding content type)
+    /// @param[out] inner_ct  TLS 1.3 inner content type byte. May be nullptr.
     /// @return true on success, false on decryption/authentication failure
     [[nodiscard]] bool decrypt(const uint8_t* record, uint16_t record_len,
-                 uint8_t* out, uint16_t& out_len) noexcept {
+                 uint8_t* out, uint16_t& out_len,
+                 uint8_t* inner_ct = nullptr) noexcept {
         if (!record || !out) [[unlikely]] {
             SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
                 "decrypt: null pointer — record={}, out={}",
@@ -196,6 +198,7 @@ public:
 
         // TLS 1.3: last byte of decrypted data is the inner content type — strip it
         if (plaintext_len > 0) {
+            if (inner_ct) *inner_ct = out[plaintext_len - 1];
             plaintext_len--;
         }
 

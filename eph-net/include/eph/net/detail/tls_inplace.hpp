@@ -140,10 +140,15 @@ public:
     /// @param[out] plaintext_len  Plaintext length on success (never counts
     ///                  the TLS 1.3 inner content-type trailing byte, which
     ///                  is stripped).
+    /// @param[out] inner_ct  TLS 1.3 inner content type (the last byte of
+    ///                  the decrypted plaintext). 23 = application_data,
+    ///                  22 = handshake (e.g. NewSessionTicket), 21 = alert.
+    ///                  May be nullptr if the caller does not need it.
     /// @return true on success, false on auth tag mismatch or malformed input.
     [[nodiscard]] bool
     open_in_place(uint8_t* buf, std::size_t record_len,
-                   std::size_t* plaintext_len) noexcept {
+                   std::size_t* plaintext_len,
+                   uint8_t* inner_ct = nullptr) noexcept {
         if (!buf || !plaintext_len) return false;
         constexpr std::size_t kHdr  = 5;
         constexpr std::size_t kTag  = 16;
@@ -178,11 +183,14 @@ public:
             return false;
         }
 
-        // TLS 1.3: strip the trailing inner content-type byte.
+        // TLS 1.3: the last byte of decrypted plaintext is the inner
+        // content-type (RFC 8446 §5.2). Strip it and optionally report.
         if (out_len == 0) return false;
+        const uint8_t ct = buf[kHdr + out_len - 1];
         out_len--;
 
         *plaintext_len = out_len;
+        if (inner_ct) *inner_ct = ct;
         ++seq_;
         return true;
     }

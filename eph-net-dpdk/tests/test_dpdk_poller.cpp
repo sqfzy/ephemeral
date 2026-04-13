@@ -103,6 +103,14 @@ struct SyntheticPollableB {
 // Tests
 // ---------------------------------------------------------------------------
 
+TEST(DpdkPoller, PollerConfigDefaults) {
+    edpk::PollerConfig cfg{};
+    EXPECT_EQ(cfg.port_id, 0);
+    EXPECT_EQ(cfg.rx_queue_id, 0);
+    EXPECT_EQ(cfg.rx_cpu, -1);
+    EXPECT_EQ(cfg.initial_capacity, 16u);
+}
+
 TEST(DpdkPoller, CreateDestroyEmpty) {
     auto p = edpk::DpdkPoller<>::create({});
     ASSERT_TRUE(p.has_value()) << p.error().detail;

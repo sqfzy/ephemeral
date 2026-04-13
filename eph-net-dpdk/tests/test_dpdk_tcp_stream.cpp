@@ -22,6 +22,7 @@
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
+#include "eph/net/proxy.hpp"
 
 namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
@@ -97,4 +98,33 @@ TEST(DpdkTcpStream, TlsTypeIsAvailable) {
     // the test binary's symbol table for debugging.
     using S = TlsRawStream;
     EXPECT_TRUE((eph::net::Stream<S>));
+}
+
+TEST(DpdkTcpStream, ProxyConfigRejectedWithInvalidConfig) {
+    auto cfg = make_config_with_pool(nullptr);  // pool doesn't matter, proxy is checked after pool
+    cfg.pool = reinterpret_cast<::rte_mempool*>(0xDEAD);  // non-null placeholder
+    cfg.proxy = eph::net::ProxyConfig{"proxy.example.com", 8080};
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(DpdkTcpStream, DefaultStreamConfigHasNoProxy) {
+    edpk::StreamConfig cfg{};
+    EXPECT_FALSE(cfg.proxy.has_value());
+}
+
+TEST(DpdkTcpStream, DefaultStreamConfigHasEmptyWsPath) {
+    edpk::StreamConfig cfg{};
+    EXPECT_TRUE(cfg.ws_path.empty());
+}
+
+TEST(DpdkTcpStream, DefaultReconnectPolicyIsDefault) {
+    edpk::StreamConfig cfg{};
+    EXPECT_EQ(cfg.connect_timeout.count(), 3000);
+}
+
+TEST(DpdkTcpStream, DefaultReasmCapacityIs256K) {
+    edpk::StreamConfig cfg{};
+    EXPECT_EQ(cfg.reasm_capacity, 256u * 1024u);
 }

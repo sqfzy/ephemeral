@@ -171,16 +171,27 @@ public:
             if (len - consumed < total) break;  // partial record
 
             std::size_t plaintext_len = 0;
+            uint8_t inner_ct = 0;
             // ★ ZERO-COPY in-place AEAD: input == output == rec+5.
-            if (!dec_->open_in_place(rec, total, &plaintext_len)) {
+            if (!dec_->open_in_place(rec, total, &plaintext_len, &inner_ct)) {
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::TlsCipherFailed,
                     "TlsState::process_records_in_place: AEAD open failed"});
             }
-            // Hand the plaintext window to the codec via the emit callback.
-            // The pointer aliases into `buf` so the caller MUST consume it
-            // before the next call to process_records_in_place.
-            emit(rec + ::eph::net::tls_record::kRecordHeaderLen, plaintext_len);
+            // TLS 1.3 inner content type filter (RFC 8446 §5.2):
+            //   0x17 (23) = application_data → emit to codec
+            //   0x16 (22) = handshake (NewSessionTicket, KeyUpdate) → skip
+            //   0x15 (21) = alert → skip (connection will close via TCP)
+            // Only application data reaches the codec; post-handshake control
+            // messages are silently consumed to keep the sequence counter in
+            // sync without corrupting the application byte stream.
+            if (inner_ct == 0x17 && plaintext_len > 0) {
+                emit(rec + ::eph::net::tls_record::kRecordHeaderLen, plaintext_len);
+            } else {
+                SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                    "TlsState: skipping non-appdata record inner_ct={:#x} len={}",
+                    inner_ct, plaintext_len);
+            }
 
             consumed += total;
         }

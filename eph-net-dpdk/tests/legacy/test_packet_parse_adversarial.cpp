@@ -303,7 +303,10 @@ TEST(PacketParseAdv, UdpZeroPayloadAccepted) {
     auto parsed = parse_udp_packet(&mbuf);
     ASSERT_NE(parsed.udp, nullptr);
     EXPECT_EQ(parsed.payload_len, 0);
-    EXPECT_EQ(parsed.payload, nullptr);
+    // payload pointer must be non-null even for zero-length datagrams
+    // (points past the UDP header), so callers can distinguish "zero-len
+    // payload" from "parse failed" via the udp field alone.
+    EXPECT_NE(parsed.payload, nullptr);
 }
 
 TEST(PacketParseAdv, UdpWithIpOptionsAccepted) {

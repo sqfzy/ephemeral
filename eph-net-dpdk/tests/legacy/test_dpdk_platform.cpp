@@ -623,3 +623,89 @@ TEST(PlatformConfigWarnings, ZeroLinkTimeout) {
     }
     EXPECT_TRUE(found) << "Expected zero link timeout warning";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate_config — constexpr validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ValidateConfig, ValidDefaultPasses) {
+    constexpr PlatformConfig cfg{};
+    constexpr auto err = validate_config(cfg);
+    static_assert(err.empty(), "Default PlatformConfig must be valid");
+    EXPECT_TRUE(err.empty());
+}
+
+TEST(ValidateConfig, ZeroRxQueuesRejected) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 0;
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, ZeroTxQueuesRejected) {
+    PlatformConfig cfg{};
+    cfg.nb_tx_queues = 0;
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, ZeroRxDescRejected) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_desc = 0;
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, ZeroTxDescRejected) {
+    PlatformConfig cfg{};
+    cfg.nb_tx_desc = 0;
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, NegativeLinkTimeoutRejected) {
+    PlatformConfig cfg{};
+    cfg.link_timeout_ms = -1;
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, NonPowerOfTwoMinusOnePoolRejected) {
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size = 1024;  // 2^10, not 2^10-1
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, CacheSizeExceedsPoolRejected) {
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size  = 1023;
+    cfg.mbuf_cache_size = 1023;  // cache >= pool
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, CacheSizeLargerThanPoolRejected) {
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size  = 255;
+    cfg.mbuf_cache_size = 256;  // cache > pool
+    EXPECT_FALSE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, CacheSizeSmallerThanPoolPasses) {
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size  = 4095;
+    cfg.mbuf_cache_size = 256;
+    EXPECT_TRUE(validate_config(cfg).empty());
+}
+
+TEST(ValidateConfig, ConfigOkCompileTime) {
+    // The test_config at the top of this file proves compile-time validation
+    // works. Here we verify the runtime path agrees.
+    EXPECT_TRUE(config_ok(test_config));
+}
+
+TEST(ValidateConfig, ValidPoolSizesAccepted) {
+    for (uint32_t pool : {1u, 3u, 7u, 15u, 31u, 63u, 127u, 255u,
+                          511u, 1023u, 2047u, 4095u, 8191u}) {
+        PlatformConfig cfg{};
+        cfg.mbuf_pool_size  = pool;
+        cfg.mbuf_cache_size = std::min(static_cast<uint16_t>(pool - 1),
+                                        static_cast<uint16_t>(256));
+        EXPECT_TRUE(validate_config(cfg).empty())
+            << "pool_size=" << pool << " should be valid";
+    }
+}

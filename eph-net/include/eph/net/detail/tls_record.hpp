@@ -68,10 +68,12 @@ struct TlsRecordCrypto {
     /// @param record_len   Total record length
     /// @param out          Output buffer for decrypted plaintext
     /// @param[out] out_len Actual decrypted plaintext length
+    /// @param[out] inner_ct  TLS 1.3 inner content type byte. May be nullptr.
     /// @return true on success, false on decryption/authentication failure
     [[nodiscard]] bool decrypt(const uint8_t* record, uint16_t record_len,
-                 uint8_t* out, uint16_t& out_len) noexcept {
-        return dec.decrypt(record, record_len, out, out_len);
+                 uint8_t* out, uint16_t& out_len,
+                 uint8_t* inner_ct = nullptr) noexcept {
+        return dec.decrypt(record, record_len, out, out_len, inner_ct);
     }
 
     /// Compute output size for encrypting a given plaintext length.

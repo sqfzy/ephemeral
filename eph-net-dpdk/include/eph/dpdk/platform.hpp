@@ -220,6 +220,9 @@ struct PlatformConfig {
     if (cfg.link_timeout_ms < 0) return "link_timeout_ms must be >= 0";
     if (!detail::is_power_of_two_minus_one(cfg.mbuf_pool_size))
         return "mbuf_pool_size must be 2^n - 1 (e.g. 1023, 4095, 8191)";
+    // DPDK rte_pktmbuf_pool_create requires cache_size < pool_size.
+    if (cfg.mbuf_cache_size >= cfg.mbuf_pool_size)
+        return "mbuf_cache_size must be less than mbuf_pool_size";
     return {};
 }
 

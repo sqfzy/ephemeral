@@ -256,14 +256,24 @@ public:
             const std::size_t out_off = out.size();
             out.resize(out_off + payload_len);
             uint16_t plaintext_len = 0;
+            uint8_t  inner_ct = 0;
             if (!crypto_->decrypt(rec, static_cast<uint16_t>(total),
-                                   out.data() + out_off, plaintext_len)) {
+                                   out.data() + out_off, plaintext_len,
+                                   &inner_ct)) {
                 out.resize(out_off);  // unwind on failure
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::TlsCipherFailed,
                     "TlsState::process_records: TLS decrypt failed"});
             }
-            out.resize(out_off + plaintext_len);
+            // TLS 1.3 inner content type filter (RFC 8446 §5.2):
+            // Only application_data (0x17) reaches the codec. Post-handshake
+            // control messages (NewSessionTicket=0x16, alerts=0x15) are
+            // silently consumed to keep the sequence counter in sync.
+            if (inner_ct == 0x17) {
+                out.resize(out_off + plaintext_len);
+            } else {
+                out.resize(out_off);  // discard non-appdata plaintext
+            }
             consumed += total;
         }
         return consumed;

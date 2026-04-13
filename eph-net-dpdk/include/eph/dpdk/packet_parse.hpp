@@ -69,6 +69,8 @@ struct ParsedIpHeader {
     if ((ip->version_ihl >> 4) != 4) return {};
     uint8_t ihl = (ip->version_ihl & 0x0F) << 2;
     if (ihl < kIpv4HeaderLen) return {};
+    // Validate IHL against actual packet length (defense in depth).
+    if (kEtherHeaderLen + ihl > pkt_len) return {};
 
     return {.eth = eth, .ip = ip, .ihl = ihl, .proto = ip->next_proto_id};
 }
@@ -182,7 +184,9 @@ parse_tcp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
 
     auto* tcp = reinterpret_cast<const rte_tcp_hdr*>(data + tcp_offset);
     uint8_t tcp_doff = (tcp->data_off >> 4) << 2;
-    if (tcp_doff < kTcpHeaderLen) return {};
+    if (tcp_doff < kTcpHeaderLen || tcp_doff > 60) return {};
+    // Validate that the full TCP header (with options) fits in the packet.
+    if (tcp_offset + tcp_doff > pkt_len) return {};
 
     ParsedPacket result;
     result.eth = ip_hdr.eth;
@@ -295,9 +299,9 @@ parse_udp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
 
     uint16_t payload_offset = udp_offset + kUdpHeaderLen;
     result.payload_len = udp_len - kUdpHeaderLen;
-    if (result.payload_len > 0) {
-        result.payload = data + payload_offset;
-    }
+    // Always set payload pointer — even for zero-length datagrams (RFC 768).
+    // Callers distinguish "no payload" (valid) from "parse failed" (null udp).
+    result.payload = data + payload_offset;
 
     return result;
 }

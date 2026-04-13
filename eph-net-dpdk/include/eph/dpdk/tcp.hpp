@@ -648,6 +648,16 @@ public:
                 "Payload too large: {} > MSS {}", len, config_.mss));
         }
 
+        // HFT design: we intentionally do NOT block on a zero send window.
+        // The application is expected to self-regulate send rate. However,
+        // exceeding the peer's advertised window is logged at DEBUG level
+        // so it surfaces in debug builds without polluting release perf.
+        if (snd_wnd_ > 0 && len > snd_wnd_) {
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "send: payload {} exceeds peer window {} (snd_una={}, snd_nxt={})",
+                len, snd_wnd_, snd_una_, snd_nxt_);
+        }
+
         // Outgoing data packet carries the latest cumulative ACK number
         // (rcv_nxt_), so any deferred ACK is now satisfied. Clear the
         // pending-ACK timestamp to skip the next bare ACK emission in
@@ -1194,7 +1204,7 @@ public:
         ++stats_.rx_bursts;
         // Capture TSC right after rx_burst — matches SocketTransport's
         // post-recvmsg() timing for fair cross-backend latency comparison.
-        last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_relaxed);
+        last_rx_burst_tsc_.store(eph::utils::TSC::now(), std::memory_order_release);
         return process_rx(pkts, nb_rx, std::forward<F>(data_callback));
     }
 
