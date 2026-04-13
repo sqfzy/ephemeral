@@ -363,7 +363,7 @@ public:
     [[nodiscard]] bool is_open() const noexcept { return fd_ >= 0; }
 
     /// @brief Enable / disable TCP_NODELAY on the open fd.
-    std::expected<void, core::ErrorInfo> set_no_delay(bool enable) noexcept {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> set_no_delay(bool enable) noexcept {
         if (fd_ < 0) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
