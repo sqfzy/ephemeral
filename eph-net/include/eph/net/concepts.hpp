@@ -179,10 +179,7 @@ concept Datagram = Pollable<T> && requires(T& t,
 /// `eph::net::test::FakeStream` signature by constraining via a helper
 /// `Pollable` template parameter `P` inside the `requires` clause.
 template <class T>
-concept Poller = requires(T& p, std::chrono::milliseconds to) {
-    // We probe the add/remove/poll shape with a nullptr-typed void** to avoid
-    // hard-coding a specific Pollable type. Real callers will instantiate the
-    // add/remove templates with their own Pollable type at the call site.
+concept Poller = requires(T& p) {
     { p.poll() } noexcept -> std::convertible_to<std::size_t>;
 };
 
