@@ -51,10 +51,11 @@ public:
     [[nodiscard]] std::size_t length() const noexcept { return length_; }
 
     /// @brief Advance the head cursor by `n` bytes (skb_pull equivalent).
-    ///        If `n` exceeds `length_` the view becomes empty.
+    ///        If `n` exceeds `length_` the view becomes empty. Safe on a
+    ///        default-constructed (null) view — avoids nullptr arithmetic UB.
     void trim_front(std::size_t n) noexcept {
         if (n >= length_) {
-            data_  += length_;
+            if (data_) data_ += length_;
             length_ = 0;
         } else {
             data_  += n;

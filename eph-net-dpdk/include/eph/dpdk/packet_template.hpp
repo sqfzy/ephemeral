@@ -88,7 +88,16 @@ struct PacketTemplate {
         // being dropped by middleboxes that expect standard TCP options.
         const bool is_syn = (flags & kTcpSyn) != 0;
         const uint16_t tcp_hdr_len = is_syn ? kSynTcpHeaderLen : kTcpHeaderLen;
-        const uint16_t total_len = kEtherHeaderLen + kIpv4HeaderLen + tcp_hdr_len + payload_len;
+        // Use uint32_t for the addition to prevent uint16_t overflow when
+        // payload_len is close to UINT16_MAX. Then validate the result fits
+        // in a uint16_t (max Ethernet frame) before allocating the mbuf.
+        const uint32_t total_len32 = static_cast<uint32_t>(kEtherHeaderLen)
+                                   + kIpv4HeaderLen + tcp_hdr_len + payload_len;
+        if (total_len32 > UINT16_MAX) [[unlikely]] {
+            rte_pktmbuf_free(mbuf);
+            return nullptr;
+        }
+        const uint16_t total_len = static_cast<uint16_t>(total_len32);
 
         auto* pkt = reinterpret_cast<uint8_t*>(
             rte_pktmbuf_append(mbuf, total_len));

@@ -988,7 +988,8 @@ public:
 
                     if (seq_after(seg_seq, rcv_nxt_) &&
                         reorder_count_ < ReorderSlots &&
-                        parsed.payload_len <= net::kDefaultMss) {
+                        parsed.payload_len <= net::kDefaultMss &&
+                        parsed.payload != nullptr) {
                         // Future segment — buffer it
                         stats_.reorder_hits++;
                         auto& entry = reorder_buf_[reorder_count_++];
@@ -1018,7 +1019,7 @@ public:
                 }
 
                 // Process in-order data payload
-                if (parsed.payload_len > 0) {
+                if (parsed.payload_len > 0 && parsed.payload != nullptr) {
                     std::invoke(std::forward<F>(data_callback),
                                 parsed.payload, parsed.payload_len);
                     rcv_nxt_ += parsed.payload_len;
@@ -1039,15 +1040,20 @@ public:
             // retransmit the FIN once the gap is filled and rcv_nxt_ advances.
             if (parsed.has_flag(net::kTcpFin)) {
                 if (parsed.seq() == rcv_nxt_) {
-                    rcv_nxt_++; // FIN consumes one sequence number
-                    need_ack = true;
-
+                    // Only advance rcv_nxt_ and ACK for states where a FIN
+                    // is expected. Incrementing the sequence counter in an
+                    // unexpected state (e.g. CloseWait where we already
+                    // consumed the peer's FIN) would desync the connection.
                     switch (state_) {
                         case TcpState::Established:
+                            rcv_nxt_++;
+                            need_ack = true;
                             SPDLOG_LOGGER_DEBUG(log, "Received FIN in ESTABLISHED");
                             state_ = TcpState::CloseWait;
                             break;
                         case TcpState::FinWait1:
+                            rcv_nxt_++;
+                            need_ack = true;
                             if (parsed.has_flag(net::kTcpAck)) {
                                 // FIN+ACK: peer acknowledged our FIN and sent its own.
                                 // Simultaneous close completes — RFC 793 §3.5 FIN_WAIT_1 → TIME_WAIT.
@@ -1062,6 +1068,8 @@ public:
                             }
                             break;
                         case TcpState::Closing:
+                            rcv_nxt_++;
+                            need_ack = true;
                             // ACK of our FIN arrives while in CLOSING — RFC 793: CLOSING → TIME_WAIT.
                             // (The ACK flag is checked via the snd_una_ update above; reaching here
                             //  means the FIN sequence was in-order, which completes the exchange.)
@@ -1069,10 +1077,18 @@ public:
                             enter_time_wait();
                             break;
                         case TcpState::FinWait2:
+                            rcv_nxt_++;
+                            need_ack = true;
                             SPDLOG_LOGGER_DEBUG(log, "Received FIN in FIN_WAIT_2 -> TIME_WAIT");
                             enter_time_wait();
                             break;
                         default:
+                            // FIN in unexpected state (e.g. CloseWait, LastAck,
+                            // TimeWait) — likely a retransmit of an already-consumed
+                            // FIN. Do NOT advance rcv_nxt_; just log and drop.
+                            SPDLOG_LOGGER_WARN(log,
+                                "Ignoring FIN in unexpected state {}: seq={}",
+                                tcp_state_name(state_), parsed.seq());
                             break;
                     }
                 } else {
