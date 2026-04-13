@@ -300,7 +300,7 @@ private:
     explicit KernelUdpSocket(int fd) noexcept : fd_(fd) {}
 
     /// @brief Shared IP_ADD/DROP_MEMBERSHIP helper.
-    std::expected<void, core::ErrorInfo>
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
     set_membership_(const SocketAddr& group, int optname) noexcept {
         if (fd_ < 0) {
             return std::unexpected(core::ErrorInfo{
