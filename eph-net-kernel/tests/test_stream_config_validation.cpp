@@ -1,9 +1,6 @@
 /// @file test_stream_config_validation.cpp
 /// Field-level validation tests for `eph::net::kernel::StreamConfig`.
 ///
-/// Sub-phase 9.8 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.8).
-///
 /// The v3.3 `StreamConfig` is a plain data struct (no member `validate()`);
 /// validation happens inside `KernelTcpStream::create()` and — for embedded
 /// `ProxyConfig` / `TlsConfig` — via their own `validate()` methods. These

@@ -4,9 +4,6 @@
 /// spun up on loopback per-test; it accepts one client, parses the
 /// CONNECT line, either rejects or establishes the tunnel, and then
 /// pipes bytes between the client and a second loopback echo server.
-///
-/// Sub-phase 9.6 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.6).
 
 #include <gtest/gtest.h>
 

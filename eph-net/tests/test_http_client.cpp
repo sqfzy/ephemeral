@@ -1,8 +1,8 @@
 /// @file test_http_client.cpp
 /// @brief Parser-level tests migrated from v3.3 baseline test_http_client.cpp.
 ///
-/// The baseline `HttpClient` class is not part of v3.3 — it lives downstream
-/// (sub-phase 9.6). However, a large share of its baseline test suite
+/// The baseline `HttpClient` class is not part of v3.3. However, a large
+/// share of its baseline test suite
 /// actually exercises the underlying parser against crafted byte sequences
 /// rather than any connection state. Those cases carry real regression
 /// value for the new `parse_http_request` / `parse_http_response`

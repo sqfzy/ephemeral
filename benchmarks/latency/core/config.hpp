@@ -394,9 +394,9 @@ load_bench_conf() {
     return cfg;
 }
 
-// ─── ScenarioConfig (INI [lat_*] section parser, Phase 10) ──────────────
+// ─── ScenarioConfig (INI [lat_*] section parser) ────────────────────────
 //
-// Phase 10 introduces per-scenario INI sections in bench.conf. Each
+// Per-scenario INI sections in bench.conf. Each
 // scenario binary reads the global `CommonConfig` / `BenchConfig` values
 // for NIC/IP/CPU layout AND its own `[lat_<name>]` section for port,
 // payload size, duration, etc.
@@ -432,7 +432,7 @@ class ScenarioConfig {
 public:
     /// Load the global (pre-section) `key = value` lines from `conf_path`.
     ///
-    /// Phase 10 bench.conf has lowercase global keys (`mock_ip`,
+    /// bench.conf has lowercase global keys (`mock_ip`,
     /// `client_ip`, `warmup_samples`, ...) BEFORE the first `[lat_*]`
     /// section header. They are shared by every scenario binary and the
     /// Python mocks, so each scenario reads them via this helper:

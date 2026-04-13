@@ -1,5 +1,5 @@
 /// @file core/measurement.hpp
-/// Header-only bench measurement helpers (Phase 10).
+/// Header-only bench measurement helpers.
 ///
 /// Provides:
 ///   - `monotonic_raw_ns()`     — single-instruction timestamp helper,
@@ -116,7 +116,7 @@ inline void install_signal_handler() noexcept {
 /// scenarios that discard the first N samples via `if (idx >= warmup)`
 /// gating pass `warmup` here so the report shows the effective count.
 ///
-/// `wall_time_ns` (plan Phase 11.0 §Interface): when non-zero, used to
+/// `wall_time_ns`: when non-zero, used to
 /// compute `throughput = s.count / wall_time_s` and print an extra
 /// `throughput: <N> samples/s` line. Scenarios pass
 /// `monotonic_raw_ns() - t_measure_start`, where `t_measure_start` is
@@ -214,7 +214,7 @@ inline void print_report(std::string_view scenario_name,
     std::fflush(stdout);
 }
 
-/// Print a 3-leg RTT / TX / RX report to stdout (Phase 11.1).
+/// Print a 3-leg RTT / TX / RX report to stdout.
 ///
 /// Format (ASCII, stable — verification gates grep for the three block
 /// labels):

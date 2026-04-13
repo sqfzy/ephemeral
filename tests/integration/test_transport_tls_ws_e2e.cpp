@@ -1,24 +1,16 @@
 /// @file test_transport_tls_ws_e2e_v3.cpp
-/// v3.3 rewrite of test_transport_tls_ws_e2e.cpp.
 ///
-/// Validates the Phase 5 TLS in-place decrypt path through the new
+/// Validates the TLS in-place decrypt path through the
 /// `KernelTcpStream<C, true>` API end-to-end against the in-process
 /// `TlsWsEchoServer` test helper.
 ///
-/// Scope (intentionally narrower than the legacy test):
-///   - The legacy test exercised the full Transport<...> + WS upgrade
-///     state machine. The v3.3 design pushes the WS HTTP upgrade *into
-///     the codec layer*, which is still being plumbed (Phase 6/7). For
-///     now we use `RawStreamCodec` so the test focuses on the TLS layer
-///     itself: the Phase 5 deliverable.
+/// Scope:
+///   - Uses `RawStreamCodec` so the test focuses on the TLS layer itself.
 ///   - We verify (a) TLS handshake completes against a real X.509 server
 ///     (the in-process echo helper uses an ephemeral keypair), and (b)
 ///     plaintext bytes round-trip through the in-place AEAD path by
 ///     manually performing a minimal WS upgrade through `stream->send()`
 ///     and reading the 101 response via the `on_message` sink.
-///
-/// Part of Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
 
 #include <atomic>
 #include <chrono>
@@ -54,12 +46,11 @@ ek::StreamConfig make_config(uint16_t port) {
     cfg.reasm_capacity  = 64 * 1024;
     cfg.connect_timeout = 2s;
     cfg.tcp_nodelay     = true;
-    // Phase 5 TlsConfig defaults: no SNI, no system trust store. The
-    // in-process test server uses a self-signed cert, so the kernel TLS
-    // path tolerates it via the same loopback shortcut the legacy test
-    // used (`verify_peer=false`). The v3.3 TlsConfig has the equivalent
-    // disable knob — we leave it default and rely on the existing
-    // detail/tls_state.hpp behavior.
+    // TlsConfig defaults: no SNI, no system trust store. The in-process
+    // test server uses a self-signed cert, so the kernel TLS path
+    // tolerates it via the same loopback shortcut (`verify_peer=false`).
+    // We leave it default and rely on the existing detail/tls_state.hpp
+    // behavior.
     return cfg;
 }
 
@@ -69,9 +60,7 @@ ek::StreamConfig make_config(uint16_t port) {
 // Test: TlsHandshakeCompletes
 //
 // Verifies that `KernelTcpStream<RawStreamCodec, true>::create()` succeeds
-// against the in-process TLS echo server. This is the Phase 5 deliverable —
-// before Phase 5 wired the real aws-lc handshake, this would fail with
-// `TlsHandshakeFailed`.
+// against the in-process TLS echo server.
 // ---------------------------------------------------------------------------
 TEST(TransportTlsWsE2EV3, TlsHandshakeCompletes) {
     eph::test::TlsWsEchoServer server;
@@ -81,14 +70,13 @@ TEST(TransportTlsWsE2EV3, TlsHandshakeCompletes) {
 
     auto sr = TlsRawStream::create(make_config(server.port()));
     if (!sr) {
-        // The Phase 5 implementation may still fail to verify the
-        // ephemeral self-signed cert depending on the trust store
-        // policy. We GTEST_SKIP rather than fail the build so the test
-        // is informative on either codepath.
+        // May fail to verify the ephemeral self-signed cert depending
+        // on the trust store policy. We GTEST_SKIP rather than fail the
+        // build so the test is informative on either codepath.
         GTEST_SKIP() << "TLS handshake against the in-proc server failed: "
                      << sr.error().detail
-                     << " (expected if the v3.3 TlsConfig requires explicit "
-                        "verify_peer=false plumbing — Phase 5 tracks this)";
+                     << " (expected if TlsConfig requires explicit "
+                        "verify_peer=false plumbing)";
     }
     auto stream = std::move(*sr);
 
@@ -110,8 +98,8 @@ TEST(TransportTlsWsE2EV3, TlsHandshakeCompletes) {
 //
 // Smoke test for the *plaintext* template specialization — the
 // `EnableTls=false` flag must still build and run. Cheap regression check
-// to make sure Phase 5's conditional `tls_` member doesn't ODR-conflict
-// with the plaintext path.
+// to make sure the conditional `tls_` member doesn't ODR-conflict with
+// the plaintext path.
 // ---------------------------------------------------------------------------
 TEST(TransportTlsWsE2EV3, PlaintextPathStillBuilds) {
     using PlainStream = ek::KernelTcpStream<ec::RawStreamCodec, /*Tls=*/false>;

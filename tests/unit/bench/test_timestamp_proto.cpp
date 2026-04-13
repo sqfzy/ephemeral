@@ -1,5 +1,5 @@
 /// @file tests/unit/bench/test_timestamp_proto.cpp
-/// Unit tests for the Phase 11.1 bench timestamp-block protocol
+/// Unit tests for the bench timestamp-block protocol
 /// (`benchmarks/latency/core/timestamp_proto.hpp`).
 ///
 /// Three cases:

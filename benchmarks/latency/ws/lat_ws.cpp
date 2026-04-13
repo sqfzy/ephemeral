@@ -1,10 +1,6 @@
 /// @file lat_ws.cpp
-/// Phase 10 latency benchmark: WebSocket RTT against a kernel Python echo
+/// Latency benchmark: WebSocket RTT against a kernel Python echo
 /// mock (`benchmarks/latency/mocks/ws_echo.py`).
-///
-/// Sub-phase 10.4 rewrite. Per
-/// `.artifacts/plan-phase-10-latency-bench-20260411-040540.md` §Sub-phase
-/// 10.4 and §Interface design → "Client API pattern":
 ///
 ///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
 ///     (port / ws_path / payload_size / duration_seconds) plus the
@@ -12,13 +8,13 @@
 ///   * Uses the v3.3 `KernelTcpStream<WsCodec, false>` + `KernelPoller`
 ///     API directly — no legacy eph-transport, no bespoke loopback echoer,
 ///     no raw socket() calls.
-///   * `StreamConfig.ws_path` is set — this triggers the Phase 9.5
-///     transparent WebSocket handshake inside `KernelTcpStream::create()`,
+///   * `StreamConfig.ws_path` is set — this triggers the transparent
+///     WebSocket handshake inside `KernelTcpStream::create()`,
 ///     so by the time we start the measurement loop the socket is ready
 ///     to exchange WS-binary frames with the Python mock.
 ///   * Measurement clock is `bench::monotonic_raw_ns()`
-///     (CLOCK_MONOTONIC_RAW via vDSO, per plan D-6) — not TSC.
-///   * Samples feed `eph::utils::Recorder::record_ns(ns)` (plan D-2).
+///     (CLOCK_MONOTONIC_RAW via vDSO) — not TSC.
+///   * Samples feed `eph::utils::Recorder::record_ns(ns)`.
 ///
 /// Design note — WS frame encoding: `KernelTcpStream::send(bytes)` does
 /// NOT run the bytes through the codec (the codec's encode path is for
@@ -28,10 +24,7 @@
 /// `on_message` callback fires once per decoded payload.
 ///
 /// A second target `lat_ws_dpdk` is produced by the xmake auto-glob loop
-/// with `EPH_USE_DPDK=1`. For now that build merely type-checks the v3.3
-/// DPDK stream API surface and prints a deferred banner — the real DPDK
-/// measurement loop is Phase-<later> work (see lat_tcp.cpp for the same
-/// pattern).
+/// with `EPH_USE_DPDK=1`.
 
 #include <array>
 #include <cstdint>
@@ -46,15 +39,15 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (plan D-4: v3.3 API only).
+// eph-* headers (v3.3 API only).
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.0: DpdkTcpStream<WsCodec> real measurement loop. Structure
-// mirrors lat_tcp exactly with `WsCodec` + `cfg.ws_path` set so the
-// DpdkTcpStream::create path performs the RFC 6455 handshake during setup.
+// DpdkTcpStream<WsCodec> measurement loop. Structure mirrors lat_tcp
+// exactly with `WsCodec` + `cfg.ws_path` set so the DpdkTcpStream::create
+// path performs the RFC 6455 handshake during setup.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -142,7 +135,7 @@ int main(int argc, char** argv) {
     }
     const std::size_t payload_size = payload_r.value();
 
-    // Phase 11.1 D-7: 24 B timestamp-block header requirement.
+    // 24 B timestamp-block header requirement.
     if (payload_size < bench::kTimestampBlockSize) {
         std::fprintf(stderr,
                      "lat_ws: payload_size=%zu < kTimestampBlockSize=%zu "
@@ -232,8 +225,8 @@ int main(int argc, char** argv) {
     cfg.ws_path         = ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
 #else
-    // StreamConfig.ws_path triggers the Phase 9.5 transparent WebSocket
-    // handshake inside KernelTcpStream::create(). The returned stream is
+    // StreamConfig.ws_path triggers the transparent WebSocket handshake
+    // inside KernelTcpStream::create(). The returned stream is
     // already past the 101 Switching Protocols response and ready to
     // exchange WS frames.
     ek::StreamConfig cfg{};
@@ -260,9 +253,9 @@ int main(int argc, char** argv) {
     // the reassembled message in a single callback regardless of how
     // many TCP segments carried it.
     //
-    // Phase 11.1: copy the first 24 B of the decoded payload into
-    // `ts_buf` for leg decomposition. `on_message` gets plaintext
-    // (post-unmask) from the WsCodec, so this is just a memcpy.
+    // Copy the first 24 B of the decoded payload into `ts_buf` for leg
+    // decomposition. `on_message` gets plaintext (post-unmask) from the
+    // WsCodec, so this is just a memcpy.
     bool got_echo = false;
     std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
     std::size_t ts_filled = 0;
@@ -281,8 +274,8 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    // Phase 11.1: we must re-encode a new WS frame for every sample
-    // because the client MUST mask each frame with a fresh (or at
+    // We must re-encode a new WS frame for every sample because the
+    // client MUST mask each frame with a fresh (or at
     // least per-frame) masking key per RFC 6455 §5.3, and the masking
     // interleaves with the timestamp bytes we overwrite each sample.
     // Re-encoding is cheap (a small memcpy + XOR over payload_size B)

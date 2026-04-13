@@ -1,5 +1,5 @@
 /// @file lat_ex_order.cpp
-/// Phase 11.1 latency benchmark: strict one-at-a-time WebSocket order RTT
+/// Latency benchmark: strict one-at-a-time WebSocket order RTT
 /// against the Python echo mock `benchmarks/latency/mocks/ex_order_echo.py`.
 ///
 /// Semantics:
@@ -15,13 +15,12 @@
 ///     a self-contained measurement; pipelined sends introduce queue
 ///     correlation between TX and RX percentiles that breaks the
 ///     `p50(TX) + p50(RX) ≤ p50(RTT)` sanity invariant even though
-///     per-sample `TX_k + SRV_k + RX_k = RTT_k` always holds. Phase 11.1
-///     decisively drops pipelining.
+///     per-sample `TX_k + SRV_k + RX_k = RTT_k` always holds.
 ///   * Loop terminates on whichever happens first: duration deadline,
 ///     `order_count + warmup_samples` orders completed, send error, or
 ///     SIGINT.
 ///
-/// Measurement clock: `bench::monotonic_raw_ns()` (plan D-6).
+/// Measurement clock: `bench::monotonic_raw_ns()` (CLOCK_MONOTONIC_RAW).
 
 #include <cstdint>
 #include <cstdio>
@@ -35,13 +34,13 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (plan D-4: v3.3 API only).
+// eph-* headers (v3.3 API only).
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.1: DpdkTcpStream<WsCodec> serial request/response order RTT.
+// DpdkTcpStream<WsCodec> serial request/response order RTT.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -163,13 +162,13 @@ int main(int argc, char** argv) {
 
     // Construct the Recorders BEFORE Stream::create so that TSC::init's
     // ~1 s calibration spin runs at startup, not while the WS handshake
-    // is completing. Same pattern as lat_ex_market (10.4 lesson).
+    // is completing. Same pattern as lat_ex_market.
     //
-    // Phase 11.1: three Recorders (RTT / TX / RX). ex_order is the
-    // only scenario that carries timestamps as JSON fields
-    // (`t_client` / `t_mock_recv` / `t_mock_send`) rather than a
-    // binary 24 B prefix — WS text-ish JSON wouldn't survive a binary
-    // header, so we extract via the existing scan_json_uint_field.
+    // Three Recorders (RTT / TX / RX). ex_order is the only scenario
+    // that carries timestamps as JSON fields (`t_client` /
+    // `t_mock_recv` / `t_mock_send`) rather than a binary 24 B prefix
+    // — WS text-ish JSON wouldn't survive a binary header, so we
+    // extract via the existing scan_json_uint_field.
     const char* backend =
 #if defined(EPH_USE_DPDK)
         "dpdk";

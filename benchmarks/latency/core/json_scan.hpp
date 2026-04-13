@@ -1,10 +1,10 @@
 /// @file core/json_scan.hpp
-/// Minimal JSON numeric-field scanner for bench mock payloads (Phase 10).
+/// Minimal JSON numeric-field scanner for bench mock payloads.
 ///
 /// Rationale (plan D-5): lat_ex_market / lat_ex_order measure end-to-end
 /// one-way latency by extracting a server-stamped `"T":<ns>` field from
 /// the mock WS/UDP payload. Pulling in `eph-json` for this would couple
-/// Phase 10 to the eph-json rewrite and drag in the full JSON codec
+/// the bench framework to the eph-json rewrite and drag in the full JSON codec
 /// machinery for a single field lookup. Instead: hand-written ~20-line
 /// scanner that matches the mock's known output shape and nothing more.
 ///
@@ -16,7 +16,7 @@
 ///     (space and tab only)
 ///
 /// These match what `json.dumps(...)` in the Python mocks produces for
-/// numeric fields; cross-checked in sub-phase 10.2.
+/// numeric fields.
 
 #pragma once
 

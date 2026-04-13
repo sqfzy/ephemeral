@@ -120,7 +120,7 @@ TEST(Concepts, FakeDatagramRoundTripsThroughTestPoller) {
     EXPECT_TRUE(saw);
 }
 
-// ─── Sub-phase 9.8: supplemental concept conformance tests ────────────────
+// ─── Supplemental concept conformance tests ──────────────────────────────
 //
 // Port of baseline `test_tcp_concept.cpp` (46 cases) re-expressed against
 // the v3.3 `Stream` / `Datagram` / `Pollable` / `Poller` concepts. Each

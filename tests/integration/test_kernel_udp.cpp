@@ -1,9 +1,6 @@
 /// @file test_kernel_udp_v3.cpp
 /// Cross-module integration test for the new `KernelUdpSocket` API.
 ///
-/// Phase 6 of the v3.3 architecture refactor
-/// (.artifacts/design-eph-v3.3-architecture-20260410.md).
-///
 /// Verifies the design doc Example 2 UDP shape:
 ///
 ///   1. KernelPoller::create

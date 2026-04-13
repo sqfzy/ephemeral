@@ -1,5 +1,5 @@
 /// @file test_codec_concept.cpp
-/// Compile-time + runtime tests for StreamCodec / DatagramCodec concepts (Phase 0 / v3.3).
+/// Compile-time + runtime tests for StreamCodec / DatagramCodec concepts.
 
 #include <cstdint>
 #include <expected>

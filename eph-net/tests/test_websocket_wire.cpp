@@ -2,8 +2,8 @@
 /// Parser-level unit tests for the WebSocket wire encode/decode helpers
 /// (`eph::net::ws::encode_frame`, `decode_frame`, `is_valid_close_code`, etc.).
 ///
-/// Phase 9.7 migration: these tests cover the Phase-7 migrated header at
-/// `eph/net/detail/websocket.hpp` — the same wire helpers used by the
+/// These tests cover the header at `eph/net/detail/websocket.hpp` — the
+/// same wire helpers used by the
 /// stream-level `SocketTransport` / `Channel` WebSocket path. Stream-level
 /// behavioural tests (Transport, Channel, SocketTransport) are intentionally
 /// excluded — they live in their own files (9.8 territory).

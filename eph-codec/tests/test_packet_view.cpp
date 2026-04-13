@@ -1,5 +1,5 @@
 /// @file test_packet_view.cpp
-/// Phase 5: compile-time + runtime conformance for the formal
+/// Compile-time + runtime conformance for the formal
 /// `eph::core::PacketView` concept declared in
 /// `eph/core/packet_view.hpp`.
 ///

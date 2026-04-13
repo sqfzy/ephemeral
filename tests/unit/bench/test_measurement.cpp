@@ -1,5 +1,5 @@
 /// @file tests/unit/bench/test_measurement.cpp
-/// Smoke tests for `bench::measurement` helpers (Phase 10).
+/// Smoke tests for `bench::measurement` helpers.
 ///
 /// `monotonic_raw_ns()` and `print_report()` are small enough that
 /// covering them with an end-to-end scenario is overkill; these unit

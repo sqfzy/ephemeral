@@ -1,6 +1,6 @@
 /// @file test_kernel_tls_state.cpp
-/// Phase 5: structural tests for `KernelTcpStream<C, true>`'s TLS path
-/// without dragging in a live TLS server.
+/// Structural tests for `KernelTcpStream<C, true>`'s TLS path without
+/// dragging in a live TLS server.
 ///
 /// What this test verifies:
 ///   1. The `EnableTls=true` template instantiation compiles for the
@@ -8,8 +8,7 @@
 ///      cleanly with `[[no_unique_address]]` and the surrounding member
 ///      layout.
 ///   2. The `eph::net::Stream` and `eph::net::Pollable` concepts are
-///      satisfied for `KernelTcpStream<C, true>` (Phase 3 only checked
-///      `EnableTls=false`).
+///      satisfied for `KernelTcpStream<C, true>`.
 ///   3. `create()` against a non-existent peer with `EnableTls=true`
 ///      fails with a TLS error code (the network connect itself will
 ///      time out — we just verify the API surface returns the expected

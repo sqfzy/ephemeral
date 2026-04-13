@@ -1,11 +1,10 @@
 /// @file test_dpdk_tcp_stream.cpp
-/// Unit tests for `eph::net::dpdk::DpdkTcpStream`. Phase 4 scope:
+/// Unit tests for `eph::net::dpdk::DpdkTcpStream`.
 ///
 ///   - concept conformance static_asserts (Pollable + Stream) for the
 ///     common instantiations (RawStreamCodec with TLS off, with TLS on)
 ///   - TLS path: `create()` with `EnableTls=true` returns
-///     `TlsHandshakeFailed` (Phase 4 stub, mirrors KernelTcpStream's
-///     Phase 3 behaviour — real handshake lands in Phase 5)
+///     `TlsHandshakeFailed` (stub — real handshake tested separately)
 ///   - InvalidConfig surface: missing pool, zero IPs
 ///
 /// We do NOT exercise the live TCP 3-way handshake here — that would
@@ -83,7 +82,7 @@ TEST(DpdkTcpStream, ZeroIpFailsInvalidConfig) {
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
 
-// Phase 4 stub: TLS-enabled create() returns TlsHandshakeFailed without
+// TLS-enabled create() returns TlsHandshakeFailed without
 // even trying to run the handshake. We need a non-null pool so the
 // pre-validation passes; the actual TCP connect call inside create() may
 // or may not succeed against the test EAL's net_null vdev — what we

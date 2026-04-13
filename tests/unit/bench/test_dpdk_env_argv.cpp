@@ -1,6 +1,5 @@
 /// @file tests/unit/bench/test_dpdk_env_argv.cpp
-/// Phase 11.0 unit tests: pure-function coverage of
-/// `bench::synthesize_eal_argv`.
+/// Unit tests: pure-function coverage of `bench::synthesize_eal_argv`.
 ///
 /// Rationale (plan D-5): `bench::load_dpdk_env` is a thin glue layer on
 /// top of `DpdkBenchEnv::create_full`, which requires real EAL init and

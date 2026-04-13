@@ -1,9 +1,6 @@
 /// @file test_kernel_tcp_stream_behavioral.cpp
 /// Behavioral integration tests for `eph::net::kernel::KernelTcpStream`.
 ///
-/// Sub-phase 9.8 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.8).
-///
 /// This is a REWRITE (not a copy) of the baseline
 /// `eph-net/tests/test_socket_transport.cpp` (86 cases) in v3.3 terms:
 /// the legacy `SocketTransport` class no longer exists — its responsibilities

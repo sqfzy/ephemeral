@@ -3,9 +3,6 @@
 /// `StreamConfig.ws_path`. Spins up a minimal in-process HTTP/1.1 mock
 /// server on loopback, accepts one client per test, performs the WS
 /// handshake (server-side), and echoes raw bytes thereafter.
-///
-/// Sub-phase 9.5 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.5).
 
 #include <gtest/gtest.h>
 

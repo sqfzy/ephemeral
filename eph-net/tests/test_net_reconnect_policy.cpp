@@ -1,5 +1,5 @@
 /// @file test_net_reconnect_policy.cpp
-/// Unit tests for the Phase-2 `eph::net::ReconnectPolicy`.
+/// Unit tests for `eph::net::ReconnectPolicy`.
 ///
 /// Filename is `test_net_reconnect_policy.cpp` (not `test_reconnect_policy.cpp`)
 /// to avoid colliding with the legacy `eph-transport/tests/test_reconnect_policy.cpp`

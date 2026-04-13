@@ -1,5 +1,5 @@
 /// @file core/dpdk_env.hpp
-/// Phase 11.0 helper: bridge from bench.conf + ScenarioConfig globals to a
+/// Bridge from bench.conf + ScenarioConfig globals to a
 /// fully-initialized `eph::dpdk::test::DpdkBenchEnv` (EAL init + Platform +
 /// ARP resolve) so the six `lat_*_dpdk` scenario binaries can share one
 /// bring-up sequence.

@@ -1,6 +1,6 @@
 /// @file test_dpdk_udp_multicast.cpp
-/// Phase 5: surface tests for `DpdkUdpSocket::join_multicast`,
-/// `leave_multicast`, and `connect_to` (the Phase 4 stubs were no-ops).
+/// Surface tests for `DpdkUdpSocket::join_multicast`,
+/// `leave_multicast`, and `connect_to`.
 ///
 /// We do not exercise the live RX path here — that requires a vfio-pci
 /// NIC and is covered by `tests/integration/dpdk_e2e`. What we DO check:
@@ -37,7 +37,7 @@ using McastSock = edpk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
 // Concept conformance still holds with the new method bodies.
 static_assert(en::Datagram<McastSock>,
-              "DpdkUdpSocket must still satisfy Datagram concept post-Phase 5");
+              "DpdkUdpSocket must still satisfy Datagram concept");
 
 TEST(DpdkUdpMulticast, MulticastIpRangeCheck) {
     EXPECT_TRUE(::eph::dpdk::is_multicast_ip(0xE0000001u));   // 224.0.0.1

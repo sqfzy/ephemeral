@@ -1,5 +1,5 @@
 /// @file core/timestamp_proto.hpp
-/// Phase 11.1 latency-bench timestamp protocol.
+/// Latency-bench timestamp protocol.
 ///
 /// A fixed 24-byte block carried at the front of every RTT-scenario
 /// payload (lat_{tcp,udp,ws,ex_md_udp}). Three little-endian `uint64`s
