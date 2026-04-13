@@ -38,10 +38,14 @@ static_assert(eph::net::Pollable<PlainRawStream>,
               "DpdkTcpStream<RawStreamCodec,false> must be Pollable");
 static_assert(eph::net::Stream<PlainRawStream>,
               "DpdkTcpStream<RawStreamCodec,false> must be Stream");
+static_assert(eph::net::dpdk::DpdkPollable<PlainRawStream>,
+              "DpdkTcpStream<RawStreamCodec,false> must be DpdkPollable");
 static_assert(eph::net::Pollable<TlsRawStream>,
               "DpdkTcpStream<RawStreamCodec,true> must be Pollable");
 static_assert(eph::net::Stream<TlsRawStream>,
               "DpdkTcpStream<RawStreamCodec,true> must be Stream");
+static_assert(eph::net::dpdk::DpdkPollable<TlsRawStream>,
+              "DpdkTcpStream<RawStreamCodec,true> must be DpdkPollable");
 
 // ---------------------------------------------------------------------------
 // Helpers

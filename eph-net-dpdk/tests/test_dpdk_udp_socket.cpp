@@ -33,6 +33,8 @@ static_assert(eph::net::Pollable<RawUdpSocket>,
               "DpdkUdpSocket<RawDatagramCodec> must be Pollable");
 static_assert(eph::net::Datagram<RawUdpSocket>,
               "DpdkUdpSocket<RawDatagramCodec> must be Datagram");
+static_assert(eph::net::dpdk::DpdkPollable<RawUdpSocket>,
+              "DpdkUdpSocket<RawDatagramCodec> must be DpdkPollable");
 
 // ---------------------------------------------------------------------------
 // Tests
