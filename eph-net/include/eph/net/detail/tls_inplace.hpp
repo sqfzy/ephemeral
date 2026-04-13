@@ -2,8 +2,7 @@
 
 /// @file tls_inplace.hpp
 /// In-place AES-GCM AEAD decrypt helper — the zero-copy primitive behind
-/// the Phase 5 DPDK `PacketView` story (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
+/// the DPDK `PacketView` design.
 ///
 /// ## Why this exists
 ///

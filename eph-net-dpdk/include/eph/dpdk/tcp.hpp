@@ -29,7 +29,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <sys/random.h>   // getrandom(2) — Phase 7: replaces RAND_bytes
+#include <sys/random.h>   // getrandom(2) for ISN generation
 
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
@@ -722,7 +722,7 @@ public:
         // deferred ACK (see send() for the single-segment analog).
         ack_pending_since_tsc_ = 0;
 
-        // Phase 1: allocate and fill all mbufs
+        // Step 1: allocate and fill all mbufs
         for (uint16_t i = 0; i < count; ++i) {
             if (segments[i].second > config_.mss) {
                 SPDLOG_LOGGER_WARN(log,
@@ -749,7 +749,7 @@ public:
 
         if (prepared == 0) return {0, count};
 
-        // Phase 2: single burst send
+        // Step 2: single burst send
         uint16_t sent = rte_eth_tx_burst(
             config_.port_id, config_.tx_queue_id, mbufs, prepared);
 
@@ -1492,10 +1492,9 @@ private:
     }
 
     /// Generate initial sequence number using the kernel CSPRNG via
-    /// `getrandom(2)`. Phase 7 switched this away from `RAND_bytes` to
-    /// decouple the DPDK TCP path from any OpenSSL flavour (vcpkg-openssl
-    /// vs. aws-lc). Returns an error if the syscall fails — propagate to
-    /// caller rather than masking failure with a sentinel value like 0 or 1.
+    /// `getrandom(2)` (decoupled from OpenSSL to avoid vcpkg-openssl vs.
+    /// aws-lc conflicts). Returns an error if the syscall fails — propagate
+    /// to caller rather than masking failure with a sentinel value like 0 or 1.
     static std::expected<uint32_t, std::string> generate_isn() noexcept {
         uint32_t isn = 0;
         // GRND_NONBLOCK: do not block if the urandom pool is not yet

@@ -1,29 +1,17 @@
 #pragma once
 
 /// @file reconnect_policy.hpp
-/// Exponential-backoff reconnection policy with ±jitter (phase-2 rewrite).
+/// Exponential-backoff reconnection policy with ±jitter.
 ///
-/// Part of Phase 2 of the v3.3 refactor (see
-/// `.artifacts/design-eph-v3.3-architecture-20260410.md`). This is the new,
-/// config-struct-driven `ReconnectPolicy` that Phase 3 / Phase 4 backends
-/// will own inside `KernelTcpStream` / `DpdkTcpStream`.
+/// Config-struct-driven `ReconnectPolicy` owned by `KernelTcpStream` /
+/// `DpdkTcpStream`.
 ///
-/// Relationship to legacy code:
-///   - A legacy `eph::net::ReconnectPolicy` still lives in
-///     `eph-transport/include/eph/transport/reconnect_policy.hpp`. It uses
-///     `TransportConfig` and a callback-driven `attempt()` shape. The legacy
-///     header is untouched and deleted wholesale in Phase 7.
-///   - To avoid ODR clashes, a translation unit must include at most one of
-///     `<eph/net/reconnect_policy.hpp>` or `<eph/transport/reconnect_policy.hpp>`
-///     until Phase 7 finishes the rename.
-///
-/// Differences from the legacy class:
+/// Key design points:
 ///   - Owns its own `ReconnectPolicyConfig` value (no external reference).
 ///   - `next_backoff()` is synchronous and side-effect-only (no sleep, no
 ///     connection attempt). The caller drives the actual connect, which
 ///     keeps this class trivially unit-testable.
-///   - Jitter range is configurable via `jitter_factor_` (legacy hardcoded
-///     ±25%). Default is ±25% to preserve prior behavior.
+///   - Jitter range is configurable via `jitter_factor_` (default ±25%).
 ///   - No spdlog dependency — pure math. Logging lives at the call site.
 
 #include <algorithm>

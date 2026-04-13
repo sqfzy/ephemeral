@@ -3,8 +3,7 @@
 /// @file codec.hpp
 /// StreamCodec / DatagramCodec concepts + OutputBuffer sink.
 ///
-/// This header is part of the Phase 0 slim-down of eph-core (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md). It defines the new
+/// Defines the
 /// stateful codec contract that replaces the old `MessageFramer` concept in
 /// `eph-core/framer_concept.hpp`.
 ///

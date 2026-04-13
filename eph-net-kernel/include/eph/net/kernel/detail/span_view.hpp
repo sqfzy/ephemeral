@@ -3,8 +3,7 @@
 /// @file span_view.hpp
 /// Kernel-backend PacketView: contiguous span over a caller-owned byte buffer.
 ///
-/// Part of Phase 3 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md). This is the kernel
+/// This is the kernel
 /// counterpart to the DPDK `MbufView`: both satisfy the PacketView duck-typing
 /// required by `eph::core::StreamCodec` / `eph::core::DatagramCodec`.
 ///
@@ -56,7 +55,7 @@ private:
     uint64_t    tsc_;
 };
 
-// Phase 5: formal concept verification.
+// Formal concept verification.
 static_assert(::eph::core::PacketView<SpanView>,
               "SpanView must satisfy the eph::core::PacketView concept");
 

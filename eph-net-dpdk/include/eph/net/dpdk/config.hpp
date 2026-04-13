@@ -2,17 +2,13 @@
 
 /// @file config.hpp
 /// Configuration aggregates for `DpdkTcpStream` / `DpdkUdpSocket` /
-/// `DpdkPoller`. Part of Phase 4 of the v3.3 refactor.
+/// `DpdkPoller`.
 ///
-/// These types are intentionally thin adapters over the existing
-/// `eph::dpdk::TcpConfig` / `eph::dpdk::UdpConfig` structures in the legacy
-/// `eph-dpdk` module. Phase 4 is additive: we do not duplicate the validation
-/// / field definitions here — we re-export them under the new namespace so
-/// v3.3 user code can write `eph::net::dpdk::StreamConfig` without pulling in
-/// the legacy header name at the call site.
-///
-/// Phase 7 will migrate the underlying struct definitions into this module
-/// and drop the re-export shim.
+/// These types are thin adapters over the existing `eph::dpdk::TcpConfig` /
+/// `eph::dpdk::UdpConfig` structures. We re-export them under the
+/// `eph::net::dpdk` namespace so user code can write
+/// `eph::net::dpdk::StreamConfig` without pulling in the underlying header
+/// name at the call site.
 
 #include <chrono>
 #include <cstddef>
@@ -29,16 +25,14 @@
                                   // LegacyUdpConfig at its single use-site).
 #include <optional>
 
-#include "eph/net/http.hpp"                   // Sub-phase 9.5: HttpHeader
-#include "eph/net/proxy.hpp"                  // Sub-phase 9.6: ProxyConfig
-#include "eph/net/detail/tls_constants.hpp"   // Phase 7: TlsConfig
+#include "eph/net/http.hpp"                   // HttpHeader
+#include "eph/net/proxy.hpp"                  // ProxyConfig
+#include "eph/net/detail/tls_constants.hpp"   // TlsConfig
 #include "eph/net/reconnect_policy.hpp"
 
-// Phase 7: the StreamConfig now carries a real `eph::net::TlsConfig` field.
-// The vcpkg-openssl ↔ aws-lc TU conflict that blocked this in Phase 5 was
-// resolved by deleting the legacy eph-dpdk / eph-transport modules and
-// switching `RAND_bytes` call sites to `getrandom(2)`. See the header
-// note in `eph/net/dpdk/tcp_stream.hpp` for the full story.
+// The StreamConfig carries a real `eph::net::TlsConfig` field. aws-lc is
+// the only OpenSSL flavour in eph-net-dpdk TUs; `RAND_bytes` call sites use
+// `getrandom(2)` to avoid symbol conflicts.
 
 namespace eph::net::dpdk {
 
@@ -48,17 +42,14 @@ namespace eph::net::dpdk {
 
 /// @brief Configuration for `DpdkTcpStream::create`.
 ///
-/// Phase 4 scope: the heavy DPDK wiring (MAC, mempool, port/queue IDs,
-/// MSS, recv_window) lives inside `eph::dpdk::TcpConfig` and is preserved
-/// verbatim via the `legacy` field. We add v3.3-only knobs on top (connect
-/// timeout, reconnect policy) without duplicating any of the validated
-/// low-level fields.
+/// The heavy DPDK wiring (MAC, mempool, port/queue IDs, MSS, recv_window)
+/// lives inside `eph::dpdk::TcpConfig` and is preserved verbatim via the
+/// `legacy` field. We add higher-level knobs on top (connect timeout,
+/// reconnect policy) without duplicating any of the validated low-level
+/// fields.
 ///
-/// Design rationale for embedding the legacy config rather than flattening
-/// its fields: Phase 4 is explicitly additive. Flattening would couple the
-/// field list to two different validation paths and require Phase 7 to
-/// re-harmonise them. Embedding keeps the single source of truth in
-/// `eph::dpdk::TcpConfig` until Phase 7 deletes the legacy header.
+/// Design rationale for embedding rather than flattening: it keeps a single
+/// source of truth for the validated DPDK fields in `eph::dpdk::TcpConfig`.
 struct StreamConfig {
     /// @brief Underlying DPDK TcpSession configuration (mempool, port/queue,
     ///        4-tuple, MAC addresses, MSS). Must be populated by the caller;
@@ -83,7 +74,7 @@ struct StreamConfig {
     /// parameter `EnableTls=false`.
     ::eph::net::TlsConfig tls{};
 
-    // ── WebSocket upgrade (Sub-phase 9.5) ────────────────────────────────
+    // ── WebSocket upgrade ─────────────────────────────────────────────────
     //
     // Same contract as `eph::net::kernel::StreamConfig`: non-empty `ws_path`
     // enables a WS HTTP Upgrade handshake after TCP (and optional TLS)
@@ -105,7 +96,7 @@ struct StreamConfig {
     /// @brief WS handshake deadline.
     std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
 
-    // ── HTTP CONNECT proxy (Sub-phase 9.6) ───────────────────────────────
+    // ── HTTP CONNECT proxy ────────────────────────────────────────────────
     //
     // The DPDK backend does NOT support HTTP CONNECT proxies — HFT colo
     // deployments never use proxies, and a DPDK client by definition bypasses

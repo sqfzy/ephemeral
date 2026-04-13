@@ -6,21 +6,18 @@
 #define EPH_NET_DPDK_TLS_STATE_HPP_INCLUDED 1
 
 /// @file tls_state.hpp
-/// Phase 5: real TLS 1.3 state for `DpdkTcpStream<C, true>` with the
-/// **zero-copy in-place AES-GCM decrypt** path enabled.
+/// Real TLS 1.3 state for `DpdkTcpStream<C, true>` with the **zero-copy
+/// in-place AES-GCM decrypt** path enabled.
 ///
-/// Replaces the Phase 4 placeholder TlsState{ handshake_completed } stub
-/// with an aws-lc / BoringSSL handshake driven through the legacy
-/// `eph::dpdk::TcpSession<>` (which already satisfies the legacy
-/// `eph::net::TcpTransport` concept), plus a hot-path AEAD context that
-/// can decrypt records **directly into the same buffer the ciphertext
-/// occupies**. That is the headline zero-copy primitive behind the v3.3
-/// design — see .artifacts/design-eph-v3.3-architecture-20260410.md.
+/// Uses an aws-lc / BoringSSL handshake driven through
+/// `eph::dpdk::TcpSession<>` (which satisfies the `eph::net::TcpTransport`
+/// concept), plus a hot-path AEAD context that can decrypt records
+/// **directly into the same buffer the ciphertext occupies**.
 ///
 /// Architecture:
 ///
 ///     DpdkTcpStream<C, true>::create()
-///        ├── TcpSession::connect()                // Phase 4 (TCP 3-way over DPDK)
+///        ├── TcpSession::connect()                // TCP 3-way over DPDK
 ///        ├── TlsSession<TcpSession>::create()     // legacy aws-lc
 ///        ├── session.handshake()                  // blocking, control thread,
 ///        │                                          drives the NIC RX queue
@@ -32,18 +29,18 @@
 ///        ├── TcpSession::process_rx (legacy)      // mbufs → reasm_ via callback
 ///        │                                          (this still copies once
 ///        │                                           into the reasm vector;
-///        │                                           the legacy state machine
-///        │                                           owns the byte pipe shape)
+///        │                                           the state machine owns
+///        │                                           the byte pipe shape)
 ///        ├── parse + decrypt-in-place each TLS record on the reasm buffer
 ///        │   ── EVP_AEAD_CTX_open(in==out)        // <-- THE ZERO-COPY POINT
 ///        └── codec.decode(MbufView{plaintext, len})
 ///
-/// The "zero-copy" applies to the codec→TLS-plaintext leg: the codec
+/// The "zero-copy" applies to the codec->TLS-plaintext leg: the codec
 /// reads plaintext directly out of the same memory we just decrypted
-/// over (no second buffer, no second memcpy). The legacy TcpSession
-/// still copies mbuf payload into the reasm vector once — Phase 6/7
-/// migrates the legacy session into the new dpdk module so the path
-/// can become a true mbuf-chain in-place pipeline.
+/// over (no second buffer, no second memcpy). The TcpSession still
+/// copies mbuf payload into the reasm vector once; a future migration
+/// of the session into the dpdk module would make the path a true
+/// mbuf-chain in-place pipeline.
 ///
 /// To exercise the AES-GCM in-place primitive without the legacy reasm
 /// copy in the test path, see `test_tls_in_place_decrypt` which feeds

@@ -25,7 +25,6 @@
 /// you need a reset-able flag, use `std::atomic<bool>` directly — that is
 /// simply a different abstraction.
 ///
-/// Sub-phase 9.1 (plan-phase-9-recovery-20260410-180306.md §5, D-3).
 
 #include <atomic>
 #include <functional>

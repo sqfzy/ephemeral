@@ -4,12 +4,9 @@
 /// Formal `PacketView` concept — the duck-typed contract between
 /// Stream / Datagram backends and the codec layer.
 ///
-/// Part of Phase 5 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md). Phases 1–4
-/// implemented the codecs and backends against the same informal surface
-/// (documented in `codec.hpp`'s file-level comment); Phase 5 formalizes it
-/// here so that every PacketView implementation can be compile-time
-/// verified via `static_assert(PacketView<T>)`.
+/// Formalizes the informal PacketView surface (documented in `codec.hpp`)
+/// so that every PacketView implementation can be compile-time verified
+/// via `static_assert(PacketView<T>)`.
 ///
 /// ## Contract
 ///

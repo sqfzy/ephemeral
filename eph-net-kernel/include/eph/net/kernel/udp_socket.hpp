@@ -4,16 +4,7 @@
 /// Epoll-backed UDP datagram socket satisfying the `eph::net::Datagram`
 /// concept.
 ///
-/// Part of Phase 3 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
-///
-/// Unlike `KernelTcpStream`, this is NEW functionality — the legacy
-/// `eph-net` does not have a kernel UDP socket (only the DPDK backend has
-/// `UdpSender`). Phase 3 introduces it so the new Datagram concept has a
-/// reference kernel implementation available to CI before Phase 4 brings
-/// the DPDK variant online.
-///
-/// Features (Phase 3 scope):
+/// Features:
 ///   - AF_INET SOCK_DGRAM with bind(), optional SO_REUSEADDR, non-blocking.
 ///   - `send_to(span, dst)` — unconnected mode single-datagram send.
 ///   - `join_multicast(group)` / `leave_multicast(group)` via
@@ -22,10 +13,6 @@
 ///     level source filtering.
 ///   - `poll_once_()` drains one recvmsg into the codec; one datagram per
 ///     call is sufficient for epoll level-triggered operation.
-///
-/// Multicast TX (IP_MULTICAST_IF / IP_MULTICAST_LOOP / TTL) is deferred
-/// to Phase 5 — the Phase 3 tests only cover unicast echo + join/leave API
-/// surface.
 
 #include <cerrno>
 #include <cstddef>

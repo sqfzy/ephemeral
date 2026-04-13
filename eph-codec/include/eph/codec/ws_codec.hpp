@@ -26,9 +26,8 @@
 /// Design note — we deliberately REUSE the battle-tested
 /// `eph::net::ws::decode_frame` / `encode_frame` from
 /// `eph-transport/include/eph/transport/detail/websocket.hpp`. That file is
-/// unchanged (Phase 1 is additive, Phase 7 deletes it). The codec is a thin
-/// stateful shell on top; when the old transport is deleted, Phase 7 also
-/// moves the underlying wire-format helpers into the codec namespace.
+/// The codec is a thin stateful shell on top of the underlying
+/// wire-format helpers.
 
 #include <algorithm>
 #include <cstddef>

@@ -2,11 +2,11 @@
 
 /// @file mbuf_view.hpp
 /// `PacketView` implementation backed by the payload slice of a DPDK
-/// `rte_mbuf`. Part of Phase 4 of the v3.3 refactor.
+/// `rte_mbuf`.
 ///
-/// Phase 4 scope: the view is a thin cursor over a contiguous byte range
-/// already extracted by `packet_parse::parse_packet()` / `parse_udp_packet()`.
-/// It satisfies the minimum PacketView surface the Codec concept relies on:
+/// The view is a thin cursor over a contiguous byte range already extracted
+/// by `packet_parse::parse_packet()` / `parse_udp_packet()`. It satisfies the
+/// minimum PacketView surface the Codec concept relies on:
 ///
 ///     const uint8_t* data() const noexcept;
 ///     uint8_t*       writable_data() noexcept;
@@ -14,10 +14,6 @@
 ///     void           trim_front(size_t n) noexcept;
 ///     void           trim_back(size_t n) noexcept;
 ///     uint64_t       arrival_tsc() const noexcept;
-///
-/// Phase 5 upgrades this to a real zero-copy mbuf chain view supporting
-/// segmented payloads and in-place TLS decrypt. For now the parser hands us
-/// a single contiguous pointer so the simple cursor form is sufficient.
 
 #include <cstddef>
 #include <cstdint>
@@ -38,7 +34,7 @@ public:
 
     /// @brief Construct from a payload pointer + length + arrival TSC.
     /// @param payload     Pointer to the first payload byte (writable; TLS
-    ///                    decrypt will mutate in place in Phase 5).
+    ///                    decrypt mutates in place).
     /// @param len         Payload length in bytes.
     /// @param arrival_tsc TSC reading captured at `rte_eth_rx_burst` return.
     constexpr MbufView(uint8_t* payload, std::size_t len,
@@ -85,7 +81,7 @@ private:
     uint64_t    arrival_tsc_ = 0;
 };
 
-// Phase 5: formal concept verification.
+// Formal concept verification.
 static_assert(::eph::core::PacketView<MbufView>,
               "MbufView must satisfy the eph::core::PacketView concept");
 

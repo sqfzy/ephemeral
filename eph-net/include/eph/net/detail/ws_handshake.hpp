@@ -3,9 +3,6 @@
 /// @file ws_handshake.hpp
 /// Client-side WebSocket HTTP Upgrade handshake over a generic ByteSink.
 ///
-/// Sub-phase 9.5 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.5).
-///
 /// This helper performs steps 1-10 of RFC 6455 §4.1 over an already-
 /// established byte-level transport (plaintext TCP *or* TLS-wrapped TCP,
 /// decided by the caller's `ByteSink` instantiation — see §D-2 of the
@@ -195,8 +192,7 @@ ws_compute_accept(std::string_view client_key) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Random 16-byte nonce via getrandom(2) — matches Phase 7's migration from
-// RAND_bytes. Returns false on repeated kernel failure.
+// Random 16-byte nonce via getrandom(2). Returns false on repeated kernel failure.
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline bool ws_random_nonce(uint8_t out[16]) noexcept {
     for (int attempt = 0; attempt < 3; ++attempt) {

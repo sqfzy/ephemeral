@@ -1,16 +1,14 @@
 #pragma once
 
 /// @file eal.hpp
-/// DPDK EAL RAII guard re-exported under `eph::net::dpdk`. Part of Phase 4
-/// of the v3.3 refactor.
+/// DPDK EAL RAII guard re-exported under `eph::net::dpdk`.
 ///
-/// The underlying implementation lives in `eph-dpdk/include/eph/dpdk/eal.hpp`
-/// (legacy module). Phase 4 adds a typedef so v3.3 user code can write
+/// The underlying implementation lives in `eph-dpdk/include/eph/dpdk/eal.hpp`.
+/// This header provides a typedef so user code can write
 ///
 ///     eph::net::dpdk::Eal eal = ...;
 ///
-/// without including the legacy namespace. Phase 7 migrates the source
-/// into this module and drops the alias.
+/// without including the internal namespace.
 
 #include "eph/dpdk/eal.hpp"
 

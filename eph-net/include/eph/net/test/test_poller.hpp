@@ -3,8 +3,7 @@
 /// @file test/test_poller.hpp
 /// In-memory `Poller` for unit tests: no epoll, no DPDK, no syscalls.
 ///
-/// Part of Phase 2 of the v3.3 refactor (see
-/// `.artifacts/design-eph-v3.3-architecture-20260410.md`). `TestPoller<P>`
+/// `TestPoller<P>`
 /// holds a flat vector of registered `P*`, and on `poll()` walks the list
 /// calling `poll_once_()` on each. It also flips `attached_` on the
 /// pollable (via `set_attached`) so `is_attached()` behaves correctly.

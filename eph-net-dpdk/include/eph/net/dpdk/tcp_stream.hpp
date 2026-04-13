@@ -1,9 +1,7 @@
 #pragma once
 
 /// @file tcp_stream.hpp
-/// DPDK user-space TCP stream satisfying `eph::net::Stream`. Part of
-/// Phase 4 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
+/// DPDK user-space TCP stream satisfying `eph::net::Stream`.
 ///
 /// Architecture:
 ///
@@ -11,32 +9,15 @@
 ///        │
 ///        v
 ///     DpdkTcpStream<C, EnableTls>
-///        │  ├── eph::dpdk::TcpSession<>  (byte-pipe; pragmatic reuse
-///        │  │                              of the battle-tested legacy
-///        │  │                              TCP state machine — Phase 7
-///        │  │                              migrates the source into
-///        │  │                              detail/dpdk_tcp_session.hpp)
+///        │  ├── eph::dpdk::TcpSession<>  (byte-pipe; reuse of the
+///        │  │                              battle-tested TCP state machine)
 ///        │  ├── C                         (StreamCodec template param)
-///        │  ├── TlsState                  (only when EnableTls == true —
-///        │  │                              Phase 4 stub returns
-///        │  │                              TlsHandshakeFailed)
+///        │  ├── TlsState                  (only when EnableTls == true)
 ///        │  ├── reassembly buffer         (for codec's decode loop)
 ///        │  └── DpdkPoller<>*             (set by Poller::add)
 ///        │
 ///        v
 ///     DpdkPoller<> (lcore burst poll)
-///
-/// Phase 4 scope:
-///   - Plaintext path works: `create()` runs the TCP 3-way handshake by
-///     calling `TcpSession::connect()`. Once the Poller adopts the stream,
-///     incoming mbufs dispatch into `process_burst_()` which feeds the
-///     TCP session and then runs the codec decode loop against the freshly
-///     delivered payload, invoking `on_message` per decoded frame.
-///   - `send()` writes bytes via `TcpSession::send`. `NotAttached` is
-///     returned when called before the stream is in a Poller.
-///   - TLS path is a Phase 5 stub, exactly like `KernelTcpStream`: with
-///     `EnableTls=true` the `create()` factory returns `TlsHandshakeFailed`.
-///   - Destructor auto-detaches from the Poller if still attached.
 
 #include <array>
 #include <chrono>
@@ -62,22 +43,17 @@
 #include "eph/dpdk/packet_parse.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
-#include "eph/net/detail/ws_handshake.hpp"   // Sub-phase 9.5
+#include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
 
-// Phase 7: the DPDK TLS path is now FULLY WIRED. Phase 5 shipped it as a
-// structural stub because `eph::dpdk::tcp.hpp` included `<openssl/rand.h>`
-// from vcpkg-openssl which collided with aws-lc in the same TU. Phase 7
-// replaced the two `RAND_bytes` call sites (TcpSession ISN generation and
-// the WS mask-key cache) with `getrandom(2)`, deleted the legacy
-// eph-transport / eph-dpdk modules, and moved the DPDK primitives into
-// eph-net-dpdk. aws-lc is now the only OpenSSL flavour in any eph-net-dpdk
-// TU, which lets us include the real `detail/tls_state.hpp` unconditionally
-// and run the TLS 1.3 handshake + in-place AEAD path for `EnableTls=true`.
+// The DPDK TLS path uses aws-lc exclusively (no vcpkg-openssl). ISN
+// generation and WS mask-key use `getrandom(2)` so there is no OpenSSL
+// symbol conflict. `detail/tls_state.hpp` provides the TLS 1.3 handshake
+// and in-place AEAD for `EnableTls=true`.
 #include "eph/net/dpdk/detail/tls_state.hpp"
 
 namespace eph::net::dpdk {
@@ -100,15 +76,13 @@ inline spdlog::logger* tcp_stream_logger() {
     return l;
 }
 
-// Phase 5: see the BLOCKER note above the namespace block. The real
-// `detail::TlsState` (with aws-lc-backed in-place AEAD) lives in
-// `detail/tls_state.hpp` but cannot be wired in here until the
-// vcpkg-openssl ↔ aws-lc TU conflict is resolved.
+// TlsState (with aws-lc-backed in-place AEAD) lives in
+// `detail/tls_state.hpp`.
 
 /// @brief Reassembly buffer for the codec decode loop. Bytes dispatched
 ///        in from the Poller append here, then the codec drains them
 ///        incrementally. Implemented as a simple std::vector<uint8_t>
-///        with a front cursor — Phase 5 can upgrade to a ring buffer.
+///        with a front cursor.
 class ReasmBuffer {
 public:
     explicit ReasmBuffer(std::size_t cap = 256 * 1024) { buf_.resize(cap); }
@@ -155,7 +129,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// WS-handshake ByteSink adapters (Sub-phase 9.5)
+// WS-handshake ByteSink adapters
 // ---------------------------------------------------------------------------
 //
 // Mirrors the kernel variants: the DPDK byte pipe is `eph::dpdk::TcpSession<>`
@@ -357,9 +331,8 @@ class DpdkPoller;
 ///
 /// @tparam C          StreamCodec implementation (duck-typed per the
 ///                    `eph::core::StreamCodec` concept).
-/// @tparam EnableTls  When true, TLS session state is carried (but real
-///                    handshake is deferred to Phase 5 — `create()`
-///                    returns `TlsHandshakeFailed` until then).
+/// @tparam EnableTls  When true, TLS session state is carried and
+///                    `create()` runs the TLS 1.3 handshake via aws-lc.
 template <class C, bool EnableTls = true>
 class DpdkTcpStream {
 public:
@@ -396,12 +369,11 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: pool must not be null"});
         }
-        // Sub-phase 9.6: HTTP CONNECT proxies are unsupported on DPDK.
-        // HFT colo deployments don't use proxies, and a DPDK client
-        // bypasses the kernel userland stack that would otherwise be the
-        // natural vehicle for reaching one. Reject up-front with a clear
-        // diagnostic so users who accidentally reuse a kernel StreamConfig
-        // get an actionable error rather than a silent data-plane stall.
+        // HTTP CONNECT proxies are unsupported on DPDK. HFT colo
+        // deployments don't use proxies, and a DPDK client bypasses the
+        // kernel userland stack that a proxy would be reachable through.
+        // Reject up-front with a clear diagnostic so users who accidentally
+        // reuse a kernel StreamConfig get an actionable error.
         if (cfg.proxy.has_value()) {
             SPDLOG_LOGGER_WARN(log,
                 "DpdkTcpStream::create: HTTP CONNECT proxy not supported "
@@ -434,12 +406,12 @@ public:
         }
 
         if constexpr (EnableTls) {
-            // Phase 7: real TLS 1.3 handshake via aws-lc, driven through the
-            // legacy `eph::dpdk::TcpSession<>` (which satisfies the legacy
-            // TcpTransport concept via its `send`/`poll_rx`/`state` triple).
-            // The hot-path AEAD state is extracted into the TlsState object
-            // held as a [[no_unique_address]] member of this stream; data
-            // frames decrypt in place over the reasm buffer on the RX burst.
+            // TLS 1.3 handshake via aws-lc, driven through TcpSession<>
+            // (which satisfies the TcpTransport concept via its
+            // `send`/`poll_rx`/`state` triple). The hot-path AEAD state is
+            // extracted into the TlsState object held as a
+            // [[no_unique_address]] member of this stream; data frames
+            // decrypt in place over the reasm buffer on the RX burst.
             auto h = stream->tls_.handshake(stream->sess_, stream->cfg_.tls);
             if (!h) {
                 SPDLOG_LOGGER_WARN(log,
@@ -451,9 +423,8 @@ public:
                 "DpdkTcpStream::create: TLS 1.3 handshake complete");
         }
 
-        // ── Sub-phase 9.5: optional WebSocket HTTP Upgrade ───────────────
-        //
-        // Same contract as KernelTcpStream: empty ws_path skips entirely.
+        // Optional WebSocket HTTP Upgrade. Same contract as
+        // KernelTcpStream: empty ws_path skips entirely.
         if (!stream->cfg_.ws_path.empty()) {
             std::string host_storage;
             std::string_view host_sv;
@@ -562,8 +533,8 @@ public:
                 core::Error::Disconnected,
                 "DpdkTcpStream::send: session not Established"});
         }
-        // Phase 7: with EnableTls=true, encrypt the bytes into one or more
-        // TLS records before forwarding to the DPDK byte pipe. Mirrors the
+        // With EnableTls=true, encrypt the bytes into one or more TLS
+        // records before forwarding to the DPDK byte pipe. Mirrors the
         // kernel-side path (KernelTcpStream::send).
         if constexpr (EnableTls) {
             tls_send_buf_.clear();
@@ -735,14 +706,10 @@ private:
     ///        `on_message` per decoded frame. Returns the number of
     ///        frames delivered.
     ///
-    /// Phase 5 note: the in-place TLS decrypt path is implemented in
-    /// `eph/net/dpdk/detail/tls_state.hpp::process_records_in_place` and
-    /// is fully unit-tested via the in-place AEAD primitive in
-    /// `eph-net/tests/test_tls_in_place_decrypt.cpp`. The wiring of that
-    /// path back into `drain_codec_` is BLOCKED by the vcpkg-openssl ↔
-    /// aws-lc TU conflict described at the top of this file. Plaintext
-    /// `EnableTls=false` instantiations are unaffected and still produce
-    /// the Phase 4 byte-pipe behaviour below.
+    /// The in-place TLS decrypt path is implemented in
+    /// `eph/net/dpdk/detail/tls_state.hpp::process_records_in_place`.
+    /// Plaintext `EnableTls=false` instantiations use the plain byte-pipe
+    /// path below.
     std::size_t drain_codec_() noexcept {
         if (!on_message) return 0;
         reasm_.compact();
@@ -753,7 +720,7 @@ private:
         uint8_t            scratch[1024];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
-        // ──────── Plaintext path (Phase 4 behavior) ────────
+        // ──────── Plaintext path ────────
         while (reasm_.readable() > 0) {
             const std::size_t before = reasm_.readable();
             detail::MbufView view(const_cast<uint8_t*>(reasm_.read_ptr()),
@@ -791,7 +758,7 @@ private:
     [[no_unique_address]] std::conditional_t<EnableTls,
                                               detail::TlsState,
                                               std::monostate> tls_{};
-    // Phase 7: scratch buffer for encrypting send() payloads into TLS records
+    // Scratch buffer for encrypting send() payloads into TLS records
     // before handing them to the byte pipe. Persists across calls so we do not
     // reallocate per send. Only populated when `EnableTls=true`.
     std::vector<uint8_t>                    tls_send_buf_{};

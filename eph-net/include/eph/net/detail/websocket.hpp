@@ -27,7 +27,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <sys/random.h>  // getrandom(2) — Phase 7: replaces RAND_bytes
+#include <sys/random.h>  // getrandom(2) for CSPRNG
 
 namespace eph::net::ws {
 
@@ -270,10 +270,9 @@ public:
 
 private:
     void refill() noexcept {
-        // Phase 7: switched from aws-lc's `RAND_bytes` to the kernel CSPRNG
-        // via `getrandom(2)`. This decouples the WS wire layer from any
-        // OpenSSL flavour — necessary because the same header is now pulled
-        // into DPDK TUs that must avoid vcpkg-openssl / aws-lc collisions.
+        // Kernel CSPRNG via getrandom(2) — decouples the WS wire layer from
+        // any OpenSSL flavour, avoiding vcpkg-openssl / aws-lc collisions
+        // when this header is pulled into DPDK TUs.
         // getrandom(2) drains the same entropy source aws-lc falls through
         // to, so the distributional guarantee is unchanged.
         //

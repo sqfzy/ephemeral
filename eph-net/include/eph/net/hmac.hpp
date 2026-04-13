@@ -57,9 +57,8 @@
 ///     and instruction count.
 ///   * Constant-time verify — not needed by outgoing signed requests.
 ///     Incoming verification (for webhook-style inbound) would use a
-///     separate `hmac_sha256_verify` helper; out of scope for Phase 9.2.
-///   * Base64 encoding — the baseline `eph-net` exposed it for OKX, but
-///     Phase 9 defers base64 support to the adapter layer that needs it.
+///     separate `hmac_sha256_verify` helper; not yet implemented.
+///   * Base64 encoding — deferred to the adapter layer that needs it.
 
 #include <array>
 #include <cstddef>

@@ -76,9 +76,9 @@ inline std::string ssl_error_string() {
 /// C function pointers used by OpenSSL's BIO interface.
 /// @brief Duck-typed template: any type providing `send`, `poll_rx`, `state` and
 /// related methods compatible with the legacy `TcpTransport` concept works.
-/// The concept constraint was removed in Phase 7 because the concept itself
-/// is deleted; the method-set requirement survives as ordinary template
-/// instantiation errors.
+/// The concept constraint was removed because the legacy concept is deleted;
+/// the method-set requirement survives as ordinary template instantiation
+/// errors.
 template <class TcpImpl>
 class TlsSession {
 

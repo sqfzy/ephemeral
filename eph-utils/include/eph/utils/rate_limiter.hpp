@@ -16,7 +16,7 @@
 ///   }
 /// @endcode
 ///
-/// Design (plan-phase-9-recovery-20260410-180306.md §6, D-4):
+/// Design:
 ///
 /// - **Thread-safe by default.**  Shared rate limiters across threads are
 ///   the common HFT case (one per venue, many sender threads).  Mutex-

@@ -3,12 +3,9 @@
 /// @file test/fake_stream.hpp
 /// In-memory `Stream` concept mock for unit tests.
 ///
-/// Introduced in Phase 2 of the v3.3 refactor (see
-/// `.artifacts/design-eph-v3.3-architecture-20260410.md`). `FakeStream`
-/// satisfies `eph::net::Stream` without any syscalls — tests can drive a
-/// Poller against it, inject bytes via `inject_rx()`, and inspect the
-/// resulting TX via `collect_tx()`. This is the v3.3 replacement for the
-/// legacy `eph::core::FakeTcpTransport` (deleted in Phase 8).
+/// `FakeStream` satisfies `eph::net::Stream` without any syscalls — tests
+/// can drive a Poller against it, inject bytes via `inject_rx()`, and
+/// inspect the resulting TX via `collect_tx()`.
 ///
 /// Intended usage pattern:
 ///
@@ -188,9 +185,8 @@ private:
     bool                 closed_gracefully_{false};
 };
 
-// Compile-time concept conformance check — this is the teeth of the Phase 2
-// contract: if the Stream concept ever evolves and FakeStream falls behind,
-// this static_assert fires the moment the header is included.
+// Compile-time concept conformance check — if the Stream concept ever evolves
+// and FakeStream falls behind, this static_assert fires on inclusion.
 static_assert(Pollable<FakeStream>,
               "FakeStream must satisfy eph::net::Pollable");
 static_assert(Stream<FakeStream>,

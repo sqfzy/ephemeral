@@ -1,8 +1,7 @@
 #pragma once
 
 /// @file udp_socket.hpp
-/// DPDK UDP datagram socket satisfying `eph::net::Datagram`. Part of
-/// Phase 4 of the v3.3 refactor.
+/// DPDK UDP datagram socket satisfying `eph::net::Datagram`.
 ///
 /// Architecture:
 ///
@@ -18,20 +17,11 @@
 ///        v
 ///     DpdkPoller<> (lcore burst poll)
 ///
-/// Phase 4 scope:
-///   - TX uses the legacy `UdpSender` for header-precomputed
-///     fixed-destination sends. `send_to(data, dst)` is only valid when
-///     `dst` matches the configured peer (the legacy template is fixed-
-///     peer — changing destination mid-stream would require rebuilding
-///     the template, which is outside Phase 4).
-///   - RX dispatch comes in via `process_burst_` from DpdkPoller, which
-///     parses the UDP packet, extracts the payload, and invokes the codec
-///     decode loop → `on_datagram` per decoded frame.
-///   - Multicast join/leave currently returns `InvalidConfig` because the
-///     legacy `eph::dpdk::multicast` helper uses a port-level registration
-///     API that is orthogonal to per-socket membership; Phase 5 wires
-///     that into the new API surface properly. Tests only exercise the
-///     API surface (NotAttached, send_to after attach, etc.).
+/// TX uses `UdpSender` for header-precomputed fixed-destination sends.
+/// `send_to(data, dst)` is only valid when `dst` matches the configured
+/// peer (the underlying template is fixed-peer). RX dispatch comes in via
+/// `process_burst_` from DpdkPoller, which parses the UDP packet, extracts
+/// the payload, and invokes the codec decode loop.
 
 #include <array>
 #include <cstddef>
@@ -52,7 +42,7 @@
 
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
-#include "eph/dpdk/multicast.hpp"   // Phase 5: multicast_mac_from_ip helper
+#include "eph/dpdk/multicast.hpp"   // multicast_mac_from_ip helper
 #include "eph/dpdk/packet_parse.hpp"
 #include "eph/dpdk/udp.hpp"
 #include "eph/net/concepts.hpp"
@@ -173,7 +163,7 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::send_to: dst does not match configured peer "
-                "(Phase 4 uses fixed-peer UdpSender)"});
+                "(fixed-peer UdpSender)"});
         }
         if (!sender_.send(data.data(),
                            static_cast<uint16_t>(data.size()))) {
@@ -186,10 +176,10 @@ public:
 
     /// @brief Subscribe to a multicast group at the NIC MAC-filter layer.
     ///
-    /// Phase 5 implementation: derive the multicast Ethernet MAC from the
-    /// group IP per RFC 1112, append it to our per-socket MAC list, and
-    /// push the rebuilt list to the NIC via `rte_eth_dev_set_mc_addr_list`.
-    /// Per-socket connect_to / 5-tuple steering is handled separately by
+    /// Derives the multicast Ethernet MAC from the group IP per RFC 1112,
+    /// appends it to our per-socket MAC list, and pushes the rebuilt list
+    /// to the NIC via `rte_eth_dev_set_mc_addr_list`. Per-socket
+    /// connect_to / 5-tuple steering is handled separately by
     /// `connect_to()`.
     ///
     /// Returns `InvalidConfig` if `group.ip` is not in the 224.0.0.0/4
@@ -321,8 +311,8 @@ public:
                 parsed.src_port()
             };
 
-            // Phase 5: connect_to() filter — drop packets whose source
-            // does not match the configured peer.
+            // connect_to() filter — drop packets whose source does not
+            // match the configured peer.
             if (connected_) {
                 if (src_addr.ip.to_be32() != connected_peer_.ip.to_be32() ||
                     src_addr.port         != connected_peer_.port) {
@@ -333,8 +323,7 @@ public:
 
             // Wrap the payload in an MbufView. The memory is owned by
             // the mbuf, which stays alive for the entire on_datagram
-            // callback scope. Phase 5 will let codecs mutate in place
-            // for zero-copy TLS decrypt.
+            // callback scope.
             detail::MbufView view(const_cast<uint8_t*>(parsed.payload),
                                    parsed.payload_len, rx_tsc);
 

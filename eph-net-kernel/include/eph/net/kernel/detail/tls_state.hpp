@@ -1,26 +1,20 @@
 #pragma once
 
 /// @file tls_state.hpp
-/// Phase 5: real TLS 1.3 state for `KernelTcpStream<C, true>`.
+/// Real TLS 1.3 state for `KernelTcpStream<C, true>`.
 ///
-/// Replaces the Phase 3 placeholder TlsState{ handshake_completed } stub
-/// with the live aws-lc / BoringSSL handshake + AES-GCM record machinery.
-///
-/// Pragmatic reuse: rather than re-implementing TLS for the kernel
-/// backend, this header builds a thin adapter (`ByteSocketTcpAdapter`) that
-/// makes the Phase 3 `detail::ByteSocket` look like the legacy
-/// `eph::net::TcpTransport` concept, then drives the existing
-/// `eph::net::TlsSession<>` for the handshake and `eph::net::TlsRecordCrypto`
-/// for the data plane. The adapter is local to this file (TU-private),
-/// the legacy headers are unmodified, and Phase 7 will fold the
-/// adapter / legacy code together when the legacy module is deleted.
+/// This header builds a thin adapter (`ByteSocketTcpAdapter`) that makes
+/// `detail::ByteSocket` look like the `eph::net::TcpTransport` concept,
+/// then drives the existing `eph::net::TlsSession<>` for the handshake
+/// and `eph::net::TlsRecordCrypto` for the data plane. The adapter is
+/// local to this file (TU-private).
 ///
 /// Architecture:
 ///
 ///     KernelTcpStream<C, true>::create()
-///        ├── ByteSocket::connect()                // Phase 3 (TCP 3-way)
+///        ├── ByteSocket::connect()                // TCP 3-way handshake
 ///        ├── ByteSocketTcpAdapter wraps the socket
-///        ├── TlsSession<adapter>::create()        // legacy aws-lc
+///        ├── TlsSession<adapter>::create()        // aws-lc
 ///        ├── session.handshake()                  // blocking, control thread
 ///        ├── session.extract_hot_state()          // pulls TLS 1.3 keys
 ///        └── TlsRecordCrypto::create(hot_state)   // hot-path AEAD
@@ -40,9 +34,9 @@
 /// Zero-copy story for kernel: there is none. The kernel-side TCP
 /// receive buffer is owned by the kernel and is copied into user space
 /// by recv(); a TLS plaintext buffer must be distinct from the
-/// ciphertext anyway. Phase 5's headline zero-copy story is the DPDK
-/// path (`DpdkTcpStream::process_burst_`), where the mbuf hands the
-/// codec a writable pointer into the same bytes the NIC DMA'd into.
+/// ciphertext anyway. The zero-copy story is the DPDK path
+/// (`DpdkTcpStream::process_burst_`), where the mbuf hands the codec a
+/// writable pointer into the same bytes the NIC DMA'd into.
 
 #include <chrono>
 #include <cstddef>
@@ -71,11 +65,11 @@ namespace eph::net::kernel::detail {
 // ByteSocketTcpAdapter — make ByteSocket look like a legacy TcpTransport.
 // ---------------------------------------------------------------------------
 //
-// The legacy `eph::net::TlsSession<TcpImpl>` template requires the wrapped
-// type to satisfy the legacy TcpTransport concept (string-typed errors,
-// `mss()`, `is_established()`, `last_rx_burst_tsc()`, etc.). The Phase 3
-// `ByteSocket` returns `eph::core::ErrorInfo` and has no transport state,
-// so a thin adapter is needed for the duration of the handshake.
+// The `eph::net::TlsSession<TcpImpl>` template requires the wrapped type
+// to satisfy the TcpTransport concept (string-typed errors, `mss()`,
+// `is_established()`, `last_rx_burst_tsc()`, etc.). `ByteSocket` returns
+// `eph::core::ErrorInfo` and has no transport state, so a thin adapter is
+// needed for the duration of the handshake.
 //
 // The adapter holds a non-owning pointer to a `ByteSocket` plus a small
 // scratch buffer it uses to satisfy `poll_rx`'s callback contract. It is
@@ -151,11 +145,11 @@ private:
     uint64_t    last_rx_tsc_ = 0;
 };
 
-// Phase 7: the legacy `eph::net::TcpTransport` concept was a compile-time
-// duck-typing check. It no longer exists as a requirement on `TlsSession`
-// (the concept header remains in eph-core for backward compatibility, but
-// `TlsSession` is now an unconstrained template). Method-set compliance is
-// enforced by ordinary template instantiation inside `TlsSession<ByteSocketTcpAdapter>`.
+// The `eph::net::TcpTransport` concept is no longer a requirement on
+// `TlsSession` (the concept header remains in eph-core for backward
+// compatibility, but `TlsSession` is now an unconstrained template).
+// Method-set compliance is enforced by ordinary template instantiation
+// inside `TlsSession<ByteSocketTcpAdapter>`.
 
 // ---------------------------------------------------------------------------
 // TlsState — owns the post-handshake AEAD context + record parsing buffer.

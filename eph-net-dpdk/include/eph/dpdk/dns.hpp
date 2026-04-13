@@ -26,7 +26,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <sys/random.h>  // getrandom(2) — Phase 7: replaces RAND_bytes
+#include <sys/random.h>  // getrandom(2) for CSPRNG
 
 #include <rte_ethdev.h>
 #include <rte_ether.h>
@@ -165,7 +165,7 @@ inline uint16_t random_ephemeral_port() noexcept {
     static_assert((net::kEphemeralPortRange & (net::kEphemeralPortRange - 1)) == 0,
                   "kEphemeralPortRange must be a power of 2 for unbiased modulo");
     uint16_t rnd;
-    // Phase 7: kernel CSPRNG via getrandom(2); see the header note at the top.
+    // Kernel CSPRNG via getrandom(2).
     if (::getrandom(&rnd, sizeof(rnd), GRND_NONBLOCK) != sizeof(rnd))
         return 0;
     return net::kEphemeralPortMin + (rnd % net::kEphemeralPortRange);
@@ -554,9 +554,8 @@ resolve(uint16_t port_id,
         port_id, queue_id);
 
     // Generate random transaction ID and ephemeral source port
-    // Phase 7: kernel CSPRNG via getrandom(2) replaces RAND_status/RAND_bytes
-    // so the DPDK DNS resolver no longer pulls in <openssl/rand.h>, unblocking
-    // the aws-lc TLS path inside the same TU.
+    // Kernel CSPRNG via getrandom(2) — avoids pulling in <openssl/rand.h>,
+    // which would conflict with the aws-lc TLS path in the same TU.
     uint16_t tx_id;
     if (::getrandom(&tx_id, sizeof(tx_id), GRND_NONBLOCK) != sizeof(tx_id)) {
         return std::unexpected("DNS resolve: CSPRNG failure for transaction ID");

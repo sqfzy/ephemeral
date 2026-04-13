@@ -3,8 +3,7 @@
 /// @file test/fake_datagram.hpp
 /// In-memory `Datagram` concept mock for unit tests.
 ///
-/// Part of Phase 2 of the v3.3 refactor (see
-/// `.artifacts/design-eph-v3.3-architecture-20260410.md`). `FakeDatagram`
+/// `FakeDatagram`
 /// is the UDP-side counterpart to `FakeStream`: injects/collects whole
 /// datagrams, tracks multicast joins/leaves in an std::vector, and plugs
 /// into `TestPoller` with zero syscalls.

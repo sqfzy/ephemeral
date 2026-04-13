@@ -13,17 +13,10 @@
 #include <format>
 #include <string>
 
-// v3.3 Phase 4 prerequisite: forward TcpState + tcp_state_name to the
-// canonical definition in `eph/core/tcp_state.hpp`. The legacy enum used
-// to live inline in this header, but Phase 2 introduced
-// `eph/net/tcp_state.hpp` (which now also forwards to the same canonical
-// header). The dual definition was an ODR conflict in any TU that
-// included both — Phase 4's eph-net-dpdk module is the first to do so,
-// and the breakage surfaced there. Pulling the enum into one shared
-// header in eph-core resolves the conflict without changing anyone's
-// public API.
-//
-// Phase 7 deletes this header outright.
+// TcpState + tcp_state_name live in the canonical definition at
+// `eph/core/tcp_state.hpp`. This header forwards to it to avoid ODR
+// conflicts when multiple modules include both this header and
+// `eph/net/tcp_state.hpp`.
 #include "eph/core/tcp_state.hpp"
 
 namespace eph::net {

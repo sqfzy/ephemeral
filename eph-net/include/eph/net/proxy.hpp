@@ -1,21 +1,17 @@
 #pragma once
 
 /// @file proxy.hpp
-/// HTTP CONNECT proxy configuration for `KernelTcpStream` (Sub-phase 9.6).
-///
-/// Part of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.6).
+/// HTTP CONNECT proxy configuration for `KernelTcpStream`.
 ///
 /// Design rationale:
 ///
-///   * **Config-driven** — a proxy is just another phase of the stream
+///   * **Config-driven** — a proxy is just another stage of the stream
 ///     bring-up, sitting between the raw TCP connect and the TLS handshake.
-///     Per §D-2 of the plan we do NOT expose a separate
-///     `connect_through_proxy()` factory; callers set `StreamConfig.proxy`
-///     and the backend runs the tunnel transparently.
+///     We do NOT expose a separate `connect_through_proxy()` factory;
+///     callers set `StreamConfig.proxy` and the backend runs the tunnel
+///     transparently.
 ///
-///   * **HTTP CONNECT only** — SOCKS5 is explicitly out of scope for 9.6
-///     (see plan §Sub-phase 9.6 bullet "No SOCKS5"). HFT colo deployments
+///   * **HTTP CONNECT only** — SOCKS5 is explicitly out of scope. HFT colo
 ///     do not use proxies; this support exists purely for development,
 ///     testing, and restricted-network operator environments where CONNECT
 ///     is the lowest-common-denominator tunneling protocol.

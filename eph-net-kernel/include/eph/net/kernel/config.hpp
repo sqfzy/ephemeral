@@ -3,10 +3,8 @@
 /// @file config.hpp
 /// Configuration structs for KernelTcpStream / KernelUdpSocket / KernelPoller.
 ///
-/// Part of Phase 3 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md). These are plain data
-/// aggregates: every field has a sensible default so user code can
-/// designated-initialize only what it cares about.
+/// These are plain data aggregates: every field has a sensible default so
+/// user code can designated-initialize only what it cares about.
 
 #include <chrono>
 #include <cstddef>
@@ -17,10 +15,10 @@
 #include <optional>
 
 #include "eph/net/http.hpp"  // HttpHeader (for ws_extra_headers)
-#include "eph/net/proxy.hpp" // Sub-phase 9.6: ProxyConfig (HTTP CONNECT)
+#include "eph/net/proxy.hpp" // ProxyConfig (HTTP CONNECT)
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
-#include "eph/net/detail/tls_constants.hpp"  // Phase 5: TlsConfig
+#include "eph/net/detail/tls_constants.hpp"  // TlsConfig
 
 namespace eph::net::kernel {
 
@@ -30,9 +28,7 @@ namespace eph::net::kernel {
 
 /// @brief Configuration for `KernelTcpStream::create`.
 ///
-/// Minimum usable config is `remote` + default everything else. The Phase 3
-/// scope is plaintext TCP + optional TLS stub + optional WS upgrade; real
-/// TLS handshake and WS HTTP upgrade are Phase 5 work.
+/// Minimum usable config is `remote` + default everything else.
 struct StreamConfig {
     /// @brief Destination endpoint. Must be populated by the caller.
     SocketAddr remote{};
@@ -54,20 +50,15 @@ struct StreamConfig {
     ///        for plaintext use (since the field is ignored). For TLS use,
     ///        callers MUST set at least `tls.hostname` (SNI) and either
     ///        `tls.ca_cert_path` or rely on the system's default trust
-    ///        store. Phase 5 wires this through the real handshake.
+    ///        store.
     ::eph::net::TlsConfig tls{};
 
-    // ── WebSocket upgrade (Sub-phase 9.5) ────────────────────────────────
+    // ── WebSocket upgrade ─────────────────────────────────────────────────
     //
     // When `ws_path` is non-empty, `KernelTcpStream::create` will run a
     // WebSocket HTTP Upgrade handshake after the TCP (and optional TLS)
     // handshake completes. An empty `ws_path` disables the upgrade — the
-    // stream behaves exactly like plain TCP / TLS (backward-compat for all
-    // pre-9.5 call sites).
-    //
-    // See D-2 in .artifacts/plan-phase-9-recovery-20260410-180306.md for
-    // why this is config-driven rather than a separate `connect_websocket()`
-    // factory.
+    // stream behaves exactly like plain TCP / TLS.
 
     /// @brief WebSocket request-target (e.g. "/ws/btcusdt@bookTicker").
     ///        Empty = no upgrade.
@@ -88,7 +79,7 @@ struct StreamConfig {
     /// @brief Cumulative deadline for the WS HTTP handshake phase.
     std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
 
-    // ── HTTP CONNECT proxy (Sub-phase 9.6) ───────────────────────────────
+    // ── HTTP CONNECT proxy ────────────────────────────────────────────────
     //
     // When `proxy` is set, `KernelTcpStream::create` will:
     //   1. TCP-connect to `proxy->host:proxy->port` (instead of `remote`)

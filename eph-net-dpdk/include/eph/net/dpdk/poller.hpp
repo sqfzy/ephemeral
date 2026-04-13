@@ -3,9 +3,6 @@
 /// @file poller.hpp
 /// DPDK lcore burst-poll multiplexer satisfying `eph::net::Poller`.
 ///
-/// Part of Phase 4 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
-///
 /// Design summary:
 ///
 ///   - **Heterogeneous Pollables via function-pointer type erasure**
@@ -21,11 +18,11 @@
 ///     returns. There is no `poll(timeout)` overload (the design doc
 ///     explicitly excludes it).
 ///
-///   - **Routing table**: Phase 4 uses a flat linear scan over the
-///     registered entries (like the legacy `Reactor<>` hot-path dispatch
-///     loop). For typical HFT deployments with 2-4 connections a cache-
-///     friendly linear scan beats a hash map; Phase 5 can swap the routing
-///     table for a real 5-tuple hash if the n is large enough to matter.
+///   - **Routing table**: uses a flat linear scan over the registered
+///     entries (like the legacy `Reactor<>` hot-path dispatch loop). For
+///     typical HFT deployments with 2-4 connections a cache-friendly
+///     linear scan beats a hash map; can be swapped for a real 5-tuple
+///     hash if the connection count is large enough to matter.
 ///
 ///   - **Pollable notification hooks**: every `Pollable` in the DPDK
 ///     backend (`DpdkTcpStream`, `DpdkUdpSocket`) exposes

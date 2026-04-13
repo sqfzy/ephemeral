@@ -5,9 +5,8 @@
 ///
 /// ## Why this exists
 ///
-/// The v3.3 refactor dropped the legacy `http_message.hpp` (eager one-shot
-/// parser built on `std::string`) in favor of a Tokio-aligned incremental
-/// parser that:
+/// Replaces the legacy `http_message.hpp` (eager one-shot parser built on
+/// `std::string`) with a Tokio-aligned incremental parser that:
 ///
 ///   1. **Returns `expected<optional<ParseResult<T>>>`** — "Partial" is a
 ///      first-class outcome, matching `httparse::Status::Partial` and the

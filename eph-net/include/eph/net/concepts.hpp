@@ -3,8 +3,7 @@
 /// @file concepts.hpp
 /// `Pollable` / `Stream` / `Datagram` / `Poller` concepts for `eph::net`.
 ///
-/// Part of Phase 2 of the v3.3 refactor (see
-/// `.artifacts/design-eph-v3.3-architecture-20260410.md`). Defines the narrow
+/// Defines the narrow
 /// waist between the two networking backends (kernel via epoll, DPDK via
 /// burst-poll) and user code. Zero virtual dispatch: everything is a template
 /// concept satisfied by concrete per-backend types such as

@@ -1,10 +1,7 @@
 #pragma once
 
 /// @file error.hpp
-/// Unified error enum and ErrorInfo struct for the v3.3 refactor.
-///
-/// This header is part of the Phase 0 slim-down of eph-core (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md). It replaces the
+/// Unified error enum and ErrorInfo struct for eph-core. Replaces the
 /// scattered per-module error enums (`SendError`, `ConnectionError`,
 /// `TcpError`, `WsError`, ...) with a single flat `Error` enum that every
 /// fallible API in the eph stack returns via `std::expected<T, ErrorInfo>`.
@@ -66,11 +63,11 @@ enum class Error : uint8_t {
     InvalidConfig,       ///< config struct failed validation
     OutOfMemory,         ///< allocation failed (or pool exhausted)
 
-    // ── HTTP CONNECT proxy (Sub-phase 9.6) ─────────────────────────────────
+    // ── HTTP CONNECT proxy ─────────────────────────────────────────────────
     //
     // Appended at the end of the enum on purpose: older switch statements
-    // that predate 9.6 keep compiling without re-order churn, and the
-    // underlying integer values of pre-9.6 errors stay stable.
+    // keep compiling without re-order churn, and the underlying integer
+    // values of earlier errors stay stable.
     ProxyConnectFailed,   ///< TCP connect to the proxy server itself failed
     ProxyHandshakeFailed, ///< proxy returned a non-200 / malformed response
     ProxyAuthRequired,    ///< proxy returned 407 — missing/wrong Basic auth

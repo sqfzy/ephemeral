@@ -9,11 +9,9 @@
 /// in the `eph::net::` namespace because that is where the rest of the
 /// v3.3 networking concepts live (Stream, Datagram, Poller).
 ///
-/// History: this header was added in Phase 4 of the v3.3 refactor to
-/// resolve an ODR conflict between two pre-existing definitions —
-/// `eph/core/tcp_concept.hpp` (legacy, Phase 0 leftover) and
-/// `eph/net/tcp_state.hpp` (new, Phase 2). Both files now forward to
-/// this header so the enum has exactly one definition per TU.
+/// This header resolves an ODR conflict between `eph/core/tcp_concept.hpp`
+/// and `eph/net/tcp_state.hpp` — both now forward here so the enum has
+/// exactly one definition per TU.
 
 #include <cstdint>
 

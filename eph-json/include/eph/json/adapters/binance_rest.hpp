@@ -6,10 +6,10 @@
 /// Provides `parse_depth_response`, `parse_server_time_response`, and
 /// `parse_depth_levels` — pure functions that turn raw JSON response bodies
 /// into typed values. Transport (HTTPS GET) is the caller's responsibility;
-/// Phase 7 removed the legacy `BinanceRestClient` wrapper because the
-/// legacy `eph::net::HttpClient` was deleted alongside `eph-transport`.
-/// Callers should perform the GET via their own `eph-net-kernel` +
-/// `eph-codec` stack and pass the response body into the parsers here.
+/// The legacy `BinanceRestClient` wrapper was removed along with
+/// `eph-transport`. Callers should perform the GET via their own
+/// `eph-net-kernel` + `eph-codec` stack and pass the response body
+/// into the parsers here.
 
 #include <algorithm>
 #include <array>

@@ -1,10 +1,9 @@
 #pragma once
 
 /// @file socket_addr.hpp
-/// IPv4 + SocketAddr value types for the v3.3 `eph::net` concept layer.
+/// IPv4 + SocketAddr value types for the `eph::net` concept layer.
 ///
-/// Part of Phase 2 of the v3.3 refactor (see
-/// `.artifacts/design-eph-v3.3-architecture-20260410.md`). Provides the minimal
+/// Provides the minimal
 /// address value types used by the new `Stream` / `Datagram` / `Poller`
 /// concepts. Deliberately minimal: IPv4 only, no resolver, no syscalls — the
 /// kernel / dpdk backends layer their own address-family plumbing on top.

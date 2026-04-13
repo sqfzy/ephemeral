@@ -5,12 +5,11 @@
 /// for the codec implementations in `eph-codec`.
 ///
 /// Background: the `StreamCodec` / `DatagramCodec` concepts in `eph-core`
-/// require each codec to name a `PacketViewRef` associated type. In the final
-/// backend design (see .artifacts/design-eph-v3.3-architecture-20260410.md)
-/// each backend provides its own PacketView implementation (kernel:
-/// `detail::SpanView`, DPDK: `detail::MbufView`). Phase 1 only needs a single
-/// concrete type so the codec headers can satisfy the concept and be unit
-/// testable — `SpanPacketView` plays that role here.
+/// require each codec to name a `PacketViewRef` associated type. Each backend
+/// provides its own PacketView implementation (kernel:
+/// `detail::SpanView`, DPDK: `detail::MbufView`). `SpanPacketView` provides
+/// a single concrete type so the codec headers can satisfy the concept and
+/// be unit-testable independently of any backend.
 ///
 /// The codec `decode` methods are still templated over `class PacketView`, so
 /// later backends can pass their own view types without modification; the
@@ -79,7 +78,7 @@ private:
     uint64_t    tsc_;   ///< NIC arrival timestamp for latency tracking
 };
 
-// Phase 5: formal concept verification.
+// Formal concept verification.
 static_assert(::eph::core::PacketView<SpanPacketView>,
               "SpanPacketView must satisfy the eph::core::PacketView concept");
 

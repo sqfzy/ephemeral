@@ -3,8 +3,7 @@
 /// @file byte_socket.hpp
 /// RAII wrapper around a non-blocking AF_INET SOCK_STREAM fd.
 ///
-/// Part of Phase 3 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md). This is the byte-pipe
+/// This is the byte-pipe
 /// layer that `KernelTcpStream` wraps. It deliberately contains **no** TLS,
 /// WebSocket, framing or reconnect logic — those sit above in the Stream
 /// layer. What it does provide:
@@ -26,8 +25,7 @@
 /// connect/send/recv logic. We intentionally re-implement a minimal subset
 /// here rather than wrapping it: the legacy class is tied to the v2.x
 /// `TcpTransport` concept and carries timestamping / histogram baggage that
-/// belongs at a higher layer in v3.3. The legacy file stays untouched until
-/// Phase 7.
+/// belongs at a higher layer.
 
 #include <cerrno>
 #include <chrono>

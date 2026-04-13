@@ -14,7 +14,7 @@
 ///   - We intentionally do NOT duplicate the parsing logic from
 ///     `eph-itch/moldudp64.hpp`. Instead we delegate to `parse_moldudp64`
 ///     which is header-only and already has a message callback API. The
-///     old header stays untouched (Phase 1 is additive).
+///     old header stays untouched.
 ///   - Gap detection is folded into the codec: we track `expected_seq_` and
 ///     increment `gaps_` when the incoming datagram's first sequence number
 ///     does not equal `expected_seq_`. Out-of-order packets are still

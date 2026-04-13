@@ -3,11 +3,8 @@
 /// @file http_connect.hpp
 /// Client-side HTTP CONNECT proxy handshake over a generic ByteSink.
 ///
-/// Sub-phase 9.6 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.6).
-///
 /// Mirrors the template/adapter pattern established by
-/// `eph/net/detail/ws_handshake.hpp` (Sub-phase 9.5): the helper takes any
+/// `eph/net/detail/ws_handshake.hpp`: the helper takes any
 /// object satisfying the duck-typed ByteSink contract
 ///
 ///     struct ByteSink {
@@ -117,12 +114,11 @@ format_host_port(char (&scratch)[320],
 // CONNECT-response fallback parser
 // ---------------------------------------------------------------------------
 //
-// Our shared `parse_http_response` (from 9.3) rejects any non-1xx/204/304
-// response without a `Content-Length` header. That's the safe default for
-// exchange REST traffic, but RFC 7231 §4.3.6 explicitly says a successful
-// CONNECT response is framed as if the body has length zero — many real
-// proxies omit Content-Length on the 200. Because Sub-phase 9.6 is not
-// allowed to modify the 9.3 parser, we fall back to a tiny hand-rolled
+// Our shared `parse_http_response` rejects any non-1xx/204/304 response
+// without a `Content-Length` header. That's the safe default for exchange
+// REST traffic, but RFC 7231 §4.3.6 explicitly says a successful CONNECT
+// response is framed as if the body has length zero — many real proxies
+// omit Content-Length on the 200. We fall back to a tiny hand-rolled
 // status-line extractor for the CONNECT response case.
 //
 // The fallback only runs if the main parser rejected the response with
@@ -355,7 +351,7 @@ perform_http_connect(
             std::span<HttpHeader>(header_storage, kMaxHeaderCount));
         if (!pr) {
             // RFC 7231 §4.3.6 allows a CONNECT 2xx to omit Content-Length.
-            // The shared 9.3 parser rejects that ("response has no
+            // The shared parser rejects that ("response has no
             // Content-Length and is not bodyless") because its contract
             // targets exchange REST traffic — here we fall back to a
             // permissive status-line-only extractor so Squid / nginx /

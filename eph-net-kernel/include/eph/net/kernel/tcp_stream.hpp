@@ -3,9 +3,6 @@
 /// @file tcp_stream.hpp
 /// Epoll-backed TCP stream satisfying the `eph::net::Stream` concept.
 ///
-/// Part of Phase 3 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
-///
 /// Architecture:
 ///
 ///     user code
@@ -21,31 +18,6 @@
 ///        │
 ///        v
 ///     KernelPoller (epoll)
-///
-/// Phase 3 scope:
-///   - **Plaintext path is fully functional** (EnableTls == false).
-///   - **EnableTls == true** compiles and the class name exists, but the
-///     TLS state is a stub: `create()` with TLS enabled will return
-///     `TlsHandshakeFailed` until Phase 5 wires the real aws-lc TLS record
-///     machinery. The design doc permits this staging so Phase 3 can land
-///     without dragging in the entire `eph-transport/detail/tls_*` stack.
-///   - **WebSocket upgrade** is likewise Phase 5: the stream delivers raw
-///     bytes to the codec via `poll_once_`, and the codec (`WsCodec`) is
-///     responsible for emitting / consuming frame structure. The HTTP
-///     upgrade handshake itself is orthogonal and will slot in alongside
-///     TLS handshake in Phase 5.
-///
-/// What IS covered by Phase 3:
-///   - Sync connect with timeout.
-///   - `poll_once_()` drains the fd via `recv` → codec decode → on_message.
-///   - `send()` writes bytes directly via the ByteSocket (no codec encode —
-///     the caller is responsible for supplying wire-format frames, matching
-///     the design doc's send signature of `std::span<const uint8_t>`).
-///   - `NotAttached` error is returned when `send` is called before the
-///     stream is attached to a Poller.
-///   - Destructor auto-detaches from the Poller if still attached, so that
-///     the Poller's `entries_` does not get a dangling pointer.
-///   - Concept conformance static_asserts for the common instantiations.
 
 #include <cerrno>
 #include <chrono>
@@ -70,13 +42,13 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
-#include "eph/net/detail/http_connect.hpp"   // Sub-phase 9.6: HTTP CONNECT proxy
-#include "eph/net/detail/ws_handshake.hpp"   // Sub-phase 9.5: WS HTTP handshake
+#include "eph/net/detail/http_connect.hpp"   // HTTP CONNECT proxy
+#include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/kernel/config.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/kernel/detail/reassembly_buffer.hpp"
 #include "eph/net/kernel/detail/span_view.hpp"
-#include "eph/net/kernel/detail/tls_state.hpp"  // Phase 5: real TLS state
+#include "eph/net/kernel/detail/tls_state.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
@@ -101,11 +73,10 @@ inline spdlog::logger* tcp_stream_logger() {
     return l;
 }
 
-// Phase 5: TlsState is now defined in detail/tls_state.hpp (real aws-lc
-// AEAD machinery, replacing the Phase 3 stub).
+// TlsState is defined in detail/tls_state.hpp (aws-lc AEAD machinery).
 
 // ---------------------------------------------------------------------------
-// WS-handshake ByteSink adapters (Sub-phase 9.5)
+// WS-handshake ByteSink adapters
 // ---------------------------------------------------------------------------
 //
 // `eph::net::detail::perform_ws_handshake<ByteSink>` is duck-typed on an
@@ -251,10 +222,8 @@ struct TlsWsSink {
 /// @tparam C          StreamCodec implementation (duck-typed per the
 ///                    `eph::core::StreamCodec` concept).
 /// @tparam EnableTls  When true, the instance carries TLS session state
-///                    and `create()` runs the handshake before returning.
-///                    Phase 3 staging: with `EnableTls=true` the handshake
-///                    currently returns `TlsHandshakeFailed`. Phase 5
-///                    wires the real session.
+///                    and `create()` runs the TLS 1.3 handshake via aws-lc
+///                    before returning.
 template <class C, bool EnableTls = true>
 class KernelTcpStream {
 public:
@@ -281,9 +250,7 @@ public:
                 "KernelTcpStream::create: reasm_capacity must be > 0"});
         }
 
-        // ── Sub-phase 9.6: validate optional proxy config up-front ────────
-        //
-        // Catching this before we allocate the stream avoids constructing
+        // Validate optional proxy config up-front to avoid constructing
         // (and then immediately tearing down) a ByteSocket on a bad config.
         if (cfg.proxy.has_value()) {
             auto pv = cfg.proxy->validate();
@@ -344,9 +311,8 @@ public:
             (void)stream->sock_.set_no_delay(true);
         }
 
-        // ── Sub-phase 9.6: HTTP CONNECT handshake (before TLS) ───────────
-        //
-        // At this point we are TCP-connected to the proxy. Drive the
+        // HTTP CONNECT handshake (before TLS). At this point we are
+        // TCP-connected to the proxy. Drive the
         // CONNECT handshake over a plain ByteSocket sink; the proxy
         // either returns 200 (tunnel established) or an error status.
         if (stream->cfg_.proxy.has_value()) {
@@ -418,7 +384,7 @@ public:
         }
 
         if constexpr (EnableTls) {
-            // Phase 5: real TLS 1.3 handshake via aws-lc, driven through a
+            // TLS 1.3 handshake via aws-lc, driven through a
             // ByteSocketTcpAdapter. After handshake the AEAD context is
             // owned by stream->tls_ and the bare ByteSocket resumes ownership
             // of the fd for the data plane.
@@ -434,9 +400,8 @@ public:
                 stream->sock_.fd(), stream->cfg_.remote.to_string());
         }
 
-        // ── Sub-phase 9.5: optional WebSocket HTTP Upgrade ───────────────
-        //
-        // When cfg.ws_path is non-empty, drive the RFC 6455 handshake
+        // Optional WebSocket HTTP Upgrade. When cfg.ws_path is non-empty,
+        // drive the RFC 6455 handshake
         // through either a plaintext (PlainWsSink) or TLS-wrapped
         // (TlsWsSink) byte sink. Any post-handshake bytes that arrived in
         // the same recv(2) as the 101 response are seeded into the
@@ -558,7 +523,7 @@ public:
                 core::Error::Disconnected,
                 "KernelTcpStream::send: state != Established"});
         }
-        // Phase 5: when TLS is enabled, encrypt the bytes into one or more
+        // When TLS is enabled, encrypt the bytes into one or more
         // TLS records before forwarding to the socket. The plaintext API
         // is still bytes-in / bytes-out — the caller has already encoded
         // their frames via `WsCodec::encode` etc.
@@ -700,16 +665,15 @@ private:
     /// @brief Feed buffered bytes through the codec until it returns
     ///        `Ok(None)`, firing `on_message` per decoded frame.
     ///
-    /// Phase 5: when TLS is enabled the reasm buffer holds ciphertext
-    /// (raw TLS records). We decrypt complete records into `tls_plain_buf_`
-    /// and run the codec over the plaintext. Partial records stay in the
-    /// reasm buffer for the next poll.
+    /// When TLS is enabled the reasm buffer holds ciphertext (raw TLS
+    /// records). We decrypt complete records into `tls_plain_buf_` and run
+    /// the codec over the plaintext. Partial records stay in the reasm
+    /// buffer for the next poll.
     std::size_t drain_codec_() noexcept {
         std::size_t delivered = 0;
         // Scratch OutputBuffer for auto-response injection. The auto-
-        // responses are queued for the next send() call (kernel-side
-        // we don't yet plumb the sink back into the TX path automatically;
-        // a Phase 6 cleanup will hook that into the codec contract).
+        // responses are queued for the next send() call (the sink is not
+        // yet plumbed back into the TX path automatically).
         uint8_t          scratch[1024];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
@@ -763,7 +727,7 @@ private:
             return delivered;
         }
 
-        // Plaintext path — original Phase 3 behavior.
+        // Plaintext path.
         while (reasm_.readable() > 0) {
             const std::size_t before = reasm_.readable();
             detail::SpanView view(reasm_.read_ptr(), before);
@@ -805,8 +769,7 @@ private:
     // TLS plaintext staging buffer (only used when EnableTls=true). Lives
     // here so its capacity can amortize across many polls. The empty-base
     // size penalty for the plaintext path is one std::vector<uint8_t> —
-    // 24 bytes. Phase 6 may swap this for a SPSC ring buffer if profiling
-    // calls for it.
+    // 24 bytes.
     std::vector<uint8_t>        tls_plain_buf_{};
     /// TLS encrypt staging — sized per-call so we don't realloc.
     std::vector<uint8_t>        tls_send_buf_{};

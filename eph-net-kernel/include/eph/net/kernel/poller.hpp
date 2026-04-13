@@ -3,9 +3,6 @@
 /// @file poller.hpp
 /// Linux epoll-based multiplexer satisfying `eph::net::Poller`.
 ///
-/// Part of Phase 3 of the v3.3 refactor (see
-/// .artifacts/design-eph-v3.3-architecture-20260410.md).
-///
 /// Design summary:
 ///
 ///   - **Heterogeneous pollables via function-pointer type erasure**
