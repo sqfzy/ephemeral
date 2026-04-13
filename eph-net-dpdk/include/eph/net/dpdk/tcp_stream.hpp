@@ -118,7 +118,7 @@ public:
     /// @brief Append `n` bytes from `src`, compacting first if needed.
     /// @return true on success, false if there is not enough room even
     ///         after compaction.
-    bool append(const uint8_t* src, std::size_t n) noexcept {
+    [[nodiscard]] bool append(const uint8_t* src, std::size_t n) noexcept {
         if (writable_capacity() < n) {
             compact();
             if (writable_capacity() < n) return false;

@@ -78,9 +78,9 @@ inline spdlog::logger* poller_logger() {
 /// Lifted from the legacy RxDispatcher code path. Symmetric so that an
 /// incoming packet with swapped src/dst matches the registered tuple
 /// without a second hash computation.
-[[nodiscard]] inline uint32_t hash_tuple(uint32_t src_ip, uint32_t dst_ip,
-                                          uint16_t src_port,
-                                          uint16_t dst_port) noexcept {
+[[nodiscard]] constexpr uint32_t hash_tuple(uint32_t src_ip, uint32_t dst_ip,
+                                              uint16_t src_port,
+                                              uint16_t dst_port) noexcept {
     uint64_t h = 14695981039346656037ULL;  // FNV-1a 64-bit offset basis
     auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ULL; };
     mix(src_ip ^ dst_ip);
