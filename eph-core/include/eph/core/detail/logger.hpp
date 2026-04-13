@@ -23,7 +23,7 @@ namespace eph::core::detail {
 ///       return l;
 ///   }
 /// @endcode
-inline spdlog::logger* make_logger(const char* name) {
+[[nodiscard]] inline spdlog::logger* make_logger(const char* name) {
     auto lg = spdlog::get(name);
     if (!lg) {
         try {
