@@ -543,13 +543,22 @@ public:
             if (!enc) {
                 return std::unexpected(enc.error());
             }
-            auto sr = sess_.send(tls_send_buf_.data(), tls_send_buf_.size());
-            if (!sr) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                    "DpdkTcpStream::send(TLS): TcpSession::send err={}", sr.error());
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::Disconnected,
-                    "DpdkTcpStream::send: TcpSession::send failed"});
+            // The encrypted buffer may exceed MSS (TLS record overhead +
+            // plaintext), so chunk by MSS before handing to the session.
+            const std::size_t mss = sess_.mss();
+            std::size_t off = 0;
+            while (off < tls_send_buf_.size()) {
+                const std::size_t chunk =
+                    std::min(mss, tls_send_buf_.size() - off);
+                auto sr = sess_.send(tls_send_buf_.data() + off, chunk);
+                if (!sr) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::send(TLS): TcpSession::send err={}", sr.error());
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::Disconnected,
+                        "DpdkTcpStream::send: TcpSession::send failed"});
+                }
+                off += *sr;
             }
             // API contract: report plaintext byte count.
             return data.size();

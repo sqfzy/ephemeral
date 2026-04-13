@@ -301,7 +301,9 @@ public:
         }
         for (uint16_t i = 0; i < n; ++i) {
             auto parsed = ::eph::dpdk::net::parse_udp_packet(mbufs[i]);
-            if (!parsed.udp || parsed.payload == nullptr || parsed.payload_len == 0) {
+            // Accept zero-length payloads per RFC 768 — only reject
+            // truly unparseable packets (no UDP header or null payload ptr).
+            if (!parsed.udp || parsed.payload == nullptr) {
                 rte_pktmbuf_free(mbufs[i]);
                 continue;
             }

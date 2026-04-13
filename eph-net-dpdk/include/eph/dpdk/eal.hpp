@@ -7,6 +7,7 @@
 /// Mixing the two in one class forces awkward ownership semantics and
 /// prevents multi-port setups.
 
+#include <atomic>
 #include <expected>
 #include <format>
 #include <string>
@@ -22,9 +23,17 @@ namespace detail {
 inline spdlog::logger* eal_logger() { return get_logger<LoggerName{"dpdk.eal"}>(); }
 } // namespace detail
 
+/// Process-wide EAL initialization state. Guards against double-init
+/// which is undefined behaviour in DPDK.
+inline std::atomic<bool>& eal_initialized_flag() noexcept {
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+
 /// @brief Initialize DPDK EAL (Environment Abstraction Layer).
 ///
 /// Must be called exactly once per process, before any other rte_* API.
+/// A second call returns an error without invoking `rte_eal_init()`.
 /// Parses DPDK-specific command-line arguments (e.g., -l, --vdev, -a).
 ///
 /// @param argc  Argument count (from main)
@@ -32,10 +41,21 @@ inline spdlog::logger* eal_logger() { return get_logger<LoggerName{"dpdk.eal"}>(
 /// @return Number of argv entries consumed by EAL on success, or error string
 [[nodiscard]] inline std::expected<int, std::string> eal_init(int argc, char** argv) {
     [[maybe_unused]] auto log = detail::eal_logger();
+
+    bool expected = false;
+    if (!eal_initialized_flag().compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+        SPDLOG_LOGGER_ERROR(log, "eal_init called twice — DPDK EAL is already initialized");
+        return std::unexpected("EAL already initialized (double-init is DPDK UB)");
+    }
+
     SPDLOG_LOGGER_TRACE(log, "Calling rte_eal_init (argc={})", argc);
 
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) {
+        // Roll back the flag so a subsequent attempt can retry after
+        // the caller fixes the EAL arguments.
+        eal_initialized_flag().store(false, std::memory_order_release);
         return std::unexpected(std::format(
             "rte_eal_init failed (ret={}, rte_errno={}): {}",
             ret, rte_errno, rte_strerror(rte_errno)));
@@ -58,6 +78,9 @@ inline spdlog::logger* eal_logger() { return get_logger<LoggerName{"dpdk.eal"}>(
                      ret, rte_errno, rte_strerror(rte_errno));
         return false;
     }
+    // Reset the process-wide flag so a subsequent init (in tests or
+    // process-restart-in-place scenarios) is allowed.
+    eal_initialized_flag().store(false, std::memory_order_release);
     return true;
 }
 
