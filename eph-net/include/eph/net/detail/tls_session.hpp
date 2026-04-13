@@ -404,13 +404,13 @@ public:
 
     ~TlsSession() {
         if (ssl_) {
-            // Only attempt TLS close_notify if handshake completed and
-            // the underlying TCP is likely still alive.  When the TCP
-            // connection is already broken, SSL_shutdown would block on
-            // BIO read/write or return an error—both are harmless to
-            // ignore, but we skip the attempt entirely to avoid noisy
-            // error logs and potential delays.
-            if (handshake_done_ && bio_ctx_ && bio_ctx_->tcp &&
+            // Only attempt TLS close_notify if handshake completed,
+            // the underlying TCP is likely still alive, AND we were not
+            // explicitly told to suppress the alert (e.g. after
+            // extract_hot_state() transferred key material to an
+            // in-place AEAD context that takes over the connection).
+            if (handshake_done_ && !suppress_close_notify_ &&
+                bio_ctx_ && bio_ctx_->tcp &&
                 bio_ctx_->tcp->is_established()) {
                 // Best-effort: ignore return value since we are tearing down
                 SSL_shutdown(ssl_);
@@ -430,10 +430,12 @@ public:
         , ctx_(other.ctx_)
         , bio_ctx_(std::move(other.bio_ctx_))
         , config_(std::move(other.config_))
-        , handshake_done_(other.handshake_done_) {
+        , handshake_done_(other.handshake_done_)
+        , suppress_close_notify_(other.suppress_close_notify_) {
         other.ssl_ = nullptr;
         other.ctx_ = nullptr;
         other.handshake_done_ = false;
+        other.suppress_close_notify_ = false;
     }
 
     TlsSession& operator=(TlsSession&& other) noexcept {
@@ -445,9 +447,11 @@ public:
             bio_ctx_ = std::move(other.bio_ctx_);
             config_ = std::move(other.config_);
             handshake_done_ = other.handshake_done_;
+            suppress_close_notify_ = other.suppress_close_notify_;
             other.ssl_ = nullptr;
             other.ctx_ = nullptr;
             other.handshake_done_ = false;
+            other.suppress_close_notify_ = false;
         }
         return *this;
     }
@@ -592,12 +596,18 @@ public:
     ///
     /// Key length is determined dynamically from the negotiated cipher:
     ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key
-    [[nodiscard]] std::expected<TlsHotState, std::string> extract_hot_state() const {
+    [[nodiscard]] std::expected<TlsHotState, std::string> extract_hot_state() {
         [[maybe_unused]] auto log = detail::tls_logger();
 
         if (!handshake_done_) {
             return std::unexpected("Cannot extract keys: handshake not done");
         }
+
+        // After key extraction the caller takes over the TLS data path
+        // with its own AEAD context. The TlsSession's SSL* object must
+        // NOT send a close_notify when destructed — the connection is
+        // still alive and the caller will continue to use it.
+        suppress_close_notify_ = true;
 
         // Determine key length from negotiated cipher
         const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
@@ -784,7 +794,11 @@ private:
     SSL_CTX*                      ctx_   = nullptr;
     std::unique_ptr<BioContext>   bio_ctx_;
     TlsConfig                     config_;
-    bool                          handshake_done_ = false;
+    bool                          handshake_done_        = false;
+    /// When true, ~TlsSession skips SSL_shutdown (close_notify). Set by
+    /// extract_hot_state() because the caller takes over key material and
+    /// continues using the TCP connection with its own AEAD context.
+    bool                          suppress_close_notify_ = false;
 };
 
 } // namespace eph::net
