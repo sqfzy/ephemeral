@@ -365,6 +365,11 @@ perform_ws_handshake(
             SPDLOG_WARN("ws_handshake: ByteSink::send err={}", sr.error().detail);
             return std::unexpected(sr.error());
         }
+        if (*sr == 0) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::BufferFull,
+                "ws_handshake: ByteSink::send returned 0 bytes"});
+        }
         sent += *sr;
     }
     SPDLOG_DEBUG("ws_handshake: sent {}B request", req_len);
