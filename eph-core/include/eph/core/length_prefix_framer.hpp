@@ -12,7 +12,7 @@
 #include <cstring>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/detail/logger.hpp"
 
 #include "eph/core/framer_concept.hpp"
 
@@ -27,14 +27,8 @@ namespace detail {
 ///
 /// @return Pointer to the spdlog logger instance. Never null after initialization.
 inline spdlog::logger* framer_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("core.framer");
-        } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("core.framer");
-        }
-    }();
-    return l.get();
+    static auto* l = ::eph::core::detail::make_logger("core.framer");
+    return l;
 }
 } // namespace detail
 
