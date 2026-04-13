@@ -1,8 +1,8 @@
-# Code Review Report — DPDK Fault Tolerance
+# Code Review Report — DPDK Fault Tolerance (Final)
 
 ## 元信息
-- 时间：2026-04-13 09:23
-- 耗时：~15 分
+- 时间：2026-04-13 09:23 – 10:07
+- 耗时：~44 分（9 轮迭代审计）
 - Diff 来源：全量审计 target: eph-net-dpdk
 - 审查范围：20+ 文件，~7200 行
 - 审查维度：正确性、安全性、性能、可观测性、测试、设计
@@ -148,10 +148,49 @@ APPROVE — 所有 Critical 问题已修复并测试通过。
 
 所有 36 个 DPDK 相关测试通过。
 
-## Diff 统计
+## 后续轮次（第 6-8 轮）交叉审计发现
+
+### [🔴 Critical] Kernel 后端同构 bug（commit 6f56432）
+
+**文件**：`eph-net-kernel/include/eph/net/kernel/tcp_stream.hpp`
+**描述**：kernel 后端的 TlsByteSocket::send()、drain_codec_() TLS 路径、
+drain_codec_() plaintext 路径与 DPDK 后端存在完全相同的 bug 模式。
+**修复**：移植 DPDK 的 3 个修复（零字节 send guard + 2 个 codec no-progress guard）。
+
+### [🔴 Critical] WS handshake 和 HTTP CONNECT send 循环（commit 95deba3）
+
+**文件**：`eph-net/include/eph/net/detail/ws_handshake.hpp:368`、
+`eph-net/include/eph/net/detail/http_connect.hpp:307`
+**描述**：共享层的 WS 握手和 HTTP CONNECT 代理握手的 send drain 循环同样缺少
+`*sr == 0` 防护，存在无限循环风险。
+**修复**：两处均添加 `*sr == 0` → `BufferFull` error 返回。
+
+### [🔴 Critical] DPDK TLS in-place codec drain 无限循环（commit 9c2f4fa）
+
+**文件**：`eph-net-dpdk/include/eph/net/dpdk/tcp_stream.hpp:769`
+**描述**：TLS decrypt-in-place 路径的 `while (view.length() > 0)` codec drain
+循环缺少 no-progress guard。第 1 轮修复了 plaintext 路径但遗漏了此 TLS 子路径。
+**修复**：添加 `view.length() == before` 检查。
+
+## 系统性验证（第 8 轮）
+
+全项目 grep 确认所有 bug 模式实例已清除：
+
+| Bug 模式 | 总实例数 | 已防护 |
+|----------|----------|--------|
+| `+= *sr` 零字节 send 循环 | 6 | 6/6 ✅ |
+| `codec_.decode` 无进展无限循环 | 4 | 4/4 ✅ |
+
+## Diff 统计（全部 5 个 commit）
 ```
- tls_state.hpp                    | 18 +++++++-
- tcp_stream.hpp                   | 50 +++++++++++++++++++---
- udp_socket.hpp                   |  7 +++
- test_dpdk_fault_tolerance.cpp    | 196 +++ (new)
+ eph-net-dpdk detail/tls_state.hpp  | 18 +++++++-
+ eph-net-dpdk tcp_stream.hpp        | 59 ++++++++++++++++++++---
+ eph-net-dpdk udp_socket.hpp        |  7 +++
+ eph-net-dpdk poller.hpp            |  2 +-
+ eph-net-dpdk test_dpdk_fault_tolerance.cpp | 196 +++ (new)
+ eph-net-kernel tcp_stream.hpp      | 22 +++
+ eph-net ws_handshake.hpp           |  5 +
+ eph-net http_connect.hpp           |  5 +
+ .artifacts/review report           | 157 +++ (new)
+ 9 files changed, +463 / -8
 ```
