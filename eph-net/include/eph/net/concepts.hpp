@@ -70,20 +70,24 @@ namespace eph::net {
 /// purposes we require only that they be callable on a non-const `T&`.
 /// Backends may relax/tighten the access control as needed; the concept
 /// cares only that the expressions are well-formed.
+///
+/// All three methods require `noexcept` — polling is the tightest inner loop
+/// and must not throw. Every existing implementation already satisfies this;
+/// the concept now enforces what the code guarantees.
 template <class T>
 concept Pollable = requires(T& t) {
     typename T::PacketView;
 
     // One I/O step; returns number of packets/frames processed.
-    { t.poll_once_() } -> std::convertible_to<std::size_t>;
+    { t.poll_once_() } noexcept -> std::convertible_to<std::size_t>;
 
     // Attachment probe: true iff currently registered with a Poller.
-    { t.is_attached_() } -> std::convertible_to<bool>;
+    { t.is_attached_() } noexcept -> std::convertible_to<bool>;
 
     // Backend-specific handle. Kernel: reinterpret as int. DPDK: conn-id /
     // mbuf-pool pointer. We type-erase via `void*` at the concept level so
     // eph-net does not leak kernel fd vs DPDK mbuf details into the waist.
-    { t.native_handle() } -> std::convertible_to<void*>;
+    { t.native_handle() } noexcept -> std::convertible_to<void*>;
 };
 
 // ---------------------------------------------------------------------------

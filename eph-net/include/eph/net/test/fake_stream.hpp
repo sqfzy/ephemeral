@@ -173,8 +173,8 @@ public:
     /// @brief Pollable concept contract — backend handle. For the fake this
     ///        is a stable pointer to the FakeStream instance itself; tests
     ///        can use it as a unique id.
-    [[nodiscard]] void* native_handle() noexcept {
-        return static_cast<void*>(this);
+    [[nodiscard]] void* native_handle() const noexcept {
+        return const_cast<void*>(static_cast<const void*>(this));
     }
 
 private:

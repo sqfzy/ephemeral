@@ -157,8 +157,8 @@ public:
 
     [[nodiscard]] bool is_attached_() const noexcept { return attached_; }
 
-    [[nodiscard]] void* native_handle() noexcept {
-        return static_cast<void*>(this);
+    [[nodiscard]] void* native_handle() const noexcept {
+        return const_cast<void*>(static_cast<const void*>(this));
     }
 
 private:
