@@ -10,6 +10,8 @@
 #include <rte_eal.h>
 #include <rte_errno.h>
 
+#include "eph/dpdk/eal.hpp"
+
 namespace eph::dpdk::test {
 
 class DpdkTestEnv : public ::testing::Environment {
@@ -33,10 +35,17 @@ public:
             << "EAL init failed (rte_errno=" << rte_errno
             << "): " << rte_strerror(rte_errno)
             << "\nHint: on Linux, ensure CONFIG_VFIO or run with --no-huge";
+
+        // Synchronize with the process-wide double-init guard so that
+        // any test code calling eal_init() is correctly rejected.
+        eal_initialized_flag().store(true, std::memory_order_release);
     }
 
     void TearDown() override {
         rte_eal_cleanup();
+        // eal_cleanup() already resets the flag, but if a test called
+        // it directly the flag may be stale — force-reset for safety.
+        eal_initialized_flag().store(false, std::memory_order_release);
     }
 };
 

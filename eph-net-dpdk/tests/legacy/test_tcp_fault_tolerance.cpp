@@ -336,14 +336,11 @@ TEST(MbufViewFaultTolerance, TrimFrontOnValidViewWorks) {
 // ═══════════════════════════════════════════════════════════════════════
 
 TEST(EalFaultTolerance, DoubleInitFlagPreventsSecondCall) {
-    // The test environment uses rte_eal_init() directly (not our wrapper),
-    // so the process-wide flag is unset. Simulate a prior init by setting
-    // the flag, then verify eal_init() rejects the second call.
+    // The test environment sets the process-wide EAL init flag after
+    // calling rte_eal_init(). A second eal_init() call must be rejected
+    // without invoking rte_eal_init (which would be DPDK UB).
     auto& flag = ::eph::dpdk::eal_initialized_flag();
-    const bool prev = flag.load();
-
-    // Pretend EAL is already initialized.
-    flag.store(true, std::memory_order_release);
+    ASSERT_TRUE(flag.load()) << "Test env must set the EAL init flag";
 
     char arg0[] = "test";
     char* argv[] = {arg0, nullptr};
@@ -356,9 +353,6 @@ TEST(EalFaultTolerance, DoubleInitFlagPreventsSecondCall) {
         EXPECT_NE(result.error().find("already initialized"), std::string::npos)
             << "Error message: " << result.error();
     }
-
-    // Restore previous flag state so test teardown can call eal_cleanup().
-    flag.store(prev, std::memory_order_release);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -456,15 +450,11 @@ TEST(FaultTolerance, ParsePacketWithIpTotalLengthZero) {
     EXPECT_EQ(parsed.payload, nullptr) << "ip_total=0 must produce no payload";
 }
 
-TEST(EalFaultTolerance, CleanupResetsFlag) {
-    // After eal_cleanup(), the flag should be reset to allow re-init.
-    // We can't actually call eal_cleanup() here (the test env owns EAL),
-    // but we can verify the flag mechanism directly.
+TEST(EalFaultTolerance, FlagIsSetByTestEnv) {
+    // Verify that the test environment correctly synchronizes the
+    // process-wide EAL init flag (dpdk_test_env.hpp sets it after
+    // raw rte_eal_init succeeds).
     auto& flag = ::eph::dpdk::eal_initialized_flag();
-    flag.store(true, std::memory_order_release);
-    EXPECT_TRUE(flag.load());
-
-    // Simulate cleanup resetting the flag (can't call real cleanup in test).
-    flag.store(false, std::memory_order_release);
-    EXPECT_FALSE(flag.load());
+    EXPECT_TRUE(flag.load())
+        << "Test env must set EAL init flag for guard consistency";
 }
