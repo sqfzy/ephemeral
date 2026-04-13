@@ -767,6 +767,7 @@ private:
                     // Feed each decrypted record's plaintext to the codec.
                     detail::MbufView view(plaintext, plen, /*arrival_tsc*/ 0);
                     while (view.length() > 0) {
+                        const std::size_t before = view.length();
                         auto dr = codec_.decode(view, out_sink);
                         if (!dr) {
                             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -775,6 +776,14 @@ private:
                             return;
                         }
                         if (!dr->has_value()) break;
+                        // Guard against infinite loop: codec returned a frame
+                        // but did not advance the view.
+                        if (view.length() == before) {
+                            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                                "DpdkTcpStream::drain_codec_(TLS): codec returned frame "
+                                "but consumed 0 bytes — breaking to avoid infinite loop");
+                            break;
+                        }
                         const auto& frame = **dr;
                         if (frame.size() > 0 && on_message) {
                             on_message(frame.data(),
