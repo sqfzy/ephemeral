@@ -729,31 +729,76 @@ private:
         uint8_t            scratch[1024];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
-        // ──────── Plaintext path ────────
-        while (reasm_.readable() > 0) {
-            const std::size_t before = reasm_.readable();
-            detail::MbufView view(const_cast<uint8_t*>(reasm_.read_ptr()),
-                                   before, /*arrival_tsc*/ 0);
-
-            auto dr = codec_.decode(view, out_sink);
-            if (!dr) {
+        if constexpr (EnableTls) {
+            // ──────── TLS decrypt-in-place path ────────
+            // The reasm_ buffer contains raw TLS records (ciphertext).
+            // Decrypt them in-place, then feed the plaintext slices to the
+            // codec. process_records_in_place() overwrites each record's
+            // payload with its plaintext (the AEAD output buffer aliases the
+            // input), so the codec reads from the same memory — zero extra
+            // copies beyond the session→reasm copy.
+            auto dec_r = tls_.process_records_in_place(
+                const_cast<uint8_t*>(reasm_.read_ptr()),
+                reasm_.readable(),
+                [&](uint8_t* plaintext, std::size_t plen) {
+                    // Feed each decrypted record's plaintext to the codec.
+                    detail::MbufView view(plaintext, plen, /*arrival_tsc*/ 0);
+                    while (view.length() > 0) {
+                        auto dr = codec_.decode(view, out_sink);
+                        if (!dr) {
+                            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                                "DpdkTcpStream::drain_codec_(TLS): decode err={}",
+                                dr.error().detail);
+                            return;
+                        }
+                        if (!dr->has_value()) break;
+                        const auto& frame = **dr;
+                        if (frame.size() > 0 && on_message) {
+                            on_message(frame.data(),
+                                       static_cast<uint16_t>(
+                                           frame.size() > 0xFFFFu
+                                               ? 0xFFFFu : frame.size()));
+                            ++delivered;
+                        }
+                    }
+                });
+            if (!dec_r) {
                 SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                    "DpdkTcpStream::drain_codec_: decode err={}",
-                    dr.error().detail);
-                break;
+                    "DpdkTcpStream::drain_codec_(TLS): decrypt err={}",
+                    dec_r.error().detail);
+                // Consume nothing — partial records stay in the buffer for
+                // the next burst. A hard error (bad MAC) should trigger
+                // reset via the reconnect policy.
+            } else {
+                reasm_.consume(*dec_r);
             }
-            const std::size_t consumed = before - view.length();
-            reasm_.consume(consumed);
+        } else {
+            // ──────── Plaintext path ────────
+            while (reasm_.readable() > 0) {
+                const std::size_t before = reasm_.readable();
+                detail::MbufView view(const_cast<uint8_t*>(reasm_.read_ptr()),
+                                       before, /*arrival_tsc*/ 0);
 
-            if (!dr->has_value()) {
-                break;
-            }
-            const auto& frame = **dr;
-            if (frame.size() > 0 && on_message) {
-                on_message(frame.data(),
-                           static_cast<uint16_t>(
-                               frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
-                ++delivered;
+                auto dr = codec_.decode(view, out_sink);
+                if (!dr) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::drain_codec_: decode err={}",
+                        dr.error().detail);
+                    break;
+                }
+                const std::size_t consumed = before - view.length();
+                reasm_.consume(consumed);
+
+                if (!dr->has_value()) {
+                    break;
+                }
+                const auto& frame = **dr;
+                if (frame.size() > 0 && on_message) {
+                    on_message(frame.data(),
+                               static_cast<uint16_t>(
+                                   frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
+                    ++delivered;
+                }
             }
         }
         return delivered;
