@@ -452,6 +452,33 @@ parse_header_block(std::span<const uint8_t> buf,
     return false;
 }
 
+/// @brief Shared header validation for HTTP builders (injection defense).
+///
+/// Both build_http_request and build_http_response perform identical checks:
+///   - header count within kMaxHeaderCount
+///   - each field-name is a valid RFC 7230 token
+///   - each field-value is free of CR/LF/NUL injection
+///
+/// Centralised here so the two builders cannot diverge on validation rules.
+[[nodiscard]] inline std::expected<void, core::ErrorInfo>
+validate_builder_headers(std::span<const HttpHeader> headers) noexcept {
+    if (headers.size() > kMaxHeaderCount) {
+        return std::unexpected(core::ErrorInfo{
+            core::Error::CodecOverflow, "too many headers (builder)"});
+    }
+    for (const auto& h : headers) {
+        if (h.name.empty() || !is_valid_token(h.name)) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad, "invalid header name (builder)"});
+        }
+        if (builder_reject_unsafe_value(h.value)) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad, "invalid header value (CRLF/NUL)"});
+        }
+    }
+    return {};
+}
+
 /// @brief Append raw bytes to `buf`, bounds-checked against `cap`.
 [[nodiscard]] inline bool buf_append(uint8_t* buf, size_t cap, size_t& off,
                                      const void* src, size_t n) noexcept {
@@ -785,19 +812,8 @@ build_http_request(
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "invalid target (CRLF/NUL/whitespace)"});
     }
-    if (headers.size() > kMaxHeaderCount) {
-        return std::unexpected(core::ErrorInfo{
-            core::Error::CodecOverflow, "too many headers (builder)"});
-    }
-    for (const auto& h : headers) {
-        if (h.name.empty() || !detail::is_valid_token(h.name)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header name (builder)"});
-        }
-        if (detail::builder_reject_unsafe_value(h.value)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header value (CRLF/NUL)"});
-        }
+    if (auto hv = detail::validate_builder_headers(headers); !hv) {
+        return std::unexpected(hv.error());
     }
 
     size_t off = 0;
@@ -853,19 +869,8 @@ build_http_response(
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "invalid reason phrase (CRLF/NUL)"});
     }
-    if (headers.size() > kMaxHeaderCount) {
-        return std::unexpected(core::ErrorInfo{
-            core::Error::CodecOverflow, "too many headers (builder)"});
-    }
-    for (const auto& h : headers) {
-        if (h.name.empty() || !detail::is_valid_token(h.name)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header name (builder)"});
-        }
-        if (detail::builder_reject_unsafe_value(h.value)) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecBad, "invalid header value (CRLF/NUL)"});
-        }
+    if (auto hv = detail::validate_builder_headers(headers); !hv) {
+        return std::unexpected(hv.error());
     }
 
     size_t off = 0;
