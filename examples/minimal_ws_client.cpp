@@ -1,9 +1,7 @@
-/// @file minimal_ws_client_v3.cpp
-/// v3.3 rewrite of minimal_ws_client.cpp.
+/// @file minimal_ws_client.cpp
 ///
-/// The shortest possible kernel-backed WebSocket client using the new
-/// eph::net::kernel + eph::codec API. Matches the design doc's Example 1
-/// shape line-for-line.
+/// The shortest possible kernel-backed WebSocket client using the
+/// eph::net::kernel + eph::codec API.
 
 #include <atomic>
 #include <chrono>

@@ -1,11 +1,11 @@
 /// @file test_http_te_edge.cpp
 /// @brief P0 security — Transfer-Encoding edge-case rejection (plan §D-1).
 ///
-/// Migrated from v3.3 baseline `test_http_te_edge_cases.cpp`, **inverted**.
+/// Migrated from baseline `test_http_te_edge_cases.cpp`, **inverted**.
 ///
 /// The baseline parser tolerated chunked and a handful of comma-list TE
 /// patterns (`gzip, chunked`, `deflate, chunked`, mixed-case, leading SP,
-/// multiple TE header lines, etc.). The v3.3 parser rejects **any**
+/// multiple TE header lines, etc.). The parser rejects **any**
 /// Transfer-Encoding header outright per plan §D-1 — the rationale is
 /// that HFT REST APIs all use Content-Length and every proxy-compat
 /// path through TE is a smuggling surface we refuse to carry.
@@ -47,7 +47,7 @@ using HdrStorage = std::array<HttpHeader, 16>;
 
 TEST(HttpTeEdge, GzipChunkedRejected) {
     // Baseline accepted "gzip, chunked" (chunked last, valid per RFC).
-    // v3.3 rejects any TE header.
+    // The parser rejects any TE header.
     constexpr std::string_view wire =
         "HTTP/1.1 200 OK\r\n"
         "Transfer-Encoding: gzip, chunked\r\n\r\n"
@@ -60,7 +60,7 @@ TEST(HttpTeEdge, GzipChunkedRejected) {
 
 TEST(HttpTeEdge, GzipOnlyRejected) {
     // Baseline: "gzip" only → returned incomplete (read until close).
-    // v3.3: TE header present → reject.
+    // TE header present → reject.
     constexpr std::string_view wire =
         "HTTP/1.1 200 OK\r\n"
         "Transfer-Encoding: gzip\r\n\r\n"
@@ -84,7 +84,7 @@ TEST(HttpTeEdge, DeflateChunkedRejected) {
 
 TEST(HttpTeEdge, ChunkedGzipRejected) {
     // Baseline: "chunked, gzip" — RFC violation (chunked must be LAST).
-    // Either way, v3.3 rejects because TE header is present.
+    // Either way, the parser rejects because TE header is present.
     constexpr std::string_view wire =
         "HTTP/1.1 200 OK\r\n"
         "Transfer-Encoding: chunked, gzip\r\n\r\n"
@@ -204,7 +204,7 @@ TEST(HttpTeEdge, EmptyTeValueRejected) {
 }
 
 TEST(HttpTeEdge, TeIdentityRejected) {
-    // "identity" was a no-op coding. v3.3 rejects anyway — TE header present.
+    // "identity" was a no-op coding. The parser rejects anyway — TE header present.
     constexpr std::string_view wire =
         "HTTP/1.1 200 OK\r\n"
         "Transfer-Encoding: identity\r\n\r\n"

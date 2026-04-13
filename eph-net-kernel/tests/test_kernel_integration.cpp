@@ -10,7 +10,7 @@
 ///   4. Send "bye" and do the same.
 ///   5. Close gracefully and verify the server thread exits.
 ///
-/// This test exercises the full Phase 3 data path: ByteSocket → epoll →
+/// This test exercises the full data path: ByteSocket → epoll →
 /// codec decode → application callback → poll-driven send.
 
 #include <gtest/gtest.h>

@@ -1,7 +1,7 @@
 /// @file test_http_whitespace.cpp
 /// @brief P0 security — RFC 7230 whitespace-in-token defense.
 ///
-/// Migrated from v3.3 baseline `test_http_request_whitespace.cpp`.
+/// Migrated from baseline `test_http_request_whitespace.cpp`.
 ///
 /// RFC 7230 §3.1.1 request-line grammar:
 ///     method SP request-target SP HTTP-version CRLF

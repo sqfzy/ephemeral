@@ -3,9 +3,8 @@
 /// `eph::net::tls_keygen` HKDF key derivation, `TlsHotState` structural
 /// invariants, TLS sequence-threshold constants, and SPKI pin utilities.
 ///
-/// Phase 9.7 migration: this file covers the Phase-7 migrated detail layer
-/// at `eph/net/detail/tls_constants.hpp` (originally baseline
-/// `eph-transport/tests/test_tls_config.cpp`, 47 cases).
+/// This file covers the detail layer at `eph/net/detail/tls_constants.hpp`
+/// (originally baseline `eph-transport/tests/test_tls_config.cpp`, 47 cases).
 
 #include <cstring>
 #include <string>

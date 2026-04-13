@@ -1,22 +1,16 @@
 /// @file lat_ex_md_udp.cpp
-/// Phase 11.1 latency benchmark: UDP RTT echo with the 24 B timestamp
-/// protocol, against the Python echo mock `benchmarks/latency/mocks/
+/// Latency benchmark: UDP RTT echo with the 24 B timestamp protocol,
+/// against the Python echo mock `benchmarks/latency/mocks/
 /// ex_md_udp_echo.py`.
 ///
-/// History: Phase 10 originally shipped this scenario as a 1-way Mold64
-/// push (client was purely passive, mock pushed at `push_rate_hz`).
-/// Phase 11.1 D-1 reverts that decision — TX/RX leg decomposition is
-/// only meaningful with a round-trip, and the "market-data" semantics
-/// were never load-bearing for bench fairness. The scenario is now
-/// structurally identical to `lat_udp` (RawDatagramCodec + 24 B TS
-/// prefix + echo); the exchange-pass suffix lives on only so users
-/// that sweep the full `lat_*` matrix get the same scenario count.
+/// Structurally identical to `lat_udp` (RawDatagramCodec + 24 B TS
+/// prefix + echo); the exchange-pass suffix lives on so users that
+/// sweep the full `lat_*` matrix get the same scenario count.
 ///
-/// Measurement clock: both ends use CLOCK_MONOTONIC_RAW via vDSO, same
-/// as every other Phase 11 scenario. Bench client stamps bytes [0:8]
-/// before send; mock overwrites [8:24] with its recv/send timestamps.
-/// Client computes rtt / tx / rx legs and records each into its own
-/// Recorder.
+/// Measurement clock: both ends use CLOCK_MONOTONIC_RAW via vDSO.
+/// Bench client stamps bytes [0:8] before send; mock overwrites [8:24]
+/// with its recv/send timestamps. Client computes rtt / tx / rx legs
+/// and records each into its own Recorder.
 
 #include <array>
 #include <cstdint>
@@ -31,15 +25,15 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (plan D-4: v3.3 API only).
+// eph-* headers.
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.1: DpdkUdpSocket<RawDatagramCodec> real RTT measurement over
-// NIC_B, structurally identical to lat_udp's DPDK branch — only the
-// config section + mock script name differ.
+// DpdkUdpSocket<RawDatagramCodec> real RTT measurement over NIC_B,
+// structurally identical to lat_udp's DPDK branch — only the config
+// section + mock script name differ.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/udp_socket.hpp"
 #else
@@ -119,7 +113,7 @@ int main(int argc, char** argv) {
     }
     const std::size_t payload_size = payload_r.value();
 
-    // Phase 11.1 D-7: 24 B timestamp-block header requirement.
+    // 24 B timestamp-block header requirement.
     if (payload_size < bench::kTimestampBlockSize) {
         std::fprintf(stderr,
                      "lat_ex_md_udp: payload_size=%zu < kTimestampBlockSize=%zu "

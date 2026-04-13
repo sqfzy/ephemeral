@@ -2,8 +2,8 @@
 /// Minimal WebSocket frame helpers for the DPDK E2E kernel-side echo mock.
 ///
 /// Previously lived at `benchmarks/latency/core/ws_framing.hpp` — moved
-/// here in Phase 10 when the bench latency suite was rewritten to rely
-/// on Python mocks instead of C++ in-process mocks. `test_dpdk_e2e.cpp`
+/// here when the bench latency suite was rewritten to rely on Python mocks
+/// instead of C++ in-process mocks. `test_dpdk_e2e.cpp`
 /// still needs a tiny in-process WS server (no framework dependency)
 /// to validate the DpdkTcpStream WS upgrade path, so the helper moves
 /// next to its only remaining caller.

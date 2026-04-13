@@ -1,9 +1,7 @@
-/// @file simple_hft_dpdk_v3.cpp
-/// v3.3 rewrite of simple_hft_dpdk.cpp using the new eph::net::dpdk API.
+/// @file simple_hft_dpdk.cpp
 ///
-/// Matches the design doc's Example 2 ("HFT 生产用户 — DPDK + TCP 下单 +
-/// UDP 行情") shape: one DpdkPoller<> drives multiple Pollables on a single
-/// lcore loop.
+/// DPDK kernel-bypass example: one DpdkPoller<> drives multiple Pollables
+/// on a single lcore loop.
 ///
 /// NOTE: TLS on DPDK is not yet available. The DPDK TLS path is
 /// structurally complete in `eph/net/dpdk/detail/tls_state.hpp` but cannot
@@ -124,8 +122,7 @@ int main(int argc, char** argv) {
         spdlog::warn(
             "simple_hft_dpdk_v3: DpdkTcpStream::create failed (expected on a "
             "smoke-boot without a real mempool): {}", sr.error().detail);
-        spdlog::info("simple_hft_dpdk_v3: this example demonstrates the v3.3 "
-                     "Example 2 API shape; populate `scfg.pool` with a real "
+        spdlog::info("simple_hft_dpdk: populate `scfg.pool` with a real "
                      "rte_pktmbuf_pool_create() output to drive the loop.");
         return 0;
     }

@@ -2,9 +2,6 @@
 /// Unit tests for `eph::net::detail::perform_ws_handshake` using a fake
 /// in-memory ByteSink — no sockets, no threads. Covers the success path
 /// and every defined failure mode.
-///
-/// Sub-phase 9.5 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.5).
 
 #include <array>
 #include <chrono>

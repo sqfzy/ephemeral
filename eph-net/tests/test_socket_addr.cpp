@@ -1,7 +1,7 @@
 /// @file test_socket_addr.cpp
 /// Unit tests for `eph::net::Ipv4Addr` and `eph::net::SocketAddr`.
 ///
-/// Phase 2 of the v3.3 refactor. Covers:
+/// Covers:
 ///   - constexpr factory paths (from_octets / from_be32)
 ///   - round-trip parse / to_string for canonical inputs
 ///   - strict rejection of malformed dotted-quad strings

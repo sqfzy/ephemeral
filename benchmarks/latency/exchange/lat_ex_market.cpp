@@ -1,10 +1,6 @@
 /// @file lat_ex_market.cpp
-/// Phase 10 latency benchmark: exchange bookTicker push (WebSocket one-way)
-/// against the Python mock `benchmarks/latency/mocks/ex_market_push.py`.
-///
-/// Sub-phase 10.4 rewrite. Per
-/// `.artifacts/plan-phase-10-latency-bench-20260411-040540.md` §Sub-phase
-/// 10.4 and §Interface design → "Client API pattern" (one-way variant).
+/// Latency benchmark: exchange bookTicker push (WebSocket one-way) against
+/// the Python mock `benchmarks/latency/mocks/ex_market_push.py`.
 ///
 /// Structure:
 ///
@@ -12,20 +8,19 @@
 ///     bench.conf (port / ws_path / push_rate_hz / duration_seconds)
 ///     plus the lowercase global `mock_ip`, `warmup_samples`.
 ///   * Uses `KernelTcpStream<WsCodec, false>` with
-///     `StreamConfig.ws_path` set — the Phase 9.5 transparent WS upgrade
-///     runs inside `create()`. Once connected we run the measurement
-///     loop by polling the stream; the client sends NOTHING after the
-///     handshake because the mock pushes frames unilaterally at
-///     `push_rate_hz` for `duration_seconds`.
+///     `StreamConfig.ws_path` set — the transparent WS upgrade runs
+///     inside `create()`. Once connected we run the measurement loop by
+///     polling the stream; the client sends NOTHING after the handshake
+///     because the mock pushes frames unilaterally at `push_rate_hz`
+///     for `duration_seconds`.
 ///   * One-way latency is measured entirely inside `on_message`:
 ///     the client stamps `t_recv = monotonic_raw_ns()` on arrival and
 ///     extracts the server-stamped `T":<ns>` field from the JSON
-///     payload via `bench::scan_json_uint_field` (plan D-5 — we do NOT
-///     pull eph-json into the bench path). Sample is `t_recv - t_server`.
+///     payload via `bench::scan_json_uint_field` (we do NOT pull
+///     eph-json into the bench path). Sample is `t_recv - t_server`.
 ///   * Measurement clock is `bench::monotonic_raw_ns()`
-///     (CLOCK_MONOTONIC_RAW via vDSO, per plan D-6). The mock stamps
-///     `T` via the same clock, so the two ends share a time base on
-///     the same host.
+///     (CLOCK_MONOTONIC_RAW via vDSO). The mock stamps `T` via the same
+///     clock, so the two ends share a time base on the same host.
 ///
 /// Per-sample lifetime: `rec` and `sample_idx` are captured by reference
 /// in the `on_message` lambda. They are stack-local in main() and
@@ -42,14 +37,14 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (plan D-4: v3.3 API only).
+// eph-* headers.
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.0: DpdkTcpStream<WsCodec> real one-way bookTicker measurement.
-// Same on_message + scan_json_uint_field("T") logic as the kernel branch.
+// DpdkTcpStream<WsCodec> real one-way bookTicker measurement. Same
+// on_message + scan_json_uint_field("T") logic as the kernel branch.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -175,8 +170,8 @@ int main(int argc, char** argv) {
     // artificially-huge "latencies" (recv_time − server_time) because
     // the frames actually sat in kernel buffers for up to a second.
     //
-    // Phase 11.1: rename Recorder to `lat_ex_market_<backend>_oneway`
-    // so Recorder::export_json produces a uniquely-prefixed JSON file
+    // Recorder named `lat_ex_market_<backend>_oneway` so
+    // Recorder::export_json produces a uniquely-prefixed JSON file
     // alongside the leg files from the other 5 RTT scenarios.
     const char* backend =
 #if defined(EPH_USE_DPDK)
@@ -217,7 +212,7 @@ int main(int argc, char** argv) {
     cfg.ws_path         = ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
 #else
-    // Phase 9.5 transparent WS handshake: setting ws_path makes
+    // Transparent WS handshake: setting ws_path makes
     // `create()` drive the HTTP/1.1 Upgrade after the TCP connect.
     // At high push rates (100 kHz × 30 s ≈ 3 M samples) the reassembly
     // buffer needs enough slack to absorb multiple frames per poll —
@@ -322,8 +317,8 @@ int main(int argc, char** argv) {
             : 0;
     bench::print_report("lat_ex_market", backend, rec,
                         warmup_samples, wall_time_ns);
-    // Phase 11.1: oneway JSON export (1 file per backend). WARN-only
-    // on failure so disk issues don't fail the bench.
+    // Oneway JSON export (1 file per backend). WARN-only on failure so
+    // disk issues don't fail the bench.
     if (!rec.export_json("benchmarks/latency/outputs")) {
         std::fprintf(stderr,
                      "[WARN] lat_ex_market: export_json to "

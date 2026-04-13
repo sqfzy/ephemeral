@@ -5,7 +5,7 @@
 ///   - concept conformance static_asserts for the common instantiations
 ///   - create() on a live in-process echo server succeeds (TLS off)
 ///   - create() with TLS enabled currently returns `TlsHandshakeFailed`
-///     (Phase 3 scope — real TLS handshake lands in Phase 5)
+///     (stub — real TLS handshake requires a live TLS peer)
 ///   - send() before attach returns NotAttached
 ///   - send() + poll drives on_message with the echoed payload
 ///   - close_gracefully transitions state to FinWait1

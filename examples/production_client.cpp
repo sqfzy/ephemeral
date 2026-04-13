@@ -1,5 +1,4 @@
-/// @file production_client_v3.cpp
-/// v3.3 rewrite of production_client.cpp.
+/// @file production_client.cpp
 ///
 /// Shows the production-quality knobs a real HFT client wires onto a
 /// KernelTcpStream: TLS on, reconnect policy, TCP_NODELAY, bounded reasm

@@ -1,5 +1,5 @@
 /// @file test_error.cpp
-/// Unit tests for eph::core::Error and eph::core::ErrorInfo (Phase 0 / v3.3).
+/// Unit tests for eph::core::Error and eph::core::ErrorInfo.
 
 #include <cstring>
 #include <expected>
@@ -61,15 +61,15 @@ TEST(ErrorName, CoversEveryEnumValue) {
     EXPECT_NAMED(BufferFull,         "BUFFER_FULL");
     EXPECT_NAMED(InvalidConfig,      "INVALID_CONFIG");
     EXPECT_NAMED(OutOfMemory,        "OUT_OF_MEMORY");
-    // Sub-phase 9.6: HTTP CONNECT proxy error triad.
+    // HTTP CONNECT proxy error triad.
     EXPECT_NAMED(ProxyConnectFailed,  "PROXY_CONNECT_FAILED");
     EXPECT_NAMED(ProxyHandshakeFailed,"PROXY_HANDSHAKE_FAILED");
     EXPECT_NAMED(ProxyAuthRequired,   "PROXY_AUTH_REQUIRED");
 }
 
 // ============================================================================
-// Proxy error triad — Sub-phase 9.6 additions get their own TESTs so coverage
-// counters see them distinctly from the big sweep above.
+// Proxy error triad — these get their own TESTs so coverage counters see them
+// distinctly from the big sweep above.
 // ============================================================================
 
 TEST(ErrorNameProxy, ProxyConnectFailedHasStableName) {

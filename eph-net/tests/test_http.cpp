@@ -1,8 +1,7 @@
 /// @file test_http.cpp
-/// @brief Full migration of HTTP/1.x parser regression suite (sub-phase 9.4).
+/// @brief Full migration of HTTP/1.x parser regression suite.
 ///
-/// Started life as the 9.3 smoke set (33 cases) and is now expanded with
-/// parser-level regression cases pulled from the v3.3 baseline
+/// Expanded with parser-level regression cases pulled from the baseline
 /// (test_http.cpp, test_http_client.cpp, test_http_response_complete_adv.cpp).
 /// Anything touching Transfer-Encoding / chunked / cookies / Set-Cookie /
 /// redirect / Expect: 100-continue / multipart is skipped per plan §D-1 —
@@ -143,7 +142,7 @@ TEST(HttpParseRequest, IncompleteBodyReturnsNone) {
 }
 
 TEST(HttpParseRequest, ConnectMethodSupported) {
-    // Needed for Sub-phase 9.6 HTTP proxy support.
+    // Needed for HTTP CONNECT proxy support.
     constexpr std::string_view wire =
         "CONNECT stream.binance.com:443 HTTP/1.1\r\n"
         "Host: stream.binance.com:443\r\n\r\n";

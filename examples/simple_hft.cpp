@@ -1,8 +1,6 @@
-/// @file simple_hft_v3.cpp
-/// v3.3 rewrite of simple_hft.cpp using the new eph::net::kernel API.
+/// @file simple_hft.cpp
 ///
-/// Demonstrates the target shape from the design doc's Example 1
-/// ("kernel-only user"):
+/// Demonstrates the kernel-only user pattern:
 ///
 ///   1. KernelPoller::create                     — one poller owns the loop
 ///   2. KernelTcpStream<WsCodec,true>::create    — WebSocket over TLS
@@ -108,16 +106,14 @@ static int run_with_tls(const AppConfig& cfg) {
     auto ip_r = eph::net::Ipv4Addr::parse(cfg.host);
     if (!ip_r) {
         spdlog::error(
-            "simple_hft_v3 demo: --host must be an IPv4 literal (got '{}'). "
+            "simple_hft demo: --host must be an IPv4 literal (got '{}'). "
             "Resolve to a literal out-of-band; DNS lives above the transport "
-            "in the v3.3 design.", cfg.host);
+            "layer.", cfg.host);
         return 2;
     }
 
-    // 3) Build the stream. The v3.3 WS handshake is a responsibility of
-    //    the codec; for demo purposes we just open the
-    //    socket. The design doc (Example 1) shows `ws_path` as a future
-    //    StreamConfig field that the handshake helper will consume.
+    // 3) Build the stream. The WS handshake is a responsibility of the
+    //    codec; for demo purposes we just open the socket.
     typename en::StreamConfig scfg{};
     scfg.remote         = eph::net::SocketAddr{*ip_r, cfg.port};
     scfg.reasm_capacity = 64 * 1024;

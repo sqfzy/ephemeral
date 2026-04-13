@@ -1,15 +1,15 @@
 /// @file test_http_cl_te_injection.cpp
 /// @brief P0 security — Content-Length + Transfer-Encoding smuggling defense.
 ///
-/// Migrated from v3.3 baseline `test_http_request_cl_te_injection.cpp`.
+/// Migrated from baseline `test_http_request_cl_te_injection.cpp`.
 ///
 /// These cases verify that the HTTP parser **rejects** any request or
 /// response that contains a `Transfer-Encoding` header (per plan §D-1,
-/// TE is not supported at all in v3.3) AND any message that mixes
+/// TE is not supported) AND any message that mixes
 /// `Content-Length` with `Transfer-Encoding` (CL/TE desync — CWE-444).
 ///
 /// The baseline builder auto-injected `Content-Length` from the body
-/// argument and scanned `extra_headers` for user-supplied CL/TE. v3.3
+/// argument and scanned `extra_headers` for user-supplied CL/TE. The current API
 /// deliberately does not auto-inject CL — the caller owns the header
 /// list — so the defense path is:
 ///   1. Any TE header in the parsed byte stream → CodecBad.

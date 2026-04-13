@@ -1,5 +1,5 @@
 /// @file core/measurement.hpp
-/// Header-only bench measurement helpers (Phase 10).
+/// Header-only bench measurement helpers.
 ///
 /// Provides:
 ///   - `monotonic_raw_ns()`     — single-instruction timestamp helper,
@@ -10,14 +10,14 @@
 ///   - `print_report()`         — human-readable Stats summary compatible
 ///                                with `eph::utils::Recorder::compute_stats()`
 ///
-/// Rationale (plan D-6): bench client uses `clock_gettime(CLOCK_MONOTONIC_RAW)`
+/// Rationale: bench client uses `clock_gettime(CLOCK_MONOTONIC_RAW)`
 /// instead of `eph::utils::TSC` because (1) Python mocks call the same clock
 /// via ctypes, giving one-way scenarios a shared time base, (2) on invariant-
 /// TSC x86_64 Linux the vDSO path uses `rdtsc` internally so cost is within
 /// 10 ns of direct `rdtsc`, and (3) ns output avoids cycle-to-ns calibration
 /// entirely.
 ///
-/// Rationale (plan D-2): Recorder now accepts raw ns via `record_ns()` —
+/// Rationale: Recorder now accepts raw ns via `record_ns()` —
 /// scenarios call `rec.record_ns(t1 - t0)` directly with no conversion wrapper.
 ///
 /// Rationale: header-only because all three pieces are sub-1-KLOC and need
@@ -116,7 +116,7 @@ inline void install_signal_handler() noexcept {
 /// scenarios that discard the first N samples via `if (idx >= warmup)`
 /// gating pass `warmup` here so the report shows the effective count.
 ///
-/// `wall_time_ns` (plan Phase 11.0 §Interface): when non-zero, used to
+/// `wall_time_ns`: when non-zero, used to
 /// compute `throughput = s.count / wall_time_s` and print an extra
 /// `throughput: <N> samples/s` line. Scenarios pass
 /// `monotonic_raw_ns() - t_measure_start`, where `t_measure_start` is
@@ -214,7 +214,7 @@ inline void print_report(std::string_view scenario_name,
     std::fflush(stdout);
 }
 
-/// Print a 3-leg RTT / TX / RX report to stdout (Phase 11.1).
+/// Print a 3-leg RTT / TX / RX report to stdout.
 ///
 /// Format (ASCII, stable — verification gates grep for the three block
 /// labels):
@@ -287,9 +287,8 @@ inline void print_leg_report(std::string_view scenario_name,
 /// `Recorder::export_json` derives the filename from the Recorder's
 /// `name` + a timestamp, so three different names (`*_rtt`, `*_tx`,
 /// `*_rx`) produce three distinct files. Any individual failure emits
-/// a stderr WARN but does not abort the caller — plan D-5 says disk
-/// failures should not pollute bench results (stdout is the primary
-/// output).
+/// a stderr WARN but does not abort the caller — disk failures should
+/// not pollute bench results (stdout is the primary output).
 ///
 /// @return true iff all three `export_json` calls succeeded.
 [[nodiscard]] inline bool

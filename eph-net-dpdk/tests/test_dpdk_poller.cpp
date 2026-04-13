@@ -1,5 +1,5 @@
 /// @file test_dpdk_poller.cpp
-/// Unit tests for `eph::net::dpdk::DpdkPoller`. Phase 4 scope:
+/// Unit tests for `eph::net::dpdk::DpdkPoller`. Covers:
 ///
 ///   - concept conformance static_asserts (`Poller<DpdkPoller<>>`)
 ///   - factory + create()/destroy without a real NIC bound

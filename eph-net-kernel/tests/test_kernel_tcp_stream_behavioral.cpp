@@ -1,11 +1,8 @@
 /// @file test_kernel_tcp_stream_behavioral.cpp
 /// Behavioral integration tests for `eph::net::kernel::KernelTcpStream`.
 ///
-/// Sub-phase 9.8 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.8).
-///
 /// This is a REWRITE (not a copy) of the baseline
-/// `eph-net/tests/test_socket_transport.cpp` (86 cases) in v3.3 terms:
+/// `eph-net/tests/test_socket_transport.cpp` (86 cases):
 /// the legacy `SocketTransport` class no longer exists — its responsibilities
 /// are now split across `KernelTcpStream` (connect + data plane),
 /// `KernelPoller` (epoll multiplexer), `StreamConfig` (construction contract)
@@ -19,7 +16,7 @@
 ///   - Cases that tested raw fd exposure or `SocketTransport`-private state
 ///     in the baseline were intentionally dropped (the new API doesn't expose
 ///     them, and asserting against internals would defeat the point of the
-///     v3.3 concept refactor).
+///     concept-based API).
 ///
 /// Coverage (per the plan):
 ///   1. Connect lifecycle              (~15 cases)
@@ -78,7 +75,7 @@ static_assert(en::Stream<PlainRawStream>,
 // one client, echo bytes until peer FIN. Lives on a background std::thread
 // joined at the end of each TEST. Written from scratch (baseline had a very
 // similar helper but it was tied to SocketTransport's test harness; the
-// v3.3 shape is simpler because KernelTcpStream does connect + recv inline).
+// simpler because KernelTcpStream does connect + recv inline).
 namespace {
 
 struct EchoServer {
@@ -803,7 +800,7 @@ TEST(KernelTcpStreamBehavioral, Err_PollerAddDuplicateIsInvalidConfig) {
 // 5. Reconnect-policy semantics (5 cases)
 // ═══════════════════════════════════════════════════════════════════════
 //
-// The v3.3 ReconnectPolicy is pure math: callers drive the actual reconnect
+// ReconnectPolicy is pure math: callers drive the actual reconnect
 // loop. These tests therefore exercise the policy state machine directly
 // rather than replaying TransportCore's legacy reconnect driver.
 

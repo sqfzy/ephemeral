@@ -1,14 +1,14 @@
 /// @file test_ws_upgrade_injection.cpp
 /// @brief P0 security — WS upgrade header injection defense.
 ///
-/// Migrated from v3.3 baseline
+/// Migrated from baseline
 /// `eph-transport/tests/test_build_upgrade_request_injection.cpp`.
 ///
 /// The baseline had a dedicated `build_upgrade_request(host, path, ws_key,
 /// extra_headers)` helper for building the HTTP/1.1 Upgrade request that
-/// kicks off a WebSocket handshake. That helper is scheduled to return in
-/// sub-phase 9.5. Until then, the injection defense lives in the generic
-/// `build_http_request` — WS upgrade is simply "GET / HTTP/1.1" with the
+/// kicks off a WebSocket handshake. The injection defense lives in the
+/// generic `build_http_request` — WS upgrade is simply "GET / HTTP/1.1"
+/// with the
 /// four mandatory headers (Host, Upgrade, Connection, Sec-WebSocket-Key,
 /// Sec-WebSocket-Version) plus optional extras.
 ///

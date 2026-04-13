@@ -1,11 +1,9 @@
 /// @file core/dpdk_env.hpp
-/// Phase 11.0 helper: bridge from bench.conf + ScenarioConfig globals to a
-/// fully-initialized `eph::dpdk::test::DpdkBenchEnv` (EAL init + Platform +
-/// ARP resolve) so the six `lat_*_dpdk` scenario binaries can share one
-/// bring-up sequence.
+/// Bridge from bench.conf + ScenarioConfig globals to a fully-initialized
+/// `eph::dpdk::test::DpdkBenchEnv` (EAL init + Platform + ARP resolve) so
+/// the six `lat_*_dpdk` scenario binaries can share one bring-up sequence.
 ///
-/// Per .artifacts/plan-phase-11-dpdk-measurement-20260411-082123.md D-1/D-2:
-/// we deliberately keep `DpdkBenchEnv` in `eph::dpdk::test::` (not in
+/// We deliberately keep `DpdkBenchEnv` in `eph::dpdk::test::` (not in
 /// `eph::net::dpdk::`) because test fixtures and benchmarks share the same
 /// bring-up; and EAL parameters are synthesized from bench.conf so the user
 /// CLI stays `sudo lat tcp --dpdk` without passing `-l 0,1 -a 0000:28:00.0`.
@@ -69,8 +67,8 @@ synthesize_eal_argv(std::string_view cores_csv,
         argv.emplace_back(std::string{pci_bdf});
     }
     // --proc-type=auto lets EAL detect primary/secondary; for bench this
-    // is always primary. Hardcoded per plan §Encoding-规范 (not exposed
-    // to bench.conf to avoid config sprawl).
+    // is always primary. Hardcoded (not exposed to bench.conf to avoid
+    // config sprawl).
     argv.emplace_back("--proc-type=auto");
     // Silence non-warning EAL chatter so the bench report stays readable.
     argv.emplace_back("--log-level=lib.eal:warning");
@@ -82,7 +80,7 @@ synthesize_eal_argv(std::string_view cores_csv,
 
 /// Pick a random ephemeral source port in the [49152, 65535] range.
 ///
-/// Rationale (plan D-3): the DPDK `TcpSession` 4-tuple bypasses the kernel
+/// Rationale: the DPDK `TcpSession` 4-tuple bypasses the kernel
 /// TIME_WAIT table, but the kernel mock (on the other side of the wire)
 /// keeps TIME_WAIT for ~60 s. Reusing a fixed src_port between back-to-back
 /// bench runs trips the mock's accept path. Fresh port per `main()` is the

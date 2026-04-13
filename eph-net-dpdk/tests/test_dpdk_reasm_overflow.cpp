@@ -2,7 +2,7 @@
 /// Unit tests for `eph::net::dpdk::detail::ReasmBuffer` overflow
 /// semantics. The surrounding `DpdkTcpStream` integration is NOT tested
 /// here — that path requires real EAL + NIC setup — but the primitive
-/// that the Phase 12 hot-fix guards is the `append()` return value plus
+/// under test is the `append()` return value plus
 /// the reassembly buffer's default capacity (256 KiB as of this fix;
 /// HFT L2 orderbook snapshots routinely exceed the previous 64 KiB
 /// default).

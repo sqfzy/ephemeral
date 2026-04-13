@@ -156,7 +156,7 @@ private:
 };
 
 // Sanity: TokenBucket must not inherit virtual dispatch and must remain
-// a concrete, non-polymorphic type (v3.3 "no virtual in hot path" rule).
+// a concrete, non-polymorphic type ("no virtual in hot path" rule).
 static_assert(!std::is_polymorphic_v<TokenBucket>,
               "TokenBucket must not be polymorphic");
 

@@ -1,5 +1,5 @@
 /// @file test_kernel_tls_state.cpp
-/// Phase 5: structural tests for `KernelTcpStream<C, true>`'s TLS path
+/// Structural tests for `KernelTcpStream<C, true>`'s TLS path
 /// without dragging in a live TLS server.
 ///
 /// What this test verifies:
@@ -8,8 +8,7 @@
 ///      cleanly with `[[no_unique_address]]` and the surrounding member
 ///      layout.
 ///   2. The `eph::net::Stream` and `eph::net::Pollable` concepts are
-///      satisfied for `KernelTcpStream<C, true>` (Phase 3 only checked
-///      `EnableTls=false`).
+///      satisfied for `KernelTcpStream<C, true>`.
 ///   3. `create()` against a non-existent peer with `EnableTls=true`
 ///      fails with a TLS error code (the network connect itself will
 ///      time out — we just verify the API surface returns the expected
@@ -17,7 +16,7 @@
 ///
 /// A full handshake test would need a localhost mock TLS server (much
 /// like `eph-transport/tests/test_tls_session.cpp`). That coverage is
-/// orthogonal to the v3.3 refactor and is left to the legacy test for
+/// orthogonal to these structural checks and is left to the legacy test for
 /// the time being.
 
 #include <chrono>

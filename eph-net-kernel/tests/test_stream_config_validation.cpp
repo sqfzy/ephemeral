@@ -1,10 +1,7 @@
 /// @file test_stream_config_validation.cpp
 /// Field-level validation tests for `eph::net::kernel::StreamConfig`.
 ///
-/// Sub-phase 9.8 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.8).
-///
-/// The v3.3 `StreamConfig` is a plain data struct (no member `validate()`);
+/// `StreamConfig` is a plain data struct (no member `validate()`);
 /// validation happens inside `KernelTcpStream::create()` and — for embedded
 /// `ProxyConfig` / `TlsConfig` — via their own `validate()` methods. These
 /// tests exercise both paths:
@@ -487,7 +484,7 @@ TEST(StreamConfigValidation, Tls_VerifyPeerFalseAccepted) {
 // 6. Reconnect policy clamping (≥5 cases)
 // ═══════════════════════════════════════════════════════════════════════
 //
-// Unlike the baseline (which returned errors), v3.3 ReconnectPolicy clamps
+// Unlike the baseline (which returned errors), ReconnectPolicy clamps
 // invalid values at construction so a default config is always safe.
 
 TEST(StreamConfigValidation, Reconnect_MultiplierBelowOneClamped) {

@@ -215,7 +215,7 @@ TEST(LoadBenchConf, MissingFileReturnsError) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// ScenarioConfig — Phase 10 INI [lat_*] section parser
+// ScenarioConfig — INI [lat_*] section parser
 // ─────────────────────────────────────────────────────────────────────────
 //
 // Unlike LoadBenchConf, these tests construct the tmp file path via

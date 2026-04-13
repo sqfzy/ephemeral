@@ -1,9 +1,6 @@
 /// @file test_proxy_url.cpp
 /// Unit tests for `eph::net::ProxyConfig` — validate() semantics plus
 /// the copy/move/default-construction shape of the struct.
-///
-/// Sub-phase 9.6 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.6).
 
 #include <chrono>
 #include <string>

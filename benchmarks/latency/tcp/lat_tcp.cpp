@@ -1,28 +1,18 @@
 /// @file lat_tcp.cpp
-/// Phase 10 latency benchmark: raw TCP RTT against a kernel Python echo mock.
-///
-/// Sub-phase 10.3 rewrite. Per plan-phase-10-latency-bench-20260411-040540.md
-/// §Interface design → Client API pattern:
+/// Latency benchmark: raw TCP RTT against a kernel Python echo mock.
 ///
 ///   * Single-file scenario binary that reads `[lat_tcp]` from bench.conf
 ///     (port / payload_size / duration_seconds) plus the lowercase global
 ///     `mock_ip`, `warmup_samples`.
-///   * Uses the v3.3 `KernelTcpStream<RawStreamCodec, false>` + `KernelPoller`
+///   * Uses `KernelTcpStream<RawStreamCodec, false>` + `KernelPoller`
 ///     API directly — no raw socket() calls, no legacy eph-transport.
 ///   * Measurement clock is `bench::monotonic_raw_ns()` (CLOCK_MONOTONIC_RAW
-///     via vDSO, per plan D-6) — not TSC.
-///   * Samples feed `eph::utils::Recorder::record_ns(ns)` (plan D-2).
+///     via vDSO) — not TSC.
+///   * Samples feed `eph::utils::Recorder::record_ns(ns)`.
 ///
 /// The binary does NOT manage mocks or NICs — the `lat` wrapper script forks
 /// the Python echo mock (`benchmarks/latency/mocks/tcp_echo.py`) and the NIC
 /// state transition before exec'ing this binary.
-///
-/// A second target `lat_tcp_dpdk` is produced by the xmake auto-glob loop with
-/// `EPH_USE_DPDK=1`. For now that build falls back to a kernel-identical code
-/// path because the v3.3 DPDK Stream API surface is still Phase 6 scaffolding
-/// (vcpkg-openssl / aws-lc TU clash, see Phase 5 notes). The `_dpdk` target
-/// therefore currently links the kernel stream as well so the build stays
-/// green — this matches the behaviour of the pre-10.3 demonstrator.
 
 #include <array>
 #include <cstdint>
@@ -37,16 +27,15 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (plan D-4: v3.3 API only).
+// eph-* headers.
 #include "eph/codec/raw_stream_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.0: real DPDK measurement loop via DpdkTcpStream + DpdkPoller over
-// NIC_B. The structure below (#if EPH_USE_DPDK branch) mirrors the kernel
-// branch 1-to-1 — only the stream/poller types differ. Fairness contract:
-// see memory/feedback_bench_no_loopback.md.
+// Real DPDK measurement loop via DpdkTcpStream + DpdkPoller over NIC_B.
+// The structure below (#if EPH_USE_DPDK branch) mirrors the kernel branch
+// 1-to-1 — only the stream/poller types differ.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -55,9 +44,9 @@
 #  include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
-// benchmarks/latency/core helpers (added in sub-phase 10.1). xmake includes
-// `benchmarks/latency/` as an include dir so the header lives at
-// `core/config.hpp` from the compiler's perspective.
+// benchmarks/latency/core helpers. xmake includes `benchmarks/latency/` as
+// an include dir so the header lives at `core/config.hpp` from the
+// compiler's perspective.
 #include "core/config.hpp"
 #include "core/measurement.hpp"
 #include "core/timestamp_proto.hpp"
@@ -137,9 +126,9 @@ int main(int argc, char** argv) {
     }
     const std::size_t payload_size = payload_r.value();
 
-    // Phase 11.1 D-7: every raw-payload RTT scenario prepends a 24 B
-    // timestamp block, so the bench operator must configure payload_size
-    // ≥ 24. Fail fast if not; the user has misconfigured bench.conf.
+    // Every raw-payload RTT scenario prepends a 24 B timestamp block, so
+    // the bench operator must configure payload_size >= 24. Fail fast if
+    // not; the user has misconfigured bench.conf.
     if (payload_size < bench::kTimestampBlockSize) {
         std::fprintf(stderr,
                      "lat_tcp: payload_size=%zu < kTimestampBlockSize=%zu "
@@ -237,10 +226,10 @@ int main(int argc, char** argv) {
     // bytes in total (which equals one round-trip since the client sends
     // exactly one payload before waiting).
     //
-    // Phase 11.1: additionally we need the first 24 B of the echoed
-    // payload (the timestamp block the mock rewrote in place). Since
-    // TCP may split across multiple on_message calls, we copy into a
-    // fixed 24 B buffer as bytes arrive until filled.
+    // Additionally we need the first 24 B of the echoed payload (the
+    // timestamp block the mock rewrote in place). Since TCP may split
+    // across multiple on_message calls, we copy into a fixed 24 B
+    // buffer as bytes arrive until filled.
     std::size_t rx_bytes = 0;
     std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
     std::size_t ts_filled = 0;
@@ -264,10 +253,10 @@ int main(int argc, char** argv) {
     // Literally identical between kernel and DPDK branches (per plan
     // §实施计划 4). Only the `Stream` / `Poller` typedefs differ above.
     //
-    // Phase 11.1: three Recorders (RTT / TX / RX) fed from the 24 B
-    // timestamp-block protocol. `rec_rtt` is what the fairness gate
-    // compares across backends; TX/RX break down the wire legs so the
-    // operator can see where DPDK's win comes from.
+    // Three Recorders (RTT / TX / RX) fed from the 24 B timestamp-block
+    // protocol. `rec_rtt` is what the fairness gate compares across
+    // backends; TX/RX break down the wire legs so the operator can see
+    // where DPDK's win comes from.
     std::vector<uint8_t> payload(payload_size, 0xAB);
     const char* backend =
 #if defined(EPH_USE_DPDK)

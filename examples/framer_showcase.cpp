@@ -1,9 +1,7 @@
-/// @file framer_showcase_v3.cpp
-/// v3.3 rewrite of framer_showcase.cpp.
+/// @file framer_showcase.cpp
 ///
-/// Demonstrates the stateful Codec interface from the v3.3 design. All
-/// three codecs (WsCodec, RawStreamCodec,
-/// LengthPrefixCodec) share the same
+/// Demonstrates the stateful Codec interface. All three codecs
+/// (WsCodec, RawStreamCodec, LengthPrefixCodec) share the same
 ///
 ///     encode(buf, cap, Frame)  ->  expected<size_t, ErrorInfo>
 ///     decode(view, OutputBuffer&) -> expected<optional<Frame>, ErrorInfo>

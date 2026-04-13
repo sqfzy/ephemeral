@@ -1,10 +1,8 @@
-/// @file simple_hft_dpdk_rx_dispatcher_v3.cpp
-/// v3.3 design-doc-mandated example: multi-connection RxDispatcher pattern.
+/// @file simple_hft_dpdk_rx_dispatcher.cpp
+/// Multi-connection RxDispatcher pattern example.
 ///
-/// Demonstrates the headline feature of the v3.3 redesign — a single
-/// `DpdkPoller<>` driving multiple Pollables (a TCP order channel +
-/// a UDP market data socket) on one lcore burst loop. This is the
-/// shape from the design doc Example 2.
+/// Demonstrates a single `DpdkPoller<>` driving multiple Pollables (a TCP
+/// order channel + a UDP market data socket) on one lcore burst loop.
 ///
 /// NOTE: TLS on DPDK is not yet available due to a vcpkg-openssl ↔ aws-lc
 /// TU clash (same issue documented in simple_hft_dpdk_v3.cpp). We use plain
@@ -94,8 +92,7 @@ int main(int argc, char** argv) {
         spdlog::warn(
             "rx_dispatcher demo: OrderStream::create failed (expected without "
             "a real mempool): {}", order_r.error().detail);
-        spdlog::info("rx_dispatcher demo: this example demonstrates the v3.3 "
-                     "Example 2 pattern; populate scfg.pool with a real "
+        spdlog::info("rx_dispatcher demo: populate scfg.pool with a real "
                      "rte_pktmbuf_pool_create() output to drive the loop.");
         // Fall through and still attempt to register the UDP socket so
         // the example exercises both code paths.

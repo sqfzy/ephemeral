@@ -1,5 +1,5 @@
 /// @file tests/unit/bench/test_json_scan.cpp
-/// Unit tests for `bench::scan_json_uint_field` (Phase 10).
+/// Unit tests for `bench::scan_json_uint_field`.
 ///
 /// The scanner is NOT a full JSON parser — it matches the exact shape
 /// Python mocks emit (`json.dumps` on a dict of numeric fields). These

@@ -2,7 +2,7 @@
 /// Server-side WebSocket HTTP Upgrade handshake for the DPDK E2E echo mock.
 ///
 /// Previously at `benchmarks/latency/core/ws_handshake.hpp` — moved here
-/// in Phase 10 when the bench suite migrated to Python mocks. The DPDK
+/// when the bench suite migrated to Python mocks. The DPDK
 /// E2E test still needs a tiny in-process WS server to exercise the
 /// `DpdkTcpStream` upgrade path, so the helper sits next to its only
 /// remaining caller (`echo_mocks.hpp`).

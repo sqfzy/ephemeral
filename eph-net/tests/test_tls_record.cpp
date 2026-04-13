@@ -3,10 +3,10 @@
 /// construction, record header parse/write, sequence-number accounting, and
 /// AEAD round-trip / tamper-detection properties.
 ///
-/// Phase 9.7 migration: this file merges the pre-v3.3 baselines
+/// This file merges the former baselines
 ///   - eph-net/tests/test_tls_record.cpp (56 cases, record + TlsConfig)
 ///   - eph-transport/tests/test_tls_record_roundtrip.cpp (22 cases, round-trip)
-/// into a single file targeting the Phase-7 migrated headers at
+/// into a single file targeting the headers at
 ///   - eph/net/detail/tls_record.hpp
 ///   - eph/net/detail/tls_encryptor.hpp
 ///   - eph/net/detail/tls_decryptor.hpp

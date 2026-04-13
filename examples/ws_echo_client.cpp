@@ -1,9 +1,8 @@
-/// @file ws_echo_client_v3.cpp
-/// v3.3 rewrite of ws_echo_client.cpp — send a frame, print the echo.
+/// @file ws_echo_client.cpp
 ///
 /// Demonstrates the simplest possible TX+RX loop against a local echo
-/// server using the new eph::net::kernel API. Pair with a simple
-/// netcat-style echoer:
+/// server using the eph::net::kernel API. Pair with a simple netcat-style
+/// echoer:
 ///
 ///   $ nc -lk 9001
 ///

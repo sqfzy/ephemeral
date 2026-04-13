@@ -8,7 +8,7 @@
 /// bound to NIC_A in the host network namespace.  They call the POSIX
 /// bind/listen helpers in `eph::net::posix::` (from `eph/net/posix_io.hpp`
 /// and `eph/net/posix_listener.hpp`) so the kernel-side I/O paths stay
-/// byte-identical to what a v3.3 KernelTcpStream would exercise.
+/// byte-identical to what a KernelTcpStream would exercise.
 ///
 /// Shutdown semantics: the dispatcher catches SIGTERM, flips its
 /// running flag, and immediately `_exit(0)`s.  Worker threads are not

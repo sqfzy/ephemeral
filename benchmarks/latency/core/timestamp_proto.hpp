@@ -1,5 +1,5 @@
 /// @file core/timestamp_proto.hpp
-/// Phase 11.1 latency-bench timestamp protocol.
+/// Latency-bench timestamp protocol.
 ///
 /// A fixed 24-byte block carried at the front of every RTT-scenario
 /// payload (lat_{tcp,udp,ws,ex_md_udp}). Three little-endian `uint64`s
@@ -20,8 +20,7 @@
 ///
 /// `tx + rx` is not exactly equal to `rtt` — the difference is the
 /// mock's internal service time `(mock_send_ns - mock_recv_ns)`, which
-/// we deliberately do not report (plan §Non-goals). Sanity gate 5 in
-/// the phase plan expects `tx + rx ≤ rtt * 1.1`.
+/// we deliberately do not report. Sanity expectation: `tx + rx ≤ rtt * 1.1`.
 ///
 /// Both ends read the same vDSO clock (`CLOCK_MONOTONIC_RAW`) via
 /// `bench::monotonic_raw_ns()` on the C++ side and `_clock.monotonic_raw_ns`
@@ -60,7 +59,7 @@ inline constexpr std::size_t kTimestampBlockSize = sizeof(TimestampBlock);
 ///
 /// Pre-condition: `buf.size() >= kTimestampBlockSize`. The caller is
 /// expected to have already performed the payload-size sanity check at
-/// scenario startup (plan D-7), so this function does not re-check.
+/// scenario startup, so this function does not re-check.
 inline void write_client_ts(std::span<uint8_t> buf,
                             uint64_t client_ns) noexcept {
     TimestampBlock b{client_ns, 0, 0};

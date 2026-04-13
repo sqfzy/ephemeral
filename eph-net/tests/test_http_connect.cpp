@@ -2,9 +2,6 @@
 /// Unit tests for `eph::net::detail::perform_http_connect` over an
 /// in-memory FakeByteSink — no sockets, no threads. Covers the success path
 /// and every defined failure mode.
-///
-/// Sub-phase 9.6 of the Phase 9 recovery
-/// (.artifacts/plan-phase-9-recovery-20260410-180306.md §Sub-phase 9.6).
 
 #include <chrono>
 #include <cstdint>

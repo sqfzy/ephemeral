@@ -1104,7 +1104,7 @@ TEST(RecorderDetailTest, MakeOutputPathSanitizesName) {
 }
 
 // ============================================================================
-// Recorder — record_ns() / record_ns_values() (phase 10.0 raw-ns API)
+// Recorder — record_ns() / record_ns_values() (raw-ns API)
 // ============================================================================
 //
 // These tests cover the thin ns → cycles wrapper added to Recorder so

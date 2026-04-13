@@ -1,5 +1,4 @@
-/// @file binance_book_v3.cpp
-/// v3.3 rewrite of binance_book.cpp.
+/// @file binance_book.cpp
 ///
 /// End-to-end Binance bookTicker pipeline:
 ///
@@ -17,10 +16,9 @@
 ///         v
 ///     spdlog::info(BBO)
 ///
-/// Demonstrates how the v3.3 design composes the network layer
-/// (eph-net-kernel + eph-codec) with the parser/book layers
-/// (eph-json + eph-book) without dragging in the legacy
-/// `eph::net::Transport`.
+/// Demonstrates how the network layer (eph-net-kernel + eph-codec)
+/// composes with the parser/book layers (eph-json + eph-book) without
+/// coupling to a monolithic transport abstraction.
 
 #include <atomic>
 #include <chrono>

@@ -1,7 +1,7 @@
 /// @file lat_udp.cpp
-/// Phase 10 latency benchmark: raw UDP RTT against a kernel Python echo mock.
+/// Latency benchmark: raw UDP RTT against a kernel Python echo mock.
 ///
-/// Sub-phase 10.3 rewrite. Same structure as lat_tcp.cpp but using
+/// Same structure as lat_tcp.cpp but using
 /// `KernelUdpSocket<RawDatagramCodec>`:
 ///   - bind a local unconnected UDP socket (0.0.0.0 ephemeral port)
 ///   - send_to(mock_ip, scenario.port) for each sample
@@ -29,8 +29,8 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// Phase 11.0: DpdkUdpSocket + DpdkPoller real measurement loop (see lat_tcp
-// for the template). The DPDK poller uses 4-tuple routing, so the registered
+// DpdkUdpSocket + DpdkPoller real measurement loop (see lat_tcp for the
+// template). The DPDK poller uses 4-tuple routing, so the registered
 // legacy.src/dst_port pair must match the mock's kernel socket 2-tuple.
 // UDP echo mock (udp_echo.py) binds a listener on (mock_ip, port) and
 // responds from the SAME 4-tuple (kernel recvfrom/sendto preserves peer),
@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     }
     const std::size_t payload_size = payload_r.value();
 
-    // Phase 11.1 D-7: 24 B timestamp-block header requirement.
+    // 24 B timestamp-block header requirement.
     if (payload_size < bench::kTimestampBlockSize) {
         std::fprintf(stderr,
                      "lat_udp: payload_size=%zu < kTimestampBlockSize=%zu "
@@ -229,9 +229,9 @@ int main(int argc, char** argv) {
     // each sample is a single send/receive round trip, so a bool flag
     // is sufficient (no byte accounting needed).
     //
-    // Phase 11.1: additionally copy the first 24 B into `ts_buf` so the
-    // measurement loop can decode the mock-rewritten timestamp block
-    // and compute TX/RX legs. Undersize datagrams are flagged via
+    // Additionally copy the first 24 B into `ts_buf` so the measurement
+    // loop can decode the mock-rewritten timestamp block and compute
+    // TX/RX legs. Undersize datagrams are flagged via
     // `ts_filled < kTimestampBlockSize` and skipped.
     bool got_echo = false;
     std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};

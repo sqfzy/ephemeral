@@ -1,7 +1,7 @@
 /// @file test_http_crlf_injection.cpp
 /// @brief P0 security — CRLF injection defense in build_http_request.
 ///
-/// Migrated from v3.3 baseline `test_http_request_crlf_injection.cpp`.
+/// Migrated from baseline `test_http_request_crlf_injection.cpp`.
 ///
 /// Regression cases for CR / LF / NUL / whitespace injection in the
 /// method, target, header name, and header value arguments of
@@ -9,7 +9,7 @@
 /// byte sequence that downstream proxies could misinterpret as a
 /// framing boundary, which would allow request smuggling.
 ///
-/// The new v3.3 builder (`eph::net::build_http_request(buf, cap, method,
+/// The builder (`eph::net::build_http_request(buf, cap, method,
 /// target, headers, body)`) validates these inputs via
 /// `detail::is_valid_token`, `detail::builder_reject_unsafe_token`, and
 /// `detail::builder_reject_unsafe_value`; every baseline attack maps

@@ -1,5 +1,5 @@
 /// @file test_concepts.cpp
-/// Compile-time + runtime sanity checks for the v3.3 `eph::net` concepts.
+/// Compile-time + runtime sanity checks for the `eph::net` concepts.
 ///
 /// The real teeth of the file is the `static_assert` block: if a fake or a
 /// concept drifts out of sync, compilation fails here. The gtest
@@ -120,10 +120,10 @@ TEST(Concepts, FakeDatagramRoundTripsThroughTestPoller) {
     EXPECT_TRUE(saw);
 }
 
-// ─── Sub-phase 9.8: supplemental concept conformance tests ────────────────
+// ─── Supplemental concept conformance tests ──────────────────────────────
 //
 // Port of baseline `test_tcp_concept.cpp` (46 cases) re-expressed against
-// the v3.3 `Stream` / `Datagram` / `Pollable` / `Poller` concepts. Each
+// the `Stream` / `Datagram` / `Pollable` / `Poller` concepts. Each
 // TEST body is mostly a `static_assert` wall; gtest exists here purely to
 // anchor the translation unit so CI counts the compile-time checks.
 
