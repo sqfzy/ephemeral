@@ -183,7 +183,7 @@ concept Poller = requires(T& p, std::chrono::milliseconds to) {
     // We probe the add/remove/poll shape with a nullptr-typed void** to avoid
     // hard-coding a specific Pollable type. Real callers will instantiate the
     // add/remove templates with their own Pollable type at the call site.
-    { p.poll() } -> std::convertible_to<std::size_t>;
+    { p.poll() } noexcept -> std::convertible_to<std::size_t>;
 };
 
 /// @brief Concept-level probe that `P` can register a specific `Pollable`
@@ -196,8 +196,8 @@ concept Poller = requires(T& p, std::chrono::milliseconds to) {
 /// function-parameter constraint without knowing the Pollable type.
 template <class T, class Obj>
 concept PollerOf = Poller<T> && Pollable<Obj> && requires(T& p, Obj* obj) {
-    { p.add(obj) }    -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { p.remove(obj) } -> std::same_as<std::expected<void, core::ErrorInfo>>;
+    { p.add(obj) } noexcept    -> std::same_as<std::expected<void, core::ErrorInfo>>;
+    { p.remove(obj) } noexcept -> std::same_as<std::expected<void, core::ErrorInfo>>;
 };
 
 } // namespace eph::net

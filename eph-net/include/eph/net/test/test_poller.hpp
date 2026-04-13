@@ -56,7 +56,7 @@ public:
     /// @brief Register `p` with the poller. Idempotent failure on nullptr
     ///        or duplicate; success flips `p->set_attached(true)` so the
     ///        Stream / Datagram concept `is_attached()` returns true.
-    [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* p) {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* p) noexcept {
         if (p == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -80,7 +80,7 @@ public:
     /// @brief Unregister `p`. Returns `InvalidConfig` if `p` is not
     ///        currently registered. Flips `p->set_attached(false)` on
     ///        success.
-    [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* p) {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* p) noexcept {
         auto it = std::find(registered_.begin(), registered_.end(), p);
         if (it == registered_.end()) {
             return std::unexpected(core::ErrorInfo{
