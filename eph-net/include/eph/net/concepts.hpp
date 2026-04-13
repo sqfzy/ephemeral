@@ -113,12 +113,12 @@ concept Stream = Pollable<T> && requires(T& t, std::span<const uint8_t> data) {
     typename T::CodecType;
     typename T::OnMessage;
 
-    { t.send(data) }
+    { t.send(data) } noexcept
         -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
-    { t.close_gracefully() }
+    { t.close_gracefully() } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { t.is_attached() } -> std::convertible_to<bool>;
-    { t.state() }       -> std::same_as<TcpState>;
+    { t.is_attached() } noexcept -> std::convertible_to<bool>;
+    { t.state() } noexcept      -> std::same_as<TcpState>;
 
     // on_message must be a member field (or ref-returning accessor) convertible
     // to the associated OnMessage type. We require it be a modifiable target so
@@ -146,13 +146,13 @@ concept Datagram = Pollable<T> && requires(T& t,
     typename T::CodecType;
     typename T::OnDatagram;
 
-    { t.send_to(data, dst) }
+    { t.send_to(data, dst) } noexcept
         -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
-    { t.join_multicast(mcast) }
+    { t.join_multicast(mcast) } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { t.leave_multicast(mcast) }
+    { t.leave_multicast(mcast) } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { t.is_attached() } -> std::convertible_to<bool>;
+    { t.is_attached() } noexcept -> std::convertible_to<bool>;
     { t.on_datagram }   -> std::convertible_to<typename T::OnDatagram>;
 };
 

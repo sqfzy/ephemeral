@@ -119,7 +119,7 @@ public:
     ///        to a poller, mirroring the contract documented in
     ///        `eph::core::Error::NotAttached`.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send(std::span<const uint8_t> data) {
+    send(std::span<const uint8_t> data) noexcept {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,

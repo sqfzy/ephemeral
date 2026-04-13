@@ -103,7 +103,7 @@ public:
     OnDatagram on_datagram;
 
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send_to(std::span<const uint8_t> data, const SocketAddr& dst) {
+    send_to(std::span<const uint8_t> data, const SocketAddr& dst) noexcept {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -117,13 +117,13 @@ public:
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
-    join_multicast(const SocketAddr& group) {
+    join_multicast(const SocketAddr& group) noexcept {
         joined_.push_back(group);
         return {};
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
-    leave_multicast(const SocketAddr& group) {
+    leave_multicast(const SocketAddr& group) noexcept {
         // Remove the first occurrence. Tests that care about multiple
         // concurrent joins on the same group can inspect `joined_groups`
         // directly.
