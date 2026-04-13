@@ -100,6 +100,25 @@ template <class P = void>
 class DpdkPoller;
 
 // ---------------------------------------------------------------------------
+// DpdkPollable — compile-time contract for types registered with DpdkPoller.
+// ---------------------------------------------------------------------------
+
+/// @brief Concept for types that can be registered with `DpdkPoller::add()`.
+///
+/// Every DPDK-backend Pollable (`DpdkTcpStream`, `DpdkUdpSocket`) must
+/// satisfy this concept. Declaring it here moves type errors from deep
+/// inside the `add()` lambda captures to the `add()` call site.
+template <class P>
+concept DpdkPollable = requires(P& p, rte_mbuf** mbufs, uint16_t n,
+                                uint64_t tsc, DpdkPoller<void>* poller,
+                                uint32_t* ip, uint16_t* port) {
+    { p.process_burst_(mbufs, n, tsc) } noexcept;
+    { p.notify_attached_(poller) };
+    { p.notify_detached_() };
+    { p.tuple_for_poller_(ip, ip, port, port) } noexcept;
+};
+
+// ---------------------------------------------------------------------------
 // DpdkPoller — type-erased specialization (P = void, the default)
 // ---------------------------------------------------------------------------
 
@@ -167,7 +186,7 @@ public:
     /// extensions live in the `DpdkTcpStream` / `DpdkUdpSocket` headers;
     /// omitting an include at the `add()` call site surfaces a compile
     /// error immediately, no missing-symbol runtime surprises.
-    template <class P>
+    template <DpdkPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
@@ -221,7 +240,7 @@ public:
     }
 
     /// @brief Unregister `obj`. Returns `InvalidConfig` if not registered.
-    template <class P>
+    template <DpdkPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
