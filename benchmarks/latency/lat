@@ -65,6 +65,7 @@ declare -A SCENARIO_MOCKS=(
     [ex_market]=ex_market_push.py
     [ex_order]=ex_order_echo.py
     [ex_md_udp]=ex_md_udp_echo.py
+    [ex_market_2p]=ex_market_2p_push.py
 )
 
 # ── Logging ──────────────────────────────────────────────────────────

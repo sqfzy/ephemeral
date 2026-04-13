@@ -35,6 +35,10 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         add_packages("spdlog")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
+        -- lat_ex_market_2p needs eph-json for full JSON parse + BinanceBookTicker.
+        if name == "lat_ex_market_2p" then
+            add_deps("eph-json")
+        end
 
     -- DPDK build — same source, EPH_USE_DPDK switches the client transport
     target(name .. "_dpdk")
@@ -49,4 +53,7 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
         apply_dpdk_pmd_linkgroups()
+        if name == "lat_ex_market_2p" then
+            add_deps("eph-json")
+        end
 end
