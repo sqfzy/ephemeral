@@ -46,8 +46,8 @@
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/socket_addr.hpp"
 
@@ -59,17 +59,7 @@ namespace eph::net::kernel::detail {
 
 /// @brief Lazily-initialized logger for the kernel byte-socket subsystem.
 inline spdlog::logger* byte_socket_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.kernel.byte_socket");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.kernel.byte_socket");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.kernel.byte_socket");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.kernel.byte_socket");
     return l;
 }
 

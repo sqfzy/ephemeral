@@ -56,7 +56,7 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/detail/logger.hpp"
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/tcp.hpp"
@@ -69,17 +69,7 @@ namespace eph::net::dpdk::detail {
 
 /// @brief Lazily-initialized logger for the DPDK TLS state subsystem.
 inline spdlog::logger* tls_state_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.dpdk.tls_state");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.dpdk.tls_state");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.dpdk.tls_state");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.dpdk.tls_state");
     return l;
 }
 

@@ -37,8 +37,8 @@
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
@@ -59,17 +59,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel TcpStream subsystem.
 inline spdlog::logger* tcp_stream_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.kernel.tcp_stream");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.kernel.tcp_stream");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.kernel.tcp_stream");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.kernel.tcp_stream");
     return l;
 }
 
@@ -727,9 +717,7 @@ private:
 
                 const auto& frame = **dr;
                 if (frame.size() > 0) {
-                    on_message(frame.data(),
-                               static_cast<uint16_t>(
-                                   frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
+                    on_message(frame.data(), saturate_u16(frame.size()));
                     ++delivered;
                 }
             }
@@ -770,9 +758,7 @@ private:
             }
             const auto& frame = **dr;
             if (frame.size() > 0) {
-                on_message(frame.data(),
-                           static_cast<uint16_t>(
-                               frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()));
+                on_message(frame.data(), saturate_u16(frame.size()));
                 ++delivered;
             }
         }

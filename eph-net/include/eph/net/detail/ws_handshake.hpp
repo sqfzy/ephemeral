@@ -206,27 +206,12 @@ ws_compute_accept(std::string_view client_key) noexcept {
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// Case-insensitive ASCII equality, local to avoid pulling http.hpp internals.
-// ---------------------------------------------------------------------------
-[[nodiscard]] inline bool ws_iequal(std::string_view a, std::string_view b) noexcept {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        uint8_t ca = static_cast<uint8_t>(a[i]);
-        uint8_t cb = static_cast<uint8_t>(b[i]);
-        if (ca >= 'A' && ca <= 'Z') ca = static_cast<uint8_t>(ca + 32);
-        if (cb >= 'A' && cb <= 'Z') cb = static_cast<uint8_t>(cb + 32);
-        if (ca != cb) return false;
-    }
-    return true;
-}
-
 /// @brief Find header by case-insensitive name in a parsed HTTP response.
 [[nodiscard]] inline std::optional<std::string_view>
 ws_find_header(std::span<const HttpHeader> headers,
                std::string_view            name) noexcept {
     for (const auto& h : headers) {
-        if (ws_iequal(h.name, name)) return h.value;
+        if (iequal(h.name, name)) return h.value;
     }
     return std::nullopt;
 }
@@ -252,7 +237,7 @@ ws_connection_has_upgrade(std::string_view value) noexcept {
         }
         if (tok_end > pos) {
             std::string_view tok = value.substr(pos, tok_end - pos);
-            if (ws_iequal(tok, "Upgrade")) return true;
+            if (iequal(tok, "Upgrade")) return true;
         }
         pos = (end < value.size()) ? end + 1 : end;
     }
@@ -441,7 +426,7 @@ perform_ws_handshake(
 
     // ── 6. Upgrade: websocket (case-insensitive) ──────────────────────────
     auto upgrade_hdr = ws_find_header(resp.headers, "Upgrade");
-    if (!upgrade_hdr || !ws_iequal(*upgrade_hdr, "websocket")) {
+    if (!upgrade_hdr || !iequal(*upgrade_hdr, "websocket")) {
         SPDLOG_WARN("ws_handshake: missing/invalid Upgrade header");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,

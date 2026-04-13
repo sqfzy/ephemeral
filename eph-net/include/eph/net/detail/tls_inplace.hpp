@@ -37,6 +37,7 @@
 /// contexts, or sequence numbers. Those live in the Stream's `TlsState`.
 /// It's a thin RAII holder plus `open_in_place()` call.
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -161,11 +162,8 @@ public:
         std::memcpy(nonce, iv_, 4);
         uint64_t iv_tail;
         std::memcpy(&iv_tail, iv_ + 4, 8);
-        // XOR big-endian sequence number into the tail. Portable bit ops.
-        uint64_t seq_be = 0;
-        for (int i = 0; i < 8; ++i) {
-            seq_be |= (uint64_t)((seq_ >> (56 - 8 * i)) & 0xFF) << (8 * i);
-        }
+        // XOR big-endian sequence number into the tail (RFC 8446 §5.3).
+        uint64_t seq_be = std::byteswap(seq_);
         uint64_t nonce_tail = iv_tail ^ seq_be;
         std::memcpy(nonce + 4, &nonce_tail, 8);
 

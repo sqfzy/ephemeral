@@ -24,10 +24,11 @@
 #include <format>
 #include <string>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <sys/random.h>  // getrandom(2) for CSPRNG
+
+#include "eph/core/detail/logger.hpp"
 
 namespace eph::net::ws {
 
@@ -181,12 +182,8 @@ namespace detail {
 
 /// @return Pointer to the "transport.websocket" spdlog logger.
 inline spdlog::logger* ws_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("transport.websocket");
-        if (!lg) lg = spdlog::stdout_color_mt("transport.websocket");
-        return lg;
-    }();
-    return l.get();
+    static auto* l = ::eph::core::detail::make_logger("transport.websocket");
+    return l;
 }
 
 } // namespace detail
@@ -380,7 +377,7 @@ inline void generate_mask_key(uint8_t mask[4]) noexcept {
 }
 
 /// Compute the frame header size for a given payload length (client, masked).
-constexpr size_t frame_header_size(uint64_t payload_len) noexcept {
+[[nodiscard]] constexpr size_t frame_header_size(uint64_t payload_len) noexcept {
     if (payload_len < 126)  return 2 + 4; // 6 bytes
     if (payload_len <= 65535) return 2 + 2 + 4; // 8 bytes
     return 2 + 8 + 4; // 14 bytes
@@ -388,7 +385,7 @@ constexpr size_t frame_header_size(uint64_t payload_len) noexcept {
 
 /// Compute total frame size (header + payload).
 /// Returns SIZE_MAX on overflow (payload_len too large to represent).
-constexpr size_t total_frame_size(uint64_t payload_len) noexcept {
+[[nodiscard]] constexpr size_t total_frame_size(uint64_t payload_len) noexcept {
     auto header = frame_header_size(payload_len);
     if (payload_len > SIZE_MAX - header) return SIZE_MAX;
     return header + static_cast<size_t>(payload_len);

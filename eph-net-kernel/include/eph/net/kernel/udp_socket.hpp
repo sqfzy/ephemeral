@@ -32,8 +32,8 @@
 #include <unistd.h>
 
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
@@ -48,17 +48,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel UDP socket subsystem.
 inline spdlog::logger* udp_socket_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("net.kernel.udp");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("net.kernel.udp");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("net.kernel.udp");
-            }
-        }
-        return lg.get();
-    }();
+    static auto* l = ::eph::core::detail::make_logger("net.kernel.udp_socket");
     return l;
 }
 
@@ -280,10 +270,7 @@ public:
         std::size_t delivered = 0;
         auto sink = [&](auto&& frame) {
             if (frame.size() > 0 && on_datagram) {
-                on_datagram(frame.data(),
-                            static_cast<uint16_t>(
-                                frame.size() > 0xFFFFu ? 0xFFFFu : frame.size()),
-                            src_addr);
+                on_datagram(frame.data(), saturate_u16(frame.size()), src_addr);
                 ++delivered;
             }
         };

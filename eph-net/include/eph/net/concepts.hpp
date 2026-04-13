@@ -40,6 +40,15 @@
 namespace eph::net {
 
 // ---------------------------------------------------------------------------
+// Utility: saturate a size_t to uint16_t (for on_message / on_datagram len).
+// ---------------------------------------------------------------------------
+
+/// @brief Clamp a size_t frame length to uint16_t range without truncation.
+[[nodiscard]] constexpr uint16_t saturate_u16(std::size_t n) noexcept {
+    return static_cast<uint16_t>(n > 0xFFFFu ? 0xFFFFu : n);
+}
+
+// ---------------------------------------------------------------------------
 // Pollable
 // ---------------------------------------------------------------------------
 
