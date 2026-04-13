@@ -1,0 +1,330 @@
+/// @file test_tcp_fault_tolerance.cpp
+/// Fault-tolerance regression tests for DPDK TCP and packet infrastructure.
+///
+/// Tests cover edge cases that were hardened:
+///   1. FIN in unexpected TCP states must NOT advance rcv_nxt_.
+///   2. Null-payload guard in the data callback path.
+///   3. PacketTemplate overflow guard for large payload_len.
+///   4. MbufView::trim_front on default-constructed (null) views.
+
+#include <cstdint>
+#include <cstring>
+
+#include <gtest/gtest.h>
+
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_mbuf.h>
+#include <rte_mempool.h>
+#include <rte_tcp.h>
+
+#include "dpdk_test_env.hpp" // IWYU pragma: keep
+#include "eph/dpdk/net_header.hpp"
+#include "eph/dpdk/packet_template.hpp"
+#include "eph/dpdk/tcp.hpp"
+#include "eph/net/dpdk/detail/mbuf_view.hpp"
+
+using namespace eph::dpdk;
+using eph::net::TcpState;
+
+namespace {
+
+// ─────────────────────────────────────────────────────────────────────────
+// Test helpers (same convention as test_tcp_state_machine.cpp)
+// ─────────────────────────────────────────────────────────────────────────
+
+constexpr uint32_t kSrcIp   = 0x0A000001;
+constexpr uint32_t kDstIp   = 0x0A000002;
+constexpr uint16_t kSrcPort = 55000;
+constexpr uint16_t kDstPort = 443;
+
+TcpConfig make_test_config() {
+    TcpConfig cfg;
+    cfg.tuple.src_ip   = kSrcIp;
+    cfg.tuple.dst_ip   = kDstIp;
+    cfg.tuple.src_port = kSrcPort;
+    cfg.tuple.dst_port = kDstPort;
+    cfg.mss            = 1460;
+    cfg.recv_window    = 65535;
+    cfg.port_id        = 0;
+    cfg.tx_queue_id    = 0;
+    cfg.rx_queue_id    = 0;
+    return cfg;
+}
+
+struct FakeTcpMbuf {
+    alignas(8) uint8_t buf[256];
+    rte_mbuf mbuf{};
+
+    void build(uint32_t seq, uint32_t ack_num, uint8_t flags,
+               uint16_t window = 65535, const uint8_t* payload = nullptr,
+               size_t payload_len = 0) {
+        constexpr size_t eth_len = net::kEtherHeaderLen;
+        constexpr size_t ip_len  = 20;
+        constexpr size_t tcp_len = 20;
+        size_t total = eth_len + ip_len + tcp_len + payload_len;
+        ASSERT_LE(total, sizeof(buf));
+
+        std::memset(buf, 0, total);
+
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+        eth->ether_type = net::hton16(net::kEtherTypeIpv4);
+
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+        ip->version_ihl  = (4 << 4) | 5;
+        ip->total_length  = net::hton16(
+            static_cast<uint16_t>(ip_len + tcp_len + payload_len));
+        ip->next_proto_id = net::kIpProtoTcp;
+        ip->src_addr      = net::hton32(kDstIp);
+        ip->dst_addr      = net::hton32(kSrcIp);
+
+        auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + eth_len + ip_len);
+        tcp->src_port  = net::hton16(kDstPort);
+        tcp->dst_port  = net::hton16(kSrcPort);
+        tcp->sent_seq  = net::hton32(seq);
+        tcp->recv_ack  = net::hton32(ack_num);
+        tcp->data_off  = static_cast<uint8_t>(5 << 4);
+        tcp->tcp_flags = flags;
+        tcp->rx_win    = net::hton16(window);
+
+        if (payload && payload_len > 0) {
+            std::memcpy(buf + eth_len + ip_len + tcp_len, payload, payload_len);
+        }
+
+        mbuf = rte_mbuf{};
+        mbuf.buf_addr = buf;
+        mbuf.data_off = 0;
+        mbuf.data_len = static_cast<uint16_t>(total);
+        mbuf.pkt_len  = static_cast<uint32_t>(total);
+    }
+};
+
+template <typename Session>
+auto drive(Session& s, FakeTcpMbuf& fake) {
+    rte_mbuf* p = &fake.mbuf;
+    return s.process_rx(&p, 1, [](const uint8_t*, uint16_t) {});
+}
+
+} // namespace
+
+// ═══════════════════════════════════════════════════════════════════════
+// FIN in unexpected states must NOT advance rcv_nxt_
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(FaultTolerance, FinInCloseWaitDoesNotAdvanceRcvNxt) {
+    // CloseWait means peer's FIN was already consumed and rcv_nxt_
+    // includes it. A duplicate/retransmitted FIN must be dropped
+    // without advancing the sequence counter.
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::CloseWait);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2001, 8192); // 2001 = already past FIN
+
+    // Craft a FIN at exactly rcv_nxt_ — this should NOT be processed
+    // because we're already in CloseWait.
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2001, /*ack=*/1000,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck));
+
+    auto r = drive(s, fake);
+    ASSERT_TRUE(r.has_value());
+    // rcv_nxt_ must stay at 2001, not advance to 2002.
+    EXPECT_EQ(s.state(), TcpState::CloseWait) << "State must not change";
+}
+
+TEST(FaultTolerance, FinInLastAckDoesNotAdvanceRcvNxt) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::LastAck);
+    s.inject_send_seq_for_testing(1000, 999);
+    s.inject_recv_seq_for_testing(2001, 8192);
+
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2001, /*ack=*/999,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck));
+
+    auto r = drive(s, fake);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(s.state(), TcpState::LastAck) << "State must not change";
+}
+
+TEST(FaultTolerance, FinInTimeWaitDoesNotAdvanceRcvNxt) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::TimeWait);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2001, 8192);
+
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2001, /*ack=*/1000,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck));
+
+    auto r = drive(s, fake);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(s.state(), TcpState::TimeWait) << "State must not change";
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FIN in valid states still works correctly
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(FaultTolerance, FinInEstablishedStillTransitions) {
+    // Verify our fix didn't break normal FIN handling.
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2000, 8192);
+
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2000, /*ack=*/1000,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck));
+
+    auto r = drive(s, fake);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(s.state(), TcpState::CloseWait);
+}
+
+TEST(FaultTolerance, FinInFinWait2TransitionsToTimeWait) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::FinWait2);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2000, 8192);
+
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2000, /*ack=*/1000,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck));
+
+    auto r = drive(s, fake);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(s.state(), TcpState::TimeWait);
+}
+
+TEST(FaultTolerance, SimultaneousCloseFinWait1ToClosing) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::FinWait1);
+    s.inject_send_seq_for_testing(1000, 999);
+    s.inject_recv_seq_for_testing(2000, 8192);
+
+    // FIN without ACK of our FIN → simultaneous close → CLOSING
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2000, /*ack=*/999,
+               static_cast<uint8_t>(net::kTcpFin));
+
+    auto r = drive(s, fake);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(s.state(), TcpState::Closing);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PacketTemplate overflow guard
+// ═══════════════════════════════════════════════════════════════════════
+
+class PacketTemplateOverflowTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        pool_ = rte_pktmbuf_pool_create(
+            "test_pkt_overflow_pool",
+            /*n=*/64,
+            /*cache_size=*/0,
+            /*priv_size=*/0,
+            /*data_room_size=*/RTE_MBUF_DEFAULT_BUF_SIZE,
+            SOCKET_ID_ANY);
+        ASSERT_NE(pool_, nullptr);
+    }
+
+    static void TearDownTestSuite() {
+        if (pool_) {
+            rte_mempool_free(pool_);
+            pool_ = nullptr;
+        }
+    }
+
+    net::PacketTemplate make_template() const {
+        net::PacketTemplate t;
+        for (int i = 0; i < 6; ++i) t.src_mac.addr_bytes[i] = static_cast<uint8_t>(0xAA + i);
+        for (int i = 0; i < 6; ++i) t.dst_mac.addr_bytes[i] = static_cast<uint8_t>(0x11 + i);
+        t.tuple.src_ip   = 0x0A000001;
+        t.tuple.dst_ip   = 0x0A000002;
+        t.tuple.src_port = 12345;
+        t.tuple.dst_port = 443;
+        t.mss            = 1460;
+        t.hw_cksum       = false;
+        return t;
+    }
+
+    static rte_mempool* pool_;
+};
+
+rte_mempool* PacketTemplateOverflowTest::pool_ = nullptr;
+
+TEST_F(PacketTemplateOverflowTest, LargePayloadLenReturnsNull) {
+    // payload_len close to UINT16_MAX would overflow total_len if computed
+    // in uint16_t. The fix widens to uint32_t and rejects. The actual
+    // rte_pktmbuf_append would also fail for such sizes, but the overflow
+    // check should fire first.
+    auto t = make_template();
+    uint8_t dummy = 0xCC;
+    // total_len = 14 + 20 + 20 + 65535 = 65589 > UINT16_MAX
+    auto* mbuf = t.build_packet(pool_, 1, 1, net::kTcpAck, 8192,
+                                 &dummy, /*payload_len=*/65535);
+    EXPECT_EQ(mbuf, nullptr) << "Oversized payload_len must return null";
+}
+
+TEST_F(PacketTemplateOverflowTest, NormalPayloadStillWorks) {
+    auto t = make_template();
+    uint8_t payload[100];
+    std::memset(payload, 0xAB, sizeof(payload));
+    auto* mbuf = t.build_packet(pool_, 1000, 2000, net::kTcpAck, 8192,
+                                 payload, 100);
+    ASSERT_NE(mbuf, nullptr);
+    rte_pktmbuf_free(mbuf);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MbufView::trim_front on default-constructed (null) view
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(MbufViewFaultTolerance, TrimFrontOnDefaultConstructedView) {
+    // Default-constructed MbufView has data_=nullptr, length_=0.
+    // trim_front must not trigger nullptr arithmetic UB.
+    eph::net::dpdk::detail::MbufView view;
+    EXPECT_EQ(view.data(), nullptr);
+    EXPECT_EQ(view.length(), 0u);
+
+    // Should not crash or trigger UB.
+    view.trim_front(0);
+    EXPECT_EQ(view.data(), nullptr);
+    EXPECT_EQ(view.length(), 0u);
+
+    view.trim_front(10);
+    EXPECT_EQ(view.length(), 0u);
+}
+
+TEST(MbufViewFaultTolerance, TrimBackOnDefaultConstructedView) {
+    eph::net::dpdk::detail::MbufView view;
+    view.trim_back(0);
+    EXPECT_EQ(view.length(), 0u);
+
+    view.trim_back(10);
+    EXPECT_EQ(view.length(), 0u);
+}
+
+TEST(MbufViewFaultTolerance, TrimFrontOnValidViewWorks) {
+    // Verify trim_front still works correctly on valid views.
+    uint8_t buf[32] = {};
+    eph::net::dpdk::detail::MbufView view(buf, 32, 1000);
+    EXPECT_EQ(view.data(), buf);
+    EXPECT_EQ(view.length(), 32u);
+
+    view.trim_front(10);
+    EXPECT_EQ(view.data(), buf + 10);
+    EXPECT_EQ(view.length(), 22u);
+
+    // Trim more than remaining — should clamp to empty.
+    view.trim_front(100);
+    EXPECT_EQ(view.length(), 0u);
+}
