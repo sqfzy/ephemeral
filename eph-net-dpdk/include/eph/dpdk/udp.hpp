@@ -63,8 +63,8 @@ struct UdpConfig {
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (src_ip == 0) return "src_ip must not be zero";
         if (dst_ip == 0) return "dst_ip must not be zero";
-        if (src_port == 0) return "src_port must not be zero";
-        if (dst_port == 0) return "dst_port must not be zero";
+        if (src_port == 0) return "src_port must be explicit (DPDK has no ephemeral port allocator)";
+        if (dst_port == 0) return "dst_port must be explicit (DPDK has no ephemeral port allocator)";
         if (pool == nullptr) return "pool must not be null";
         return {};
     }

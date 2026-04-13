@@ -79,9 +79,9 @@ struct TcpConfig {
         if (tuple.dst_ip == 0)
             return "dst_ip must not be zero";
         if (tuple.src_port == 0)
-            return "src_port must be > 0";
+            return "src_port must be explicit (DPDK has no ephemeral port allocator)";
         if (tuple.dst_port == 0)
-            return "dst_port must be > 0";
+            return "dst_port must be explicit (DPDK has no ephemeral port allocator)";
         if (mss == 0)
             return "mss must be > 0";
         if (mss > 9000)
