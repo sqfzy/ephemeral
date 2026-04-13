@@ -14,7 +14,7 @@
 -- (they are header-only and stay under the `eph::dpdk` namespace / `eph/dpdk/`
 -- include path to minimise churn):
 --
---   * eph::dpdk::TcpSession / UdpSender / Reactor / Connector / Multicast /
+--   * eph::dpdk::TcpSession / UdpSender / RxDispatcher / Connector / Multicast /
 --     ARP / DNS / FlowSteering / packet_* / platform / EalGuard
 --
 -- Dependency rule (post-Phase-7): eph-core + eph-utils + eph-containers +

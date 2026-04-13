@@ -29,7 +29,7 @@ wrapping the existing internal DPDK primitives.
 - `eph/net/dpdk/udp_socket.hpp` — `DpdkUdpSocket<C>`. Wraps the internal UDP
   sender + receive path, adds multicast helpers, satisfies `eph::net::Datagram`.
 - `eph/net/dpdk/poller.hpp` — `DpdkPoller<P>`. Replaces the legacy
-  `eph::dpdk::Reactor` with a concept-driven heterogeneous poller: P2
+  `eph::dpdk::RxDispatcher` with a concept-driven heterogeneous poller: P2
   function-pointer type erase so one Poller drives any mix of `DpdkTcpStream`
   and `DpdkUdpSocket` instances.
 - `eph/net/dpdk/eal.hpp` — `Eal` RAII wrapper around EAL init/teardown.
@@ -43,7 +43,7 @@ wrapping the existing internal DPDK primitives.
 
 ### Retained (internal detail — users don't touch)
 - `eph/dpdk/` — the rich pre-v3.3 DPDK primitives: `eal.hpp`, `tcp.hpp`
-  (DpdkTcpSession), `udp.hpp`, `reactor.hpp`, `arp.hpp`, `dns.hpp`,
+  (DpdkTcpSession), `udp.hpp`, `rx_dispatcher.hpp`, `arp.hpp`, `dns.hpp`,
   `flow_steering.hpp`, `packet_template.hpp`, `packet_core.hpp`,
   `packet_parse.hpp`, `multicast.hpp`, `net_header.hpp`, `platform.hpp`. Phase 7
   moved these from `eph-dpdk/include/` to `eph-net-dpdk/include/` without

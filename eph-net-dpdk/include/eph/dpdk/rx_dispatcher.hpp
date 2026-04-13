@@ -1,6 +1,6 @@
 #pragma once
 
-/// @file reactor.hpp
+/// @file rx_dispatcher.hpp
 /// Epoll-style multiplexed RX for multiple DPDK connections.
 ///
 /// Replaces SharedRxDispatcher — zero ring overhead. A single RX thread
@@ -13,7 +13,7 @@
 /// needed at all).
 ///
 /// Usage:
-///   Reactor reactor({.port_id = 0, .rx_queue_id = 0}, pool);
+///   RxDispatcher dispatcher({.port_id = 0, .rx_queue_id = 0}, pool);
 ///   reactor.add_connection(&session1, on_data1);
 ///   reactor.add_connection(&session2, on_data2);
 ///   reactor.start();
@@ -45,18 +45,18 @@
 namespace eph::dpdk {
 
 namespace detail {
-inline spdlog::logger* reactor_logger() { return get_logger<LoggerName{"dpdk.reactor"}>(); }
+inline spdlog::logger* rx_dispatcher_logger() { return get_logger<LoggerName{"dpdk.rx_dispatcher"}>(); }
 } // namespace detail
 
-/// Maximum connections a single Reactor can service.
+/// Maximum connections a single RxDispatcher can service.
 /// Fixed array avoids heap allocation on the dispatch hot path.
-inline constexpr size_t kReactorMaxConnections = 16;
+inline constexpr size_t kRxDispatcherMaxConnections = 16;
 
 /// Callback invoked for each received TCP payload segment.
 /// @param data    Pointer to TCP payload (valid only during callback)
 /// @param len     Payload length in bytes
 /// @param conn_id Connection index in the reactor (0-based)
-using ReactorDataCallback =
+using RxDispatcherDataCallback =
     std::function<void(const uint8_t* data, uint16_t len, size_t conn_id)>;
 
 /// Callback invoked once per burst after all packets have been dispatched.
@@ -65,20 +65,20 @@ using ReactorDataCallback =
 /// note that not all packets may have matched a registered connection.
 using BurstCompleteCallback = std::function<void()>;
 
-/// @brief Per-connection entry in the Reactor's fixed-size connection table.
+/// @brief Per-connection entry in the RxDispatcher's fixed-size connection table.
 ///
 /// Contains the TcpSession pointer (atomic for safe reconnection), the
 /// connection 4-tuple for packet matching, a data callback, and a connected
 /// flag that gates processing. The session pointer and connected flag use
 /// atomic operations to support mark_reconnected() while the RX loop is running.
-struct ReactorEntry {
+struct RxDispatcherEntry {
     /// Atomic pointer — mark_reconnected() may swap this while the RX loop
     /// is running. The RX loop loads it once into a local before calling
     /// process_rx, so a concurrent store is safe (both old and new sessions
     /// must remain alive until the next burst cycle).
     std::atomic<TcpSession<>*> session{nullptr};
     net::ConnectionTuple tuple{};
-    ReactorDataCallback on_data{};
+    RxDispatcherDataCallback on_data{};
     std::atomic<bool> connected{false};
 
     /// Direction-symmetric hash of the 4-tuple for fast rejection in linear scan.
@@ -96,28 +96,28 @@ struct ReactorEntry {
     }
 };
 
-/// Maximum UDP entries a single Reactor can service.
-inline constexpr size_t kReactorMaxUdpEntries = 8;
+/// Maximum UDP entries a single RxDispatcher can service.
+inline constexpr size_t kRxDispatcherMaxUdpEntries = 8;
 
 /// Callback invoked for each received UDP payload.
 /// @param data    Pointer to UDP payload (valid only during callback)
 /// @param len     Payload length in bytes
 /// @param udp_id  UDP entry index in the reactor (0-based)
-using UdpReactorCallback =
+using UdpRxDispatcherCallback =
     std::function<void(const uint8_t* data, uint16_t len, size_t udp_id)>;
 
-/// Per-UDP-entry in the Reactor's fixed-size table.
-struct UdpReactorEntry {
+/// Per-UDP-entry in the RxDispatcher's fixed-size table.
+struct UdpRxDispatcherEntry {
     net::ConnectionTuple tuple{};
-    UdpReactorCallback on_data{};
+    UdpRxDispatcherCallback on_data{};
 };
 
-/// @brief Reactor configuration: which port/queue to poll and optional CPU pinning.
+/// @brief RxDispatcher configuration: which port/queue to poll and optional CPU pinning.
 ///
-/// Defined outside the Reactor template so that Reactor<false>::Config and
-/// Reactor<true>::Config are the same type, avoiding template-dependent
+/// Defined outside the Reactor template so that RxDispatcher<false>::Config and
+/// RxDispatcher<true>::Config are the same type, avoiding template-dependent
 /// std::formatter issues.
-struct ReactorConfig {
+struct RxDispatcherConfig {
     uint16_t port_id      = 0;     ///< DPDK port ID to poll
     uint16_t rx_queue_id  = 0;     ///< RX queue index on the port
     int      rx_cpu       = -1;    ///< CPU affinity for RX thread (-1 = no pin)
@@ -131,7 +131,7 @@ struct ReactorConfig {
 
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
-        return std::format("ReactorConfig(port={}, queue={}, cpu={})",
+        return std::format("RxDispatcherConfig(port={}, queue={}, cpu={})",
                            port_id, rx_queue_id, rx_cpu);
     }
 
@@ -146,22 +146,22 @@ struct ReactorConfig {
     [[nodiscard]] std::vector<std::string> warnings() const {
         std::vector<std::string> w;
         if (rx_cpu == -1)
-            w.emplace_back("rx_cpu=-1 (no pinning) -- Reactor RX thread "
+            w.emplace_back("rx_cpu=-1 (no pinning) -- RxDispatcher RX thread "
                            "may migrate across cores, increasing tail latency");
         return w;
     }
 
     /// Defaulted equality -- all fields must match exactly.
-    [[nodiscard]] friend bool operator==(const ReactorConfig&,
-                                         const ReactorConfig&) = default;
+    [[nodiscard]] friend bool operator==(const RxDispatcherConfig&,
+                                         const RxDispatcherConfig&) = default;
 };
 
-/// Epoll-style single-thread multiplexed RX for up to kReactorMaxConnections
+/// Epoll-style single-thread multiplexed RX for up to kRxDispatcherMaxConnections
 /// DPDK connections. Zero ring overhead — packets dispatch directly to
 /// TcpSession::process_rx via inline callback.
 ///
 /// Threading model:
-///   - One RX thread (owned by Reactor) polls NIC and processes all connections
+///   - One RX thread (owned by RxDispatcher) polls NIC and processes all connections
 ///   - TX threads remain per-connection (owned by Transport or user)
 ///   - Data delivery via callback (on_data) in the RX thread context
 ///
@@ -169,46 +169,46 @@ struct ReactorConfig {
 ///                    UDP packets to registered UDP entries via add_udp().
 ///                    When false (default), identical codegen to the non-template version.
 template <bool EnableUdp = false>
-class Reactor {
+class RxDispatcher {
 public:
-    /// Reactor configuration — alias to the standalone ReactorConfig struct.
-    using Config = ReactorConfig;
+    /// RxDispatcher configuration — alias to the standalone RxDispatcherConfig struct.
+    using Config = RxDispatcherConfig;
 
-    explicit Reactor(Config config) noexcept
+    explicit RxDispatcher(Config config) noexcept
         : config_(config) {}
 
-    ~Reactor() { stop(); }
+    ~RxDispatcher() { stop(); }
 
-    Reactor(const Reactor&) = delete;
-    Reactor& operator=(const Reactor&) = delete;
-    Reactor(Reactor&&) = delete;
-    Reactor& operator=(Reactor&&) = delete;
+    RxDispatcher(const RxDispatcher&) = delete;
+    RxDispatcher& operator=(const RxDispatcher&) = delete;
+    RxDispatcher(RxDispatcher&&) = delete;
+    RxDispatcher& operator=(RxDispatcher&&) = delete;
 
     /// Add a connection. Session must be already connected.
     /// Must be called BEFORE start() — modifying entries_ while the RX loop
     /// is running is not safe (no lock on the hot path by design).
     /// Returns connection index (0-based) or error string.
     [[nodiscard]] std::expected<size_t, std::string>
-    add_connection(TcpSession<>* session, ReactorDataCallback on_data) {
+    add_connection(TcpSession<>* session, RxDispatcherDataCallback on_data) {
         if (running_.load(std::memory_order_acquire)) {
             return std::unexpected("add_connection() must be called before start()");
         }
         if (!session) return std::unexpected("session is null");
         if (!on_data) return std::unexpected("on_data callback is null");
         size_t idx = count_.load(std::memory_order_relaxed);
-        if (idx >= kReactorMaxConnections) {
+        if (idx >= kRxDispatcherMaxConnections) {
             return std::unexpected(std::format(
                 "reactor full ({}/{} connections)",
-                idx, kReactorMaxConnections));
+                idx, kRxDispatcherMaxConnections));
         }
         auto& e = entries_[idx];
         e.session.store(session, std::memory_order_relaxed);
         e.tuple = session->connection_tuple();
         e.on_data = std::move(on_data);
         e.connected.store(session->is_established(), std::memory_order_relaxed);
-        hashes_[idx] = ReactorEntry::hash_tuple(e.tuple);
+        hashes_[idx] = RxDispatcherEntry::hash_tuple(e.tuple);
 
-        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+        SPDLOG_LOGGER_DEBUG(detail::rx_dispatcher_logger(),
             "Added connection {}: {}:{} -> {}:{}",
             idx,
             net::format_ipv4(e.tuple.src_ip).data(), e.tuple.src_port,
@@ -223,7 +223,7 @@ public:
     [[nodiscard]] bool start() {
         if (running_.load(std::memory_order_relaxed)) return false;
         if (count_.load(std::memory_order_relaxed) == 0) {
-            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
                 "start(): no connections registered");
             return false;
         }
@@ -236,20 +236,20 @@ public:
     void stop() {
         if (!running_.exchange(false, std::memory_order_acq_rel)) return;
         if (thread_.joinable()) thread_.join();
-        SPDLOG_LOGGER_INFO(detail::reactor_logger(), "Reactor stopped");
+        SPDLOG_LOGGER_INFO(detail::rx_dispatcher_logger(), "RxDispatcher stopped");
     }
 
     /// Mark a connection as disconnected (skip processing until reconnected).
     /// Safe to call while the reactor is running.
     void mark_disconnected(size_t conn_id) noexcept {
         if (conn_id >= count_.load(std::memory_order_acquire)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
                 "mark_disconnected: conn_id={} out of range (count={})",
                 conn_id, count_.load(std::memory_order_relaxed));
             return;
         }
         entries_[conn_id].connected.store(false, std::memory_order_release);
-        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+        SPDLOG_LOGGER_DEBUG(detail::rx_dispatcher_logger(),
             "Connection {} marked disconnected", conn_id);
     }
 
@@ -271,12 +271,12 @@ public:
     ///  4. Set connected=true (release) to re-enable the entry.
     void mark_reconnected(size_t conn_id, TcpSession<>* new_session) noexcept {
         if (!new_session) {
-            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
                 "mark_reconnected: null session for conn_id={}", conn_id);
             return;
         }
         if (conn_id >= count_.load(std::memory_order_acquire)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
                 "mark_reconnected: conn_id={} out of range (count={})",
                 conn_id, count_.load(std::memory_order_relaxed));
             return;
@@ -289,12 +289,12 @@ public:
 
         // Step 3: Update tuple and hash for the new connection.
         entries_[conn_id].tuple = new_session->connection_tuple();
-        hashes_[conn_id] = ReactorEntry::hash_tuple(entries_[conn_id].tuple);
+        hashes_[conn_id] = RxDispatcherEntry::hash_tuple(entries_[conn_id].tuple);
 
         // Step 4: Re-enable the entry for the RX loop.
         entries_[conn_id].connected.store(true, std::memory_order_release);
 
-        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+        SPDLOG_LOGGER_DEBUG(detail::rx_dispatcher_logger(),
             "Connection {} reconnected with new session", conn_id);
     }
 
@@ -302,7 +302,7 @@ public:
     /// Must be called before start(). Returns false if reactor is already running.
     [[nodiscard]] bool set_on_burst_complete(BurstCompleteCallback cb) {
         if (running_.load(std::memory_order_acquire)) {
-            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
                 "set_on_burst_complete: called while reactor is running");
             return false;
         }
@@ -317,7 +317,7 @@ public:
     /// Add a UDP entry. Must be called BEFORE start().
     /// Returns UDP entry index (0-based) or error string.
     [[nodiscard]] std::expected<size_t, std::string>
-    add_udp(const net::ConnectionTuple& tuple, UdpReactorCallback on_data)
+    add_udp(const net::ConnectionTuple& tuple, UdpRxDispatcherCallback on_data)
         requires (EnableUdp)
     {
         if (running_.load(std::memory_order_acquire)) {
@@ -328,16 +328,16 @@ public:
         if (!err.empty()) return std::unexpected(std::string(err));
 
         size_t idx = udp_count_.load(std::memory_order_relaxed);
-        if (idx >= kReactorMaxUdpEntries) {
+        if (idx >= kRxDispatcherMaxUdpEntries) {
             return std::unexpected(std::format(
-                "reactor UDP entries full ({}/{})", idx, kReactorMaxUdpEntries));
+                "reactor UDP entries full ({}/{})", idx, kRxDispatcherMaxUdpEntries));
         }
         udp_entries_[idx].tuple = tuple;
         udp_entries_[idx].on_data = std::move(on_data);
-        udp_hashes_[idx] = ReactorEntry::hash_tuple(tuple);
+        udp_hashes_[idx] = RxDispatcherEntry::hash_tuple(tuple);
         udp_active_[idx].store(true, std::memory_order_relaxed);
 
-        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+        SPDLOG_LOGGER_DEBUG(detail::rx_dispatcher_logger(),
             "Added UDP entry {}: {}:{} -> {}:{}",
             idx,
             net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
@@ -352,13 +352,13 @@ public:
         requires (EnableUdp)
     {
         if (udp_id >= udp_count_.load(std::memory_order_acquire)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::reactor_logger(),
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
                 "set_udp_active: udp_id={} out of range (count={})",
                 udp_id, udp_count_.load(std::memory_order_relaxed));
             return;
         }
         udp_active_[udp_id].store(active, std::memory_order_release);
-        SPDLOG_LOGGER_DEBUG(detail::reactor_logger(),
+        SPDLOG_LOGGER_DEBUG(detail::rx_dispatcher_logger(),
             "UDP entry {} set active={}", udp_id, active);
     }
 
@@ -381,9 +381,9 @@ public:
 
     /// Access entry by index (for stats, diagnostics).
     /// Returns a static empty entry if index is out of bounds.
-    [[nodiscard]] const ReactorEntry& entry(size_t i) const noexcept {
+    [[nodiscard]] const RxDispatcherEntry& entry(size_t i) const noexcept {
         if (i >= count_.load(std::memory_order_acquire)) [[unlikely]] {
-            static const ReactorEntry empty{};
+            static const RxDispatcherEntry empty{};
             return empty;
         }
         return entries_[i];
@@ -395,9 +395,9 @@ private:
             [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(config_.rx_cpu, "reactor_rx");
         }
 
-        [[maybe_unused]] auto* log = detail::reactor_logger();
+        [[maybe_unused]] auto* log = detail::rx_dispatcher_logger();
         SPDLOG_LOGGER_INFO(log,
-            "Reactor RX loop started: {} connections, port={}, queue={}, cpu={}",
+            "RxDispatcher RX loop started: {} connections, port={}, queue={}, cpu={}",
             count_.load(std::memory_order_acquire), config_.port_id, config_.rx_queue_id, config_.rx_cpu);
 
         rte_mbuf* pkts[32];
@@ -421,7 +421,7 @@ private:
 
             for (uint16_t i = 0; i < nb_rx; ++i) {
                 // UDP dispatch: check IP protocol before TCP parse.
-                // if constexpr ensures this branch is compiled away for Reactor<false>.
+                // if constexpr ensures this branch is compiled away for RxDispatcher<false>.
                 if constexpr (EnableUdp) {
                     auto ip_hdr = net::parse_ip_header(pkts[i]);
                     if (ip_hdr && ip_hdr.proto == net::kIpProtoUdp) {
@@ -442,7 +442,7 @@ private:
                 pkt_tuple.dst_ip = parsed.dst_ip();
                 pkt_tuple.src_port = parsed.src_port();
                 pkt_tuple.dst_port = parsed.dst_port();
-                const uint64_t pkt_hash = ReactorEntry::hash_tuple(pkt_tuple);
+                const uint64_t pkt_hash = RxDispatcherEntry::hash_tuple(pkt_tuple);
 
                 // PERF: Connection dispatch uses linear scan over registered connections.
                 // For typical HFT deployments (2-4 connections), this is optimal (no indirection overhead).
@@ -511,7 +511,7 @@ private:
             }
         }
 
-        SPDLOG_LOGGER_DEBUG(log, "Reactor RX loop exited");
+        SPDLOG_LOGGER_DEBUG(log, "RxDispatcher RX loop exited");
     }
 
     /// Dispatch a UDP packet to the matching registered UDP entry.
@@ -526,7 +526,7 @@ private:
         net::ConnectionTuple pkt_tuple{
             .src_ip = parsed.src_ip(), .dst_ip = parsed.dst_ip(),
             .src_port = parsed.src_port(), .dst_port = parsed.dst_port()};
-        const uint64_t pkt_hash = ReactorEntry::hash_tuple(pkt_tuple);
+        const uint64_t pkt_hash = RxDispatcherEntry::hash_tuple(pkt_tuple);
 
         const size_t n = udp_count_.load(std::memory_order_acquire);
         for (size_t j = 0; j < n; ++j) {
@@ -549,29 +549,29 @@ private:
     }
 
     Config config_;
-    std::array<ReactorEntry, kReactorMaxConnections> entries_{};
-    std::array<uint64_t, kReactorMaxConnections> hashes_{};
+    std::array<RxDispatcherEntry, kRxDispatcherMaxConnections> entries_{};
+    std::array<uint64_t, kRxDispatcherMaxConnections> hashes_{};
     std::atomic<size_t> count_{0};
     std::atomic<bool> running_{false};
     std::thread thread_;
     BurstCompleteCallback on_burst_complete_{};
 
     // UDP entries — always declared for uniform sizeof, only used when EnableUdp=true
-    std::array<UdpReactorEntry, kReactorMaxUdpEntries> udp_entries_{};
-    std::array<uint64_t, kReactorMaxUdpEntries> udp_hashes_{};
-    std::array<std::atomic<bool>, kReactorMaxUdpEntries> udp_active_{};
+    std::array<UdpRxDispatcherEntry, kRxDispatcherMaxUdpEntries> udp_entries_{};
+    std::array<uint64_t, kRxDispatcherMaxUdpEntries> udp_hashes_{};
+    std::array<std::atomic<bool>, kRxDispatcherMaxUdpEntries> udp_active_{};
     std::atomic<size_t> udp_count_{0};
 };
 
 } // namespace eph::dpdk
 
 // ─────────────────────────────────────────────────────────────────────────────
-// std::formatter specialization for ReactorConfig
+// std::formatter specialization for RxDispatcherConfig
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <>
-struct std::formatter<eph::dpdk::ReactorConfig> : std::formatter<std::string> {
-    auto format(const eph::dpdk::ReactorConfig& c, auto& ctx) const {
+struct std::formatter<eph::dpdk::RxDispatcherConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::RxDispatcherConfig& c, auto& ctx) const {
         return std::formatter<std::string>::format(c.dump(), ctx);
     }
 };

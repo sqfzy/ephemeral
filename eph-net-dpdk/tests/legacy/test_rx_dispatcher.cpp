@@ -1,11 +1,11 @@
 /// @file test_reactor.cpp
-/// Unit tests for Reactor: connection management, hash utility, and API.
+/// Unit tests for RxDispatcher: connection management, hash utility, and API.
 ///
 /// NOTE: The actual NIC poll (rte_eth_rx_burst) cannot be unit-tested
 /// without DPDK EAL. These tests cover the non-NIC parts:
-///   - ReactorEntry::hash_tuple correctness
+///   - RxDispatcherEntry::hash_tuple correctness
 ///   - Connection registration and limits
-///   - Reactor lifecycle (start/stop without NIC)
+///   - RxDispatcher lifecycle (start/stop without NIC)
 
 #include <cstdint>
 #include <string>
@@ -13,13 +13,13 @@
 #include <gtest/gtest.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
-#include "eph/dpdk/reactor.hpp"
+#include "eph/dpdk/rx_dispatcher.hpp"
 
 using namespace eph::dpdk;
 using namespace eph::net;
 
 // ---------------------------------------------------------------------------
-// ReactorEntry::hash_tuple
+// RxDispatcherEntry::hash_tuple
 // ---------------------------------------------------------------------------
 
 static net::ConnectionTuple make_tuple(uint32_t src_ip, uint32_t dst_ip,
@@ -32,40 +32,40 @@ static net::ConnectionTuple make_tuple(uint32_t src_ip, uint32_t dst_ip,
     return t;
 }
 
-TEST(ReactorHash, DifferentTuplesProduceDifferentHashes) {
+TEST(RxDispatcherHash, DifferentTuplesProduceDifferentHashes) {
     auto t1 = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
     auto t2 = make_tuple(0x0A000001, 0x0A000003, 12345, 443);
-    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+    EXPECT_NE(RxDispatcherEntry::hash_tuple(t1), RxDispatcherEntry::hash_tuple(t2));
 }
 
-TEST(ReactorHash, SameTuplesSameHash) {
+TEST(RxDispatcherHash, SameTuplesSameHash) {
     auto t = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
-    EXPECT_EQ(ReactorEntry::hash_tuple(t), ReactorEntry::hash_tuple(t));
+    EXPECT_EQ(RxDispatcherEntry::hash_tuple(t), RxDispatcherEntry::hash_tuple(t));
 }
 
-TEST(ReactorHash, DifferentPortsDifferentHash) {
+TEST(RxDispatcherHash, DifferentPortsDifferentHash) {
     auto t1 = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
     auto t2 = make_tuple(0x0A000001, 0x0A000002, 12346, 443);
-    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+    EXPECT_NE(RxDispatcherEntry::hash_tuple(t1), RxDispatcherEntry::hash_tuple(t2));
 }
 
-TEST(ReactorHash, ZeroTupleNonZeroHash) {
+TEST(RxDispatcherHash, ZeroTupleNonZeroHash) {
     net::ConnectionTuple t{};
-    auto h = ReactorEntry::hash_tuple(t);
-    EXPECT_EQ(h, ReactorEntry::hash_tuple(t));
+    auto h = RxDispatcherEntry::hash_tuple(t);
+    EXPECT_EQ(h, RxDispatcherEntry::hash_tuple(t));
 }
 
-TEST(ReactorHash, SymmetricSwappedSrcDst) {
+TEST(RxDispatcherHash, SymmetricSwappedSrcDst) {
     // Critical property: hash(A->B) == hash(B->A) because incoming packets
     // have swapped src/dst relative to the registered connection tuple.
     auto local = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
     auto remote = make_tuple(0x0A000002, 0x0A000001, 443, 12345); // swapped
-    EXPECT_EQ(ReactorEntry::hash_tuple(local),
-              ReactorEntry::hash_tuple(remote))
+    EXPECT_EQ(RxDispatcherEntry::hash_tuple(local),
+              RxDispatcherEntry::hash_tuple(remote))
         << "Hash must be direction-symmetric for RX dispatch";
 }
 
-TEST(ReactorHash, SymmetricMultipleTuples) {
+TEST(RxDispatcherHash, SymmetricMultipleTuples) {
     // Verify symmetry across several different connection tuples
     struct { uint32_t a_ip; uint32_t b_ip; uint16_t a_port; uint16_t b_port; } cases[] = {
         {0xC0A80101, 0x08080808, 5000, 443},
@@ -75,87 +75,87 @@ TEST(ReactorHash, SymmetricMultipleTuples) {
     for (const auto& c : cases) {
         auto fwd = make_tuple(c.a_ip, c.b_ip, c.a_port, c.b_port);
         auto rev = make_tuple(c.b_ip, c.a_ip, c.b_port, c.a_port);
-        EXPECT_EQ(ReactorEntry::hash_tuple(fwd), ReactorEntry::hash_tuple(rev))
+        EXPECT_EQ(RxDispatcherEntry::hash_tuple(fwd), RxDispatcherEntry::hash_tuple(rev))
             << "Symmetry violation for " << c.a_ip << " <-> " << c.b_ip;
     }
 }
 
-TEST(ReactorHash, NonSymmetricIpsDifferentHash) {
+TEST(RxDispatcherHash, NonSymmetricIpsDifferentHash) {
     // Different IPs (not just swapped) should produce different hashes
     auto t1 = make_tuple(0x0A000001, 0x0A000002, 12345, 443);
     auto t2 = make_tuple(0x0A000001, 0x0A000003, 12345, 443);
-    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+    EXPECT_NE(RxDispatcherEntry::hash_tuple(t1), RxDispatcherEntry::hash_tuple(t2));
 }
 
 // ---------------------------------------------------------------------------
-// Reactor — connection management (no NIC needed)
+// RxDispatcher — connection management (no NIC needed)
 // ---------------------------------------------------------------------------
 
-TEST(Reactor, AddConnectionNullSessionFails) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, AddConnectionNullSessionFails) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     auto result = reactor.add_connection(nullptr, [](auto*, auto, auto){});
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("null"), std::string::npos);
 }
 
-TEST(Reactor, ConnectionCountStartsAtZero) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, ConnectionCountStartsAtZero) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
-TEST(Reactor, IsRunningInitiallyFalse) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, IsRunningInitiallyFalse) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     EXPECT_FALSE(reactor.is_running());
 }
 
-TEST(Reactor, MaxConnectionsConstant) {
-    EXPECT_GE(kReactorMaxConnections, 8u);
-    EXPECT_LE(kReactorMaxConnections, 256u);
+TEST(RxDispatcher, MaxConnectionsConstant) {
+    EXPECT_GE(kRxDispatcherMaxConnections, 8u);
+    EXPECT_LE(kRxDispatcherMaxConnections, 256u);
 }
 
 // ---------------------------------------------------------------------------
-// ReactorEntry
+// RxDispatcherEntry
 // ---------------------------------------------------------------------------
 
-TEST(ReactorEntry, DefaultConstructedIsDisconnected) {
-    ReactorEntry entry;
+TEST(RxDispatcherEntry, DefaultConstructedIsDisconnected) {
+    RxDispatcherEntry entry;
     EXPECT_EQ(entry.session, nullptr);
     EXPECT_FALSE(entry.connected);
 }
 
-TEST(ReactorEntry, HashIsConstexprSafe) {
+TEST(RxDispatcherEntry, HashIsConstexprSafe) {
     auto t = make_tuple(1, 2, 3, 4);
-    auto h1 = ReactorEntry::hash_tuple(t);
-    auto h2 = ReactorEntry::hash_tuple(t);
+    auto h1 = RxDispatcherEntry::hash_tuple(t);
+    auto h2 = RxDispatcherEntry::hash_tuple(t);
     EXPECT_EQ(h1, h2);
 }
 
 // ---------------------------------------------------------------------------
-// ReactorConfig validate/dump
+// RxDispatcherConfig validate/dump
 // ---------------------------------------------------------------------------
 
-TEST(ReactorConfig, DefaultConfigIsValid) {
-    ReactorConfig cfg;
+TEST(RxDispatcherConfig, DefaultConfigIsValid) {
+    RxDispatcherConfig cfg;
     EXPECT_TRUE(cfg.validate().empty());
 }
 
-TEST(ReactorConfig, NegativeCpuAffinity) {
-    ReactorConfig cfg{.rx_cpu = -2};
+TEST(RxDispatcherConfig, NegativeCpuAffinity) {
+    RxDispatcherConfig cfg{.rx_cpu = -2};
     auto err = cfg.validate();
     EXPECT_FALSE(err.empty());
     EXPECT_NE(err.find("rx_cpu"), std::string_view::npos);
 }
 
-TEST(ReactorConfig, DumpContainsFields) {
-    ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+TEST(RxDispatcherConfig, DumpContainsFields) {
+    RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
     auto d = cfg.dump();
     EXPECT_NE(d.find("port=1"), std::string::npos);
     EXPECT_NE(d.find("queue=2"), std::string::npos);
     EXPECT_NE(d.find("cpu=3"), std::string::npos);
 }
 
-TEST(ReactorConfig, ToJsonValidStructure) {
-    ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+TEST(RxDispatcherConfig, ToJsonValidStructure) {
+    RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
     auto j = cfg.to_json();
     EXPECT_EQ(j.front(), '{');
     EXPECT_EQ(j.back(), '}');
@@ -164,40 +164,40 @@ TEST(ReactorConfig, ToJsonValidStructure) {
     EXPECT_NE(j.find("\"rx_cpu\":3"), std::string::npos);
 }
 
-TEST(ReactorConfig, Equality) {
-    ReactorConfig a{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
-    ReactorConfig b{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
-    ReactorConfig c{.port_id = 0, .rx_queue_id = 2, .rx_cpu = 3};
+TEST(RxDispatcherConfig, Equality) {
+    RxDispatcherConfig a{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    RxDispatcherConfig b{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+    RxDispatcherConfig c{.port_id = 0, .rx_queue_id = 2, .rx_cpu = 3};
     EXPECT_EQ(a, b);
     EXPECT_NE(a, c);
 }
 
-TEST(ReactorConfig, WarningUnpinnedCpu) {
-    ReactorConfig cfg{.rx_cpu = -1};
+TEST(RxDispatcherConfig, WarningUnpinnedCpu) {
+    RxDispatcherConfig cfg{.rx_cpu = -1};
     auto w = cfg.warnings();
     ASSERT_FALSE(w.empty());
     EXPECT_NE(w[0].find("no pinning"), std::string::npos);
 }
 
-TEST(ReactorConfig, NoWarningPinnedCpu) {
-    ReactorConfig cfg{.rx_cpu = 3};
+TEST(RxDispatcherConfig, NoWarningPinnedCpu) {
+    RxDispatcherConfig cfg{.rx_cpu = 3};
     auto w = cfg.warnings();
     EXPECT_TRUE(w.empty());
 }
 
-TEST(ReactorConfig, FormatterContainsKeyFields) {
-    ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
+TEST(RxDispatcherConfig, FormatterContainsKeyFields) {
+    RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 3};
     auto s = std::format("{}", cfg);
-    EXPECT_NE(s.find("Reactor"), std::string::npos);
+    EXPECT_NE(s.find("RxDispatcher"), std::string::npos);
     EXPECT_NE(s.find("port=1"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
-// Reactor::entry out-of-bounds
+// RxDispatcher::entry out-of-bounds
 // ---------------------------------------------------------------------------
 
-TEST(Reactor, EntryOutOfBoundsReturnsEmpty) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, EntryOutOfBoundsReturnsEmpty) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     // No connections added, any index should return the static empty entry
     const auto& e = reactor.entry(0);
     EXPECT_EQ(e.session, nullptr);
@@ -209,23 +209,23 @@ TEST(Reactor, EntryOutOfBoundsReturnsEmpty) {
     EXPECT_FALSE(e2.connected);
 }
 
-TEST(Reactor, MarkDisconnectedOutOfBoundsIsSafe) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, MarkDisconnectedOutOfBoundsIsSafe) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     // Should not crash, just log a warning
     reactor.mark_disconnected(0);
     reactor.mark_disconnected(999);
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
-TEST(Reactor, MarkReconnectedNullSessionIsSafe) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, MarkReconnectedNullSessionIsSafe) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     // Should not crash, null session is logged
     reactor.mark_reconnected(0, nullptr);
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
-TEST(Reactor, MarkReconnectedOutOfBoundsIsSafe) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, MarkReconnectedOutOfBoundsIsSafe) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     // Fake non-null session pointer for testing out-of-bounds
     TcpSession<>* fake_session = reinterpret_cast<TcpSession<>*>(0xDEAD);
     // Should not crash, just log a warning (does not dereference pointer
@@ -234,30 +234,30 @@ TEST(Reactor, MarkReconnectedOutOfBoundsIsSafe) {
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
-TEST(Reactor, AddConnectionWhileRunningFails) {
+TEST(RxDispatcher, AddConnectionWhileRunningFails) {
     // Cannot test start()/stop() without EAL, but can verify the running
     // check logic indirectly via the atomic flag
-    Reactor<> reactor(ReactorConfig{});
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     EXPECT_FALSE(reactor.is_running());
     // The actual "running" rejection test would require mocking the thread
 }
 
-TEST(Reactor, StopWhileNotRunningIsSafe) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, StopWhileNotRunningIsSafe) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     reactor.stop(); // Should not crash
     reactor.stop(); // Double stop should be idempotent
     EXPECT_FALSE(reactor.is_running());
 }
 
 // ---------------------------------------------------------------------------
-// Reactor — add_connection null callback rejection
+// RxDispatcher — add_connection null callback rejection
 // ---------------------------------------------------------------------------
 
-TEST(Reactor, AddConnectionNullCallbackFails) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, AddConnectionNullCallbackFails) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     // Fake non-null session pointer for testing callback validation
     TcpSession<>* fake_session = reinterpret_cast<TcpSession<>*>(0xBEEF);
-    ReactorDataCallback empty_cb;  // default-constructed = empty
+    RxDispatcherDataCallback empty_cb;  // default-constructed = empty
     auto result = reactor.add_connection(fake_session, empty_cb);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("null"), std::string::npos);
@@ -265,92 +265,92 @@ TEST(Reactor, AddConnectionNullCallbackFails) {
 }
 
 // ---------------------------------------------------------------------------
-// Reactor::start — returns false with zero connections
+// RxDispatcher::start — returns false with zero connections
 // ---------------------------------------------------------------------------
 
-TEST(Reactor, StartWithNoConnectionsReturnsFalse) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, StartWithNoConnectionsReturnsFalse) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     EXPECT_FALSE(reactor.start());
     EXPECT_FALSE(reactor.is_running());
 }
 
 // ---------------------------------------------------------------------------
-// Reactor::set_on_burst_complete — returns bool
+// RxDispatcher::set_on_burst_complete — returns bool
 // ---------------------------------------------------------------------------
 
-TEST(Reactor, SetOnBurstCompleteReturnsTrue) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, SetOnBurstCompleteReturnsTrue) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     bool result = reactor.set_on_burst_complete([]() {});
     EXPECT_TRUE(result);
 }
 
-TEST(Reactor, SetOnBurstCompleteNullCallbackReturnsTrue) {
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, SetOnBurstCompleteNullCallbackReturnsTrue) {
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     // Clearing the callback is a valid operation
     bool result = reactor.set_on_burst_complete(nullptr);
     EXPECT_TRUE(result);
 }
 
 // ---------------------------------------------------------------------------
-// ReactorConfig — to_json with negative rx_cpu
+// RxDispatcherConfig — to_json with negative rx_cpu
 // ---------------------------------------------------------------------------
 
-TEST(ReactorConfig, ToJsonNegativeCpu) {
-    ReactorConfig cfg{.port_id = 0, .rx_queue_id = 0, .rx_cpu = -1};
+TEST(RxDispatcherConfig, ToJsonNegativeCpu) {
+    RxDispatcherConfig cfg{.port_id = 0, .rx_queue_id = 0, .rx_cpu = -1};
     auto json = cfg.to_json();
     EXPECT_NE(json.find("\"rx_cpu\":-1"), std::string::npos);
 }
 
-TEST(ReactorConfig, DumpDefaultConfig) {
-    ReactorConfig cfg{};
+TEST(RxDispatcherConfig, DumpDefaultConfig) {
+    RxDispatcherConfig cfg{};
     auto d = cfg.dump();
-    EXPECT_NE(d.find("ReactorConfig"), std::string::npos);
+    EXPECT_NE(d.find("RxDispatcherConfig"), std::string::npos);
     EXPECT_NE(d.find("port=0"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
-// ReactorEntry — hash_tuple edge cases
+// RxDispatcherEntry — hash_tuple edge cases
 // ---------------------------------------------------------------------------
 
-TEST(ReactorHash, MaxValueTupleNonZeroHash) {
+TEST(RxDispatcherHash, MaxValueTupleNonZeroHash) {
     auto t = make_tuple(UINT32_MAX, UINT32_MAX, UINT16_MAX, UINT16_MAX);
-    auto h = ReactorEntry::hash_tuple(t);
+    auto h = RxDispatcherEntry::hash_tuple(t);
     // Should produce some hash, not zero (collisions are theoretically possible
     // but extremely unlikely for a well-distributed hash)
-    EXPECT_EQ(h, ReactorEntry::hash_tuple(t));  // Deterministic
+    EXPECT_EQ(h, RxDispatcherEntry::hash_tuple(t));  // Deterministic
 }
 
-TEST(ReactorHash, SingleBitDifferenceDifferentHash) {
+TEST(RxDispatcherHash, SingleBitDifferenceDifferentHash) {
     // Verify single-bit difference in IP produces different hash
     auto t1 = make_tuple(0x80000000, 0x0A000002, 12345, 443);
     auto t2 = make_tuple(0x80000001, 0x0A000002, 12345, 443);
-    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+    EXPECT_NE(RxDispatcherEntry::hash_tuple(t1), RxDispatcherEntry::hash_tuple(t2));
 }
 
-TEST(ReactorHash, SingleBitDifferencePortDifferentHash) {
+TEST(RxDispatcherHash, SingleBitDifferencePortDifferentHash) {
     auto t1 = make_tuple(0x0A000001, 0x0A000002, 1, 443);
     auto t2 = make_tuple(0x0A000001, 0x0A000002, 2, 443);
-    EXPECT_NE(ReactorEntry::hash_tuple(t1), ReactorEntry::hash_tuple(t2));
+    EXPECT_NE(RxDispatcherEntry::hash_tuple(t1), RxDispatcherEntry::hash_tuple(t2));
 }
 
 // ---------------------------------------------------------------------------
-// Reactor — default template parameter compiles
+// RxDispatcher — default template parameter compiles
 // ---------------------------------------------------------------------------
 
-TEST(Reactor, DefaultTemplateParam) {
-    // Reactor<> (EnableUdp=false) must compile and behave identically
-    // to the pre-template Reactor.
-    Reactor<> reactor(ReactorConfig{});
+TEST(RxDispatcher, DefaultTemplateParam) {
+    // RxDispatcher<> (EnableUdp=false) must compile and behave identically
+    // to the pre-template RxDispatcher.
+    RxDispatcher<> reactor(RxDispatcherConfig{});
     EXPECT_FALSE(reactor.is_running());
     EXPECT_EQ(reactor.connection_count(), 0u);
 }
 
 // ---------------------------------------------------------------------------
-// Reactor<true> — UDP entry management
+// RxDispatcher<true> — UDP entry management
 // ---------------------------------------------------------------------------
 
-TEST(ReactorUdp, AddUdpBeforeStart) {
-    Reactor<true> reactor(ReactorConfig{});
+TEST(RxDispatcherUdp, AddUdpBeforeStart) {
+    RxDispatcher<true> reactor(RxDispatcherConfig{});
     auto tuple = make_tuple(0x0A000001, 0x0A000002, 50000, 8080);
     auto result = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
     ASSERT_TRUE(result.has_value());
@@ -358,25 +358,25 @@ TEST(ReactorUdp, AddUdpBeforeStart) {
     EXPECT_EQ(reactor.udp_count(), 1u);
 }
 
-TEST(ReactorUdp, AddUdpNullCallback) {
-    Reactor<true> reactor(ReactorConfig{});
+TEST(RxDispatcherUdp, AddUdpNullCallback) {
+    RxDispatcher<true> reactor(RxDispatcherConfig{});
     auto tuple = make_tuple(0x0A000001, 0x0A000002, 50000, 8080);
-    UdpReactorCallback empty_cb;
+    UdpRxDispatcherCallback empty_cb;
     auto result = reactor.add_udp(tuple, empty_cb);
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().find("null"), std::string::npos);
 }
 
-TEST(ReactorUdp, AddUdpInvalidTuple) {
-    Reactor<true> reactor(ReactorConfig{});
+TEST(RxDispatcherUdp, AddUdpInvalidTuple) {
+    RxDispatcher<true> reactor(RxDispatcherConfig{});
     net::ConnectionTuple bad_tuple{};  // all zeros = invalid
     auto result = reactor.add_udp(bad_tuple, [](const uint8_t*, uint16_t, size_t){});
     ASSERT_FALSE(result.has_value());
 }
 
-TEST(ReactorUdp, AddUdpFull) {
-    Reactor<true> reactor(ReactorConfig{});
-    for (size_t i = 0; i < kReactorMaxUdpEntries; ++i) {
+TEST(RxDispatcherUdp, AddUdpFull) {
+    RxDispatcher<true> reactor(RxDispatcherConfig{});
+    for (size_t i = 0; i < kRxDispatcherMaxUdpEntries; ++i) {
         auto tuple = make_tuple(0x0A000001, 0x0A000002, static_cast<uint16_t>(50000 + i), 8080);
         auto result = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
         ASSERT_TRUE(result.has_value()) << "Failed at entry " << i;
@@ -389,8 +389,8 @@ TEST(ReactorUdp, AddUdpFull) {
     EXPECT_NE(result.error().find("full"), std::string::npos);
 }
 
-TEST(ReactorUdp, SetUdpActiveToggle) {
-    Reactor<true> reactor(ReactorConfig{});
+TEST(RxDispatcherUdp, SetUdpActiveToggle) {
+    RxDispatcher<true> reactor(RxDispatcherConfig{});
     auto tuple = make_tuple(0x0A000001, 0x0A000002, 50000, 8080);
     auto id = reactor.add_udp(tuple, [](const uint8_t*, uint16_t, size_t){});
     ASSERT_TRUE(id.has_value());
@@ -403,17 +403,17 @@ TEST(ReactorUdp, SetUdpActiveToggle) {
     reactor.set_udp_active(999, true);
 }
 
-TEST(ReactorUdp, UdpCountStartsAtZero) {
-    Reactor<true> reactor(ReactorConfig{});
+TEST(RxDispatcherUdp, UdpCountStartsAtZero) {
+    RxDispatcher<true> reactor(RxDispatcherConfig{});
     EXPECT_EQ(reactor.udp_count(), 0u);
 }
 
 // ---------------------------------------------------------------------------
-// UdpReactorEntry — defaults
+// UdpRxDispatcherEntry — defaults
 // ---------------------------------------------------------------------------
 
-TEST(UdpReactorEntry, Defaults) {
-    UdpReactorEntry entry;
+TEST(UdpRxDispatcherEntry, Defaults) {
+    UdpRxDispatcherEntry entry;
     EXPECT_EQ(entry.tuple.src_ip, 0u);
     EXPECT_EQ(entry.tuple.dst_ip, 0u);
     EXPECT_EQ(entry.tuple.src_port, 0u);
@@ -421,7 +421,7 @@ TEST(UdpReactorEntry, Defaults) {
     EXPECT_FALSE(entry.on_data);  // default-constructed = empty
 }
 
-TEST(ReactorUdp, MaxUdpEntriesConstant) {
-    EXPECT_GE(kReactorMaxUdpEntries, 4u);
-    EXPECT_LE(kReactorMaxUdpEntries, 64u);
+TEST(RxDispatcherUdp, MaxUdpEntriesConstant) {
+    EXPECT_GE(kRxDispatcherMaxUdpEntries, 4u);
+    EXPECT_LE(kRxDispatcherMaxUdpEntries, 64u);
 }

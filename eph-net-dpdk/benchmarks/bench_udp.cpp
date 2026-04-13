@@ -1,6 +1,6 @@
 /// @file bench_udp.cpp
 /// UDP micro-benchmarks — header fill/build, checksum, layered parse API,
-/// Reactor UDP dispatch simulation.
+/// RxDispatcher UDP dispatch simulation.
 ///
 /// Establishes UDP performance baselines for comparison with TCP equivalents
 /// in bench_tcp_header.cpp. Does NOT require DPDK EAL — uses FakeMbuf.
@@ -13,7 +13,7 @@
 #include <benchmark/benchmark.h>
 
 #include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/reactor.hpp"
+#include "eph/dpdk/rx_dispatcher.hpp"
 
 namespace {
 
@@ -230,11 +230,11 @@ static void BM_ParsePacketDirect(benchmark::State& state) {
 BENCHMARK(BM_ParsePacketDirect)->Apply(UdpPayloadSizeArgs);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reactor UDP dispatch simulation
-// Mirrors BM_ReactorDispatchSim in bench_tcp_header.cpp but for UDP entries.
+// RxDispatcher UDP dispatch simulation
+// Mirrors BM_RxDispatcherDispatchSim in bench_tcp_header.cpp but for UDP entries.
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void BM_ReactorUdpDispatchSim(benchmark::State& state) {
+static void BM_RxDispatcherUdpDispatchSim(benchmark::State& state) {
     auto num_entries = static_cast<size_t>(state.range(0));
 
     // Build UDP entries with distinct tuples
@@ -243,7 +243,7 @@ static void BM_ReactorUdpDispatchSim(benchmark::State& state) {
     for (size_t i = 0; i < num_entries; ++i) {
         tuples[i] = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
                      .src_port = static_cast<uint16_t>(50000 + i), .dst_port = 8080};
-        hashes[i] = ReactorEntry::hash_tuple(tuples[i]);
+        hashes[i] = RxDispatcherEntry::hash_tuple(tuples[i]);
     }
 
     // Build a packet matching the LAST entry (worst-case linear scan)
@@ -267,14 +267,14 @@ static void BM_ReactorUdpDispatchSim(benchmark::State& state) {
     fake.set_len(kUdpAllHeadersLen + 64);
 
     for (auto _ : state) {
-        // Simulate Reactor UDP dispatch: parse + hash + linear scan
+        // Simulate RxDispatcher UDP dispatch: parse + hash + linear scan
         auto ip_hdr = parse_ip_header(&fake.mbuf);
         auto parsed = parse_udp_from_ip(&fake.mbuf, ip_hdr);
 
         ConnectionTuple pkt_tuple{
             .src_ip = parsed.src_ip(), .dst_ip = parsed.dst_ip(),
             .src_port = parsed.src_port(), .dst_port = parsed.dst_port()};
-        uint64_t pkt_hash = ReactorEntry::hash_tuple(pkt_tuple);
+        uint64_t pkt_hash = RxDispatcherEntry::hash_tuple(pkt_tuple);
 
         bool matched = false;
         for (size_t j = 0; j < num_entries; ++j) {
@@ -291,6 +291,6 @@ static void BM_ReactorUdpDispatchSim(benchmark::State& state) {
         benchmark::DoNotOptimize(matched);
     }
 }
-BENCHMARK(BM_ReactorUdpDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8);
+BENCHMARK(BM_RxDispatcherUdpDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8);
 
 BENCHMARK_MAIN();

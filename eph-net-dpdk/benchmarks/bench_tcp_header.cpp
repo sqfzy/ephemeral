@@ -11,7 +11,7 @@
 #include <benchmark/benchmark.h>
 
 #include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/reactor.hpp"
+#include "eph/dpdk/rx_dispatcher.hpp"
 
 namespace {
 
@@ -253,10 +253,10 @@ static void BM_Ipv4ParseFormat(benchmark::State& state) {
 BENCHMARK(BM_Ipv4ParseFormat);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ReactorEntry::hash_tuple — per-packet dispatch pre-filter
+// RxDispatcherEntry::hash_tuple — per-packet dispatch pre-filter
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void BM_ReactorHashTuple(benchmark::State& state) {
+static void BM_RxDispatcherHashTuple(benchmark::State& state) {
     eph::dpdk::net::ConnectionTuple tuples[] = {
         {.src_ip = 0x0A000001, .dst_ip = 0x0A000002, .src_port = 12345, .dst_port = 443},
         {.src_ip = 0xC0A80101, .dst_ip = 0x08080808, .src_port = 5000, .dst_port = 80},
@@ -266,18 +266,18 @@ static void BM_ReactorHashTuple(benchmark::State& state) {
     size_t idx = 0;
 
     for (auto _ : state) {
-        auto h = eph::dpdk::ReactorEntry::hash_tuple(tuples[idx & 3]);
+        auto h = eph::dpdk::RxDispatcherEntry::hash_tuple(tuples[idx & 3]);
         benchmark::DoNotOptimize(h);
         ++idx;
     }
 }
-BENCHMARK(BM_ReactorHashTuple);
+BENCHMARK(BM_RxDispatcherHashTuple);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reactor dispatch simulation — parse + hash + linear scan match
+// RxDispatcher dispatch simulation — parse + hash + linear scan match
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void BM_ReactorDispatchSim(benchmark::State& state) {
+static void BM_RxDispatcherDispatchSim(benchmark::State& state) {
     auto n_conns = static_cast<size_t>(state.range(0));
 
     // Pre-build connection tuples and hashes
@@ -290,7 +290,7 @@ static void BM_ReactorDispatchSim(benchmark::State& state) {
             .src_port = static_cast<uint16_t>(12345 + i),
             .dst_port = 443,
         };
-        hashes[i] = eph::dpdk::ReactorEntry::hash_tuple(tuples[i]);
+        hashes[i] = eph::dpdk::RxDispatcherEntry::hash_tuple(tuples[i]);
     }
 
     // Build a packet tuple that matches the LAST connection (worst case)
@@ -298,7 +298,7 @@ static void BM_ReactorDispatchSim(benchmark::State& state) {
     // Swap src/dst as incoming packet would
     std::swap(pkt_tuple.src_ip, pkt_tuple.dst_ip);
     std::swap(pkt_tuple.src_port, pkt_tuple.dst_port);
-    uint64_t pkt_hash = eph::dpdk::ReactorEntry::hash_tuple(pkt_tuple);
+    uint64_t pkt_hash = eph::dpdk::RxDispatcherEntry::hash_tuple(pkt_tuple);
 
     for (auto _ : state) {
         bool found = false;
@@ -316,7 +316,7 @@ static void BM_ReactorDispatchSim(benchmark::State& state) {
         benchmark::DoNotOptimize(found);
     }
 }
-BENCHMARK(BM_ReactorDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(16);
+BENCHMARK(BM_RxDispatcherDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(16);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // write_syn_options — SYN option serialization
@@ -453,26 +453,26 @@ static void BM_PacketTemplateToJson(benchmark::State& state) {
 BENCHMARK(BM_PacketTemplateToJson);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reactor::Config serialization
+// RxDispatcher::Config serialization
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void BM_ReactorConfigDump(benchmark::State& state) {
-    eph::dpdk::ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
+static void BM_RxDispatcherConfigDump(benchmark::State& state) {
+    eph::dpdk::RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
     for (auto _ : state) {
         auto s = cfg.dump();
         benchmark::DoNotOptimize(s.data());
     }
 }
-BENCHMARK(BM_ReactorConfigDump);
+BENCHMARK(BM_RxDispatcherConfigDump);
 
-static void BM_ReactorConfigToJson(benchmark::State& state) {
-    eph::dpdk::ReactorConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
+static void BM_RxDispatcherConfigToJson(benchmark::State& state) {
+    eph::dpdk::RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
     for (auto _ : state) {
         auto s = cfg.to_json();
         benchmark::DoNotOptimize(s.data());
     }
 }
-BENCHMARK(BM_ReactorConfigToJson);
+BENCHMARK(BM_RxDispatcherConfigToJson);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParsedPacket::to_json

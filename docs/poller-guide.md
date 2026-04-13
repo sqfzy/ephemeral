@@ -6,7 +6,7 @@ attaches its `TcpStream` / `UdpSocket` objects to a `Poller` and drives them fro
 loop. This document walks through the common patterns.
 
 For the underlying concept definition, see `docs/architecture.md`. For the legacy
-`Reactor`-centric guide from earlier architectures: that's gone — the v3.3 `Poller`
+`RxDispatcher`-centric guide from earlier architectures: that's gone — the v3.3 `Poller`
 supersedes it.
 
 ## Contents

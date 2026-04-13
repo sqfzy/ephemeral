@@ -5,7 +5,7 @@
 ///
 /// Provides runtime detection of NIC capabilities and automatic selection
 /// of the best RX dispatch strategy:
-///   - Software (Reactor): NIC has no RSS — epoll-style multiplexing
+///   - Software (RxDispatcher): NIC has no RSS — epoll-style multiplexing
 ///   - RssPartitioned: NIC supports RSS — traffic hashed across queues
 ///   - FlowDirector: NIC supports rte_flow 5-tuple — per-connection queue
 ///
@@ -62,7 +62,7 @@ enum class FlowProtocol : uint8_t {
 
 /// NIC hardware dispatch capabilities detected at runtime.
 enum class RxDispatchMode : uint8_t {
-    Software,          ///< No RSS, no flow director → use Reactor (epoll)
+    Software,          ///< No RSS, no flow director → use RxDispatcher (epoll)
     RssPartitioned,    ///< RSS hash to multiple queues → reduced contention
     FlowDirector,      ///< rte_flow 5-tuple exact match → per-connection queue
 };
@@ -70,7 +70,7 @@ enum class RxDispatchMode : uint8_t {
 /// Human-readable name for RxDispatchMode.
 [[nodiscard]] constexpr std::string_view rx_dispatch_mode_name(RxDispatchMode m) noexcept {
     switch (m) {
-    case RxDispatchMode::Software:       return "Software (Reactor)";
+    case RxDispatchMode::Software:       return "Software (RxDispatcher)";
     case RxDispatchMode::RssPartitioned: return "RSS Partitioned";
     case RxDispatchMode::FlowDirector:   return "Flow Director (rte_flow)";
     }
@@ -162,7 +162,7 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
     }
 
     SPDLOG_LOGGER_INFO(log,
-        "Port {} has no RSS/FlowDirector support (Software/Reactor mode)",
+        "Port {} has no RSS/FlowDirector support (Software/RxDispatcher mode)",
         port_id);
     return RxDispatchMode::Software;
 }

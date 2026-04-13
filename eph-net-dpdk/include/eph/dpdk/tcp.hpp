@@ -257,7 +257,7 @@ inline spdlog::logger* tcp_logger() { return get_logger<LoggerName{"dpdk.tcp"}>(
 ///
 /// @note Not thread-safe. All send/receive operations must run on a single
 ///       DPDK poll-mode lcore. For multi-connection setups on a shared RX
-///       queue, use Reactor (reactor.hpp) to demultiplex.
+///       queue, use RxDispatcher (rx_dispatcher.hpp) to demultiplex.
 template <size_t ReorderSlots = 64>
 class TcpSession {
     static_assert(ReorderSlots <= 255,
@@ -1146,8 +1146,8 @@ public:
     /// This is the TcpTransport concept-compatible interface that encapsulates
     /// rte_eth_rx_burst + process_rx into a single call.
     ///
-    /// For multi-session sharing a single NIC RX queue, use Reactor
-    /// (reactor.hpp) which dispatches directly via process_rx with zero
+    /// For multi-session sharing a single NIC RX queue, use RxDispatcher
+    /// (rx_dispatcher.hpp) which dispatches directly via process_rx with zero
     /// ring overhead.
     ///
     /// @return On success: count of data packets processed (may be 0 if no
@@ -1190,7 +1190,7 @@ public:
     /// Get TCP-level statistics (packets, bursts, bytes, etc.).
     [[nodiscard]] const Stats& tcp_stats() const noexcept { return stats_; }
 
-    /// Set the RX burst TSC externally (used by Reactor to propagate
+    /// Set the RX burst TSC externally (used by RxDispatcher to propagate
     /// the NIC arrival timestamp to the session without going through poll_rx).
     void set_last_rx_burst_tsc(uint64_t tsc) noexcept {
         last_rx_burst_tsc_.store(tsc, std::memory_order_release);

@@ -19,7 +19,7 @@
 ///     explicitly excludes it).
 ///
 ///   - **Routing table**: uses a flat linear scan over the registered
-///     entries (like the legacy `Reactor<>` hot-path dispatch loop). For
+///     entries (like the legacy `RxDispatcher<>` hot-path dispatch loop). For
 ///     typical HFT deployments with 2-4 connections a cache-friendly
 ///     linear scan beats a hash map; can be swapped for a real 5-tuple
 ///     hash if the connection count is large enough to matter.
@@ -75,7 +75,7 @@ inline spdlog::logger* poller_logger() {
 
 /// @brief Direction-symmetric FNV-1a hash of a 4-tuple.
 ///
-/// Lifted from the legacy `Reactor` code path. Symmetric so that an
+/// Lifted from the legacy RxDispatcher code path. Symmetric so that an
 /// incoming packet with swapped src/dst matches the registered tuple
 /// without a second hash computation.
 [[nodiscard]] inline uint32_t hash_tuple(uint32_t src_ip, uint32_t dst_ip,
@@ -123,7 +123,7 @@ public:
     ///        friendly for linear scan (typical N ≤ 8 in HFT).
     static constexpr std::size_t kMaxConn = 16;
 
-    /// @brief DPDK burst size — matches the legacy `Reactor::rx_loop`
+    /// @brief DPDK burst size — matches the legacy RxDispatcher:rx_loop`
     ///        choice so microbenchmark results carry over cleanly.
     static constexpr uint16_t kBurstSize = 32;
 
@@ -274,7 +274,7 @@ public:
                 ++dispatched;
             } else {
                 // No routing match — drop. This mirrors the legacy
-                // Reactor behaviour for unmatched packets.
+                // RxDispatcher behaviour for unmatched packets.
                 rte_pktmbuf_free(mbufs[i]);
             }
         }

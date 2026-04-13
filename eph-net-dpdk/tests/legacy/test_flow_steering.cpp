@@ -23,7 +23,7 @@ using namespace eph::dpdk;
 
 TEST(RxDispatchMode, NameSoftware) {
     EXPECT_EQ(rx_dispatch_mode_name(RxDispatchMode::Software),
-              "Software (Reactor)");
+              "Software (RxDispatcher)");
 }
 
 TEST(RxDispatchMode, NameRss) {
@@ -102,14 +102,14 @@ TEST(ConfigureRss, RejectsZeroQueues) {
 // ---------------------------------------------------------------------------
 
 TEST(RxDispatchMode, FormatterProducesOutput) {
-    EXPECT_EQ(std::format("{}", RxDispatchMode::Software), "Software (Reactor)");
+    EXPECT_EQ(std::format("{}", RxDispatchMode::Software), "Software (RxDispatcher)");
     EXPECT_EQ(std::format("{}", RxDispatchMode::RssPartitioned), "RSS Partitioned");
     EXPECT_EQ(std::format("{}", RxDispatchMode::FlowDirector), "Flow Director (rte_flow)");
 }
 
 TEST(RxDispatchMode, FormatterWorksInCompositeFormat) {
     auto s = std::format("mode={} port={}", RxDispatchMode::Software, 0);
-    EXPECT_EQ(s, "mode=Software (Reactor) port=0");
+    EXPECT_EQ(s, "mode=Software (RxDispatcher) port=0");
 }
 
 // ---------------------------------------------------------------------------

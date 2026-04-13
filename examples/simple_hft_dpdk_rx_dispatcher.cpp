@@ -1,5 +1,5 @@
-/// @file simple_hft_dpdk_reactor_v3.cpp
-/// v3.3 design-doc-mandated example: multi-connection Reactor pattern.
+/// @file simple_hft_dpdk_rx_dispatcher_v3.cpp
+/// v3.3 design-doc-mandated example: multi-connection RxDispatcher pattern.
 ///
 /// Demonstrates the headline feature of the v3.3 redesign — a single
 /// `DpdkPoller<>` driving multiple Pollables (a TCP order channel +
@@ -9,7 +9,7 @@
 /// NOTE: TLS on DPDK pending Phase 7 legacy header removal (same
 /// vcpkg-openssl ↔ aws-lc TU clash that simple_hft_dpdk_v3.cpp documents).
 /// We use plain TCP here so the example builds and demonstrates the
-/// reactor pattern without dragging in the legacy stack.
+/// rx_dispatcher pattern without dragging in the legacy stack.
 ///
 /// Part of Phase 6 of the v3.3 architecture refactor
 /// (.artifacts/design-eph-v3.3-architecture-20260410.md).
@@ -95,9 +95,9 @@ int main(int argc, char** argv) {
     auto order_r = OrderStream::create(std::move(scfg));
     if (!order_r) {
         spdlog::warn(
-            "reactor demo: OrderStream::create failed (expected without "
+            "rx_dispatcher demo: OrderStream::create failed (expected without "
             "a real mempool): {}", order_r.error().detail);
-        spdlog::info("reactor demo: this example demonstrates the v3.3 "
+        spdlog::info("rx_dispatcher demo: this example demonstrates the v3.3 "
                      "Example 2 pattern; populate scfg.pool with a real "
                      "rte_pktmbuf_pool_create() output to drive the loop.");
         // Fall through and still attempt to register the UDP socket so
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
     using MdSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
     edpdk::UdpConfig ucfg{};
-    // Real reactor demos populate ucfg.legacy with src/dst MAC, src IP,
+    // Real rx_dispatcher demos populate ucfg.legacy with src/dst MAC, src IP,
     // src/dst port, mempool, port_id, tx_queue_id. We leave it default
     // here — the create() factory will surface a typed validation error,
     // which is the smoke-boot signal we want to exercise.
@@ -127,9 +127,9 @@ int main(int argc, char** argv) {
     auto md_r = MdSock::create(std::move(ucfg));
     if (!md_r) {
         spdlog::warn(
-            "reactor demo: MdSock::create failed (expected on smoke-boot): {}",
+            "rx_dispatcher demo: MdSock::create failed (expected on smoke-boot): {}",
             md_r.error().detail);
-        spdlog::info("reactor demo: populate ucfg.legacy.{src/dst MAC, src IP, "
+        spdlog::info("rx_dispatcher demo: populate ucfg.legacy.{src/dst MAC, src IP, "
                      "ports, mempool, port_id, tx_queue_id} for a real run.");
     } else {
         auto md = std::move(*md_r);
@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
     }
 
     // ── 5) Drive both pollables from a single burst loop ────────────────
-    spdlog::info("reactor demo: entering single-loop burst poll, "
+    spdlog::info("rx_dispatcher demo: entering single-loop burst poll, "
                  "driving {} Pollable(s)", poller->size());
 
     auto deadline = std::chrono::steady_clock::now() + 1s;
@@ -153,6 +153,6 @@ int main(int argc, char** argv) {
         (void)poller->poll();
     }
 
-    spdlog::info("reactor demo: exiting");
+    spdlog::info("rx_dispatcher demo: exiting");
     return 0;
 }

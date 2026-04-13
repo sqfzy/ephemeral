@@ -36,8 +36,8 @@ inline constexpr uint16_t kTcpRstPort      = 19002;
 inline constexpr uint16_t kTcpFinPort      = 19003;
 inline constexpr uint16_t kUdpEchoPort     = 19101;
 inline constexpr uint16_t kWsEchoPort      = 19201;
-inline constexpr uint16_t kReactorPortBase = 19301;  ///< 19301..19308
-inline constexpr int      kReactorConns    = 8;
+inline constexpr uint16_t kRxDispatcherPortBase = 19301;  ///< 19301..19308
+inline constexpr int      kRxDispatcherConns    = 8;
 
 // Process-wide running flag.  Threads poll it; signal handler flips it.
 inline std::atomic<bool> g_dispatcher_running{true};
@@ -59,7 +59,7 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     spdlog::info("dispatcher: starting mocks on {}", server_ip);
 
     std::vector<std::thread> threads;
-    threads.reserve(5 + kReactorConns);
+    threads.reserve(5 + kRxDispatcherConns);
 
     threads.emplace_back([&] {
         tcp_echo_mock_thread(server_ip, kTcpEchoPort, g_dispatcher_running);
@@ -77,9 +77,9 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
         ws_echo_mock_thread(server_ip, kWsEchoPort, g_dispatcher_running);
     });
 
-    // Reactor multi-conn mock — N parallel TCP echo servers on contiguous ports.
-    for (int i = 0; i < kReactorConns; ++i) {
-        uint16_t port = static_cast<uint16_t>(kReactorPortBase + i);
+    // RxDispatcher multi-conn mock — N parallel TCP echo servers on contiguous ports.
+    for (int i = 0; i < kRxDispatcherConns; ++i) {
+        uint16_t port = static_cast<uint16_t>(kRxDispatcherPortBase + i);
         threads.emplace_back([server_ip, port] {
             tcp_echo_mock_thread(server_ip, port, g_dispatcher_running);
         });

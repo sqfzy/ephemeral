@@ -27,7 +27,7 @@ headroom so TLS decrypt can run in place via aws-lc's
 - `eal.hpp` — raw EAL init (the `Eal` RAII wrapper in `eph::net::dpdk` uses this)
 - `tcp.hpp` — `DpdkTcpSession` (the TCP state machine `DpdkTcpStream` wraps)
 - `udp.hpp` — UDP sender primitives
-- `reactor.hpp` — legacy internal burst dispatcher; `DpdkPoller` uses similar machinery
+- `rx_dispatcher.hpp` — legacy internal burst dispatcher; `DpdkPoller` uses similar machinery
 - `arp.hpp`, `dns.hpp` — link-layer resolution helpers
 - `flow_steering.hpp` — RSS + RTE flow rule management
 - `packet_template.hpp` — pre-computed UDP+IP header templates

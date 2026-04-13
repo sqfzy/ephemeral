@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include "eph/dpdk/reactor.hpp"   // ReactorConfig (lcore / port / queue)
+#include "eph/dpdk/rx_dispatcher.hpp"   // RxDispatcherConfig (lcore / port / queue)
 #include "eph/dpdk/tcp.hpp"       // TcpConfig
 #include "eph/dpdk/udp.hpp"       // UdpConfig (legacy naming collides with our
                                   // eph::net::dpdk::UdpConfig below — we keep
@@ -147,7 +147,7 @@ struct UdpConfig {
 /// DPDK lcore burst poll has no epoll equivalent: the Poller simply calls
 /// `rte_eth_rx_burst` on a single {port_id, rx_queue_id} and routes each
 /// mbuf to a registered Pollable based on its 4-tuple. We therefore reuse
-/// `eph::dpdk::ReactorConfig` verbatim.
+/// `eph::dpdk::RxDispatcherConfig` verbatim.
 struct PollerConfig {
     /// @brief DPDK port ID on which to poll.
     uint16_t port_id{0};
