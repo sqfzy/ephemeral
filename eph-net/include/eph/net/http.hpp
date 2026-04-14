@@ -392,7 +392,7 @@ parse_header_block(std::span<const uint8_t> buf,
             size_t cl = 0;
             if (!parse_decimal(value, cl)) {
                 SPDLOG_WARN("http: Content-Length non-numeric ('{}')",
-                            std::string(value));
+                            value);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "Content-Length not numeric"});
             }
@@ -607,7 +607,7 @@ parse_http_request(
     // HTTP version: "HTTP/1.0" or "HTTP/1.1"
     if (version.size() != 8 || version.substr(0, 7) != "HTTP/1." ||
         (version[7] != '0' && version[7] != '1')) {
-        SPDLOG_WARN("http: unsupported version '{}'", std::string(version));
+        SPDLOG_WARN("http: unsupported version '{}'", version);
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "unsupported HTTP version (need 1.0/1.1)"});
     }
@@ -642,7 +642,7 @@ parse_http_request(
         .body          = body_span,
     };
     SPDLOG_DEBUG("http: parsed request method='{}' target='{}' hdrs={} body={}B",
-                 std::string(method), std::string(target), st.count,
+                 method, target, st.count,
                  body_span.size());
     return std::optional<ParseResult<HttpRequest>>{
         ParseResult<HttpRequest>{req, consumed}};
@@ -772,7 +772,7 @@ parse_http_response(
         .body          = body_span,
     };
     SPDLOG_DEBUG("http: parsed response status={} reason='{}' hdrs={} body={}B",
-                 status_code, std::string(reason_phrase), st.count,
+                 status_code, reason_phrase, st.count,
                  body_span.size());
     return std::optional<ParseResult<HttpResponse>>{
         ParseResult<HttpResponse>{resp, consumed}};
@@ -834,7 +834,7 @@ build_http_request(
             goto overflow;
     }
     SPDLOG_DEBUG("http: built request {} {} bytes={}",
-                 std::string(method), std::string(target), off);
+                 method, target, off);
     return off;
 
 overflow:
