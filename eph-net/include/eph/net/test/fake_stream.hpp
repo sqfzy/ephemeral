@@ -131,6 +131,21 @@ public:
     ///        to simulate half-open or closing sessions.
     void set_state(TcpState s) noexcept { state_ = s; }
 
+    /// @brief Simulate a peer-initiated disconnect in one call: flips
+    ///        `state_` to `Closed` and drops any undelivered rx bytes
+    ///        (matching the real-backend sequence where recv() surfaces
+    ///        `Disconnected` and `poll_once_` early-returns without
+    ///        dispatching buffered ciphertext). Tests that want
+    ///        drain-then-close semantics should call `poll_once_()` first
+    ///        and then `inject_disconnect()`.
+    ///
+    /// Added in batch3-round3 MEDIUM-2 — previously tests had to
+    /// open-code `set_state(Closed) + rx_buf.clear()`.
+    void inject_disconnect() noexcept {
+        state_ = TcpState::Closed;
+        rx_buf_.clear();
+    }
+
     /// @brief Simulate being attached or detached from a Poller. The
     ///        TestPoller drives this automatically; test code rarely needs
     ///        to call it directly.
@@ -146,13 +161,21 @@ public:
     ///        bytes "sent" (always all of them — no backpressure simulation).
     ///        Fails with `NotAttached` if the fake is not currently attached
     ///        to a poller, mirroring the contract documented in
-    ///        `eph::core::Error::NotAttached`.
+    ///        `eph::core::Error::NotAttached`. Also fails with `Disconnected`
+    ///        when `state_ != Established` so that tests driving a closed
+    ///        stream through `send()` see the same error the real backends
+    ///        would produce (see `KernelTcpStream::send`).
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> data) noexcept {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "FakeStream::send called before attach"});
+        }
+        if (state_ != TcpState::Established) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::Disconnected,
+                "FakeStream::send: state != Established"});
         }
         tx_buf_.insert(tx_buf_.end(), data.begin(), data.end());
         return data.size();
@@ -184,6 +207,11 @@ public:
     /// because the v3.3 Pollable concept requires it be callable. The real
     /// kernel / dpdk backends declare it `private + friend Poller`.
     std::size_t poll_once_() noexcept {
+        // Mirror the real-backend contract: do not dispatch on a closed
+        // stream (KernelTcpStream::poll_once_:625, DpdkTcpStream likewise).
+        // A test that closes the stream then expects no more on_message
+        // fires should see exactly that behavior from the mock.
+        if (state_ != TcpState::Established) return 0;
         if (rx_buf_.empty()) return 0;
         if (on_message) {
             // Cap at uint16_t as the Stream concept's OnMessage signature

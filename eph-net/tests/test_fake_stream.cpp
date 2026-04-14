@@ -99,3 +99,48 @@ TEST(FakeStream, NativeHandleIsStablePointer) {
     ent::FakeStream fs;
     EXPECT_EQ(fs.native_handle(), static_cast<void*>(&fs));
 }
+
+// ───────────────────────────────────────────────────────────────────────
+// batch3-round3 MEDIUM-1/2 coverage: state-aware poll_once_ + send,
+// inject_disconnect helper.
+// ───────────────────────────────────────────────────────────────────────
+
+TEST(FakeStream, PollOnceDoesNotDispatchWhenStateClosed) {
+    ent::FakeStream fs;
+    std::vector<uint8_t> captured;
+    fs.on_message = [&](const uint8_t* p, uint16_t n) {
+        captured.assign(p, p + n);
+    };
+    const uint8_t data[] = {0x01, 0x02};
+    fs.inject_rx(data);
+    fs.set_state(en::TcpState::Closed);
+    // Real backends early-return 0 when state != Established. The mock
+    // must match so reconnect tests don't observe bogus frames.
+    EXPECT_EQ(fs.poll_once_(), 0u);
+    EXPECT_TRUE(captured.empty());
+}
+
+TEST(FakeStream, SendAfterCloseReturnsDisconnected) {
+    ent::FakeStream fs;
+    fs.set_attached(true);
+    ASSERT_TRUE(fs.close_gracefully().has_value());
+    const uint8_t data[] = {0xAA};
+    auto r = fs.send(data);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::Disconnected);
+}
+
+TEST(FakeStream, InjectDisconnectFlipsStateAndDropsRx) {
+    ent::FakeStream fs;
+    std::vector<uint8_t> captured;
+    fs.on_message = [&](const uint8_t* p, uint16_t n) {
+        captured.assign(p, p + n);
+    };
+    const uint8_t data[] = {0xDE, 0xAD};
+    fs.inject_rx(data);
+    fs.inject_disconnect();
+    EXPECT_EQ(fs.state(), en::TcpState::Closed);
+    // Rx buffer was dropped by the disconnect — poll_once_ returns 0.
+    EXPECT_EQ(fs.poll_once_(), 0u);
+    EXPECT_TRUE(captured.empty());
+}
