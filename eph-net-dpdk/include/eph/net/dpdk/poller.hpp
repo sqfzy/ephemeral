@@ -189,13 +189,38 @@ public:
                 core::Error::OutOfMemory,
                 "DpdkPoller::add: entries table full"});
         }
-        // Reject duplicates defensively — the linear scan on the hot path
-        // would still be correct but routing becomes ambiguous.
+        // Retrieve the incoming 4-tuple up front so the duplicate scan can
+        // check both obj-pointer duplicates AND 4-tuple duplicates in the
+        // same linear pass. Reject either: obj-duplicate makes no sense
+        // and 4-tuple duplicate makes routing ambiguous (silent data
+        // corruption on the hot path, which is catastrophic in HFT).
+        uint32_t new_src_ip = 0, new_dst_ip = 0;
+        uint16_t new_src_port = 0, new_dst_port = 0;
+        obj->tuple_for_poller_(&new_src_ip, &new_dst_ip,
+                                &new_src_port, &new_dst_port);
+        const uint32_t new_hash = detail::hash_tuple(
+            new_src_ip, new_dst_ip, new_src_port, new_dst_port);
+
         for (std::size_t i = 0; i < n_entries_; ++i) {
-            if (entries_[i].obj == static_cast<void*>(obj)) {
+            const auto& e = entries_[i];
+            if (e.obj == static_cast<void*>(obj)) {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "DpdkPoller::add: already registered"});
+            }
+            // Fast filter on hash; full 4-field compare only on hash hit.
+            if (e.conn_hash == new_hash &&
+                e.src_ip    == new_src_ip &&
+                e.dst_ip    == new_dst_ip &&
+                e.src_port  == new_src_port &&
+                e.dst_port  == new_dst_port) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkPoller::add: 4-tuple already registered "
+                    "src=0x{:08x}:{} dst=0x{:08x}:{}",
+                    new_src_ip, new_src_port, new_dst_ip, new_dst_port);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "DpdkPoller::add: 4-tuple already registered"});
             }
         }
 
@@ -212,14 +237,12 @@ public:
                                     uint16_t* src_port, uint16_t* dst_port) noexcept {
             static_cast<P*>(p)->tuple_for_poller_(src_ip, dst_ip, src_port, dst_port);
         };
-        uint32_t src_ip = 0, dst_ip = 0;
-        uint16_t src_port = 0, dst_port = 0;
-        entry.tuple_fn(entry.obj, &src_ip, &dst_ip, &src_port, &dst_port);
-        entry.src_ip   = src_ip;
-        entry.dst_ip   = dst_ip;
-        entry.src_port = src_port;
-        entry.dst_port = dst_port;
-        entry.conn_hash = detail::hash_tuple(src_ip, dst_ip, src_port, dst_port);
+        // Reuse the tuple retrieved above — no second call to tuple_for_poller_.
+        entry.src_ip    = new_src_ip;
+        entry.dst_ip    = new_dst_ip;
+        entry.src_port  = new_src_port;
+        entry.dst_port  = new_dst_port;
+        entry.conn_hash = new_hash;
         ++n_entries_;
 
         obj->notify_attached_(this);

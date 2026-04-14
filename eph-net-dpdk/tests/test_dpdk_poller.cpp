@@ -14,6 +14,7 @@
 /// and friend-hook plumbing, where the bugs live.
 
 #include <cstdint>
+#include <string_view>
 
 #include <gtest/gtest.h>
 
@@ -186,6 +187,51 @@ TEST(DpdkPoller, P2HeterogeneousRegistration) {
     EXPECT_EQ(pb.attached_to, nullptr);
     EXPECT_GE(pa.detach_calls, 1);
     EXPECT_GE(pb.detach_calls, 1);
+}
+
+TEST(DpdkPoller, AddRejectsDuplicateFourTuple) {
+    // Two distinct Pollable objects exposing the exact same 4-tuple must
+    // NOT both register — the routing table would become ambiguous.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa;
+    SyntheticPollableA pb;  // distinct object, default tuple matches pa
+
+    auto a1 = p->add<SyntheticPollableA>(&pa);
+    ASSERT_TRUE(a1.has_value()) << a1.error().detail;
+
+    auto a2 = p->add<SyntheticPollableA>(&pb);
+    ASSERT_FALSE(a2.has_value());
+    EXPECT_EQ(a2.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{a2.error().detail}.find("4-tuple"),
+              std::string_view::npos)
+        << "detail should mention '4-tuple': " << a2.error().detail;
+
+    // First registration must still be intact.
+    EXPECT_EQ(p->size(), 1u);
+    EXPECT_EQ(pa.attached_to, p.get());
+    EXPECT_EQ(pb.attached_to, nullptr);  // rejected: never attached
+}
+
+TEST(DpdkPoller, AddAcceptsDistinctFourTuplesOnSameDst) {
+    // Sanity guard: the new 4-tuple check must NOT over-reject. Two
+    // streams to the same (dst_ip, dst_port) but with different src_port
+    // are legitimate concurrent client connections and must both add.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa;
+    SyntheticPollableA pb;
+    pa.src_port = 40001;
+    pb.src_port = 40002;  // only src_port differs
+    // (src_ip, dst_ip, dst_port all identical)
+
+    auto a1 = p->add<SyntheticPollableA>(&pa);
+    ASSERT_TRUE(a1.has_value()) << a1.error().detail;
+
+    auto a2 = p->add<SyntheticPollableA>(&pb);
+    ASSERT_TRUE(a2.has_value()) << a2.error().detail;
+
+    EXPECT_EQ(p->size(), 2u);
 }
 
 TEST(DpdkPoller, FillToCapacity) {
