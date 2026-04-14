@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <random>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1233,38 +1234,40 @@ TEST(TlsBuildNonce, RfcStyleVectorLargeSeq) {
 
 TEST(TlsRecordConfigSmoke, ValidateDefaultConfigPasses) {
     TlsConfig cfg{};
-    EXPECT_TRUE(cfg.validate().empty());
+    EXPECT_TRUE(cfg.validate().has_value());
 }
 
 TEST(TlsRecordConfigSmoke, ValidateZeroHandshakeTimeoutFails) {
     TlsConfig cfg{.handshake_timeout = std::chrono::milliseconds{0}};
     auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
-    EXPECT_NE(err.find("handshake_timeout"), std::string_view::npos);
+    ASSERT_FALSE(err.has_value());
+    EXPECT_NE(std::string_view{err.error().detail}.find("handshake_timeout"),
+              std::string_view::npos);
 }
 
 TEST(TlsRecordConfigSmoke, ValidateNegativeHandshakeTimeoutFails) {
     TlsConfig cfg{.handshake_timeout = std::chrono::milliseconds{-1}};
     auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
+    EXPECT_FALSE(err.has_value());
 }
 
 TEST(TlsRecordConfigSmoke, ValidateBothCertAndKeySetPasses) {
     TlsConfig cfg{.client_cert_path = "/cert.pem", .client_key_path = "/key.pem"};
-    EXPECT_TRUE(cfg.validate().empty());
+    EXPECT_TRUE(cfg.validate().has_value());
 }
 
 TEST(TlsRecordConfigSmoke, ValidateCertWithoutKeyFails) {
     TlsConfig cfg{.client_cert_path = "/cert.pem"};
     auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
-    EXPECT_NE(err.find("client_cert_path"), std::string_view::npos);
+    ASSERT_FALSE(err.has_value());
+    EXPECT_NE(std::string_view{err.error().detail}.find("client_cert_path"),
+              std::string_view::npos);
 }
 
 TEST(TlsRecordConfigSmoke, ValidateKeyWithoutCertFails) {
     TlsConfig cfg{.client_key_path = "/key.pem"};
     auto err = cfg.validate();
-    EXPECT_FALSE(err.empty());
+    EXPECT_FALSE(err.has_value());
 }
 
 TEST(TlsRecordConfigSmoke, EqualityDefaultBehavior) {
