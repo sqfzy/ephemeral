@@ -223,9 +223,12 @@ struct HmacSha256Tag {
     /// do NOT call on the HFT hot path; use the span-based overload there.
     [[nodiscard]] std::string to_hex() const {
         std::string s(64, '\0');
-        uint8_t     buf[64];
-        to_hex(std::span<uint8_t, 64>{buf});
-        std::memcpy(s.data(), buf, 64);
+        // Write the hex directly into the string's storage — the previous
+        // implementation bounced through a stack buffer + memcpy for no
+        // benefit (batch2-round4 LOW-1). The cast is safe because
+        // std::string::data() is contiguous writable char* since C++17.
+        to_hex(std::span<uint8_t, 64>{
+            reinterpret_cast<uint8_t*>(s.data()), 64});
         return s;
     }
 };
