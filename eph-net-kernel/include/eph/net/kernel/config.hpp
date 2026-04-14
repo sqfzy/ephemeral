@@ -16,7 +16,6 @@
 
 #include "eph/net/http.hpp"  // HttpHeader (for ws_extra_headers)
 #include "eph/net/proxy.hpp" // ProxyConfig (HTTP CONNECT)
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/detail/tls_constants.hpp"  // TlsConfig
 
@@ -41,9 +40,6 @@ struct StreamConfig {
 
     /// @brief TCP_NODELAY setting at socket creation time.
     bool tcp_nodelay{true};
-
-    /// @brief Reconnection policy applied by higher-level recovery code.
-    ReconnectPolicyConfig reconnect{};
 
     /// @brief TLS 1.3 configuration. Only consulted when the stream is
     ///        instantiated with `EnableTls=true`. The default value works

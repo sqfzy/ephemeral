@@ -123,7 +123,7 @@ TEST(DpdkTcpStream, DefaultStreamConfigHasEmptyWsPath) {
     EXPECT_TRUE(cfg.ws_path.empty());
 }
 
-TEST(DpdkTcpStream, DefaultReconnectPolicyIsDefault) {
+TEST(DpdkTcpStream, DefaultConnectTimeoutIs3000ms) {
     edpk::StreamConfig cfg{};
     EXPECT_EQ(cfg.connect_timeout.count(), 3000);
 }

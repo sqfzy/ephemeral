@@ -136,12 +136,6 @@ TEST(StreamConfigValidation, DefaultTcpNodelayTrue) {
     EXPECT_TRUE(cfg.tcp_nodelay);
 }
 
-TEST(StreamConfigValidation, DefaultReconnectConfigWellFormed) {
-    ek::StreamConfig cfg{};
-    EXPECT_GT(cfg.reconnect.initial_backoff.count(), 0);
-    EXPECT_GE(cfg.reconnect.max_backoff, cfg.reconnect.initial_backoff);
-}
-
 TEST(StreamConfigValidation, DefaultWsPathEmpty) {
     ek::StreamConfig cfg{};
     EXPECT_TRUE(cfg.ws_path.empty());
@@ -235,14 +229,6 @@ TEST(StreamConfigValidation, AssignProxyConfig) {
     ASSERT_TRUE(cfg.proxy.has_value());
     EXPECT_EQ(cfg.proxy->host, "10.1.2.3");
     EXPECT_EQ(cfg.proxy->port, 3128);
-}
-
-TEST(StreamConfigValidation, AssignReconnectConfig) {
-    ek::StreamConfig cfg{};
-    cfg.reconnect.max_attempts = 5;
-    cfg.reconnect.initial_backoff = std::chrono::milliseconds{200};
-    EXPECT_EQ(cfg.reconnect.max_attempts, 5u);
-    EXPECT_EQ(cfg.reconnect.initial_backoff, std::chrono::milliseconds{200});
 }
 
 TEST(StreamConfigValidation, AssignTlsHostname) {

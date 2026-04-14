@@ -1,5 +1,22 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — Drop dead reconnect field (2026-04-14)
+
+### Changed — BREAKING
+- Removed `StreamConfig::reconnect` (`ReconnectPolicyConfig`) and the
+  corresponding `DpdkTcpStream::reconnect_policy_` member, mirroring
+  the kernel backend change. Same rationale: the field was carried
+  but never read; a retry loop inside `create()` cannot see the
+  protocol-layer state (FIX Logon, kill switch, primary/backup) that
+  real HFT recovery requires, and runs before the stream is attached
+  to a `DpdkPoller` so no supervisor can observe it.
+
+  Migration: drive the reconnect loop in caller code using a
+  standalone `eph::net::ReconnectPolicy`. See
+  `examples/session_reconnect.cpp` (kernel variant — the DPDK
+  reconnect loop has exactly the same shape, only the stream type
+  changes).
+
 ## [Unreleased] — Phase 9 Recovery (2026-04-10)
 
 ### Added

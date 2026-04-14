@@ -177,6 +177,13 @@ target("production_client")
     add_files("examples/production_client.cpp")
     add_deps("eph-net-kernel", "eph-codec")
 
+target("session_reconnect")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/session_reconnect.cpp")
+    add_deps("eph-net-kernel", "eph-codec")
+
 target("ws_echo_client")
     set_kind("binary")
     set_group("examples")

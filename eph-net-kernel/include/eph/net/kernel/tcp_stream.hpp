@@ -50,7 +50,6 @@
 #include "eph/net/kernel/detail/span_view.hpp"
 #include "eph/net/kernel/detail/tls_state.hpp"
 #include "eph/net/kernel/poller.hpp"
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
 
 namespace eph::net::kernel {
@@ -652,8 +651,7 @@ private:
 
     explicit KernelTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg)),
-          reasm_(cfg_.reasm_capacity),
-          reconnect_policy_(cfg_.reconnect) {}
+          reasm_(cfg_.reasm_capacity) {}
 
     // ── Codec drain loop ─────────────────────────────────────────────────
 
@@ -782,7 +780,6 @@ private:
     /// TLS encrypt staging — sized per-call so we don't realloc.
     std::vector<uint8_t>        tls_send_buf_{};
     KernelPoller*               attached_to_{nullptr};
-    ReconnectPolicy             reconnect_policy_;
     TcpState                    state_{TcpState::Closed};
 };
 

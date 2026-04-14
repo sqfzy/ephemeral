@@ -1,9 +1,15 @@
 /// @file production_client.cpp
 ///
 /// Shows the production-quality knobs a real HFT client wires onto a
-/// KernelTcpStream: TLS on, reconnect policy, TCP_NODELAY, bounded reasm
-/// buffer, signal-driven shutdown. No exchange-specific logic — the file
-/// is deliberately a template that a strategy can drop into.
+/// KernelTcpStream: TLS on, TCP_NODELAY, bounded reasm buffer,
+/// signal-driven shutdown, and an outer reconnect loop driven by
+/// `eph::net::ReconnectPolicy`. The reconnect loop lives in the caller —
+/// the stream layer itself does not retry (by design: real recovery
+/// needs protocol-layer state the stream cannot see, e.g. FIX Logon
+/// seq numbers, kill-switch gates, primary/backup routing).
+///
+/// No exchange-specific logic — the file is deliberately a template
+/// that a strategy can drop into.
 
 #include <atomic>
 #include <chrono>
@@ -13,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <spdlog/spdlog.h>
 
@@ -33,12 +40,43 @@ static void on_signal(int) {
     g_running.store(false, std::memory_order_release);
 }
 
-// ── Run one session to completion (exits on disconnect or signal) ──────────
+// ── Run one session to completion (returns when disconnected or signalled) ─
+//
+// `true`  = session ended cleanly on signal (outer loop should stop)
+// `false` = session dropped on its own (outer loop should reconnect)
+
+template <bool EnableTls>
+static bool run_one_session(en::StreamConfig& cfg,
+                            en::KernelPoller& poller) {
+    auto sr = en::KernelTcpStream<ec::WsCodec, EnableTls>::create(cfg);
+    if (!sr) {
+        spdlog::error("create failed: {}", sr.error().detail);
+        return false;  // reconnect
+    }
+    auto stream = std::move(*sr);
+    stream->on_message = [](const uint8_t*, uint16_t len) {
+        SPDLOG_DEBUG("prod: rx {} bytes", len);
+        (void)len;
+    };
+    if (auto r = poller.add(stream.get()); !r) {
+        spdlog::error("poller add failed: {}", r.error().detail);
+        return false;
+    }
+
+    while (g_running.load(std::memory_order_acquire)
+           && stream->state() == eph::net::TcpState::Established) {
+        (void)poller.poll(100ms);
+    }
+    // Session ended — clean up before returning so the next create()
+    // gets a fresh fd.
+    (void)poller.remove(stream.get());
+    return !g_running.load(std::memory_order_acquire);
+}
 
 static int run_session(const std::string& host, uint16_t port, bool use_tls) {
     auto ip = eph::net::Ipv4Addr::parse(host);
     if (!ip) {
-        spdlog::error("production_client_v3: --host must be an IPv4 literal, "
+        spdlog::error("production_client: --host must be an IPv4 literal, "
                       "got '{}'", host);
         return 1;
     }
@@ -51,63 +89,29 @@ static int run_session(const std::string& host, uint16_t port, bool use_tls) {
     cfg.connect_timeout = 3s;
     cfg.tcp_nodelay     = true;
 
-    // Reconnect policy lives on the stream config — outer recovery loop
-    // can consult `cfg.reconnect` to decide whether to re-create the
-    // stream after a drop. ReconnectPolicyConfig defaults are already
-    // production-sane (exponential back-off, bounded attempts).
-    cfg.reconnect = eph::net::ReconnectPolicyConfig{};
+    // Reconnect policy lives HERE in the caller — not on the stream
+    // config. This is deliberate: after a drop, real recovery needs
+    // protocol-level state (FIX Logon seq num resync, ITCH snapshot
+    // replay, kill-switch check) that a stream-local retry cannot see.
+    // Production-sane defaults: exponential back-off, unbounded
+    // attempts, ±25% jitter.
+    eph::net::ReconnectPolicy reconnect{eph::net::ReconnectPolicyConfig{}};
 
-    auto make_stream = [&]()
-        -> std::expected<
-             std::unique_ptr<en::KernelTcpStream<ec::WsCodec, /*Tls=*/true>>,
-             eph::core::ErrorInfo> {
-        return en::KernelTcpStream<ec::WsCodec, true>::create(cfg);
-    };
-    auto make_stream_plain = [&]()
-        -> std::expected<
-             std::unique_ptr<en::KernelTcpStream<ec::WsCodec, /*Tls=*/false>>,
-             eph::core::ErrorInfo> {
-        return en::KernelTcpStream<ec::WsCodec, false>::create(cfg);
-    };
+    while (g_running.load(std::memory_order_acquire)
+           && reconnect.should_reconnect()) {
+        const bool stop = use_tls ? run_one_session<true>(cfg, *poller)
+                                  : run_one_session<false>(cfg, *poller);
+        if (stop) break;
 
-    if (use_tls) {
-        auto sr = make_stream();
-        if (!sr) {
-            spdlog::error("create (tls) failed: {}", sr.error().detail);
-            return 2;
-        }
-        auto stream = std::move(*sr);
-        stream->on_message = [](const uint8_t*, uint16_t len) {
-            SPDLOG_DEBUG("prod: rx {} bytes", len);
-            (void)len;
-        };
-        if (auto r = poller->add(stream.get()); !r) {
-            spdlog::error("add failed: {}", r.error().detail);
-            return 3;
-        }
-        while (g_running.load(std::memory_order_acquire)
-               && stream->state() == eph::net::TcpState::Established) {
-            (void)poller->poll(100ms);
-        }
-    } else {
-        auto sr = make_stream_plain();
-        if (!sr) {
-            spdlog::error("create (plain) failed: {}", sr.error().detail);
-            return 2;
-        }
-        auto stream = std::move(*sr);
-        stream->on_message = [](const uint8_t*, uint16_t len) {
-            SPDLOG_DEBUG("prod: rx {} bytes", len);
-            (void)len;
-        };
-        if (auto r = poller->add(stream.get()); !r) {
-            spdlog::error("add failed: {}", r.error().detail);
-            return 3;
-        }
-        while (g_running.load(std::memory_order_acquire)
-               && stream->state() == eph::net::TcpState::Established) {
-            (void)poller->poll(100ms);
-        }
+        // Session dropped (or create failed). Sleep with jitter before
+        // trying again. A real strategy would re-check kill-switch,
+        // consult a backup remote, or refresh credentials here before
+        // reconnecting.
+        const auto delay = reconnect.next_backoff();
+        spdlog::warn("session dropped; sleeping {}ms before reconnect "
+                     "(attempt {})",
+                     delay.count(), reconnect.attempts());
+        std::this_thread::sleep_for(delay);
     }
     return 0;
 }
@@ -129,6 +133,6 @@ int main(int argc, char** argv) {
         else if (a == "--no-tls")               use_tls = false;
     }
 
-    spdlog::info("production_client_v3: host={}:{} tls={}", host, port, use_tls);
+    spdlog::info("production_client: host={}:{} tls={}", host, port, use_tls);
     return run_session(host, port, use_tls);
 }

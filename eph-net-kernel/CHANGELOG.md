@@ -1,5 +1,29 @@
 # eph-net-kernel changelog
 
+## [Unreleased] — Drop dead reconnect field (2026-04-14)
+
+### Changed — BREAKING
+- Removed `StreamConfig::reconnect` (`ReconnectPolicyConfig`) and the
+  corresponding `KernelTcpStream::reconnect_policy_` member. The field
+  was carried through the stream object but **never read** by any
+  production code path; it was a leftover from the v3.3 architecture
+  sketch. Keeping it created a "configured it, must be working"
+  illusion for users.
+
+  Migration: construct an `eph::net::ReconnectPolicy` in caller code
+  and drive the reconnect loop there. See
+  `examples/session_reconnect.cpp` for the canonical pattern and
+  `examples/production_client.cpp` for a TLS + signal-driven variant.
+
+  Rationale: session recovery (FIX Logon seq resync, ITCH snapshot
+  replay, kill-switch gating, primary/backup routing) is inherently
+  protocol-layer; a stream-local retry cannot see that state. The
+  stream between `create()` and `poller.add()` is also unobservable
+  to any supervisor, so internal retry loops run in a blind spot.
+
+  `eph::net::ReconnectPolicy` itself (pure backoff math, no I/O) is
+  unchanged and is now the recommended caller-side primitive.
+
 ## [Unreleased] — Phase 9 Recovery (2026-04-10)
 
 ### Added

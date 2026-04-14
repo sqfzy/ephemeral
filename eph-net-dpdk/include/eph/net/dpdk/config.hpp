@@ -28,7 +28,6 @@
 #include "eph/net/http.hpp"                   // HttpHeader
 #include "eph/net/proxy.hpp"                  // ProxyConfig
 #include "eph/net/detail/tls_constants.hpp"   // TlsConfig
-#include "eph/net/reconnect_policy.hpp"
 
 // The StreamConfig carries a real `eph::net::TlsConfig` field. aws-lc is
 // the only OpenSSL flavour in eph-net-dpdk TUs; `RAND_bytes` call sites use
@@ -66,9 +65,6 @@ struct StreamConfig {
 
     /// @brief TCP handshake deadline (SYN -> SYN/ACK -> ACK round trip).
     std::chrono::milliseconds connect_timeout{3000};
-
-    /// @brief Reconnection policy applied by higher-level recovery code.
-    ReconnectPolicyConfig reconnect{};
 
     /// @brief TLS 1.3 handshake configuration. Ignored when the template
     /// parameter `EnableTls=false`.

@@ -47,7 +47,6 @@
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/tcp_state.hpp"
 
 // The DPDK TLS path uses aws-lc exclusively (no vcpkg-openssl). ISN
@@ -721,8 +720,7 @@ private:
     explicit DpdkTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg))
         , sess_(cfg_.legacy, cfg_.pool)
-        , reasm_(cfg_.reasm_capacity > 0 ? cfg_.reasm_capacity : 256 * 1024)
-        , reconnect_policy_(cfg_.reconnect) {}
+        , reasm_(cfg_.reasm_capacity > 0 ? cfg_.reasm_capacity : 256 * 1024) {}
 
     /// @brief Run the codec over the accumulated payload bytes, firing
     ///        `on_message` per decoded frame. Returns the number of
@@ -850,11 +848,10 @@ private:
     std::vector<uint8_t>                    tls_send_buf_{};
     detail::ReasmBuffer                     reasm_;
     /// @brief Latch set when `reasm_.append()` reports overflow. Once
-    ///        tripped, the stream short-circuits all further RX dispatch
-    ///        and the reconnect policy is expected to tear it down.
+    ///        tripped, the stream short-circuits all further RX dispatch;
+    ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
-    ::eph::net::ReconnectPolicy             reconnect_policy_;
 };
 
 } // namespace eph::net::dpdk
