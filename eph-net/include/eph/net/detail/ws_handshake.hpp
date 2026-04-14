@@ -277,7 +277,7 @@ perform_ws_handshake(
     std::vector<uint8_t>*           leftover      = nullptr) noexcept
 {
     SPDLOG_DEBUG("ws_handshake: begin host='{}' path='{}' extras={} timeout={}ms",
-                 std::string(host), std::string(ws_path),
+                 host, ws_path,
                  extra_headers.size(), timeout.count());
 
     // ── 1. Generate + base64-encode the 16-byte client nonce ──────────────
@@ -418,7 +418,7 @@ perform_ws_handshake(
     // ── 5. Verify status == 101 Switching Protocols ───────────────────────
     if (resp.status_code != 101) {
         SPDLOG_WARN("ws_handshake: unexpected status {} (reason='{}')",
-                    resp.status_code, std::string(resp.reason_phrase));
+                    resp.status_code, resp.reason_phrase);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
             "ws_handshake: non-101 status"});
@@ -454,7 +454,7 @@ perform_ws_handshake(
     if (*accept_hdr != expected_accept) {
         SPDLOG_WARN("ws_handshake: Sec-WebSocket-Accept mismatch "
                     "(expected='{}' got='{}')",
-                    expected_accept, std::string(*accept_hdr));
+                    expected_accept, *accept_hdr);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
             "ws_handshake: Sec-WebSocket-Accept mismatch"});
@@ -472,7 +472,7 @@ perform_ws_handshake(
     if (ext_hdr) {
         SPDLOG_WARN("ws_handshake: server enabled unsolicited extension(s) '{}' "
                     "— rejecting (WsCodec does not support permessage-deflate)",
-                    std::string(*ext_hdr));
+                    *ext_hdr);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
             "ws_handshake: server enabled unsolicited Sec-WebSocket-Extensions"});
@@ -493,7 +493,7 @@ perform_ws_handshake(
     }
 
     SPDLOG_INFO("ws_handshake: OK path='{}' host='{}' ({}B req, {}B resp)",
-                std::string(ws_path), std::string(host), req_len, consumed);
+                ws_path, host, req_len, consumed);
     return {};
 }
 
