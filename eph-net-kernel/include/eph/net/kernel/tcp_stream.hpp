@@ -634,6 +634,23 @@ public:
             return 0;
         }
 
+        // Drain any pre-seeded / carry-over bytes BEFORE recv. This handles
+        // the post-WS-handshake / post-HTTP-CONNECT case where `create()`
+        // committed over-read bytes into `reasm_` but the kernel socket
+        // buffer was already drained by the handshake `recv()`. With EPOLLIN
+        // level-triggered, epoll_wait() will not fire until the peer sends
+        // more bytes, so those seeded bytes would stall in `reasm_` until
+        // some unrelated network packet arrives. Also covers the TLS path
+        // where `tls_plain_buf_` may hold leftover plaintext from a prior
+        // poll. A drain on an empty buffer is a cheap no-op.
+        std::size_t preserved = 0;
+        if (reasm_.readable() > 0 || (EnableTls && tls_plain_head_ < tls_plain_buf_.size())) {
+            preserved = drain_codec_();
+            if (state_ != TcpState::Established) {
+                return preserved;
+            }
+        }
+
         // Compact front-headroom before the next recv so the tail keeps
         // growing. No-op if head_ == 0.
         reasm_.compact();
@@ -643,31 +660,32 @@ public:
                 "KernelTcpStream::poll_once_: reasm buffer full; "
                 "dropping connection");
             state_ = TcpState::Closed;
-            return 0;
+            return preserved;
         }
 
         auto rr = sock_.recv(reasm_.writable_ptr(), reasm_.writable_capacity());
         if (!rr) {
             const auto& err = rr.error();
             if (err.code == core::Error::WouldBlock) {
-                // Epoll is level-triggered: returning 0 is fine.
-                return 0;
+                // Epoll is level-triggered: returning the already-drained
+                // count is fine — the next poll will pick up fresh bytes.
+                return preserved;
             }
             if (err.code == core::Error::Disconnected) {
                 SPDLOG_LOGGER_INFO(detail::tcp_stream_logger(),
                     "KernelTcpStream::poll_once_: peer closed fd={}",
                     sock_.fd());
                 state_ = TcpState::Closed;
-                return 0;
+                return preserved;
             }
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                 "KernelTcpStream::poll_once_: recv err={}", err.detail);
             state_ = TcpState::Closed;
-            return 0;
+            return preserved;
         }
         reasm_.commit_write(*rr);
 
-        return drain_codec_();
+        return preserved + drain_codec_();
     }
 
     // ── Poller-facing friend hooks ───────────────────────────────────────
