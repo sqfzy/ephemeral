@@ -232,7 +232,7 @@ perform_http_connect(
 {
     SPDLOG_DEBUG("http_connect: begin proxy={}:{} target={}:{} auth={} timeout={}ms",
                  proxy.host, proxy.port,
-                 std::string(target_host), target_port,
+                 target_host, target_port,
                  proxy.basic_auth_user.has_value(),
                  proxy.timeout.count());
 
@@ -405,14 +405,14 @@ perform_http_connect(
     }
     if (resp.status_code < 200 || resp.status_code >= 300) {
         SPDLOG_WARN("http_connect: non-2xx status {} (reason='{}')",
-                    resp.status_code, std::string(resp.reason_phrase));
+                    resp.status_code, resp.reason_phrase);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::ProxyHandshakeFailed,
             "http_connect: proxy returned non-2xx status"});
     }
     if (resp.status_code != 200) {
         SPDLOG_WARN("http_connect: unexpected 2xx {} (reason='{}')",
-                    resp.status_code, std::string(resp.reason_phrase));
+                    resp.status_code, resp.reason_phrase);
     }
 
     // ── 7. Stash any over-read bytes for the caller's reasm buffer ────────
@@ -434,7 +434,7 @@ perform_http_connect(
     }
 
     SPDLOG_INFO("http_connect: OK target={}:{} via {}:{} ({}B req, {}B resp)",
-                std::string(target_host), target_port,
+                target_host, target_port,
                 proxy.host, proxy.port, req_len, consumed);
     return {};
 }
