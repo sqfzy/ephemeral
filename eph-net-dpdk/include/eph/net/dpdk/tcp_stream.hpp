@@ -838,6 +838,14 @@ private:
                         }
                         const auto& frame = **dr;
                         if (frame.size() > 0 && on_message) {
+                            if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
+                                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                                    "DpdkTcpStream::drain_codec_(TLS): frame size "
+                                    "{} > 0xFFFF; on_message length is clamped "
+                                    "to 0xFFFF (warn-once per stream)",
+                                    frame.size());
+                                trunc_warned_ = true;
+                            }
                             on_message(frame.data(), saturate_u16(frame.size()));
                             ++delivered;
                         }
@@ -917,6 +925,14 @@ private:
                 }
                 const auto& frame = **dr;
                 if (frame.size() > 0 && on_message) {
+                    if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
+                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                            "DpdkTcpStream::drain_codec_: frame size {} > "
+                            "0xFFFF; on_message length is clamped to 0xFFFF "
+                            "(warn-once per stream)",
+                            frame.size());
+                        trunc_warned_ = true;
+                    }
                     on_message(frame.data(), saturate_u16(frame.size()));
                     ++delivered;
                 }
@@ -951,6 +967,9 @@ private:
     ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
+    /// Warn-once latch for `saturate_u16` clamping during on_message dispatch.
+    /// See batch3-round1 MEDIUM-1.
+    bool                                    trunc_warned_{false};
 };
 
 } // namespace eph::net::dpdk

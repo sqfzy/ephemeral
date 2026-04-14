@@ -791,6 +791,14 @@ private:
 
                 const auto& frame = **dr;
                 if (frame.size() > 0) {
+                    if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
+                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                            "KernelTcpStream::drain_codec_(TLS): frame size "
+                            "{} > 0xFFFF; on_message length is clamped to "
+                            "0xFFFF (warn-once per stream)",
+                            frame.size());
+                        trunc_warned_ = true;
+                    }
                     on_message(frame.data(), saturate_u16(frame.size()));
                     ++delivered;
                 }
@@ -852,6 +860,14 @@ private:
             }
             const auto& frame = **dr;
             if (frame.size() > 0) {
+                if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "KernelTcpStream::drain_codec_: frame size {} > "
+                        "0xFFFF; on_message length is clamped to 0xFFFF "
+                        "(warn-once per stream)",
+                        frame.size());
+                    trunc_warned_ = true;
+                }
                 on_message(frame.data(), saturate_u16(frame.size()));
                 ++delivered;
             }
@@ -884,6 +900,9 @@ private:
     std::vector<uint8_t>        tls_send_buf_{};
     KernelPoller*               attached_to_{nullptr};
     TcpState                    state_{TcpState::Closed};
+    /// Warn-once latch for `saturate_u16` clamping during on_message dispatch.
+    /// See batch3-round1 MEDIUM-1: silent truncation of frames >64 KiB.
+    bool                        trunc_warned_{false};
 };
 
 } // namespace eph::net::kernel

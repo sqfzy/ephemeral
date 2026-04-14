@@ -314,6 +314,14 @@ public:
         std::size_t delivered = 0;
         auto sink = [&](auto&& frame) {
             if (frame.size() > 0 && on_datagram) {
+                if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
+                    SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                        "KernelUdpSocket::poll_once_: datagram frame size {} "
+                        "> 0xFFFF; on_datagram length is clamped to 0xFFFF "
+                        "(warn-once per socket)",
+                        frame.size());
+                    trunc_warned_ = true;
+                }
                 on_datagram(frame.data(), saturate_u16(frame.size()), src_addr);
                 ++delivered;
             }
@@ -368,6 +376,9 @@ private:
     int                      fd_{-1};
     [[no_unique_address]] C  codec_{};
     KernelPoller*            attached_to_{nullptr};
+    /// Warn-once latch for on_datagram length clamping >0xFFFF.
+    /// See batch3-round1 MEDIUM-1.
+    bool                     trunc_warned_{false};
 };
 
 } // namespace eph::net::kernel

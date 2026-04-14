@@ -331,6 +331,14 @@ public:
 
             auto sink = [&](auto&& frame) {
                 if (frame.size() > 0 && on_datagram) {
+                    if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
+                        SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                            "DpdkUdpSocket::process_burst_: datagram frame "
+                            "size {} > 0xFFFF; on_datagram length clamped to "
+                            "0xFFFF (warn-once per socket)",
+                            frame.size());
+                        trunc_warned_ = true;
+                    }
                     on_datagram(frame.data(), saturate_u16(frame.size()), src_addr);
                 }
             };
@@ -386,6 +394,9 @@ private:
     /// peers are filtered by the Poller's tuple dispatch.
     SocketAddr                             connected_peer_{};
     bool                                   connected_{false};
+    /// Warn-once latch for `saturate_u16` clamping during on_datagram dispatch.
+    /// See batch3-round1 MEDIUM-1.
+    bool                                   trunc_warned_{false};
 };
 
 } // namespace eph::net::dpdk

@@ -43,9 +43,25 @@ namespace eph::net {
 // Utility: saturate a size_t to uint16_t (for on_message / on_datagram len).
 // ---------------------------------------------------------------------------
 
-/// @brief Clamp a size_t frame length to uint16_t range without truncation.
+/// @brief Clamp a size_t frame length to uint16_t range.
+///
+/// NOTE: The current `on_message` / `on_datagram` callback signatures take
+/// `uint16_t` for the length field — this is a historical HFT-exchange
+/// artifact (most exchange messages fit in <64 KiB) and will widen to
+/// `uint32_t` in a future concept revision. Until then, callers that may
+/// see oversized frames should check `frame.size() > 0xFFFF` themselves
+/// before forwarding, because this helper silently clamps. The kernel and
+/// DPDK Stream/Datagram backends log a one-shot WARN when clamping
+/// actually fires; see the `truncating_saturate_u16` helper below.
 [[nodiscard]] constexpr uint16_t saturate_u16(std::size_t n) noexcept {
     return static_cast<uint16_t>(n > 0xFFFFu ? 0xFFFFu : n);
+}
+
+/// @brief True when `saturate_u16(n)` would clamp — useful at Stream
+///        dispatch sites to gate a one-shot WARN log without paying the
+///        branch cost in the common case at runtime hot paths.
+[[nodiscard]] constexpr bool saturate_u16_clamps(std::size_t n) noexcept {
+    return n > 0xFFFFu;
 }
 
 // ---------------------------------------------------------------------------
