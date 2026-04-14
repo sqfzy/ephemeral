@@ -441,10 +441,15 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Try to extract a DNS response from a received mbuf.
+/// @param expected_src_port  UDP source port the response must originate
+///        from (host byte order).  Mirrors `DnsConfig::port` on the call
+///        site — defaults to kDnsPort so adversarial tests using stock
+///        port-53 fixtures keep working without modification.
 /// @return IPv4 address (host order) if valid DNS response, nullopt otherwise
 [[nodiscard]] inline std::optional<uint32_t>
 try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
-                     uint32_t nameserver_ip) noexcept {
+                     uint32_t nameserver_ip,
+                     uint16_t expected_src_port = kDnsPort) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + net::kIpv4HeaderLen
                              + kUdpHeaderLen + kDnsHeaderLen;
     if (mbuf->data_len < min_len) return std::nullopt;
@@ -467,10 +472,13 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
     if (net::kEtherHeaderLen + ihl + kUdpHeaderLen + kDnsHeaderLen > mbuf->data_len)
         return std::nullopt;
 
-    // Check UDP source port = 53
+    // Check UDP source port matches the configured nameserver port.
+    // Hardcoding 53 here would silently drop responses whenever the
+    // caller pointed DnsConfig::port at a non-standard port (e.g. for
+    // a local DNS forwarder or a test fixture).
     auto* udp = reinterpret_cast<const UdpHeader*>(
         pkt + net::kEtherHeaderLen + ihl);
-    if (net::ntoh16(udp->src_port) != kDnsPort) return std::nullopt;
+    if (net::ntoh16(udp->src_port) != expected_src_port) return std::nullopt;
 
     // Parse DNS payload
     const uint8_t* dns_data = pkt + net::kEtherHeaderLen + ihl
@@ -620,7 +628,7 @@ resolve(uint16_t port_id,
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto resolved_ip = detail::try_parse_dns_packet(
-                pkts[i], tx_id_net, cfg.nameserver_ip);
+                pkts[i], tx_id_net, cfg.nameserver_ip, cfg.port);
             if (resolved_ip) {
                 SPDLOG_LOGGER_INFO(log,
                     "DNS resolved: {} -> {} (after {} query/queries)",
