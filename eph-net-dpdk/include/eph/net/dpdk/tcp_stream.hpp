@@ -748,12 +748,30 @@ private:
             // payload with its plaintext (the AEAD output buffer aliases the
             // input), so the codec reads from the same memory — zero extra
             // copies beyond the session→reasm copy.
+            // Per-record emit with cross-record carry-over: when a WS
+            // frame's payload spans a TLS record boundary, the tail of
+            // the first record is saved into tls_codec_pending_ and
+            // prepended to the next record's plaintext before feeding
+            // the codec. Fast path (pending empty, frame fits) feeds
+            // the codec directly over the in-place decrypted bytes —
+            // zero copy.
             auto dec_r = tls_.process_records_in_place(
                 const_cast<uint8_t*>(reasm_.read_ptr()),
                 reasm_.readable(),
-                [&](uint8_t* plaintext, std::size_t plen) {
-                    // Feed each decrypted record's plaintext to the codec.
-                    detail::MbufView view(plaintext, plen, /*arrival_tsc*/ 0);
+                [&](uint8_t* chunk, std::size_t chunk_len) {
+                    uint8_t*    feed_ptr;
+                    std::size_t feed_len;
+                    if (tls_codec_pending_.empty()) {
+                        feed_ptr = chunk;                // zero-copy fast path
+                        feed_len = chunk_len;
+                    } else {
+                        tls_codec_pending_.insert(tls_codec_pending_.end(),
+                                                   chunk, chunk + chunk_len);
+                        feed_ptr = tls_codec_pending_.data();
+                        feed_len = tls_codec_pending_.size();
+                    }
+
+                    detail::MbufView view(feed_ptr, feed_len, /*arrival_tsc*/ 0);
                     while (view.length() > 0) {
                         const std::size_t before = view.length();
                         auto dr = codec_.decode(view, out_sink);
@@ -761,6 +779,7 @@ private:
                             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                                 "DpdkTcpStream::drain_codec_(TLS): decode err={}",
                                 dr.error().detail);
+                            tls_codec_pending_.clear();
                             return;
                         }
                         if (!dr->has_value()) break;
@@ -777,6 +796,17 @@ private:
                             on_message(frame.data(), saturate_u16(frame.size()));
                             ++delivered;
                         }
+                    }
+
+                    // Save any unconsumed tail (incomplete frame) for the
+                    // next emit. If this record fully consumed (frame
+                    // boundary aligned), pending is empty and the next
+                    // record takes the fast path again.
+                    if (view.length() > 0) {
+                        tls_codec_pending_.assign(view.data(),
+                                                   view.data() + view.length());
+                    } else {
+                        tls_codec_pending_.clear();
                     }
                 });
             if (!dec_r) {
@@ -846,6 +876,14 @@ private:
     // before handing them to the byte pipe. Persists across calls so we do not
     // reallocate per send. Only populated when `EnableTls=true`.
     std::vector<uint8_t>                    tls_send_buf_{};
+    // Cross-record carry-over for the TLS codec drain path. Holds the
+    // unconsumed tail from a previous emit when a WS frame's payload
+    // spans a TLS record boundary; prepended to the next record's
+    // plaintext before the codec runs again. Empty in the common case
+    // (frames aligned to record boundaries) — the fast path feeds the
+    // codec directly over the in-place decrypted bytes with zero copy.
+    // Only populated when `EnableTls=true`.
+    std::vector<uint8_t>                    tls_codec_pending_{};
     detail::ReasmBuffer                     reasm_;
     /// @brief Latch set when `reasm_.append()` reports overflow. Once
     ///        tripped, the stream short-circuits all further RX dispatch;
