@@ -132,8 +132,19 @@ public:
         }
 
         // TCP_NODELAY by default — HFT bias, matches legacy SocketTransport.
+        // Previously the return value was silently discarded, which is a
+        // latency footgun: if setsockopt fails (EOPNOTSUPP on an unusual
+        // socket family, seccomp block, etc.) Nagle stays on and every
+        // small send pays the coalescing penalty. Continue on failure so
+        // an unusual environment doesn't become unusable, but WARN-log
+        // the errno so operators can notice.
         int one = 1;
-        (void)::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        if (::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+            SPDLOG_LOGGER_WARN(log,
+                "ByteSocket::connect: setsockopt(TCP_NODELAY) failed: "
+                "errno={} ({}) — Nagle may remain enabled",
+                errno, std::strerror(errno));
+        }
 
         struct sockaddr_in sa{};
         sa.sin_family      = AF_INET;
@@ -371,6 +382,13 @@ public:
         }
         int v = enable ? 1 : 0;
         if (::setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, &v, sizeof(v)) != 0) {
+            // WARN-log here as well so a caller who (legitimately) drops
+            // the expected<> return still sees evidence in the log stream
+            // that the option took effect — this matters in HFT because
+            // silent Nagle-on is catastrophic for tail latency.
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_no_delay: setsockopt errno={} ({}) enable={}",
+                errno, std::strerror(errno), enable);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "ByteSocket::set_no_delay: setsockopt failed"});
