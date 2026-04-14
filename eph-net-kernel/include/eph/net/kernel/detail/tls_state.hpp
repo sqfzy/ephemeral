@@ -52,6 +52,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+#include "eph/core/detail/logger.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/tcp_state.hpp"
@@ -60,6 +61,18 @@
 #include "eph/net/detail/tls_session.hpp"
 
 namespace eph::net::kernel::detail {
+
+/// @brief Lazily-initialized logger for the kernel-backend TLS state.
+///
+/// Added in batch3-round2: the previous implementation had zero logging,
+/// making every TLS handshake / record-plane failure a silent "TLS error"
+/// with no breadcrumb about WHICH sub-step (session create, handshake,
+/// extract_hot_state, key length, AEAD create, decrypt, record-header
+/// parse) tripped. See review-audit-net-batch3-round2 HIGH-1.
+inline spdlog::logger* tls_state_logger() {
+    static auto* l = ::eph::core::detail::make_logger("net.kernel.tls_state");
+    return l;
+}
 
 // ---------------------------------------------------------------------------
 // ByteSocketTcpAdapter — make ByteSocket look like a legacy TcpTransport.
@@ -178,11 +191,19 @@ public:
     /// caller — no live SSL pointers remain on the data plane.
     [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
     handshake(ByteSocket& sock, const ::eph::net::TlsConfig& cfg) noexcept {
+        [[maybe_unused]] auto* log = tls_state_logger();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::handshake: entry fd={} hostname='{}' verify_peer={}",
+            sock.fd(), cfg.hostname, cfg.verify_peer);
+
         ByteSocketTcpAdapter adapter(&sock);
 
         auto sess_r = ::eph::net::TlsSession<ByteSocketTcpAdapter>::create(
             adapter, cfg);
         if (!sess_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: TlsSession::create failed fd={} "
+                "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: TlsSession::create failed"});
@@ -190,6 +211,9 @@ public:
         auto& session = *sess_r;
 
         if (auto h = session.handshake(); !h) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: session.handshake() failed fd={} "
+                "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: TLS handshake failed"});
@@ -198,6 +222,9 @@ public:
         // Pull traffic keys + sequence numbers from the SSL session.
         auto state_r = session.extract_hot_state();
         if (!state_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: extract_hot_state failed fd={} "
+                "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: extract_hot_state failed"});
@@ -205,18 +232,29 @@ public:
 
         const std::size_t key_len = session.cipher_key_len();
         if (key_len != 16 && key_len != 32) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: unsupported AEAD key length {} "
+                "(expected 16 or 32) fd={} hostname='{}'",
+                key_len, sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsCipherFailed,
                 "TlsState::handshake: unsupported AEAD key length"});
         }
         auto crypto_r = ::eph::net::TlsRecordCrypto::create(*state_r, key_len);
         if (!crypto_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: TlsRecordCrypto::create failed fd={} "
+                "hostname='{}' key_len={}",
+                sock.fd(), cfg.hostname, key_len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsCipherFailed,
                 "TlsState::handshake: TlsRecordCrypto::create failed"});
         }
         crypto_      = std::make_unique<::eph::net::TlsRecordCrypto>(std::move(*crypto_r));
         established_ = true;
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::handshake: success fd={} hostname='{}' key_len={}",
+            sock.fd(), cfg.hostname, key_len);
         return {};
     }
 
@@ -233,6 +271,9 @@ public:
     process_records(const uint8_t* in_ptr, std::size_t in_len,
                      std::vector<uint8_t>& out) noexcept {
         if (!established_ || !crypto_) {
+            SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                "TlsState::process_records: called before established "
+                "(in_len={})", in_len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::process_records: not established"});
@@ -244,7 +285,14 @@ public:
             uint8_t  ct;
             uint16_t payload_len;
             if (!::eph::net::tls_record::parse_record_header(rec, ct, payload_len)) {
-                // Bad header — surface as cipher failure.
+                // Bad header — surface as cipher failure. Log with context
+                // (offset, first few header bytes) so operators can triage
+                // between "proxy injected garbage" and "decrypt key desync".
+                SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                    "TlsState::process_records: bad record header "
+                    "offset={} total_buffered={} ct_byte=0x{:02x} "
+                    "len_bytes=0x{:02x}{:02x}",
+                    consumed, in_len, rec[0], rec[3], rec[4]);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::TlsRecordBad,
                     "TlsState::process_records: bad record header"});
@@ -261,6 +309,10 @@ public:
                                    out.data() + out_off, plaintext_len,
                                    &inner_ct)) {
                 out.resize(out_off);  // unwind on failure
+                SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                    "TlsState::process_records: TLS decrypt failed "
+                    "offset={} record_total={} payload_len={} ct=0x{:02x}",
+                    consumed, total, payload_len, ct);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::TlsCipherFailed,
                     "TlsState::process_records: TLS decrypt failed"});
@@ -284,6 +336,9 @@ public:
     encrypt_for_send(const uint8_t* data, std::size_t len,
                       std::vector<uint8_t>& out) noexcept {
         if (!established_ || !crypto_) {
+            SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                "TlsState::encrypt_for_send: called before established "
+                "(len={})", len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::encrypt_for_send: not established"});
@@ -299,6 +354,10 @@ public:
                                                        out.data() + out_off);
             if (written == 0) {
                 out.resize(out_off);
+                SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                    "TlsState::encrypt_for_send: TLS encrypt failed "
+                    "off={} chunk={} total_len={}",
+                    off, chunk, len);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::TlsCipherFailed,
                     "TlsState::encrypt_for_send: TLS encrypt failed"});
