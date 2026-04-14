@@ -552,14 +552,47 @@ public:
     }
 
     /// @brief Initiate a graceful half-close (shutdown(SHUT_WR) equivalent).
+    ///
+    /// Error-path policy:
+    ///   - ENOTCONN: peer already closed; tolerated silently (DEBUG-logged)
+    ///     because the caller's intent ("stop sending") is already achieved.
+    ///     State flips to FinWait1 as if the syscall had succeeded.
+    ///   - EBADF: our fd is bogus — programming error. WARN-logged and
+    ///     reported as Disconnected without touching state_.
+    ///   - other errnos: WARN-logged, state unchanged, reported as
+    ///     Disconnected. The caller can retry or destroy the stream.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     close_gracefully() noexcept {
-        if (sock_.fd() >= 0) {
-            ::shutdown(sock_.fd(), SHUT_WR);
+        auto* log = detail::tcp_stream_logger();
+        const int fd = sock_.fd();
+        if (fd < 0) {
+            // Already closed — treat as idempotent success and flip state.
+            state_ = TcpState::Closed;
+            SPDLOG_LOGGER_DEBUG(log,
+                "KernelTcpStream::close_gracefully: fd already closed");
+            return {};
+        }
+        if (::shutdown(fd, SHUT_WR) != 0) {
+            const int err = errno;
+            if (err == ENOTCONN) {
+                // Peer already tore the TCP session down before we got here.
+                // Not an error — our half-close intent is fulfilled.
+                SPDLOG_LOGGER_DEBUG(log,
+                    "KernelTcpStream::close_gracefully fd={} "
+                    "peer already closed (ENOTCONN)", fd);
+                state_ = TcpState::FinWait1;
+                return {};
+            }
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::close_gracefully fd={} errno={} ({})",
+                fd, err, std::strerror(err));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::Disconnected,
+                "KernelTcpStream::close_gracefully: shutdown(SHUT_WR) failed"});
         }
         state_ = TcpState::FinWait1;
-        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
-            "KernelTcpStream::close_gracefully fd={}", sock_.fd());
+        SPDLOG_LOGGER_DEBUG(log,
+            "KernelTcpStream::close_gracefully fd={}", fd);
         return {};
     }
 
