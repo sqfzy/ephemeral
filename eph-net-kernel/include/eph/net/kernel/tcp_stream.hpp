@@ -161,47 +161,61 @@ struct TlsWsSink {
         }
 
         // No plaintext staged — pull ciphertext from the socket, decrypt
-        // as many complete records as possible, then serve from the staged
-        // plaintext. Loop at most a handful of times to stay bounded.
-        for (int iter = 0; iter < 8; ++iter) {
-            uint8_t tmp[4096];
-            auto rr = sock->recv(tmp, sizeof(tmp));
-            if (!rr) {
-                // Propagate WouldBlock so the handshake driver can re-poll.
-                return std::unexpected(rr.error());
-            }
-            if (*rr == 0) {
-                // Spurious (ByteSocket never returns 0 per its contract),
-                // but be defensive.
-                continue;
-            }
-            rx_cipher.insert(rx_cipher.end(), tmp, tmp + *rr);
-
-            // Decrypt complete records.
-            auto cr = tls->process_records(rx_cipher.data(), rx_cipher.size(),
-                                            rx_plain);
-            if (!cr) return std::unexpected(cr.error());
-            // Drop consumed ciphertext; partial record (if any) stays.
-            if (*cr > 0) {
-                rx_cipher.erase(rx_cipher.begin(),
-                                 rx_cipher.begin() + *cr);
-            }
-
-            if (!rx_plain.empty()) {
-                const std::size_t n = std::min(cap, rx_plain.size());
-                std::memcpy(buf, rx_plain.data(), n);
-                rx_plain_off = n;
-                if (rx_plain_off == rx_plain.size()) {
-                    rx_plain.clear();
-                    rx_plain_off = 0;
-                }
-                return n;
-            }
-            // No full record yet — loop and try another recv.
+        // as many complete records as possible, then serve the staged
+        // plaintext.
+        //
+        // We make a single recv attempt and propagate WouldBlock up to the
+        // handshake driver, which owns the outer deadline loop. A prior
+        // version of this function ran an 8-iteration "bounded retry" but
+        // the very first unconditional propagation of ByteSocket errors
+        // (any error, including WouldBlock) short-circuited the loop — it
+        // was dead code that only confused readers. Keep the semantics
+        // but collapse the structure.
+        uint8_t tmp[4096];
+        auto rr = sock->recv(tmp, sizeof(tmp));
+        if (!rr) {
+            // Propagate WouldBlock (the handshake driver retries against
+            // its own timeout) and real errors verbatim.
+            return std::unexpected(rr.error());
         }
+        if (*rr == 0) {
+            // Spurious — ByteSocket::recv never returns 0 per its contract
+            // — but be defensive and signal WouldBlock so the handshake
+            // driver re-enters without treating this as a hard error.
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::WouldBlock,
+                "TlsWsSink::recv: ByteSocket::recv returned 0"});
+        }
+        rx_cipher.insert(rx_cipher.end(), tmp, tmp + *rr);
+
+        // Decrypt complete records.
+        auto cr = tls->process_records(rx_cipher.data(), rx_cipher.size(),
+                                        rx_plain);
+        if (!cr) return std::unexpected(cr.error());
+        // Drop consumed ciphertext; partial record (if any) stays.
+        if (*cr > 0) {
+            rx_cipher.erase(rx_cipher.begin(),
+                             rx_cipher.begin() + *cr);
+        }
+
+        if (!rx_plain.empty()) {
+            const std::size_t n = std::min(cap, rx_plain.size());
+            std::memcpy(buf, rx_plain.data(), n);
+            rx_plain_off = n;
+            if (rx_plain_off == rx_plain.size()) {
+                rx_plain.clear();
+                rx_plain_off = 0;
+            }
+            return n;
+        }
+
+        // No full record buffered yet — tell the handshake driver to
+        // re-poll. (The ByteSocket recv succeeded but the bytes were
+        // only part of a TLS record, so we have nothing plaintext to
+        // deliver this call.)
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WouldBlock,
-            "TlsWsSink::recv: no plaintext after bounded retry"});
+            "TlsWsSink::recv: no plaintext record yet"});
     }
 };
 
