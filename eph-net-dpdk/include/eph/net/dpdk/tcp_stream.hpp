@@ -575,15 +575,44 @@ public:
             // API contract: report plaintext byte count.
             return data.size();
         } else {
-            auto r = sess_.send(data.data(), data.size());
-            if (!r) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                    "DpdkTcpStream::send: TcpSession::send err={}", r.error());
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::Disconnected,
-                    "DpdkTcpStream::send: TcpSession::send failed"});
+            // Plaintext path. `TcpSession::send` rejects payloads
+            // larger than MSS (eph-net-dpdk/include/eph/dpdk/tcp.hpp:646),
+            // so we must chunk here ourselves. Mirrors the TLS branch
+            // above and the WS handshake sinks.
+            //
+            // Loop until every byte is accepted so the public Stream
+            // contract is contractually all-or-nothing: on success the
+            // returned count equals `data.size()`. Any session-layer
+            // error while draining the loop surfaces as Disconnected,
+            // exactly as the pre-fix code path did on a single-shot
+            // failure.
+            const std::size_t mss = sess_.mss();
+            std::size_t off = 0;
+            while (off < data.size()) {
+                const std::size_t chunk =
+                    std::min(mss, data.size() - off);
+                auto sr = sess_.send(data.data() + off, chunk);
+                if (!sr) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::send: TcpSession::send err={} "
+                        "(off={}/{}, chunk={}, mss={})",
+                        sr.error(), off, data.size(), chunk, mss);
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::Disconnected,
+                        "DpdkTcpStream::send: TcpSession::send failed"});
+                }
+                if (*sr == 0) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::send: TcpSession::send returned 0 "
+                        "bytes (off={}/{}, chunk={})",
+                        off, data.size(), chunk);
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::BufferFull,
+                        "DpdkTcpStream::send: TcpSession::send returned 0"});
+                }
+                off += *sr;
             }
-            return *r;
+            return data.size();
         }
     }
 
