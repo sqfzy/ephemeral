@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "eph/core/error.hpp"
+#include "eph/core/packet_view.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/tcp_state.hpp"
 
@@ -47,17 +48,45 @@ namespace eph::net::test {
 /// wire a real codec around this fake at the application layer.
 class FakeStream {
 public:
-    /// @brief Associated PacketView type — contiguous read-only span.
+    /// @brief Associated PacketView — conforming `eph::core::PacketView`.
     ///
-    /// For testing purposes we only need the data pointer + length;
-    /// backends that require mbuf-style mutation belong in the real kernel
-    /// or DPDK streams.
+    /// Previously this was a 2-field `{data, length}` stub, which drifted
+    /// from the real backends (`SpanView`, `MbufView`) that satisfy the full
+    /// `eph::core::PacketView` contract (writable_data / trim_front /
+    /// trim_back / arrival_tsc). The drift meant tests that composed a real
+    /// `StreamCodec` over `FakeStream` would fail to compile inside the
+    /// codec because `decode(view)` invokes `trim_front` / `writable_data`.
+    ///
+    /// This version carries `base_ + head_/tail_ + tsc_` — the same layout as
+    /// the kernel `SpanView`, so the mock exercises the same codec code
+    /// paths the real backends do.
     struct PacketView {
-        const uint8_t* data_;
-        std::size_t    length_;
+        constexpr PacketView(uint8_t* base, std::size_t len,
+                             uint64_t tsc = 0) noexcept
+            : base_(base), head_(0), tail_(len), tsc_(tsc) {}
 
-        [[nodiscard]] const uint8_t* data() const noexcept { return data_; }
-        [[nodiscard]] std::size_t length() const noexcept { return length_; }
+        [[nodiscard]] uint8_t* writable_data() noexcept {
+            return base_ + head_;
+        }
+        [[nodiscard]] const uint8_t* data() const noexcept {
+            return base_ + head_;
+        }
+        [[nodiscard]] std::size_t length() const noexcept {
+            return tail_ - head_;
+        }
+
+        /// @brief Advance head cursor — skb_pull equivalent.
+        constexpr void trim_front(std::size_t n) noexcept { head_ += n; }
+        /// @brief Pull back tail cursor — skb_trim equivalent.
+        constexpr void trim_back(std::size_t n) noexcept { tail_ -= n; }
+
+        [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
+
+    private:
+        uint8_t*    base_{nullptr};
+        std::size_t head_{0};
+        std::size_t tail_{0};
+        uint64_t    tsc_{0};
     };
 
     /// @brief No codec is attached — tests compose FakeStream + a codec
@@ -187,6 +216,8 @@ private:
 
 // Compile-time concept conformance check — if the Stream concept ever evolves
 // and FakeStream falls behind, this static_assert fires on inclusion.
+static_assert(::eph::core::PacketView<FakeStream::PacketView>,
+              "FakeStream::PacketView must satisfy eph::core::PacketView");
 static_assert(Pollable<FakeStream>,
               "FakeStream must satisfy eph::net::Pollable");
 static_assert(Stream<FakeStream>,
