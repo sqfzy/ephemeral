@@ -340,3 +340,57 @@ TEST(KernelWsUpgrade, MissingUpgradeHeaderFailsHandshake) {
     server.join();
     ::close(lfd);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. ws_timeout is enforced — server accepts but never sends the 101
+//    response; client must fail with Error::Timeout within the configured
+//    budget (+ some slack for scheduling).
+//
+// batch3-round3 MEDIUM-3: the `ws_timeout` StreamConfig field was shipped
+// without a test; this closes the gap.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(KernelWsUpgrade, WsTimeoutIsEnforcedWhenServerStalls) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+
+    // Stalled server: accept the connection but never read or write.
+    // Holding the client fd open is enough to keep the TCP session alive
+    // for the duration of the test.
+    std::atomic<bool> stop{false};
+    std::thread server([lfd, &stop] {
+        struct sockaddr_in cli{};
+        socklen_t clen = sizeof(cli);
+        int c = ::accept(lfd,
+                         reinterpret_cast<struct sockaddr*>(&cli), &clen);
+        if (c < 0) return;
+        // Park until the test signals shutdown.
+        while (!stop.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        ::close(c);
+    });
+
+    ek::StreamConfig cfg{};
+    cfg.remote     = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.ws_path    = "/ws";
+    cfg.ws_host    = "localhost";
+    cfg.ws_timeout = std::chrono::milliseconds{150};
+
+    const auto start = std::chrono::steady_clock::now();
+    auto stream_r = PlainStream::create(cfg);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_FALSE(stream_r.has_value());
+    EXPECT_EQ(stream_r.error().code, eph::core::Error::Timeout);
+
+    // Tolerate ±1 second of scheduling slack on WSL / loaded CI — the
+    // assertion is "did the timeout fire at all within a reasonable
+    // bound", not exact timing.
+    EXPECT_LT(elapsed, std::chrono::milliseconds{2000})
+        << "ws_timeout was not observed within the configured budget";
+
+    stop.store(true, std::memory_order_release);
+    server.join();
+    ::close(lfd);
+}
