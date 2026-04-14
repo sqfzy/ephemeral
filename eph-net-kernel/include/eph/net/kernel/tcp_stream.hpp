@@ -719,6 +719,10 @@ private:
 
         if constexpr (EnableTls) {
             // 1) Decrypt as many complete TLS records as possible.
+            //    process_records appends plaintext to the tail of
+            //    tls_plain_buf_; any carry-over from a previous poll lives
+            //    at [tls_plain_head_, tls_plain_buf_.size()) and is
+            //    preserved below.
             auto cr = tls_.process_records(reasm_.read_ptr(),
                                             reasm_.readable(),
                                             tls_plain_buf_);
@@ -732,10 +736,16 @@ private:
             reasm_.consume(*cr);
 
             // 2) Run the codec over the decrypted plaintext window.
-            std::size_t plain_off = 0;
-            while (plain_off < tls_plain_buf_.size()) {
-                const std::size_t before = tls_plain_buf_.size() - plain_off;
-                detail::SpanView view(tls_plain_buf_.data() + plain_off, before);
+            //    Walk `tls_plain_head_` forward rather than erasing from
+            //    the front — the earlier std::vector::erase(begin,
+            //    begin+plain_off) shifted the entire remaining tail every
+            //    poll and was the hottest allocation-adjacent op in the
+            //    TLS RX path (batch2-round2 MED-1).
+            while (tls_plain_head_ < tls_plain_buf_.size()) {
+                const std::size_t before =
+                    tls_plain_buf_.size() - tls_plain_head_;
+                detail::SpanView view(
+                    tls_plain_buf_.data() + tls_plain_head_, before);
 
                 auto dr = codec_.decode(view, out_sink);
                 if (!dr) {
@@ -744,10 +754,11 @@ private:
                         dr.error().detail);
                     state_ = TcpState::Closed;
                     tls_plain_buf_.clear();
+                    tls_plain_head_ = 0;
                     return delivered;
                 }
                 const std::size_t consumed = before - view.length();
-                plain_off += consumed;
+                tls_plain_head_ += consumed;
 
                 if (!dr->has_value()) break;  // need more plaintext
 
@@ -766,10 +777,30 @@ private:
                     ++delivered;
                 }
             }
-            // Compact the plaintext buffer: drop everything we consumed.
-            if (plain_off > 0) {
-                tls_plain_buf_.erase(tls_plain_buf_.begin(),
-                                      tls_plain_buf_.begin() + plain_off);
+            // Compaction policy:
+            //   - Fully consumed: O(1) reset to reuse capacity.
+            //   - Partially consumed AND dead-head is large relative to
+            //     the live tail: shift the live tail to the front so the
+            //     vector's live window does not grow without bound across
+            //     many polls of a slow codec. Threshold chosen such that
+            //     the amortized cost stays O(1) per byte (we shift only
+            //     when dead bytes >= live bytes, so each byte is shifted
+            //     at most log-times over its lifetime).
+            //   - Partially consumed AND dead-head is small: leave in
+            //     place — the next poll will extend the tail with new
+            //     plaintext and the codec will likely drain it.
+            if (tls_plain_head_ == tls_plain_buf_.size()) {
+                tls_plain_buf_.clear();
+                tls_plain_head_ = 0;
+            } else if (tls_plain_head_ > 0 &&
+                       tls_plain_head_ >=
+                           tls_plain_buf_.size() - tls_plain_head_) {
+                const std::size_t live =
+                    tls_plain_buf_.size() - tls_plain_head_;
+                std::memmove(tls_plain_buf_.data(),
+                             tls_plain_buf_.data() + tls_plain_head_, live);
+                tls_plain_buf_.resize(live);
+                tls_plain_head_ = 0;
             }
             return delivered;
         }
@@ -823,7 +854,14 @@ private:
     // here so its capacity can amortize across many polls. The empty-base
     // size penalty for the plaintext path is one std::vector<uint8_t> —
     // 24 bytes.
+    //
+    // Compacted via a head-index (`tls_plain_head_`) rather than
+    // `erase(begin, begin + n)` so that post-decode cleanup is O(1)
+    // instead of O(remaining-bytes) — see batch2-round2 MED-1. When the
+    // head reaches the size the vector and index are both reset to zero
+    // so capacity is reused across polls.
     std::vector<uint8_t>        tls_plain_buf_{};
+    std::size_t                 tls_plain_head_{0};
     /// TLS encrypt staging — sized per-call so we don't realloc.
     std::vector<uint8_t>        tls_send_buf_{};
     KernelPoller*               attached_to_{nullptr};
