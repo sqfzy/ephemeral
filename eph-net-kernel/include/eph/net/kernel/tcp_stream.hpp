@@ -62,6 +62,29 @@ inline spdlog::logger* tcp_stream_logger() {
     return l;
 }
 
+// ---------------------------------------------------------------------------
+// Scratch buffer sizing constants (batch3-round5 LOW-1)
+// ---------------------------------------------------------------------------
+
+/// @brief TlsWsSink::recv ciphertext scratch window used during the
+///        WebSocket handshake over a TLS tunnel. 4 KiB is one mmap page
+///        and fits the largest handshake fragment any real broker emits
+///        (typical: <1.5 KiB). Too big wastes stack; too small would
+///        require multiple recv calls per TLS record.
+inline constexpr std::size_t kTlsWsSinkRxScratchBytes = 4096;
+
+/// @brief Sink-less drain buffer inside `KernelTcpStream::poll_once_`.
+///        When a stream is attached without an `on_message` callback we
+///        still drain the socket to avoid stalling the peer, but the
+///        bytes are discarded — a 4 KiB stack buffer is enough to clear
+///        one epoll wakeup's worth of traffic in a single recv().
+inline constexpr std::size_t kNoSinkDrainBytes = 4096;
+
+/// @brief Stack-allocated OutputBuffer for the codec auto-response path
+///        (e.g. WS pong, close ack). 1 KiB is generous for the control
+///        frames the WsCodec emits.
+inline constexpr std::size_t kCodecAutoResponseBytes = 1024;
+
 // TlsState is defined in detail/tls_state.hpp (aws-lc AEAD machinery).
 
 // ---------------------------------------------------------------------------
@@ -171,7 +194,7 @@ struct TlsWsSink {
         // (any error, including WouldBlock) short-circuited the loop — it
         // was dead code that only confused readers. Keep the semantics
         // but collapse the structure.
-        uint8_t tmp[4096];
+        uint8_t tmp[kTlsWsSinkRxScratchBytes];
         auto rr = sock->recv(tmp, sizeof(tmp));
         if (!rr) {
             // Propagate WouldBlock (the handshake driver retries against
@@ -665,7 +688,7 @@ public:
                     sock_.fd());
                 no_sink_warned_ = true;
             }
-            uint8_t sink[4096];
+            uint8_t sink[detail::kNoSinkDrainBytes];
             auto r = sock_.recv(sink, sizeof(sink));
             if (!r && r.error().code == core::Error::Disconnected) {
                 state_ = TcpState::Closed;
@@ -771,7 +794,7 @@ private:
         // Scratch OutputBuffer for auto-response injection. The auto-
         // responses are queued for the next send() call (the sink is not
         // yet plumbed back into the TX path automatically).
-        uint8_t          scratch[1024];
+        uint8_t          scratch[detail::kCodecAutoResponseBytes];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
         if constexpr (EnableTls) {

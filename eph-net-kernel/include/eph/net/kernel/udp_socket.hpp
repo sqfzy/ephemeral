@@ -52,6 +52,12 @@ inline spdlog::logger* udp_socket_logger() {
     return l;
 }
 
+/// @brief Stack-allocated OutputBuffer for UDP codec auto-response path.
+///        Datagram codecs rarely emit control frames (Mold64 is pure RX)
+///        so 64 B is generous for the forseeable consumers. See
+///        batch3-round5 LOW-2.
+inline constexpr std::size_t kUdpCodecAutoResponseBytes = 64;
+
 } // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -308,7 +314,7 @@ public:
         // frames via a sink lambda; we forward each to `on_datagram` with
         // the source address.
         detail::SpanView   view(buf, static_cast<std::size_t>(n));
-        uint8_t            scratch[64];
+        uint8_t            scratch[detail::kUdpCodecAutoResponseBytes];
         core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
         std::size_t delivered = 0;
