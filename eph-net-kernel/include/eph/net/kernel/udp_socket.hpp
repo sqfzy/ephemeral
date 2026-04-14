@@ -328,8 +328,16 @@ public:
         };
         auto dr = codec_.decode(view, out_sink, sink);
         if (!dr) {
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
-                "KernelUdpSocket::poll_once_: decode err={}", dr.error().detail);
+            // Elevate to ERROR: a decode failure on one datagram is not
+            // state-corrupting for UDP (per-packet codec, stateless in
+            // practice), but it IS a market-data-loss event that operators
+            // must see. Include the source address and payload length so
+            // the offending peer is identifiable from the log.
+            SPDLOG_LOGGER_ERROR(detail::udp_socket_logger(),
+                "KernelUdpSocket::poll_once_: decode err={} "
+                "src={} payload_len={} delivered_before_err={}",
+                dr.error().detail, src_addr.to_string(),
+                static_cast<std::size_t>(n), delivered);
             return delivered;
         }
         return delivered;
