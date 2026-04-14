@@ -799,12 +799,16 @@ private:
                     }
 
                     // Save any unconsumed tail (incomplete frame) for the
-                    // next emit. If this record fully consumed (frame
-                    // boundary aligned), pending is empty and the next
-                    // record takes the fast path again.
+                    // next emit. When `pending` was non-empty on entry,
+                    // view.data() points INTO pending itself — calling
+                    // `pending.assign(ptr_into_pending, ...)` would be
+                    // UB (std::vector::assign explicitly forbids iterators
+                    // into *this). Construct a fresh vector from the tail
+                    // bytes first, then move-assign — the temporary owns
+                    // its own allocation so there is no aliasing.
                     if (view.length() > 0) {
-                        tls_codec_pending_.assign(view.data(),
-                                                   view.data() + view.length());
+                        tls_codec_pending_ = std::vector<uint8_t>(
+                            view.data(), view.data() + view.length());
                     } else {
                         tls_codec_pending_.clear();
                     }
