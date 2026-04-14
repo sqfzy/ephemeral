@@ -626,6 +626,20 @@ public:
         if (!on_message) {
             // No sink — still drain to avoid stalling the peer, but skip
             // the decode path (codec.decode would be wasted work).
+            //
+            // This is a developer-error footgun: a user who forgets to
+            // assign `on_message` before `poller->add(stream)` will
+            // silently discard every frame. Emit a warn-once diagnostic
+            // on the first sink-less drain so the mistake surfaces at
+            // runtime instead of becoming silent data loss.
+            if (!no_sink_warned_) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "KernelTcpStream::poll_once_: on_message is unset for "
+                    "fd={} — discarding inbound bytes (warn-once per stream). "
+                    "Assign on_message before attaching to the Poller.",
+                    sock_.fd());
+                no_sink_warned_ = true;
+            }
             uint8_t sink[4096];
             auto r = sock_.recv(sink, sizeof(sink));
             if (!r && r.error().code == core::Error::Disconnected) {
@@ -903,6 +917,10 @@ private:
     /// Warn-once latch for `saturate_u16` clamping during on_message dispatch.
     /// See batch3-round1 MEDIUM-1: silent truncation of frames >64 KiB.
     bool                        trunc_warned_{false};
+    /// Warn-once latch for the no-on_message drain path (MEDIUM-2). Set on
+    /// the first poll that finds `on_message` unset so operators see the
+    /// misconfiguration surface once per stream instead of never.
+    bool                        no_sink_warned_{false};
 };
 
 } // namespace eph::net::kernel
