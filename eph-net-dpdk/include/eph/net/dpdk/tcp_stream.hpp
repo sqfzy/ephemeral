@@ -784,10 +784,25 @@ private:
             // the codec. Fast path (pending empty, frame fits) feeds
             // the codec directly over the in-place decrypted bytes —
             // zero copy.
+            // `codec_err_latched` captures a codec protocol error surfaced
+            // inside the per-record callback below. The callback cannot
+            // propagate errors directly (process_records_in_place takes a
+            // void lambda) so we latch here and tear the session down after
+            // process_records_in_place returns. This mirrors the existing
+            // `reasm_overflowed_` escalation for AEAD failures — without it,
+            // a WS protocol violation would only WARN-log on every
+            // subsequent poll forever instead of handing back to the
+            // reconnect loop (batch2-round5 MED-1).
+            bool codec_err_latched = false;
             auto dec_r = tls_.process_records_in_place(
                 const_cast<uint8_t*>(reasm_.read_ptr()),
                 reasm_.readable(),
                 [&](uint8_t* chunk, std::size_t chunk_len) {
+                    // Stop feeding further records once the codec has
+                    // signalled an unrecoverable error — any subsequent
+                    // record would just re-trigger the same failure.
+                    if (codec_err_latched) return;
+
                     uint8_t*    feed_ptr;
                     std::size_t feed_len;
                     if (tls_codec_pending_.empty()) {
@@ -809,6 +824,7 @@ private:
                                 "DpdkTcpStream::drain_codec_(TLS): decode err={}",
                                 dr.error().detail);
                             tls_codec_pending_.clear();
+                            codec_err_latched = true;
                             return;
                         }
                         if (!dr->has_value()) break;
@@ -857,6 +873,18 @@ private:
                 sess_.reset();
             } else {
                 reasm_.consume(*dec_r);
+                if (codec_err_latched) {
+                    // Codec protocol violation (malformed WS frame, oversized
+                    // message, etc.) — escalate the same way AEAD failures
+                    // do: latch reasm_overflowed_ and reset the session so
+                    // the reconnect policy can spin up a fresh one.
+                    SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::drain_codec_(TLS): codec err latched "
+                        "— forcing session reset");
+                    tls_codec_pending_.clear();
+                    reasm_overflowed_ = true;
+                    sess_.reset();
+                }
             }
         } else {
             // ──────── Plaintext path ────────
