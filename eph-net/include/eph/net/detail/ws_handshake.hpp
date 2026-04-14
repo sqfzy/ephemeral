@@ -280,6 +280,36 @@ perform_ws_handshake(
                  host, ws_path,
                  extra_headers.size(), timeout.count());
 
+    // ── 0. Reject extra headers that collide with RFC 6455 mandatory
+    //       names. A caller that passes `{"Upgrade", "h2c"}` or a second
+    //       `Host` would otherwise emit duplicates; most servers then
+    //       reject the whole request and the client sees only a
+    //       confusing `parse` / `Accept mismatch` error. Catching it
+    //       here surfaces the real cause immediately. See
+    //       review-audit-net-batch3-round4 MEDIUM-1.
+    {
+        static constexpr std::string_view kMandatoryNames[] = {
+            "Host",
+            "Upgrade",
+            "Connection",
+            "Sec-WebSocket-Key",
+            "Sec-WebSocket-Version",
+        };
+        for (const auto& eh : extra_headers) {
+            for (auto mn : kMandatoryNames) {
+                if (iequal(eh.name, mn)) {
+                    SPDLOG_WARN("ws_handshake: extra header '{}' conflicts "
+                                "with mandatory WebSocket header",
+                                eh.name);
+                    return std::unexpected(::eph::core::ErrorInfo{
+                        ::eph::core::Error::WsHandshakeFailed,
+                        "ws_handshake: extra header conflicts with a "
+                        "mandatory WebSocket header"});
+                }
+            }
+        }
+    }
+
     // ── 1. Generate + base64-encode the 16-byte client nonce ──────────────
     uint8_t nonce[16];
     if (!ws_random_nonce(nonce)) {

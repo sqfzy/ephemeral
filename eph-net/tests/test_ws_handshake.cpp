@@ -368,6 +368,37 @@ TEST(WsHandshake, ExtraHeadersAppear) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 9b. Extra headers that collide with a mandatory WebSocket header are
+//     rejected with Error::WsHandshakeFailed before any bytes leave the
+//     sink. Added in batch3-round4 MEDIUM-1: a caller passing
+//     `{"Upgrade", "h2c"}` or a second `Host` previously emitted a
+//     duplicate header, which most servers reject with a 400 and the
+//     client could only see a confusing parse error.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(WsHandshake, ExtraHeaderCollidingWithMandatoryNameRejected) {
+    for (std::string_view colliding_name : {
+            "Host", "Upgrade", "Connection",
+            "Sec-WebSocket-Key", "Sec-WebSocket-Version",
+            // case-insensitive rejection
+            "host", "UPGRADE", "sec-websocket-key"}) {
+        FakeByteSink sink;
+        HttpHeader extras[] = {
+            {colliding_name, "clash"},
+        };
+        auto r = perform_ws_handshake(sink, "h", "/ws",
+                                        std::span<const HttpHeader>(extras, 1),
+                                        std::chrono::seconds{1});
+        ASSERT_FALSE(r.has_value())
+            << "extra header '" << colliding_name
+            << "' should have been rejected";
+        EXPECT_EQ(r.error().code, eph::core::Error::WsHandshakeFailed);
+        EXPECT_TRUE(sink.tx.empty())
+            << "no bytes should have been sent when the header check fails";
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // 10. Host header is set from the caller argument
 // ═══════════════════════════════════════════════════════════════════════
 
