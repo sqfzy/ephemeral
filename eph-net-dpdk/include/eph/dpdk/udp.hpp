@@ -19,7 +19,6 @@
 #include <cstdint>
 #include <expected>
 #include <format>
-#include <optional>
 #include <string>
 #include <string_view>
 
@@ -53,9 +52,13 @@ struct UdpConfig {
     rte_ether_addr dst_mac{};       ///< Destination Ethernet address (usually gateway)
     uint16_t port_id{};             ///< DPDK port ID for TX
     uint16_t tx_queue_id{};         ///< TX queue index on the DPDK port
-    std::optional<uint16_t> rx_queue_id{};  ///< Reserved for future RX support
     rte_mempool* pool{nullptr};     ///< mbuf pool for packet allocation
     bool hw_cksum{false};           ///< Enable NIC checksum offload (IP + UDP)
+
+    // Note: this struct is TX-only. RX of UDP datagrams in v3.3 goes
+    // through `eph::net::dpdk::DpdkUdpSocket::process_burst_`, which
+    // is dispatched by `DpdkPoller` using `PollerConfig::rx_queue_id`.
+    // There is no RX queue field on this struct on purpose.
 
     /// Validate that all required fields are set.
     /// constexpr for compile-time validation of IP/port fields; pool check is runtime-only.
@@ -95,7 +98,7 @@ struct UdpConfig {
             && std::memcmp(&a.src_mac, &b.src_mac, sizeof(rte_ether_addr)) == 0
             && std::memcmp(&a.dst_mac, &b.dst_mac, sizeof(rte_ether_addr)) == 0
             && a.port_id == b.port_id && a.tx_queue_id == b.tx_queue_id
-            && a.rx_queue_id == b.rx_queue_id && a.pool == b.pool
+            && a.pool == b.pool
             && a.hw_cksum == b.hw_cksum;
     }
 
@@ -210,12 +213,6 @@ public:
         sender.pool_ = cfg.pool;
         sender.port_id_ = cfg.port_id;
         sender.tx_queue_id_ = cfg.tx_queue_id;
-
-        if (cfg.rx_queue_id.has_value()) {
-            SPDLOG_LOGGER_DEBUG(log,
-                "rx_queue_id={} specified but RX not yet implemented — reserved for future use",
-                cfg.rx_queue_id.value());
-        }
 
         SPDLOG_LOGGER_INFO(log, "UdpSender created: {}", cfg.dump());
 

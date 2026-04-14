@@ -153,9 +153,6 @@ struct PollerConfig {
 
     /// @brief DPDK RX queue index on the above port.
     uint16_t rx_queue_id{0};
-
-    /// @brief Initial registered-Pollable vector capacity reservation.
-    std::size_t initial_capacity{16};
 };
 
 } // namespace eph::net::dpdk
