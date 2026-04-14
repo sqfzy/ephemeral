@@ -331,6 +331,18 @@ private:
             }
             if (pf != nullptr) {
                 total += pf(obj);
+            } else {
+                // Orphan event: obj pointer no longer resolves to any
+                // registered entry. The expected cause is a prior
+                // `pf(obj)` callback removing itself mid-poll (entries_
+                // shrinks, subsequent events in the same batch may point
+                // at the now-removed pollable). Anything else (e.g.
+                // dangling obj after UAF) is a real bug — DEBUG-log so
+                // tests and operators can distinguish the two.
+                SPDLOG_LOGGER_DEBUG(detail::poller_logger(),
+                    "KernelPoller::poll: orphan event obj={} (self-remove "
+                    "or stale) — skipping, remaining_entries={}",
+                    obj, entries_.size());
             }
         }
         return total;
