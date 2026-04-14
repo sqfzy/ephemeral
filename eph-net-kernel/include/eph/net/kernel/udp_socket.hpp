@@ -172,17 +172,41 @@ public:
                                     reinterpret_cast<struct sockaddr*>(&sa),
                                     sizeof(sa));
         if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            const int err = errno;
+            if (err == EAGAIN || err == EWOULDBLOCK) {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::WouldBlock,
                     "KernelUdpSocket::send_to: would block"});
             }
             SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::send_to: errno {} ({})",
-                errno, std::strerror(errno));
+                err, std::strerror(err));
+            // Classify by errno so operators can distinguish a bad
+            // caller payload (EMSGSIZE / EINVAL) from a dead peer
+            // (ECONNREFUSED on connected UDP) from a firewall drop
+            // (EPERM / EACCES) or a routing failure (ENETUNREACH /
+            // EHOSTUNREACH). Previously every non-EAGAIN errno was
+            // lumped into Disconnected, which hid the actionable
+            // causes behind a generic "unexpected I/O error" string.
+            if (err == EMSGSIZE || err == EINVAL) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "KernelUdpSocket::send_to: payload rejected by kernel "
+                    "(EMSGSIZE/EINVAL)"});
+            }
+            if (err == ENOBUFS || err == ENOMEM) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::BufferFull,
+                    "KernelUdpSocket::send_to: kernel buffer exhausted "
+                    "(ENOBUFS/ENOMEM)"});
+            }
+            // ECONNREFUSED / ENETUNREACH / EHOSTUNREACH / EPERM etc. all
+            // fall through to Disconnected since from the caller's
+            // perspective the datagram cannot be delivered and the
+            // reconnect policy is the right recovery action.
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
-                "KernelUdpSocket::send_to: unexpected I/O error"});
+                "KernelUdpSocket::send_to: sendto failed (see log for errno)"});
         }
         return static_cast<std::size_t>(n);
     }
