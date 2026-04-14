@@ -262,6 +262,55 @@ TEST(StreamConfigValidation, Create_ZeroReasm_ErrorDetailMentionsField) {
               std::string_view::npos);
 }
 
+// batch3-round4 MEDIUM-2: connect_timeout / ws_timeout must be > 0.
+TEST(StreamConfigValidation, Create_ZeroConnectTimeout_InvalidConfig) {
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 1};
+    cfg.reasm_capacity  = 4096;
+    cfg.connect_timeout = std::chrono::milliseconds{0};
+    auto r = PlainStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("connect_timeout"),
+              std::string_view::npos);
+}
+
+TEST(StreamConfigValidation, Create_NegativeConnectTimeout_InvalidConfig) {
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 1};
+    cfg.reasm_capacity  = 4096;
+    cfg.connect_timeout = std::chrono::milliseconds{-1};
+    auto r = PlainStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(StreamConfigValidation, Create_ZeroWsTimeoutWithWsPath_InvalidConfig) {
+    ek::StreamConfig cfg{};
+    cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 1};
+    cfg.reasm_capacity  = 4096;
+    cfg.connect_timeout = std::chrono::milliseconds{100};
+    cfg.ws_path         = "/ws";
+    cfg.ws_timeout      = std::chrono::milliseconds{0};
+    auto r = PlainStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("ws_timeout"),
+              std::string_view::npos);
+}
+
+TEST(StreamConfigValidation, Create_ZeroWsTimeoutWithoutWsPath_Ignored) {
+    // When ws_path is empty the ws_timeout field is irrelevant — do not
+    // impose validation on a field that is never consumed.
+    OneShotEcho echo;
+    ASSERT_GE(echo.fd, 0);
+    auto cfg = make_valid_config(echo);
+    cfg.ws_path    = "";
+    cfg.ws_timeout = std::chrono::milliseconds{0};
+    auto r = PlainStream::create(cfg);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().detail);
+}
+
 TEST(StreamConfigValidation, Create_ValidMinimumConfigSucceeds) {
     OneShotEcho echo;
     ASSERT_GE(echo.fd, 0);

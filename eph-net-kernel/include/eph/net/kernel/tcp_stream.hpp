@@ -258,6 +258,31 @@ public:
                 "KernelTcpStream::create: reasm_capacity must be > 0"});
         }
 
+        // Timeout fields must be strictly positive. Previously a zero /
+        // negative `connect_timeout` or `ws_timeout` slipped through and
+        // emerged from deep inside the handshake as a confusing
+        // `Error::Timeout` with no breadcrumb linking it back to the bad
+        // config. Surface the cause at the validation boundary instead.
+        // See review-audit-net-batch3-round4 MEDIUM-2.
+        if (cfg.connect_timeout <= std::chrono::milliseconds::zero()) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::create: connect_timeout={}ms must be > 0",
+                cfg.connect_timeout.count());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelTcpStream::create: connect_timeout must be > 0"});
+        }
+        if (!cfg.ws_path.empty() &&
+            cfg.ws_timeout <= std::chrono::milliseconds::zero()) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::create: ws_timeout={}ms must be > 0 when "
+                "ws_path is non-empty",
+                cfg.ws_timeout.count());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelTcpStream::create: ws_timeout must be > 0"});
+        }
+
         // Validate optional proxy config up-front to avoid constructing
         // (and then immediately tearing down) a ByteSocket on a bad config.
         if (cfg.proxy.has_value()) {
