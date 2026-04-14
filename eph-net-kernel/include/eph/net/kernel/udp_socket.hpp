@@ -87,17 +87,37 @@ public:
                 "KernelUdpSocket::create: socket() failed"});
         }
 
+        // setsockopt failures here are non-fatal (we continue with kernel
+        // defaults) but must be surfaced via WARN logs. Previously the
+        // return values were silently dropped, which hid the rejection
+        // of rcv/snd buffer sizing — a real issue for market-data
+        // consumers that rely on large SO_RCVBUF to absorb burst
+        // traffic. See review-audit-net-batch1-round2 MEDIUM-2.
         if (cfg.reuse_addr) {
             int one = 1;
-            (void)::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+            if (::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelUdpSocket::create: setsockopt(SO_REUSEADDR) "
+                    "errno={} ({})", errno, std::strerror(errno));
+            }
         }
         if (cfg.rcv_buf > 0) {
             int v = static_cast<int>(cfg.rcv_buf);
-            (void)::setsockopt(s, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v));
+            if (::setsockopt(s, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v)) != 0) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelUdpSocket::create: setsockopt(SO_RCVBUF={}) "
+                    "errno={} ({}) — kernel default in effect",
+                    cfg.rcv_buf, errno, std::strerror(errno));
+            }
         }
         if (cfg.snd_buf > 0) {
             int v = static_cast<int>(cfg.snd_buf);
-            (void)::setsockopt(s, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v));
+            if (::setsockopt(s, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v)) != 0) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelUdpSocket::create: setsockopt(SO_SNDBUF={}) "
+                    "errno={} ({}) — kernel default in effect",
+                    cfg.snd_buf, errno, std::strerror(errno));
+            }
         }
 
         struct sockaddr_in sa{};
