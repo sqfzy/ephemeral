@@ -62,7 +62,6 @@ int main(int argc, char** argv) {
     edpdk::PollerConfig pcfg{};
     pcfg.port_id     = 0;
     pcfg.rx_queue_id = 0;
-    pcfg.rx_cpu      = -1;
 
     auto poller_r = edpdk::DpdkPoller<>::create(pcfg);
     if (!poller_r) {

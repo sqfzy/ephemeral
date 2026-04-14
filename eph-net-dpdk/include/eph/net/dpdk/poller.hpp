@@ -144,8 +144,8 @@ public:
     create(PollerConfig cfg = {}) noexcept {
         auto* log = detail::poller_logger();
         SPDLOG_LOGGER_DEBUG(log,
-            "DpdkPoller::create: port={} queue={} rx_cpu={}",
-            cfg.port_id, cfg.rx_queue_id, cfg.rx_cpu);
+            "DpdkPoller::create: port={} queue={}",
+            cfg.port_id, cfg.rx_queue_id);
         auto p = std::unique_ptr<DpdkPoller>(new DpdkPoller(cfg));
         return p;
     }

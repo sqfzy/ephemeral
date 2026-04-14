@@ -142,19 +142,17 @@ struct UdpConfig {
 ///
 /// DPDK lcore burst poll has no epoll equivalent: the Poller simply calls
 /// `rte_eth_rx_burst` on a single {port_id, rx_queue_id} and routes each
-/// mbuf to a registered Pollable based on its 4-tuple. We therefore reuse
-/// `eph::dpdk::RxDispatcherConfig` verbatim.
+/// mbuf to a registered Pollable based on its 4-tuple.
+///
+/// Thread affinity is intentionally NOT a field here — `DpdkPoller` does
+/// not spawn a thread of its own. The user calls `poll()` from their own
+/// lcore loop and is responsible for pinning that thread themselves.
 struct PollerConfig {
     /// @brief DPDK port ID on which to poll.
     uint16_t port_id{0};
 
     /// @brief DPDK RX queue index on the above port.
     uint16_t rx_queue_id{0};
-
-    /// @brief CPU affinity for the thread that drives `poll()`. -1 = no pin.
-    ///        The Poller does not spawn a thread of its own — affinity is a
-    ///        hint for the user's polling thread.
-    int rx_cpu{-1};
 
     /// @brief Initial registered-Pollable vector capacity reservation.
     std::size_t initial_capacity{16};
