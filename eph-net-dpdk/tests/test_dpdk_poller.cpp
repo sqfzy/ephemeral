@@ -14,6 +14,7 @@
 /// and friend-hook plumbing, where the bugs live.
 
 #include <cstdint>
+#include <set>
 #include <string_view>
 
 #include <gtest/gtest.h>
@@ -232,6 +233,185 @@ TEST(DpdkPoller, AddAcceptsDistinctFourTuplesOnSameDst) {
     ASSERT_TRUE(a2.has_value()) << a2.error().detail;
 
     EXPECT_EQ(p->size(), 2u);
+}
+
+// ---------------------------------------------------------------------------
+// pick_src_port tests
+// ---------------------------------------------------------------------------
+//
+// pick_src_port is an advisory query that returns an unused source port for
+// a new TCP client connection. Covered below:
+//
+//   - range validation (inverted, privileged, preferred out-of-range)
+//   - empty Poller fast-path
+//   - preferred-accepted / preferred-downgraded
+//   - skip conflict with registered 4-tuple
+//   - different dst_port => no conflict (4-tuple scoping)
+//   - range exhaustion => OutOfMemory
+//   - end-to-end pick + add confirmation
+//
+// Thread safety is not tested — pick_src_port is explicitly documented as
+// "advisory"; DpdkPoller itself is non-MT-safe.
+
+TEST(DpdkPoller, PickSrcPort_EmptyPollerReturnsInRange) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(/*src_ip=*/0x0A000001,
+                              /*dst_ip=*/0x0A000002,
+                              /*dst_port=*/443);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_GE(*r, 32768);
+    EXPECT_LE(*r, 60999);
+}
+
+TEST(DpdkPoller, PickSrcPort_PreferredAcceptedIfFree) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/32768,
+                              /*range_end=*/60999,
+                              /*preferred=*/40001);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_EQ(*r, 40001);
+}
+
+TEST(DpdkPoller, PickSrcPort_PreferredOutOfRangeFails) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              32768, 60999, /*preferred=*/100);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("preferred"),
+              std::string_view::npos);
+}
+
+TEST(DpdkPoller, PickSrcPort_InvertedRangeFails) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/50000,
+                              /*range_end=*/40000);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("range_begin"),
+              std::string_view::npos);
+}
+
+TEST(DpdkPoller, PickSrcPort_PrivilegedRangeFails) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/100, /*range_end=*/200);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("1024"),
+              std::string_view::npos);
+}
+
+TEST(DpdkPoller, PickSrcPort_SkipsRegisteredFourTuple) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa;
+    pa.src_ip   = 0x0A000001;
+    pa.dst_ip   = 0x0A000002;
+    pa.dst_port = 443;
+    pa.src_port = 40001;
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+
+    // Preferred port is taken — must NOT return 40001.
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              32768, 60999, /*preferred=*/40001);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_NE(*r, 40001);
+    EXPECT_GE(*r, 32768);
+    EXPECT_LE(*r, 60999);
+}
+
+TEST(DpdkPoller, PickSrcPort_DifferentDstDoesNotConflict) {
+    // A 4-tuple is scoped by (src_ip, dst_ip, dst_port, src_port). If the
+    // caller is connecting to a DIFFERENT dst_port, the registered stream
+    // on 40001 does not conflict and pick_src_port may return 40001.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa;
+    pa.src_ip   = 0x0A000001;
+    pa.dst_ip   = 0x0A000002;
+    pa.dst_port = 443;
+    pa.src_port = 40001;
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, /*dst_port=*/8080,
+                              32768, 60999, /*preferred=*/40001);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_EQ(*r, 40001);
+}
+
+TEST(DpdkPoller, PickSrcPort_ExhaustionReturnsOutOfMemory) {
+    // Tiny range of 3 ports; fill all three with registered streams and
+    // confirm pick_src_port reports exhaustion rather than hanging or
+    // returning a bogus value.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA p1, p2, p3;
+    for (auto* s : {&p1, &p2, &p3}) {
+        s->src_ip = 0x0A000001;
+        s->dst_ip = 0x0A000002;
+        s->dst_port = 443;
+    }
+    p1.src_port = 50000;
+    p2.src_port = 50001;
+    p3.src_port = 50002;
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&p1).has_value());
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&p2).has_value());
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&p3).has_value());
+
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/50000,
+                              /*range_end=*/50002);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::OutOfMemory);
+    EXPECT_NE(std::string_view{r.error().detail}.find("no free port"),
+              std::string_view::npos);
+}
+
+TEST(DpdkPoller, PickSrcPort_ConfirmedByAdd) {
+    // End-to-end: pick a port, stamp it onto a Pollable, add to Poller,
+    // verify add succeeds. This is the contract pick_src_port promises
+    // to uphold under single-threaded use.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA existing;
+    existing.src_ip = 0x0A000001;
+    existing.dst_ip = 0x0A000002;
+    existing.dst_port = 443;
+    existing.src_port = 40001;
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&existing).has_value());
+
+    auto picked = p->pick_src_port(0x0A000001, 0x0A000002, 443);
+    ASSERT_TRUE(picked.has_value()) << picked.error().detail;
+    EXPECT_NE(*picked, 40001);
+
+    SyntheticPollableA fresh;
+    fresh.src_ip   = 0x0A000001;
+    fresh.dst_ip   = 0x0A000002;
+    fresh.dst_port = 443;
+    fresh.src_port = *picked;
+
+    auto add_r = p->add<SyntheticPollableA>(&fresh);
+    EXPECT_TRUE(add_r.has_value()) << add_r.error().detail;
+    EXPECT_EQ(p->size(), 2u);
+}
+
+TEST(DpdkPoller, PickSrcPort_RandomStartSpreadsPicks) {
+    // Smoke test for distribution: repeatedly pick on an empty poller;
+    // the returned ports should not all be identical. Weak check —
+    // strict distribution testing is out of scope.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    std::set<uint16_t> seen;
+    for (int i = 0; i < 32; ++i) {
+        auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443);
+        ASSERT_TRUE(r.has_value()) << r.error().detail;
+        seen.insert(*r);
+    }
+    // With getrandom-seeded start across 32 calls on a 28k range the
+    // odds of collapse to a single value are astronomically small.
+    EXPECT_GT(seen.size(), 1u);
 }
 
 TEST(DpdkPoller, FillToCapacity) {

@@ -41,6 +41,8 @@
 #include <span>
 #include <vector>
 
+#include <sys/random.h>   // getrandom(2) — random start for pick_src_port
+
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
@@ -324,6 +326,136 @@ public:
     ///        extremely unlucky hash distribution or potential attack traffic.
     [[nodiscard]] uint64_t hash_collision_drops() const noexcept { return hash_collision_drops_; }
 
+    // ── Source port selection (client-side helper) ───────────────────────
+
+    /// @brief Suggest an unused source port for a new TCP client connection.
+    ///
+    /// Scans the currently registered Pollables and returns a port in
+    /// `[range_begin, range_end]` such that the 4-tuple
+    /// `(src_ip, dst_ip, dst_port, result)` does not conflict with any
+    /// existing entry. Selection is random-start linear probe.
+    ///
+    /// Selection policy:
+    ///   - If `preferred != 0` and is within range and not in use, return
+    ///     it directly (soft-preference fast path).
+    ///   - Otherwise, `getrandom(2)` seeds a random starting point; we
+    ///     probe forward modulo the range until the first non-conflicting
+    ///     port is found. Random start spreads re-picks across the entire
+    ///     range, which is what lets us avoid a separate 2MSL grace window
+    ///     — a recently-released port is, on a 28k-wide range, very
+    ///     unlikely to be picked immediately after release.
+    ///   - If every port in the range conflicts, returns `OutOfMemory`.
+    ///
+    /// Thread safety: advisory query only. The returned port can become
+    /// stale the instant another thread modifies the Poller.
+    /// `DpdkPoller` itself is not MT-safe; typical usage is a single
+    /// driver thread, and the authoritative check is `add()` which
+    /// rejects duplicate 4-tuples. Callers can retry `pick_src_port` on
+    /// add() failure.
+    ///
+    /// Usage:
+    ///     auto port = poller->pick_src_port(src_ip, dst_ip, 443).value();
+    ///     cfg.legacy.tuple.src_port = port;
+    ///     auto stream = DpdkTcpStream::create(std::move(cfg)).value();
+    ///     auto add_r  = poller->add(stream.get());  // authoritative
+    ///
+    /// @param src_ip       Source IPv4 (host order) — must match cfg.tuple.src_ip
+    /// @param dst_ip       Destination IPv4 (host order)
+    /// @param dst_port     Destination port (host order)
+    /// @param range_begin  Inclusive lower bound (default 32768, Linux ephemeral)
+    /// @param range_end    Inclusive upper bound (default 60999, Linux ephemeral)
+    /// @param preferred    Optional soft preference (0 = no preference)
+    [[nodiscard]] std::expected<uint16_t, core::ErrorInfo>
+    pick_src_port(uint32_t src_ip,
+                  uint32_t dst_ip,
+                  uint16_t dst_port,
+                  uint16_t range_begin = 32768,
+                  uint16_t range_end   = 60999,
+                  uint16_t preferred   = 0) const noexcept {
+        auto* log = detail::poller_logger();
+
+        if (range_begin < 1024) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkPoller::pick_src_port: range_begin={} < 1024",
+                range_begin);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkPoller::pick_src_port: range_begin must be >= 1024"});
+        }
+        if (range_begin > range_end) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkPoller::pick_src_port: inverted range [{}, {}]",
+                range_begin, range_end);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkPoller::pick_src_port: range_begin > range_end"});
+        }
+        if (preferred != 0 &&
+            (preferred < range_begin || preferred > range_end)) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkPoller::pick_src_port: preferred={} outside [{}, {}]",
+                preferred, range_begin, range_end);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkPoller::pick_src_port: preferred out of range"});
+        }
+
+        // Is a (src_ip, dst_ip, dst_port, candidate) 4-tuple already in
+        // use by a registered Pollable? Linear scan over entries_ —
+        // identical semantics to add()'s uniqueness check.
+        auto is_in_use = [&](uint16_t candidate) noexcept -> bool {
+            for (std::size_t i = 0; i < n_entries_; ++i) {
+                const auto& e = entries_[i];
+                if (e.src_ip   == src_ip   &&
+                    e.dst_ip   == dst_ip   &&
+                    e.dst_port == dst_port &&
+                    e.src_port == candidate) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // Soft preference fast path.
+        if (preferred != 0 && !is_in_use(preferred)) {
+            SPDLOG_LOGGER_DEBUG(log,
+                "DpdkPoller::pick_src_port: preferred={} accepted", preferred);
+            return preferred;
+        }
+
+        // Random-start linear probe over [range_begin, range_end].
+        const uint32_t range =
+            static_cast<uint32_t>(range_end - range_begin) + 1u;
+        uint32_t seed = 0;
+        if (::getrandom(&seed, sizeof(seed), 0) !=
+            static_cast<ssize_t>(sizeof(seed))) {
+            // getrandom on Linux ≥ 3.17 never fails for small reads;
+            // if it does, fall back to 0 and log loudly.
+            SPDLOG_LOGGER_ERROR(log,
+                "DpdkPoller::pick_src_port: getrandom failed, seed=0");
+            seed = 0;
+        }
+        const uint32_t start = seed % range;
+        for (uint32_t i = 0; i < range; ++i) {
+            const uint16_t candidate = static_cast<uint16_t>(
+                range_begin + ((start + i) % range));
+            if (!is_in_use(candidate)) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "DpdkPoller::pick_src_port: selected port={} "
+                    "after {} probe(s)", candidate, i + 1);
+                return candidate;
+            }
+        }
+
+        SPDLOG_LOGGER_WARN(log,
+            "DpdkPoller::pick_src_port: no free port in [{}, {}] for "
+            "src_ip=0x{:08x} dst_ip=0x{:08x} dst_port={} entries={}",
+            range_begin, range_end, src_ip, dst_ip, dst_port, n_entries_);
+        return std::unexpected(core::ErrorInfo{
+            core::Error::OutOfMemory,
+            "DpdkPoller::pick_src_port: no free port in range"});
+    }
+
 private:
     /// @brief Per-registered-Pollable state. Pure POD — kept in a fixed-
     ///        size array so the hot path has no indirection through a
@@ -424,6 +556,15 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return impl_->size(); }
     [[nodiscard]] uint16_t port_id() const noexcept { return impl_->port_id(); }
     [[nodiscard]] uint16_t rx_queue_id() const noexcept { return impl_->rx_queue_id(); }
+
+    [[nodiscard]] std::expected<uint16_t, core::ErrorInfo>
+    pick_src_port(uint32_t src_ip, uint32_t dst_ip, uint16_t dst_port,
+                  uint16_t range_begin = 32768,
+                  uint16_t range_end   = 60999,
+                  uint16_t preferred   = 0) const noexcept {
+        return impl_->pick_src_port(src_ip, dst_ip, dst_port,
+                                    range_begin, range_end, preferred);
+    }
 
 private:
     explicit DpdkPoller(std::unique_ptr<DpdkPoller<void>> impl) noexcept
