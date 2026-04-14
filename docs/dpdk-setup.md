@@ -186,6 +186,20 @@ Note: DPDK builds need the `/tmp/gcc14-wrap/g++` wrapper on hosts where vcpkg br
 its own libssl — the wrapper reorders `-isystem` / `-L` so aws-lc resolves first. See
 the Phase 7 commit message (`c2a0ca4`) for the root cause.
 
+**Both compiler AND linker must go through the wrapper**, otherwise the link step
+re-introduces the original `-L` ordering and DPDK TLS targets fail with
+`EVP_aead_* / HKDF_expand / SSL_*` undefined references:
+
+```bash
+xmake f --cxx=/tmp/gcc14-wrap/g++ \
+        --ld=/tmp/gcc14-wrap/g++ \
+        --sh=/tmp/gcc14-wrap/g++
+```
+
+If `test_dpdk_tls_handshake` fails at link time with aws-lc symbols undefined, check
+`xmake show -t test_dpdk_tls_handshake | grep -E 'linker|compiler'`; both must point
+at `/tmp/gcc14-wrap/g++`, not `/usr/bin/g++`.
+
 ## 7. Verification
 
 ### Quick smoke test

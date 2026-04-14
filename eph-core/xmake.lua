@@ -21,7 +21,16 @@ target("eph-core")
         if not ok then
             raise("C++23 not supported by current compiler.\n"
                   .. "  GCC >= 13 or Clang >= 17 required.\n"
-                  .. "  Amazon Linux 2023: dnf install gcc14-g++ && EPH_USE_GCC14=1 xmake build")
+                  .. "  Amazon Linux 2023 with aws-lc+DPDK:\n"
+                  .. "    dnf install gcc14-g++\n"
+                  .. "    xmake f --cxx=/tmp/gcc14-wrap/g++ \\\n"
+                  .. "            --ld=/tmp/gcc14-wrap/g++ \\\n"
+                  .. "            --sh=/tmp/gcc14-wrap/g++\n"
+                  .. "  The wrapper reorders -isystem / -L so aws-lc resolves\n"
+                  .. "  before vcpkg-bundled libssl. Both compiler AND linker\n"
+                  .. "  must go through the wrapper; otherwise the DPDK TLS\n"
+                  .. "  targets link against the wrong libssl and fail with\n"
+                  .. "  EVP_aead_* / HKDF_expand / SSL_* undefined references.")
         end
     end)
 
