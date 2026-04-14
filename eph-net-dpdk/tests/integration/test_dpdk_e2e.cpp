@@ -1,8 +1,8 @@
 /// @file test_dpdk_e2e.cpp
 /// End-to-end integration tests for the DPDK datapath.
 ///
-/// Layout: this single binary contains all 7 P0+P1 test cases (TCP, UDP,
-/// WS, RST, FIN, RxDispatcher, ARP) so that EAL is initialized exactly once
+/// Layout: this single binary contains all P0+P1 test cases (TCP, UDP,
+/// WS, RST, FIN, RxDispatcher, ARP, DNS) so that EAL is initialized exactly once
 /// and the kernel mock dispatcher is forked exactly once for the binary's
 /// entire lifetime.  See plan-dpdk-integration-tests-20260410-053355.md
 /// for design rationale.
@@ -32,6 +32,7 @@
 #include "eph/dpdk/tcp.hpp"
 #include "eph/dpdk/udp.hpp"
 #include "eph/dpdk/arp.hpp"
+#include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/rx_dispatcher.hpp"
 
 using namespace eph::dpdk::test_e2e;
@@ -422,6 +423,159 @@ TEST(ArpE2E, ResolveGateway) {
     ASSERT_TRUE(r.has_value()) << "second ARP resolve failed: " << r.error();
     EXPECT_EQ(0, std::memcmp(&*r, &env.gw_mac, sizeof(rte_ether_addr)))
         << "ARP resolve returned different gateway MAC than fixture init";
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DnsE2E — DPDK dns::resolve over real NIC against kernel DNS mock
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The mock dispatcher binds a UDP responder on (SERVER_IP, kDnsMockPort)
+// that answers any A query with kDnsMockResolvedIp.  The DPDK client
+// frames DNS over UDP/IPv4/Ethernet and ships it through NIC_B; the
+// kernel routes it back via NIC_A to the mock just like the TCP/UDP
+// echo paths.
+
+namespace {
+inline eph::dpdk::dns::DnsConfig make_dns_mock_cfg(
+    uint32_t server_ip,
+    std::chrono::milliseconds timeout = std::chrono::seconds{3}) {
+    eph::dpdk::dns::DnsConfig cfg{};
+    cfg.nameserver_ip = server_ip;
+    cfg.port          = kDnsMockPort;
+    cfg.timeout       = timeout;
+    return cfg;
+}
+} // namespace
+
+TEST(DnsE2E, ResolveHostname) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+
+    auto cfg = make_dns_mock_cfg(env.dst_ip);
+    auto r = eph::dpdk::dns::resolve(
+        env.port_id, /*queue_id=*/0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip,
+        "example.com", cfg);
+
+    ASSERT_TRUE(r.has_value()) << "DNS resolve failed: " << r.error();
+    EXPECT_EQ(*r, kDnsMockResolvedIp)
+        << "resolved IP mismatch: got 0x" << std::hex << *r
+        << ", expected 0x" << kDnsMockResolvedIp;
+}
+
+TEST(DnsE2E, ResolveTwoDifferentHostnamesInSequence) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+    auto cfg = make_dns_mock_cfg(env.dst_ip);
+
+    // Two back-to-back resolves with different hostnames must each
+    // succeed: a fresh tx_id is generated per call and any leftover
+    // state in the recv loop must not bleed across calls.
+    auto r1 = eph::dpdk::dns::resolve(
+        env.port_id, 0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip, "first.test", cfg);
+    ASSERT_TRUE(r1.has_value()) << "first resolve failed: " << r1.error();
+    EXPECT_EQ(*r1, kDnsMockResolvedIp);
+
+    auto r2 = eph::dpdk::dns::resolve(
+        env.port_id, 0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip, "second.different.test", cfg);
+    ASSERT_TRUE(r2.has_value()) << "second resolve failed: " << r2.error();
+    EXPECT_EQ(*r2, kDnsMockResolvedIp);
+}
+
+TEST(DnsE2E, EmptyHostnameReturnsError) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+    auto cfg = make_dns_mock_cfg(env.dst_ip);
+
+    auto r = eph::dpdk::dns::resolve(
+        env.port_id, 0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip, "", cfg);
+
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("hostname is empty"), std::string::npos)
+        << "expected 'hostname is empty' diagnostic, got: " << r.error();
+}
+
+TEST(DnsE2E, NullPoolReturnsError) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+    auto cfg = make_dns_mock_cfg(env.dst_ip);
+
+    auto r = eph::dpdk::dns::resolve(
+        env.port_id, 0, /*pool=*/nullptr,
+        env.src_mac, env.gw_mac, env.src_ip, "example.com", cfg);
+
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("mempool is null"), std::string::npos)
+        << "expected 'mempool is null' diagnostic, got: " << r.error();
+}
+
+TEST(DnsE2E, InvalidConfigZeroNameserverReturnsError) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+
+    eph::dpdk::dns::DnsConfig bad{};
+    bad.nameserver_ip = 0;  // explicit invalid
+
+    auto r = eph::dpdk::dns::resolve(
+        env.port_id, 0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip, "example.com", bad);
+
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("Invalid DNS config"), std::string::npos)
+        << "expected validation error, got: " << r.error();
+    EXPECT_NE(r.error().find("nameserver_ip"), std::string::npos)
+        << "expected nameserver_ip in error, got: " << r.error();
+}
+
+TEST(DnsE2E, TimeoutOnUnreachableNameserver) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+
+    // Point at a TEST-NET-1 (RFC 5737) host with no listener.  The mock
+    // dispatcher does not bind anything on this address, and the kernel
+    // routing path will black-hole it.  retry_interval is clamped to
+    // 100ms, so a 250ms total timeout exercises the retry loop at least
+    // once and then times out.
+    eph::dpdk::dns::DnsConfig bh{};
+    bh.nameserver_ip = 0xc0000263U;  // 192.0.2.99
+    bh.port          = kDnsMockPort;
+    bh.timeout       = std::chrono::milliseconds{250};
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto r = eph::dpdk::dns::resolve(
+        env.port_id, 0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip, "blackhole.test", bh);
+    auto elapsed = std::chrono::steady_clock::now() - t0;
+
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("timeout"), std::string::npos)
+        << "expected timeout diagnostic, got: " << r.error();
+    // Sanity check: did we actually wait the configured budget?  We
+    // give the upper bound generous slack for scheduler jitter.
+    EXPECT_GE(elapsed, std::chrono::milliseconds{200});
+    EXPECT_LT(elapsed, std::chrono::seconds{3});
+}
+
+TEST(DnsE2E, FastPathDottedDecimalSkipsNetwork) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+    auto cfg = make_dns_mock_cfg(env.dst_ip);
+
+    // Dotted-decimal must short-circuit before any packet is sent.
+    // Use an IP that the mock would NEVER return so we know the
+    // result came from the fast path, not the network.
+    auto r = eph::dpdk::dns::resolve(
+        env.port_id, 0, env.pool,
+        env.src_mac, env.gw_mac, env.src_ip, "10.20.30.40", cfg);
+
+    ASSERT_TRUE(r.has_value()) << "fast path failed: " << r.error();
+    EXPECT_EQ(*r, 0x0a141e28U)  // 10.20.30.40
+        << "fast path returned wrong IP: 0x" << std::hex << *r;
+    EXPECT_NE(*r, kDnsMockResolvedIp)
+        << "fast path appears to have hit the mock instead of parsing locally";
 }
 
 // ═══════════════════════════════════════════════════════════════════════

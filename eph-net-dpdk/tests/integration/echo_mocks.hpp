@@ -110,6 +110,105 @@ inline void udp_echo_mock_thread(const std::string& ip, uint16_t port,
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// DNS mock — minimal RFC 1035 A-record responder.
+//
+// Listens on (ip, port) and answers any incoming query with a single A
+// record pointing to `resolved_ip` (host byte order).  Echoes the
+// transaction ID, sets QR/RD/RA, and uses a compression pointer (0xc00c)
+// to reuse the question's QNAME in the answer section so the wire format
+// stays minimal but still exercises dns::detail::skip_dns_name's pointer
+// path on the client side.
+//
+// Intentionally trusts the query's qd_count=1 / single-question shape
+// (which is what dns::resolve always sends).  Malformed queries get no
+// reply — the client will time out.
+// ─────────────────────────────────────────────────────────────────────────
+inline void dns_mock_thread(const std::string& ip, uint16_t port,
+                             uint32_t resolved_ip,
+                             std::atomic<bool>& running) noexcept {
+    auto fd_r = eph::net::posix::udp_bind(ip, port);
+    if (!fd_r) {
+        spdlog::error("test_e2e dns_mock {}:{} bind: {}",
+                      ip, port, fd_r.error());
+        return;
+    }
+    int fd = *fd_r;
+    spdlog::info("test_e2e dns_mock listening on {}:{} (resolved_ip=0x{:08x})",
+                 ip, port, resolved_ip);
+
+    constexpr size_t kBufSize = 1500;
+    std::vector<uint8_t> rx(kBufSize);
+    std::vector<uint8_t> tx(kBufSize);
+
+    while (running.load(std::memory_order_acquire)) {
+        sockaddr_in src{};
+        socklen_t srclen = sizeof(src);
+        ssize_t n = ::recvfrom(fd, rx.data(), kBufSize, 0,
+                                reinterpret_cast<sockaddr*>(&src), &srclen);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        // Need at least DNS header (12) + minimal question (5: 1-byte
+        // label + null + qtype(2) + qclass(2)).  Reject smaller packets.
+        if (n < 17) continue;
+
+        // Walk the question's QNAME so we know where it ends — needed
+        // both to compute the response size and to validate the query
+        // wasn't truncated mid-label.
+        size_t q_off = 12;  // start of question
+        while (q_off < static_cast<size_t>(n)) {
+            uint8_t lbl = rx[q_off];
+            if (lbl == 0) { q_off += 1; break; }
+            // Reject pointer-form QNAMEs in queries; not used by the
+            // client and not worth implementing in a mock.
+            if ((lbl & 0xC0) != 0) { q_off = 0; break; }
+            if (lbl > 63) { q_off = 0; break; }
+            q_off += 1u + lbl;
+        }
+        if (q_off == 0 || q_off + 4 > static_cast<size_t>(n)) continue;
+        size_t qname_len = q_off - 12;  // includes terminating 0
+        size_t question_len = qname_len + 4;  // + qtype + qclass
+
+        // ── Build response in tx[] ────────────────────────────────────
+        // Header: echo id, flags = QR|RD|RA, qd=1, an=1, ns=ar=0
+        std::memcpy(tx.data(), rx.data(), 2);  // tx_id
+        tx[2] = 0x81;  // QR=1 RD=1
+        tx[3] = 0x80;  // RA=1, RCODE=0
+        tx[4] = 0; tx[5] = 1;  // qd_count = 1
+        tx[6] = 0; tx[7] = 1;  // an_count = 1
+        tx[8] = 0; tx[9] = 0;  // ns_count = 0
+        tx[10] = 0; tx[11] = 0;  // ar_count = 0
+
+        // Echo the question section verbatim
+        std::memcpy(tx.data() + 12, rx.data() + 12, question_len);
+        size_t off = 12 + question_len;
+
+        // Answer: NAME = compression pointer to question QNAME at offset 12
+        tx[off++] = 0xc0;
+        tx[off++] = 0x0c;
+        // TYPE = A (1)
+        tx[off++] = 0x00; tx[off++] = 0x01;
+        // CLASS = IN (1)
+        tx[off++] = 0x00; tx[off++] = 0x01;
+        // TTL = 300 seconds
+        tx[off++] = 0x00; tx[off++] = 0x00;
+        tx[off++] = 0x01; tx[off++] = 0x2c;
+        // RDLENGTH = 4
+        tx[off++] = 0x00; tx[off++] = 0x04;
+        // RDATA = resolved_ip in network byte order
+        tx[off++] = static_cast<uint8_t>((resolved_ip >> 24) & 0xff);
+        tx[off++] = static_cast<uint8_t>((resolved_ip >> 16) & 0xff);
+        tx[off++] = static_cast<uint8_t>((resolved_ip >>  8) & 0xff);
+        tx[off++] = static_cast<uint8_t>( resolved_ip        & 0xff);
+
+        ::sendto(fd, tx.data(), off, MSG_NOSIGNAL,
+                 reinterpret_cast<sockaddr*>(&src), srclen);
+    }
+    ::close(fd);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // RST mock — accept then immediately abort with RST via SO_LINGER {1, 0}.
 // Used by FailureE2E.PeerRstAfterAccept.
 // ─────────────────────────────────────────────────────────────────────────

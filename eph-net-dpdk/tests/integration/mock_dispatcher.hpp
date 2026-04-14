@@ -5,8 +5,8 @@
 ///
 /// Run as the entry point of the test main()'s forked child process.
 /// Spawns one thread per port (TCP echo, UDP echo, RST, FIN, WS echo,
-/// plus N reactor echo ports).  Catches SIGTERM/SIGINT, flips
-/// `g_running` to false, joins all threads, exits 0.
+/// DNS responder, plus N reactor echo ports).  Catches SIGTERM/SIGINT,
+/// flips `g_running` to false, joins all threads, exits 0.
 ///
 /// All mocks bind to `cfg.server_ip` (the SERVER_IP from bench.conf,
 /// which lives on NIC_A in the host network namespace).  This is the
@@ -38,6 +38,14 @@ inline constexpr uint16_t kUdpEchoPort     = 19101;
 inline constexpr uint16_t kWsEchoPort      = 19201;
 inline constexpr uint16_t kRxDispatcherPortBase = 19301;  ///< 19301..19308
 inline constexpr int      kRxDispatcherConns    = 8;
+/// Non-standard DNS port — port 53 would force the test binary to run
+/// with CAP_NET_BIND_SERVICE and risks colliding with systemd-resolved.
+/// `dns::resolve()` accepts an arbitrary port via `DnsConfig::port`.
+inline constexpr uint16_t kDnsMockPort          = 19401;
+/// IP that the DNS mock answers with for every A query.  192.0.2.42 is
+/// in TEST-NET-1 (RFC 5737) — unambiguously synthetic, won't be
+/// confused with real production data.
+inline constexpr uint32_t kDnsMockResolvedIp    = 0xc000022aU;
 
 // Process-wide running flag.  Threads poll it; signal handler flips it.
 inline std::atomic<bool> g_dispatcher_running{true};
@@ -59,7 +67,7 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     spdlog::info("dispatcher: starting mocks on {}", server_ip);
 
     std::vector<std::thread> threads;
-    threads.reserve(5 + kRxDispatcherConns);
+    threads.reserve(6 + kRxDispatcherConns);
 
     threads.emplace_back([&] {
         tcp_echo_mock_thread(server_ip, kTcpEchoPort, g_dispatcher_running);
@@ -75,6 +83,10 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     });
     threads.emplace_back([&] {
         ws_echo_mock_thread(server_ip, kWsEchoPort, g_dispatcher_running);
+    });
+    threads.emplace_back([&] {
+        dns_mock_thread(server_ip, kDnsMockPort, kDnsMockResolvedIp,
+                        g_dispatcher_running);
     });
 
     // RxDispatcher multi-conn mock — N parallel TCP echo servers on contiguous ports.
