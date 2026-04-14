@@ -1,5 +1,41 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — Client source port selection helper (2026-04-14)
+
+### Fixed
+- `DpdkPoller::add` now rejects duplicate 4-tuples, not just duplicate
+  object pointers. A collision on `(src_ip, dst_ip, src_port, dst_port)`
+  previously passed `add()` silently, leaving two entries with the
+  same routing key — `lookup_by_5tuple_` would then return the first
+  match on rx_burst, causing silent packet misrouting. The new check
+  is folded into `add()`'s single linear scan; fast filter on
+  `conn_hash`, full 4-field compare only on hash hit.
+
+### Added
+- `DpdkPoller::pick_src_port(src_ip, dst_ip, dst_port, range_begin,
+  range_end, preferred)` — advisory helper that returns an unused
+  source port in the default Linux ephemeral range `[32768, 60999]`
+  for a new TCP client connection. Random-start linear probe over the
+  range spreads re-picks across all 28k ports, which is what lets this
+  helper skip the 2MSL grace complexity: colliding with a
+  recently-released port on the same 4-tuple has ~0.0036% probability
+  per call, well below the noise floor of HFT reconnect workflows.
+  Optional `preferred` parameter takes a soft-preference fast path.
+
+  Typical usage:
+  ```cpp
+  auto port   = poller->pick_src_port(src_ip, dst_ip, 443).value();
+  cfg.legacy.tuple.src_port = port;
+  auto stream = DpdkTcpStream::create(std::move(cfg)).value();
+  auto add_r  = poller->add(stream.get());  // authoritative
+  ```
+
+  `DpdkTcpStream::create` is unchanged — users still write the picked
+  port into `cfg.legacy.tuple.src_port` and go through the existing
+  `TcpConfig::validate()` which continues to enforce `src_port != 0`.
+  Flow-director preregistration deployments that hand-pick a fixed
+  source port are completely unaffected.
+
 ## [Unreleased] — Drop dead reconnect field (2026-04-14)
 
 ### Changed — BREAKING
