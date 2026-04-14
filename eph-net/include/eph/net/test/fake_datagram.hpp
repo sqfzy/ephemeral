@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "eph/core/error.hpp"
+#include "eph/core/packet_view.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/socket_addr.hpp"
 
@@ -35,13 +36,37 @@ namespace eph::net::test {
 /// the real backends expose.
 class FakeDatagram {
 public:
-    /// @brief Associated PacketView — contiguous read-only span.
+    /// @brief Associated PacketView — conforming `eph::core::PacketView`.
+    ///
+    /// Mirrors the kernel `SpanView` / DPDK `MbufView` layout so that real
+    /// DatagramCodec implementations (e.g. Mold64Codec) can decode directly
+    /// off a FakeDatagram in unit tests. Previously a 2-field stub, which
+    /// made the mock drift from the real backends.
     struct PacketView {
-        const uint8_t* data_;
-        std::size_t    length_;
+        constexpr PacketView(uint8_t* base, std::size_t len,
+                             uint64_t tsc = 0) noexcept
+            : base_(base), head_(0), tail_(len), tsc_(tsc) {}
 
-        [[nodiscard]] const uint8_t* data() const noexcept { return data_; }
-        [[nodiscard]] std::size_t length() const noexcept { return length_; }
+        [[nodiscard]] uint8_t* writable_data() noexcept {
+            return base_ + head_;
+        }
+        [[nodiscard]] const uint8_t* data() const noexcept {
+            return base_ + head_;
+        }
+        [[nodiscard]] std::size_t length() const noexcept {
+            return tail_ - head_;
+        }
+
+        constexpr void trim_front(std::size_t n) noexcept { head_ += n; }
+        constexpr void trim_back(std::size_t n) noexcept { tail_ -= n; }
+
+        [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
+
+    private:
+        uint8_t*    base_{nullptr};
+        std::size_t head_{0};
+        std::size_t tail_{0};
+        uint64_t    tsc_{0};
     };
 
     /// @brief No codec attached — tests layer a codec on top.
@@ -169,6 +194,8 @@ private:
 };
 
 // Compile-time concept conformance checks.
+static_assert(::eph::core::PacketView<FakeDatagram::PacketView>,
+              "FakeDatagram::PacketView must satisfy eph::core::PacketView");
 static_assert(Pollable<FakeDatagram>,
               "FakeDatagram must satisfy eph::net::Pollable");
 static_assert(Datagram<FakeDatagram>,
