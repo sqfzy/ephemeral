@@ -64,6 +64,23 @@ inline spdlog::logger* byte_socket_logger() {
 }
 
 // ---------------------------------------------------------------------------
+// Tunables (compile-time constants, no config field to keep the byte layer
+// free of StreamConfig knowledge).
+// ---------------------------------------------------------------------------
+
+/// @brief Upper bound on `::poll(2)` waits for writability inside
+///        `ByteSocket::send` when the kernel returns EAGAIN/EWOULDBLOCK.
+///
+/// Previously hard-coded as `1000` inline — see batch3-round1 HIGH-2. An
+/// HFT-grade default is much tighter than the 1-second value the legacy
+/// SocketTransport inherited; 20 ms is still generous relative to typical
+/// loopback/LAN backpressure clearance but bounds tail-latency impact when
+/// the kernel socket send queue saturates. Callers who need a different
+/// budget should drive the write loop from the higher-level Stream layer
+/// (which owns the application timeout) rather than tuning this constant.
+inline constexpr int kSendBackpressurePollMs = 20;
+
+// ---------------------------------------------------------------------------
 // ByteSocket — non-blocking AF_INET SOCK_STREAM fd
 // ---------------------------------------------------------------------------
 
@@ -284,16 +301,24 @@ public:
             }
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // Wait up to 1s for writability. The Stream layer handles
-                // higher-level timeouts.
+                // Wait up to `kSendBackpressurePollMs` for writability. The
+                // Stream layer (KernelTcpStream::send / close_gracefully)
+                // owns higher-level timeouts — this is only the inner
+                // backpressure bounce.
                 struct pollfd pfd{};
                 pfd.fd     = fd_;
                 pfd.events = POLLOUT;
-                const int pr = ::poll(&pfd, 1, 1000);
+                const int pr = ::poll(&pfd, 1, kSendBackpressurePollMs);
                 if (pr <= 0) {
+                    // Actionable context: fd, remaining bytes, wait budget.
+                    // Operators need this to distinguish a one-off spike
+                    // from a systematic backpressure problem.
                     SPDLOG_LOGGER_WARN(byte_socket_logger(),
-                        "ByteSocket::send: poll for writable failed pr={}",
-                        pr);
+                        "ByteSocket::send: poll for writable failed "
+                        "fd={} sent={} remain={} budget_ms={} pr={} errno={} ({})",
+                        fd_, sent, remain, kSendBackpressurePollMs, pr,
+                        (pr < 0 ? errno : 0),
+                        (pr < 0 ? std::strerror(errno) : "timeout"));
                     return std::unexpected(core::ErrorInfo{
                         core::Error::Timeout,
                         "ByteSocket::send: poll writable timeout"});
