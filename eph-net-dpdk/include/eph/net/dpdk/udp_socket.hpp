@@ -343,6 +343,35 @@ public:
                 }
             };
             auto dr = codec_.decode(view, out_sink, sink);
+
+            // Flush any auto-response bytes the codec wrote into
+            // `out_sink` back to the source peer. Latent fix symmetric
+            // with the kernel backend (5c44e99) and the TCP drain_codec_
+            // flush (7401196). No in-tree DatagramCodec currently writes
+            // to out_sink, so this is dormant today. Note: `UdpSender`
+            // is fixed-peer — send_to only succeeds if `src_addr` matches
+            // the configured peer, which `connected_` mode above already
+            // enforces. On other (broadcast / multicast) configurations
+            // the send_to may be rejected as dst mismatch; we WARN-log
+            // and keep going.
+            if (out_sink.size() > 0) {
+                auto sr = this->send_to(
+                    std::span<const uint8_t>(out_sink.data(), out_sink.size()),
+                    src_addr);
+                if (!sr) {
+                    SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                        "DpdkUdpSocket::process_burst_: auto-response "
+                        "send_to failed ({} bytes to {}): {}",
+                        out_sink.size(), src_addr.to_string(),
+                        sr.error().detail);
+                } else {
+                    SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+                        "DpdkUdpSocket::process_burst_: sent {} "
+                        "auto-response bytes to {}",
+                        out_sink.size(), src_addr.to_string());
+                }
+            }
+
             if (!dr) {
                 SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
                     "DpdkUdpSocket::process_burst_: codec decode err={}",
