@@ -620,6 +620,13 @@ Platform::create(const PlatformConfig& config) {
         return std::unexpected(std::string{err});
     }
 
+    // Surface non-fatal misconfigurations (undersized rings, promiscuous mode,
+    // zero link-timeout, etc.) at WARN so operators see them in production
+    // logs. Advisory only — does not block construction.
+    for (const auto& w : config.warnings()) {
+        SPDLOG_LOGGER_WARN(log, "PlatformConfig advisory: {}", w);
+    }
+
     auto impl    = std::make_unique<Impl>();
     impl->config = config;
 
