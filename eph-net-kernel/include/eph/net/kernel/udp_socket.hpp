@@ -333,6 +333,32 @@ public:
             }
         };
         auto dr = codec_.decode(view, out_sink, sink);
+
+        // Flush any auto-response bytes the codec wrote into `out_sink`
+        // back to the source peer (NAK, ACK, …). No in-tree DatagramCodec
+        // currently exercises this path — Mold64 and RawDatagramCodec are
+        // pure RX — but without this flush, a future auto-responding
+        // codec would silently drop its own emissions (same class of bug
+        // as the TCP drain_codec_ drop fixed in 9bbc163 / 7401196). WARN
+        // on failure and continue; UDP has no session state to reset.
+        if (out_sink.size() > 0) {
+            auto sr = this->send_to(
+                std::span<const uint8_t>(out_sink.data(), out_sink.size()),
+                src_addr);
+            if (!sr) {
+                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                    "KernelUdpSocket::poll_once_: auto-response send_to "
+                    "failed ({} bytes to {}): {}",
+                    out_sink.size(), src_addr.to_string(),
+                    sr.error().detail);
+            } else {
+                SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+                    "KernelUdpSocket::poll_once_: sent {} auto-response "
+                    "bytes to {}",
+                    out_sink.size(), src_addr.to_string());
+            }
+        }
+
         if (!dr) {
             // Elevate to ERROR: a decode failure on one datagram is not
             // state-corrupting for UDP (per-packet codec, stateless in
