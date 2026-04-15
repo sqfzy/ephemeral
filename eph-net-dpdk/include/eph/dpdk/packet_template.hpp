@@ -12,6 +12,11 @@
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 
+#ifndef NDEBUG
+#include <cassert>
+#include <thread>
+#endif
+
 namespace eph::dpdk::net {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +52,31 @@ struct PacketTemplate {
     /// silently corrupt packets.
     bool hw_cksum = false;
 
+#ifndef NDEBUG
+    /// Debug-only owner thread id. Lazily captured on first ip_id-mutating
+    /// call; asserts every subsequent call arrives on the same thread so
+    /// silent concurrent corruption of ip_id is caught in tests. Release
+    /// builds (NDEBUG) compile this out completely.
+    mutable std::thread::id owner_tid_{};
+#endif
+
+#ifndef NDEBUG
+    /// Debug-only single-thread check. Lazily captures the first caller's
+    /// thread id and asserts all subsequent ip_id-mutating calls originate
+    /// from the same thread. Inline so the release build drops it entirely.
+    void debug_check_single_thread_() const noexcept {
+        const auto tid = std::this_thread::get_id();
+        if (owner_tid_ == std::thread::id{}) {
+            owner_tid_ = tid;
+        } else {
+            assert(owner_tid_ == tid &&
+                   "PacketTemplate used from multiple threads; ip_id "
+                   "increment is not synchronised — each TX thread must "
+                   "own its own PacketTemplate instance");
+        }
+    }
+#endif
+
     /// Validate template fields. Returns empty string_view if valid.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (tuple.src_ip == 0) return "src_ip must not be zero";
@@ -81,6 +111,9 @@ struct PacketTemplate {
                            const void* payload = nullptr,
                            uint16_t payload_len = 0) noexcept {
         if (!pool) [[unlikely]] return nullptr;
+#ifndef NDEBUG
+        debug_check_single_thread_();
+#endif
         rte_mbuf* mbuf = rte_pktmbuf_alloc(pool);
         if (!mbuf) return nullptr;
 
@@ -184,6 +217,9 @@ struct PacketTemplate {
                          const void* payload = nullptr,
                          uint16_t payload_len = 0) noexcept {
         if (!mbuf) [[unlikely]] return 0;
+#ifndef NDEBUG
+        debug_check_single_thread_();
+#endif
 
         // SYN requires TCP options (MSS, SACK, WScale) — use build_packet() instead.
         if (flags & kTcpSyn) [[unlikely]] {
@@ -279,6 +315,14 @@ struct UdpPacketTemplate {
     /// When false: IP checksum = software, UDP checksum = 0 (optional for IPv4, RFC 768).
     bool hw_cksum_{false};
 
+#ifndef NDEBUG
+    /// Debug-only owner thread id. Lazily captured on first fill() call.
+    /// Subsequent calls from a different thread trigger an assertion. Release
+    /// builds compile this member (and the accompanying check) out entirely
+    /// so there is zero hot-path cost.
+    mutable std::thread::id owner_tid_{};
+#endif
+
     /// Initialize the precomputed header template from connection parameters.
     ///
     /// Pre-fills all static fields in network byte order. Dynamic fields
@@ -340,6 +384,21 @@ struct UdpPacketTemplate {
     uint16_t fill(rte_mbuf* mbuf,
                   const void* payload, uint16_t payload_len) noexcept {
         if (!mbuf) [[unlikely]] return 0;
+
+#ifndef NDEBUG
+        // Debug-only single-thread assertion: ip_id_ is incremented without
+        // synchronization, so concurrent fill() calls would corrupt it. Lazily
+        // capture the first caller's thread id and assert every subsequent
+        // call comes from the same thread. Release builds compile this out.
+        const auto tid = std::this_thread::get_id();
+        if (owner_tid_ == std::thread::id{}) {
+            owner_tid_ = tid;
+        } else {
+            assert(owner_tid_ == tid &&
+                   "UdpPacketTemplate::fill called from multiple threads; "
+                   "each TX thread must own its own UdpPacketTemplate");
+        }
+#endif
 
         // Use uint32_t to detect overflow before truncating to uint16_t.
         // kUdpAllHeadersLen (42) + payload_len could exceed 65535 with jumbo payloads.
