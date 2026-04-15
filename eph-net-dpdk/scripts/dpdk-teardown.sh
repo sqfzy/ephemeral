@@ -2,8 +2,8 @@
 # dpdk-teardown.sh — undo dpdk-setup.sh: rebind NIC to kernel, optionally free hugepages
 #
 # ┌── Script roles in this repo ────────────────────────────────────────────┐
-# │ eph-dpdk/scripts/dpdk-setup.sh         one-shot host env: vfio + hugepg │
-# │ eph-dpdk/scripts/dpdk-teardown.sh      this script — restore kernel NIC │
+# │ eph-net-dpdk/scripts/dpdk-setup.sh         one-shot host env: vfio + hugepg │
+# │ eph-net-dpdk/scripts/dpdk-teardown.sh      this script — restore kernel NIC │
 # │ benchmarks/latency/scripts/            NIC RX coalescing tuning         │
 # │   setup_coalescing.sh                                                   │
 # │ benchmarks/latency/lat                 per-run bench wrapper            │
@@ -27,7 +27,7 @@
 # previous `lat` run), it is already on the kernel driver and this script
 # has nothing to undo — it will exit cleanly.
 #
-# 用法：sudo ./eph-dpdk/scripts/dpdk-teardown.sh [选项]
+# 用法：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh [选项]
 
 set -euo pipefail
 
@@ -56,6 +56,57 @@ die() {
 separator() { echo -e "\n${BOLD}────────────────────────────────────────${RESET}"; }
 
 # ──────────────────────────────────────────
+# 跨主机 探测辅助
+# ──────────────────────────────────────────
+
+# 查找 dpdk-devbind.py — $PATH 优先，然后常见安装路径
+DEVBIND=""
+find_devbind() {
+    if command -v dpdk-devbind.py &>/dev/null; then
+        DEVBIND=$(command -v dpdk-devbind.py)
+        return 0
+    fi
+    local c
+    for c in \
+        /usr/local/share/dpdk/usertools/dpdk-devbind.py \
+        /usr/share/dpdk/usertools/dpdk-devbind.py \
+        /usr/local/bin/dpdk-devbind.py; do
+        if [[ -x "$c" ]]; then
+            DEVBIND="$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 主动触发 DHCP / 网络管理器为接口重新获取 IP
+request_dhcp() {
+    local iface="$1"
+    if command -v dhclient &>/dev/null; then
+        verbose "使用 dhclient 异步获取 IP"
+        dhclient -nw "$iface" 2>/dev/null || true
+        return 0
+    fi
+    if command -v networkctl &>/dev/null && systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+        verbose "systemd-networkd 已管理，触发 reconfigure"
+        networkctl reconfigure "$iface" 2>/dev/null || true
+        return 0
+    fi
+    if command -v nmcli &>/dev/null && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        verbose "NetworkManager 已管理，触发 connection up"
+        nmcli device connect "$iface" 2>/dev/null || nmcli device reapply "$iface" 2>/dev/null || true
+        return 0
+    fi
+    if command -v dhcpcd &>/dev/null; then
+        verbose "使用 dhcpcd 获取 IP"
+        dhcpcd "$iface" 2>/dev/null || true
+        return 0
+    fi
+    verbose "未检测到已知网络管理器（dhclient/networkd/NetworkManager/dhcpcd）"
+    return 1
+}
+
+# ──────────────────────────────────────────
 # 默认配置
 # ──────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,7 +116,7 @@ if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); th
     :
 else
     PROJECT_DIR="$SCRIPT_DIR"
-    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-net-dpdk" ]]; do
         PROJECT_DIR="$(dirname "$PROJECT_DIR")"
     done
     [[ "$PROJECT_DIR" == "/" ]] && { echo "cannot locate project root from $SCRIPT_DIR" >&2; exit 1; }
@@ -88,7 +139,7 @@ FORCE=false
 
 usage() {
     cat <<EOF
-${BOLD}用法${RESET}：sudo ./eph-dpdk/scripts/dpdk-teardown.sh [选项]
+${BOLD}用法${RESET}：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh [选项]
 
 ${BOLD}恢复 DPDK 网卡到内核驱动，可选释放 hugepages。${RESET}
 自动读取 .dpdk_state 获取 setup 时的配置。
@@ -106,9 +157,9 @@ ${BOLD}环境变量${RESET}（覆盖 .dpdk_state 中的值）：
   KERNEL_DRIVER     恢复到的内核驱动
 
 ${BOLD}示例${RESET}：
-  sudo ./eph-dpdk/scripts/dpdk-teardown.sh                       # 恢复网卡
-  sudo ./eph-dpdk/scripts/dpdk-teardown.sh --release-hugepages   # 恢复 + 释放 hugepages
-  sudo ./eph-dpdk/scripts/dpdk-teardown.sh -f                    # 强制恢复（即使有进程在用）
+  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh                       # 恢复网卡
+  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh --release-hugepages   # 恢复 + 释放 hugepages
+  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh -f                    # 强制恢复（即使有进程在用）
 EOF
 }
 
@@ -119,7 +170,7 @@ while [[ $# -gt 0 ]]; do
         --release-hugepages)    RELEASE_HUGEPAGES=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
         -h|--help)              usage; exit 0 ;;
-        *)                      die "未知选项：$1" "  查看帮助：sudo ./eph-dpdk/scripts/dpdk-teardown.sh --help" ;;
+        *)                      die "未知选项：$1" "  查看帮助：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh --help" ;;
     esac
 done
 
@@ -157,25 +208,27 @@ load_state() {
     if [[ -z "$DPDK_PCI" ]]; then
         step "自动检测 vfio-pci 设备"
         local vfio_line
-        vfio_line=$(dpdk-devbind.py --status 2>/dev/null | grep 'drv=vfio-pci' | head -1 || true)
+        vfio_line=$("$DEVBIND" --status 2>/dev/null | grep 'drv=vfio-pci' | head -1 || true)
         if [[ -n "$vfio_line" ]]; then
             DPDK_PCI=$(echo "$vfio_line" | grep -oP '^\S+')
             ok "检测到 vfio-pci 设备：${DPDK_PCI}"
         else
             die "没有找到绑定到 vfio-pci 的设备，无需恢复" \
-                "  查看状态：dpdk-devbind.py --status"
+                "  查看状态：${DEVBIND} --status"
         fi
     fi
 
-    # 自动检测内核驱动（从设备的 modalias 推断）
+    # 自动检测内核驱动（从设备的 modalias 推断）—— 拒绝猜测，错猜会把网卡绑到错的驱动
     if [[ -z "$KERNEL_DRIVER" ]]; then
         local modalias
         modalias=$(cat "/sys/bus/pci/devices/$DPDK_PCI/modalias" 2>/dev/null || echo "")
         if [[ -n "$modalias" ]]; then
             KERNEL_DRIVER=$(modprobe --resolve-alias "$modalias" 2>/dev/null | head -1 || echo "")
         fi
-        # ENA 是 AWS 最常见的驱动
-        KERNEL_DRIVER="${KERNEL_DRIVER:-ena}"
+        if [[ -z "$KERNEL_DRIVER" ]]; then
+            die "无法推断 ${DPDK_PCI} 的原内核驱动" \
+                "  .dpdk_state 缺失且 modalias 解析失败；拒绝猜测（绑错驱动会损坏网卡状态）\n  手动指定：sudo KERNEL_DRIVER=<驱动名> ./eph-net-dpdk/scripts/dpdk-teardown.sh\n  常见值：ena (AWS), ixgbe/i40e/ice (Intel), mlx5_core (Mellanox), r8169 (Realtek)\n  查看 modalias：cat /sys/bus/pci/devices/${DPDK_PCI}/modalias"
+        fi
         info "推断内核驱动：${KERNEL_DRIVER}"
     fi
 
@@ -193,7 +246,7 @@ pre_check() {
 
     if [[ $EUID -ne 0 ]]; then
         die "需要 root 权限" \
-            "  运行方式：sudo ./eph-dpdk/scripts/dpdk-teardown.sh"
+            "  运行方式：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
     fi
     ok "root 权限"
 
@@ -260,7 +313,7 @@ check_running_processes() {
             warn "使用 --force，继续恢复（进程可能崩溃）"
         else
             die "有 DPDK 进程正在运行，解绑网卡可能导致崩溃" \
-                "  先停止进程：kill ${dpdk_pids[*]}\n  或强制恢复：sudo ./eph-dpdk/scripts/dpdk-teardown.sh --force"
+                "  先停止进程：kill ${dpdk_pids[*]}\n  或强制恢复：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh --force"
         fi
     else
         ok "没有 DPDK 进程在运行"
@@ -283,17 +336,17 @@ unbind_nic() {
     fi
 
     if [[ "$DRY_RUN" == true ]]; then
-        info "[模拟] dpdk-devbind.py --bind=${KERNEL_DRIVER} ${DPDK_PCI}"
+        info "[模拟] ${DEVBIND} --bind=${KERNEL_DRIVER} ${DPDK_PCI}"
         return
     fi
 
-    dpdk-devbind.py --bind="$KERNEL_DRIVER" "$DPDK_PCI"
+    "$DEVBIND" --bind="$KERNEL_DRIVER" "$DPDK_PCI"
 
     # 验证
     current_driver=$(basename "$(readlink -f "/sys/bus/pci/devices/$DPDK_PCI/driver")" 2>/dev/null || echo "none")
     if [[ "$current_driver" != "$KERNEL_DRIVER" ]]; then
         die "恢复失败：当前驱动仍为 ${current_driver}" \
-            "  手动尝试：dpdk-devbind.py --bind=${KERNEL_DRIVER} ${DPDK_PCI} --force"
+            "  手动尝试：${DEVBIND} --bind=${KERNEL_DRIVER} ${DPDK_PCI} --force"
     fi
 
     ok "网卡已恢复到 ${KERNEL_DRIVER}"
@@ -335,9 +388,13 @@ unbind_nic() {
     ip link set "$found_iface" up 2>/dev/null || true
     ok "接口 ${found_iface} 已启用"
 
-    # 等待 DHCP 获取 IP（最多 10 秒）
-    step "等待 DHCP 获取 IP"
-    verbose "AWS 的 DHCP 通常在 2-5 秒内分配 IP。"
+    # 主动触发网络管理器重新获取 IP（dhclient/systemd-networkd/NetworkManager/dhcpcd）
+    request_dhcp "$found_iface" || \
+        warn "未能主动触发 DHCP（未检测到已知管理器），等待系统自动恢复"
+
+    # 等待接口获取 IP（最多 10 秒）
+    step "等待接口获取 IP"
+    verbose "取决于网络管理方式：dhclient / systemd-networkd / NetworkManager / 静态配置。"
     retries=20
     while [[ $retries -gt 0 ]]; do
         local current_ip
@@ -350,8 +407,9 @@ unbind_nic() {
         retries=$((retries - 1))
     done
 
-    warn "DHCP 超时（10 秒），IP 可能稍后分配"
-    info "  手动触发：dhclient ${found_iface}"
+    warn "10 秒内未检测到 IP"
+    info "  静态 IP 系统：按本机 netplan/ifcfg/systemd-networkd 配置手动恢复"
+    info "  手动触发 DHCP：dhclient ${found_iface}   或   dhcpcd ${found_iface}"
     info "  检查状态：ip addr show ${found_iface}"
 }
 
@@ -415,7 +473,7 @@ report_results() {
     echo -e "${BOLD}${GREEN}✅ DPDK 环境已恢复${RESET}"
     echo ""
 
-    dpdk-devbind.py --status 2>&1 | grep -E 'kernel driver|drv=' | head -8
+    "$DEVBIND" --status 2>&1 | grep -E 'kernel driver|drv=' | head -8
 
     local hp_total
     hp_total=$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages 2>/dev/null || echo 0)
@@ -429,7 +487,7 @@ report_results() {
     if [[ "$hp_total" -gt 0 && "$RELEASE_HUGEPAGES" != true ]]; then
         echo ""
         suggest "Hugepages 仍保留（下次 DPDK 启动更快）"
-        info "  释放方式：sudo ./eph-dpdk/scripts/dpdk-teardown.sh --release-hugepages"
+        info "  释放方式：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh --release-hugepages"
     fi
 }
 
@@ -441,6 +499,13 @@ main() {
     echo -e "${BOLD}dpdk-teardown.sh — 恢复 DPDK 网卡到内核${RESET}"
     [[ "$VERBOSE" == true ]] && info "详细模式已开启"
     [[ "$DRY_RUN" == true ]] && info "模拟运行模式：不实际执行"
+
+    # find dpdk-devbind.py first — load_state 依赖它做 vfio-pci 自动检测
+    if ! find_devbind; then
+        die "dpdk-devbind.py 未找到" \
+            "  已搜索：\$PATH、/usr/local/share/dpdk/usertools、/usr/share/dpdk/usertools、/usr/local/bin\n  或手动加入 PATH：export PATH=\$PATH:/usr/local/share/dpdk/usertools"
+    fi
+    verbose "dpdk-devbind.py：${DEVBIND}"
 
     load_state
     pre_check

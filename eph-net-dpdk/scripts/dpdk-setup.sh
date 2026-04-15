@@ -2,8 +2,8 @@
 # dpdk-setup.sh — one-shot host environment preparation for DPDK
 #
 # ┌── Script roles in this repo ────────────────────────────────────────────┐
-# │ eph-dpdk/scripts/dpdk-setup.sh         this script — host env prep      │
-# │ eph-dpdk/scripts/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
+# │ eph-net-dpdk/scripts/dpdk-setup.sh         this script — host env prep      │
+# │ eph-net-dpdk/scripts/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
 # │ benchmarks/latency/scripts/            NIC RX coalescing tuning         │
 # │   setup_coalescing.sh                                                   │
 # │ benchmarks/latency/lat                 per-run bench wrapper            │
@@ -24,7 +24,7 @@
 # tools like benchmarks/latency/lat can switch the NIC between vfio-pci and
 # bench_ns kernel mode without re-running setup.
 #
-# 用法：sudo ./eph-dpdk/scripts/dpdk-setup.sh [选项]
+# 用法：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh [选项]
 
 set -euo pipefail
 
@@ -53,16 +53,62 @@ die() {
 separator() { echo -e "\n${BOLD}────────────────────────────────────────${RESET}"; }
 
 # ──────────────────────────────────────────
+# 跨发行版 / 跨主机 探测辅助
+# ──────────────────────────────────────────
+
+# 根据 /etc/os-release 给出对应发行版的包安装命令
+pkg_install_hint() {
+    local pkg_rh="$1" pkg_deb="$2" pkg_arch="$3"
+    local id=""
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        id=$(. /etc/os-release; echo "${ID_LIKE:-${ID:-}}")
+    fi
+    case "$id" in
+        *rhel*|*fedora*|*centos*|*amzn*) echo "sudo dnf install $pkg_rh" ;;
+        *debian*|*ubuntu*)                echo "sudo apt install $pkg_deb" ;;
+        *arch*)                           echo "sudo pacman -S $pkg_arch" ;;
+        *)                                echo "请用发行版包管理器安装（RH=$pkg_rh Deb=$pkg_deb Arch=$pkg_arch）" ;;
+    esac
+}
+
+# 查找 dpdk-devbind.py — $PATH 优先，然后常见安装路径
+DEVBIND=""
+find_devbind() {
+    if command -v dpdk-devbind.py &>/dev/null; then
+        DEVBIND=$(command -v dpdk-devbind.py)
+        return 0
+    fi
+    local c
+    for c in \
+        /usr/local/share/dpdk/usertools/dpdk-devbind.py \
+        /usr/share/dpdk/usertools/dpdk-devbind.py \
+        /usr/local/bin/dpdk-devbind.py; do
+        if [[ -x "$c" ]]; then
+            DEVBIND="$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 读取 PCI 设备的 NUMA 节点（-1 表示未知或单节点系统）
+nic_numa_node() {
+    local pci="$1"
+    cat "/sys/bus/pci/devices/$pci/numa_node" 2>/dev/null || echo -1
+}
+
+# ──────────────────────────────────────────
 # 默认配置（可通过环境变量覆盖）
 # ──────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Repo root, regardless of where this script lives. The .dpdk_state file
-# and the build/ tree both sit at the repo root, not under eph-dpdk/.
+# and the build/ tree both sit at the repo root, not under eph-net-dpdk/.
 if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
     :
 else
     PROJECT_DIR="$SCRIPT_DIR"
-    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-net-dpdk" ]]; do
         PROJECT_DIR="$(dirname "$PROJECT_DIR")"
     done
     [[ "$PROJECT_DIR" == "/" ]] && { echo "cannot locate project root from $SCRIPT_DIR" >&2; exit 1; }
@@ -86,7 +132,7 @@ SCRIPT_ARGS_DISPLAY="$*"  # cached for retry hints in error messages
 
 usage() {
     cat <<EOF
-${BOLD}用法${RESET}：sudo ./eph-dpdk/scripts/dpdk-setup.sh [选项]
+${BOLD}用法${RESET}：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh [选项]
 
 ${BOLD}配置 DPDK 独占网卡环境：加载 VFIO、分配 hugepages、绑定网卡到 vfio-pci。${RESET}
 自动检测 SSH 网卡并选择另一张网卡用于 DPDK，无需手动指定。
@@ -105,14 +151,14 @@ ${BOLD}环境变量${RESET}（覆盖自动检测）：
   KERNEL_DRIVER     网卡的内核驱动名（自动检测）
 
 ${BOLD}示例${RESET}：
-  sudo ./eph-dpdk/scripts/dpdk-setup.sh                     # 自动检测网卡并配置
-  sudo ./eph-dpdk/scripts/dpdk-setup.sh --verbose            # 详细模式（推荐初次使用）
-  sudo ./eph-dpdk/scripts/dpdk-setup.sh --check-only         # 只查看当前状态
-  sudo ./eph-dpdk/scripts/dpdk-setup.sh -y                   # 跳过确认
-  sudo DPDK_PCI=0000:29:00.0 ./eph-dpdk/scripts/dpdk-setup.sh  # 手动指定网卡
+  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh                     # 自动检测网卡并配置
+  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh --verbose            # 详细模式（推荐初次使用）
+  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh --check-only         # 只查看当前状态
+  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh -y                   # 跳过确认
+  sudo DPDK_PCI=0000:29:00.0 ./eph-net-dpdk/scripts/dpdk-setup.sh  # 手动指定网卡
 
 ${BOLD}恢复${RESET}：
-  sudo ./eph-dpdk/scripts/dpdk-teardown.sh
+  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh
 EOF
 }
 
@@ -123,7 +169,7 @@ while [[ $# -gt 0 ]]; do
         --check-only)   CHECK_ONLY=true; shift ;;
         --dry-run)      DRY_RUN=true; shift ;;
         -h|--help)      usage; exit 0 ;;
-        *)              die "未知选项：$1" "  查看帮助：sudo ./eph-dpdk/scripts/dpdk-setup.sh --help" ;;
+        *)              die "未知选项：$1" "  查看帮助：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh --help" ;;
     esac
 done
 
@@ -201,11 +247,11 @@ detect_nic() {
 
     while IFS= read -r iface; do
         [[ -z "$iface" ]] && continue
-        # 跳过虚拟接口
-        [[ "$iface" == lo ]] && continue
-        [[ "$iface" == docker* ]] && continue
-        [[ "$iface" == veth* ]] && continue
-        [[ "$iface" == br-* ]] && continue
+        # 跳过虚拟接口、wifi（DPDK 只支持以太网 PMD）、bond/bridge/tap/tunnel 等
+        case "$iface" in
+            lo|docker*|veth*|br-*|virbr*|bond*|tap*|tun*|wg*|ip6tnl*|sit*|gre*|wlan*|wlp*|wls*|vmnet*|dummy*|cni*|flannel*|cali*)
+                continue ;;
+        esac
 
         # 需要有 PCI 设备（物理网卡）
         local pci_path="/sys/class/net/$iface/device"
@@ -232,10 +278,10 @@ detect_nic() {
 
     # 检查是否已有网卡绑到 vfio-pci（可能是上次 setup 没 teardown）
     local vfio_bound
-    vfio_bound=$(dpdk-devbind.py --status 2>/dev/null | grep 'drv=vfio-pci' | grep -oP '\S+(?= .*)' || true)
+    vfio_bound=$("$DEVBIND" --status 2>/dev/null | grep 'drv=vfio-pci' | grep -oP '\S+(?= .*)' || true)
     if [[ -n "$vfio_bound" ]]; then
         warn "发现已绑定到 vfio-pci 的设备：${vfio_bound}"
-        info "如果是上次未恢复，先运行：sudo ./eph-dpdk/scripts/dpdk-teardown.sh"
+        info "如果是上次未恢复，先运行：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
     fi
 
     if [[ ${#dpdk_candidates[@]} -eq 0 ]]; then
@@ -305,21 +351,25 @@ pre_check() {
 
     if [[ $EUID -ne 0 ]]; then
         die "需要 root 权限" \
-            "  运行方式：sudo ./eph-dpdk/scripts/dpdk-setup.sh\n  保留环境变量：sudo -E ./eph-dpdk/scripts/dpdk-setup.sh"
+            "  运行方式：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh\n  保留环境变量：sudo -E ./eph-net-dpdk/scripts/dpdk-setup.sh"
     fi
     ok "root 权限"
 
     if ! modinfo vfio-pci &>/dev/null; then
+        local vfio_hint
+        vfio_hint=$(pkg_install_hint kernel-modules-extra "linux-modules-extra-\$(uname -r)" linux)
         die "vfio-pci 内核模块不可用" \
-            "  检查内核配置：grep VFIO /boot/config-\$(uname -r)\n  安装方式：sudo dnf install kernel-modules-extra"
+            "  检查内核配置：grep VFIO /boot/config-\$(uname -r)\n  安装方式：${vfio_hint}"
     fi
     ok "vfio-pci 模块可用"
 
-    if ! command -v dpdk-devbind.py &>/dev/null; then
+    if ! find_devbind; then
+        local dpdk_hint
+        dpdk_hint=$(pkg_install_hint dpdk dpdk dpdk)
         die "dpdk-devbind.py 未找到" \
-            "  确认 DPDK 已安装：which dpdk-devbind.py\n  或指定完整路径：/usr/local/share/dpdk/usertools/dpdk-devbind.py"
+            "  已搜索：\$PATH、/usr/local/share/dpdk/usertools、/usr/share/dpdk/usertools、/usr/local/bin\n  安装方式：${dpdk_hint}\n  或手动加入 PATH：export PATH=\$PATH:/usr/local/share/dpdk/usertools"
     fi
-    ok "dpdk-devbind.py 可用"
+    ok "dpdk-devbind.py：${DEVBIND}"
 
     # 检查是否有 DPDK 进程正在运行
     local dpdk_procs
@@ -347,11 +397,12 @@ confirm_action() {
     echo -e "     ${RED}⚠ 网卡 ${DPDK_IFACE} 将从内核消失，无法用于普通网络${RESET}"
     echo ""
     read -rp "$(echo -e "${BOLD}确认执行？ [y/N]${RESET} ")" answer
-    case "${answer,,}" in
+    # bash 3.2-compat lowercasing (macOS 默认 bash 没有 ${var,,})
+    case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
         y|yes) ok "已确认" ;;
         *)
             info "已取消。"
-            info "跳过确认：sudo ./eph-dpdk/scripts/dpdk-setup.sh -y"
+            info "跳过确认：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh -y"
             exit 0
             ;;
     esac
@@ -383,21 +434,38 @@ report_env() {
 }
 
 # ──────────────────────────────────────────
-# 1. 加载 VFIO 模块
+# 1. 加载 VFIO 模块 — 仅在无 IOMMU 时降级到 noiommu
 # ──────────────────────────────────────────
 setup_vfio() {
     step "加载 VFIO 模块"
     verbose "VFIO（Virtual Function I/O）允许用户态程序安全地直接访问 PCI 设备。"
-    verbose "AWS Graviton 实例没有硬件 IOMMU，所以需要开启 noiommu 模式。"
+    verbose "有硬件 IOMMU（bare-metal / VT-d / AMD-Vi / SMMU）时走受保护路径；"
+    verbose "没有（如 AWS Graviton 等云 VM）才降级到 unsafe noiommu 模式。"
 
     if [[ "$DRY_RUN" == true ]]; then
         info "[模拟] modprobe vfio-pci"
-        info "[模拟] echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode"
+        info "[模拟] 根据 /sys/kernel/iommu_groups 决定是否开启 noiommu"
         return
     fi
 
     modprobe vfio-pci
     ok "vfio-pci 模块已加载"
+
+    # 探测 IOMMU：有真 IOMMU 就不降级 DMA 安全边界
+    local iommu_groups=0
+    if [[ -d /sys/kernel/iommu_groups ]]; then
+        iommu_groups=$(find /sys/kernel/iommu_groups -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    fi
+
+    if [[ "$iommu_groups" -gt 0 ]]; then
+        ok "检测到 IOMMU（${iommu_groups} 个组），使用受保护 DMA 映射"
+        verbose "bare-metal 或支持 VT-d/AMD-Vi/SMMU 的虚拟化平台：保留 IOMMU 保护，不开 noiommu"
+        return
+    fi
+
+    # 无 IOMMU：必须开启 noiommu 才能在此类主机使用 vfio-pci
+    warn "未检测到 IOMMU（常见于 AWS/GCP/Azure VM），降级到 noiommu 模式"
+    info "  noiommu 允许用户态直接做 DMA，仅适用于可信单租户环境"
 
     local noiommu
     noiommu=$(cat /sys/module/vfio/parameters/enable_unsafe_noiommu_mode 2>/dev/null || echo "N")
@@ -410,15 +478,41 @@ setup_vfio() {
 }
 
 # ──────────────────────────────────────────
-# 2. 分配 Hugepages
+# 2. 分配 Hugepages — NUMA-aware：多节点系统按 NIC 所在节点
 # ──────────────────────────────────────────
 setup_hugepages() {
     step "分配 Hugepages"
     verbose "Hugepages 是大页内存（每页 2MB），DPDK 用它做零拷贝包缓冲区。"
     verbose "目标分配 ${NR_HUGEPAGES} 页 = $((NR_HUGEPAGES * 2))MB。"
 
+    local sys_dir="/sys/kernel/mm/hugepages/hugepages-2048kB"
+    if [[ ! -d "$sys_dir" ]]; then
+        die "内核未启用 2MB hugepage 支持（${sys_dir} 不存在）" \
+            "  检查：ls /sys/kernel/mm/hugepages/\n  可能需要 kernel boot 参数：hugepagesz=2M default_hugepagesz=2M"
+    fi
+
+    # NUMA-aware：多节点系统按 NIC 所在节点分配，避免 DPDK 跨 socket 访存
+    local nic_node node_count nr_path hp_dir
+    nic_node=$(nic_numa_node "$DPDK_PCI")
+    node_count=$(find /sys/devices/system/node -mindepth 1 -maxdepth 1 -type d -name 'node[0-9]*' 2>/dev/null | wc -l)
+
+    if [[ "$node_count" -gt 1 && "$nic_node" -ge 0 \
+          && -f "/sys/devices/system/node/node${nic_node}/hugepages/hugepages-2048kB/nr_hugepages" ]]; then
+        hp_dir="/sys/devices/system/node/node${nic_node}/hugepages/hugepages-2048kB"
+        nr_path="${hp_dir}/nr_hugepages"
+        info "NIC 位于 NUMA node ${nic_node}（系统共 ${node_count} 节点），按节点分配"
+    else
+        hp_dir="$sys_dir"
+        nr_path="${hp_dir}/nr_hugepages"
+        if [[ "$node_count" -le 1 ]]; then
+            verbose "单 NUMA 节点系统，使用全局 hugepage 池"
+        else
+            verbose "NIC 的 NUMA 节点信息不可用，退回到全局 hugepage 池"
+        fi
+    fi
+
     if [[ "$DRY_RUN" == true ]]; then
-        info "[模拟] echo ${NR_HUGEPAGES} > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"
+        info "[模拟] echo ${NR_HUGEPAGES} > ${nr_path}"
         return
     fi
 
@@ -429,19 +523,19 @@ setup_hugepages() {
         ok "hugetlbfs 已挂载到 /dev/hugepages"
     fi
 
-    echo "$NR_HUGEPAGES" > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+    echo "$NR_HUGEPAGES" > "$nr_path"
 
     local actual free
-    actual=$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)
-    free=$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages)
+    actual=$(cat "$nr_path")
+    free=$(cat "${hp_dir}/free_hugepages")
 
     if [[ "$actual" -lt "$NR_HUGEPAGES" ]]; then
         warn "请求 ${NR_HUGEPAGES} 页但只分配到 ${actual} 页（内存不足或碎片化）"
-        info "尝试：NR_HUGEPAGES=${actual} sudo ./eph-dpdk/scripts/dpdk-setup.sh"
+        info "尝试：NR_HUGEPAGES=${actual} sudo ./eph-net-dpdk/scripts/dpdk-setup.sh"
         info "或重启后重试（减少碎片）"
     fi
 
-    ok "Hugepages：已分配=${actual} 空闲=${free}（$((actual * 2))MB）"
+    ok "Hugepages：${nr_path%/nr_hugepages} 已分配=${actual} 空闲=${free}（$((actual * 2))MB）"
 }
 
 # ──────────────────────────────────────────
@@ -462,12 +556,12 @@ bind_nic() {
 
     if [[ "$DRY_RUN" == true ]]; then
         info "[模拟] ip link set ${DPDK_IFACE} down"
-        info "[模拟] dpdk-devbind.py --bind=vfio-pci ${DPDK_PCI}"
+        info "[模拟] ${DEVBIND} --bind=vfio-pci ${DPDK_PCI}"
         return
     fi
 
     ip link set "$DPDK_IFACE" down 2>/dev/null || true
-    dpdk-devbind.py --bind=vfio-pci "$DPDK_PCI"
+    "$DEVBIND" --bind=vfio-pci "$DPDK_PCI"
 
     # 验证绑定成功
     current_driver=$(basename "$(readlink -f "/sys/bus/pci/devices/$DPDK_PCI/driver")" 2>/dev/null || echo "none")
@@ -510,7 +604,7 @@ report_results() {
     echo -e "${BOLD}${GREEN}✅ DPDK 环境就绪${RESET}"
     echo ""
 
-    dpdk-devbind.py --status 2>&1 | grep -E 'DPDK-compat|drv=' | head -6 || true
+    "$DEVBIND" --status 2>&1 | grep -E 'DPDK-compat|drv=' | head -6 || true
 
     local gw_ip
     gw_ip=$(ip route show default | head -1 | awk '{print $3}')
@@ -531,7 +625,7 @@ report_results() {
     echo -e "      --count 3 --msg 'hello dpdk'"
     echo ""
     suggest "恢复网卡："
-    info "  sudo ./eph-dpdk/scripts/dpdk-teardown.sh"
+    info "  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
 }
 
 # ──────────────────────────────────────────
@@ -557,8 +651,8 @@ main() {
 
     setup_vfio
     setup_hugepages
+    save_state      # 先保存状态再 bind：若 bind 中途失败，teardown 仍能找到目标 PCI
     bind_nic
-    save_state
     report_results
 }
 
