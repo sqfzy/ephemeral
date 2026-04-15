@@ -445,11 +445,18 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
 ///        from (host byte order).  Mirrors `DnsConfig::port` on the call
 ///        site — defaults to kDnsPort so adversarial tests using stock
 ///        port-53 fixtures keep working without modification.
+/// @param expected_dst_port  UDP destination port the response must carry
+///        (host byte order). Equal to the ephemeral src_port the resolver
+///        chose for the outgoing query. 0 means "accept any dst_port" and
+///        is the legacy default used by adversarial tests; production
+///        callers pass their random ephemeral port for cache-poisoning
+///        defense in depth.
 /// @return IPv4 address (host order) if valid DNS response, nullopt otherwise
 [[nodiscard]] inline std::optional<uint32_t>
 try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
                      uint32_t nameserver_ip,
-                     uint16_t expected_src_port = kDnsPort) noexcept {
+                     uint16_t expected_src_port = kDnsPort,
+                     uint16_t expected_dst_port = 0) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + net::kIpv4HeaderLen
                              + kUdpHeaderLen + kDnsHeaderLen;
     if (mbuf->data_len < min_len) return std::nullopt;
@@ -479,6 +486,15 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
     auto* udp = reinterpret_cast<const UdpHeader*>(
         pkt + net::kEtherHeaderLen + ihl);
     if (net::ntoh16(udp->src_port) != expected_src_port) return std::nullopt;
+    // Defense in depth against off-path cache poisoning: the response
+    // must also be addressed to the ephemeral source port we chose when
+    // sending. Raising this check from "NIC filters by flow" to "parser
+    // enforces it too" narrows the unguessable-state window from
+    // (16-bit tx_id) to (16-bit tx_id × ephemeral port width). 0 is
+    // a legacy sentinel meaning "accept any dst_port" — used by the
+    // adversarial test fixtures that predate this check.
+    if (expected_dst_port != 0 &&
+        net::ntoh16(udp->dst_port) != expected_dst_port) return std::nullopt;
 
     // Parse DNS payload
     const uint8_t* dns_data = pkt + net::kEtherHeaderLen + ihl
@@ -628,7 +644,8 @@ resolve(uint16_t port_id,
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto resolved_ip = detail::try_parse_dns_packet(
-                pkts[i], tx_id_net, cfg.nameserver_ip, cfg.port);
+                pkts[i], tx_id_net, cfg.nameserver_ip, cfg.port,
+                src_port);
             if (resolved_ip) {
                 SPDLOG_LOGGER_INFO(log,
                     "DNS resolved: {} -> {} (after {} query/queries)",
