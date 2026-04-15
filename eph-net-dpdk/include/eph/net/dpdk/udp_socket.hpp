@@ -30,7 +30,6 @@
 #include <expected>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <span>
 #include <utility>
 

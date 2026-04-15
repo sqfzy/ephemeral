@@ -32,14 +32,11 @@
 ///
 ///   - **Not thread-safe**: one Poller owns one lcore.
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <memory>
-#include <span>
-#include <vector>
 
 #include <sys/random.h>   // getrandom(2) — random start for pick_src_port
 
@@ -142,7 +139,7 @@ public:
 
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkPoller>, core::ErrorInfo>
     create(PollerConfig cfg = {}) noexcept {
-        auto* log = detail::poller_logger();
+        [[maybe_unused]] auto* log = detail::poller_logger();
         SPDLOG_LOGGER_DEBUG(log,
             "DpdkPoller::create: port={} queue={}",
             cfg.port_id, cfg.rx_queue_id);
@@ -257,7 +254,7 @@ public:
     /// @brief Unregister `obj`. Returns `InvalidConfig` if not registered.
     template <DpdkPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
-        auto* log = detail::poller_logger();
+        [[maybe_unused]] auto* log = detail::poller_logger();
         if (obj == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,

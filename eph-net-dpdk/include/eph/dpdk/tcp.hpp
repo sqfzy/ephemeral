@@ -1173,7 +1173,7 @@ public:
                                         ack_delay_cycles_())) {
             return;  // no-op: no pending ACK, or timer not yet expired
         }
-        const uint64_t elapsed = now - ack_pending_since_tsc_;
+        [[maybe_unused]] const uint64_t elapsed = now - ack_pending_since_tsc_;
         ack_pending_since_tsc_ = 0;
         // TRACE: useful for diagnosing RX-only flows where the timer
         // (rather than piggyback) is what's keeping the connection alive.
