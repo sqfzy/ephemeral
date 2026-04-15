@@ -1289,6 +1289,12 @@ public:
         state_ = TcpState::Closed;
         reorder_count_ = 0;  // Prevent stale data delivery on reconnect
         ack_pending_since_tsc_ = 0;
+        // Clear peer-specific window state so a stale value from the
+        // broken connection cannot leak into any inspection/telemetry
+        // between reset() and the next SYN-ACK. The normal send() path is
+        // already gated on is_established(), so this is defense in depth.
+        snd_wnd_ = 0;
+        rcv_nxt_ = 0;
         SPDLOG_LOGGER_DEBUG(log, "RST sent, state -> Closed");
     }
 
