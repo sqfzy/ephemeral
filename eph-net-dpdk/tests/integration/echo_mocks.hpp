@@ -381,4 +381,116 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
     ::close(listen_fd);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// WebSocket server-initiated ping mock — proves the client (DpdkTcpStream
+// under WsCodec) flushes an auto-response pong from drain_codec_.
+//
+// Protocol:
+//   1. Accept, perform server-side WS upgrade (same bench helpers as
+//      ws_echo_mock_thread).
+//   2. Send ONE unmasked ping frame with payload "hi".
+//   3. Read one client frame. It must be a masked pong with payload "hi".
+//   4. On successful verification, send a data (binary) frame with
+//      payload "OK" so the client's on_message handler can observe the
+//      round trip. This is the signal the e2e test asserts on.
+//   5. Drain client bytes until FIN, then close.
+//
+// Pre-fix bug: step 3 never arrives because drain_codec_() discards the
+// out_sink bytes on return, so the server would hang at recv() until the
+// client closes. The test deadline (~3s) makes this a hard failure.
+// ─────────────────────────────────────────────────────────────────────────
+inline void ws_server_ping_mock_thread(const std::string& ip, uint16_t port,
+                                        std::atomic<bool>& running) noexcept {
+    auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
+    if (!listen_r) {
+        spdlog::error("test_e2e ws_server_ping_mock {}:{} bind: {}",
+                      ip, port, listen_r.error());
+        return;
+    }
+    int listen_fd = *listen_r;
+    spdlog::info("test_e2e ws_server_ping_mock listening on {}:{}", ip, port);
+
+    constexpr size_t kBufSize = 4096;
+    constexpr size_t kMaxPayload = 256;
+    std::vector<uint8_t> buf(kBufSize);
+
+    while (running.load(std::memory_order_acquire)) {
+        auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
+        if (!cfd_r) continue;
+        if (*cfd_r < 0) break;
+        int cfd = *cfd_r;
+
+        // ── 1) HTTP upgrade handshake ────────────────────────────────
+        if (auto h = bench::ws_server_handshake(cfd); !h) {
+            spdlog::warn("test_e2e ws_server_ping: handshake failed: {}",
+                         h.error());
+            ::close(cfd);
+            continue;
+        }
+
+        // ── 2) Proactively send a ping with payload "hi" ─────────────
+        const uint8_t ping_payload[] = {'h', 'i'};
+        uint8_t ping_frame[16];
+        size_t ping_len = bench::ws_framing::build_server_frame(
+            ping_frame, bench::ws_framing::kOpPing,
+            ping_payload, sizeof(ping_payload));
+        if (!eph::net::posix::send_all(cfd, ping_frame, ping_len)) {
+            ::close(cfd);
+            continue;
+        }
+
+        // ── 3) Read the client's reply. Expect a masked pong with
+        //       payload "hi". ────────────────────────────────────────
+        size_t buf_used = 0;
+        bool verified = false;
+        auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds{3};
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto f_opt = bench::ws_framing::parse_client_frame_inplace(
+                buf.data(), buf_used, kMaxPayload);
+            if (!f_opt) {
+                if (buf_used >= kBufSize) break;
+                ssize_t n = ::recv(cfd, buf.data() + buf_used,
+                                    kBufSize - buf_used, 0);
+                if (n <= 0) break;
+                buf_used += static_cast<size_t>(n);
+                continue;
+            }
+            const auto& f = *f_opt;
+            if (f.opcode == bench::ws_framing::kOpPong &&
+                f.payload_len == sizeof(ping_payload)) {
+                const uint8_t* p = buf.data() +
+                    (f.total_consumed - f.payload_len);
+                if (std::memcmp(p, ping_payload, sizeof(ping_payload)) == 0) {
+                    verified = true;
+                }
+            }
+            break;
+        }
+
+        // ── 4) On verification, send "OK" as a binary frame for the
+        //       client's on_message to observe. ─────────────────────
+        if (verified) {
+            const uint8_t ok_payload[] = {'O', 'K'};
+            uint8_t ok_frame[16];
+            size_t ok_len = bench::ws_framing::build_server_frame(
+                ok_frame, bench::ws_framing::kOpBinary,
+                ok_payload, sizeof(ok_payload));
+            (void)eph::net::posix::send_all(cfd, ok_frame, ok_len);
+        } else {
+            spdlog::warn("test_e2e ws_server_ping: pong verification failed "
+                         "(buf_used={})", buf_used);
+        }
+
+        // ── 5) Drain until peer FIN, then close ────────────────────
+        char drain[256];
+        while (running.load(std::memory_order_acquire)) {
+            ssize_t n = ::recv(cfd, drain, sizeof(drain), 0);
+            if (n <= 0) break;
+        }
+        ::close(cfd);
+    }
+    ::close(listen_fd);
+}
+
 } // namespace eph::dpdk::test_e2e

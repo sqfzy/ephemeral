@@ -36,6 +36,7 @@ inline constexpr uint16_t kTcpRstPort      = 19002;
 inline constexpr uint16_t kTcpFinPort      = 19003;
 inline constexpr uint16_t kUdpEchoPort     = 19101;
 inline constexpr uint16_t kWsEchoPort      = 19201;
+inline constexpr uint16_t kWsPingPort      = 19202;
 inline constexpr uint16_t kRxDispatcherPortBase = 19301;  ///< 19301..19308
 inline constexpr int      kRxDispatcherConns    = 8;
 /// Non-standard DNS port — port 53 would force the test binary to run
@@ -83,6 +84,9 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     });
     threads.emplace_back([&] {
         ws_echo_mock_thread(server_ip, kWsEchoPort, g_dispatcher_running);
+    });
+    threads.emplace_back([&] {
+        ws_server_ping_mock_thread(server_ip, kWsPingPort, g_dispatcher_running);
     });
     threads.emplace_back([&] {
         dns_mock_thread(server_ip, kDnsMockPort, kDnsMockResolvedIp,

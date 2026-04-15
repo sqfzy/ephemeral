@@ -65,6 +65,12 @@ inline spdlog::logger* tcp_stream_logger() {
     return l;
 }
 
+/// @brief Stack scratch size for the codec auto-response `OutputBuffer`
+///        sink. Sized to hold a single max-sized WS control frame (pong
+///        or close-ack). 1 KB matches the kernel backend's
+///        `kCodecAutoResponseBytes` for parity.
+inline constexpr std::size_t kCodecAutoResponseBytes = 1024;
+
 // TlsState (with aws-lc-backed in-place AEAD) lives in
 // `detail/tls_state.hpp`.
 
@@ -765,9 +771,12 @@ private:
         if (reasm_.readable() == 0) return 0;
 
         std::size_t delivered = 0;
-        // Scratch OutputBuffer for auto-response injection (WS pong, etc.).
-        uint8_t            scratch[1024];
-        core::OutputBuffer out_sink(scratch, sizeof(scratch));
+        // Scratch region backing the per-iteration `out_sink` below. Reused
+        // across iterations via a fresh `OutputBuffer` each time — the
+        // previous iteration's bytes are already flushed to the peer via
+        // this->send() (which goes through the TLS encrypt path when
+        // EnableTls=true), so reusing the same storage is safe.
+        uint8_t scratch[detail::kCodecAutoResponseBytes];
 
         if constexpr (EnableTls) {
             // ──────── TLS decrypt-in-place path ────────
@@ -818,7 +827,32 @@ private:
                     detail::MbufView view(feed_ptr, feed_len, /*arrival_tsc*/ 0);
                     while (view.length() > 0) {
                         const std::size_t before = view.length();
+                        // Per-iteration sink; flushed via this->send()
+                        // below (before branching on `dr`) so close-acks
+                        // on WsCloseReceived reach the wire prior to any
+                        // session teardown. `send()` re-enters the TLS
+                        // encrypt path (tls_send_buf_ is a separate member
+                        // from tls_codec_pending_) which is safe while
+                        // we are still iterating over decrypted RX
+                        // records here.
+                        core::OutputBuffer out_sink(scratch,
+                                                     sizeof(scratch));
                         auto dr = codec_.decode(view, out_sink);
+                        if (out_sink.size() > 0) {
+                            auto sr = this->send(std::span<const uint8_t>(
+                                out_sink.data(), out_sink.size()));
+                            if (!sr) {
+                                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                                    "DpdkTcpStream::drain_codec_(TLS): "
+                                    "auto-response send failed ({} bytes): {}",
+                                    out_sink.size(), sr.error().detail);
+                            } else {
+                                SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                                    "DpdkTcpStream::drain_codec_(TLS): "
+                                    "sent {} auto-response bytes",
+                                    out_sink.size());
+                            }
+                        }
                         if (!dr) {
                             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                                 "DpdkTcpStream::drain_codec_(TLS): decode err={}",
@@ -827,7 +861,13 @@ private:
                             codec_err_latched = true;
                             return;
                         }
-                        if (!dr->has_value()) break;
+                        if (!dr->has_value()) {
+                            // Ok(None) + consumed>0 means the codec
+                            // auto-handled a control frame; keep draining.
+                            // Only consumed==0 justifies break.
+                            if (view.length() == before) break;
+                            continue;
+                        }
                         // Guard against infinite loop: codec returned a frame
                         // but did not advance the view.
                         if (view.length() == before) {
@@ -901,7 +941,25 @@ private:
                 detail::MbufView view(const_cast<uint8_t*>(reasm_.read_ptr()),
                                        before, /*arrival_tsc*/ 0);
 
+                // Per-iteration sink; flushed before branching on `dr`
+                // so close-acks written alongside WsCloseReceived reach
+                // the wire before we teardown session state.
+                core::OutputBuffer out_sink(scratch, sizeof(scratch));
                 auto dr = codec_.decode(view, out_sink);
+                if (out_sink.size() > 0) {
+                    auto sr = this->send(std::span<const uint8_t>(
+                        out_sink.data(), out_sink.size()));
+                    if (!sr) {
+                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                            "DpdkTcpStream::drain_codec_: "
+                            "auto-response send failed ({} bytes): {}",
+                            out_sink.size(), sr.error().detail);
+                    } else {
+                        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                            "DpdkTcpStream::drain_codec_: sent {} "
+                            "auto-response bytes", out_sink.size());
+                    }
+                }
                 if (!dr) {
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::drain_codec_: decode err={}",
@@ -912,7 +970,11 @@ private:
                 reasm_.consume(consumed);
 
                 if (!dr->has_value()) {
-                    break;
+                    // Ok(None) + consumed>0 means the codec auto-handled
+                    // a control frame and we should keep draining.
+                    // Only consumed==0 is "need more bytes".
+                    if (consumed == 0) break;
+                    continue;
                 }
                 // Guard against infinite loop: if the codec returned a frame
                 // but did not advance the view, we cannot make progress.

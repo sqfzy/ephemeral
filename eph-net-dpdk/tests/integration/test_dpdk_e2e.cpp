@@ -29,11 +29,14 @@
 #include "dpdk_e2e_env.hpp"
 #include "mock_dispatcher.hpp"
 
+#include "eph/codec/ws_codec.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/dpdk/udp.hpp"
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/rx_dispatcher.hpp"
+#include "eph/net/dpdk/poller.hpp"
+#include "eph/net/dpdk/tcp_stream.hpp"
 
 using namespace eph::dpdk::test_e2e;
 using namespace std::chrono_literals;
@@ -223,6 +226,69 @@ TEST(WsE2E, HandshakeAndEcho) {
         << "WS accept hash mismatch: " << resp;
 
     EXPECT_TRUE(session.close().has_value());
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DpdkWsAutoResponse — server-initiated ping triggers client auto-pong
+//
+// Drives a full DpdkTcpStream<WsCodec> + DpdkPoller against the kernel
+// ws_server_ping_mock: after the handshake the mock sends a ping, waits
+// for a masked pong, and on success sends a binary "OK" frame. The test
+// observes "OK" via on_message and asserts it arrived — proving the
+// drain_codec_ flush path actually pushes the auto-response onto the
+// wire on the DPDK side.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(DpdkWsAutoResponse, ServerPingTriggersClientPong) {
+    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
+    auto& env = DpdkE2ETestEnv::env();
+    namespace edpdk = eph::net::dpdk;
+    namespace ec    = eph::codec;
+
+    edpdk::StreamConfig scfg{};
+    scfg.legacy          = env.make_tcp_config(next_src_port(), kWsPingPort);
+    scfg.pool            = env.pool;
+    scfg.connect_timeout = 3s;
+    scfg.ws_path         = "/ws";
+    scfg.ws_host         = "server";
+
+    using WsStream = edpdk::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+    auto stream_r = WsStream::create(std::move(scfg));
+    ASSERT_TRUE(stream_r.has_value())
+        << "DpdkTcpStream::create failed: "
+        << (stream_r ? "" : stream_r.error().detail);
+    auto stream = std::move(*stream_r);
+
+    std::atomic<bool> got_ok{false};
+    stream->on_message =
+        [&got_ok](const uint8_t* data, uint16_t len) {
+            if (len == 2 && data[0] == 'O' && data[1] == 'K') {
+                got_ok.store(true, std::memory_order_release);
+            }
+        };
+
+    edpdk::PollerConfig pcfg{};
+    pcfg.port_id      = scfg.legacy.port_id;
+    pcfg.rx_queue_id  = 0;
+    auto poller_r = edpdk::DpdkPoller<>::create(pcfg);
+    ASSERT_TRUE(poller_r.has_value())
+        << "DpdkPoller::create failed: "
+        << (poller_r ? "" : poller_r.error().detail);
+    auto poller = std::move(*poller_r);
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (!got_ok.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline &&
+           stream->state() == eph::net::TcpState::Established) {
+        (void)poller->poll();
+    }
+
+    EXPECT_TRUE(got_ok.load())
+        << "client did not observe server-side OK confirmation "
+        << "(mock's ping was not ack'd with a masked pong)";
+
+    (void)poller->remove(stream.get());
 }
 
 // ═══════════════════════════════════════════════════════════════════════
