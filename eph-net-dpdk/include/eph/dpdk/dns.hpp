@@ -390,6 +390,16 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     // Guard against dns_len overflow when cast to uint16_t
     if (dns_len > kMaxDnsPacketLen) return nullptr;
 
+    // Defensive: rte_pktmbuf_alloc dereferences pool with no NULL check
+    // and segfaults on nullptr. Match the contract of
+    // arp::build_arp_request (returns nullptr on null pool) so callers
+    // fail fast without a crash.
+    if (!pool) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+            "build_dns_packet: null mempool — cannot allocate");
+        return nullptr;
+    }
+
     auto* mbuf = rte_pktmbuf_alloc(pool);
     if (!mbuf) return nullptr;
 
