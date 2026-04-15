@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <optional>
 #include <string>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -208,18 +209,22 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
 /// Must be called BEFORE TCP connection establishment — this function will
 /// discard any non-ARP packets received during the poll.
 ///
-/// @warning Accepts the first ARP reply with matching sender IP. No
-///          protection against ARP spoofing. In untrusted networks,
-///          cross-validate the returned MAC against a known-good value
-///          (e.g., via ConnectorOptions::gateway_mac).
+/// @note Pass `expected_mac` to enable anti-spoof: replies from any MAC
+///       other than the configured gateway MAC are rejected. In HFT colo
+///       deployments the gateway MAC is static and known in advance —
+///       always pass it. When `expected_mac == nullopt` the first reply
+///       with a matching sender IP wins (legacy behaviour).
 ///
-/// @param port_id    DPDK port to send/receive on
-/// @param queue_id   TX/RX queue to use (default 0)
-/// @param pool       Mempool for mbuf allocation
-/// @param src_mac    Our NIC's MAC address
-/// @param src_ip     Our IPv4 address (host byte order)
-/// @param target_ip  IPv4 address to resolve (host byte order)
-/// @param timeout    Maximum wait time (default 1s)
+/// @param port_id       DPDK port to send/receive on
+/// @param queue_id      TX/RX queue to use (default 0)
+/// @param pool          Mempool for mbuf allocation
+/// @param src_mac       Our NIC's MAC address
+/// @param src_ip        Our IPv4 address (host byte order)
+/// @param target_ip     IPv4 address to resolve (host byte order)
+/// @param timeout       Maximum wait time (default 1s)
+/// @param expected_mac  If set, reject replies whose sender MAC differs
+///                      (see `parse_arp_reply` doc). `nullopt` = legacy
+///                      behaviour (accept any sender MAC for target_ip).
 /// @return Resolved MAC address, or error string on timeout/failure
 [[nodiscard]] inline std::expected<rte_ether_addr, std::string>
 resolve(uint16_t port_id,
@@ -228,7 +233,8 @@ resolve(uint16_t port_id,
         const rte_ether_addr& src_mac,
         uint32_t src_ip,
         uint32_t target_ip,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000}) {
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000},
+        std::optional<rte_ether_addr> expected_mac = std::nullopt) {
 
     [[maybe_unused]] auto log = detail::arp_logger();
 
@@ -285,7 +291,7 @@ resolve(uint16_t port_id,
         uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts, 16);
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
-            auto mac = parse_arp_reply(pkts[i], target_ip);
+            auto mac = parse_arp_reply(pkts[i], target_ip, expected_mac);
             if (mac) {
                 SPDLOG_LOGGER_INFO(log,
                     "ARP resolved: {} -> {} (after {} request(s))",
