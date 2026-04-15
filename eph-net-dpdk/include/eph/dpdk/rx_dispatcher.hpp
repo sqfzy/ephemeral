@@ -388,6 +388,17 @@ public:
         return running_.load(std::memory_order_acquire);
     }
 
+    /// @brief Cumulative number of packets dropped due to hash collision
+    ///        (hash matched but full-tuple compare failed). Non-zero values
+    ///        indicate either unlucky hash distribution or potential attack
+    ///        traffic. Parallels DpdkPoller::hash_collision_drops().
+    ///
+    /// @warning Safe to read only after stop() — the RX thread writes
+    ///          this counter non-atomically on the hot path.
+    [[nodiscard]] uint64_t hash_collision_drops() const noexcept {
+        return hash_collision_drops_;
+    }
+
     /// Access entry by index (for stats, diagnostics).
     /// Returns a static empty entry if index is out of bounds.
     [[nodiscard]] const RxDispatcherEntry& entry(size_t i) const noexcept {
@@ -469,7 +480,24 @@ private:
                     // the release-store to connected=true.
                     if (!entry.connected.load(std::memory_order_acquire)) continue;
                     if (hashes_[j] != pkt_hash) continue;  // Fast reject
-                    if (!parsed.matches(entry.tuple)) continue;  // Collision check
+                    if (!parsed.matches(entry.tuple)) {
+                        // Hash matched but full-tuple comparison rejected —
+                        // a true hash collision between two registered
+                        // connections. Count it so the operator can observe
+                        // the rate; warn once on first occurrence so the
+                        // event surfaces in logs without spamming the hot
+                        // path in an adversarial burst.
+                        if (hash_collision_drops_ == 0) {
+                            SPDLOG_LOGGER_WARN(log,
+                                "RxDispatcher::rx_loop: first hash collision "
+                                "(pkt_hash=0x{:016x} idx={}); subsequent "
+                                "collisions tracked via "
+                                "hash_collision_drops()",
+                                pkt_hash, j);
+                        }
+                        ++hash_collision_drops_;
+                        continue;
+                    }
 
                     // Load session pointer once into a local — safe even if
                     // mark_reconnected() atomically swaps it concurrently.
@@ -564,6 +592,11 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     BurstCompleteCallback on_burst_complete_{};
+    /// Cumulative hash-collision count (RX-thread-local, not atomic —
+    /// only the rx_loop writes it and only collect_stats()/tests read
+    /// it after a non-fatal stop, so no cross-thread synchronization is
+    /// needed). Parallels DpdkPoller::hash_collision_drops_.
+    uint64_t hash_collision_drops_{0};
 
     // UDP entries — always declared for uniform sizeof, only used when EnableUdp=true
     std::array<UdpRxDispatcherEntry, kRxDispatcherMaxUdpEntries> udp_entries_{};
