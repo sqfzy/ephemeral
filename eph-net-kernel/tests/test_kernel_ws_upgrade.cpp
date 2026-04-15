@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "eph/codec/raw_stream_codec.hpp"
+#include "eph/codec/ws_codec.hpp"
 #include "eph/core/detail/base64.hpp"
 #include "eph/net/detail/ws_handshake.hpp"
 #include "eph/net/kernel/poller.hpp"
@@ -391,6 +392,293 @@ TEST(KernelWsUpgrade, WsTimeoutIsEnforcedWhenServerStalls) {
         << "ws_timeout was not observed within the configured budget";
 
     stop.store(true, std::memory_order_release);
+    server.join();
+    ::close(lfd);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Server-initiated control frames → client auto-response via drain_codec_
+//
+// These exercise the post-v3.3 contract where `WsCodec::decode` writes an
+// auto-response (pong / close-ack) into an `OutputBuffer` sink which the
+// stream backend MUST flush via the TX path. Before the flush fix, the
+// sink was silently dropped on return from `drain_codec_`, and the bug
+// manifested as Binance disconnects roughly every three missed pings
+// (~10 minutes).
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Control-frame opcodes (low nibble only; FIN bit added per-frame).
+static constexpr uint8_t kOpClose = 0x8;
+static constexpr uint8_t kOpPing  = 0x9;
+static constexpr uint8_t kOpPong  = 0xA;
+
+// Server-side WS control-frame mode for the auto-response tests.
+enum class ControlMode {
+    SendsPing,       ///< write one ping, expect one masked pong echoing the payload
+    SendsPingBurst3, ///< write three pings in one send(), expect three masked pongs
+    SendsClose,      ///< write close(code=1000), expect masked close-ack
+};
+
+// Build an unmasked server→client control frame. Payload must be ≤ 125
+// bytes (RFC 6455 §5.5 control frame limit).
+std::vector<uint8_t> mk_server_control_frame(uint8_t opcode,
+                                              const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> out;
+    out.reserve(2 + payload.size());
+    out.push_back(static_cast<uint8_t>(0x80 | opcode));           // FIN | opcode
+    out.push_back(static_cast<uint8_t>(payload.size() & 0x7F));   // no MASK, short len
+    out.insert(out.end(), payload.begin(), payload.end());
+    return out;
+}
+
+// Read one client-sent masked control frame with a deadline. On success,
+// writes the frame opcode (low nibble) and unmasked payload; returns true.
+// Only handles short-form (≤125 byte) frames — sufficient for control
+// frames which are capped at 125 bytes by spec.
+bool read_client_control_frame(int fd, uint8_t* opcode_out,
+                                std::vector<uint8_t>* payload_out,
+                                std::chrono::milliseconds deadline) {
+    const auto expiry = std::chrono::steady_clock::now() + deadline;
+    auto recv_exact = [&](uint8_t* dst, size_t want) {
+        size_t got = 0;
+        while (got < want) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= expiry) return false;
+            const int rem_ms = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    expiry - now).count());
+            struct pollfd p{ .fd = fd, .events = POLLIN, .revents = 0 };
+            if (::poll(&p, 1, rem_ms) <= 0) return false;
+            ssize_t n = ::recv(fd, dst + got, want - got, 0);
+            if (n <= 0) return false;
+            got += static_cast<size_t>(n);
+        }
+        return true;
+    };
+
+    uint8_t hdr[2];
+    if (!recv_exact(hdr, 2)) return false;
+    if ((hdr[0] & 0x80) == 0) return false;          // FIN must be set on control
+    *opcode_out = hdr[0] & 0x0F;
+    if ((hdr[1] & 0x80) == 0) return false;          // client MUST mask
+    const uint8_t plen = hdr[1] & 0x7F;
+    if (plen > 125) return false;                    // control frames are short-form
+    uint8_t mask[4];
+    if (!recv_exact(mask, 4)) return false;
+    payload_out->assign(plen, 0);
+    if (plen > 0) {
+        if (!recv_exact(payload_out->data(), plen)) return false;
+        for (size_t i = 0; i < plen; ++i) {
+            (*payload_out)[i] ^= mask[i & 3];
+        }
+    }
+    return true;
+}
+
+// Server that drives a WS handshake, then proactively sends a control
+// frame according to `mode` and verifies the client's auto-response. On
+// each verified round trip, increments `*verified_count`.
+void run_ws_control_server(int listen_fd, ControlMode mode,
+                            std::atomic<int>* verified_count) {
+    struct sockaddr_in cli{};
+    socklen_t clen = sizeof(cli);
+    int c = ::accept(listen_fd,
+                     reinterpret_cast<struct sockaddr*>(&cli), &clen);
+    if (c < 0) return;
+
+    std::string req;
+    if (!read_request(c, req, std::chrono::seconds{2})) {
+        ::close(c);
+        return;
+    }
+    auto key = extract_key(req);
+    auto acc = eph::net::detail::ws_compute_accept(key);
+    std::string resp = "HTTP/1.1 101 Switching Protocols\r\n"
+                       "Upgrade: websocket\r\n"
+                       "Connection: Upgrade\r\n"
+                       "Sec-WebSocket-Accept: " + acc + "\r\n\r\n";
+    if (!send_all(c, resp.data(), resp.size())) {
+        ::close(c);
+        return;
+    }
+
+    const std::vector<uint8_t> ping_payload{'h', 'i'};
+
+    int expected_replies = 0;
+    uint8_t expected_opcode = 0;
+    switch (mode) {
+    case ControlMode::SendsPing: {
+        auto f = mk_server_control_frame(kOpPing, ping_payload);
+        if (!send_all(c, f.data(), f.size())) { ::close(c); return; }
+        expected_replies = 1;
+        expected_opcode  = kOpPong;
+        break;
+    }
+    case ControlMode::SendsPingBurst3: {
+        // Concatenate three pings in ONE send_all so they land in the
+        // same drain_codec_() invocation and prove per-iteration flush
+        // (not per-function batching) is the implementation choice.
+        std::vector<uint8_t> burst;
+        for (int i = 0; i < 3; ++i) {
+            auto f = mk_server_control_frame(kOpPing, ping_payload);
+            burst.insert(burst.end(), f.begin(), f.end());
+        }
+        if (!send_all(c, burst.data(), burst.size())) { ::close(c); return; }
+        expected_replies = 3;
+        expected_opcode  = kOpPong;
+        break;
+    }
+    case ControlMode::SendsClose: {
+        // Close frame with status code 1000 (normal closure). Two-byte
+        // big-endian payload.
+        const std::vector<uint8_t> code{0x03, 0xE8};
+        auto f = mk_server_control_frame(kOpClose, code);
+        if (!send_all(c, f.data(), f.size())) { ::close(c); return; }
+        expected_replies = 1;
+        expected_opcode  = kOpClose;
+        break;
+    }
+    }
+
+    for (int i = 0; i < expected_replies; ++i) {
+        uint8_t opcode = 0;
+        std::vector<uint8_t> payload;
+        if (!read_client_control_frame(c, &opcode, &payload,
+                                        std::chrono::seconds{2})) break;
+        if (opcode != expected_opcode) break;
+        if (expected_opcode == kOpPong) {
+            if (payload != ping_payload) break;
+        }
+        // For close-ack we accept any 2-byte payload (RFC 6455 §7.4.1
+        // permits the peer to echo the status code or substitute
+        // kProtocolError). The mere fact a masked close-frame was
+        // received proves the flush + ordering fix.
+        verified_count->fetch_add(1, std::memory_order_release);
+    }
+
+    // Drain any remaining bytes until client FIN, so the test's stream
+    // destruction does not race with us on the socket.
+    char drain[256];
+    while (::recv(c, drain, sizeof(drain), 0) > 0) { /* discard */ }
+    ::close(c);
+}
+
+using WsStream = ek::KernelTcpStream<eph::codec::WsCodec, false>;
+
+ek::StreamConfig make_ws_cfg(uint16_t port) {
+    ek::StreamConfig cfg{};
+    cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.ws_path = "/ws/feed";
+    cfg.ws_host = "localhost";
+    return cfg;
+}
+
+} // namespace
+
+// ───────────────────────────────────────────────────────────────────────
+// 1. Single server ping → single client pong (the baseline Binance case)
+// ───────────────────────────────────────────────────────────────────────
+
+TEST(KernelWsAutoResponse, ServerPingTriggersAutoPongOnNextPoll) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+    std::atomic<int> verified{0};
+    std::thread server([lfd, &verified] {
+        run_ws_control_server(lfd, ControlMode::SendsPing, &verified);
+    });
+
+    auto stream_r = WsStream::create(make_ws_cfg(port));
+    ASSERT_TRUE(stream_r.has_value())
+        << (stream_r ? "" : stream_r.error().detail);
+    auto stream = std::move(*stream_r);
+    stream->on_message = [](const uint8_t*, uint16_t) {};
+
+    auto poller = ek::KernelPoller::create().value();
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (verified.load(std::memory_order_acquire) < 1 &&
+           std::chrono::steady_clock::now() < deadline &&
+           stream->state() == en::TcpState::Established) {
+        (void)poller->poll(std::chrono::milliseconds{10});
+    }
+
+    EXPECT_EQ(verified.load(), 1);
+    stream.reset();
+    server.join();
+    ::close(lfd);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// 2. Three pings in one poll → three pongs (guards against per-function
+//    flush hoisting that would OutputBuffer-overflow on bursts)
+// ───────────────────────────────────────────────────────────────────────
+
+TEST(KernelWsAutoResponse, MultiplePingsInOnePollAllAckd) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+    std::atomic<int> verified{0};
+    std::thread server([lfd, &verified] {
+        run_ws_control_server(lfd, ControlMode::SendsPingBurst3, &verified);
+    });
+
+    auto stream_r = WsStream::create(make_ws_cfg(port));
+    ASSERT_TRUE(stream_r.has_value())
+        << (stream_r ? "" : stream_r.error().detail);
+    auto stream = std::move(*stream_r);
+    stream->on_message = [](const uint8_t*, uint16_t) {};
+
+    auto poller = ek::KernelPoller::create().value();
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (verified.load(std::memory_order_acquire) < 3 &&
+           std::chrono::steady_clock::now() < deadline &&
+           stream->state() == en::TcpState::Established) {
+        (void)poller->poll(std::chrono::milliseconds{10});
+    }
+
+    EXPECT_EQ(verified.load(), 3);
+    stream.reset();
+    server.join();
+    ::close(lfd);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// 3. Server close → client close-ack (guards against the close-ack
+//    ordering bug where state_ would flip before the ack was flushed)
+// ───────────────────────────────────────────────────────────────────────
+
+TEST(KernelWsAutoResponse, ServerCloseFrameFlushesCloseAckBeforeStateClosed) {
+    auto [lfd, port] = bind_loopback_listener();
+    ASSERT_GE(lfd, 0);
+    std::atomic<int> verified{0};
+    std::thread server([lfd, &verified] {
+        run_ws_control_server(lfd, ControlMode::SendsClose, &verified);
+    });
+
+    auto stream_r = WsStream::create(make_ws_cfg(port));
+    ASSERT_TRUE(stream_r.has_value())
+        << (stream_r ? "" : stream_r.error().detail);
+    auto stream = std::move(*stream_r);
+    stream->on_message = [](const uint8_t*, uint16_t) {};
+
+    auto poller = ek::KernelPoller::create().value();
+    ASSERT_TRUE(poller->add(stream.get()).has_value());
+    // Poll until the close-ack is observed. The stream may flip to Closed
+    // once WsCloseReceived is latched — we keep polling regardless so we
+    // can cleanly tear down even if decode raced ahead of our observer.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (verified.load(std::memory_order_acquire) < 1 &&
+           std::chrono::steady_clock::now() < deadline) {
+        (void)poller->poll(std::chrono::milliseconds{10});
+    }
+
+    EXPECT_EQ(verified.load(), 1);
+    stream.reset();
     server.join();
     ::close(lfd);
 }

@@ -791,11 +791,11 @@ private:
     /// buffer for the next poll.
     std::size_t drain_codec_() noexcept {
         std::size_t delivered = 0;
-        // Scratch OutputBuffer for auto-response injection. The auto-
-        // responses are queued for the next send() call (the sink is not
-        // yet plumbed back into the TX path automatically).
-        uint8_t          scratch[detail::kCodecAutoResponseBytes];
-        core::OutputBuffer out_sink(scratch, sizeof(scratch));
+        // Scratch region backing the per-iteration `out_sink` below. Reused
+        // across iterations via a fresh `OutputBuffer` each time — the
+        // previous iteration's bytes are already flushed to the peer at the
+        // bottom of the loop, so reusing the same storage is safe.
+        uint8_t scratch[detail::kCodecAutoResponseBytes];
 
         if constexpr (EnableTls) {
             // 1) Decrypt as many complete TLS records as possible.
@@ -827,7 +827,26 @@ private:
                 detail::SpanView view(
                     tls_plain_buf_.data() + tls_plain_head_, before);
 
+                // Per-iteration sink: bounded to one control-frame worth
+                // of auto-response (pong / close-ack). Flush it before
+                // branching on `dr` so a close-ack written alongside
+                // WsCloseReceived reaches the wire before state_ flips.
+                core::OutputBuffer out_sink(scratch, sizeof(scratch));
                 auto dr = codec_.decode(view, out_sink);
+                if (out_sink.size() > 0) {
+                    auto sr = this->send(std::span<const uint8_t>(
+                        out_sink.data(), out_sink.size()));
+                    if (!sr) {
+                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                            "KernelTcpStream::drain_codec_(TLS): "
+                            "auto-response send failed ({} bytes): {}",
+                            out_sink.size(), sr.error().detail);
+                    } else {
+                        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                            "KernelTcpStream::drain_codec_(TLS): sent {} "
+                            "auto-response bytes", out_sink.size());
+                    }
+                }
                 if (!dr) {
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "KernelTcpStream::drain_codec_: decode error (TLS): {}",
@@ -840,7 +859,19 @@ private:
                 const std::size_t consumed = before - view.length();
                 tls_plain_head_ += consumed;
 
-                if (!dr->has_value()) break;  // need more plaintext
+                if (!dr->has_value()) {
+                    // Ok(None) can mean either "codec auto-handled a
+                    // control frame and consumed bytes" (e.g. WsCodec
+                    // absorbing a ping) or "need more bytes". Only the
+                    // latter justifies a break; the former should keep
+                    // draining so back-to-back control frames in one
+                    // recv() burst are all processed before we yield
+                    // back to the epoll loop. A burst of server pings
+                    // that stopped at the first one would otherwise
+                    // stall until the next level-triggered wakeup.
+                    if (consumed == 0) break;
+                    continue;
+                }
 
                 // Guard against infinite loop: codec returned a frame
                 // but did not advance the view.
@@ -898,7 +929,25 @@ private:
             const std::size_t before = reasm_.readable();
             detail::SpanView view(reasm_.read_ptr(), before);
 
+            // Per-iteration sink; flushed before any branch on `dr`
+            // so close-acks written on WsCloseReceived reach the wire
+            // before state_ flips.
+            core::OutputBuffer out_sink(scratch, sizeof(scratch));
             auto dr = codec_.decode(view, out_sink);
+            if (out_sink.size() > 0) {
+                auto sr = this->send(std::span<const uint8_t>(
+                    out_sink.data(), out_sink.size()));
+                if (!sr) {
+                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        "KernelTcpStream::drain_codec_: "
+                        "auto-response send failed ({} bytes): {}",
+                        out_sink.size(), sr.error().detail);
+                } else {
+                    SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                        "KernelTcpStream::drain_codec_: sent {} "
+                        "auto-response bytes", out_sink.size());
+                }
+            }
             if (!dr) {
                 SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::drain_codec_: decode error: {}",
@@ -910,7 +959,12 @@ private:
             reasm_.consume(consumed);
 
             if (!dr->has_value()) {
-                break;
+                // See TLS branch for the rationale: Ok(None) + consumed>0
+                // means the codec auto-handled a control frame and we
+                // should keep draining. Only consumed==0 is "need more
+                // bytes" and warrants a break.
+                if (consumed == 0) break;
+                continue;
             }
             // Guard against infinite loop: codec returned a frame
             // but did not advance the view.
