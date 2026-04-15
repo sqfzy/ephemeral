@@ -380,6 +380,29 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: pool must not be null"});
         }
+        // Validate timeout values up front so a caller passing zero or
+        // negative `connect_timeout` / `ws_timeout` fails at the config
+        // boundary instead of emerging much later as a cryptic
+        // `Error::Timeout`. Parity with the kernel backend fix (MED-2 /
+        // commit 7aa19b6) so the two backends reject identical bad configs.
+        if (cfg.connect_timeout <= std::chrono::milliseconds::zero()) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::create: connect_timeout={}ms must be > 0",
+                cfg.connect_timeout.count());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkTcpStream::create: connect_timeout must be > 0"});
+        }
+        if (!cfg.ws_path.empty() &&
+            cfg.ws_timeout <= std::chrono::milliseconds::zero()) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::create: ws_timeout={}ms must be > 0 when "
+                "ws_path is non-empty",
+                cfg.ws_timeout.count());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkTcpStream::create: ws_timeout must be > 0"});
+        }
         // HTTP CONNECT proxies are unsupported on DPDK. HFT colo
         // deployments don't use proxies, and a DPDK client bypasses the
         // kernel userland stack that a proxy would be reachable through.
