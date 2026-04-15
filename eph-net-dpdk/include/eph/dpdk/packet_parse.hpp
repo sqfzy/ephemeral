@@ -291,6 +291,14 @@ parse_udp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
     uint16_t udp_len = ntoh16(udp->length);
     if (udp_len < kUdpHeaderLen) return {};
     if (udp_offset + udp_len > pkt_len) return {};
+    // Cross-check UDP length against IP total_length: the UDP datagram must
+    // fit exactly inside the IP payload (ip_total_length - ihl). A mismatch
+    // signals a malformed or tampered packet — reject rather than accept the
+    // smaller of the two values, because either field being wrong is a red
+    // flag worth losing the packet over.
+    const uint16_t ip_total = ntoh16(ip_hdr.ip->total_length);
+    if (ip_total < ip_hdr.ihl + kUdpHeaderLen) return {};
+    if (udp_len != ip_total - ip_hdr.ihl) return {};
 
     ParsedUdpPacket result;
     result.eth = ip_hdr.eth;
