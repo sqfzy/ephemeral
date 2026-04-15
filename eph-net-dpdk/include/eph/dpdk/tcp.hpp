@@ -396,6 +396,14 @@ public:
                 net::format_ipv4(config.tuple.dst_ip).data());
         }
 
+        // Surface TcpConfig::warnings() (loopback IPs, zero MACs, shared
+        // TX/RX queue, unusual MSS, etc.) — advisory, does not block
+        // construction. Mirrors Platform::create / UdpSender::create.
+        for (const auto& w : config.warnings()) {
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "TcpConfig advisory: {}", w);
+        }
+
         pkt_template_.src_mac = config.src_mac;
         pkt_template_.dst_mac = config.dst_mac;
         pkt_template_.tuple   = config.tuple;
