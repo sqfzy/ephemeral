@@ -184,6 +184,14 @@ public:
             return std::unexpected(std::string(err));
         }
 
+        // Surface non-fatal misconfigurations (currently just hw_cksum
+        // without a verified NIC capability). Advisory only — does not
+        // block construction. Parallel to Platform::create emitting
+        // PlatformConfig::warnings() at WARN.
+        for (const auto& w : cfg.warnings()) {
+            SPDLOG_LOGGER_WARN(log, "UdpConfig advisory: {}", w);
+        }
+
         // Verify NIC supports UDP checksum offload if requested
         if (cfg.hw_cksum) {
             rte_eth_dev_info dev_info{};
