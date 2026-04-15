@@ -15,6 +15,15 @@
 /// is pinned via `--pin-cpu` (default 2 — must be one of the lcores passed
 /// to EAL via `-l <list>` and ideally on `isolcpus`).
 ///
+/// Reconnect behaviour: the stream lifecycle is wrapped in an
+/// `eph::net::ReconnectPolicy` exponential-backoff loop with ±25% jitter.
+/// DNS / ARP / mempool / src MAC are resolved ONCE on startup and reused
+/// across reconnects — re-resolving DNS on every drop would add noise to a
+/// latency probe and the L2 gateway is stable on a single-segment LAN.
+/// Latency samples and frame counters persist across reconnects so the
+/// final report reflects the whole `--duration` window. Tuning knobs:
+/// `--reconnect-initial-ms` / `--reconnect-max-ms` / `--reconnect-max-attempts`.
+///
 /// Usage:
 ///   sudo ./binance_latency <EAL args> --
 ///        --local-ip 10.0.0.16 --gateway-ip 10.0.0.1
@@ -23,11 +32,16 @@
 ///        [--src-port 40001] [--port 9443]
 ///        [--path /ws/btcusdt@aggTrade] [--duration 30]
 ///        [--pin-cpu 2] [--log-level info]
+///        [--reconnect-initial-ms 250] [--reconnect-max-ms 10000]
+///        [--reconnect-max-attempts 0]
 ///
 /// `--dst-ip` skips the DPDK-native DNS path (useful to pin a known
 /// TLS-1.3-capable Binance backend). When absent, `eph::dpdk::dns::resolve`
 /// is used to look up `--host` through the configured nameserver, which
 /// itself is reached via the ARP-resolved gateway MAC.
+///
+/// `--reconnect-max-attempts 0` means unlimited retries; the loop is
+/// bounded by `--duration` and SIGINT / SIGTERM instead.
 
 #include <time.h>
 
@@ -40,6 +54,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <rte_ethdev.h>
@@ -63,6 +78,7 @@
 // v3.3 concept-layer DPDK stream / poller.
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
+#include "eph/net/reconnect_policy.hpp"
 
 #include "eph/utils/cpu_pin.hpp"
 #include "eph/utils/recorder.hpp"
@@ -128,6 +144,13 @@ struct AppConfig {
     std::uint32_t gateway_ip = 0;      // required
     std::uint32_t dst_ip = 0;          // optional — 0 means "use DPDK DNS"
     std::uint32_t nameserver_ip = 0x08080808;  // 8.8.8.8 default
+
+    // ReconnectPolicy knobs. Sane defaults for exchange-grade endpoints:
+    // fast initial retry, capped at 10s, unlimited attempts (outer loop
+    // is bounded by --duration and SIGINT).
+    int reconnect_initial_ms = 250;
+    int reconnect_max_ms     = 10000;
+    std::uint32_t reconnect_max_attempts = 0;  // 0 = unlimited
 };
 
 [[nodiscard]] static std::optional<AppConfig>
@@ -187,6 +210,12 @@ parse_app_args(int argc, char** argv) {
             cfg.dpdk_port_id = static_cast<std::uint16_t>(std::atoi(next));
         } else if (a == "--pin-cpu" && need("--pin-cpu")) {
             cfg.pin_cpu = std::atoi(next);
+        } else if (a == "--reconnect-initial-ms" && need("--reconnect-initial-ms")) {
+            cfg.reconnect_initial_ms = std::atoi(next);
+        } else if (a == "--reconnect-max-ms" && need("--reconnect-max-ms")) {
+            cfg.reconnect_max_ms = std::atoi(next);
+        } else if (a == "--reconnect-max-attempts" && need("--reconnect-max-attempts")) {
+            cfg.reconnect_max_attempts = static_cast<std::uint32_t>(std::atoi(next));
         } else {
             spdlog::warn("ignoring unknown app argument: {}", a);
         }
@@ -344,59 +373,31 @@ int main(int argc, char** argv) {
     }
     auto poller = std::move(*poller_r);
 
-    // ── 9) Build the DpdkTcpStream<WsCodec, true> with TLS + WS upgrade ───
+    // ── 9) Reconnect policy + stats (persist across sessions) ────────────
     //
-    // DPDK has no kernel ephemeral-port allocator, so we ask DpdkPoller to
-    // pick a fresh source port from the Linux-conventional [32768, 60999]
-    // range with a random start. `--src-port N` (N != 0) overrides the
-    // pick with a soft preference; if it's already in use the allocator
-    // falls back to the random scan.
-    const std::uint16_t preferred_src_port = app_cfg.src_port;
-    auto src_port_r = poller->pick_src_port(
-        app_cfg.local_ip, dst_ip, app_cfg.port,
-        /*range_begin=*/32768, /*range_end=*/60999,
-        /*preferred=*/preferred_src_port);
-    if (!src_port_r) {
-        spdlog::error("DpdkPoller::pick_src_port failed: {}",
-                      src_port_r.error().detail);
-        return 9;
-    }
-    const std::uint16_t src_port = *src_port_r;
-    if (preferred_src_port != 0 && src_port != preferred_src_port) {
-        spdlog::warn("--src-port {} rejected; allocated {} instead",
-                     preferred_src_port, src_port);
-    }
-
-    edpdk::StreamConfig scfg{};
-    scfg.legacy.tuple.src_ip = app_cfg.local_ip;
-    scfg.legacy.tuple.dst_ip = dst_ip;
-    scfg.legacy.tuple.src_port = src_port;
-    scfg.legacy.tuple.dst_port = app_cfg.port;
-    scfg.legacy.src_mac = src_mac;
-    scfg.legacy.dst_mac = gw_mac;
-    scfg.legacy.port_id = port_id;
-    scfg.legacy.tx_queue_id = 0;
-    scfg.legacy.rx_queue_id = 0;
-    scfg.legacy.mss = eph::dpdk::net::kDefaultMss;
-    scfg.legacy.recv_window = 65535;
-    scfg.pool = pool;
-    scfg.connect_timeout = 5s;
-    scfg.tls.hostname = app_cfg.host;  // SNI
-    scfg.ws_path = app_cfg.ws_path;
-    scfg.ws_host = app_cfg.host;
-    scfg.ws_timeout = 10s;
-    scfg.reasm_capacity = 256 * 1024;
+    // ReconnectPolicy is just exponential-backoff math — no sleep, no
+    // connect. The outer loop below drives the actual connect / drop
+    // cycle. On a clean drop (FIN, close handshake, TLS alert) the
+    // stream leaves Established, the inner poll loop exits, we destroy
+    // the stream, and the outer loop picks a fresh ephemeral src port
+    // and tries again. `policy.reset()` is called after each successful
+    // connect so a later drop starts backoff fresh instead of inheriting
+    // the previous chain's delay.
+    eph::net::ReconnectPolicy policy{eph::net::ReconnectPolicyConfig{
+        .initial_backoff = std::chrono::milliseconds{app_cfg.reconnect_initial_ms},
+        .max_backoff     = std::chrono::milliseconds{app_cfg.reconnect_max_ms},
+        .multiplier      = 2.0,
+        .jitter_factor   = 0.25,
+        .max_attempts    = app_cfg.reconnect_max_attempts,  // 0 = unlimited
+    }};
 
     using Stream = edpdk::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/true>;
-    auto sr = Stream::create(std::move(scfg));
-    if (!sr) {
-        spdlog::error("DpdkTcpStream::create failed: {}", sr.error().detail);
-        return 9;
-    }
-    auto stream = std::move(*sr);
-
     SessionStats stats{"binance_recv_minus_T_ns"};
-    stream->on_message = [&stats](const std::uint8_t* data, std::uint16_t len) {
+
+    // on_message captures `stats` by reference so counters and the
+    // Recorder accumulate across reconnects — the final report reflects
+    // the whole --duration window.
+    auto on_message_handler = [&stats](const std::uint8_t* data, std::uint16_t len) {
         // Wall-clock receive timestamp (matches Binance's T which is
         // wall-clock ms since epoch). Mixing TSC with realtime would
         // produce garbage diffs.
@@ -436,30 +437,133 @@ int main(int argc, char** argv) {
         stats.recorder.record_ns(recv_ns - T_ns);
     };
 
-    if (auto r = poller->add(stream.get()); !r) {
-        spdlog::error("poller->add failed: {}", r.error().detail);
-        return 10;
-    }
-
-    // ── 10) Run the burst-poll loop until the caller asks to stop ─────────
+    // ── 10) Reconnect loop ────────────────────────────────────────────────
+    //
+    // Deadline is wall-clock from startup: time spent in backoff / TLS
+    // handshake on reconnect eats into the measurement budget by design
+    // (failed connects ARE a latency event the operator should see in
+    // the final report).
+    //
+    // DNS / ARP / mempool / src MAC are resolved above and reused — we
+    // do NOT re-resolve them on reconnect: DNS is slow and would add
+    // noise to a latency probe, and the L2 gateway is stable.
     spdlog::info(
-        "binance_latency (dpdk): host={} src={}:{} -> dst={}:{} path={} "
-        "pin_cpu={} duration={}s",
+        "binance_latency (dpdk): host={} -> dst={}:{} path={} "
+        "pin_cpu={} duration={}s reconnect[initial={}ms max={}ms attempts={}]",
         app_cfg.host,
-        eph::dpdk::net::format_ipv4(app_cfg.local_ip).data(), src_port,
         eph::dpdk::net::format_ipv4(dst_ip).data(), app_cfg.port,
-        app_cfg.ws_path, app_cfg.pin_cpu, app_cfg.duration_s);
+        app_cfg.ws_path, app_cfg.pin_cpu, app_cfg.duration_s,
+        app_cfg.reconnect_initial_ms, app_cfg.reconnect_max_ms,
+        app_cfg.reconnect_max_attempts);
 
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::seconds{app_cfg.duration_s};
-    while (g_running.load(std::memory_order_acquire) &&
-           std::chrono::steady_clock::now() < deadline) {
-        (void)poller->poll();
+    std::uint64_t session_count = 0;
+    bool warned_src_port_override = false;
+
+    while (g_running.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline
+           && policy.should_reconnect()) {
+
+        // ── 10a) Fresh ephemeral src port per attempt ───────────────────
+        // DPDK has no kernel ephemeral-port allocator, so DpdkPoller
+        // does the [32768, 60999] random scan itself. `--src-port N`
+        // is a soft preference; on conflict the scan picks something
+        // else and we warn once.
+        auto src_port_r = poller->pick_src_port(
+            app_cfg.local_ip, dst_ip, app_cfg.port,
+            /*range_begin=*/32768, /*range_end=*/60999,
+            /*preferred=*/app_cfg.src_port);
+        if (!src_port_r) {
+            const auto delay = policy.next_backoff();
+            spdlog::warn("pick_src_port failed: {} — retry in {}ms (attempt {})",
+                         src_port_r.error().detail, delay.count(),
+                         policy.attempts());
+            std::this_thread::sleep_for(delay);
+            continue;
+        }
+        const std::uint16_t src_port = *src_port_r;
+        if (!warned_src_port_override && app_cfg.src_port != 0 &&
+            src_port != app_cfg.src_port) {
+            spdlog::warn("--src-port {} rejected; allocated {} instead",
+                         app_cfg.src_port, src_port);
+            warned_src_port_override = true;
+        }
+
+        // ── 10b) Build StreamConfig and run create() — this does the
+        //        TCP handshake, TLS 1.3 handshake, and WS Upgrade all in
+        //        one call. Failure here is what the reconnect loop is
+        //        here for.
+        edpdk::StreamConfig scfg{};
+        scfg.legacy.tuple.src_ip = app_cfg.local_ip;
+        scfg.legacy.tuple.dst_ip = dst_ip;
+        scfg.legacy.tuple.src_port = src_port;
+        scfg.legacy.tuple.dst_port = app_cfg.port;
+        scfg.legacy.src_mac = src_mac;
+        scfg.legacy.dst_mac = gw_mac;
+        scfg.legacy.port_id = port_id;
+        scfg.legacy.tx_queue_id = 0;
+        scfg.legacy.rx_queue_id = 0;
+        scfg.legacy.mss = eph::dpdk::net::kDefaultMss;
+        scfg.legacy.recv_window = 65535;
+        scfg.pool = pool;
+        scfg.connect_timeout = 5s;
+        scfg.tls.hostname = app_cfg.host;  // SNI
+        scfg.ws_path = app_cfg.ws_path;
+        scfg.ws_host = app_cfg.host;
+        scfg.ws_timeout = 10s;
+        scfg.reasm_capacity = 256 * 1024;
+
+        auto sr = Stream::create(std::move(scfg));
+        if (!sr) {
+            const auto delay = policy.next_backoff();
+            spdlog::warn("DpdkTcpStream::create failed: {} — retry in {}ms (attempt {})",
+                         sr.error().detail, delay.count(), policy.attempts());
+            std::this_thread::sleep_for(delay);
+            continue;
+        }
+        auto stream = std::move(*sr);
+        stream->on_message = on_message_handler;
+
+        if (auto r = poller->add(stream.get()); !r) {
+            const auto delay = policy.next_backoff();
+            spdlog::warn("poller->add failed: {} — retry in {}ms (attempt {})",
+                         r.error().detail, delay.count(), policy.attempts());
+            std::this_thread::sleep_for(delay);
+            continue;
+        }
+
+        // Connected — reset backoff chain.
+        policy.reset();
+        ++session_count;
+        spdlog::info("session #{} connected src={}:{} dst={}:{}",
+                     session_count,
+                     eph::dpdk::net::format_ipv4(app_cfg.local_ip).data(),
+                     src_port,
+                     eph::dpdk::net::format_ipv4(dst_ip).data(),
+                     app_cfg.port);
+
+        // ── 10c) Burst-poll loop until clean drop, SIGINT, or deadline.
+        // `state() == Established` flips to Closing / Closed on any FIN,
+        // RST, TLS alert, or poller-side disconnect.
+        while (g_running.load(std::memory_order_acquire)
+               && std::chrono::steady_clock::now() < deadline
+               && stream->state() == eph::net::TcpState::Established) {
+            (void)poller->poll();
+        }
+
+        (void)poller->remove(stream.get());
+        spdlog::info("session #{} ended state={} frames_so_far={}",
+                     session_count,
+                     eph::net::tcp_state_name(stream->state()),
+                     stats.frames);
+        // `stream` destroyed at end of scope; outer loop decides what
+        // to do next.
     }
 
     spdlog::info(
-        "binance_latency: stopping. frames={} parsed_ok={} no_T={} skew_skip={}",
-        stats.frames, stats.parsed_ok, stats.no_T_field,
+        "binance_latency: stopping. sessions={} frames={} parsed_ok={} no_T={} skew_skip={}",
+        session_count, stats.frames, stats.parsed_ok, stats.no_T_field,
         stats.clock_skew_skipped);
     stats.recorder.print_report();
     return 0;
