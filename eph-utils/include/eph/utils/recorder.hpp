@@ -19,8 +19,11 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -92,6 +95,60 @@ namespace recorder_detail {
         std::println(stderr, "Directory error: {}", e.what());
         return false;
     }
+}
+
+/// @brief Print a single-column ASCII "card" with all Stats fields.
+///
+/// Fixed width (48 columns) so the output never wraps on 80-col terminals,
+/// and every value sits on its own line — scripts can extract any metric
+/// with a trivial `awk '/^\| p99 / {print $3}'` pattern. Pure ASCII so
+/// `cut -c` byte offsets stay stable regardless of locale.
+///
+/// @param stats            Latency statistics to print.
+/// @param skipped_invalid  Count of samples rejected for being out of range.
+/// @param skipped_overflow Count of samples rejected for arithmetic overflow.
+/// @param threads          Optional (active, retired) thread counts; when set,
+///                         an extra "Threads" row is printed (used by the
+///                         concurrent recorder).
+inline void print_stats_card(
+    const Stats& stats,
+    uint64_t skipped_invalid,
+    uint64_t skipped_overflow,
+    std::optional<std::pair<size_t, size_t>> threads = std::nullopt) {
+    // inner_w = width between the two outer '|' chars. Chosen so the
+    // whole card is 48 columns — comfortably under any sane terminal.
+    constexpr int inner_w = 46;
+    constexpr int label_w = 8;
+    constexpr int value_w = inner_w - 2 - label_w;  // leading/trailing space
+
+    auto row = [&](std::string_view label, std::string_view value) {
+        std::println("| {:<{}}{:>{}} |", label, label_w, value, value_w);
+    };
+    auto sep = [&]() { std::println("+{:-<{}}+", "", inner_w); };
+    auto fmt_ns = [](double v) { return std::format("{:.1f} ns", v); };
+
+    std::println("");
+    std::println("+{:-<{}}+", "- Latency Report ", inner_w);
+    row("Task", stats.name);
+    row("Time", get_timestamp());
+    row("Samples", std::format("{}", stats.count));
+    row("Skipped", std::format("{} invalid, {} overflow",
+                               skipped_invalid, skipped_overflow));
+    if (threads) {
+        row("Threads", std::format("{} active, {} retired",
+                                   threads->first, threads->second));
+    }
+    sep();
+    row("avg",    fmt_ns(stats.avg_ns));
+    row("stddev", fmt_ns(stats.stddev_ns));
+    row("min",    fmt_ns(stats.min_ns));
+    row("max",    fmt_ns(stats.max_ns));
+    row("p50",    fmt_ns(stats.p50_ns));
+    row("p90",    fmt_ns(stats.p90_ns));
+    row("p99",    fmt_ns(stats.p99_ns));
+    row("p99.9",  fmt_ns(stats.p999_ns));
+    sep();
+    std::println("");
 }
 
 }  // namespace recorder_detail
@@ -307,32 +364,8 @@ class Recorder {
             print_warnings();
             return;
         }
-
-        std::string time_str = get_timestamp();
-        std::string title = std::format(" BENCHMARK REPORT ({}) ", time_str);
-
-        constexpr int w_name = 30;
-        constexpr int w_metric = 12;
-        constexpr int total_w = w_name + (w_metric * 6) + 18;
-
-        std::println("\n{:-^{}}", title, total_w);
-
-        std::println(
-            "{:<{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}}",
-            "Task Name", w_name, "Count", w_metric, "Avg(ns)", w_metric,
-            "P50(ns)", w_metric, "P99(ns)", w_metric, "Min(ns)", w_metric,
-            "Max(ns)", w_metric);
-
-        std::println("{:-^{}}", "", total_w);
-
-        std::println(
-            "{:<{}} | {:>{}} | {:>{}.1f} | {:>{}.1f} | {:>{}.1f} | "
-            "{:>{}.1f} | {:>{}.1f}",
-            stats->name, w_name, stats->count, w_metric, stats->avg_ns,
-            w_metric, stats->p50_ns, w_metric, stats->p99_ns, w_metric,
-            stats->min_ns, w_metric, stats->max_ns, w_metric);
-
-        std::println("{:-^{}}\n", "", total_w);
+        recorder_detail::print_stats_card(
+            *stats, skipped_invalid_, skipped_overflow_);
         print_warnings();
     }
 
@@ -734,38 +767,10 @@ class ConcurrentRecorder {
             std::println(stderr, "[{}] No data recorded", name_);
             return;
         }
-
-        auto now = std::chrono::system_clock::now();
-        std::string time_str = std::format(
-            "{:%Y-%m-%d_%H-%M-%S}",
-            std::chrono::floor<std::chrono::seconds>(now));
-        std::string title = std::format(" BENCHMARK REPORT ({}) ", time_str);
-
-        constexpr int w_name = 30;
-        constexpr int w_metric = 12;
-        constexpr int total_w = w_name + (w_metric * 6) + 18;
-
-        auto [active, retired] = state_->thread_counts();
-
-        std::println("\n{:-^{}}", title, total_w);
-        std::println("  Threads: {} active, {} retired", active, retired);
-
-        std::println(
-            "{:<{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}} | {:>{}}",
-            "Task Name", w_name, "Count", w_metric, "Avg(ns)", w_metric,
-            "P50(ns)", w_metric, "P99(ns)", w_metric, "Min(ns)", w_metric,
-            "Max(ns)", w_metric);
-
-        std::println("{:-^{}}", "", total_w);
-
-        std::println(
-            "{:<{}} | {:>{}} | {:>{}.1f} | {:>{}.1f} | {:>{}.1f} | "
-            "{:>{}.1f} | {:>{}.1f}",
-            stats->name, w_name, stats->count, w_metric, stats->avg_ns,
-            w_metric, stats->p50_ns, w_metric, stats->p99_ns, w_metric,
-            stats->min_ns, w_metric, stats->max_ns, w_metric);
-
-        std::println("{:-^{}}\n", "", total_w);
+        auto [skipped_invalid, skipped_overflow] = merged_skipped_counts();
+        recorder_detail::print_stats_card(
+            *stats, skipped_invalid, skipped_overflow,
+            state_->thread_counts());
     }
 
     /// @brief Benchmark name provided at construction.
