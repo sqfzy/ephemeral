@@ -518,7 +518,18 @@ private:
                 pkt_src_port == e.dst_port && pkt_dst_port == e.src_port) {
                 return &e;
             }
-            // Hash matched but tuple didn't — genuine hash collision.
+            // Hash matched but tuple didn't — genuine hash collision. Warn
+            // once per Poller instance so the first occurrence is visible
+            // in logs, then rely on the running counter exposed via
+            // hash_collision_drops() for cumulative tracking.
+            if (hash_collision_drops_ == 0) {
+                SPDLOG_LOGGER_WARN(detail::poller_logger(),
+                    "DpdkPoller::lookup_by_5tuple_: first hash collision "
+                    "(pkt_hash=0x{:08x} src=0x{:08x}:{} dst=0x{:08x}:{}); "
+                    "subsequent collisions tracked via hash_collision_drops()",
+                    pkt_hash, pkt_src_ip, pkt_src_port,
+                    pkt_dst_ip, pkt_dst_port);
+            }
             ++hash_collision_drops_;
         }
         return nullptr;
