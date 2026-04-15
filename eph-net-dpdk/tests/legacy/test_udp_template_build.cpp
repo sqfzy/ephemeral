@@ -90,7 +90,10 @@ TEST_F(UdpTemplateTest, BuildZeroPayloadRoundTrip) {
     auto parsed = parse_udp_packet(mbuf);
     ASSERT_NE(parsed.udp, nullptr);
     EXPECT_EQ(parsed.payload_len, 0u);
-    EXPECT_EQ(parsed.payload, nullptr);
+    // Per RFC 768 the parser accepts zero-length datagrams and points
+    // `payload` past the UDP header — the length is authoritative. The old
+    // nullptr sentinel (from the pre-fix parser) is no longer the contract.
+    EXPECT_NE(parsed.payload, nullptr);
 
     rte_pktmbuf_free(mbuf);
 }
