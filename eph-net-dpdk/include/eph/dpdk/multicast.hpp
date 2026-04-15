@@ -182,6 +182,13 @@ struct MulticastGroup {
 ///
 /// Controls which NIC port/queue to poll, optional CPU pinning for the
 /// RX thread, and the burst size per poll cycle.
+/// @brief Maximum rx_burst accepted by MulticastConfig::validate() and the
+///        corresponding stack-allocated burst pointer array inside
+///        MulticastReceiver::rx_loop. Kept as a named constant so the two
+///        sites cannot drift out of sync. 512 mbuf pointers = 4 KiB of
+///        stack which is comfortable even in worker contexts.
+inline constexpr uint16_t kMulticastMaxRxBurst = 512;
+
 struct MulticastConfig {
     uint16_t port_id      = 0;       ///< DPDK port ID to poll
     uint16_t rx_queue_id  = 0;       ///< RX queue index on the port
@@ -194,7 +201,7 @@ struct MulticastConfig {
     /// Validate configuration parameters.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
         if (rx_burst == 0) return "rx_burst must not be zero";
-        if (rx_burst > 512) return "rx_burst too large (max 512)";
+        if (rx_burst > kMulticastMaxRxBurst) return "rx_burst too large (max 512)";
         if (rx_cpu < -1) return "rx_cpu must be >= -1 (-1 = no pinning)";
         return {};
     }
@@ -640,9 +647,11 @@ private:
             "Multicast RX loop started: {} active groups, port={}, queue={}, cpu={}",
             active_group_count(), config_.port_id, config_.rx_queue_id, config_.rx_cpu);
 
-        // Allocate burst array on stack (size known at construction)
-        // Cap at 512 to keep stack usage reasonable
-        rte_mbuf* pkts[512];
+        // Allocate burst array on stack. Sized to the configured upper
+        // bound (kMulticastMaxRxBurst = 512 pointers = 4 KiB) so validate()
+        // and this loop cannot drift out of sync. rte_eth_rx_burst is
+        // capped via the runtime `burst_size` below.
+        rte_mbuf* pkts[kMulticastMaxRxBurst];
         const uint16_t burst_size = config_.rx_burst;
 
         while (running_.load(std::memory_order_acquire)) {
