@@ -303,6 +303,13 @@ public:
         SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
             "MulticastReceiver created: port={}, queue={}, rx_burst={}",
             config_.port_id, config_.rx_queue_id, config_.rx_burst);
+        // Surface non-fatal misconfigurations (no CPU pinning, unusual
+        // rx_burst). Advisory only — operators see them in production
+        // logs. Parallel to Platform / UdpSender / TcpSession / DNS.
+        for (const auto& w : config_.warnings()) {
+            SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                "MulticastConfig advisory: {}", w);
+        }
     }
 
     ~MulticastReceiver() {

@@ -175,7 +175,16 @@ public:
     using Config = RxDispatcherConfig;
 
     explicit RxDispatcher(Config config) noexcept
-        : config_(config) {}
+        : config_(config) {
+        // Surface non-fatal misconfigurations (no CPU pinning, etc.).
+        // Advisory only — does not block construction. Completes the
+        // warnings() auto-log pattern shared by Platform / UdpSender /
+        // TcpSession / DNS / Multicast.
+        for (const auto& w : config_.warnings()) {
+            SPDLOG_LOGGER_WARN(detail::rx_dispatcher_logger(),
+                "RxDispatcherConfig advisory: {}", w);
+        }
+    }
 
     ~RxDispatcher() { stop(); }
 
