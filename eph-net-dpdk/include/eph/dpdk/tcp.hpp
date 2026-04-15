@@ -898,9 +898,21 @@ public:
         // Per-packet rte_pktmbuf_free inside the loop costs ~20-40ns each
         // and falls within the latency-measured path.
         // Safety: free_list is sized to the max burst the callers (poll_rx,
-        // connect) ever pass. Clamp nb_pkts to prevent stack overflow.
+        // connect) ever pass. Packets beyond kMaxBurst are freed up front
+        // so they cannot leak — previously the excess was silently dropped
+        // and the underlying mbufs would linger in the mempool forever.
         static constexpr uint16_t kMaxBurst = 32;
-        nb_pkts = std::min(nb_pkts, kMaxBurst);
+        if (nb_pkts > kMaxBurst) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(log,
+                "process_rx: nb_pkts={} exceeds kMaxBurst={}; freeing {} "
+                "excess mbufs (no current caller should hit this — if this "
+                "WARN triggers in production, raise kMaxBurst)",
+                nb_pkts, kMaxBurst, nb_pkts - kMaxBurst);
+            for (uint16_t i = kMaxBurst; i < nb_pkts; ++i) {
+                rte_pktmbuf_free(pkts[i]);
+            }
+            nb_pkts = kMaxBurst;
+        }
         rte_mbuf* free_list[kMaxBurst];
         uint16_t free_count = 0;
 
