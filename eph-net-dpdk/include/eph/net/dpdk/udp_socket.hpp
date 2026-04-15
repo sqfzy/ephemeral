@@ -61,6 +61,15 @@ inline spdlog::logger* udp_socket_logger() {
     return l;
 }
 
+/// @brief Stack scratch size for the datagram-codec auto-response
+///        `OutputBuffer` sink. Sized to hold a single max-sized UDP
+///        response a codec might synthesize (e.g. MoldUDP64 request-retrans
+///        reply). Matches `tcp_stream::detail::kCodecAutoResponseBytes` for
+///        parity so both backends treat the auto-response budget the same.
+///        Named separately from the tcp_stream constant to keep the two
+///        headers mutually independent — either can be included alone.
+inline constexpr std::size_t kDatagramAutoResponseBytes = 1024;
+
 } // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -326,7 +335,7 @@ public:
             detail::MbufView view(const_cast<uint8_t*>(parsed.payload),
                                    parsed.payload_len, rx_tsc);
 
-            uint8_t            scratch[64];
+            uint8_t            scratch[detail::kDatagramAutoResponseBytes];
             core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
             auto sink = [&](auto&& frame) {
