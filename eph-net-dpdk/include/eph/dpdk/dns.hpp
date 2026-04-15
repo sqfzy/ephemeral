@@ -565,6 +565,13 @@ resolve(uint16_t port_id,
 
     [[maybe_unused]] auto log = detail::dns_logger();
 
+    // Surface non-fatal misconfigurations (loopback nameserver on DPDK,
+    // very short timeout, non-standard port) — advisory, does not block
+    // the resolve. Parallel to Platform / UdpSender / TcpSession.
+    for (const auto& w : cfg.warnings()) {
+        SPDLOG_LOGGER_WARN(log, "DnsConfig advisory: {}", w);
+    }
+
     if (hostname.empty()) {
         return std::unexpected("DNS resolve: hostname is empty");
     }
