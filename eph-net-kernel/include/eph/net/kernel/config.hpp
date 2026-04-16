@@ -32,6 +32,15 @@ struct StreamConfig {
     /// @brief Destination endpoint. Must be populated by the caller.
     SocketAddr remote{};
 
+    /// @brief Optional local bind endpoint applied before connect().
+    ///        Default-constructed (`{0.0.0.0}:0`) means "let the kernel
+    ///        pick" — same behavior as if no bind() were called. Set a
+    ///        non-zero `port` (and optionally a non-zero `ip`) to pin the
+    ///        5-tuple's source side, which is required when a downstream
+    ///        path-discovery probe (e.g. paris-traceroute) must traverse
+    ///        the same ECMP bucket as this connection.
+    SocketAddr local{};
+
     /// @brief Connect deadline (DNS + TCP + TLS handshake combined).
     std::chrono::milliseconds connect_timeout{3000};
 

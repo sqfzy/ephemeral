@@ -123,11 +123,12 @@ public:
     ///   - Err(ConnectFailed) on socket()/connect()/getsockopt() failure
     ///   - Err(Timeout) when the deadline expires before completion
     [[nodiscard]] std::expected<void, core::ErrorInfo>
-    connect(const SocketAddr& addr, std::chrono::milliseconds timeout) noexcept {
+    connect(const SocketAddr& addr, std::chrono::milliseconds timeout,
+            const SocketAddr& local = SocketAddr{}) noexcept {
         [[maybe_unused]] auto* log = byte_socket_logger();
         SPDLOG_LOGGER_DEBUG(log,
-            "ByteSocket::connect entry: addr={} timeout_ms={}",
-            addr.to_string(), timeout.count());
+            "ByteSocket::connect entry: addr={} local={} timeout_ms={}",
+            addr.to_string(), local.to_string(), timeout.count());
 
         if (fd_ >= 0) {
             return std::unexpected(core::ErrorInfo{
@@ -161,6 +162,32 @@ public:
                 "ByteSocket::connect: setsockopt(TCP_NODELAY) failed: "
                 "errno={} ({}) — Nagle may remain enabled",
                 errno, std::strerror(errno));
+        }
+
+        // Optional explicit local bind. The default-constructed SocketAddr
+        // has port=0 and ip=0.0.0.0, which is the no-op case (kernel picks
+        // both, same as if bind() were never called). Any non-zero field
+        // means the caller wants to pin part of the 5-tuple — typically the
+        // source port, so a paris-traceroute companion probe can hash into
+        // the same ECMP bucket. We do NOT set SO_REUSEADDR: this is a
+        // client-only socket, and a stale TIME_WAIT on the same 4-tuple is
+        // a real conflict the caller should learn about, not paper over.
+        if (local.port != 0 || local.ip.to_be32() != 0) {
+            struct sockaddr_in lsa{};
+            lsa.sin_family      = AF_INET;
+            lsa.sin_port        = ::htons(local.port);
+            lsa.sin_addr.s_addr = ::htonl(local.ip.to_be32());
+            if (::bind(s, reinterpret_cast<struct sockaddr*>(&lsa),
+                       sizeof(lsa)) != 0) {
+                const int err = errno;
+                ::close(s);
+                SPDLOG_LOGGER_WARN(log,
+                    "ByteSocket::connect: bind({}) failed: errno={} ({})",
+                    local.to_string(), err, std::strerror(err));
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::ConnectFailed,
+                    "ByteSocket::connect: bind() failed"});
+            }
         }
 
         struct sockaddr_in sa{};

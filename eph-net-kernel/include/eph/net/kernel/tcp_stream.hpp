@@ -347,8 +347,13 @@ public:
                 connect_target.to_string());
         }
 
+        // The local-bind side is *upstream* configuration: even when a
+        // proxy is in use, the bind is on our local end of the wire to the
+        // proxy. So we always pass `cfg_.local`, regardless of whether the
+        // immediate connect_target is the proxy or the upstream itself.
         auto cr = stream->sock_.connect(connect_target,
-                                        stream->cfg_.connect_timeout);
+                                        stream->cfg_.connect_timeout,
+                                        stream->cfg_.local);
         if (!cr) {
             SPDLOG_LOGGER_WARN(log,
                 "KernelTcpStream::create: connect failed: {}", cr.error().detail);
