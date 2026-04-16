@@ -16,12 +16,15 @@
 /// tick, with symbols chosen randomly. In a burst, the same symbol may appear
 /// multiple times; two-phase deduplicates these so only the latest is parsed.
 ///
-/// Latency measurement mirrors lat_ex_market: `t_recv = monotonic_raw_ns()`
-/// at on_message entry, `t_server` extracted from the JSON `"T"` field.
-/// Sample = `t_recv - t_server`. The key difference: in naive mode, each
-/// on_message pays the full-parse cost (~200-500ns), which delays `t_recv`
-/// for subsequent frames in the same burst. In two-phase, Phase 1 costs
-/// ~50ns so subsequent frames see lower `t_recv`.
+/// Latency measurement: a single timestamp `t_actionable = monotonic_raw_ns()`
+/// stamped at the moment the business object (BookTicker) is parsed and
+/// usable. `t_server` is extracted from the JSON `"T"` field.
+/// Sample = `t_actionable - t_server`. This single point captures all three
+/// effects that distinguish the two modes:
+///   - HOL blocking (naive parse-inline stretches burst-tail wakeup time)
+///   - Parse cost itself (naive pays per frame; twophase pays per slot)
+///   - Dedup savings (in twophase, stale frames are overwritten and never
+///     reach Phase 2 — they contribute zero samples, which is the point).
 ///
 /// Config: [lat_ex_market_2p] in bench.conf
 ///   port, ws_path, push_rate_hz, duration_seconds, burst_size, symbols, mode
@@ -86,7 +89,6 @@ struct Slot {
     uint32_t hash     = 0;
     bool     active   = false;
     uint16_t len      = 0;
-    uint64_t t_recv   = 0;
     uint64_t t_server = 0;
     uint8_t  data[kMaxFrameSize]{};
 };
@@ -275,7 +277,6 @@ int main(int argc, char** argv) {
     if (mode == Mode::kNaive) {
         // ── Naive mode: full parse every frame ─────────────────────────
         stream->on_message = [&](const uint8_t* d, uint16_t n) {
-            const uint64_t t_recv = bench::monotonic_raw_ns();
             ++total_frames;
 
             // Full JSON parse + BookTicker extraction (the expensive part).
@@ -299,26 +300,34 @@ int main(int argc, char** argv) {
             }
             const uint64_t t_server = *t_server_opt;
 
-            if (t_recv <= t_server) {
+            // Single instrumentation point: stamp after the BookTicker is
+            // actionable. In naive mode this is inline in on_message, so
+            // burst-tail frames accumulate both HOL blocking and full
+            // parse cost before `t_actionable` is taken.
+            const uint64_t t_actionable = bench::monotonic_raw_ns();
+            if (t_actionable <= t_server) {
                 ++clock_skew;
                 return;
             }
 
             if (sample_idx == warmup_samples) {
-                t_measure_start = t_recv;
+                t_measure_start = t_actionable;
             }
             if (sample_idx >= warmup_samples) {
-                rec.record_ns(t_recv - t_server);
+                rec.record_ns(t_actionable - t_server);
             }
             ++sample_idx;
         };
     } else {
         // ── Two-phase mode: lightweight Phase 1 in on_message ──────────
         stream->on_message = [&](const uint8_t* d, uint16_t n) {
-            const uint64_t t_recv = bench::monotonic_raw_ns();
             ++total_frames;
 
-            // Phase 1: extract symbol hash (~20ns) and T field (~20ns).
+            // Phase 1: extract symbol hash + T field, copy data to the
+            // per-symbol slot. No timestamp is taken here — the single
+            // instrumentation point lives in Phase 2, so dedup-overwritten
+            // stale frames contribute zero samples (that omission is what
+            // two-phase trades parse latency for).
             const uint32_t hash = ej::binance::symbol_hash(d, n);
             if (hash == 0) {
                 ++malformed;
@@ -328,11 +337,6 @@ int main(int argc, char** argv) {
             auto t_server_opt = bench::scan_json_uint_field(d, n, "T");
             if (!t_server_opt) {
                 ++malformed;
-                return;
-            }
-
-            if (t_recv <= *t_server_opt) {
-                ++clock_skew;
                 return;
             }
 
@@ -358,7 +362,6 @@ int main(int argc, char** argv) {
                 static_cast<uint16_t>(std::min<std::size_t>(n, kMaxFrameSize));
             std::memcpy(target->data, d, copy_len);
             target->len      = copy_len;
-            target->t_recv   = t_recv;
             target->t_server = *t_server_opt;
             target->active   = true;
         };
@@ -397,11 +400,20 @@ int main(int argc, char** argv) {
                 }
                 ++parsed_frames;
 
+                // Single instrumentation point: stamp after the BookTicker
+                // is actionable. Dedup-overwritten frames never reach here,
+                // which is why twophase's sample count < total_frames.
+                const uint64_t t_actionable = bench::monotonic_raw_ns();
+                if (t_actionable <= slots[i].t_server) {
+                    ++clock_skew;
+                    continue;
+                }
+
                 if (sample_idx == warmup_samples) {
-                    t_measure_start = slots[i].t_recv;
+                    t_measure_start = t_actionable;
                 }
                 if (sample_idx >= warmup_samples) {
-                    rec.record_ns(slots[i].t_recv - slots[i].t_server);
+                    rec.record_ns(t_actionable - slots[i].t_server);
                 }
                 ++sample_idx;
             }
