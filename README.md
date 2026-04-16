@@ -82,9 +82,10 @@ xmake build -g examples   # build all examples
 xmake build -g benchmarks # build all microbenchmarks
 ```
 
-DPDK builds need the gcc14 wrapper (`/tmp/gcc14-wrap/g++`) to reorder `-isystem` /
-`-L` flags so aws-lc resolves before vcpkg's bundled libssl. See
-[`docs/dpdk-setup.md`](docs/dpdk-setup.md).
+DPDK builds use the distribution's libdpdk via pkg-config (`sudo pacman -S dpdk`,
+`sudo apt install libdpdk-dev`, or build from source). No compiler wrapper is
+required. See [`docs/dpdk-setup.md`](docs/dpdk-setup.md) for hugepages, vfio-pci
+binding, and EAL runtime setup.
 
 ## Usage Examples
 

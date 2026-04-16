@@ -86,9 +86,11 @@ target("my_hft_app")
     apply_dpdk_pmd_linkgroups()
 ```
 
-Builds that combine `eph-net-dpdk` with aws-lc on hosts where vcpkg brings its own
-libssl need the `/tmp/gcc14-wrap/g++` compiler wrapper to reorder `-isystem` /
-`-L` flags. See the Phase 7 commit message (`c2a0ca4`) for the rationale.
+DPDK is sourced from the distribution's system package via pkg-config
+(`sudo pacman -S dpdk` on Arch, `sudo apt install libdpdk-dev` on Ubuntu, or build
+from source). This isolates DPDK's headers under `/usr/include/dpdk/` so they do
+not collide with aws-lc's openssl headers — the previous `/tmp/gcc14-wrap/g++`
+wrapper needed by the vcpkg path is no longer required.
 
 DPDK environment setup (hugepages, vfio-pci binding) is documented in
 [`../docs/dpdk-setup.md`](../docs/dpdk-setup.md).

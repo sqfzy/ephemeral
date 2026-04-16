@@ -54,11 +54,15 @@ xmake f -m tsan && xmake  # ThreadSanitizer
 Optional config flags: `xmake f --use_numa=y`, `xmake f --native_arch=y` (enables
 `-march=native` for benchmark targets).
 
-Optional dependencies: `vcpkg::dpdk` (for `eph-net-dpdk` and `*_dpdk` targets), `aws-lc`
-(TLS / HMAC / CSPRNG — required by `eph-net` for its TLS path), `numactl`, `tabulate`.
-`gtest` and `benchmark` are auto-fetched. DPDK builds use the GCC wrapper at
-`/tmp/gcc14-wrap/g++` which reorders `-isystem` / `-L` so aws-lc resolves before
-vcpkg's bundled libssl — see Phase 7's commit message (`c2a0ca4`) for the rationale.
+Optional dependencies: system **libdpdk** via pkg-config (for `eph-net-dpdk` and
+`*_dpdk` targets — `sudo pacman -S dpdk` on Arch, `sudo apt install libdpdk-dev` on
+Ubuntu, or build from source with `meson setup -Ddisable_drivers=crypto/openssl`),
+`aws-lc` (TLS / HMAC / CSPRNG — required by `eph-net` for its TLS path), `numactl`,
+`tabulate`. `gtest` and `benchmark` are auto-fetched. The previous vcpkg DPDK path
+leaked vcpkg's bundled libssl headers into the DPDK TU and collided with aws-lc's
+(ASN1_NULL / CRYPTO_THREADID typedefs); using system libdpdk isolates the headers
+under `/usr/include/dpdk/` and eliminates the conflict — the `/tmp/gcc14-wrap/g++`
+include-order workaround is retired.
 
 The **release build excludes ALL tests/benchmarks/examples by default** (every such target
 sets `set_default(false)`). Build them explicitly:

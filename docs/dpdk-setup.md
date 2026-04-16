@@ -170,35 +170,38 @@ numactl --cpunodebind=0 --membind=0 ./my_app -l 2,3
 
 ## 6. Build ephemeral with DPDK
 
-```bash
-# Install DPDK via vcpkg (ephemeral's default)
-xmake f -m release -y
+DPDK is sourced from the distribution's system package via pkg-config
+(`libdpdk.pc`). Install the OS package and build normally:
 
-# Or use system DPDK
-xmake f -m release --dpdk=/usr/local -y
+```bash
+# Arch Linux (includes WSL Arch)
+sudo pacman -S dpdk
+
+# Ubuntu / Debian
+sudo apt install libdpdk-dev
+
+# From source (production HFT hosts typically pin a specific version)
+# Disable the openssl crypto PMD to avoid dragging openssl into the link,
+# plus any PMD you don't need:
+meson setup build -Ddisable_drivers=crypto/openssl
+ninja -C build && sudo ninja -C build install
+```
+
+Then:
+
+```bash
+xmake f -m release -y
 
 # Build DPDK examples (see examples/ and eph-net-dpdk/tests/)
 xmake build simple_hft_dpdk
 xmake build ws_echo_client_dpdk
 ```
 
-Note: DPDK builds need the `/tmp/gcc14-wrap/g++` wrapper on hosts where vcpkg brings
-its own libssl — the wrapper reorders `-isystem` / `-L` so aws-lc resolves first. See
-the Phase 7 commit message (`c2a0ca4`) for the root cause.
-
-**Both compiler AND linker must go through the wrapper**, otherwise the link step
-re-introduces the original `-L` ordering and DPDK TLS targets fail with
-`EVP_aead_* / HKDF_expand / SSL_*` undefined references:
-
-```bash
-xmake f --cxx=/tmp/gcc14-wrap/g++ \
-        --ld=/tmp/gcc14-wrap/g++ \
-        --sh=/tmp/gcc14-wrap/g++
-```
-
-If `test_dpdk_tls_handshake` fails at link time with aws-lc symbols undefined, check
-`xmake show -t test_dpdk_tls_handshake | grep -E 'linker|compiler'`; both must point
-at `/tmp/gcc14-wrap/g++`, not `/usr/bin/g++`.
+Historical note: the previous vcpkg::dpdk path flattened openssl headers into
+the same include tree as DPDK, which conflicted with aws-lc. A compiler
+wrapper at `/tmp/gcc14-wrap/g++` was used to reorder `-isystem` / `-L` flags
+so aws-lc resolved first. With system libdpdk the conflict is gone (isolated
+`/usr/include/dpdk/` layout) and the wrapper is **no longer required**.
 
 ## 7. Verification
 

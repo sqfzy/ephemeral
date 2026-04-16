@@ -39,11 +39,13 @@ Read the code in this order:
 
 See `../docs/dpdk-setup.md` for the full flow:
 
-1. Allocate hugepages (`echo 1024 > .../nr_hugepages`).
-2. Bind your secondary NIC to `vfio-pci`.
-3. Build with `xmake -m release` (the gcc14 wrapper at `/tmp/gcc14-wrap/g++`
-   handles the aws-lc ↔ vcpkg-openssl ordering automatically).
-4. Verify with a DPDK example: `sudo xmake run simple_hft_dpdk -- --host …`.
+1. Install system libdpdk (`sudo pacman -S dpdk` / `sudo apt install libdpdk-dev`).
+2. Allocate hugepages (`echo 1024 > .../nr_hugepages`).
+3. Bind your secondary NIC to `vfio-pci`.
+4. Build with `xmake -m release` — no compiler wrapper needed; system libdpdk
+   lives in an isolated `/usr/include/dpdk/` tree so the previous vcpkg path's
+   aws-lc / openssl header collision no longer applies.
+5. Verify with a DPDK example: `sudo xmake run simple_hft_dpdk -- --host …`.
 
 The latency benchmark wrapper (`../benchmarks/latency/lat tcp --dpdk`) is the
 friendliest way to verify NIC-B state transitions end-to-end.
@@ -100,9 +102,10 @@ into it. Unit tests are in `tests/legacy/test_flow_steering.cpp`.
    required — uses a FakeStream).
 3. If the real DPDK path fails at `DpdkTcpStream::create()`, check
    `eph::net::detail::tls_session.hpp` for the handshake state machine.
-4. The `/tmp/gcc14-wrap/g++` wrapper is required to build TLS-enabled DPDK
-   targets on hosts where vcpkg ships its own libssl. If you see duplicate
-   `RSA_*` symbols at link time, you're not using the wrapper.
+4. If you see duplicate `RSA_*` / `CRYPTO_THREADID` symbols at link time, the
+   build is picking up a second openssl implementation somewhere on the
+   include / link path. Check your DPDK came from system libdpdk (not vcpkg)
+   and that `pkg-config --cflags libdpdk` does not point inside a vcpkg tree.
 
 ## See also
 

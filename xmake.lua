@@ -36,7 +36,17 @@ end
 
 -- Dependencies
 add_requires("numactl", "tabulate", "benchmark", "spdlog", { optional = true })
-add_requires("vcpkg::dpdk", { optional = true, alias = "dpdk" })
+-- DPDK: use the distro's system package via pkg-config. This avoids
+-- vcpkg's shared-prefix include tree, where every vcpkg port's headers
+-- get flattened into one include/ dir — that used to drag openssl's
+-- headers into the DPDK TU and collide with aws-lc's (ASN1_NULL /
+-- CRYPTO_THREADID typedef conflict). System DPDK has an isolated
+-- /usr/include/dpdk layout, so the conflict vanishes entirely and the
+-- /tmp/gcc14-wrap/g++ include-order hack is no longer needed.
+-- Arch:    sudo pacman -S dpdk
+-- Ubuntu:  sudo apt install libdpdk-dev
+-- Source:  meson setup -Ddisable_drivers=crypto/openssl && ninja install
+add_requires("libdpdk", { system = true, optional = true, alias = "dpdk" })
 add_requires("aws-lc", { optional = true })
 add_requires("gtest", { system = false, configs = { main = true } })
 
@@ -55,11 +65,20 @@ option("native_arch")
 -- Global constants (inherited by module xmake.lua via includes() scope sharing)
 net_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
 
--- Global helper for DPDK PMD whole-archive linking
+-- DPDK PMD linking strategy.
+--
+-- History: with vcpkg's static DPDK, PMDs had to be force-linked with
+-- -Wl,--whole-archive (otherwise the linker dropped the registration
+-- constructors). That is what this helper used to do.
+--
+-- System DPDK (pkg-config libdpdk, DPDK >= 20.11) ships as shared libs +
+-- a plugin directory at `/usr/lib/dpdk/pmds-<abi>/`. EAL auto-scans that
+-- directory at `rte_eal_init()` via dlopen, so no explicit PMD link is
+-- required at build time. The helper is kept as a no-op so existing
+-- `apply_dpdk_pmd_linkgroups()` call sites in examples/benches don't
+-- need to change.
 function apply_dpdk_pmd_linkgroups()
-    add_linkgroups("rte_net_null", "rte_net_ena", "rte_net_af_packet",
-                   "rte_bus_pci", "rte_bus_vdev", "rte_mempool_ring",
-                   { whole = true })
+    -- Intentionally empty — see comment above.
 end
 
 -- ===========================================================================

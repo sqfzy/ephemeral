@@ -27,7 +27,8 @@ xmake run -g tests          # expect all-pass
 ```
 
 If the build fails on C++23 features, install GCC 14 (Amazon Linux 2023:
-`sudo dnf install gcc14-g++`) and use the gcc14 wrapper at `/tmp/gcc14-wrap/g++`.
+`sudo dnf install gcc14-g++`, then `xmake f --cxx=/usr/bin/g++-14 --ld=/usr/bin/g++-14`).
+Recent Arch / Ubuntu ship a modern-enough compiler by default.
 
 DPDK builds are optional. The kernel path builds cleanly on any Linux host with GCC
 ≥ 13 / Clang ≥ 17. See `docs/dpdk-setup.md` if you want to bring up the DPDK path.

@@ -334,7 +334,7 @@ All public APIs are header-only under `core/`.
 | Package          | Purpose                                                             |
 |------------------|---------------------------------------------------------------------|
 | `spdlog`         | Structured logging for every bench binary                           |
-| `vcpkg::dpdk`    | Underlying DPDK runtime (EAL, ethdev, mempool) for `_dpdk` variants |
+| `libdpdk` (sys)  | Underlying DPDK runtime (EAL, ethdev, mempool) for `_dpdk` variants |
 | `aws-lc`         | TLS crypto (pulled in transitively by sibling libs, not this suite) |
 
 ---

@@ -41,8 +41,8 @@ See [`../summary.md`](../summary.md) for architecture details and
 - GCC 14+ or Clang 18+ with C++23 (concepts, `std::expected`,
   `std::format`, structured bindings)
 - `spdlog` (vcpkg / system package)
-- For DPDK builds: `vcpkg::dpdk`, `aws-lc`, and the `eph-dpdk` sibling
-  library
+- For DPDK builds: system `libdpdk` (pkg-config), `aws-lc`, and the
+  `eph-net-dpdk` sibling module
 
 ### First build
 
