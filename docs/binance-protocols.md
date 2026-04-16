@@ -228,7 +228,7 @@ ephemeral provides a **complementary client-side mechanism**:
 
 Combined usage:
 ```cpp
-// v3.3: the Stream owns its codec; the user feeds frames into an
+// The Stream owns its codec; the user feeds frames into an
 // EvictingQueue when the consumer thread is slower than the poller.
 using WsStream = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec, true>;
 

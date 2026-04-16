@@ -195,7 +195,7 @@ TEST(MyApp, RoutesWsPingToPong) {
 }
 ```
 
-More examples live under `examples/` and the canonical v3.3 integration tests under
+More examples live under `examples/` and the integration tests under
 `tests/integration/`. See [`docs/poller-guide.md`](docs/poller-guide.md) for
 multi-connection patterns and heterogeneous `TcpStream` + `UdpSocket` on one poller.
 
@@ -242,7 +242,7 @@ computed from four timestamps stamped into the payload: `client_send`, `server_r
 ## Documentation
 
 - [`summary.md`](summary.md) — architecture overview, module map, data flow
-- [`docs/architecture.md`](docs/architecture.md) — v3.3 concept model for new contributors
+- [`docs/architecture.md`](docs/architecture.md) — concept model for new contributors
 - [`docs/poller-guide.md`](docs/poller-guide.md) — the Poller concept with examples
 - [`docs/custom-codec.md`](docs/custom-codec.md) — writing a new Codec
 - [`docs/dpdk-setup.md`](docs/dpdk-setup.md) — DPDK environment setup
@@ -252,7 +252,7 @@ computed from four timestamps stamped into the payload: `client_send`, `server_r
 - [`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md) — kernel-vs-DPDK methodology
 - [`docs/multi-connection.md`](docs/multi-connection.md) — multi-connection patterns
 - [`docs/binance-protocols.md`](docs/binance-protocols.md) — Binance protocol details
-- `.artifacts/design-eph-v3.3-architecture-20260410.md` — frozen design spec for the v3.3 refactor
+- `.artifacts/design-eph-v3.3-architecture-20260410.md` — frozen design spec
 
 ## License
 

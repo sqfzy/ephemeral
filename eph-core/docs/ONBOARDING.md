@@ -4,7 +4,7 @@
 
 `eph-core` is the leaf dependency of the `eph-*` graph. It contains:
 
-- **v3.3 core types** — `Error` / `ErrorInfo` enum, `StreamCodec` / `DatagramCodec`
+- **Core types** — `Error` / `ErrorInfo` enum, `StreamCodec` / `DatagramCodec`
   concepts, `OutputBuffer`, the `PacketView` contract.
 - **Shared enums** — `TcpState` (RFC 793) is defined here so both kernel and DPDK
   backends can reference it without ODR conflicts.
@@ -45,7 +45,7 @@ Per-file targets are auto-globbed from `tests/test_*.cpp`.
 2. Add a `case` to `error_name()`.
 3. Add a unit test in `tests/test_error.cpp`.
 
-Do not add module-specific error codes here — the v3.3 design uses one shared enum
+Do not add module-specific error codes here — the design uses one shared enum
 for all networking errors, with a free-form `detail` string for context.
 
 ### Adding a new utility helper
@@ -57,5 +57,5 @@ Header-only + `inline` or `template`, no `.cpp` files under `include/`.
 
 - `README.md` — module overview
 - `summary.md` — public API surface
-- `CHANGELOG.md` — v3.3 refactor impact
+- `CHANGELOG.md` — change history
 - `../../docs/architecture.md` — the whole-project concept model

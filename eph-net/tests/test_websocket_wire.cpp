@@ -8,7 +8,7 @@
 /// behavioural tests (Transport, Channel, SocketTransport) are intentionally
 /// excluded — they live in their own files (9.8 territory).
 ///
-/// Critical regression cases preserved from pre-v3.3 baseline:
+/// Critical regression cases preserved from the original baseline:
 ///   * 1-byte Close-frame rejection per RFC 6455 §5.5.1 (commit 80d5a3b)
 ///   * 8-byte extended length encoding rules per RFC 6455 §5.2 (commit 3bed1b3)
 ///   * Forbidden close code handling / is_valid_close_code (commit 08dacb1)

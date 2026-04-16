@@ -120,9 +120,6 @@ includes("eph-fix/xmake.lua")
 includes("eph-itch/xmake.lua")
 includes("eph-json/xmake.lua")
 includes("eph-book/xmake.lua")
--- Phase 7: eph-transport and eph-dpdk have been deleted. Their source
--- files were migrated into eph-net/include/eph/net/detail/ (TLS + WS wire
--- helpers) and eph-net-dpdk/include/eph/dpdk/ (DPDK low-level primitives).
 includes("eph-net/xmake.lua")
 includes("eph-codec/xmake.lua")
 includes("eph-net-kernel/xmake.lua")
@@ -141,8 +138,8 @@ includes("tests/unit/bench/xmake.lua")
 includes("benchmarks/latency/xmake.lua")
 
 -- ===========================================================================
--- Examples (centralized, user-facing). Post-Phase-7 all examples target
--- the v3.3 eph-net-kernel / eph-net-dpdk / eph-codec API.
+-- Examples (centralized, user-facing). All examples target the
+-- eph-net-kernel / eph-net-dpdk / eph-codec API.
 -- ===========================================================================
 
 target("simple_hft")

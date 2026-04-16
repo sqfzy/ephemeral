@@ -4,8 +4,8 @@
 ///   * Single-file scenario binary that reads `[lat_tcp]` from bench.conf
 ///     (port / payload_size / duration_seconds) plus the lowercase global
 ///     `mock_ip`, `warmup_samples`.
-///   * Uses the v3.3 `KernelTcpStream<RawStreamCodec, false>` + `KernelPoller`
-///     API directly — no raw socket() calls, no legacy eph-transport.
+///   * Uses `KernelTcpStream<RawStreamCodec, false>` + `KernelPoller`
+///     API directly — no raw socket() calls.
 ///   * Measurement clock is `bench::monotonic_raw_ns()` (CLOCK_MONOTONIC_RAW
 ///     via vDSO) — not TSC.
 ///   * Samples feed `eph::utils::Recorder::record_ns(ns)`.
@@ -30,7 +30,7 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (v3.3 API only).
+// eph-* headers.
 #include "eph/codec/raw_stream_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"

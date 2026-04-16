@@ -6,14 +6,13 @@ ephemeral codebase in roughly an afternoon. Read in order.
 ## 1. Read these first (30 minutes)
 
 1. `README.md` at the repo root — what ephemeral is, who it's for, quickstart.
-2. `docs/architecture.md` — the v3.3 concept model (Stream / Codec / Poller) and the
+2. `docs/architecture.md` — the concept model (Stream / Codec / Poller) and the
    module graph. This is the single most important document.
 3. `summary.md` — module-by-module overview with public API sketches and data flow.
 
-If you want the full decision log (why v3.3 looks the way it does, what alternatives
-were weighed and rejected), read
-`.artifacts/design-eph-v3.3-architecture-20260410.md`. It's the frozen design spec
-that drove the refactor.
+If you want the full decision log (what alternatives were weighed and rejected),
+read `.artifacts/design-eph-v3.3-architecture-20260410.md`. It's the frozen design
+spec.
 
 ## 2. Get a build running (15 minutes)
 
@@ -56,7 +55,7 @@ your target, never both on the same file. Parser modules (`eph-fix`, `eph-itch`,
 
 ## 4. The three concepts
 
-Everything network-shaped in v3.3 pivots on three concepts:
+Everything network-shaped pivots on three concepts:
 
 - **`StreamCodec<T>` / `DatagramCodec<T>`** (`eph/core/codec.hpp`) — stateful
   decoders. `decode()` takes a `PacketView&` and an `OutputBuffer&` (for
@@ -130,15 +129,14 @@ one target per file. Drop a new `.cpp` in and it builds automatically.
 - **No exceptions across module boundaries.** Use `std::expected<T, ErrorInfo>`.
   Tests build with `SPDLOG_NO_EXCEPTIONS` and the hot path has `-fno-exceptions`
   flags on the relevant targets.
-- **No virtual dispatch.** Constrain templates with the v3.3 concepts; don't add
+- **No virtual dispatch.** Constrain templates with the core concepts; don't add
   abstract base classes.
 - **TSC, not `steady_clock`**, for latency measurement. `eph::utils::TSC::now()` is
   the canonical timer. The bench framework assumes it.
 - **Compile-time log filtering.** Use the `SPDLOG_TRACE / DEBUG / INFO / …` macros
   (not the runtime spdlog API), so suppressed levels compile out entirely.
 - **Per-module README/CHANGELOG/summary/ONBOARDING** are regenerated on big refactors
-  — don't hand-edit them in a way that will get blown away. They were regenerated
-  wholesale for v3.3.
+  — don't hand-edit them in a way that will get blown away.
 - **DPDK targets need `apply_dpdk_pmd_linkgroups()`** in their `xmake.lua` to
   whole-archive-link PMDs. See the `*_dpdk` targets in the root xmake.lua for the
   pattern.

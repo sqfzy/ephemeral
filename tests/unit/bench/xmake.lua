@@ -28,7 +28,7 @@ target("test_bench_measurement")
     add_deps("eph-utils")
     add_packages("spdlog")
 
--- Phase 11.1: TX/RX leg decomposition timestamp-block protocol
+-- TX/RX leg decomposition timestamp-block protocol
 -- (benchmarks/latency/core/timestamp_proto.hpp). Pure-function unit
 -- tests — no eph dependencies beyond gtest + spdlog.
 target("test_timestamp_proto")
@@ -37,7 +37,7 @@ target("test_timestamp_proto")
     add_includedirs("$(projectdir)/benchmarks/latency")
     add_packages("spdlog")
 
--- Phase 11.0: pure-function coverage for bench::synthesize_eal_argv.
+-- Pure-function coverage for bench::synthesize_eal_argv.
 -- The source file is guarded by `#ifdef EPH_USE_DPDK` and falls back to
 -- a single SKIP-style test when DPDK is not available. Link the real
 -- DPDK backend so we exercise the live argv synthesis path on hosts

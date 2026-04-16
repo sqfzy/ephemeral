@@ -13,9 +13,7 @@
 -- The mock is always kernel — only the client transport differs, which
 -- is the "echo bench is inherently fair" property recorded in the plan.
 --
--- Phase 7: all lat_*.cpp now target the v3.3 eph-net-kernel / eph-net-dpdk
--- + eph-codec API. The legacy eph-transport / eph-dpdk dependencies have
--- been removed now that those modules no longer exist.
+-- All lat_*.cpp target the eph-net-kernel / eph-net-dpdk + eph-codec API.
 
 local bench_latency_flags = {"-fno-omit-frame-pointer", "-march=native"}
 

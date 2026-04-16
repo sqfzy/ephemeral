@@ -10,7 +10,7 @@
 ///
 ///   1. **Returns `expected<optional<ParseResult<T>>>`** — "Partial" is a
 ///      first-class outcome, matching `httparse::Status::Partial` and the
-///      v3.3 `StreamCodec::decode` contract.
+///      `StreamCodec::decode` contract.
 ///   2. **Allocates nothing** — parsed headers land in a caller-provided
 ///      `span<HttpHeader>`; the returned view types are
 ///      `string_view` / `span<const uint8_t>` into the caller's receive

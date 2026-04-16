@@ -1,7 +1,7 @@
 # Custom Codec guide
 
 How to implement a custom `StreamCodec` or `DatagramCodec` for a proprietary wire
-protocol. This is the v3.3 replacement for the old `MessageFramer` concept — the
+protocol. This is the replacement for the old `MessageFramer` concept — the
 differences are: codecs are stateful (they can own reassembly buffers, FSMs, sequence
 counters), and they can inject auto-responses via an `OutputBuffer&` so control-plane
 logic stays out of user code.

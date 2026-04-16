@@ -16,7 +16,7 @@
 ///
 /// A full handshake test would need a localhost mock TLS server (much
 /// like `eph-transport/tests/test_tls_session.cpp`). That coverage is
-/// orthogonal to the v3.3 refactor and is left to the legacy test for
+/// orthogonal and is left to the legacy test for
 /// the time being.
 
 #include <chrono>

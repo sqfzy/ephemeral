@@ -1,7 +1,7 @@
 /// @file test_http_client.cpp
-/// @brief Parser-level tests migrated from v3.3 baseline test_http_client.cpp.
+/// @brief Parser-level tests migrated from the baseline test_http_client.cpp.
 ///
-/// The baseline `HttpClient` class is not part of v3.3. However, a large
+/// The baseline `HttpClient` class is not part of the current API. However, a large
 /// share of its baseline test suite
 /// actually exercises the underlying parser against crafted byte sequences
 /// rather than any connection state. Those cases carry real regression
@@ -481,7 +481,7 @@ TEST(HttpClientParseResponse, RejectReasonPhraseWithBareCr) {
 // header lookup — migrated from HttpClientFindHeader
 // =============================================================================
 //
-// v3.3 parser returns a span of HttpHeader; the baseline find_header()
+// The parser returns a span of HttpHeader; the baseline find_header()
 // helper is not part of the public API but the same semantics are tested
 // here against a local helper that mimics it.
 
@@ -591,7 +591,7 @@ TEST(HttpClientFindHeader, PartialNameDoesNotFalsePositive) {
 // is_response_complete equivalent — pure parser completion
 // =============================================================================
 //
-// v3.3 replaces the baseline `is_response_complete(buf)` predicate with the
+// The current API replaces the baseline `is_response_complete(buf)` predicate with the
 // parser's incremental "need more / complete / error" tri-state. Each
 // baseline case maps onto a parse call and checks which of those three
 // outcomes fires.

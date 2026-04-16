@@ -39,7 +39,7 @@
 /// `rte_mbuf` payload, the codec's `writable_data()` returns the same pointer
 /// the NIC DMA'd into, which lets the TLS layer decrypt **in place** via
 /// `EVP_AEAD_CTX_open` (aws-lc supports in == out for AES-GCM). That is the
-/// headline zero-copy property behind the whole v3.3 design.
+/// headline zero-copy property behind the design.
 
 #include <concepts>
 #include <cstddef>

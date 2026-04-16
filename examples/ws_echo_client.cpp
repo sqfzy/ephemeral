@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
     }
 
     // Fire one ping so the echo loop can start.
-    const char* payload = "hello v3.3\n";
+    const char* payload = "hello eph\n";
     auto tx = stream->send(std::span<const uint8_t>(
         reinterpret_cast<const uint8_t*>(payload), std::strlen(payload)));
     if (!tx) {

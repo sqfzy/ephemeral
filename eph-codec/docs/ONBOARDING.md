@@ -2,7 +2,7 @@
 
 ## What's in this module
 
-`eph-codec` holds the stateful codec implementations for v3.3. Five codecs total:
+`eph-codec` holds the stateful codec implementations. Five codecs total:
 
 - `WsCodec` — RFC 6455, the most complex (reassembly + control FSM).
 - `RawStreamCodec` — passthrough for raw TCP.

@@ -1,6 +1,6 @@
 # eph-core
 
-Header-only C++23 foundation for the `eph` ecosystem. Provides the v3.3 error types,
+Header-only C++23 foundation for the `eph` ecosystem. Provides the error types,
 the `StreamCodec` / `DatagramCodec` concepts, `OutputBuffer`, the `PacketView`
 contract, plus a handful of utility primitives (number parsers, base64, JSON
 escaping, string checks). No networking dependencies — `eph-core` is the leaf of the
@@ -8,11 +8,11 @@ dependency graph.
 
 ## What lives here
 
-### v3.3 core types (`eph/core/`)
+### Core types (`eph/core/`)
 
 | Header | Contents |
 |---|---|
-| `error.hpp` | `enum class Error` + `struct ErrorInfo { Error code; const char* detail; }`. The unified v3.3 error type. |
+| `error.hpp` | `enum class Error` + `struct ErrorInfo { Error code; const char* detail; }`. The unified error type. |
 | `codec.hpp` | `concept StreamCodec` / `concept DatagramCodec` / `concept Codec`, plus the `OutputBuffer` class for codec auto-responses. |
 | `packet_view.hpp` | The `PacketView` contract definition — `writable_data()` / `data()` / `length()` / `trim_front()` / `trim_back()` / `arrival_tsc()`. |
 | `tcp_state.hpp` | `enum class TcpState` (RFC 793) + `tcp_state_name()`. Shared by kernel and DPDK backends. |
@@ -21,7 +21,7 @@ dependency graph.
 
 ### Legacy primitives still in use (`eph/core/`)
 
-These predate the v3.3 refactor and are still consumed by the parser modules
+These are legacy primitives still consumed by the parser modules
 (`eph-fix`, `eph-itch`, `eph-json`). They remain here because extracting them would
 be disruptive and offers no architectural win.
 
@@ -30,7 +30,7 @@ be disruptive and offers no architectural win.
 | `framer_concept.hpp` | `eph-fix`, `eph-itch`, `eph-json` framers |
 | `length_prefix_framer.hpp` | `eph-itch/framer.hpp` |
 | `parse_number.hpp` | `eph-json`, `eph-fix`, `eph-book` |
-| `tcp_concept.hpp` | internal detail of `eph-net-dpdk` (legacy TCP session layer that the v3.3 `DpdkTcpStream` wraps) |
+| `tcp_concept.hpp` | internal detail of `eph-net-dpdk` (legacy TCP session layer that `DpdkTcpStream` wraps) |
 | `detail/json_escape.hpp` | `eph-json` serialisation |
 | `detail/base64.hpp` | `eph-net` WebSocket handshake |
 | `detail/string_checks.hpp` | hostname / path validation |
@@ -83,6 +83,6 @@ depend on `eph-core`.
 
 ## See also
 
-- `docs/architecture.md` — the v3.3 concept model
+- `docs/architecture.md` — the concept model
 - `docs/custom-codec.md` — writing a new codec
 - `.artifacts/design-eph-v3.3-architecture-20260410.md` — design spec

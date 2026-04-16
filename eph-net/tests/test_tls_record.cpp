@@ -3,7 +3,7 @@
 /// construction, record header parse/write, sequence-number accounting, and
 /// AEAD round-trip / tamper-detection properties.
 ///
-/// Merges the pre-v3.3 baselines:
+/// Merges the original baselines:
 ///   - eph-net/tests/test_tls_record.cpp (56 cases, record + TlsConfig)
 ///   - eph-transport/tests/test_tls_record_roundtrip.cpp (22 cases, round-trip)
 /// into a single file targeting:

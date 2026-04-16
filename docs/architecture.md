@@ -1,13 +1,13 @@
-# ephemeral v3.3 architecture
+# ephemeral architecture
 
-High-level overview of the v3.3 architecture, written for new contributors. For the
+High-level overview of the architecture, written for new contributors. For the
 full frozen design spec (including the decision log and rejected alternatives), read
 `.artifacts/design-eph-v3.3-architecture-20260410.md`.
 
 ## The elevator pitch
 
-ephemeral is a header-only C++23 networking library for HFT. v3.3 was a ground-up
-refactor that collapsed the previous `Transport` / `DirectTransport` / `DirectTxTransport`
+ephemeral is a header-only C++23 networking library for HFT. The architecture
+collapsed the previous `Transport` / `DirectTransport` / `DirectTxTransport`
 trio into a single Tokio-style API:
 
 - **`TcpStream<Codec>` / `UdpSocket<Codec>`** — the only per-connection types.
@@ -171,7 +171,7 @@ between wire and user callback on the hot path.
 
 ## Tokio naming alignment
 
-The v3.3 user-facing names deliberately mirror Tokio / mio:
+The user-facing names deliberately mirror Tokio / mio:
 
 | ephemeral | Tokio / mio |
 |---|---|
@@ -183,7 +183,7 @@ The v3.3 user-facing names deliberately mirror Tokio / mio:
 | `eph::net::Poller` concept          | `mio::event::Source`'s host |
 
 `TcpStream` and `UdpSocket` are the only per-connection types. There are no "channels"
-or "variants" in v3.3 — the threading model collapsed to "whatever thread owns the
+or "variants" — the threading model collapsed to "whatever thread owns the
 Poller runs the callbacks in that thread."
 
 ## Preset aliases

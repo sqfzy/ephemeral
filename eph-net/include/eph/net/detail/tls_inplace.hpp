@@ -6,7 +6,7 @@
 ///
 /// ## Why this exists
 ///
-/// The v3.3 design's headline performance feature is that a DPDK PacketView
+/// The headline performance feature is that a DPDK PacketView
 /// (`MbufView`) hands the codec a writable pointer directly into a received
 /// mbuf. For TLS-wrapped connections we want the decrypted plaintext to
 /// land **in the same mbuf bytes** the NIC DMA'd into — no intermediate

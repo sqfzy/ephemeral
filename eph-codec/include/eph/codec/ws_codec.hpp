@@ -3,7 +3,7 @@
 /// @file ws_codec.hpp
 /// Stateful WebSocket codec — frame parsing + control-frame state machine.
 ///
-/// This is the v3.3 replacement for:
+/// This replaces the legacy:
 ///   - `eph::net::WsFramer` (in eph-transport/include/eph/transport/ws_framer.hpp)
 ///   - The WS control-frame handling logic in
 ///     `eph-transport/include/eph/transport/detail/frame_processor.hpp`

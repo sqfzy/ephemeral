@@ -3,7 +3,7 @@
 /// @file raw_stream_codec.hpp
 /// Identity stream codec — no framing, every byte is data.
 ///
-/// This is the v3.3 replacement for `eph::net::RawFramer` (in
+/// This replaces the legacy `eph::net::RawFramer` (in
 /// `eph-transport/include/eph/transport/raw_framer.hpp`). Unlike the old
 /// framer which took `(const uint8_t* data, size_t len)` and returned a
 /// `DecodedFrame`, the new codec takes a duck-typed PacketView by reference

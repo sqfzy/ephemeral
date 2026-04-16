@@ -204,7 +204,7 @@ public:
     ///        the entire buffered payload as one frame).
     ///
     /// `poll_once_` is logically private (Poller-internal) but kept public
-    /// because the v3.3 Pollable concept requires it be callable. The real
+    /// because the Pollable concept requires it be callable. The real
     /// kernel / dpdk backends declare it `private + friend Poller`.
     std::size_t poll_once_() noexcept {
         // Mirror the real-backend contract: do not dispatch on a closed

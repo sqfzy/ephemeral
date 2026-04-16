@@ -1,5 +1,5 @@
 /// @file bench_e2e_latency.cpp
-/// Microbenchmarks the v3.3 `KernelTcpStream<RawStreamCodec, false>` API
+/// Microbenchmarks the `KernelTcpStream<RawStreamCodec, false>` API
 /// against an in-process loopback echo server. Real I/O (epoll loopback)
 /// so PacketView / TLS work is exercised, not just the codec fast path.
 
@@ -74,7 +74,7 @@ void echo_serve(int lfd, std::atomic<bool>& stop) {
 // Each iteration accepts a fresh connection and immediately closes it. To
 // avoid TIME_WAIT exhaustion under high iteration counts the listener uses
 // SO_REUSEADDR (already set by bind_loopback) and the client side sets
-// SO_LINGER=0 via close — but the v3.3 KernelTcpStream destroys via plain
+// SO_LINGER=0 via close — but KernelTcpStream destroys via plain
 // close(2). The benchmark therefore caps iterations at a sane value via
 // `Iterations()`.
 // ---------------------------------------------------------------------------
@@ -118,8 +118,8 @@ static void BM_V3_StreamCreate(benchmark::State& state) {
 BENCHMARK(BM_V3_StreamCreate)->Unit(benchmark::kMicrosecond)->Iterations(200);
 
 // ---------------------------------------------------------------------------
-// BM_V3_RoundTrip — measure send + poll + receive RTT through the v3.3
-// API on a loopback fd.
+// BM_V3_RoundTrip — measure send + poll + receive RTT through the
+// Stream + Poller API on a loopback fd.
 // ---------------------------------------------------------------------------
 static void BM_V3_RoundTrip(benchmark::State& state) {
     auto [lfd, port] = bind_loopback();

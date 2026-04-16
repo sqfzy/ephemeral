@@ -1,8 +1,8 @@
 -- ============================================================================
--- eph-net — v3.3 networking concept layer + shared detail helpers.
+-- eph-net — networking concept layer + shared detail helpers.
 -- ============================================================================
 --
--- Post-Phase-7 responsibilities:
+-- Responsibilities:
 --   * eph::net Stream / Datagram / Pollable / Poller concepts
 --     (`include/eph/net/concepts.hpp`)
 --   * Shared value types: SocketAddr, TcpState, ReconnectPolicy
@@ -12,13 +12,11 @@
 --     posix_listener.hpp (used by bench mocks + integration tests)
 --   * Detail TLS building blocks (tls_constants, tls_record, tls_encryptor,
 --     tls_decryptor, tls_session, tls_inplace, websocket wire helpers)
---     under `include/eph/net/detail/`. These migrated over from the deleted
---     eph-transport module in Phase 7. The kernel + DPDK backends share
+--     under `include/eph/net/detail/`. The kernel + DPDK backends share
 --     these primitives.
 --
 -- Dependency rule: depends only on eph-core (and spdlog / aws-lc via the
--- detail headers). The legacy eph-transport dependency was removed in
--- Phase 7.
+-- detail headers).
 
 target("eph-net")
     set_kind("headeronly")
@@ -38,8 +36,7 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         add_deps("eph-net")
 end
 
--- Module benchmarks — auto-globbed; currently empty post-Phase-7 (legacy
--- bench_* files were deleted together with the legacy transport code).
+-- Module benchmarks — auto-globbed.
 for _, file in ipairs(os.files("benchmarks/**.cpp")) do
     target(path.basename(file))
         add_rules("eph-bench")

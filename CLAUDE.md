@@ -12,15 +12,13 @@ satisfy the common `eph::net::Stream` / `eph::net::Datagram` concepts and plug i
 shared `eph::net::Poller` concept.
 
 See `README.md` for the public-facing overview, `summary.md` for the full architecture /
-module map, and `docs/architecture.md` for the v3.3 concept model.
+module map, and `docs/architecture.md` for the concept model.
 
-The v3.3 architecture is the result of a large refactor that finished in April 2026. The
-frozen design spec is at `.artifacts/design-eph-v3.3-architecture-20260410.md` — refer to
-it when reasoning about module boundaries or concept contracts.
+The frozen design spec is at `.artifacts/design-eph-v3.3-architecture-20260410.md` — refer
+to it when reasoning about module boundaries or concept contracts.
 
-A subsequent Phase 9 recovery pass (2026-04-10, 9 sub-phases) restored an HFT-pragmatic
-subset of functionality that the v3.3 refactor had dropped. The scope decisions are
-archived in `.artifacts/phase-9-scope-decision.md`. Newly (re)available public surface:
+The scope decisions for the current feature set are archived in
+`.artifacts/phase-9-scope-decision.md`. Available public surface includes:
 
 - `eph::net::parse_http_request` / `parse_http_response` / `build_http_request` —
   incremental zero-heap HTTP/1.1 parser subset. Explicitly rejects chunked /
@@ -35,7 +33,7 @@ archived in `.artifacts/phase-9-scope-decision.md`. Newly (re)available public s
 - `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
 - `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
 
-Deliberately **not** migrated from pre-v3.3 baseline: `Gateway`, `CircuitBreaker`,
+Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
 and recovery guidance if a future need surfaces.
 
@@ -118,8 +116,8 @@ Two distinct benchmark systems:
    after the change and verify no regression.
 
 2. **End-to-end latency benchmarks** — `benchmarks/latency/`, one
-   `lat_<scenario>[_dpdk]` binary per scenario. Phase 10 rewrote every scenario on top of
-   the v3.3 `Stream` / `Poller` API against **Python stdlib mocks** (no pip install
+   `lat_<scenario>[_dpdk]` binary per scenario. Every scenario is built on the
+   `Stream` / `Poller` API against **Python stdlib mocks** (no pip install
    required); the mock is **always kernel**, only the client side differs between kernel
    and DPDK, which is what makes the comparison fair. The bench writes no files.
 
@@ -149,7 +147,7 @@ keys (NIC/IP/CPU layout, `warmup_samples`) before the first section header, then
 Both the C++ client and the Python mock read the same file via
 `bench::ScenarioConfig` / `mocks/_conf.py`.
 
-Phase 10 override of the canonical TSC rule: bench client and mocks both read
+Exception to the canonical TSC rule: bench client and mocks both read
 `clock_gettime(CLOCK_MONOTONIC_RAW)` via `bench::monotonic_raw_ns()` so the Python mock
 and C++ client share a time base on one-way scenarios. Samples feed
 `eph::utils::Recorder::record_ns()` directly (no cycle→ns conversion). Shared bench
@@ -171,9 +169,9 @@ eph-utils  ←  eph-containers
         eph-codec     eph-net          eph-fix / eph-itch /
      (WsCodec,      (Stream /          eph-json / eph-book
       RawStream-    Datagram /         (all parser modules
-      Codec,        Pollable /         keep the pre-v3.3
+      Codec,        Pollable /         keep the legacy
       Mold64-       Poller concepts,   framer API; they still
-      Codec, …)     SocketAddr,        satisfy the new Codec
+      Codec, …)     SocketAddr,        satisfy the Codec
                     ReconnectPolicy,   concept so they plug into
                     test mocks, TLS    eph-net-kernel / -dpdk)
                     session detail)
@@ -198,7 +196,7 @@ Key rules:
 - All DPDK build weight (vfio-pci, hugepages, `apply_dpdk_pmd_linkgroups()`) is
   confined to `eph-net-dpdk`. Kernel-only users are fully immune.
 
-### The three v3.3 concepts
+### The three core concepts
 
 The type system pivots on three narrow concepts defined in `eph-core` and `eph-net`:
 
@@ -266,7 +264,7 @@ DPDK environment setup is via `eph-net-dpdk/scripts/dpdk-setup.sh` and
   directories. New functionality lives in headers; if a function is non-trivial it
   should still be `inline` or a template.
 - **Prefer concepts over inheritance.** This codebase has zero virtual dispatch in the
-  hot path. Constrain templates with the v3.3 concepts (`Stream`, `Datagram`, `Pollable`,
+  hot path. Constrain templates with the core concepts (`Stream`, `Datagram`, `Pollable`,
   `Poller`, `StreamCodec`, `DatagramCodec`, `MetricsSink`); do not add abstract base
   classes.
 - **Zero-copy parsers.** `eph-fix`, `eph-itch`, `eph-json` parsers operate directly on
@@ -280,8 +278,8 @@ DPDK environment setup is via `eph-net-dpdk/scripts/dpdk-setup.sh` and
   Codecs are templated on `PacketView` so the same `WsCodec` works against both the
   contiguous `SpanView` (kernel) and the mbuf-backed `MbufView` (DPDK) with no runtime
   branching.
-- **`std::expected<T, ErrorInfo>` for fallible APIs.** The v3.3 error type is
-  `eph::core::Error` (enum) + `eph::core::ErrorInfo` (enum + const char* detail). Pre-v3.3
+- **`std::expected<T, ErrorInfo>` for fallible APIs.** The error type is
+  `eph::core::Error` (enum) + `eph::core::ErrorInfo` (enum + const char* detail). Legacy
   per-module error enums (`SendError`, `ConnectionError`, …) have been retired; the
   parser modules that still expose domain-specific enums (`FrameError`, `FixError`, …)
   remain unchanged. Do not throw across module boundaries (`SPDLOG_NO_EXCEPTIONS` is set
@@ -291,12 +289,12 @@ DPDK environment setup is via `eph-net-dpdk/scripts/dpdk-setup.sh` and
   framework all use it.
 - **Per-module README/CHANGELOG/summary/ONBOARDING.** These are regenerated on major
   refactors — prefer editing the source code and re-running the doc pass over tweaking
-  docs by hand. The v3.3 refactor regenerated them wholesale.
+  docs by hand.
 
 ## Useful docs in this repo
 
 - `summary.md` — full architecture, module map, data flow (deepest single document)
-- `docs/architecture.md` — v3.3 concept model / module graph / PacketView contract
+- `docs/architecture.md` — concept model / module graph / PacketView contract
 - `docs/poller-guide.md` — the `Poller` concept with kernel and DPDK examples, single and
   multi-connection patterns, heterogeneous `TcpStream + UdpSocket` on one poller
 - `docs/custom-codec.md` — writing a new `StreamCodec` or `DatagramCodec`

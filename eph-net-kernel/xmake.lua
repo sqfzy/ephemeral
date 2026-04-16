@@ -1,5 +1,5 @@
 -- ============================================================================
--- eph-net-kernel — header-only kernel (epoll) backend for the v3.3 eph::net
+-- eph-net-kernel — header-only kernel (epoll) backend for the eph::net
 --                   concept layer.
 -- ============================================================================
 --
@@ -10,9 +10,8 @@
 --   * eph::net::kernel::KernelUdpSocket<C>             — Datagram impl
 --   * eph::net::kernel::KernelPoller                   — Poller impl
 --
--- Dependency rule (post-Phase-7): eph-net-kernel depends ONLY on eph-core and
--- eph-net. The TLS detail headers moved into `eph-net/include/eph/net/detail/`
--- in Phase 7, so the pragmatic dependency on eph-transport has been removed.
+-- Dependency rule: eph-net-kernel depends ONLY on eph-core and eph-net.
+-- TLS detail headers live in `eph-net/include/eph/net/detail/`.
 
 target("eph-net-kernel")
     set_kind("headeronly")

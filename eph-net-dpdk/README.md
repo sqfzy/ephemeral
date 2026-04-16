@@ -1,9 +1,8 @@
 # eph-net-dpdk
 
 Header-only C++23 DPDK networking backend. Implements the `eph::net::Stream` /
-`Datagram` / `Poller` concepts on top of DPDK kernel-bypass I/O. Introduced in
-v3.3 Phase 4 as the successor to the legacy `eph-dpdk` module (same code, new
-name and namespace shape).
+`Datagram` / `Poller` concepts on top of DPDK kernel-bypass I/O. Successor to the
+legacy `eph-dpdk` module (same code, new name and namespace shape).
 
 ## Types
 
@@ -99,8 +98,8 @@ DPDK environment setup (hugepages, vfio-pci binding) is documented in
 
 `eph-net-dpdk/tests/` holds:
 
-- `test_dpdk_tls_handshake.cpp` — regression guard for the Phase 7 TLS
-  unblocking (`DpdkTcpStream<C, true>::create()` runs a real TLS 1.3 handshake).
+- `test_dpdk_tls_handshake.cpp` — regression guard for TLS
+  (`DpdkTcpStream<C, true>::create()` runs a real TLS 1.3 handshake).
 - `test_dpdk_tls_state.cpp` — in-place decrypt state tests.
 - `test_dpdk_udp_multicast.cpp` — UDP multicast join/leave tests.
 - `tests/integration/test_dpdk_e2e.cpp` — full kernel-mock → DPDK-client suite.
@@ -108,7 +107,7 @@ DPDK environment setup (hugepages, vfio-pci binding) is documented in
   cover the internal `eph::dpdk::*` primitives (ARP, DNS, flow steering, TCP
   state machine, net header helpers). These aren't "legacy" in the sense of
   "to be deleted" — they're the unit-level coverage for the internal detail
-  layer the v3.3 types wrap.
+  layer the public types wrap.
 
 ```bash
 xmake build -g tests

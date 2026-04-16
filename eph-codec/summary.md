@@ -60,7 +60,7 @@ public:
 };
 ```
 
-v3.3 successor to the legacy `eph::core::LengthPrefixFramer`. Stateful and
+Successor to the legacy `eph::core::LengthPrefixFramer`. Stateful and
 PacketView-aware.
 
 ### `RawDatagramCodec` - one frame per datagram (DatagramCodec)

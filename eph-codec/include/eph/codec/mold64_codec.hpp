@@ -2,7 +2,7 @@
 
 /// @file mold64_codec.hpp
 /// MoldUDP64 datagram codec — wraps `eph::itch::parse_moldudp64` into the
-/// v3.3 DatagramCodec interface.
+/// DatagramCodec interface.
 ///
 /// MoldUDP64 is Nasdaq's multicast container for ITCH data distribution
 /// (see `eph-itch/include/eph/itch/moldudp64.hpp` for the wire format).

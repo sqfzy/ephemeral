@@ -140,7 +140,7 @@ taskset -cp $$
 
 ### In ephemeral
 
-`DpdkPoller` pins itself to the lcore passed in its config. The v3.3 architecture has
+`DpdkPoller` pins itself to the lcore passed in its config. The architecture has
 no TX worker thread — `send()` runs synchronously on the caller, so you typically
 only have one lcore per Poller:
 

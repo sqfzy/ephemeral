@@ -1,8 +1,8 @@
 # eph latency benchmarks
 
-End-to-end latency measurements for the v3.3 `Stream` / `Poller` API across six
-scenarios, rewritten in Phase 10 to use Python stdlib mocks and a single
-`lat_<scenario>[_dpdk]` binary per scenario.
+End-to-end latency measurements for the `Stream` / `Poller` API across six
+scenarios, using Python stdlib mocks and a single `lat_<scenario>[_dpdk]` binary
+per scenario.
 
 The mock always runs in kernel. Only the client side differs between the
 `kernel` and `dpdk` builds, which is what makes the kernel-vs-DPDK comparison
@@ -178,6 +178,6 @@ Shared bench unit tests live in `tests/unit/bench/`.
 - [`../../docs/dpdk-setup.md`](../../docs/dpdk-setup.md) — NIC-B / hugepages /
   vfio-pci environment
 - [`../../.artifacts/phase-10-scope-decision.md`](../../.artifacts/phase-10-scope-decision.md)
-  — what Phase 10 intentionally did NOT restore from the pre-v3.3 bench
+  — scope decisions for the latency benchmark suite
 - [`../../.artifacts/phase-10-perf-results-20260411.md`](../../.artifacts/phase-10-perf-results-20260411.md)
   — latest kernel performance numbers

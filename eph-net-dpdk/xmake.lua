@@ -1,5 +1,5 @@
 -- ============================================================================
--- eph-net-dpdk — header-only DPDK backend for the v3.3 eph::net concept layer.
+-- eph-net-dpdk — header-only DPDK backend for the eph::net concept layer.
 -- ============================================================================
 --
 -- Provides concrete types satisfying the `eph::net::Stream`, `eph::net::Datagram`
@@ -17,16 +17,13 @@
 --   * eph::dpdk::TcpSession / UdpSender / RxDispatcher / Connector / Multicast /
 --     ARP / DNS / FlowSteering / packet_* / platform / EalGuard
 --
--- Dependency rule (post-Phase-7): eph-core + eph-utils + eph-containers +
--- eph-net + aws-lc + DPDK. The Phase 4 pragmatic `eph-dpdk` dependency has
--- been removed — those source files now live in this module.
+-- Dependency rule: eph-core + eph-utils + eph-containers + eph-net +
+-- aws-lc + DPDK.
 --
 -- aws-lc is the only OpenSSL flavour in every eph-net-dpdk TU now:
--- Phase 7 replaced the two <openssl/rand.h> call sites (TcpSession ISN
--- generation, WS mask key cache) with `getrandom(2)`, and the DPDK
--- backend dependency now resolves via the system's libdpdk (isolated
--- /usr/include/dpdk layout) instead of vcpkg's shared prefix. No more
--- aws-lc / vcpkg-openssl typedef collision — gcc14-wrap/g++ is retired.
+-- ISN generation and WS mask key cache use `getrandom(2)` (no OpenSSL
+-- rand dependency). The DPDK backend resolves via the system's libdpdk
+-- (isolated /usr/include/dpdk layout).
 
 target("eph-net-dpdk")
     set_kind("headeronly")
@@ -62,8 +59,8 @@ for _, file in ipairs(os.files("tests/*.cpp")) do
 end
 
 -- Legacy DPDK unit tests — these exercise the low-level `eph::dpdk::*`
--- primitives that migrated into this module from eph-dpdk in Phase 7.
--- They run under --no-pci mode and do NOT touch the v3 API.
+-- primitives. They run under --no-pci mode and do NOT touch the
+-- high-level Stream / Datagram API.
 for _, file in ipairs(os.files("tests/legacy/*.cpp")) do
     target(path.basename(file))
         add_rules("eph-test")

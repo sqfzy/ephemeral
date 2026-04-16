@@ -55,7 +55,7 @@ struct UdpConfig {
     rte_mempool* pool{nullptr};     ///< mbuf pool for packet allocation
     bool hw_cksum{false};           ///< Enable NIC checksum offload (IP + UDP)
 
-    // Note: this struct is TX-only. RX of UDP datagrams in v3.3 goes
+    // Note: this struct is TX-only. RX of UDP datagrams goes
     // through `eph::net::dpdk::DpdkUdpSocket::process_burst_`, which
     // is dispatched by `DpdkPoller` using `PollerConfig::rx_queue_id`.
     // There is no RX queue field on this struct on purpose.

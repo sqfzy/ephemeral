@@ -34,7 +34,7 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (v3.3 API only).
+// eph-* headers.
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"

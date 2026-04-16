@@ -126,7 +126,7 @@ struct StreamConfig {
 /// @brief Configuration for `DpdkUdpSocket::create`.
 ///
 /// Parallels `StreamConfig`: wraps the legacy `eph::dpdk::UdpConfig`
-/// (fixed-peer UDP packet template) and adds v3.3-only knobs. The legacy
+/// (fixed-peer UDP packet template) and adds high-level knobs. The legacy
 /// config carries src/dst MAC, IP, port, mempool, port_id, tx_queue_id, and
 /// hw_cksum — exactly what `UdpPacketTemplate::init` needs.
 struct UdpConfig {

@@ -1,6 +1,6 @@
 # Multi-connection patterns
 
-In v3.3 a single `Poller` hosts any number of streams — kernel or DPDK, TCP or UDP,
+A single `Poller` hosts any number of streams — kernel or DPDK, TCP or UDP,
 different codecs, different TLS settings. This document covers the three common
 layouts for multi-symbol HFT feeds.
 

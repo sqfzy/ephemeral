@@ -4,7 +4,7 @@
 
 `eph-net` is the narrow-waist between codecs and networking backends. It contains:
 
-- The four v3.3 networking concepts (`Pollable`, `Stream`, `Datagram`, `Poller`).
+- The four networking concepts (`Pollable`, `Stream`, `Datagram`, `Poller`).
 - Shared value types: `SocketAddr`, `TcpState`, `ReconnectPolicy`.
 - In-memory test mocks: `FakeStream`, `FakeDatagram`, `TestPoller`.
 - The shared TLS + WebSocket + HTTP wire detail (`detail/`) used by both the
@@ -74,6 +74,6 @@ Drop a new header under `include/eph/net/test/`. It must satisfy `Stream` or
 
 - `README.md` — module overview
 - `summary.md` — public API surface
-- `CHANGELOG.md` — v3.3 repurposing impact
+- `CHANGELOG.md` — change history
 - `../docs/architecture.md` — whole-project concept model
 - `../docs/poller-guide.md` — using `Poller` in application code

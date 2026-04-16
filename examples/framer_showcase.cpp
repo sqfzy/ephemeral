@@ -81,7 +81,7 @@ static void demo(std::string_view name, Codec& codec,
 int main() {
     spdlog::set_level(spdlog::level::info);
 
-    const std::string msg = "v3.3 codec round-trip";
+    const std::string msg = "codec round-trip";
     std::span<const uint8_t> payload(
         reinterpret_cast<const uint8_t*>(msg.data()), msg.size());
 

@@ -2,7 +2,7 @@
 
 ## Public API surface
 
-Namespace: `eph::net::kernel`. Header-only. Backend implementation of the v3.3
+Namespace: `eph::net::kernel`. Header-only. Backend implementation of the
 network concepts on top of POSIX sockets + epoll.
 
 ### `KernelTcpStream<C, EnableTls>`

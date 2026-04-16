@@ -75,7 +75,7 @@
 #include "eph/dpdk/packet_core.hpp"  // net::parse_ipv4, net::format_ipv4, kDefaultMss
 #include "eph/dpdk/platform.hpp"
 
-// v3.3 concept-layer DPDK stream / poller.
+// DPDK stream / poller.
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
 #include "eph/net/reconnect_policy.hpp"

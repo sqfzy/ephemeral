@@ -1,6 +1,6 @@
 /// @file test_tls_in_place_decrypt.cpp
 /// End-to-end correctness for the in-place AES-GCM AEAD primitive
-/// behind the v3.3 zero-copy TLS path. The header under test lives at
+/// behind the zero-copy TLS path. The header under test lives at
 /// `eph/net/detail/tls_inplace.hpp` and is exercised here without any
 /// network or DPDK dependency.
 ///

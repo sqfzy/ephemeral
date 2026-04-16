@@ -366,7 +366,7 @@ public:
         // Validate the legacy TcpConfig first — it carries all the DPDK
         // wiring (port/queue/MAC/mempool-adjacent parameters) and knows
         // exactly which invariants it needs. We convert the string error
-        // to an ErrorInfo so the v3.3 error contract holds.
+        // to an ErrorInfo so the error contract holds.
         auto verr = cfg.legacy.validate();
         if (!verr.empty()) {
             SPDLOG_LOGGER_WARN(log,

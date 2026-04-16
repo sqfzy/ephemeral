@@ -26,7 +26,7 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (v3.3 API only).
+// eph-* headers.
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"

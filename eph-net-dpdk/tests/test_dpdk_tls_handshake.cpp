@@ -35,13 +35,13 @@ namespace en  = eph::net;
 
 using TlsRawStream = edpk::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/true>;
 
-// Concept checks — verify DpdkTcpStream<*, true> satisfies the v3.3 concepts.
+// Concept checks — verify DpdkTcpStream<*, true> satisfies the Stream/Pollable concepts.
 static_assert(en::Stream<TlsRawStream>,
               "DpdkTcpStream<*, true> must satisfy Stream");
 static_assert(en::Pollable<TlsRawStream>,
               "DpdkTcpStream<*, true> must satisfy Pollable");
 
-// `StreamConfig::tls` has to exist and be the v3.3 `eph::net::TlsConfig`.
+// `StreamConfig::tls` has to exist and be `eph::net::TlsConfig`.
 static_assert(std::is_same_v<decltype(edpk::StreamConfig{}.tls),
                               ::eph::net::TlsConfig>,
               "StreamConfig must carry an eph::net::TlsConfig field");

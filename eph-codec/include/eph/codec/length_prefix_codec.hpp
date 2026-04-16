@@ -10,10 +10,10 @@
 /// `decode()` call consumes at most one frame even if multiple frames are
 /// available in the view; the caller loops until `Ok(None)` is returned.
 ///
-/// This is the v3.3 replacement for `eph::net::LengthPrefixFramer` (in
+/// This replaces the legacy `eph::net::LengthPrefixFramer` (in
 /// `eph-core/include/eph/core/length_prefix_framer.hpp`). The differences:
 ///
-///   1. Widened from 2-byte to 4-byte length prefix per the v3.3 design doc
+///   1. Widened from 2-byte to 4-byte length prefix per the current design
 ///      (see "Codec 实现示例" / `max_overhead` table).
 ///   2. Decode operates on a `PacketViewRef` and returns
 ///      `expected<optional<Frame>, ErrorInfo>`, matching `StreamCodec`.

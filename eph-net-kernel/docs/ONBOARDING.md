@@ -2,7 +2,7 @@
 
 ## What's in this module
 
-The kernel-side implementation of the v3.3 networking concepts. Three
+The kernel-side implementation of the networking concepts. Three
 user-facing types:
 
 - `KernelTcpStream<C, EnableTls>` — per-connection TCP stream with optional TLS.

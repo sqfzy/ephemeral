@@ -1,6 +1,6 @@
 /// @file test_transport_e2e.cpp
 /// End-to-end test of `KernelTcpStream<RawStreamCodec, false>` against a
-/// localhost echo server driven by `KernelPoller`. Exercises the full v3.3
+/// localhost echo server driven by `KernelPoller`. Exercises the full
 /// stack (Stream concept, Poller concept, RawStreamCodec) across a real
 /// loopback socket.
 

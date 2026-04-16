@@ -5,9 +5,8 @@
 ///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
 ///     (port / ws_path / payload_size / duration_seconds) plus the
 ///     lowercase global `mock_ip`, `warmup_samples`.
-///   * Uses the v3.3 `KernelTcpStream<WsCodec, false>` + `KernelPoller`
-///     API directly — no legacy eph-transport, no bespoke loopback echoer,
-///     no raw socket() calls.
+///   * Uses `KernelTcpStream<WsCodec, false>` + `KernelPoller`
+///     API directly — no raw socket() calls.
 ///   * `StreamConfig.ws_path` is set — this triggers the transparent
 ///     WebSocket handshake inside `KernelTcpStream::create()`,
 ///     so by the time we start the measurement loop the socket is ready
@@ -39,7 +38,7 @@
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers (v3.3 API only).
+// eph-* headers.
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/utils/recorder.hpp"

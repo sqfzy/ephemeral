@@ -399,7 +399,7 @@ TEST(KernelWsUpgrade, WsTimeoutIsEnforcedWhenServerStalls) {
 // ═══════════════════════════════════════════════════════════════════════
 // Server-initiated control frames → client auto-response via drain_codec_
 //
-// These exercise the post-v3.3 contract where `WsCodec::decode` writes an
+// These exercise the contract where `WsCodec::decode` writes an
 // auto-response (pong / close-ack) into an `OutputBuffer` sink which the
 // stream backend MUST flush via the TX path. Before the flush fix, the
 // sink was silently dropped on return from `drain_codec_`, and the bug

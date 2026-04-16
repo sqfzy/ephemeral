@@ -22,9 +22,7 @@ target("test_metrics_concept")
     add_deps("eph-core", "eph-utils")
 
 -- ============================================================================
--- Phase 7: the v3.3 kernel + codec integration tests (formerly _v3 variants;
--- legacy suffix removed once the old eph-transport / eph-dpdk modules were
--- deleted).
+-- Kernel + codec integration tests.
 -- ============================================================================
 
 target("test_transport_e2e")

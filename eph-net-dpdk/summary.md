@@ -3,7 +3,7 @@
 ## Public API surface
 
 Namespace: `eph::net::dpdk`. Header-only (but links DPDK libs). Backend
-implementation of the v3.3 network concepts on top of DPDK kernel-bypass I/O.
+implementation of the network concepts on top of DPDK kernel-bypass I/O.
 
 ### `Eal` - RAII EAL wrapper
 

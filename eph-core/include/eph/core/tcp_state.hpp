@@ -7,7 +7,7 @@
 /// is correct: every module that needs `TcpState` already depends on
 /// `eph-core`, which is the universal substrate. The enum is declared
 /// in the `eph::net::` namespace because that is where the rest of the
-/// v3.3 networking concepts live (Stream, Datagram, Poller).
+/// networking concepts live (Stream, Datagram, Poller).
 ///
 /// This header resolves an ODR conflict between `eph/core/tcp_concept.hpp`
 /// and `eph/net/tcp_state.hpp` — both now forward here so the enum has

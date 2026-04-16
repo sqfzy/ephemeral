@@ -4,7 +4,7 @@
 > three narrow concepts (Stream / Datagram / Codec), one `Poller` driving
 > heterogeneous kernel + DPDK connections, zero virtual dispatch.
 
-**Language**: C++23 | **Build**: xmake | **Architecture**: v3.3 (frozen 2026-04-10)
+**Language**: C++23 | **Build**: xmake
 
 The authoritative design spec for the current architecture is
 `.artifacts/design-eph-v3.3-architecture-20260410.md`. This document is the
@@ -18,7 +18,7 @@ weighed), read the design doc. For a narrower concept-level guide, see
 
 1. [Overview](#overview)
 2. [Module Map](#module-map)
-3. [The Three v3.3 Concepts](#the-three-v33-concepts)
+3. [The Three Core Concepts](#the-three-core-concepts)
 4. [Dependency Graph](#dependency-graph)
 5. [Backend Implementations](#backend-implementations)
 6. [Data Flow (RX and TX)](#data-flow-rx-and-tx)
@@ -33,7 +33,7 @@ weighed), read the design doc. For a narrower concept-level guide, see
 ## Overview
 
 ephemeral is a C++23 networking library for HFT order entry and market data. It is
-entirely header-only and organized into eleven independent modules. The v3.3
+entirely header-only and organized into eleven independent modules. The
 architecture pivots the whole stack on three narrow concepts and a single I/O driver:
 
 - `eph::core::StreamCodec<T>` / `DatagramCodec<T>` — stateful, templated over an
@@ -85,7 +85,7 @@ application at link time.
 
 ---
 
-## The Three v3.3 Concepts
+## The Three Core Concepts
 
 ### `eph::core::StreamCodec<T>` / `eph::core::DatagramCodec<T>`
 
@@ -320,8 +320,8 @@ pointing into that same mbuf — zero memcpy between wire and user callback.
 
 ## Threading Model
 
-v3.3 intentionally deleted the earlier `Transport` / `DirectTransport` /
-`DirectTxTransport` trio (which composed a matrix of RX / TX thread choices). The new
+The current architecture intentionally avoids the earlier `Transport` / `DirectTransport`
+/ `DirectTxTransport` trio (which composed a matrix of RX / TX thread choices). The
 model is:
 
 - **One `Poller` drives I/O.** Whatever thread owns the poller runs the codec, TLS
@@ -347,14 +347,13 @@ runtime owns the loop; user code calls `send()`/`recv()` from within a task).
 - All fallible APIs return `std::expected<T, ErrorInfo>`. No exceptions cross module
   boundaries (`SPDLOG_NO_EXCEPTIONS` is also set in tests).
 - Parser modules (`eph-fix`, `eph-itch`, `eph-json`) keep their domain-specific enums
-  (`FrameError`, `FixError`, etc.) because they predate the v3.3 error unification and
-  the refactor didn't touch them.
+  (`FrameError`, `FixError`, etc.) because the error unification did not touch them.
 
 ---
 
 ## Tokio naming alignment
 
-The v3.3 public API deliberately mirrors Tokio:
+The public API deliberately mirrors Tokio:
 
 | ephemeral | Tokio |
 |---|---|
@@ -379,8 +378,8 @@ user-facing API; there are no "channels" or "variants" left.
 - Cross-module integration tests live in `tests/integration/`.
 - DPDK e2e tests live in `eph-net-dpdk/tests/integration/test_dpdk_e2e.cpp`. They skip
   cleanly when NIC_B is not bound to vfio-pci.
-- The v3.3 legacy test suite (unit tests for pre-refactor primitives still used as
-  internal detail) lives in `eph-net-dpdk/tests/legacy/` to preserve coverage of ARP /
+- The legacy test suite (unit tests for internal primitives) lives in
+  `eph-net-dpdk/tests/legacy/` to preserve coverage of ARP /
   DNS / flow steering / TCP state machine / net header helpers.
 - End-to-end latency benches are in `benchmarks/latency/` with a canonical wrapper
   script (`benchmarks/latency/lat`). See `docs/latency-benchmark-fairness.md`.
@@ -392,6 +391,6 @@ name.
 
 ---
 
-For a detailed decision log (including alternatives weighed and rejected during v3.3
+For a detailed decision log (including alternatives weighed and rejected during
 design), see `.artifacts/design-eph-v3.3-architecture-20260410.md`. For the
 concept-level new-contributor overview, see `docs/architecture.md`.

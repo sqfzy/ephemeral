@@ -2,7 +2,7 @@
 
 ## What's in this module
 
-The DPDK-side implementation of the v3.3 networking concepts. Four
+The DPDK-side implementation of the networking concepts. Four
 user-facing types:
 
 - `DpdkTcpStream<C, EnableTls>` — per-connection TCP stream with in-place TLS.
@@ -11,7 +11,7 @@ user-facing types:
 - `Eal` — RAII EAL init/teardown.
 
 Plus a rich internal-detail layer under `include/eph/dpdk/` (retained include
-path, pre-v3.3 heritage) containing ARP / DNS / flow steering / TCP state
+path) containing ARP / DNS / flow steering / TCP state
 machine / packet templates / EAL platform primitives.
 
 ## How to read the code
@@ -54,7 +54,7 @@ friendliest way to verify NIC-B state transitions end-to-end.
 
 ```bash
 xmake build -g tests
-xmake run test_dpdk_tls_handshake     # Phase 7 regression guard
+xmake run test_dpdk_tls_handshake     # TLS regression guard
 xmake run test_dpdk_tls_state         # in-place decrypt state tests
 xmake run test_dpdk_udp_multicast     # multicast join/leave
 

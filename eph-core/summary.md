@@ -1,6 +1,6 @@
 # eph-core summary
 
-## Public API surface (v3.3)
+## Public API surface
 
 ### `eph::core` - errors
 
@@ -102,8 +102,8 @@ struct ErrorEnumFormatter : std::formatter<std::string_view> { /* one-liner */ }
 - `FrameError` - kIncomplete / kInvalidFormat / kPayloadTooLarge.
 - `LengthPrefixFramer` - 2-byte BE length prefix, <= 65 535 byte payloads.
 
-These predate v3.3 and remain here for eph-fix / eph-itch / eph-json. The v3.3
-`eph::codec::LengthPrefixCodec` is a new implementation under the new concept.
+These are legacy primitives that remain here for eph-fix / eph-itch / eph-json.
+`eph::codec::LengthPrefixCodec` is the current implementation under the Codec concept.
 
 ### `eph::core` - number parsing
 

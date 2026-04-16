@@ -1,7 +1,7 @@
 # eph-codec
 
 Header-only C++23 module holding the stateful `StreamCodec` / `DatagramCodec`
-implementations for the v3.3 architecture. Introduced in v3.3 Phase 1.
+implementations for the architecture.
 
 Codecs are independent of any networking backend — they operate on a templated
 `PacketView` parameter, so the same instantiation works against kernel

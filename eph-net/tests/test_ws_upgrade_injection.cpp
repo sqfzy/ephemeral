@@ -1,7 +1,7 @@
 /// @file test_ws_upgrade_injection.cpp
 /// @brief P0 security — WS upgrade header injection defense.
 ///
-/// Migrated from v3.3 baseline
+/// Migrated from baseline
 /// `eph-transport/tests/test_build_upgrade_request_injection.cpp`.
 ///
 /// The baseline had a dedicated `build_upgrade_request(host, path, ws_key,

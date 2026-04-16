@@ -1,6 +1,6 @@
 # eph-net
 
-Header-only C++23 module defining the v3.3 networking concepts and shared types.
+Header-only C++23 module defining the networking concepts and shared types.
 Does not contain any backend implementation — that lives in `eph-net-kernel` and
 `eph-net-dpdk`. `eph-net` is the narrow-waist between codecs and backends.
 
@@ -8,7 +8,7 @@ Does not contain any backend implementation — that lives in `eph-net-kernel` a
 
 ### Concepts
 
-`include/eph/net/concepts.hpp` defines the four v3.3 networking concepts:
+`include/eph/net/concepts.hpp` defines the four networking concepts:
 
 - `Pollable<T>` — any type a `Poller` can drive (private `poll_once_()`).
 - `Stream<T>` — TCP-style connection. `send()`, `close_gracefully()`, `on_message`.

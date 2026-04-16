@@ -1,12 +1,12 @@
 # Poller guide
 
-The `eph::net::Poller` concept is the single I/O driver in the v3.3 architecture.
+The `eph::net::Poller` concept is the single I/O driver in the architecture.
 Every network program — kernel or DPDK, single-connection or multi-connection —
 attaches its `TcpStream` / `UdpSocket` objects to a `Poller` and drives them from a
 loop. This document walks through the common patterns.
 
 For the underlying concept definition, see `docs/architecture.md`. For the legacy
-`RxDispatcher`-centric guide from earlier architectures: that's gone — the v3.3 `Poller`
+`RxDispatcher`-centric guide from earlier architectures: that's gone — the `Poller`
 supersedes it.
 
 ## Contents
@@ -169,7 +169,7 @@ registered Pollables every tick.
 
 ## Heterogeneous
 
-One of the design goals of v3.3 is that a single Poller can drive a mix of `TcpStream`
+One of the design goals is that a single Poller can drive a mix of `TcpStream`
 and `UdpSocket` objects — the classic HFT layout where orders go over TCP and market
 data over UDP multicast:
 

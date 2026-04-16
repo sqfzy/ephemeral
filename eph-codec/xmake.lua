@@ -2,26 +2,23 @@
 -- eph-codec — header-only library of stateful codec implementations.
 -- ============================================================================
 --
--- Post-Phase-7 responsibilities:
+-- Responsibilities:
 --   * eph::codec::WsCodec            — stateful WebSocket codec with
 --                                       internal control-frame state machine
 --                                       (auto pong / close-ack via OutputBuffer).
 --                                       Uses the WS wire helpers under
 --                                       `eph/net/detail/websocket.hpp` (owned
---                                       by eph-net since Phase 7).
+--                                       by eph-net).
 --   * eph::codec::RawStreamCodec     — identity stream codec (no framing).
 --   * eph::codec::LengthPrefixCodec  — 4-byte big-endian length-prefix framer.
 --   * eph::codec::RawDatagramCodec   — identity datagram codec.
 --   * eph::codec::Mold64Codec        — MoldUDP64 datagram codec wrapping
 --                                       `eph::itch::parse_moldudp64`.
 --
--- Dependency rule (post-Phase-7):
+-- Dependency rule:
 --   * eph-core         — StreamCodec / DatagramCodec concepts, ErrorInfo, OutputBuffer
 --   * eph-net          — TLS detail + WS wire helpers (under eph/net/detail/*)
 --   * eph-itch         — MoldUDP64 wire parser (Mold64Codec is a thin wrapper)
---
--- The Phase 1 pragmatic dependency on `eph-transport` was removed in Phase 7
--- when the transport detail headers migrated into `eph-net/include/eph/net/detail/`.
 
 target("eph-codec")
     set_kind("headeronly")

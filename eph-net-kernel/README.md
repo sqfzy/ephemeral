@@ -1,8 +1,7 @@
 # eph-net-kernel
 
 Header-only C++23 kernel networking backend. Implements the `eph::net::Stream` /
-`Datagram` / `Poller` concepts on top of POSIX sockets + `epoll`. Introduced in
-v3.3 Phase 3.
+`Datagram` / `Poller` concepts on top of POSIX sockets + `epoll`.
 
 ## Types
 
