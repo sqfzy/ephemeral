@@ -14,7 +14,7 @@
 ///
 ///   - **No epoll equivalent**: DPDK lcore polling is always non-blocking
 ///     — `poll()` calls `rte_eth_rx_burst` once, dispatches each mbuf to
-///     the matching Pollable based on the 4-tuple / native handle, and
+///     the matching Pollable based on the 5-tuple / native handle, and
 ///     returns. There is no `poll(timeout)` overload (the design doc
 ///     explicitly excludes it).
 ///
@@ -172,7 +172,7 @@ public:
 
     // ── Registration ─────────────────────────────────────────────────────
 
-    /// @brief Register `obj` with the Poller. The Pollable's 4-tuple must
+    /// @brief Register `obj` with the Poller. The Pollable's 5-tuple must
     ///        be stable for the lifetime of the registration.
     ///
     /// `add<P>` accepts any concrete type `P` satisfying `eph::net::Pollable`
@@ -364,7 +364,7 @@ public:
     /// stale the instant another thread modifies the Poller.
     /// `DpdkPoller` itself is not MT-safe; typical usage is a single
     /// driver thread, and the authoritative check is `add()` which
-    /// rejects duplicate 4-tuples. Callers can retry `pick_src_port` on
+    /// rejects duplicate 5-tuples. Callers can retry `pick_src_port` on
     /// add() failure.
     ///
     /// Usage:

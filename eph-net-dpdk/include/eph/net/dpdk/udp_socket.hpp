@@ -11,7 +11,7 @@
 ///     DpdkUdpSocket<C>
 ///        │  ├── eph::dpdk::UdpSender     (TX path — fixed-peer template)
 ///        │  ├── C                         (DatagramCodec template param)
-///        │  ├── registered 4-tuple        (for Poller routing)
+///        │  ├── registered 5-tuple        (for Poller routing)
 ///        │  └── DpdkPoller<>*             (set by Poller::add)
 ///        │
 ///        v
@@ -241,7 +241,7 @@ public:
     ///        exists in eph-net-dpdk, this records the peer for the
     ///        Poller's per-tuple dispatch — the existing
     ///        `tuple_for_poller_` machinery already routes inbound
-    ///        packets by 4-tuple, so updating the configured peer is
+    ///        packets by 5-tuple, so updating the configured peer is
     ///        sufficient to redirect inbound dispatch.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     connect_to(const SocketAddr& peer) noexcept {

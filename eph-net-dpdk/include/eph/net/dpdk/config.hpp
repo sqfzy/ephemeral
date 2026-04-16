@@ -142,7 +142,7 @@ struct UdpConfig {
 ///
 /// DPDK lcore burst poll has no epoll equivalent: the Poller simply calls
 /// `rte_eth_rx_burst` on a single {port_id, rx_queue_id} and routes each
-/// mbuf to a registered Pollable based on its 4-tuple.
+/// mbuf to a registered Pollable based on its 5-tuple.
 ///
 /// Thread affinity is intentionally NOT a field here — `DpdkPoller` does
 /// not spawn a thread of its own. The user calls `poll()` from their own

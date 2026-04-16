@@ -1,15 +1,30 @@
 # eph-net-dpdk changelog
 
-## [Unreleased] — Client source port selection helper (2026-04-14)
+## [Unreleased] — 5-tuple routing + client source port selection (2026-04-16)
+
+### Changed
+- **DpdkPoller routing key upgraded from 4-tuple to 5-tuple** (IP protocol
+  added). `PollableEntry.proto` stores `kIpProtoTcp(6)` or `kIpProtoUdp(17)`.
+  `detail::hash_tuple()` and `lookup_by_5tuple_()` now include the protocol
+  field in both hash and full compare. This fixes two latent issues:
+  - TCP + UDP Pollables sharing the same (src_ip, dst_ip, src_port, dst_port)
+    can now coexist on one Poller (legitimate independent L4 namespaces).
+  - Cross-protocol misrouting is eliminated — a stray TCP packet can no longer
+    be dispatched to a same-4-tuple UDP Pollable (or vice versa), which was
+    only prevented in practice by NIC flow-steering rules and broke silently
+    in `--no-pci` test mode.
+- `DpdkPollable` concept and `tuple_for_poller_()` signature gained a
+  `uint8_t* proto` out-param. `DpdkTcpStream` fills `kIpProtoTcp`,
+  `DpdkUdpSocket` fills `kIpProtoUdp`.
+- `PollableEntry` sizeof grew from 48 → 56 bytes (still within one 64B
+  cacheline; a `static_assert` guards this invariant).
+- `pick_src_port()` intentionally stays 4-tuple (protocol-agnostic) — it is
+  almost exclusively a TCP-client concern and the over-restriction is
+  conservative rather than incorrect.
 
 ### Fixed
-- `DpdkPoller::add` now rejects duplicate 4-tuples, not just duplicate
-  object pointers. A collision on `(src_ip, dst_ip, src_port, dst_port)`
-  previously passed `add()` silently, leaving two entries with the
-  same routing key — `lookup_by_5tuple_` would then return the first
-  match on rx_burst, causing silent packet misrouting. The new check
-  is folded into `add()`'s single linear scan; fast filter on
-  `conn_hash`, full 4-field compare only on hash hit.
+- `DpdkPoller::add` now rejects duplicate 5-tuples (was 4-tuples), not just
+  duplicate object pointers. Error message and warn log updated accordingly.
 
 ### Added
 - `DpdkPoller::pick_src_port(src_ip, dst_ip, dst_port, range_begin,

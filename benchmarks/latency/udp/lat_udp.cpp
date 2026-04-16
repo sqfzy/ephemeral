@@ -30,7 +30,7 @@
 
 #if defined(EPH_USE_DPDK)
 // DpdkUdpSocket + DpdkPoller measurement loop. The DPDK poller uses
-// 4-tuple routing, so the registered
+// 5-tuple routing, so the registered
 // legacy.src/dst_port pair must match the mock's kernel socket 2-tuple.
 // UDP echo mock (udp_echo.py) binds a listener on (mock_ip, port) and
 // responds from the SAME 4-tuple (kernel recvfrom/sendto preserves peer),
@@ -197,7 +197,7 @@ int main(int argc, char** argv) {
     auto poller = std::move(poller_r.value());
 
 #if defined(EPH_USE_DPDK)
-    // DPDK UDP uses fixed-peer 4-tuple routing: choose a random client
+    // DPDK UDP uses fixed-peer 5-tuple routing: choose a random client
     // src_port and register (client_ip:src, mock_ip:port). The mock
     // (udp_echo.py) replies from the same 4-tuple so the Poller's direction-
     // symmetric lookup matches automatically.

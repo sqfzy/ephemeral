@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
     auto poller = std::move(poller_r.value());
 
 #if defined(EPH_USE_DPDK)
-    // DPDK UDP uses fixed-peer 4-tuple routing: random local src port,
+    // DPDK UDP uses fixed-peer 5-tuple routing: random local src port,
     // mock echoes back from (mock_ip, port) → (client_ip, src_port).
     const uint16_t local_src_port = bench::random_src_port();
     ed::UdpConfig sock_cfg{};
