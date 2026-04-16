@@ -21,6 +21,7 @@
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
+#include "eph/dpdk/packet_core.hpp"  // kIpProtoTcp / kIpProtoUdp
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
@@ -48,6 +49,7 @@ struct SyntheticPollableA {
     uint32_t dst_ip   = 0x0A000002;  // 10.0.0.2
     uint16_t src_port = 12345;
     uint16_t dst_port = 443;
+    uint8_t  proto    = eph::dpdk::net::kIpProtoTcp;  // default TCP
     int      burst_calls = 0;
     int      detach_calls = 0;
 
@@ -62,9 +64,11 @@ struct SyntheticPollableA {
     void notify_attached_(edpk::DpdkPoller<void>* p) noexcept { attached_to = p; }
     void notify_detached_() noexcept { attached_to = nullptr; ++detach_calls; }
     void tuple_for_poller_(uint32_t* s_ip, uint32_t* d_ip,
-                            uint16_t* s_port, uint16_t* d_port) noexcept {
+                            uint16_t* s_port, uint16_t* d_port,
+                            uint8_t* p) noexcept {
         *s_ip = src_ip; *d_ip = dst_ip;
         *s_port = src_port; *d_port = dst_port;
+        *p = proto;
     }
     void process_burst_(rte_mbuf** /*mbufs*/, uint16_t /*n*/,
                          uint64_t /*tsc*/) noexcept {
@@ -82,6 +86,7 @@ struct SyntheticPollableB {
     uint32_t dst_ip   = 0x0A000004;  // 10.0.0.4
     uint16_t src_port = 30000;
     uint16_t dst_port = 30001;
+    uint8_t  proto    = eph::dpdk::net::kIpProtoUdp;  // default UDP (distinct from A)
     int      detach_calls = 0;
 
     std::size_t poll_once_() noexcept { return 0; }
@@ -91,9 +96,11 @@ struct SyntheticPollableB {
     void notify_attached_(edpk::DpdkPoller<void>* p) noexcept { attached_to = p; }
     void notify_detached_() noexcept { attached_to = nullptr; ++detach_calls; }
     void tuple_for_poller_(uint32_t* s_ip, uint32_t* d_ip,
-                            uint16_t* s_port, uint16_t* d_port) noexcept {
+                            uint16_t* s_port, uint16_t* d_port,
+                            uint8_t* p) noexcept {
         *s_ip = src_ip; *d_ip = dst_ip;
         *s_port = src_port; *d_port = dst_port;
+        *p = proto;
     }
     void process_burst_(rte_mbuf** /*mbufs*/, uint16_t /*n*/,
                          uint64_t /*tsc*/) noexcept {}
@@ -188,13 +195,14 @@ TEST(DpdkPoller, P2HeterogeneousRegistration) {
     EXPECT_GE(pb.detach_calls, 1);
 }
 
-TEST(DpdkPoller, AddRejectsDuplicateFourTuple) {
-    // Two distinct Pollable objects exposing the exact same 4-tuple must
-    // NOT both register — the routing table would become ambiguous.
+TEST(DpdkPoller, AddRejectsDuplicate5Tuple) {
+    // Two distinct Pollable objects exposing the exact same 5-tuple (same
+    // 4-tuple AND same IP protocol) must NOT both register — the routing
+    // table would become ambiguous.
     auto p = edpk::DpdkPoller<>::create({}).value();
 
-    SyntheticPollableA pa;
-    SyntheticPollableA pb;  // distinct object, default tuple matches pa
+    SyntheticPollableA pa;  // default proto = kIpProtoTcp
+    SyntheticPollableA pb;  // distinct object, same 5-tuple as pa
 
     auto a1 = p->add<SyntheticPollableA>(&pa);
     ASSERT_TRUE(a1.has_value()) << a1.error().detail;
@@ -202,14 +210,42 @@ TEST(DpdkPoller, AddRejectsDuplicateFourTuple) {
     auto a2 = p->add<SyntheticPollableA>(&pb);
     ASSERT_FALSE(a2.has_value());
     EXPECT_EQ(a2.error().code, eph::core::Error::InvalidConfig);
-    EXPECT_NE(std::string_view{a2.error().detail}.find("4-tuple"),
+    EXPECT_NE(std::string_view{a2.error().detail}.find("5-tuple"),
               std::string_view::npos)
-        << "detail should mention '4-tuple': " << a2.error().detail;
+        << "detail should mention '5-tuple': " << a2.error().detail;
 
     // First registration must still be intact.
     EXPECT_EQ(p->size(), 1u);
     EXPECT_EQ(pa.attached_to, p.get());
     EXPECT_EQ(pb.attached_to, nullptr);  // rejected: never attached
+}
+
+TEST(DpdkPoller, CrossProtocolSame4TupleCoexists) {
+    // TCP and UDP Pollables sharing the exact same (src_ip, dst_ip,
+    // src_port, dst_port) live in independent L4 namespaces and must
+    // both register successfully. The routing key is a 5-tuple, so the
+    // IP protocol field disambiguates them on incoming packets.
+    //
+    // Pre-regression: before the 4→5-tuple upgrade, add() rejected the
+    // second registration with "4-tuple already registered", incorrectly
+    // conflating TCP and UDP scopes.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa_tcp;
+    pa_tcp.proto = eph::dpdk::net::kIpProtoTcp;
+
+    SyntheticPollableA pa_udp;  // identical 4-tuple as pa_tcp
+    pa_udp.proto = eph::dpdk::net::kIpProtoUdp;
+
+    auto a1 = p->add<SyntheticPollableA>(&pa_tcp);
+    ASSERT_TRUE(a1.has_value()) << a1.error().detail;
+
+    auto a2 = p->add<SyntheticPollableA>(&pa_udp);
+    ASSERT_TRUE(a2.has_value()) << a2.error().detail;
+
+    EXPECT_EQ(p->size(), 2u);
+    EXPECT_EQ(pa_tcp.attached_to, p.get());
+    EXPECT_EQ(pa_udp.attached_to, p.get());
 }
 
 TEST(DpdkPoller, AddAcceptsDistinctFourTuplesOnSameDst) {

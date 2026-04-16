@@ -286,13 +286,17 @@ public:
     void notify_attached_(DpdkPoller<void>* p) noexcept { attached_to_ = p; }
     void notify_detached_() noexcept { attached_to_ = nullptr; }
 
-    /// @brief Supplies the registered 4-tuple to the Poller at add-time.
+    /// @brief Supplies the registered 5-tuple to the Poller at add-time.
+    ///        `*proto` is set to `kIpProtoUdp` so the poller routing table
+    ///        can coexist with TCP Pollables sharing the same 4-tuple.
     void tuple_for_poller_(uint32_t* src_ip, uint32_t* dst_ip,
-                            uint16_t* src_port, uint16_t* dst_port) noexcept {
+                            uint16_t* src_port, uint16_t* dst_port,
+                            uint8_t*  proto) noexcept {
         *src_ip   = cfg_.legacy.src_ip;
         *dst_ip   = cfg_.legacy.dst_ip;
         *src_port = cfg_.legacy.src_port;
         *dst_port = cfg_.legacy.dst_port;
+        *proto    = eph::dpdk::net::kIpProtoUdp;
     }
 
     /// @brief Hot-path burst dispatch from DpdkPoller. Parses each mbuf

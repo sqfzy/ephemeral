@@ -725,14 +725,18 @@ public:
     /// @brief Invoked by `DpdkPoller::remove` and `~DpdkPoller`.
     void notify_detached_() noexcept { attached_to_ = nullptr; }
 
-    /// @brief Supplies the registered 4-tuple to the Poller at add-time.
+    /// @brief Supplies the registered 5-tuple to the Poller at add-time.
+    ///        `*proto` is set to `kIpProtoTcp` so the poller routing table
+    ///        can coexist with UDP Pollables sharing the same 4-tuple.
     void tuple_for_poller_(uint32_t* src_ip, uint32_t* dst_ip,
-                            uint16_t* src_port, uint16_t* dst_port) noexcept {
+                            uint16_t* src_port, uint16_t* dst_port,
+                            uint8_t*  proto) noexcept {
         const auto& t = cfg_.legacy.tuple;
         *src_ip   = t.src_ip;
         *dst_ip   = t.dst_ip;
         *src_port = t.src_port;
         *dst_port = t.dst_port;
+        *proto    = eph::dpdk::net::kIpProtoTcp;
     }
 
     /// @brief Hot-path burst dispatch entry point called by DpdkPoller.
