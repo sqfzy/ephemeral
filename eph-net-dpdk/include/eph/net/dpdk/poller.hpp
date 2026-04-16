@@ -299,7 +299,7 @@ public:
 
         std::size_t dispatched = 0;
         for (uint16_t i = 0; i < n; ++i) {
-            PollableEntry* entry = lookup_by_5tuple_(mbufs[i]);
+            PollableEntry* entry = lookup_by_4tuple_(mbufs[i]);
             if (entry != nullptr) {
                 entry->process_burst_fn(entry->obj, &mbufs[i], 1, rx_tsc);
                 ++dispatched;
@@ -473,7 +473,7 @@ private:
 
     /// @brief Route an incoming mbuf to the matching PollableEntry by
     ///        4-tuple. Handles both TCP and UDP.
-    PollableEntry* lookup_by_5tuple_(rte_mbuf* mbuf) noexcept {
+    PollableEntry* lookup_by_4tuple_(rte_mbuf* mbuf) noexcept {
         // L2+L3 parse first so we can dispatch by protocol without doing
         // the TCP or UDP parse twice in the collision / miss path.
         auto ip_hdr = eph::dpdk::net::parse_ip_header(mbuf);
@@ -521,7 +521,7 @@ private:
             // hash_collision_drops() for cumulative tracking.
             if (hash_collision_drops_ == 0) {
                 SPDLOG_LOGGER_WARN(detail::poller_logger(),
-                    "DpdkPoller::lookup_by_5tuple_: first hash collision "
+                    "DpdkPoller::lookup_by_4tuple_: first hash collision "
                     "(pkt_hash=0x{:08x} src=0x{:08x}:{} dst=0x{:08x}:{}); "
                     "subsequent collisions tracked via hash_collision_drops()",
                     pkt_hash, pkt_src_ip, pkt_src_port,
