@@ -2,6 +2,12 @@
 /// Latency benchmark: WebSocket RTT against the `ws` scenario of
 /// `benchmarks/mockex/mockex`.
 ///
+/// Real-server note: this scenario is inherently echo-RTT. Public
+/// exchanges do not offer a WS echo endpoint, so the `endpoint =
+/// wss://...` dual-mode switch from Phase 4 is not wired here —
+/// there is no meaningful real-server counterpart to validate
+/// against. Stay on the mock.
+///
 ///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
 ///     (port / ws_path / payload_size / duration_seconds) plus the
 ///     lowercase global `mock_ip`, `warmup_samples`.

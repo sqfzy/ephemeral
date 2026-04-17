@@ -2,6 +2,11 @@
 /// Latency benchmark: UDP RTT echo with the 24 B timestamp protocol,
 /// against the `ex_md_udp` scenario of `benchmarks/mockex/mockex`.
 ///
+/// Real-server note: the Phase-4 `endpoint = wss://...` switch is
+/// WebSocket-over-TLS only. UDP cannot carry wss:// and Binance's UDP
+/// market-data stream is not publicly exposed either. This scenario
+/// stays mock-only by design.
+///
 /// Structurally identical to `lat_udp` (RawDatagramCodec + 24 B TS
 /// prefix + echo); the exchange-pass suffix lives on so users that
 /// sweep the full `lat_*` matrix get the same scenario count.

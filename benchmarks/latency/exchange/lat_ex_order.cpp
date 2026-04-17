@@ -2,6 +2,13 @@
 /// Latency benchmark: strict one-at-a-time WebSocket order RTT
 /// against the `ex_order` scenario of `benchmarks/mockex/mockex`.
 ///
+/// Real-server note: placing live orders is neither safe nor cheap.
+/// The Phase-4 `endpoint = wss://...` dual-mode switch is intentionally
+/// not wired here — mock is the only sensible target. For real-wire
+/// TX/RX latency against an exchange, use the bookTicker push scenarios
+/// (lat_ex_market, lat_ex_market_2p) with a `wss://...` endpoint
+/// override.
+///
 /// Semantics:
 ///
 ///   * Strict request→response: send one order, wait for its echo,
