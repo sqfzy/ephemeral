@@ -318,6 +318,28 @@ host_to_bench_ns() {
     if [[ -n "$GATEWAY_IP" ]]; then
         ip netns exec bench_ns ip route add default via "$GATEWAY_IP" dev "$CLIENT_NIC" 2>/dev/null || true
     fi
+
+    # Bidirectional static ARP. AWS VPC does not proxy-ARP between two
+    # ENIs on the same instance, so neither side can resolve the other via
+    # broadcast ARP — SYNs and replies both black-hole. Inject permanent
+    # neighbour entries in both directions:
+    #   bench_ns: MOCK_IP  → mock NIC's MAC   (so client SYN goes out)
+    #   host ns:  CLIENT_IP → client NIC's MAC (so mock SYN-ACK comes back)
+    if [[ -n "$MOCK_NIC" && -n "$MOCK_IP" ]]; then
+        local mock_mac client_mac
+        mock_mac=$(ip -br link show "$MOCK_NIC" 2>/dev/null | awk '{print $3}')
+        client_mac=$(ip netns exec bench_ns ip -br link show "$CLIENT_NIC" 2>/dev/null | awk '{print $3}')
+        if [[ -n "$mock_mac" && -n "$client_mac" ]]; then
+            ip netns exec bench_ns ip neigh replace "$MOCK_IP" \
+                lladdr "$mock_mac" dev "$CLIENT_NIC" nud permanent 2>/dev/null || true
+            ip neigh replace "$CLIENT_IP" \
+                lladdr "$client_mac" dev "$MOCK_NIC" nud permanent 2>/dev/null || true
+            log_info "static ARP: $MOCK_IP → $mock_mac, $CLIENT_IP → $client_mac"
+        else
+            log_warn "could not read MACs ($MOCK_NIC=$mock_mac, $CLIENT_NIC=$client_mac) — ARP may fail"
+        fi
+    fi
+
     log_info "bench_ns ready ($CLIENT_NIC = ${CLIENT_IP}/${PREFIX} → ${GATEWAY_IP:-no-gw})"
 }
 
