@@ -36,6 +36,11 @@
 #include <string>
 #include <utility>
 
+#include <arpa/inet.h>        // inet_ntop
+#include <netdb.h>            // getaddrinfo (Phase 4 real-server mode)
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 
 #include <spdlog/spdlog.h>
 
@@ -56,6 +61,7 @@
 #endif
 
 #include "core/config.hpp"
+#include "core/endpoint.hpp"          // Phase 4: resolve_endpoint
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"
 #if defined(EPH_USE_DPDK)
@@ -70,12 +76,14 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using Stream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using Poller = ed::DpdkPoller<>;
+using Stream    = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using StreamTls = Stream;  // DPDK path does not support the wss:// endpoint
+using Poller    = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
-using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using Poller = ek::KernelPoller;
+using Stream    = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
+using StreamTls = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>;
+using Poller    = ek::KernelPoller;
 #endif
 
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
@@ -90,6 +98,81 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
         return env;
     }
     return kDefaultConfigPath;
+}
+
+/// Inner measurement loop — templated over the stream type so the
+/// plain-TCP (mock) and TLS (real-server) branches share every line
+/// below it. The function takes ownership of the stream unique_ptr
+/// so lifetime bookkeeping stays in one place.
+///
+/// The loop is identical to pre-Phase-4 code: attach stream →
+/// install on_message → poll until the duration deadline or SIGTERM
+/// → print report → export JSON → teardown.
+template <class StreamT, class PollerT>
+int run_measurement(std::unique_ptr<StreamT> stream,
+                    std::unique_ptr<PollerT>& poller,
+                    eu::Recorder& rec,
+                    uint64_t warmup_samples,
+                    uint64_t duration_s,
+                    const char* backend) noexcept {
+    uint64_t sample_idx      = 0;
+    uint64_t malformed       = 0;
+    uint64_t clock_skew      = 0;
+    uint64_t t_measure_start = 0;
+
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        const uint64_t t_recv = bench::monotonic_raw_ns();
+        auto t_server_opt = bench::scan_json_uint_field(
+            app_frame.data(), app_frame.size(), "T");
+        if (!t_server_opt) { ++malformed; return; }
+        const uint64_t t_server = *t_server_opt;
+        if (t_recv <= t_server) { ++clock_skew; return; }
+        if (sample_idx == warmup_samples) t_measure_start = t_recv;
+        if (sample_idx >= warmup_samples) rec.record_ns(t_recv - t_server);
+        ++sample_idx;
+    };
+
+    if (auto r = poller->add(stream.get()); !r) {
+        std::fprintf(stderr, "lat_ex_market: poller->add failed: %s\n",
+                     r.error().detail);
+        return 3;
+    }
+
+    const uint64_t t_start = bench::monotonic_raw_ns();
+    const uint64_t t_deadline =
+        t_start + (duration_s + 2) * 1'000'000'000ull;
+
+    while (bench::monotonic_raw_ns() < t_deadline &&
+           !bench::shutdown_requested()) {
+        poller->poll();
+    }
+
+    if (malformed > 0 || clock_skew > 0) {
+        std::fprintf(stderr,
+                     "lat_ex_market: skipped %llu malformed + %llu clock-skew "
+                     "samples\n",
+                     static_cast<unsigned long long>(malformed),
+                     static_cast<unsigned long long>(clock_skew));
+    }
+
+    const uint64_t wall_time_ns =
+        (t_measure_start != 0)
+            ? (bench::monotonic_raw_ns() - t_measure_start)
+            : 0;
+    bench::print_report("lat_ex_market", backend, rec,
+                        warmup_samples, wall_time_ns);
+    if (!rec.export_json("benchmarks/latency/outputs")) {
+        std::fprintf(stderr,
+                     "[WARN] lat_ex_market: export_json to "
+                     "'benchmarks/latency/outputs' failed\n");
+    }
+
+    (void)stream->close_gracefully();
+#if !defined(EPH_USE_DPDK)
+    poller->poll(std::chrono::milliseconds{50});
+#endif
+    (void)poller->remove(stream.get());
+    return 0;
 }
 
 } // namespace
@@ -142,25 +225,88 @@ int main(int argc, char** argv) {
     }
     const uint64_t warmup_samples = warmup_r.value();
 
-    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
-    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
-    if (!ip_r) {
-        std::fprintf(stderr, "lat_ex_market: invalid mock_ip '%s': %s\n",
-                     mock_ip_str.c_str(), ip_r.error().detail);
+    // Phase 4: resolve the endpoint. `mock` (default) keeps the legacy
+    // mock_ip:port/ws_path wiring; `wss://host[:port]/path` switches to
+    // real-server mode, which (on the kernel backend) instantiates the
+    // TLS-enabled stream typedef below.
+    auto endpoint_r = bench::resolve_endpoint(globals, scenario);
+    if (!endpoint_r) {
+        std::fprintf(stderr, "lat_ex_market: %s\n", endpoint_r.error().c_str());
         return 1;
     }
-    const en::SocketAddr remote{ip_r.value(), port};
+    const auto endpoint = std::move(*endpoint_r);
+
+#if defined(EPH_USE_DPDK)
+    if (endpoint.is_real_server) {
+        std::fprintf(stderr,
+            "lat_ex_market: real-server endpoint ('%s') is not supported on "
+            "the DPDK build — the PMD path has no outbound WAN routing.\n"
+            "Run the kernel build (lat_ex_market) against the real server "
+            "and keep the DPDK build on the mock.\n",
+            scenario.get_string("endpoint").c_str());
+        return 1;
+    }
+#endif
+
+    // Resolve the target host. For the mock path it's always a plain IPv4
+    // literal from bench.conf. For real-server mode we may have a DNS
+    // name (e.g. `stream.binance.com`) — resolve it via getaddrinfo here.
+    // eph-net does not ship a resolver (DNS is outside its "zero-syscall
+    // on the hot path" scope), and this is a one-shot startup call.
+    const std::string mock_ip_str = endpoint.host;
+    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
+    std::string resolved_ip = mock_ip_str;
+    if (!ip_r) {
+        if (!endpoint.is_real_server) {
+            std::fprintf(stderr, "lat_ex_market: invalid mock_ip '%s': %s\n",
+                         mock_ip_str.c_str(), ip_r.error().detail);
+            return 1;
+        }
+        // Real-server mode with a hostname — resolve via getaddrinfo.
+        struct addrinfo hints{};
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo* ai = nullptr;
+        const int gai = ::getaddrinfo(mock_ip_str.c_str(), nullptr, &hints, &ai);
+        if (gai != 0 || ai == nullptr) {
+            std::fprintf(stderr,
+                "lat_ex_market: getaddrinfo('%s') failed: %s\n",
+                mock_ip_str.c_str(), ::gai_strerror(gai));
+            if (ai) ::freeaddrinfo(ai);
+            return 1;
+        }
+        char buf[INET_ADDRSTRLEN];
+        const auto* sin = reinterpret_cast<const sockaddr_in*>(ai->ai_addr);
+        ::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+        resolved_ip = buf;
+        ::freeaddrinfo(ai);
+        ip_r = en::Ipv4Addr::parse(resolved_ip);
+        if (!ip_r) {
+            std::fprintf(stderr,
+                "lat_ex_market: failed to re-parse resolved IP '%s'\n",
+                resolved_ip.c_str());
+            return 1;
+        }
+        std::printf("lat_ex_market: DNS %s → %s\n",
+                    mock_ip_str.c_str(), resolved_ip.c_str());
+    }
+    const en::SocketAddr remote{ip_r.value(), endpoint.port};
+
+    const std::string effective_ws_path =
+        endpoint.is_real_server ? endpoint.ws_path : ws_path;
 
     std::printf("=== lat_ex_market ===\n");
-    std::printf("config: mock=%s port=%u ws_path=%s push_rate_hz=%u "
-                "duration=%llus warmup_samples=%llu\n",
-                mock_ip_str.c_str(),
-                static_cast<unsigned>(port),
-                ws_path.c_str(),
+    std::printf("config: target=%s:%u ws_path=%s push_rate_hz=%u "
+                "duration=%llus warmup_samples=%llu mode=%s\n",
+                endpoint.host.c_str(),
+                static_cast<unsigned>(endpoint.port),
+                effective_ws_path.c_str(),
                 static_cast<unsigned>(push_rate_hz),
                 static_cast<unsigned long long>(duration_s),
-                static_cast<unsigned long long>(warmup_samples));
+                static_cast<unsigned long long>(warmup_samples),
+                endpoint.is_real_server ? "real-server+tls" : "mock");
     std::fflush(stdout);
+    (void)port;  // superseded by endpoint.port
 
     bench::install_signal_handler();
 
@@ -208,24 +354,12 @@ int main(int argc, char** argv) {
 
 #if defined(EPH_USE_DPDK)
     ed::StreamConfig cfg{};
-    cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
+    cfg.legacy          = env.make_tcp_config(bench::random_src_port(),
+                                              endpoint.port);
     cfg.pool            = env.pool;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = ws_path;
+    cfg.ws_path         = effective_ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
-#else
-    // Transparent WS handshake: setting ws_path makes `create()` drive
-    // the HTTP/1.1 Upgrade after the TCP connect.
-    // At high push rates (100 kHz × 30 s ≈ 3 M samples) the reassembly
-    // buffer needs enough slack to absorb multiple frames per poll —
-    // 256 KiB is comfortable headroom for ~200-byte bookTicker JSONs.
-    ek::StreamConfig cfg{};
-    cfg.remote          = remote;
-    cfg.reasm_capacity  = 256 * 1024;
-    cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = ws_path;
-    cfg.ws_timeout      = std::chrono::seconds{10};
-#endif
 
     auto stream_r = Stream::create(cfg);
     if (!stream_r) {
@@ -233,108 +367,52 @@ int main(int argc, char** argv) {
                      stream_r.error().detail);
         return 3;
     }
-    auto stream = std::move(stream_r.value());
+    const int rc = run_measurement(std::move(stream_r.value()), poller,
+                                   rec, warmup_samples, duration_s, backend);
+#else
+    // Kernel backend: pick the TLS-enabled stream typedef when the
+    // endpoint is a real exchange (wss://...), plain otherwise. The
+    // post-connect loop is templated so both branches share it.
+    // 256 KiB reasm buffer: ~200 B bookTicker JSON × ~1 k in-flight
+    // frames before the epoll event → comfortable headroom.
+    ek::StreamConfig cfg{};
+    cfg.reasm_capacity  = 256 * 1024;
+    cfg.connect_timeout = std::chrono::milliseconds{3000};
+    cfg.ws_path         = effective_ws_path;
+    cfg.ws_timeout      = std::chrono::seconds{10};
 
-    // ── One-way measurement inside on_message ───────────────────────────
-    //
-    // Each decoded WS-binary frame carries a JSON blob of the form:
-    //   {"e":"bookTicker","s":"BTCUSDT",...,"T":1712345678901234567}
-    //
-    // `scan_json_uint_field(data, n, "T")` finds the `"T":<digits>`
-    // token and parses the unsigned integer. If the field is missing
-    // or the payload arrives out of shape (mock warmup noise, partial
-    // decode, ...) we skip that sample rather than poison the
-    // histogram.
-    //
-    // Sanity gate: `t_recv > t_server` must hold — otherwise we've hit
-    // a clock skew / instrumentation bug and should drop the sample.
-    //
-    // `rec` is declared above the poller (before Stream::create) so
-    // TSC calibration doesn't steal a second of wall time between
-    // "mock begins pushing" and "client begins polling".
-    uint64_t sample_idx     = 0;
-    uint64_t malformed      = 0;
-    uint64_t clock_skew     = 0;
-    uint64_t t_measure_start = 0;  // stamped at the first post-warmup sample
-
-    stream->on_message = [&](std::span<const uint8_t> app_frame) {
-        const uint64_t t_recv = bench::monotonic_raw_ns();
-
-        auto t_server_opt = bench::scan_json_uint_field(
-            app_frame.data(), app_frame.size(), "T");
-        if (!t_server_opt) {
-            ++malformed;
-            return;
+    int rc = 0;
+    if (endpoint.is_real_server) {
+        // TLS path. SNI + Host header both take the user-facing
+        // hostname (not the resolved IP) so the server routes to the
+        // right vhost and the certificate matches.
+        cfg.remote          = remote;
+        cfg.tls.hostname    = endpoint.host;
+        cfg.ws_host         = endpoint.host;
+        auto stream_r = StreamTls::create(cfg);
+        if (!stream_r) {
+            std::fprintf(stderr,
+                "lat_ex_market: StreamTls::create('%s:%u%s') failed: %s\n",
+                endpoint.host.c_str(), endpoint.port,
+                effective_ws_path.c_str(),
+                stream_r.error().detail);
+            return 3;
         }
-        const uint64_t t_server = *t_server_opt;
-
-        if (t_recv <= t_server) {
-            ++clock_skew;
-            return;
+        rc = run_measurement(std::move(stream_r.value()), poller,
+                             rec, warmup_samples, duration_s, backend);
+    } else {
+        cfg.remote = remote;
+        auto stream_r = Stream::create(cfg);
+        if (!stream_r) {
+            std::fprintf(stderr, "lat_ex_market: Stream::create failed: %s\n",
+                         stream_r.error().detail);
+            return 3;
         }
-
-        if (sample_idx == warmup_samples) {
-            t_measure_start = t_recv;
-        }
-        if (sample_idx >= warmup_samples) {
-            rec.record_ns(t_recv - t_server);
-        }
-        ++sample_idx;
-    };
-
-    if (auto r = poller->add(stream.get()); !r) {
-        std::fprintf(stderr, "lat_ex_market: poller->add failed: %s\n",
-                     r.error().detail);
-        return 3;
+        rc = run_measurement(std::move(stream_r.value()), poller,
+                             rec, warmup_samples, duration_s, backend);
     }
-
-    // ── Poll loop ───────────────────────────────────────────────────────
-    //
-    // The client is passive: it only polls. The mock drives the rate.
-    // We bound the run by `duration_seconds` from bench.conf plus a
-    // cooperative shutdown flag so Ctrl-C still prints a report.
-    //
-    // `duration_s + 2` gives the mock an extra 2 s tail so slow-start
-    // jitter doesn't truncate the sample window; the mock exits on
-    // its own `duration_seconds` deadline and then `poll()` will stop
-    // seeing frames — we fall out naturally on the outer time guard.
-    const uint64_t t_start = bench::monotonic_raw_ns();
-    const uint64_t t_deadline =
-        t_start + (duration_s + 2) * 1'000'000'000ull;
-
-    while (bench::monotonic_raw_ns() < t_deadline && !bench::shutdown_requested()) {
-        poller->poll();
-    }
-
-    if (malformed > 0 || clock_skew > 0) {
-        std::fprintf(stderr,
-                     "lat_ex_market: skipped %llu malformed + %llu clock-skew "
-                     "samples\n",
-                     static_cast<unsigned long long>(malformed),
-                     static_cast<unsigned long long>(clock_skew));
-    }
-
-    const uint64_t wall_time_ns =
-        (t_measure_start != 0)
-            ? (bench::monotonic_raw_ns() - t_measure_start)
-            : 0;
-    bench::print_report("lat_ex_market", backend, rec,
-                        warmup_samples, wall_time_ns);
-    // Oneway JSON export (1 file per backend). WARN-only on failure so
-    // disk issues don't fail the bench.
-    if (!rec.export_json("benchmarks/latency/outputs")) {
-        std::fprintf(stderr,
-                     "[WARN] lat_ex_market: export_json to "
-                     "'benchmarks/latency/outputs' failed\n");
-    }
-
-    (void)stream->close_gracefully();
-#if !defined(EPH_USE_DPDK)
-    poller->poll(std::chrono::milliseconds{50});
 #endif
-    (void)poller->remove(stream.get());
-    stream.reset();
-    poller.reset();
 
-    return 0;
+    poller.reset();
+    return rc;
 }

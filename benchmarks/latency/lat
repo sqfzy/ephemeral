@@ -204,6 +204,28 @@ conf_get() {
     [[ -n "$val" ]] && echo "$val" || echo "$default"
 }
 
+# Read a single KEY = VALUE from inside a `[SECTION]` block. Comments
+# and leading/trailing whitespace are stripped; the first match wins.
+# Used for Phase-4 `endpoint` detection — the rest of the script still
+# reads its routing keys from the global (pre-section) scope.
+conf_get_section() {
+    local section="$1" key="$2" default="${3:-}"
+    local val
+    val=$(awk -v sec="[$section]" -v k="$key" '
+        $0 == sec            { in_sec = 1; next }
+        /^\[/                { in_sec = 0; next }
+        /^[[:space:]]*#/     { next }
+        in_sec {
+            sub(/#.*$/, "")
+            split($0, a, "=")
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[1])
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
+            if (a[1] == k) { print a[2]; exit }
+        }
+    ' "$CONFIG_FILE")
+    [[ -n "$val" ]] && echo "$val" || echo "$default"
+}
+
 MOCK_NIC=$(conf_get mock_nic)
 CLIENT_NIC=$(conf_get client_nic)
 MOCK_IP=$(conf_get mock_ip)
@@ -487,10 +509,26 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Phase 4: detect real-server mode from the section's `endpoint` key.
+# `mock` (default) / absent → fork the local mockex child.
+# `wss://...` (or `ws://...`)  → skip the fork; client connects to the
+# exchange directly (requires DNS + TLS + outbound connectivity).
+ENDPOINT=$(conf_get_section "lat_$SCENARIO" endpoint mock)
+REAL_SERVER=false
+case "$ENDPOINT" in
+    mock|"")            REAL_SERVER=false ;;
+    wss://*|ws://*)     REAL_SERVER=true  ;;
+    *) die "unrecognised endpoint '$ENDPOINT' for $SCENARIO" \
+           "Expected 'mock' or a ws[s]:// URL. See bench.conf." ;;
+esac
+
 case "$MOCK_KIND" in
     cpp) MOCK_DESC="mockex --scenario $MOCK_ARG" ;;
     py)  MOCK_DESC="python3 $(basename "$MOCK_SCRIPT")" ;;
 esac
+if $REAL_SERVER; then
+    MOCK_DESC="⎆ real server: $ENDPOINT"
+fi
 
 printf '\n%s── lat %s%s ──%s\n' "$BOLD" "$SCENARIO" \
     "$($DPDK && echo ' --dpdk')" "$NC"
@@ -502,29 +540,34 @@ printf '   topo   : %s\n\n' \
        $DPDK && echo "dpdk(ens35=vfio) → VPC → mock(ens34)" || \
        echo "bench_ns(ens35) → VPC → mock(ens34)")"
 
-# Fork the mock. For cpp: scenarios we exec the mockex binary next to
-# the latency benches in the xmake build output; for py: scenarios we
-# fall back to python3 pointing at the legacy script.
-case "$MOCK_KIND" in
-    cpp)
-        MOCKEX_BIN="$BUILD_DIR/mockex"
-        [[ -x "$MOCKEX_BIN" ]] || die "mockex binary not found: $MOCKEX_BIN" \
-            "Build with: xmake build mockex"
-        log_step "forking mock: mockex --scenario $MOCK_ARG --config $(basename "$CONFIG_FILE")"
-        "$MOCKEX_BIN" --scenario "$MOCK_ARG" --config "$CONFIG_FILE" &
-        ;;
-    py)
-        log_step "forking mock: python3 $(basename "$MOCK_SCRIPT") --config $(basename "$CONFIG_FILE")"
-        python3 "$MOCK_SCRIPT" --config "$CONFIG_FILE" &
-        ;;
-esac
-MOCK_PID=$!
+# Fork the mock — unless we're in real-server mode, in which case the
+# client will dial the exchange directly and there's nothing to fork.
+if $REAL_SERVER; then
+    log_step "real-server mode: skipping mockex fork (endpoint=$ENDPOINT)"
+    MOCK_PID=""
+else
+    case "$MOCK_KIND" in
+        cpp)
+            MOCKEX_BIN="$BUILD_DIR/mockex"
+            [[ -x "$MOCKEX_BIN" ]] || die "mockex binary not found: $MOCKEX_BIN" \
+                "Build with: xmake build mockex"
+            log_step "forking mock: mockex --scenario $MOCK_ARG --config $(basename "$CONFIG_FILE")"
+            "$MOCKEX_BIN" --scenario "$MOCK_ARG" --config "$CONFIG_FILE" &
+            ;;
+        py)
+            log_step "forking mock: python3 $(basename "$MOCK_SCRIPT") --config $(basename "$CONFIG_FILE")"
+            python3 "$MOCK_SCRIPT" --config "$CONFIG_FILE" &
+            ;;
+    esac
+    MOCK_PID=$!
+fi
 
-sleep 0.5
-
-if ! kill -0 "$MOCK_PID" 2>/dev/null; then
-    die "mock exited before client could run" \
-        "Check the mock output above; it probably failed to bind $MOCK_IP."
+if [[ -n "$MOCK_PID" ]]; then
+    sleep 0.5
+    if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+        die "mock exited before client could run" \
+            "Check the mock output above; it probably failed to bind $MOCK_IP."
+    fi
 fi
 
 # ── Exec the client ─────────────────────────────────────────────────

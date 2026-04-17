@@ -28,6 +28,14 @@ target("test_bench_measurement")
     add_deps("eph-utils")
     add_packages("spdlog")
 
+-- Phase 4 mockex real-server switch: parse_ws_url + resolve_endpoint.
+target("test_bench_endpoint")
+    add_rules("eph-test")
+    add_files("test_endpoint.cpp")
+    add_includedirs("$(projectdir)/benchmarks/latency")
+    add_deps("eph-utils")
+    add_packages("spdlog")
+
 -- TX/RX leg decomposition timestamp-block protocol
 -- (benchmarks/latency/core/timestamp_proto.hpp). Pure-function unit
 -- tests — no eph dependencies beyond gtest + spdlog.
