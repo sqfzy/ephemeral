@@ -137,6 +137,12 @@ includes("tests/unit/bench/xmake.lua")
 -- .artifacts/plan-bench-latency-simplify-20260409-065640.md
 includes("benchmarks/latency/xmake.lua")
 
+-- Unified mock-server binary for the latency bench suite. Replaces the
+-- per-scenario Python mocks under benchmarks/latency/mocks/. See
+-- benchmarks/mockex/xmake.lua and the plan at
+-- .claude/plans/elegant-toasting-popcorn.md.
+includes("benchmarks/mockex/xmake.lua")
+
 -- ===========================================================================
 -- Examples (centralized, user-facing). All examples target the
 -- eph-net-kernel / eph-net-dpdk / eph-codec API.
