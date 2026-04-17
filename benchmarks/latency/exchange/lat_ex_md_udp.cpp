@@ -1,7 +1,6 @@
 /// @file lat_ex_md_udp.cpp
 /// Latency benchmark: UDP RTT echo with the 24 B timestamp protocol,
-/// against the Python echo mock `benchmarks/latency/mocks/
-/// ex_md_udp_echo.py`.
+/// against the `ex_md_udp` scenario of `benchmarks/mockex/mockex`.
 ///
 /// Structurally identical to `lat_udp` (RawDatagramCodec + 24 B TS
 /// prefix + echo); the exchange-pass suffix lives on so users that

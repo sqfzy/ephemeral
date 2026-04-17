@@ -132,21 +132,23 @@ Two distinct benchmark systems:
    after the change and verify no regression.
 
 2. **End-to-end latency benchmarks** — `benchmarks/latency/`, one
-   `lat_<scenario>[_dpdk]` binary per scenario. Every scenario is built on the
-   `Stream` / `Poller` API against **Python stdlib mocks** (no pip install
-   required); the mock is **always kernel**, only the client side differs between kernel
-   and DPDK, which is what makes the comparison fair. The bench writes no files.
+   `lat_<scenario>[_dpdk]` binary per scenario, all served by the single C++23
+   `benchmarks/mockex/mockex` binary (`mockex --scenario <name>` dispatches to
+   the handler for `[lat_<name>]`). The mock is **always kernel**, only the
+   client side differs between kernel and DPDK, which is what makes the
+   comparison fair. The bench writes no files.
 
-   The six scenarios:
+   The seven scenarios:
 
-   | Scenario        | Client                                             | Mock                    |
-   |-----------------|----------------------------------------------------|-------------------------|
-   | `lat_tcp`       | `KernelTcpStream<RawStreamCodec>` echo RTT         | `mocks/tcp_echo.py`     |
-   | `lat_udp`       | `KernelUdpSocket<RawDatagramCodec>` echo RTT       | `mocks/udp_echo.py`     |
-   | `lat_ws`        | `KernelTcpStream<WsCodec>` echo RTT (RFC 6455)     | `mocks/ws_echo.py`      |
-   | `lat_ex_market` | `WsCodec` + `core/json_scan.hpp` 1-leg oneway      | `mocks/ex_market_push.py` |
-   | `lat_ex_order`  | `WsCodec` + N-inflight JSON order RTT              | `mocks/ex_order_echo.py`|
-   | `lat_ex_md_udp` | `RawDatagramCodec` Mold64-style oneway             | `mocks/ex_md_udp_push.py` |
+   | Scenario          | Client                                             | mockex handler                         |
+   |-------------------|----------------------------------------------------|----------------------------------------|
+   | `lat_tcp`         | `KernelTcpStream<RawStreamCodec>` echo RTT         | `tcp_echo_run` (echo + ts stamp)       |
+   | `lat_udp`         | `KernelUdpSocket<RawDatagramCodec>` echo RTT       | `udp_echo_run`                         |
+   | `lat_ws`          | `KernelTcpStream<WsCodec>` echo RTT (RFC 6455)     | `ws_echo_run`                          |
+   | `lat_ex_market`   | `WsCodec` + `core/json_scan.hpp` 1-leg oneway      | `ex_market_push_run` (MMPP-2 + pool)   |
+   | `lat_ex_market_2p`| 2-phase multi-symbol + burst                       | `ex_market_2p_push_run`                |
+   | `lat_ex_order`    | `WsCodec` + N-inflight JSON order RTT              | `ex_order_echo_run` (JSON ts splice)   |
+   | `lat_ex_md_udp`   | `RawDatagramCodec` Mold64-style RTT                | `ex_md_udp_echo_run`                   |
 
    Drive everything via the `lat` dispatcher — it handles NIC-B state transitions
    (host kernel ↔ `bench_ns` ↔ vfio-pci) idempotently and execs the right binary:
@@ -159,13 +161,14 @@ sudo ./benchmarks/latency/lat ex_market     # exchange bookTicker push
 
 Configuration is a single INI-style `benchmarks/latency/bench.conf`: lowercase global
 keys (NIC/IP/CPU layout, `warmup_samples`) before the first section header, then one
-`[lat_<scenario>]` section per binary (`port`, `payload_size`, `duration_seconds`, etc.).
-Both the C++ client and the Python mock read the same file via
-`bench::ScenarioConfig` / `mocks/_conf.py`.
+`[lat_<scenario>]` section per binary (`port`, `payload_size`, `duration_seconds`,
+push-scenario `mockex_params` / `mockex_payload` / `mockex_seed`, optional
+`endpoint = wss://...` for real-server mode). Both the C++ client and mockex read the
+same file via `bench::ScenarioConfig`.
 
-Exception to the canonical TSC rule: bench client and mocks both read
-`clock_gettime(CLOCK_MONOTONIC_RAW)` via `bench::monotonic_raw_ns()` so the Python mock
-and C++ client share a time base on one-way scenarios. Samples feed
+Exception to the canonical TSC rule: bench client and mockex both read
+`clock_gettime(CLOCK_MONOTONIC_RAW)` via `bench::monotonic_raw_ns()` so they share a
+time base on one-way scenarios. Samples feed
 `eph::utils::Recorder::record_ns()` directly (no cycle→ns conversion). Shared bench
 infrastructure is a header-only library under `benchmarks/latency/core/` with its own
 unit tests in `tests/unit/bench/`. See `benchmarks/latency/README.md` for the scenario

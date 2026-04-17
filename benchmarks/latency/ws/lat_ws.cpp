@@ -1,6 +1,6 @@
 /// @file lat_ws.cpp
-/// Latency benchmark: WebSocket RTT against a kernel Python echo
-/// mock (`benchmarks/latency/mocks/ws_echo.py`).
+/// Latency benchmark: WebSocket RTT against the `ws` scenario of
+/// `benchmarks/mockex/mockex`.
 ///
 ///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
 ///     (port / ws_path / payload_size / duration_seconds) plus the
@@ -10,7 +10,7 @@
 ///   * `StreamConfig.ws_path` is set — this triggers the transparent
 ///     WebSocket handshake inside `KernelTcpStream::create()`,
 ///     so by the time we start the measurement loop the socket is ready
-///     to exchange WS-binary frames with the Python mock.
+///     to exchange WS-binary frames with the mockex handler.
 ///   * Measurement clock is `bench::monotonic_raw_ns()`
 ///     (CLOCK_MONOTONIC_RAW via vDSO) — not TSC.
 ///   * Samples feed `eph::utils::Recorder::record_ns(ns)`.

@@ -1,5 +1,6 @@
 /// @file lat_tcp.cpp
-/// Latency benchmark: raw TCP RTT against a kernel Python echo mock.
+/// Latency benchmark: raw TCP RTT against the `tcp` scenario served by
+/// the unified C++ mock `benchmarks/mockex/mockex`.
 ///
 ///   * Single-file scenario binary that reads `[lat_tcp]` from bench.conf
 ///     (port / payload_size / duration_seconds) plus the lowercase global
@@ -11,8 +12,8 @@
 ///   * Samples feed `eph::utils::Recorder::record_ns(ns)`.
 ///
 /// The binary does NOT manage mocks or NICs — the `lat` wrapper script forks
-/// the Python echo mock (`benchmarks/latency/mocks/tcp_echo.py`) and the NIC
-/// state transition before exec'ing this binary.
+/// `mockex --scenario tcp` and drives the NIC state transition before
+/// exec'ing this binary.
 ///
 /// A second target `lat_tcp_dpdk` is produced by the xmake auto-glob loop with
 /// `EPH_USE_DPDK=1`.
@@ -346,7 +347,7 @@ int main(int argc, char** argv) {
     (void)bench::export_legs(rec_rtt, rec_tx, rec_rx);
 
     // ── Graceful close. Ignore errors: the report is what the user cares
-    //    about, and the Python mock will notice the FIN regardless.
+    //    about, and the mock will notice the FIN regardless.
     (void)stream->close_gracefully();
 #if !defined(EPH_USE_DPDK)
     poller->poll(std::chrono::milliseconds{50});

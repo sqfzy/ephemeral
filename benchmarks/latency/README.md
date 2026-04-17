@@ -1,8 +1,10 @@
 # eph latency benchmarks
 
-End-to-end latency measurements for the `Stream` / `Poller` API across six
-scenarios, using Python stdlib mocks and a single `lat_<scenario>[_dpdk]` binary
-per scenario.
+End-to-end latency measurements for the `Stream` / `Poller` API across seven
+scenarios, served by a single C++23 mock binary (`benchmarks/mockex/mockex`)
+and one `lat_<scenario>[_dpdk]` client binary per scenario. See
+`benchmarks/mockex/README.md` for the mock internals, refit workflow, and
+real-vs-mock validation loop.
 
 The mock always runs in kernel. Only the client side differs between the
 `kernel` and `dpdk` builds, which is what makes the kernel-vs-DPDK comparison
@@ -78,26 +80,28 @@ payload_size = 1024
 
 ## Mock design
 
-All mocks are Python 3.8+ stdlib only — no `pip install` required.
+The mock is the C++23 binary `benchmarks/mockex/mockex`, header-only
+per-scenario handlers plus a single `src/main.cpp`. Every scenario reads
+`[lat_<name>]` from `bench.conf` (same parser as the client) and exposes
+itself through `mockex --scenario <name>`. See
+`benchmarks/mockex/README.md` for the full design — the short version:
 
-- **TCP / UDP echo** — plain `socket`, `SO_REUSEADDR`, `TCP_NODELAY`.
-- **WebSocket echo** — `mocks/_ws.py` implements the RFC 6455 handshake
-  (SHA-1 + base64 via `hashlib` / `base64`) and binary frame read/write.
-- **Rate-limited push** — `mocks/_rate.py` busy-loops on
-  `clock_gettime(CLOCK_MONOTONIC_RAW)` (via `ctypes`) because `time.sleep` is
-  too coarse at bench rates.
-- **Shared clock** — `mocks/_clock.py` exposes `monotonic_raw_ns()` for Python
-  mocks; the C++ client uses `bench::monotonic_raw_ns()` in
-  `core/measurement.hpp`. Same clock source, same epoch — required for
-  one-way scenarios (`lat_ex_market`, `lat_ex_md_udp`) where the mock stamps
-  send time and the client subtracts it from receive time.
-- **Shared config parser** — `mocks/_conf.py` reads the same `bench.conf`
-  layout as the C++ `bench::ScenarioConfig`.
+- **TCP / UDP / WebSocket echo** — `eph::net::posix` helpers bind + accept,
+  then a recv/stamp/send inner loop overwrites `[8:16]` / `[16:24]` with
+  the mock's `t_mock_recv` / `t_mock_send` before echoing.
+- **Exchange order echo** — same WS framing, splices `"t_mock_recv"` /
+  `"t_mock_send"` fields into the client's JSON.
+- **Exchange market push** — two-state MMPP-2 arrival sampler (fitted
+  offline from a real Binance capture) + rotating pool of real `bookTicker`
+  JSON frames with the `"T"` field patched in place per send.
+- **Shared clock** — both mock and client read `bench::monotonic_raw_ns()`
+  (CLOCK_MONOTONIC_RAW). Same epoch, same toolchain, no cross-language jitter.
+- **Shared config parser** — `bench::ScenarioConfig` reads the same
+  `bench.conf` the client reads.
 
-Mock push rate is capped at roughly 100-200 kHz sustained by Python stdlib
-overhead. For higher rates, replace the specific push mock with a C
-implementation — the `bench.conf` contract stays the same, just swap the
-executable the `lat` wrapper invokes. See `.artifacts/phase-10-scope-decision.md`.
+Rate is now governed by the MMPP-2 parameters in each scenario's
+`mockex_params` INI — see `benchmarks/mockex/README.md` for the refit
+workflow and K-S validation loop against real exchange captures.
 
 ## Fairness
 
@@ -126,21 +130,24 @@ hosts.
 
 ## Debugging a mock standalone
 
-Every Python mock accepts `--config <path>`:
-
 ```bash
-python3 benchmarks/latency/mocks/tcp_echo.py --config benchmarks/latency/bench.conf
+./build/linux/arm64/release/mockex \
+    --scenario tcp \
+    --config benchmarks/latency/bench.conf
 ```
 
-The mock logs progress to stderr and can be killed with `Ctrl-C`.
+The mock logs progress to stderr via spdlog and can be killed with
+`Ctrl-C`. `mockex --help` prints the full scenario list.
 
 ## Dependencies
 
-- Python 3.8+ (stdlib only)
 - GCC ≥ 13 or Clang ≥ 17 (C++23 / `std::expected` / `std::format`)
 - `aws-lc` (already required by `eph-net` for TLS)
 - For `--dpdk` variants: `vfio-pci` module loaded, hugepages reserved, NIC-B
   available for unbind — see [`../../docs/dpdk-setup.md`](../../docs/dpdk-setup.md)
+- For the offline mockex refit tools only (`benchmarks/mockex/tools/`):
+  Python 3.9+ with `websockets` (for `capture_binance.py`). `fit_mmpp.py` and
+  `ks_validate.py` are stdlib-only.
 
 ## Project layout
 
@@ -153,13 +160,7 @@ benchmarks/latency/
 │   ├── config.hpp       BenchConfig + ScenarioConfig INI parser
 │   ├── measurement.hpp  monotonic_raw_ns, signal handler, print_report
 │   └── json_scan.hpp    minimal JSON field scanner (no eph-json dep)
-├── mocks/
-│   ├── _clock.py        ctypes clock_gettime(CLOCK_MONOTONIC_RAW)
-│   ├── _conf.py         bench.conf INI parser
-│   ├── _rate.py         busy-loop rate limiter
-│   ├── _ws.py           RFC 6455 handshake + frame IO
-│   ├── tcp_echo.py, udp_echo.py, ws_echo.py
-│   └── ex_market_push.py, ex_order_echo.py, ex_md_udp_push.py
+├── (see ../mockex/ for the mock binary and its fixtures/tools)
 ├── tcp/lat_tcp.cpp
 ├── udp/lat_udp.cpp
 ├── ws/lat_ws.cpp

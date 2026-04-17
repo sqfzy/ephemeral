@@ -1,6 +1,6 @@
 /// @file lat_ex_order.cpp
 /// Latency benchmark: strict one-at-a-time WebSocket order RTT
-/// against the Python echo mock `benchmarks/latency/mocks/ex_order_echo.py`.
+/// against the `ex_order` scenario of `benchmarks/mockex/mockex`.
 ///
 /// Semantics:
 ///
@@ -8,8 +8,8 @@
 ///     record legs, send next. No pipelining, no slot table.
 ///   * Each order gets a unique strictly-incrementing `id` and carries
 ///     its `t_client` CLOCK_MONOTONIC_RAW timestamp as a JSON field.
-///   * The mock inserts `t_mock_recv` / `t_mock_send` around its own
-///     `json.loads` / `json.dumps`, so the client recovers all four
+///   * The mock splices `t_mock_recv` / `t_mock_send` into the JSON
+///     object right before send, so the client recovers all four
 ///     timestamps and computes RTT / TX / RX cleanly per order.
 ///   * Why strict serial: TX/RX leg decomposition assumes each order is
 ///     a self-contained measurement; pipelined sends introduce queue

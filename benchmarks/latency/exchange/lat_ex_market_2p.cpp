@@ -12,9 +12,11 @@
 ///                  Phase 2 (after poll()): full parse only for surviving
 ///                  slots (one per symbol — the latest frame wins).
 ///
-/// The mock (`ex_market_2p_push.py`) sends bursts of `burst_size` frames per
-/// tick, with symbols chosen randomly. In a burst, the same symbol may appear
-/// multiple times; two-phase deduplicates these so only the latest is parsed.
+/// The mock (`mockex --scenario ex_market_2p`) sends bursts of `burst_size`
+/// frames per MMPP busy-regime tick, drawing from a rotating pool of real
+/// Binance bookTicker frames with the `"T"` field patched in place on each
+/// send. In a burst, the same symbol may appear multiple times; two-phase
+/// deduplicates these so only the latest is parsed.
 ///
 /// Latency measurement: a single timestamp `t_actionable = monotonic_raw_ns()`
 /// stamped at the moment the business object (BookTicker) is parsed and

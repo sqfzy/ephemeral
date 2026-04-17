@@ -53,7 +53,6 @@ else
     PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
 DEFAULT_CONFIG="$PROJECT_DIR/benchmarks/latency/bench.conf"
-MOCKS_DIR="$PROJECT_DIR/benchmarks/latency/mocks"
 DPDK_SETUP="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-setup.sh"
 DPDK_TEARDOWN="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-teardown.sh"
 
@@ -69,13 +68,13 @@ DPDK_TEARDOWN="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-teardown.sh"
 #   cpp:<scenario>   — exec mockex binary with --scenario <scenario>
 #   py:<script>      — exec python3 mocks/<script>
 declare -A SCENARIO_MOCKS=(
-    [tcp]=cpp:tcp
-    [udp]=cpp:udp
-    [ws]=cpp:ws
-    [ex_order]=cpp:ex_order
-    [ex_md_udp]=cpp:ex_md_udp
-    [ex_market]=cpp:ex_market
-    [ex_market_2p]=cpp:ex_market_2p
+    [tcp]=tcp
+    [udp]=udp
+    [ws]=ws
+    [ex_order]=ex_order
+    [ex_md_udp]=ex_md_udp
+    [ex_market]=ex_market
+    [ex_market_2p]=ex_market_2p
 )
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -143,29 +142,13 @@ done
 # ── Environment sanity ──────────────────────────────────────────────
 [[ -f "$CONFIG_FILE" ]] || die "config not found: $CONFIG_FILE"
 
-# Resolve the mock entry into a concrete command. For cpp: scenarios we
-# point at the mockex binary (built by `xmake build mockex`); for py:
-# ones we fall back to the original Python script until Phase 3 of the
-# mockex migration lands the push handlers.
-MOCK_SPEC="${SCENARIO_MOCKS[$SCENARIO]}"
-MOCK_KIND="${MOCK_SPEC%%:*}"
-MOCK_ARG="${MOCK_SPEC#*:}"
+# All scenarios are served by the C++ `mockex` binary after the
+# Phase-5 Python mock retirement. The array maps the lat wrapper's
+# scenario keyword to mockex's own --scenario argument (they're
+# equal, but keeping a map makes the wiring explicit for any future
+# back-door scenarios).
+MOCK_ARG="${SCENARIO_MOCKS[$SCENARIO]}"
 MOCK_DESC=""
-
-case "$MOCK_KIND" in
-    cpp)
-        command -v python3 >/dev/null 2>&1 || true  # mockex is C++; python only for py: entries
-        ;;
-    py)
-        command -v python3 >/dev/null 2>&1 || \
-            die "python3 not found in PATH" \
-                "Scenario $SCENARIO still uses the Python mock ($MOCK_ARG)."
-        MOCK_SCRIPT="$MOCKS_DIR/$MOCK_ARG"
-        [[ -f "$MOCK_SCRIPT" ]] || die "mock script missing: $MOCK_SCRIPT"
-        ;;
-    *)
-        die "internal error: unrecognised mock spec '$MOCK_SPEC' for $SCENARIO" ;;
-esac
 
 # ── Locate the client binary ────────────────────────────────────────
 detect_build_dir() {
@@ -522,10 +505,7 @@ case "$ENDPOINT" in
            "Expected 'mock' or a ws[s]:// URL. See bench.conf." ;;
 esac
 
-case "$MOCK_KIND" in
-    cpp) MOCK_DESC="mockex --scenario $MOCK_ARG" ;;
-    py)  MOCK_DESC="python3 $(basename "$MOCK_SCRIPT")" ;;
-esac
+MOCK_DESC="mockex --scenario $MOCK_ARG"
 if $REAL_SERVER; then
     MOCK_DESC="⎆ real server: $ENDPOINT"
 fi
@@ -546,19 +526,11 @@ if $REAL_SERVER; then
     log_step "real-server mode: skipping mockex fork (endpoint=$ENDPOINT)"
     MOCK_PID=""
 else
-    case "$MOCK_KIND" in
-        cpp)
-            MOCKEX_BIN="$BUILD_DIR/mockex"
-            [[ -x "$MOCKEX_BIN" ]] || die "mockex binary not found: $MOCKEX_BIN" \
-                "Build with: xmake build mockex"
-            log_step "forking mock: mockex --scenario $MOCK_ARG --config $(basename "$CONFIG_FILE")"
-            "$MOCKEX_BIN" --scenario "$MOCK_ARG" --config "$CONFIG_FILE" &
-            ;;
-        py)
-            log_step "forking mock: python3 $(basename "$MOCK_SCRIPT") --config $(basename "$CONFIG_FILE")"
-            python3 "$MOCK_SCRIPT" --config "$CONFIG_FILE" &
-            ;;
-    esac
+    MOCKEX_BIN="$BUILD_DIR/mockex"
+    [[ -x "$MOCKEX_BIN" ]] || die "mockex binary not found: $MOCKEX_BIN" \
+        "Build with: xmake build mockex"
+    log_step "forking mock: mockex --scenario $MOCK_ARG --config $(basename "$CONFIG_FILE")"
+    "$MOCKEX_BIN" --scenario "$MOCK_ARG" --config "$CONFIG_FILE" &
     MOCK_PID=$!
 fi
 

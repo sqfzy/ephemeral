@@ -1,5 +1,6 @@
 /// @file lat_udp.cpp
-/// Latency benchmark: raw UDP RTT against a kernel Python echo mock.
+/// Latency benchmark: raw UDP RTT against the `udp` scenario of
+/// `benchmarks/mockex/mockex`.
 ///
 /// Same structure as lat_tcp.cpp but using
 /// `KernelUdpSocket<RawDatagramCodec>`:
@@ -8,8 +9,8 @@
 ///   - wait for the echoed datagram via poller->poll()
 ///   - record `t1 - t0` (ns, CLOCK_MONOTONIC_RAW) into the Recorder
 ///
-/// The Python echo mock is `benchmarks/latency/mocks/udp_echo.py`, forked by
-/// the `lat` wrapper script. This binary contains no mock / NIC plumbing.
+/// The mock is `mockex --scenario udp`, forked by the `lat` wrapper
+/// script. This binary contains no mock / NIC plumbing.
 
 #include <array>
 #include <cstdint>
@@ -32,7 +33,7 @@
 // DpdkUdpSocket + DpdkPoller measurement loop. The DPDK poller uses
 // 5-tuple routing, so the registered
 // legacy.src/dst_port pair must match the mock's kernel socket 2-tuple.
-// UDP echo mock (udp_echo.py) binds a listener on (mock_ip, port) and
+// mockex's `udp` scenario binds a listener on (mock_ip, port) and
 // responds from the SAME 4-tuple (kernel recvfrom/sendto preserves peer),
 // which our registered (client_ip:src, mock_ip:port) matches after the
 // Poller's direction-symmetric swap check.

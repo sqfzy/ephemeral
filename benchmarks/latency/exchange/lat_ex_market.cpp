@@ -1,6 +1,8 @@
 /// @file lat_ex_market.cpp
 /// Latency benchmark: exchange bookTicker push (WebSocket one-way) against
-/// the Python mock `benchmarks/latency/mocks/ex_market_push.py`.
+/// the mockex `ex_market_push` scenario (benchmarks/mockex/). The same
+/// binary can dial a real exchange directly via `endpoint = wss://...`
+/// in bench.conf — see benchmarks/mockex/README.md.
 ///
 /// Structure:
 ///
