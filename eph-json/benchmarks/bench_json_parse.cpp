@@ -31,6 +31,19 @@ static void BM_JsonParseAndExtract(benchmark::State& state) {
 }
 BENCHMARK(BM_JsonParseAndExtract);
 
+static void BM_BinanceBookTickerParse(benchmark::State& state) {
+    // Fused single-pass parser — direct competitor to BM_JsonParseAndExtract.
+    auto data = reinterpret_cast<const uint8_t*>(kBookTicker.data());
+    auto len = kBookTicker.size();
+    for (auto _ : state) {
+        auto ticker = eph::json::binance::BookTicker::parse(data, len);
+        benchmark::DoNotOptimize(ticker);
+    }
+    state.SetItemsProcessed(state.iterations());
+    state.SetBytesProcessed(state.iterations() * len);
+}
+BENCHMARK(BM_BinanceBookTickerParse);
+
 static void BM_SymbolHash(benchmark::State& state) {
     auto data = reinterpret_cast<const uint8_t*>(kBookTicker.data());
     auto len = kBookTicker.size();

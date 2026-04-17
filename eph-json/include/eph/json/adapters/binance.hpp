@@ -182,6 +182,158 @@ struct BookTicker {
         return t;
     }
 
+    /// @brief Fused parse + extract from raw bookTicker bytes.
+    ///
+    /// Single-pass specialised alternative to `parse(data,len)` + `from(view)`.
+    /// Designed for the HFT hot path where the stream is known a priori to be
+    /// Binance bookTicker (direct `/ws/<sym>@bookTicker` subscription). Skips
+    /// the generic `JsonView` intermediate: scans the payload once, dispatching
+    /// each 1-char key directly into the target BookTicker field. Unknown keys
+    /// (multi-char like `"e"`, or single-char not in the known set) are
+    /// silently skipped — so a future Binance field addition does not break
+    /// callers, they just do not see the new field until this switch is
+    /// extended.
+    ///
+    /// Performance: ~2-3× faster than `from(parse(...))` on the same payload
+    /// (no Field[] intermediate, no linear key lookup). See
+    /// `bench_json_parse.cpp` / `BM_BinanceBookTickerParse` for live numbers.
+    ///
+    /// Correctness contract: the returned BookTicker's field values are
+    /// byte-for-byte identical to what `BookTicker::from(parse(data,len))`
+    /// would produce. Verified by `BinanceBookTickerParse.MatchesFromFlow`.
+    ///
+    /// @param data  Raw bookTicker JSON bytes.
+    /// @param len   Payload length.
+    /// @return Populated BookTicker, or nullopt if any required field
+    ///         (s/b/B/a/A) is missing, malformed, or the input is not a
+    ///         well-formed flat JSON object.
+    [[nodiscard]] static std::optional<BookTicker>
+    parse(const uint8_t* data, size_t len) noexcept {
+        if (!data || len < 2) return std::nullopt;
+
+        const char* p   = reinterpret_cast<const char*>(data);
+        const char* end = p + len;
+
+        p = ::eph::json::detail::skip_ws(p, end);
+        if (p >= end || *p != '{') return std::nullopt;
+        ++p;
+
+        // Required-field presence bitmask. All 5 bits must be set for success.
+        constexpr uint8_t R_s = 1 << 0, R_b = 1 << 1, R_B = 1 << 2,
+                          R_a = 1 << 3, R_A = 1 << 4;
+        constexpr uint8_t R_ALL = R_s | R_b | R_B | R_a | R_A;
+
+        BookTicker t;
+        uint8_t required = 0;
+        bool first = true;
+
+        // Inline helpers — each captures p/end/required/t by reference and is
+        // expected to be inlined by the compiler (single call site each).
+        auto read_string = [&](std::string_view& out, uint8_t flag) noexcept {
+            if (p >= end || *p != '"') return false;
+            ++p;
+            const char* vs = p;
+            p = ::eph::json::detail::scan_string(p, end);
+            if (p >= end) return false;
+            out = std::string_view(vs, static_cast<size_t>(p - vs));
+            required |= flag;
+            ++p;
+            return true;
+        };
+        auto read_int = [&](int64_t& out) noexcept {
+            const char* vs = p;
+            while (p < end &&
+                   !::eph::json::detail::kValTermLut[
+                       static_cast<unsigned char>(*p)]) ++p;
+            if (auto iv = eph::core::parse_int(
+                    std::string_view(vs, static_cast<size_t>(p - vs)))) {
+                out = *iv;
+            }
+        };
+        auto skip_value = [&]() noexcept {
+            if (p >= end) return;
+            if (*p == '"') {
+                ++p;
+                p = ::eph::json::detail::scan_string(p, end);
+                if (p < end) ++p;
+                return;
+            }
+            if (*p == '{' || *p == '[') {
+                const char open = *p, close = (open == '{') ? '}' : ']';
+                int depth = 1;
+                ++p;
+                while (p < end && depth > 0) {
+                    if (*p == '"') {
+                        ++p;
+                        while (p < end && *p != '"') {
+                            if (*p == '\\' && p + 1 < end) ++p;
+                            if (p < end) ++p;
+                        }
+                        if (p < end) ++p;
+                        continue;
+                    }
+                    if (*p == open) ++depth;
+                    else if (*p == close) --depth;
+                    ++p;
+                }
+                return;
+            }
+            while (p < end &&
+                   !::eph::json::detail::kValTermLut[
+                       static_cast<unsigned char>(*p)]) ++p;
+        };
+
+        while (p < end) {
+            p = ::eph::json::detail::skip_ws(p, end);
+            if (p >= end) return std::nullopt;
+            if (*p == '}') {
+                return (required == R_ALL) ? std::optional<BookTicker>(t)
+                                           : std::nullopt;
+            }
+            if (!first) {
+                if (*p != ',') return std::nullopt;
+                ++p;
+                p = ::eph::json::detail::skip_ws(p, end);
+                if (p >= end) return std::nullopt;
+            }
+            first = false;
+
+            if (*p != '"') return std::nullopt;
+            ++p;
+            const char* k0 = p;
+            p = ::eph::json::detail::scan_string(p, end);
+            if (p >= end) return std::nullopt;
+            const size_t klen = static_cast<size_t>(p - k0);
+            ++p;  // closing quote
+
+            p = ::eph::json::detail::skip_ws(p, end);
+            if (p >= end || *p != ':') return std::nullopt;
+            ++p;
+            p = ::eph::json::detail::skip_ws(p, end);
+            if (p >= end) return std::nullopt;
+
+            // Binance bookTicker target keys are all 1 char. Multi-char
+            // keys ("e":"bookTicker", …) are skipped opaquely.
+            if (klen == 1) {
+                switch (k0[0]) {
+                case 's': if (!read_string(t.symbol,    R_s)) return std::nullopt; break;
+                case 'b': if (!read_string(t.bid_price, R_b)) return std::nullopt; break;
+                case 'B': if (!read_string(t.bid_qty,   R_B)) return std::nullopt; break;
+                case 'a': if (!read_string(t.ask_price, R_a)) return std::nullopt; break;
+                case 'A': if (!read_string(t.ask_qty,   R_A)) return std::nullopt; break;
+                case 'u': read_int(t.update_id);  break;
+                case 'E': read_int(t.event_time); break;
+                case 'T': read_int(t.txn_time);   break;
+                default:  skip_value();           break;
+                }
+            } else {
+                skip_value();
+            }
+        }
+
+        return std::nullopt;  // ran off the end without seeing '}'
+    }
+
     /// @brief Compute mid price as (bid + ask) / 2.
     /// @return Mid price as double, or nullopt if either price string
     ///         cannot be parsed as a valid number.

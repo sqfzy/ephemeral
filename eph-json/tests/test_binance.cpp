@@ -149,6 +149,107 @@ TEST(BinanceBookTicker, OptionalFieldsMissing) {
 }
 
 // ---------------------------------------------------------------------------
+// BookTicker::parse — fused single-pass parser (contract: byte-for-byte
+// identical output to BookTicker::from(parse(data,len))).
+// ---------------------------------------------------------------------------
+
+TEST(BinanceBookTickerParse, MatchesFromFlow) {
+    // Golden contract: fast path must produce identical BookTicker as the
+    // generic parse() + from(view) flow on a representative payload.
+    auto data = reinterpret_cast<const uint8_t*>(kBookTickerJson.data());
+    auto len  = kBookTickerJson.size();
+
+    auto via_view = BookTicker::from(parse(data, len).value());
+    auto via_fast = BookTicker::parse(data, len);
+
+    ASSERT_TRUE(via_view.has_value());
+    ASSERT_TRUE(via_fast.has_value());
+    EXPECT_EQ(via_fast->symbol,     via_view->symbol);
+    EXPECT_EQ(via_fast->bid_price,  via_view->bid_price);
+    EXPECT_EQ(via_fast->bid_qty,    via_view->bid_qty);
+    EXPECT_EQ(via_fast->ask_price,  via_view->ask_price);
+    EXPECT_EQ(via_fast->ask_qty,    via_view->ask_qty);
+    EXPECT_EQ(via_fast->update_id,  via_view->update_id);
+    EXPECT_EQ(via_fast->event_time, via_view->event_time);
+    EXPECT_EQ(via_fast->txn_time,   via_view->txn_time);
+}
+
+TEST(BinanceBookTickerParse, OptionalFieldsMissing) {
+    constexpr std::string_view only_required =
+        R"({"s":"BTCUSDT","b":"100","B":"1","a":"101","A":"2"})";
+    auto ticker = BookTicker::parse(
+        reinterpret_cast<const uint8_t*>(only_required.data()),
+        only_required.size());
+    ASSERT_TRUE(ticker.has_value());
+    EXPECT_EQ(ticker->symbol, "BTCUSDT");
+    EXPECT_EQ(ticker->update_id, 0);
+    EXPECT_EQ(ticker->event_time, 0);
+    EXPECT_EQ(ticker->txn_time, 0);
+}
+
+TEST(BinanceBookTickerParse, MissingSymbolReturnsNullopt) {
+    constexpr std::string_view missing_s =
+        R"({"b":"1","B":"1","a":"1","A":"1"})";
+    EXPECT_FALSE(BookTicker::parse(
+        reinterpret_cast<const uint8_t*>(missing_s.data()),
+        missing_s.size()).has_value());
+}
+
+TEST(BinanceBookTickerParse, MissingBidReturnsNullopt) {
+    constexpr std::string_view missing_b =
+        R"({"s":"BTC","B":"1","a":"1","A":"1"})";
+    EXPECT_FALSE(BookTicker::parse(
+        reinterpret_cast<const uint8_t*>(missing_b.data()),
+        missing_b.size()).has_value());
+}
+
+TEST(BinanceBookTickerParse, UnknownFutureFieldIsSkipped) {
+    // Contract: if Binance adds a new 1-char field (e.g. "c" for close price),
+    // parse() must ignore it rather than fail. Future-proofs against API
+    // additions; known missing fields are still caught by the required check.
+    constexpr std::string_view with_future_c =
+        R"({"s":"BTC","b":"1","B":"1","a":"2","A":"2","c":"closevalue","T":42})";
+    auto ticker = BookTicker::parse(
+        reinterpret_cast<const uint8_t*>(with_future_c.data()),
+        with_future_c.size());
+    ASSERT_TRUE(ticker.has_value());
+    EXPECT_EQ(ticker->txn_time, 42);
+}
+
+TEST(BinanceBookTickerParse, MalformedJsonReturnsNullopt) {
+    // Various malformed inputs must cleanly return nullopt, never crash or
+    // read past the buffer end.
+    auto test_case = [](std::string_view sv) {
+        return BookTicker::parse(
+            reinterpret_cast<const uint8_t*>(sv.data()), sv.size());
+    };
+    EXPECT_FALSE(test_case(R"()").has_value());             // empty
+    EXPECT_FALSE(test_case(R"({)").has_value());            // unterminated
+    EXPECT_FALSE(test_case(R"({"s":)").has_value());        // no value
+    EXPECT_FALSE(test_case(R"({"s":"BTC)").has_value());    // unterminated string
+    EXPECT_FALSE(test_case(R"(not json)").has_value());     // no {
+    EXPECT_FALSE(test_case(R"({"s":42,"b":"1","B":"1","a":"1","A":"1"})").has_value());
+    //                              ^-- s as number, required string
+}
+
+TEST(BinanceBookTickerParse, FieldReorderingPreservesValues) {
+    // Contract: field order must not affect output. Binance documented order
+    // is {e,u,s,b,B,a,A,T,E}; verify we handle any permutation.
+    constexpr std::string_view reordered =
+        R"({"T":1,"A":"2.0","a":"1.5","B":"0.5","b":"1.0","s":"ETH","E":2,"u":99})";
+    auto ticker = BookTicker::parse(
+        reinterpret_cast<const uint8_t*>(reordered.data()),
+        reordered.size());
+    ASSERT_TRUE(ticker.has_value());
+    EXPECT_EQ(ticker->symbol, "ETH");
+    EXPECT_EQ(ticker->bid_price, "1.0");
+    EXPECT_EQ(ticker->ask_price, "1.5");
+    EXPECT_EQ(ticker->update_id, 99);
+    EXPECT_EQ(ticker->event_time, 2);
+    EXPECT_EQ(ticker->txn_time, 1);
+}
+
+// ---------------------------------------------------------------------------
 // CombinedStream::from
 // ---------------------------------------------------------------------------
 
