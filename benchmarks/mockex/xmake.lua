@@ -46,5 +46,10 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "tests/test_*.cpp"))) d
                 "linux", os.arch(), get_config("mode") or "release")
             t:add("defines", 'MOCKEX_BINARY_PATH="' ..
                 path.join(build_dir, "mockex") .. '"')
+            -- Absolute path to the checked-in fixture directory; tests
+            -- that load *_sample.jsonl can't rely on cwd because xmake
+            -- run changes it to the binary dir.
+            t:add("defines", 'MOCKEX_FIXTURES_DIR="' ..
+                path.join(os.projectdir(), "benchmarks/mockex/fixtures") .. '"')
         end)
 end
