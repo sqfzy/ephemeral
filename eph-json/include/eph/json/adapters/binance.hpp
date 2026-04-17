@@ -141,16 +141,14 @@ struct BookTicker {
     int64_t event_time = 0;      ///< Event time (milliseconds since epoch)
     int64_t txn_time = 0;        ///< Transaction time (milliseconds since epoch)
 
-    // Cached parsed prices — populated once during from() to avoid re-parsing
-    // in mid_price()/spread() on every call.
-    std::optional<double> cached_bid{};  ///< Cached parsed bid price
-    std::optional<double> cached_ask{};  ///< Cached parsed ask price
-
     /// @brief Extract BookTicker from a parsed JsonView.
     ///
     /// Reads fields "s", "b", "B", "a", "A" (required) and "u", "E", "T"
-    /// (optional) from the JSON object. Pre-parses bid/ask prices into
-    /// cached doubles for fast mid_price()/spread() access.
+    /// (optional) from the JSON object. Price strings are kept as
+    /// string_views into the original buffer; `mid_price()` / `spread()`
+    /// parse them on demand — the vast majority of HFT consumers need
+    /// the raw strings (or their own typed price representation) and
+    /// never call the convenience accessors.
     ///
     /// @param json  Parsed JSON view of a Binance bookTicker message.
     /// @return Populated BookTicker, or nullopt if any required field is missing.
@@ -181,40 +179,25 @@ struct BookTicker {
         if (auto E = json.get_int("E")) t.event_time = *E;
         if (auto T = json.get_int("T")) t.txn_time = *T;
 
-        // Pre-parse prices once to avoid repeated string→double conversion
-        // in mid_price()/spread().
-        t.cached_bid = parse_number(t.bid_price);
-        t.cached_ask = parse_number(t.ask_price);
-
         return t;
     }
 
     /// @brief Compute mid price as (bid + ask) / 2.
-    ///
-    /// Uses cached parsed values when available (populated by from()),
-    /// falls back to on-demand string-to-double parsing for manually
-    /// constructed instances.
-    ///
     /// @return Mid price as double, or nullopt if either price string
     ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> mid_price() const noexcept {
-        auto bid = cached_bid ? cached_bid : parse_number(bid_price);
-        auto ask = cached_ask ? cached_ask : parse_number(ask_price);
+        auto bid = parse_number(bid_price);
+        auto ask = parse_number(ask_price);
         if (!bid || !ask) return std::nullopt;
         return (*bid + *ask) / 2.0;
     }
 
     /// @brief Compute spread as (ask - bid).
-    ///
-    /// Uses cached parsed values when available (populated by from()),
-    /// falls back to on-demand string-to-double parsing for manually
-    /// constructed instances.
-    ///
     /// @return Spread as double, or nullopt if either price string
     ///         cannot be parsed as a valid number.
     [[nodiscard]] std::optional<double> spread() const noexcept {
-        auto bid = cached_bid ? cached_bid : parse_number(bid_price);
-        auto ask = cached_ask ? cached_ask : parse_number(ask_price);
+        auto bid = parse_number(bid_price);
+        auto ask = parse_number(ask_price);
         if (!bid || !ask) return std::nullopt;
         return *ask - *bid;
     }
