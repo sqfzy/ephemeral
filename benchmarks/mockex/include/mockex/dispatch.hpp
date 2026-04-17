@@ -17,6 +17,8 @@
 #include <string_view>
 
 #include "mockex/scenario.hpp"
+#include "mockex/scenarios/ex_market_2p_push.hpp"
+#include "mockex/scenarios/ex_market_push.hpp"
 #include "mockex/scenarios/ex_md_udp_echo.hpp"
 #include "mockex/scenarios/ex_order_echo.hpp"
 #include "mockex/scenarios/tcp_echo.hpp"
@@ -31,17 +33,18 @@ struct ScenarioEntry {
     ScenarioFn       fn;
 };
 
-/// Phase 1 registry — echo scenarios only. Phase 3 will extend with the
-/// three push scenarios (`ex_market`, `ex_market_2p`, `ex_md_udp_push`).
-///
-/// The `section` column mirrors bench.conf exactly so a future audit
-/// script can cross-check that every `[lat_*]` section has a handler.
-inline constexpr std::array<ScenarioEntry, 5> kScenarioTable{{
-    {"tcp",       "lat_tcp",       &scenarios::tcp_echo_run},
-    {"udp",       "lat_udp",       &scenarios::udp_echo_run},
-    {"ws",        "lat_ws",        &scenarios::ws_echo_run},
-    {"ex_order",  "lat_ex_order",  &scenarios::ex_order_echo_run},
-    {"ex_md_udp", "lat_ex_md_udp", &scenarios::ex_md_udp_echo_run},
+/// Full registry — five echo scenarios (Phase 1) + two push scenarios
+/// (Phase 3). The `section` column mirrors bench.conf exactly so a
+/// future audit script can cross-check that every `[lat_*]` section
+/// has a handler.
+inline constexpr std::array<ScenarioEntry, 7> kScenarioTable{{
+    {"tcp",          "lat_tcp",          &scenarios::tcp_echo_run},
+    {"udp",          "lat_udp",          &scenarios::udp_echo_run},
+    {"ws",           "lat_ws",           &scenarios::ws_echo_run},
+    {"ex_order",     "lat_ex_order",     &scenarios::ex_order_echo_run},
+    {"ex_md_udp",    "lat_ex_md_udp",    &scenarios::ex_md_udp_echo_run},
+    {"ex_market",    "lat_ex_market",    &scenarios::ex_market_push_run},
+    {"ex_market_2p", "lat_ex_market_2p", &scenarios::ex_market_2p_push_run},
 }};
 
 /// Look up a scenario by its CLI keyword (the same token the `lat`
