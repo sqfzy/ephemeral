@@ -52,6 +52,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -397,7 +398,7 @@ int main(int argc, char** argv) {
     // on_message captures `stats` by reference so counters and the
     // Recorder accumulate across reconnects — the final report reflects
     // the whole --duration window.
-    auto on_message_handler = [&stats](const std::uint8_t* data, std::uint16_t len) {
+    auto on_message_handler = [&stats](std::span<const std::uint8_t> app_frame) {
         // Wall-clock receive timestamp (matches Binance's T which is
         // wall-clock ms since epoch). Mixing TSC with realtime would
         // produce garbage diffs.
@@ -408,6 +409,8 @@ int main(int argc, char** argv) {
             static_cast<std::uint64_t>(ts.tv_nsec);
 
         ++stats.frames;
+        const auto* data = app_frame.data();
+        const auto  len  = app_frame.size();
 
         // Full payload dump for offline debugging. Compile-time gated by
         // SPDLOG_ACTIVE_LEVEL on this target — build with

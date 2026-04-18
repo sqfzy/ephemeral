@@ -25,10 +25,12 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/codec/ws_codec.hpp"
+#include "eph/core/metrics_concept.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
 #include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/net/stream_metrics.hpp"
 
 namespace en = eph::net::kernel;
 namespace ec = eph::codec;
@@ -63,9 +65,23 @@ static bool run_one_session(en::StreamConfig& cfg,
         return false;
     }
 
+    // ── Observability hookup ─────────────────────────────────────────────
+    // Stream metrics are auto-collected on the hot path (single `lock add`
+    // per event). Periodically `publish_metrics()` to any MetricsSink.
+    // In real production, swap NullSink for PrometheusSink / OtelSink etc.;
+    // the snapshot frequency is the application's choice (here: 1s).
+    eph::core::NullSink metrics_sink;  // <-- replace with prod sink
+    auto next_publish = std::chrono::steady_clock::now() + 1s;
+
     while (g_running.load(std::memory_order_acquire)
            && stream->state() == eph::net::TcpState::Established) {
         (void)poller.poll(100ms);
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_publish) {
+            eph::net::publish_metrics(*stream, metrics_sink);
+            next_publish = now + 1s;
+        }
     }
     // Session ended — clean up before returning so the next create()
     // gets a fresh fd.

@@ -35,6 +35,7 @@
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/net/stream_metrics.hpp"
 
 namespace en = eph::net::kernel;
 namespace ec = eph::codec;
@@ -158,6 +159,19 @@ static int run_with_tls(const AppConfig& cfg) {
     auto elapsed = std::chrono::steady_clock::now() - started;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
     spdlog::info("simple_hft_v3: received {} messages in {} ms", msgs, ms);
+
+    // ── Final metrics snapshot — direct read ─────────────────────────────
+    // For a full observability hookup with periodic publish to a sink,
+    // see examples/observability_demo.cpp. Here we simply read the raw
+    // stream counters at exit so the operator sees the totals.
+    spdlog::info("simple_hft_v3: stream counters — "
+                 "bytes_sent={}, bytes_recv={}, frames_decoded={}, "
+                 "reasm_overflows={}, codec_errors={}",
+                 stream->metric(eph::net::StreamMetric::kBytesSent),
+                 stream->metric(eph::net::StreamMetric::kBytesRecv),
+                 stream->metric(eph::net::StreamMetric::kFramesDecoded),
+                 stream->metric(eph::net::StreamMetric::kReasmOverflows),
+                 stream->metric(eph::net::StreamMetric::kCodecErrors));
     return 0;
 }
 
