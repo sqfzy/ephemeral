@@ -14,13 +14,17 @@ Defined in `eph-core/include/eph/core/codec.hpp`:
 // TCP-style streaming codec — incremental decode, may need more data
 template <class T>
 concept StreamCodec = requires(T& t, typename T::PacketViewRef view,
-                               core::OutputBuffer& out,
-                               uint8_t* buf, size_t cap) {
+                               core::OutputBuffer& out_sink,
+                               uint8_t* out_buf, size_t out_cap) {
     typename T::Frame;
     typename T::PacketViewRef;
-    { t.decode(view, out) } -> std::same_as<
+    // `view` carries application-layer plaintext; `out_sink` is the
+    // auto-response staging buffer.
+    { t.decode(view, out_sink) } -> std::same_as<
         std::expected<std::optional<typename T::Frame>, core::ErrorInfo>>;
-    { t.encode(buf, cap, std::declval<typename T::Frame>()) }
+    // Encode a single frame into `out_buf` (writable destination, capacity
+    // `out_cap`). Returns bytes written or BufferFull / CodecBad.
+    { t.encode(out_buf, out_cap, std::declval<typename T::Frame>()) }
         -> std::same_as<std::expected<size_t, core::ErrorInfo>>;
     { T::max_overhead } -> std::convertible_to<size_t>;
     { T::is_streaming } -> std::convertible_to<bool>;  // true
@@ -29,14 +33,14 @@ concept StreamCodec = requires(T& t, typename T::PacketViewRef view,
 // UDP-style datagram codec — one complete packet in, 0/1/N frames out
 template <class T>
 concept DatagramCodec = requires(T& t, typename T::PacketViewRef dgram,
-                                 core::OutputBuffer& out,
+                                 core::OutputBuffer& out_sink,
                                  std::function<void(typename T::Frame)> sink,
-                                 uint8_t* buf, size_t cap) {
+                                 uint8_t* out_buf, size_t out_cap) {
     typename T::Frame;
     typename T::PacketViewRef;
-    { t.decode(dgram, out, sink) } -> std::same_as<
+    { t.decode(dgram, out_sink, sink) } -> std::same_as<
         std::expected<size_t, core::ErrorInfo>>;       // returns frame count
-    { t.encode(buf, cap, std::declval<typename T::Frame>()) }
+    { t.encode(out_buf, out_cap, std::declval<typename T::Frame>()) }
         -> std::same_as<std::expected<size_t, core::ErrorInfo>>;
     { T::max_overhead } -> std::convertible_to<size_t>;
     { T::is_streaming } -> std::convertible_to<bool>;  // false

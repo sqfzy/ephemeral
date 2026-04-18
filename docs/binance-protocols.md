@@ -235,9 +235,9 @@ using WsStream = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec, true>;
 eph::containers::EvictingQueueBytes<512> latest_tick{};
 
 auto stream = WsStream::create(cfg).value();
-stream->on_message = [&](const uint8_t* data, uint16_t len) {
+stream->on_message = [&](std::span<const uint8_t> app_frame) {
     // Drop older ticks — keep only the newest
-    latest_tick.push(std::span{data, len});
+    latest_tick.push(app_frame);
 };
 
 // Server auto-culls during overload → fewer messages on wire

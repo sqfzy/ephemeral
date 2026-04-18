@@ -113,9 +113,11 @@ int main() {
         .use_tls     = true,
     }).value();
 
-    stream->on_message = [](const uint8_t* data, uint16_t len) {
-        std::string_view msg{reinterpret_cast<const char*>(data), len};
-        spdlog::info("market data ({} bytes): {}", len, msg);
+    stream->on_message = [](std::span<const uint8_t> app_frame) {
+        std::string_view msg{
+            reinterpret_cast<const char*>(app_frame.data()),
+            app_frame.size()};
+        spdlog::info("market data ({} bytes): {}", app_frame.size(), msg);
     };
 
     poller->add(stream.get()).value();

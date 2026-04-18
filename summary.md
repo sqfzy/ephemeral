@@ -49,7 +49,7 @@ the same shape:
 ```cpp
 auto poller = Poller::create({}).value();
 auto stream = TcpStream<WsCodec>::create(cfg).value();
-stream->on_message = [](const uint8_t* data, uint16_t len) { … };
+stream->on_message = [](std::span<const uint8_t> app_frame) { … };
 poller->add(stream.get()).value();
 while (running) poller->poll(100ms);
 ```

@@ -35,8 +35,8 @@ auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
     .use_tls     = true,
 }).value();
 
-stream->on_message = [](const uint8_t* data, uint16_t len) {
-    /* handle frame */
+stream->on_message = [](std::span<const uint8_t> app_frame) {
+    /* handle frame — app_frame is post-TLS-decrypt, post-codec bytes */
 };
 
 poller->add(stream.get()).value();

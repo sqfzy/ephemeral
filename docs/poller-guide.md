@@ -68,8 +68,10 @@ int main() {
         .use_tls     = true,
     }).value();
 
-    stream->on_message = [](const uint8_t* data, uint16_t len) {
-        spdlog::info("rx: {}", std::string_view{(const char*)data, len});
+    stream->on_message = [](std::span<const uint8_t> app_frame) {
+        spdlog::info("rx: {}", std::string_view{
+            reinterpret_cast<const char*>(app_frame.data()),
+            app_frame.size()});
     };
 
     poller->add(stream.get()).value();
@@ -151,8 +153,8 @@ for (auto& symbol : symbols) {
         .ws_path     = std::format("/ws/{}@trade", symbol),
         .use_tls     = true,
     }).value();
-    s->on_message = [&, sym = symbol](const uint8_t* d, uint16_t n) {
-        route_trade(sym, d, n);
+    s->on_message = [&, sym = symbol](std::span<const uint8_t> app_frame) {
+        route_trade(sym, app_frame.data(), app_frame.size());
     };
     poller->add(s.get()).value();
     streams.push_back(std::move(s));
