@@ -5,6 +5,7 @@
 #include <expected>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -190,8 +191,8 @@ TEST(OutputBuffer, AppendAndSize) {
     EXPECT_EQ(ob.available(), 16u);
     EXPECT_EQ(ob.size(), 0u);
 
-    const uint8_t data[] = {1, 2, 3};
-    auto r = ob.append(data, sizeof(data));
+    const uint8_t src_bytes[] = {1, 2, 3};
+    auto r = ob.append(std::span<const uint8_t>(src_bytes, sizeof(src_bytes)));
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(ob.size(), 3u);
     EXPECT_EQ(ob.available(), 13u);
@@ -203,8 +204,8 @@ TEST(OutputBuffer, AppendOverflowReturnsBufferFull) {
     uint8_t storage[4] = {};
     OutputBuffer ob{storage, sizeof(storage)};
 
-    const uint8_t data[] = {0xA, 0xB, 0xC, 0xD, 0xE};
-    auto r = ob.append(data, sizeof(data));
+    const uint8_t src_bytes[] = {0xA, 0xB, 0xC, 0xD, 0xE};
+    auto r = ob.append(std::span<const uint8_t>(src_bytes, sizeof(src_bytes)));
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::BufferFull);
     // Failed append must not corrupt partial state.
@@ -252,7 +253,7 @@ TEST(OutputBuffer, WritableTailReturnsNullOnOverflow) {
 TEST(OutputBuffer, EmptyAppendIsNoop) {
     uint8_t storage[4] = {};
     OutputBuffer ob{storage, sizeof(storage)};
-    auto r = ob.append(nullptr, 0);  // nullptr ok since len==0
+    auto r = ob.append(std::span<const uint8_t>{});  // empty span
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(ob.size(), 0u);
 }

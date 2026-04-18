@@ -391,7 +391,7 @@ private:
                 core::Error::CodecBad,
                 "WsCodec: build_pong_frame failed"});
         }
-        return out.append(scratch, n);
+        return out.append(std::span<const uint8_t>(scratch, n));
     }
 
     /// @brief Write a close frame into `out` with the given status code.
@@ -406,7 +406,7 @@ private:
                 core::Error::CodecBad,
                 "WsCodec: build_close_frame failed"});
         }
-        return out.append(scratch, n);
+        return out.append(std::span<const uint8_t>(scratch, n));
     }
 
     WsCodecConfig        cfg_;

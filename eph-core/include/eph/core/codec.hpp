@@ -33,6 +33,7 @@
 #include <expected>
 #include <functional>
 #include <optional>
+#include <span>
 #include <utility>
 
 #include "eph/core/error.hpp"
@@ -65,20 +66,23 @@ public:
     constexpr OutputBuffer(uint8_t* base, std::size_t cap) noexcept
         : base_(base), cap_(cap), len_(0) {}
 
-    /// @brief Append `len` bytes by copy.
+    /// @brief Append `src` bytes into the committed region by copy.
     ///
-    /// Prefer `writable_tail()` + `commit()` for zero-copy paths when the
-    /// encoder can write directly into the buffer.
+    /// `src` is the source region whose bytes the caller wants appended; the
+    /// destination is this `OutputBuffer`'s tail. Prefer `writable_tail()` +
+    /// `commit()` for zero-copy paths when the encoder can write directly into
+    /// the buffer.
+    /// @param src   source byte range to copy from (may be empty)
     /// @return BufferFull on overflow, Ok otherwise.
     [[nodiscard]] std::expected<void, ErrorInfo>
-    append(const uint8_t* data, std::size_t len) noexcept {
-        if (len_ + len > cap_) {
+    append(std::span<const uint8_t> src) noexcept {
+        if (len_ + src.size() > cap_) {
             return std::unexpected(ErrorInfo{Error::BufferFull,
                                              "OutputBuffer::append: capacity exceeded"});
         }
-        if (len > 0) {
-            std::memcpy(base_ + len_, data, len);
-            len_ += len;
+        if (!src.empty()) {
+            std::memcpy(base_ + len_, src.data(), src.size());
+            len_ += src.size();
         }
         return {};
     }
@@ -159,20 +163,23 @@ private:
 template <class T>
 concept StreamCodec = requires(T& t,
                                typename T::PacketViewRef view,
-                               OutputBuffer& out,
-                               uint8_t* enc_buf,
-                               std::size_t enc_cap) {
+                               OutputBuffer& out_sink,
+                               uint8_t* out_buf,
+                               std::size_t out_cap) {
     // Associated types
     typename T::Frame;
     typename T::PacketViewRef;
 
     // Stateful decode — T is taken by non-const reference on purpose.
-    { t.decode(view, out) } -> std::same_as<
+    // `view` holds application-layer plaintext (post-TLS-decrypt if TLS is in
+    // use); `out_sink` is the auto-response staging buffer.
+    { t.decode(view, out_sink) } -> std::same_as<
         std::expected<std::optional<typename T::Frame>, ErrorInfo>>;
 
-    // Encode a single frame into a caller-provided byte region. Returns the
-    // number of bytes written, or BufferFull / CodecBad on error.
-    { t.encode(enc_buf, enc_cap, std::declval<typename T::Frame>()) }
+    // Encode a single frame into `out_buf` (writable destination, capacity
+    // `out_cap`). Returns the number of bytes written, or BufferFull /
+    // CodecBad on error.
+    { t.encode(out_buf, out_cap, std::declval<typename T::Frame>()) }
         -> std::same_as<std::expected<std::size_t, ErrorInfo>>;
 
     // Static traits — max bytes encode() might prepend/append per frame, and
@@ -199,18 +206,22 @@ concept StreamCodec = requires(T& t,
 template <class T>
 concept DatagramCodec = requires(T& t,
                                  typename T::PacketViewRef dgram,
-                                 OutputBuffer& out,
+                                 OutputBuffer& out_sink,
                                  std::function<void(typename T::Frame)> sink,
-                                 uint8_t* enc_buf,
-                                 std::size_t enc_cap) {
+                                 uint8_t* out_buf,
+                                 std::size_t out_cap) {
     typename T::Frame;
     typename T::PacketViewRef;
 
-    // Must consume the entire datagram. Reports emitted frames via `sink`.
-    { t.decode(dgram, out, sink) } -> std::same_as<
+    // Must consume the entire datagram. `dgram` holds application-layer
+    // bytes; reports emitted frames via `sink`; `out_sink` receives optional
+    // auto-responses.
+    { t.decode(dgram, out_sink, sink) } -> std::same_as<
         std::expected<std::size_t, ErrorInfo>>;
 
-    { t.encode(enc_buf, enc_cap, std::declval<typename T::Frame>()) }
+    // Encode a single frame into `out_buf` (writable destination, capacity
+    // `out_cap`).
+    { t.encode(out_buf, out_cap, std::declval<typename T::Frame>()) }
         -> std::same_as<std::expected<std::size_t, ErrorInfo>>;
 
     { T::max_overhead } -> std::convertible_to<std::size_t>;
