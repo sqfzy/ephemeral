@@ -72,9 +72,12 @@ public:
     /// @brief No codec attached — tests layer a codec on top.
     using CodecType = void;
 
-    /// @brief Receive callback: `(data, length, source_addr)`, matching the
-    ///        real `eph::net::kernel::UdpSocket::OnDatagram` shape.
-    using OnDatagram = std::function<void(const uint8_t*, uint16_t,
+    /// @brief Receive callback: `(app_datagram, peer)`, matching the real
+    ///        `eph::net::kernel::UdpSocket::OnDatagram` shape.
+    ///
+    /// The span holds one decoded application datagram (post-codec if the
+    /// fake is composed with a codec); `peer` is the source address.
+    using OnDatagram = std::function<void(std::span<const uint8_t>,
                                           const SocketAddr&)>;
 
     /// @brief One queued incoming datagram.
@@ -97,12 +100,12 @@ public:
 
     // ── Test-control API ───────────────────────────────────────────────────
 
-    /// @brief Queue a simulated incoming datagram. Each call appends one
-    ///        distinct datagram to the rx queue, preserving message
-    ///        boundaries.
-    void inject_datagram(std::span<const uint8_t> data, const SocketAddr& src) {
+    /// @brief Queue a simulated incoming datagram. `wire_bytes` are raw
+    ///        pre-codec bytes (a whole datagram boundary). Each call appends
+    ///        one distinct datagram to the rx queue, preserving boundaries.
+    void inject_datagram(std::span<const uint8_t> wire_bytes, const SocketAddr& src) {
         RxEntry e;
-        e.data.assign(data.begin(), data.end());
+        e.data.assign(wire_bytes.begin(), wire_bytes.end());
         e.src = src;
         rx_queue_.push_back(std::move(e));
     }
@@ -128,17 +131,17 @@ public:
     OnDatagram on_datagram;
 
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send_to(std::span<const uint8_t> data, const SocketAddr& dst) noexcept {
+    send_to(std::span<const uint8_t> app_payload, const SocketAddr& dst) noexcept {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "FakeDatagram::send_to before attach"});
         }
         TxEntry e;
-        e.data.assign(data.begin(), data.end());
+        e.data.assign(app_payload.begin(), app_payload.end());
         e.dst = dst;
         tx_queue_.push_back(std::move(e));
-        return data.size();
+        return app_payload.size();
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
@@ -168,9 +171,8 @@ public:
         std::size_t delivered = 0;
         if (on_datagram) {
             for (const auto& e : rx_queue_) {
-                const auto len = static_cast<uint16_t>(
-                    e.data.size() > 0xFFFF ? 0xFFFF : e.data.size());
-                on_datagram(e.data.data(), len, e.src);
+                on_datagram(std::span<const uint8_t>(e.data.data(), e.data.size()),
+                            e.src);
                 ++delivered;
             }
         } else {

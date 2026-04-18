@@ -479,27 +479,29 @@ validate_builder_headers(std::span<const HttpHeader> headers) noexcept {
     return {};
 }
 
-/// @brief Append raw bytes to `buf`, bounds-checked against `cap`.
-[[nodiscard]] inline bool buf_append(uint8_t* buf, size_t cap, size_t& off,
+/// @brief Append `src`/`n` bytes into `out_buf`, bounds-checked against `cap`.
+///        `out_buf` is the destination the builder writes into; `off` is the
+///        in/out cursor.
+[[nodiscard]] inline bool buf_append(uint8_t* out_buf, size_t cap, size_t& off,
                                      const void* src, size_t n) noexcept {
     if (off > cap || cap - off < n) return false;
-    std::memcpy(buf + off, src, n);
+    std::memcpy(out_buf + off, src, n);
     off += n;
     return true;
 }
 
-[[nodiscard]] inline bool buf_append_sv(uint8_t* buf, size_t cap, size_t& off,
+[[nodiscard]] inline bool buf_append_sv(uint8_t* out_buf, size_t cap, size_t& off,
                                         std::string_view s) noexcept {
-    return buf_append(buf, cap, off, s.data(), s.size());
+    return buf_append(out_buf, cap, off, s.data(), s.size());
 }
 
-[[nodiscard]] inline bool buf_append_cstr(uint8_t* buf, size_t cap, size_t& off,
+[[nodiscard]] inline bool buf_append_cstr(uint8_t* out_buf, size_t cap, size_t& off,
                                           const char* s) noexcept {
-    return buf_append(buf, cap, off, s, std::strlen(s));
+    return buf_append(out_buf, cap, off, s, std::strlen(s));
 }
 
 /// @brief Append a non-negative decimal integer (no padding).
-[[nodiscard]] inline bool buf_append_decimal(uint8_t* buf, size_t cap, size_t& off,
+[[nodiscard]] inline bool buf_append_decimal(uint8_t* out_buf, size_t cap, size_t& off,
                                              size_t v) noexcept {
     // 20 digits is enough for 2^64; we reverse in place.
     char tmp[20];
@@ -516,7 +518,7 @@ validate_builder_headers(std::span<const HttpHeader> headers) noexcept {
             std::swap(tmp[i], tmp[j]);
         }
     }
-    return buf_append(buf, cap, off, tmp, n);
+    return buf_append(out_buf, cap, off, tmp, n);
 }
 
 } // namespace detail
@@ -796,7 +798,7 @@ parse_http_response(
 [[nodiscard]] inline
 std::expected<size_t, core::ErrorInfo>
 build_http_request(
-    uint8_t*                      buf,
+    uint8_t*                      out_buf,
     size_t                        cap,
     std::string_view              method,
     std::string_view              target,
@@ -818,19 +820,19 @@ build_http_request(
 
     size_t off = 0;
     // "METHOD SP TARGET SP HTTP/1.1\r\n"
-    if (!detail::buf_append_sv(buf, cap, off, method))            goto overflow;
-    if (!detail::buf_append_cstr(buf, cap, off, " "))             goto overflow;
-    if (!detail::buf_append_sv(buf, cap, off, target))            goto overflow;
-    if (!detail::buf_append_cstr(buf, cap, off, " HTTP/1.1\r\n")) goto overflow;
+    if (!detail::buf_append_sv(out_buf, cap, off, method))            goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, " "))             goto overflow;
+    if (!detail::buf_append_sv(out_buf, cap, off, target))            goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, " HTTP/1.1\r\n")) goto overflow;
     for (const auto& h : headers) {
-        if (!detail::buf_append_sv(buf, cap, off, h.name))     goto overflow;
-        if (!detail::buf_append_cstr(buf, cap, off, ": "))     goto overflow;
-        if (!detail::buf_append_sv(buf, cap, off, h.value))    goto overflow;
-        if (!detail::buf_append_cstr(buf, cap, off, "\r\n"))   goto overflow;
+        if (!detail::buf_append_sv(out_buf, cap, off, h.name))     goto overflow;
+        if (!detail::buf_append_cstr(out_buf, cap, off, ": "))     goto overflow;
+        if (!detail::buf_append_sv(out_buf, cap, off, h.value))    goto overflow;
+        if (!detail::buf_append_cstr(out_buf, cap, off, "\r\n"))   goto overflow;
     }
-    if (!detail::buf_append_cstr(buf, cap, off, "\r\n"))      goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, "\r\n"))      goto overflow;
     if (!body.empty()) {
-        if (!detail::buf_append(buf, cap, off, body.data(), body.size()))
+        if (!detail::buf_append(out_buf, cap, off, body.data(), body.size()))
             goto overflow;
     }
     SPDLOG_DEBUG("http: built request {} {} bytes={}",
@@ -854,7 +856,7 @@ overflow:
 [[nodiscard]] inline
 std::expected<size_t, core::ErrorInfo>
 build_http_response(
-    uint8_t*                      buf,
+    uint8_t*                      out_buf,
     size_t                        cap,
     uint16_t                      status_code,
     std::string_view              reason_phrase,
@@ -875,20 +877,20 @@ build_http_response(
 
     size_t off = 0;
     // "HTTP/1.1 DDD REASON\r\n"
-    if (!detail::buf_append_cstr(buf, cap, off, "HTTP/1.1 "))  goto overflow;
-    if (!detail::buf_append_decimal(buf, cap, off, status_code)) goto overflow;
-    if (!detail::buf_append_cstr(buf, cap, off, " "))          goto overflow;
-    if (!detail::buf_append_sv(buf, cap, off, reason_phrase))  goto overflow;
-    if (!detail::buf_append_cstr(buf, cap, off, "\r\n"))       goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, "HTTP/1.1 "))  goto overflow;
+    if (!detail::buf_append_decimal(out_buf, cap, off, status_code)) goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, " "))          goto overflow;
+    if (!detail::buf_append_sv(out_buf, cap, off, reason_phrase))  goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, "\r\n"))       goto overflow;
     for (const auto& h : headers) {
-        if (!detail::buf_append_sv(buf, cap, off, h.name))    goto overflow;
-        if (!detail::buf_append_cstr(buf, cap, off, ": "))    goto overflow;
-        if (!detail::buf_append_sv(buf, cap, off, h.value))   goto overflow;
-        if (!detail::buf_append_cstr(buf, cap, off, "\r\n"))  goto overflow;
+        if (!detail::buf_append_sv(out_buf, cap, off, h.name))    goto overflow;
+        if (!detail::buf_append_cstr(out_buf, cap, off, ": "))    goto overflow;
+        if (!detail::buf_append_sv(out_buf, cap, off, h.value))   goto overflow;
+        if (!detail::buf_append_cstr(out_buf, cap, off, "\r\n"))  goto overflow;
     }
-    if (!detail::buf_append_cstr(buf, cap, off, "\r\n"))      goto overflow;
+    if (!detail::buf_append_cstr(out_buf, cap, off, "\r\n"))      goto overflow;
     if (!body.empty()) {
-        if (!detail::buf_append(buf, cap, off, body.data(), body.size()))
+        if (!detail::buf_append(out_buf, cap, off, body.data(), body.size()))
             goto overflow;
     }
     SPDLOG_DEBUG("http: built response status={} bytes={}", status_code, off);

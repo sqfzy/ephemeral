@@ -7,6 +7,8 @@
 ///   - state / attach flag lifecycle
 ///   - graceful close
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include "eph/net/test/fake_stream.hpp"
@@ -56,8 +58,8 @@ TEST(FakeStream, ClearTxEmptiesBufferOnly) {
 TEST(FakeStream, InjectRxThenPollOnceFiresOnMessage) {
     ent::FakeStream fs;
     std::vector<uint8_t> captured;
-    fs.on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.assign(p, p + n);
+    fs.on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.assign(app_frame.begin(), app_frame.end());
     };
 
     const uint8_t data[] = {0xDE, 0xAD, 0xBE, 0xEF};
@@ -108,8 +110,8 @@ TEST(FakeStream, NativeHandleIsStablePointer) {
 TEST(FakeStream, PollOnceDoesNotDispatchWhenStateClosed) {
     ent::FakeStream fs;
     std::vector<uint8_t> captured;
-    fs.on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.assign(p, p + n);
+    fs.on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.assign(app_frame.begin(), app_frame.end());
     };
     const uint8_t data[] = {0x01, 0x02};
     fs.inject_rx(data);
@@ -133,8 +135,8 @@ TEST(FakeStream, SendAfterCloseReturnsDisconnected) {
 TEST(FakeStream, InjectDisconnectFlipsStateAndDropsRx) {
     ent::FakeStream fs;
     std::vector<uint8_t> captured;
-    fs.on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.assign(p, p + n);
+    fs.on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.assign(app_frame.begin(), app_frame.end());
     };
     const uint8_t data[] = {0xDE, 0xAD};
     fs.inject_rx(data);

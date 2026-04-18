@@ -504,14 +504,16 @@ struct DecodedFrame {
     }
 };
 
-/// Decode a WebSocket frame from a buffer.
+/// Decode a WebSocket frame from a wire-level byte buffer.
 ///
-/// @param data     Input buffer
-/// @param len      Available bytes
+/// @param wire_bytes   Incoming byte buffer — raw RFC 6455 framed bytes
+///                     (header + payload). May carry partial data; the
+///                     decoder returns `kIncomplete` if more is needed.
+/// @param len          Available bytes in `wire_bytes`.
 /// @return Decoded frame, or error if incomplete/malformed.
 ///         "incomplete" error means more data is needed.
 [[nodiscard]] inline std::expected<DecodedFrame, DecodeError>
-decode_frame(const uint8_t* data, size_t len) {
+decode_frame(const uint8_t* wire_bytes, size_t len) {
     if (len < 2) {
         return std::unexpected(DecodeError::kIncomplete);
     }
@@ -520,24 +522,24 @@ decode_frame(const uint8_t* data, size_t len) {
     size_t pos = 0;
 
     // Byte 0: FIN + opcode
-    frame.fin = (data[pos] & kFinBit) != 0;
-    frame.opcode = data[pos] & 0x0F;
+    frame.fin = (wire_bytes[pos] & kFinBit) != 0;
+    frame.opcode = wire_bytes[pos] & 0x0F;
 
     // RFC 6455 §5.2: RSV1-3 must be 0 unless an extension is negotiated.
     // Check here — before any length parsing — so malformed frames are
     // rejected early without consuming variable-length fields.
-    if (data[pos] & 0x70) {
+    if (wire_bytes[pos] & 0x70) {
         SPDLOG_LOGGER_WARN(detail::ws_logger(),
             "decode_frame: non-zero RSV bits 0x{:02X} in byte0=0x{:02X} "
             "(no extensions negotiated)",
-            data[pos] & 0x70, data[pos]);
+            wire_bytes[pos] & 0x70, wire_bytes[pos]);
         return std::unexpected(DecodeError::kReservedBits);
     }
     pos++;
 
     // Byte 1: MASK + payload length
-    frame.masked = (data[pos] & kMaskBit) != 0;
-    uint8_t len_byte = data[pos] & 0x7F;
+    frame.masked = (wire_bytes[pos] & kMaskBit) != 0;
+    uint8_t len_byte = wire_bytes[pos] & 0x7F;
     pos++;
 
     // Extended payload length
@@ -560,8 +562,8 @@ decode_frame(const uint8_t* data, size_t len) {
         frame.payload_len = len_byte;
     } else if (len_byte == 126) {
         if (len < pos + 2) return std::unexpected(DecodeError::kIncomplete);
-        frame.payload_len = static_cast<uint64_t>(data[pos]) << 8 |
-                            static_cast<uint64_t>(data[pos + 1]);
+        frame.payload_len = static_cast<uint64_t>(wire_bytes[pos]) << 8 |
+                            static_cast<uint64_t>(wire_bytes[pos + 1]);
         pos += 2;
         if (frame.payload_len < 126) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::ws_logger(),
@@ -574,7 +576,7 @@ decode_frame(const uint8_t* data, size_t len) {
         if (len < pos + 8) return std::unexpected(DecodeError::kIncomplete);
         frame.payload_len = 0;
         for (size_t i = 0; i < 8; ++i) {
-            frame.payload_len = (frame.payload_len << 8) | data[pos + i];
+            frame.payload_len = (frame.payload_len << 8) | wire_bytes[pos + i];
         }
         pos += 8;
         // High bit MUST be 0 per RFC 6455 §5.2.  Equivalently:
@@ -598,7 +600,7 @@ decode_frame(const uint8_t* data, size_t len) {
     // Masking key (if present — server frames are typically unmasked)
     if (frame.masked) {
         if (len < pos + 4) return std::unexpected(DecodeError::kIncomplete);
-        std::memcpy(frame.mask_key, data + pos, 4);
+        std::memcpy(frame.mask_key, wire_bytes + pos, 4);
         pos += 4;
     }
 
@@ -648,7 +650,7 @@ decode_frame(const uint8_t* data, size_t len) {
         }
     }
 
-    frame.payload = data + pos;
+    frame.payload = wire_bytes + pos;
     frame.total_len = pos + static_cast<size_t>(frame.payload_len);
 
     return frame;

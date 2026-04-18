@@ -6,6 +6,8 @@
 /// `TEST(…)` bodies exist mostly to anchor the translation unit as a
 /// test target so the compile-time checks are actually exercised by CI.
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include "eph/net/concepts.hpp"
@@ -89,8 +91,8 @@ TEST(Concepts, FakeStreamRoundTripsThroughTestPoller) {
     auto poller = ent::TestPoller<ent::FakeStream>::create();
     auto fake = ent::FakeStream::create();
     std::vector<uint8_t> captured;
-    fake->on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.assign(p, p + n);
+    fake->on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.assign(app_frame.begin(), app_frame.end());
     };
     ASSERT_TRUE(poller->add(fake.get()).has_value());
     EXPECT_TRUE(fake->is_attached());
@@ -107,10 +109,11 @@ TEST(Concepts, FakeDatagramRoundTripsThroughTestPoller) {
     auto poller = ent::TestPoller<ent::FakeDatagram>::create();
     auto fake = ent::FakeDatagram::create();
     bool saw = false;
-    fake->on_datagram = [&](const uint8_t*, uint16_t n, const en::SocketAddr& src) {
+    fake->on_datagram = [&](std::span<const uint8_t> app_datagram,
+                            const en::SocketAddr& peer) {
         saw = true;
-        EXPECT_EQ(n, 3u);
-        EXPECT_EQ(src.port, 9999);
+        EXPECT_EQ(app_datagram.size(), 3u);
+        EXPECT_EQ(peer.port, 9999);
     };
     ASSERT_TRUE(poller->add(fake.get()).has_value());
 

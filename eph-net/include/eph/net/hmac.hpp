@@ -85,11 +85,11 @@ class HmacSha256Key;
 
 [[nodiscard]] inline HmacSha256Tag hmac_sha256_sign(
     const HmacSha256Key&     key,
-    std::span<const uint8_t> data) noexcept;
+    std::span<const uint8_t> msg) noexcept;
 
 [[nodiscard]] inline HmacSha256Tag hmac_sha256_sign(
     const HmacSha256Key& key,
-    std::string_view     data) noexcept;
+    std::string_view     msg) noexcept;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HmacSha256Key — typed, RAII, zero-on-destroy
@@ -237,12 +237,14 @@ struct HmacSha256Tag {
 // One-shot sign — hot path API
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief Sign `data` with the normalized key and return the 32-byte tag.
+/// @brief Sign `msg` with the normalized key and return the 32-byte tag.
 ///
-/// Uses aws-lc's `HMAC()` one-shot. Because the key is already normalized
-/// to 64 bytes at construction, the per-call work is: two SHA-256
-/// compressions over the ipad/opad blocks plus the data. No allocation,
-/// no dynamic context, noexcept.
+/// `msg` is the message bytes the caller wants authenticated (e.g. the
+/// canonical request string before sending to a venue). Uses aws-lc's
+/// `HMAC()` one-shot. Because the key is already normalized to 64 bytes at
+/// construction, the per-call work is: two SHA-256 compressions over the
+/// ipad/opad blocks plus the message. No allocation, no dynamic context,
+/// noexcept.
 ///
 /// If `HMAC()` ever returned null (it cannot, for SHA-256 with a valid
 /// key buffer, on any aws-lc build we target), the tag would be
@@ -251,7 +253,7 @@ struct HmacSha256Tag {
 /// output length as a defensive check.
 [[nodiscard]] inline HmacSha256Tag hmac_sha256_sign(
     const HmacSha256Key&     key,
-    std::span<const uint8_t> data) noexcept {
+    std::span<const uint8_t> msg) noexcept {
     HmacSha256Tag tag{};
     unsigned int  tag_len = 0;
 
@@ -262,7 +264,7 @@ struct HmacSha256Tag {
     const uint8_t* result = HMAC(
         EVP_sha256(),
         key.normalized_, 64,                   // always 64 — key is normalized
-        data.data(), data.size(),
+        msg.data(), msg.size(),
         tag.bytes.data(), &tag_len);
 
     // Defensive: on any sane aws-lc build these are guaranteed, so this
@@ -280,11 +282,11 @@ struct HmacSha256Tag {
 /// @brief Convenience overload for `std::string_view` payloads.
 [[nodiscard]] inline HmacSha256Tag hmac_sha256_sign(
     const HmacSha256Key& key,
-    std::string_view     data) noexcept {
+    std::string_view     msg) noexcept {
     return hmac_sha256_sign(
         key,
         std::span<const uint8_t>{
-            reinterpret_cast<const uint8_t*>(data.data()), data.size()});
+            reinterpret_cast<const uint8_t*>(msg.data()), msg.size()});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

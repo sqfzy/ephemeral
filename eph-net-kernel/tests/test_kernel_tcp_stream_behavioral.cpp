@@ -557,7 +557,7 @@ TEST(KernelTcpStreamBehavioral, FakeStream_InjectRxDeliveredOncePerPoll) {
     auto fake = ent::FakeStream::create();
     auto poller = ent::TestPoller<ent::FakeStream>::create();
     int calls = 0;
-    fake->on_message = [&](const uint8_t*, uint16_t) { ++calls; };
+    fake->on_message = [&](std::span<const uint8_t>) { ++calls; };
     ASSERT_TRUE(poller->add(fake.get()).has_value());
     const uint8_t bytes[] = {1, 2, 3};
     fake->inject_rx(bytes);

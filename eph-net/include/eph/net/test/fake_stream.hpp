@@ -10,12 +10,12 @@
 /// Intended usage pattern:
 ///
 ///     auto stream = FakeStream::create();
-///     stream->on_message = [&](const uint8_t* p, uint16_t n) {
-///         captured.assign(p, p + n);
+///     stream->on_message = [&](std::span<const uint8_t> app_frame) {
+///         captured.assign(app_frame.begin(), app_frame.end());
 ///     };
 ///     TestPoller<FakeStream> poller;
 ///     poller.add(stream.get()).value();
-///     stream->inject_rx(raw_bytes);
+///     stream->inject_rx(wire_bytes);
 ///     poller.poll();                  // drains rx buffer, fires on_message
 ///     EXPECT_EQ(stream->collect_tx(), expected_tx);
 
@@ -94,8 +94,12 @@ public:
     using CodecType = void;
 
     /// @brief Receive callback: invoked once per injected rx chunk.
+    ///
+    /// The span argument holds one decoded application frame — the bytes have
+    /// already passed through TLS (if enabled) and the codec's framing layer,
+    /// so they are the application-layer payload the user cares about.
     /// Signature matches `eph::net::Stream::OnMessage` contract.
-    using OnMessage = std::function<void(const uint8_t*, uint16_t)>;
+    using OnMessage = std::function<void(std::span<const uint8_t>)>;
 
     // ── Construction ───────────────────────────────────────────────────────
 
@@ -110,11 +114,12 @@ public:
 
     // ── Test-control API ───────────────────────────────────────────────────
 
-    /// @brief Feed bytes as if they had arrived from the wire. The data is
-    ///        copied into an internal rx buffer; call `poll()` on the owning
-    ///        `TestPoller` to drain.
-    void inject_rx(std::span<const uint8_t> data) {
-        rx_buf_.insert(rx_buf_.end(), data.begin(), data.end());
+    /// @brief Feed bytes as if they had arrived from the wire. `wire_bytes`
+    ///        are raw pre-codec bytes (the same granularity `recv()` would
+    ///        return from a real socket); they are copied into an internal
+    ///        rx buffer. Call `poll()` on the owning `TestPoller` to drain.
+    void inject_rx(std::span<const uint8_t> wire_bytes) {
+        rx_buf_.insert(rx_buf_.end(), wire_bytes.begin(), wire_bytes.end());
     }
 
     /// @brief Return a view into the accumulated TX buffer — bytes the code
@@ -157,16 +162,16 @@ public:
     ///        `poll()`, invoked once per rx buffer drain.
     OnMessage on_message;
 
-    /// @brief Append `data` to the internal TX buffer. Returns the number of
-    ///        bytes "sent" (always all of them — no backpressure simulation).
-    ///        Fails with `NotAttached` if the fake is not currently attached
-    ///        to a poller, mirroring the contract documented in
-    ///        `eph::core::Error::NotAttached`. Also fails with `Disconnected`
-    ///        when `state_ != Established` so that tests driving a closed
-    ///        stream through `send()` see the same error the real backends
-    ///        would produce (see `KernelTcpStream::send`).
+    /// @brief Append `app_payload` to the internal TX buffer. Returns the
+    ///        number of bytes "sent" (always all of them — no backpressure
+    ///        simulation). Fails with `NotAttached` if the fake is not
+    ///        currently attached to a poller, mirroring the contract
+    ///        documented in `eph::core::Error::NotAttached`. Also fails with
+    ///        `Disconnected` when `state_ != Established` so that tests
+    ///        driving a closed stream through `send()` see the same error
+    ///        the real backends would produce (see `KernelTcpStream::send`).
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send(std::span<const uint8_t> data) noexcept {
+    send(std::span<const uint8_t> app_payload) noexcept {
         if (!attached_) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -177,8 +182,8 @@ public:
                 core::Error::Disconnected,
                 "FakeStream::send: state != Established"});
         }
-        tx_buf_.insert(tx_buf_.end(), data.begin(), data.end());
-        return data.size();
+        tx_buf_.insert(tx_buf_.end(), app_payload.begin(), app_payload.end());
+        return app_payload.size();
     }
 
     /// @brief Flip the state to `Closed` and record a graceful close.
@@ -214,12 +219,10 @@ public:
         if (state_ != TcpState::Established) return 0;
         if (rx_buf_.empty()) return 0;
         if (on_message) {
-            // Cap at uint16_t as the Stream concept's OnMessage signature
-            // uses uint16_t — this matches the design doc's wire-format
-            // assumption that a single frame fits in 65535 bytes.
-            const auto len = static_cast<uint16_t>(
-                rx_buf_.size() > 0xFFFF ? 0xFFFF : rx_buf_.size());
-            on_message(rx_buf_.data(), len);
+            // Emit the buffered payload as one application frame. The span
+            // carries the full size_t extent — the OnMessage signature no
+            // longer clamps to uint16_t.
+            on_message(std::span<const uint8_t>(rx_buf_.data(), rx_buf_.size()));
         }
         rx_buf_.clear();
         return 1;

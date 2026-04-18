@@ -1,6 +1,8 @@
 /// @file test_fake_datagram.cpp
 /// Unit tests for `eph::net::test::FakeDatagram`.
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include "eph/net/test/fake_datagram.hpp"
@@ -52,11 +54,12 @@ TEST(FakeDatagram, InjectDatagramThenPollOnceFiresOnDatagram) {
     ent::FakeDatagram fd;
     int calls = 0;
     en::SocketAddr last_src{};
-    uint16_t last_len = 0;
-    fd.on_datagram = [&](const uint8_t*, uint16_t n, const en::SocketAddr& s) {
+    std::size_t last_len = 0;
+    fd.on_datagram = [&](std::span<const uint8_t> app_datagram,
+                         const en::SocketAddr& peer) {
         ++calls;
-        last_len = n;
-        last_src = s;
+        last_len = app_datagram.size();
+        last_src = peer;
     };
     const uint8_t data[] = {9, 9, 9, 9};
     fd.inject_datagram(data, addr(192, 168, 0, 1, 12345));
@@ -68,9 +71,10 @@ TEST(FakeDatagram, InjectDatagramThenPollOnceFiresOnDatagram) {
 
 TEST(FakeDatagram, MultipleInjectedDatagramsDeliverInOrder) {
     ent::FakeDatagram fd;
-    std::vector<uint16_t> sizes;
-    fd.on_datagram = [&](const uint8_t*, uint16_t n, const en::SocketAddr&) {
-        sizes.push_back(n);
+    std::vector<std::size_t> sizes;
+    fd.on_datagram = [&](std::span<const uint8_t> app_datagram,
+                         const en::SocketAddr&) {
+        sizes.push_back(app_datagram.size());
     };
     const uint8_t d1[] = {1};
     const uint8_t d2[] = {1, 2};

@@ -1,6 +1,8 @@
 /// @file test_test_poller.cpp
 /// Unit tests for `eph::net::test::TestPoller`.
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include "eph/net/test/fake_datagram.hpp"
@@ -66,8 +68,8 @@ TEST(TestPoller, PollDrivesAllRegisteredStreams) {
     auto a = ent::FakeStream::create();
     auto b = ent::FakeStream::create();
     int a_calls = 0, b_calls = 0;
-    a->on_message = [&](const uint8_t*, uint16_t) { ++a_calls; };
-    b->on_message = [&](const uint8_t*, uint16_t) { ++b_calls; };
+    a->on_message = [&](std::span<const uint8_t>) { ++a_calls; };
+    b->on_message = [&](std::span<const uint8_t>) { ++b_calls; };
     ASSERT_TRUE(p.add(a.get()).has_value());
     ASSERT_TRUE(p.add(b.get()).has_value());
 
@@ -99,14 +101,14 @@ TEST(TestPoller, CallbackRemovingSelfDoesNotCrash) {
     ASSERT_TRUE(p.add(b.get()).has_value());
 
     bool removed = false;
-    a->on_message = [&](const uint8_t*, uint16_t) {
+    a->on_message = [&](std::span<const uint8_t>) {
         if (!removed) {
             (void)p.remove(a.get());
             removed = true;
         }
     };
     int b_calls = 0;
-    b->on_message = [&](const uint8_t*, uint16_t) { ++b_calls; };
+    b->on_message = [&](std::span<const uint8_t>) { ++b_calls; };
 
     const uint8_t data[] = {42};
     a->inject_rx(data);
@@ -128,7 +130,7 @@ TEST(TestPoller, DrivesFakeDatagram) {
     ent::TestPoller<ent::FakeDatagram> p;
     auto fd = ent::FakeDatagram::create();
     int calls = 0;
-    fd->on_datagram = [&](const uint8_t*, uint16_t, const en::SocketAddr&) {
+    fd->on_datagram = [&](std::span<const uint8_t>, const en::SocketAddr&) {
         ++calls;
     };
     ASSERT_TRUE(p.add(fd.get()).has_value());

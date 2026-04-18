@@ -113,23 +113,29 @@ concept Pollable = requires(T& t) {
 /// @brief Connection-oriented byte-stream concept (TCP, TLS, WebSocket).
 ///
 /// A `Stream` is always also a `Pollable`. Conceptually:
-///   - `send(data)`           — write bytes to the peer
+///   - `send(app_payload)`    — write application-layer bytes to the peer.
+///                              The bytes travel through the codec (frame
+///                              headers added) and, if TLS is in use, are
+///                              transparently encrypted before hitting the
+///                              wire. Callers pass plaintext application
+///                              bytes here — not framed or encrypted data.
 ///   - `close_gracefully()`   — initiate clean shutdown (FIN/TLS close_notify/
 ///                              WS Close frame as appropriate)
 ///   - `is_attached()`        — public attach probe (mirrors Pollable's)
 ///   - `state()`              — current `TcpState`
 ///   - `on_message`           — callback invoked by `poll_once_()` when the
-///                              codec emits a complete frame
+///                              codec emits a complete application frame
+///                              (post-TLS-decrypt, post-framing)
 ///
 /// Subsumption: every `Stream` is a `Pollable`, so code constrained on
 /// `Pollable` implicitly accepts `Stream` values. This lets a single Poller
 /// drive heterogeneous `Stream` and `Datagram` objects.
 template <class T>
-concept Stream = Pollable<T> && requires(T& t, std::span<const uint8_t> data) {
+concept Stream = Pollable<T> && requires(T& t, std::span<const uint8_t> app_payload) {
     typename T::CodecType;
     typename T::OnMessage;
 
-    { t.send(data) } noexcept
+    { t.send(app_payload) } noexcept
         -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
     { t.close_gracefully() } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
@@ -156,13 +162,13 @@ concept Stream = Pollable<T> && requires(T& t, std::span<const uint8_t> data) {
 ///   - the receive callback observes a `SocketAddr` source.
 template <class T>
 concept Datagram = Pollable<T> && requires(T& t,
-                                           std::span<const uint8_t> data,
+                                           std::span<const uint8_t> app_payload,
                                            const SocketAddr& dst,
                                            const SocketAddr& mcast) {
     typename T::CodecType;
     typename T::OnDatagram;
 
-    { t.send_to(data, dst) } noexcept
+    { t.send_to(app_payload, dst) } noexcept
         -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
     { t.join_multicast(mcast) } noexcept
         -> std::same_as<std::expected<void, core::ErrorInfo>>;
