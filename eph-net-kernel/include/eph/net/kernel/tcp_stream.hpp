@@ -19,6 +19,8 @@
 ///        v
 ///     KernelPoller (epoll)
 
+#include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -50,6 +52,7 @@
 #include "eph/net/kernel/detail/span_view.hpp"
 #include "eph/net/kernel/detail/tls_state.hpp"
 #include "eph/net/kernel/poller.hpp"
+#include "eph/net/stream_metrics.hpp"
 #include "eph/net/tcp_state.hpp"
 
 namespace eph::net::kernel {
@@ -620,10 +623,14 @@ public:
             }
             auto sr = sock_.send(tx_ciphertext_);
             if (!sr) return std::unexpected(sr.error());
+            inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
             // Return plaintext byte count (the API contract is plaintext-len).
             return app_payload.size();
         } else {
-            return sock_.send(app_payload);
+            auto sr = sock_.send(app_payload);
+            if (!sr) return std::unexpected(sr.error());
+            inc_<::eph::net::StreamMetric::kBytesSent>(*sr);
+            return *sr;
         }
     }
 
@@ -750,6 +757,7 @@ public:
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                 "KernelTcpStream::poll_once_: reasm buffer full; "
                 "dropping connection");
+            inc_<::eph::net::StreamMetric::kReasmOverflows>();
             state_ = TcpState::Closed;
             return preserved;
         }
@@ -775,6 +783,7 @@ public:
             return preserved;
         }
         rx_bytes_.commit_write(*rr);
+        inc_<::eph::net::StreamMetric::kBytesRecv>(*rr);
 
         return preserved + drain_codec_();
     }
@@ -802,12 +811,49 @@ public:
             static_cast<std::intptr_t>(sock_.fd()));
     }
 
+    // ── Observability (StreamMetric pull model) ──────────────────────────
+    //
+    // See eph/net/stream_metrics.hpp for the architecture (Layer 1: hot
+    // path inc_<M>(), Layer 2: publish_metrics() snapshot to MetricsSink).
+
+    /// @brief Read current value of metric `m`. Lock-free, relaxed memory
+    ///        order. The returned counter is monotonically non-decreasing
+    ///        — Prometheus-style monotonic counter semantics. Safe for
+    ///        any number of concurrent readers.
+    [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
+        return counters_[static_cast<std::size_t>(m)]
+            .v.load(std::memory_order_relaxed);
+    }
+
 private:
     // ── Construction ─────────────────────────────────────────────────────
 
     explicit KernelTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg)),
           rx_bytes_(cfg_.reasm_capacity) {}
+
+    // ── Hot-path metric counters ─────────────────────────────────────────
+
+    /// @brief One counter slot per `StreamMetric`, padded to a cache line
+    ///        to prevent false sharing with neighbouring counters when
+    ///        a reader thread snapshots concurrently with the writer.
+    struct alignas(64) Counter { std::atomic<std::uint64_t> v{0}; };
+
+    /// @brief Compile-time size = `StreamMetric::kCount`. Backend-specific
+    ///        N/A entries (none for KernelTcpStream — all 6 are wired)
+    ///        simply remain at 0.
+    std::array<Counter,
+               static_cast<std::size_t>(::eph::net::StreamMetric::kCount)>
+        counters_{};
+
+    /// @brief Hot-path increment for metric `M`. Single `lock add` on x86
+    ///        with relaxed memory order; verified zero-cost in Phase A
+    ///        (objdump confirms single-instruction body).
+    template <::eph::net::StreamMetric M>
+    void inc_(std::uint64_t n = 1) noexcept {
+        counters_[static_cast<std::size_t>(M)]
+            .v.fetch_add(n, std::memory_order_relaxed);
+    }
 
     // ── Codec drain loop ─────────────────────────────────────────────────
 
@@ -884,6 +930,7 @@ private:
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "KernelTcpStream::drain_codec_: decode error (TLS): {}",
                         dr.error().detail);
+                    inc_<::eph::net::StreamMetric::kCodecErrors>();
                     state_ = TcpState::Closed;
                     rx_plaintext_.clear();
                     rx_plaintext_head_ = 0;
@@ -919,6 +966,7 @@ private:
                 if (frame.size() > 0) {
                     on_message(std::span<const uint8_t>(frame.data(),
                                                         frame.size()));
+                    inc_<::eph::net::StreamMetric::kFramesDecoded>();
                     ++delivered;
                 }
             }
@@ -979,6 +1027,7 @@ private:
                 SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::drain_codec_: decode error: {}",
                     dr.error().detail);
+                inc_<::eph::net::StreamMetric::kCodecErrors>();
                 state_ = TcpState::Closed;
                 break;
             }
@@ -1005,6 +1054,7 @@ private:
             if (frame.size() > 0) {
                 on_message(std::span<const uint8_t>(frame.data(),
                                                     frame.size()));
+                inc_<::eph::net::StreamMetric::kFramesDecoded>();
                 ++delivered;
             }
         }

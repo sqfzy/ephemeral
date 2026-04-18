@@ -42,6 +42,11 @@ target("test_kernel_udp")
     add_files("test_kernel_udp.cpp")
     add_deps("eph-net-kernel", "eph-codec")
 
+target("test_stream_metrics")
+    add_rules("eph-test")
+    add_files("test_stream_metrics.cpp")
+    add_deps("eph-net-kernel", "eph-codec")
+
 target("bench_e2e_latency")
     add_rules("eph-bench")
     add_files("bench_e2e_latency.cpp")
