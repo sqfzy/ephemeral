@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <array>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <span>
@@ -41,6 +43,7 @@
 #include "eph/net/kernel/detail/span_view.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/net/stream_metrics.hpp"
 
 namespace eph::net::kernel {
 
@@ -237,6 +240,7 @@ public:
                 core::Error::Disconnected,
                 "KernelUdpSocket::send_to: sendto failed (see log for errno)"});
         }
+        inc_<::eph::net::StreamMetric::kBytesSent>(static_cast<std::uint64_t>(n));
         return static_cast<std::size_t>(n);
     }
 
@@ -310,6 +314,7 @@ public:
             Ipv4Addr::from_be32(::ntohl(src.sin_addr.s_addr)),
             ::ntohs(src.sin_port)
         };
+        inc_<::eph::net::StreamMetric::kBytesRecv>(static_cast<std::uint64_t>(n));
 
         if (!on_datagram) return 0;
 
@@ -326,6 +331,7 @@ public:
                 on_datagram(std::span<const uint8_t>(frame.data(),
                                                      frame.size()),
                             src_addr);
+                inc_<::eph::net::StreamMetric::kFramesDecoded>();
                 ++delivered;
             }
         };
@@ -362,6 +368,7 @@ public:
             // practice), but it IS a market-data-loss event that operators
             // must see. Include the source address and payload length so
             // the offending peer is identifiable from the log.
+            inc_<::eph::net::StreamMetric::kCodecErrors>();
             SPDLOG_LOGGER_ERROR(detail::udp_socket_logger(),
                 "KernelUdpSocket::poll_once_: decode err={} "
                 "src={} payload_len={} delivered_before_err={}",
@@ -385,8 +392,33 @@ public:
         return reinterpret_cast<void*>(static_cast<std::intptr_t>(fd_));
     }
 
+    // ── Observability (StreamMetric pull model) ──────────────────────────
+    //
+    // See eph/net/stream_metrics.hpp. UDP backends do not maintain a
+    // reasm buffer or a TLS state, so kReasmOverflows / kCodecErrors
+    // (TLS-only metric) and kTlsCrossRecordFrames remain at 0.
+
+    [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
+        return counters_[static_cast<std::size_t>(m)]
+            .v.load(std::memory_order_relaxed);
+    }
+
 private:
     explicit KernelUdpSocket(int fd) noexcept : fd_(fd) {}
+
+    // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
+
+    struct alignas(64) Counter { std::atomic<std::uint64_t> v{0}; };
+
+    std::array<Counter,
+               static_cast<std::size_t>(::eph::net::StreamMetric::kCount)>
+        counters_{};
+
+    template <::eph::net::StreamMetric M>
+    void inc_(std::uint64_t n = 1) noexcept {
+        counters_[static_cast<std::size_t>(M)]
+            .v.fetch_add(n, std::memory_order_relaxed);
+    }
 
     /// @brief Shared IP_ADD/DROP_MEMBERSHIP helper.
     [[nodiscard]] std::expected<void, core::ErrorInfo>

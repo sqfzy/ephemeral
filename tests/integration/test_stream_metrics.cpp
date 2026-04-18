@@ -28,10 +28,12 @@
 
 #include <gtest/gtest.h>
 
+#include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/codec/raw_stream_codec.hpp"
 #include "eph/core/metrics_concept.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/kernel/udp_socket.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/stream_metrics.hpp"
 
@@ -41,6 +43,7 @@ namespace ec = eph::codec;
 namespace ecore = eph::core;
 
 using PlainTcpStream = ek::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
+using PlainUdp       = ek::KernelUdpSocket<ec::RawDatagramCodec>;
 
 // ─── RecordingSink — captures every push for assertion ────────────────────
 
@@ -224,6 +227,58 @@ TEST(StreamMetrics, KernelTcpStreamRecordsBytesSentAndRecv) {
     EXPECT_GE(sink.find("net.stream.bytes_recv")->counter_value,
               static_cast<int64_t>(sizeof(payload)));
     EXPECT_GE(sink.find("net.stream.frames_decoded")->counter_value, 1);
+}
+
+// ─── KernelUdpSocket end-to-end ───────────────────────────────────────────
+
+TEST(StreamMetrics, KernelUdpSocketRecordsBytesSentAndRecv) {
+    // Bind two ephemeral UDP sockets on loopback; A sends to B, drive
+    // poller, assert B's counters reflect the round-trip.
+    auto poller = ek::KernelPoller::create().value();
+
+    ek::UdpConfig cfg_a{};
+    cfg_a.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    auto a = PlainUdp::create(cfg_a).value();
+
+    ek::UdpConfig cfg_b{};
+    cfg_b.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    auto b = PlainUdp::create(cfg_b).value();
+
+    std::vector<uint8_t> rx;
+    b->on_datagram = [&](std::span<const uint8_t> app_datagram,
+                          const en::SocketAddr&) {
+        rx.insert(rx.end(), app_datagram.begin(), app_datagram.end());
+    };
+
+    ASSERT_TRUE(poller->add(a.get()).has_value());
+    ASSERT_TRUE(poller->add(b.get()).has_value());
+
+    // We need B's bound port to send to. Pick a small payload.
+    sockaddr_in sa{};
+    socklen_t sl = sizeof(sa);
+    ::getsockname(b->fd(), reinterpret_cast<sockaddr*>(&sa), &sl);
+    en::SocketAddr b_addr{en::Ipv4Addr{127, 0, 0, 1}, ntohs(sa.sin_port)};
+
+    const uint8_t payload[] = {'u', 'd', 'p'};
+    ASSERT_TRUE(a->send_to(payload, b_addr).has_value());
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (rx.empty()
+           && std::chrono::steady_clock::now() < deadline) {
+        poller->poll(std::chrono::milliseconds{50});
+    }
+    ASSERT_EQ(rx.size(), sizeof(payload));
+
+    EXPECT_GE(a->metric(en::StreamMetric::kBytesSent), sizeof(payload));
+    EXPECT_GE(b->metric(en::StreamMetric::kBytesRecv), sizeof(payload));
+    EXPECT_GE(b->metric(en::StreamMetric::kFramesDecoded), 1u);
+
+    // UDP backend N/A entries stay at 0:
+    EXPECT_EQ(a->metric(en::StreamMetric::kReasmOverflows), 0u);
+    EXPECT_EQ(b->metric(en::StreamMetric::kReasmOverflows), 0u);
+    EXPECT_EQ(a->metric(en::StreamMetric::kTlsCrossRecordFrames), 0u);
+    EXPECT_EQ(b->metric(en::StreamMetric::kTlsCrossRecordFrames), 0u);
 }
 
 TEST(StreamMetrics, MetricCountersAreMonotonic) {

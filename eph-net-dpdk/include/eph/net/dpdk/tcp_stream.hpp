@@ -20,6 +20,7 @@
 ///     DpdkPoller<> (lcore burst poll)
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +48,7 @@
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
+#include "eph/net/stream_metrics.hpp"
 #include "eph/net/tcp_state.hpp"
 
 // The DPDK TLS path uses aws-lc exclusively (no vcpkg-openssl). ISN
@@ -619,6 +621,7 @@ public:
                 }
                 off += *sr;
             }
+            inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
             // API contract: report plaintext byte count.
             return app_payload.size();
         } else {
@@ -659,6 +662,7 @@ public:
                 }
                 off += *sr;
             }
+            inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
             return app_payload.size();
         }
     }
@@ -715,9 +719,12 @@ public:
                     "cap={} need={} readable={} — forcing reset",
                     reasm_.capacity(), static_cast<std::size_t>(len),
                     reasm_.readable());
+                inc_<::eph::net::StreamMetric::kReasmOverflows>();
                 reasm_overflowed_ = true;
                 sess_.reset();
+                return;
             }
+            inc_<::eph::net::StreamMetric::kBytesRecv>(len);
         });
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -736,6 +743,17 @@ public:
     ///        a generic void* (distinct from kernel fd semantics).
     [[nodiscard]] void* native_handle() const noexcept {
         return const_cast<void*>(static_cast<const void*>(&sess_));
+    }
+
+    // ── Observability (StreamMetric pull model) ──────────────────────────
+    //
+    // See eph/net/stream_metrics.hpp. All 6 metrics are wired on this
+    // backend, including the DPDK-only kTlsCrossRecordFrames in the TLS
+    // drain_codec_ slow path.
+
+    [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
+        return counters_[static_cast<std::size_t>(m)]
+            .v.load(std::memory_order_relaxed);
     }
 
     // ── Poller-facing friend hooks ───────────────────────────────────────
@@ -783,6 +801,7 @@ public:
             [this](const uint8_t* rx_chunk, uint16_t len) {
                 if (reasm_overflowed_) return;
                 if (!this->reasm_.append(rx_chunk, len)) {
+                    inc_<::eph::net::StreamMetric::kReasmOverflows>();
                     SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
                         "DpdkTcpStream::process_burst_: reasm buffer overflow "
                         "cap={} need={} readable={} — forcing reset",
@@ -790,7 +809,9 @@ public:
                         reasm_.readable());
                     reasm_overflowed_ = true;
                     sess_.reset();
+                    return;
                 }
+                inc_<::eph::net::StreamMetric::kBytesRecv>(len);
             });
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -871,6 +892,14 @@ private:
                         feed_ptr = plaintext_chunk;      // zero-copy fast path
                         feed_len = plaintext_len;
                     } else {
+                        // Slow path: a WS frame's payload spans this TLS
+                        // record + the previous one's tail. Force a memcpy
+                        // into pending so the codec sees a contiguous view.
+                        // Counted so operators can spot config drift in the
+                        // upstream's TLS write strategy (e.g. record cap
+                        // shrunk, app frames suddenly larger). Typical
+                        // production traffic should keep this near zero.
+                        inc_<::eph::net::StreamMetric::kTlsCrossRecordFrames>();
                         tls_codec_pending_.insert(
                             tls_codec_pending_.end(),
                             plaintext_chunk, plaintext_chunk + plaintext_len);
@@ -908,6 +937,7 @@ private:
                             }
                         }
                         if (!dr) {
+                            inc_<::eph::net::StreamMetric::kCodecErrors>();
                             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                                 "DpdkTcpStream::drain_codec_(TLS): decode err={}",
                                 dr.error().detail);
@@ -934,6 +964,7 @@ private:
                         if (frame.size() > 0 && on_message) {
                             on_message(std::span<const uint8_t>(
                                 frame.data(), frame.size()));
+                            inc_<::eph::net::StreamMetric::kFramesDecoded>();
                             ++delivered;
                         }
                     }
@@ -1008,6 +1039,7 @@ private:
                     }
                 }
                 if (!dr) {
+                    inc_<::eph::net::StreamMetric::kCodecErrors>();
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::drain_codec_: decode err={}",
                         dr.error().detail);
@@ -1036,6 +1068,7 @@ private:
                 if (frame.size() > 0 && on_message) {
                     on_message(std::span<const uint8_t>(frame.data(),
                                                         frame.size()));
+                    inc_<::eph::net::StreamMetric::kFramesDecoded>();
                     ++delivered;
                 }
             }
@@ -1069,6 +1102,20 @@ private:
     ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
+
+    // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
+
+    struct alignas(64) Counter { std::atomic<std::uint64_t> v{0}; };
+
+    std::array<Counter,
+               static_cast<std::size_t>(::eph::net::StreamMetric::kCount)>
+        counters_{};
+
+    template <::eph::net::StreamMetric M>
+    void inc_(std::uint64_t n = 1) noexcept {
+        counters_[static_cast<std::size_t>(M)]
+            .v.fetch_add(n, std::memory_order_relaxed);
+    }
 };
 
 } // namespace eph::net::dpdk

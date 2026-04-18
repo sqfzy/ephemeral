@@ -24,6 +24,7 @@
 /// the payload, and invokes the codec decode loop.
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -49,6 +50,7 @@
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/net/stream_metrics.hpp"
 
 namespace eph::net::dpdk {
 
@@ -179,6 +181,7 @@ public:
                 core::Error::BufferFull,
                 "DpdkUdpSocket::send_to: UdpSender::send failed"});
         }
+        inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
         return app_payload.size();
     }
 
@@ -340,6 +343,7 @@ public:
             // callback scope.
             detail::MbufView view(const_cast<uint8_t*>(parsed.payload),
                                    parsed.payload_len, rx_tsc);
+            inc_<::eph::net::StreamMetric::kBytesRecv>(parsed.payload_len);
 
             uint8_t            scratch[detail::kDatagramAutoResponseBytes];
             core::OutputBuffer out_sink(scratch, sizeof(scratch));
@@ -349,6 +353,7 @@ public:
                     on_datagram(std::span<const uint8_t>(
                                     frame.data(), frame.size()),
                                 src_addr);
+                    inc_<::eph::net::StreamMetric::kFramesDecoded>();
                 }
             };
             auto dr = codec_.decode(view, out_sink, sink);
@@ -382,6 +387,7 @@ public:
             }
 
             if (!dr) {
+                inc_<::eph::net::StreamMetric::kCodecErrors>();
                 SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
                     "DpdkUdpSocket::process_burst_: codec decode err={}",
                     dr.error().detail);
@@ -432,6 +438,29 @@ private:
     /// peers are filtered by the Poller's tuple dispatch.
     SocketAddr                             connected_peer_{};
     bool                                   connected_{false};
+
+    // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
+    //
+    // UDP backend N/A entries: kReasmOverflows, kCodecErrors (TLS-only
+    // metric N/A here), kTlsCrossRecordFrames — all stay at 0.
+
+    struct alignas(64) Counter { std::atomic<std::uint64_t> v{0}; };
+
+    std::array<Counter,
+               static_cast<std::size_t>(::eph::net::StreamMetric::kCount)>
+        counters_{};
+
+    template <::eph::net::StreamMetric M>
+    void inc_(std::uint64_t n = 1) noexcept {
+        counters_[static_cast<std::size_t>(M)]
+            .v.fetch_add(n, std::memory_order_relaxed);
+    }
+
+public:
+    [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
+        return counters_[static_cast<std::size_t>(m)]
+            .v.load(std::memory_order_relaxed);
+    }
 };
 
 } // namespace eph::net::dpdk
