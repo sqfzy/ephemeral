@@ -25,6 +25,7 @@
 #include <format>
 #include <iostream>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -129,10 +130,12 @@ static int run_with_tls(const AppConfig& cfg) {
 
     // 4) Wire the sink BEFORE attach so no frames are dropped.
     std::size_t msgs = 0;
-    stream->on_message = [&](const uint8_t* data, uint16_t len) {
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
         ++msgs;
         if ((msgs & 0xFF) == 1) {
-            std::string_view view(reinterpret_cast<const char*>(data), len);
+            std::string_view view(
+                reinterpret_cast<const char*>(app_frame.data()),
+                app_frame.size());
             spdlog::info("[MKT #{:>6}] {:.80}", msgs, view);
         }
     };

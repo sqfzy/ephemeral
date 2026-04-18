@@ -37,6 +37,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <span>
 #include <thread>
 
 #include <spdlog/spdlog.h>
@@ -84,9 +85,8 @@ int main() {
         }
 
         auto stream = std::move(*sr);
-        stream->on_message = [](const uint8_t*, uint16_t len) {
-            SPDLOG_DEBUG("rx {} bytes", len);
-            (void)len;
+        stream->on_message = [](std::span<const uint8_t> app_frame) {
+            SPDLOG_DEBUG("rx {} bytes", app_frame.size());
         };
         if (auto r = poller->add(stream.get()); !r) {
             spdlog::error("poller add failed: {}", r.error().detail);

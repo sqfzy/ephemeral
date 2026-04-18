@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <thread>
 
 #include <arpa/inet.h>
@@ -139,8 +140,8 @@ static void BM_V3_RoundTrip(benchmark::State& state) {
     auto stream = std::move(*stream_r);
 
     std::atomic<std::size_t> rx{0};
-    stream->on_message = [&](const uint8_t*, uint16_t n) {
-        rx.fetch_add(n, std::memory_order_release);
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        rx.fetch_add(app_frame.size(), std::memory_order_release);
     };
     if (auto r = poller->add(stream.get()); !r) {
         state.SkipWithError("attach failed");

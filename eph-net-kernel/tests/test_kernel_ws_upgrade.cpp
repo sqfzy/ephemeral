@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -297,8 +298,8 @@ TEST(KernelWsUpgrade, PostHandshakeEchoRoundTrips) {
     auto poller = ek::KernelPoller::create().value();
 
     std::vector<uint8_t> captured;
-    stream->on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.insert(captured.end(), p, p + n);
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.insert(captured.end(), app_frame.begin(), app_frame.end());
     };
     ASSERT_TRUE(poller->add(stream.get()).has_value());
 
@@ -593,7 +594,7 @@ TEST(KernelWsAutoResponse, ServerPingTriggersAutoPongOnNextPoll) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
-    stream->on_message = [](const uint8_t*, uint16_t) {};
+    stream->on_message = [](std::span<const uint8_t>) {};
 
     auto poller = ek::KernelPoller::create().value();
     ASSERT_TRUE(poller->add(stream.get()).has_value());
@@ -628,7 +629,7 @@ TEST(KernelWsAutoResponse, MultiplePingsInOnePollAllAckd) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
-    stream->on_message = [](const uint8_t*, uint16_t) {};
+    stream->on_message = [](std::span<const uint8_t>) {};
 
     auto poller = ek::KernelPoller::create().value();
     ASSERT_TRUE(poller->add(stream.get()).has_value());
@@ -663,7 +664,7 @@ TEST(KernelWsAutoResponse, ServerCloseFrameFlushesCloseAckBeforeStateClosed) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
-    stream->on_message = [](const uint8_t*, uint16_t) {};
+    stream->on_message = [](std::span<const uint8_t>) {};
 
     auto poller = ek::KernelPoller::create().value();
     ASSERT_TRUE(poller->add(stream.get()).has_value());

@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -79,9 +80,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto stream = std::move(*sr);
-    stream->on_message = [](const uint8_t*, uint16_t len) {
-        spdlog::info("[via-proxy] rx {} bytes", len);
-        (void)len;
+    stream->on_message = [](std::span<const uint8_t> app_frame) {
+        spdlog::info("[via-proxy] rx {} bytes", app_frame.size());
     };
     if (auto r = poller->add(stream.get()); !r) {
         spdlog::error("add failed: {}", r.error().detail);

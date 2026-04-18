@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -54,9 +55,8 @@ static bool run_one_session(en::StreamConfig& cfg,
         return false;  // reconnect
     }
     auto stream = std::move(*sr);
-    stream->on_message = [](const uint8_t*, uint16_t len) {
-        SPDLOG_DEBUG("prod: rx {} bytes", len);
-        (void)len;
+    stream->on_message = [](std::span<const uint8_t> app_frame) {
+        SPDLOG_DEBUG("prod: rx {} bytes", app_frame.size());
     };
     if (auto r = poller.add(stream.get()); !r) {
         spdlog::error("poller add failed: {}", r.error().detail);

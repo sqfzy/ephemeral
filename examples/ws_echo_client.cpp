@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 
 #include <spdlog/spdlog.h>
 
@@ -62,10 +63,9 @@ int main(int argc, char** argv) {
     auto stream = std::move(*sr);
 
     std::size_t pong_count = 0;
-    stream->on_message = [&](const uint8_t* data, uint16_t len) {
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
         ++pong_count;
-        spdlog::info("<< echo #{}: {} bytes", pong_count, len);
-        (void)data;
+        spdlog::info("<< echo #{}: {} bytes", pong_count, app_frame.size());
     };
 
     if (auto r = poller->add(stream.get()); !r) {

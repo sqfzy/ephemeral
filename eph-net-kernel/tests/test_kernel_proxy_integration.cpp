@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -419,8 +420,9 @@ TEST(KernelProxyIntegration, PostTunnelEchoRoundTrip) {
     auto poller = std::move(*poller_r);
 
     std::string collected;
-    stream->on_message = [&collected](const uint8_t* data, uint16_t n) {
-        collected.append(reinterpret_cast<const char*>(data), n);
+    stream->on_message = [&collected](std::span<const uint8_t> app_frame) {
+        collected.append(reinterpret_cast<const char*>(app_frame.data()),
+                         app_frame.size());
     };
     ASSERT_TRUE(poller->add(stream.get()).has_value());
 

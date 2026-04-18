@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <span>
 
 #include <spdlog/spdlog.h>
 
@@ -55,9 +56,8 @@ int main(int argc, char** argv) {
     }
     auto stream = std::move(*sr);
 
-    stream->on_message = [](const uint8_t* data, uint16_t len) {
-        spdlog::info("<< {} bytes", len);
-        (void)data;
+    stream->on_message = [](std::span<const uint8_t> app_frame) {
+        spdlog::info("<< {} bytes", app_frame.size());
     };
 
     if (auto r = poller->add(stream.get()); !r) {

@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <span>
 #include <string_view>
 
 #include <spdlog/spdlog.h>
@@ -97,9 +98,8 @@ int main(int argc, char** argv) {
         // the example exercises both code paths.
     } else {
         auto stream = std::move(*order_r);
-        stream->on_message = [](const uint8_t*, uint16_t len) {
-            spdlog::info("[order] exec_report {} bytes", len);
-            (void)len;
+        stream->on_message = [](std::span<const uint8_t> app_frame) {
+            spdlog::info("[order] exec_report {} bytes", app_frame.size());
         };
         if (auto r = poller->add(stream.get()); !r) {
             spdlog::warn("[order] add failed: {}", r.error().detail);
@@ -126,10 +126,10 @@ int main(int argc, char** argv) {
                      "ports, mempool, port_id, tx_queue_id} for a real run.");
     } else {
         auto md = std::move(*md_r);
-        md->on_datagram = [](const uint8_t*, uint16_t len,
+        md->on_datagram = [](std::span<const uint8_t> app_datagram,
                              const eph::net::SocketAddr& src) {
-            spdlog::info("[md] from {} ({} bytes)", src.to_string(), len);
-            (void)len;
+            spdlog::info("[md] from {} ({} bytes)",
+                         src.to_string(), app_datagram.size());
         };
         if (auto r = poller->add(md.get()); !r) {
             spdlog::warn("[md] add failed: {}", r.error().detail);

@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -131,9 +132,8 @@ int main(int argc, char** argv) {
     }
     auto stream = std::move(*sr);
 
-    stream->on_message = [](const uint8_t*, uint16_t len) {
-        spdlog::info("[dpdk] rx {} bytes", len);
-        (void)len;
+    stream->on_message = [](std::span<const uint8_t> app_frame) {
+        spdlog::info("[dpdk] rx {} bytes", app_frame.size());
     };
 
     if (auto r = poller->add(stream.get()); !r) {

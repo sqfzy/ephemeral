@@ -236,12 +236,13 @@ int main(int argc, char** argv) {
     bool got_echo = false;
     std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
     std::size_t ts_filled = 0;
-    sock->on_datagram = [&](const uint8_t* data, uint16_t n,
+    sock->on_datagram = [&](std::span<const uint8_t> app_datagram,
                             const en::SocketAddr& /*src*/) {
         got_echo = true;
         ts_filled = 0;
-        if (n >= bench::kTimestampBlockSize) {
-            std::memcpy(ts_buf.data(), data, bench::kTimestampBlockSize);
+        if (app_datagram.size() >= bench::kTimestampBlockSize) {
+            std::memcpy(ts_buf.data(), app_datagram.data(),
+                        bench::kTimestampBlockSize);
             ts_filled = bench::kTimestampBlockSize;
         }
     };

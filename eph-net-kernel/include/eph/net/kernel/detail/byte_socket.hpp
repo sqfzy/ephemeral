@@ -292,22 +292,25 @@ public:
 
     // ── I/O ───────────────────────────────────────────────────────────────
 
-    /// @brief Send all of `data` via one or more ::send() calls.
+    /// @brief Send all of `wire_bytes` via one or more ::send() calls.
     ///
-    /// Retries on EAGAIN/EWOULDBLOCK via poll() with a short internal
-    /// budget. Returns bytes written on success, or a typed error.
+    /// `wire_bytes` are whatever the caller wants to put on the socket —
+    /// the ByteSocket layer is payload-agnostic (plaintext on a plain
+    /// TCP stream; ciphertext when the Stream layer above is wrapped in
+    /// TLS). Retries on EAGAIN/EWOULDBLOCK via poll() with a short
+    /// internal budget. Returns bytes written on success, or typed error.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send(std::span<const uint8_t> data) noexcept {
+    send(std::span<const uint8_t> wire_bytes) noexcept {
         if (fd_ < 0) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "ByteSocket::send: fd closed"});
         }
-        if (data.empty()) return std::size_t{0};
+        if (wire_bytes.empty()) return std::size_t{0};
 
         std::size_t   sent = 0;
-        const uint8_t* ptr = data.data();
-        std::size_t remain = data.size();
+        const uint8_t* ptr = wire_bytes.data();
+        std::size_t remain = wire_bytes.size();
 
         while (remain > 0) {
             const ssize_t n = ::send(fd_, ptr, remain, MSG_NOSIGNAL);
@@ -369,16 +372,21 @@ public:
         return sent;
     }
 
-    /// @brief Non-blocking recv of up to `cap` bytes into `buf`.
+    /// @brief Non-blocking recv of up to `cap` bytes into `wire_out`.
+    ///
+    /// `wire_out` is the destination buffer the syscall writes into — the
+    /// bytes are raw wire bytes (plaintext on a plain stream; ciphertext
+    /// when the Stream layer above is wrapped in TLS). The caller's
+    /// upper layer decides how to interpret them.
     ///
     /// Return values:
-    ///   - Ok(n), n > 0  : `n` bytes read
+    ///   - Ok(n), n > 0  : `n` bytes read into `wire_out`
     ///   - Ok(0)         : **not** used (ambiguous); instead WouldBlock below
     ///   - Err(WouldBlock): no data available right now
     ///   - Err(Disconnected): peer FIN (recv returned 0) or RST
     ///   - Err(...)       : other I/O error
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    recv(uint8_t* buf, std::size_t cap) noexcept {
+    recv(uint8_t* wire_out, std::size_t cap) noexcept {
         if (fd_ < 0) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
@@ -387,7 +395,7 @@ public:
         if (cap == 0) return std::size_t{0};
 
         for (;;) {
-            const ssize_t n = ::recv(fd_, buf, cap, MSG_DONTWAIT);
+            const ssize_t n = ::recv(fd_, wire_out, cap, MSG_DONTWAIT);
             if (n > 0) {
                 return static_cast<std::size_t>(n);
             }

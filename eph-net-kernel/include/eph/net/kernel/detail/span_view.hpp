@@ -28,14 +28,21 @@
 namespace eph::net::kernel::detail {
 
 /// @brief Contiguous mutable byte window; matches the PacketView contract.
+///
+/// By construction callers hand a `payload` pointer that refers to the
+/// application-layer plaintext the codec should decode — the SpanView does
+/// not distinguish ciphertext from plaintext because TLS decrypt has
+/// already happened one layer up (see KernelTcpStream::drain_codec_ which
+/// always wraps plaintext before passing it in).
 struct SpanView {
-    /// @brief Construct a view over `[base, base + len)`.
-    /// @param base         pointer to the first byte (may be nullptr iff len == 0)
+    /// @brief Construct a view over `[payload, payload + len)`.
+    /// @param payload      pointer to the first application-layer byte
+    ///                     (may be nullptr iff len == 0)
     /// @param len          length of the window
     /// @param arrival_tsc  optional arrival timestamp (TSC ticks); 0 if unknown
-    constexpr SpanView(uint8_t* base, std::size_t len,
+    constexpr SpanView(uint8_t* payload, std::size_t len,
                        uint64_t arrival_tsc = 0) noexcept
-        : base_(base), head_(0), tail_(len), tsc_(arrival_tsc) {}
+        : base_(payload), head_(0), tail_(len), tsc_(arrival_tsc) {}
 
     [[nodiscard]] uint8_t*       writable_data() noexcept { return base_ + head_; }
     [[nodiscard]] const uint8_t* data() const noexcept    { return base_ + head_; }

@@ -14,6 +14,8 @@
 /// may not route multicast on loopback. The API-surface tests confirm the
 /// setsockopt path compiles and runs cleanly.
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
@@ -101,8 +103,10 @@ TEST(KernelUdpSocket, RoundTripThroughPeerSocketViaPoller) {
     auto sock = RawUdp::create(cfg).value();
 
     std::vector<uint8_t> captured;
-    sock->on_datagram = [&](const uint8_t* p, uint16_t n, const en::SocketAddr&) {
-        captured.insert(captured.end(), p, p + n);
+    sock->on_datagram = [&](std::span<const uint8_t> app_datagram,
+                             const en::SocketAddr&) {
+        captured.insert(captured.end(),
+                        app_datagram.begin(), app_datagram.end());
     };
 
     auto poller = ek::KernelPoller::create().value();

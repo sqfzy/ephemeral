@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -276,8 +277,10 @@ int main(int argc, char** argv) {
 
     if (mode == Mode::kNaive) {
         // ── Naive mode: full parse every frame ─────────────────────────
-        stream->on_message = [&](const uint8_t* d, uint16_t n) {
+        stream->on_message = [&](std::span<const uint8_t> app_frame) {
             ++total_frames;
+            const auto* d = app_frame.data();
+            const auto  n = app_frame.size();
 
             // Full JSON parse + BookTicker extraction (the expensive part).
             auto json_r = ej::parse(d, n);
@@ -320,8 +323,10 @@ int main(int argc, char** argv) {
         };
     } else {
         // ── Two-phase mode: lightweight Phase 1 in on_message ──────────
-        stream->on_message = [&](const uint8_t* d, uint16_t n) {
+        stream->on_message = [&](std::span<const uint8_t> app_frame) {
             ++total_frames;
+            const auto* d = app_frame.data();
+            const auto  n = app_frame.size();
 
             // Phase 1: extract symbol hash + T field, copy data to the
             // per-symbol slot. No timestamp is taken here — the single

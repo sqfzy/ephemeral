@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -73,9 +74,9 @@ TEST(KernelUdpV3, SendAndReceive) {
 
     std::vector<uint8_t> rx;
     en::SocketAddr       rx_src{};
-    sock->on_datagram = [&](const uint8_t* p, uint16_t n,
+    sock->on_datagram = [&](std::span<const uint8_t> app_datagram,
                             const en::SocketAddr& src) {
-        rx.insert(rx.end(), p, p + n);
+        rx.insert(rx.end(), app_datagram.begin(), app_datagram.end());
         rx_src = src;
     };
 

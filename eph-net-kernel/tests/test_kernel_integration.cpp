@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -97,8 +98,8 @@ TEST(KernelIntegration, FullEchoCycleViaPoller) {
     auto stream = PlainStream::create(cfg).value();
 
     std::vector<uint8_t> captured;
-    stream->on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.insert(captured.end(), p, p + n);
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.insert(captured.end(), app_frame.begin(), app_frame.end());
     };
 
     ASSERT_TRUE(poller->add(stream.get()).has_value());
@@ -183,8 +184,8 @@ TEST(KernelIntegration, TcpAndUdpOnSinglePoller) {
     scfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, tcp_port};
     auto tcp_stream = PlainStream::create(scfg).value();
     std::vector<uint8_t> tcp_captured;
-    tcp_stream->on_message = [&](const uint8_t* p, uint16_t n) {
-        tcp_captured.insert(tcp_captured.end(), p, p + n);
+    tcp_stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        tcp_captured.insert(tcp_captured.end(), app_frame.begin(), app_frame.end());
     };
     ASSERT_TRUE(poller->add(tcp_stream.get()).has_value());
 
@@ -193,9 +194,10 @@ TEST(KernelIntegration, TcpAndUdpOnSinglePoller) {
     ucfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
     auto udp_sock = PlainUdp::create(ucfg).value();
     std::vector<uint8_t> udp_captured;
-    udp_sock->on_datagram = [&](const uint8_t* p, uint16_t n,
+    udp_sock->on_datagram = [&](std::span<const uint8_t> app_datagram,
                                  const en::SocketAddr&) {
-        udp_captured.insert(udp_captured.end(), p, p + n);
+        udp_captured.insert(udp_captured.end(),
+                            app_datagram.begin(), app_datagram.end());
     };
     ASSERT_TRUE(poller->add(udp_sock.get()).has_value());
     EXPECT_EQ(poller->size(), 2u);

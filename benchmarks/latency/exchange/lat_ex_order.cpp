@@ -241,9 +241,10 @@ int main(int argc, char** argv) {
     uint64_t malformed_count = 0;     // missing "id" or timestamp fields
     uint64_t t_measure_start = 0;     // first post-warmup completion time
 
-    stream->on_message = [&](const uint8_t* d, uint16_t n) {
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
         const uint64_t t_recv = bench::monotonic_raw_ns();
-        const std::size_t nsz = static_cast<std::size_t>(n);
+        const auto* d   = app_frame.data();
+        const std::size_t nsz = app_frame.size();
 
         auto id_opt = bench::scan_json_uint_field(d, nsz, "id");
         if (!id_opt) {

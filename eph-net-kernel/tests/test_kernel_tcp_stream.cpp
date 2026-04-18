@@ -10,6 +10,8 @@
 ///   - close_gracefully transitions state to FinWait1
 ///   - destructor auto-detaches the stream from a Poller
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
@@ -172,8 +174,8 @@ TEST(KernelTcpStream, PollDeliversEchoedPayload) {
     auto s = PlainRawStream::create(cfg).value();
 
     std::vector<uint8_t> captured;
-    s->on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.insert(captured.end(), p, p + n);
+    s->on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.insert(captured.end(), app_frame.begin(), app_frame.end());
     };
 
     auto poller = ek::KernelPoller::create().value();

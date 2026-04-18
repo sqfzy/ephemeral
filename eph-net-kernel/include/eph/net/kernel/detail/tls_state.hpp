@@ -104,17 +104,24 @@ public:
     close() noexcept { return {}; }
     void reset() noexcept {}
 
-    // Data transfer — forward to the byte socket.
+    // Data transfer — forward to the byte socket. `handshake_bytes` holds
+    // TLS protocol bytes (ClientHello / Finished / …) that aws-lc's BIO is
+    // pushing to the wire; from this adapter's perspective they're just
+    // bytes to ship.
     [[nodiscard]] std::expected<std::size_t, std::string>
-    send(const void* data, std::size_t len) noexcept {
-        std::span<const uint8_t> view(static_cast<const uint8_t*>(data), len);
+    send(const void* handshake_bytes, std::size_t len) noexcept {
+        std::span<const uint8_t> view(
+            static_cast<const uint8_t*>(handshake_bytes), len);
         auto r = sock_->send(view);
         if (!r) return std::unexpected(std::string{r.error().detail});
         return *r;
     }
 
     /// Poll RX once: read up to 16K from the socket and invoke `cb` for the
-    /// data we got. The TlsSession's BIO uses this to feed handshake bytes.
+    /// handshake bytes we got. The TlsSession's BIO uses this callback to
+    /// feed ClientHello/ServerHello/... into the handshake state machine.
+    /// At this adapter layer the bytes are raw TLS handshake bytes (not
+    /// yet encrypted app data); aws-lc's BIO pipeline peels them.
     ///
     /// Return type matches the legacy `TcpTransport::poll_rx` contract:
     /// `std::expected<uint16_t, std::string>` where the value is the byte
@@ -122,8 +129,8 @@ public:
     template <class Cb>
     [[nodiscard]] std::expected<std::uint16_t, std::string>
     poll_rx(Cb&& cb) noexcept {
-        uint8_t buf[16 * 1024];
-        auto r = sock_->recv(buf, sizeof(buf));
+        uint8_t handshake_scratch[16 * 1024];
+        auto r = sock_->recv(handshake_scratch, sizeof(handshake_scratch));
         if (!r) {
             const auto& err = r.error();
             // WouldBlock is not an error from poll_rx's perspective — return 0.
@@ -135,7 +142,7 @@ public:
         if (*r > 0) {
             const std::uint16_t n = static_cast<std::uint16_t>(
                 *r > 0xFFFFu ? 0xFFFFu : *r);
-            cb(buf, n);
+            cb(handshake_scratch, n);
             last_rx_tsc_ = 0;  // not tracked at this layer
             return n;
         }
@@ -261,15 +268,16 @@ public:
     [[nodiscard]] bool is_established() const noexcept { return established_; }
 
     /// @brief Decrypt as many complete TLS records as available in
-    ///        `[in_ptr, in_ptr + in_len)`, append plaintext to `out`,
-    ///        return the number of input bytes consumed.
+    ///        `[ciphertext_in, ciphertext_in + in_len)`, append plaintext
+    ///        to `plaintext_out`, return the number of ciphertext bytes
+    ///        consumed.
     ///
     /// Records that are partially-buffered (header parses but payload not
     /// yet fully present) are not consumed — the caller leaves them for
     /// the next call.
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
-    process_records(const uint8_t* in_ptr, std::size_t in_len,
-                     std::vector<uint8_t>& out) noexcept {
+    process_records(const uint8_t* ciphertext_in, std::size_t in_len,
+                     std::vector<uint8_t>& plaintext_out) noexcept {
         if (!established_ || !crypto_) {
             SPDLOG_LOGGER_ERROR(tls_state_logger(),
                 "TlsState::process_records: called before established "
@@ -281,7 +289,7 @@ public:
 
         std::size_t consumed = 0;
         while (in_len - consumed >= ::eph::net::tls_record::kRecordHeaderLen) {
-            const uint8_t* rec = in_ptr + consumed;
+            const uint8_t* rec = ciphertext_in + consumed;
             uint8_t  ct;
             uint16_t payload_len;
             if (!::eph::net::tls_record::parse_record_header(rec, ct, payload_len)) {
@@ -301,14 +309,14 @@ public:
             if (in_len - consumed < total) break;  // partial record
 
             // Worst-case plaintext is `payload_len` bytes (no auth tag, no inner CT).
-            const std::size_t out_off = out.size();
-            out.resize(out_off + payload_len);
+            const std::size_t out_off = plaintext_out.size();
+            plaintext_out.resize(out_off + payload_len);
             uint16_t plaintext_len = 0;
             uint8_t  inner_ct = 0;
             if (!crypto_->decrypt(rec, static_cast<uint16_t>(total),
-                                   out.data() + out_off, plaintext_len,
+                                   plaintext_out.data() + out_off, plaintext_len,
                                    &inner_ct)) {
-                out.resize(out_off);  // unwind on failure
+                plaintext_out.resize(out_off);  // unwind on failure
                 SPDLOG_LOGGER_ERROR(tls_state_logger(),
                     "TlsState::process_records: TLS decrypt failed "
                     "offset={} record_total={} payload_len={} ct=0x{:02x}",
@@ -322,19 +330,22 @@ public:
             // control messages (NewSessionTicket=0x16, alerts=0x15) are
             // silently consumed to keep the sequence counter in sync.
             if (inner_ct == 0x17) {
-                out.resize(out_off + plaintext_len);
+                plaintext_out.resize(out_off + plaintext_len);
             } else {
-                out.resize(out_off);  // discard non-appdata plaintext
+                plaintext_out.resize(out_off);  // discard non-appdata plaintext
             }
             consumed += total;
         }
         return consumed;
     }
 
-    /// @brief Encrypt `data` into one or more TLS records appended to `out`.
+    /// @brief Encrypt `plaintext` into one or more TLS records appended to
+    ///        `ciphertext_out`. `plaintext` is application-layer bytes
+    ///        (post-codec); `ciphertext_out` receives the AEAD-sealed
+    ///        TLS records ready for the socket.
     [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
-    encrypt_for_send(const uint8_t* data, std::size_t len,
-                      std::vector<uint8_t>& out) noexcept {
+    encrypt_for_send(const uint8_t* plaintext, std::size_t len,
+                      std::vector<uint8_t>& ciphertext_out) noexcept {
         if (!established_ || !crypto_) {
             SPDLOG_LOGGER_ERROR(tls_state_logger(),
                 "TlsState::encrypt_for_send: called before established "
@@ -348,12 +359,12 @@ public:
             const uint16_t chunk = static_cast<uint16_t>(std::min<std::size_t>(
                 ::eph::net::tls_const::kMaxRecordPayload, len - off));
             const uint16_t enc_size = ::eph::net::TlsRecordCrypto::encrypted_size(chunk);
-            const std::size_t out_off = out.size();
-            out.resize(out_off + enc_size);
-            const uint16_t written = crypto_->encrypt(data + off, chunk,
-                                                       out.data() + out_off);
+            const std::size_t out_off = ciphertext_out.size();
+            ciphertext_out.resize(out_off + enc_size);
+            const uint16_t written = crypto_->encrypt(plaintext + off, chunk,
+                                                       ciphertext_out.data() + out_off);
             if (written == 0) {
-                out.resize(out_off);
+                ciphertext_out.resize(out_off);
                 SPDLOG_LOGGER_ERROR(tls_state_logger(),
                     "TlsState::encrypt_for_send: TLS encrypt failed "
                     "off={} chunk={} total_len={}",
@@ -362,7 +373,7 @@ public:
                     ::eph::core::Error::TlsCipherFailed,
                     "TlsState::encrypt_for_send: TLS encrypt failed"});
             }
-            out.resize(out_off + written);
+            ciphertext_out.resize(out_off + written);
             off += chunk;
         }
         return {};

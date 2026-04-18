@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -256,10 +257,11 @@ int main(int argc, char** argv) {
     uint64_t clock_skew     = 0;
     uint64_t t_measure_start = 0;  // stamped at the first post-warmup sample
 
-    stream->on_message = [&](const uint8_t* d, uint16_t n) {
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
         const uint64_t t_recv = bench::monotonic_raw_ns();
 
-        auto t_server_opt = bench::scan_json_uint_field(d, n, "T");
+        auto t_server_opt = bench::scan_json_uint_field(
+            app_frame.data(), app_frame.size(), "T");
         if (!t_server_opt) {
             ++malformed;
             return;

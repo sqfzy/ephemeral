@@ -197,9 +197,12 @@ public:
         }
         // Pull one burst; accept multiple recv loops if the burst was empty.
         for (int iter = 0; iter < 16; ++iter) {
+            // `plaintext_chunk` here: PlainDpdkWsSink path — no TLS, so the
+            // TCP payload IS already the plaintext handshake bytes.
             auto r = sess_->poll_rx(
-                [this](const uint8_t* p, uint16_t len) {
-                    staged_.insert(staged_.end(), p, p + len);
+                [this](const uint8_t* plaintext_chunk, uint16_t len) {
+                    staged_.insert(staged_.end(),
+                                   plaintext_chunk, plaintext_chunk + len);
                 });
             if (!r) {
                 return std::unexpected(::eph::core::ErrorInfo{
@@ -277,9 +280,13 @@ public:
         }
 
         for (int iter = 0; iter < 16; ++iter) {
+            // `ciphertext_chunk`: TLS path — TCP payload is an encrypted
+            // TLS record, not yet decrypted. Accumulated in `cipher_` until
+            // a full record can be decrypted in place below.
             auto r = sess_->poll_rx(
-                [this](const uint8_t* p, uint16_t len) {
-                    cipher_.insert(cipher_.end(), p, p + len);
+                [this](const uint8_t* ciphertext_chunk, uint16_t len) {
+                    cipher_.insert(cipher_.end(),
+                                   ciphertext_chunk, ciphertext_chunk + len);
                 });
             if (!r) {
                 return std::unexpected(::eph::core::ErrorInfo{
@@ -291,10 +298,12 @@ public:
             // In-place decrypt over a mutable copy: we need a contiguous
             // buffer we can write through. plain_ accumulates the emitted
             // plaintext slices copied out of the in-place buffer.
+            // `plaintext_chunk`: post-AEAD, ready for codec/handshake consumer.
             auto cr = tls_->process_records_in_place(
                 cipher_.data(), cipher_.size(),
-                [this](uint8_t* p, std::size_t len) {
-                    plain_.insert(plain_.end(), p, p + len);
+                [this](uint8_t* plaintext_chunk, std::size_t len) {
+                    plain_.insert(plain_.end(),
+                                  plaintext_chunk, plaintext_chunk + len);
                 });
             if (!cr) return std::unexpected(cr.error());
             if (*cr > 0) {
@@ -351,7 +360,11 @@ public:
 
     using CodecType  = C;
     using PacketView = detail::MbufView;
-    using OnMessage  = std::function<void(const uint8_t*, uint16_t)>;
+    /// @brief Frame sink: invoked once per decoded application frame.
+    ///        The span carries application-layer plaintext — already
+    ///        post-codec and, if EnableTls=true, post-AEAD-decrypt in the
+    ///        mbuf payload.
+    using OnMessage  = std::function<void(std::span<const uint8_t>)>;
 
     // ── Factory ──────────────────────────────────────────────────────────
 
@@ -555,8 +568,12 @@ public:
 
     // ── Stream concept API ───────────────────────────────────────────────
 
+    /// @brief Send `app_payload` bytes to the peer. `app_payload` holds
+    ///        plaintext application-layer bytes (post-codec); when
+    ///        EnableTls=true it is encrypted into TLS records
+    ///        transparently before handing to the DPDK byte pipe.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send(std::span<const uint8_t> data) noexcept {
+    send(std::span<const uint8_t> app_payload) noexcept {
         if (attached_to_ == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -572,7 +589,8 @@ public:
         // kernel-side path (KernelTcpStream::send).
         if constexpr (EnableTls) {
             tls_send_buf_.clear();
-            auto enc = tls_.encrypt_for_send(data.data(), data.size(),
+            auto enc = tls_.encrypt_for_send(app_payload.data(),
+                                              app_payload.size(),
                                               tls_send_buf_);
             if (!enc) {
                 return std::unexpected(enc.error());
@@ -602,7 +620,7 @@ public:
                 off += *sr;
             }
             // API contract: report plaintext byte count.
-            return data.size();
+            return app_payload.size();
         } else {
             // Plaintext path. `TcpSession::send` rejects payloads
             // larger than MSS (eph-net-dpdk/include/eph/dpdk/tcp.hpp:646),
@@ -611,21 +629,21 @@ public:
             //
             // Loop until every byte is accepted so the public Stream
             // contract is contractually all-or-nothing: on success the
-            // returned count equals `data.size()`. Any session-layer
+            // returned count equals `app_payload.size()`. Any session-layer
             // error while draining the loop surfaces as Disconnected,
             // exactly as the pre-fix code path did on a single-shot
             // failure.
             const std::size_t mss = sess_.mss();
             std::size_t off = 0;
-            while (off < data.size()) {
+            while (off < app_payload.size()) {
                 const std::size_t chunk =
-                    std::min(mss, data.size() - off);
-                auto sr = sess_.send(data.data() + off, chunk);
+                    std::min(mss, app_payload.size() - off);
+                auto sr = sess_.send(app_payload.data() + off, chunk);
                 if (!sr) {
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send: TcpSession::send err={} "
                         "(off={}/{}, chunk={}, mss={})",
-                        sr.error(), off, data.size(), chunk, mss);
+                        sr.error(), off, app_payload.size(), chunk, mss);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::Disconnected,
                         "DpdkTcpStream::send: TcpSession::send failed"});
@@ -634,14 +652,14 @@ public:
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send: TcpSession::send returned 0 "
                         "bytes (off={}/{}, chunk={})",
-                        off, data.size(), chunk);
+                        off, app_payload.size(), chunk);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::BufferFull,
                         "DpdkTcpStream::send: TcpSession::send returned 0"});
                 }
                 off += *sr;
             }
-            return data.size();
+            return app_payload.size();
         }
     }
 
@@ -682,9 +700,13 @@ public:
     std::size_t poll_once_() noexcept {
         if (!sess_.is_established()) return 0;
         if (reasm_overflowed_) return 0;
-        auto r = sess_.poll_rx([this](const uint8_t* data, uint16_t len) {
+        // `rx_chunk`: TCP payload bytes emerging from the session-layer
+        // reassembly. Semantically plaintext when EnableTls=false; when
+        // EnableTls=true these are TLS ciphertext records that the
+        // drain_codec_ path below will decrypt in place.
+        auto r = sess_.poll_rx([this](const uint8_t* rx_chunk, uint16_t len) {
             if (reasm_overflowed_) return;
-            if (!this->reasm_.append(data, len)) {
+            if (!this->reasm_.append(rx_chunk, len)) {
                 // Silent drop is a reliability bug in HFT — flip the
                 // byte pipe into Closed via RST so the reconnect policy
                 // takes over on the next scheduler tick.
@@ -755,10 +777,12 @@ public:
         // `reasm_overflowed_` so any subsequent callback from the same
         // burst skips touching the (full) buffer, and reset the session
         // so the reconnect loop can take over.
+        // `rx_chunk`: same semantic as poll_once_'s lambda — TCP payload
+        // bytes, plaintext if EnableTls=false, ciphertext otherwise.
         auto r = sess_.process_rx(mbufs, n,
-            [this](const uint8_t* data, uint16_t len) {
+            [this](const uint8_t* rx_chunk, uint16_t len) {
                 if (reasm_overflowed_) return;
-                if (!this->reasm_.append(data, len)) {
+                if (!this->reasm_.append(rx_chunk, len)) {
                     SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
                         "DpdkTcpStream::process_burst_: reasm buffer overflow "
                         "cap={} need={} readable={} — forcing reset",
@@ -833,7 +857,9 @@ private:
             auto dec_r = tls_.process_records_in_place(
                 const_cast<uint8_t*>(reasm_.read_ptr()),
                 reasm_.readable(),
-                [&](uint8_t* chunk, std::size_t chunk_len) {
+                // `plaintext_chunk`: one TLS record's payload after AEAD
+                // decrypt-in-place. Ready to feed the application codec.
+                [&](uint8_t* plaintext_chunk, std::size_t plaintext_len) {
                     // Stop feeding further records once the codec has
                     // signalled an unrecoverable error — any subsequent
                     // record would just re-trigger the same failure.
@@ -842,11 +868,12 @@ private:
                     uint8_t*    feed_ptr;
                     std::size_t feed_len;
                     if (tls_codec_pending_.empty()) {
-                        feed_ptr = chunk;                // zero-copy fast path
-                        feed_len = chunk_len;
+                        feed_ptr = plaintext_chunk;      // zero-copy fast path
+                        feed_len = plaintext_len;
                     } else {
-                        tls_codec_pending_.insert(tls_codec_pending_.end(),
-                                                   chunk, chunk + chunk_len);
+                        tls_codec_pending_.insert(
+                            tls_codec_pending_.end(),
+                            plaintext_chunk, plaintext_chunk + plaintext_len);
                         feed_ptr = tls_codec_pending_.data();
                         feed_len = tls_codec_pending_.size();
                     }
@@ -905,15 +932,8 @@ private:
                         }
                         const auto& frame = **dr;
                         if (frame.size() > 0 && on_message) {
-                            if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
-                                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                                    "DpdkTcpStream::drain_codec_(TLS): frame size "
-                                    "{} > 0xFFFF; on_message length is clamped "
-                                    "to 0xFFFF (warn-once per stream)",
-                                    frame.size());
-                                trunc_warned_ = true;
-                            }
-                            on_message(frame.data(), saturate_u16(frame.size()));
+                            on_message(std::span<const uint8_t>(
+                                frame.data(), frame.size()));
                             ++delivered;
                         }
                     }
@@ -1014,15 +1034,8 @@ private:
                 }
                 const auto& frame = **dr;
                 if (frame.size() > 0 && on_message) {
-                    if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
-                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                            "DpdkTcpStream::drain_codec_: frame size {} > "
-                            "0xFFFF; on_message length is clamped to 0xFFFF "
-                            "(warn-once per stream)",
-                            frame.size());
-                        trunc_warned_ = true;
-                    }
-                    on_message(frame.data(), saturate_u16(frame.size()));
+                    on_message(std::span<const uint8_t>(frame.data(),
+                                                        frame.size()));
                     ++delivered;
                 }
             }
@@ -1056,9 +1069,6 @@ private:
     ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
-    /// Warn-once latch for `saturate_u16` clamping during on_message dispatch.
-    /// See batch3-round1 MEDIUM-1.
-    bool                                    trunc_warned_{false};
 };
 
 } // namespace eph::net::dpdk

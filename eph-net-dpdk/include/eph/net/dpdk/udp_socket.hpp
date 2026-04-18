@@ -87,7 +87,10 @@ public:
 
     using CodecType   = C;
     using PacketView  = detail::MbufView;
-    using OnDatagram  = std::function<void(const uint8_t*, uint16_t,
+    /// @brief Datagram sink: invoked once per decoded datagram. The span
+    ///        carries application-layer bytes post-codec; `peer` is the
+    ///        source address the datagram arrived from.
+    using OnDatagram  = std::function<void(std::span<const uint8_t>,
                                             const SocketAddr&)>;
 
     // ── Factory ──────────────────────────────────────────────────────────
@@ -148,7 +151,7 @@ public:
     // ── Datagram concept API ─────────────────────────────────────────────
 
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send_to(std::span<const uint8_t> data, const SocketAddr& dst) noexcept {
+    send_to(std::span<const uint8_t> app_payload, const SocketAddr& dst) noexcept {
         if (attached_to_ == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -165,18 +168,18 @@ public:
         }
         // UDP maximum payload is 65535 bytes (uint16_t). Reject oversized
         // payloads explicitly rather than silently truncating via cast.
-        if (data.size() > 0xFFFFu) {
+        if (app_payload.size() > 0xFFFFu) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::send_to: payload exceeds max UDP size (65535)"});
         }
-        if (!sender_.send(data.data(),
-                           static_cast<uint16_t>(data.size()))) {
+        if (!sender_.send(app_payload.data(),
+                           static_cast<uint16_t>(app_payload.size()))) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
                 "DpdkUdpSocket::send_to: UdpSender::send failed"});
         }
-        return data.size();
+        return app_payload.size();
     }
 
     /// @brief Subscribe to a multicast group at the NIC MAC-filter layer.
@@ -343,15 +346,9 @@ public:
 
             auto sink = [&](auto&& frame) {
                 if (frame.size() > 0 && on_datagram) {
-                    if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
-                        SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
-                            "DpdkUdpSocket::process_burst_: datagram frame "
-                            "size {} > 0xFFFF; on_datagram length clamped to "
-                            "0xFFFF (warn-once per socket)",
-                            frame.size());
-                        trunc_warned_ = true;
-                    }
-                    on_datagram(frame.data(), saturate_u16(frame.size()), src_addr);
+                    on_datagram(std::span<const uint8_t>(
+                                    frame.data(), frame.size()),
+                                src_addr);
                 }
             };
             auto dr = codec_.decode(view, out_sink, sink);
@@ -435,9 +432,6 @@ private:
     /// peers are filtered by the Poller's tuple dispatch.
     SocketAddr                             connected_peer_{};
     bool                                   connected_{false};
-    /// Warn-once latch for `saturate_u16` clamping during on_datagram dispatch.
-    /// See batch3-round1 MEDIUM-1.
-    bool                                   trunc_warned_{false};
 };
 
 } // namespace eph::net::dpdk

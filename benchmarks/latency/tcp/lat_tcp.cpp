@@ -236,14 +236,15 @@ int main(int argc, char** argv) {
     std::size_t rx_bytes = 0;
     std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
     std::size_t ts_filled = 0;
-    stream->on_message = [&](const uint8_t* data, uint16_t n) {
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
         if (ts_filled < ts_buf.size()) {
             const std::size_t want = ts_buf.size() - ts_filled;
-            const std::size_t copy = (n < want) ? n : want;
-            std::memcpy(ts_buf.data() + ts_filled, data, copy);
+            const std::size_t copy = (app_frame.size() < want)
+                                       ? app_frame.size() : want;
+            std::memcpy(ts_buf.data() + ts_filled, app_frame.data(), copy);
             ts_filled += copy;
         }
-        rx_bytes += n;
+        rx_bytes += app_frame.size();
     };
 
     if (auto r = poller->add(stream.get()); !r) {

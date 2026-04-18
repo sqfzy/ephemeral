@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -93,8 +94,8 @@ TEST(TransportE2EV3, HappyPath) {
     auto stream = std::move(*sr);
 
     std::vector<uint8_t> captured;
-    stream->on_message = [&](const uint8_t* p, uint16_t n) {
-        captured.insert(captured.end(), p, p + n);
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.insert(captured.end(), app_frame.begin(), app_frame.end());
     };
 
     ASSERT_TRUE(poller->add(stream.get()).has_value());
@@ -172,7 +173,9 @@ TEST(TransportE2EV3, MultipleEchoes) {
     auto stream = PlainStream::create(cfg).value();
 
     std::size_t bytes_in = 0;
-    stream->on_message = [&](const uint8_t*, uint16_t n) { bytes_in += n; };
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
+        bytes_in += app_frame.size();
+    };
 
     ASSERT_TRUE(poller->add(stream.get()).has_value());
 

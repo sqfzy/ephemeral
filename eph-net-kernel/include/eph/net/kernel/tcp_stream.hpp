@@ -113,14 +113,18 @@ inline constexpr std::size_t kCodecAutoResponseBytes = 1024;
 struct PlainWsSink {
     ByteSocket* sock;
 
+    /// @brief Write a plaintext handshake segment directly to the wire.
+    ///        Plain path: no encryption, the bytes ARE the wire bytes.
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
-    send(std::span<const uint8_t> data) noexcept {
-        return sock->send(data);
+    send(std::span<const uint8_t> plaintext_request) noexcept {
+        return sock->send(plaintext_request);
     }
 
+    /// @brief Read plaintext handshake bytes from the wire. `plaintext_out`
+    ///        is filled from the socket directly — plain path has no TLS.
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
-    recv(uint8_t* buf, std::size_t cap) noexcept {
-        return sock->recv(buf, cap);
+    recv(uint8_t* plaintext_out, std::size_t cap) noexcept {
+        return sock->recv(plaintext_out, cap);
     }
 };
 
@@ -128,32 +132,40 @@ struct TlsWsSink {
     ByteSocket*    sock;
     TlsState*      tls;
 
-    // Scratch for outbound TLS records (reused across multiple send() calls).
-    std::vector<uint8_t> tx_scratch{};
+    /// @brief Outbound ciphertext staging — holds TLS records produced by
+    ///        `encrypt_for_send()` before they are flushed to the socket.
+    ///        Reused across multiple send() calls.
+    std::vector<uint8_t> tx_ciphertext{};
 
-    // Inbound plaintext staging: accumulates decrypted bytes so that
-    // `recv()` can return them incrementally while the underlying socket
-    // may deliver multiple TLS records per recv(2) call.
-    std::vector<uint8_t> rx_plain{};
-    std::size_t          rx_plain_off{0};
+    /// @brief Inbound plaintext staging: accumulates decrypted bytes so
+    ///        that `recv()` can return them incrementally while the
+    ///        underlying socket may deliver multiple TLS records per
+    ///        recv(2) call.
+    std::vector<uint8_t> rx_plaintext{};
+    std::size_t          rx_plaintext_off{0};
 
-    // Ciphertext accumulator: a TLS record may arrive in fragments across
-    // multiple recv(2) calls, so we must hold partial records between calls.
-    std::vector<uint8_t> rx_cipher{};
+    /// @brief Inbound ciphertext accumulator — a TLS record may arrive in
+    ///        fragments across multiple recv(2) calls, so partial records
+    ///        are held here until the next recv fills them.
+    std::vector<uint8_t> rx_ciphertext{};
 
+    /// @brief Encrypt `plaintext_request` into TLS records and push to the
+    ///        wire. Returns the plaintext byte count so the handshake
+    ///        driver's accounting stays plaintext-relative (mirrors
+    ///        KernelTcpStream::send's contract).
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
-    send(std::span<const uint8_t> data) noexcept {
-        tx_scratch.clear();
-        auto enc = tls->encrypt_for_send(data.data(), data.size(), tx_scratch);
+    send(std::span<const uint8_t> plaintext_request) noexcept {
+        tx_ciphertext.clear();
+        auto enc = tls->encrypt_for_send(plaintext_request.data(),
+                                          plaintext_request.size(),
+                                          tx_ciphertext);
         if (!enc) return std::unexpected(enc.error());
-        // Drain the encrypted payload to the wire. The wrapper returns
-        // "plaintext byte count" so the caller's byte accounting stays
-        // plaintext-relative (mirrors KernelTcpStream::send's contract).
+        // Drain the encrypted payload to the wire.
         std::size_t off = 0;
-        while (off < tx_scratch.size()) {
+        while (off < tx_ciphertext.size()) {
             auto sr = sock->send(
-                std::span<const uint8_t>(tx_scratch.data() + off,
-                                          tx_scratch.size() - off));
+                std::span<const uint8_t>(tx_ciphertext.data() + off,
+                                          tx_ciphertext.size() - off));
             if (!sr) {
                 if (sr.error().code == ::eph::core::Error::WouldBlock) continue;
                 return std::unexpected(sr.error());
@@ -165,20 +177,24 @@ struct TlsWsSink {
             }
             off += *sr;
         }
-        return data.size();
+        return plaintext_request.size();
     }
 
+    /// @brief Read plaintext handshake bytes. The path is:
+    ///        socket recv → `rx_ciphertext` accumulator → TLS AEAD decrypt
+    ///        → `rx_plaintext` staging → `plaintext_out`. Partial records
+    ///        remain in `rx_ciphertext` between calls.
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
-    recv(uint8_t* buf, std::size_t cap) noexcept {
+    recv(uint8_t* plaintext_out, std::size_t cap) noexcept {
         // Fast path: any staged plaintext from a previous call?
-        if (rx_plain_off < rx_plain.size()) {
-            const std::size_t avail = rx_plain.size() - rx_plain_off;
+        if (rx_plaintext_off < rx_plaintext.size()) {
+            const std::size_t avail = rx_plaintext.size() - rx_plaintext_off;
             const std::size_t n     = std::min(cap, avail);
-            std::memcpy(buf, rx_plain.data() + rx_plain_off, n);
-            rx_plain_off += n;
-            if (rx_plain_off == rx_plain.size()) {
-                rx_plain.clear();
-                rx_plain_off = 0;
+            std::memcpy(plaintext_out, rx_plaintext.data() + rx_plaintext_off, n);
+            rx_plaintext_off += n;
+            if (rx_plaintext_off == rx_plaintext.size()) {
+                rx_plaintext.clear();
+                rx_plaintext_off = 0;
             }
             return n;
         }
@@ -194,11 +210,9 @@ struct TlsWsSink {
         // (any error, including WouldBlock) short-circuited the loop — it
         // was dead code that only confused readers. Keep the semantics
         // but collapse the structure.
-        uint8_t tmp[kTlsWsSinkRxScratchBytes];
-        auto rr = sock->recv(tmp, sizeof(tmp));
+        uint8_t ciphertext_scratch[kTlsWsSinkRxScratchBytes];
+        auto rr = sock->recv(ciphertext_scratch, sizeof(ciphertext_scratch));
         if (!rr) {
-            // Propagate WouldBlock (the handshake driver retries against
-            // its own timeout) and real errors verbatim.
             return std::unexpected(rr.error());
         }
         if (*rr == 0) {
@@ -209,25 +223,28 @@ struct TlsWsSink {
                 ::eph::core::Error::WouldBlock,
                 "TlsWsSink::recv: ByteSocket::recv returned 0"});
         }
-        rx_cipher.insert(rx_cipher.end(), tmp, tmp + *rr);
+        rx_ciphertext.insert(rx_ciphertext.end(),
+                              ciphertext_scratch,
+                              ciphertext_scratch + *rr);
 
         // Decrypt complete records.
-        auto cr = tls->process_records(rx_cipher.data(), rx_cipher.size(),
-                                        rx_plain);
+        auto cr = tls->process_records(rx_ciphertext.data(),
+                                        rx_ciphertext.size(),
+                                        rx_plaintext);
         if (!cr) return std::unexpected(cr.error());
         // Drop consumed ciphertext; partial record (if any) stays.
         if (*cr > 0) {
-            rx_cipher.erase(rx_cipher.begin(),
-                             rx_cipher.begin() + *cr);
+            rx_ciphertext.erase(rx_ciphertext.begin(),
+                                 rx_ciphertext.begin() + *cr);
         }
 
-        if (!rx_plain.empty()) {
-            const std::size_t n = std::min(cap, rx_plain.size());
-            std::memcpy(buf, rx_plain.data(), n);
-            rx_plain_off = n;
-            if (rx_plain_off == rx_plain.size()) {
-                rx_plain.clear();
-                rx_plain_off = 0;
+        if (!rx_plaintext.empty()) {
+            const std::size_t n = std::min(cap, rx_plaintext.size());
+            std::memcpy(plaintext_out, rx_plaintext.data(), n);
+            rx_plaintext_off = n;
+            if (rx_plaintext_off == rx_plaintext.size()) {
+                rx_plaintext.clear();
+                rx_plaintext_off = 0;
             }
             return n;
         }
@@ -262,7 +279,10 @@ public:
 
     using CodecType  = C;
     using PacketView = detail::SpanView;
-    using OnMessage  = std::function<void(const uint8_t*, uint16_t)>;
+    /// @brief Frame sink: invoked once per decoded application frame.
+    ///        The span carries application-layer plaintext — already
+    ///        post-codec and, if EnableTls=true, post-AEAD-decrypt.
+    using OnMessage  = std::function<void(std::span<const uint8_t>)>;
 
     // ── Factory ──────────────────────────────────────────────────────────
 
@@ -419,21 +439,21 @@ public:
                         "KernelTcpStream::create: proxy over-read before WS "
                         "is not supported"});
                 } else {
-                    // Pure plaintext TCP post-CONNECT: seed into reasm.
-                    if (stream->reasm_.writable_capacity() <
+                    // Pure plaintext TCP post-CONNECT: seed into rx_bytes_.
+                    if (stream->rx_bytes_.writable_capacity() <
                         connect_leftover.size()) {
                         return std::unexpected(core::ErrorInfo{
                             core::Error::BufferFull,
                             "KernelTcpStream::create: proxy leftover exceeds "
                             "reasm capacity"});
                     }
-                    std::memcpy(stream->reasm_.writable_ptr(),
+                    std::memcpy(stream->rx_bytes_.writable_ptr(),
                                 connect_leftover.data(),
                                 connect_leftover.size());
-                    stream->reasm_.commit_write(connect_leftover.size());
+                    stream->rx_bytes_.commit_write(connect_leftover.size());
                     SPDLOG_LOGGER_DEBUG(log,
                         "KernelTcpStream::create: seeded {}B post-CONNECT "
-                        "bytes into reasm buffer",
+                        "bytes into rx_bytes_ buffer",
                         connect_leftover.size());
                 }
             }
@@ -511,24 +531,24 @@ public:
                 return std::unexpected(hs_result.error());
             }
 
-            // Seed any post-handshake over-read into the reasm buffer so
-            // the codec sees it on the first poll_once_() call.
+            // Seed any post-handshake over-read into rx_bytes_ so the
+            // codec sees it on the first poll_once_() call.
             if (!leftover.empty()) {
-                if (stream->reasm_.writable_capacity() < leftover.size()) {
+                if (stream->rx_bytes_.writable_capacity() < leftover.size()) {
                     SPDLOG_LOGGER_WARN(log,
-                        "KernelTcpStream::create: reasm cannot hold {}B "
+                        "KernelTcpStream::create: rx_bytes_ cannot hold {}B "
                         "of post-handshake over-read",
                         leftover.size());
                     return std::unexpected(core::ErrorInfo{
                         core::Error::BufferFull,
                         "KernelTcpStream::create: ws leftover exceeds reasm capacity"});
                 }
-                std::memcpy(stream->reasm_.writable_ptr(),
+                std::memcpy(stream->rx_bytes_.writable_ptr(),
                             leftover.data(), leftover.size());
-                stream->reasm_.commit_write(leftover.size());
+                stream->rx_bytes_.commit_write(leftover.size());
                 SPDLOG_LOGGER_DEBUG(log,
                     "KernelTcpStream::create: seeded {}B of post-handshake "
-                    "bytes into reasm buffer", leftover.size());
+                    "bytes into rx_bytes_ buffer", leftover.size());
             }
 
             SPDLOG_LOGGER_INFO(log,
@@ -570,10 +590,13 @@ public:
 
     // ── Stream concept API ───────────────────────────────────────────────
 
-    /// @brief Send `data` bytes to the peer. Fails with `NotAttached` if
-    ///        the stream has not been added to a Poller yet.
+    /// @brief Send `app_payload` bytes to the peer. `app_payload` holds
+    ///        application-layer plaintext (post-codec, pre-TLS-encrypt);
+    ///        when EnableTls=true it is encrypted into TLS records
+    ///        transparently here. Fails with `NotAttached` if the stream
+    ///        has not been added to a Poller yet.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
-    send(std::span<const uint8_t> data) noexcept {
+    send(std::span<const uint8_t> app_payload) noexcept {
         if (attached_to_ == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -584,23 +607,23 @@ public:
                 core::Error::Disconnected,
                 "KernelTcpStream::send: state != Established"});
         }
-        // When TLS is enabled, encrypt the bytes into one or more
-        // TLS records before forwarding to the socket. The plaintext API
-        // is still bytes-in / bytes-out — the caller has already encoded
-        // their frames via `WsCodec::encode` etc.
+        // When TLS is enabled, encrypt the plaintext application bytes
+        // into one or more TLS records before forwarding to the socket.
+        // The plaintext API is still bytes-in / bytes-out — the caller
+        // has already encoded their frames via `WsCodec::encode` etc.
         if constexpr (EnableTls) {
-            tls_send_buf_.clear();
-            auto enc = tls_.encrypt_for_send(data.data(), data.size(),
-                                              tls_send_buf_);
+            tx_ciphertext_.clear();
+            auto enc = tls_.encrypt_for_send(app_payload.data(), app_payload.size(),
+                                              tx_ciphertext_);
             if (!enc) {
                 return std::unexpected(enc.error());
             }
-            auto sr = sock_.send(tls_send_buf_);
+            auto sr = sock_.send(tx_ciphertext_);
             if (!sr) return std::unexpected(sr.error());
             // Return plaintext byte count (the API contract is plaintext-len).
-            return data.size();
+            return app_payload.size();
         } else {
-            return sock_.send(data);
+            return sock_.send(app_payload);
         }
     }
 
@@ -703,15 +726,16 @@ public:
 
         // Drain any pre-seeded / carry-over bytes BEFORE recv. This handles
         // the post-WS-handshake / post-HTTP-CONNECT case where `create()`
-        // committed over-read bytes into `reasm_` but the kernel socket
+        // committed over-read bytes into `rx_bytes_` but the kernel socket
         // buffer was already drained by the handshake `recv()`. With EPOLLIN
         // level-triggered, epoll_wait() will not fire until the peer sends
-        // more bytes, so those seeded bytes would stall in `reasm_` until
+        // more bytes, so those seeded bytes would stall in `rx_bytes_` until
         // some unrelated network packet arrives. Also covers the TLS path
-        // where `tls_plain_buf_` may hold leftover plaintext from a prior
+        // where `rx_plaintext_` may hold leftover plaintext from a prior
         // poll. A drain on an empty buffer is a cheap no-op.
         std::size_t preserved = 0;
-        if (reasm_.readable() > 0 || (EnableTls && tls_plain_head_ < tls_plain_buf_.size())) {
+        if (rx_bytes_.readable() > 0 ||
+            (EnableTls && rx_plaintext_head_ < rx_plaintext_.size())) {
             preserved = drain_codec_();
             if (state_ != TcpState::Established) {
                 return preserved;
@@ -720,9 +744,9 @@ public:
 
         // Compact front-headroom before the next recv so the tail keeps
         // growing. No-op if head_ == 0.
-        reasm_.compact();
+        rx_bytes_.compact();
 
-        if (reasm_.writable_capacity() == 0) {
+        if (rx_bytes_.writable_capacity() == 0) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                 "KernelTcpStream::poll_once_: reasm buffer full; "
                 "dropping connection");
@@ -730,7 +754,7 @@ public:
             return preserved;
         }
 
-        auto rr = sock_.recv(reasm_.writable_ptr(), reasm_.writable_capacity());
+        auto rr = sock_.recv(rx_bytes_.writable_ptr(), rx_bytes_.writable_capacity());
         if (!rr) {
             const auto& err = rr.error();
             if (err.code == core::Error::WouldBlock) {
@@ -750,7 +774,7 @@ public:
             state_ = TcpState::Closed;
             return preserved;
         }
-        reasm_.commit_write(*rr);
+        rx_bytes_.commit_write(*rr);
 
         return preserved + drain_codec_();
     }
@@ -783,34 +807,35 @@ private:
 
     explicit KernelTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg)),
-          reasm_(cfg_.reasm_capacity) {}
+          rx_bytes_(cfg_.reasm_capacity) {}
 
     // ── Codec drain loop ─────────────────────────────────────────────────
 
     /// @brief Feed buffered bytes through the codec until it returns
     ///        `Ok(None)`, firing `on_message` per decoded frame.
     ///
-    /// When TLS is enabled the reasm buffer holds ciphertext (raw TLS
-    /// records). We decrypt complete records into `tls_plain_buf_` and run
-    /// the codec over the plaintext. Partial records stay in the reasm
-    /// buffer for the next poll.
+    /// When TLS is enabled `rx_bytes_` holds ciphertext (raw TLS records).
+    /// We decrypt complete records into `rx_plaintext_` and run the codec
+    /// over the plaintext. Partial records stay in `rx_bytes_` for the
+    /// next poll.
     std::size_t drain_codec_() noexcept {
         std::size_t delivered = 0;
-        // Scratch region backing the per-iteration `out_sink` below. Reused
-        // across iterations via a fresh `OutputBuffer` each time — the
-        // previous iteration's bytes are already flushed to the peer at the
-        // bottom of the loop, so reusing the same storage is safe.
-        uint8_t scratch[detail::kCodecAutoResponseBytes];
+        // Auto-response scratch backing the per-iteration `out_sink` below.
+        // Reused across iterations via a fresh `OutputBuffer` each time —
+        // the previous iteration's bytes are already flushed to the peer
+        // at the bottom of the loop, so reusing the same storage is safe.
+        uint8_t auto_resp_scratch[detail::kCodecAutoResponseBytes];
 
         if constexpr (EnableTls) {
-            // 1) Decrypt as many complete TLS records as possible.
-            //    process_records appends plaintext to the tail of
-            //    tls_plain_buf_; any carry-over from a previous poll lives
-            //    at [tls_plain_head_, tls_plain_buf_.size()) and is
+            // 1) Decrypt as many complete TLS records from `rx_bytes_`
+            //    (ciphertext in this branch) as possible. process_records
+            //    appends plaintext to the tail of `rx_plaintext_`; any
+            //    carry-over from a previous poll lives at
+            //    [rx_plaintext_head_, rx_plaintext_.size()) and is
             //    preserved below.
-            auto cr = tls_.process_records(reasm_.read_ptr(),
-                                            reasm_.readable(),
-                                            tls_plain_buf_);
+            auto cr = tls_.process_records(rx_bytes_.read_ptr(),
+                                            rx_bytes_.readable(),
+                                            rx_plaintext_);
             if (!cr) {
                 SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::drain_codec_: TLS process_records "
@@ -818,25 +843,28 @@ private:
                 state_ = TcpState::Closed;
                 return 0;
             }
-            reasm_.consume(*cr);
+            rx_bytes_.consume(*cr);
 
             // 2) Run the codec over the decrypted plaintext window.
-            //    Walk `tls_plain_head_` forward rather than erasing from
-            //    the front — the earlier std::vector::erase(begin,
-            //    begin+plain_off) shifted the entire remaining tail every
-            //    poll and was the hottest allocation-adjacent op in the
-            //    TLS RX path (batch2-round2 MED-1).
-            while (tls_plain_head_ < tls_plain_buf_.size()) {
+            //    Walk `rx_plaintext_head_` forward rather than erasing
+            //    from the front — the earlier std::vector::erase shifted
+            //    the entire remaining tail every poll and was the hottest
+            //    allocation-adjacent op in the TLS RX path (batch2-round2
+            //    MED-1).
+            while (rx_plaintext_head_ < rx_plaintext_.size()) {
                 const std::size_t before =
-                    tls_plain_buf_.size() - tls_plain_head_;
+                    rx_plaintext_.size() - rx_plaintext_head_;
+                // `view` wraps application-layer plaintext — the codec
+                // only ever sees plaintext regardless of TLS state.
                 detail::SpanView view(
-                    tls_plain_buf_.data() + tls_plain_head_, before);
+                    rx_plaintext_.data() + rx_plaintext_head_, before);
 
                 // Per-iteration sink: bounded to one control-frame worth
                 // of auto-response (pong / close-ack). Flush it before
                 // branching on `dr` so a close-ack written alongside
                 // WsCloseReceived reaches the wire before state_ flips.
-                core::OutputBuffer out_sink(scratch, sizeof(scratch));
+                core::OutputBuffer out_sink(auto_resp_scratch,
+                                            sizeof(auto_resp_scratch));
                 auto dr = codec_.decode(view, out_sink);
                 if (out_sink.size() > 0) {
                     auto sr = this->send(std::span<const uint8_t>(
@@ -857,12 +885,12 @@ private:
                         "KernelTcpStream::drain_codec_: decode error (TLS): {}",
                         dr.error().detail);
                     state_ = TcpState::Closed;
-                    tls_plain_buf_.clear();
-                    tls_plain_head_ = 0;
+                    rx_plaintext_.clear();
+                    rx_plaintext_head_ = 0;
                     return delivered;
                 }
                 const std::size_t consumed = before - view.length();
-                tls_plain_head_ += consumed;
+                rx_plaintext_head_ += consumed;
 
                 if (!dr->has_value()) {
                     // Ok(None) can mean either "codec auto-handled a
@@ -889,15 +917,8 @@ private:
 
                 const auto& frame = **dr;
                 if (frame.size() > 0) {
-                    if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
-                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                            "KernelTcpStream::drain_codec_(TLS): frame size "
-                            "{} > 0xFFFF; on_message length is clamped to "
-                            "0xFFFF (warn-once per stream)",
-                            frame.size());
-                        trunc_warned_ = true;
-                    }
-                    on_message(frame.data(), saturate_u16(frame.size()));
+                    on_message(std::span<const uint8_t>(frame.data(),
+                                                        frame.size()));
                     ++delivered;
                 }
             }
@@ -913,31 +934,32 @@ private:
             //   - Partially consumed AND dead-head is small: leave in
             //     place — the next poll will extend the tail with new
             //     plaintext and the codec will likely drain it.
-            if (tls_plain_head_ == tls_plain_buf_.size()) {
-                tls_plain_buf_.clear();
-                tls_plain_head_ = 0;
-            } else if (tls_plain_head_ > 0 &&
-                       tls_plain_head_ >=
-                           tls_plain_buf_.size() - tls_plain_head_) {
+            if (rx_plaintext_head_ == rx_plaintext_.size()) {
+                rx_plaintext_.clear();
+                rx_plaintext_head_ = 0;
+            } else if (rx_plaintext_head_ > 0 &&
+                       rx_plaintext_head_ >=
+                           rx_plaintext_.size() - rx_plaintext_head_) {
                 const std::size_t live =
-                    tls_plain_buf_.size() - tls_plain_head_;
-                std::memmove(tls_plain_buf_.data(),
-                             tls_plain_buf_.data() + tls_plain_head_, live);
-                tls_plain_buf_.resize(live);
-                tls_plain_head_ = 0;
+                    rx_plaintext_.size() - rx_plaintext_head_;
+                std::memmove(rx_plaintext_.data(),
+                             rx_plaintext_.data() + rx_plaintext_head_, live);
+                rx_plaintext_.resize(live);
+                rx_plaintext_head_ = 0;
             }
             return delivered;
         }
 
-        // Plaintext path.
-        while (reasm_.readable() > 0) {
-            const std::size_t before = reasm_.readable();
-            detail::SpanView view(reasm_.read_ptr(), before);
+        // Plaintext path — `rx_bytes_` holds the plaintext directly.
+        while (rx_bytes_.readable() > 0) {
+            const std::size_t before = rx_bytes_.readable();
+            detail::SpanView view(rx_bytes_.read_ptr(), before);
 
             // Per-iteration sink; flushed before any branch on `dr`
             // so close-acks written on WsCloseReceived reach the wire
             // before state_ flips.
-            core::OutputBuffer out_sink(scratch, sizeof(scratch));
+            core::OutputBuffer out_sink(auto_resp_scratch,
+                                        sizeof(auto_resp_scratch));
             auto dr = codec_.decode(view, out_sink);
             if (out_sink.size() > 0) {
                 auto sr = this->send(std::span<const uint8_t>(
@@ -961,7 +983,7 @@ private:
                 break;
             }
             const std::size_t consumed = before - view.length();
-            reasm_.consume(consumed);
+            rx_bytes_.consume(consumed);
 
             if (!dr->has_value()) {
                 // See TLS branch for the rationale: Ok(None) + consumed>0
@@ -981,15 +1003,8 @@ private:
             }
             const auto& frame = **dr;
             if (frame.size() > 0) {
-                if (saturate_u16_clamps(frame.size()) && !trunc_warned_) {
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                        "KernelTcpStream::drain_codec_: frame size {} > "
-                        "0xFFFF; on_message length is clamped to 0xFFFF "
-                        "(warn-once per stream)",
-                        frame.size());
-                    trunc_warned_ = true;
-                }
-                on_message(frame.data(), saturate_u16(frame.size()));
+                on_message(std::span<const uint8_t>(frame.data(),
+                                                    frame.size()));
                 ++delivered;
             }
         }
@@ -1004,26 +1019,36 @@ private:
     [[no_unique_address]] std::conditional_t<EnableTls,
                                               detail::TlsState,
                                               std::monostate> tls_{};
-    detail::ReassemblyBuffer    reasm_;
-    // TLS plaintext staging buffer (only used when EnableTls=true). Lives
-    // here so its capacity can amortize across many polls. The empty-base
-    // size penalty for the plaintext path is one std::vector<uint8_t> —
-    // 24 bytes.
-    //
-    // Compacted via a head-index (`tls_plain_head_`) rather than
-    // `erase(begin, begin + n)` so that post-decode cleanup is O(1)
-    // instead of O(remaining-bytes) — see batch2-round2 MED-1. When the
-    // head reaches the size the vector and index are both reset to zero
-    // so capacity is reused across polls.
-    std::vector<uint8_t>        tls_plain_buf_{};
-    std::size_t                 tls_plain_head_{0};
-    /// TLS encrypt staging — sized per-call so we don't realloc.
-    std::vector<uint8_t>        tls_send_buf_{};
+    /// @brief Raw RX staging fed by `sock_.recv()`. Its semantic flips with
+    ///        `EnableTls`:
+    ///          - EnableTls=false: holds plaintext application bytes (the
+    ///            codec reads directly from here).
+    ///          - EnableTls=true:  holds TLS ciphertext records pending
+    ///            AEAD decrypt. After decrypt, plaintext lands in
+    ///            `rx_plaintext_` below.
+    ///        Renamed from `reasm_` to `rx_bytes_` for semantic neutrality.
+    detail::ReassemblyBuffer    rx_bytes_;
+    /// @brief TLS plaintext staging buffer (only used when EnableTls=true).
+    ///        Lives here so its capacity can amortize across many polls.
+    ///        The empty-base size penalty for the plaintext path is one
+    ///        std::vector<uint8_t> — 24 bytes.
+    ///
+    ///        Compacted via a head-index (`rx_plaintext_head_`) rather
+    ///        than `erase(begin, begin + n)` so that post-decode cleanup
+    ///        is O(1) instead of O(remaining-bytes) — see batch2-round2
+    ///        MED-1. When the head reaches the size the vector and index
+    ///        are both reset to zero so capacity is reused across polls.
+    ///        Renamed from `tls_plain_buf_` for consistency with
+    ///        `rx_ciphertext`-style vocabulary.
+    std::vector<uint8_t>        rx_plaintext_{};
+    std::size_t                 rx_plaintext_head_{0};
+    /// @brief TLS encrypt staging — holds AEAD-encrypted TLS records
+    ///        produced by `encrypt_for_send()`, flushed to the socket in
+    ///        `send()`. Sized per-call so we don't realloc. Renamed from
+    ///        `tls_send_buf_`.
+    std::vector<uint8_t>        tx_ciphertext_{};
     KernelPoller*               attached_to_{nullptr};
     TcpState                    state_{TcpState::Closed};
-    /// Warn-once latch for `saturate_u16` clamping during on_message dispatch.
-    /// See batch3-round1 MEDIUM-1: silent truncation of frames >64 KiB.
-    bool                        trunc_warned_{false};
     /// Warn-once latch for the no-on_message drain path (MEDIUM-2). Set on
     /// the first poll that finds `on_message` unset so operators see the
     /// misconfiguration surface once per stream instead of never.

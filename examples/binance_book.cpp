@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -97,10 +98,11 @@ int main(int argc, char** argv) {
     // the payload and feed it into BinanceBookAdapter::apply(), which the
     // user can wire in once their target symbol is reachable.
     std::size_t frames = 0;
-    stream->on_message = [&](const uint8_t* /*data*/, uint16_t len) {
+    stream->on_message = [&](std::span<const uint8_t> app_frame) {
         ++frames;
         if ((frames & 0x0F) == 1) {
-            spdlog::info("[book] frame #{} ({} bytes)", frames, len);
+            spdlog::info("[book] frame #{} ({} bytes)",
+                         frames, app_frame.size());
         }
     };
 

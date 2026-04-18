@@ -27,6 +27,8 @@
 ///   ---------------------------------------------
 ///                                     ≥60 cases total
 
+#include <span>
+
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
@@ -365,8 +367,8 @@ struct SendRecvHarness {
         auto cfg = cfg_for(*server);
         cfg.reasm_capacity = reasm;
         stream = PlainRawStream::create(cfg).value();
-        stream->on_message = [this](const uint8_t* p, uint16_t n) {
-            received.insert(received.end(), p, p + n);
+        stream->on_message = [this](std::span<const uint8_t> app_frame) {
+            received.insert(received.end(), app_frame.begin(), app_frame.end());
         };
         (void)poller->add(stream.get());
     }
@@ -475,7 +477,7 @@ TEST(KernelTcpStreamBehavioral, Recv_OnMessageNotInvokedWithoutPoll) {
 TEST(KernelTcpStreamBehavioral, Recv_OnMessageFiresExactlyOncePerChunk) {
     SendRecvHarness h;
     std::atomic<int> cb_count{0};
-    h.stream->on_message = [&](const uint8_t*, uint16_t) { ++cb_count; };
+    h.stream->on_message = [&](std::span<const uint8_t>) { ++cb_count; };
     const uint8_t p[] = {'x'};
     ASSERT_TRUE(h.stream->send(p).has_value());
     // Give the echo time to return then poll once.
