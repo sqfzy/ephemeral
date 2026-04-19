@@ -60,6 +60,25 @@ link whichever is needed. The DPDK build weight (vfio-pci, hugepages, whole-arch
 PMD linking) is confined entirely to `eph-net-dpdk`; kernel-only users and CI hosts
 are immune.
 
+### Observability
+
+Both backends share a two-layer pull-model metrics path (details in
+`docs/observability-guide.md`):
+
+- **Layer 1 (hot path)**: each stream owns an `alignas(64) std::atomic<uint64_t>`
+  array indexed by `eph::net::StreamMetric`. The hot path increments via a private
+  template `inc_<M>()` that compiles to a single `lock add` on x86 — no virtual
+  dispatch, no branch, no sink reference.
+- **Layer 2 (reader)**: `eph::net::publish_metrics(stream, sink, tags)` iterates
+  every counter and pushes it into any `eph::core::MetricsSink` (`NullSink`,
+  `eph::utils::ConsoleSink`, or user-defined `PrometheusSink` / `OtelSink` / …).
+  Applications choose the publish cadence (typical: 100 ms - 1 s).
+
+Six built-in counters: `kBytesSent` / `kBytesRecv` / `kFramesDecoded` /
+`kReasmOverflows` (TCP only) / `kCodecErrors` / `kTlsCrossRecordFrames` (DPDK
+TLS only). Adding a new counter is one enum entry + one name-table entry + N
+hot-path `inc_<M>()` calls; no template signature changes anywhere.
+
 ---
 
 ## Module Map

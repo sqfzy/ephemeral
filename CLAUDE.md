@@ -32,10 +32,26 @@ The scope decisions for the current feature set are archived in
   on both backends.
 - `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
 - `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
+- `eph::core::MetricsSink` concept + `NullSink` / `eph::utils::ConsoleSink` — the
+  generic push sink for observability. Any user type with `push_counter` /
+  `push_gauge` / `push_histogram` / `flush` satisfies it (duck-typed).
+- `eph::net::StreamMetric` enum + `eph::net::publish_metrics<Stream, Sink>` — the
+  two-layer observability for the 4 stream backends. Hot path: each stream owns an
+  `alignas(64) std::atomic<uint64_t>` array, incremented via a private template
+  `inc_<M>()` that compiles to a single `lock add` on x86 (verified by objdump).
+  Reader: `metric(StreamMetric m)` direct read, or `publish_metrics(*stream, sink,
+  tags)` to forward every counter into any `MetricsSink`. See
+  `docs/observability-guide.md` and `examples/observability_demo.cpp`.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
 and recovery guidance if a future need surfaces.
+
+Observability scope deferred for now: histogram integration (delay distributions
+would reuse the existing `eph::utils::Recorder` / HdrHistogram), gauge-type metrics
+(e.g. `reasm_readable_bytes`), tracing context, and OpenTelemetry SDK adapters.
+See `.artifacts/discuss-20260418-181343-metrics-sink-architecture.md` for the
+full architectural discussion.
 
 ## Build
 
