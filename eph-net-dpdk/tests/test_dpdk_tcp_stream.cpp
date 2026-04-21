@@ -132,3 +132,65 @@ TEST(DpdkTcpStream, DefaultReasmCapacityIs256K) {
     edpk::StreamConfig cfg{};
     EXPECT_EQ(cfg.reasm_capacity, 256u * 1024u);
 }
+
+// Boundary cases on the legacy tuple / MSS validator — every failing
+// path in `TcpConfig::validate()` should surface as InvalidConfig out
+// of `DpdkTcpStream::create`. Without these, a regression that lets
+// a zero port through would only surface as a runtime connect failure
+// instead of a clear config error.
+namespace {
+edpk::StreamConfig valid_cfg_with_pool_sentinel() {
+    edpk::StreamConfig cfg{};
+    cfg.legacy.tuple.src_ip   = 0x0A000001;
+    cfg.legacy.tuple.dst_ip   = 0x0A000002;
+    cfg.legacy.tuple.src_port = 12345;
+    cfg.legacy.tuple.dst_port = 443;
+    cfg.legacy.mss            = 1460;
+    cfg.legacy.recv_window    = 65535;
+    cfg.legacy.port_id        = 0;
+    cfg.legacy.tx_queue_id    = 0;
+    cfg.legacy.rx_queue_id    = 0;
+    cfg.pool = reinterpret_cast<::rte_mempool*>(0xDEAD);  // fails later; fine
+    return cfg;
+}
+} // namespace
+
+TEST(DpdkTcpStream, ZeroSrcPortFailsInvalidConfig) {
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.legacy.tuple.src_port = 0;
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(DpdkTcpStream, ZeroDstPortFailsInvalidConfig) {
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.legacy.tuple.dst_port = 0;
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(DpdkTcpStream, ZeroMssFailsInvalidConfig) {
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.legacy.mss = 0;
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(DpdkTcpStream, MssExceedingJumboFailsInvalidConfig) {
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.legacy.mss = 9001;  // one past the 9000-byte jumbo cap
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(DpdkTcpStream, ZeroRecvWindowFailsInvalidConfig) {
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.legacy.recv_window = 0;
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
