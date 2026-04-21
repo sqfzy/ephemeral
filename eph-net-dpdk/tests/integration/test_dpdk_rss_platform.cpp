@@ -151,6 +151,24 @@ public:
             int rc = ::eph::dpdk::test_e2e::run_mock_dispatcher(server_ip);
             ::_exit(rc);
         }
+
+        // RAII guard: if anything between here and ready_=true throws or
+        // returns early, reap the mock child instead of leaving a zombie
+        // / a stale listener bound on the mock IP.  ChildReaper resets
+        // mock_pid_ to -1 once parent ownership transfers to ready_=true.
+        struct ChildReaper {
+            pid_t& pid;
+            ~ChildReaper() {
+                if (pid > 0) {
+                    ::kill(pid, SIGTERM);
+                    int wstatus = 0;
+                    ::waitpid(pid, &wstatus, 0);
+                    pid = -1;
+                }
+            }
+        };
+        ChildReaper reaper{mock_pid_};
+
         // Parent: wait for the mock to bind/listen (7 mocks need a moment).
         std::this_thread::sleep_for(1s);
 
@@ -186,15 +204,13 @@ public:
             server_ip, client_ip, gw_ip, pcfg);
         if (!env_r) {
             reason_ = "DpdkBenchEnv::create_full failed: " + env_r.error();
-            // Reap the mock so it doesn't hang as a zombie.
-            ::kill(mock_pid_, SIGTERM);
-            int wstatus = 0;
-            ::waitpid(mock_pid_, &wstatus, 0);
-            mock_pid_ = -1;
+            // ChildReaper will reap on scope exit.
             return;
         }
         env_ = std::make_unique<::eph::dpdk::test::DpdkBenchEnv>(
             std::move(*env_r));
+        // Transfer mock ownership to TearDown — ChildReaper must NOT reap.
+        reaper.pid = -1;
         ready_ = true;
         spdlog::info("RssPlatformEnv: ready (PCI={}, mock pid={}, "
                      "nb_rx_queues={}, dispatch_mode={})",
@@ -262,7 +278,11 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     spdlog::info("dispatch_mode = {}",
                  ::eph::net::dpdk::rx_dispatch_mode_name(mode));
     const uint16_t n = platform.nb_rx_queues();
-    EXPECT_EQ(n, 4u);  // multi-queue env (see SetUp rationale)
+    // Platform clamps to NIC max_rx_queues; use range check rather than
+    // EXPECT_EQ(n, 4) so the test stays portable to NICs with fewer
+    // queues than requested.
+    EXPECT_GT(n, 1u);
+    EXPECT_LE(n, 4u);
 
     // Register fake DpdkPoller<void>* into queues 1..n-1 only — queue 0
     // is reserved for the E2E test below. Pointers are never dereferenced.

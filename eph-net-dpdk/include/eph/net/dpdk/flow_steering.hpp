@@ -571,6 +571,11 @@ query_rss_state(uint16_t port_id) noexcept {
     }
 
     // 2. RETA — query the live indirection table.
+    // RssState's reta[] is value-initialized in the struct definition,
+    // so partial-fill (which DPDK PMDs are NOT supposed to do — the
+    // contract is "fully success or fail entirely" — but if one ever
+    // does) leaves un-touched slots at queue 0, which is a sane
+    // fallback rather than reading uninitialized garbage.
     rte_eth_dev_info dev_info{};
     if (rte_eth_dev_info_get(port_id, &dev_info) != 0) {
         return std::unexpected("rte_eth_dev_info_get failed");
