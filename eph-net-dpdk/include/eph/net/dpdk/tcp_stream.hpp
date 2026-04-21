@@ -920,10 +920,11 @@ public:
     ///        `sess_.poll_rx` which runs one burst against the
     ///        session-local NIC driver loop.
     std::size_t poll_once_() noexcept {
-        // Drive the keepalive tick on every poll cycle regardless of
-        // whether bytes arrived. An idle, established connection has no
-        // packets flowing but still needs its liveness probes to emit.
-        sess_.tick_keepalive(::eph::utils::TSC::now());
+        // Keepalive tick lives on the Poller's per-cycle sweep (see
+        // DpdkPoller::poll), driven through on_poll_tick_. Users who
+        // drive poll_once_ directly (single-stream, Poller-less)
+        // should call `on_poll_tick_(TSC::now())` themselves once per
+        // cycle; see `docs/poller-guide.md`.
         if (!sess_.is_established()) return 0;
         if (reasm_overflowed_) return 0;
         // `rx_chunk`: TCP payload bytes emerging from the session-layer
@@ -1022,6 +1023,15 @@ public:
         *src_port = t.src_port;
         *dst_port = t.dst_port;
         *proto    = eph::dpdk::net::kIpProtoTcp;
+    }
+
+    /// @brief Per-poll-cycle tick — drives the TCP session's keepalive
+    ///        probe emission. Called by DpdkPoller::poll() once per
+    ///        cycle for every registered entry, regardless of whether
+    ///        the burst actually delivered mbufs, so idle connections
+    ///        still get their probes fired.
+    void on_poll_tick_(uint64_t tsc) noexcept {
+        sess_.tick_keepalive(tsc);
     }
 
     /// @brief ICMP Frag Needed callback registered with Platform via

@@ -110,6 +110,7 @@ concept DpdkPollable = requires(P& p, rte_mbuf** mbufs, uint16_t n,
     { p.notify_attached_(poller) } noexcept;
     { p.notify_detached_() } noexcept;
     { p.tuple_for_poller_(ip, ip, port, port, proto) } noexcept;
+    { p.on_poll_tick_(tsc) } noexcept;   // periodic per-cycle work (keepalive, timers)
 };
 
 // ---------------------------------------------------------------------------
@@ -251,6 +252,9 @@ public:
                                     uint8_t* proto) noexcept {
             static_cast<P*>(p)->tuple_for_poller_(src_ip, dst_ip, src_port, dst_port, proto);
         };
+        entry.tick_fn         = +[](void* p, uint64_t tsc) noexcept {
+            static_cast<P*>(p)->on_poll_tick_(tsc);
+        };
         // Reuse the tuple retrieved above — no second call to tuple_for_poller_.
         entry.src_ip    = new_src_ip;
         entry.dst_ip    = new_dst_ip;
@@ -309,26 +313,38 @@ public:
         rte_mbuf* mbufs[kBurstSize];
         const uint16_t n = rte_eth_rx_burst(cfg_.port_id, cfg_.rx_queue_id,
                                              mbufs, kBurstSize);
-        if (n == 0) return 0;
-
-        const uint64_t rx_tsc = eph::utils::TSC::now();
 
         std::size_t dispatched = 0;
-        for (uint16_t i = 0; i < n; ++i) {
-            PollableEntry* entry = lookup_by_5tuple_(mbufs[i]);
-            if (entry != nullptr) {
-                entry->process_burst_fn(entry->obj, &mbufs[i], 1, rx_tsc);
-                ++dispatched;
-            } else {
-                // No routing match. Before falling back to drop, check
-                // whether the mbuf is an ICMP Frag Needed (Type 3
-                // Code 4) message targeting one of the registered
-                // streams — that needs a path-MTU feedback dispatch,
-                // not a silent drop. Unmatched non-ICMP packets in
-                // DPDK PMD mode have no kernel "stack" to fall back
-                // to; freeing the mbuf is the only sane disposal.
-                maybe_dispatch_icmp_(mbufs[i]);
-                rte_pktmbuf_free(mbufs[i]);
+        if (n > 0) {
+            const uint64_t rx_tsc = eph::utils::TSC::now();
+            for (uint16_t i = 0; i < n; ++i) {
+                PollableEntry* entry = lookup_by_5tuple_(mbufs[i]);
+                if (entry != nullptr) {
+                    entry->process_burst_fn(entry->obj, &mbufs[i], 1, rx_tsc);
+                    ++dispatched;
+                } else {
+                    // No routing match. Before falling back to drop,
+                    // check whether the mbuf is an ICMP Frag Needed
+                    // (Type 3 Code 4) message targeting one of the
+                    // registered streams. Non-ICMP unmatched packets
+                    // in DPDK PMD mode have no kernel stack to fall
+                    // back to; freeing the mbuf is the only sane
+                    // disposal.
+                    maybe_dispatch_icmp_(mbufs[i]);
+                    rte_pktmbuf_free(mbufs[i]);
+                }
+            }
+        }
+
+        // Periodic per-cycle tick — runs regardless of whether the burst
+        // delivered any mbufs. Idle connections with `keepalive_interval
+        // > 0` rely on this to fire probes even when RX is silent. The
+        // tick thunks are inlinable function pointers; UDP implements
+        // `on_poll_tick_` as a no-op which GCC14 compiles out entirely.
+        const uint64_t tick_tsc = eph::utils::TSC::now();
+        for (std::size_t i = 0; i < n_entries_; ++i) {
+            if (entries_[i].tick_fn != nullptr) {
+                entries_[i].tick_fn(entries_[i].obj, tick_tsc);
             }
         }
         return dispatched;
@@ -527,6 +543,7 @@ private:
         void   (*process_burst_fn)(void*, rte_mbuf**, uint16_t, uint64_t) noexcept = nullptr;
         void   (*detach_fn)(void*) noexcept = nullptr;
         void   (*tuple_fn)(void*, uint32_t*, uint32_t*, uint16_t*, uint16_t*, uint8_t*) noexcept = nullptr;
+        void   (*tick_fn)(void*, uint64_t) noexcept = nullptr;  ///< per-poll-cycle periodic hook
         uint32_t conn_hash         = 0;
         uint32_t src_ip            = 0;
         uint32_t dst_ip            = 0;

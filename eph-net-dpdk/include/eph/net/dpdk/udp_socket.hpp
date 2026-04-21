@@ -426,6 +426,12 @@ public:
         *proto    = eph::dpdk::net::kIpProtoUdp;
     }
 
+    /// @brief Per-poll-cycle tick. UDP has no session-level periodic
+    ///        work analogous to TCP keepalive, so this is an inline
+    ///        no-op — GCC -O2 compiles it out of the Poller's tick
+    ///        sweep entirely.
+    void on_poll_tick_(uint64_t /*tsc*/) noexcept {}
+
     /// @brief Hot-path burst dispatch from DpdkPoller. Parses each mbuf
     ///        as a UDP packet, wraps the payload in an MbufView, and
     ///        drives the codec. Must stay noexcept and allocation-free.

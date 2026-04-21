@@ -74,6 +74,8 @@ struct SyntheticPollableA {
                          uint64_t /*tsc*/) noexcept {
         ++burst_calls;
     }
+    int tick_calls = 0;
+    void on_poll_tick_(uint64_t /*tsc*/) noexcept { ++tick_calls; }
 };
 
 // A second concrete type with a different tuple — exercises the P2
@@ -104,6 +106,7 @@ struct SyntheticPollableB {
     }
     void process_burst_(rte_mbuf** /*mbufs*/, uint16_t /*n*/,
                          uint64_t /*tsc*/) noexcept {}
+    void on_poll_tick_(uint64_t /*tsc*/) noexcept {}
 };
 
 } // namespace
@@ -468,4 +471,46 @@ TEST(DpdkPoller, FillToCapacity) {
     auto a = p->add<SyntheticPollableA>(&overflow);
     ASSERT_FALSE(a.has_value());
     EXPECT_EQ(a.error().code, eph::core::Error::OutOfMemory);
+}
+
+// ─── on_poll_tick_ per-cycle sweep (Phase 2) ─────────────────────────────
+
+TEST(DpdkPoller, PollCallsOnPollTickOnEachEntryEveryCycle) {
+    // Even when no mbufs arrive — the Poller's rx_burst on the default
+    // PollerConfig always returns 0 in unit-test mode because no real
+    // NIC is bound — tick must still fire. Two cycles => 2 tick_calls
+    // per entry. This is the behaviour that makes TCP keepalive work in
+    // the DpdkPoller-driven (multi-stream) path.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA a;
+    SyntheticPollableA b;
+    b.src_port = 12346;  // distinct tuple
+
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&a).has_value());
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&b).has_value());
+
+    EXPECT_EQ(a.tick_calls, 0);
+    EXPECT_EQ(b.tick_calls, 0);
+
+    // rx_burst returns 0 with no bound NIC, so poll() goes directly
+    // into the tick sweep for each entry.
+    p->poll();
+    EXPECT_EQ(a.tick_calls, 1);
+    EXPECT_EQ(b.tick_calls, 1);
+
+    p->poll();
+    p->poll();
+    EXPECT_EQ(a.tick_calls, 3);
+    EXPECT_EQ(b.tick_calls, 3);
+}
+
+TEST(DpdkPoller, PollEmptyPollerDoesNotTickAnyone) {
+    // No entries registered → poll returns 0 fast-path, no tick loop.
+    // Prevents accidentally invoking a stale function pointer on an
+    // empty entries_[0] slot.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    SyntheticPollableA a;  // NOT added — should never see tick
+    EXPECT_EQ(p->poll(), 0u);
+    EXPECT_EQ(a.tick_calls, 0);
 }
