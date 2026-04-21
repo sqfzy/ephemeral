@@ -328,6 +328,104 @@ parse_udp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ICMP parser — RFC 792. We only care about Type 3 Code 4 (Fragmentation
+// Needed and DF Set) for path-MTU feedback; other types are surfaced
+// verbatim for diagnostic callers but their embedded-4-tuple fields are
+// only populated for Type 3 Code 4 where the layout is well-defined.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct ParsedIcmp {
+    const rte_ether_hdr* eth = nullptr;
+    const rte_ipv4_hdr*  ip  = nullptr;
+    uint8_t  type = 0;
+    uint8_t  code = 0;
+
+    // Populated only for Type 3 Code 4 when the embedded headers are
+    // present and well-formed. Values are in host byte order.
+    uint16_t next_hop_mtu     = 0;
+    uint32_t embedded_src_ip  = 0;
+    uint32_t embedded_dst_ip  = 0;
+    uint16_t embedded_src_port = 0;
+    uint16_t embedded_dst_port = 0;
+    uint8_t  embedded_proto   = 0;
+    bool     embedded_valid   = false;
+
+    [[nodiscard]] bool is_frag_needed() const noexcept {
+        return type == 3 && code == 4;
+    }
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return ip != nullptr;
+    }
+};
+
+/// @brief Parse an Ethernet/IPv4/ICMP packet from an mbuf. Only fully
+///        populates the embedded 4-tuple + next_hop_mtu for Type 3
+///        Code 4 (Fragmentation Needed and DF Set), which is the only
+///        ICMP variant TcpSession::on_icmp_frag_needed acts on.
+///
+/// Non-ICMP packets and malformed ICMP packets return a ParsedIcmp
+/// whose `operator bool()` is false.
+[[nodiscard]] inline ParsedIcmp parse_icmp(const rte_mbuf* mbuf) noexcept {
+    auto ip_hdr = parse_ip_header(mbuf);
+    if (!ip_hdr) return {};
+    if (ip_hdr.proto != kIpProtoIcmp) return {};
+
+    const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
+    const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
+    const uint16_t icmp_offset = kEtherHeaderLen + ip_hdr.ihl;
+    // ICMP minimum header is 8 bytes; Type 3 extends to include the
+    // next-hop MTU at offset 6..7.
+    if (static_cast<uint32_t>(icmp_offset) + 8u > pkt_len) return {};
+
+    ParsedIcmp out{};
+    out.eth  = ip_hdr.eth;
+    out.ip   = ip_hdr.ip;
+    out.type = data[icmp_offset];
+    out.code = data[icmp_offset + 1];
+
+    if (out.is_frag_needed()) {
+        // ICMP Type 3 Code 4 layout (RFC 1191 for the MTU field):
+        //   0      type=3
+        //   1      code=4
+        //   2..3   checksum
+        //   4..5   unused
+        //   6..7   next-hop MTU (network order)
+        //   8..    embedded original IP header + first 8 bytes of L4
+        uint16_t mtu_net = 0;
+        std::memcpy(&mtu_net, data + icmp_offset + 6, 2);
+        out.next_hop_mtu = ntoh16(mtu_net);
+
+        const uint16_t emb_ip_off = icmp_offset + 8;
+        if (static_cast<uint32_t>(emb_ip_off) + kIpv4HeaderLen > pkt_len) return out;
+        const auto* e_ip = reinterpret_cast<const rte_ipv4_hdr*>(data + emb_ip_off);
+        if ((e_ip->version_ihl >> 4) != 4) return out;
+        const uint8_t e_ihl = (e_ip->version_ihl & 0x0F) << 2;
+        if (e_ihl < kIpv4HeaderLen) return out;
+        if (static_cast<uint32_t>(emb_ip_off) + e_ihl + 4u > pkt_len) return out;
+
+        out.embedded_src_ip = ntoh32(e_ip->src_addr);
+        out.embedded_dst_ip = ntoh32(e_ip->dst_addr);
+        out.embedded_proto  = e_ip->next_proto_id;
+
+        // First 4 bytes of the embedded L4 are src_port + dst_port for
+        // both TCP and UDP — sufficient to match against a registered
+        // Pollable's 4-tuple. RFC 792 requires exactly the first 8 bytes
+        // of the original L4 be included, so doing this for ICMP from
+        // modern implementations is safe.
+        if (out.embedded_proto == kIpProtoTcp ||
+            out.embedded_proto == kIpProtoUdp) {
+            uint16_t sp_net = 0, dp_net = 0;
+            std::memcpy(&sp_net, data + emb_ip_off + e_ihl, 2);
+            std::memcpy(&dp_net, data + emb_ip_off + e_ihl + 2, 2);
+            out.embedded_src_port = ntoh16(sp_net);
+            out.embedded_dst_port = ntoh16(dp_net);
+            out.embedded_valid = true;
+        }
+    }
+    return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TCP options parser — MSS / WSCALE / SACK_PERM from SYN / SYN-ACK
 // ─────────────────────────────────────────────────────────────────────────────
 

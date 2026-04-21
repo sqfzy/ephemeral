@@ -1259,6 +1259,44 @@ public:
         return data_count;
     }
 
+    /// Apply ICMP Frag Needed (Type 3 Code 4) feedback from the network.
+    /// Clamps effective_mss_ to `next_hop_mtu - 40` (IPv4 header + base
+    /// TCP header) so subsequent segments fit inside the smallest
+    /// observed path MTU. Never grows effective_mss_ beyond the current
+    /// value — PMTU shrinks are monotonic until the next connect().
+    ///
+    /// Bumps `stats_.icmp_frag_needed_received` regardless of whether
+    /// the clamp actually shrank the MSS, so operators can tell
+    /// "we are receiving ICMP feedback but it's redundant" from
+    /// "we never see ICMP at all".
+    void on_icmp_frag_needed(uint16_t next_hop_mtu) noexcept {
+        ++stats_.icmp_frag_needed_received;
+        // RFC 1191 allows an MTU of zero to mean "the router does not
+        // know" (ICMP Type 3 Code 4 legacy format). Ignore zero and any
+        // MTU that can't accommodate even an empty TCP segment.
+        constexpr uint16_t kMinHeaders = net::kIpv4HeaderLen + net::kTcpHeaderLen;
+        if (next_hop_mtu <= kMinHeaders) {
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "ICMP Frag Needed: next_hop_mtu={} too small to derive MSS",
+                next_hop_mtu);
+            return;
+        }
+        const uint16_t new_mss =
+            static_cast<uint16_t>(next_hop_mtu - kMinHeaders);
+        const uint16_t before = effective_mss_;
+        effective_mss_ = std::min(effective_mss_, new_mss);
+        if (effective_mss_ < before) {
+            SPDLOG_LOGGER_INFO(detail::tcp_logger(),
+                "ICMP Frag Needed: next_hop_mtu={} effective_mss {} -> {}",
+                next_hop_mtu, before, effective_mss_);
+        } else {
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "ICMP Frag Needed: next_hop_mtu={} (current effective_mss "
+                "{} already <= derived {}); no-op",
+                next_hop_mtu, effective_mss_, new_mss);
+        }
+    }
+
     /// Periodic keepalive driver. No-op when disabled
     /// (`config_.keepalive_interval == 0`) or when the session is not
     /// Established. Intended to be called from the stream's poll loop

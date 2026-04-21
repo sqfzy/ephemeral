@@ -684,6 +684,150 @@ TEST(Keepalive, IncomingSegmentResetsMissCounter) {
     EXPECT_EQ(s.stats().keepalive_probes_sent, 0u);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ICMP Frag Needed feedback (Path MTU Discovery)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Fake ICMP Type 3 Code 4 mbuf carrying an embedded IPv4+TCP header.
+/// Used to exercise parse_icmp() + TcpSession::on_icmp_frag_needed
+/// without any NIC dependency.
+struct FakeIcmpFragNeededMbuf {
+    alignas(8) uint8_t buf[256]{};
+    rte_mbuf mbuf{};
+
+    void build(uint16_t next_hop_mtu,
+               uint32_t emb_src_ip, uint32_t emb_dst_ip,
+               uint16_t emb_src_port, uint16_t emb_dst_port,
+               uint8_t  emb_proto = eph::dpdk::net::kIpProtoTcp) {
+        constexpr size_t eth_len = eph::dpdk::net::kEtherHeaderLen;
+        constexpr size_t ip_len  = 20;
+        constexpr size_t icmp_hdr = 8;
+        constexpr size_t emb_ip_len = 20;
+        constexpr size_t emb_l4_first8 = 8;
+        constexpr size_t total = eth_len + ip_len + icmp_hdr + emb_ip_len + emb_l4_first8;
+        static_assert(total <= sizeof(buf));
+
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+        eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+        ip->version_ihl   = (4 << 4) | 5;
+        ip->total_length  = eph::dpdk::net::hton16(
+            static_cast<uint16_t>(ip_len + icmp_hdr + emb_ip_len + emb_l4_first8));
+        ip->next_proto_id = eph::dpdk::net::kIpProtoIcmp;
+        // Source is a router on the path (address doesn't matter for our test).
+        ip->src_addr = eph::dpdk::net::hton32(0x0A00FFFF);
+        // Destination is US (the original sender of the embedded IP).
+        ip->dst_addr = eph::dpdk::net::hton32(emb_src_ip);
+
+        uint8_t* icmp = buf + eth_len + ip_len;
+        icmp[0] = 3;            // Type: Destination Unreachable
+        icmp[1] = 4;            // Code: Fragmentation Needed
+        icmp[2] = 0; icmp[3] = 0;  // Checksum (unchecked)
+        icmp[4] = 0; icmp[5] = 0;  // Unused
+        uint16_t mtu_net = eph::dpdk::net::hton16(next_hop_mtu);
+        std::memcpy(&icmp[6], &mtu_net, 2);
+
+        // Embedded IP header — copy of the packet that triggered the error.
+        auto* e_ip = reinterpret_cast<rte_ipv4_hdr*>(icmp + icmp_hdr);
+        e_ip->version_ihl   = (4 << 4) | 5;
+        e_ip->total_length  = 0;  // unused by parser
+        e_ip->next_proto_id = emb_proto;
+        e_ip->src_addr      = eph::dpdk::net::hton32(emb_src_ip);
+        e_ip->dst_addr      = eph::dpdk::net::hton32(emb_dst_ip);
+
+        // First 8 bytes of embedded TCP header (src_port + dst_port + seq).
+        uint8_t* e_l4 = reinterpret_cast<uint8_t*>(e_ip) + emb_ip_len;
+        uint16_t sp = eph::dpdk::net::hton16(emb_src_port);
+        uint16_t dp = eph::dpdk::net::hton16(emb_dst_port);
+        std::memcpy(e_l4, &sp, 2);
+        std::memcpy(e_l4 + 2, &dp, 2);
+        // seq, bytes 4..7 — left as zeros, not inspected by the parser.
+
+        mbuf = rte_mbuf{};
+        mbuf.buf_addr = buf;
+        mbuf.data_off = 0;
+        mbuf.data_len = total;
+        mbuf.pkt_len  = total;
+    }
+};
+
+TEST(IcmpParse, FragNeededExtractsMtuAnd4Tuple) {
+    FakeIcmpFragNeededMbuf fake;
+    fake.build(/*next_hop_mtu=*/1400,
+               /*emb_src_ip=*/kSrcIp, /*emb_dst_ip=*/kDstIp,
+               /*emb_src_port=*/kSrcPort, /*emb_dst_port=*/kDstPort);
+
+    auto parsed = eph::dpdk::net::parse_icmp(&fake.mbuf);
+    ASSERT_TRUE(parsed);
+    EXPECT_TRUE(parsed.is_frag_needed());
+    EXPECT_TRUE(parsed.embedded_valid);
+    EXPECT_EQ(parsed.next_hop_mtu, 1400u);
+    EXPECT_EQ(parsed.embedded_src_ip,  kSrcIp);
+    EXPECT_EQ(parsed.embedded_dst_ip,  kDstIp);
+    EXPECT_EQ(parsed.embedded_src_port, kSrcPort);
+    EXPECT_EQ(parsed.embedded_dst_port, kDstPort);
+    EXPECT_EQ(parsed.embedded_proto,    eph::dpdk::net::kIpProtoTcp);
+}
+
+TEST(IcmpParse, NonIcmpReturnsInvalid) {
+    FakeTcpMbuf fake;
+    fake.build(1, 1, eph::dpdk::net::kTcpAck);
+    auto parsed = eph::dpdk::net::parse_icmp(&fake.mbuf);
+    EXPECT_FALSE(parsed);
+}
+
+TEST(OnIcmpFragNeeded, ClampsEffectiveMss) {
+    auto cfg = make_test_config();
+    cfg.mss = 1460;
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    EXPECT_EQ(s.effective_mss(), 1460u);
+
+    // MTU=576 → effective_mss = 576 - 20 (IP) - 20 (TCP) = 536
+    s.on_icmp_frag_needed(576);
+    EXPECT_EQ(s.effective_mss(), 536u);
+    EXPECT_EQ(s.stats().icmp_frag_needed_received, 1u);
+}
+
+TEST(OnIcmpFragNeeded, NeverInflates) {
+    auto cfg = make_test_config();
+    cfg.mss = 1200;
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    EXPECT_EQ(s.effective_mss(), 1200u);
+
+    // MTU=1500 derives 1460 MSS — bigger than current 1200; effective stays 1200.
+    s.on_icmp_frag_needed(1500);
+    EXPECT_EQ(s.effective_mss(), 1200u);
+    EXPECT_EQ(s.stats().icmp_frag_needed_received, 1u);
+}
+
+TEST(OnIcmpFragNeeded, ZeroMtuIsIgnored) {
+    auto cfg = make_test_config();
+    cfg.mss = 1460;
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+
+    // RFC 1191 legacy: MTU=0 means "router doesn't know" — our impl treats
+    // this as a no-op on effective_mss but still bumps the received count.
+    s.on_icmp_frag_needed(0);
+    EXPECT_EQ(s.effective_mss(), 1460u);
+    EXPECT_EQ(s.stats().icmp_frag_needed_received, 1u);
+}
+
+TEST(OnIcmpFragNeeded, TooSmallMtuIsIgnored) {
+    auto cfg = make_test_config();
+    cfg.mss = 1460;
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+
+    // MTU < IP header + TCP header (40 bytes) can't produce a useful MSS.
+    s.on_icmp_frag_needed(30);
+    EXPECT_EQ(s.effective_mss(), 1460u);  // unchanged
+    EXPECT_EQ(s.stats().icmp_frag_needed_received, 1u);
+}
+
 TEST(EffectiveMss, LargerPeerMssDoesNotInflate) {
     // Defensive property: even if peer advertises a larger MSS than ours,
     // effective MSS is the min — we never inflate beyond our local cap.

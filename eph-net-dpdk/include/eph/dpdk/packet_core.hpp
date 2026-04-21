@@ -32,6 +32,7 @@ namespace eph::dpdk::net {
 /// @name EtherType and IP protocol constants
 /// @{
 inline constexpr uint16_t kEtherTypeIpv4   = 0x0800;  ///< EtherType for IPv4 (IEEE 802.3)
+inline constexpr uint8_t  kIpProtoIcmp     = 1;       ///< IP protocol number for ICMP (RFC 792)
 inline constexpr uint8_t  kIpProtoTcp      = 6;       ///< IP protocol number for TCP (RFC 793)
 inline constexpr uint8_t  kIpProtoUdp      = 17;      ///< IP protocol number for UDP (RFC 768)
 /// @}

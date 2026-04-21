@@ -420,7 +420,19 @@ public:
             SPDLOG_LOGGER_INFO(log,
                 "DpdkTcpStream::create: auto-allocated src_port={}", *port);
         }
-        return create(std::move(cfg));
+        auto result = create(std::move(cfg));
+        if (result) {
+            // Register this stream as the ICMP Frag Needed dispatch
+            // target. The callback matches the embedded 4-tuple against
+            // our own and forwards the next-hop MTU to the session.
+            // Single-callback limitation: the last create(cfg, poller)
+            // wins. Multi-stream users sharing one Poller must build
+            // their own dispatcher (no silent misrouting — the callback
+            // compares tuples and ignores mismatches).
+            poller.set_icmp_callback(&DpdkTcpStream::on_icmp_frag_needed_trampoline_,
+                                      result->get());
+        }
+        return result;
     }
 
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
@@ -1002,6 +1014,33 @@ public:
         *src_port = t.src_port;
         *dst_port = t.dst_port;
         *proto    = eph::dpdk::net::kIpProtoTcp;
+    }
+
+    /// @brief ICMP Frag Needed trampoline registered with the Poller.
+    ///        Matches the embedded 4-tuple + protocol against our own
+    ///        and, on match, forwards `next_hop_mtu` to the session.
+    ///        noexcept so a mis-dispatch can never unwind through the
+    ///        Poller's hot path.
+    static void on_icmp_frag_needed_trampoline_(
+        void* user,
+        uint32_t embedded_src_ip, uint32_t embedded_dst_ip,
+        uint16_t embedded_src_port, uint16_t embedded_dst_port,
+        uint8_t  embedded_proto,
+        uint16_t next_hop_mtu) noexcept {
+        auto* self = static_cast<DpdkTcpStream*>(user);
+        if (self == nullptr) return;
+        // The embedded headers carry OUR original packet verbatim: so
+        // embedded src/dst equal our cfg.tuple src/dst (not swapped).
+        // Protocol must be TCP.
+        if (embedded_proto != eph::dpdk::net::kIpProtoTcp) return;
+        const auto& t = self->cfg_.legacy.tuple;
+        if (embedded_src_ip != t.src_ip ||
+            embedded_dst_ip != t.dst_ip ||
+            embedded_src_port != t.src_port ||
+            embedded_dst_port != t.dst_port) {
+            return;
+        }
+        self->sess_.on_icmp_frag_needed(next_hop_mtu);
     }
 
     /// @brief Hot-path burst dispatch entry point called by DpdkPoller.

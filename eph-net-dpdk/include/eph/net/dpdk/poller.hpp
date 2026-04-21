@@ -320,13 +320,51 @@ public:
                 entry->process_burst_fn(entry->obj, &mbufs[i], 1, rx_tsc);
                 ++dispatched;
             } else {
-                // No routing match — drop. Unmatched packets in DPDK PMD
-                // mode have no kernel "stack" to fall back to; freeing the
-                // mbuf is the only sane disposal.
+                // No routing match. Before falling back to drop, check
+                // whether the mbuf is an ICMP Frag Needed (Type 3
+                // Code 4) message targeting one of the registered
+                // streams — that needs a path-MTU feedback dispatch,
+                // not a silent drop. Unmatched non-ICMP packets in
+                // DPDK PMD mode have no kernel "stack" to fall back
+                // to; freeing the mbuf is the only sane disposal.
+                maybe_dispatch_icmp_(mbufs[i]);
                 rte_pktmbuf_free(mbufs[i]);
             }
         }
         return dispatched;
+    }
+
+    // ── ICMP Frag Needed feedback (PMTU discovery) ───────────────────────
+
+    /// @brief User-provided callback fired for every ICMP Type 3 Code 4
+    ///        message the Poller sees whose embedded 4-tuple + protocol
+    ///        are well-formed. The callback dispatches to the right
+    ///        stream; the Poller itself only handles parsing.
+    ///
+    /// Single callback per Poller. Multi-stream users need to build
+    /// their own dispatcher or rely on single-stream topology (which
+    /// is the common HFT case).
+    using IcmpFragNeededCallback = void(*)(void* user,
+                                            uint32_t embedded_src_ip,
+                                            uint32_t embedded_dst_ip,
+                                            uint16_t embedded_src_port,
+                                            uint16_t embedded_dst_port,
+                                            uint8_t  embedded_proto,
+                                            uint16_t next_hop_mtu) noexcept;
+
+    /// @brief Register an ICMP Frag Needed callback. Pass nullptr to
+    ///        disable. `user` is opaque — passed back to the callback
+    ///        verbatim so the caller can route to the right receiver.
+    void set_icmp_callback(IcmpFragNeededCallback cb, void* user) noexcept {
+        icmp_cb_   = cb;
+        icmp_user_ = user;
+    }
+
+    /// @brief Diagnostic counter — number of ICMP Type 3 Code 4 messages
+    ///        that were parsed successfully and dispatched via the
+    ///        registered callback.
+    [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept {
+        return icmp_frag_needed_dispatched_;
     }
 
     // ── Introspection (test hooks) ───────────────────────────────────────
@@ -574,10 +612,32 @@ private:
         return nullptr;
     }
 
+    /// @brief Inspect an un-routed mbuf; if it is an ICMP Frag Needed
+    ///        message carrying a valid embedded 4-tuple, fire the
+    ///        registered ICMP callback. Silently returns otherwise —
+    ///        the caller is responsible for freeing the mbuf regardless.
+    void maybe_dispatch_icmp_(rte_mbuf* mbuf) noexcept {
+        if (icmp_cb_ == nullptr) return;
+        auto parsed = eph::dpdk::net::parse_icmp(mbuf);
+        if (!parsed || !parsed.is_frag_needed() || !parsed.embedded_valid) {
+            return;
+        }
+        icmp_cb_(icmp_user_,
+                 parsed.embedded_src_ip,  parsed.embedded_dst_ip,
+                 parsed.embedded_src_port, parsed.embedded_dst_port,
+                 parsed.embedded_proto,    parsed.next_hop_mtu);
+        ++icmp_frag_needed_dispatched_;
+    }
+
     PollerConfig                       cfg_{};
     std::array<PollableEntry, kMaxConn> entries_{};
     std::size_t                         n_entries_{0};
     uint64_t                            hash_collision_drops_{0};
+
+    // ── ICMP Frag Needed callback state ──
+    IcmpFragNeededCallback              icmp_cb_{nullptr};
+    void*                               icmp_user_{nullptr};
+    uint64_t                            icmp_frag_needed_dispatched_{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -614,6 +674,15 @@ public:
                   uint16_t preferred   = 0) const noexcept {
         return impl_->pick_src_port(src_ip, dst_ip, dst_port,
                                     range_begin, range_end, preferred);
+    }
+
+    using IcmpFragNeededCallback =
+        typename DpdkPoller<void>::IcmpFragNeededCallback;
+    void set_icmp_callback(IcmpFragNeededCallback cb, void* user) noexcept {
+        impl_->set_icmp_callback(cb, user);
+    }
+    [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept {
+        return impl_->icmp_frag_needed_dispatched();
     }
 
 private:
