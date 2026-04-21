@@ -6,16 +6,16 @@
 /// These tests cover:
 ///   - Enum names and values
 ///   - FlowRule RAII semantics (move, default state)
-///   - detect_rx_dispatch_mode return value semantics
+///   - configure_rss validation paths that don't need a NIC
 
 #include <format>
 
 #include <gtest/gtest.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
-#include "eph/dpdk/flow_steering.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
 
-using namespace eph::dpdk;
+using namespace eph::net::dpdk;
 
 // ---------------------------------------------------------------------------
 // RxDispatchMode
@@ -23,7 +23,7 @@ using namespace eph::dpdk;
 
 TEST(RxDispatchMode, NameSoftware) {
     EXPECT_EQ(rx_dispatch_mode_name(RxDispatchMode::Software),
-              "Software (RxDispatcher)");
+              "Software (single-Poller fallback)");
 }
 
 TEST(RxDispatchMode, NameRss) {
@@ -102,14 +102,15 @@ TEST(ConfigureRss, RejectsZeroQueues) {
 // ---------------------------------------------------------------------------
 
 TEST(RxDispatchMode, FormatterProducesOutput) {
-    EXPECT_EQ(std::format("{}", RxDispatchMode::Software), "Software (RxDispatcher)");
+    EXPECT_EQ(std::format("{}", RxDispatchMode::Software),
+              "Software (single-Poller fallback)");
     EXPECT_EQ(std::format("{}", RxDispatchMode::RssPartitioned), "RSS Partitioned");
     EXPECT_EQ(std::format("{}", RxDispatchMode::FlowDirector), "Flow Director (rte_flow)");
 }
 
 TEST(RxDispatchMode, FormatterWorksInCompositeFormat) {
     auto s = std::format("mode={} port={}", RxDispatchMode::Software, 0);
-    EXPECT_EQ(s, "mode=Software (RxDispatcher) port=0");
+    EXPECT_EQ(s, "mode=Software (single-Poller fallback) port=0");
 }
 
 // ---------------------------------------------------------------------------

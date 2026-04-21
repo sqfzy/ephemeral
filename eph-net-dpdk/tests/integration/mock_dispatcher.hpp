@@ -37,8 +37,6 @@ inline constexpr uint16_t kTcpFinPort      = 19003;
 inline constexpr uint16_t kUdpEchoPort     = 19101;
 inline constexpr uint16_t kWsEchoPort      = 19201;
 inline constexpr uint16_t kWsPingPort      = 19202;
-inline constexpr uint16_t kRxDispatcherPortBase = 19301;  ///< 19301..19308
-inline constexpr int      kRxDispatcherConns    = 8;
 /// Non-standard DNS port — port 53 would force the test binary to run
 /// with CAP_NET_BIND_SERVICE and risks colliding with systemd-resolved.
 /// `dns::resolve()` accepts an arbitrary port via `DnsConfig::port`.
@@ -68,7 +66,7 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     spdlog::info("dispatcher: starting mocks on {}", server_ip);
 
     std::vector<std::thread> threads;
-    threads.reserve(6 + kRxDispatcherConns);
+    threads.reserve(7);
 
     threads.emplace_back([&] {
         tcp_echo_mock_thread(server_ip, kTcpEchoPort, g_dispatcher_running);
@@ -92,14 +90,6 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
         dns_mock_thread(server_ip, kDnsMockPort, kDnsMockResolvedIp,
                         g_dispatcher_running);
     });
-
-    // RxDispatcher multi-conn mock — N parallel TCP echo servers on contiguous ports.
-    for (int i = 0; i < kRxDispatcherConns; ++i) {
-        uint16_t port = static_cast<uint16_t>(kRxDispatcherPortBase + i);
-        threads.emplace_back([server_ip, port] {
-            tcp_echo_mock_thread(server_ip, port, g_dispatcher_running);
-        });
-    }
 
     spdlog::info("dispatcher: {} mock threads running, awaiting SIGTERM",
                  threads.size());

@@ -1,6 +1,6 @@
 /// @file bench_udp.cpp
 /// UDP micro-benchmarks — header fill/build, checksum, layered parse API,
-/// RxDispatcher UDP dispatch simulation.
+/// (RxDispatcher UDP dispatch simulation removed with RxDispatcher retirement.)
 ///
 /// Establishes UDP performance baselines for comparison with TCP equivalents
 /// in bench_tcp_header.cpp. Does NOT require DPDK EAL — uses FakeMbuf.
@@ -13,7 +13,6 @@
 #include <benchmark/benchmark.h>
 
 #include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/rx_dispatcher.hpp"
 
 namespace {
 
@@ -228,69 +227,5 @@ static void BM_ParsePacketDirect(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_ParsePacketDirect)->Apply(UdpPayloadSizeArgs);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RxDispatcher UDP dispatch simulation
-// Mirrors BM_RxDispatcherDispatchSim in bench_tcp_header.cpp but for UDP entries.
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void BM_RxDispatcherUdpDispatchSim(benchmark::State& state) {
-    auto num_entries = static_cast<size_t>(state.range(0));
-
-    // Build UDP entries with distinct tuples
-    std::array<ConnectionTuple, 8> tuples{};
-    std::array<uint64_t, 8> hashes{};
-    for (size_t i = 0; i < num_entries; ++i) {
-        tuples[i] = {.src_ip = 0x0A000001, .dst_ip = 0x0A000002,
-                     .src_port = static_cast<uint16_t>(50000 + i), .dst_port = 8080};
-        hashes[i] = RxDispatcherEntry::hash_tuple(tuples[i]);
-    }
-
-    // Build a packet matching the LAST entry (worst-case linear scan)
-    BenchMbuf fake;
-    auto last = tuples[num_entries - 1];
-    // Incoming packets have swapped src/dst
-    auto* buf = fake.buf;
-    std::memset(buf, 0, kUdpAllHeadersLen + 64);
-    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
-    eth->ether_type = hton16(kEtherTypeIpv4);
-    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
-    ip->version_ihl = 0x45;
-    ip->next_proto_id = kIpProtoUdp;
-    ip->total_length = hton16(kIpv4HeaderLen + kUdpHeaderLen + 64);
-    ip->src_addr = hton32(last.dst_ip);  // swapped
-    ip->dst_addr = hton32(last.src_ip);  // swapped
-    auto* udp = reinterpret_cast<UdpHeader*>(buf + kEtherHeaderLen + kIpv4HeaderLen);
-    udp->src_port = hton16(last.dst_port);  // swapped
-    udp->dst_port = hton16(last.src_port);  // swapped
-    udp->length = hton16(kUdpHeaderLen + 64);
-    fake.set_len(kUdpAllHeadersLen + 64);
-
-    for (auto _ : state) {
-        // Simulate RxDispatcher UDP dispatch: parse + hash + linear scan
-        auto ip_hdr = parse_ip_header(&fake.mbuf);
-        auto parsed = parse_udp_from_ip(&fake.mbuf, ip_hdr);
-
-        ConnectionTuple pkt_tuple{
-            .src_ip = parsed.src_ip(), .dst_ip = parsed.dst_ip(),
-            .src_port = parsed.src_port(), .dst_port = parsed.dst_port()};
-        uint64_t pkt_hash = RxDispatcherEntry::hash_tuple(pkt_tuple);
-
-        bool matched = false;
-        for (size_t j = 0; j < num_entries; ++j) {
-            if (hashes[j] != pkt_hash) continue;
-            // Reverse match (incoming has swapped src/dst)
-            if (pkt_tuple.src_ip == tuples[j].dst_ip &&
-                pkt_tuple.dst_ip == tuples[j].src_ip &&
-                pkt_tuple.src_port == tuples[j].dst_port &&
-                pkt_tuple.dst_port == tuples[j].src_port) {
-                matched = true;
-                break;
-            }
-        }
-        benchmark::DoNotOptimize(matched);
-    }
-}
-BENCHMARK(BM_RxDispatcherUdpDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8);
 
 BENCHMARK_MAIN();

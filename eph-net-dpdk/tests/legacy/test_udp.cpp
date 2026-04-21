@@ -515,30 +515,37 @@ TEST(UdpSegment, DefaultsNull) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FlowProtocol (from flow_steering.hpp)
+// FlowProtocol (from eph/net/dpdk/flow_steering.hpp)
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include "eph/dpdk/flow_steering.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
 
 TEST(FlowProtocol, NameTcp) {
+    using ::eph::net::dpdk::FlowProtocol;
+    using ::eph::net::dpdk::flow_protocol_name;
     EXPECT_EQ(flow_protocol_name(FlowProtocol::Tcp), "TCP");
 }
 
 TEST(FlowProtocol, NameUdp) {
+    using ::eph::net::dpdk::FlowProtocol;
+    using ::eph::net::dpdk::flow_protocol_name;
     EXPECT_EQ(flow_protocol_name(FlowProtocol::Udp), "UDP");
 }
 
 TEST(FlowProtocol, EnumValuesDistinct) {
+    using ::eph::net::dpdk::FlowProtocol;
     EXPECT_NE(static_cast<uint8_t>(FlowProtocol::Tcp),
               static_cast<uint8_t>(FlowProtocol::Udp));
 }
 
 TEST(FlowProtocol, FormatTcp) {
+    using ::eph::net::dpdk::FlowProtocol;
     auto s = std::format("{}", FlowProtocol::Tcp);
     EXPECT_EQ(s, "TCP");
 }
 
 TEST(FlowProtocol, FormatUdp) {
+    using ::eph::net::dpdk::FlowProtocol;
     auto s = std::format("{}", FlowProtocol::Udp);
     EXPECT_EQ(s, "UDP");
 }

@@ -14,8 +14,10 @@
 -- (they are header-only and stay under the `eph::dpdk` namespace / `eph/dpdk/`
 -- include path to minimise churn):
 --
---   * eph::dpdk::TcpSession / UdpSender / RxDispatcher / Connector / Multicast /
---     ARP / DNS / FlowSteering / packet_* / platform / EalGuard
+--   * eph::dpdk::TcpSession / UdpSender / Connector / Multicast /
+--     ARP / DNS / packet_* / platform / EalGuard
+-- And in `eph::net::dpdk`:
+--   * FlowSteering / configure_rss / install_flow_rule / FlowRule
 --
 -- Dependency rule: eph-core + eph-utils + eph-containers + eph-net +
 -- aws-lc + DPDK.

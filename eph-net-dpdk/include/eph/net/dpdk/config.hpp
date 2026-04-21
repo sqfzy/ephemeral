@@ -16,7 +16,6 @@
 #include <string>
 #include <vector>
 
-#include "eph/dpdk/rx_dispatcher.hpp"   // RxDispatcherConfig (lcore / port / queue)
 #include "eph/dpdk/tcp.hpp"       // TcpConfig
 #include "eph/dpdk/udp.hpp"       // UdpConfig (legacy naming collides with our
                                   // eph::net::dpdk::UdpConfig below — we keep

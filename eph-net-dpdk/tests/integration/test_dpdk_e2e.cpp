@@ -2,7 +2,7 @@
 /// End-to-end integration tests for the DPDK datapath.
 ///
 /// Layout: this single binary contains all P0+P1 test cases (TCP, UDP,
-/// WS, RST, FIN, RxDispatcher, ARP, DNS) so that EAL is initialized exactly once
+/// WS, RST, FIN, ARP, DNS) so that EAL is initialized exactly once
 /// and the kernel mock dispatcher is forked exactly once for the binary's
 /// entire lifetime.  See plan-dpdk-integration-tests-20260410-053355.md
 /// for design rationale.
@@ -34,7 +34,6 @@
 #include "eph/dpdk/udp.hpp"
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/dns.hpp"
-#include "eph/dpdk/rx_dispatcher.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
 
@@ -261,8 +260,8 @@ TEST(DpdkWsAutoResponse, ServerPingTriggersClientPong) {
 
     std::atomic<bool> got_ok{false};
     stream->on_message =
-        [&got_ok](const uint8_t* data, uint16_t len) {
-            if (len == 2 && data[0] == 'O' && data[1] == 'K') {
+        [&got_ok](std::span<const uint8_t> data) {
+            if (data.size() == 2 && data[0] == 'O' && data[1] == 'K') {
                 got_ok.store(true, std::memory_order_release);
             }
         };
@@ -366,108 +365,6 @@ TEST(FailureE2E, PeerFinAfterEcho) {
 
     // Reciprocate FIN — should complete the close handshake.
     EXPECT_TRUE(session.close().has_value());
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// ReactorE2E — multi-connection concurrent echo via the actual RxDispatcher
-//
-// This test validates eph::dpdk::RxDispatcher's connection multiplexer.  We
-// CANNOT just spin N TcpSessions and round-robin poll_rx them: each
-// poll_rx call drains the shared rx_queue and DROPS packets that don't
-// match its 4-tuple.  With N sessions sharing one queue that's fatally
-// destructive to N-1 of them per poll cycle.
-//
-// The RxDispatcher class is the canonical solution: a single dedicated RX
-// thread polls the NIC and dispatches each packet to the matching
-// session via on_data callback.
-// ═══════════════════════════════════════════════════════════════════════
-
-TEST(RxDispatcherE2E, MultiConnFairness) {
-    EPH_DPDK_E2E_SKIP_IF_NOT_READY();
-    auto& env = DpdkE2ETestEnv::env();
-
-    // 1. Connect kRxDispatcherConns sessions ONE AT A TIME.  Each connect
-    //    uses TcpSession::poll_rx internally, so they must serialize.
-    std::vector<std::unique_ptr<eph::dpdk::TcpSession<>>> sessions;
-    sessions.reserve(kRxDispatcherConns);
-    for (int i = 0; i < kRxDispatcherConns; ++i) {
-        auto tcfg = env.make_tcp_config(
-            next_src_port(),
-            static_cast<uint16_t>(kRxDispatcherPortBase + i));
-        auto s = std::make_unique<eph::dpdk::TcpSession<>>(tcfg, env.pool);
-        auto cr = s->connect(3s);
-        ASSERT_TRUE(cr.has_value())
-            << "session " << i << " connect failed: " << cr.error();
-        sessions.push_back(std::move(s));
-    }
-
-    // 2. Hand all sessions to a RxDispatcher with per-session on_data
-    //    callbacks pushing into per-session receive buffers.
-    eph::dpdk::RxDispatcherConfig rcfg{};
-    rcfg.port_id = env.port_id;
-    rcfg.rx_queue_id = 0;
-    rcfg.rx_cpu = -1;
-    eph::dpdk::RxDispatcher<> reactor(rcfg);
-
-    const size_t kPayload = 256;
-    std::vector<std::vector<uint8_t>> recv_buf(kRxDispatcherConns);
-    std::vector<std::atomic<size_t>> received(kRxDispatcherConns);
-    for (auto& a : received) a.store(0);
-    for (auto& v : recv_buf) v.assign(kPayload, 0);
-
-    for (int i = 0; i < kRxDispatcherConns; ++i) {
-        auto add_r = reactor.add_connection(sessions[i].get(),
-            [i, &recv_buf, &received, kPayload]
-            (const uint8_t* d, uint16_t l, size_t /*conn_id*/) {
-                size_t cur = received[i].load(std::memory_order_relaxed);
-                size_t take = std::min(static_cast<size_t>(l), kPayload - cur);
-                if (take > 0) {
-                    std::memcpy(recv_buf[i].data() + cur, d, take);
-                    received[i].fetch_add(take, std::memory_order_release);
-                }
-            });
-        ASSERT_TRUE(add_r.has_value())
-            << "reactor.add_connection " << i << " failed: " << add_r.error();
-    }
-
-    ASSERT_TRUE(reactor.start()) << "reactor.start() returned false";
-
-    // 3. Send a distinct 256B payload through each session.  TX is
-    //    per-session and remains the test thread's responsibility.
-    std::vector<std::vector<uint8_t>> sent_payloads(kRxDispatcherConns);
-    for (int i = 0; i < kRxDispatcherConns; ++i) {
-        sent_payloads[i].resize(kPayload);
-        for (size_t j = 0; j < kPayload; ++j) {
-            sent_payloads[i][j] = static_cast<uint8_t>((i * 7 + j) & 0xFF);
-        }
-        ASSERT_TRUE(tcp_send_all(*sessions[i],
-                                  sent_payloads[i].data(), kPayload))
-            << "session " << i << " send failed";
-    }
-
-    // 4. Wait for all callbacks to fill their buffers.
-    auto deadline = std::chrono::steady_clock::now() + 5s;
-    bool all_done = false;
-    while (!all_done && std::chrono::steady_clock::now() < deadline) {
-        all_done = true;
-        for (int i = 0; i < kRxDispatcherConns; ++i) {
-            if (received[i].load(std::memory_order_acquire) < kPayload) {
-                all_done = false;
-                break;
-            }
-        }
-        if (!all_done) std::this_thread::sleep_for(5ms);
-    }
-
-    reactor.stop();
-
-    for (int i = 0; i < kRxDispatcherConns; ++i) {
-        EXPECT_EQ(received[i].load(), kPayload)
-            << "session " << i << " incomplete";
-        EXPECT_EQ(recv_buf[i], sent_payloads[i])
-            << "session " << i << " payload mismatch";
-        (void)sessions[i]->close();
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

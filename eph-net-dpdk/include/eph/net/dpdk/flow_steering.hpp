@@ -5,15 +5,15 @@
 ///
 /// Provides runtime detection of NIC capabilities and automatic selection
 /// of the best RX dispatch strategy:
-///   - Software (RxDispatcher): NIC has no RSS — epoll-style multiplexing
+///   - Software:       NIC has no RSS — single Poller fans out by 5-tuple
 ///   - RssPartitioned: NIC supports RSS — traffic hashed across queues
-///   - FlowDirector: NIC supports rte_flow 5-tuple — per-connection queue
+///   - FlowDirector:   NIC supports rte_flow 5-tuple — per-connection queue
 ///
 /// Usage:
 ///   auto mode = detect_rx_dispatch_mode(port_id);
 ///   if (mode == RxDispatchMode::FlowDirector) {
 ///       auto rule = install_flow_rule(port_id, queue_id, tuple);
-///       // session polls from dedicated queue — zero dispatcher overhead
+///       // session polls from a dedicated queue — zero dispatcher overhead
 ///   }
 
 #include <cstdint>
@@ -29,12 +29,16 @@
 #include <rte_flow.h>
 #include <rte_udp.h>
 
+#include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/net_header.hpp"
 
-namespace eph::dpdk {
+namespace eph::net::dpdk {
 
 namespace detail {
-inline spdlog::logger* flow_logger() { return get_logger<LoggerName{"dpdk.flow"}>(); }
+inline spdlog::logger* flow_logger() {
+    return ::eph::dpdk::detail::get_logger<
+        ::eph::dpdk::detail::LoggerName{"dpdk.flow"}>();
+}
 } // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -62,7 +66,7 @@ enum class FlowProtocol : uint8_t {
 
 /// NIC hardware dispatch capabilities detected at runtime.
 enum class RxDispatchMode : uint8_t {
-    Software,          ///< No RSS, no flow director → use RxDispatcher (epoll)
+    Software,          ///< No RSS, no flow director → single-Poller fallback
     RssPartitioned,    ///< RSS hash to multiple queues → reduced contention
     FlowDirector,      ///< rte_flow 5-tuple exact match → per-connection queue
 };
@@ -70,7 +74,7 @@ enum class RxDispatchMode : uint8_t {
 /// Human-readable name for RxDispatchMode.
 [[nodiscard]] constexpr std::string_view rx_dispatch_mode_name(RxDispatchMode m) noexcept {
     switch (m) {
-    case RxDispatchMode::Software:       return "Software (RxDispatcher)";
+    case RxDispatchMode::Software:       return "Software (single-Poller fallback)";
     case RxDispatchMode::RssPartitioned: return "RSS Partitioned";
     case RxDispatchMode::FlowDirector:   return "Flow Director (rte_flow)";
     }
@@ -162,7 +166,7 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
     }
 
     SPDLOG_LOGGER_INFO(log,
-        "Port {} has no RSS/FlowDirector support (Software/RxDispatcher mode)",
+        "Port {} has no RSS/FlowDirector support (Software / single-Poller mode)",
         port_id);
     return RxDispatchMode::Software;
 }
@@ -337,7 +341,7 @@ struct FlowRule {
 /// @return FlowRule handle on success, error string on failure
 [[nodiscard]] inline std::expected<FlowRule, std::string>
 install_flow_rule(uint16_t port_id, uint16_t queue_id,
-                  const net::ConnectionTuple& tuple,
+                  const ::eph::dpdk::net::ConnectionTuple& tuple,
                   FlowProtocol proto = FlowProtocol::Tcp) noexcept {
     [[maybe_unused]] auto* log = detail::flow_logger();
 
@@ -407,8 +411,8 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     SPDLOG_LOGGER_INFO(log,
         "{} flow rule installed: {}:{} -> {}:{} queue={} (NIC src/dst swapped)",
         flow_protocol_name(proto),
-        net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
-        net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
+        ::eph::dpdk::net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
+        ::eph::dpdk::net::format_ipv4(tuple.src_ip).data(), tuple.src_port,
         queue_id);
 
     FlowRule rule;
@@ -418,7 +422,7 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     return rule;
 }
 
-} // namespace eph::dpdk
+} // namespace eph::net::dpdk
 
 // ─────────────────────────────────────────────────────────────────────────────
 // std::formatter specialization for RxDispatchMode
@@ -428,19 +432,19 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
 ///
 /// Formats as the human-readable name from rx_dispatch_mode_name().
 template <>
-struct std::formatter<eph::dpdk::RxDispatchMode> : std::formatter<std::string_view> {
-    auto format(eph::dpdk::RxDispatchMode m, auto& ctx) const {
+struct std::formatter<eph::net::dpdk::RxDispatchMode> : std::formatter<std::string_view> {
+    auto format(eph::net::dpdk::RxDispatchMode m, auto& ctx) const {
         return std::formatter<std::string_view>::format(
-            eph::dpdk::rx_dispatch_mode_name(m), ctx);
+            eph::net::dpdk::rx_dispatch_mode_name(m), ctx);
     }
 };
 
 /// @brief std::formatter specialization for FlowProtocol.
 template <>
-struct std::formatter<eph::dpdk::FlowProtocol> : std::formatter<std::string_view> {
-    auto format(eph::dpdk::FlowProtocol p, auto& ctx) const {
+struct std::formatter<eph::net::dpdk::FlowProtocol> : std::formatter<std::string_view> {
+    auto format(eph::net::dpdk::FlowProtocol p, auto& ctx) const {
         return std::formatter<std::string_view>::format(
-            eph::dpdk::flow_protocol_name(p), ctx);
+            eph::net::dpdk::flow_protocol_name(p), ctx);
     }
 };
 
@@ -448,8 +452,8 @@ struct std::formatter<eph::dpdk::FlowProtocol> : std::formatter<std::string_view
 ///
 /// Formats as a compact one-line summary showing port, queue, and status.
 template <>
-struct std::formatter<eph::dpdk::FlowRule> : std::formatter<std::string> {
-    auto format(const eph::dpdk::FlowRule& r, auto& ctx) const {
+struct std::formatter<eph::net::dpdk::FlowRule> : std::formatter<std::string> {
+    auto format(const eph::net::dpdk::FlowRule& r, auto& ctx) const {
         return std::formatter<std::string>::format(r.dump(), ctx);
     }
 };

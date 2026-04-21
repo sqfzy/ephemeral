@@ -11,7 +11,6 @@
 #include <benchmark/benchmark.h>
 
 #include "eph/dpdk/net_header.hpp"
-#include "eph/dpdk/rx_dispatcher.hpp"
 
 namespace {
 
@@ -252,71 +251,6 @@ static void BM_Ipv4ParseFormat(benchmark::State& state) {
 }
 BENCHMARK(BM_Ipv4ParseFormat);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RxDispatcherEntry::hash_tuple — per-packet dispatch pre-filter
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void BM_RxDispatcherHashTuple(benchmark::State& state) {
-    eph::dpdk::net::ConnectionTuple tuples[] = {
-        {.src_ip = 0x0A000001, .dst_ip = 0x0A000002, .src_port = 12345, .dst_port = 443},
-        {.src_ip = 0xC0A80101, .dst_ip = 0x08080808, .src_port = 5000, .dst_port = 80},
-        {.src_ip = 0xAC100001, .dst_ip = 0xAC100002, .src_port = 8443, .dst_port = 9090},
-        {.src_ip = 0x0A0A0A01, .dst_ip = 0x0A0A0A02, .src_port = 55123, .dst_port = 443},
-    };
-    size_t idx = 0;
-
-    for (auto _ : state) {
-        auto h = eph::dpdk::RxDispatcherEntry::hash_tuple(tuples[idx & 3]);
-        benchmark::DoNotOptimize(h);
-        ++idx;
-    }
-}
-BENCHMARK(BM_RxDispatcherHashTuple);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RxDispatcher dispatch simulation — parse + hash + linear scan match
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void BM_RxDispatcherDispatchSim(benchmark::State& state) {
-    auto n_conns = static_cast<size_t>(state.range(0));
-
-    // Pre-build connection tuples and hashes
-    std::vector<eph::dpdk::net::ConnectionTuple> tuples(n_conns);
-    std::vector<uint64_t> hashes(n_conns);
-    for (size_t i = 0; i < n_conns; ++i) {
-        tuples[i] = {
-            .src_ip = 0x0A000001 + static_cast<uint32_t>(i),
-            .dst_ip = 0x0A000002,
-            .src_port = static_cast<uint16_t>(12345 + i),
-            .dst_port = 443,
-        };
-        hashes[i] = eph::dpdk::RxDispatcherEntry::hash_tuple(tuples[i]);
-    }
-
-    // Build a packet tuple that matches the LAST connection (worst case)
-    auto pkt_tuple = tuples[n_conns - 1];
-    // Swap src/dst as incoming packet would
-    std::swap(pkt_tuple.src_ip, pkt_tuple.dst_ip);
-    std::swap(pkt_tuple.src_port, pkt_tuple.dst_port);
-    uint64_t pkt_hash = eph::dpdk::RxDispatcherEntry::hash_tuple(pkt_tuple);
-
-    for (auto _ : state) {
-        bool found = false;
-        for (size_t j = 0; j < n_conns; ++j) {
-            if (hashes[j] != pkt_hash) continue;
-            // Simulate matches() check
-            if (tuples[j].src_ip == pkt_tuple.dst_ip &&
-                tuples[j].dst_ip == pkt_tuple.src_ip &&
-                tuples[j].src_port == pkt_tuple.dst_port &&
-                tuples[j].dst_port == pkt_tuple.src_port) {
-                found = true;
-                break;
-            }
-        }
-        benchmark::DoNotOptimize(found);
-    }
-}
-BENCHMARK(BM_RxDispatcherDispatchSim)->Arg(1)->Arg(2)->Arg(4)->Arg(8)->Arg(16);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // write_syn_options — SYN option serialization
@@ -451,28 +385,6 @@ static void BM_PacketTemplateToJson(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_PacketTemplateToJson);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RxDispatcher::Config serialization
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void BM_RxDispatcherConfigDump(benchmark::State& state) {
-    eph::dpdk::RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
-    for (auto _ : state) {
-        auto s = cfg.dump();
-        benchmark::DoNotOptimize(s.data());
-    }
-}
-BENCHMARK(BM_RxDispatcherConfigDump);
-
-static void BM_RxDispatcherConfigToJson(benchmark::State& state) {
-    eph::dpdk::RxDispatcherConfig cfg{.port_id = 1, .rx_queue_id = 2, .rx_cpu = 5};
-    for (auto _ : state) {
-        auto s = cfg.to_json();
-        benchmark::DoNotOptimize(s.data());
-    }
-}
-BENCHMARK(BM_RxDispatcherConfigToJson);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ParsedPacket::to_json
@@ -617,10 +529,10 @@ BENCHMARK(BM_TcpStatsToJson);
 // FlowRule::dump / to_json
 // ─────────────────────────────────────────────────────────────────────────────
 
-#include "eph/dpdk/flow_steering.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
 
 static void BM_FlowRuleDump(benchmark::State& state) {
-    eph::dpdk::FlowRule rule;
+    eph::net::dpdk::FlowRule rule;
     rule.port_id = 1;
     rule.queue_id = 3;
     // Simulate active rule with fake pointer
@@ -636,7 +548,7 @@ static void BM_FlowRuleDump(benchmark::State& state) {
 BENCHMARK(BM_FlowRuleDump);
 
 static void BM_FlowRuleToJson(benchmark::State& state) {
-    eph::dpdk::FlowRule rule;
+    eph::net::dpdk::FlowRule rule;
     rule.port_id = 1;
     rule.queue_id = 3;
     rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
