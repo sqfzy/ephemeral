@@ -1,5 +1,13 @@
 # Artifacts Index
 
+<!--
+Convention: rows are appended in commit order, not strict time order.
+Rebase merges (e.g. blueprint follow-ups landing after the upstream RSS
+branch) can therefore show earlier timestamps lower in the file — read
+the Commit column as authoritative for ordering. The 时间 column is a
+session-local clock sample, kept for human context only.
+-->
+
 | 时间 | Skill | 摘要 | Commit | 文件 |
 |------|-------|------|--------|------|
 | 2026-03-28 03:50 | /discuss HFT 库缺失分析 | 5 角色 7 轮讨论：最缺订单簿、JSON parsing、连接管理、io_uring；四阶段路线图 | 50ca07c | discuss-20260328-035012.md |
@@ -72,3 +80,4 @@
 | 2026-04-21 07:33 | /repeat summary | 6-round audit-action-plan execution report (6 commits 1306a74..8675806 全部 push origin/main) | 8675806 | repeat-20260421-073324-audit-action-plan.md |
 | 2026-04-21 04:08 | /design auto Phase A-G DPDK TCP P0 hardening | 7 commits (rebased onto RSS branch): MSS negotiation, auto src_port, destructor RST, keepalive (default off), ICMP PMTU feedback, 7 new StreamMetrics, 66-row state-machine conformance table. Unit tests only (shared DPDK NIC not exercised) | dd0c5b2 | design-20260421-040844.md |
 | 2026-04-21 07:49 | /review audit rebase | Post-rebase review of 8 P0-hardening commits: 0 critical / 2 major (ICMP callback not wired into create_and_attach; keepalive tick missing in DpdkPoller-driven loop) / 4 minor / 1 nit. NEEDS_FOLLOWUP | 35b6de0 | review-20260421-074945.md |
+| 2026-04-21 08:28 | /blueprint 生产级统一对齐 | 7-phase plan 执行：Phase 1-3+5+7 LANDED (7 commits 971a494..this), Phase 4 REVISED (保留 std::string boundary), Phase 6 DEFERRED (需 NIC_B). 10 new tests, 0 regression. | (this commit) | blueprint-exec-20260421-082851.md |

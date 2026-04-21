@@ -39,9 +39,34 @@ The scope decisions for the current feature set are archived in
   two-layer observability for the 4 stream backends. Hot path: each stream owns an
   `alignas(64) std::atomic<uint64_t>` array, incremented via a private template
   `inc_<M>()` that compiles to a single `lock add` on x86 (verified by objdump).
-  Reader: `metric(StreamMetric m)` direct read, or `publish_metrics(*stream, sink,
-  tags)` to forward every counter into any `MetricsSink`. See
-  `docs/observability-guide.md` and `examples/observability_demo.cpp`.
+  Reader: `metric(StreamMetric m)` direct read (bounds-checked — out-of-range
+  values return 0), or `publish_metrics(*stream, sink, tags)` to forward every
+  counter into any `MetricsSink`. See `docs/observability-guide.md` and
+  `examples/observability_demo.cpp`. The 13 entries include 7 TCP/ICMP
+  session-level metrics (`net.stream.tcp.*` + `net.stream.icmp.*`) exposed
+  by `DpdkTcpStream::metric` via lazy-read from `TcpSession::Stats`.
+- `eph::dpdk::TcpConfig::keepalive_interval` / `keepalive_probes` + the
+  caller-driven `TcpSession::tick_keepalive(now_tsc)` — optional TCP keepalive
+  (default off). In DPDK production (`DpdkPoller::poll`) the tick fires on
+  every poll cycle via the `on_poll_tick_` hook; single-stream users driving
+  `poll_once_` directly must tick themselves.
+- `eph::dpdk::TcpSession::effective_mss()` / `peer_mss_negotiated()` —
+  connection MSS is clamped to `min(local, peer SYN-ACK MSS)` and may shrink
+  further on ICMP Frag Needed; exposed read-only for diagnostics.
+- `eph::dpdk::TcpSession::on_icmp_frag_needed(mtu)` + `eph::dpdk::Platform::
+  register_icmp_target` — path-MTU feedback path. `DpdkTcpStream::
+  create_and_attach` wires the stream into Platform's ICMP registry so
+  router-originated Type 3 Code 4 messages are dispatched to the owning
+  stream regardless of which RX queue they land on (RSS-safe).
+- `DpdkTcpStream::create_and_attach(cfg, platform)` — turnkey production
+  factory. Handles queue selection (Software / RSS-pinned / FlowDirector),
+  src_port allocation (rebinding to match RSS hash when pinning), TCP/TLS/
+  WS handshakes, Poller attach, FlowDirector rule install, and ICMP
+  registration. The older `create(cfg, poller)` overload was removed —
+  its narrow subset is covered by `create_and_attach`.
+- `eph::net::dpdk::DpdkPollable` concept grew `on_poll_tick_(uint64_t tsc)
+  noexcept`. Invoked once per poll cycle by `DpdkPoller::poll()` for every
+  registered entry — used by TCP keepalive; UDP implements as no-op.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
