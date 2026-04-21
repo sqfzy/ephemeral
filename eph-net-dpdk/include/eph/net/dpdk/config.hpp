@@ -116,6 +116,25 @@ struct StreamConfig {
     ///        HFT. Kept symmetric with `eph::net::kernel::StreamConfig`
     ///        which carries the same field.
     std::size_t reasm_capacity{256 * 1024};
+
+    /// @brief When using `DpdkTcpStream::create_and_attach(cfg, platform)`,
+    ///        force the connection to land on a specific RX queue.
+    ///
+    /// nullopt (default):
+    ///   * RssPartitioned mode → let the NIC's hash decide; the stream is
+    ///     attached to whichever Poller already owns that queue.
+    ///   * FlowDirector mode  → the helper round-robins across queues to
+    ///     spread connections evenly.
+    ///   * Software mode      → attach to queue 0 (the only queue).
+    ///
+    /// uint16_t value:
+    ///   * RssPartitioned mode → search the ephemeral src-port range for a
+    ///     port whose Toeplitz hash lands on `pin_to_queue`. If the range
+    ///     is exhausted, create_and_attach returns InvalidConfig.
+    ///   * FlowDirector mode  → install an rte_flow rule steering the 5-tuple
+    ///     to `pin_to_queue`.
+    ///   * Software mode      → must be 0 (or nullopt); otherwise QueueOutOfRange.
+    std::optional<uint16_t> pin_to_queue{};
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +150,13 @@ struct StreamConfig {
 struct UdpConfig {
     /// @brief Underlying DPDK UdpSender configuration.
     ::eph::dpdk::UdpConfig legacy{};
+
+    /// @brief See StreamConfig::pin_to_queue. UDP has no connect handshake,
+    /// so the pin is honoured at attach time — the user is expected to have
+    /// already set `legacy.src_port` such that the (src/dst) tuple hashes
+    /// to the desired queue under RSS, or the helper installs an rte_flow
+    /// rule under FlowDirector. nullopt = auto.
+    std::optional<uint16_t> pin_to_queue{};
 };
 
 // ---------------------------------------------------------------------------

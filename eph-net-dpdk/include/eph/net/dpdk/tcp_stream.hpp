@@ -42,6 +42,7 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/dpdk/packet_parse.hpp"
+#include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
@@ -545,6 +546,169 @@ public:
             "DpdkTcpStream::create: connected src=0x{:08x}:{} -> dst=0x{:08x}:{}",
             stream->cfg_.legacy.tuple.src_ip, stream->cfg_.legacy.tuple.src_port,
             stream->cfg_.legacy.tuple.dst_ip, stream->cfg_.legacy.tuple.dst_port);
+        return stream;
+    }
+
+    /// @brief Turnkey factory: create a stream and attach it to the
+    /// per-queue Poller already registered with `platform`. Honours
+    /// `cfg.pin_to_queue` and the platform's `dispatch_mode()` to pick
+    /// the correct RX queue (and, in RSS+pin mode, to rebind the
+    /// ephemeral src_port so the connection's hash lands on the target
+    /// queue). Pre-conditions:
+    ///   * the relevant `DpdkPoller<>` is already registered with
+    ///     `platform.register_poller(qid, poller)` for every queue this
+    ///     stream might land on;
+    ///   * `cfg.legacy.tuple.dst_ip` / `dst_port` carry the remote
+    ///     endpoint, `src_ip` is the local ip, and `src_port` is either
+    ///     a pre-chosen ephemeral port or 0 (the helper rebinds it in
+    ///     the RSS+pin case anyway).
+    /// On success the returned `unique_ptr` already has its `attached_to_`
+    /// set; the caller may immediately start polling on the matching
+    /// `DpdkPoller`'s lcore loop.
+    [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
+    create_and_attach(StreamConfig cfg, ::eph::dpdk::Platform& platform) noexcept {
+        auto* log = detail::tcp_stream_logger();
+
+        const auto mode = platform.dispatch_mode();
+        const uint16_t nb_q = platform.nb_rx_queues();
+        if (nb_q == 0) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "create_and_attach: Platform has 0 RX queues "
+                "(moved-from or never created)"});
+        }
+
+        // ── Phase 1: pre-create — pick target queue, possibly rebind src_port ──
+        // RxDispatchMode::RssPartitioned with an explicit pin requires us to
+        // search the ephemeral src_port range for one whose Toeplitz hash
+        // lands on the target queue, AND apply that src_port to cfg before
+        // connect() runs. Other modes can defer queue selection to phase 2.
+        uint16_t target_qid = 0;
+        bool defer_queue_selection = false;
+
+        if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
+            if (cfg.pin_to_queue && *cfg.pin_to_queue != 0) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pin_to_queue != 0 in Software mode"});
+            }
+            target_qid = 0;
+        } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
+            if (cfg.pin_to_queue) {
+                const uint16_t want = *cfg.pin_to_queue;
+                if (want >= nb_q) {
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: pin_to_queue >= nb_rx_queues"});
+                }
+                // RSS input "src" is the REMOTE end (incoming packets have
+                // peer→local direction), so we feed the helper with
+                // (remote_ip=dst_ip, local_ip=src_ip, local_port=src_port).
+                const auto& t = cfg.legacy.tuple;
+                auto sp = ::eph::net::dpdk::find_src_port_for_queue(
+                    platform.port_id(), want,
+                    /*src_ip=*/t.dst_ip,
+                    /*dst_ip=*/t.src_ip,
+                    /*dst_port=*/t.src_port);
+                if (!sp) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "create_and_attach: find_src_port_for_queue({}) failed: {}",
+                        want, sp.error());
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: find_src_port_for_queue exhausted"});
+                }
+                cfg.legacy.tuple.src_port = *sp;
+                target_qid = want;
+                SPDLOG_LOGGER_INFO(log,
+                    "create_and_attach: RSS pin → src_port={} hashes to queue={}",
+                    *sp, want);
+            } else {
+                // Will compute target_qid from the FINAL 5-tuple after create().
+                defer_queue_selection = true;
+            }
+        } else {  // FlowDirector
+            if (cfg.pin_to_queue && *cfg.pin_to_queue >= nb_q) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pin_to_queue >= nb_rx_queues"});
+            }
+            // Default: round-robin via a static counter. Atomic so concurrent
+            // create_and_attach calls from different threads don't all map to
+            // queue 0. Bounded modulo nb_q at decode time.
+            if (cfg.pin_to_queue) {
+                target_qid = *cfg.pin_to_queue;
+            } else {
+                static std::atomic<uint16_t> rr_counter{0};
+                target_qid = rr_counter.fetch_add(1, std::memory_order_relaxed)
+                             % nb_q;
+            }
+        }
+
+        // ── Phase 2: actual stream construction (TCP handshake + TLS + WS) ──
+        auto sr = create(std::move(cfg));
+        if (!sr) return std::unexpected(sr.error());
+        auto stream = std::move(*sr);
+
+        // Resolve queue id from the final post-connect 5-tuple if we deferred.
+        if (defer_queue_selection) {
+            const auto& t = stream->cfg_.legacy.tuple;
+            auto qr = ::eph::net::dpdk::predict_rss_queue(
+                platform.port_id(),
+                /*src_ip=*/t.dst_ip,
+                /*src_port=*/t.dst_port,
+                /*dst_ip=*/t.src_ip,
+                /*dst_port=*/t.src_port);
+            if (!qr) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: predict_rss_queue failed"});
+            }
+            target_qid = *qr;
+            SPDLOG_LOGGER_INFO(log,
+                "create_and_attach: RSS auto → queue={}", target_qid);
+        }
+
+        // FlowDirector: install rte_flow rule steering this 5-tuple to qid.
+        // TODO: persist FlowRule as a stream member so disconnect cleans up.
+        // For now the rule is leaked until rte_eth_dev_close() at port
+        // teardown — acceptable for the initial wiring; revisit if FD path
+        // becomes the production default.
+        if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
+            const auto& t = stream->cfg_.legacy.tuple;
+            ::eph::dpdk::net::ConnectionTuple fl_tuple{
+                .src_ip   = t.src_ip,   .dst_ip   = t.dst_ip,
+                .src_port = t.src_port, .dst_port = t.dst_port};
+            auto rule = ::eph::net::dpdk::install_flow_rule(
+                platform.port_id(), target_qid, fl_tuple,
+                ::eph::net::dpdk::FlowProtocol::Tcp);
+            if (!rule) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: install_flow_rule failed: {}",
+                    rule.error());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: install_flow_rule failed"});
+            }
+            // Suppress RAII destroy so the rule persists past this scope.
+            rule->handle = nullptr;
+        }
+
+        // Look up the Poller that owns this queue + attach.
+        void* poller_void = platform.poller_for_queue(target_qid);
+        if (poller_void == nullptr) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotAttached,
+                "create_and_attach: no Poller registered for target queue"});
+        }
+        auto* poller = static_cast<DpdkPoller<void>*>(poller_void);
+        auto add_r = poller->add(stream.get());
+        if (!add_r) return std::unexpected(add_r.error());
+
+        SPDLOG_LOGGER_INFO(log,
+            "create_and_attach: TCP stream attached → port={}, queue={}, mode={}",
+            platform.port_id(), target_qid,
+            ::eph::net::dpdk::rx_dispatch_mode_name(mode));
         return stream;
     }
 

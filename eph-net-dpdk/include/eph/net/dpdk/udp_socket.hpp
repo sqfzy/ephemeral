@@ -44,6 +44,7 @@
 #include "eph/core/error.hpp"
 #include "eph/dpdk/multicast.hpp"   // multicast_mac_from_ip helper
 #include "eph/dpdk/packet_parse.hpp"
+#include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/udp.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/config.hpp"
@@ -130,6 +131,122 @@ public:
         SPDLOG_LOGGER_INFO(log,
             "DpdkUdpSocket::create: ready, peer={}:{}",
             sock->cfg_.legacy.dst_ip, sock->cfg_.legacy.dst_port);
+        return sock;
+    }
+
+    /// @brief Turnkey factory: create a UDP socket and attach it to the
+    /// per-queue Poller already registered with `platform`. Mirrors
+    /// `DpdkTcpStream::create_and_attach`. UDP has no connect handshake,
+    /// so the RSS+pin path simply rebinds the src_port in `cfg.legacy`
+    /// before sender construction.
+    [[nodiscard]] static std::expected<std::unique_ptr<DpdkUdpSocket>, core::ErrorInfo>
+    create_and_attach(UdpConfig cfg, ::eph::dpdk::Platform& platform) noexcept {
+        auto* log = detail::udp_socket_logger();
+
+        const auto mode = platform.dispatch_mode();
+        const uint16_t nb_q = platform.nb_rx_queues();
+        if (nb_q == 0) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "create_and_attach: Platform has 0 RX queues"});
+        }
+
+        uint16_t target_qid = 0;
+
+        if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
+            if (cfg.pin_to_queue && *cfg.pin_to_queue != 0) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pin_to_queue != 0 in Software mode"});
+            }
+            target_qid = 0;
+        } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
+            if (cfg.pin_to_queue) {
+                const uint16_t want = *cfg.pin_to_queue;
+                if (want >= nb_q) {
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: pin_to_queue >= nb_rx_queues"});
+                }
+                auto sp = ::eph::net::dpdk::find_src_port_for_queue(
+                    platform.port_id(), want,
+                    /*src_ip=*/cfg.legacy.dst_ip,
+                    /*dst_ip=*/cfg.legacy.src_ip,
+                    /*dst_port=*/cfg.legacy.src_port);
+                if (!sp) {
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: find_src_port_for_queue exhausted"});
+                }
+                cfg.legacy.src_port = *sp;
+                target_qid = want;
+            } else {
+                auto qr = ::eph::net::dpdk::predict_rss_queue(
+                    platform.port_id(),
+                    /*src_ip=*/cfg.legacy.dst_ip,
+                    /*src_port=*/cfg.legacy.dst_port,
+                    /*dst_ip=*/cfg.legacy.src_ip,
+                    /*dst_port=*/cfg.legacy.src_port);
+                if (!qr) {
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: predict_rss_queue failed"});
+                }
+                target_qid = *qr;
+            }
+        } else {  // FlowDirector
+            if (cfg.pin_to_queue && *cfg.pin_to_queue >= nb_q) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pin_to_queue >= nb_rx_queues"});
+            }
+            if (cfg.pin_to_queue) {
+                target_qid = *cfg.pin_to_queue;
+            } else {
+                static std::atomic<uint16_t> rr_counter{0};
+                target_qid = rr_counter.fetch_add(1, std::memory_order_relaxed)
+                             % nb_q;
+            }
+        }
+
+        auto sr = create(std::move(cfg));
+        if (!sr) return std::unexpected(sr.error());
+        auto sock = std::move(*sr);
+
+        if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
+            ::eph::dpdk::net::ConnectionTuple ft{
+                .src_ip   = sock->cfg_.legacy.src_ip,
+                .dst_ip   = sock->cfg_.legacy.dst_ip,
+                .src_port = sock->cfg_.legacy.src_port,
+                .dst_port = sock->cfg_.legacy.dst_port};
+            auto rule = ::eph::net::dpdk::install_flow_rule(
+                platform.port_id(), target_qid, ft,
+                ::eph::net::dpdk::FlowProtocol::Udp);
+            if (!rule) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: install_flow_rule failed: {}",
+                    rule.error());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: install_flow_rule failed"});
+            }
+            rule->handle = nullptr;  // see TODO in tcp_stream.hpp
+        }
+
+        void* poller_void = platform.poller_for_queue(target_qid);
+        if (poller_void == nullptr) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotAttached,
+                "create_and_attach: no Poller registered for target queue"});
+        }
+        auto* poller = static_cast<DpdkPoller<void>*>(poller_void);
+        auto add_r = poller->add(sock.get());
+        if (!add_r) return std::unexpected(add_r.error());
+
+        SPDLOG_LOGGER_INFO(log,
+            "create_and_attach: UDP socket attached → port={}, queue={}, mode={}",
+            platform.port_id(), target_qid,
+            ::eph::net::dpdk::rx_dispatch_mode_name(mode));
         return sock;
     }
 
