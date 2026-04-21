@@ -59,9 +59,8 @@ xmake run test_dpdk_tls_state         # in-place decrypt state tests
 xmake run test_dpdk_udp_multicast     # multicast join/leave
 
 # Legacy unit tests for the internal primitives (still the coverage
-# source for eph::dpdk::DpdkTcpSession / RxDispatcher / ARP / DNS / ...)
+# source for eph::dpdk::DpdkTcpSession / ARP / DNS / multicast / ...)
 xmake run test_tcp                    # TCP state machine
-xmake run test_reactor                # legacy reactor (internal detail)
 xmake run test_arp / test_dns / ...
 
 # Full end-to-end (needs NIC_B on vfio-pci, skips cleanly otherwise)

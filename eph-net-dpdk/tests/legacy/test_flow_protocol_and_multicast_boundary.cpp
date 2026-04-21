@@ -11,10 +11,12 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/dpdk/flow_steering.hpp"
 #include "eph/dpdk/multicast.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
 
 using namespace eph::dpdk;
+using ::eph::net::dpdk::FlowProtocol;
+using ::eph::net::dpdk::flow_protocol_name;
 
 // ═══════════════════════════════════════════════════════════════════════
 // FlowProtocol — enum names and formatter

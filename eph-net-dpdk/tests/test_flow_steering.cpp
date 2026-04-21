@@ -6,16 +6,16 @@
 /// These tests cover:
 ///   - Enum names and values
 ///   - FlowRule RAII semantics (move, default state)
-///   - detect_rx_dispatch_mode return value semantics
+///   - configure_rss validation paths that don't need a NIC
 
 #include <format>
 
 #include <gtest/gtest.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
-#include "eph/dpdk/flow_steering.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
 
-using namespace eph::dpdk;
+using namespace eph::net::dpdk;
 
 // ---------------------------------------------------------------------------
 // RxDispatchMode
@@ -23,7 +23,7 @@ using namespace eph::dpdk;
 
 TEST(RxDispatchMode, NameSoftware) {
     EXPECT_EQ(rx_dispatch_mode_name(RxDispatchMode::Software),
-              "Software (RxDispatcher)");
+              "Software (single-Poller fallback)");
 }
 
 TEST(RxDispatchMode, NameRss) {
@@ -102,14 +102,15 @@ TEST(ConfigureRss, RejectsZeroQueues) {
 // ---------------------------------------------------------------------------
 
 TEST(RxDispatchMode, FormatterProducesOutput) {
-    EXPECT_EQ(std::format("{}", RxDispatchMode::Software), "Software (RxDispatcher)");
+    EXPECT_EQ(std::format("{}", RxDispatchMode::Software),
+              "Software (single-Poller fallback)");
     EXPECT_EQ(std::format("{}", RxDispatchMode::RssPartitioned), "RSS Partitioned");
     EXPECT_EQ(std::format("{}", RxDispatchMode::FlowDirector), "Flow Director (rte_flow)");
 }
 
 TEST(RxDispatchMode, FormatterWorksInCompositeFormat) {
     auto s = std::format("mode={} port={}", RxDispatchMode::Software, 0);
-    EXPECT_EQ(s, "mode=Software (RxDispatcher) port=0");
+    EXPECT_EQ(s, "mode=Software (single-Poller fallback) port=0");
 }
 
 // ---------------------------------------------------------------------------
@@ -248,3 +249,140 @@ TEST(FlowRule, DoubleRemoveIsSafe) {
     rule.remove();  // Idempotent
     EXPECT_FALSE(rule.valid());
 }
+
+// ---------------------------------------------------------------------------
+// kRssDefaultKey
+// ---------------------------------------------------------------------------
+
+TEST(RssDefaultKey, FortyBytes) {
+    EXPECT_EQ(kRssDefaultKey.size(), 40u);
+}
+
+TEST(RssDefaultKey, MicrosoftFirstByte) {
+    // Sanity: Microsoft / DPDK default key starts with 0x6D 0x5A 0x56 0xDA
+    EXPECT_EQ(kRssDefaultKey[0], 0x6D);
+    EXPECT_EQ(kRssDefaultKey[1], 0x5A);
+    EXPECT_EQ(kRssDefaultKey[2], 0x56);
+    EXPECT_EQ(kRssDefaultKey[3], 0xDA);
+}
+
+// ---------------------------------------------------------------------------
+// toeplitz_hash — Microsoft RSS verification vectors (IPv4 + TCP, full L3+L4)
+// Source: DPDK lib/eal test_thash.c (which itself follows Microsoft's
+// "Verifying the RSS Hash Calculation" spec).
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr uint32_t make_ipv4(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    return (uint32_t(a) << 24) | (uint32_t(b) << 16) |
+           (uint32_t(c) <<  8) |  uint32_t(d);
+}
+}
+
+TEST(ToeplitzHash, MicrosoftVector1_IPv4Tcp) {
+    // src=66.9.149.187:2794, dst=161.142.100.80:1766 → 0x51ccc178
+    const uint32_t h = toeplitz_hash_ipv4(
+        std::span(kRssDefaultKey),
+        make_ipv4(66, 9, 149, 187), 2794,
+        make_ipv4(161, 142, 100, 80), 1766);
+    EXPECT_EQ(h, 0x51ccc178u);
+}
+
+TEST(ToeplitzHash, MicrosoftVector2_IPv4Tcp) {
+    // src=199.92.111.2:14230, dst=65.69.140.83:4739 → 0xc626b0ea
+    const uint32_t h = toeplitz_hash_ipv4(
+        std::span(kRssDefaultKey),
+        make_ipv4(199, 92, 111, 2), 14230,
+        make_ipv4(65, 69, 140, 83), 4739);
+    EXPECT_EQ(h, 0xc626b0eau);
+}
+
+TEST(ToeplitzHash, MicrosoftVector3_IPv4Tcp) {
+    // src=24.19.198.95:12898, dst=12.22.207.184:38024 → 0x5c2b394a
+    const uint32_t h = toeplitz_hash_ipv4(
+        std::span(kRssDefaultKey),
+        make_ipv4(24, 19, 198, 95), 12898,
+        make_ipv4(12, 22, 207, 184), 38024);
+    EXPECT_EQ(h, 0x5c2b394au);
+}
+
+TEST(ToeplitzHash, MicrosoftVector4_IPv4Tcp) {
+    // src=38.27.205.30:48228, dst=209.142.163.6:2217 → 0xafc7327f
+    const uint32_t h = toeplitz_hash_ipv4(
+        std::span(kRssDefaultKey),
+        make_ipv4(38, 27, 205, 30), 48228,
+        make_ipv4(209, 142, 163, 6), 2217);
+    EXPECT_EQ(h, 0xafc7327fu);
+}
+
+TEST(ToeplitzHash, MicrosoftVector5_IPv4Tcp) {
+    // src=153.39.163.191:44251, dst=202.188.127.2:1303 → 0x10e828a2
+    const uint32_t h = toeplitz_hash_ipv4(
+        std::span(kRssDefaultKey),
+        make_ipv4(153, 39, 163, 191), 44251,
+        make_ipv4(202, 188, 127, 2), 1303);
+    EXPECT_EQ(h, 0x10e828a2u);
+}
+
+TEST(ToeplitzHash, Deterministic) {
+    auto h1 = toeplitz_hash_ipv4(std::span(kRssDefaultKey),
+                                  0x0a000001, 12345, 0x0a000002, 443);
+    auto h2 = toeplitz_hash_ipv4(std::span(kRssDefaultKey),
+                                  0x0a000001, 12345, 0x0a000002, 443);
+    EXPECT_EQ(h1, h2);
+}
+
+TEST(ToeplitzHash, DifferentSrcPortDifferentHash) {
+    auto h1 = toeplitz_hash_ipv4(std::span(kRssDefaultKey),
+                                  0x0a000001, 12345, 0x0a000002, 443);
+    auto h2 = toeplitz_hash_ipv4(std::span(kRssDefaultKey),
+                                  0x0a000001, 12346, 0x0a000002, 443);
+    EXPECT_NE(h1, h2);
+}
+
+TEST(ToeplitzHash, EmptyInputReturnsZero) {
+    std::array<uint8_t, 0> empty{};
+    auto h = toeplitz_hash(std::span(kRssDefaultKey),
+                           std::span<const uint8_t>(empty));
+    EXPECT_EQ(h, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// queue_for_hash
+// ---------------------------------------------------------------------------
+
+TEST(QueueForHash, MapsByLowBits) {
+    // 4-queue RETA distributing round-robin
+    std::array<uint16_t, 4> reta{0, 1, 2, 3};
+    EXPECT_EQ(queue_for_hash(0u,           reta), 0u);
+    EXPECT_EQ(queue_for_hash(0xFFFFFFFCu,  reta), 0u);
+    EXPECT_EQ(queue_for_hash(0x12345671u,  reta), 1u);
+    EXPECT_EQ(queue_for_hash(0xFFFFFFFFu,  reta), 3u);
+}
+
+TEST(QueueForHash, RoundRobin8Queues) {
+    std::array<uint16_t, 8> reta{0, 1, 2, 3, 4, 5, 6, 7};
+    for (uint32_t h = 0; h < 16; ++h) {
+        EXPECT_EQ(queue_for_hash(h, reta), h & 7u)
+            << "hash " << h;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// find_src_port_for_queue — validation paths (NIC-independent)
+// ---------------------------------------------------------------------------
+
+TEST(FindSrcPortForQueue, RejectsInvertedRange) {
+    auto r = find_src_port_for_queue(/*port_id=*/0, /*target=*/0,
+                                     /*src_ip=*/0x0a000001,
+                                     /*dst_ip=*/0x0a000002, /*dst_port=*/443,
+                                     /*range_start=*/40000,
+                                     /*range_end=*/30000);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("port_range_start"), std::string::npos);
+}
+
+// NOTE: any test that calls predict_rss_queue / find_src_port_for_queue
+// against a real port_id requires DPDK EAL + a configured NIC. Those
+// paths are exercised by the integration test in stage 3
+// (test_dpdk_rss_platform), not here.

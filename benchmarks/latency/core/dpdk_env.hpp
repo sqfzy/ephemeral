@@ -185,13 +185,52 @@ load_dpdk_env(const bench::ScenarioConfig& globals,
         "load_dpdk_env: EAL argv synthesized: {} cores={} pci={}",
         argc, eal_cores, *dpdk_pci_r);
 
+    // ── Optional RSS / multi-queue from globals ──────────────────────────
+    // bench.conf knobs:
+    //   NB_RX_QUEUES=4
+    //   ENABLE_RSS=true
+    // Defaults (1 / false) keep every existing scenario behaviourally
+    // identical to the pre-stage-5 path.
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id = dpdk_port_id;
+    // Mirror the lowercase / uppercase fallback style used for mock_ip
+    // / SERVER_IP — bench.conf may carry either form for these knobs.
+    auto get_u32_either = [&](std::string_view lower, std::string_view upper,
+                              uint32_t deflt) -> uint32_t {
+        if (auto v = globals.get_u32(lower); v) return *v;
+        if (auto v = globals.get_u32(upper); v) return *v;
+        return deflt;
+    };
+    auto get_str_either = [&](std::string_view lower, std::string_view upper)
+                              -> std::string {
+        std::string v{globals.get_string(lower, "")};
+        if (v.empty()) v = std::string{globals.get_string(upper, "")};
+        return v;
+    };
+    pcfg.nb_rx_queues = static_cast<uint16_t>(
+        get_u32_either("nb_rx_queues", "NB_RX_QUEUES", 1));
+    pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
+    {
+        std::string rss_str = strip_inline_comment(
+            get_str_either("enable_rss", "ENABLE_RSS"));
+        for (auto& c : rss_str)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        pcfg.enable_rss = (rss_str == "true" || rss_str == "1" ||
+                           rss_str == "yes" || rss_str == "on");
+    }
+    if (pcfg.enable_rss || pcfg.nb_rx_queues > 1) {
+        spdlog::info(
+            "load_dpdk_env: RSS configured nb_rx_queues={} enable_rss={}",
+            pcfg.nb_rx_queues, pcfg.enable_rss ? "true" : "false");
+    }
+
     // ── Delegate to the shared EAL+Platform+ARP bring-up ─────────────────
     auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full(
         argc, argv.data(),
         *mock_ip_r,     // server_ip
         *client_ip_r,   // local_ip
         *gateway_ip_r,  // gateway_ip
-        dpdk_port_id);
+        pcfg);
     if (!env_r) {
         return std::unexpected("load_dpdk_env: create_full: " + env_r.error());
     }

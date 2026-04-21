@@ -24,8 +24,8 @@ namespace eph::dpdk::net {
 /// @brief Minimal L2+L3 parse result for protocol dispatch.
 ///
 /// Extracts Ethernet + IPv4 headers and IP protocol number without parsing
-/// L4 (TCP/UDP). Used by RxDispatcher to determine protocol before committing
-/// to a full L4 parse, avoiding redundant IP header parsing.
+/// L4 (TCP/UDP). Used by `DpdkPoller<>` dispatch to determine protocol
+/// before committing to a full L4 parse, avoiding redundant IP header parsing.
 ///
 /// @note Zero-copy — all pointers reference the original mbuf data buffer.
 struct ParsedIpHeader {
@@ -164,9 +164,9 @@ struct ParsedPacket {
 
 /// @brief Parse TCP L4 headers from a pre-parsed IP header (zero-redundancy).
 ///
-/// Skips L2/L3 parsing (already done by parse_ip_header). Use this in RxDispatcher
-/// dispatch paths where parse_ip_header is called once for protocol detection,
-/// then the appropriate L4 parser is invoked.
+/// Skips L2/L3 parsing (already done by parse_ip_header). Use this in
+/// `DpdkPoller<>` dispatch paths where parse_ip_header is called once for
+/// protocol detection, then the appropriate L4 parser is invoked.
 ///
 /// @param mbuf    Received packet mbuf
 /// @param ip_hdr  Pre-parsed IP header from parse_ip_header()
@@ -214,7 +214,7 @@ parse_tcp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
 /// @brief Parse an Ethernet/IPv4/TCP packet from an mbuf (zero-copy).
 ///
 /// Convenience wrapper that calls parse_ip_header() + parse_tcp_from_ip().
-/// For RxDispatcher dispatch where protocol detection is done first, prefer
+/// For `DpdkPoller<>` dispatch where protocol detection is done first, prefer
 /// calling the layered API directly to avoid redundant IP parsing.
 ///
 /// @param mbuf  Received packet mbuf (must not be null)
@@ -270,8 +270,8 @@ struct ParsedUdpPacket {
 
 /// @brief Parse UDP L4 headers from a pre-parsed IP header (zero-redundancy).
 ///
-/// Skips L2/L3 parsing (already done by parse_ip_header). Use this in RxDispatcher
-/// dispatch paths for zero-redundancy protocol dispatch.
+/// Skips L2/L3 parsing (already done by parse_ip_header). Use this in
+/// `DpdkPoller<>` dispatch paths for zero-redundancy protocol dispatch.
 ///
 /// @param mbuf    Received packet mbuf
 /// @param ip_hdr  Pre-parsed IP header from parse_ip_header()
@@ -317,7 +317,7 @@ parse_udp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
 /// @brief Parse a UDP/IPv4/Ethernet packet from an mbuf (zero-copy).
 ///
 /// Convenience wrapper that calls parse_ip_header() + parse_udp_from_ip().
-/// For RxDispatcher dispatch, prefer the layered API directly.
+/// For `DpdkPoller<>` dispatch, prefer the layered API directly.
 ///
 /// @param mbuf  Received packet mbuf (must not be null)
 /// @return ParsedUdpPacket with all fields on success, all-null if not valid UDP

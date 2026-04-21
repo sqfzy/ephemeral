@@ -73,13 +73,17 @@ struct DpdkBenchEnv {
     DpdkBenchEnv(DpdkBenchEnv&&) = default;
     DpdkBenchEnv& operator=(DpdkBenchEnv&&) = default;
 
-    /// Full factory with explicit server / local / gateway IPs.
+    /// Full factory with explicit PlatformConfig — the override path that
+    /// lets the bench helpers turn on RSS / multi-queue (`nb_rx_queues`,
+    /// `enable_rss`) without touching the legacy 6-arg call sites.
+    /// `pcfg.port_id` is honoured; all other fields land verbatim on the
+    /// constructed Platform.
     [[nodiscard]] static std::expected<DpdkBenchEnv, std::string>
     create_full(int argc, char** argv,
                 const std::string& server_ip_str,
                 const std::string& local_ip_str,
                 const std::string& gateway_ip_str,
-                uint16_t dpdk_port_id) {
+                const eph::dpdk::PlatformConfig& pcfg_template) {
         // ── 1. Split argv at "--" ──────────────────────────────────
         int eal_argc = argc;
         char** eal_argv = argv;
@@ -94,11 +98,10 @@ struct DpdkBenchEnv {
         auto eal = eph::dpdk::EalGuard::init(eal_argc, eal_argv);
         if (!eal) return std::unexpected("EAL init: " + eal.error());
 
-        // ── 3. Platform ───────────────────────────────────────────
-        eph::dpdk::PlatformConfig pcfg{};
-        pcfg.port_id = dpdk_port_id;
-        auto plat = eph::dpdk::Platform::create(pcfg);
+        // ── 3. Platform (caller-supplied config) ──────────────────
+        auto plat = eph::dpdk::Platform::create(pcfg_template);
         if (!plat) return std::unexpected("Platform: " + plat.error());
+        const uint16_t dpdk_port_id = pcfg_template.port_id;
 
         uint16_t port_id = plat->port_id();
         rte_mempool* pool = plat->mempool();
@@ -148,6 +151,20 @@ struct DpdkBenchEnv {
             src_mac, *gw_mac_result,
             port_id, pool
         };
+    }
+
+    /// Backwards-compatible overload — defaults to single-queue / RSS-off.
+    /// New code that wants RSS should use the PlatformConfig overload.
+    [[nodiscard]] static std::expected<DpdkBenchEnv, std::string>
+    create_full(int argc, char** argv,
+                const std::string& server_ip_str,
+                const std::string& local_ip_str,
+                const std::string& gateway_ip_str,
+                uint16_t dpdk_port_id) {
+        eph::dpdk::PlatformConfig pcfg{};
+        pcfg.port_id = dpdk_port_id;
+        return create_full(argc, argv, server_ip_str, local_ip_str,
+                           gateway_ip_str, pcfg);
     }
 
     /// Create a UdpSender configured for this environment.

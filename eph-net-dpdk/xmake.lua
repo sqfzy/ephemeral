@@ -14,8 +14,10 @@
 -- (they are header-only and stay under the `eph::dpdk` namespace / `eph/dpdk/`
 -- include path to minimise churn):
 --
---   * eph::dpdk::TcpSession / UdpSender / RxDispatcher / Connector / Multicast /
---     ARP / DNS / FlowSteering / packet_* / platform / EalGuard
+--   * eph::dpdk::TcpSession / UdpSender / Connector / Multicast /
+--     ARP / DNS / packet_* / platform / EalGuard
+-- And in `eph::net::dpdk`:
+--   * FlowSteering / configure_rss / install_flow_rule / FlowRule
 --
 -- Dependency rule: eph-core + eph-utils + eph-containers + eph-net +
 -- aws-lc + DPDK.
@@ -81,6 +83,21 @@ target("test_dpdk_e2e")
     add_deps("eph-net-dpdk", "eph-net", "eph-codec")
     -- The fixture reuses bench's DpdkBenchEnv via #include of
     -- benchmarks/latency/core/dpdk_env.hpp.
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_defines("EPH_USE_DPDK=1")
+    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
+        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
+    apply_dpdk_pmd_linkgroups()
+
+-- Stage 3 RSS Platform integration test (real-NIC).  Self-contained —
+-- it does NOT fork the kernel mock dispatcher, just verifies the
+-- Platform RSS surface (dispatch_mode + register_poller + poller_for_queue).
+-- SKIPs when NIC_B is not bound to vfio-pci.
+target("test_dpdk_rss_platform")
+    add_rules("eph-test")
+    add_files("tests/integration/test_dpdk_rss_platform.cpp")
+    add_includedirs("tests/integration")
+    add_deps("eph-net-dpdk")
     add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
     add_defines("EPH_USE_DPDK=1")
     add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
