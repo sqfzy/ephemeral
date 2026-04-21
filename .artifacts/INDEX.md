@@ -64,3 +64,4 @@
 | 2026-04-21 04:43 | /design auto | RSS support 5-stage rollout (stage 5 partial) | ed6c94a | design-rss-eph-net-dpdk-20260421-044326.md |
 | 2026-04-21 05:02 | /design auto stage 5 bench | RSS plumbing end-to-end verified; default config zero regression; multi-stream lat refactor as follow-up | (pending commit) | bench-report-rss-multi-queue-20260421-050200.md |
 | 2026-04-21 05:19 | /design auto stage 3 retest | Platform RSS integration test now real-NIC verified — 1/1 PASS (consolidated 6 atomic assertions into single TEST to dodge DPDK port slot detach after dev_close) | (pending) | (no new artifact) |
+| 2026-04-21 05:25 | /review main..HEAD | 10-commit RSS branch review — 0 critical, 3 major (perf O(N) NIC syscalls, dispatch_mode/rss_active inconsistency, no e2e create_and_attach test), 5 minor, 3 nit; APPROVE with M1+m4 fix recommended pre-merge | 8314757 | review-rss-eph-net-dpdk-20260421-052500.md |
