@@ -41,6 +41,19 @@ inline constexpr uint16_t kWsPingPort      = 19202;
 /// with CAP_NET_BIND_SERVICE and risks colliding with systemd-resolved.
 /// `dns::resolve()` accepts an arbitrary port via `DnsConfig::port`.
 inline constexpr uint16_t kDnsMockPort          = 19401;
+
+// Lock the "above 19000, below 20000" invariant at compile time so an
+// accidental edit that lowered a port back into the ephemeral range
+// (≥ 32768 on Linux) or the privileged range (< 1024) cannot slip in
+// without being noticed. Tightening to < 20000 also keeps the block
+// contiguous and reserved — see bench.conf for the overlapping ranges.
+static_assert(kTcpEchoPort    >= 19000 && kTcpEchoPort    < 20000);
+static_assert(kTcpRstPort     >= 19000 && kTcpRstPort     < 20000);
+static_assert(kTcpFinPort     >= 19000 && kTcpFinPort     < 20000);
+static_assert(kUdpEchoPort    >= 19000 && kUdpEchoPort    < 20000);
+static_assert(kWsEchoPort     >= 19000 && kWsEchoPort     < 20000);
+static_assert(kWsPingPort     >= 19000 && kWsPingPort     < 20000);
+static_assert(kDnsMockPort    >= 19000 && kDnsMockPort    < 20000);
 /// IP that the DNS mock answers with for every A query.  192.0.2.42 is
 /// in TEST-NET-1 (RFC 5737) — unambiguously synthetic, won't be
 /// confused with real production data.
