@@ -16,9 +16,12 @@
 ///       // session polls from a dedicated queue — zero dispatcher overhead
 ///   }
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -420,6 +423,196 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     rule.queue_id = queue_id;
     rule.handle = flow;
     return rule;
+}
+
+// ---------------------------------------------------------------------------
+// RSS hash prediction (Step 4) — Toeplitz over IPv4 5-tuple
+// ---------------------------------------------------------------------------
+
+/// DPDK / Microsoft default RSS Toeplitz key (40 bytes). Used as the
+/// fallback when the driver does not implement `rte_eth_dev_rss_hash_conf_get`
+/// (notably AWS ENA on some kernel versions). The key matches the one
+/// applied by `configure_rss()` (which passes `rss_key = nullptr` to let
+/// DPDK use this same default).
+inline constexpr std::array<uint8_t, 40> kRssDefaultKey = {
+    0x6D, 0x5A, 0x56, 0xDA, 0x25, 0x5B, 0x0E, 0xC2,
+    0x41, 0x67, 0x25, 0x3D, 0x43, 0xA3, 0x8F, 0xB0,
+    0xD0, 0xCA, 0x2B, 0xCB, 0xAE, 0x7B, 0x30, 0xB4,
+    0x77, 0xCB, 0x2D, 0xA3, 0x80, 0x30, 0xF2, 0x0C,
+    0x6A, 0x42, 0xB7, 0x3B, 0xBE, 0xAC, 0x01, 0xFA,
+};
+
+/// Compute the Toeplitz hash of an arbitrary input byte string under the
+/// given RSS key, per Microsoft's "Verifying the RSS Hash Calculation"
+/// spec.
+///
+/// The reference impl walks every input bit MSB-first; for each set bit
+/// it XORs into the result a 32-bit window of the key starting at that
+/// same bit offset. Performance is irrelevant on the connect path; clarity
+/// over micro-optimisation.
+///
+/// @param key   RSS key bytes (typically 40); must be at least
+///              `input.size() + 4` bytes long, otherwise high bits of
+///              the trailing window read as zero (matches MSFT spec).
+/// @param input The packet field tuple in NETWORK byte order.
+[[nodiscard]] inline uint32_t
+toeplitz_hash(std::span<const uint8_t> key,
+              std::span<const uint8_t> input) noexcept {
+    uint32_t result = 0;
+    const size_t total_bits = input.size() * 8;
+    for (size_t k = 0; k < total_bits; ++k) {
+        const size_t input_byte = k / 8;
+        const size_t input_bit  = 7 - (k % 8); // MSB-first
+        if (((input[input_byte] >> input_bit) & 1u) == 0) continue;
+
+        // 32-bit window of key starting at bit k.
+        uint32_t window = 0;
+        for (int w = 0; w < 32; ++w) {
+            const size_t kbit = k + w;
+            const size_t kby  = kbit / 8;
+            const size_t kbi  = 7 - (kbit % 8);
+            if (kby < key.size() && (key[kby] >> kbi) & 1u) {
+                window |= (1u << (31 - w));
+            }
+        }
+        result ^= window;
+    }
+    return result;
+}
+
+/// Convenience wrapper: hash an IPv4 + L4 5-tuple per Microsoft RSS spec.
+///
+/// The Microsoft layout for IPv4 + TCP/UDP RSS is:
+///   src_ip (BE32) | dst_ip (BE32) | src_port (BE16) | dst_port (BE16)
+///
+/// All inputs are in HOST byte order; the function serialises them to
+/// network-byte-order before feeding `toeplitz_hash`.
+///
+/// @note `src` here is the RSS-input "source" — for a packet arriving
+/// at the NIC it is the REMOTE peer (incoming src). When predicting the
+/// queue for a connection you opened locally, pass remote-as-src and
+/// local-as-dst.
+[[nodiscard]] inline uint32_t
+toeplitz_hash_ipv4(std::span<const uint8_t> rss_key,
+                   uint32_t src_ip, uint16_t src_port,
+                   uint32_t dst_ip, uint16_t dst_port) noexcept {
+    std::array<uint8_t, 12> buf{};
+    buf[0]  = uint8_t(src_ip   >> 24); buf[1]  = uint8_t(src_ip   >> 16);
+    buf[2]  = uint8_t(src_ip   >>  8); buf[3]  = uint8_t(src_ip   >>  0);
+    buf[4]  = uint8_t(dst_ip   >> 24); buf[5]  = uint8_t(dst_ip   >> 16);
+    buf[6]  = uint8_t(dst_ip   >>  8); buf[7]  = uint8_t(dst_ip   >>  0);
+    buf[8]  = uint8_t(src_port >>  8); buf[9]  = uint8_t(src_port >>  0);
+    buf[10] = uint8_t(dst_port >>  8); buf[11] = uint8_t(dst_port >>  0);
+    return toeplitz_hash(rss_key, std::span<const uint8_t>(buf));
+}
+
+/// Look up which RX queue a Toeplitz hash routes to via the RETA table.
+/// The standard RSS rule is `queue = reta[hash & (reta_size - 1)]`.
+///
+/// @param hash         Toeplitz hash of the packet's 5-tuple.
+/// @param reta_table   Flattened RETA — one queue id per slot. Size MUST
+///                     be a power of two (RSS spec); otherwise behaviour
+///                     is implementation-defined.
+[[nodiscard]] inline uint16_t
+queue_for_hash(uint32_t hash, std::span<const uint16_t> reta_table) noexcept {
+    return reta_table[hash & (reta_table.size() - 1)];
+}
+
+/// Predict which RX queue a packet with the given 5-tuple will land on.
+///
+/// Reads the live RSS key + RETA from the NIC. Some PMDs (notably ENA)
+/// reject `rte_eth_dev_rss_hash_conf_get`; in that case we fall back to
+/// `kRssDefaultKey` (which is what `configure_rss` installs by default,
+/// so the prediction stays accurate as long as nobody overwrote the key).
+///
+/// @note `src_ip / src_port` describe the RSS *input* "source" — i.e.
+/// the REMOTE end as seen by the NIC on incoming packets. To predict
+/// the queue for a TCP connection you initiated as the local end, pass
+/// `(remote_ip, remote_port, local_ip, local_port)`.
+[[nodiscard]] inline std::expected<uint16_t, std::string>
+predict_rss_queue(uint16_t port_id,
+                  uint32_t src_ip, uint16_t src_port,
+                  uint32_t dst_ip, uint16_t dst_port) noexcept {
+    [[maybe_unused]] auto* log = detail::flow_logger();
+
+    // 1. RSS key — try driver readback first, fall back to default.
+    std::array<uint8_t, 64> key_buf{};
+    rte_eth_rss_conf rss_conf{};
+    rss_conf.rss_key = key_buf.data();
+    rss_conf.rss_key_len = static_cast<uint8_t>(key_buf.size());
+    int ret = rte_eth_dev_rss_hash_conf_get(port_id, &rss_conf);
+
+    std::span<const uint8_t> key_view;
+    if (ret == 0 && rss_conf.rss_key_len > 0) {
+        key_view = std::span(key_buf.data(),
+                             static_cast<size_t>(rss_conf.rss_key_len));
+    } else {
+        SPDLOG_LOGGER_DEBUG(log,
+            "rte_eth_dev_rss_hash_conf_get unsupported on port {} (ret={}), "
+            "falling back to kRssDefaultKey", port_id, ret);
+        key_view = std::span(kRssDefaultKey);
+    }
+
+    // 2. RETA — query the live indirection table.
+    rte_eth_dev_info dev_info{};
+    if (rte_eth_dev_info_get(port_id, &dev_info) != 0) {
+        return std::unexpected("rte_eth_dev_info_get failed");
+    }
+    uint16_t reta_size = dev_info.reta_size;
+    if (reta_size == 0) reta_size = 128;
+    reta_size = std::min(reta_size, static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
+
+    rte_eth_rss_reta_entry64 reta[RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE]{};
+    const uint16_t groups = reta_size / RTE_ETH_RETA_GROUP_SIZE;
+    for (uint16_t i = 0; i < groups; ++i) reta[i].mask = ~uint64_t(0);
+    if (rte_eth_dev_rss_reta_query(port_id, reta, reta_size) != 0) {
+        return std::unexpected("rte_eth_dev_rss_reta_query failed");
+    }
+
+    // 3. Hash + lookup.
+    const uint32_t h = toeplitz_hash_ipv4(key_view, src_ip, src_port,
+                                          dst_ip, dst_port);
+    const size_t reta_idx = h & (reta_size - 1);
+    const size_t group = reta_idx / RTE_ETH_RETA_GROUP_SIZE;
+    const size_t bit   = reta_idx % RTE_ETH_RETA_GROUP_SIZE;
+    return reta[group].reta[bit];
+}
+
+/// Find a `src_port` in the given range so that the resulting 5-tuple
+/// (with `src_ip` / `dst_ip` / `dst_port` fixed) RSS-hashes to
+/// `target_queue`. Linear scan; returns the first match.
+///
+/// Used by `Stream::create_and_attach` in `RssPartitioned` mode when
+/// the user explicitly pinned the connection to a specific queue: we
+/// rebind the socket's local port until RSS lands the connection where
+/// the user asked.
+///
+/// Default range matches the Linux ephemeral-port window
+/// `/proc/sys/net/ipv4/ip_local_port_range` (32768..60999).
+///
+/// @return the chosen src_port, or an error string starting with
+/// "RssHashPredictExhausted" if no port in the range hashes to the
+/// target queue.
+[[nodiscard]] inline std::expected<uint16_t, std::string>
+find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
+                        uint32_t src_ip,
+                        uint32_t dst_ip, uint16_t dst_port,
+                        uint16_t port_range_start = 32768,
+                        uint16_t port_range_end   = 60999) noexcept {
+    if (port_range_start > port_range_end) {
+        return std::unexpected(
+            "find_src_port_for_queue: port_range_start > port_range_end");
+    }
+    for (uint32_t sp = port_range_start; sp <= port_range_end; ++sp) {
+        auto qid = predict_rss_queue(port_id, src_ip,
+                                     static_cast<uint16_t>(sp),
+                                     dst_ip, dst_port);
+        if (!qid) return std::unexpected(qid.error());
+        if (*qid == target_queue) return static_cast<uint16_t>(sp);
+    }
+    return std::unexpected(std::format(
+        "RssHashPredictExhausted: no src_port in [{},{}] hashes to queue {}",
+        port_range_start, port_range_end, target_queue));
 }
 
 } // namespace eph::net::dpdk
