@@ -204,26 +204,44 @@ public:
     ///        invoke its callback with `parsed.next_hop_mtu` and bump
     ///        the `dispatched()` counter. Silently no-op on no match
     ///        or on `embedded_valid == false`.
-    /// @note Thread-safe under `mu_`. The callback runs **while
-    ///       holding the lock** — callbacks must not call back into
-    ///       the registry (would deadlock). Our Stream callback just
-    ///       forwards to `sess_.on_icmp_frag_needed(mtu)` which is a
-    ///       pure TcpSession-local operation — safe.
+    /// @note The **match-and-copy** happens under `mu_`, but the
+    ///       callback itself is invoked **after releasing the lock**.
+    ///       This lets callbacks safely call back into the registry
+    ///       (e.g. `unregister` from a different thread's Handle
+    ///       destructor, or a future self-unregistering target)
+    ///       without recursive-lock deadlock.
     void dispatch(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
         if (!parsed.embedded_valid) return;
-        std::lock_guard<std::mutex> g(mu_);
-        for (std::size_t i = 0; i < n_targets_; ++i) {
-            const auto& e = targets_[i];
-            if (e.proto            == parsed.embedded_proto   &&
-                e.tuple.src_ip     == parsed.embedded_src_ip  &&
-                e.tuple.dst_ip     == parsed.embedded_dst_ip  &&
-                e.tuple.src_port   == parsed.embedded_src_port &&
-                e.tuple.dst_port   == parsed.embedded_dst_port) {
-                e.cb(e.stream, parsed.next_hop_mtu);
-                ++dispatched_;
-                return;
+
+        // Match-and-copy phase: scan under the lock and snapshot the
+        // (stream, cb) pair into stack locals so we can release the
+        // lock before invoking. dispatched_ is bumped here (before
+        // the call) so the counter and the decision to invoke are
+        // atomic with respect to other threads' scans — a concurrent
+        // unregister will remove the entry we just snapshotted, but
+        // the counter correctly records that the dispatch-to-that-
+        // entry happened.
+        void*       stream = nullptr;
+        MtuCallback cb     = nullptr;
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            for (std::size_t i = 0; i < n_targets_; ++i) {
+                const auto& e = targets_[i];
+                if (e.proto            == parsed.embedded_proto   &&
+                    e.tuple.src_ip     == parsed.embedded_src_ip  &&
+                    e.tuple.dst_ip     == parsed.embedded_dst_ip  &&
+                    e.tuple.src_port   == parsed.embedded_src_port &&
+                    e.tuple.dst_port   == parsed.embedded_dst_port) {
+                    stream = e.stream;
+                    cb     = e.cb;
+                    ++dispatched_;
+                    break;
+                }
             }
         }
+        // Invoke out-of-lock — callback is free to mutate the
+        // registry (or anything else) without deadlock risk.
+        if (cb) cb(stream, parsed.next_hop_mtu);
     }
 
     /// @brief Cumulative count of successful dispatches.
