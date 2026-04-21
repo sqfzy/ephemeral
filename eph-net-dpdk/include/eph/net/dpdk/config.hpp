@@ -115,6 +115,22 @@ struct StreamConfig {
     ///        — silently dropping application bytes is not an option in
     ///        HFT. Kept symmetric with `eph::net::kernel::StreamConfig`
     ///        which carries the same field.
+    ///
+    /// Sizing guidance:
+    ///   - Rule of thumb: set to **2-4x** the largest single frame your
+    ///     codec is expected to emit in one burst, rounded up to a
+    ///     convenient power of two. The factor covers transient drain
+    ///     lag where the codec hasn't consumed the previous frame yet.
+    ///   - Workload benchmarks:
+    ///       * WS market-data (JSON bookTicker) ................ 64-128 KiB
+    ///       * WS L2 orderbook snapshot (BTC/USDT) ............ 256-384 KiB
+    ///       * FIX Drop Copy / large ITCH message bundle ...... 512 KiB
+    ///   - Overflow is visible: monitor `StreamMetric::kReasmOverflows`.
+    ///     A non-zero counter means frames were dropped and the stream
+    ///     was reset; if it persists, raise `reasm_capacity` until the
+    ///     counter stays at zero under peak load.
+    ///   - Memory footprint: the buffer is allocated once per Stream and
+    ///     is not shared — N streams → N × capacity resident bytes.
     std::size_t reasm_capacity{256 * 1024};
 
     /// @brief When using `DpdkTcpStream::create_and_attach(cfg, platform)`,
