@@ -214,7 +214,16 @@ int main(int argc, char** argv) {
     sock_cfg.bind = en::SocketAddr{client_ip_r.value(), 0};
 #endif
 
+#if defined(EPH_USE_DPDK)
+    if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
+        std::fprintf(stderr, "lat_ex_md_udp: register_poller failed: %s\n",
+                     rr.error().c_str());
+        return 3;
+    }
+    auto sock_r = Socket::create_and_attach(std::move(sock_cfg), env.platform);
+#else
     auto sock_r = Socket::create(sock_cfg);
+#endif
     if (!sock_r) {
         std::fprintf(stderr, "lat_ex_md_udp: Socket::create failed: %s\n",
                      sock_r.error().detail);
@@ -239,11 +248,13 @@ int main(int argc, char** argv) {
         }
     };
 
+#if !defined(EPH_USE_DPDK)
     if (auto r = poller->add(sock.get()); !r) {
         std::fprintf(stderr, "lat_ex_md_udp: poller->add failed: %s\n",
                      r.error().detail);
         return 3;
     }
+#endif
 
     // ── Measurement loop ─────────────────────────────────────────────────
     std::vector<uint8_t> payload(payload_size, 0xEF);

@@ -209,11 +209,8 @@ int run_measurement(std::unique_ptr<StreamT> stream,
         };
     }
 
-    if (auto r = poller->add(stream.get()); !r) {
-        std::fprintf(stderr, "lat_ex_market_2p: poller->add failed: %s\n",
-                     r.error().detail);
-        return 3;
-    }
+    // Stream is pre-attached by the caller — DPDK via Stream::create_and_attach,
+    // kernel via an explicit poller->add in main(). We don't re-attach here.
 
     const uint64_t t_start = bench::monotonic_raw_ns();
     const uint64_t t_deadline =
@@ -466,9 +463,15 @@ int main(int argc, char** argv) {
     cfg.ws_path         = effective_ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
 
-    auto stream_r = Stream::create(cfg);
+    if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
+        std::fprintf(stderr, "lat_ex_market_2p: register_poller failed: %s\n",
+                     rr.error().c_str());
+        return 3;
+    }
+    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
     if (!stream_r) {
-        std::fprintf(stderr, "lat_ex_market_2p: Stream::create failed: %s\n",
+        std::fprintf(stderr,
+                     "lat_ex_market_2p: Stream::create_and_attach failed: %s\n",
                      stream_r.error().detail);
         return 3;
     }
@@ -501,7 +504,14 @@ int main(int argc, char** argv) {
                 stream_r.error().detail);
             return 3;
         }
-        rc = run_measurement(std::move(stream_r.value()), poller,
+        auto stream = std::move(stream_r.value());
+        if (auto r = poller->add(stream.get()); !r) {
+            std::fprintf(stderr,
+                         "lat_ex_market_2p: poller->add failed: %s\n",
+                         r.error().detail);
+            return 3;
+        }
+        rc = run_measurement(std::move(stream), poller,
                              rec, mode, burst_size, duration_s,
                              warmup_samples, mode_label, backend);
     } else {
@@ -512,7 +522,14 @@ int main(int argc, char** argv) {
                          stream_r.error().detail);
             return 3;
         }
-        rc = run_measurement(std::move(stream_r.value()), poller,
+        auto stream = std::move(stream_r.value());
+        if (auto r = poller->add(stream.get()); !r) {
+            std::fprintf(stderr,
+                         "lat_ex_market_2p: poller->add failed: %s\n",
+                         r.error().detail);
+            return 3;
+        }
+        rc = run_measurement(std::move(stream), poller,
                              rec, mode, burst_size, duration_s,
                              warmup_samples, mode_label, backend);
     }

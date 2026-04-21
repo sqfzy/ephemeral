@@ -226,7 +226,16 @@ int main(int argc, char** argv) {
     cfg.ws_timeout      = std::chrono::seconds{10};
 #endif
 
+#if defined(EPH_USE_DPDK)
+    if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
+        std::fprintf(stderr, "lat_ex_order: register_poller failed: %s\n",
+                     rr.error().c_str());
+        return 3;
+    }
+    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
+#else
     auto stream_r = Stream::create(cfg);
+#endif
     if (!stream_r) {
         std::fprintf(stderr, "lat_ex_order: Stream::create failed: %s\n",
                      stream_r.error().detail);
@@ -301,11 +310,13 @@ int main(int argc, char** argv) {
         response_seen = true;
     };
 
+#if !defined(EPH_USE_DPDK)
     if (auto r = poller->add(stream.get()); !r) {
         std::fprintf(stderr, "lat_ex_order: poller->add failed: %s\n",
                      r.error().detail);
         return 3;
     }
+#endif
 
     // ── Encode buffer for outbound WS-binary frames ─────────────────────
     //

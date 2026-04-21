@@ -208,14 +208,29 @@ int main(int argc, char** argv) {
     cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
     cfg.pool            = env.pool;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
+
+    // Register Poller with Platform so Stream::create_and_attach can find
+    // it via poller_for_queue.  Single-stream lat scenario → single
+    // Poller on queue 0; the post-PR-2.5 RETA-collapse fix in
+    // Platform::create guarantees all RX traffic lands on queue 0 when
+    // dispatch_mode is pinned to Software (i.e. nb_rx_queues>1 but RSS
+    // not actively configured).  Default config (nb_rx_queues=1) is
+    // unaffected.
+    if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
+        std::fprintf(stderr, "lat_tcp: register_poller failed: %s\n",
+                     rr.error().c_str());
+        return 3;
+    }
+    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
 #else
     ek::StreamConfig cfg{};
     cfg.remote          = remote;
     cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-#endif
 
     auto stream_r = Stream::create(cfg);
+#endif
+
     if (!stream_r) {
         std::fprintf(stderr, "lat_tcp: Stream::create failed: %s\n",
                      stream_r.error().detail);
@@ -248,11 +263,15 @@ int main(int argc, char** argv) {
         rx_bytes += app_frame.size();
     };
 
+#if !defined(EPH_USE_DPDK)
+    // Kernel backend: explicit attach (no turnkey factory).  DPDK path
+    // already attached inside Stream::create_and_attach above.
     if (auto r = poller->add(stream.get()); !r) {
         std::fprintf(stderr, "lat_tcp: poller->add failed: %s\n",
                      r.error().detail);
         return 3;
     }
+#endif
 
     // ── Measurement loop ─────────────────────────────────────────────────
     // Literally identical between kernel and DPDK branches — only the
