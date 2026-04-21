@@ -89,6 +89,21 @@ target("test_dpdk_e2e")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
+-- Stage 3 RSS Platform integration test (real-NIC).  Self-contained —
+-- it does NOT fork the kernel mock dispatcher, just verifies the
+-- Platform RSS surface (dispatch_mode + register_poller + poller_for_queue).
+-- SKIPs when NIC_B is not bound to vfio-pci.
+target("test_dpdk_rss_platform")
+    add_rules("eph-test")
+    add_files("tests/integration/test_dpdk_rss_platform.cpp")
+    add_includedirs("tests/integration")
+    add_deps("eph-net-dpdk")
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_defines("EPH_USE_DPDK=1")
+    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
+        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do

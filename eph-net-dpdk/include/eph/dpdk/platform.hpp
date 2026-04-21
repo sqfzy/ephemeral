@@ -18,6 +18,7 @@
 ///     descriptor limits are known ahead of time.
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <expected>
@@ -31,6 +32,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
 
 #include <rte_errno.h>
 #include <rte_ethdev.h>
@@ -124,6 +126,10 @@ inline spdlog::logger* platform_logger() { return get_logger<LoggerName{"dpdk.pl
 /// promiscuous mode, and link-up timeout. Supports constexpr validation
 /// via validate_config() and config_ok() for compile-time checking.
 ///
+/// @brief Maximum number of RX queues the Poller registry can hold.
+/// Practical NIC limits are well below this (ENA: 32, ConnectX-5: 63).
+inline constexpr uint16_t kMaxRssQueues = 64;
+
 /// @note Queue counts and descriptor counts are automatically clamped to
 ///       NIC-reported limits during Platform::create(). Values here are
 ///       the *requested* values — actual values may be smaller.
@@ -138,6 +144,13 @@ struct PlatformConfig {
     uint32_t mbuf_pool_size  = 4095;
     uint16_t mbuf_cache_size = 256;     ///< Per-lcore mempool cache size
     bool     enable_promiscuous = false; ///< Enable promiscuous mode on the port
+    /// @brief Enable RSS hashing across `nb_rx_queues` RX queues. When true and
+    /// `nb_rx_queues > 1`, Platform::create() turns on `RTE_ETH_MQ_RX_RSS` in
+    /// the eth_conf and calls `eph::net::dpdk::configure_rss()` before starting
+    /// the port. After the port starts, `detect_rx_dispatch_mode()` is run
+    /// once and the result is cached (see `Platform::dispatch_mode()`).
+    /// Default false — single-queue Software mode, fully backwards compatible.
+    bool     enable_rss      = false;
     /// @brief Poll timeout for link-up after port start (milliseconds).
     /// 0 = single check, continue regardless of link state.
     int      link_timeout_ms = 2000;
@@ -184,6 +197,11 @@ struct PlatformConfig {
             w.emplace_back("enable_promiscuous=true -- receives all NIC "
                            "traffic, not just this MAC; consider disabling "
                            "in production");
+        if (enable_rss && nb_rx_queues < 2)
+            w.emplace_back(std::format(
+                "enable_rss=true but nb_rx_queues={} -- RSS needs >=2 queues, "
+                "the flag will be silently ignored (single-queue Software mode)",
+                nb_rx_queues));
         // Zero link timeout means no wait for link-up
         if (link_timeout_ms == 0)
             w.emplace_back("link_timeout_ms=0 -- will not wait for NIC "
@@ -198,11 +216,14 @@ struct PlatformConfig {
             "{{\"port_id\":{},\"nb_rx_queues\":{},\"nb_tx_queues\":{},"
             "\"nb_rx_desc\":{},\"nb_tx_desc\":{},"
             "\"mbuf_pool_size\":{},\"mbuf_cache_size\":{},"
-            "\"enable_promiscuous\":{},\"link_timeout_ms\":{}}}",
+            "\"enable_promiscuous\":{},\"enable_rss\":{},"
+            "\"link_timeout_ms\":{}}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
-            enable_promiscuous ? "true" : "false", link_timeout_ms);
+            enable_promiscuous ? "true" : "false",
+            enable_rss ? "true" : "false",
+            link_timeout_ms);
     }
 };
 
@@ -337,6 +358,31 @@ public:
     /// @return Stats snapshot, or zeroed stats on error or moved-from state.
     [[nodiscard]] Stats collect_stats() const;
 
+    // ── RSS / multi-queue surface (stage 3 of RSS rollout) ────────────────
+
+    /// @brief Cached RX dispatch mode probed once at Platform::create() via
+    /// `detect_rx_dispatch_mode()`. Returns Software for moved-from / un-RSS'd
+    /// ports.
+    [[nodiscard]] ::eph::net::dpdk::RxDispatchMode dispatch_mode() const noexcept;
+
+    /// @brief The actual number of RX queues configured on the port (after
+    /// NIC-cap clamping). Returns 0 for moved-from Platforms.
+    [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
+
+    /// @brief Register a per-queue Poller. The pointer is opaque (`void*`)
+    /// because `DpdkPoller<>` is a template — the user is responsible for
+    /// type consistency on retrieval. Intended to be called once per queue
+    /// at startup, before the lcore loops begin polling. Not thread-safe.
+    /// @return error if `queue_id >= nb_rx_queues()`, `>= kMaxRssQueues`,
+    /// or the slot is already occupied.
+    [[nodiscard]] std::expected<void, std::string>
+        register_poller(uint16_t queue_id, void* poller) noexcept;
+
+    /// @brief Look up the Poller registered for a queue. Returns nullptr if
+    /// `queue_id` is out of range, the slot is empty, or the Platform is
+    /// moved-from.
+    [[nodiscard]] void* poller_for_queue(uint16_t queue_id) const noexcept;
+
 private:
     struct Impl;
     explicit Platform(std::unique_ptr<Impl> impl) noexcept;
@@ -356,6 +402,15 @@ struct Platform::Impl {
     rte_mempool*   mempool{nullptr};
     bool           port_started{false};
     bool           promiscuous_active{false};
+
+    // RSS / multi-queue dispatch state (stage 3).
+    bool           rss_active{false};   ///< True if configure_rss() succeeded
+    ::eph::net::dpdk::RxDispatchMode dispatch_mode{
+        ::eph::net::dpdk::RxDispatchMode::Software};
+    /// Per-queue Poller registry. Populated by Stream::create_and_attach
+    /// (stage 4) at startup, read on the hot path via poller_for_queue.
+    /// nullptr slot = unregistered queue.
+    std::array<void*, kMaxRssQueues> pollers{};
 
     ~Impl() { cleanup(); }
 
@@ -444,6 +499,29 @@ struct Platform::Impl {
         // Checksum offload is handled per-packet via PacketTemplate::hw_cksum.
         eth_conf.rxmode.offloads = 0;
         eth_conf.txmode.offloads = 0;
+
+        // RSS multi-queue mode. Must be set BEFORE rte_eth_dev_configure;
+        // rss_hash_update later cannot upgrade single-queue → multi-queue.
+        // Hash flags are intersected with NIC capability — passing flags the
+        // PMD does not advertise causes EINVAL.
+        if (config.enable_rss && nb_rx > 1) {
+            eth_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
+            eth_conf.rx_adv_conf.rss_conf.rss_key = nullptr;
+            eth_conf.rx_adv_conf.rss_conf.rss_key_len = 0;
+            eth_conf.rx_adv_conf.rss_conf.rss_hf =
+                dev_info.flow_type_rss_offloads &
+                (RTE_ETH_RSS_NONFRAG_IPV4_TCP |
+                 RTE_ETH_RSS_NONFRAG_IPV4_UDP |
+                 RTE_ETH_RSS_IPV4);
+            if (eth_conf.rx_adv_conf.rss_conf.rss_hf == 0) {
+                SPDLOG_LOGGER_WARN(log,
+                    "port={} enable_rss=true but NIC reports no IPv4 TCP/UDP "
+                    "RSS hash offloads (flow_type_rss_offloads=0x{:016x}); "
+                    "RSS will be inactive — falling back to single-queue dispatch",
+                    config.port_id, dev_info.flow_type_rss_offloads);
+                eth_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+            }
+        }
 
         int ret = rte_eth_dev_configure(config.port_id, nb_rx, nb_tx, &eth_conf);
         if (ret != 0) {
@@ -649,10 +727,40 @@ Platform::create(const PlatformConfig& config) {
 
     if (auto r = impl->configure_port(dev_info); !r) return std::unexpected(r.error());
     if (auto r = impl->setup_queues(dev_info);   !r) return std::unexpected(r.error());
+
+    // RSS hash key + RETA must be installed BEFORE rte_eth_dev_start.
+    // configure_port already set mq_mode=RTE_ETH_MQ_RX_RSS in eth_conf when
+    // enable_rss && nb_rx_queues > 1; here we wire up the actual hash params.
+    // Failure is non-fatal: we log + degrade to single-queue Software fallback
+    // so a NIC that doesn't fully support RSS doesn't bring the whole port down.
+    if (config.enable_rss && impl->config.nb_rx_queues > 1) {
+        auto rss_r = ::eph::net::dpdk::configure_rss(
+            config.port_id, impl->config.nb_rx_queues);
+        if (rss_r) {
+            impl->rss_active = true;
+        } else {
+            SPDLOG_LOGGER_WARN(log,
+                "configure_rss(port={}, queues={}) failed: {} -- "
+                "continuing in single-queue Software fallback",
+                config.port_id, impl->config.nb_rx_queues, rss_r.error());
+        }
+    }
+
     if (auto r = impl->start_port();             !r) return std::unexpected(r.error());
     impl->wait_link_up();
 
-    SPDLOG_LOGGER_INFO(log, "Platform ready (port={})", config.port_id);
+    // Probe live NIC capability AFTER port start (rte_flow_validate needs the
+    // port up). Cache the result for the lifetime of the Platform — Stream
+    // attach paths read it but do not re-probe.
+    impl->dispatch_mode =
+        ::eph::net::dpdk::detect_rx_dispatch_mode(config.port_id);
+
+    SPDLOG_LOGGER_INFO(log,
+        "Platform ready (port={}, nb_rx_queues={}, rss_active={}, "
+        "dispatch_mode={})",
+        config.port_id, impl->config.nb_rx_queues,
+        impl->rss_active ? "true" : "false",
+        ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
     return Platform(std::move(impl));
 }
 
@@ -662,6 +770,44 @@ inline rte_mempool* Platform::mempool()          const noexcept { return impl_ ?
 inline uint16_t     Platform::port_id()          const noexcept { return impl_ ? impl_->config.port_id       : 0; }
 inline bool         Platform::is_running()       const noexcept { return impl_ && impl_->port_started; }
 inline bool         Platform::is_promiscuous()   const noexcept { return impl_ && impl_->promiscuous_active; }
+
+inline ::eph::net::dpdk::RxDispatchMode
+Platform::dispatch_mode() const noexcept {
+    return impl_ ? impl_->dispatch_mode
+                 : ::eph::net::dpdk::RxDispatchMode::Software;
+}
+
+inline uint16_t Platform::nb_rx_queues() const noexcept {
+    return impl_ ? impl_->config.nb_rx_queues : 0;
+}
+
+inline std::expected<void, std::string>
+Platform::register_poller(uint16_t queue_id, void* poller) noexcept {
+    if (!impl_) return std::unexpected("Platform is moved-from");
+    if (poller == nullptr)
+        return std::unexpected("register_poller: poller pointer is null");
+    if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
+        return std::unexpected(std::format(
+            "QueueOutOfRange: queue_id={} not in [0, {})",
+            queue_id,
+            std::min(impl_->config.nb_rx_queues, kMaxRssQueues)));
+    if (impl_->pollers[queue_id] != nullptr)
+        return std::unexpected(std::format(
+            "DuplicateQueue: queue_id={} already has a registered Poller",
+            queue_id));
+    impl_->pollers[queue_id] = poller;
+    SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
+        "Poller registered: port={}, queue={}, ptr={:p}",
+        impl_->config.port_id, queue_id, poller);
+    return {};
+}
+
+inline void* Platform::poller_for_queue(uint16_t queue_id) const noexcept {
+    if (!impl_) return nullptr;
+    if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
+        return nullptr;
+    return impl_->pollers[queue_id];
+}
 
 inline Platform::Stats Platform::collect_stats() const {
     [[maybe_unused]] auto log = detail::platform_logger();
