@@ -590,10 +590,12 @@ query_rss_state(uint16_t port_id) noexcept {
 /// Pure-CPU lookup of which RX queue a given 5-tuple hashes to under
 /// the supplied RssState snapshot. No NIC syscalls.
 ///
-/// @note `src_ip / src_port` describe the RSS *input* "source" — i.e.
+/// @warning `src_ip / src_port` describe the RSS *input* "source" — i.e.
 /// the REMOTE end as seen by the NIC on incoming packets. To predict
 /// the queue for a TCP connection you initiated as the local end, pass
-/// `(remote_ip, remote_port, local_ip, local_port)`.
+/// `(remote_ip, remote_port, local_ip, local_port)`. **Do NOT pass your
+/// own local IP/port as `src_*`** — the function silently produces the
+/// wrong queue id otherwise.
 [[nodiscard]] inline uint16_t
 queue_for_tuple(const RssState& state,
                 uint32_t src_ip, uint16_t src_port,

@@ -34,6 +34,13 @@
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/net/dpdk/flow_steering.hpp"
 
+// Forward-declare DpdkPoller so register_poller / poller_for_queue can name
+// it without pulling in the entire poller.hpp.  The full template lives at
+// eph/net/dpdk/poller.hpp; matches the signature there.
+namespace eph::net::dpdk {
+template <class P> class DpdkPoller;
+}
+
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
@@ -369,19 +376,20 @@ public:
     /// NIC-cap clamping). Returns 0 for moved-from Platforms.
     [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
 
-    /// @brief Register a per-queue Poller. The pointer is opaque (`void*`)
-    /// because `DpdkPoller<>` is a template — the user is responsible for
-    /// type consistency on retrieval. Intended to be called once per queue
-    /// at startup, before the lcore loops begin polling. Not thread-safe.
+    /// @brief Register a per-queue Poller. Intended to be called once per
+    /// queue at startup, before the lcore loops begin polling.
+    /// Not thread-safe.
     /// @return error if `queue_id >= nb_rx_queues()`, `>= kMaxRssQueues`,
     /// or the slot is already occupied.
     [[nodiscard]] std::expected<void, std::string>
-        register_poller(uint16_t queue_id, void* poller) noexcept;
+        register_poller(uint16_t queue_id,
+                        ::eph::net::dpdk::DpdkPoller<void>* poller) noexcept;
 
     /// @brief Look up the Poller registered for a queue. Returns nullptr if
     /// `queue_id` is out of range, the slot is empty, or the Platform is
     /// moved-from.
-    [[nodiscard]] void* poller_for_queue(uint16_t queue_id) const noexcept;
+    [[nodiscard]] ::eph::net::dpdk::DpdkPoller<void>*
+        poller_for_queue(uint16_t queue_id) const noexcept;
 
 private:
     struct Impl;
@@ -410,7 +418,7 @@ struct Platform::Impl {
     /// Per-queue Poller registry. Populated by Stream::create_and_attach
     /// (stage 4) at startup, read on the hot path via poller_for_queue.
     /// nullptr slot = unregistered queue.
-    std::array<void*, kMaxRssQueues> pollers{};
+    std::array<::eph::net::dpdk::DpdkPoller<void>*, kMaxRssQueues> pollers{};
 
     ~Impl() { cleanup(); }
 
@@ -755,6 +763,28 @@ Platform::create(const PlatformConfig& config) {
     impl->dispatch_mode =
         ::eph::net::dpdk::detect_rx_dispatch_mode(config.port_id);
 
+    // Reflect what THIS Platform is actually doing, not just NIC capability.
+    // detect_rx_dispatch_mode reports the NIC's intrinsic capabilities;
+    // if we didn't successfully bring up multi-queue RSS (single-queue
+    // config OR configure_rss failed on a PMD that rejects hash_update),
+    // dispatch_mode is effectively Software for the purposes of stream
+    // attach decisions.  Without this pin, Stream::create_and_attach would
+    // walk the RssPartitioned branch and call predict_rss_queue + attach
+    // to a non-existent target Poller.
+    if (impl->config.nb_rx_queues <= 1 || !impl->rss_active) {
+        if (impl->dispatch_mode !=
+                ::eph::net::dpdk::RxDispatchMode::Software) {
+            SPDLOG_LOGGER_INFO(log,
+                "Platform: NIC supports {} but RSS not active "
+                "(nb_rx_queues={}, rss_active={}); pinning dispatch_mode "
+                "to Software for attach decisions",
+                ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode),
+                impl->config.nb_rx_queues,
+                impl->rss_active ? "true" : "false");
+            impl->dispatch_mode = ::eph::net::dpdk::RxDispatchMode::Software;
+        }
+    }
+
     SPDLOG_LOGGER_INFO(log,
         "Platform ready (port={}, nb_rx_queues={}, rss_active={}, "
         "dispatch_mode={})",
@@ -782,7 +812,8 @@ inline uint16_t Platform::nb_rx_queues() const noexcept {
 }
 
 inline std::expected<void, std::string>
-Platform::register_poller(uint16_t queue_id, void* poller) noexcept {
+Platform::register_poller(uint16_t queue_id,
+                          ::eph::net::dpdk::DpdkPoller<void>* poller) noexcept {
     if (!impl_) return std::unexpected("Platform is moved-from");
     if (poller == nullptr)
         return std::unexpected("register_poller: poller pointer is null");
@@ -798,11 +829,12 @@ Platform::register_poller(uint16_t queue_id, void* poller) noexcept {
     impl_->pollers[queue_id] = poller;
     SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
         "Poller registered: port={}, queue={}, ptr={:p}",
-        impl_->config.port_id, queue_id, poller);
+        impl_->config.port_id, queue_id, static_cast<void*>(poller));
     return {};
 }
 
-inline void* Platform::poller_for_queue(uint16_t queue_id) const noexcept {
+inline ::eph::net::dpdk::DpdkPoller<void>*
+Platform::poller_for_queue(uint16_t queue_id) const noexcept {
     if (!impl_) return nullptr;
     if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
         return nullptr;

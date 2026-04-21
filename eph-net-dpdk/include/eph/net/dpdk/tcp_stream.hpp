@@ -670,6 +670,21 @@ public:
                 "create_and_attach: RSS auto → queue={}", target_qid);
         }
 
+        // Attach the Pollable BEFORE installing any flow rule, so the
+        // moment the NIC starts steering matching packets to target_qid
+        // (post install_flow_rule), the Pollable is already there to
+        // demux them. Reverse order would open a race window where
+        // packets land in target_qid's burst loop with no matching
+        // 5-tuple → silent drop.
+        auto* poller = platform.poller_for_queue(target_qid);
+        if (poller == nullptr) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotAttached,
+                "create_and_attach: no Poller registered for target queue"});
+        }
+        auto add_r = poller->add(stream.get());
+        if (!add_r) return std::unexpected(add_r.error());
+
         // FlowDirector: install rte_flow rule steering this 5-tuple to qid
         // and move it into the stream so RAII destruction (~FlowRule →
         // rte_flow_destroy) cleans up at stream teardown.
@@ -685,23 +700,14 @@ public:
                 SPDLOG_LOGGER_WARN(log,
                     "create_and_attach: install_flow_rule failed: {}",
                     rule.error());
+                // Roll back the attach so the stream isn't half-registered.
+                (void)poller->remove(stream.get());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: install_flow_rule failed"});
             }
             stream->flow_rule_.emplace(std::move(*rule));
         }
-
-        // Look up the Poller that owns this queue + attach.
-        void* poller_void = platform.poller_for_queue(target_qid);
-        if (poller_void == nullptr) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::NotAttached,
-                "create_and_attach: no Poller registered for target queue"});
-        }
-        auto* poller = static_cast<DpdkPoller<void>*>(poller_void);
-        auto add_r = poller->add(stream.get());
-        if (!add_r) return std::unexpected(add_r.error());
 
         SPDLOG_LOGGER_INFO(log,
             "create_and_attach: TCP stream attached → port={}, queue={}, mode={}",

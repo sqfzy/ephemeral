@@ -214,6 +214,17 @@ public:
         if (!sr) return std::unexpected(sr.error());
         auto sock = std::move(*sr);
 
+        // Attach BEFORE installing the flow rule (see tcp_stream.hpp's
+        // create_and_attach for the race-window rationale).
+        auto* poller = platform.poller_for_queue(target_qid);
+        if (poller == nullptr) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotAttached,
+                "create_and_attach: no Poller registered for target queue"});
+        }
+        auto add_r = poller->add(sock.get());
+        if (!add_r) return std::unexpected(add_r.error());
+
         if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
             ::eph::dpdk::net::ConnectionTuple ft{
                 .src_ip   = sock->cfg_.legacy.src_ip,
@@ -227,6 +238,7 @@ public:
                 SPDLOG_LOGGER_WARN(log,
                     "create_and_attach: install_flow_rule failed: {}",
                     rule.error());
+                (void)poller->remove(sock.get());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: install_flow_rule failed"});
@@ -234,16 +246,6 @@ public:
             // Move into the socket so ~FlowRule cleans up at teardown.
             sock->flow_rule_.emplace(std::move(*rule));
         }
-
-        void* poller_void = platform.poller_for_queue(target_qid);
-        if (poller_void == nullptr) {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::NotAttached,
-                "create_and_attach: no Poller registered for target queue"});
-        }
-        auto* poller = static_cast<DpdkPoller<void>*>(poller_void);
-        auto add_r = poller->add(sock.get());
-        if (!add_r) return std::unexpected(add_r.error());
 
         SPDLOG_LOGGER_INFO(log,
             "create_and_attach: UDP socket attached → port={}, queue={}, mode={}",
