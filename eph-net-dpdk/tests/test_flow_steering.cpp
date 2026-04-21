@@ -348,6 +348,72 @@ TEST(ToeplitzHash, EmptyInputReturnsZero) {
 }
 
 // ---------------------------------------------------------------------------
+// queue_for_tuple — pure-CPU end-to-end with synthesized RssState
+// ---------------------------------------------------------------------------
+
+namespace {
+RssState make_state_round_robin(uint16_t reta_size, uint16_t n_queues) {
+    RssState s;
+    std::copy(kRssDefaultKey.begin(), kRssDefaultKey.end(), s.key_buf.begin());
+    s.key_len = static_cast<uint8_t>(kRssDefaultKey.size());
+    s.reta_size = reta_size;
+    const uint16_t groups = reta_size / RTE_ETH_RETA_GROUP_SIZE;
+    for (uint16_t g = 0; g < groups; ++g) {
+        s.reta[g].mask = ~uint64_t(0);
+        for (uint16_t j = 0; j < RTE_ETH_RETA_GROUP_SIZE; ++j) {
+            s.reta[g].reta[j] = static_cast<uint16_t>(
+                (g * RTE_ETH_RETA_GROUP_SIZE + j) % n_queues);
+        }
+    }
+    return s;
+}
+} // namespace
+
+TEST(QueueForTuple, MicrosoftVec1RoutesViaRoundRobinReta) {
+    // Microsoft vector 1: hash = 0x51ccc178. With reta_size=128 round-robin
+    // over 4 queues, RETA[hash & 0x7F] = RETA[0x78 = 120] = 120 % 4 = 0.
+    auto state = make_state_round_robin(/*reta_size=*/128, /*n_queues=*/4);
+    uint16_t q = queue_for_tuple(state,
+                                  make_ipv4(66, 9, 149, 187), 2794,
+                                  make_ipv4(161, 142, 100, 80), 1766);
+    EXPECT_EQ(q, 0u);
+}
+
+TEST(QueueForTuple, DifferentSrcPortsDistributeAcrossQueues) {
+    // Stress: many src_port values populate all queues under round-robin
+    // RETA — verifies queue_for_tuple is pure and that the new
+    // find_src_port_for_queue inner loop will actually find matches.
+    auto state = make_state_round_robin(/*reta_size=*/128, /*n_queues=*/4);
+    std::array<int, 4> hits{};
+    for (uint16_t sp = 32768; sp < 32768 + 256; ++sp) {
+        uint16_t q = queue_for_tuple(state, 0x0a000001, sp,
+                                     0x0a000002, 443);
+        EXPECT_LT(q, 4u);
+        ++hits[q];
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_GT(hits[i], 0) << "queue " << i << " never selected";
+    }
+}
+
+TEST(RssState, FallbackKeyWhenLenZero) {
+    RssState s;
+    s.key_len = 0;
+    auto k = s.key();
+    EXPECT_EQ(k.size(), kRssDefaultKey.size());
+    EXPECT_EQ(k.data(), kRssDefaultKey.data());  // span aliases default
+}
+
+TEST(RssState, ReadbackKeyWhenLenSet) {
+    RssState s;
+    std::copy(kRssDefaultKey.begin(), kRssDefaultKey.end(), s.key_buf.begin());
+    s.key_len = 40;
+    auto k = s.key();
+    EXPECT_EQ(k.size(), 40u);
+    EXPECT_EQ(k.data(), s.key_buf.data());  // span aliases buf, not default
+}
+
+// ---------------------------------------------------------------------------
 // queue_for_hash
 // ---------------------------------------------------------------------------
 

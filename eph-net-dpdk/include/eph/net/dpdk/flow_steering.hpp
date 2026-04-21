@@ -518,39 +518,56 @@ queue_for_hash(uint32_t hash, std::span<const uint16_t> reta_table) noexcept {
     return reta_table[hash & (reta_table.size() - 1)];
 }
 
-/// Predict which RX queue a packet with the given 5-tuple will land on.
-///
-/// Reads the live RSS key + RETA from the NIC. Some PMDs (notably ENA)
-/// reject `rte_eth_dev_rss_hash_conf_get`; in that case we fall back to
-/// `kRssDefaultKey` (which is what `configure_rss` installs by default,
-/// so the prediction stays accurate as long as nobody overwrote the key).
-///
-/// @note `src_ip / src_port` describe the RSS *input* "source" — i.e.
-/// the REMOTE end as seen by the NIC on incoming packets. To predict
-/// the queue for a TCP connection you initiated as the local end, pass
-/// `(remote_ip, remote_port, local_ip, local_port)`.
-[[nodiscard]] inline std::expected<uint16_t, std::string>
-predict_rss_queue(uint16_t port_id,
-                  uint32_t src_ip, uint16_t src_port,
-                  uint32_t dst_ip, uint16_t dst_port) noexcept {
-    [[maybe_unused]] auto* log = detail::flow_logger();
-
-    // 1. RSS key — try driver readback first, fall back to default.
+/// Snapshot of a port's RSS state (Toeplitz key + RETA). Query once via
+/// `query_rss_state(port_id)`, then look up arbitrary 5-tuples with
+/// `queue_for_tuple(state, ...)` — pure CPU, no NIC syscalls. Use this
+/// in tight loops like `find_src_port_for_queue` where the RSS config
+/// is known constant during the search.
+struct RssState {
+    /// Storage for the key bytes returned by `rte_eth_dev_rss_hash_conf_get`.
+    /// `key_len == 0` means readback was unsupported and `key()` falls
+    /// back to `kRssDefaultKey`.
     std::array<uint8_t, 64> key_buf{};
-    rte_eth_rss_conf rss_conf{};
-    rss_conf.rss_key = key_buf.data();
-    rss_conf.rss_key_len = static_cast<uint8_t>(key_buf.size());
-    int ret = rte_eth_dev_rss_hash_conf_get(port_id, &rss_conf);
+    uint8_t  key_len = 0;
+    uint16_t reta_size = 0;
+    /// RETA entries (max 512 slots / 64 entries-per-bucket = 8 buckets).
+    rte_eth_rss_reta_entry64
+        reta[RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE]{};
 
-    std::span<const uint8_t> key_view;
+    /// Active RSS key — driver readback if available, else
+    /// `kRssDefaultKey`. The returned span aliases either `key_buf` or
+    /// `kRssDefaultKey`; do not retain past `RssState`'s lifetime.
+    [[nodiscard]] std::span<const uint8_t> key() const noexcept {
+        return key_len > 0 ? std::span(key_buf.data(),
+                                       static_cast<size_t>(key_len))
+                           : std::span(kRssDefaultKey);
+    }
+};
+
+/// Query a port's RSS state with two NIC syscalls
+/// (`rte_eth_dev_rss_hash_conf_get` + `rte_eth_dev_info_get` +
+/// `rte_eth_dev_rss_reta_query`). Some PMDs (notably ENA) reject
+/// `rss_hash_conf_get`; in that case `RssState::key_len` stays 0 and
+/// `RssState::key()` falls back to `kRssDefaultKey` — the prediction
+/// remains accurate as long as nobody overwrote the key (default
+/// `configure_rss` installs exactly `kRssDefaultKey`).
+[[nodiscard]] inline std::expected<RssState, std::string>
+query_rss_state(uint16_t port_id) noexcept {
+    [[maybe_unused]] auto* log = detail::flow_logger();
+    RssState state;
+
+    // 1. RSS key — try driver readback first.
+    rte_eth_rss_conf rss_conf{};
+    rss_conf.rss_key = state.key_buf.data();
+    rss_conf.rss_key_len = static_cast<uint8_t>(state.key_buf.size());
+    int ret = rte_eth_dev_rss_hash_conf_get(port_id, &rss_conf);
     if (ret == 0 && rss_conf.rss_key_len > 0) {
-        key_view = std::span(key_buf.data(),
-                             static_cast<size_t>(rss_conf.rss_key_len));
+        state.key_len = rss_conf.rss_key_len;
     } else {
         SPDLOG_LOGGER_DEBUG(log,
             "rte_eth_dev_rss_hash_conf_get unsupported on port {} (ret={}), "
             "falling back to kRssDefaultKey", port_id, ret);
-        key_view = std::span(kRssDefaultKey);
+        // state.key_len stays 0 → state.key() returns kRssDefaultKey.
     }
 
     // 2. RETA — query the live indirection table.
@@ -558,24 +575,52 @@ predict_rss_queue(uint16_t port_id,
     if (rte_eth_dev_info_get(port_id, &dev_info) != 0) {
         return std::unexpected("rte_eth_dev_info_get failed");
     }
-    uint16_t reta_size = dev_info.reta_size;
-    if (reta_size == 0) reta_size = 128;
-    reta_size = std::min(reta_size, static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
-
-    rte_eth_rss_reta_entry64 reta[RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE]{};
-    const uint16_t groups = reta_size / RTE_ETH_RETA_GROUP_SIZE;
-    for (uint16_t i = 0; i < groups; ++i) reta[i].mask = ~uint64_t(0);
-    if (rte_eth_dev_rss_reta_query(port_id, reta, reta_size) != 0) {
+    state.reta_size = dev_info.reta_size;
+    if (state.reta_size == 0) state.reta_size = 128;
+    state.reta_size = std::min(state.reta_size,
+                               static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
+    const uint16_t groups = state.reta_size / RTE_ETH_RETA_GROUP_SIZE;
+    for (uint16_t i = 0; i < groups; ++i) state.reta[i].mask = ~uint64_t(0);
+    if (rte_eth_dev_rss_reta_query(port_id, state.reta, state.reta_size) != 0) {
         return std::unexpected("rte_eth_dev_rss_reta_query failed");
     }
+    return state;
+}
 
-    // 3. Hash + lookup.
-    const uint32_t h = toeplitz_hash_ipv4(key_view, src_ip, src_port,
+/// Pure-CPU lookup of which RX queue a given 5-tuple hashes to under
+/// the supplied RssState snapshot. No NIC syscalls.
+///
+/// @note `src_ip / src_port` describe the RSS *input* "source" — i.e.
+/// the REMOTE end as seen by the NIC on incoming packets. To predict
+/// the queue for a TCP connection you initiated as the local end, pass
+/// `(remote_ip, remote_port, local_ip, local_port)`.
+[[nodiscard]] inline uint16_t
+queue_for_tuple(const RssState& state,
+                uint32_t src_ip, uint16_t src_port,
+                uint32_t dst_ip, uint16_t dst_port) noexcept {
+    const uint32_t h = toeplitz_hash_ipv4(state.key(), src_ip, src_port,
                                           dst_ip, dst_port);
-    const size_t reta_idx = h & (reta_size - 1);
+    const size_t reta_idx = h & (state.reta_size - 1);
     const size_t group = reta_idx / RTE_ETH_RETA_GROUP_SIZE;
     const size_t bit   = reta_idx % RTE_ETH_RETA_GROUP_SIZE;
-    return reta[group].reta[bit];
+    return state.reta[group].reta[bit];
+}
+
+/// Predict which RX queue a packet with the given 5-tuple will land on.
+/// Convenience over `query_rss_state` + `queue_for_tuple` for one-shot
+/// callers; pays 2 NIC syscalls per call. For repeated lookups against
+/// the same NIC, snapshot once with `query_rss_state` and call
+/// `queue_for_tuple` in the loop instead.
+///
+/// @note `src_ip / src_port` describe the RSS *input* "source" — see
+/// `queue_for_tuple` for the full RX-direction caveat.
+[[nodiscard]] inline std::expected<uint16_t, std::string>
+predict_rss_queue(uint16_t port_id,
+                  uint32_t src_ip, uint16_t src_port,
+                  uint32_t dst_ip, uint16_t dst_port) noexcept {
+    auto state = query_rss_state(port_id);
+    if (!state) return std::unexpected(state.error());
+    return queue_for_tuple(*state, src_ip, src_port, dst_ip, dst_port);
 }
 
 /// Find a `src_port` in the given range so that the resulting 5-tuple
@@ -603,12 +648,19 @@ find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
         return std::unexpected(
             "find_src_port_for_queue: port_range_start > port_range_end");
     }
+    // Snapshot the NIC's RSS state ONCE (2 syscalls). The loop below is
+    // pure CPU — Toeplitz hash + RETA lookup. Pre-refactor (commit 8b10661)
+    // the loop did 2 syscalls per iteration, scaling to ~56k DPDK calls
+    // for the default ephemeral-port range. See PR-1 perf rationale in
+    // .artifacts/review-rss-eph-net-dpdk-20260421-052500.md (Major M1).
+    auto state_r = query_rss_state(port_id);
+    if (!state_r) return std::unexpected(state_r.error());
+    const auto& state = *state_r;
     for (uint32_t sp = port_range_start; sp <= port_range_end; ++sp) {
-        auto qid = predict_rss_queue(port_id, src_ip,
-                                     static_cast<uint16_t>(sp),
-                                     dst_ip, dst_port);
-        if (!qid) return std::unexpected(qid.error());
-        if (*qid == target_queue) return static_cast<uint16_t>(sp);
+        if (queue_for_tuple(state, src_ip, static_cast<uint16_t>(sp),
+                            dst_ip, dst_port) == target_queue) {
+            return static_cast<uint16_t>(sp);
+        }
     }
     return std::unexpected(std::format(
         "RssHashPredictExhausted: no src_port in [{},{}] hashes to queue {}",
