@@ -646,6 +646,7 @@ private:
         // and the protocol match.
         const uint32_t pkt_hash = detail::hash_tuple(
             pkt_src_ip, pkt_dst_ip, pkt_src_port, pkt_dst_port, pkt_proto);
+        bool had_hash_collision = false;
         for (std::size_t i = 0; i < n_entries_; ++i) {
             auto& e = entries_[i];
             if (e.conn_hash != pkt_hash) continue;
@@ -656,15 +657,25 @@ private:
                 pkt_proto    == e.proto) {
                 return &e;
             }
-            // Hash matched but tuple didn't — genuine hash collision. Warn
-            // once per Poller instance so the first occurrence is visible
-            // in logs, then rely on the running counter exposed via
-            // hash_collision_drops() for cumulative tracking.
-            if (hash_collision_drops_ == 0) {
+            // Hash matched but tuple didn't — mark this packet as a
+            // collision victim. Count once *per packet* after the loop
+            // (not per colliding entry) so multiple entries sharing the
+            // same hash do not inflate the metric by the fan-out.
+            had_hash_collision = true;
+        }
+        if (had_hash_collision) {
+            // Sustained collision scenarios (adversarial traffic or a
+            // pathological hash distribution) must stay observable beyond
+            // the first event. Log at WARN on the first collision drop and
+            // then every 1024th so log volume is bounded but not silent —
+            // a once-per-Poller guard would hide prolonged attacks.
+            if (hash_collision_drops_ == 0 ||
+                (hash_collision_drops_ & 0x3ffULL) == 0) {
                 SPDLOG_LOGGER_WARN(detail::poller_logger(),
-                    "DpdkPoller::lookup_by_5tuple_: first hash collision "
+                    "DpdkPoller::lookup_by_5tuple_: hash collision drop #{} "
                     "(pkt_hash=0x{:08x} proto={} src=0x{:08x}:{} dst=0x{:08x}:{}); "
-                    "subsequent collisions tracked via hash_collision_drops()",
+                    "cumulative count via hash_collision_drops()",
+                    hash_collision_drops_ + 1,
                     pkt_hash, pkt_proto, pkt_src_ip, pkt_src_port,
                     pkt_dst_ip, pkt_dst_port);
             }
