@@ -89,15 +89,18 @@ target("test_dpdk_e2e")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
--- Stage 3 RSS Platform integration test (real-NIC).  Self-contained —
--- it does NOT fork the kernel mock dispatcher, just verifies the
--- Platform RSS surface (dispatch_mode + register_poller + poller_for_queue).
+-- Stage 3 RSS Platform integration test (real-NIC).  Forks the kernel
+-- mock dispatcher (TCP echo etc on NIC_A) and brings up DpdkBenchEnv
+-- on NIC_B with enable_rss=true; verifies the Platform RSS registry
+-- AND drives an end-to-end create_and_attach Software-mode round trip.
 -- SKIPs when NIC_B is not bound to vfio-pci.
 target("test_dpdk_rss_platform")
     add_rules("eph-test")
     add_files("tests/integration/test_dpdk_rss_platform.cpp")
     add_includedirs("tests/integration")
-    add_deps("eph-net-dpdk")
+    -- eph-net for posix_listener / posix_io helpers used by echo_mocks.hpp;
+    -- eph-codec for RawStreamCodec used by the create_and_attach E2E case.
+    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
     add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
     add_defines("EPH_USE_DPDK=1")
     add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
