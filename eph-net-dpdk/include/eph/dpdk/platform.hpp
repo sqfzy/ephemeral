@@ -31,6 +31,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/core/error.hpp"          // core::Error / core::ErrorInfo
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/packet_parse.hpp"   // ParsedIcmp for dispatch_icmp_
 #include "eph/net/dpdk/flow_steering.hpp"
@@ -393,9 +394,11 @@ public:
     /// @brief Register a per-queue Poller. Intended to be called once per
     /// queue at startup, before the lcore loops begin polling.
     /// Not thread-safe.
-    /// @return error if `queue_id >= nb_rx_queues()`, `>= kMaxRssQueues`,
-    /// or the slot is already occupied.
-    [[nodiscard]] std::expected<void, std::string>
+    /// @return `InvalidConfig` if `queue_id >= nb_rx_queues()` /
+    ///         `>= kMaxRssQueues` / poller is null / Platform is
+    ///         moved-from; `InvalidConfig` with "DuplicateQueue" detail
+    ///         if the slot is already occupied.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
         register_poller(uint16_t queue_id,
                         ::eph::net::dpdk::DpdkPoller<void>* poller) noexcept;
 
@@ -414,10 +417,25 @@ public:
     // over all streams/queues — so it owns ICMP dispatch.
     //
     // Streams call `register_icmp_target` once post-attach. The returned
-    // RAII handle unregisters on destruction. `register_poller` installs
-    // a Platform-side trampoline onto each Poller's ICMP fallback, so
-    // every Poller's un-routed ICMP mbufs converge into our registry
-    // walk automatically.
+    // RAII handle unregisters on destruction. The Platform-side trampoline
+    // (`on_poller_icmp_`) is installed onto each Poller's ICMP fallback
+    // by `DpdkTcpStream::create_and_attach` — NOT by `register_poller`
+    // itself, because `platform.hpp` only forward-declares `DpdkPoller<>`
+    // and can't call its full API inline. Net effect: every registered
+    // Poller's un-routed ICMP mbufs converge into Platform's registry
+    // walk once any stream attaches through the turnkey factory.
+    //
+    // @warning LIFETIME CONTRACT: a Platform must outlive every
+    //          DpdkPoller registered via `register_poller` AND every
+    //          DpdkTcpStream constructed via
+    //          `DpdkTcpStream::create_and_attach(..., *this)`.
+    //          The Poller stores a raw `Platform*` as ICMP callback
+    //          context; each stream's `IcmpTargetHandle` stores a raw
+    //          `Platform*` too. Destroying the Platform first is a
+    //          use-after-free on the ICMP dispatch path. Typical-correct
+    //          ordering: declare Platform first, Poller second, Stream
+    //          last — reverse-declaration destruction honours the
+    //          contract automatically.
 
     using IcmpMtuCallback = void(*)(void* stream, uint16_t next_hop_mtu) noexcept;
 
@@ -468,7 +486,7 @@ public:
     ///
     /// Not thread-safe: expected to be called from the same
     /// stream-construction thread that registered the Poller.
-    [[nodiscard]] std::expected<IcmpTargetHandle, std::string>
+    [[nodiscard]] std::expected<IcmpTargetHandle, ::eph::core::ErrorInfo>
         register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
                              uint8_t  proto,
                              void*    stream,
@@ -1017,21 +1035,34 @@ inline uint16_t Platform::nb_rx_queues() const noexcept {
     return impl_ ? impl_->config.nb_rx_queues : 0;
 }
 
-inline std::expected<void, std::string>
+inline std::expected<void, ::eph::core::ErrorInfo>
 Platform::register_poller(uint16_t queue_id,
                           ::eph::net::dpdk::DpdkPoller<void>* poller) noexcept {
-    if (!impl_) return std::unexpected("Platform is moved-from");
+    if (!impl_)
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "Platform::register_poller: Platform is moved-from"});
     if (poller == nullptr)
-        return std::unexpected("register_poller: poller pointer is null");
-    if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
-        return std::unexpected(std::format(
-            "QueueOutOfRange: queue_id={} not in [0, {})",
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "Platform::register_poller: poller pointer is null"});
+    if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues) {
+        SPDLOG_LOGGER_WARN(detail::platform_logger(),
+            "Platform::register_poller: queue_id={} not in [0, {})",
             queue_id,
-            std::min(impl_->config.nb_rx_queues, kMaxRssQueues)));
-    if (impl_->pollers[queue_id] != nullptr)
-        return std::unexpected(std::format(
-            "DuplicateQueue: queue_id={} already has a registered Poller",
-            queue_id));
+            std::min(impl_->config.nb_rx_queues, kMaxRssQueues));
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "Platform::register_poller: queue_id out of range"});
+    }
+    if (impl_->pollers[queue_id] != nullptr) {
+        SPDLOG_LOGGER_WARN(detail::platform_logger(),
+            "Platform::register_poller: queue_id={} already has a registered Poller",
+            queue_id);
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "Platform::register_poller: queue already has a registered Poller"});
+    }
     impl_->pollers[queue_id] = poller;
     // NB: the ICMP callback (`poller->set_icmp_callback(...)`) is NOT
     // wired here because DpdkPoller is only forward-declared at this
@@ -1053,16 +1084,23 @@ Platform::poller_for_queue(uint16_t queue_id) const noexcept {
     return impl_->pollers[queue_id];
 }
 
-inline std::expected<Platform::IcmpTargetHandle, std::string>
+inline std::expected<Platform::IcmpTargetHandle, ::eph::core::ErrorInfo>
 Platform::register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
                                 uint8_t  proto,
                                 void*    stream,
                                 IcmpMtuCallback cb) noexcept {
-    if (!impl_) return std::unexpected("Platform is moved-from");
+    if (!impl_)
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "Platform::register_icmp_target: Platform is moved-from"});
     if (stream == nullptr || cb == nullptr)
-        return std::unexpected("register_icmp_target: stream/cb must not be null");
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "Platform::register_icmp_target: stream/cb must not be null"});
     if (impl_->n_icmp_targets >= Impl::kMaxIcmpTargets)
-        return std::unexpected("register_icmp_target: registry full");
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::OutOfMemory,
+            "Platform::register_icmp_target: registry full"});
 
     // Reject duplicate (tuple, proto) — caller has a bookkeeping bug,
     // not a retryable error.
@@ -1073,7 +1111,9 @@ Platform::register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
             e.tuple.dst_ip   == tuple.dst_ip   &&
             e.tuple.src_port == tuple.src_port &&
             e.tuple.dst_port == tuple.dst_port) {
-            return std::unexpected("register_icmp_target: tuple already registered");
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "Platform::register_icmp_target: tuple already registered"});
         }
     }
 

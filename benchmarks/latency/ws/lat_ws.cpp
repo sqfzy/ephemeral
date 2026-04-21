@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
 #if defined(EPH_USE_DPDK)
     if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
         std::fprintf(stderr, "lat_ws: register_poller failed: %s\n",
-                     rr.error().c_str());
+                     rr.error().detail);
         return 3;
     }
     auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);

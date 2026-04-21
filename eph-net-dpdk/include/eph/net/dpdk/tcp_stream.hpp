@@ -750,8 +750,11 @@ public:
                 "create_and_attach: register_icmp_target failed: {}",
                 icmp_reg.error());
             (void)poller->remove(stream.get());
+            // Registry-full is a resource-exhaustion condition, not a
+            // misconfiguration — use OutOfMemory to match the rest of
+            // the codebase (mbuf alloc failed / Poller full also use it).
             return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
+                core::Error::OutOfMemory,
                 "create_and_attach: register_icmp_target failed"});
         }
         stream->icmp_reg_.emplace(std::move(*icmp_reg));

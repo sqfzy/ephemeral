@@ -181,9 +181,14 @@ inline std::string_view format_as(Error e) noexcept {
 } // namespace eph::core
 
 // ---------------------------------------------------------------------------
-// std::formatter specialization for ErrorInfo — enables `std::format("{}", err)`
-// and transitively SPDLOG_LOGGER_*({}, err). Body mirrors operator<< so log
-// lines and gtest diagnostic prints stay in lockstep.
+// std::formatter specialization for ErrorInfo — enables `std::format("{}", err)`.
+//
+// This specialization covers the STANDARD library formatter path only.
+// spdlog vendors its own fmt (spdlog/fmt/bundled/), which does NOT consult
+// std::formatter specializations; it uses the `format_as` ADL hook defined
+// above. Both paths must exist: std::format users get this specialization,
+// spdlog/fmt users get format_as. Body is kept in lockstep with format_as
+// and operator<< so all three render identically.
 // ---------------------------------------------------------------------------
 
 template <>

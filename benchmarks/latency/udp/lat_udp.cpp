@@ -221,7 +221,7 @@ int main(int argc, char** argv) {
 #if defined(EPH_USE_DPDK)
     if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
         std::fprintf(stderr, "lat_udp: register_poller failed: %s\n",
-                     rr.error().c_str());
+                     rr.error().detail);
         return 3;
     }
     auto sock_r = Socket::create_and_attach(std::move(sock_cfg), env.platform);

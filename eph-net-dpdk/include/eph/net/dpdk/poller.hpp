@@ -308,43 +308,55 @@ public:
     ///
     /// @note Hot path — must stay noexcept and allocation-free.
     std::size_t poll() noexcept {
-        if (n_entries_ == 0) return 0;
-
+        // Always drain the NIC ring, even when no streams are currently
+        // attached. A registered-but-empty Poller can still be the
+        // destination of unsolicited ICMP (Type 3 Code 4), late-arriving
+        // mbufs from a just-detached stream, or other out-of-band traffic
+        // — leaving them in the ring causes tail-drops that bleed into
+        // unrelated queues on NICs with shared buffers.
         rte_mbuf* mbufs[kBurstSize];
         const uint16_t n = rte_eth_rx_burst(cfg_.port_id, cfg_.rx_queue_id,
                                              mbufs, kBurstSize);
 
+        // Single TSC read per cycle — used both as the rx_tsc passed
+        // down to process_burst_fn and as the tick_tsc for on_poll_tick_.
+        // Keepalive needs only ms-level precision; the ~µs drift between
+        // "just after rx_burst" and "end of dispatch" is irrelevant.
+        const uint64_t cycle_tsc = eph::utils::TSC::now();
+
         std::size_t dispatched = 0;
-        if (n > 0) {
-            const uint64_t rx_tsc = eph::utils::TSC::now();
-            for (uint16_t i = 0; i < n; ++i) {
-                PollableEntry* entry = lookup_by_5tuple_(mbufs[i]);
-                if (entry != nullptr) {
-                    entry->process_burst_fn(entry->obj, &mbufs[i], 1, rx_tsc);
-                    ++dispatched;
-                } else {
-                    // No routing match. Before falling back to drop,
-                    // check whether the mbuf is an ICMP Frag Needed
-                    // (Type 3 Code 4) message targeting one of the
-                    // registered streams. Non-ICMP unmatched packets
-                    // in DPDK PMD mode have no kernel stack to fall
-                    // back to; freeing the mbuf is the only sane
-                    // disposal.
-                    maybe_dispatch_icmp_(mbufs[i]);
-                    rte_pktmbuf_free(mbufs[i]);
-                }
+        for (uint16_t i = 0; i < n; ++i) {
+            PollableEntry* entry = lookup_by_5tuple_(mbufs[i]);
+            if (entry != nullptr) {
+                entry->process_burst_fn(entry->obj, &mbufs[i], 1, cycle_tsc);
+                ++dispatched;
+            } else {
+                // No routing match. Before falling back to drop, check
+                // whether the mbuf is an ICMP Frag Needed (Type 3
+                // Code 4) message targeting one of the registered
+                // streams. Non-ICMP unmatched packets in DPDK PMD
+                // mode have no kernel stack to fall back to; freeing
+                // the mbuf is the only sane disposal.
+                maybe_dispatch_icmp_(mbufs[i]);
+                rte_pktmbuf_free(mbufs[i]);
             }
         }
 
         // Periodic per-cycle tick — runs regardless of whether the burst
-        // delivered any mbufs. Idle connections with `keepalive_interval
-        // > 0` rely on this to fire probes even when RX is silent. The
-        // tick thunks are inlinable function pointers; UDP implements
-        // `on_poll_tick_` as a no-op which GCC14 compiles out entirely.
-        const uint64_t tick_tsc = eph::utils::TSC::now();
-        for (std::size_t i = 0; i < n_entries_; ++i) {
+        // delivered any mbufs. Idle connections with
+        // `keepalive_interval > 0` rely on this to fire probes even
+        // when RX is silent. The tick thunks are inlinable function
+        // pointers; UDP implements `on_poll_tick_` as a no-op which
+        // GCC14 compiles out entirely.
+        //
+        // Reverse iteration: defensive against a tick_fn that somehow
+        // triggers `Poller::remove` for some entry (none currently do,
+        // but a future extension might). Removal shifts the tail left
+        // into the vacated slot; walking backwards means such a shift
+        // cannot cause us to skip a not-yet-ticked entry.
+        for (std::size_t i = n_entries_; i-- > 0; ) {
             if (entries_[i].tick_fn != nullptr) {
-                entries_[i].tick_fn(entries_[i].obj, tick_tsc);
+                entries_[i].tick_fn(entries_[i].obj, cycle_tsc);
             }
         }
         return dispatched;

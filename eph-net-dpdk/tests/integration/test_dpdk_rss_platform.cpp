@@ -296,7 +296,7 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     for (uint16_t q = 1; q < n; ++q) {
         auto r = platform.register_poller(q, fakes[q]);
         EXPECT_TRUE(r.has_value()) << "register_poller(" << q << ") "
-                                   << (r ? "" : r.error());
+                                   << (r ? "" : r.error().detail);
         EXPECT_EQ(platform.poller_for_queue(q), fakes[q]);
     }
 
@@ -305,7 +305,9 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
         reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xBEEF0000));
     auto r_dup = platform.register_poller(1, dup);
     ASSERT_FALSE(r_dup.has_value());
-    EXPECT_NE(r_dup.error().find("DuplicateQueue"), std::string::npos);
+    EXPECT_EQ(r_dup.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view(r_dup.error().detail).find("already"),
+              std::string_view::npos);
     EXPECT_EQ(platform.poller_for_queue(1), fakes[1])
         << "duplicate register must not overwrite";
 
@@ -314,13 +316,17 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
         reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xBEEF0001));
     auto r_oor = platform.register_poller(9999, oor);
     ASSERT_FALSE(r_oor.has_value());
-    EXPECT_NE(r_oor.error().find("QueueOutOfRange"), std::string::npos);
+    EXPECT_EQ(r_oor.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view(r_oor.error().detail).find("out of range"),
+              std::string_view::npos);
     EXPECT_EQ(platform.poller_for_queue(9999), nullptr);
 
     // null Poller rejected.
     auto r_null = platform.register_poller(0, nullptr);
     ASSERT_FALSE(r_null.has_value());
-    EXPECT_NE(r_null.error().find("null"), std::string::npos);
+    EXPECT_EQ(r_null.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view(r_null.error().detail).find("null"),
+              std::string_view::npos);
 
     // Queue 0 still empty (reserved for E2E).
     EXPECT_EQ(platform.poller_for_queue(0), nullptr);
@@ -372,7 +378,7 @@ TEST(PlatformRss, CreateAndAttachSoftwareModeE2E) {
 
     auto reg_r = platform.register_poller(0, poller.get());
     ASSERT_TRUE(reg_r.has_value())
-        << "register_poller(0) failed: " << reg_r.error();
+        << "register_poller(0) failed: " << reg_r.error().detail;
 
     // Build StreamConfig pointing at the kernel TCP echo mock.
     using TStream = ed::DpdkTcpStream<::eph::codec::RawStreamCodec, false>;
