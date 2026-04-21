@@ -1710,6 +1710,12 @@ private:
         // oversized reordered segments here — they are delivered in-order only
         // or dropped if out-of-order. A runtime guard in process_rx enforces this.
         uint8_t  data[net::kDefaultMss]{};
+
+        // Pair the runtime guard at process_rx (payload_len <= kDefaultMss)
+        // with a compile-time check so a future resize of the buffer cannot
+        // silently shrink below the runtime-permitted copy bound.
+        static_assert(sizeof(data) >= net::kDefaultMss,
+                      "ReorderEntry::data must fit a full kDefaultMss payload");
     };
 
     /// Try to deliver buffered segments that are now in-order.
