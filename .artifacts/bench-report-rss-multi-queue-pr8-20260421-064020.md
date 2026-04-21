@@ -86,6 +86,63 @@ throughput: 33385 samples/s
 
 5. **是否加 hard guard** — 取决于 #1 结论。如果重复实验显示"multi-queue 单流确实有显著尾延迟代价"，则在 `Platform::create` 加 WARN；否则 INFO log 已足够。
 
+---
+
+## Round 6 重复实验（2026-04-21 N=10 校准 — 推翻 +202% 信号）
+
+执行原报告"后续建议 #1"。同 host、同 config、同 15s→10s window，每边各跑 10 次，
+取每次的 RTT p99 做 mean / stddev / 95% CI（t_{0.025,9}=2.262）。
+
+### Run A — `NB_RX_QUEUES=1, ENABLE_RSS=false` (10 runs, p99 ns)
+
+```
+21175  23143  24343  23127  23079  24855  22871  22743  22935  23143
+mean=23141.4  stddev=973.3  se=307.8  95% CI = [22445, 23838]
+```
+
+### Run B — `NB_RX_QUEUES=4, ENABLE_RSS=true` (10 runs, p99 ns)
+
+```
+24759  23191  22503  22903  23031  24119  23095  23527  24695  23415
+mean=23523.8  stddev=762.2  se=241.0  95% CI = [22979, 24069]
+```
+
+### 统计检验（Welch's t-test）
+
+| 指标 | Run A (1q) | Run B (4q+RSS) | Δ |
+|---|---:|---:|---|
+| p99 mean (ns)         | 23141.4 | 23523.8 | **+382 ns (+1.65%)** |
+| p99 stddev (ns)       |   973.3 |   762.2 | — |
+| p99 95% CI            | [22445, 23838] | [22979, 24069] | **重叠** |
+| Welch t               | — | — | **0.978** |
+| t_{0.025,18} 临界值   | — | — | 2.10 |
+| 是否统计显著          | — | — | **❌ 否** |
+
+### 结论修订
+
+| 原 N=1 观察 | N=10 重复后裁定 |
+|---|---|
+| RTT p99 +202% (23223 → 70173 ns) | **推翻** — N=10 真实 mean Δ 仅 +1.65%（+382 ns），CI 大量重叠，Welch t=0.98 远低于显著阈值 2.10 |
+| Throughput -32% (48944 → 33385 s/s) | **强烈疑为同次 outlier 拖累** — 与 p99 同源；本次 N=10 跑没复现该规模的吞吐塌方 |
+| TX p99 +315% | **推翻** — 同上，p99 既已不显著则同源的 TX p99 也属 outlier |
+| 怀疑"ENA TX queue 开销"机制 | **撤回** — 没有数据支持 |
+
+**最终工程结论**：
+- 在 ENA + Software-mode + RETA collapse 单流通路上，`NB_RX_QUEUES=4` vs `NB_RX_QUEUES=1`
+  **无统计显著的 p99 差异**（+1.65%, p > 0.10）。原报告"留待复现的可疑信号"已被
+  N=10 重复实验**否定**。
+- 默认 `NB_RX_QUEUES=1` 仍是 single-stream HFT 推荐 config，但理由不再是"避免 perf trap"，
+  而是"无收益 → 不必要的资源浪费"。
+- 不需要在 `Platform::create` 加 WARN guard。
+- `ENA TX queue 开销" 假说 也撤回 —— 没有实测数据支持。**
+
+教训：单次 15s 跑的 p99 在 noisy cloud 环境（vCPU steal、邻居干扰、kernel scheduling）
+下波动可达 ±200%。任何"显著退化"结论必须 N≥10 + CI 检验。本轮校准把
+**直觉式 perf 报告**升级为**统计驱动的工程结论**，恰好印证了用户当时
+"也许只是偶发情况，不要那么快下结论"的判断。
+
+---
+
 ## 全 PR 链回顾 (PR-0 → PR-8)
 
 | PR | commit | 状态 | 关键 deliverable |
@@ -99,6 +156,6 @@ throughput: 33385 samples/s
 | 5 | (no commit) | ➡️ | docs (no work needed — earlier sweep sufficient) |
 | 6 | e7ce53c | ✅ | 7 lat scenarios → create_and_attach |
 | 7 | 001b840 | ✅ | mockex tcp_echo accept-N |
-| 8 | (this report) | ⚠️ | NIC limitation: ENA `rss_hash_update` unsupported → real multi-stream demo deferred to RSS-capable NIC (Mellanox/Intel). Single-stream multi-queue 配置在本次 N=1 跑里观察到尾延迟异常，但需重复实验确认。 |
+| 8 | (this report + Round 6) | ✅ | NIC limitation: ENA `rss_hash_update` unsupported → real multi-stream demo deferred to RSS-capable NIC (Mellanox/Intel). Single-stream multi-queue N=1 报告的 +202% p99 退化在 N=10 重复实验中**未能复现**（Δ +1.65%, Welch t=0.98 < 2.10, CI 重叠）→ 推翻"perf trap"假说，撤回 ENA TX queue 开销猜测。 |
 
 **13 commits ahead of pre-RSS main**, all build green, all single-stream lat scenarios zero regression in default config, real-NIC integration verified with M2 invariant + RETA collapse + create_and_attach turnkey.
