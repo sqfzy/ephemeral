@@ -35,7 +35,9 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <functional>
 #include <memory>
+#include <utility>
 
 #include <sys/random.h>   // getrandom(2) — random start for pick_src_port
 
@@ -364,28 +366,27 @@ public:
 
     // ── ICMP Frag Needed feedback (PMTU discovery) ───────────────────────
 
-    /// @brief User-provided callback fired for every ICMP Type 3 Code 4
-    ///        message the Poller sees whose embedded 4-tuple + protocol
-    ///        are well-formed. The callback dispatches to the right
-    ///        stream; the Poller itself only handles parsing.
+    /// @brief Callback invoked for every ICMP Type 3 Code 4 message the
+    ///        Poller sees whose embedded 4-tuple + protocol are well-
+    ///        formed. The callback is responsible for routing the
+    ///        parsed ICMP to the appropriate application receiver
+    ///        (typically by walking a shared registry).
     ///
-    /// Single callback per Poller. Multi-stream users need to build
-    /// their own dispatcher or rely on single-stream topology (which
-    /// is the common HFT case).
-    using IcmpFragNeededCallback = void(*)(void* user,
-                                            uint32_t embedded_src_ip,
-                                            uint32_t embedded_dst_ip,
-                                            uint16_t embedded_src_port,
-                                            uint16_t embedded_dst_port,
-                                            uint8_t  embedded_proto,
-                                            uint16_t next_hop_mtu) noexcept;
+    /// `std::function` rather than a raw `void(*)(void*, ...)` because
+    /// the Platform-level dispatch pattern captures a
+    /// `shared_ptr<IcmpRegistry>` in the closure, giving the registry
+    /// a strong ref so its lifetime extends past Platform destruction
+    /// if necessary. Construction typically allocates once (closure
+    /// exceeds SBO) — acceptable startup cost, never on the hot path.
+    using IcmpFragNeededCallback =
+        std::function<void(const eph::dpdk::net::ParsedIcmp&)>;
 
-    /// @brief Register an ICMP Frag Needed callback. Pass nullptr to
-    ///        disable. `user` is opaque — passed back to the callback
-    ///        verbatim so the caller can route to the right receiver.
-    void set_icmp_callback(IcmpFragNeededCallback cb, void* user) noexcept {
-        icmp_cb_   = cb;
-        icmp_user_ = user;
+    /// @brief Install or clear the ICMP callback. Passing a default-
+    ///        constructed `std::function` disables it. Not thread-safe
+    ///        vs. `poll()` — expected to be called at setup before
+    ///        the lcore loop starts, or while poll() is paused.
+    void set_icmp_callback(IcmpFragNeededCallback cb) noexcept {
+        icmp_cb_ = std::move(cb);
     }
 
     /// @brief Diagnostic counter — number of ICMP Type 3 Code 4 messages
@@ -646,15 +647,12 @@ private:
     ///        registered ICMP callback. Silently returns otherwise —
     ///        the caller is responsible for freeing the mbuf regardless.
     void maybe_dispatch_icmp_(rte_mbuf* mbuf) noexcept {
-        if (icmp_cb_ == nullptr) return;
+        if (!icmp_cb_) return;
         auto parsed = eph::dpdk::net::parse_icmp(mbuf);
         if (!parsed || !parsed.is_frag_needed() || !parsed.embedded_valid) {
             return;
         }
-        icmp_cb_(icmp_user_,
-                 parsed.embedded_src_ip,  parsed.embedded_dst_ip,
-                 parsed.embedded_src_port, parsed.embedded_dst_port,
-                 parsed.embedded_proto,    parsed.next_hop_mtu);
+        icmp_cb_(parsed);
         ++icmp_frag_needed_dispatched_;
     }
 
@@ -664,8 +662,11 @@ private:
     uint64_t                            hash_collision_drops_{0};
 
     // ── ICMP Frag Needed callback state ──
-    IcmpFragNeededCallback              icmp_cb_{nullptr};
-    void*                               icmp_user_{nullptr};
+    // std::function because the registered closure captures a
+    // shared_ptr<IcmpRegistry> (strong ref) — that indirection is
+    // what roots registry lifetime in the Poller when Platform dies
+    // first. Empty by default; `operator bool` gates the hot path.
+    IcmpFragNeededCallback              icmp_cb_{};
     uint64_t                            icmp_frag_needed_dispatched_{0};
 };
 
@@ -707,8 +708,8 @@ public:
 
     using IcmpFragNeededCallback =
         typename DpdkPoller<void>::IcmpFragNeededCallback;
-    void set_icmp_callback(IcmpFragNeededCallback cb, void* user) noexcept {
-        impl_->set_icmp_callback(cb, user);
+    void set_icmp_callback(IcmpFragNeededCallback cb) noexcept {
+        impl_->set_icmp_callback(std::move(cb));
     }
     [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept {
         return impl_->icmp_frag_needed_dispatched();

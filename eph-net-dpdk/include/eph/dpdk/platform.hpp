@@ -412,37 +412,34 @@ public:
     // ── ICMP Frag Needed target registry ─────────────────────────────────
     //
     // ICMP messages can arrive on any RX queue (routers pick based on
-    // their own hashing, not ours). So each per-queue Poller only sees
-    // the ICMPs routed to it, but an ICMP Frag Needed about any registered
-    // stream might land on any queue. Platform is the only global view
+    // their own hashing, not ours). Platform is the only global view
     // over all streams/queues — so it owns ICMP dispatch.
     //
-    // Streams call `register_icmp_target` once post-attach. The returned
-    // RAII handle unregisters on destruction. The Platform-side trampoline
-    // (`on_poller_icmp_`) is installed onto each Poller's ICMP fallback
-    // by `DpdkTcpStream::create_and_attach` — NOT by `register_poller`
-    // itself, because `platform.hpp` only forward-declares `DpdkPoller<>`
-    // and can't call its full API inline. Net effect: every registered
-    // Poller's un-routed ICMP mbufs converge into Platform's registry
-    // walk once any stream attaches through the turnkey factory.
-    //
-    // @warning LIFETIME CONTRACT: a Platform must outlive every
-    //          DpdkPoller registered via `register_poller` AND every
-    //          DpdkTcpStream constructed via
-    //          `DpdkTcpStream::create_and_attach(..., *this)`.
-    //          The Poller stores a raw `Platform*` as ICMP callback
-    //          context; each stream's `IcmpTargetHandle` stores a raw
-    //          `Platform*` too. Destroying the Platform first is a
-    //          use-after-free on the ICMP dispatch path. Typical-correct
-    //          ordering: declare Platform first, Poller second, Stream
-    //          last — reverse-declaration destruction honours the
-    //          contract automatically.
-
     // The registry's store + state-machine lives in
-    // `detail::IcmpRegistry`; Platform is a thin facade that owns
-    // one instance and forwards the public API. This keeps the
-    // registry unit-testable without EAL/NIC (see
-    // `tests/legacy/test_icmp_registry.cpp`).
+    // `detail::IcmpRegistry` (heap-allocated, ref-counted via
+    // shared_ptr, internally synchronised with std::mutex). Platform
+    // is a thin facade that holds one strong ref via
+    // `Impl::icmp_registry_sp` and forwards the public API.
+    //
+    // `DpdkTcpStream::create_and_attach` installs a closure on each
+    // registered Poller's ICMP callback; the closure captures
+    // `icmp_registry_shared_()`'s shared_ptr **by value**, giving the
+    // Poller a second strong ref. Registry lifetime is therefore the
+    // union of "Platform alive" OR "Poller still holds the closure"
+    // — so any declaration / destruction order is safe.
+    //
+    // Streams call `register_icmp_target` once post-attach. The
+    // returned RAII Handle holds a `weak_ptr<IcmpRegistry>`: if the
+    // registry has already been freed by the time the Handle
+    // destructs, the weak_ptr lock returns empty and unregister is
+    // a safe no-op.
+    //
+    // @note LIFETIME is now enforced by shared_ptr/weak_ptr
+    //       semantics; no external declaration-order contract is
+    //       needed. The recommended ordering (Platform outermost,
+    //       Stream innermost) remains a good habit for other
+    //       reasons (mempool / port lifetime), but an accidental
+    //       reverse order no longer causes UAF in the ICMP path.
     using IcmpMtuCallback  = ::eph::dpdk::detail::IcmpRegistry::MtuCallback;
     using IcmpTargetHandle = ::eph::dpdk::detail::IcmpRegistry::Handle;
 
@@ -462,20 +459,13 @@ public:
     ///        to a registered target since Platform construction.
     [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept;
 
-    // ── Internal (public to the RAII handle) ────────────────────────────
-    void unregister_icmp_target_(const ::eph::dpdk::net::ConnectionTuple& tuple,
-                                  uint8_t proto) noexcept;
-
-    /// @brief Trampoline installed onto every registered Poller's ICMP
-    ///        fallback. Extracts the embedded 4-tuple from the parsed
-    ///        ICMP and looks up the matching target.
-    static void on_poller_icmp_(void* ctx,
-                                 uint32_t embedded_src_ip,
-                                 uint32_t embedded_dst_ip,
-                                 uint16_t embedded_src_port,
-                                 uint16_t embedded_dst_port,
-                                 uint8_t  embedded_proto,
-                                 uint16_t next_hop_mtu) noexcept;
+    /// @brief Internal: returns the shared_ptr to this Platform's ICMP
+    ///        registry. Used by `DpdkTcpStream::create_and_attach` to
+    ///        capture a strong ref into the Poller's ICMP callback
+    ///        closure so the registry outlives Platform if needed.
+    ///        Returns empty shared_ptr on moved-from Platform.
+    [[nodiscard]] std::shared_ptr<::eph::dpdk::detail::IcmpRegistry>
+    icmp_registry_shared_() const noexcept;
 
 private:
     struct Impl;
@@ -508,10 +498,14 @@ struct Platform::Impl {
 
     // ── ICMP Frag Needed target registry ──
     // State + state-machine live in `detail::IcmpRegistry`; this
-    // field is the only owner. See
-    // `eph/dpdk/detail/icmp_registry.hpp` for the dispatch / match /
-    // RAII handle logic.
-    ::eph::dpdk::detail::IcmpRegistry icmp_registry{};
+    // `shared_ptr` is the strong owner. The same registry may also
+    // be held strongly by a `DpdkPoller`'s ICMP callback closure
+    // (for lifetime-safe dispatch if this Platform is destroyed
+    // first) and weakly by every stream's `IcmpTargetHandle` (for
+    // safe deregistration if the registry outlives the handle).
+    // See `eph/dpdk/detail/icmp_registry.hpp`.
+    std::shared_ptr<::eph::dpdk::detail::IcmpRegistry> icmp_registry_sp{
+        std::make_shared<::eph::dpdk::detail::IcmpRegistry>()};
 
     ~Impl() { cleanup(); }
 
@@ -1031,46 +1025,23 @@ Platform::register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
                                 uint8_t  proto,
                                 void*    stream,
                                 IcmpMtuCallback cb) noexcept {
-    if (!impl_)
+    if (!impl_ || !impl_->icmp_registry_sp) {
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
             "Platform::register_icmp_target: Platform is moved-from"});
-    return impl_->icmp_registry.register_target(tuple, proto, stream, cb);
-}
-
-inline void
-Platform::unregister_icmp_target_(
-    const ::eph::dpdk::net::ConnectionTuple& tuple, uint8_t proto) noexcept {
-    if (!impl_) return;
-    impl_->icmp_registry.unregister(tuple, proto);
+    }
+    return impl_->icmp_registry_sp->register_target(tuple, proto, stream, cb);
 }
 
 inline uint64_t Platform::icmp_frag_needed_dispatched() const noexcept {
-    return impl_ ? impl_->icmp_registry.dispatched() : 0;
+    return (impl_ && impl_->icmp_registry_sp)
+               ? impl_->icmp_registry_sp->dispatched()
+               : 0;
 }
 
-inline void Platform::on_poller_icmp_(
-    void* ctx,
-    uint32_t embedded_src_ip, uint32_t embedded_dst_ip,
-    uint16_t embedded_src_port, uint16_t embedded_dst_port,
-    uint8_t  embedded_proto,
-    uint16_t next_hop_mtu) noexcept {
-    auto* self = static_cast<Platform*>(ctx);
-    if (self == nullptr || !self->impl_) return;
-    // Build a ParsedIcmp-compatible slim struct so the registry's
-    // dispatch logic can be shared with any future direct-invocation
-    // path.
-    ::eph::dpdk::net::ParsedIcmp p{};
-    p.type              = 3;
-    p.code              = 4;
-    p.next_hop_mtu      = next_hop_mtu;
-    p.embedded_src_ip   = embedded_src_ip;
-    p.embedded_dst_ip   = embedded_dst_ip;
-    p.embedded_src_port = embedded_src_port;
-    p.embedded_dst_port = embedded_dst_port;
-    p.embedded_proto    = embedded_proto;
-    p.embedded_valid    = true;
-    self->impl_->icmp_registry.dispatch(p);
+inline std::shared_ptr<::eph::dpdk::detail::IcmpRegistry>
+Platform::icmp_registry_shared_() const noexcept {
+    return impl_ ? impl_->icmp_registry_sp : nullptr;
 }
 
 inline Platform::Stats Platform::collect_stats() const {

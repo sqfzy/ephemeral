@@ -1,29 +1,52 @@
 #pragma once
 
 /// @file icmp_registry.hpp
-/// Standalone ICMP Frag Needed target registry — a small heap-free,
-/// EAL-free store that maps {embedded 4-tuple + IP protocol} to
-/// (stream, callback) pairs. Used by `eph::dpdk::Platform` to route
-/// router-originated ICMP messages back to the stream that caused
-/// them.
+/// ICMP Frag Needed target registry — maps {embedded 4-tuple + IP
+/// protocol} to (stream, callback) pairs. Used by `eph::dpdk::Platform`
+/// to route router-originated ICMP messages back to the stream that
+/// caused them.
 ///
-/// Factored out of `Platform::Impl` so that the registry's state-
-/// machine (register/unregister/dispatch, linear-scan matching,
-/// swap-with-last compaction, RAII Handle lifecycle) can be unit-
-/// tested without spinning up EAL + NIC — i.e. on CI / laptop / any
-/// dev machine.
+/// ## Ownership model — shared_ptr (Major 2 root fix)
 ///
-/// Thread-safety: not thread-safe. Register/unregister are expected
-/// on the stream-construction thread; `dispatch()` runs on the lcore
-/// poll thread. In typical HFT topologies the two are separated by
-/// startup ordering (streams attach before poll loop starts), so no
-/// overlap occurs. A future multi-threaded use case would need
-/// external synchronisation or a mutex here.
+/// `IcmpRegistry` must be heap-allocated and reference-counted via
+/// `std::shared_ptr`. Two reasons:
+///
+///   1. **Shared lifetime** between `Platform` (strong ref in Impl)
+///      and `DpdkPoller`'s ICMP callback closure (strong ref captured
+///      by value in the std::function). Platform destruction can
+///      predate Poller destruction without UAF — registry lives as
+///      long as either holder is alive.
+///
+///   2. **weak_ptr Handle** — each `IcmpRegistry::Handle` (held by a
+///      Stream's `icmp_reg_`) stores a `weak_ptr<IcmpRegistry>`. If
+///      the registry has already died when the handle destructs,
+///      `.lock()` returns empty and the unregister is safely skipped.
+///
+/// The class inherits `enable_shared_from_this` so `register_target`
+/// can hand a `weak_ptr` to each `Handle`. Constructing an
+/// `IcmpRegistry` outside a `std::shared_ptr` is UB (weak_from_this
+/// inside a non-shared instance); use `std::make_shared<IcmpRegistry>()`.
+///
+/// ## Thread safety
+///
+/// All state mutation (register / unregister / dispatch / counters)
+/// happens under `mu_`. Production HFT topologies have:
+///
+///   - Control thread (stream create/destroy) → register / unregister
+///   - LCore thread (poll loop) → dispatch
+///
+/// Without the lock, hot reconnect (stream destroy racing with ICMP
+/// dispatch) would corrupt `targets_`. The lock is uncontended in
+/// steady state — register/unregister are startup/teardown events,
+/// dispatch fires << 1 Hz (only when routers emit ICMP Frag Needed).
+/// Hot path (poll cycles without ICMP) never touches the registry.
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "eph/core/error.hpp"
@@ -32,11 +55,7 @@
 
 namespace eph::dpdk::detail {
 
-/// @brief ICMP-to-stream registry. Owns an inline fixed-capacity
-///        array of targets (no heap). Returns RAII `Handle`s on
-///        register; the handle's destructor (or move-overwrite)
-///        unregisters.
-class IcmpRegistry {
+class IcmpRegistry : public std::enable_shared_from_this<IcmpRegistry> {
 public:
     /// @brief Callback invoked on a dispatch hit.
     /// @param stream  User-opaque pointer the caller passed at
@@ -51,43 +70,38 @@ public:
 
     // ── RAII Handle ──────────────────────────────────────────────────────
     //
-    // Move-only. Empty-constructed, default-moved-from, and alive
-    // variants all distinguishable via `engaged_`. Destructor calls
-    // `reg_->unregister(tuple_, proto_)` only when engaged_ && reg_
-    // — both guards matter: moved-from has engaged_=false, default-
-    // constructed has reg_=nullptr.
+    // Holds a `weak_ptr<IcmpRegistry>` — destructor tries `.lock()` and
+    // unregisters only if the registry is still alive. Move-only.
+    // Three distinguishable states:
+    //   * default-constructed: engaged_=false, reg_weak_ empty → dtor no-op
+    //   * active:              engaged_=true,  reg_weak_ targets live registry
+    //   * moved-from:          engaged_=false (source of move)
 
     class Handle {
     public:
         Handle() noexcept = default;
-        Handle(IcmpRegistry* reg,
-               ::eph::dpdk::net::ConnectionTuple tuple,
-               uint8_t proto) noexcept
-            : reg_(reg), tuple_(tuple), proto_(proto), engaged_(true) {}
 
         ~Handle() noexcept {
-            if (engaged_ && reg_ != nullptr) {
-                reg_->unregister(tuple_, proto_);
-            }
+            release_();
         }
 
         Handle(const Handle&)            = delete;
         Handle& operator=(const Handle&) = delete;
 
         Handle(Handle&& o) noexcept
-            : reg_(o.reg_), tuple_(o.tuple_),
-              proto_(o.proto_), engaged_(o.engaged_) {
+            : reg_weak_(std::move(o.reg_weak_)),
+              tuple_(o.tuple_),
+              proto_(o.proto_),
+              engaged_(o.engaged_) {
             o.engaged_ = false;
         }
         Handle& operator=(Handle&& o) noexcept {
             if (this != &o) {
-                if (engaged_ && reg_ != nullptr) {
-                    reg_->unregister(tuple_, proto_);
-                }
-                reg_     = o.reg_;
-                tuple_   = o.tuple_;
-                proto_   = o.proto_;
-                engaged_ = o.engaged_;
+                release_();
+                reg_weak_ = std::move(o.reg_weak_);
+                tuple_    = o.tuple_;
+                proto_    = o.proto_;
+                engaged_  = o.engaged_;
                 o.engaged_ = false;
             }
             return *this;
@@ -96,7 +110,33 @@ public:
         [[nodiscard]] bool engaged() const noexcept { return engaged_; }
 
     private:
-        IcmpRegistry*                     reg_{nullptr};
+        friend class IcmpRegistry;
+
+        Handle(std::weak_ptr<IcmpRegistry> reg,
+               ::eph::dpdk::net::ConnectionTuple tuple,
+               uint8_t proto) noexcept
+            : reg_weak_(std::move(reg)),
+              tuple_(tuple),
+              proto_(proto),
+              engaged_(true) {}
+
+        /// Unregister from the registry if it's still alive. Safe to call
+        /// on moved-from or default-constructed handles (no-op).
+        void release_() noexcept {
+            if (!engaged_) return;
+            // weak_ptr::lock() is thread-safe and returns an empty
+            // shared_ptr if the last strong ref has dropped. Holding
+            // the temporary shared_ptr for the duration of the
+            // unregister() call keeps the registry alive across the
+            // call, even if another thread is concurrently dropping
+            // the last external reference.
+            if (auto reg = reg_weak_.lock()) {
+                reg->unregister(tuple_, proto_);
+            }
+            engaged_ = false;
+        }
+
+        std::weak_ptr<IcmpRegistry>       reg_weak_;
         ::eph::dpdk::net::ConnectionTuple tuple_{};
         uint8_t                           proto_{0};
         bool                              engaged_{false};
@@ -109,6 +149,10 @@ public:
     /// @return An RAII Handle on success; an ErrorInfo on
     ///         InvalidConfig (null cb/stream or duplicate) or
     ///         OutOfMemory (registry full).
+    /// @note Thread-safe under `mu_`.
+    /// @note The returned Handle holds a weak_ptr derived from
+    ///       `weak_from_this()`; calling this on an `IcmpRegistry`
+    ///       not managed by `shared_ptr` is UB.
     [[nodiscard]] std::expected<Handle, ::eph::core::ErrorInfo>
     register_target(::eph::dpdk::net::ConnectionTuple tuple,
                     uint8_t     proto,
@@ -119,14 +163,14 @@ public:
                 ::eph::core::Error::InvalidConfig,
                 "IcmpRegistry::register_target: stream/cb must not be null"});
         }
+        std::lock_guard<std::mutex> g(mu_);
         if (n_targets_ >= kMaxTargets) {
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::OutOfMemory,
                 "IcmpRegistry::register_target: registry full"});
         }
         for (std::size_t i = 0; i < n_targets_; ++i) {
-            const auto& e = targets_[i];
-            if (entry_matches_(e, tuple, proto)) {
+            if (entry_matches_(targets_[i], tuple, proto)) {
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::InvalidConfig,
                     "IcmpRegistry::register_target: tuple already registered"});
@@ -137,13 +181,15 @@ public:
         slot.proto  = proto;
         slot.stream = stream;
         slot.cb     = cb;
-        return Handle{this, tuple, proto};
+        return Handle{weak_from_this(), tuple, proto};
     }
 
     /// @brief Unregister a (tuple, proto) pair. No-op if not found.
     ///        Uses swap-with-last removal to keep the array compact.
+    /// @note Thread-safe under `mu_`.
     void unregister(const ::eph::dpdk::net::ConnectionTuple& tuple,
                     uint8_t proto) noexcept {
+        std::lock_guard<std::mutex> g(mu_);
         for (std::size_t i = 0; i < n_targets_; ++i) {
             if (entry_matches_(targets_[i], tuple, proto)) {
                 targets_[i] = targets_[n_targets_ - 1];
@@ -156,12 +202,16 @@ public:
     /// @brief Walk the registry looking for an entry matching the
     ///        embedded 4-tuple + protocol in `parsed`. On match,
     ///        invoke its callback with `parsed.next_hop_mtu` and bump
-    ///        the `dispatched()` counter. Silently no-op on no match.
-    ///
-    /// Safe to call with any `ParsedIcmp`; requires
-    /// `parsed.embedded_valid == true` to attempt dispatch.
+    ///        the `dispatched()` counter. Silently no-op on no match
+    ///        or on `embedded_valid == false`.
+    /// @note Thread-safe under `mu_`. The callback runs **while
+    ///       holding the lock** — callbacks must not call back into
+    ///       the registry (would deadlock). Our Stream callback just
+    ///       forwards to `sess_.on_icmp_frag_needed(mtu)` which is a
+    ///       pure TcpSession-local operation — safe.
     void dispatch(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
         if (!parsed.embedded_valid) return;
+        std::lock_guard<std::mutex> g(mu_);
         for (std::size_t i = 0; i < n_targets_; ++i) {
             const auto& e = targets_[i];
             if (e.proto            == parsed.embedded_proto   &&
@@ -177,10 +227,18 @@ public:
     }
 
     /// @brief Cumulative count of successful dispatches.
-    [[nodiscard]] uint64_t dispatched() const noexcept { return dispatched_; }
+    /// @note Thread-safe; takes `mu_` for a consistent snapshot.
+    [[nodiscard]] uint64_t dispatched() const noexcept {
+        std::lock_guard<std::mutex> g(mu_);
+        return dispatched_;
+    }
 
     /// @brief Current number of registered targets (0..kMaxTargets).
-    [[nodiscard]] std::size_t size() const noexcept { return n_targets_; }
+    /// @note Thread-safe; takes `mu_` for a consistent snapshot.
+    [[nodiscard]] std::size_t size() const noexcept {
+        std::lock_guard<std::mutex> g(mu_);
+        return n_targets_;
+    }
 
 private:
     struct Entry {
@@ -201,6 +259,7 @@ private:
                e.tuple.dst_port   == tuple.dst_port;
     }
 
+    mutable std::mutex             mu_;
     std::array<Entry, kMaxTargets> targets_{};
     std::size_t                    n_targets_{0};
     uint64_t                       dispatched_{0};

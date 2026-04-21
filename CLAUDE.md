@@ -57,7 +57,14 @@ The scope decisions for the current feature set are archived in
   register_icmp_target` — path-MTU feedback path. `DpdkTcpStream::
   create_and_attach` wires the stream into Platform's ICMP registry so
   router-originated Type 3 Code 4 messages are dispatched to the owning
-  stream regardless of which RX queue they land on (RSS-safe).
+  stream regardless of which RX queue they land on (RSS-safe). The
+  registry is `shared_ptr`-managed and internally mutex-locked: safe
+  under any declaration / destruction order between Platform / Poller
+  / Stream, and safe under concurrent register/unregister/dispatch
+  (ASan + TSan verified). `DpdkPoller::set_icmp_callback` takes a
+  `std::function<void(ParsedIcmp const&)>` that closes over the
+  registry's shared_ptr; Stream's `IcmpTargetHandle` holds a weak_ptr
+  and unregisters safely even if the registry predeceases it.
 - `DpdkTcpStream::create_and_attach(cfg, platform)` — turnkey production
   factory. Handles queue selection (Software / RSS-pinned / FlowDirector),
   src_port allocation (rebinding to match RSS hash when pinning), TCP/TLS/

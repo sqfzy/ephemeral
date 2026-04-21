@@ -725,14 +725,28 @@ public:
             stream->flow_rule_.emplace(std::move(*rule));
         }
 
-        // Ensure this Poller routes un-dispatched ICMP mbufs into
-        // Platform::on_poller_icmp_. Installing the callback is
-        // idempotent — subsequent streams attaching to the same Poller
-        // overwrite the same function pointer / context, which is a
-        // no-op semantically. Doing it here keeps platform.hpp free
-        // of any dependency on the full DpdkPoller<> definition.
-        poller->set_icmp_callback(&::eph::dpdk::Platform::on_poller_icmp_,
-                                   static_cast<void*>(&platform));
+        // Install a Platform-aware ICMP dispatch closure on this
+        // Poller. Capturing the registry's `shared_ptr` *by value*
+        // gives the Poller a strong ref — if the user's Platform
+        // outlives its Poller (the normal order) the ref is released
+        // quickly; if the user destroys Platform before the Poller
+        // (legal but easy to do accidentally), the Poller's closure
+        // keeps the registry alive, so ICMP dispatch continues to
+        // route safely to Stream Handles still registered. Major 2
+        // root fix for the "Platform* dangling in Poller ctx" UAF.
+        //
+        // Overwriting on each create_and_attach is fine: every call
+        // passes the same `platform` reference, so the captured
+        // shared_ptr points to the same registry; the net effect is
+        // a fresh closure with an extra ref-bump on the same
+        // underlying control block. Idempotent from Poller's view.
+        if (auto reg_sp = platform.icmp_registry_shared_()) {
+            poller->set_icmp_callback(
+                [reg_sp = std::move(reg_sp)](
+                    const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
+                    reg_sp->dispatch(parsed);
+                });
+        }
 
         // Register the stream as an ICMP Frag Needed target so path-MTU
         // feedback routes to our `sess_.on_icmp_frag_needed`. Platform
