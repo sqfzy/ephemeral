@@ -233,6 +233,22 @@ struct BenchConfig {
 
     // --- Server TCP listen port (used by stage-4+ scenarios) ---
     uint16_t server_port = 9000;
+
+    // --- DPDK RSS / multi-queue configuration ---
+    // Used by the multi-queue lat_*_dpdk variants to drive per-lcore
+    // Pollers. Default 1 / false keeps every existing scenario in
+    // single-queue Software mode (zero behavioural change).
+    //
+    // When NB_RX_QUEUES > 1 + ENABLE_RSS=true:
+    //   * Platform::create installs an RSS hash + RETA across NB_RX_QUEUES.
+    //   * The lat scenario spawns one DpdkPoller per queue and pins it to
+    //     the corresponding lcore listed in LCORE_PER_QUEUE (CSV indexed
+    //     by qid). The lcore CSV must list at least NB_RX_QUEUES values.
+    //   * Each connection / stream calls DpdkTcpStream::create_and_attach
+    //     with pin_to_queue set to its qid (round-robin across symbols).
+    uint16_t    nb_rx_queues  = 1;
+    bool        enable_rss    = false;
+    std::string lcore_per_queue;     ///< CSV like "4,5,6,7" — indexed by qid
 };
 
 namespace config_detail {
@@ -345,6 +361,11 @@ inline void apply_kv(BenchConfig& cfg, const std::string& k,
     else if (k == "TRADE_MEAN_MS")   cfg.trade_mean_ms = parse_int(v, 5);
     else if (k == "KLINE_S")         cfg.kline_s = parse_int(v, 1);
     else if (k == "DEPTH_BYTES")     cfg.depth_bytes = static_cast<size_t>(parse_int(v, 1024));
+    else if (k == "NB_RX_QUEUES")    cfg.nb_rx_queues = static_cast<uint16_t>(parse_int(v, 1));
+    else if (k == "ENABLE_RSS") {
+        cfg.enable_rss = (v == "true" || v == "1" || v == "yes" || v == "on");
+    }
+    else if (k == "LCORE_PER_QUEUE") cfg.lcore_per_queue = v;
     // Unknown keys are silently ignored — bench.conf may grow new keys
     // that older binaries don't understand.
 }
