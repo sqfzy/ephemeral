@@ -13,6 +13,26 @@
 /// The state machine handles TCP three-way handshake, data transfer, and
 /// graceful close. All operations go through DPDK tx_burst/rx_burst — no
 /// kernel sockets are used on the data path.
+///
+/// ## Error type layering
+///
+/// `TcpSession` methods return `std::expected<T, std::string>` deliberately,
+/// NOT `std::expected<T, core::ErrorInfo>` like the public Stream API.
+///
+/// The rationale is concrete: internal errors here carry *formatted*
+/// detail (timeout values, sequence numbers, effective MSS, peer state)
+/// that is only meaningful at the TcpSession layer — e.g. "TCP handshake
+/// timeout after 3000ms", "Payload too large: 1460 > effective MSS 1200".
+/// `ErrorInfo::detail` is `const char*` with static lifetime, so adopting
+/// it here would either drop the formatted context or force the caller
+/// to reconstruct it from side-channel logs.
+///
+/// `DpdkTcpStream` (the public Stream backend) converts each
+/// `TcpSession` string error into an `ErrorInfo` at the boundary, using
+/// `SPDLOG_LOGGER_*` to retain the formatted detail in logs. This is
+/// the same adapter pattern the kernel backend uses at its
+/// `KernelTcpStream` → POSIX-errno boundary; it keeps the public API
+/// contract uniform without sacrificing internal diagnosability.
 
 #include <array>
 #include <atomic>
