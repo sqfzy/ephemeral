@@ -112,8 +112,20 @@ inline void echo_client_loop(int cfd,
     // mockex_max_connections caps concurrent clients.  Default 1 = the
     // original single-client behaviour, fully backwards-compatible with
     // lat_tcp et al.  Set to N in [lat_ex_market_multi] for PR-8.
-    const uint32_t max_conn =
+    //
+    // Hard upper bound to prevent a typo / runaway config from
+    // spawning millions of std::threads → OOM / EAGAIN.  64 is more
+    // than enough for any realistic HFT bench (matches kMaxRssQueues).
+    constexpr uint32_t kMaxMockConn = 64;
+    const uint32_t requested =
         ctx.section->get_u32("mockex_max_connections").value_or(1u);
+    if (requested > kMaxMockConn) {
+        SPDLOG_ERROR("[tcp_echo] mockex_max_connections={} exceeds hard cap {} "
+                     "(prevents thread-per-conn exhaustion); aborting",
+                     requested, kMaxMockConn);
+        return 1;
+    }
+    const uint32_t max_conn = std::max(1u, requested);
 
     auto lfd_e = eph::net::posix::tcp_bind_listen(
         host, port, /*backlog=*/static_cast<int>(std::max(1u, max_conn)));
