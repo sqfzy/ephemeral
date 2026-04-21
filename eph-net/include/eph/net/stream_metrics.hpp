@@ -87,6 +87,40 @@ enum class StreamMetric : std::size_t {
     /// the upstream changed its TLS write strategy.
     kTlsCrossRecordFrames,
 
+    // ── DPDK TCP session-specific counters (pulled from
+    //    TcpSession::Stats at read time; other backends emit 0). ──
+
+    /// Peer-initiated RSTs received on the session. UDP backends emit 0.
+    kTcpResetsReceived,
+
+    /// TCP segments that arrived with a gap relative to rcv_nxt.
+    /// DPDK only; kernel backend and UDP emit 0.
+    kTcpOutOfOrderSegments,
+
+    /// Out-of-order segments that were successfully buffered + later
+    /// drained once the gap filled. DPDK TCP only.
+    kTcpReorderBufferHits,
+
+    /// Reorder buffer was already full when an out-of-order segment
+    /// arrived — triggers session reset. DPDK TCP only.
+    kTcpReorderBufferOverflows,
+
+    /// Keepalive probes emitted by `tick_keepalive`. Non-zero means the
+    /// peer went idle past `keepalive_interval`. DPDK TCP only.
+    kTcpKeepaliveProbesSent,
+
+    /// SYN-ACK carried a peer MSS option that clamped our effective MSS
+    /// below the configured local value. Should be very low in steady
+    /// state; a sudden spike indicates the upstream changed MTU.
+    /// DPDK TCP only.
+    kTcpMssNegotiationApplied,
+
+    /// ICMP Type 3 Code 4 (Fragmentation Needed) messages acted on by
+    /// the session. Normal on paths where PMTU shrinks mid-flight
+    /// (VPN / tunnel / changed route); persistently non-zero means the
+    /// MSS was not recorded correctly.
+    kIcmpFragNeededReceived,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -102,6 +136,13 @@ kStreamMetricNames = {
     "net.stream.reasm_overflows",
     "net.stream.codec_errors",
     "net.stream.tls.cross_record_frames",
+    "net.stream.tcp.resets_received",
+    "net.stream.tcp.out_of_order_segments",
+    "net.stream.tcp.reorder_buffer_hits",
+    "net.stream.tcp.reorder_buffer_overflows",
+    "net.stream.tcp.keepalive_probes_sent",
+    "net.stream.tcp.mss_negotiation_applied",
+    "net.stream.icmp.frag_needed_received",
 };
 
 static_assert(kStreamMetricNames.size() ==

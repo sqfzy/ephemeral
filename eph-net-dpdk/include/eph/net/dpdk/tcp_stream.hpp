@@ -989,6 +989,29 @@ public:
     // drain_codec_ slow path.
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
+        using SM = ::eph::net::StreamMetric;
+        // TCP / ICMP session-level counters live on TcpSession::Stats and
+        // are updated in-situ on the hot path; reading them lazily here
+        // avoids maintaining a second parallel atomic counter plus the
+        // extra lock-add on every event.
+        switch (m) {
+            case SM::kTcpResetsReceived:
+                return sess_.tcp_stats().resets_received;
+            case SM::kTcpOutOfOrderSegments:
+                return sess_.tcp_stats().out_of_order;
+            case SM::kTcpReorderBufferHits:
+                return sess_.tcp_stats().reorder_hits;
+            case SM::kTcpReorderBufferOverflows:
+                return sess_.tcp_stats().reorder_overflows;
+            case SM::kTcpKeepaliveProbesSent:
+                return sess_.tcp_stats().keepalive_probes_sent;
+            case SM::kTcpMssNegotiationApplied:
+                return sess_.tcp_stats().mss_negotiations_applied;
+            case SM::kIcmpFragNeededReceived:
+                return sess_.tcp_stats().icmp_frag_needed_received;
+            default:
+                break;
+        }
         return counters_[static_cast<std::size_t>(m)]
             .v.load(std::memory_order_relaxed);
     }

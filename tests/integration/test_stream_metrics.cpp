@@ -315,3 +315,69 @@ TEST(StreamMetrics, MetricCountersAreMonotonic) {
     EXPECT_GE(stream->metric(en::StreamMetric::kBytesSent), sent_after_first);
     EXPECT_GE(stream->metric(en::StreamMetric::kBytesRecv), recv_after_first);
 }
+
+// ─── Phase F new metrics: per-backend shape + zero defaults ──────────────
+
+TEST(StreamMetrics, NewTcpIcmpMetricsPresentInNameTable) {
+    // Enum additions must be reflected in the name table; the header's
+    // static_assert enforces this, but a runtime check catches accidental
+    // re-ordering during back-port.
+    ASSERT_EQ(static_cast<std::size_t>(en::StreamMetric::kCount),
+              en::kStreamMetricNames.size());
+    const auto names_begin = en::kStreamMetricNames.begin();
+    const auto names_end   = en::kStreamMetricNames.end();
+    for (auto n : {
+            "net.stream.tcp.resets_received",
+            "net.stream.tcp.out_of_order_segments",
+            "net.stream.tcp.reorder_buffer_hits",
+            "net.stream.tcp.reorder_buffer_overflows",
+            "net.stream.tcp.keepalive_probes_sent",
+            "net.stream.tcp.mss_negotiation_applied",
+            "net.stream.icmp.frag_needed_received",
+        }) {
+        EXPECT_TRUE(std::find(names_begin, names_end, std::string_view{n})
+                    != names_end)
+            << "missing metric name: " << n;
+    }
+}
+
+TEST(StreamMetrics, KernelTcpReturnsZeroForNewTcpIcmpMetrics) {
+    // Kernel backend does not implement MSS-negotiation / ICMP /
+    // reorder-buffer telemetry. Its metric() must return 0 for the new
+    // enum entries so `publish_metrics` does not emit bogus counters.
+    EchoServer srv;
+    ek::StreamConfig cfg{};
+    cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
+    auto stream = PlainTcpStream::create(cfg).value();
+
+    for (auto m : {
+            en::StreamMetric::kTcpResetsReceived,
+            en::StreamMetric::kTcpOutOfOrderSegments,
+            en::StreamMetric::kTcpReorderBufferHits,
+            en::StreamMetric::kTcpReorderBufferOverflows,
+            en::StreamMetric::kTcpKeepaliveProbesSent,
+            en::StreamMetric::kTcpMssNegotiationApplied,
+            en::StreamMetric::kIcmpFragNeededReceived,
+        }) {
+        EXPECT_EQ(stream->metric(m), 0u);
+    }
+
+    // publish_metrics still emits one row per enum entry — count matches.
+    RecordingSink sink;
+    en::publish_metrics(*stream, sink);
+    EXPECT_EQ(sink.records.size(),
+              static_cast<std::size_t>(en::StreamMetric::kCount));
+}
+
+TEST(StreamMetrics, KernelUdpReturnsZeroForNewTcpIcmpMetrics) {
+    auto sock = PlainUdp::create(
+        ek::UdpConfig{.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0}})
+        .value();
+    for (auto m : {
+            en::StreamMetric::kTcpResetsReceived,
+            en::StreamMetric::kTcpKeepaliveProbesSent,
+            en::StreamMetric::kIcmpFragNeededReceived,
+        }) {
+        EXPECT_EQ(sock->metric(m), 0u);
+    }
+}
