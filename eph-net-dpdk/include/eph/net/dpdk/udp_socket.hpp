@@ -376,6 +376,25 @@ public:
         // packet template), so we can't change the TX peer mid-stream.
         // What we CAN do is update the inbound dispatch tuple — the
         // Poller's routing table keys on (src_ip, src_port, dst_ip, dst_port).
+        //
+        // Reject peer mismatches up front: if `peer` differs from the
+        // fixed TX destination, we'd end up sending to cfg.legacy.dst_*
+        // but filtering inbound on `peer`, so replies from the real
+        // server would be silently dropped and the socket would appear
+        // hung. Fail loudly instead.
+        if (peer.ip.to_be32() != cfg_.legacy.dst_ip ||
+            peer.port         != cfg_.legacy.dst_port) {
+            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                "DpdkUdpSocket::connect_to: peer ip_be=0x{:08x}:{} does not "
+                "match configured fixed peer ip_be=0x{:08x}:{} — would silently "
+                "drop all inbound traffic",
+                peer.ip.to_be32(), peer.port,
+                cfg_.legacy.dst_ip, cfg_.legacy.dst_port);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkUdpSocket::connect_to: peer does not match configured "
+                "fixed peer (UdpSender is precomputed-template, fixed-peer)"});
+        }
         connected_peer_ = peer;
         connected_     = true;
         SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
