@@ -167,16 +167,17 @@ public:
         argv.reserve(args.size());
         for (auto& a : args) argv.push_back(a.data());
 
-        // Single-queue + enable_rss=true exercises the post-PR-2 invariant:
-        // ENA's hash_update unsupported → rss_active=false → dispatch_mode
-        // pinned to Software. Single queue is also the only configuration
-        // where the E2E round trip works on ENA — multi-queue would let
-        // the NIC's intrinsic default RSS hash SYN-ACK into a queue our
-        // single Poller doesn't poll. Multi-queue throughput is PR-8's job.
+        // Multi-queue + enable_rss=true with the post-PR-2 invariant
+        // pin AND the RETA-collapse fix: ENA's hash_update unsupported
+        // → rss_active=false → dispatch_mode pinned to Software → RETA
+        // forced to all-queue-0 → single Poller receives all traffic
+        // even though nb_rx_queues=4 is physically allocated.  This
+        // exercises the actual fix and proves single-Poller usage is
+        // safe under multi-queue config.
         ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
-        pcfg.nb_rx_queues     = 1;
-        pcfg.nb_tx_queues     = 1;
+        pcfg.nb_rx_queues     = 4;
+        pcfg.nb_tx_queues     = 4;
         pcfg.enable_rss       = true;
         pcfg.link_timeout_ms  = 0;
 
@@ -261,30 +262,48 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     spdlog::info("dispatch_mode = {}",
                  ::eph::net::dpdk::rx_dispatch_mode_name(mode));
     const uint16_t n = platform.nb_rx_queues();
-    EXPECT_EQ(n, 1u);  // single-queue env (see SetUp rationale)
+    EXPECT_EQ(n, 4u);  // multi-queue env (see SetUp rationale)
 
-    // QueueOutOfRange: queue 1 is past nb_rx_queues=1, must reject.
+    // Register fake DpdkPoller<void>* into queues 1..n-1 only — queue 0
+    // is reserved for the E2E test below. Pointers are never dereferenced.
     using PollerPtr = ::eph::net::dpdk::DpdkPoller<void>*;
+    PollerPtr fakes[4] = {
+        nullptr,
+        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xDEAD0001)),
+        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xDEAD0002)),
+        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xDEAD0003)),
+    };
+    for (uint16_t q = 1; q < n; ++q) {
+        auto r = platform.register_poller(q, fakes[q]);
+        EXPECT_TRUE(r.has_value()) << "register_poller(" << q << ") "
+                                   << (r ? "" : r.error());
+        EXPECT_EQ(platform.poller_for_queue(q), fakes[q]);
+    }
+
+    // DuplicateQueue: re-register a previously occupied qid (1).
+    auto* dup =
+        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xBEEF0000));
+    auto r_dup = platform.register_poller(1, dup);
+    ASSERT_FALSE(r_dup.has_value());
+    EXPECT_NE(r_dup.error().find("DuplicateQueue"), std::string::npos);
+    EXPECT_EQ(platform.poller_for_queue(1), fakes[1])
+        << "duplicate register must not overwrite";
+
+    // QueueOutOfRange: 9999 above kMaxRssQueues + any NIC qid.
     auto* oor =
         reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xBEEF0001));
-    auto r_oor1 = platform.register_poller(1, oor);
-    ASSERT_FALSE(r_oor1.has_value());
-    EXPECT_NE(r_oor1.error().find("QueueOutOfRange"), std::string::npos);
-
-    auto r_oor2 = platform.register_poller(9999, oor);
-    ASSERT_FALSE(r_oor2.has_value());
-    EXPECT_NE(r_oor2.error().find("QueueOutOfRange"), std::string::npos);
+    auto r_oor = platform.register_poller(9999, oor);
+    ASSERT_FALSE(r_oor.has_value());
+    EXPECT_NE(r_oor.error().find("QueueOutOfRange"), std::string::npos);
     EXPECT_EQ(platform.poller_for_queue(9999), nullptr);
 
-    // null Poller rejected at queue 0 (queue 0 is the only valid qid).
+    // null Poller rejected.
     auto r_null = platform.register_poller(0, nullptr);
     ASSERT_FALSE(r_null.has_value());
     EXPECT_NE(r_null.error().find("null"), std::string::npos);
 
-    // poller_for_queue past nb_rx_queues → nullptr.
-    EXPECT_EQ(platform.poller_for_queue(n), nullptr);
-    EXPECT_EQ(platform.poller_for_queue(0), nullptr)
-        << "queue 0 should be empty before the E2E test claims it";
+    // Queue 0 still empty (reserved for E2E).
+    EXPECT_EQ(platform.poller_for_queue(0), nullptr);
 
     // Unregistered queue past nb_rx_queues → nullptr.
     if (n < 64) {

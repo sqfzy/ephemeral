@@ -796,6 +796,64 @@ Platform::create(const PlatformConfig& config) {
                 impl->rss_active ? "true" : "false");
             impl->dispatch_mode = ::eph::net::dpdk::RxDispatchMode::Software;
         }
+
+        // ── Real fix for the "single-Poller misses SYN-ACK in
+        // non-zero queue" bug ──────────────────────────────────────────
+        //
+        // Even when dispatch_mode is pinned to Software, the NIC still
+        // physically has nb_rx_queues > 1 queues active and its
+        // intrinsic default RSS would scatter incoming packets across
+        // them. A single-Poller user (which is the only valid topology
+        // in Software mode) would silently miss every packet that
+        // hashes to a non-zero queue — most visibly: TCP SYN-ACK lost
+        // → connect timeout.
+        //
+        // Collapse the RETA: write a uniform indirection table where
+        // every entry maps to queue 0. After this, the NIC's hash
+        // calculation still happens but every result indexes to 0. The
+        // other queues stay allocated (descriptor rings, mbuf cache)
+        // but receive 0 packets. Trivial extra memory cost; correctness
+        // win is total (no more silent drops).
+        //
+        // RETA update is supported on PMDs that reject hash_update
+        // (notably ENA), so this works in the exact case that
+        // motivated the fix. If it fails we log WARN and the original
+        // bug returns — but at least it's surfaced.
+        if (impl->config.nb_rx_queues > 1) {
+            rte_eth_dev_info dinfo{};
+            if (rte_eth_dev_info_get(config.port_id, &dinfo) == 0) {
+                uint16_t reta_size = dinfo.reta_size;
+                if (reta_size == 0) reta_size = 128;
+                reta_size = std::min(
+                    reta_size,
+                    static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
+                rte_eth_rss_reta_entry64
+                    reta[RTE_ETH_RSS_RETA_SIZE_512 /
+                         RTE_ETH_RETA_GROUP_SIZE]{};
+                const uint16_t groups =
+                    reta_size / RTE_ETH_RETA_GROUP_SIZE;
+                for (uint16_t i = 0; i < groups; ++i) {
+                    reta[i].mask = ~uint64_t(0);
+                    // entries[] zero-initialised → all map to queue 0
+                }
+                int rc = rte_eth_dev_rss_reta_update(
+                    config.port_id, reta, reta_size);
+                if (rc == 0) {
+                    SPDLOG_LOGGER_INFO(log,
+                        "Platform: collapsed RETA → queue 0 "
+                        "(nb_rx_queues={} active, but Software mode → "
+                        "single-Poller; all RX traffic routes to queue 0)",
+                        impl->config.nb_rx_queues);
+                } else {
+                    SPDLOG_LOGGER_WARN(log,
+                        "Platform: RETA collapse failed (ret={}): packets "
+                        "hashing to non-zero queue will be silently "
+                        "dropped by single-Poller users. Workaround: set "
+                        "nb_rx_queues=1 in PlatformConfig.",
+                        rc);
+                }
+            }
+        }
     }
 
     SPDLOG_LOGGER_INFO(log,
