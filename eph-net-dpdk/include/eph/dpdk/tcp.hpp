@@ -453,33 +453,56 @@ public:
     }
 
     ~TcpSession() {
-        // Best-effort RST on destruction. If we go down with a connection
-        // still open (application crash / stack unwind past the normal
-        // close() / FIN dance), the peer would otherwise have to wait
-        // tens of seconds for its keepalive or idle timer to fire before
-        // noticing we are gone. An RST right now flips the peer to Closed
-        // immediately.
+        // Best-effort RST on destruction — only for states where the
+        // peer still believes the connection is live (Established,
+        // SynSent, SynReceived, CloseWait). If we're already in a
+        // mid-close state (FinWait*/Closing/LastAck/TimeWait) the peer
+        // has seen (or sent) a FIN and is winding down; injecting a
+        // RST on top of that would needlessly replace an orderly close
+        // with a reset that looks like an abort in tcptrace / tshark.
         //
-        // Gated on pool_ != nullptr because:
-        //   * test paths construct with pool=nullptr on purpose, and
-        //     reset() would deref the null pool when building the RST mbuf
-        //   * at program shutdown the mempool may already have been freed,
-        //     in which case skipping the RST beats touching freed memory
-        // The log is DEBUG — this is routine at clean teardown. A genuine
-        // mempool-after-free would surface as ASan/Valgrind noise, not as
-        // a silent DEBUG line, so the level is low by design.
-        if (state_ != TcpState::Closed) {
-            if (pool_ != nullptr) {
-                SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
-                    "~TcpSession: state={} -> best-effort RST",
-                    tcp_state_name(state_));
-                reset();
-            } else {
-                SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
-                    "~TcpSession: state={} but pool is null; skipping RST",
-                    tcp_state_name(state_));
-            }
+        // Additionally gated on `pool_ != nullptr` because:
+        //   * unit-test paths construct with pool=nullptr intentionally
+        //   * at program shutdown the mempool may already be freed
+        // Both would turn `reset()`'s mbuf build into UB.
+        if (!should_rst_on_destroy_(state_)) return;
+        if (pool_ == nullptr) {
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "~TcpSession: state={} but pool is null; skipping RST",
+                tcp_state_name(state_));
+            return;
         }
+        SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            "~TcpSession: state={} -> best-effort RST",
+            tcp_state_name(state_));
+        reset();
+    }
+
+    /// @brief Per-state policy: does destroying a TcpSession in this
+    ///        state justify emitting a best-effort RST to the peer?
+    ///
+    /// True iff the peer still considers the connection open from its
+    /// side — Established (full-duplex), SynSent / SynReceived
+    /// (handshake in flight), or CloseWait (we haven't sent FIN yet).
+    /// False for any state where a FIN has already crossed the wire
+    /// in at least one direction; a gratuitous RST there would corrupt
+    /// an otherwise orderly shutdown.
+    [[nodiscard]] static constexpr bool
+    should_rst_on_destroy_(TcpState s) noexcept {
+        switch (s) {
+            case TcpState::Established:
+            case TcpState::SynSent:
+            case TcpState::SynReceived:
+            case TcpState::CloseWait:  return true;
+            case TcpState::Closed:
+            case TcpState::Listen:
+            case TcpState::FinWait1:
+            case TcpState::FinWait2:
+            case TcpState::Closing:
+            case TcpState::LastAck:
+            case TcpState::TimeWait:   return false;
+        }
+        return false;  // exhaustive switch above; silences -Wreturn-type
     }
 
     TcpSession(const TcpSession&)            = delete;
