@@ -1,5 +1,80 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — Production-hardening sweep (2026-04-22)
+
+A /pax --loop --auto review pass over the non-RSS surface produced
+10+ small commits tightening correctness, observability, and test
+coverage without changing the public API. No hot-path performance
+impact; `test_dpdk_poller`, `test_dpdk_udp_socket`,
+`test_dpdk_tcp_stream`, `test_dpdk_reasm_overflow`, and legacy
+`test_arp` all pass.
+
+### Fixed
+- `DpdkPoller::lookup_by_5tuple_` now increments the
+  `hash_collision_drops_` counter **once per packet** (previously
+  once per colliding entry, inflating the metric by the hash fan-out).
+  The WARN log for sustained collisions is emitted on the first drop
+  and every 1024th thereafter — previously only the first drop ever
+  was logged, leaving prolonged collisions or adversarial traffic
+  invisible.
+- `DpdkUdpSocket::connect_to` rejects any peer that does not match the
+  configured fixed `cfg.legacy.dst_ip/dst_port`. Previously a mismatch
+  set `connected_peer_` to a peer the inbound filter would never see,
+  leaving the socket silently TX-only (send succeeds, reply is dropped).
+- `~DpdkTcpStream` and `~DpdkUdpSocket` no longer swallow
+  `Poller::remove` errors — a WARN log surfaces the detail so
+  Poller/Stream lifecycle mismatches (double-remove, stale
+  `attached_to_`) do not disappear in the dtor.
+
+### Security
+- `eph::dpdk::arp::parse_arp_reply` now rejects ARP replies with an
+  all-zero sender MAC or a non-unicast (I/G bit set) sender MAC per
+  IEEE 802.3. Both are malformed as Ethernet source addresses and an
+  attacker could use them to poison an ARP cache that stores blindly.
+
+### Changed
+- `TcpSession::ReorderEntry` carries an explicit
+  `static_assert(sizeof(data) >= net::kDefaultMss)` so the compile-
+  time invariant tracks the runtime `memcpy` bound; a future resize
+  that shrunk the buffer would be caught at build time.
+
+### Scripts
+- `scripts/dpdk-setup.sh` differentiates "module missing" from "module
+  built into the kernel" when loading `vfio-pci`; built-in is a warn+
+  continue, missing is an actionable error with install hints.
+- `scripts/dpdk-teardown.sh` guards `fuser /dev/vfio/*` on
+  `[[ -d /dev/vfio ]]` so a host without vfio-pci is reported
+  correctly (rather than masquerading as "no DPDK processes").
+
+### Tests
+- `test_dpdk_poller`: two new cases assert that a failing duplicate
+  `add` leaves the routing table and Pollable state unchanged (same
+  pointer + same tuple variants). 23/23 pass.
+- `test_dpdk_reasm_overflow`: new multi-round consume/append stress
+  test verifies byte-for-byte content preservation across implicit
+  compaction — catches off-by-one regressions that the existing
+  single-shot tests would miss. 6/6 pass.
+- `test_dpdk_udp_socket`: new `DpdkUdpSocketConnectTo` fixture with
+  three cases covering matching peer, IP mismatch, and port mismatch.
+  6/6 pass.
+- `test_dpdk_tcp_stream`: five new cases cover the remaining
+  `TcpConfig::validate()` failure branches (src_port=0, dst_port=0,
+  mss=0, mss>9000, recv_window=0). 13/13 pass.
+- `tests/legacy/test_arp.cpp`: two new cases cover the all-zero
+  and multicast sender-MAC rejection paths. 22/22 pass.
+
+### Docs
+- `StreamConfig::reasm_capacity` comment now includes a concrete
+  sizing recipe, per-workload reference values (WS bookTicker / L2
+  snapshot / FIX bundle), the observability hook
+  (`StreamMetric::kReasmOverflows`), and the N-streams footprint note.
+- New `fuzzers/README.md` documenting the build / seed / run workflow
+  for libFuzzer harnesses; `fuzz_dns_reply` include paths fixed to
+  reflect the post-migration `eph-net-dpdk` layout.
+- New `fuzzers/corpus/fuzz_dns_reply/` with 8 seed inputs (well-formed,
+  empty, runt, header-only, count overflow, pointer loop, bad label
+  length) to accelerate libFuzzer coverage discovery.
+
 ## [Unreleased] — 5-tuple routing + client source port selection (2026-04-16)
 
 ### Changed
