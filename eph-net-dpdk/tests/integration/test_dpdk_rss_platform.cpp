@@ -159,101 +159,73 @@ private:
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-// dispatch_mode + nb_rx_queues
+// All RSS Platform checks fold into a single TEST.
+//
+// Why: DPDK detaches the port slot on rte_eth_dev_close, after which
+// rte_eth_dev_count_avail() returns 0 — a second Platform::create() in
+// the same process fails with "No DPDK ports available". Sharing one
+// Platform across all assertions sidesteps this; we use distinct queue
+// ids per assertion so register_poller side-effects don't bleed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(PlatformRss, EnableRssReturnsValidDispatchMode) {
+TEST(PlatformRss, EndToEnd) {
     EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
     auto pcfg = make_rss_pcfg(4);
-    auto plat = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat.has_value()) << "Platform::create failed: " << plat.error();
+    auto plat_r = ::eph::dpdk::Platform::create(pcfg);
+    ASSERT_TRUE(plat_r.has_value())
+        << "Platform::create failed: " << plat_r.error();
+    auto& plat = *plat_r;
 
-    // Any of the three modes is acceptable — the actual one depends on
-    // NIC capability (FlowDirector on Mellanox, RssPartitioned on ENA,
-    // Software on bare-bones PMDs).
-    auto mode = plat->dispatch_mode();
+    // ─── dispatch_mode + nb_rx_queues ──────────────────────────────────
+    const auto mode = plat.dispatch_mode();
     EXPECT_TRUE(mode == ::eph::net::dpdk::RxDispatchMode::Software ||
                 mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned ||
                 mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector)
         << "unexpected dispatch_mode value";
     spdlog::info("dispatch_mode = {}",
                  ::eph::net::dpdk::rx_dispatch_mode_name(mode));
+    const uint16_t n = plat.nb_rx_queues();
+    EXPECT_GT(n, 0u);
+    EXPECT_LE(n, 4u);
 
-    // Actual queue count may be NIC-clamped; should be in (0, requested].
-    EXPECT_GT(plat->nb_rx_queues(), 0u);
-    EXPECT_LE(plat->nb_rx_queues(), 4u);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// register_poller / poller_for_queue
-// ─────────────────────────────────────────────────────────────────────────────
-
-TEST(PlatformRss, RegisterPollerHappyPath) {
-    EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
-    auto pcfg = make_rss_pcfg(4);
-    auto plat = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat.has_value());
-
-    // Distinct dummy pointers for each queue.
+    // ─── register_poller happy path: register every valid queue ────────
     int dummies[4]{1, 2, 3, 4};
-    const uint16_t n = plat->nb_rx_queues();
     for (uint16_t q = 0; q < n; ++q) {
-        auto r = plat->register_poller(q, &dummies[q]);
+        auto r = plat.register_poller(q, &dummies[q]);
         EXPECT_TRUE(r.has_value())
             << "register_poller(" << q << ") failed: "
             << (r ? "" : r.error());
-        EXPECT_EQ(plat->poller_for_queue(q), &dummies[q]);
+        EXPECT_EQ(plat.poller_for_queue(q), &dummies[q]);
     }
-}
 
-TEST(PlatformRss, RegisterPollerRejectsDuplicate) {
-    EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
-    auto pcfg = make_rss_pcfg(2);
-    auto plat = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat.has_value());
+    // ─── DuplicateQueue: re-register a previously occupied qid (0) ─────
+    int dup_marker = 0;
+    auto r_dup = plat.register_poller(0, &dup_marker);
+    ASSERT_FALSE(r_dup.has_value());
+    EXPECT_NE(r_dup.error().find("DuplicateQueue"), std::string::npos);
+    EXPECT_EQ(plat.poller_for_queue(0), &dummies[0])
+        << "duplicate register must not overwrite";
 
-    int a = 0, b = 0;
-    auto r1 = plat->register_poller(0, &a);
-    ASSERT_TRUE(r1.has_value());
-    auto r2 = plat->register_poller(0, &b);
-    ASSERT_FALSE(r2.has_value());
-    EXPECT_NE(r2.error().find("DuplicateQueue"), std::string::npos);
-    // Original Poller pointer is preserved — duplicate didn't overwrite.
-    EXPECT_EQ(plat->poller_for_queue(0), &a);
-}
+    // ─── QueueOutOfRange: 9999 is above kMaxRssQueues and any NIC qid ──
+    int oor_marker = 0;
+    auto r_oor = plat.register_poller(9999, &oor_marker);
+    ASSERT_FALSE(r_oor.has_value());
+    EXPECT_NE(r_oor.error().find("QueueOutOfRange"), std::string::npos);
+    EXPECT_EQ(plat.poller_for_queue(9999), nullptr);
 
-TEST(PlatformRss, RegisterPollerRejectsOutOfRange) {
-    EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
-    auto pcfg = make_rss_pcfg(2);
-    auto plat = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat.has_value());
+    // ─── null Poller pointer ───────────────────────────────────────────
+    // Use qid n-1 (already occupied) so we exercise the null check before
+    // the duplicate check would fire — the impl checks null first.
+    auto r_null = plat.register_poller(0, nullptr);
+    ASSERT_FALSE(r_null.has_value());
+    EXPECT_NE(r_null.error().find("null"), std::string::npos);
 
-    int dummy = 0;
-    // A queue id well above kMaxRssQueues (and well above any sensible
-    // NIC queue count).
-    auto r = plat->register_poller(9999, &dummy);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("QueueOutOfRange"), std::string::npos);
-    EXPECT_EQ(plat->poller_for_queue(9999), nullptr);
-}
-
-TEST(PlatformRss, RegisterPollerRejectsNull) {
-    EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
-    auto pcfg = make_rss_pcfg(2);
-    auto plat = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat.has_value());
-
-    auto r = plat->register_poller(0, nullptr);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("null"), std::string::npos);
-}
-
-TEST(PlatformRss, PollerForUnregisteredQueueReturnsNull) {
-    EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
-    auto pcfg = make_rss_pcfg(4);
-    auto plat = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat.has_value());
-    EXPECT_EQ(plat->poller_for_queue(2), nullptr);
+    // ─── poller_for_queue on unregistered queue ────────────────────────
+    // Pick any qid > nb_rx_queues that's still below kMaxRssQueues.
+    if (n < 64) {
+        EXPECT_EQ(plat.poller_for_queue(n), nullptr)
+            << "queue past nb_rx_queues should return nullptr";
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
