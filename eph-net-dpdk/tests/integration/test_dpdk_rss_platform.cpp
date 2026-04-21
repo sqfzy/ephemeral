@@ -167,11 +167,16 @@ public:
         argv.reserve(args.size());
         for (auto& a : args) argv.push_back(a.data());
 
-        // Build the RSS-enabled PlatformConfig and bring up the full env.
+        // Single-queue + enable_rss=true exercises the post-PR-2 invariant:
+        // ENA's hash_update unsupported → rss_active=false → dispatch_mode
+        // pinned to Software. Single queue is also the only configuration
+        // where the E2E round trip works on ENA — multi-queue would let
+        // the NIC's intrinsic default RSS hash SYN-ACK into a queue our
+        // single Poller doesn't poll. Multi-queue throughput is PR-8's job.
         ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
-        pcfg.nb_rx_queues     = 4;
-        pcfg.nb_tx_queues     = 4;
+        pcfg.nb_rx_queues     = 1;
+        pcfg.nb_tx_queues     = 1;
         pcfg.enable_rss       = true;
         pcfg.link_timeout_ms  = 0;
 
@@ -234,16 +239,21 @@ inline uint16_t next_src_port() {
 // ─────────────────────────────────────────────────────────────────────────────
 // PlatformRss.RegistryAndDispatchMode
 //
-// Registry plumbing + dispatch_mode invariant — declared FIRST so it runs
-// before the E2E test, leaving queue 0 unregistered for the E2E to claim.
-// Registers fake DpdkPoller<void>* into queues 1..n-1 only.
+// Registry plumbing + dispatch_mode invariant on the single-queue env
+// (see SetUp rationale).  Declared FIRST so it runs before the E2E test
+// — registry side-effects on queue 0 here would prevent the E2E test
+// from registering its real Poller, so we only exercise NEGATIVE cases
+// (out-of-range, null) plus the dispatch_mode pin.
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(PlatformRss, RegistryAndDispatchMode) {
     EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
     auto& platform = RssPlatformEnv::env().platform;
 
-    // dispatch_mode + nb_rx_queues
+    // PR-2 invariant: ENA's hash_update unsupported → rss_active=false →
+    // dispatch_mode pinned to Software.  On Mellanox/Intel where
+    // hash_update succeeds, this would stay at the detected mode; here
+    // we just assert the value is one of the known three.
     const auto mode = platform.dispatch_mode();
     EXPECT_TRUE(mode == ::eph::net::dpdk::RxDispatchMode::Software ||
                 mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned ||
@@ -251,47 +261,30 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     spdlog::info("dispatch_mode = {}",
                  ::eph::net::dpdk::rx_dispatch_mode_name(mode));
     const uint16_t n = platform.nb_rx_queues();
-    EXPECT_GT(n, 1u);  // env asks for 4
-    EXPECT_LE(n, 4u);
+    EXPECT_EQ(n, 1u);  // single-queue env (see SetUp rationale)
 
-    // Register fake Poller pointers into queues 1..n-1 (queue 0 reserved
-    // for the E2E test below). Pointers are never dereferenced.
+    // QueueOutOfRange: queue 1 is past nb_rx_queues=1, must reject.
     using PollerPtr = ::eph::net::dpdk::DpdkPoller<void>*;
-    PollerPtr fakes[4] = {
-        nullptr,  // index 0 unused; queue 0 reserved for E2E
-        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xDEAD0001)),
-        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xDEAD0002)),
-        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xDEAD0003)),
-    };
-    for (uint16_t q = 1; q < n; ++q) {
-        auto r = platform.register_poller(q, fakes[q]);
-        EXPECT_TRUE(r.has_value())
-            << "register_poller(" << q << ") failed: "
-            << (r ? "" : r.error());
-        EXPECT_EQ(platform.poller_for_queue(q), fakes[q]);
-    }
-
-    // DuplicateQueue: re-register a previously occupied qid (1).
-    auto* dup =
-        reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xBEEF0000));
-    auto r_dup = platform.register_poller(1, dup);
-    ASSERT_FALSE(r_dup.has_value());
-    EXPECT_NE(r_dup.error().find("DuplicateQueue"), std::string::npos);
-    EXPECT_EQ(platform.poller_for_queue(1), fakes[1])
-        << "duplicate register must not overwrite";
-
-    // QueueOutOfRange: 9999 above kMaxRssQueues + any NIC qid.
     auto* oor =
         reinterpret_cast<PollerPtr>(static_cast<uintptr_t>(0xBEEF0001));
-    auto r_oor = platform.register_poller(9999, oor);
-    ASSERT_FALSE(r_oor.has_value());
-    EXPECT_NE(r_oor.error().find("QueueOutOfRange"), std::string::npos);
+    auto r_oor1 = platform.register_poller(1, oor);
+    ASSERT_FALSE(r_oor1.has_value());
+    EXPECT_NE(r_oor1.error().find("QueueOutOfRange"), std::string::npos);
+
+    auto r_oor2 = platform.register_poller(9999, oor);
+    ASSERT_FALSE(r_oor2.has_value());
+    EXPECT_NE(r_oor2.error().find("QueueOutOfRange"), std::string::npos);
     EXPECT_EQ(platform.poller_for_queue(9999), nullptr);
 
-    // null Poller pointer rejected.
+    // null Poller rejected at queue 0 (queue 0 is the only valid qid).
     auto r_null = platform.register_poller(0, nullptr);
     ASSERT_FALSE(r_null.has_value());
     EXPECT_NE(r_null.error().find("null"), std::string::npos);
+
+    // poller_for_queue past nb_rx_queues → nullptr.
+    EXPECT_EQ(platform.poller_for_queue(n), nullptr);
+    EXPECT_EQ(platform.poller_for_queue(0), nullptr)
+        << "queue 0 should be empty before the E2E test claims it";
 
     // Unregistered queue past nb_rx_queues → nullptr.
     if (n < 64) {
