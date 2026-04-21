@@ -71,6 +71,23 @@ struct TcpConfig {
     /// Non-zero overrides the auto value (clamped to [1, 32]).
     uint16_t             max_rx_burst = 0;
 
+    /// @name Keepalive
+    /// @{
+
+    /// Idle interval before a keepalive probe is emitted. Zero = disabled
+    /// (default). Typical setting for idle-sensitive paths behind NAT /
+    /// firewalls is ~30s; HFT data-plane usage leaves this at 0 because
+    /// application-layer heartbeats (FIX, WS ping, ITCH periodic messages)
+    /// already cover liveness detection.
+    std::chrono::milliseconds keepalive_interval = std::chrono::milliseconds::zero();
+
+    /// Consecutive un-answered probes before the session is declared dead
+    /// and transitions to Closed. Honored only when keepalive_interval > 0.
+    /// Must be in [1, 10].
+    uint8_t              keepalive_probes = 3;
+
+    /// @}
+
     /// Validate configuration, returning an error description or empty string on success.
     /// Call before TcpSession construction to get early, actionable error messages.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
@@ -92,6 +109,9 @@ struct TcpConfig {
             return "recv_window exceeds 65535 (window scaling not implemented)";
         if (max_rx_burst > 32)
             return "max_rx_burst must be in [0, 32] (0 = auto)";
+        if (keepalive_interval.count() > 0 &&
+            (keepalive_probes == 0 || keepalive_probes > 10))
+            return "keepalive_probes must be in [1, 10] when keepalive_interval > 0";
         return {};
     }
 
@@ -282,6 +302,11 @@ public:
         uint64_t out_of_order    = 0;  ///< Out-of-order segments detected (buffered, dropped, or duplicate)
         uint64_t resets_received = 0;  ///< RST packets received from peer
 
+        // ── MSS negotiation / PMTU / keepalive telemetry ──
+        uint64_t mss_negotiations_applied  = 0;  ///< Connect attempts where peer MSS < local MSS caused a downgrade
+        uint64_t icmp_frag_needed_received = 0;  ///< ICMP Type 3 Code 4 packets that triggered an effective_mss clamp
+        uint64_t keepalive_probes_sent     = 0;  ///< TCP keepalive probes emitted by tick_keepalive
+
         // ── Reorder / loss telemetry ──
         uint64_t reorder_hits      = 0;  ///< Segments successfully buffered & delivered via reorder buf
         uint64_t reorder_overflows = 0;  ///< Reorder buffer full events (triggered reconnect)
@@ -363,6 +388,9 @@ public:
                 .acks_sent         = lhs.acks_sent         - rhs.acks_sent,
                 .out_of_order      = lhs.out_of_order      - rhs.out_of_order,
                 .resets_received   = lhs.resets_received   - rhs.resets_received,
+                .mss_negotiations_applied  = lhs.mss_negotiations_applied  - rhs.mss_negotiations_applied,
+                .icmp_frag_needed_received = lhs.icmp_frag_needed_received - rhs.icmp_frag_needed_received,
+                .keepalive_probes_sent     = lhs.keepalive_probes_sent     - rhs.keepalive_probes_sent,
                 .reorder_hits      = lhs.reorder_hits      - rhs.reorder_hits,
                 .reorder_overflows = lhs.reorder_overflows - rhs.reorder_overflows,
                 .max_gap_size      = lhs.max_gap_size,  // Point-in-time (not diffable)
@@ -386,7 +414,8 @@ public:
         , snd_una_(snd_nxt_)
         , rcv_nxt_(0)
         , rcv_wnd_(static_cast<uint16_t>(config.recv_window))
-        , snd_wnd_(0) {
+        , snd_wnd_(0)
+        , effective_mss_(config.mss) {
 
         if (!pool_) [[unlikely]] {
             SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
@@ -443,10 +472,15 @@ public:
         , rcv_nxt_(other.rcv_nxt_)
         , rcv_wnd_(other.rcv_wnd_)
         , snd_wnd_(other.snd_wnd_)
+        , effective_mss_(other.effective_mss_)
+        , peer_mss_negotiated_(other.peer_mss_negotiated_)
         , reorder_count_(other.reorder_count_)
         , stats_(other.stats_)
         , ack_pending_since_tsc_(other.ack_pending_since_tsc_)
         , time_wait_deadline_(other.time_wait_deadline_)
+        , last_rx_tsc_(other.last_rx_tsc_)
+        , last_keepalive_tsc_(other.last_keepalive_tsc_)
+        , keepalive_misses_(other.keepalive_misses_)
         , last_rx_burst_tsc_(other.last_rx_burst_tsc_.load(std::memory_order_relaxed))
 {
         // reorder_count_ is initialized from other.reorder_count_ in the
@@ -470,12 +504,17 @@ public:
             rcv_nxt_ = other.rcv_nxt_;
             rcv_wnd_ = other.rcv_wnd_;
             snd_wnd_ = other.snd_wnd_;
+            effective_mss_ = other.effective_mss_;
+            peer_mss_negotiated_ = other.peer_mss_negotiated_;
             reorder_count_ = other.reorder_count_;
             for (uint8_t i = 0; i < reorder_count_; ++i)
                 reorder_buf_[i] = other.reorder_buf_[i];
             stats_ = other.stats_;
             ack_pending_since_tsc_ = other.ack_pending_since_tsc_;
             time_wait_deadline_ = other.time_wait_deadline_;
+            last_rx_tsc_ = other.last_rx_tsc_;
+            last_keepalive_tsc_ = other.last_keepalive_tsc_;
+            keepalive_misses_ = other.keepalive_misses_;
             last_rx_burst_tsc_.store(other.last_rx_burst_tsc_.load(std::memory_order_relaxed), std::memory_order_relaxed);
             other.pool_ = nullptr;
             other.state_ = TcpState::Closed;
@@ -527,6 +566,15 @@ public:
         rcv_nxt_ = 0;
         reorder_count_ = 0;
         ack_pending_since_tsc_ = 0;
+        // Reset any MSS / keepalive state carried over from a prior
+        // connection attempt on this session. effective_mss_ restarts at
+        // the configured local MSS; a fresh SYN-ACK negotiation below may
+        // clamp it further.
+        effective_mss_       = config_.mss;
+        peer_mss_negotiated_ = false;
+        last_rx_tsc_         = 0;
+        last_keepalive_tsc_  = 0;
+        keepalive_misses_    = 0;
 
         // Send SYN
         SPDLOG_LOGGER_DEBUG(log, "Sending SYN, isn={}", snd_nxt_);
@@ -610,9 +658,34 @@ public:
                     snd_una_ = parsed.ack();
                     snd_wnd_ = parsed.window();
 
+                    // Negotiate effective MSS from the peer's SYN-ACK options.
+                    // We advertise config_.mss in our SYN; the peer may
+                    // advertise something smaller (or no MSS option at all,
+                    // in which case we keep the local value). Picking the
+                    // minimum protects against silent black-holing on paths
+                    // where a switch / vSwitch between us and the peer has
+                    // a smaller MTU than either endpoint assumes.
+                    auto peer_opts = net::parse_tcp_options(parsed);
+                    if (peer_opts.has_mss && peer_opts.mss > 0) {
+                        const uint16_t before = effective_mss_;
+                        effective_mss_ =
+                            std::min(effective_mss_, peer_opts.mss);
+                        peer_mss_negotiated_ = true;
+                        if (effective_mss_ < before) {
+                            stats_.mss_negotiations_applied++;
+                            SPDLOG_LOGGER_DEBUG(log,
+                                "MSS negotiated down: local={} peer={} effective={}",
+                                before, peer_opts.mss, effective_mss_);
+                        } else {
+                            SPDLOG_LOGGER_DEBUG(log,
+                                "MSS negotiated (no change): local={} peer={}",
+                                before, peer_opts.mss);
+                        }
+                    }
+
                     SPDLOG_LOGGER_DEBUG(log,
-                        "Received SYN-ACK: peer_isn={}, window={}",
-                        parsed.seq(), snd_wnd_);
+                        "Received SYN-ACK: peer_isn={}, window={}, effective_mss={}",
+                        parsed.seq(), snd_wnd_, effective_mss_);
 
                     // Send ACK to complete handshake
                     rte_pktmbuf_free(pkts[i]);
@@ -656,9 +729,9 @@ public:
                 "Cannot send: state={}", tcp_state_name(state_)));
         }
 
-        if (len > config_.mss) {
+        if (len > effective_mss_) {
             return std::unexpected(std::format(
-                "Payload too large: {} > MSS {}", len, config_.mss));
+                "Payload too large: {} > effective MSS {}", len, effective_mss_));
         }
 
         // HFT design: we intentionally do NOT block on a zero send window.
@@ -747,10 +820,10 @@ public:
 
         // Step 1: allocate and fill all mbufs
         for (uint16_t i = 0; i < count; ++i) {
-            if (segments[i].second > config_.mss) {
+            if (segments[i].second > effective_mss_) {
                 SPDLOG_LOGGER_WARN(log,
-                    "send_batch: segment[{}] too large ({} > MSS {})",
-                    i, segments[i].second, config_.mss);
+                    "send_batch: segment[{}] too large ({} > effective MSS {})",
+                    i, segments[i].second, effective_mss_);
                 break;
             }
 
@@ -871,7 +944,7 @@ public:
     ///          numbers are inconsistent and must be reset().
     rte_mbuf* build_data_packet(rte_mbuf* mbuf,
                                 const void* data, uint16_t len) noexcept {
-        if (state_ != TcpState::Established || len > config_.mss) return nullptr;
+        if (state_ != TcpState::Established || len > effective_mss_) return nullptr;
 
         uint16_t written = pkt_template_.fill_packet(
             mbuf, snd_nxt_, rcv_nxt_,
@@ -1340,8 +1413,19 @@ public:
     [[nodiscard]] uint16_t rcv_wnd()     const noexcept { return rcv_wnd_; }
     /// @brief Peer's advertised receive window (SND.WND).
     [[nodiscard]] uint16_t snd_wnd()     const noexcept { return snd_wnd_; }
-    /// @brief Maximum Segment Size for this session.
-    [[nodiscard]] uint16_t mss()         const noexcept { return config_.mss; }
+    /// @brief Maximum Segment Size for this session (effective after
+    ///        negotiation / ICMP feedback). Before connect() it equals the
+    ///        configured local MSS; after a SYN-ACK with a peer MSS option
+    ///        it is min(local, peer); any subsequent ICMP Frag Needed may
+    ///        reduce it further.
+    [[nodiscard]] uint16_t mss()         const noexcept { return effective_mss_; }
+    /// @brief Effective MSS in use — alias for `mss()` with an explicit
+    ///        name that makes the negotiated-vs-configured distinction
+    ///        clear at call sites.
+    [[nodiscard]] uint16_t effective_mss() const noexcept { return effective_mss_; }
+    /// @brief True iff the peer advertised an MSS option in SYN-ACK.
+    ///        When false, effective_mss_ equals the configured local MSS.
+    [[nodiscard]] bool peer_mss_negotiated() const noexcept { return peer_mss_negotiated_; }
     /// @brief Access the session's TcpConfig.
     [[nodiscard]] const TcpConfig& config() const noexcept { return config_; }
     /// @brief Copy of the current statistics snapshot.
@@ -1508,6 +1592,13 @@ private:
     uint16_t rcv_wnd_;    // RCV.WND: our receive window advertisement
     uint16_t snd_wnd_;    // SND.WND: peer's receive window
 
+    // Effective send-side MSS. Starts at config_.mss, may drop to the peer's
+    // advertisement on SYN-ACK, and may drop further on ICMP Frag Needed.
+    // Never grows — that would require a second round-trip signal we don't
+    // implement. Resets to config_.mss at every connect() attempt.
+    uint16_t effective_mss_;
+    bool     peer_mss_negotiated_ = false;
+
     ReorderEntry reorder_buf_[ReorderSlots]{};
     uint8_t      reorder_count_ = 0;
 
@@ -1525,6 +1616,17 @@ private:
     // MSL = 60s (common implementation default). Deadline is set when entering
     // TIME_WAIT; connect() checks it to allow re-use after expiry.
     std::chrono::steady_clock::time_point time_wait_deadline_{};
+
+    // ── Keepalive state ──
+    // Driven by tick_keepalive(now_tsc). last_rx_tsc_ tracks the TSC of the
+    // most recent rx packet that matched this connection; if it falls more
+    // than config_.keepalive_interval behind, a probe is emitted and
+    // keepalive_misses_ is incremented. A reply resets keepalive_misses_
+    // to 0 (last_rx_tsc_ updates naturally). After keepalive_probes
+    // consecutive misses, state_ transitions to Closed.
+    uint64_t last_rx_tsc_        = 0;
+    uint64_t last_keepalive_tsc_ = 0;
+    uint8_t  keepalive_misses_   = 0;
 
     // TSC captured right after rte_eth_rx_burst returns data.
     // Used by Transport as the true RX arrival baseline.

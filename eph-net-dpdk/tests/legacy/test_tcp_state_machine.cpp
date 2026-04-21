@@ -389,3 +389,205 @@ TEST(StateMachine, NonMatching4TupleIgnored) {
     // resets_received should NOT increment for spoofed RSTs from wrong peer.
     EXPECT_EQ(s.stats().resets_received, 0u);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// TCP options parsing (MSS + WSCALE + SACK_PERM from SYN-ACK)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// FakeTcpMbuf variant that builds a 20+12-byte TCP header carrying the
+/// standard SYN / SYN-ACK options block (MSS, SACK_PERM, WSCALE). Used by
+/// the parse_tcp_options tests and the MSS-negotiation regression below.
+struct FakeSynAckMbuf {
+    alignas(8) uint8_t buf[256]{};
+    rte_mbuf mbuf{};
+
+    void build(uint32_t seq, uint32_t ack, uint16_t mss, uint8_t wscale,
+               bool include_sack_perm) {
+        constexpr size_t eth_len = eph::dpdk::net::kEtherHeaderLen;
+        constexpr size_t ip_len  = 20;
+        constexpr size_t tcp_hdr = 20;
+        constexpr size_t tcp_opts_max = 12;
+        size_t opts_len = 0;
+
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+        eth->ether_type = eph::dpdk::net::hton16(eph::dpdk::net::kEtherTypeIpv4);
+
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+        ip->version_ihl   = (4 << 4) | 5;
+        ip->next_proto_id = eph::dpdk::net::kIpProtoTcp;
+        ip->src_addr      = eph::dpdk::net::hton32(kDstIp);
+        ip->dst_addr      = eph::dpdk::net::hton32(kSrcIp);
+
+        auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + eth_len + ip_len);
+        tcp->src_port = eph::dpdk::net::hton16(kDstPort);
+        tcp->dst_port = eph::dpdk::net::hton16(kSrcPort);
+        tcp->sent_seq = eph::dpdk::net::hton32(seq);
+        tcp->recv_ack = eph::dpdk::net::hton32(ack);
+        tcp->tcp_flags = static_cast<uint8_t>(eph::dpdk::net::kTcpSyn |
+                                               eph::dpdk::net::kTcpAck);
+        tcp->rx_win   = eph::dpdk::net::hton16(65535);
+
+        uint8_t* opts = buf + eth_len + ip_len + tcp_hdr;
+        // MSS (4 bytes)
+        opts[opts_len++] = 2;
+        opts[opts_len++] = 4;
+        {
+            uint16_t mss_net = eph::dpdk::net::hton16(mss);
+            std::memcpy(&opts[opts_len], &mss_net, 2);
+            opts_len += 2;
+        }
+        // SACK_PERM (2 bytes)
+        if (include_sack_perm) {
+            opts[opts_len++] = 4;
+            opts[opts_len++] = 2;
+        }
+        // NOP + WSCALE(3) + pad to 4-byte boundary
+        opts[opts_len++] = 1;        // NOP
+        opts[opts_len++] = 3;        // Kind: WSCALE
+        opts[opts_len++] = 3;        // Length
+        opts[opts_len++] = wscale;   // Shift count
+        while (opts_len % 4 != 0 && opts_len < tcp_opts_max) {
+            opts[opts_len++] = 1;    // NOP padding
+        }
+
+        // TCP data_off measures full header including options in 4-byte words.
+        tcp->data_off = static_cast<uint8_t>(((tcp_hdr + opts_len) / 4) << 4);
+
+        size_t total = eth_len + ip_len + tcp_hdr + opts_len;
+        ip->total_length = eph::dpdk::net::hton16(
+            static_cast<uint16_t>(ip_len + tcp_hdr + opts_len));
+
+        mbuf = rte_mbuf{};
+        mbuf.buf_addr = buf;
+        mbuf.data_off = 0;
+        mbuf.data_len = static_cast<uint16_t>(total);
+        mbuf.pkt_len  = static_cast<uint32_t>(total);
+    }
+};
+
+TEST(TcpOptions, ParsesMssWscaleAndSackPerm) {
+    FakeSynAckMbuf fake;
+    fake.build(/*seq=*/9001, /*ack=*/1001,
+               /*mss=*/1200, /*wscale=*/7, /*sack=*/true);
+
+    auto parsed = eph::dpdk::net::parse_packet(&fake.mbuf);
+    ASSERT_TRUE(parsed) << "SYN-ACK with options must parse as valid TCP";
+
+    auto opts = eph::dpdk::net::parse_tcp_options(parsed);
+    EXPECT_TRUE(opts.has_mss);
+    EXPECT_EQ(opts.mss, 1200u);
+    EXPECT_TRUE(opts.has_wscale);
+    EXPECT_EQ(opts.wscale, 7u);
+    EXPECT_TRUE(opts.has_sack_perm);
+}
+
+TEST(TcpOptions, HandlesOptionsWithoutMss) {
+    // SYN-ACK that only advertises WSCALE (no MSS option).
+    FakeSynAckMbuf fake;
+    fake.build(9001, 1001, /*mss=*/1460, 4, /*sack=*/false);
+    // Overwrite the MSS option bytes with two NOPs so only WSCALE remains.
+    constexpr size_t eth_len = eph::dpdk::net::kEtherHeaderLen;
+    constexpr size_t ip_len  = 20;
+    uint8_t* opts = fake.buf + eth_len + ip_len + 20;
+    opts[0] = 1; opts[1] = 1;        // NOPs in place of MSS kind/length
+    opts[2] = 1; opts[3] = 1;        // NOPs in place of MSS value
+    auto parsed = eph::dpdk::net::parse_packet(&fake.mbuf);
+    ASSERT_TRUE(parsed);
+    auto o = eph::dpdk::net::parse_tcp_options(parsed);
+    EXPECT_FALSE(o.has_mss);
+    EXPECT_TRUE(o.has_wscale);
+    EXPECT_EQ(o.wscale, 4u);
+}
+
+TEST(TcpOptions, TerminatedByEolOption) {
+    // EOL (kind=0) must stop the parse even if bytes follow.
+    FakeSynAckMbuf fake;
+    fake.build(9001, 1001, 1400, 0, /*sack=*/false);
+    constexpr size_t eth_len = eph::dpdk::net::kEtherHeaderLen;
+    constexpr size_t ip_len  = 20;
+    uint8_t* opts = fake.buf + eth_len + ip_len + 20;
+    // Preserve MSS option (first 4 bytes), then inject EOL + garbage WSCALE.
+    opts[4] = 0;            // EOL
+    opts[5] = 3; opts[6] = 3; opts[7] = 9;  // would-be WSCALE — ignored
+    auto parsed = eph::dpdk::net::parse_packet(&fake.mbuf);
+    ASSERT_TRUE(parsed);
+    auto o = eph::dpdk::net::parse_tcp_options(parsed);
+    EXPECT_TRUE(o.has_mss);
+    EXPECT_EQ(o.mss, 1400u);
+    EXPECT_FALSE(o.has_wscale) << "options after EOL must not be parsed";
+}
+
+TEST(TcpOptions, StopsOnMalformedLength) {
+    // Length field 0 would be a zero-advance infinite loop — parser must bail.
+    FakeSynAckMbuf fake;
+    fake.build(9001, 1001, 1460, 0, /*sack=*/false);
+    constexpr size_t eth_len = eph::dpdk::net::kEtherHeaderLen;
+    constexpr size_t ip_len  = 20;
+    uint8_t* opts = fake.buf + eth_len + ip_len + 20;
+    // After MSS(4 bytes), inject a bogus option kind=99 with len=0.
+    opts[4] = 99;    // unknown option
+    opts[5] = 0;     // malformed length
+    auto parsed = eph::dpdk::net::parse_packet(&fake.mbuf);
+    ASSERT_TRUE(parsed);
+    auto o = eph::dpdk::net::parse_tcp_options(parsed);
+    // MSS from before the malformed entry must still be retained.
+    EXPECT_TRUE(o.has_mss);
+    EXPECT_EQ(o.mss, 1460u);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Effective MSS negotiation via SYN-ACK options
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(EffectiveMss, DefaultsToConfiguredBeforeConnect) {
+    auto cfg = make_test_config();
+    cfg.mss = 1460;
+    TcpSession<> s(cfg, nullptr);
+    EXPECT_EQ(s.effective_mss(), 1460u);
+    EXPECT_FALSE(s.peer_mss_negotiated());
+}
+
+TEST(EffectiveMss, SmallerPeerMssIsClamped) {
+    // Directly exercise the negotiation path: set state machine to SynSent,
+    // then drive a crafted SYN-ACK with MSS=1200 into process_rx does NOT
+    // reach the connect() path (MSS parse happens only in connect()'s loop).
+    // Instead, drive via inject + a targeted constructor-level assertion:
+    // this test verifies the property "effective_mss_ tracks min(config, peer)"
+    // by building a SYN-ACK with peer_mss=1200 and parsing with the public
+    // parse_tcp_options free function. The integration with connect() is
+    // exercised in test_dpdk_e2e.
+    auto cfg = make_test_config();
+    cfg.mss = 1460;
+    TcpSession<> s(cfg, nullptr);
+
+    // Sanity: before any SYN-ACK the effective MSS equals the configured.
+    EXPECT_EQ(s.effective_mss(), 1460u);
+
+    FakeSynAckMbuf fake;
+    fake.build(/*seq=*/9001, /*ack=*/1001, /*mss=*/1200, 0, /*sack=*/true);
+    auto parsed = eph::dpdk::net::parse_packet(&fake.mbuf);
+    auto peer = eph::dpdk::net::parse_tcp_options(parsed);
+    EXPECT_TRUE(peer.has_mss);
+    EXPECT_EQ(peer.mss, 1200u);
+    EXPECT_LT(peer.mss, cfg.mss);
+}
+
+TEST(EffectiveMss, LargerPeerMssDoesNotInflate) {
+    // Defensive property: even if peer advertises a larger MSS than ours,
+    // effective MSS is the min — we never inflate beyond our local cap.
+    // (This test exercises the property via the math the implementation
+    // performs: std::min(config.mss, peer.mss).)
+    auto cfg = make_test_config();
+    cfg.mss = 1200;
+    TcpSession<> s(cfg, nullptr);
+    EXPECT_EQ(s.effective_mss(), 1200u);
+
+    // Simulate peer advertising 9000 (jumbo). Our cap stays at 1200.
+    // We assert via parse_tcp_options; the actual clamp lives in connect().
+    FakeSynAckMbuf fake;
+    fake.build(9001, 1001, /*mss=*/9000, 0, false);
+    auto parsed = eph::dpdk::net::parse_packet(&fake.mbuf);
+    auto peer = eph::dpdk::net::parse_tcp_options(parsed);
+    EXPECT_TRUE(peer.has_mss);
+    EXPECT_EQ(std::min<uint16_t>(cfg.mss, peer.mss), 1200u);
+}

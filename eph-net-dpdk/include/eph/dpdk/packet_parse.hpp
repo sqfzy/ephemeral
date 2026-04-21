@@ -327,6 +327,91 @@ parse_udp_from_ip(const rte_mbuf* mbuf, const ParsedIpHeader& ip_hdr) noexcept {
     return parse_udp_from_ip(mbuf, ip_hdr);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TCP options parser — MSS / WSCALE / SACK_PERM from SYN / SYN-ACK
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief TCP options extracted from the options area of a SYN / SYN-ACK
+///        TCP header (RFC 793 + RFC 1323).
+///
+/// Absent options leave their respective field at its default — callers
+/// must inspect the matching `has_*` flag before using the value. Unknown
+/// option kinds are silently skipped; malformed options stop the parse at
+/// the first offending byte and return whatever was successfully parsed.
+struct TcpOptions {
+    uint16_t mss           = 0;      ///< MSS option value (host order); valid iff has_mss
+    uint8_t  wscale        = 0;      ///< Window scale shift count; valid iff has_wscale
+    bool     has_mss       = false;
+    bool     has_wscale    = false;
+    bool     has_sack_perm = false;
+};
+
+/// @brief Parse the TCP options area of a parsed packet.
+///
+/// The options area lives between the end of the fixed 20-byte TCP header
+/// and the start of the payload, inclusive of up to 40 bytes (doff - 5
+/// words). Handles kind=0 (EOL) and kind=1 (NOP) by the special-case
+/// rules in RFC 793; every other option is length-delimited.
+///
+/// Only SYN / SYN-ACK packets typically carry meaningful options in this
+/// codebase (we do not use Timestamps or SACK on the data path); a non-SYN
+/// packet with no options area returns an all-default result.
+///
+/// @param parsed  A ParsedPacket from parse_packet() / parse_tcp_from_ip.
+/// @return TcpOptions populated with whichever options were parsed.
+[[nodiscard]] inline TcpOptions parse_tcp_options(const ParsedPacket& parsed) noexcept {
+    TcpOptions out{};
+    if (!parsed.tcp) return out;
+    const uint8_t tcp_doff_bytes = (parsed.tcp->data_off >> 4) << 2;
+    if (tcp_doff_bytes <= kTcpHeaderLen) return out;
+    const uint16_t opt_len = tcp_doff_bytes - kTcpHeaderLen;
+
+    // The options area begins immediately after the 20-byte fixed TCP
+    // header. Deriving its pointer from `parsed.tcp` keeps the parser
+    // layering-aware: the mbuf's backing buffer has already been bounds-
+    // checked by parse_tcp_from_ip (which enforced doff <= 60 and
+    // eth_hdr + ip_hdr + doff <= pkt_len).
+    const uint8_t* opts =
+        reinterpret_cast<const uint8_t*>(parsed.tcp) + kTcpHeaderLen;
+
+    uint16_t i = 0;
+    while (i < opt_len) {
+        const uint8_t kind = opts[i];
+        if (kind == 0) break;                  // End of Option List
+        if (kind == 1) { ++i; continue; }      // NOP — single byte
+        if (i + 1 >= opt_len) break;           // missing length byte
+        const uint8_t len = opts[i + 1];
+        if (len < 2) break;                    // malformed
+        if (static_cast<uint16_t>(i + len) > opt_len) break;
+
+        switch (kind) {
+            case 2:  // Maximum Segment Size
+                if (len == 4) {
+                    uint16_t mss_net;
+                    std::memcpy(&mss_net, &opts[i + 2], 2);
+                    out.mss = ntoh16(mss_net);
+                    out.has_mss = true;
+                }
+                break;
+            case 3:  // Window Scale (RFC 1323)
+                if (len == 3) {
+                    out.wscale = opts[i + 2];
+                    out.has_wscale = true;
+                }
+                break;
+            case 4:  // SACK Permitted
+                if (len == 2) {
+                    out.has_sack_perm = true;
+                }
+                break;
+            default:
+                break;                         // unknown — skip
+        }
+        i += len;
+    }
+    return out;
+}
+
 inline std::string ParsedPacket::dump() const {
     if (!tcp) return "(invalid)";
     auto flags = tcp_flags();
