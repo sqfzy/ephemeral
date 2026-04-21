@@ -491,6 +491,20 @@ int main(int argc, char** argv) {
     cfg.ws_timeout      = std::chrono::seconds{10};
 
     int rc = 0;
+    // Common kernel-side helper: explicit poller->add (DPDK pre-attaches
+    // via create_and_attach above; this branch covers TLS + plain).
+    auto attach_and_run = [&](auto stream_uptr) -> int {
+        if (auto r = poller->add(stream_uptr.get()); !r) {
+            std::fprintf(stderr,
+                         "lat_ex_market_2p: poller->add failed: %s\n",
+                         r.error().detail);
+            return 3;
+        }
+        return run_measurement(std::move(stream_uptr), poller,
+                               rec, mode, burst_size, duration_s,
+                               warmup_samples, mode_label, backend);
+    };
+
     if (endpoint.is_real_server) {
         cfg.remote       = remote;
         cfg.tls.hostname = endpoint.host;
@@ -504,16 +518,7 @@ int main(int argc, char** argv) {
                 stream_r.error().detail);
             return 3;
         }
-        auto stream = std::move(stream_r.value());
-        if (auto r = poller->add(stream.get()); !r) {
-            std::fprintf(stderr,
-                         "lat_ex_market_2p: poller->add failed: %s\n",
-                         r.error().detail);
-            return 3;
-        }
-        rc = run_measurement(std::move(stream), poller,
-                             rec, mode, burst_size, duration_s,
-                             warmup_samples, mode_label, backend);
+        rc = attach_and_run(std::move(stream_r.value()));
     } else {
         cfg.remote = remote;
         auto stream_r = Stream::create(cfg);
@@ -522,16 +527,7 @@ int main(int argc, char** argv) {
                          stream_r.error().detail);
             return 3;
         }
-        auto stream = std::move(stream_r.value());
-        if (auto r = poller->add(stream.get()); !r) {
-            std::fprintf(stderr,
-                         "lat_ex_market_2p: poller->add failed: %s\n",
-                         r.error().detail);
-            return 3;
-        }
-        rc = run_measurement(std::move(stream), poller,
-                             rec, mode, burst_size, duration_s,
-                             warmup_samples, mode_label, backend);
+        rc = attach_and_run(std::move(stream_r.value()));
     }
     poller.reset();
     return rc;
