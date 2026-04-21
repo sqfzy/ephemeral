@@ -1,13 +1,17 @@
 // Fuzz harness for DNS response parser (eph::dpdk::dns::detail::parse_dns_response).
 //
-// Build:
-//   clang++ -fsanitize=fuzzer,address -std=c++23 \
-//       -Ieph-dpdk/include -Ieph-core/include \
+// See fuzzers/README.md for the full workflow (build / seed corpus / run).
+//
+// Quick build (clang ≥ 17, libFuzzer available):
+//   clang++ -fsanitize=fuzzer,address,undefined -std=c++23 \
+//       -Ieph-net-dpdk/include -Ieph-core/include -Ieph-utils/include \
 //       -lspdlog -lssl -lcrypto \
-//       eph-dpdk/fuzzers/fuzz_dns_reply.cpp -o fuzz_dns_reply
+//       eph-net-dpdk/fuzzers/fuzz_dns_reply.cpp -o fuzz_dns_reply
 //
 // Run:
-//   ./fuzz_dns_reply -max_total_time=600
+//   mkdir -p /tmp/dns_fuzz_corpus
+//   cp eph-net-dpdk/fuzzers/corpus/fuzz_dns_reply/* /tmp/dns_fuzz_corpus/
+//   ./fuzz_dns_reply -max_total_time=600 /tmp/dns_fuzz_corpus
 //
 // Note: This harness targets the pure parsing function parse_dns_response()
 // and the name-skipping helper skip_dns_name(), which operate on raw byte
