@@ -342,6 +342,41 @@ TEST(ArpReply, ZeroAddrLensIgnored) {
         << "Zero address lengths should be rejected";
 }
 
+TEST(ArpReply, AllZeroSenderMacIsRejected) {
+    // 00:00:00:00:00:00 is not a valid Ethernet source; an attacker may
+    // craft a reply with this to poison an ARP cache that stores blindly.
+    rte_ether_addr zero_mac = {{0, 0, 0, 0, 0, 0}};
+    rte_ether_addr our_mac  = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
+    uint32_t ip = net::parse_ipv4("10.0.0.1");
+
+    FakeMbuf fake;
+    size_t len = build_fake_arp_reply(fake.data(), sizeof(fake.buf),
+                                       zero_mac, ip, our_mac, ip);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    auto result = parse_arp_reply(&fake.mbuf, ip);
+    EXPECT_FALSE(result.has_value())
+        << "All-zero sender MAC should be rejected";
+}
+
+TEST(ArpReply, MulticastSenderMacIsRejected) {
+    // IEEE 802.3 source addresses must have the I/G (individual/group) bit
+    // cleared — only the destination field may be multicast or broadcast.
+    // A reply claiming a multicast source is malformed.
+    rte_ether_addr mcast_mac = {{0x01, 0x00, 0x5e, 0x00, 0x00, 0x01}};
+    rte_ether_addr our_mac   = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
+    uint32_t ip = net::parse_ipv4("10.0.0.1");
+
+    FakeMbuf fake;
+    size_t len = build_fake_arp_reply(fake.data(), sizeof(fake.buf),
+                                       mcast_mac, ip, our_mac, ip);
+    fake.set_len(static_cast<uint16_t>(len));
+
+    auto result = parse_arp_reply(&fake.mbuf, ip);
+    EXPECT_FALSE(result.has_value())
+        << "Multicast/broadcast sender MAC should be rejected";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAC formatting
 // ─────────────────────────────────────────────────────────────────────────────

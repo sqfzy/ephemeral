@@ -185,6 +185,26 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
     rte_ether_addr result;
     std::memcpy(result.addr_bytes, arp->sender_mac, 6);
 
+    // Reject degenerate / non-unicast sender MACs up-front. IEEE 802.3
+    // source addresses must be individual (unicast) — the I/G bit of the
+    // first octet must be clear. In practice attackers sometimes probe with
+    // 00:00:00:00:00:00 (unset) or ff:ff:ff:ff:ff:ff (broadcast) hoping a
+    // caller caches them blindly; both are unusable as next-hop MACs and
+    // would break subsequent L2 forwarding.
+    {
+        const bool all_zero = (result.addr_bytes[0] | result.addr_bytes[1] |
+                               result.addr_bytes[2] | result.addr_bytes[3] |
+                               result.addr_bytes[4] | result.addr_bytes[5]) == 0;
+        const bool is_group = (result.addr_bytes[0] & 0x01u) != 0;
+        if (all_zero || is_group) {
+            SPDLOG_LOGGER_WARN(detail::arp_logger(),
+                "ARP reply sender MAC invalid ({} — {}), rejecting",
+                net::format_mac(result).data(),
+                all_zero ? "all-zero" : "non-unicast I/G bit set");
+            return std::nullopt;
+        }
+    }
+
     // Optional anti-spoof: reject replies from unexpected MACs
     if (expected_mac.has_value()) {
         if (std::memcmp(result.addr_bytes,
