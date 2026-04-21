@@ -1,9 +1,13 @@
 /// @file bench_udp.cpp
-/// UDP micro-benchmarks — header fill/build, checksum, layered parse API,
-/// DPDK UDP header layer benchmarks — checksum, header build/parse.
+/// UDP micro-benchmarks — header fill/build, checksum, layered parse API.
 ///
 /// Establishes UDP performance baselines for comparison with TCP equivalents
 /// in bench_tcp_header.cpp. Does NOT require DPDK EAL — uses FakeMbuf.
+///
+/// (Pre-2026-04 this file also exercised the legacy RxDispatcher's UDP
+/// dispatch simulation; that microbenchmark was removed alongside
+/// RxDispatcher itself in commit 3e1d7d0 since DpdkPoller subsumes the
+/// dispatch responsibility — see eph-net-dpdk/CHANGELOG.md.)
 
 #include <cstdint>
 #include <cstring>

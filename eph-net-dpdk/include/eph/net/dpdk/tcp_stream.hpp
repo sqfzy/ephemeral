@@ -702,6 +702,8 @@ public:
                     rule.error());
                 // Roll back the attach so the stream isn't half-registered.
                 (void)poller->remove(stream.get());
+                // RAII unwinds the rest: ~unique_ptr<DpdkTcpStream> →
+                // ~optional<FlowRule> (still empty) → ~TcpSession.
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: install_flow_rule failed"});

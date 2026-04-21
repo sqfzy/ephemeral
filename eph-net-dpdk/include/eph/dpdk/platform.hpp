@@ -134,7 +134,20 @@ inline spdlog::logger* platform_logger() { return get_logger<LoggerName{"dpdk.pl
 /// via validate_config() and config_ok() for compile-time checking.
 ///
 /// @brief Maximum number of RX queues the Poller registry can hold.
-/// Practical NIC limits are well below this (ENA: 32, ConnectX-5: 63).
+///
+/// Sized for current production HFT NICs:
+///   - AWS ENA            ≤ 32 queues per device
+///   - Mellanox ConnectX-5 ≤ 63 queues
+///   - Intel E810         ≤ 256 queues (would need bump if used)
+///
+/// Storage cost: `std::array<DpdkPoller<void>*, kMaxRssQueues>` ≈
+/// `kMaxRssQueues * sizeof(void*)` = 512 B per Platform; trivial.
+/// To raise (e.g. for E810 in a future deployment), bump this constant
+/// — no other code change required since `register_poller` /
+/// `poller_for_queue` validate against this same value.
+///
+/// Not bound to `RTE_MAX_QUEUES_PER_PORT` (default 1024 in DPDK), which
+/// would burst the per-Platform footprint to 8 KiB for no current benefit.
 inline constexpr uint16_t kMaxRssQueues = 64;
 
 /// @note Queue counts and descriptor counts are automatically clamped to
