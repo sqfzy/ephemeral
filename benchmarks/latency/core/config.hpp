@@ -235,20 +235,19 @@ struct BenchConfig {
     uint16_t server_port = 9000;
 
     // --- DPDK RSS / multi-queue configuration ---
-    // Used by the multi-queue lat_*_dpdk variants to drive per-lcore
-    // Pollers. Default 1 / false keeps every existing scenario in
-    // single-queue Software mode (zero behavioural change).
+    // nb_rx_queues + enable_rss are END-TO-END PLUMBED into Platform::create
+    // via load_dpdk_env (verified by the stage-3 bench report).
+    // Default 1 / false keeps every existing scenario in single-queue
+    // Software mode — zero behavioural change.
     //
-    // When NB_RX_QUEUES > 1 + ENABLE_RSS=true:
-    //   * Platform::create installs an RSS hash + RETA across NB_RX_QUEUES.
-    //   * The lat scenario spawns one DpdkPoller per queue and pins it to
-    //     the corresponding lcore listed in LCORE_PER_QUEUE (CSV indexed
-    //     by qid). The lcore CSV must list at least NB_RX_QUEUES values.
-    //   * Each connection / stream calls DpdkTcpStream::create_and_attach
-    //     with pin_to_queue set to its qid (round-robin across symbols).
+    // lcore_per_queue is **NOT YET CONSUMED** by any lat scenario.
+    // Reserved for the multi-stream lat refactor (stage-5 follow-up):
+    // the future caller will parse this CSV, spawn one lcore per qid,
+    // each running a DpdkPoller; streams attach via
+    // DpdkTcpStream::create_and_attach with pin_to_queue.
     uint16_t    nb_rx_queues  = 1;
     bool        enable_rss    = false;
-    std::string lcore_per_queue;     ///< CSV like "4,5,6,7" — indexed by qid
+    std::string lcore_per_queue;     ///< CSV like "4,5,6,7"; reserved (not yet read)
 };
 
 namespace config_detail {

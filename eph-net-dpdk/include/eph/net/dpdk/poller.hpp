@@ -19,10 +19,9 @@
 ///     explicitly excludes it).
 ///
 ///   - **Routing table**: uses a flat linear scan over the registered
-///     entries (like the legacy `RxDispatcher<>` hot-path dispatch loop). For
-///     typical HFT deployments with 2-4 connections a cache-friendly
-///     linear scan beats a hash map; can be swapped for a real 5-tuple
-///     hash if the connection count is large enough to matter.
+///     entries. For typical HFT deployments with 2-4 connections a
+///     cache-friendly linear scan beats a hash map; can be swapped for
+///     a real 5-tuple hash if the connection count is large enough to matter.
 ///
 ///   - **Pollable notification hooks**: every `Pollable` in the DPDK
 ///     backend (`DpdkTcpStream`, `DpdkUdpSocket`) exposes
@@ -64,10 +63,10 @@ inline spdlog::logger* poller_logger() {
 
 /// @brief Direction-symmetric FNV-1a hash of a 5-tuple.
 ///
-/// Lifted from the legacy RxDispatcher code path. Symmetric so that an
-/// incoming packet with swapped src/dst matches the registered tuple
-/// without a second hash computation. Protocol is mixed as an additional
-/// field so that a TCP and a UDP Pollable sharing the same (src_ip,
+/// Symmetric so that an incoming packet with swapped src/dst matches the
+/// registered tuple without a second hash computation. Protocol is mixed
+/// as an additional field so that a TCP and a UDP Pollable sharing the
+/// same (src_ip,
 /// dst_ip, src_port, dst_port) land in distinct hash buckets — required
 /// to prevent cross-protocol misrouting when NIC flow steering delivers
 /// both protocols to the same poll queue.
@@ -137,8 +136,8 @@ public:
     ///        friendly for linear scan (typical N ≤ 8 in HFT).
     static constexpr std::size_t kMaxConn = 16;
 
-    /// @brief DPDK burst size — matches the legacy RxDispatcher:rx_loop`
-    ///        choice so microbenchmark results carry over cleanly.
+    /// @brief DPDK burst size — matches the canonical 32-mbuf burst used
+    ///        across the codebase (TcpSession::poll_rx, microbenchmarks).
     static constexpr uint16_t kBurstSize = 32;
 
     // ── Factory ──────────────────────────────────────────────────────────
@@ -321,8 +320,9 @@ public:
                 entry->process_burst_fn(entry->obj, &mbufs[i], 1, rx_tsc);
                 ++dispatched;
             } else {
-                // No routing match — drop. This mirrors the legacy
-                // RxDispatcher behaviour for unmatched packets.
+                // No routing match — drop. Unmatched packets in DPDK PMD
+                // mode have no kernel "stack" to fall back to; freeing the
+                // mbuf is the only sane disposal.
                 rte_pktmbuf_free(mbufs[i]);
             }
         }
