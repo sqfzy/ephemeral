@@ -293,8 +293,19 @@ check_running_processes() {
     fi
 
     # 方法 2：检查 /dev/vfio 的打开者
-    local vfio_pids
-    vfio_pids=$(fuser /dev/vfio/* 2>/dev/null | tr -s ' ' '\n' | sort -u || true)
+    #
+    # 在无 vfio-pci（或模块未加载）的环境里 /dev/vfio 目录本身不存在，
+    # fuser 会打印 "specified filename ... does not exist" 然后非零退出。
+    # 之前用 `2>/dev/null || true` 把错误都吞掉，会让 /dev/vfio 缺失这种
+    # 需要关注的状态静默通过 —— 本应是 "没人在跑 DPDK"，实际上是 "这台
+    # 机器从未进过 vfio 态"。分开处理：仅在目录存在时才 fuser，并把
+    # 异常日志保留到 verbose 通路。
+    local vfio_pids=""
+    if [[ -d /dev/vfio ]]; then
+        vfio_pids=$(fuser /dev/vfio/* 2>/dev/null | tr -s ' ' '\n' | sort -u || true)
+    else
+        verbose "/dev/vfio 目录不存在，跳过 fuser 检查（vfio-pci 可能未加载）"
+    fi
     for pid in $vfio_pids; do
         if [[ "$pid" =~ ^[0-9]+$ ]] && ! printf '%s\n' "${dpdk_pids[@]}" | grep -qx "$pid" 2>/dev/null; then
             dpdk_pids+=("$pid")
