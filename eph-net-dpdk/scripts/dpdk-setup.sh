@@ -448,7 +448,28 @@ setup_vfio() {
         return
     fi
 
-    modprobe vfio-pci
+    # modprobe vfio-pci may fail for two different reasons:
+    #   1. Module not available → fatal; can't proceed with vfio binding
+    #   2. Module is statically built into the kernel → modprobe "fails"
+    #      but the functionality is present (check /sys/module/vfio_pci)
+    # set -e would abort on either case, so we handle both explicitly and
+    # verify the module is actually active before declaring success.
+    if ! modprobe vfio-pci 2>/dev/null; then
+        if [[ ! -d /sys/module/vfio_pci ]]; then
+            echo "[ERROR] modprobe vfio-pci failed and /sys/module/vfio_pci " \
+                 "is missing — vfio-pci is neither loadable nor built in." >&2
+            echo "        Install kernel-modules-extra (RHEL/Fedora) or " \
+                 "linux-modules-extra (Ubuntu), or build a kernel with " \
+                 "CONFIG_VFIO_PCI=y/m." >&2
+            exit 1
+        fi
+        warn "modprobe vfio-pci 返回非零，但 /sys/module/vfio_pci 存在 → " \
+             "视为内建模块，继续"
+    fi
+    if [[ ! -d /sys/module/vfio_pci ]]; then
+        echo "[ERROR] vfio-pci 加载后仍无 /sys/module/vfio_pci — 异常状态" >&2
+        exit 1
+    fi
     ok "vfio-pci 模块已加载"
 
     # 探测 IOMMU：有真 IOMMU 就不降级 DMA 安全边界
