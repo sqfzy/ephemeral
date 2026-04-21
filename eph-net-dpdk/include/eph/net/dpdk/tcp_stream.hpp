@@ -371,69 +371,23 @@ public:
     using OnMessage  = std::function<void(std::span<const uint8_t>)>;
 
     // ── Factory ──────────────────────────────────────────────────────────
-
-    /// @brief Poller-aware factory. Auto-allocates a conflict-free
-    ///        source port via `poller.pick_src_port()` when
-    ///        `cfg.legacy.tuple.src_port == 0`, then delegates to the
-    ///        single-argument `create` overload.
-    ///
-    /// This is the recommended entry point when a `DpdkPoller` is
-    /// available at construction time: it closes the "picked a stale
-    /// port still in TIME_WAIT on our side" loophole that bites
-    /// high-frequency reconnect workloads, because `pick_src_port` scans
-    /// the currently registered 5-tuples and uses a random-start probe
-    /// across the whole ephemeral range.
-    ///
-    /// The strict `create(cfg)` overload below is preserved for the
-    /// direct-construction path (tests, users that manage ports
-    /// themselves): it still rejects `src_port == 0` via
-    /// `TcpConfig::validate()`.
-    [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
-    create(StreamConfig cfg, DpdkPoller<void>& poller) noexcept {
-        auto* log = detail::tcp_stream_logger();
-        if (cfg.legacy.tuple.src_port == 0) {
-            if (cfg.legacy.tuple.src_ip == 0 ||
-                cfg.legacy.tuple.dst_ip == 0 ||
-                cfg.legacy.tuple.dst_port == 0) {
-                SPDLOG_LOGGER_WARN(log,
-                    "DpdkTcpStream::create(poller): src_ip/dst_ip/dst_port "
-                    "must be set before auto-allocating src_port "
-                    "(src={:x} dst={:x}:{})",
-                    cfg.legacy.tuple.src_ip, cfg.legacy.tuple.dst_ip,
-                    cfg.legacy.tuple.dst_port);
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::InvalidConfig,
-                    "DpdkTcpStream::create: src_ip/dst_ip/dst_port required "
-                    "before auto-allocating src_port"});
-            }
-            auto port = poller.pick_src_port(
-                cfg.legacy.tuple.src_ip,
-                cfg.legacy.tuple.dst_ip,
-                cfg.legacy.tuple.dst_port);
-            if (!port) {
-                SPDLOG_LOGGER_WARN(log,
-                    "DpdkTcpStream::create: pick_src_port failed: {}",
-                    port.error().detail);
-                return std::unexpected(port.error());
-            }
-            cfg.legacy.tuple.src_port = *port;
-            SPDLOG_LOGGER_INFO(log,
-                "DpdkTcpStream::create: auto-allocated src_port={}", *port);
-        }
-        auto result = create(std::move(cfg));
-        if (result) {
-            // Register this stream as the ICMP Frag Needed dispatch
-            // target. The callback matches the embedded 4-tuple against
-            // our own and forwards the next-hop MTU to the session.
-            // Single-callback limitation: the last create(cfg, poller)
-            // wins. Multi-stream users sharing one Poller must build
-            // their own dispatcher (no silent misrouting — the callback
-            // compares tuples and ignores mismatches).
-            poller.set_icmp_callback(&DpdkTcpStream::on_icmp_frag_needed_trampoline_,
-                                      result->get());
-        }
-        return result;
-    }
+    //
+    // Two factories are supported:
+    //   * `create(cfg)` — strict, requires a pre-chosen `src_port` and
+    //     does not attach to any Poller. Used by unit tests and advanced
+    //     users that manage their own poller topology.
+    //   * `create_and_attach(cfg, platform)` — the recommended production
+    //     path: picks a target RX queue, allocates a conflict-free
+    //     `src_port` (rebinding to match the RSS hash when necessary),
+    //     runs the TCP/TLS/WS handshakes, attaches to the per-queue
+    //     Poller and registers the stream as an ICMP Frag Needed target
+    //     on the Platform so path-MTU feedback routes correctly in
+    //     multi-queue topologies.
+    //
+    // The older `create(cfg, poller)` overload has been retired: its
+    // role (src_port auto-allocation + ICMP wiring) is now a proper
+    // subset of `create_and_attach`, and leaving both in was causing
+    // users to pick the wrong one.
 
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
     create(StreamConfig cfg) noexcept {
@@ -774,6 +728,37 @@ public:
             stream->flow_rule_.emplace(std::move(*rule));
         }
 
+        // Ensure this Poller routes un-dispatched ICMP mbufs into
+        // Platform::on_poller_icmp_. Installing the callback is
+        // idempotent — subsequent streams attaching to the same Poller
+        // overwrite the same function pointer / context, which is a
+        // no-op semantically. Doing it here keeps platform.hpp free
+        // of any dependency on the full DpdkPoller<> definition.
+        poller->set_icmp_callback(&::eph::dpdk::Platform::on_poller_icmp_,
+                                   static_cast<void*>(&platform));
+
+        // Register the stream as an ICMP Frag Needed target so path-MTU
+        // feedback routes to our `sess_.on_icmp_frag_needed`. Platform
+        // walks the registry across ALL per-queue pollers, so this works
+        // correctly regardless of which RX queue the router's ICMP
+        // response happens to land on. The returned RAII handle auto-
+        // unregisters on ~DpdkTcpStream.
+        auto icmp_reg = platform.register_icmp_target(
+            stream->cfg_.legacy.tuple,
+            eph::dpdk::net::kIpProtoTcp,
+            stream.get(),
+            &DpdkTcpStream::on_icmp_mtu_thunk_);
+        if (!icmp_reg) {
+            SPDLOG_LOGGER_WARN(log,
+                "create_and_attach: register_icmp_target failed: {}",
+                icmp_reg.error());
+            (void)poller->remove(stream.get());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "create_and_attach: register_icmp_target failed"});
+        }
+        stream->icmp_reg_.emplace(std::move(*icmp_reg));
+
         SPDLOG_LOGGER_INFO(log,
             "create_and_attach: TCP stream attached → port={}, queue={}, mode={}",
             platform.port_id(), target_qid,
@@ -1039,30 +1024,14 @@ public:
         *proto    = eph::dpdk::net::kIpProtoTcp;
     }
 
-    /// @brief ICMP Frag Needed trampoline registered with the Poller.
-    ///        Matches the embedded 4-tuple + protocol against our own
-    ///        and, on match, forwards `next_hop_mtu` to the session.
-    ///        noexcept so a mis-dispatch can never unwind through the
-    ///        Poller's hot path.
-    static void on_icmp_frag_needed_trampoline_(
-        void* user,
-        uint32_t embedded_src_ip, uint32_t embedded_dst_ip,
-        uint16_t embedded_src_port, uint16_t embedded_dst_port,
-        uint8_t  embedded_proto,
-        uint16_t next_hop_mtu) noexcept {
+    /// @brief ICMP Frag Needed callback registered with Platform via
+    ///        `register_icmp_target`. Platform has already matched the
+    ///        embedded 4-tuple to this stream — we just forward the
+    ///        MTU down to the session. noexcept so a mis-dispatch can
+    ///        never unwind through the Poller's hot path.
+    static void on_icmp_mtu_thunk_(void* user, uint16_t next_hop_mtu) noexcept {
         auto* self = static_cast<DpdkTcpStream*>(user);
         if (self == nullptr) return;
-        // The embedded headers carry OUR original packet verbatim: so
-        // embedded src/dst equal our cfg.tuple src/dst (not swapped).
-        // Protocol must be TCP.
-        if (embedded_proto != eph::dpdk::net::kIpProtoTcp) return;
-        const auto& t = self->cfg_.legacy.tuple;
-        if (embedded_src_ip != t.src_ip ||
-            embedded_dst_ip != t.dst_ip ||
-            embedded_src_port != t.src_port ||
-            embedded_dst_port != t.dst_port) {
-            return;
-        }
         self->sess_.on_icmp_frag_needed(next_hop_mtu);
     }
 
@@ -1396,6 +1365,12 @@ private:
     /// NIC via `~FlowRule` → `rte_flow_destroy`. Empty in Software /
     /// RssPartitioned mode.
     std::optional<::eph::net::dpdk::FlowRule> flow_rule_{};
+
+    /// @brief RAII handle for the ICMP Frag Needed registration on
+    ///        Platform. Engaged only when `create_and_attach` succeeds.
+    ///        Destructor auto-unregisters, so an exception / rollback /
+    ///        normal teardown all leave Platform's registry clean.
+    std::optional<::eph::dpdk::Platform::IcmpTargetHandle> icmp_reg_{};
 
     // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
 

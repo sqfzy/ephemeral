@@ -32,6 +32,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/dpdk/packet_parse.hpp"   // ParsedIcmp for dispatch_icmp_
 #include "eph/net/dpdk/flow_steering.hpp"
 
 // Forward-declare DpdkPoller so register_poller / poller_for_queue can name
@@ -404,6 +405,94 @@ public:
     [[nodiscard]] ::eph::net::dpdk::DpdkPoller<void>*
         poller_for_queue(uint16_t queue_id) const noexcept;
 
+    // ── ICMP Frag Needed target registry ─────────────────────────────────
+    //
+    // ICMP messages can arrive on any RX queue (routers pick based on
+    // their own hashing, not ours). So each per-queue Poller only sees
+    // the ICMPs routed to it, but an ICMP Frag Needed about any registered
+    // stream might land on any queue. Platform is the only global view
+    // over all streams/queues — so it owns ICMP dispatch.
+    //
+    // Streams call `register_icmp_target` once post-attach. The returned
+    // RAII handle unregisters on destruction. `register_poller` installs
+    // a Platform-side trampoline onto each Poller's ICMP fallback, so
+    // every Poller's un-routed ICMP mbufs converge into our registry
+    // walk automatically.
+
+    using IcmpMtuCallback = void(*)(void* stream, uint16_t next_hop_mtu) noexcept;
+
+    class IcmpTargetHandle {
+    public:
+        IcmpTargetHandle() noexcept = default;
+        IcmpTargetHandle(Platform* p,
+                         ::eph::dpdk::net::ConnectionTuple tuple,
+                         uint8_t proto) noexcept
+            : platform_(p), tuple_(tuple), proto_(proto), engaged_(true) {}
+        ~IcmpTargetHandle() noexcept {
+            if (engaged_ && platform_ != nullptr) {
+                platform_->unregister_icmp_target_(tuple_, proto_);
+            }
+        }
+        IcmpTargetHandle(const IcmpTargetHandle&)            = delete;
+        IcmpTargetHandle& operator=(const IcmpTargetHandle&) = delete;
+        IcmpTargetHandle(IcmpTargetHandle&& o) noexcept
+            : platform_(o.platform_), tuple_(o.tuple_),
+              proto_(o.proto_), engaged_(o.engaged_) {
+            o.engaged_ = false;
+        }
+        IcmpTargetHandle& operator=(IcmpTargetHandle&& o) noexcept {
+            if (this != &o) {
+                if (engaged_ && platform_ != nullptr) {
+                    platform_->unregister_icmp_target_(tuple_, proto_);
+                }
+                platform_ = o.platform_;
+                tuple_    = o.tuple_;
+                proto_    = o.proto_;
+                engaged_  = o.engaged_;
+                o.engaged_ = false;
+            }
+            return *this;
+        }
+        [[nodiscard]] bool engaged() const noexcept { return engaged_; }
+
+    private:
+        Platform* platform_{nullptr};
+        ::eph::dpdk::net::ConnectionTuple tuple_{};
+        uint8_t   proto_{0};
+        bool      engaged_{false};
+    };
+
+    /// @brief Register an ICMP Frag Needed target. Returns an RAII
+    ///        handle — destroy it (or overwrite via move-assignment) to
+    ///        unregister. Duplicate (tuple, proto) are rejected.
+    ///
+    /// Not thread-safe: expected to be called from the same
+    /// stream-construction thread that registered the Poller.
+    [[nodiscard]] std::expected<IcmpTargetHandle, std::string>
+        register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
+                             uint8_t  proto,
+                             void*    stream,
+                             IcmpMtuCallback cb) noexcept;
+
+    /// @brief Running count of ICMP Type 3 Code 4 messages dispatched
+    ///        to a registered target since Platform construction.
+    [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept;
+
+    // ── Internal (public to the RAII handle) ────────────────────────────
+    void unregister_icmp_target_(const ::eph::dpdk::net::ConnectionTuple& tuple,
+                                  uint8_t proto) noexcept;
+
+    /// @brief Trampoline installed onto every registered Poller's ICMP
+    ///        fallback. Extracts the embedded 4-tuple from the parsed
+    ///        ICMP and looks up the matching target.
+    static void on_poller_icmp_(void* ctx,
+                                 uint32_t embedded_src_ip,
+                                 uint32_t embedded_dst_ip,
+                                 uint16_t embedded_src_port,
+                                 uint16_t embedded_dst_port,
+                                 uint8_t  embedded_proto,
+                                 uint16_t next_hop_mtu) noexcept;
+
 private:
     struct Impl;
     explicit Platform(std::unique_ptr<Impl> impl) noexcept;
@@ -432,6 +521,37 @@ struct Platform::Impl {
     /// (stage 4) at startup, read on the hot path via poller_for_queue.
     /// nullptr slot = unregistered queue.
     std::array<::eph::net::dpdk::DpdkPoller<void>*, kMaxRssQueues> pollers{};
+
+    // ── ICMP Frag Needed target registry ──
+    // Linear scan over this small array is fine: typical HFT setups have
+    // O(4) streams, and ICMP dispatch is a cold path (routers only emit
+    // Frag Needed on topology change).
+    static constexpr std::size_t kMaxIcmpTargets = 64;
+    struct IcmpEntry {
+        ::eph::dpdk::net::ConnectionTuple tuple{};
+        uint8_t  proto{0};
+        void*    stream{nullptr};
+        Platform::IcmpMtuCallback cb{nullptr};
+    };
+    std::array<IcmpEntry, kMaxIcmpTargets> icmp_targets{};
+    std::size_t n_icmp_targets{0};
+    uint64_t    icmp_dispatched{0};
+
+    void dispatch_icmp_(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
+        if (!parsed.embedded_valid) return;
+        for (std::size_t i = 0; i < n_icmp_targets; ++i) {
+            const auto& e = icmp_targets[i];
+            if (e.proto            == parsed.embedded_proto  &&
+                e.tuple.src_ip     == parsed.embedded_src_ip &&
+                e.tuple.dst_ip     == parsed.embedded_dst_ip &&
+                e.tuple.src_port   == parsed.embedded_src_port &&
+                e.tuple.dst_port   == parsed.embedded_dst_port) {
+                e.cb(e.stream, parsed.next_hop_mtu);
+                ++icmp_dispatched;
+                return;
+            }
+        }
+    }
 
     ~Impl() { cleanup(); }
 
@@ -913,6 +1033,12 @@ Platform::register_poller(uint16_t queue_id,
             "DuplicateQueue: queue_id={} already has a registered Poller",
             queue_id));
     impl_->pollers[queue_id] = poller;
+    // NB: the ICMP callback (`poller->set_icmp_callback(...)`) is NOT
+    // wired here because DpdkPoller is only forward-declared at this
+    // point (platform.hpp sits below poller.hpp in the dep graph).
+    // `DpdkTcpStream::create_and_attach` installs the callback as part
+    // of its attach sequence — by the time any stream attaches, both
+    // headers are fully included.
     SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
         "Poller registered: port={}, queue={}, ptr={:p}",
         impl_->config.port_id, queue_id, static_cast<void*>(poller));
@@ -925,6 +1051,85 @@ Platform::poller_for_queue(uint16_t queue_id) const noexcept {
     if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
         return nullptr;
     return impl_->pollers[queue_id];
+}
+
+inline std::expected<Platform::IcmpTargetHandle, std::string>
+Platform::register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
+                                uint8_t  proto,
+                                void*    stream,
+                                IcmpMtuCallback cb) noexcept {
+    if (!impl_) return std::unexpected("Platform is moved-from");
+    if (stream == nullptr || cb == nullptr)
+        return std::unexpected("register_icmp_target: stream/cb must not be null");
+    if (impl_->n_icmp_targets >= Impl::kMaxIcmpTargets)
+        return std::unexpected("register_icmp_target: registry full");
+
+    // Reject duplicate (tuple, proto) — caller has a bookkeeping bug,
+    // not a retryable error.
+    for (std::size_t i = 0; i < impl_->n_icmp_targets; ++i) {
+        const auto& e = impl_->icmp_targets[i];
+        if (e.proto == proto &&
+            e.tuple.src_ip   == tuple.src_ip   &&
+            e.tuple.dst_ip   == tuple.dst_ip   &&
+            e.tuple.src_port == tuple.src_port &&
+            e.tuple.dst_port == tuple.dst_port) {
+            return std::unexpected("register_icmp_target: tuple already registered");
+        }
+    }
+
+    auto& slot = impl_->icmp_targets[impl_->n_icmp_targets++];
+    slot.tuple  = tuple;
+    slot.proto  = proto;
+    slot.stream = stream;
+    slot.cb     = cb;
+    return IcmpTargetHandle{this, tuple, proto};
+}
+
+inline void
+Platform::unregister_icmp_target_(
+    const ::eph::dpdk::net::ConnectionTuple& tuple, uint8_t proto) noexcept {
+    if (!impl_) return;
+    for (std::size_t i = 0; i < impl_->n_icmp_targets; ++i) {
+        const auto& e = impl_->icmp_targets[i];
+        if (e.proto == proto &&
+            e.tuple.src_ip   == tuple.src_ip   &&
+            e.tuple.dst_ip   == tuple.dst_ip   &&
+            e.tuple.src_port == tuple.src_port &&
+            e.tuple.dst_port == tuple.dst_port) {
+            // Swap-with-last removal keeps the registry compact.
+            impl_->icmp_targets[i] =
+                impl_->icmp_targets[impl_->n_icmp_targets - 1];
+            impl_->icmp_targets[--impl_->n_icmp_targets] = Impl::IcmpEntry{};
+            return;
+        }
+    }
+}
+
+inline uint64_t Platform::icmp_frag_needed_dispatched() const noexcept {
+    return impl_ ? impl_->icmp_dispatched : 0;
+}
+
+inline void Platform::on_poller_icmp_(
+    void* ctx,
+    uint32_t embedded_src_ip, uint32_t embedded_dst_ip,
+    uint16_t embedded_src_port, uint16_t embedded_dst_port,
+    uint8_t  embedded_proto,
+    uint16_t next_hop_mtu) noexcept {
+    auto* self = static_cast<Platform*>(ctx);
+    if (self == nullptr || !self->impl_) return;
+    // Build a ParsedIcmp-compatible slim struct so dispatch_icmp_ can be
+    // shared with any future direct-invocation path.
+    ::eph::dpdk::net::ParsedIcmp p{};
+    p.type              = 3;
+    p.code              = 4;
+    p.next_hop_mtu      = next_hop_mtu;
+    p.embedded_src_ip   = embedded_src_ip;
+    p.embedded_dst_ip   = embedded_dst_ip;
+    p.embedded_src_port = embedded_src_port;
+    p.embedded_dst_port = embedded_dst_port;
+    p.embedded_proto    = embedded_proto;
+    p.embedded_valid    = true;
+    self->impl_->dispatch_icmp_(p);
 }
 
 inline Platform::Stats Platform::collect_stats() const {
