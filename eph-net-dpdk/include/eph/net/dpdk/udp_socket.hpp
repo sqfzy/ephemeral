@@ -31,6 +31,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <utility>
 
@@ -230,7 +231,8 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: install_flow_rule failed"});
             }
-            rule->handle = nullptr;  // see TODO in tcp_stream.hpp
+            // Move into the socket so ~FlowRule cleans up at teardown.
+            sock->flow_rule_.emplace(std::move(*rule));
         }
 
         void* poller_void = platform.poller_for_queue(target_qid);
@@ -546,6 +548,10 @@ private:
     ::eph::dpdk::UdpSender                 sender_;
     [[no_unique_address]] C                codec_{};
     DpdkPoller<void>*                      attached_to_{nullptr};
+    /// @brief RAII handle for the rte_flow rule installed by
+    /// `create_and_attach` in FlowDirector mode. See the matching field
+    /// on `DpdkTcpStream` for the lifecycle contract.
+    std::optional<::eph::net::dpdk::FlowRule> flow_rule_{};
     /// Per-socket multicast MAC list (max 8 groups, matches the legacy
     /// kMaxMulticastGroups). Pushed to the NIC via
     /// `rte_eth_dev_set_mc_addr_list` on join / leave.

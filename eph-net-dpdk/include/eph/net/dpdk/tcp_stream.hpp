@@ -28,6 +28,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -669,11 +670,9 @@ public:
                 "create_and_attach: RSS auto → queue={}", target_qid);
         }
 
-        // FlowDirector: install rte_flow rule steering this 5-tuple to qid.
-        // TODO: persist FlowRule as a stream member so disconnect cleans up.
-        // For now the rule is leaked until rte_eth_dev_close() at port
-        // teardown — acceptable for the initial wiring; revisit if FD path
-        // becomes the production default.
+        // FlowDirector: install rte_flow rule steering this 5-tuple to qid
+        // and move it into the stream so RAII destruction (~FlowRule →
+        // rte_flow_destroy) cleans up at stream teardown.
         if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
             const auto& t = stream->cfg_.legacy.tuple;
             ::eph::dpdk::net::ConnectionTuple fl_tuple{
@@ -690,8 +689,7 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: install_flow_rule failed"});
             }
-            // Suppress RAII destroy so the rule persists past this scope.
-            rule->handle = nullptr;
+            stream->flow_rule_.emplace(std::move(*rule));
         }
 
         // Look up the Poller that owns this queue + attach.
@@ -1266,6 +1264,13 @@ private:
     ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
+    /// @brief RAII handle for the rte_flow rule installed by
+    /// `create_and_attach` in FlowDirector mode (engaged only on NICs
+    /// where `Platform::dispatch_mode() == FlowDirector`). When the
+    /// stream is destroyed the rule is automatically removed from the
+    /// NIC via `~FlowRule` → `rte_flow_destroy`. Empty in Software /
+    /// RssPartitioned mode.
+    std::optional<::eph::net::dpdk::FlowRule> flow_rule_{};
 
     // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
 
