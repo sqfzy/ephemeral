@@ -923,6 +923,10 @@ public:
     ///        `sess_.poll_rx` which runs one burst against the
     ///        session-local NIC driver loop.
     std::size_t poll_once_() noexcept {
+        // Drive the keepalive tick on every poll cycle regardless of
+        // whether bytes arrived. An idle, established connection has no
+        // packets flowing but still needs its liveness probes to emit.
+        sess_.tick_keepalive(::eph::utils::TSC::now());
         if (!sess_.is_established()) return 0;
         if (reasm_overflowed_) return 0;
         // `rx_chunk`: TCP payload bytes emerging from the session-layer

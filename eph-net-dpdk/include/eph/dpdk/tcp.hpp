@@ -1027,6 +1027,14 @@ public:
             }
 
             stats_.rx_packets++;
+            // Any matching segment counts as liveness evidence. Refresh
+            // the keepalive baseline to the most recent burst's TSC (set
+            // by poll_rx() before calling us, or via set_last_rx_burst_tsc
+            // on the RxDispatcher path). Clearing keepalive_misses_ also
+            // resets the "N probes unanswered → Closed" counter, so a
+            // single live reply undoes prior uncertainty.
+            last_rx_tsc_ = last_rx_burst_tsc_.load(std::memory_order_relaxed);
+            keepalive_misses_ = 0;
 
             // RST — immediate close
             if (parsed.has_flag(net::kTcpRst)) {
@@ -1249,6 +1257,62 @@ public:
         }
 
         return data_count;
+    }
+
+    /// Periodic keepalive driver. No-op when disabled
+    /// (`config_.keepalive_interval == 0`) or when the session is not
+    /// Established. Intended to be called from the stream's poll loop
+    /// — e.g. `DpdkTcpStream::poll_once_`, or a per-entry tick inside
+    /// `DpdkPoller`.
+    ///
+    /// Semantics:
+    ///   * If no RX has been observed yet (last_rx_tsc_ == 0), anchor
+    ///     the baseline to `now_tsc` — fresh connections don't probe
+    ///     immediately.
+    ///   * If (now - last_rx_tsc_) < interval → no-op.
+    ///   * Else, if we've already emitted a probe inside this interval
+    ///     window, do not probe again (rate-limited to one per window).
+    ///   * Else, if we've burned through `keepalive_probes` un-answered
+    ///     probes → declare the connection dead (state_ = Closed).
+    ///   * Else → emit a probe, increment `keepalive_misses_` and the
+    ///     `keepalive_probes_sent` stat.
+    ///
+    /// An incoming packet (any TCP segment matching our 4-tuple)
+    /// resets `keepalive_misses_` back to 0 via process_rx().
+    void tick_keepalive(uint64_t now_tsc) noexcept {
+        if (config_.keepalive_interval.count() == 0) return;
+        if (state_ != TcpState::Established) return;
+        if (last_rx_tsc_ == 0) {
+            last_rx_tsc_ = now_tsc;
+            return;
+        }
+        const uint64_t interval_cycles = keepalive_interval_cycles_();
+        if (now_tsc - last_rx_tsc_ < interval_cycles) return;
+        // Rate-limit probes to at most one per window.
+        if (last_keepalive_tsc_ != 0 &&
+            now_tsc - last_keepalive_tsc_ < interval_cycles) return;
+
+        if (keepalive_misses_ >= config_.keepalive_probes) {
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "keepalive: {} consecutive probes unanswered — "
+                "declaring connection dead ({}:{} -> {}:{})",
+                keepalive_misses_,
+                net::format_ipv4(config_.tuple.src_ip).data(),
+                config_.tuple.src_port,
+                net::format_ipv4(config_.tuple.dst_ip).data(),
+                config_.tuple.dst_port);
+            state_ = TcpState::Closed;
+            return;
+        }
+
+        auto r = send_keepalive_probe_();
+        last_keepalive_tsc_ = now_tsc;
+        if (r) {
+            ++keepalive_misses_;
+            ++stats_.keepalive_probes_sent;
+            SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
+                "keepalive probe #{} sent", keepalive_misses_);
+        }
     }
 
     /// Delayed-ACK driver: emit a bare ACK only if the timer has expired.
@@ -1698,6 +1762,48 @@ private:
     /// returns true if a is "after" b in the circular sense.
     static bool seq_after(uint32_t a, uint32_t b) noexcept {
         return static_cast<int32_t>(a - b) > 0;
+    }
+
+    /// Send a standard Linux-style TCP keepalive probe: a zero-length
+    /// ACK with `seq = snd_nxt - 1`. The sequence number is before the
+    /// peer's `rcv_nxt`, so RFC 1122 §4.2.3.6 requires the peer to
+    /// respond with an ACK — and if the peer is gone, nothing comes
+    /// back and the tick_keepalive misses counter advances.
+    [[nodiscard]] std::expected<void, std::string> send_keepalive_probe_() noexcept {
+        // snd_nxt_ is the next byte we would send; snd_nxt_-1 is a byte
+        // we believe the peer has already acknowledged. Wrap is handled
+        // implicitly by uint32_t underflow at seq=0 (peer interprets via
+        // 32-bit modular arithmetic, which is correct).
+        const uint32_t probe_seq = snd_nxt_ - 1;
+        auto* pkt = pkt_template_.build_packet(
+            pool_, probe_seq, rcv_nxt_, net::kTcpAck, rcv_wnd_);
+        if (!pkt) {
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "keepalive: mbuf alloc failed");
+            return std::unexpected("mbuf alloc failed");
+        }
+        uint16_t sent = rte_eth_tx_burst(
+            config_.port_id, config_.tx_queue_id, &pkt, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(pkt);
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "keepalive: tx_burst failed");
+            return std::unexpected("tx_burst failed");
+        }
+        ++stats_.tx_packets;
+        return {};
+    }
+
+    /// Convert `config_.keepalive_interval` (milliseconds) into TSC
+    /// cycles once per call. Uses the 1 GHz ns→cycles fallback if
+    /// TSC::init() has not yet run — keepalive does not need
+    /// microsecond precision, so an off-by-a-few-percent is acceptable
+    /// in that edge case.
+    [[nodiscard]] uint64_t keepalive_interval_cycles_() const noexcept {
+        const double ns =
+            static_cast<double>(config_.keepalive_interval.count()) * 1'000'000.0;
+        if (auto opt = eph::utils::TSC::to_cycles(ns)) return *opt;
+        return static_cast<uint64_t>(ns);
     }
 
     /// Send a bare ACK packet.
