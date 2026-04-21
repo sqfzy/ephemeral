@@ -782,11 +782,21 @@ public:
 
     ~DpdkTcpStream() {
         // If still attached to a Poller, remove ourselves first so the
-        // Poller's entries_ does not retain a dangling pointer.
+        // Poller's entries_ does not retain a dangling pointer. A non-OK
+        // result means the Stream and Poller lifecycles have drifted out
+        // of sync (e.g. double-remove or stale attached_to_ after an
+        // unexpected path) — log loudly so the bug surfaces instead of
+        // being swallowed silently by the dtor.
         if (attached_to_ != nullptr) {
             SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
                 "~DpdkTcpStream: auto-detach");
-            (void)attached_to_->remove(this);
+            auto r = attached_to_->remove(this);
+            if (!r) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "~DpdkTcpStream: auto-detach failed: {} — possible "
+                    "Poller/Stream lifecycle mismatch",
+                    r.error().detail ? r.error().detail : "unknown");
+            }
         }
     }
 

@@ -255,10 +255,19 @@ public:
     }
 
     ~DpdkUdpSocket() {
+        // See the symmetric rationale in ~DpdkTcpStream — a failing remove
+        // here signals a Poller/Socket lifecycle mismatch and should not
+        // be silently swallowed.
         if (attached_to_ != nullptr) {
             SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
                 "~DpdkUdpSocket: auto-detach");
-            (void)attached_to_->remove(this);
+            auto r = attached_to_->remove(this);
+            if (!r) {
+                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                    "~DpdkUdpSocket: auto-detach failed: {} — possible "
+                    "Poller/Socket lifecycle mismatch",
+                    r.error().detail ? r.error().detail : "unknown");
+            }
         }
     }
 
