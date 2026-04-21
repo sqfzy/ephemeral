@@ -466,11 +466,8 @@ public:
         auto cr = stream->sess_.connect(stream->cfg_.connect_timeout);
         if (!cr) {
             SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: TcpSession::connect failed: {}",
-                cr.error());
-            return std::unexpected(core::ErrorInfo{
-                core::Error::ConnectFailed,
-                "DpdkTcpStream::create: TcpSession::connect failed"});
+                "DpdkTcpStream::create: {}", cr.error().detail);
+            return std::unexpected(cr.error());
         }
 
         if constexpr (EnableTls) {
@@ -824,11 +821,11 @@ public:
                     std::min(mss, tls_send_buf_.size() - off);
                 auto sr = sess_.send(tls_send_buf_.data() + off, chunk);
                 if (!sr) {
+                    // Pass through the session's typed error — no re-wrap
+                    // needed now that sess_.send returns ErrorInfo.
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                        "DpdkTcpStream::send(TLS): TcpSession::send err={}", sr.error());
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::Disconnected,
-                        "DpdkTcpStream::send: TcpSession::send failed"});
+                        "DpdkTcpStream::send(TLS): {}", sr.error().detail);
+                    return std::unexpected(sr.error());
                 }
                 if (*sr == 0) {
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -862,12 +859,10 @@ public:
                 auto sr = sess_.send(app_payload.data() + off, chunk);
                 if (!sr) {
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                        "DpdkTcpStream::send: TcpSession::send err={} "
+                        "DpdkTcpStream::send: {} "
                         "(off={}/{}, chunk={}, mss={})",
-                        sr.error(), off, app_payload.size(), chunk, mss);
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::Disconnected,
-                        "DpdkTcpStream::send: TcpSession::send failed"});
+                        sr.error().detail, off, app_payload.size(), chunk, mss);
+                    return std::unexpected(sr.error());
                 }
                 if (*sr == 0) {
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -890,11 +885,8 @@ public:
         auto r = sess_.close();
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::close_gracefully: TcpSession::close err={}",
-                r.error());
-            return std::unexpected(core::ErrorInfo{
-                core::Error::Disconnected,
-                "DpdkTcpStream::close_gracefully: TcpSession::close failed"});
+                "DpdkTcpStream::close_gracefully: {}", r.error().detail);
+            return std::unexpected(r.error());
         }
         return {};
     }
@@ -951,7 +943,7 @@ public:
         });
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::poll_once_: poll_rx err={}", r.error());
+                "DpdkTcpStream::poll_once_: {}", r.error().detail);
             return 0;
         }
         if (reasm_overflowed_) return 0;
@@ -1089,7 +1081,7 @@ public:
             });
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::process_burst_: process_rx err={}", r.error());
+                "DpdkTcpStream::process_burst_: {}", r.error().detail);
             return;
         }
         if (reasm_overflowed_) return;

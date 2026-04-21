@@ -14,25 +14,15 @@
 /// graceful close. All operations go through DPDK tx_burst/rx_burst — no
 /// kernel sockets are used on the data path.
 ///
-/// ## Error type layering
+/// ## Error contract
 ///
-/// `TcpSession` methods return `std::expected<T, std::string>` deliberately,
-/// NOT `std::expected<T, core::ErrorInfo>` like the public Stream API.
-///
-/// The rationale is concrete: internal errors here carry *formatted*
-/// detail (timeout values, sequence numbers, effective MSS, peer state)
-/// that is only meaningful at the TcpSession layer — e.g. "TCP handshake
-/// timeout after 3000ms", "Payload too large: 1460 > effective MSS 1200".
-/// `ErrorInfo::detail` is `const char*` with static lifetime, so adopting
-/// it here would either drop the formatted context or force the caller
-/// to reconstruct it from side-channel logs.
-///
-/// `DpdkTcpStream` (the public Stream backend) converts each
-/// `TcpSession` string error into an `ErrorInfo` at the boundary, using
-/// `SPDLOG_LOGGER_*` to retain the formatted detail in logs. This is
-/// the same adapter pattern the kernel backend uses at its
-/// `KernelTcpStream` → POSIX-errno boundary; it keeps the public API
-/// contract uniform without sacrificing internal diagnosability.
+/// All fallible methods return `std::expected<T, core::ErrorInfo>` — the
+/// same type as the public Stream API. `ErrorInfo::detail` is a static
+/// string literal (never formatted / allocated); formatted diagnostic
+/// context (timeout values, sequence numbers, effective MSS, peer state)
+/// is emitted via `SPDLOG_LOGGER_*` at the error site before the return,
+/// so ops can still see the full picture in logs while programmatic
+/// callers get a uniformly-typed error for dispatch.
 
 #include <array>
 #include <atomic>
@@ -54,9 +44,10 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
+#include "eph/core/error.hpp"
+#include "eph/core/tcp_concept.hpp"
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/net_header.hpp"
-#include "eph/core/tcp_concept.hpp"
 #include "eph/utils/time.hpp"
 
 namespace eph::dpdk {
@@ -596,8 +587,10 @@ public:
 
     /// Perform TCP three-way handshake (blocking, polls DPDK rx).
     /// @param timeout  Maximum time to wait for SYN-ACK
-    /// @return Error string on failure
-    [[nodiscard]] std::expected<void, std::string>
+    /// @return ErrorInfo on failure; code is ConnectFailed for peer-side
+    ///         refusal / timeout, InvalidConfig for misuse, OutOfMemory
+    ///         for mbuf exhaustion, BufferFull for NIC backpressure.
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
         [[maybe_unused]] auto log = detail::tcp_logger();
 
@@ -608,14 +601,18 @@ public:
                     "TIME_WAIT 2MSL expired — allowing reconnect");
                 state_ = TcpState::Closed;
             } else {
-                return std::unexpected(std::format(
-                    "Cannot connect: session in TIME_WAIT (2MSL not yet expired)"));
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "TcpSession::connect: session in TIME_WAIT (2MSL not yet expired)"});
             }
         }
 
         if (state_ != TcpState::Closed) {
-            return std::unexpected(std::format(
-                "Cannot connect: session in state {}", tcp_state_name(state_)));
+            SPDLOG_LOGGER_WARN(log,
+                "TcpSession::connect: session in state {}", tcp_state_name(state_));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "TcpSession::connect: session not in Closed state"});
         }
 
         // Always regenerate ISN on each connect attempt.
@@ -624,8 +621,12 @@ public:
         // incremented) do not bleed into the new connection.
         auto isn_result = generate_isn();
         if (!isn_result) {
-            SPDLOG_LOGGER_ERROR(log, "ISN generation failed — CSPRNG unavailable");
-            return std::unexpected(std::format("ISN generation failed: {}", isn_result.error()));
+            SPDLOG_LOGGER_ERROR(log,
+                "TcpSession::connect: ISN generation failed — CSPRNG unavailable: {}",
+                isn_result.error());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::connect: ISN generation failed (CSPRNG unavailable)"});
         }
         snd_nxt_ = *isn_result;
         snd_una_ = *isn_result;
@@ -647,15 +648,21 @@ public:
         auto* syn = pkt_template_.build_packet(
             pool_, snd_nxt_, 0, net::kTcpSyn, rcv_wnd_);
         if (!syn) {
-            SPDLOG_LOGGER_ERROR(log, "Failed to allocate mbuf for SYN");
-            return std::unexpected("mbuf allocation failed for SYN");
+            SPDLOG_LOGGER_ERROR(log,
+                "TcpSession::connect: mbuf allocation failed for SYN");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::connect: mbuf allocation failed for SYN"});
         }
 
         uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &syn, 1);
         if (sent != 1) {
             rte_pktmbuf_free(syn);
-            SPDLOG_LOGGER_ERROR(log, "tx_burst failed for SYN");
-            return std::unexpected("tx_burst failed for SYN");
+            SPDLOG_LOGGER_ERROR(log,
+                "TcpSession::connect: tx_burst failed for SYN");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "TcpSession::connect: tx_burst failed for SYN"});
         }
         stats_.tx_packets++;
 
@@ -703,11 +710,14 @@ public:
                 stats_.rx_packets++;
 
                 if (parsed.has_flag(net::kTcpRst)) {
-                    SPDLOG_LOGGER_ERROR(log, "Received RST during handshake");
+                    SPDLOG_LOGGER_ERROR(log,
+                        "TcpSession::connect: received RST during handshake");
                     state_ = TcpState::Closed;
                     stats_.resets_received++;
                     free_remaining(pkts, i + 1, nb_rx);
-                    return std::unexpected("Connection refused (RST)");
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::ConnectFailed,
+                        "TcpSession::connect: connection refused (RST)"});
                 }
 
                 // Expecting SYN+ACK
@@ -775,9 +785,12 @@ public:
         }
 
         state_ = TcpState::Closed;
-        SPDLOG_LOGGER_ERROR(log, "TCP handshake timeout ({}ms)", timeout.count());
-        return std::unexpected(std::format(
-            "TCP handshake timeout after {}ms", timeout.count()));
+        SPDLOG_LOGGER_ERROR(log,
+            "TcpSession::connect: handshake timeout after {}ms",
+            timeout.count());
+        return std::unexpected(core::ErrorInfo{
+            core::Error::Timeout,
+            "TcpSession::connect: handshake timeout"});
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -787,17 +800,27 @@ public:
     /// Send data over the established TCP connection.
     /// @param data     Payload data
     /// @param len      Payload length (must be <= MSS)
-    /// @return Number of bytes sent, or error
-    [[nodiscard]] std::expected<size_t, std::string>
+    /// @return Number of bytes sent, or error. Disconnected on non-
+    ///         Established state; InvalidConfig on oversized payload;
+    ///         OutOfMemory / BufferFull on NIC-side issues.
+    [[nodiscard]] std::expected<size_t, core::ErrorInfo>
     send(const void* data, size_t len) {
         if (state_ != TcpState::Established) {
-            return std::unexpected(std::format(
-                "Cannot send: state={}", tcp_state_name(state_)));
+            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                "TcpSession::send: state={} (expected Established)",
+                tcp_state_name(state_));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::Disconnected,
+                "TcpSession::send: session not Established"});
         }
 
         if (len > effective_mss_) {
-            return std::unexpected(std::format(
-                "Payload too large: {} > effective MSS {}", len, effective_mss_));
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "TcpSession::send: payload too large ({} > effective MSS {})",
+                len, effective_mss_);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "TcpSession::send: payload exceeds effective MSS"});
         }
 
         // HFT design: we intentionally do NOT block on a zero send window.
@@ -823,8 +846,10 @@ public:
             rcv_wnd_, data, static_cast<uint16_t>(len));
         if (!mbuf) {
             SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
-                "mbuf alloc failed in send (len={})", len);
-            return std::unexpected("mbuf allocation failed");
+                "TcpSession::send: mbuf alloc failed (len={})", len);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::send: mbuf allocation failed"});
         }
 
         uint16_t sent = rte_eth_tx_burst(
@@ -832,8 +857,11 @@ public:
         if (sent != 1) {
             rte_pktmbuf_free(mbuf);
             SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
-                "tx_burst failed in send: len={}, snd_nxt_={}", len, snd_nxt_);
-            return std::unexpected("tx_burst failed");
+                "TcpSession::send: tx_burst failed (len={}, snd_nxt={})",
+                len, snd_nxt_);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "TcpSession::send: tx_burst failed"});
         }
 
         snd_nxt_ += static_cast<uint32_t>(len);
@@ -1032,7 +1060,7 @@ public:
     /// @return Number of data packets processed, or error
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    [[nodiscard]] std::expected<uint16_t, std::string>
+    [[nodiscard]] std::expected<uint16_t, core::ErrorInfo>
     process_rx(rte_mbuf** pkts, uint16_t nb_pkts, F&& data_callback) {
         [[maybe_unused]] auto log = detail::tcp_logger();
         uint16_t data_count = 0;
@@ -1103,7 +1131,9 @@ public:
                 state_ = TcpState::Closed;
                 stats_.resets_received++;
                 abort_rx_cleanup(pkts, i, nb_pkts, free_list, free_count);
-                return std::unexpected("Connection reset by peer");
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "TcpSession::process_rx: connection reset by peer"});
             }
 
             // Update send window from peer's advertisements
@@ -1189,12 +1219,13 @@ public:
                         // Reorder buffer full — genuine loss
                         stats_.reorder_overflows++;
                         SPDLOG_LOGGER_WARN(log,
-                            "Reorder buffer full ({} slots): expected={}, got={}",
+                            "TcpSession::process_rx: reorder buffer full "
+                            "({} slots): expected={}, got={}",
                             ReorderSlots, rcv_nxt_, seg_seq);
                         abort_rx_cleanup(pkts, i, nb_pkts, free_list, free_count);
-                        return std::unexpected(std::format(
-                            "Packet loss detected (reorder buffer full): expected seq {}, got {}",
-                            rcv_nxt_, seg_seq));
+                        return std::unexpected(core::ErrorInfo{
+                            core::Error::Disconnected,
+                            "TcpSession::process_rx: packet loss detected (reorder buffer full)"});
                     }
                     free_list[free_count++] = pkts[i];
                     continue;
@@ -1430,7 +1461,7 @@ public:
         auto r = send_ack();
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_logger(),
-                "Failed to send delayed ACK: {}", r.error());
+                "Failed to send delayed ACK: {}", r.error().detail);
         }
     }
 
@@ -1448,7 +1479,7 @@ public:
     ///         unexpected with error message; all received packets are freed.
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
-    [[nodiscard]] std::expected<uint16_t, std::string> poll_rx(F&& data_callback) {
+    [[nodiscard]] std::expected<uint16_t, core::ErrorInfo> poll_rx(F&& data_callback) {
         rte_mbuf* pkts[32];
 
         // Limit burst size to prevent upstream reassembly buffer overflow.
@@ -1502,13 +1533,17 @@ public:
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Initiate graceful TCP close (send FIN).
-    [[nodiscard]] std::expected<void, std::string> close() {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> close() {
         [[maybe_unused]] auto log = detail::tcp_logger();
 
         if (state_ != TcpState::Established &&
             state_ != TcpState::CloseWait) {
-            return std::unexpected(std::format(
-                "Cannot close: state={}", tcp_state_name(state_)));
+            SPDLOG_LOGGER_DEBUG(log,
+                "TcpSession::close: state={} (need Established or CloseWait)",
+                tcp_state_name(state_));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "TcpSession::close: state not Established or CloseWait"});
         }
 
         SPDLOG_LOGGER_DEBUG(log, "Sending FIN");
@@ -1516,15 +1551,22 @@ public:
             pool_, snd_nxt_, rcv_nxt_,
             net::kTcpFin | net::kTcpAck, rcv_wnd_);
         if (!fin) {
-            return std::unexpected("mbuf allocation failed for FIN");
+            SPDLOG_LOGGER_ERROR(log,
+                "TcpSession::close: mbuf allocation failed for FIN");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::close: mbuf allocation failed for FIN"});
         }
 
         uint16_t sent = rte_eth_tx_burst(
             config_.port_id, config_.tx_queue_id, &fin, 1);
         if (sent != 1) {
             rte_pktmbuf_free(fin);
-            SPDLOG_LOGGER_ERROR(log, "tx_burst failed for FIN");
-            return std::unexpected("tx_burst failed for FIN");
+            SPDLOG_LOGGER_ERROR(log,
+                "TcpSession::close: tx_burst failed for FIN");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "TcpSession::close: tx_burst failed for FIN"});
         }
 
         snd_nxt_++; // FIN consumes one sequence number
@@ -1823,7 +1865,7 @@ private:
     /// `getrandom(2)` (decoupled from OpenSSL to avoid vcpkg-openssl vs.
     /// aws-lc conflicts). Returns an error if the syscall fails — propagate
     /// to caller rather than masking failure with a sentinel value like 0 or 1.
-    static std::expected<uint32_t, std::string> generate_isn() noexcept {
+    static std::expected<uint32_t, core::ErrorInfo> generate_isn() noexcept {
         uint32_t isn = 0;
         // GRND_NONBLOCK: do not block if the urandom pool is not yet
         // initialised. On any post-boot Linux ≥ 3.17 this returns immediately.
@@ -1832,7 +1874,9 @@ private:
             SPDLOG_LOGGER_CRITICAL(detail::tcp_logger(),
                 "getrandom() failed for ISN generation (ret={}) — cannot "
                 "establish secure TCP connection", n);
-            return std::unexpected("CSPRNG failed");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::generate_isn: CSPRNG (getrandom) failed"});
         }
         return isn;
     }
@@ -1850,7 +1894,7 @@ private:
     /// peer's `rcv_nxt`, so RFC 1122 §4.2.3.6 requires the peer to
     /// respond with an ACK — and if the peer is gone, nothing comes
     /// back and the tick_keepalive misses counter advances.
-    [[nodiscard]] std::expected<void, std::string> send_keepalive_probe_() noexcept {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> send_keepalive_probe_() noexcept {
         // snd_nxt_ is the next byte we would send; snd_nxt_-1 is a byte
         // we believe the peer has already acknowledged. Wrap is handled
         // implicitly by uint32_t underflow at seq=0 (peer interprets via
@@ -1860,16 +1904,20 @@ private:
             pool_, probe_seq, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!pkt) {
             SPDLOG_LOGGER_WARN(detail::tcp_logger(),
-                "keepalive: mbuf alloc failed");
-            return std::unexpected("mbuf alloc failed");
+                "TcpSession::send_keepalive_probe_: mbuf alloc failed");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::send_keepalive_probe_: mbuf alloc failed"});
         }
         uint16_t sent = rte_eth_tx_burst(
             config_.port_id, config_.tx_queue_id, &pkt, 1);
         if (sent != 1) {
             rte_pktmbuf_free(pkt);
             SPDLOG_LOGGER_WARN(detail::tcp_logger(),
-                "keepalive: tx_burst failed");
-            return std::unexpected("tx_burst failed");
+                "TcpSession::send_keepalive_probe_: tx_burst failed");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "TcpSession::send_keepalive_probe_: tx_burst failed"});
         }
         ++stats_.tx_packets;
         return {};
@@ -1888,18 +1936,26 @@ private:
     }
 
     /// Send a bare ACK packet.
-    [[nodiscard]] std::expected<void, std::string> send_ack() {
+    [[nodiscard]] std::expected<void, core::ErrorInfo> send_ack() {
         auto* ack_pkt = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!ack_pkt) {
-            return std::unexpected("mbuf allocation failed for ACK");
+            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+                "TcpSession::send_ack: mbuf allocation failed");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "TcpSession::send_ack: mbuf allocation failed"});
         }
 
         uint16_t sent = rte_eth_tx_burst(
             config_.port_id, config_.tx_queue_id, &ack_pkt, 1);
         if (sent != 1) {
             rte_pktmbuf_free(ack_pkt);
-            return std::unexpected("tx_burst failed for ACK");
+            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+                "TcpSession::send_ack: tx_burst failed");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "TcpSession::send_ack: tx_burst failed"});
         }
 
         stats_.acks_sent++;

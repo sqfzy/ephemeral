@@ -143,7 +143,7 @@ void run_row(const Row& r) {
     auto result = drive(s, pkt);
 
     EXPECT_EQ(result.has_value(), r.expect_ok)
-        << "result = " << (result ? "ok" : result.error());
+        << "result = " << (result ? "ok" : result.error().detail);
     EXPECT_EQ(s.state(), r.expected_state);
     EXPECT_EQ(s.rcv_nxt() - rcv_before, r.expected_rcv_nxt_advance);
     EXPECT_EQ(s.stats().resets_received - resets_before,

@@ -11,8 +11,8 @@
 #include <cstdint>
 #include <expected>
 #include <format>
-#include <string>
 
+#include "eph/core/error.hpp"
 // TcpState + tcp_state_name live in the canonical definition at
 // `eph/core/tcp_state.hpp`. This header forwards to it to avoid ODR
 // conflicts when multiple modules include both this header and
@@ -49,13 +49,15 @@ template <typename T>
 concept TcpTransport = requires(T& t,
     const void* data, size_t len,
     std::chrono::milliseconds timeout) {
-    // Connection lifecycle
-    { t.connect(timeout) } -> std::same_as<std::expected<void, std::string>>;
-    { t.close() }          -> std::same_as<std::expected<void, std::string>>;
+    // Connection lifecycle. Error type is `core::ErrorInfo` — uniform with
+    // the public Stream API, so boundary conversions don't propagate
+    // mixed error-type plumbing through the stack.
+    { t.connect(timeout) } -> std::same_as<std::expected<void, ::eph::core::ErrorInfo>>;
+    { t.close() }          -> std::same_as<std::expected<void, ::eph::core::ErrorInfo>>;
     { t.reset() }          noexcept;
 
     // Data transfer
-    { t.send(data, len) } -> std::same_as<std::expected<size_t, std::string>>;
+    { t.send(data, len) } -> std::same_as<std::expected<size_t, ::eph::core::ErrorInfo>>;
 
     // Timestamping — TSC captured at the earliest point after data arrives
     { t.last_rx_burst_tsc() } -> std::convertible_to<uint64_t>;
@@ -73,7 +75,7 @@ concept TcpTransport = requires(T& t,
     ///       For unusual configurations with >64KB payload reassembly, this would need
     ///       to be widened to uint32_t (breaking API change).
     { t.poll_rx([](const uint8_t*, uint16_t) {}) }
-        -> std::same_as<std::expected<uint16_t, std::string>>;
+        -> std::same_as<std::expected<uint16_t, ::eph::core::ErrorInfo>>;
 };
 
 } // namespace eph::net

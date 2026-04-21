@@ -305,7 +305,7 @@ TEST(StateMachine, FinFromPeerInEstablishedTransitionsToCloseWait) {
                                     eph::dpdk::net::kTcpAck));
 
     auto r = drive(s, fake);
-    ASSERT_TRUE(r.has_value()) << "FIN should not error: " << (r ? "" : r.error());
+    ASSERT_TRUE(r.has_value()) << "FIN should not error: " << (r ? "" : r.error().detail);
     EXPECT_EQ(s.state(), TcpState::CloseWait);
 }
 
@@ -326,7 +326,7 @@ TEST(StateMachine, FinWait1AckOfFinTransitionsToFinWait2) {
     fake.build(/*seq=*/2000, /*ack=*/1000, eph::dpdk::net::kTcpAck);
 
     auto r = drive(s, fake);
-    ASSERT_TRUE(r.has_value()) << r.error();
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
     EXPECT_EQ(s.state(), TcpState::FinWait2);
 }
 

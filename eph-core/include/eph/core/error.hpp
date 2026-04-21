@@ -18,6 +18,9 @@
 ///     conventions (see CLAUDE.md).
 
 #include <cstdint>
+#include <format>
+#include <ostream>
+#include <string>
 
 namespace eph::core {
 
@@ -148,4 +151,59 @@ struct ErrorInfo {
     return "UNKNOWN";
 }
 
+/// @brief Stream insertion: renders as `CODE: detail` (detail omitted when empty).
+///
+/// Lets existing diagnostic call sites that already stream `.error()` into
+/// gtest / std::ostream continue to work unchanged after the TcpSession
+/// error type migration. Keeps logging call sites short and readable.
+inline std::ostream& operator<<(std::ostream& os, const ErrorInfo& e) {
+    os << error_name(e.code);
+    if (e.detail != nullptr && e.detail[0] != '\0') {
+        os << ": " << e.detail;
+    }
+    return os;
+}
+
+/// @brief ADL-found formatting hook recognised by both std::format and
+///        spdlog's bundled fmt. Lets `SPDLOG_LOGGER_*("{}", err)` work
+///        without each TU having to include error.hpp before spdlog.
+inline std::string format_as(const ErrorInfo& e) {
+    if (e.detail != nullptr && e.detail[0] != '\0') {
+        return std::string(error_name(e.code)) + ": " + e.detail;
+    }
+    return std::string(error_name(e.code));
+}
+
+inline std::string_view format_as(Error e) noexcept {
+    return error_name(e);
+}
+
 } // namespace eph::core
+
+// ---------------------------------------------------------------------------
+// std::formatter specialization for ErrorInfo — enables `std::format("{}", err)`
+// and transitively SPDLOG_LOGGER_*({}, err). Body mirrors operator<< so log
+// lines and gtest diagnostic prints stay in lockstep.
+// ---------------------------------------------------------------------------
+
+template <>
+struct std::formatter<::eph::core::ErrorInfo> : std::formatter<std::string> {
+    auto format(const ::eph::core::ErrorInfo& e, auto& ctx) const {
+        if (e.detail != nullptr && e.detail[0] != '\0') {
+            return std::formatter<std::string>::format(
+                std::format("{}: {}", ::eph::core::error_name(e.code), e.detail),
+                ctx);
+        }
+        return std::formatter<std::string>::format(
+            std::string(::eph::core::error_name(e.code)), ctx);
+    }
+};
+
+template <>
+struct std::formatter<::eph::core::Error>
+    : std::formatter<const char*> {
+    auto format(::eph::core::Error e, auto& ctx) const {
+        return std::formatter<const char*>::format(
+            ::eph::core::error_name(e), ctx);
+    }
+};
