@@ -845,12 +845,27 @@ Platform::create(const PlatformConfig& config) {
                         "single-Poller; all RX traffic routes to queue 0)",
                         impl->config.nb_rx_queues);
                 } else {
-                    SPDLOG_LOGGER_WARN(log,
-                        "Platform: RETA collapse failed (ret={}): packets "
-                        "hashing to non-zero queue will be silently "
-                        "dropped by single-Poller users. Workaround: set "
-                        "nb_rx_queues=1 in PlatformConfig.",
+                    // RETA update failed too.  Without it, the NIC's
+                    // intrinsic default RSS will scatter packets across
+                    // all N queues; a single-Poller user would silently
+                    // drop everything that doesn't hash to queue 0
+                    // (the original SYN-ACK-loss bug). Refuse to bring
+                    // up the Platform rather than let the caller hit
+                    // that bug undetected. Caller's recovery path: set
+                    // nb_rx_queues=1 in PlatformConfig.
+                    SPDLOG_LOGGER_ERROR(log,
+                        "Platform: RETA collapse failed (ret={}) on PMD "
+                        "that doesn't support rss_reta_update; "
+                        "single-Poller would drop non-zero-queue packets. "
+                        "Refusing to bring up multi-queue port. "
+                        "Workaround: set nb_rx_queues=1 in PlatformConfig.",
                         rc);
+                    return std::unexpected(std::format(
+                        "RETA collapse failed (ret={}); refusing to start "
+                        "Platform with nb_rx_queues={} on PMD that supports "
+                        "neither rss_hash_update nor rss_reta_update. Set "
+                        "PlatformConfig::nb_rx_queues=1 to recover.",
+                        rc, impl->config.nb_rx_queues));
                 }
             }
         }
