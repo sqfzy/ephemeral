@@ -171,6 +171,50 @@ TEST(DpdkPoller, AddDuplicateFails) {
     EXPECT_EQ(a2.error().code, eph::core::Error::InvalidConfig);
 }
 
+// Failed duplicate `add` must not mutate the Poller's routing table:
+// size stays 1, `attached_to` stays valid, and a subsequent remove +
+// re-add round-trip still works. Catches partial-mutation regressions
+// where the pointer-duplicate check incremented n_entries_ before the
+// rollback path returned the error.
+TEST(DpdkPoller, AddDuplicateLeavesStateIntact) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    SyntheticPollableA pa;
+
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+    EXPECT_EQ(p->size(), 1u);
+
+    auto fail = p->add<SyntheticPollableA>(&pa);
+    ASSERT_FALSE(fail.has_value());
+    EXPECT_EQ(p->size(), 1u);
+    EXPECT_EQ(pa.attached_to, p.get());
+    EXPECT_EQ(pa.detach_calls, 0);
+
+    // Round-trip is still healthy after a rejected duplicate.
+    ASSERT_TRUE(p->remove<SyntheticPollableA>(&pa).has_value());
+    EXPECT_EQ(p->size(), 0u);
+    EXPECT_EQ(pa.attached_to, nullptr);
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+    EXPECT_EQ(p->size(), 1u);
+}
+
+// Duplicate 5-tuple check — different Pollable object but same tuple as
+// an existing registration. Must fail with InvalidConfig AND leave the
+// prior registration intact (the original `pa` still receives dispatch).
+TEST(DpdkPoller, AddDuplicateTupleLeavesOriginalIntact) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    SyntheticPollableA pa;
+    SyntheticPollableA pa_clone;  // independent object, same tuple as pa
+
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+    auto fail = p->add<SyntheticPollableA>(&pa_clone);
+    ASSERT_FALSE(fail.has_value());
+    EXPECT_EQ(fail.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_EQ(p->size(), 1u);
+    EXPECT_EQ(pa.attached_to, p.get());
+    EXPECT_EQ(pa_clone.attached_to, nullptr);
+    EXPECT_EQ(pa_clone.detach_calls, 0);
+}
+
 TEST(DpdkPoller, P2HeterogeneousRegistration) {
     // The crux of the P2 design: a single DpdkPoller<> instance can
     // host arbitrary Pollable types, mixed in the same entries_ table,
