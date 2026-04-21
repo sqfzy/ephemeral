@@ -453,9 +453,32 @@ public:
     }
 
     ~TcpSession() {
+        // Best-effort RST on destruction. If we go down with a connection
+        // still open (application crash / stack unwind past the normal
+        // close() / FIN dance), the peer would otherwise have to wait
+        // tens of seconds for its keepalive or idle timer to fire before
+        // noticing we are gone. An RST right now flips the peer to Closed
+        // immediately.
+        //
+        // Gated on pool_ != nullptr because:
+        //   * test paths construct with pool=nullptr on purpose, and
+        //     reset() would deref the null pool when building the RST mbuf
+        //   * at program shutdown the mempool may already have been freed,
+        //     in which case skipping the RST beats touching freed memory
+        // The log is DEBUG — this is routine at clean teardown. A genuine
+        // mempool-after-free would surface as ASan/Valgrind noise, not as
+        // a silent DEBUG line, so the level is low by design.
         if (state_ != TcpState::Closed) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
-                "TcpSession destroyed in state {}", tcp_state_name(state_));
+            if (pool_ != nullptr) {
+                SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                    "~TcpSession: state={} -> best-effort RST",
+                    tcp_state_name(state_));
+                reset();
+            } else {
+                SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                    "~TcpSession: state={} but pool is null; skipping RST",
+                    tcp_state_name(state_));
+            }
         }
     }
 
