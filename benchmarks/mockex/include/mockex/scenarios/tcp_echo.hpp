@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -141,6 +142,14 @@ inline void echo_client_loop(int cfd,
     std::vector<std::thread> client_threads;
     client_threads.reserve(max_conn);
 
+    // Active client fds — needed at shutdown to wake worker threads
+    // out of recv() so they can join cleanly. Worker thread closes its
+    // own fd on exit; main thread reads this list at shutdown to call
+    // shutdown(fd, SHUT_RDWR) on still-blocked sockets.
+    std::mutex                         active_fds_mu;
+    std::vector<int>                   active_fds;
+    active_fds.reserve(max_conn);
+
     while (ctx.running->load(std::memory_order_acquire)) {
         auto cfd_e = eph::net::posix::accept_one(lfd, *ctx.running);
         if (!cfd_e) {
@@ -150,15 +159,6 @@ inline void echo_client_loop(int cfd,
         const int cfd = *cfd_e;
         if (cfd < 0) break;  // shutdown requested
 
-        // Reap any joinable finished threads before deciding capacity.
-        client_threads.erase(
-            std::remove_if(client_threads.begin(), client_threads.end(),
-                [](std::thread& t) {
-                    if (!t.joinable()) return true;
-                    return false;
-                }),
-            client_threads.end());
-
         if (client_threads.size() >= max_conn) {
             SPDLOG_WARN("[tcp_echo] max_conn={} reached; rejecting fd={}",
                         max_conn, cfd);
@@ -166,19 +166,33 @@ inline void echo_client_loop(int cfd,
             continue;
         }
 
+        {
+            std::lock_guard lk(active_fds_mu);
+            active_fds.push_back(cfd);
+        }
         SPDLOG_INFO("[tcp_echo] client connected fd={} (active={}/{})",
                     cfd, client_threads.size() + 1, max_conn);
         client_threads.emplace_back(
-            [cfd, running = ctx.running]() {
+            [cfd, running = ctx.running, &active_fds_mu, &active_fds]() {
                 echo_client_loop(cfd, *running);
+                std::lock_guard lk(active_fds_mu);
+                active_fds.erase(
+                    std::remove(active_fds.begin(), active_fds.end(), cfd),
+                    active_fds.end());
             });
     }
 
-    // Detach client threads — process exit will tear them down. Joining
-    // here would block waiting for clients still in recv() that haven't
-    // observed the shutdown flag yet.
+    // Graceful shutdown: shutdown(SHUT_RDWR) on every still-active fd
+    // so worker threads' recv() returns 0 and they exit + close. Then
+    // join all workers — bounded wait, no zombie sockets at process exit.
+    {
+        std::lock_guard lk(active_fds_mu);
+        for (int fd : active_fds) {
+            ::shutdown(fd, SHUT_RDWR);
+        }
+    }
     for (auto& t : client_threads) {
-        if (t.joinable()) t.detach();
+        if (t.joinable()) t.join();
     }
 
     ::close(lfd);
