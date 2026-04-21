@@ -381,3 +381,49 @@ TEST(StreamMetrics, KernelUdpReturnsZeroForNewTcpIcmpMetrics) {
         EXPECT_EQ(sock->metric(m), 0u);
     }
 }
+
+// ─── Phase 5: metric() bounds check — safety for out-of-range enums ──────
+
+TEST(StreamMetrics, MetricAcceptsEveryValidStreamMetricWithoutCrash) {
+    EchoServer srv;
+    ek::StreamConfig cfg{};
+    cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
+    auto stream = PlainTcpStream::create(cfg).value();
+    // Every enumerator in [0, kCount) must be readable. If the backend's
+    // metric() falls off the end of its counter array, ASan would catch
+    // it here; without ASan the test just passes silently, which is
+    // still the point — no crash.
+    for (std::size_t i = 0;
+         i < static_cast<std::size_t>(en::StreamMetric::kCount); ++i) {
+        const auto m = static_cast<en::StreamMetric>(i);
+        const auto v = stream->metric(m);
+        (void)v;
+    }
+    SUCCEED();
+}
+
+TEST(StreamMetrics, MetricReturnsZeroForOutOfRangeEnumValue) {
+    // Simulate ABI drift: a caller passing an enumerator value that is
+    // past the current `kCount`. The bounds check in each backend's
+    // metric() must return 0 rather than index past counters_.
+    EchoServer srv;
+    ek::StreamConfig cfg{};
+    cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
+    auto stream = PlainTcpStream::create(cfg).value();
+
+    auto udp = PlainUdp::create(
+        ek::UdpConfig{.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0}})
+        .value();
+
+    for (auto drifted : {
+            static_cast<en::StreamMetric>(
+                static_cast<std::size_t>(en::StreamMetric::kCount)),
+            static_cast<en::StreamMetric>(
+                static_cast<std::size_t>(en::StreamMetric::kCount) + 1),
+            static_cast<en::StreamMetric>(
+                static_cast<std::size_t>(en::StreamMetric::kCount) + 42),
+        }) {
+        EXPECT_EQ(stream->metric(drifted), 0u);
+        EXPECT_EQ(udp->metric(drifted), 0u);
+    }
+}

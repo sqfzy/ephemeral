@@ -976,6 +976,14 @@ public:
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
         using SM = ::eph::net::StreamMetric;
+        // Defensive bounds check: an out-of-range `m` (stale enum from
+        // ABI drift, or a reinterpret_cast into the enum) must not
+        // index past counters_ — return 0 instead of UB. The sentinel
+        // `kCount` itself is also out of range.
+        if (static_cast<std::size_t>(m) >=
+            static_cast<std::size_t>(SM::kCount)) {
+            return 0;
+        }
         // TCP / ICMP session-level counters live on TcpSession::Stats and
         // are updated in-situ on the hot path; reading them lazily here
         // avoids maintaining a second parallel atomic counter plus the

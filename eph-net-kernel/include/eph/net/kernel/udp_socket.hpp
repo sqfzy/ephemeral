@@ -399,6 +399,11 @@ public:
     // (TLS-only metric) and kTlsCrossRecordFrames remain at 0.
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
+        // Defensive bounds check — see DpdkTcpStream::metric for rationale.
+        if (static_cast<std::size_t>(m) >=
+            static_cast<std::size_t>(::eph::net::StreamMetric::kCount)) {
+            return 0;
+        }
         return counters_[static_cast<std::size_t>(m)]
             .v.load(std::memory_order_relaxed);
     }
