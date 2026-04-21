@@ -372,6 +372,57 @@ public:
 
     // ── Factory ──────────────────────────────────────────────────────────
 
+    /// @brief Poller-aware factory. Auto-allocates a conflict-free
+    ///        source port via `poller.pick_src_port()` when
+    ///        `cfg.legacy.tuple.src_port == 0`, then delegates to the
+    ///        single-argument `create` overload.
+    ///
+    /// This is the recommended entry point when a `DpdkPoller` is
+    /// available at construction time: it closes the "picked a stale
+    /// port still in TIME_WAIT on our side" loophole that bites
+    /// high-frequency reconnect workloads, because `pick_src_port` scans
+    /// the currently registered 5-tuples and uses a random-start probe
+    /// across the whole ephemeral range.
+    ///
+    /// The strict `create(cfg)` overload below is preserved for the
+    /// direct-construction path (tests, users that manage ports
+    /// themselves): it still rejects `src_port == 0` via
+    /// `TcpConfig::validate()`.
+    [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
+    create(StreamConfig cfg, DpdkPoller<void>& poller) noexcept {
+        auto* log = detail::tcp_stream_logger();
+        if (cfg.legacy.tuple.src_port == 0) {
+            if (cfg.legacy.tuple.src_ip == 0 ||
+                cfg.legacy.tuple.dst_ip == 0 ||
+                cfg.legacy.tuple.dst_port == 0) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::create(poller): src_ip/dst_ip/dst_port "
+                    "must be set before auto-allocating src_port "
+                    "(src={:x} dst={:x}:{})",
+                    cfg.legacy.tuple.src_ip, cfg.legacy.tuple.dst_ip,
+                    cfg.legacy.tuple.dst_port);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "DpdkTcpStream::create: src_ip/dst_ip/dst_port required "
+                    "before auto-allocating src_port"});
+            }
+            auto port = poller.pick_src_port(
+                cfg.legacy.tuple.src_ip,
+                cfg.legacy.tuple.dst_ip,
+                cfg.legacy.tuple.dst_port);
+            if (!port) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::create: pick_src_port failed: {}",
+                    port.error().detail);
+                return std::unexpected(port.error());
+            }
+            cfg.legacy.tuple.src_port = *port;
+            SPDLOG_LOGGER_INFO(log,
+                "DpdkTcpStream::create: auto-allocated src_port={}", *port);
+        }
+        return create(std::move(cfg));
+    }
+
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
     create(StreamConfig cfg) noexcept {
         auto* log = detail::tcp_stream_logger();
