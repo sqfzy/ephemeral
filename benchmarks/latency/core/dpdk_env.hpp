@@ -193,13 +193,26 @@ load_dpdk_env(const bench::ScenarioConfig& globals,
     // identical to the pre-stage-5 path.
     eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id = dpdk_port_id;
-    if (auto v = globals.get_u32("nb_rx_queues", 1); v) {
-        pcfg.nb_rx_queues = static_cast<uint16_t>(*v);
-        pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
-    }
+    // Mirror the lowercase / uppercase fallback style used for mock_ip
+    // / SERVER_IP — bench.conf may carry either form for these knobs.
+    auto get_u32_either = [&](std::string_view lower, std::string_view upper,
+                              uint32_t deflt) -> uint32_t {
+        if (auto v = globals.get_u32(lower); v) return *v;
+        if (auto v = globals.get_u32(upper); v) return *v;
+        return deflt;
+    };
+    auto get_str_either = [&](std::string_view lower, std::string_view upper)
+                              -> std::string {
+        std::string v{globals.get_string(lower, "")};
+        if (v.empty()) v = std::string{globals.get_string(upper, "")};
+        return v;
+    };
+    pcfg.nb_rx_queues = static_cast<uint16_t>(
+        get_u32_either("nb_rx_queues", "NB_RX_QUEUES", 1));
+    pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
     {
         std::string rss_str = strip_inline_comment(
-            std::string{globals.get_string("enable_rss", "false")});
+            get_str_either("enable_rss", "ENABLE_RSS"));
         for (auto& c : rss_str)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         pcfg.enable_rss = (rss_str == "true" || rss_str == "1" ||
