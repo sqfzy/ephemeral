@@ -32,6 +32,7 @@
 ///   - **Not thread-safe**: one Poller owns one lcore.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -381,12 +382,42 @@ public:
     using IcmpFragNeededCallback =
         std::function<void(const eph::dpdk::net::ParsedIcmp&)>;
 
-    /// @brief Install or clear the ICMP callback. Passing a default-
-    ///        constructed `std::function` disables it. Not thread-safe
-    ///        vs. `poll()` — expected to be called at setup before
-    ///        the lcore loop starts, or while poll() is paused.
+    /// @brief Install the ICMP callback. **First-install-wins + atomic**
+    ///        — later calls return silently without touching the
+    ///        existing callback. This is what makes the install
+    ///        thread-safe relative to a running `poll()` loop:
+    ///
+    ///   1. Writer claims the install slot via a CAS on an atomic
+    ///      state (`0 → 1`).
+    ///   2. Winner writes `icmp_cb_` (no concurrent writer — CAS
+    ///      serialized it).
+    ///   3. Winner release-stores the state `1 → 2`, publishing the
+    ///      callback.
+    ///   4. Reader (`poll()` hot path) acquire-loads the state. Only
+    ///      `state == 2` means `icmp_cb_` is safe to read; `0` / `1`
+    ///      both skip.
+    ///
+    /// The HFT dynamic-reconnect scenario — control thread calls
+    /// `DpdkTcpStream::create_and_attach` repeatedly while the lcore
+    /// thread is already polling — is safe: first attach installs
+    /// the closure; subsequent attaches' `set_icmp_callback` calls
+    /// are no-ops (the closure they'd install is functionally
+    /// identical — always `reg_sp->dispatch(parsed)` on the same
+    /// shared registry).
     void set_icmp_callback(IcmpFragNeededCallback cb) noexcept {
+        uint8_t expected = kIcmpCbStateUnset;
+        if (!icmp_cb_state_.compare_exchange_strong(
+                expected, kIcmpCbStateInstalling,
+                std::memory_order_relaxed)) {
+            // State is already Installing or Ready — someone else
+            // owns / has owned the install slot. Silently skip.
+            return;
+        }
+        // We own the install slot exclusively; no concurrent writer.
         icmp_cb_ = std::move(cb);
+        // Publish: acquire-loaders of state == 2 now see the write
+        // above as-if it had happened before their load.
+        icmp_cb_state_.store(kIcmpCbStateReady, std::memory_order_release);
     }
 
     /// @brief Diagnostic counter — number of ICMP Type 3 Code 4 messages
@@ -646,8 +677,16 @@ private:
     ///        message carrying a valid embedded 4-tuple, fire the
     ///        registered ICMP callback. Silently returns otherwise —
     ///        the caller is responsible for freeing the mbuf regardless.
+    ///
+    /// Acquire-load pairs with the release-store in
+    /// `set_icmp_callback`. `state == kIcmpCbStateReady` (== 2) is
+    /// the ONLY state where `icmp_cb_` is safe to read; Unset (0)
+    /// and Installing (1) both fast-return.
     void maybe_dispatch_icmp_(rte_mbuf* mbuf) noexcept {
-        if (!icmp_cb_) return;
+        if (icmp_cb_state_.load(std::memory_order_acquire) !=
+                kIcmpCbStateReady) {
+            return;
+        }
         auto parsed = eph::dpdk::net::parse_icmp(mbuf);
         if (!parsed || !parsed.is_frag_needed() || !parsed.embedded_valid) {
             return;
@@ -662,10 +701,25 @@ private:
     uint64_t                            hash_collision_drops_{0};
 
     // ── ICMP Frag Needed callback state ──
-    // std::function because the registered closure captures a
-    // shared_ptr<IcmpRegistry> (strong ref) — that indirection is
-    // what roots registry lifetime in the Poller when Platform dies
-    // first. Empty by default; `operator bool` gates the hot path.
+    //
+    // Install-once state machine:
+    //   0 = Unset      — no callback ever installed
+    //   1 = Installing — a writer claimed the slot, busy writing icmp_cb_
+    //   2 = Ready      — icmp_cb_ is committed, safe for readers
+    //
+    // Exactly one writer ever transitions 0 → 1 (CAS); 1 → 2 is a
+    // release-store by the same writer. Readers acquire-load and
+    // only touch icmp_cb_ when state == 2.
+    static constexpr uint8_t kIcmpCbStateUnset     = 0;
+    static constexpr uint8_t kIcmpCbStateInstalling = 1;
+    static constexpr uint8_t kIcmpCbStateReady     = 2;
+
+    std::atomic<uint8_t>                icmp_cb_state_{kIcmpCbStateUnset};
+    // Only written by the install-slot winner; only read when
+    // icmp_cb_state_ == Ready. std::function captures a
+    // shared_ptr<IcmpRegistry> in practice (see
+    // DpdkTcpStream::create_and_attach), which is what gives the
+    // registry lifetime independence from Platform.
     IcmpFragNeededCallback              icmp_cb_{};
     uint64_t                            icmp_frag_needed_dispatched_{0};
 };

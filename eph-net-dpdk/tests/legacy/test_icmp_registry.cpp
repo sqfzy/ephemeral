@@ -487,6 +487,47 @@ TEST(IcmpRegistryLifecycle, MoveConstructHandleAfterRegistryDies) {
     SUCCEED();
 }
 
+TEST(IcmpRegistryLifecycle, DispatchCallbackCanReenterRegistry) {
+    // Major 2 root-fix: dispatch() now invokes the callback AFTER
+    // releasing `mu_`. This makes it safe for the callback to mutate
+    // the registry (e.g. unregister another entry, inspect size,
+    // query dispatched()) without recursive-lock deadlock.
+    //
+    // Pin behaviour with a callback that deliberately calls
+    // unregister() for a *different* tuple during dispatch — under
+    // the old in-lock design this was a guaranteed deadlock (the
+    // same mu_ acquired twice on one thread is UB with std::mutex).
+    reset_mocks();
+    auto r = make_registry();
+    static IcmpRegistry* g_reg_for_callback = nullptr;  // for static thunk
+    g_reg_for_callback = r.get();
+
+    auto on_mtu_unregister_b = [](void* /*user*/, uint16_t /*mtu*/) noexcept {
+        // Callback reaches back into registry to unregister kTupleB.
+        // If dispatch held mu_ over this call, same-thread recursive
+        // lock attempt → undefined behaviour / deadlock.
+        g_reg_for_callback->unregister(kTupleB, kIpProtoTcp);
+    };
+
+    auto ha = r->register_target(kTupleA, kIpProtoTcp,
+                                  &g_mock_a, +on_mtu_unregister_b);
+    auto hb = r->register_target(kTupleB, kIpProtoTcp,
+                                  &g_mock_b, &on_mtu_b);
+    ASSERT_TRUE(ha.has_value());
+    ASSERT_TRUE(hb.has_value());
+    EXPECT_EQ(r->size(), 2u);
+
+    // Dispatch to A → callback unregisters B.
+    r->dispatch(make_icmp(kTupleA, kIpProtoTcp, 1300));
+
+    // If we got here without deadlock, the out-of-lock invocation works.
+    EXPECT_EQ(r->size(), 1u) << "B should have been unregistered by A's callback";
+
+    // Handle hb is still engaged_=true even though B is unregistered —
+    // its dtor will weak_ptr.lock() → unregister no-op (B already gone).
+    // Handle ha's dtor will unregister A normally.
+}
+
 TEST(IcmpRegistryLifecycle, ConcurrentRegisterUnregisterDispatch) {
     // Stress the mutex: two threads.
     //   T1 (writer): cycle register → drop Handle in a tight loop.
