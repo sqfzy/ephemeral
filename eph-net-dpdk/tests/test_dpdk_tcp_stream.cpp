@@ -205,6 +205,24 @@ TEST(DpdkTcpStream, ReasmCapacityBelowFloorFailsInvalidConfig) {
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
 
+TEST(DpdkTcpStream, ReasmCapacityExactlyFloorMinusOneRejected) {
+    // Boundary probe: kMinReasmCapacity - 1 (4095) must still reject.
+    // Complements ReasmCapacityBelowFloorFailsInvalidConfig (512) and
+    // ReasmCapacityAboveFloorPassesValidation (4096) — together they
+    // pin the check to the exact boundary.
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.reasm_capacity = 4095;  // one byte below the floor
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Must reject specifically for reasm_capacity, not for some other
+    // earlier validation failure.
+    if (const char* detail = r.error().detail) {
+        EXPECT_NE(std::string_view(detail).find("reasm_capacity"),
+                  std::string_view::npos);
+    }
+}
+
 TEST(DpdkTcpStream, ReasmCapacityAboveFloorPassesValidation) {
     // Walks the ValidationOK → NullPool path: reasm_capacity == floor
     // is accepted; the create() call then reaches the pool-null check
