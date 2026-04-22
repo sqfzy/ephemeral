@@ -298,12 +298,24 @@ public:
                 "DpdkUdpSocket::send_to: dst does not match configured peer "
                 "(fixed-peer UdpSender)"});
         }
-        // UDP maximum payload is 65535 bytes (uint16_t). Reject oversized
-        // payloads explicitly rather than silently truncating via cast.
-        if (app_payload.size() > 0xFFFFu) {
+        // UDP on IPv4 is capped not by the raw UDP length field
+        // (uint16_t) but by the enclosing IPv4 total_length field
+        // (also uint16_t), which must include 20 bytes of IP header +
+        // 8 bytes of UDP header + payload. The real maximum payload
+        // is therefore 65535 - 28 = 65507 bytes. Add the Ethernet
+        // header (14 bytes) and the frame layout itself caps at
+        // 65535 - 42 = 65493 bytes — which is what `UdpPacketTemplate::
+        // fill` enforces downstream. Reject at the API boundary with
+        // an InvalidConfig instead of letting the user discover a
+        // BufferFull from the template. The 42-byte constant matches
+        // `eph::dpdk::net::kUdpAllHeadersLen`.
+        static constexpr std::size_t kMaxUdpPayload =
+            0xFFFFu - ::eph::dpdk::net::kUdpAllHeadersLen;
+        if (app_payload.size() > kMaxUdpPayload) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
-                "DpdkUdpSocket::send_to: payload exceeds max UDP size (65535)"});
+                "DpdkUdpSocket::send_to: payload exceeds max UDP-over-IP "
+                "frame size (65493 bytes)"});
         }
         if (!sender_.send(app_payload.data(),
                            static_cast<uint16_t>(app_payload.size()))) {
