@@ -1471,7 +1471,6 @@ public:
             return;  // no-op: no pending ACK, or timer not yet expired
         }
         [[maybe_unused]] const uint64_t elapsed = now - ack_pending_since_tsc_;
-        ack_pending_since_tsc_ = 0;
         // TRACE: useful for diagnosing RX-only flows where the timer
         // (rather than piggyback) is what's keeping the connection alive.
         // Compiled out at most levels via SPDLOG_ACTIVE_LEVEL.
@@ -1480,9 +1479,18 @@ public:
             eph::utils::TSC::to_ns(elapsed).value_or(0.0), elapsed);
         auto r = send_ack();
         if (!r) {
+            // Keep `ack_pending_since_tsc_` intact so the next poll
+            // cycle retries. Clearing eagerly (old behaviour) silently
+            // lost the pending-ACK obligation on tx_burst failure,
+            // stalling RX-only flows behind the peer's nagle / delayed
+            // ACK of our prior data. Aligns with send() / send_batch()
+            // post-fix.
             SPDLOG_LOGGER_WARN(detail::tcp_logger(),
-                "Failed to send delayed ACK: {}", r.error().detail);
+                "Failed to send delayed ACK: {} — keeping pending state "
+                "for retry on next poll", r.error().detail);
+            return;
         }
+        ack_pending_since_tsc_ = 0;
     }
 
     /// Poll DPDK rx and process received packets through the TCP state machine.
