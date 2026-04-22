@@ -63,6 +63,7 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#include "core/pin_client.hpp"
 #include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
@@ -108,37 +109,39 @@ int main(int argc, char** argv) {
 
     const char* conf_path = parse_config_path(argc, argv);
 
-    // ── Load config: globals (mock_ip, warmup_samples) + [lat_ws] section.
-    auto globals_r = bench::ScenarioConfig::load_globals(conf_path);
-    if (!globals_r) {
-        std::fprintf(stderr, "lat_ws: %s\n", globals_r.error().c_str());
+    // ── Load config.toml into structured BenchConfig.
+    auto cfg_r = bench::load_bench_conf(conf_path);
+    if (!cfg_r) {
+        std::fprintf(stderr, "lat_ws: %s\n",
+                     bench::format_error(cfg_r.error()).c_str());
         return 1;
     }
-    auto scenario_r = bench::ScenarioConfig::load(conf_path, "lat_ws");
-    if (!scenario_r) {
-        std::fprintf(stderr, "lat_ws: %s\n", scenario_r.error().c_str());
+    const bench::BenchConfig& bench_cfg = *cfg_r;
+    const bench::Scenario* sc = bench_cfg.scenario("lat_ws");
+    if (sc == nullptr) {
+        std::fprintf(stderr, "lat_ws: [scenarios.lat_ws] not found in %s\n",
+                     conf_path);
         return 1;
     }
-    const auto& globals  = globals_r.value();
-    const auto& scenario = scenario_r.value();
+    const bench::Scenario& scenario = *sc;
 
-    // Required: port (no sensible default).
-    auto port_r = scenario.get_u32("port");
+    bench::pin_client_from_cfg(bench_cfg, "lat_ws");
+
+    // Required: port.
+    auto port_r = scenario.get<uint16_t>("port");
     if (!port_r) {
-        std::fprintf(stderr, "lat_ws: %s\n", port_r.error().c_str());
+        std::fprintf(stderr, "lat_ws: %s\n",
+                     bench::format_error(port_r.error()).c_str());
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(port_r.value());
+    const uint16_t port = *port_r;
 
     // Optional with defaults.
-    const std::string ws_path = scenario.get_string("ws_path", "/echo");
+    const std::string ws_path =
+        scenario.get_or<std::string>("ws_path", "/echo");
 
-    auto payload_r = scenario.get_u32("payload_size", 64);
-    if (!payload_r) {
-        std::fprintf(stderr, "lat_ws: %s\n", payload_r.error().c_str());
-        return 1;
-    }
-    const std::size_t payload_size = payload_r.value();
+    const std::size_t payload_size =
+        scenario.get_or<uint32_t>("payload_size", 64);
 
     // 24 B timestamp-block header requirement.
     if (payload_size < bench::kTimestampBlockSize) {
@@ -149,21 +152,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto duration_r = scenario.get_u32("duration_seconds", 10);
-    if (!duration_r) {
-        std::fprintf(stderr, "lat_ws: %s\n", duration_r.error().c_str());
-        return 1;
-    }
-    const uint64_t duration_s = duration_r.value();
+    const uint64_t duration_s =
+        scenario.get_or<uint32_t>("duration_seconds", 10);
+    const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
 
-    auto warmup_r = globals.get_u64("warmup_samples", 1000);
-    if (!warmup_r) {
-        std::fprintf(stderr, "lat_ws: %s\n", warmup_r.error().c_str());
-        return 1;
-    }
-    const uint64_t warmup_samples = warmup_r.value();
-
-    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
+    const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
+                                        ? std::string{"127.0.0.1"}
+                                        : bench_cfg.networking.server_ip;
     auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
     if (!ip_r) {
         std::fprintf(stderr, "lat_ws: invalid mock_ip '%s': %s\n",
@@ -200,7 +195,7 @@ int main(int argc, char** argv) {
     eu::Recorder rec_rx {std::string{"lat_ws_"} + backend + "_rx" };
 
 #if defined(EPH_USE_DPDK)
-    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    auto env_r = bench::load_dpdk_env(bench_cfg, /*port_id=*/0);
     if (!env_r) {
         std::fprintf(stderr, "lat_ws: %s\n", env_r.error().c_str());
         return 1;
