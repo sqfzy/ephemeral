@@ -49,13 +49,15 @@ constexpr int    kRcvBufBytes = 4 * 1024 * 1024;
 udp_echo_impl(const ScenarioContext& ctx, std::string_view tag) noexcept {
     using namespace detail::udp_echo;
 
-    const auto host = ctx.globals->get_string("mock_ip", "127.0.0.1");
-    auto port_e = ctx.section->get_u32("port");
+    const std::string host = ctx.cfg->networking.server_ip.empty()
+                                 ? std::string{"127.0.0.1"}
+                                 : ctx.cfg->networking.server_ip;
+    auto port_e = ctx.scenario->get<uint16_t>("port");
     if (!port_e) {
-        SPDLOG_ERROR("[{}] missing port: {}", tag, port_e.error());
+        SPDLOG_ERROR("[{}] missing port: {}", tag, bench::format_error(port_e.error()));
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(*port_e);
+    const uint16_t port = *port_e;
 
     auto fd_e = eph::net::posix::udp_bind(host, port);
     if (!fd_e) {

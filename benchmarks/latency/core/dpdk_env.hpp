@@ -30,7 +30,6 @@
 #include <spdlog/spdlog.h>
 
 #include "core/bench_conf.hpp"
-#include "core/config.hpp"
 
 #include "eph/dpdk/test/dpdk_env.hpp"
 
@@ -97,158 +96,22 @@ synthesize_eal_argv(std::string_view cores_csv,
     return dist(rng);
 }
 
-/// Read DPDK bootstrap keys from the pre-section (global) part of
-/// bench.conf and construct a fully-initialized `DpdkBenchEnv`.
+/// Read DPDK bootstrap fields from config.toml-backed `BenchConfig` and
+/// construct a fully-initialized `DpdkBenchEnv`.
 ///
-/// Required global keys (lowercase checked first, uppercase fallback):
-///   - mock_ip      / SERVER_IP     — destination (kernel mock on NIC_A)
-///   - client_ip    / LOCAL_IP      — DPDK client source IP on NIC_B
-///   - gateway_ip   / GATEWAY_IP    — default GW for ARP resolve
-///   - dpdk_pci     / NIC_B_PCI     — NIC_B PCI BDF (e.g. "0000:28:00.0")
-/// Optional global key (default "0,1" with WARN):
-///   - eal_cores    / EAL_CORES     — comma-separated lcore list
-///
-/// `mock_ip`/`client_ip`/`gateway_ip` are REQUIRED (no default). Unlike
-/// the kernel bench path which falls back to 127.0.0.1 for loopback smoke
-/// tests, DPDK over loopback is meaningless per
-/// memory/feedback_bench_no_loopback.md, so missing these keys is a hard
-/// error.
+/// Required fields (validated by `load_bench_conf()`):
+///   - networking.server_ip   — destination (kernel mock on NIC_A)
+///   - networking.client_ip   — DPDK client source IP on NIC_B
+///   - networking.gateway_ip  — default GW for ARP resolve
+///   - networking.nic_b_pci   — NIC_B PCI BDF (required for DPDK bring-up)
+/// Optional:
+///   - cpu.eal_cores          — comma-separated lcore list (default "0,1")
+///   - dpdk.rss.nb_rx_queues  — default 1
+///   - dpdk.rss.enable_rss    — default false
 ///
 /// Failure modes (all surface as `std::unexpected(std::string)`):
-///   - "load_dpdk_env: missing global key '<k>'"
+///   - "load_dpdk_env: networking.nic_b_pci is required ..."
 ///   - "load_dpdk_env: create_full: <reason>"
-[[nodiscard]] inline std::expected<eph::dpdk::test::DpdkBenchEnv, std::string>
-load_dpdk_env(const bench::ScenarioConfig& globals,
-              uint16_t dpdk_port_id = 0) noexcept try {
-    // `ScenarioConfig::load_globals` deliberately preserves trailing inline
-    // comments verbatim (see the comment at load_globals' implementation) —
-    // the legacy uppercase keys in bench.conf all have `# DPDK EAL lcores`-
-    // style trailers that would otherwise land inside `value`. Strip the
-    // first unquoted `#` and any surrounding whitespace here, which is the
-    // behaviour the legacy `BenchConfig` parser used for the same keys.
-    auto strip_inline_comment = [](std::string s) -> std::string {
-        if (auto hash = s.find('#'); hash != std::string::npos) {
-            s.erase(hash);
-        }
-        // rtrim + ltrim (whitespace-only span)
-        auto ws = [](unsigned char c) { return std::isspace(c) != 0; };
-        while (!s.empty() && ws(static_cast<unsigned char>(s.back()))) s.pop_back();
-        std::size_t first = 0;
-        while (first < s.size() && ws(static_cast<unsigned char>(s[first]))) ++first;
-        if (first > 0) s.erase(0, first);
-        return s;
-    };
-
-    // ── Required networking keys ─────────────────────────────────────────
-    auto read_required = [&](std::string_view lower, std::string_view upper)
-        -> std::expected<std::string, std::string> {
-        std::string v = strip_inline_comment(std::string{globals.get_string(lower, "")});
-        if (v.empty()) v = strip_inline_comment(std::string{globals.get_string(upper, "")});
-        if (v.empty()) {
-            return std::unexpected(
-                "load_dpdk_env: missing global key '" + std::string{lower} +
-                "' (also checked uppercase '" + std::string{upper} + "')");
-        }
-        return v;
-    };
-
-    auto mock_ip_r = read_required("mock_ip", "SERVER_IP");
-    if (!mock_ip_r) return std::unexpected(mock_ip_r.error());
-    auto client_ip_r = read_required("client_ip", "LOCAL_IP");
-    if (!client_ip_r) return std::unexpected(client_ip_r.error());
-    auto gateway_ip_r = read_required("gateway_ip", "GATEWAY_IP");
-    if (!gateway_ip_r) return std::unexpected(gateway_ip_r.error());
-    auto dpdk_pci_r = read_required("dpdk_pci", "NIC_B_PCI");
-    if (!dpdk_pci_r) return std::unexpected(dpdk_pci_r.error());
-
-    // ── Optional cores with warn-on-default ──────────────────────────────
-    std::string eal_cores =
-        strip_inline_comment(std::string{globals.get_string("eal_cores", "")});
-    if (eal_cores.empty()) {
-        eal_cores = strip_inline_comment(
-            std::string{globals.get_string("EAL_CORES", "")});
-    }
-    if (eal_cores.empty()) {
-        spdlog::warn("load_dpdk_env: eal_cores not set; defaulting to \"0,1\"");
-        eal_cores = "0,1";
-    }
-
-    // ── Synthesize EAL argv and keep backing storage alive ───────────────
-    auto argv_storage = synthesize_eal_argv(eal_cores, *dpdk_pci_r);
-    std::vector<char*> argv;
-    argv.reserve(argv_storage.size());
-    for (auto& s : argv_storage) {
-        argv.push_back(s.data());
-    }
-    const int argc = static_cast<int>(argv.size());
-
-    spdlog::info(
-        "load_dpdk_env: EAL argv synthesized: {} cores={} pci={}",
-        argc, eal_cores, *dpdk_pci_r);
-
-    // ── Optional RSS / multi-queue from globals ──────────────────────────
-    // bench.conf knobs:
-    //   NB_RX_QUEUES=4
-    //   ENABLE_RSS=true
-    // Defaults (1 / false) keep every existing scenario behaviourally
-    // identical to the pre-stage-5 path.
-    eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id = dpdk_port_id;
-    // Mirror the lowercase / uppercase fallback style used for mock_ip
-    // / SERVER_IP — bench.conf may carry either form for these knobs.
-    auto get_u32_either = [&](std::string_view lower, std::string_view upper,
-                              uint32_t deflt) -> uint32_t {
-        if (auto v = globals.get_u32(lower); v) return *v;
-        if (auto v = globals.get_u32(upper); v) return *v;
-        return deflt;
-    };
-    auto get_str_either = [&](std::string_view lower, std::string_view upper)
-                              -> std::string {
-        std::string v{globals.get_string(lower, "")};
-        if (v.empty()) v = std::string{globals.get_string(upper, "")};
-        return v;
-    };
-    pcfg.nb_rx_queues = static_cast<uint16_t>(
-        get_u32_either("nb_rx_queues", "NB_RX_QUEUES", 1));
-    pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
-    {
-        std::string rss_str = strip_inline_comment(
-            get_str_either("enable_rss", "ENABLE_RSS"));
-        for (auto& c : rss_str)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        pcfg.enable_rss = (rss_str == "true" || rss_str == "1" ||
-                           rss_str == "yes" || rss_str == "on");
-    }
-    if (pcfg.enable_rss || pcfg.nb_rx_queues > 1) {
-        spdlog::info(
-            "load_dpdk_env: RSS configured nb_rx_queues={} enable_rss={}",
-            pcfg.nb_rx_queues, pcfg.enable_rss ? "true" : "false");
-    }
-
-    // ── Delegate to the shared EAL+Platform+ARP bring-up ─────────────────
-    auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full(
-        argc, argv.data(),
-        *mock_ip_r,     // server_ip
-        *client_ip_r,   // local_ip
-        *gateway_ip_r,  // gateway_ip
-        pcfg);
-    if (!env_r) {
-        return std::unexpected("load_dpdk_env: create_full: " + env_r.error());
-    }
-    return std::move(*env_r);
-} catch (const std::exception& e) {
-    return std::unexpected(std::string{"load_dpdk_env: exception: "} + e.what());
-} catch (...) {
-    return std::unexpected("load_dpdk_env: unknown exception");
-}
-
-/// TOML-based overload: preferred for newly migrated callers.
-/// Reads structured fields from `BenchConfig` (post-reshape) instead of
-/// the legacy lowercase/uppercase dual-key ScenarioConfig probe.
-///
-/// Required networking fields are validated at `load_bench_conf()` time,
-/// so here we only check that `nic_b_pci` is populated (still optional
-/// in config.toml, but required for DPDK bring-up).
 [[nodiscard]] inline std::expected<eph::dpdk::test::DpdkBenchEnv, std::string>
 load_dpdk_env(const BenchConfig& cfg,
               uint16_t dpdk_port_id = 0) noexcept try {

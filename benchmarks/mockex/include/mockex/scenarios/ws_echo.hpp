@@ -69,13 +69,15 @@ ws_echo_handle(int cfd, const std::atomic<bool>& running) noexcept {
 }
 
 [[nodiscard]] inline int ws_echo_run(const ScenarioContext& ctx) noexcept {
-    const auto host = ctx.globals->get_string("mock_ip", "127.0.0.1");
-    auto port_e = ctx.section->get_u32("port");
+    const std::string host = ctx.cfg->networking.server_ip.empty()
+                                 ? std::string{"127.0.0.1"}
+                                 : ctx.cfg->networking.server_ip;
+    auto port_e = ctx.scenario->get<uint16_t>("port");
     if (!port_e) {
-        SPDLOG_ERROR("[ws_echo] missing port: {}", port_e.error());
+        SPDLOG_ERROR("[ws_echo] missing port: {}", bench::format_error(port_e.error()));
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(*port_e);
+    const uint16_t port = *port_e;
 
     auto lfd_e = eph::net::posix::tcp_bind_listen(host, port);
     if (!lfd_e) {

@@ -2,15 +2,6 @@
 -- General-purpose pieces (cpu_pin, spin_for_ns, PhasedTimer) live in
 -- eph-utils and are tested there.
 
-target("test_load_bench_conf")
-    add_rules("eph-test")
-    add_files("test_load_bench_conf.cpp")
-    add_includedirs("$(projectdir)/benchmarks/latency")
-    add_deps("eph-utils")
-    add_packages("spdlog")
-
--- New toml++-backed config loader tests (replaces test_load_bench_conf
--- after Stage 3 of the bench.conf → config.toml reshape).
 target("test_bench_conf")
     add_rules("eph-test")
     add_files("test_bench_conf.cpp")

@@ -25,7 +25,6 @@
 #include <string_view>
 
 #include "core/bench_conf.hpp"
-#include "core/config.hpp"
 
 namespace bench {
 
@@ -117,51 +116,14 @@ parse_ws_url(std::string_view url) noexcept {
     return out;
 }
 
-/// Combine the global mock_ip + scenario `port` / `ws_path` with an
-/// optional `endpoint = ...` override and return the resolved
+/// Combine the [networking].server_ip + scenario `port` / `ws_path`
+/// with an optional `endpoint = ...` override and return the resolved
 /// target. Defaults:
-///   * `endpoint` absent / "mock" → mock_ip:port / ws_path, plaintext
-///   * `endpoint = wss://...`      → URL fields, TLS, is_real_server
+///   * `endpoint` absent / "mock" → server_ip:port / ws_path, plaintext
+///   * `endpoint = wss://...`     → URL fields, TLS, is_real_server
 ///
 /// A malformed URL surfaces as an error; callers should exit rather
 /// than silently fall through to the mock.
-[[nodiscard]] inline std::expected<ResolvedEndpoint, std::string>
-resolve_endpoint(const ScenarioConfig& globals,
-                 const ScenarioConfig& section) noexcept {
-    ResolvedEndpoint out;
-    const auto ep = section.get_string("endpoint", "mock");
-
-    if (ep == "mock" || ep.empty()) {
-        out.host = globals.get_string("mock_ip", "127.0.0.1");
-        auto port_e = section.get_u32("port");
-        if (!port_e) return std::unexpected(port_e.error());
-        out.port = static_cast<uint16_t>(*port_e);
-        out.ws_path = section.get_string("ws_path", "");
-        out.is_tls = false;
-        out.is_real_server = false;
-        return out;
-    }
-
-    if (ep.rfind("ws://", 0) != 0 && ep.rfind("wss://", 0) != 0) {
-        return std::unexpected(
-            "resolve_endpoint: 'endpoint' must be 'mock' or a ws[s]:// "
-            "URL — got '" + ep + "'");
-    }
-
-    auto url_e = parse_ws_url(ep);
-    if (!url_e) return std::unexpected(url_e.error());
-    out.host          = std::move(url_e->host);
-    out.port          = url_e->port;
-    out.ws_path       = std::move(url_e->path);
-    out.is_tls        = url_e->is_tls;
-    out.is_real_server = true;
-    return out;
-}
-
-/// TOML-based overload: preferred for newly migrated callers.
-/// Semantics identical to the legacy (ScenarioConfig) version; the
-/// old overload will be removed in Stage 3 of the bench.conf →
-/// config.toml reshape.
 [[nodiscard]] inline std::expected<ResolvedEndpoint, std::string>
 resolve_endpoint(const BenchConfig& cfg,
                  const Scenario& scenario) noexcept {

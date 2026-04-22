@@ -102,13 +102,15 @@ inline void echo_client_loop(int cfd,
 [[nodiscard]] inline int tcp_echo_run(const ScenarioContext& ctx) noexcept {
     using namespace detail::tcp_echo;
 
-    const auto host = ctx.globals->get_string("mock_ip", "127.0.0.1");
-    auto port_e = ctx.section->get_u32("port");
+    const std::string host = ctx.cfg->networking.server_ip.empty()
+                                 ? std::string{"127.0.0.1"}
+                                 : ctx.cfg->networking.server_ip;
+    auto port_e = ctx.scenario->get<uint16_t>("port");
     if (!port_e) {
-        SPDLOG_ERROR("[tcp_echo] missing port: {}", port_e.error());
+        SPDLOG_ERROR("[tcp_echo] missing port: {}", bench::format_error(port_e.error()));
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(*port_e);
+    const uint16_t port = *port_e;
 
     // mockex_max_connections caps concurrent clients.  Default 1 = the
     // original single-client behaviour, fully backwards-compatible with
@@ -119,7 +121,7 @@ inline void echo_client_loop(int cfd,
     // than enough for any realistic HFT bench (matches kMaxRssQueues).
     constexpr uint32_t kMaxMockConn = 64;
     const uint32_t requested =
-        ctx.section->get_u32("mockex_max_connections").value_or(1u);
+        ctx.scenario->get_or<uint32_t>("mockex_max_connections", 1u);
     if (requested > kMaxMockConn) {
         SPDLOG_ERROR("[tcp_echo] mockex_max_connections={} exceeds hard cap {} "
                      "(prevents thread-per-conn exhaustion); aborting",

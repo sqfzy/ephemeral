@@ -51,7 +51,6 @@
 // benchmarks/latency/core helpers. xmake includes
 // `benchmarks/latency/` as an include dir so the header lives at
 // `core/config.hpp` from the compiler's perspective.
-#include "core/config.hpp"
 #include "core/measurement.hpp"
 #include "core/pin_client.hpp"
 #include "core/timestamp_proto.hpp"

@@ -33,17 +33,19 @@ namespace mockex::scenarios {
 
 [[nodiscard]] inline int
 ex_market_2p_push_run(const ScenarioContext& ctx) noexcept {
-    const auto host         = ctx.globals->get_string("mock_ip", "127.0.0.1");
-    const auto params_path  = ctx.section->get_string("mockex_params");
-    const auto payload_path = ctx.section->get_string("mockex_payload");
-    auto port_e = ctx.section->get_u32("port");
+    const std::string host = ctx.cfg->networking.server_ip.empty()
+                                 ? std::string{"127.0.0.1"}
+                                 : ctx.cfg->networking.server_ip;
+    const auto params_path  = ctx.scenario->get_or<std::string>("mockex_params", "");
+    const auto payload_path = ctx.scenario->get_or<std::string>("mockex_payload", "");
+    auto port_e = ctx.scenario->get<uint16_t>("port");
     if (!port_e || params_path.empty() || payload_path.empty()) {
         SPDLOG_ERROR("[ex_market_2p_push] missing one of "
-                     "port/mockex_params/mockex_payload in [{}]",
+                     "port/mockex_params/mockex_payload in [scenarios.{}]",
                      ctx.scenario_name);
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(*port_e);
+    const uint16_t port = *port_e;
 
     auto params_e = mockex::Mmpp2Params::load_from_file(params_path);
     if (!params_e) {
@@ -59,10 +61,9 @@ ex_market_2p_push_run(const ScenarioContext& ctx) noexcept {
     }
 
     const uint64_t seed =
-        ctx.section->get_u64("mockex_seed", params_e->seed_default).value_or(
-            params_e->seed_default);
-    auto burst_e = ctx.section->get_u32("burst_size", 10);
-    const size_t burst = burst_e ? *burst_e : 10;
+        ctx.scenario->get_or<uint64_t>("mockex_seed", params_e->seed_default);
+    const size_t burst =
+        ctx.scenario->get_or<uint32_t>("burst_size", 10);
 
     mockex::Mmpp2Sampler<> sampler(*params_e, seed);
     auto pool = std::move(*pool_e);

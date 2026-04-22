@@ -62,7 +62,6 @@
 #  include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
-#include "core/config.hpp"
 #include "core/endpoint.hpp"          // Phase 4: resolve_endpoint
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"

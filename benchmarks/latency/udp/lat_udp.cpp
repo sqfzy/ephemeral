@@ -45,7 +45,6 @@
 #  include "eph/net/kernel/udp_socket.hpp"
 #endif
 
-#include "core/config.hpp"
 #include "core/measurement.hpp"
 #include "core/pin_client.hpp"
 #include "core/timestamp_proto.hpp"

@@ -31,22 +31,26 @@
 
 namespace {
 
-/// Write a minimal bench.conf to a scratch path and return the path.
-/// The generated config binds mockex to 127.0.0.1 on a caller-chosen
-/// port; the caller is responsible for ensuring the port is free.
+/// Write a minimal TOML config.toml to a scratch path and return the path.
 std::string write_tmp_conf(uint16_t port, const char* section,
-                           const char* extra_keys = "") {
+                           const char* extra_scenario_keys = "") {
     const std::string path = "/tmp/mockex_test_" +
                              std::to_string(::getpid()) + "_" +
-                             section + ".conf";
+                             section + ".toml";
     std::ofstream f(path);
-    f << "mock_ip = 127.0.0.1\n"
-      << "client_ip = 127.0.0.1\n"
-      << "cpu_mock = -1\n"        // sentinel — we don't actually pin
-      << "warmup_samples = 1\n"
-      << "[" << section << "]\n"
+    f << "[networking]\n"
+      << "nic_a      = \"lo\"\n"
+      << "nic_b      = \"lo\"\n"
+      << "server_ip  = \"127.0.0.1\"\n"
+      << "client_ip  = \"127.0.0.1\"\n"
+      << "gateway_ip = \"127.0.0.1\"\n"
+      << "\n[cpu]\n"
+      << "cpu_client = 0\n"
+      << "cpu_mock   = 0\n"
+      << "\n[measurement]\nwarmup_samples = 1\n"
+      << "\n[scenarios." << section << "]\n"
       << "port = " << port << "\n"
-      << extra_keys;
+      << extra_scenario_keys;
     return path;
 }
 

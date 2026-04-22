@@ -29,12 +29,19 @@ namespace {
 
 std::string write_tmp_conf(uint16_t port) {
     const std::string path = "/tmp/mockex_test_order_" +
-                             std::to_string(::getpid()) + ".conf";
+                             std::to_string(::getpid()) + ".toml";
     std::ofstream f(path);
-    f << "mock_ip = 127.0.0.1\n"
-      << "cpu_mock = -1\n"
-      << "warmup_samples = 1\n"
-      << "[lat_ex_order]\n"
+    f << "[networking]\n"
+      << "nic_a      = \"lo\"\n"
+      << "nic_b      = \"lo\"\n"
+      << "server_ip  = \"127.0.0.1\"\n"
+      << "client_ip  = \"127.0.0.1\"\n"
+      << "gateway_ip = \"127.0.0.1\"\n"
+      << "\n[cpu]\n"
+      << "cpu_client = 0\n"
+      << "cpu_mock   = 0\n"
+      << "\n[measurement]\nwarmup_samples = 1\n"
+      << "\n[scenarios.lat_ex_order]\n"
       << "port = " << port << "\n";
     return path;
 }

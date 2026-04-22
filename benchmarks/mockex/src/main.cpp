@@ -1,7 +1,7 @@
 /// @file benchmarks/mockex/src/main.cpp
 /// Unified mock-server entry point.
 ///
-/// Parses `--scenario <name> --config <path>`, loads bench.conf, pins
+/// Parses `--scenario <name> --config <path>`, loads config.toml, pins
 /// to the configured `cpu_mock`, installs SIGINT/SIGTERM handlers, and
 /// dispatches to the handler registered in `mockex::kScenarioTable`.
 ///
@@ -19,7 +19,6 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include "core/config.hpp"
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/shutdown_signal.hpp"
 #include "mockex/dispatch.hpp"
@@ -36,8 +35,8 @@ int print_usage(int rc) noexcept {
         "OPTIONS:\n"
         "  --scenario <name>   one of: tcp, udp, ws, ex_order, ex_md_udp,\n"
         "                      ex_market, ex_market_2p\n"
-        "  --config <path>     bench.conf path (default: search from $BENCH_CONFIG\n"
-        "                      then ./bench.conf then walk up from /proc/self/exe)\n"
+        "  --config <path>     config.toml path (default: $BENCH_CONFIG, then\n"
+        "                      benchmarks/latency/config.toml)\n"
         "  -h, --help          this help\n\n"
         "SCENARIOS:\n");
     for (const auto& e : mockex::kScenarioTable) {
@@ -48,14 +47,12 @@ int print_usage(int rc) noexcept {
     return rc;
 }
 
-/// Locate bench.conf when `--config` was not explicitly passed.
-/// Falls back through the same search order as
-/// `bench::config_detail::find_bench_conf`.
+/// Locate config.toml when `--config` was not explicitly passed.
 [[nodiscard]] std::string locate_config() {
     if (const char* env = std::getenv("BENCH_CONFIG"); env && *env) {
         return env;
     }
-    return "benchmarks/latency/bench.conf";
+    return "benchmarks/latency/config.toml";
 }
 
 /// Best-effort CPU pinning. Non-fatal: missing taskset/permissions
@@ -120,9 +117,7 @@ int main(int argc, char** argv) {
         config_path = locate_config();
     }
 
-    // Parse config.toml into the new structured BenchConfig. The
-    // legacy ScenarioConfig pair is parsed in parallel so scenario
-    // handlers that haven't been migrated yet keep working.
+    // Parse config.toml into the structured BenchConfig.
     auto cfg_e = bench::load_bench_conf(config_path);
     if (!cfg_e) {
         SPDLOG_ERROR("[mockex] failed to load {}: {}",
@@ -133,19 +128,6 @@ int main(int argc, char** argv) {
     if (scenario_ptr == nullptr) {
         SPDLOG_ERROR("[mockex] scenario [{}] not found in {}",
                      entry->section, config_path);
-        return 1;
-    }
-
-    auto globals_e = bench::ScenarioConfig::load_globals(config_path);
-    if (!globals_e) {
-        SPDLOG_ERROR("[mockex] failed to load globals from {}: {}",
-                     config_path, globals_e.error());
-        return 1;
-    }
-    auto section_e = bench::ScenarioConfig::load(config_path, entry->section);
-    if (!section_e) {
-        SPDLOG_ERROR("[mockex] failed to load section [{}] from {}: {}",
-                     entry->section, config_path, section_e.error());
         return 1;
     }
 
@@ -165,8 +147,6 @@ int main(int argc, char** argv) {
         .config_path   = config_path,
         .cfg           = &*cfg_e,
         .scenario      = scenario_ptr,
-        .globals       = &*globals_e,
-        .section       = &*section_e,
         .running       = &eph::utils::g_shutdown_flag,
     };
 
