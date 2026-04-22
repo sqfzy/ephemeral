@@ -29,6 +29,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "core/bench_conf.hpp"
 #include "core/config.hpp"
 
 #include "eph/dpdk/test/dpdk_env.hpp"
@@ -231,6 +232,67 @@ load_dpdk_env(const bench::ScenarioConfig& globals,
         *client_ip_r,   // local_ip
         *gateway_ip_r,  // gateway_ip
         pcfg);
+    if (!env_r) {
+        return std::unexpected("load_dpdk_env: create_full: " + env_r.error());
+    }
+    return std::move(*env_r);
+} catch (const std::exception& e) {
+    return std::unexpected(std::string{"load_dpdk_env: exception: "} + e.what());
+} catch (...) {
+    return std::unexpected("load_dpdk_env: unknown exception");
+}
+
+/// TOML-based overload: preferred for newly migrated callers.
+/// Reads structured fields from `BenchConfig` (post-reshape) instead of
+/// the legacy lowercase/uppercase dual-key ScenarioConfig probe.
+///
+/// Required networking fields are validated at `load_bench_conf()` time,
+/// so here we only check that `nic_b_pci` is populated (still optional
+/// in config.toml, but required for DPDK bring-up).
+[[nodiscard]] inline std::expected<eph::dpdk::test::DpdkBenchEnv, std::string>
+load_dpdk_env(const BenchConfig& cfg,
+              uint16_t dpdk_port_id = 0) noexcept try {
+    const std::string& mock_ip    = cfg.networking.server_ip;
+    const std::string& client_ip  = cfg.networking.client_ip;
+    const std::string& gateway_ip = cfg.networking.gateway_ip;
+    const std::string& dpdk_pci   = cfg.networking.nic_b_pci;
+
+    if (dpdk_pci.empty()) {
+        return std::unexpected(
+            "load_dpdk_env: networking.nic_b_pci is required in config.toml "
+            "for DPDK bring-up");
+    }
+
+    std::string eal_cores = cfg.cpu.eal_cores;
+    if (eal_cores.empty()) {
+        spdlog::warn("load_dpdk_env: cpu.eal_cores not set; defaulting to \"0,1\"");
+        eal_cores = "0,1";
+    }
+
+    auto argv_storage = synthesize_eal_argv(eal_cores, dpdk_pci);
+    std::vector<char*> argv;
+    argv.reserve(argv_storage.size());
+    for (auto& s : argv_storage) argv.push_back(s.data());
+    const int argc = static_cast<int>(argv.size());
+
+    spdlog::info(
+        "load_dpdk_env: EAL argv synthesized: {} cores={} pci={}",
+        argc, eal_cores, dpdk_pci);
+
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id      = dpdk_port_id;
+    pcfg.nb_rx_queues = cfg.dpdk.nb_rx_queues;
+    pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
+    pcfg.enable_rss   = cfg.dpdk.enable_rss;
+
+    if (pcfg.enable_rss || pcfg.nb_rx_queues > 1) {
+        spdlog::info(
+            "load_dpdk_env: RSS configured nb_rx_queues={} enable_rss={}",
+            pcfg.nb_rx_queues, pcfg.enable_rss ? "true" : "false");
+    }
+
+    auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full(
+        argc, argv.data(), mock_ip, client_ip, gateway_ip, pcfg);
     if (!env_r) {
         return std::unexpected("load_dpdk_env: create_full: " + env_r.error());
     }

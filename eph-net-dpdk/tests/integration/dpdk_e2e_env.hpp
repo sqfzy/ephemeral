@@ -57,13 +57,13 @@ public:
     }
 
     /// Access the loaded bench.conf.
-    static const bench::BenchConfig& cfg() {
+    static const bench::LegacyBenchConfig& cfg() {
         return cfg_;
     }
 
     void SetUp() override {
         // ── 1. Load bench.conf ────────────────────────────────────────
-        auto cfg_r = bench::load_bench_conf();
+        auto cfg_r = bench::load_legacy_bench_conf();
         if (!cfg_r) {
             skip_reason_ = "load_bench_conf failed: " + cfg_r.error();
             spdlog::error("DpdkE2ETestEnv: {}", skip_reason_);
@@ -265,7 +265,7 @@ private:
     static inline std::string nic_b_pci_;
     static inline pid_t mock_pid_ = -1;
     static inline std::optional<::eph::dpdk::test::DpdkBenchEnv> env_;
-    static inline bench::BenchConfig cfg_;
+    static inline bench::LegacyBenchConfig cfg_;
 };
 
 /// Convenience macro: skip a test if the env is not ready (and report why).

@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 
+#include "core/bench_conf.hpp"
 #include "core/config.hpp"
 
 namespace bench {
@@ -136,6 +137,45 @@ resolve_endpoint(const ScenarioConfig& globals,
         if (!port_e) return std::unexpected(port_e.error());
         out.port = static_cast<uint16_t>(*port_e);
         out.ws_path = section.get_string("ws_path", "");
+        out.is_tls = false;
+        out.is_real_server = false;
+        return out;
+    }
+
+    if (ep.rfind("ws://", 0) != 0 && ep.rfind("wss://", 0) != 0) {
+        return std::unexpected(
+            "resolve_endpoint: 'endpoint' must be 'mock' or a ws[s]:// "
+            "URL — got '" + ep + "'");
+    }
+
+    auto url_e = parse_ws_url(ep);
+    if (!url_e) return std::unexpected(url_e.error());
+    out.host          = std::move(url_e->host);
+    out.port          = url_e->port;
+    out.ws_path       = std::move(url_e->path);
+    out.is_tls        = url_e->is_tls;
+    out.is_real_server = true;
+    return out;
+}
+
+/// TOML-based overload: preferred for newly migrated callers.
+/// Semantics identical to the legacy (ScenarioConfig) version; the
+/// old overload will be removed in Stage 3 of the bench.conf →
+/// config.toml reshape.
+[[nodiscard]] inline std::expected<ResolvedEndpoint, std::string>
+resolve_endpoint(const BenchConfig& cfg,
+                 const Scenario& scenario) noexcept {
+    ResolvedEndpoint out;
+    const auto ep = scenario.get_or<std::string>("endpoint", "mock");
+
+    if (ep == "mock" || ep.empty()) {
+        out.host = cfg.networking.server_ip.empty()
+                       ? std::string{"127.0.0.1"}
+                       : cfg.networking.server_ip;
+        auto port_e = scenario.get<uint16_t>("port");
+        if (!port_e) return std::unexpected(format_error(port_e.error()));
+        out.port = *port_e;
+        out.ws_path = scenario.get_or<std::string>("ws_path", "");
         out.is_tls = false;
         out.is_real_server = false;
         return out;

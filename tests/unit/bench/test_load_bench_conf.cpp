@@ -76,7 +76,7 @@ DEPTH_BYTES=2048
 
 TEST(LoadBenchConf, ValidConfigParsesAllFields) {
     TmpConf t{kFullValid};
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     ASSERT_TRUE(r.has_value()) << r.error();
     const auto& c = *r;
 
@@ -126,7 +126,7 @@ CLIENT_CPU=2
 MOCK_CPU=4
 )";
     TmpConf t{body};
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("SERVER_IP"), std::string::npos)
         << "error message should mention the missing field, got: " << r.error();
@@ -141,7 +141,7 @@ GATEWAY_IP=10.0.0.254
 MOCK_CPU=4
 )";
     TmpConf t{body};
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("CLIENT_CPU"), std::string::npos)
         << "got: " << r.error();
@@ -162,7 +162,7 @@ CLIENT_CPU=2
 MOCK_CPU=4
 )";
     TmpConf t{body};
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     ASSERT_TRUE(r.has_value()) << r.error();
     EXPECT_EQ(r->server_ip, "10.0.0.1");
 }
@@ -179,7 +179,7 @@ TCP_PAYLOADS=64,128,256,512,1024,1460,4096,16384
 INFLIGHTS=1,4,16,64
 )";
     TmpConf t{body};
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     ASSERT_TRUE(r.has_value()) << r.error();
     ASSERT_EQ(r->tcp_payloads.size(), 8u);
     EXPECT_EQ(r->tcp_payloads.front(), 64u);
@@ -201,7 +201,7 @@ MOCK_CPU=4
 NEW_FUTURE_KEY=hello
 )";
     TmpConf t{body};
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error());
 }
 
@@ -209,7 +209,7 @@ NEW_FUTURE_KEY=hello
 
 TEST(LoadBenchConf, MissingFileReturnsError) {
     ::setenv("BENCH_CONFIG", "/nonexistent/path/to/bench.conf", 1);
-    auto r = load_bench_conf();
+    auto r = load_legacy_bench_conf();
     ::unsetenv("BENCH_CONFIG");
     EXPECT_FALSE(r.has_value());
 }

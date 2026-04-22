@@ -189,12 +189,12 @@ effective_inflights(const CommonConfig& cfg,
 //
 // Stage 3 of the simplify plan. The legacy `parse_common` API stays for
 // the still-CLI-driven stage-2 binaries; new binaries (stage 4-5) read
-// `BenchConfig` directly via `load_bench_conf()`.
+// `BenchConfig` directly via `load_legacy_bench_conf()`.
 
 /// Single struct holding every field a latency benchmark binary may need.
 /// Each binary reads only the fields it cares about; unused fields are
 /// silently kept at their defaults.
-struct BenchConfig {
+struct LegacyBenchConfig {
     // --- Networking ---
     std::string nic_a;            ///< NIC_A (informational, for log)
     std::string nic_b;            ///< NIC_B (informational, for log)
@@ -329,7 +329,7 @@ inline std::optional<std::filesystem::path> find_bench_conf() {
 
 /// Apply a single KEY=VALUE pair from `bench.conf` to `cfg`. Unknown keys
 /// are silently ignored so older binaries tolerate newer config files.
-inline void apply_kv(BenchConfig& cfg, const std::string& k,
+inline void apply_kv(LegacyBenchConfig& cfg, const std::string& k,
                      const std::string& v) {
     if      (k == "NIC_A")           cfg.nic_a = v;
     else if (k == "NIC_B")           cfg.nic_b = v;
@@ -378,8 +378,8 @@ inline void apply_kv(BenchConfig& cfg, const std::string& k,
 /// Returns an error if no config file is found or any required field is
 /// missing. Required: NIC_B, SERVER_IP, LOCAL_IP, GATEWAY_IP, CLIENT_CPU,
 /// MOCK_CPU.
-[[nodiscard]] inline std::expected<BenchConfig, std::string>
-load_bench_conf() {
+[[nodiscard]] inline std::expected<LegacyBenchConfig, std::string>
+load_legacy_bench_conf() {
     using namespace config_detail;
     auto path = find_bench_conf();
     if (!path) {
@@ -393,7 +393,7 @@ load_bench_conf() {
         return std::unexpected("failed to open bench.conf at " + path->string());
     }
 
-    BenchConfig cfg;
+    LegacyBenchConfig cfg;
     std::string line, key, val;
     size_t lineno = 0;
     while (std::getline(in, line)) {
