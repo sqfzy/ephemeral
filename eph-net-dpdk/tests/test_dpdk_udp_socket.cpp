@@ -146,6 +146,56 @@ TEST_F(DpdkUdpSocketConnectTo, RejectsPeerWithMismatchedPort) {
     EXPECT_EQ(bad.error().code, eph::core::Error::InvalidConfig);
 }
 
+// `connect_to()` on UdpSender is write-once in the sense that the TX peer
+// is fixed by cfg.legacy.dst_*; the API mutates only the RX-filter state.
+// Still, calling it a second time with the SAME matching peer must be
+// idempotent — no error, no state corruption, socket still usable. Also
+// after an accepted match, a subsequent mismatched peer call must still
+// be rejected (it does not un-latch the connected_ state).
+TEST_F(DpdkUdpSocketConnectTo, SamePeerCalledTwiceIsIdempotent) {
+    auto cfg = make_cfg();
+    auto r = RawUdpSocket::create(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+
+    const eph::net::SocketAddr matching{
+        eph::net::Ipv4Addr::from_be32(cfg.legacy.dst_ip),
+        cfg.legacy.dst_port};
+    auto first  = (*r)->connect_to(matching);
+    EXPECT_TRUE(first.has_value()) << (first ? "" : first.error().detail);
+    auto second = (*r)->connect_to(matching);
+    EXPECT_TRUE(second.has_value()) << (second ? "" : second.error().detail);
+}
+
+// Once `connect_to` has latched `connected_=true` on the matching peer,
+// calling it again with a MISMATCHED peer must keep the original state
+// intact — we reject the bad call, not silently re-point the filter to
+// something that would then drop legitimate inbound traffic.
+// Pairs with the idempotency test above to pin the full "connect then
+// connect-again" state machine.
+TEST_F(DpdkUdpSocketConnectTo, MismatchAfterMatchDoesNotUnlatch) {
+    auto cfg = make_cfg();
+    auto r = RawUdpSocket::create(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+
+    const eph::net::SocketAddr matching{
+        eph::net::Ipv4Addr::from_be32(cfg.legacy.dst_ip),
+        cfg.legacy.dst_port};
+    ASSERT_TRUE((*r)->connect_to(matching).has_value());
+
+    const eph::net::SocketAddr wrong_ip{
+        eph::net::Ipv4Addr::from_be32(0x0A000003),  // 10.0.0.3 ≠ configured
+        cfg.legacy.dst_port};
+    auto bad = (*r)->connect_to(wrong_ip);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().code, eph::core::Error::InvalidConfig);
+
+    // A third call with the original matching peer still succeeds — the
+    // socket is still usable, the rejected mismatch did not corrupt it.
+    auto recover = (*r)->connect_to(matching);
+    EXPECT_TRUE(recover.has_value())
+        << (recover ? "" : recover.error().detail);
+}
+
 // send_to payload bound: the real cap isn't 0xFFFF bytes (the UDP
 // length field's raw range), but 0xFFFF minus 42 bytes of
 // Ethernet+IP+UDP header. Anything above the frame cap was previously
