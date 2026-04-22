@@ -84,6 +84,7 @@ target("test_dpdk_e2e")
     -- The fixture reuses bench's DpdkBenchEnv via #include of
     -- benchmarks/latency/core/dpdk_env.hpp.
     add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_packages("tomlplusplus")
     add_defines("EPH_USE_DPDK=1")
     add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
@@ -102,6 +103,7 @@ target("test_dpdk_rss_platform")
     -- eph-codec for RawStreamCodec used by the create_and_attach E2E case.
     add_deps("eph-net-dpdk", "eph-net", "eph-codec")
     add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_packages("tomlplusplus")
     add_defines("EPH_USE_DPDK=1")
     add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')

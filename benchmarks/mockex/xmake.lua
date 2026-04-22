@@ -16,10 +16,10 @@ target("mockex")
     set_default(false)
     add_files("src/main.cpp")
     add_includedirs("include")
-    -- Reuse the bench core helpers (ScenarioConfig, monotonic_raw_ns).
+    -- Reuse the bench core helpers (BenchConfig, monotonic_raw_ns).
     add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
     add_deps("eph-core", "eph-utils", "eph-net")
-    add_packages("spdlog")
+    add_packages("spdlog", "tomlplusplus")
     add_cxflags("-fno-omit-frame-pointer")
     set_symbols("debug")
 
@@ -35,7 +35,7 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "tests/test_*.cpp"))) d
         add_includedirs("include")
         add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
         add_deps("eph-core", "eph-utils", "eph-net")
-        add_packages("spdlog")
+        add_packages("spdlog", "tomlplusplus")
         -- Pass the mockex build target's output directory at configure time so
         -- the test can fork the child without searching $PATH. xmake provides
         -- `$(targetdir)` at build but we want a plain string at configure, so
