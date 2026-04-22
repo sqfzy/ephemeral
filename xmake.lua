@@ -49,6 +49,7 @@ add_requires("numactl", "tabulate", "benchmark", "spdlog", { optional = true })
 add_requires("libdpdk", { system = true, optional = true, alias = "dpdk" })
 add_requires("aws-lc", { optional = true })
 add_requires("gtest", { system = false, configs = { main = true } })
+add_requires("toml++ v3.4.0", { alias = "tomlplusplus" })
 
 -- Options
 option("use_numa")

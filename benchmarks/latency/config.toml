@@ -1,0 +1,124 @@
+# benchmarks/latency/config.toml — machine + scenario layout for the lat suite.
+#
+# Format: TOML. Read by every lat_* binary and mockex via
+# `bench::load_bench_conf(path)`. History: replaces the pre-v3 `bench.conf`
+# (bash-style KEY=VALUE + INI section mix). The C++ function name is
+# kept as `load_bench_conf` for historical continuity; the file it reads
+# is this one.
+#
+# Pass an alternate path via the `--config` flag or $BENCH_CONFIG env var.
+
+# ── Machine-level layout ──────────────────────────────────────────────
+
+[networking]
+nic_a      = "ens34"               # server-side NIC (kernel mock binds here)
+nic_b      = "ens35"               # client-side NIC (moved into bench_ns for
+                                   # kernel, bound to vfio-pci for DPDK)
+server_ip  = "172.31.47.238"       # NIC_A IP — AWS ENI primary
+client_ip  = "172.31.38.174"       # NIC_B IP — AWS ENI primary
+gateway_ip = "172.31.32.1"         # VPC default gateway (answers ARP here;
+                                   # 172.31.16.1 is the nominal gateway for
+                                   # 172.31.16.0/20 but AWS does not answer
+                                   # ARP on it, so DPDK bring-up must use
+                                   # the host's actual default-route gateway)
+netmask    = "255.255.240.0"
+
+# Optional: NIC_B's PCI BDF. Set this when NIC_B may be permanently bound
+# to vfio-pci on your host (i.e. /sys/class/net/$NIC_B doesn't exist on
+# a fresh boot). Without it, the lat wrapper falls back to
+# /sys/class/net/$NIC_B/device → .dpdk_state cache, which fails on the
+# very first run after a reboot if the NIC was already on vfio-pci.
+nic_b_pci  = "0000:28:00.0"
+
+# ── CPU pinning ───────────────────────────────────────────────────────
+
+[cpu]
+cpu_client         = 4             # bench client poll thread cpu
+cpu_mock           = 6             # mock server cpu
+eal_cores          = "0,1"         # DPDK EAL lcore list (CSV string)
+allow_non_isolated = true          # relax isolcpus hard check (dev hosts only)
+
+# ── Measurement window ────────────────────────────────────────────────
+
+[measurement]
+warmup_samples = 1000
+server_work_ns = 200               # mock spin ns simulating business work
+
+# ── DPDK RSS / multi-queue (optional, default off) ────────────────────
+#
+# nb_rx_queues + enable_rss are end-to-end plumbed through bench helpers
+# into Platform::create — when enable_rss=true and nb_rx_queues>1 the
+# port comes up with RSS hash + RETA across N queues.
+#
+# lcore_per_queue is NOT YET CONSUMED: no lat_*_dpdk scenario currently
+# spawns multiple lcores / Pollers — single-Stream scenarios attach to
+# the default DpdkPoller on queue 0. Reserved for the stage-5 multi-
+# stream lat refactor.
+
+[dpdk.rss]
+nb_rx_queues    = 1
+enable_rss      = false
+lcore_per_queue = "4,5,6,7"
+
+# ── Scenarios ─────────────────────────────────────────────────────────
+# Each [scenarios.lat_<name>] section drives one lat_<name> binary.
+# Required keys (port) must be present; optional keys
+# (duration_seconds, payload_size, ws_path, ...) have per-binary defaults.
+
+[scenarios.lat_tcp]
+port             = 20000
+payload_size     = 256
+duration_seconds = 300
+
+[scenarios.lat_udp]
+port             = 20001
+payload_size     = 256
+duration_seconds = 300
+
+[scenarios.lat_ws]
+port             = 20002
+ws_path          = "/echo"
+payload_size     = 256
+duration_seconds = 300
+
+[scenarios.lat_ex_market]
+port             = 20003
+ws_path          = "/ws/bookticker"
+duration_seconds = 300
+# Phase 3 mockex push parameters. Replace the *_sample.jsonl with a
+# real capture (tools/capture_binance.py --stream btcusdt@bookTicker)
+# and refit params.toml to get realistic traffic shape.
+mockex_params    = "benchmarks/mockex/fixtures/ex_market_params.toml"
+mockex_payload   = "benchmarks/mockex/fixtures/ex_market_sample.jsonl"
+mockex_seed      = 42
+
+[scenarios.lat_ex_order]
+port             = 20004
+ws_path          = "/ws/order"
+# Strict one-at-a-time semantics: send order → wait for response →
+# record legs → send next. No pipelining, no slot table. This makes
+# each order a self-contained RTT sample and guarantees the percentile
+# math p50(TX)+p50(RX) ≤ p50(RTT) per Gate 5 sanity.
+# order_count caps total orders; bumped to 20M so 300s at ~30k/s
+# (max serial throughput) can't hit the cap before the deadline.
+order_count      = 20000000
+duration_seconds = 300
+# Inflights sweep — lat_ex_order driver cycles through each N, running
+# each for duration_seconds, recording per-N percentiles.
+inflights        = [1, 4, 16, 64]
+
+[scenarios.lat_ex_md_udp]
+port             = 20005
+payload_size     = 256
+duration_seconds = 300
+
+[scenarios.lat_ex_market_2p]
+port             = 20007
+ws_path          = "/ws/bookticker"
+duration_seconds = 300
+burst_size       = 10
+symbols          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+mode             = "twophase"
+mockex_params    = "benchmarks/mockex/fixtures/ex_market_2p_params.toml"
+mockex_payload   = "benchmarks/mockex/fixtures/ex_market_2p_sample.jsonl"
+mockex_seed      = 42

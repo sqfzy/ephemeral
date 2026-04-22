@@ -30,7 +30,7 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         -- core/{signal,socket_bind,socket_io}.hpp are header-only shims
         -- that forward to eph-utils / eph-net helpers.
         add_deps("eph-utils", "eph-net", "eph-net-kernel", "eph-codec")
-        add_packages("spdlog")
+        add_packages("spdlog", "tomlplusplus")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")
         -- lat_ex_market_2p needs eph-json for full JSON parse + BinanceBookTicker.
@@ -46,7 +46,7 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
         add_files(file)
         add_includedirs(os.scriptdir())
         add_deps("eph-utils", "eph-net", "eph-net-dpdk", "eph-codec")
-        add_packages("spdlog")
+        add_packages("spdlog", "tomlplusplus")
         add_defines("EPH_USE_DPDK=1")
         add_cxflags(table.unpack(bench_latency_flags))
         set_symbols("debug")

@@ -1,0 +1,16 @@
+# Fitted by fit_mmpp.py at 2026-04-17T08:36:09+00:00
+# Format: TOML (flat). Read by mockex/mmpp2.hpp via bench::load_toml_table.
+fitted_from      = "/tmp/refit_2p/s"
+fitted_at        = "2026-04-17T08:36:09+00:00"
+model            = "mmpp2"
+fitter_version   = 1
+seed_default     = 42
+
+lambda_quiet_hz   = 9.14441
+lambda_busy_hz    = 44758
+p_quiet_to_busy   = 0.821824
+p_busy_to_quiet   = 0.0288946
+
+size_kde_bandwidth = 1
+size_kde_anchors   = [140, 140, 140, 140, 140, 140]
+size_kde_weights   = [0.1667, 0.1667, 0.1667, 0.1667, 0.1667, 0.1667]
