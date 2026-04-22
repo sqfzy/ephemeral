@@ -47,7 +47,7 @@ target("test_endpoint")
     add_files("test_endpoint.cpp")
     add_includedirs("$(projectdir)/benchmarks/latency")
     add_deps("eph-utils")
-    add_packages("spdlog")
+    add_packages("spdlog", "tomlplusplus")
 
 -- TX/RX leg decomposition timestamp-block protocol
 -- (benchmarks/latency/core/timestamp_proto.hpp). Pure-function unit

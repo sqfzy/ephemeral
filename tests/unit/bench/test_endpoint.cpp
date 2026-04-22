@@ -12,14 +12,24 @@
 
 namespace {
 
-std::string write_conf(std::string_view global, std::string_view section_body,
-                       std::string_view section_name = "lat_ex_market") {
+/// Write a minimal TOML config that the new BenchConfig loader accepts
+/// (all required networking / cpu keys populated) plus an arbitrary
+/// [scenarios.<name>] subtable.
+std::string write_toml(std::string_view server_ip,
+                       std::string_view scenario_body,
+                       std::string_view scenario_name = "lat_ex_market") {
     const std::string path = "/tmp/test_endpoint_" +
-                             std::to_string(::getpid()) + ".conf";
+                             std::to_string(::getpid()) + ".toml";
     std::ofstream f(path);
-    f << global;
-    f << "[" << section_name << "]\n";
-    f << section_body;
+    f << "[networking]\n"
+      << "nic_a      = \"ens34\"\n"
+      << "nic_b      = \"ens35\"\n"
+      << "server_ip  = \"" << server_ip << "\"\n"
+      << "client_ip  = \"10.0.0.99\"\n"
+      << "gateway_ip = \"10.0.0.254\"\n"
+      << "\n[cpu]\ncpu_client = 0\ncpu_mock = 1\n\n"
+      << "[scenarios." << scenario_name << "]\n"
+      << scenario_body;
     return path;
 }
 
@@ -64,13 +74,14 @@ TEST(ParseWsUrl, RejectsOutOfRangePort) {
     EXPECT_FALSE(bench::parse_ws_url("wss://x:65536/y").has_value());
 }
 
-TEST(ResolveEndpoint, DefaultsToMockIpPortPath) {
-    const auto p = write_conf(
-        "mock_ip = 10.0.0.1\n",
-        "port = 20003\nws_path = /ws/book\n");
-    auto globals = bench::ScenarioConfig::load_globals(p).value();
-    auto section = bench::ScenarioConfig::load(p, "lat_ex_market").value();
-    auto r = bench::resolve_endpoint(globals, section).value();
+TEST(ResolveEndpoint, DefaultsToServerIpPortPath) {
+    const auto p = write_toml("10.0.0.1",
+        "port             = 20003\n"
+        "ws_path          = \"/ws/book\"\n");
+    auto cfg = bench::load_bench_conf(p).value();
+    const auto* sc = cfg.scenario("lat_ex_market");
+    ASSERT_NE(sc, nullptr);
+    auto r = bench::resolve_endpoint(cfg, *sc).value();
     EXPECT_EQ(r.host, "10.0.0.1");
     EXPECT_EQ(r.port, 20003u);
     EXPECT_EQ(r.ws_path, "/ws/book");
@@ -80,25 +91,28 @@ TEST(ResolveEndpoint, DefaultsToMockIpPortPath) {
 }
 
 TEST(ResolveEndpoint, ExplicitMockSameAsAbsent) {
-    const auto p = write_conf(
-        "mock_ip = 10.0.0.1\n",
-        "port = 20003\nws_path = /ws/book\nendpoint = mock\n");
-    auto globals = bench::ScenarioConfig::load_globals(p).value();
-    auto section = bench::ScenarioConfig::load(p, "lat_ex_market").value();
-    auto r = bench::resolve_endpoint(globals, section).value();
+    const auto p = write_toml("10.0.0.1",
+        "port     = 20003\n"
+        "ws_path  = \"/ws/book\"\n"
+        "endpoint = \"mock\"\n");
+    auto cfg = bench::load_bench_conf(p).value();
+    const auto* sc = cfg.scenario("lat_ex_market");
+    ASSERT_NE(sc, nullptr);
+    auto r = bench::resolve_endpoint(cfg, *sc).value();
     EXPECT_EQ(r.host, "10.0.0.1");
     EXPECT_FALSE(r.is_real_server);
     std::remove(p.c_str());
 }
 
-TEST(ResolveEndpoint, WssUrlOverridesGlobals) {
-    const auto p = write_conf(
-        "mock_ip = 10.0.0.1\n",
-        "port = 20003\nws_path = /ignored\n"
-        "endpoint = wss://stream.binance.com:9443/ws/btcusdt@bookTicker\n");
-    auto globals = bench::ScenarioConfig::load_globals(p).value();
-    auto section = bench::ScenarioConfig::load(p, "lat_ex_market").value();
-    auto r = bench::resolve_endpoint(globals, section).value();
+TEST(ResolveEndpoint, WssUrlOverridesServerIp) {
+    const auto p = write_toml("10.0.0.1",
+        "port     = 20003\n"
+        "ws_path  = \"/ignored\"\n"
+        "endpoint = \"wss://stream.binance.com:9443/ws/btcusdt@bookTicker\"\n");
+    auto cfg = bench::load_bench_conf(p).value();
+    const auto* sc = cfg.scenario("lat_ex_market");
+    ASSERT_NE(sc, nullptr);
+    auto r = bench::resolve_endpoint(cfg, *sc).value();
     EXPECT_EQ(r.host, "stream.binance.com");
     EXPECT_EQ(r.port, 9443u);
     EXPECT_EQ(r.ws_path, "/ws/btcusdt@bookTicker");
@@ -108,12 +122,13 @@ TEST(ResolveEndpoint, WssUrlOverridesGlobals) {
 }
 
 TEST(ResolveEndpoint, BadEndpointSchemeIsError) {
-    const auto p = write_conf(
-        "mock_ip = 10.0.0.1\n",
-        "port = 20003\nendpoint = http://x\n");
-    auto globals = bench::ScenarioConfig::load_globals(p).value();
-    auto section = bench::ScenarioConfig::load(p, "lat_ex_market").value();
-    auto r = bench::resolve_endpoint(globals, section);
+    const auto p = write_toml("10.0.0.1",
+        "port     = 20003\n"
+        "endpoint = \"http://x\"\n");
+    auto cfg = bench::load_bench_conf(p).value();
+    const auto* sc = cfg.scenario("lat_ex_market");
+    ASSERT_NE(sc, nullptr);
+    auto r = bench::resolve_endpoint(cfg, *sc);
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("'mock'"), std::string::npos);
     std::remove(p.c_str());
