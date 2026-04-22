@@ -36,7 +36,7 @@
 // from its canonical home rather than reverse-including via the bench
 // shim.
 #define EPH_USE_DPDK 1
-#include "../../../benchmarks/latency/core/config.hpp"
+#include "../../../benchmarks/latency/core/bench_conf.hpp"
 #include "eph/dpdk/test/dpdk_env.hpp"
 
 #include "mock_dispatcher.hpp"
@@ -56,34 +56,56 @@ public:
         return *env_;
     }
 
-    /// Access the loaded bench.conf.
-    static const bench::LegacyBenchConfig& cfg() {
-        return cfg_;
+    /// Access the loaded config.toml (read-only).
+    static const bench::BenchConfig& cfg() {
+        return *cfg_;
     }
 
     void SetUp() override {
-        // ── 1. Load bench.conf ────────────────────────────────────────
-        auto cfg_r = bench::load_legacy_bench_conf();
+        // ── 1. Load config.toml ───────────────────────────────────────
+        // Path resolution mirrors the legacy search order: $BENCH_CONFIG
+        // env var wins; otherwise fall back to the compiled-in absolute
+        // path provided by xmake (EPH_BENCH_CONF_ABS_PATH).
+        std::string conf_path;
+        if (const char* env = std::getenv("BENCH_CONFIG"); env && *env) {
+            conf_path = env;
+        } else {
+#ifdef EPH_BENCH_CONF_ABS_PATH
+            conf_path = EPH_BENCH_CONF_ABS_PATH;
+#else
+            conf_path = "benchmarks/latency/config.toml";
+#endif
+            // Prefer the TOML file if it exists alongside the legacy bench.conf.
+            if (auto dot = conf_path.rfind("bench.conf"); dot != std::string::npos) {
+                std::string toml_path = conf_path.substr(0, dot) + "config.toml";
+                if (::access(toml_path.c_str(), F_OK) == 0) {
+                    conf_path = std::move(toml_path);
+                }
+            }
+        }
+
+        auto cfg_r = bench::load_bench_conf(conf_path);
         if (!cfg_r) {
-            skip_reason_ = "load_bench_conf failed: " + cfg_r.error();
+            skip_reason_ = "load_bench_conf failed: " +
+                           bench::format_error(cfg_r.error());
             spdlog::error("DpdkE2ETestEnv: {}", skip_reason_);
             return;
         }
-        cfg_ = *cfg_r;
+        cfg_.emplace(std::move(*cfg_r));
 
         // ── 2. Resolve NIC_B PCI BDF ──────────────────────────────────
-        // BenchConfig doesn't carry NIC_B_PCI (only the lat shell wrapper
-        // reads it).  Try the env var first, then bench.conf directly,
-        // then /sys/class/net/$NIC_B/device for the kernel-bound case.
-        nic_b_pci_ = resolve_nic_b_pci_(cfg_.nic_b);
+        // Prefer the env var; fall back to config.toml's
+        // networking.nic_b_pci; else /sys/class/net/<nic_b>/device.
+        nic_b_pci_ = resolve_nic_b_pci_(cfg_->networking.nic_b);
         if (nic_b_pci_.empty()) {
             skip_reason_ =
                 "could not determine NIC_B PCI BDF. Set EPH_TEST_NIC_B_PCI=<bdf> "
-                "or add NIC_B_PCI=<bdf> to benchmarks/latency/bench.conf";
+                "or add nic_b_pci=<bdf> under [networking] in config.toml";
             spdlog::warn("DpdkE2ETestEnv: {}", skip_reason_);
             return;
         }
-        spdlog::info("DpdkE2ETestEnv: NIC_B={} PCI={}", cfg_.nic_b, nic_b_pci_);
+        spdlog::info("DpdkE2ETestEnv: NIC_B={} PCI={}",
+                     cfg_->networking.nic_b, nic_b_pci_);
 
         // ── 3. Verify NIC_B is on vfio-pci ────────────────────────────
         if (!nic_on_vfio_pci_(nic_b_pci_)) {
@@ -104,7 +126,7 @@ public:
         }
         if (pid == 0) {
             // Child: become the mock dispatcher and never return.
-            ::_exit(run_mock_dispatcher(cfg_.server_ip));
+            ::_exit(run_mock_dispatcher(cfg_->networking.server_ip));
         }
         mock_pid_ = pid;
         spdlog::info("DpdkE2ETestEnv: forked mock dispatcher pid={}", pid);
@@ -127,7 +149,9 @@ public:
 
         auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create_full(
             argc, argv,
-            cfg_.server_ip, cfg_.local_ip, cfg_.gateway_ip,
+            cfg_->networking.server_ip,
+            cfg_->networking.client_ip,
+            cfg_->networking.gateway_ip,
             /*dpdk_port_id=*/0);
         if (!env_r) {
             skip_reason_ = "DpdkBenchEnv::create_full failed: " + env_r.error();
@@ -265,7 +289,7 @@ private:
     static inline std::string nic_b_pci_;
     static inline pid_t mock_pid_ = -1;
     static inline std::optional<::eph::dpdk::test::DpdkBenchEnv> env_;
-    static inline bench::LegacyBenchConfig cfg_;
+    static inline std::optional<bench::BenchConfig> cfg_;
 };
 
 /// Convenience macro: skip a test if the env is not ready (and report why).
