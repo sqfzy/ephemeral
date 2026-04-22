@@ -66,6 +66,7 @@
 #include "core/endpoint.hpp"          // Phase 4: resolve_endpoint
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"
+#include "core/pin_client.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
@@ -181,54 +182,52 @@ int main(int argc, char** argv) {
 
     const char* conf_path = parse_config_path(argc, argv);
 
-    // ── Load config: globals + [lat_ex_market] section.
-    auto globals_r = bench::ScenarioConfig::load_globals(conf_path);
-    if (!globals_r) {
-        std::fprintf(stderr, "lat_ex_market: %s\n", globals_r.error().c_str());
+    // ── Load config.toml into structured BenchConfig.
+    auto cfg_r = bench::load_bench_conf(conf_path);
+    if (!cfg_r) {
+        std::fprintf(stderr, "lat_ex_market: %s\n",
+                     bench::format_error(cfg_r.error()).c_str());
         return 1;
     }
-    auto scenario_r = bench::ScenarioConfig::load(conf_path, "lat_ex_market");
-    if (!scenario_r) {
-        std::fprintf(stderr, "lat_ex_market: %s\n", scenario_r.error().c_str());
+    const bench::BenchConfig& bench_cfg = *cfg_r;
+    const bench::Scenario* sc = bench_cfg.scenario("lat_ex_market");
+    if (sc == nullptr) {
+        std::fprintf(stderr,
+                     "lat_ex_market: [scenarios.lat_ex_market] not found in %s\n",
+                     conf_path);
         return 1;
     }
-    const auto& globals  = globals_r.value();
-    const auto& scenario = scenario_r.value();
+    const bench::Scenario& scenario = *sc;
 
-    auto port_r = scenario.get_u32("port");
+    bench::pin_client_from_cfg(bench_cfg, "lat_ex_market");
+
+    auto port_r = scenario.get<uint16_t>("port");
     if (!port_r) {
-        std::fprintf(stderr, "lat_ex_market: %s\n", port_r.error().c_str());
+        std::fprintf(stderr, "lat_ex_market: %s\n",
+                     bench::format_error(port_r.error()).c_str());
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(port_r.value());
+    const uint16_t port = *port_r;
 
-    const std::string ws_path = scenario.get_string("ws_path", "/ws/bookticker");
+    const std::string ws_path =
+        scenario.get_or<std::string>("ws_path", "/ws/bookticker");
 
-    auto duration_r = scenario.get_u32("duration_seconds", 30);
-    if (!duration_r) {
-        std::fprintf(stderr, "lat_ex_market: %s\n", duration_r.error().c_str());
-        return 1;
-    }
-    const uint64_t duration_s = duration_r.value();
+    const uint64_t duration_s =
+        scenario.get_or<uint32_t>("duration_seconds", 30);
 
     // push_rate_hz is informational at the client — only the mock consults
     // it to pace its sender loop. We print it in the banner so bench logs
     // are self-describing.
-    const uint32_t push_rate_hz = scenario.get_u32("push_rate_hz", 100000)
-                                      .value_or(100000);
+    const uint32_t push_rate_hz =
+        scenario.get_or<uint32_t>("push_rate_hz", 100000);
 
-    auto warmup_r = globals.get_u64("warmup_samples", 1000);
-    if (!warmup_r) {
-        std::fprintf(stderr, "lat_ex_market: %s\n", warmup_r.error().c_str());
-        return 1;
-    }
-    const uint64_t warmup_samples = warmup_r.value();
+    const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
 
     // Phase 4: resolve the endpoint. `mock` (default) keeps the legacy
-    // mock_ip:port/ws_path wiring; `wss://host[:port]/path` switches to
+    // server_ip:port/ws_path wiring; `wss://host[:port]/path` switches to
     // real-server mode, which (on the kernel backend) instantiates the
     // TLS-enabled stream typedef below.
-    auto endpoint_r = bench::resolve_endpoint(globals, scenario);
+    auto endpoint_r = bench::resolve_endpoint(bench_cfg, scenario);
     if (!endpoint_r) {
         std::fprintf(stderr, "lat_ex_market: %s\n", endpoint_r.error().c_str());
         return 1;
@@ -237,12 +236,13 @@ int main(int argc, char** argv) {
 
 #if defined(EPH_USE_DPDK)
     if (endpoint.is_real_server) {
+        const std::string ep = scenario.get_or<std::string>("endpoint", "mock");
         std::fprintf(stderr,
             "lat_ex_market: real-server endpoint ('%s') is not supported on "
             "the DPDK build — the PMD path has no outbound WAN routing.\n"
             "Run the kernel build (lat_ex_market) against the real server "
             "and keep the DPDK build on the mock.\n",
-            scenario.get_string("endpoint").c_str());
+            ep.c_str());
         return 1;
     }
 #endif
@@ -329,7 +329,7 @@ int main(int argc, char** argv) {
     eu::Recorder rec{std::string{"lat_ex_market_"} + backend + "_oneway"};
 
 #if defined(EPH_USE_DPDK)
-    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    auto env_r = bench::load_dpdk_env(bench_cfg, /*port_id=*/0);
     if (!env_r) {
         std::fprintf(stderr, "lat_ex_market: %s\n", env_r.error().c_str());
         return 1;
