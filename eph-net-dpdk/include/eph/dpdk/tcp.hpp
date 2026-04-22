@@ -127,6 +127,10 @@ struct TcpConfig {
     }
 
     /// Equality comparison (manual because rte_ether_addr is a C struct).
+    /// All user-visible config fields (including keepalive) are compared so
+    /// two configs that produce materially different session behaviour do
+    /// not collapse to equal — catches accidental misuse like "did I forget
+    /// to copy this field?" in snapshot / round-trip tests.
     [[nodiscard]] friend bool operator==(const TcpConfig& a,
                                          const TcpConfig& b) noexcept {
         return a.tuple        == b.tuple
@@ -137,7 +141,9 @@ struct TcpConfig {
             && a.port_id      == b.port_id
             && a.tx_queue_id  == b.tx_queue_id
             && a.rx_queue_id  == b.rx_queue_id
-            && a.max_rx_burst == b.max_rx_burst;
+            && a.max_rx_burst == b.max_rx_burst
+            && a.keepalive_interval == b.keepalive_interval
+            && a.keepalive_probes   == b.keepalive_probes;
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.

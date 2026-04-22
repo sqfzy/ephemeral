@@ -216,6 +216,28 @@ TEST(TcpConfig, EqualityDifferentMac) {
     EXPECT_NE(a, b);
 }
 
+// Keepalive fields participate in equality — see operator==, which must
+// compare them so two configs that differ only in keepalive do not collapse
+// to equal. Regression guard for a silent drop observed during review.
+TEST(TcpConfig, EqualityDifferentKeepaliveInterval) {
+    auto a = make_valid_config();
+    auto b = make_valid_config();
+    b.keepalive_interval = std::chrono::milliseconds{5000};
+    EXPECT_NE(a, b);
+}
+
+TEST(TcpConfig, EqualityDifferentKeepaliveProbes) {
+    auto a = make_valid_config();
+    auto b = make_valid_config();
+    // When keepalive_interval is zero, probes is unused but still a
+    // distinguishing field for config snapshot / round-trip purposes.
+    a.keepalive_interval = std::chrono::milliseconds{5000};
+    b.keepalive_interval = std::chrono::milliseconds{5000};
+    a.keepalive_probes = 3;
+    b.keepalive_probes = 7;
+    EXPECT_NE(a, b);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TcpSession concept satisfaction
 // ─────────────────────────────────────────────────────────────────────────────
