@@ -452,3 +452,39 @@ TEST(FindSrcPortForQueue, RejectsInvertedRange) {
 // against a real port_id requires DPDK EAL + a configured NIC. Those
 // paths are exercised by the integration test in stage 3
 // (test_dpdk_rss_platform), not here.
+
+// ---------------------------------------------------------------------------
+// queue_for_hash — boundary defenses against malformed RETA snapshots
+// ---------------------------------------------------------------------------
+
+TEST(QueueForHash, EmptyRetaTableReturnsZero) {
+    // Callers that hand in a zero-length reta_table would trigger a signed
+    // -1 mask on the old code (UB on the array index). Defensive branch
+    // must return 0 without dereferencing.
+    std::array<uint16_t, 0> empty_reta{};
+    EXPECT_EQ(queue_for_hash(0xdeadbeef, std::span<const uint16_t>(empty_reta)), 0);
+}
+
+TEST(QueueForHash, PowerOfTwoRetaUsesBitmask) {
+    // Standard path: reta_size is a power of two. The bitmask branch is
+    // exact; hash & (N-1) should land on the matching slot.
+    std::array<uint16_t, 8> reta{0, 1, 2, 3, 4, 5, 6, 7};
+    EXPECT_EQ(queue_for_hash(0xAABBCC00u, std::span<const uint16_t>(reta)),
+              reta[0xAABBCC00u & 7u]);
+    EXPECT_EQ(queue_for_hash(0xAABBCC05u, std::span<const uint16_t>(reta)),
+              reta[0xAABBCC05u & 7u]);
+}
+
+TEST(QueueForHash, NonPowerOfTwoRetaFallsBackToModulo) {
+    // 12 slots is not a power of two — the old bitmask path would have
+    // produced a wrong-index read (12 - 1 = 0x0B is not a full mask,
+    // so index `hash & 0x0B` skips many legitimate slots). The fallback
+    // branch uses `%` so every slot is reachable.
+    std::array<uint16_t, 12> reta{
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21};
+    EXPECT_EQ(queue_for_hash(0u, std::span<const uint16_t>(reta)), reta[0]);
+    EXPECT_EQ(queue_for_hash(100u, std::span<const uint16_t>(reta)),
+              reta[100u % 12u]);
+    EXPECT_EQ(queue_for_hash(0xFFFFFFFFu, std::span<const uint16_t>(reta)),
+              reta[0xFFFFFFFFu % 12u]);
+}
