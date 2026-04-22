@@ -53,6 +53,7 @@
 // `core/config.hpp` from the compiler's perspective.
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#include "core/pin_client.hpp"
 #include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
@@ -100,39 +101,40 @@ int main(int argc, char** argv) {
 
     const char* conf_path = parse_config_path(argc, argv);
 
-    // ── Load config: globals (mock_ip, warmup_samples) + [lat_tcp] section.
-    auto globals_r = bench::ScenarioConfig::load_globals(conf_path);
-    if (!globals_r) {
-        std::fprintf(stderr, "lat_tcp: %s\n", globals_r.error().c_str());
+    // ── Load config.toml into structured BenchConfig.
+    auto cfg_r = bench::load_bench_conf(conf_path);
+    if (!cfg_r) {
+        std::fprintf(stderr, "lat_tcp: %s\n",
+                     bench::format_error(cfg_r.error()).c_str());
         return 1;
     }
-    auto scenario_r = bench::ScenarioConfig::load(conf_path, "lat_tcp");
-    if (!scenario_r) {
-        std::fprintf(stderr, "lat_tcp: %s\n", scenario_r.error().c_str());
+    const bench::BenchConfig& bench_cfg = *cfg_r;
+    const bench::Scenario* tcp = bench_cfg.scenario("lat_tcp");
+    if (tcp == nullptr) {
+        std::fprintf(stderr, "lat_tcp: [scenarios.lat_tcp] not found in %s\n",
+                     conf_path);
         return 1;
     }
-    const auto& globals  = globals_r.value();
-    const auto& scenario = scenario_r.value();
+    const bench::Scenario& scenario = *tcp;
 
-    // Required: port (no sensible default).
-    auto port_r = scenario.get_u32("port");
+    bench::pin_client_from_cfg(bench_cfg, "lat_tcp");
+
+    // Required: port.
+    auto port_r = scenario.get<uint16_t>("port");
     if (!port_r) {
-        std::fprintf(stderr, "lat_tcp: %s\n", port_r.error().c_str());
+        std::fprintf(stderr, "lat_tcp: %s\n",
+                     bench::format_error(port_r.error()).c_str());
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(port_r.value());
+    const uint16_t port = *port_r;
 
     // Optional with defaults.
-    auto payload_r = scenario.get_u32("payload_size", 256);
-    if (!payload_r) {
-        std::fprintf(stderr, "lat_tcp: %s\n", payload_r.error().c_str());
-        return 1;
-    }
-    const std::size_t payload_size = payload_r.value();
+    const std::size_t payload_size =
+        scenario.get_or<uint32_t>("payload_size", 256);
 
     // Every raw-payload RTT scenario prepends a 24 B timestamp block,
     // so the bench operator must configure payload_size
-    // ≥ 24. Fail fast if not; the user has misconfigured bench.conf.
+    // ≥ 24. Fail fast if not; the user has misconfigured config.toml.
     if (payload_size < bench::kTimestampBlockSize) {
         std::fprintf(stderr,
                      "lat_tcp: payload_size=%zu < kTimestampBlockSize=%zu "
@@ -141,23 +143,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto duration_r = scenario.get_u32("duration_seconds", 10);
-    if (!duration_r) {
-        std::fprintf(stderr, "lat_tcp: %s\n", duration_r.error().c_str());
-        return 1;
-    }
-    const uint64_t duration_s = duration_r.value();
+    const uint64_t duration_s =
+        scenario.get_or<uint32_t>("duration_seconds", 10);
+    const uint64_t warmup_samples =
+        bench_cfg.measurement.warmup_samples;
 
-    auto warmup_r = globals.get_u64("warmup_samples", 1000);
-    if (!warmup_r) {
-        std::fprintf(stderr, "lat_tcp: %s\n", warmup_r.error().c_str());
-        return 1;
-    }
-    const uint64_t warmup_samples = warmup_r.value();
-
-    // Mock IP: global `mock_ip` key, defaults to loopback so the smoke test
-    // from a trivial `/tmp/bench-smoke.conf` without mock_ip still works.
-    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
+    // Mock IP: server_ip from [networking]; falls back to 127.0.0.1 if empty.
+    const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
+                                        ? std::string{"127.0.0.1"}
+                                        : bench_cfg.networking.server_ip;
     auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
     if (!ip_r) {
         std::fprintf(stderr, "lat_tcp: invalid mock_ip '%s': %s\n",
@@ -181,7 +175,7 @@ int main(int argc, char** argv) {
 
 #if defined(EPH_USE_DPDK)
     // ── DPDK bootstrap: EAL + Platform + ARP resolve via shared helper.
-    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    auto env_r = bench::load_dpdk_env(bench_cfg, /*port_id=*/0);
     if (!env_r) {
         std::fprintf(stderr, "lat_tcp: %s\n", env_r.error().c_str());
         return 1;
