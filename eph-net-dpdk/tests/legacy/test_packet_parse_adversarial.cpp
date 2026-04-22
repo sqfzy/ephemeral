@@ -423,3 +423,291 @@ TEST(PacketParseAdv, MatchesRejectsWrongIp) {
     ConnectionTuple wrong{0x0A000099, 0x0A000001, 443, 12345};
     EXPECT_FALSE(parsed.matches(wrong));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ICMP parse — Type 3 Code 4 (Fragmentation Needed and DF Set) path + common
+// boundary cases. The full path is already exercised in test_tcp_state_machine
+// via a real TcpSession fixture; these tests isolate parse_icmp() itself and
+// target edge cases the state-machine tests don't cover.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Build a minimal ICMP Type 3 Code 4 packet with an embedded IP/TCP header.
+/// Parameters:
+///   - `next_hop_mtu`: MTU value to encode (host byte order; written BE).
+///   - `embedded_proto`: protocol in the embedded IP header (kIpProtoTcp / Udp).
+///   - `embedded_ihl_words`: IHL for the embedded IP header.
+///   - `truncate_embedded_to`: if non-zero, shrink the total to exactly this
+///     many bytes (simulates a wire-truncated ICMP).
+size_t build_icmp_frag_needed(uint8_t* buf,
+                               uint16_t next_hop_mtu = 1280,
+                               uint8_t  embedded_proto = kIpProtoTcp,
+                               uint8_t  embedded_ihl_words = 5,
+                               size_t   truncate_embedded_to = 0) {
+    const size_t eth_len = kEtherHeaderLen;
+    const size_t outer_ip_len = kIpv4HeaderLen;
+    const size_t icmp_hdr_len = 8;  // type/code/cksum/unused/mtu
+    const size_t emb_ip_len = embedded_ihl_words * 4u;
+    const size_t emb_l4_len = 8;    // ports + 4 bytes of TCP seq / UDP len+cksum
+    const size_t total = eth_len + outer_ip_len + icmp_hdr_len
+                        + emb_ip_len + emb_l4_len;
+
+    std::memset(buf, 0, total);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + eth_len);
+    ip->version_ihl   = static_cast<uint8_t>((4 << 4) | 5);
+    ip->total_length  = hton16(static_cast<uint16_t>(
+        outer_ip_len + icmp_hdr_len + emb_ip_len + emb_l4_len));
+    ip->next_proto_id = kIpProtoIcmp;
+    ip->src_addr      = hton32(0x0A00000A); // router
+    ip->dst_addr      = hton32(0x0A000001); // us
+
+    uint8_t* icmp = buf + eth_len + outer_ip_len;
+    icmp[0] = 3; // Type 3
+    icmp[1] = 4; // Code 4
+    // icmp[2..3] checksum (skip)
+    // icmp[4..5] unused (zero)
+    uint16_t mtu_net = hton16(next_hop_mtu);
+    std::memcpy(icmp + 6, &mtu_net, 2);
+
+    auto* emb_ip = reinterpret_cast<rte_ipv4_hdr*>(icmp + icmp_hdr_len);
+    emb_ip->version_ihl   = static_cast<uint8_t>((4 << 4) | embedded_ihl_words);
+    emb_ip->next_proto_id = embedded_proto;
+    emb_ip->src_addr      = hton32(0x0A000001);
+    emb_ip->dst_addr      = hton32(0x0A000002);
+
+    // Embedded L4 ports (first 4 bytes of L4)
+    uint8_t* emb_l4 = icmp + icmp_hdr_len + emb_ip_len;
+    uint16_t sp = hton16(12345);
+    uint16_t dp = hton16(443);
+    std::memcpy(emb_l4, &sp, 2);
+    std::memcpy(emb_l4 + 2, &dp, 2);
+
+    return truncate_embedded_to != 0 ? truncate_embedded_to : total;
+}
+
+} // namespace
+
+TEST(PacketParseAdv, IcmpFragNeededFullyParsed) {
+    uint8_t buf[256];
+    const size_t len = build_icmp_frag_needed(buf, /*mtu=*/1400);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    ASSERT_TRUE(parsed);
+    EXPECT_TRUE(parsed.is_frag_needed());
+    EXPECT_EQ(parsed.type, 3);
+    EXPECT_EQ(parsed.code, 4);
+    EXPECT_EQ(parsed.next_hop_mtu, 1400);
+    EXPECT_TRUE(parsed.embedded_valid);
+    EXPECT_EQ(parsed.embedded_src_ip, 0x0A000001u);
+    EXPECT_EQ(parsed.embedded_dst_ip, 0x0A000002u);
+    EXPECT_EQ(parsed.embedded_proto, kIpProtoTcp);
+    EXPECT_EQ(parsed.embedded_src_port, 12345);
+    EXPECT_EQ(parsed.embedded_dst_port, 443);
+}
+
+TEST(PacketParseAdv, IcmpFragNeededNonTcpNonUdpProtoInvalidatesEmbedded) {
+    // RFC 792 requires the embedded first-8-bytes-of-original-L4, but
+    // our parser only populates src/dst port for TCP/UDP. An embedded
+    // ICMP-in-ICMP (proto 1) must leave `embedded_valid` = false even
+    // though the rest of the parse succeeds.
+    uint8_t buf[256];
+    const size_t len = build_icmp_frag_needed(
+        buf, /*mtu=*/1280, /*embedded_proto=*/kIpProtoIcmp);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    ASSERT_TRUE(parsed);
+    EXPECT_TRUE(parsed.is_frag_needed());
+    EXPECT_EQ(parsed.embedded_proto, kIpProtoIcmp);
+    EXPECT_FALSE(parsed.embedded_valid);
+}
+
+TEST(PacketParseAdv, IcmpFragNeededTruncatedAfterIcmpHeaderReturnsCoreFields) {
+    // Truncated so only the 8-byte ICMP header fits. parse_icmp still
+    // returns type/code/next_hop_mtu (those are in the 8-byte header),
+    // but the embedded_* fields stay default-zeroed because the nested
+    // IP header doesn't fit.
+    uint8_t buf[256];
+    const size_t min_len = kEtherHeaderLen + kIpv4HeaderLen + 8;
+    const size_t len = build_icmp_frag_needed(
+        buf, /*mtu=*/900, /*embedded_proto=*/kIpProtoTcp,
+        /*embedded_ihl_words=*/5, /*truncate_embedded_to=*/min_len);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.type, 3);
+    EXPECT_EQ(parsed.code, 4);
+    EXPECT_EQ(parsed.next_hop_mtu, 900);
+    EXPECT_FALSE(parsed.embedded_valid);
+    EXPECT_EQ(parsed.embedded_src_port, 0);
+    EXPECT_EQ(parsed.embedded_dst_port, 0);
+}
+
+TEST(PacketParseAdv, IcmpFragNeededTruncatedBeforeIcmpHeaderRejected) {
+    // Truncated below the 8-byte ICMP header — parse_icmp must return
+    // a default-constructed ParsedIcmp (operator bool() false).
+    uint8_t buf[256];
+    (void)build_icmp_frag_needed(buf);
+    // Cut to just ethernet+ip, no ICMP payload at all.
+    const size_t truncated = kEtherHeaderLen + kIpv4HeaderLen + 4; // 4 < 8
+    auto mbuf = make_mbuf(buf, truncated);
+    auto parsed = parse_icmp(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(parsed));
+}
+
+TEST(PacketParseAdv, IcmpNonFragNeededTypeLeavesEmbeddedFieldsZero) {
+    // Build a Type 3 Code 4, then overwrite type+code to a different
+    // diagnostic message (e.g. echo request). parse_icmp exposes
+    // type/code but leaves next_hop_mtu and embedded_* at their
+    // default zero values — confirming the embedded parse is strictly
+    // gated on is_frag_needed().
+    uint8_t buf[256];
+    const size_t len = build_icmp_frag_needed(buf, /*mtu=*/1100);
+    buf[kEtherHeaderLen + kIpv4HeaderLen + 0] = 8; // echo request
+    buf[kEtherHeaderLen + kIpv4HeaderLen + 1] = 0;
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    ASSERT_TRUE(parsed);
+    EXPECT_FALSE(parsed.is_frag_needed());
+    EXPECT_EQ(parsed.type, 8);
+    EXPECT_EQ(parsed.code, 0);
+    EXPECT_EQ(parsed.next_hop_mtu, 0);
+    EXPECT_FALSE(parsed.embedded_valid);
+}
+
+TEST(PacketParseAdv, IcmpNullMbufReturnsDefault) {
+    auto parsed = parse_icmp(nullptr);
+    EXPECT_FALSE(static_cast<bool>(parsed));
+}
+
+TEST(PacketParseAdv, IcmpProtocolMismatchRejected) {
+    // IP says proto=17 (UDP) but we call parse_icmp — must reject at
+    // the proto gate rather than misinterpret UDP bytes as ICMP.
+    uint8_t buf[128];
+    const size_t len = build_udp_packet(buf, 4);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(parsed));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// IP fragmentation — our L4 parsers assume the TCP/UDP/ICMP header sits
+// immediately after the IP header, which is only true for the *first*
+// fragment (MF=1, offset=0) or an unfragmented packet. Accepting a
+// non-first fragment would let an attacker place arbitrary payload bytes
+// where the parser reads src/dst/seq/ack. We don't do L3 reassembly, so
+// drop fragmented packets at parse_ip_header. DF=1 alone is fine.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(PacketParseAdv, IpMoreFragmentsBitRejected) {
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // MF=1, offset=0 — first fragment of a larger datagram.
+    ip->fragment_offset = hton16(kIpMoreFragments);
+    auto mbuf = make_mbuf(buf, len);
+    auto hdr = parse_ip_header(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(hdr));
+    EXPECT_EQ(parse_packet(&mbuf).tcp, nullptr);
+}
+
+TEST(PacketParseAdv, IpNonZeroFragmentOffsetRejected) {
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // MF=0, offset=185 (in 8-byte units, so byte 1480) — a middle/last fragment.
+    ip->fragment_offset = hton16(185);
+    auto mbuf = make_mbuf(buf, len);
+    auto hdr = parse_ip_header(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(hdr));
+    EXPECT_EQ(parse_packet(&mbuf).tcp, nullptr);
+}
+
+TEST(PacketParseAdv, IpMoreFragmentsAndNonZeroOffsetRejected) {
+    // A middle fragment typically has MF=1 AND offset > 0. Both flags
+    // set simultaneously must be rejected — this is the attacker-
+    // friendly overlapping-fragment case.
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpMoreFragments | 1);
+    auto mbuf = make_mbuf(buf, len);
+    EXPECT_FALSE(static_cast<bool>(parse_ip_header(&mbuf)));
+}
+
+TEST(PacketParseAdv, IpDontFragmentAloneAccepted) {
+    // DF=1 (no MF, no offset) is the common HFT send pattern — must
+    // pass through unchanged. This is a regression guard for the
+    // fragment-rejection patch.
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpDontFragment);
+    auto mbuf = make_mbuf(buf, len);
+    auto hdr = parse_ip_header(&mbuf);
+    EXPECT_TRUE(static_cast<bool>(hdr));
+    auto parsed = parse_packet(&mbuf);
+    EXPECT_NE(parsed.tcp, nullptr);
+}
+
+TEST(PacketParseAdv, UdpFragmentedRejectedBySharedParseIpHeader) {
+    // UDP's parse path shares parse_ip_header with TCP; confirm the
+    // fragment rejection covers UDP too (defensive — a fragmented UDP
+    // message attack would otherwise misinterpret payload bytes as
+    // UDP length / checksum).
+    uint8_t buf[128];
+    const size_t len = build_udp_packet(buf, 16);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpMoreFragments);
+    auto mbuf = make_mbuf(buf, len);
+    EXPECT_EQ(parse_udp_packet(&mbuf).udp, nullptr);
+}
+
+TEST(PacketParseAdv, IcmpFragmentedRejectedBySharedParseIpHeader) {
+    // Same gate applies to ICMP — a fragmented Type 3 Code 4 could
+    // otherwise feed bogus next_hop_mtu / embedded 4-tuple into
+    // TcpSession::on_icmp_frag_needed.
+    uint8_t buf[256];
+    const size_t len = build_icmp_frag_needed(buf, /*mtu=*/1280);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpMoreFragments | 2);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(parsed));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Multi-segment mbuf — all downstream parsers use first-segment data_len.
+// Chained mbufs would let bounds-check logic operate on the wrong byte
+// count; parse_ip_header rejects outright as defense-in-depth.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(PacketParseAdv, MultiSegmentMbufRejected) {
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto mbuf = make_mbuf(buf, len);
+    // Simulate a NIC delivering the packet as a chain by setting
+    // nb_segs=2. Our parsers assume nb_segs==1 (single contiguous
+    // buffer) and must bail rather than silently parse the first
+    // segment alone.
+    mbuf.nb_segs = 2;
+    EXPECT_FALSE(static_cast<bool>(parse_ip_header(&mbuf)));
+    EXPECT_EQ(parse_packet(&mbuf).tcp, nullptr);
+    EXPECT_EQ(parse_udp_packet(&mbuf).udp, nullptr);
+}
+
+TEST(PacketParseAdv, SingleSegmentMbufAccepted) {
+    // Regression guard for the multi-segment rejection above: the
+    // normal case (nb_segs==1, what PMDs deliver for standard-MTU
+    // traffic) must continue to parse without incident.
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto mbuf = make_mbuf(buf, len);
+    mbuf.nb_segs = 1;
+    EXPECT_TRUE(static_cast<bool>(parse_ip_header(&mbuf)));
+    EXPECT_NE(parse_packet(&mbuf).tcp, nullptr);
+}

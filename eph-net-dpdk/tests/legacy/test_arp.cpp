@@ -247,6 +247,14 @@ TEST(ArpReply, TruncatedPacketReturnsNullopt) {
         << "Truncated packet should return nullopt";
 }
 
+TEST(ArpReply, NullMbufReturnsNullopt) {
+    // Callers (resolve loop, fuzzer) should never pass nullptr, but a
+    // defensive null-check keeps us from segfaulting if they do.
+    auto result = parse_arp_reply(nullptr, net::parse_ipv4("10.0.0.1"));
+    EXPECT_FALSE(result.has_value())
+        << "Null mbuf must not crash and must return nullopt";
+}
+
 TEST(ArpReply, WrongHwTypeIgnored) {
     rte_ether_addr mac = {{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
     uint32_t ip = net::parse_ipv4("10.0.0.1");

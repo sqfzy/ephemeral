@@ -513,9 +513,30 @@ toeplitz_hash_ipv4(std::span<const uint8_t> rss_key,
 /// @param reta_table   Flattened RETA — one queue id per slot. Size MUST
 ///                     be a power of two (RSS spec); otherwise behaviour
 ///                     is implementation-defined.
+/// @return Queue id, or 0 when `reta_table` is empty or not a power of two
+///         (log a WARN in those cases — reaching this branch means the
+///         caller supplied a malformed RSS snapshot, which is a bug).
+///         Returning 0 keeps the caller on the default queue rather than
+///         producing UB via an out-of-bounds read / wrong-mask index.
 [[nodiscard]] inline uint16_t
 queue_for_hash(uint32_t hash, std::span<const uint16_t> reta_table) noexcept {
-    return reta_table[hash & (reta_table.size() - 1)];
+    if (reta_table.empty()) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::flow_logger(),
+            "queue_for_hash: reta_table is empty -- returning queue 0");
+        return 0;
+    }
+    const size_t sz = reta_table.size();
+    // Power-of-two check: (sz & (sz - 1)) == 0 for non-zero powers of two.
+    // Driver bugs / tests sometimes supply oddly-sized tables; degrade
+    // gracefully rather than produce a silently wrong queue index.
+    if ((sz & (sz - 1)) != 0) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::flow_logger(),
+            "queue_for_hash: reta_table size={} is not a power of two "
+            "-- falling back to modulo (RSS routing will be approximate)",
+            sz);
+        return reta_table[hash % sz];
+    }
+    return reta_table[hash & (sz - 1)];
 }
 
 /// Snapshot of a port's RSS state (Toeplitz key + RETA). Query once via

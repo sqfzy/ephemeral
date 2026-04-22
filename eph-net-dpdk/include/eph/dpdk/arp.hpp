@@ -162,6 +162,12 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
 parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
                 std::optional<rte_ether_addr> expected_mac = std::nullopt) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + sizeof(ArpPacket);
+    // Defensive: parse_arp_reply is reachable from the fuzzer harness and
+    // from the resolve() loop where a nullptr mbuf should never appear
+    // in practice — but the fuzz harness has found off-by-one mistakes
+    // before. A null-check keeps us from dereferencing and crashing if
+    // a caller inadvertently hands in nullptr.
+    if (mbuf == nullptr) [[unlikely]] return std::nullopt;
     if (mbuf->data_len < min_len) return std::nullopt;
 
     auto* pkt = rte_pktmbuf_mtod(mbuf, const uint8_t*);

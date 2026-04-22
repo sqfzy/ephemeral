@@ -87,6 +87,20 @@ enum class StreamMetric : std::size_t {
     /// the upstream changed its TLS write strategy.
     kTlsCrossRecordFrames,
 
+    /// DPDK + TLS only: a `send()` call encrypted `N` plaintext bytes into
+    /// one `tls_send_buf_`, advancing the TLS write sequence counter, but
+    /// the subsequent chunked hand-off to `TcpSession::send` failed partway
+    /// through — leaving the peer's AEAD nonce/sequence state permanently
+    /// out of sync with ours. The stream latches `tls_corrupt_` and every
+    /// further `send()` / `process_burst_` returns `Error::Disconnected`
+    /// so the reconnect loop replaces the session. Any non-zero value here
+    /// means "this connection was correctly torn down before it could
+    /// silently spoil its peer's crypto state"; it should be paired with
+    /// `kTcpResetsReceived` or a reconnect metric on the app side. Never
+    /// expected in steady state — TX queue saturation on a loopback-free
+    /// HFT path is a design-level anomaly.
+    kTlsSendDesyncs,
+
     // ── DPDK TCP session-specific counters (pulled from
     //    TcpSession::Stats at read time; other backends emit 0). ──
 
@@ -136,6 +150,7 @@ kStreamMetricNames = {
     "net.stream.reasm_overflows",
     "net.stream.codec_errors",
     "net.stream.tls.cross_record_frames",
+    "net.stream.tls.send_desyncs",
     "net.stream.tcp.resets_received",
     "net.stream.tcp.out_of_order_segments",
     "net.stream.tcp.reorder_buffer_hits",

@@ -267,6 +267,46 @@ TEST(DpdkPoller, AddRejectsDuplicate5Tuple) {
     EXPECT_EQ(pb.attached_to, nullptr);  // rejected: never attached
 }
 
+TEST(DpdkPoller, RemoveMiddleShiftsTailLeft) {
+    // Remove the middle of three entries and verify:
+    //   1. size decrements to 2.
+    //   2. The tail entry (originally index 2) is correctly reachable —
+    //      add/remove round-trip still works for it (catches shift-left
+    //      copy bugs that corrupt function-pointer thunks).
+    //   3. The removed entry's notify_detached_ fires exactly once.
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa;  pa.src_port = 10001;
+    SyntheticPollableA pb;  pb.src_port = 10002;
+    SyntheticPollableA pc;  pc.src_port = 10003;
+
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pb).has_value());
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pc).has_value());
+    EXPECT_EQ(p->size(), 3u);
+
+    // Remove the middle one.
+    auto r = p->remove<SyntheticPollableA>(&pb);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_EQ(p->size(), 2u);
+    EXPECT_EQ(pa.attached_to, p.get());
+    EXPECT_EQ(pb.attached_to, nullptr);
+    EXPECT_EQ(pc.attached_to, p.get());
+    EXPECT_EQ(pb.detach_calls, 1);
+    EXPECT_EQ(pa.detach_calls, 0);
+    EXPECT_EQ(pc.detach_calls, 0);
+
+    // The tail entry (pc) must be safely remove-able — the shift-left
+    // copied its function-pointer thunks into index 1 and if any of
+    // those copies were corrupted, remove()'s detach_fn invocation via
+    // entries_[1].detach_fn(entries_[1].obj) would UB.
+    auto r2 = p->remove<SyntheticPollableA>(&pc);
+    ASSERT_TRUE(r2.has_value()) << r2.error().detail;
+    EXPECT_EQ(p->size(), 1u);
+    EXPECT_EQ(pc.attached_to, nullptr);
+    EXPECT_EQ(pc.detach_calls, 1);
+}
+
 TEST(DpdkPoller, CrossProtocolSame4TupleCoexists) {
     // TCP and UDP Pollables sharing the exact same (src_ip, dst_ip,
     // src_port, dst_port) live in independent L4 namespaces and must
@@ -642,4 +682,58 @@ TEST(DpdkPoller, SetIcmpCallbackEmptyIsAlsoInstallOnce) {
     EXPECT_EQ(hits, 0);
     // `hits` goes out of scope after this test returns; `p`'s
     // icmp_cb_ is the empty default — no dangling reference. ASan-safe.
+}
+
+// The "connection rebind" sequence: add Pollable A on tuple T, remove A,
+// then add DIFFERENT object B on the SAME tuple T. Must succeed — the
+// 5-tuple dup check scans the current entries_ table only, and the
+// previous registration's slot has been shift-left cleared. Catches
+// regressions where a stale entries_ slot (e.g. a dtor that only
+// decremented n_entries_ without overwriting the final entry) would
+// cause a ghost 5-tuple collision.
+TEST(DpdkPoller, ReaddSameTupleAfterRemoveSucceeds) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa;
+    SyntheticPollableA pa_replace;  // independent object, same tuple
+    ASSERT_EQ(pa.src_port, pa_replace.src_port)
+        << "test precondition: both defaults share a 5-tuple";
+
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa).has_value());
+    EXPECT_EQ(p->size(), 1u);
+
+    ASSERT_TRUE(p->remove<SyntheticPollableA>(&pa).has_value());
+    EXPECT_EQ(p->size(), 0u);
+    EXPECT_EQ(pa.attached_to, nullptr);
+
+    // Re-add a distinct object on the same tuple — must succeed.
+    auto add2 = p->add<SyntheticPollableA>(&pa_replace);
+    ASSERT_TRUE(add2.has_value())
+        << "re-add after remove failed: " << add2.error().detail;
+    EXPECT_EQ(p->size(), 1u);
+    EXPECT_EQ(pa_replace.attached_to, p.get());
+    EXPECT_EQ(pa.detach_calls, 1);           // original fully detached
+    EXPECT_EQ(pa_replace.detach_calls, 0);   // replacement still attached
+}
+
+// Stacked rebind — N cycles of add→remove on the same tuple with
+// distinct objects must each succeed and leave entries_ in a clean
+// state. Guards against per-cycle state drift (e.g. a counter that
+// accumulates each time, or a stale slot persisting one rebind later).
+TEST(DpdkPoller, ReaddSameTupleSurvivesMultipleCycles) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+
+    SyntheticPollableA pa1;
+    SyntheticPollableA pa2;  // same tuple as pa1 (all defaults)
+    SyntheticPollableA pa3;  // same tuple
+
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa1).has_value());
+    ASSERT_TRUE(p->remove<SyntheticPollableA>(&pa1).has_value());
+    ASSERT_TRUE(p->add<SyntheticPollableA>(&pa2).has_value());
+    ASSERT_TRUE(p->remove<SyntheticPollableA>(&pa2).has_value());
+    auto last = p->add<SyntheticPollableA>(&pa3);
+    ASSERT_TRUE(last.has_value())
+        << "3rd rebind cycle failed: " << last.error().detail;
+    EXPECT_EQ(p->size(), 1u);
+    EXPECT_EQ(pa3.attached_to, p.get());
 }
