@@ -57,6 +57,20 @@ struct ParsedIpHeader {
 /// @return ParsedIpHeader with eth/ip populated on success, all-null on failure
 [[nodiscard]] inline ParsedIpHeader parse_ip_header(const rte_mbuf* mbuf) noexcept {
     if (!mbuf) [[unlikely]] return {};
+    // Reject multi-segment mbufs. All downstream parsers use
+    // `rte_pktmbuf_data_len` (first segment only), so a chained
+    // mbuf where the full packet spans segments would let the
+    // header sit in segment 0 while payload bytes extend into
+    // segment 1 beyond data_len. Bounds checks would then pass
+    // on segment-0 alone but report a payload slice that doesn't
+    // actually fit in the contiguous buffer. This codebase
+    // assumes standard-MTU traffic (single-segment mbuf). NICs
+    // configured without RTE_ETH_RX_OFFLOAD_SCATTER never deliver
+    // multi-segment RX; the check is defense-in-depth for any
+    // topology that does enable scatter + jumbo and ensures the
+    // bounds invariants in parse_tcp_from_ip / parse_udp_from_ip
+    // hold unconditionally.
+    if (mbuf->nb_segs > 1) [[unlikely]] return {};
     const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
     if (pkt_len < kEtherHeaderLen + kIpv4HeaderLen) return {};
 

@@ -679,3 +679,35 @@ TEST(PacketParseAdv, IcmpFragmentedRejectedBySharedParseIpHeader) {
     auto parsed = parse_icmp(&mbuf);
     EXPECT_FALSE(static_cast<bool>(parsed));
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Multi-segment mbuf — all downstream parsers use first-segment data_len.
+// Chained mbufs would let bounds-check logic operate on the wrong byte
+// count; parse_ip_header rejects outright as defense-in-depth.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(PacketParseAdv, MultiSegmentMbufRejected) {
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto mbuf = make_mbuf(buf, len);
+    // Simulate a NIC delivering the packet as a chain by setting
+    // nb_segs=2. Our parsers assume nb_segs==1 (single contiguous
+    // buffer) and must bail rather than silently parse the first
+    // segment alone.
+    mbuf.nb_segs = 2;
+    EXPECT_FALSE(static_cast<bool>(parse_ip_header(&mbuf)));
+    EXPECT_EQ(parse_packet(&mbuf).tcp, nullptr);
+    EXPECT_EQ(parse_udp_packet(&mbuf).udp, nullptr);
+}
+
+TEST(PacketParseAdv, SingleSegmentMbufAccepted) {
+    // Regression guard for the multi-segment rejection above: the
+    // normal case (nb_segs==1, what PMDs deliver for standard-MTU
+    // traffic) must continue to parse without incident.
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto mbuf = make_mbuf(buf, len);
+    mbuf.nb_segs = 1;
+    EXPECT_TRUE(static_cast<bool>(parse_ip_header(&mbuf)));
+    EXPECT_NE(parse_packet(&mbuf).tcp, nullptr);
+}
