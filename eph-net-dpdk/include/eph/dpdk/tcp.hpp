@@ -1620,7 +1620,15 @@ public:
             pool_, snd_nxt_, rcv_nxt_, net::kTcpRst | net::kTcpAck, 0);
         if (rst) {
             uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &rst, 1);
-            if (sent != 1) rte_pktmbuf_free(rst);
+            if (sent != 1) {
+                rte_pktmbuf_free(rst);
+            } else {
+                // Keep tx_packets consistent with connect() / close() / send() —
+                // every successfully-burst segment counts, including RSTs.
+                // Without this, operators see reset-heavy workloads under-
+                // report TX throughput in telemetry.
+                stats_.tx_packets++;
+            }
         }
 
         state_ = TcpState::Closed;

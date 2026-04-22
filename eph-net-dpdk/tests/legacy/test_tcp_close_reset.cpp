@@ -233,3 +233,20 @@ TEST_F(TcpCloseResetTest, ResetFromAlreadyClosedIsNoOp) {
     s.reset();
     EXPECT_EQ(s.state(), TcpState::Closed);
 }
+
+TEST_F(TcpCloseResetTest, ResetIncrementsTxPacketsOnSuccess) {
+    // Parallel to the close() counterpart above: a successfully-bursted
+    // RST must be counted in tx_packets so operators tracking TX volume
+    // don't see reset-heavy workloads silently under-report throughput.
+    auto cfg = make_config(45013);
+    TcpSession<> s(cfg, platform_->mempool());
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(1, 1);
+    s.inject_recv_seq_for_testing(1, 100);
+
+    auto before = s.stats().tx_packets;
+    s.reset();
+    // net_null accepts every TX, so the RST always bursts successfully.
+    EXPECT_EQ(s.stats().tx_packets, before + 1);
+    EXPECT_EQ(s.state(), TcpState::Closed);
+}
