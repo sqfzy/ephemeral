@@ -44,7 +44,7 @@
 #include "eph/net/dpdk/tcp_stream.hpp"
 
 #define EPH_USE_DPDK 1
-#include "../../../benchmarks/latency/core/config.hpp"
+#include "../../../benchmarks/latency/core/bench_conf.hpp"
 
 #include "echo_mocks.hpp"
 #include "mock_dispatcher.hpp"
@@ -53,55 +53,10 @@ namespace {
 
 using namespace std::chrono_literals;
 
-// Resolve NIC_B's PCI BDF by env var (EPH_TEST_NIC_B_PCI) or by parsing
-// the optional NIC_B_PCI=... line in bench.conf.
-std::string resolve_nic_b_pci(const std::string& bench_conf_path) {
-    if (const char* e = std::getenv("EPH_TEST_NIC_B_PCI"); e && *e) return e;
-    std::ifstream f(bench_conf_path);
-    if (!f) return {};
-    std::string line;
-    while (std::getline(f, line)) {
-        size_t s = 0;
-        while (s < line.size() && (line[s] == ' ' || line[s] == '\t')) ++s;
-        if (s >= line.size() || line[s] == '#' || line[s] == '[') continue;
-        if (line.compare(s, 9, "NIC_B_PCI") != 0) continue;
-        size_t eq = line.find('=', s);
-        if (eq == std::string::npos) continue;
-        size_t v = eq + 1;
-        while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-        size_t end = line.find_first_of(" \t#", v);
-        if (end == std::string::npos) end = line.size();
-        return line.substr(v, end - v);
-    }
-    return {};
-}
-
 bool nic_on_vfio_pci(const std::string& pci_bdf) {
     if (pci_bdf.empty()) return false;
     std::string sys = "/sys/bus/pci/drivers/vfio-pci/" + pci_bdf;
     return ::access(sys.c_str(), F_OK) == 0;
-}
-
-// Read a top-level (pre-section) lowercase key from bench.conf.
-std::string read_global_key(const std::string& path, std::string_view key) {
-    std::ifstream f(path);
-    if (!f) return {};
-    std::string line;
-    while (std::getline(f, line)) {
-        size_t s = 0;
-        while (s < line.size() && (line[s] == ' ' || line[s] == '\t')) ++s;
-        if (s >= line.size() || line[s] == '#') continue;
-        if (line[s] == '[') break;  // entered first section, stop scanning
-        if (line.compare(s, key.size(), key) != 0) continue;
-        size_t eq = line.find('=', s);
-        if (eq == std::string::npos) continue;
-        size_t v = eq + 1;
-        while (v < line.size() && (line[v] == ' ' || line[v] == '\t')) ++v;
-        size_t end = line.find_first_of(" \t#", v);
-        if (end == std::string::npos) end = line.size();
-        return line.substr(v, end - v);
-    }
-    return {};
 }
 
 // Process-wide environment: forks the kernel mock dispatcher (NIC_A
@@ -114,13 +69,35 @@ public:
     static ::eph::dpdk::test::DpdkBenchEnv& env() { return *env_; }
 
     void SetUp() override {
-        const char* conf = std::getenv("EPH_BENCH_CONF");
-        std::string conf_path = conf ? conf : EPH_BENCH_CONF_ABS_PATH;
+        // Path resolution: $EPH_BENCH_CONF / $BENCH_CONFIG / compiled-in
+        // EPH_BENCH_CONF_ABS_PATH; prefer config.toml if it exists
+        // alongside the legacy bench.conf.
+        std::string conf_path;
+        if (const char* e = std::getenv("EPH_BENCH_CONF"); e && *e) {
+            conf_path = e;
+        } else if (const char* e = std::getenv("BENCH_CONFIG"); e && *e) {
+            conf_path = e;
+        } else {
+            conf_path = EPH_BENCH_CONF_ABS_PATH;
+            if (auto dot = conf_path.rfind("bench.conf"); dot != std::string::npos) {
+                std::string toml = conf_path.substr(0, dot) + "config.toml";
+                if (::access(toml.c_str(), F_OK) == 0) conf_path = toml;
+            }
+        }
 
-        std::string pci = resolve_nic_b_pci(conf_path);
+        auto cfg_r = bench::load_bench_conf(conf_path);
+        if (!cfg_r) {
+            reason_ = "load_bench_conf failed: " +
+                      bench::format_error(cfg_r.error());
+            return;
+        }
+        const bench::BenchConfig& cfg = *cfg_r;
+
+        std::string pci = cfg.networking.nic_b_pci;
+        if (const char* e = std::getenv("EPH_TEST_NIC_B_PCI"); e && *e) pci = e;
         if (pci.empty()) {
             reason_ = "NIC_B PCI BDF unknown — set EPH_TEST_NIC_B_PCI or "
-                      "NIC_B_PCI=... in bench.conf";
+                      "networking.nic_b_pci in config.toml";
             return;
         }
         if (!nic_on_vfio_pci(pci)) {
@@ -129,14 +106,12 @@ public:
             return;
         }
 
-        // Pull the IPs we'll need from bench.conf — server side bind for
-        // the kernel mock and source/gateway for the DPDK client.
-        std::string server_ip = read_global_key(conf_path, "mock_ip");
-        std::string client_ip = read_global_key(conf_path, "client_ip");
-        std::string gw_ip     = read_global_key(conf_path, "gateway_ip");
+        const std::string& server_ip = cfg.networking.server_ip;
+        const std::string& client_ip = cfg.networking.client_ip;
+        const std::string& gw_ip     = cfg.networking.gateway_ip;
         if (server_ip.empty() || client_ip.empty() || gw_ip.empty()) {
-            reason_ = "bench.conf missing mock_ip / client_ip / gateway_ip "
-                      "lowercase globals — required for E2E mock + ARP";
+            reason_ = "config.toml missing [networking].server_ip / .client_ip "
+                      "/ .gateway_ip — required for E2E mock + ARP";
             return;
         }
 
