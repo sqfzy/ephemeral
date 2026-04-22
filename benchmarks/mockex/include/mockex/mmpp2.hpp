@@ -29,7 +29,7 @@
 #include <string>
 #include <vector>
 
-#include "core/config.hpp"
+#include "core/bench_conf.hpp"
 #include "mockex/sampler.hpp"
 
 namespace mockex {
@@ -46,53 +46,69 @@ struct Mmpp2Params {
     std::vector<double> size_kde_weights;  ///< normalised weights, sum ≈ 1
     uint64_t seed_default      = 42;    ///< seed if the scenario section doesn't override
 
-    /// Load parameters from an INI file produced by fit_mmpp.py.
-    /// Expected keys (flat, no sections needed):
+    /// Load parameters from a flat TOML file produced by fit_mmpp.py.
+    /// Expected keys (flat, no subtables):
     ///   lambda_quiet_hz, lambda_busy_hz, p_quiet_to_busy, p_busy_to_quiet
-    ///   size_kde_bandwidth, size_kde_anchors (comma list), size_kde_weights
-    ///   seed_default (optional, u64)
+    ///   size_kde_bandwidth            (double)
+    ///   size_kde_anchors              (array of integers)
+    ///   size_kde_weights              (array of doubles)
+    ///   seed_default                  (optional, integer)
     [[nodiscard]] static std::expected<Mmpp2Params, std::string>
     load_from_file(std::string_view path) noexcept {
-        auto cfg_e = bench::ScenarioConfig::load_globals(path);
-        if (!cfg_e) return std::unexpected(cfg_e.error());
-        const auto& cfg = *cfg_e;
+        auto tbl_r = bench::load_toml_table(path);
+        if (!tbl_r) {
+            return std::unexpected(bench::format_error(tbl_r.error()));
+        }
+        const auto& tbl = *tbl_r;
 
-        Mmpp2Params out;
-        auto lq = cfg.get_double("lambda_quiet_hz");
-        auto lb = cfg.get_double("lambda_busy_hz");
-        auto pqb = cfg.get_double("p_quiet_to_busy");
-        auto pbq = cfg.get_double("p_busy_to_quiet");
-        auto bw = cfg.get_double("size_kde_bandwidth");
+        auto get_double = [&](const char* key) -> std::optional<double> {
+            return tbl[key].value<double>();
+        };
+
+        auto lq  = get_double("lambda_quiet_hz");
+        auto lb  = get_double("lambda_busy_hz");
+        auto pqb = get_double("p_quiet_to_busy");
+        auto pbq = get_double("p_busy_to_quiet");
+        auto bw  = get_double("size_kde_bandwidth");
         if (!lq || !lb || !pqb || !pbq || !bw) {
             return std::unexpected(
                 "Mmpp2Params: missing one of lambda_quiet_hz/lambda_busy_hz/"
                 "p_quiet_to_busy/p_busy_to_quiet/size_kde_bandwidth in " +
                 std::string{path});
         }
+
+        Mmpp2Params out;
         out.lambda_quiet_hz    = *lq;
         out.lambda_busy_hz     = *lb;
         out.p_quiet_to_busy    = *pqb;
         out.p_busy_to_quiet    = *pbq;
         out.size_kde_bandwidth = *bw;
 
-        const std::string anchors = cfg.get_string("size_kde_anchors");
-        const std::string weights = cfg.get_string("size_kde_weights");
-        if (anchors.empty() || weights.empty()) {
+        const toml::array* anc = tbl["size_kde_anchors"].as_array();
+        const toml::array* wts = tbl["size_kde_weights"].as_array();
+        if (anc == nullptr || wts == nullptr) {
             return std::unexpected(
-                "Mmpp2Params: missing size_kde_anchors / size_kde_weights in " +
-                std::string{path});
+                "Mmpp2Params: size_kde_anchors / size_kde_weights must be "
+                "arrays in " + std::string{path});
         }
-        for (auto& p : bench::config_detail::split(anchors, ',')) {
-            try { out.size_kde_anchors.push_back(
-                static_cast<size_t>(std::stoul(p))); }
-            catch (...) {
+        for (std::size_t i = 0; i < anc->size(); ++i) {
+            auto v = anc->get(i)->value<int64_t>();
+            if (!v) {
                 return std::unexpected("Mmpp2Params: malformed size_kde_anchors");
             }
+            out.size_kde_anchors.push_back(static_cast<size_t>(*v));
         }
-        for (auto& p : bench::config_detail::split(weights, ',')) {
-            try { out.size_kde_weights.push_back(std::stod(p)); }
-            catch (...) {
-                return std::unexpected("Mmpp2Params: malformed size_kde_weights");
+        for (std::size_t i = 0; i < wts->size(); ++i) {
+            auto v = wts->get(i)->value<double>();
+            if (!v) {
+                // Accept integer weights too (TOML promotes).
+                auto iv = wts->get(i)->value<int64_t>();
+                if (!iv) {
+                    return std::unexpected("Mmpp2Params: malformed size_kde_weights");
+                }
+                out.size_kde_weights.push_back(static_cast<double>(*iv));
+            } else {
+                out.size_kde_weights.push_back(*v);
             }
         }
         if (out.size_kde_anchors.size() != out.size_kde_weights.size() ||
@@ -102,8 +118,9 @@ struct Mmpp2Params {
                 "non-empty length");
         }
 
-        auto seed_e = cfg.get_u64("seed_default", out.seed_default);
-        if (seed_e) out.seed_default = *seed_e;
+        if (auto v = tbl["seed_default"].value<int64_t>()) {
+            out.seed_default = static_cast<uint64_t>(*v);
+        }
         return out;
     }
 };

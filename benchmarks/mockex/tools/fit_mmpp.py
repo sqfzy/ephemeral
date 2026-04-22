@@ -18,7 +18,7 @@ Usage::
 
     python3 fit_mmpp.py \\
         --in fixtures/ex_market_sample \\
-        --out fixtures/ex_market_params.ini \\
+        --out fixtures/ex_market_params.toml \\
         --seed 42
 
 The ``--synthetic N`` flag bypasses capture files and emits
@@ -249,22 +249,27 @@ def write_params(
     source: str,
     seed_default: int,
 ) -> None:
-    """Emit the flat INI schema read by ``Mmpp2Params::load_from_file``."""
+    """Emit the flat TOML schema read by ``Mmpp2Params::load_from_file``.
+
+    Format: flat-key TOML — strings quoted, arrays use [] syntax. Parsed
+    by `bench::load_toml_table` (toml++) on the C++ side.
+    """
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="seconds")
     out.write(f"# Fitted by fit_mmpp.py at {now}\n")
-    out.write(f"fitted_from = {source}\n")
-    out.write(f"fitted_at = {now}\n")
-    out.write("model = mmpp2\n")
-    out.write("fitter_version = 1\n")
-    out.write(f"seed_default = {seed_default}\n\n")
-    out.write(f"lambda_quiet_hz = {lam_q:.6g}\n")
-    out.write(f"lambda_busy_hz = {lam_b:.6g}\n")
-    out.write(f"p_quiet_to_busy = {p_qb:.6g}\n")
-    out.write(f"p_busy_to_quiet = {p_bq:.6g}\n\n")
+    out.write("# Format: TOML (flat). Read by mockex/mmpp2.hpp via bench::load_toml_table.\n")
+    out.write(f'fitted_from      = "{source}"\n')
+    out.write(f'fitted_at        = "{now}"\n')
+    out.write('model            = "mmpp2"\n')
+    out.write("fitter_version   = 1\n")
+    out.write(f"seed_default     = {seed_default}\n\n")
+    out.write(f"lambda_quiet_hz   = {lam_q:.6g}\n")
+    out.write(f"lambda_busy_hz    = {lam_b:.6g}\n")
+    out.write(f"p_quiet_to_busy   = {p_qb:.6g}\n")
+    out.write(f"p_busy_to_quiet   = {p_bq:.6g}\n\n")
     out.write(f"size_kde_bandwidth = {bandwidth:.4g}\n")
-    out.write("size_kde_anchors = " + ",".join(str(a) for a in anchors) + "\n")
-    out.write("size_kde_weights = " + ",".join(f"{w:.4g}" for w in weights) + "\n")
+    out.write("size_kde_anchors   = [" + ", ".join(str(a) for a in anchors) + "]\n")
+    out.write("size_kde_weights   = [" + ", ".join(f"{w:.4g}" for w in weights) + "]\n")
 
 
 def synthetic_params(scenario: str) -> dict:
@@ -292,7 +297,7 @@ def main() -> int:
     )
     p.add_argument(
         "--out", type=Path, default=None,
-        help="write params.ini here; stdout if omitted",
+        help="write params.toml here; stdout if omitted",
     )
     p.add_argument("--seed", type=int, default=42,
                    help="seed_default for the sampler at runtime")

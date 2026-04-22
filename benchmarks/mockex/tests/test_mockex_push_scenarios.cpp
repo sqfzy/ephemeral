@@ -176,7 +176,7 @@ void kill_and_reap(pid_t pid) {
 TEST(MockexExMarketPush, StreamsBinanceShapedFramesWithStampedT) {
     const uint16_t port = pick_port();
     const std::string params =
-        std::string{MOCKEX_FIXTURES_DIR} + "/ex_market_params.ini";
+        std::string{MOCKEX_FIXTURES_DIR} + "/ex_market_params.toml";
     const std::string pool =
         std::string{MOCKEX_FIXTURES_DIR} + "/ex_market_sample.jsonl";
     const auto conf = write_conf(port, "lat_ex_market",
@@ -231,7 +231,7 @@ TEST(MockexExMarketPush, StreamsBinanceShapedFramesWithStampedT) {
 TEST(MockexExMarket2pPush, MultiSymbolRotationInBursts) {
     const uint16_t port = pick_port();
     const std::string params =
-        std::string{MOCKEX_FIXTURES_DIR} + "/ex_market_2p_params.ini";
+        std::string{MOCKEX_FIXTURES_DIR} + "/ex_market_2p_params.toml";
     const std::string pool =
         std::string{MOCKEX_FIXTURES_DIR} + "/ex_market_2p_sample.jsonl";
     const auto conf = write_conf(port, "lat_ex_market_2p",
