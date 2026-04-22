@@ -120,9 +120,22 @@ int main(int argc, char** argv) {
         config_path = locate_config();
     }
 
-    // Parse the global (pre-section) lowercase keys + the scenario
-    // section. Both loaders read the same INI file; the section call
-    // is scoped to `[lat_<name>]`.
+    // Parse config.toml into the new structured BenchConfig. The
+    // legacy ScenarioConfig pair is parsed in parallel so scenario
+    // handlers that haven't been migrated yet keep working.
+    auto cfg_e = bench::load_bench_conf(config_path);
+    if (!cfg_e) {
+        SPDLOG_ERROR("[mockex] failed to load {}: {}",
+                     config_path, bench::format_error(cfg_e.error()));
+        return 1;
+    }
+    const bench::Scenario* scenario_ptr = cfg_e->scenario(entry->section);
+    if (scenario_ptr == nullptr) {
+        SPDLOG_ERROR("[mockex] scenario [{}] not found in {}",
+                     entry->section, config_path);
+        return 1;
+    }
+
     auto globals_e = bench::ScenarioConfig::load_globals(config_path);
     if (!globals_e) {
         SPDLOG_ERROR("[mockex] failed to load globals from {}: {}",
@@ -136,12 +149,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Optional CPU pinning — matches the Python mocks, which Python's
-    // os.sched_setaffinity handled when run under taskset. bench.conf
-    // now exposes `cpu_mock` as a first-class global key.
-    auto cpu_mock_e = globals_e->get_u32("cpu_mock", UINT32_MAX);
-    if (cpu_mock_e && *cpu_mock_e != UINT32_MAX) {
-        pin_to_cpu(static_cast<int>(*cpu_mock_e));
+    // CPU pinning: cpu_mock from the structured BenchConfig.
+    if (cfg_e->cpu.cpu_mock >= 0) {
+        pin_to_cpu(cfg_e->cpu.cpu_mock);
     }
 
     eph::utils::install_shutdown_handlers();
@@ -153,6 +163,8 @@ int main(int argc, char** argv) {
     mockex::ScenarioContext ctx{
         .scenario_name = entry->section,
         .config_path   = config_path,
+        .cfg           = &*cfg_e,
+        .scenario      = scenario_ptr,
         .globals       = &*globals_e,
         .section       = &*section_e,
         .running       = &eph::utils::g_shutdown_flag,
