@@ -77,12 +77,46 @@ unchanged; behavior tightenings only.
   actionable context (malformed field, detected value) rather
   than silent drop.
 
-### Deferred (noted for a future pass)
-- TLS partial-send nonce desync — requires deeper API rework
-  than the loop body permits; flagged for a scoped `/pax`.
-- Additional wrapper-layer failure-combo coverage (proxy invalid
-  / ws handshake timeout / TLS cert fail) — scope-creep outside
-  this sweep, tracked separately.
+### Deferred-item resolution (follow-up pax, same day)
+- **TLS partial-send desync → fail-fast latch**
+  (`DpdkTcpStream<C,EnableTls=true>::send`). When `encrypt_for_send`
+  encodes the full payload, the TLS write sequence counter advances
+  by the whole payload's record count. If the subsequent chunked
+  `TcpSession::send` loop then returns a typed error or 0 bytes
+  (BufferFull / Disconnected), the peer is missing records with
+  nonces that cannot be re-emitted — the stream is permanently
+  desynced. Rather than the deeper record-by-record encrypt API
+  rework, a `tls_corrupt_` latch is set on any failure in the chunk
+  loop (including `off==0` since encryption has already advanced
+  the counter); `send`, `process_burst_`, and `poll_once_` check
+  the latch and return `Error::Disconnected` + actionable detail,
+  forcing the caller's reconnect policy to rebuild the session.
+  New `StreamMetric::kTlsSendDesyncs` counter; new public
+  `is_tls_send_desynced()` diagnostic; test-only hooks under
+  `EPH_DPDK_TCP_STREAM_TEST_HOOKS`. 6 regression tests in
+  `test_dpdk_tls_desync.cpp`.
+- **DpdkUdpSocket::connect_to state machine** —
+  `SamePeerCalledTwiceIsIdempotent` +
+  `MismatchAfterMatchDoesNotUnlatch` cover the double-call
+  latching behavior that complements the existing peer-mismatch
+  negative cases.
+- **DpdkPoller rebind cycle** —
+  `ReaddSameTupleAfterRemoveSucceeds` +
+  `ReaddSameTupleSurvivesMultipleCycles` pin the add→remove→add
+  rebind on the same 5-tuple, including detach-hook ordering and
+  ghost-slot drift guards.
+
+### Deferred (still open for a future pass)
+- Full record-by-record `encrypt_for_send` API surgery (eliminates
+  the desync window entirely instead of latching on failure). Not
+  justified while typical reconnect policies already react to
+  `Error::Disconnected`.
+- Additional wrapper failure combos (proxy invalid / ws handshake
+  timeout / TLS cert fail) — the handshake-phase error paths are
+  narrower than the partial-send one and lower priority.
+- `DpdkPoller::remove` returning `Error::NotFound` instead of the
+  current `Error::InvalidConfig` — public enum change, deferred
+  to a batched enum-rename pass if/when other callsites accumulate.
 
 ## [Unreleased] — Production-hardening sweep (2026-04-22)
 
