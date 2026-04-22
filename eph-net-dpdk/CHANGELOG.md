@@ -1,5 +1,89 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — Production-hardening sweep (round 2, 2026-04-22)
+
+A second `/pax --loop --auto` pass (2 subagent batches × 15 rounds,
+16 commits total) surfaced genuine latent bugs the first sweep
+missed, plus defense-in-depth parser hardening and observability
+gaps. All 28 DPDK test binaries (660+ tests) pass cumulatively
+against baseline `c2362fd` on GCC 14 release. Public API shape
+unchanged; behavior tightenings only.
+
+### Fixed
+- `TcpConfig::operator==` dropped `keepalive_interval` /
+  `keepalive_probes` from comparison — two distinct configs
+  compared equal, masking config-drift in diagnostic paths.
+- `eph::net::dpdk::queue_for_hash` produced OOB reads on empty
+  RETA and silently-wrong queues on non-power-of-two sizes
+  (`size() - 1` wraps to SIZE_MAX with an implicit AND mask).
+- `DpdkTcpStream::StreamConfig` silently accepted dangerous tiny
+  `reasm_capacity` values (e.g. 512 bytes) that later crashed on
+  the first burst; now rejected at config time with a 4 KiB floor.
+- `TcpSession::send()` and `flush_pending_ack()` cleared the
+  pending delayed-ACK timer **before** calling `tx_burst`; on
+  transient NIC backpressure the pending ACK was silently dropped,
+  stalling peer transmission by up to ~40 ms.
+- `DpdkTcpStream`'s WS Host fallback formatted the IP with bytes
+  reversed (local was named `ip_be` but `dst_ip` is host order) —
+  stricter servers would return 403 on the crafted Host header.
+- `DpdkUdpSocket::send_to` oversize cap was `0xFFFF` (full IP
+  total_length) instead of the real UDP-over-IP payload ceiling
+  (`0xFFFF − kUdpAllHeadersLen` = 65 493); oversized payloads
+  reached the template as `BufferFull` rather than early
+  `InvalidConfig`.
+- `eph::dpdk::arp::parse_arp_reply` dereferenced `mbuf->data_len`
+  before the nullptr check.
+- `TcpSession::reset()` burst the RST but never `++stats_.
+  tx_packets`; the sole TX path missing telemetry. Reset-heavy
+  workloads underreported throughput.
+- `parse_ip_header` now rejects IP fragments (MF=1 or offset!=0);
+  a non-first fragment lets arbitrary bytes occupy the TCP/UDP
+  header slot and could impersonate any 4-tuple. HFT paths DF all
+  sends anyway; this is defense-in-depth across TCP / UDP / ICMP.
+- `parse_ip_header` now rejects multi-segment mbufs; all
+  downstream parsers use `rte_pktmbuf_data_len` (first segment
+  only), so a chained mbuf with payload extending into segment 1
+  would pass bounds checks against segment-0 length then walk off
+  the contiguous buffer. Standard-MTU HFT paths don't enable
+  scatter; defense-in-depth for any topology that does.
+
+### Tests
+- `fuzzers/fuzz_arp_reply.cpp` + 10-seed corpus for the ARP
+  parser attack surface (well-formed, empty, truncated, wrong
+  ethertype, request opcode, zero / multicast sender MAC, bad
+  hw_len). Out of the xmake graph per fuzzer convention — see
+  `fuzzers/README.md`.
+- `test_dpdk_poller`: remove-middle-of-three regression pinning
+  the shift-left compaction against function-pointer-thunk
+  corruption on the formerly-tail entry.
+- `test_dpdk_tcp_stream`: reasm-floor exact floor-minus-one
+  probe; boundary becomes self-documenting.
+- `test_flow_steering`: 3 probes covering empty / non-power-of-
+  two RETA and regression for the UB path.
+- `test_dpdk_udp_socket`: oversize send_to boundary.
+- `test_packet_parse_adversarial`: 170 lines of new ICMP
+  boundary coverage (truncated header, non-Frag-Needed
+  codes, undersized payload) plus 6 IP-fragment adversarial
+  cases plus 2 multi-segment mbuf cases.
+- `test_packet_core_checksum`: RFC 1071 known-vector sanity
+  probe — prior tests self-verified only.
+- `test_tcp`: operator== regression covering the dropped
+  keepalive fields.
+- `test_tcp_close_reset`: tx_packets counter for RST path.
+- `test_arp`: null-mbuf guard regression.
+
+### Observability
+- Every parse-time reject now logs via `SPDLOG_WARN` with
+  actionable context (malformed field, detected value) rather
+  than silent drop.
+
+### Deferred (noted for a future pass)
+- TLS partial-send nonce desync — requires deeper API rework
+  than the loop body permits; flagged for a scoped `/pax`.
+- Additional wrapper-layer failure-combo coverage (proxy invalid
+  / ws handshake timeout / TLS cert fail) — scope-creep outside
+  this sweep, tracked separately.
+
 ## [Unreleased] — Production-hardening sweep (2026-04-22)
 
 A /pax --loop --auto review pass over the non-RSS surface produced
