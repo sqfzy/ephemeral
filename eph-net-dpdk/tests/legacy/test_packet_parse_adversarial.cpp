@@ -593,3 +593,89 @@ TEST(PacketParseAdv, IcmpProtocolMismatchRejected) {
     auto parsed = parse_icmp(&mbuf);
     EXPECT_FALSE(static_cast<bool>(parsed));
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// IP fragmentation — our L4 parsers assume the TCP/UDP/ICMP header sits
+// immediately after the IP header, which is only true for the *first*
+// fragment (MF=1, offset=0) or an unfragmented packet. Accepting a
+// non-first fragment would let an attacker place arbitrary payload bytes
+// where the parser reads src/dst/seq/ack. We don't do L3 reassembly, so
+// drop fragmented packets at parse_ip_header. DF=1 alone is fine.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(PacketParseAdv, IpMoreFragmentsBitRejected) {
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // MF=1, offset=0 — first fragment of a larger datagram.
+    ip->fragment_offset = hton16(kIpMoreFragments);
+    auto mbuf = make_mbuf(buf, len);
+    auto hdr = parse_ip_header(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(hdr));
+    EXPECT_EQ(parse_packet(&mbuf).tcp, nullptr);
+}
+
+TEST(PacketParseAdv, IpNonZeroFragmentOffsetRejected) {
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // MF=0, offset=185 (in 8-byte units, so byte 1480) — a middle/last fragment.
+    ip->fragment_offset = hton16(185);
+    auto mbuf = make_mbuf(buf, len);
+    auto hdr = parse_ip_header(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(hdr));
+    EXPECT_EQ(parse_packet(&mbuf).tcp, nullptr);
+}
+
+TEST(PacketParseAdv, IpMoreFragmentsAndNonZeroOffsetRejected) {
+    // A middle fragment typically has MF=1 AND offset > 0. Both flags
+    // set simultaneously must be rejected — this is the attacker-
+    // friendly overlapping-fragment case.
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpMoreFragments | 1);
+    auto mbuf = make_mbuf(buf, len);
+    EXPECT_FALSE(static_cast<bool>(parse_ip_header(&mbuf)));
+}
+
+TEST(PacketParseAdv, IpDontFragmentAloneAccepted) {
+    // DF=1 (no MF, no offset) is the common HFT send pattern — must
+    // pass through unchanged. This is a regression guard for the
+    // fragment-rejection patch.
+    uint8_t buf[128];
+    const size_t len = build_tcp_packet(buf, 4);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpDontFragment);
+    auto mbuf = make_mbuf(buf, len);
+    auto hdr = parse_ip_header(&mbuf);
+    EXPECT_TRUE(static_cast<bool>(hdr));
+    auto parsed = parse_packet(&mbuf);
+    EXPECT_NE(parsed.tcp, nullptr);
+}
+
+TEST(PacketParseAdv, UdpFragmentedRejectedBySharedParseIpHeader) {
+    // UDP's parse path shares parse_ip_header with TCP; confirm the
+    // fragment rejection covers UDP too (defensive — a fragmented UDP
+    // message attack would otherwise misinterpret payload bytes as
+    // UDP length / checksum).
+    uint8_t buf[128];
+    const size_t len = build_udp_packet(buf, 16);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpMoreFragments);
+    auto mbuf = make_mbuf(buf, len);
+    EXPECT_EQ(parse_udp_packet(&mbuf).udp, nullptr);
+}
+
+TEST(PacketParseAdv, IcmpFragmentedRejectedBySharedParseIpHeader) {
+    // Same gate applies to ICMP — a fragmented Type 3 Code 4 could
+    // otherwise feed bogus next_hop_mtu / embedded 4-tuple into
+    // TcpSession::on_icmp_frag_needed.
+    uint8_t buf[256];
+    const size_t len = build_icmp_frag_needed(buf, /*mtu=*/1280);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->fragment_offset = hton16(kIpMoreFragments | 2);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_icmp(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(parsed));
+}

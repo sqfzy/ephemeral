@@ -77,6 +77,8 @@ inline constexpr uint8_t kTcpUrg = 0x20;  ///< Urgent pointer field is significa
 /// @{
 inline constexpr uint8_t  kIpv4VersionIhl5 = 0x45;   ///< Version 4, IHL 5 (20 bytes, no options)
 inline constexpr uint16_t kIpDontFragment   = 0x4000; ///< Don't Fragment flag in fragment_offset field
+inline constexpr uint16_t kIpMoreFragments  = 0x2000; ///< More Fragments flag in fragment_offset field
+inline constexpr uint16_t kIpFragOffsetMask = 0x1FFF; ///< Fragment offset mask (8-byte units)
 inline constexpr uint8_t  kDefaultTtl       = 64;     ///< Default Time-To-Live hop count
 /// @}
 
