@@ -1,0 +1,331 @@
+# Reproduced: 2026-04-22 11:23 – 11:46 UTC (local AWS EC2 aarch64)
+# Commit: 7869ea4 (clean; same HEAD as baseline experiment-20260422-103422.md)
+# Compiler: GCC 14 via gcc14-wrap (xmake release, -O fastest)
+# Build: xmake f -m release && xmake build lat_ex_order_dpdk lat_udp_dpdk mockex
+# Bench: sudo ./benchmarks/latency/lat <ex_order|udp> --dpdk --config /tmp/bench-5min.toml
+# Config: /tmp/bench-5min.toml == benchmarks/latency/config.toml but duration_seconds=300 for every scenario
+# Host: AWS EC2 aarch64 Graviton; NIC-B ens35 bound vfio-pci (DPDK client); NIC-A ens34 kernel (mock)
+# TSC freq 1.00 GHz CV 0.00%; warmup_samples=1000; pin: client→CPU 4, mockex→CPU 6
+# ---
+
+
+================================================================
+=== dpdk_ex_order_5min_r1.txt
+================================================================
+[OK] NIC-B current: dpdk  →  desired: dpdk
+
+── lat ex_order --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_order_dpdk
+   mock   : mockex --scenario ex_order
+   config : /tmp/bench-5min.toml
+   topo   : dpdk(ens35=vfio) → VPC → mock(ens34)
+
+[..] forking mock: mockex --scenario ex_order --config bench-5min.toml
+[11:23:47.084] [info] pin_thread: 'mockex' pinned to cpu 6 (verified)
+[11:23:47.084] [info] [mockex] pinned to CPU 6
+[11:23:47.084] [info] [mockex] scenario='ex_order' section='[lat_ex_order]' config='/tmp/bench-5min.toml'
+[11:23:47.084] [info] [ex_order_echo] listening on 172.31.47.238:20004
+[..] exec client: lat_ex_order_dpdk --config bench-5min.toml
+[2026-04-22 11:23:47.592] [info] pin_thread: 'lat_ex_order' pinned to cpu 4 (verified)
+[2026-04-22 11:23:47.592] [info] [pin_client.hpp:65] [lat_ex_order] pinned to CPU 4 (source: config.toml cpu.cpu_client)
+=== lat_ex_order ===
+config: mock=172.31.47.238 port=20004 ws_path=/ws/order order_count=20000000 duration=300s warmup_samples=1000
+[2026-04-22 11:23:47.592] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-22 11:23:48.612] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-22 11:23:48.612] [info] load_dpdk_env: EAL argv synthesized: 8 cores=0,1 pci=0000:28:00.0
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-22 11:23:49.088] [dpdk.platform] [info] [platform.hpp:522] Available DPDK ports: 1
+[2026-04-22 11:23:49.090] [dpdk.platform] [info] [platform.hpp:730] port=0 link up: 0 Mbps full-duplex
+[2026-04-22 11:23:49.090] [dpdk.flow] [info] [flow_steering.hpp:164] Port 0 supports RSS TCP hash (RssPartitioned mode), offloads=0x0000000000000c30
+[2026-04-22 11:23:49.090] [dpdk.platform] [info] [platform.hpp:864] Platform: NIC supports RSS Partitioned but RSS not active (nb_rx_queues=1, rss_active=false); pinning dispatch_mode to Software for attach decisions
+[2026-04-22 11:23:49.090] [dpdk.platform] [info] [platform.hpp:948] Platform ready (port=0, nb_rx_queues=1, rss_active=false, dispatch_mode=Software (single-Poller fallback))
+[2026-04-22 11:23:49.090] [info] dpdk_env: local MAC 06:df:40:7b:7f:8d
+[2026-04-22 11:23:49.090] [dpdk.arp] [info] [arp.hpp:316] ARP resolved: 172.31.32.1 -> 06:32:55:ab:21:eb (after 1 request(s))
+[2026-04-22 11:23:49.090] [info] dpdk_env: gateway MAC 06:32:55:ab:21:eb
+dpdk_config: port_id=0 src_mac=06:df:40:7b:7f:8d gw_mac=06:32:55:ab:21:eb src_ip=0xac1f26ae dst_ip=0xac1f2fee gw_ip=0xac1f2001
+[2026-04-22 11:23:49.090] [dpdk.tcp] [info] [tcp.hpp:774] TCP connection established: 172.31.38.174:63724 -> 172.31.47.238:20004
+[11:23:49.090] [info] posix::accept_one: client 172.31.38.174:63724
+[11:23:49.090] [info] [ex_order_echo] client connected fd=4
+[2026-04-22 11:23:49.090] [info] [ws_handshake.hpp:525] ws_handshake: OK path='/ws/order' host='238.47.31.172:20004' (166B req, 129B resp)
+[2026-04-22 11:23:49.090] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:555] DpdkTcpStream::create: WS upgrade OK path='/ws/order'
+[2026-04-22 11:23:49.090] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:560] DpdkTcpStream::create: connected src=0xac1f26ae:63724 -> dst=0xac1f2fee:20004
+[2026-04-22 11:23:49.090] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:776] create_and_attach: TCP stream attached → port=0, queue=0, mode=Software (single-Poller fallback)
+lat_ex_order: completed 14010594 orders (recorded 14009594 post-warmup)
+=== lat_ex_order (dpdk) ===
+samples: 14009594 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18125
+  p50    = 20503
+  p90    = 22839
+  p99    = 27399
+  p99.9  = 34351
+  max    = 9195459
+  avg    = 20961
+  stddev = 5439
+TX_ns:
+  min    = 10944
+  p50    = 12379
+  p90    = 14067
+  p99    = 17687
+  p99.9  = 23623
+  max    = 9169714
+  avg    = 12753
+  stddev = 5292
+RX_ns:
+  min    = 6854
+  p50    = 7917
+  p90    = 9219
+  p99    = 12331
+  p99.9  = 16743
+  max    = 123055
+  avg    = 8176
+  stddev = 1140
+throughput: 46392 samples/s
+[11:28:51.082] [info] [ex_order_echo] client disconnected
+ENA_INIT: ena_close(): Failed to unregister interrupt handler
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_rtt_2026-04-22_11-28-51.json
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_tx_2026-04-22_11-28-51.json
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_rx_2026-04-22_11-28-51.json
+[11:28:51.315] [info] [ex_order_echo] shutdown
+
+
+================================================================
+=== dpdk_ex_order_5min_r2.txt
+================================================================
+[OK] NIC-B current: dpdk  →  desired: dpdk
+
+── lat ex_order --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_order_dpdk
+   mock   : mockex --scenario ex_order
+   config : /tmp/bench-5min.toml
+   topo   : dpdk(ens35=vfio) → VPC → mock(ens34)
+
+[..] forking mock: mockex --scenario ex_order --config bench-5min.toml
+[11:29:03.061] [info] pin_thread: 'mockex' pinned to cpu 6 (verified)
+[11:29:03.061] [info] [mockex] pinned to CPU 6
+[11:29:03.061] [info] [mockex] scenario='ex_order' section='[lat_ex_order]' config='/tmp/bench-5min.toml'
+[11:29:03.061] [info] [ex_order_echo] listening on 172.31.47.238:20004
+[..] exec client: lat_ex_order_dpdk --config bench-5min.toml
+[2026-04-22 11:29:03.569] [info] pin_thread: 'lat_ex_order' pinned to cpu 4 (verified)
+[2026-04-22 11:29:03.569] [info] [pin_client.hpp:65] [lat_ex_order] pinned to CPU 4 (source: config.toml cpu.cpu_client)
+=== lat_ex_order ===
+config: mock=172.31.47.238 port=20004 ws_path=/ws/order order_count=20000000 duration=300s warmup_samples=1000
+[2026-04-22 11:29:03.569] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-22 11:29:04.589] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-22 11:29:04.589] [info] load_dpdk_env: EAL argv synthesized: 8 cores=0,1 pci=0000:28:00.0
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-22 11:29:05.058] [dpdk.platform] [info] [platform.hpp:522] Available DPDK ports: 1
+[2026-04-22 11:29:05.060] [dpdk.platform] [info] [platform.hpp:730] port=0 link up: 0 Mbps full-duplex
+[2026-04-22 11:29:05.060] [dpdk.flow] [info] [flow_steering.hpp:164] Port 0 supports RSS TCP hash (RssPartitioned mode), offloads=0x0000000000000c30
+[2026-04-22 11:29:05.060] [dpdk.platform] [info] [platform.hpp:864] Platform: NIC supports RSS Partitioned but RSS not active (nb_rx_queues=1, rss_active=false); pinning dispatch_mode to Software for attach decisions
+[2026-04-22 11:29:05.060] [dpdk.platform] [info] [platform.hpp:948] Platform ready (port=0, nb_rx_queues=1, rss_active=false, dispatch_mode=Software (single-Poller fallback))
+[2026-04-22 11:29:05.060] [info] dpdk_env: local MAC 06:df:40:7b:7f:8d
+[2026-04-22 11:29:05.060] [dpdk.arp] [info] [arp.hpp:316] ARP resolved: 172.31.32.1 -> 06:32:55:ab:21:eb (after 1 request(s))
+[2026-04-22 11:29:05.060] [info] dpdk_env: gateway MAC 06:32:55:ab:21:eb
+dpdk_config: port_id=0 src_mac=06:df:40:7b:7f:8d gw_mac=06:32:55:ab:21:eb src_ip=0xac1f26ae dst_ip=0xac1f2fee gw_ip=0xac1f2001
+[2026-04-22 11:29:05.060] [dpdk.tcp] [info] [tcp.hpp:774] TCP connection established: 172.31.38.174:62123 -> 172.31.47.238:20004
+[11:29:05.060] [info] posix::accept_one: client 172.31.38.174:62123
+[11:29:05.060] [info] [ex_order_echo] client connected fd=4
+[2026-04-22 11:29:05.060] [info] [ws_handshake.hpp:525] ws_handshake: OK path='/ws/order' host='238.47.31.172:20004' (166B req, 129B resp)
+[2026-04-22 11:29:05.060] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:555] DpdkTcpStream::create: WS upgrade OK path='/ws/order'
+[2026-04-22 11:29:05.060] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:560] DpdkTcpStream::create: connected src=0xac1f26ae:62123 -> dst=0xac1f2fee:20004
+[2026-04-22 11:29:05.060] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:776] create_and_attach: TCP stream attached → port=0, queue=0, mode=Software (single-Poller fallback)
+lat_ex_order: completed 13988954 orders (recorded 13987954 post-warmup)
+=== lat_ex_order (dpdk) ===
+samples: 13987954 (warmup 1000 discarded)
+RTT_ns:
+  min    = 17500
+  p50    = 20519
+  p90    = 22951
+  p99    = 27863
+  p99.9  = 34095
+  max    = 3950492
+  avg    = 20991
+  stddev = 3147
+TX_ns:
+  min    = 9960
+  p50    = 12387
+  p90    = 14011
+  p99    = 17911
+  p99.9  = 23143
+  max    = 3930333
+  avg    = 12741
+  stddev = 2841
+RX_ns:
+  min    = 6775
+  p50    = 7917
+  p90    = 9387
+  p99    = 12835
+  p99.9  = 17239
+  max    = 126254
+  avg    = 8218
+  stddev = 1248
+throughput: 46321 samples/s
+[11:34:07.052] [info] [ex_order_echo] client disconnected
+ENA_INIT: ena_close(): Failed to unregister interrupt handler
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_rtt_2026-04-22_11-34-07.json
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_tx_2026-04-22_11-34-07.json
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_rx_2026-04-22_11-34-07.json
+[11:34:07.285] [info] [ex_order_echo] shutdown
+
+
+================================================================
+=== dpdk_ex_order_5min_r3.txt
+================================================================
+[OK] NIC-B current: dpdk  →  desired: dpdk
+
+── lat ex_order --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_ex_order_dpdk
+   mock   : mockex --scenario ex_order
+   config : /tmp/bench-5min.toml
+   topo   : dpdk(ens35=vfio) → VPC → mock(ens34)
+
+[..] forking mock: mockex --scenario ex_order --config bench-5min.toml
+[11:36:15.706] [info] pin_thread: 'mockex' pinned to cpu 6 (verified)
+[11:36:15.706] [info] [mockex] pinned to CPU 6
+[11:36:15.706] [info] [mockex] scenario='ex_order' section='[lat_ex_order]' config='/tmp/bench-5min.toml'
+[11:36:15.706] [info] [ex_order_echo] listening on 172.31.47.238:20004
+[..] exec client: lat_ex_order_dpdk --config bench-5min.toml
+[2026-04-22 11:36:16.214] [info] pin_thread: 'lat_ex_order' pinned to cpu 4 (verified)
+[2026-04-22 11:36:16.214] [info] [pin_client.hpp:65] [lat_ex_order] pinned to CPU 4 (source: config.toml cpu.cpu_client)
+=== lat_ex_order ===
+config: mock=172.31.47.238 port=20004 ws_path=/ws/order order_count=20000000 duration=300s warmup_samples=1000
+[2026-04-22 11:36:16.214] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-22 11:36:17.234] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+[2026-04-22 11:36:17.234] [info] load_dpdk_env: EAL argv synthesized: 8 cores=0,1 pci=0000:28:00.0
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-22 11:36:17.709] [dpdk.platform] [info] [platform.hpp:522] Available DPDK ports: 1
+[2026-04-22 11:36:17.711] [dpdk.platform] [info] [platform.hpp:730] port=0 link up: 0 Mbps full-duplex
+[2026-04-22 11:36:17.711] [dpdk.flow] [info] [flow_steering.hpp:164] Port 0 supports RSS TCP hash (RssPartitioned mode), offloads=0x0000000000000c30
+[2026-04-22 11:36:17.711] [dpdk.platform] [info] [platform.hpp:864] Platform: NIC supports RSS Partitioned but RSS not active (nb_rx_queues=1, rss_active=false); pinning dispatch_mode to Software for attach decisions
+[2026-04-22 11:36:17.711] [dpdk.platform] [info] [platform.hpp:948] Platform ready (port=0, nb_rx_queues=1, rss_active=false, dispatch_mode=Software (single-Poller fallback))
+[2026-04-22 11:36:17.711] [info] dpdk_env: local MAC 06:df:40:7b:7f:8d
+[2026-04-22 11:36:17.711] [dpdk.arp] [info] [arp.hpp:316] ARP resolved: 172.31.32.1 -> 06:32:55:ab:21:eb (after 1 request(s))
+[2026-04-22 11:36:17.711] [info] dpdk_env: gateway MAC 06:32:55:ab:21:eb
+dpdk_config: port_id=0 src_mac=06:df:40:7b:7f:8d gw_mac=06:32:55:ab:21:eb src_ip=0xac1f26ae dst_ip=0xac1f2fee gw_ip=0xac1f2001
+[2026-04-22 11:36:17.711] [dpdk.tcp] [info] [tcp.hpp:774] TCP connection established: 172.31.38.174:63641 -> 172.31.47.238:20004
+[11:36:17.711] [info] posix::accept_one: client 172.31.38.174:63641
+[11:36:17.711] [info] [ex_order_echo] client connected fd=4
+[2026-04-22 11:36:17.711] [info] [ws_handshake.hpp:525] ws_handshake: OK path='/ws/order' host='238.47.31.172:20004' (166B req, 129B resp)
+[2026-04-22 11:36:17.711] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:555] DpdkTcpStream::create: WS upgrade OK path='/ws/order'
+[2026-04-22 11:36:17.711] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:560] DpdkTcpStream::create: connected src=0xac1f26ae:63641 -> dst=0xac1f2fee:20004
+[2026-04-22 11:36:17.711] [net.dpdk.tcp_stream] [info] [tcp_stream.hpp:776] create_and_attach: TCP stream attached → port=0, queue=0, mode=Software (single-Poller fallback)
+lat_ex_order: completed 13908042 orders (recorded 13907042 post-warmup)
+=== lat_ex_order (dpdk) ===
+samples: 13907042 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18156
+  p50    = 20663
+  p90    = 22999
+  p99    = 27847
+  p99.9  = 35279
+  max    = 2251961
+  avg    = 21120
+  stddev = 2860
+TX_ns:
+  min    = 10977
+  p50    = 12419
+  p90    = 14035
+  p99    = 17943
+  p99.9  = 23863
+  max    = 2232671
+  avg    = 12780
+  stddev = 2545
+RX_ns:
+  min    = 6896
+  p50    = 8029
+  p90    = 9443
+  p99    = 12803
+  p99.9  = 17191
+  max    = 122945
+  avg    = 8308
+  stddev = 1222
+throughput: 46053 samples/s
+[11:41:19.703] [info] [ex_order_echo] client disconnected
+ENA_INIT: ena_close(): Failed to unregister interrupt handler
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_rtt_2026-04-22_11-41-19.json
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_tx_2026-04-22_11-41-19.json
+  JSON: benchmarks/latency/outputs/lat_ex_order_dpdk_rx_2026-04-22_11-41-19.json
+[11:41:19.935] [info] [ex_order_echo] shutdown
+
+
+================================================================
+=== dpdk_udp_5min_r1.txt
+================================================================
+[OK] NIC-B current: dpdk  →  desired: dpdk
+
+── lat udp --dpdk ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_udp_dpdk
+   mock   : mockex --scenario udp
+   config : /tmp/bench-5min.toml
+   topo   : dpdk(ens35=vfio) → VPC → mock(ens34)
+
+[..] forking mock: mockex --scenario udp --config bench-5min.toml
+[11:41:30.979] [info] pin_thread: 'mockex' pinned to cpu 6 (verified)
+[11:41:30.979] [info] [mockex] pinned to CPU 6
+[11:41:30.979] [info] [mockex] scenario='udp' section='[lat_udp]' config='/tmp/bench-5min.toml'
+[11:41:30.979] [info] [udp_echo] listening on 172.31.47.238:20001
+[..] exec client: lat_udp_dpdk --config bench-5min.toml
+[2026-04-22 11:41:31.487] [info] pin_thread: 'lat_udp' pinned to cpu 4 (verified)
+[2026-04-22 11:41:31.487] [info] [pin_client.hpp:65] [lat_udp] pinned to CPU 4 (source: config.toml cpu.cpu_client)
+=== lat_udp ===
+config: mock=172.31.47.238 client_bind=172.31.38.174 port=20001 payload_size=256 duration=300s warmup_samples=1000
+[2026-04-22 11:41:31.487] [info] load_dpdk_env: EAL argv synthesized: 8 cores=0,1 pci=0000:28:00.0
+ENA_DRIVER: ena_get_metrics_entries(): 0x6 customer metrics are supported
+[2026-04-22 11:41:31.959] [dpdk.platform] [info] [platform.hpp:522] Available DPDK ports: 1
+[2026-04-22 11:41:31.961] [dpdk.platform] [info] [platform.hpp:730] port=0 link up: 0 Mbps full-duplex
+[2026-04-22 11:41:31.961] [dpdk.flow] [info] [flow_steering.hpp:164] Port 0 supports RSS TCP hash (RssPartitioned mode), offloads=0x0000000000000c30
+[2026-04-22 11:41:31.961] [dpdk.platform] [info] [platform.hpp:864] Platform: NIC supports RSS Partitioned but RSS not active (nb_rx_queues=1, rss_active=false); pinning dispatch_mode to Software for attach decisions
+[2026-04-22 11:41:31.961] [dpdk.platform] [info] [platform.hpp:948] Platform ready (port=0, nb_rx_queues=1, rss_active=false, dispatch_mode=Software (single-Poller fallback))
+[2026-04-22 11:41:31.961] [info] dpdk_env: local MAC 06:df:40:7b:7f:8d
+[2026-04-22 11:41:31.961] [dpdk.arp] [info] [arp.hpp:316] ARP resolved: 172.31.32.1 -> 06:32:55:ab:21:eb (after 1 request(s))
+[2026-04-22 11:41:31.961] [info] dpdk_env: gateway MAC 06:32:55:ab:21:eb
+dpdk_config: port_id=0 src_mac=06:df:40:7b:7f:8d gw_mac=06:32:55:ab:21:eb src_ip=0xac1f26ae dst_ip=0xac1f2fee gw_ip=0xac1f2001
+[2026-04-22 11:41:31.961] [dpdk.udp] [info] [udp.hpp:225] UdpSender created: UdpConfig(172.31.38.174:61286 -> 172.31.47.238:20001, port=0, tx_q=0, hw_cksum=false)
+[2026-04-22 11:41:31.961] [net.dpdk.udp_socket] [info] [udp_socket.hpp:132] DpdkUdpSocket::create: ready, peer=2887725038:20001
+[2026-04-22 11:41:31.961] [net.dpdk.udp_socket] [info] [udp_socket.hpp:250] create_and_attach: UDP socket attached → port=0, queue=0, mode=Software (single-Poller fallback)
+[2026-04-22 11:41:31.961] [utils.tsc] [info] [time.hpp:262] Calibrating TSC...
+[2026-04-22 11:41:32.981] [utils.tsc] [info] [time.hpp:348] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+=== lat_udp (dpdk) ===
+samples: 13775386 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18472
+  p50    = 21175
+  p90    = 23399
+  p99    = 29351
+  p99.9  = 68318
+  max    = 2280822
+  avg    = 21686
+  stddev = 3187
+TX_ns:
+  min    = 10482
+  p50    = 12539
+  p90    = 14099
+  p99    = 19431
+  p99.9  = 59502
+  max    = 2262753
+  avg    = 12957
+  stddev = 2953
+RX_ns:
+  min    = 7419
+  p50    = 8435
+  p90    = 9747
+  p99    = 12907
+  p99.9  = 17447
+  max    = 117133
+  avg    = 8696
+  stddev = 1151
+throughput: 45928 samples/s
+ENA_INIT: ena_close(): Failed to unregister interrupt handler
+ENA_DRIVER: ena_rx_queue_release(): Rx queue 0:0 released
+ENA_DRIVER: ena_tx_queue_release(): Tx queue 0:0 released
+  JSON: benchmarks/latency/outputs/lat_udp_dpdk_rtt_2026-04-22_11-46-32.json
+  JSON: benchmarks/latency/outputs/lat_udp_dpdk_tx_2026-04-22_11-46-32.json
+  JSON: benchmarks/latency/outputs/lat_udp_dpdk_rx_2026-04-22_11-46-32.json
+[11:46:33.205] [info] [udp_echo] shutdown

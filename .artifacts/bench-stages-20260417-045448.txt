@@ -1,0 +1,13 @@
+# Stage breakdown — 20260417-045448
+# Commit: 2f438b95c6db0ad18ee245ea0796f7c7fc427960 (clean)
+# N=2M iterations per stage, pinned to core 2
+
+
+## Stage breakdown (mean ns, N=2000000)
+| Stage | ns/op | share of parse+from |
+|---|---|---|
+| S1: parse()                       | 102.11 |  56.0% |
+| S2: from() 5×get_string           |  15.37 |        |
+| S3: 3×get_int + 2×parse_number    |  69.00 |        |
+| S2+S3: from() whole               |  80.17 |  44.0% |
+| **parse() + from()**              | 182.28 | 100.0% |

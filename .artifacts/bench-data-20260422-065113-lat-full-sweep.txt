@@ -1,0 +1,342 @@
+# Raw lat-sweep output — 7 scenarios × (kernel, dpdk) = 14 runs
+# Reproduced: 2026-04-22 06:30 — 06:58 (EC2 aarch64 Graviton host)
+# Commit (HEAD): eb7bb64 (clean tree for lat_*/mockex binaries; working-tree
+#                changes limited to benchmarks/mockex/fixtures/ex_market_2p_sample.jsonl
+#                + benchmarks/latency/bench.conf [local IP override] + CLAUDE.md)
+# Compiler: gcc14 (xmake release toolchain)
+# Build:    xmake build -g tests && xmake build (pre-existing binaries under
+#           build/linux/arm64/release/, identified via ls earlier in session)
+# Bench wrapper: benchmarks/latency/lat
+#   echo scenarios (tcp,udp,ws,ex_order,ex_md_udp):
+#     sudo ./benchmarks/latency/lat        <s> --config /tmp/bench-30s.conf
+#     sudo ./benchmarks/latency/lat        <s> --dpdk --config /tmp/bench-30s.conf
+#   push scenarios (ex_market, ex_market_2p):
+#     sudo ./benchmarks/latency/lat        <s> --config /tmp/bench-push-120s.conf
+#     sudo ./benchmarks/latency/lat        <s> --dpdk --config /tmp/bench-push-120s.conf
+# Config overrides:
+#   bench-30s.conf       : clones bench.conf; replaces every `duration_seconds = 300`
+#                          with `= 30`  (5 echo scenarios: 30s window is plenty at MHz RTT rate)
+#   bench-push-120s.conf : derived from bench-30s.conf; ex_market + ex_market_2p
+#                          sections bumped to duration_seconds = 120 (MMPP-2 mock
+#                          starts in quiet state λ_q≈2.7Hz at seed=42; 30s window
+#                          rarely transitions to burst, producing 0 samples)
+# Fairness contract (unchanged from bench.conf):
+#   mock always kernel on ens34; only client code path differs between runs.
+#   kernel client → ens35 moved into bench_ns netns (blocks same-host shortcut)
+#   dpdk   client → ens35 bound to vfio-pci, DPDK PMD owns the queue
+#   Both paths: client → AWS VPC fabric → mock. Same wire, same mock.
+# TSC: CPU frequency calibrated at 1.00 GHz (CV=0.00%) across every run.
+# warmup_samples = 1000 (discarded before sampling).
+#
+# IMPORTANT: ex_market_2p runs below include a kernel/dpdk pair that
+# predates the fixture fix (skip_ratio=100%, 0 samples), and a second
+# pair after regenerating benchmarks/mockex/fixtures/ex_market_2p_sample.jsonl
+# as synthetic bookTicker (see experiment report for rationale).
+# ==============================================================================
+
+===== kernel tcp =====
+=== lat_tcp (kernel) ===
+samples: 1194565 (warmup 1000 discarded)
+RTT_ns:
+  min    = 22157
+  p50    = 24519
+  p90    = 26759
+  p99    = 31991
+  p99.9  = 68638
+  max    = 1015060
+  avg    = 25002
+  stddev = 2852
+TX_ns:
+  min    = 11836
+  p50    = 13219
+  p90    = 14651
+  p99    = 18535
+  p99.9  = 26071
+  max    = 999250
+  avg    = 13552
+  stddev = 2343
+RX_ns:
+  min    = 9964
+  p50    = 11107
+  p90    = 12467
+  p99    = 16347
+  p99.9  = 22135
+  max    = 94209
+  avg    = 11417
+  stddev = 1562
+throughput: 39856 samples/s
+
+===== kernel udp =====
+=== lat_udp (kernel) ===
+samples: 1007052 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21429
+  p50    = 24743
+  p90    = 58286
+  p99    = 78109
+  p99.9  = 82717
+  max    = 2777009
+  avg    = 29627
+  stddev = (not reported)
+TX_ns:
+  min    = 11438
+  p50    = 13259
+  p90    = 24519
+  p99    = 58478
+  p99.9  = 61230
+  max    = 2740972
+  avg    = 17868
+RX_ns:
+  min    = 9405
+  p50    = 11027
+  p90    = 13403
+  p99    = 20423
+  p99.9  = 56142
+  max    = 124489
+  avg    = 11727
+throughput: 33649 samples/s
+
+===== kernel ws =====
+=== lat_ws (kernel) ===
+samples: 1110752 (warmup 1000 discarded)
+RTT_ns:
+  min    = 22966
+  p50    = 25719
+  p90    = 28199
+  p99    = 69022
+  p99.9  = 70749
+  max    = 1531330
+  avg    = 26887
+TX_ns:
+  min    = 12684
+  p50    = 14307
+  p90    = 15803
+  p99    = 24471
+  p99.9  = 58254
+  max    = 1505079
+  avg    = 14998
+RX_ns:
+  min    = 9911
+  p50    = 11195
+  p90    = 12755
+  p99    = 21047
+  p99.9  = 55214
+  max    = 114619
+  avg    = 11857
+throughput: 37067 samples/s
+
+===== kernel ex_market (120s, PRE-FIX — same fixture as ex_market_2p but ex_market client does not call BookTicker::from so this run is unaffected) =====
+=== lat_ex_market (kernel) ===
+samples: 2142 (warmup 1000 discarded)
+latency_ns:
+  min    = 10362
+  p50    = 34191
+  p90    = 210874
+  p99    = 271480
+  p99.9  = 289655
+  max    = 300529
+
+===== kernel ex_market_2p (120s, PRE-FIX — 100% skip_ratio) =====
+=== lat_ex_market_2p (kernel) ===
+lat_ex_market_2p: skipped 176116 malformed + 0 clock-skew + 0 slot-overflow samples
+samples: 0 (no data recorded)
+--- two-phase stats ---
+mode:          twophase
+total_frames:  339574
+parsed_frames: 0
+skip_ratio:    100.00%
+active_slots:  5
+
+===== kernel ex_order =====
+=== lat_ex_order (kernel) ===
+samples: 836169 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21831
+  p50    = 24999
+  p90    = 68638
+  p99    = 70621
+  p99.9  = 74013
+  max    = 806191
+  avg    = 37641
+TX_ns:
+  min    = 11808
+  p50    = 13475
+  p90    = 57198
+  p99    = 58254
+  p99.9  = 59822
+  max    = 788483
+  avg    = 20075
+RX_ns:
+  min    = 9631
+  p50    = 10955
+  p90    = 54638
+  p99    = 55790
+  p99.9  = 56782
+  max    = 141672
+  avg    = 17534
+throughput: 26153 samples/s
+
+===== kernel ex_md_udp =====
+=== lat_ex_md_udp (kernel) ===
+samples: 949916 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21036
+  p50    = 23719
+  p90    = 68958
+  p99    = 70494
+  p99.9  = 84317
+  max    = 1404525
+  avg    = 31462
+TX_ns:
+  min    = 11421
+  p50    = 12939
+  p90    = 17591
+  p99    = 58958
+  p99.9  = 62062
+  max    = 1380862
+  avg    = 16975
+RX_ns:
+  min    = 9136
+  p50    = 10507
+  p90    = 14139
+  p99    = 56558
+  p99.9  = 57934
+  max    = 162375
+  avg    = 14455
+throughput: 31694 samples/s
+
+===== dpdk tcp =====
+=== lat_tcp (dpdk) ===
+samples: 1408739 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18450
+  p50    = 20775
+  p90    = 22903
+  p99    = 27511
+  p99.9  = 35374
+  max    = 1416939
+  avg    = 21193
+  stddev = 2652
+TX_ns:
+  min    = 10637
+  p50    = 12195
+  p90    = 13659
+  p99    = 17447
+  p99.9  = 23591
+  max    = 1399254
+  avg    = 12525
+  stddev = 2342
+RX_ns:
+  min    = 7284
+  p50    = 8387
+  p90    = 9659
+  p99    = 12835
+  p99.9  = 17559
+  max    = 253602
+  avg    = 8636
+  stddev = 1192
+throughput: 46991 samples/s
+
+===== dpdk udp =====
+=== lat_udp (dpdk) ===
+samples: 1385459 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18855
+  p50    = 21079
+  p90    = 23239
+  p99    = 28999
+  p99.9  = 37358
+  max    = 2321817
+  avg    = 21549
+TX_ns:
+  min    = 11173
+  p50    = 12507
+  p90    = 14011
+  p99    = 18983
+  p99.9  = 26375
+  max    = 2305404
+  avg    = 12897
+RX_ns:
+  min    = 7376
+  p50    = 8355
+  p90    = 9667
+  p99    = 12755
+  p99.9  = 17159
+  max    = 115518
+  avg    = 8620
+throughput: 46220 samples/s
+
+===== dpdk ws =====
+=== lat_ws (dpdk) ===
+samples: 1274854 (warmup 1000 discarded)
+RTT_ns:
+  min    = 19840
+  p50    = 22759
+  p90    = 26183
+  p99    = 31415
+  p99.9  = 67614
+  max    = 1889550
+  avg    = 23427
+TX_ns:
+  min    = 11949
+  p50    = 13699
+  p90    = 16067
+  p99    = 21031
+  p99.9  = 58158
+  max    = 1863965
+  avg    = 14245
+RX_ns:
+  min    = 7498
+  p50    = 8715
+  p90    = 10763
+  p99    = 15179
+  p99.9  = 19047
+  max    = 124875
+  avg    = 9149
+throughput: 42528 samples/s
+
+===== dpdk ex_market (120s, PRE-FIX — fixture unchanged for ex_market) =====
+=== lat_ex_market (dpdk) ===
+samples: 2142 (warmup 1000 discarded)
+latency_ns:
+  min    = 7406
+  p50    = 9099
+  p90    = 16823
+  p99    = 36355064
+  p99.9  = 37469145
+  max    = 37590414
+
+===== dpdk ex_market_2p (120s, PRE-FIX — 100% skip_ratio) =====
+=== lat_ex_market_2p (dpdk) ===
+lat_ex_market_2p: skipped 250398 malformed + 0 clock-skew + 0 slot-overflow samples
+samples: 0 (no data recorded)
+parsed_frames: 0
+skip_ratio:    100.00%
+
+===== kernel ex_market_2p (120s, POST-FIX — synthetic bookTicker fixture) =====
+=== lat_ex_market_2p (kernel) ===
+samples: 209799 (warmup 1000 discarded)
+latency_ns:
+  min    = 10389
+  p50    = 49166
+  p90    = 95261
+  p99    = 138172
+  p99.9  = 269176
+  max    = 359767
+total_frames:  339574
+parsed_frames: 210799
+skip_ratio:    37.92%            ← by-design twophase coalescing, malformed=0
+
+===== dpdk ex_market_2p (120s, POST-FIX — synthetic bookTicker fixture) =====
+=== lat_ex_market_2p (dpdk) ===
+samples: 250044 (warmup 1000 discarded)
+latency_ns:
+  min    = 7765
+  p50    = 21543
+  p90    = 51406
+  p99    = 81373
+  p99.9  = 95901
+  max    = 355222
+total_frames:  339574
+parsed_frames: 251044
+skip_ratio:    26.07%            ← by-design twophase coalescing, malformed=0

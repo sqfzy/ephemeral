@@ -1,0 +1,425 @@
+# Raw lat-sweep output — 7 scenarios × (kernel, dpdk) = 14 runs (POST-pin_thread rerun)
+# Reproduced: 2026-04-22 10:19 — 10:31 (EC2 aarch64 Graviton host)
+# Commit (HEAD): 7869ea4  refactor(bench): S3 — remove legacy config.hpp + bench.conf + INI MMPP params
+#
+# KEY DIFFERENCE vs the 2026-04-22 06:51 sweep (.artifacts/bench-data-20260422-065113-lat-full-sweep.txt):
+# this rerun has *all lat_* binaries pinning themselves to the configured
+# cpu.cpu_client = 4 via pin_client_from_cfg (see commit history for the fix).
+# Confirmed at runtime by the `[lat_<scenario>] pinned to CPU 4 (source:
+# config.toml cpu.cpu_client)` log line every run emits. mockex is pinned
+# to cpu.cpu_mock = 6 as before.
+#
+# Compiler: gcc14 (xmake release toolchain)
+# Build:    xmake build <each target>  (all rebuilt during the bench.conf →
+#           config.toml reshape; binaries under build/linux/arm64/release/)
+# Bench wrapper: benchmarks/latency/lat
+#   echo scenarios (tcp, udp, ws, ex_order, ex_md_udp):
+#     sudo ./benchmarks/latency/lat <s>        --config /tmp/bench-30s.toml
+#     sudo ./benchmarks/latency/lat <s> --dpdk --config /tmp/bench-30s.toml
+#   push scenarios (ex_market, ex_market_2p):
+#     sudo ./benchmarks/latency/lat <s>        --config /tmp/bench-push-120s.toml
+#     sudo ./benchmarks/latency/lat <s> --dpdk --config /tmp/bench-push-120s.toml
+# Config overrides (TOML now, not the retired bash bench.conf):
+#   /tmp/bench-30s.toml       clones benchmarks/latency/config.toml and rewrites
+#                             every `duration_seconds = 300` to `= 30`
+#   /tmp/bench-push-120s.toml lifts only lat_ex_market + lat_ex_market_2p to
+#                             `duration_seconds = 120` (MMPP-2 quiet-state λ_q
+#                             at seed=42 needs a longer window)
+# Fairness contract: mock always kernel on ens34; only client code path differs.
+#   kernel client → ens35 in bench_ns netns (same-host shortcut blocked)
+#   dpdk   client → ens35 bound to vfio-pci, DPDK PMD owns the queue
+#   Both paths: client → AWS VPC fabric → mock.
+# TSC: CPU frequency calibrated at 1.00 GHz (CV = 0.00 %) across every run.
+# warmup_samples = 1000 (discarded before sampling).
+#
+# Anomalies to be aware of when citing these numbers:
+#   (1) DPDK ex_order TX p50 = 253,880 ns / throughput 3,806 /s
+#       (vs kernel same-scenario throughput 31,437 /s)
+#   (2) DPDK UDP p99 = 261,944 ns (p50 still 20.5 µs, clean)
+#       — one/two 250 µs outliers smeared into p99
+#   (3) DPDK ex_market p99 = 16,264,758 ns (16 ms)
+#       — same MMPP low-rate artifact as in the previous sweep
+#   See experiment-20260422-103422.md §Anomalies for analysis.
+# ==============================================================================
+
+===== kernel tcp =====
+=== lat_tcp (kernel) ===
+samples: 1168952 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21887
+  p50    = 24311
+  p90    = 26871
+  p99    = 69022
+  p99.9  = 69918
+  max    = 1357407
+  avg    = 25516
+  stddev = 6536
+TX_ns:
+  min    = 11556
+  p50    = 13123
+  p90    = 14771
+  p99    = 20631
+  p99.9  = 58030
+  max    = 1335034
+  avg    = 13690
+  stddev = 3999
+RX_ns:
+  min    = 9797
+  p50    = 10995
+  p90    = 12483
+  p99    = 48654
+  p99.9  = 56526
+  max    = 123259
+  avg    = 11794
+  stddev = 4821
+throughput: 39055 samples/s
+
+===== kernel udp =====
+=== lat_udp (kernel) ===
+samples: 1239291 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21095
+  p50    = 23479
+  p90    = 25719
+  p99    = 33199
+  p99.9  = 69342
+  max    = 12504879
+  avg    = 24090
+  stddev = 11877
+TX_ns:
+  min    = 11484
+  p50    = 12787
+  p90    = 14259
+  p99    = 19495
+  p99.9  = 56622
+  max    = 12479737
+  avg    = 13189
+  stddev = 11574
+RX_ns:
+  min    = 9237
+  p50    = 10483
+  p90    = 11899
+  p99    = 16011
+  p99.9  = 55694
+  max    = 146104
+  avg    = 10869
+  stddev = 2577
+throughput: 41349 samples/s
+
+===== kernel ws =====
+=== lat_ws (kernel) ===
+samples: 1001851 (warmup 1000 discarded)
+RTT_ns:
+  min    = 22664
+  p50    = 26087
+  p90    = 32647
+  p99    = 69917
+  p99.9  = 74269
+  max    = 3449072
+  avg    = 29818
+  stddev = 13515
+TX_ns:
+  min    = 12517
+  p50    = 14371
+  p90    = 17623
+  p99    = 57998
+  p99.9  = 58670
+  max    = 3423108
+  avg    = 16471
+  stddev = 10812
+RX_ns:
+  min    = 9737
+  p50    = 11275
+  p90    = 14123
+  p99    = 54830
+  p99.9  = 55470
+  max    = 134213
+  avg    = 13314
+  stddev = 8312
+throughput: 33434 samples/s
+
+===== kernel ex_market (120s) =====
+=== lat_ex_market (kernel) ===
+samples: 2142 (warmup 1000 discarded)
+latency_ns:
+  min    = 9741
+  p50    = 14435
+  p90    = 61902
+  p99    = 158139
+  p99.9  = 273784
+  max    = 276949
+  avg    = 28867
+  stddev = 31924
+throughput: 23 samples/s
+
+===== kernel ex_market_2p (120s, twophase) =====
+=== lat_ex_market_2p (kernel) ===
+samples: 163125 (warmup 1000 discarded)
+latency_ns:
+  min    = 10746
+  p50    = 69470
+  p90    = 223545
+  p99    = 297591
+  p99.9  = 325750
+  max    = 353671
+  avg    = 89338
+  stddev = 73190
+total_frames:  339574
+parsed_frames: 164125
+skip_ratio:    51.67%       ← by-design twophase coalescing
+throughput: 1339 samples/s
+
+===== kernel ex_order =====
+=== lat_ex_order (kernel) ===
+samples: 1005085 (warmup 1000 discarded)
+RTT_ns:
+  min    = 22032
+  p50    = 25751
+  p90    = 68062
+  p99    = 70174
+  p99.9  = 75933
+  max    = 939584
+  avg    = 31209
+  stddev = 14387
+TX_ns:
+  min    = 11330
+  p50    = 14099
+  p90    = 24839
+  p99    = 57934
+  p99.9  = 59566
+  max    = 925024
+  avg    = 18361
+  stddev = 12155
+RX_ns:
+  min    = 9595
+  p50    = 11059
+  p90    = 14851
+  p99    = 54030
+  p99.9  = 55534
+  max    = 143425
+  avg    = 12815
+  stddev = 6925
+throughput: 31437 samples/s
+
+===== kernel ex_md_udp =====
+=== lat_ex_md_udp (kernel) ===
+samples: 1252199 (warmup 1000 discarded)
+RTT_ns:
+  min    = 20943
+  p50    = 23287
+  p90    = 25447
+  p99    = 32151
+  p99.9  = 69342
+  max    = 949381
+  avg    = 23847
+  stddev = 3929
+TX_ns:
+  min    = 11312
+  p50    = 12691
+  p90    = 14179
+  p99    = 19239
+  p99.9  = 57710
+  max    = 921225
+  avg    = 13083
+  stddev = 3136
+RX_ns:
+  min    = 9234
+  p50    = 10411
+  p90    = 11675
+  p99    = 15291
+  p99.9  = 53966
+  max    = 128026
+  avg    = 10732
+  stddev = 2303
+throughput: 41773 samples/s
+
+===== dpdk tcp =====
+=== lat_tcp (dpdk) ===
+samples: 1392609 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18668
+  p50    = 20999
+  p90    = 23303
+  p99    = 27367
+  p99.9  = 35119
+  max    = 1546895
+  avg    = 21428
+  stddev = 2650
+TX_ns:
+  min    = 11043
+  p50    = 12435
+  p90    = 14211
+  p99    = 17671
+  p99.9  = 24647
+  max    = 1522225
+  avg    = 12816
+  stddev = 2398
+RX_ns:
+  min    = 7341
+  p50    = 8355
+  p90    = 9547
+  p99    = 12331
+  p99.9  = 16439
+  max    = 97752
+  avg    = 8579
+  stddev = 1088
+throughput: 46474 samples/s
+
+===== dpdk udp =====
+=== lat_udp (dpdk) ===
+samples: 1223805 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18383
+  p50    = 20551
+  p90    = 22823
+  p99    = 261944             ← anomaly (see header note #2)
+  p99.9  = 264056
+  max    = 1553344
+  avg    = 24216
+  stddev = 27639
+TX_ns:
+  min    = 9783
+  p50    = 12099
+  p90    = 13667
+  p99    = 253496             ← paired with RTT p99 spike
+  p99.9  = 254648
+  max    = 1534438
+  avg    = 15681
+  stddev = 27582
+RX_ns:
+  min    = 7239
+  p50    = 8259
+  p90    = 9499
+  p99    = 12563
+  p99.9  = 16951
+  max    = 117676
+  avg    = 8502
+  stddev = 1141
+throughput: 41144 samples/s
+
+===== dpdk ws =====
+=== lat_ws (dpdk) ===
+samples: 1348070 (warmup 1000 discarded)
+RTT_ns:
+  min    = 19462
+  p50    = 21735
+  p90    = 23751
+  p99    = 28071
+  p99.9  = 34927
+  max    = 15839916
+  avg    = 22149
+  stddev = 17261
+TX_ns:
+  min    = 11714
+  p50    = 13147
+  p90    = 14611
+  p99    = 18183
+  p99.9  = 23783
+  max    = 15820808
+  avg    = 13504
+  stddev = 17211
+RX_ns:
+  min    = 7354
+  p50    = 8387
+  p90    = 9555
+  p99    = 12395
+  p99.9  = 16839
+  max    = 124466
+  avg    = 8613
+  stddev = 1080
+throughput: 44969 samples/s
+
+===== dpdk ex_market (120s) =====
+=== lat_ex_market (dpdk) ===
+samples: 2142 (warmup 1000 discarded)
+latency_ns:
+  min    = 7331
+  p50    = 8955
+  p90    = 15419
+  p99    = 16264758           ← MMPP quiet-state artifact, see header note #3
+  p99.9  = 34520117
+  max    = 34775610
+  avg    = 407405
+  stddev = 3017243
+throughput: 23 samples/s
+
+===== dpdk ex_market_2p (120s, twophase) =====
+=== lat_ex_market_2p (dpdk) ===
+samples: 251682 (warmup 1000 discarded)
+latency_ns:
+  min    = 7799
+  p50    = 21815
+  p90    = 49774
+  p99    = 81693
+  p99.9  = 100253
+  max    = 19686274
+  avg    = 29314
+  stddev = 241982
+total_frames:  339574
+parsed_frames: 252682
+skip_ratio:    25.59%       ← by-design twophase coalescing
+throughput: 2067 samples/s
+
+===== dpdk ex_order (ANOMALY — see header note #1) =====
+=== lat_ex_order (dpdk) ===
+samples: 120808 (warmup 1000 discarded)
+RTT_ns:
+  min    = 22504
+  p50    = 262072             ← 254 µs TX-leg stall; prev sweep was 20,983
+  p90    = 263800
+  p99    = 268408
+  p99.9  = 287351
+  max    = 1754897
+  avg    = 262145
+  stddev = 12622
+TX_ns:
+  min    = 13236
+  p50    = 253880             ← the entire gap is in TX; RX is normal
+  p90    = 254648
+  p99    = 258488
+  p99.9  = 270712
+  max    = 1735932
+  avg    = 253704
+  stddev = 12453
+RX_ns:
+  min    = 7228
+  p50    = 8097
+  p90    = 9467
+  p99    = 12691
+  p99.9  = 17255
+  max    = 95180
+  avg    = 8408
+  stddev = 1254
+throughput: 3806 samples/s  (kernel same-scenario: 31,437 /s)
+
+===== dpdk ex_md_udp =====
+=== lat_ex_md_udp (dpdk) ===
+samples: 1426240 (warmup 1000 discarded)
+RTT_ns:
+  min    = 18358
+  p50    = 20471
+  p90    = 22487
+  p99    = 28103
+  p99.9  = 40430
+  max    = 7482089
+  avg    = 20932
+  stddev = 7105
+TX_ns:
+  min    = 10808
+  p50    = 12035
+  p90    = 13443
+  p99    = 18279
+  p99.9  = 27879
+  max    = 7444773
+  avg    = 12418
+  stddev = 6984
+RX_ns:
+  min    = 7215
+  p50    = 8235
+  p90    = 9467
+  p99    = 12467
+  p99.9  = 16823
+  max    = 103254
+  avg    = 8481
+  stddev = 1123
+throughput: 47575 samples/s

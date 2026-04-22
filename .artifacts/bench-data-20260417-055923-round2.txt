@@ -1,0 +1,32 @@
+# Round 2 — BookTicker::parse fused dispatcher — 20260417-055923
+# Commit: c67d5526b2176b4609f1cb296edc6c8afcbbc8e9 (dirty)
+# Command: taskset -c 2 ./build/linux/arm64/release/bench_json_parse --benchmark_repetitions=5 --benchmark_report_aggregates_only=true --benchmark_min_time=2s
+
+2026-04-17T05:59:23+00:00
+Running ./build/linux/arm64/release/bench_json_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 4.16, 4.29, 1.96
+-------------------------------------------------------------------------------------------
+Benchmark                                 Time             CPU   Iterations UserCounters...
+-------------------------------------------------------------------------------------------
+BM_JsonParse_mean                       108 ns          108 ns            5 bytes_per_second=1.18537Gi/s items_per_second=9.29035M/s
+BM_JsonParse_median                     104 ns          104 ns            5 bytes_per_second=1.22628Gi/s items_per_second=9.61099M/s
+BM_JsonParse_stddev                    6.13 ns         6.14 ns            5 bytes_per_second=65.5191Mi/s items_per_second=501.473k/s
+BM_JsonParse_cv                        5.68 %          5.69 %             5 bytes_per_second=5.40% items_per_second=5.40%
+BM_JsonParseAndExtract_mean             169 ns          169 ns            5 items_per_second=5.93197M/s
+BM_JsonParseAndExtract_median           169 ns          169 ns            5 items_per_second=5.93127M/s
+BM_JsonParseAndExtract_stddev         0.110 ns        0.089 ns            5 items_per_second=3.12588k/s
+BM_JsonParseAndExtract_cv              0.07 %          0.05 %             5 items_per_second=0.05%
+BM_BinanceBookTickerParse_mean          126 ns          126 ns            5 bytes_per_second=1.01131Gi/s items_per_second=7.92617M/s
+BM_BinanceBookTickerParse_median        126 ns          126 ns            5 bytes_per_second=1.01395Gi/s items_per_second=7.94683M/s
+BM_BinanceBookTickerParse_stddev      0.749 ns        0.760 ns            5 bytes_per_second=6.18814Mi/s items_per_second=47.363k/s
+BM_BinanceBookTickerParse_cv           0.59 %          0.60 %             5 bytes_per_second=0.60% items_per_second=0.60%
+BM_SymbolHash_mean                     22.5 ns         22.5 ns            5 items_per_second=44.636M/s
+BM_SymbolHash_median                   21.7 ns         21.7 ns            5 items_per_second=46.1449M/s
+BM_SymbolHash_stddev                   1.69 ns         1.68 ns            5 items_per_second=3.26234M/s
+BM_SymbolHash_cv                       7.49 %          7.48 %             5 items_per_second=7.31%

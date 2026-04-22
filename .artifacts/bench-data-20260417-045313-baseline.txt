@@ -1,0 +1,31 @@
+# Benchmark baseline — 20260417-045313
+# Commit: 2f438b95c6db0ad18ee245ea0796f7c7fc427960 (clean)
+# Compiler: gcc14-g++ (GCC) 14.2.1 20250110 (Red Hat 14.2.1-7)
+# CPU: 
+# OS: Linux 6.1.163-186.299.amzn2023.aarch64
+# Command: taskset -c 2 ./build/linux/arm64/release/bench_json_parse --benchmark_repetitions=5 --benchmark_report_aggregates_only=true --benchmark_min_time=2s
+
+2026-04-17T04:53:13+00:00
+Running ./build/linux/arm64/release/bench_json_parse
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.41, 0.29, 0.20
+----------------------------------------------------------------------------------------
+Benchmark                              Time             CPU   Iterations UserCounters...
+----------------------------------------------------------------------------------------
+BM_JsonParse_mean                    110 ns          110 ns            5 bytes_per_second=1.16405Gi/s items_per_second=9.12326M/s
+BM_JsonParse_median                  109 ns          109 ns            5 bytes_per_second=1.17482Gi/s items_per_second=9.2077M/s
+BM_JsonParse_stddev                 5.92 ns         5.92 ns            5 bytes_per_second=63.7071Mi/s items_per_second=487.604k/s
+BM_JsonParse_cv                     5.39 %          5.39 %             5 bytes_per_second=5.34% items_per_second=5.34%
+BM_JsonParseAndExtract_mean          192 ns          192 ns            5 items_per_second=5.20281M/s
+BM_JsonParseAndExtract_median        192 ns          192 ns            5 items_per_second=5.20279M/s
+BM_JsonParseAndExtract_stddev      0.013 ns        0.013 ns            5 items_per_second=357.225/s
+BM_JsonParseAndExtract_cv           0.01 %          0.01 %             5 items_per_second=0.01%
+BM_SymbolHash_mean                  21.1 ns         21.1 ns            5 items_per_second=47.4028M/s
+BM_SymbolHash_median                21.1 ns         21.1 ns            5 items_per_second=47.4014M/s
+BM_SymbolHash_stddev               0.004 ns        0.004 ns            5 items_per_second=8.76988k/s
+BM_SymbolHash_cv                    0.02 %          0.02 %             5 items_per_second=0.02%
