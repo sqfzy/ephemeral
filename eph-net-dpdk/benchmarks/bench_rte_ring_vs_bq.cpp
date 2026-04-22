@@ -146,14 +146,14 @@ static void BM_BQ_Throughput(benchmark::State& state) {
     }
 
     if (state.thread_index() == 0) {
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         T val;
         for ([[maybe_unused]] auto _ : state) {
             q.push(val);
             benchmark::ClobberMemory();
         }
     } else {
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         T out;
         for ([[maybe_unused]] auto _ : state) {
             q.pop(out);
@@ -183,7 +183,7 @@ static void BM_RteRing_Throughput(benchmark::State& state) {
 
     if (state.thread_index() == 0) {
         // Producer
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         size_t idx = 0;
         for ([[maybe_unused]] auto _ : state) {
             T* p = &pool[idx & (BufSize - 1)];
@@ -196,7 +196,7 @@ static void BM_RteRing_Throughput(benchmark::State& state) {
         }
     } else {
         // Consumer
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         for ([[maybe_unused]] auto _ : state) {
             void* out_ptr = nullptr;
             while (rte_ring_sc_dequeue(ring, &out_ptr) != 0) {
@@ -231,14 +231,14 @@ static void BM_BQ_PingPong(benchmark::State& state) {
     }
 
     if (state.thread_index() == 0) {
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         T send_val, recv_val;
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.push(send_val);
             ctx->q2.pop(recv_val);
         }
     } else {
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         T val;
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.pop(val);
@@ -267,7 +267,7 @@ static void BM_RteRing_PingPong(benchmark::State& state) {
 
     if (state.thread_index() == 0) {
         // Ping: send on q1, receive on q2
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         size_t idx = 0;
         for ([[maybe_unused]] auto _ : state) {
             T* p = &pool[idx & (BufSize - 1)];
@@ -283,7 +283,7 @@ static void BM_RteRing_PingPong(benchmark::State& state) {
         }
     } else {
         // Pong: receive on q1, send on q2
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         for ([[maybe_unused]] auto _ : state) {
             void* in_ptr = nullptr;
             while (rte_ring_sc_dequeue(q1, &in_ptr) != 0) {

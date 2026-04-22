@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     // ── 3) Build the Poller (one lcore burst loop for the app) ────────────
     // NOTE: DpdkPoller does not spawn its own thread — the user's main
     // loop drives `poll()`. Thread pinning (e.g. to `lcore_hint`) is the
-    // caller's responsibility; see eph::utils::set_thread_affinity().
+    // caller's responsibility; see eph::utils::pin_thread().
     (void)lcore_hint;
     edpdk::PollerConfig pcfg{};
     pcfg.port_id     = dpdk_port_id;

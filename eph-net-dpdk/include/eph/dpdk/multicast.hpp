@@ -646,7 +646,7 @@ private:
 
     void rx_loop() {
         if (config_.rx_cpu >= 0) {
-            [[maybe_unused]] auto affinity_ok = eph::utils::set_thread_affinity(config_.rx_cpu, "multicast_rx");
+            [[maybe_unused]] auto affinity_ok = eph::utils::pin_thread(config_.rx_cpu, "multicast_rx");
         }
 
         [[maybe_unused]] auto* log = detail::multicast_logger();
