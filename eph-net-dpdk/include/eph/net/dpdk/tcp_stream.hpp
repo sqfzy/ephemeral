@@ -839,6 +839,24 @@ public:
     ///        transparently before handing to the DPDK byte pipe.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> app_payload) noexcept {
+        // Fail-fast guard on TLS write-seq desync. Checked BEFORE the
+        // attach/established preconditions so the error surface is
+        // identical (Disconnected) regardless of whether the desync was
+        // observed on a not-yet-attached stream, a live session, or a
+        // mid-teardown reconnect retry. The moment this latch trips, the
+        // peer's AEAD state is permanently out of sync with ours and no
+        // further byte we send can decrypt successfully — caller must
+        // reconnect to replace the TLS state entirely. See
+        // `kTlsSendDesyncs`.
+        if constexpr (EnableTls) {
+            if (tls_corrupt_) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "DpdkTcpStream::send: TLS state desynced "
+                    "(partial send advanced write seq past wire) — "
+                    "reconnect required"});
+            }
+        }
         if (attached_to_ == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
@@ -853,6 +871,7 @@ public:
         // records before forwarding to the DPDK byte pipe. Mirrors the
         // kernel-side path (KernelTcpStream::send).
         if constexpr (EnableTls) {
+            // (Desync latch already checked above.)
             tls_send_buf_.clear();
             auto enc = tls_.encrypt_for_send(app_payload.data(),
                                               app_payload.size(),
@@ -862,6 +881,14 @@ public:
             }
             // The encrypted buffer may exceed MSS (TLS record overhead +
             // plaintext), so chunk by MSS before handing to the session.
+            //
+            // Any failure past this point desyncs the peer: encrypt_for_send
+            // already bumped the TLS write seq to cover the full plaintext,
+            // so if we bail out without delivering every ciphertext byte,
+            // the next record will use a seq the peer does not expect and
+            // its AEAD-open will fail permanently. Latch `tls_corrupt_`
+            // before returning so the next send() / RX path surface
+            // Disconnected and trigger reconnect.
             const std::size_t mss = sess_.mss();
             std::size_t off = 0;
             while (off < tls_send_buf_.size()) {
@@ -869,15 +896,27 @@ public:
                     std::min(mss, tls_send_buf_.size() - off);
                 auto sr = sess_.send(tls_send_buf_.data() + off, chunk);
                 if (!sr) {
+                    tls_corrupt_ = true;
+                    inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
                     // Pass through the session's typed error — no re-wrap
                     // needed now that sess_.send returns ErrorInfo.
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                        "DpdkTcpStream::send(TLS): {}", sr.error().detail);
+                        "DpdkTcpStream::send(TLS): {} "
+                        "(off={}/{}, chunk={}, mss={}) — latching "
+                        "tls_corrupt_ since TLS write seq was already "
+                        "advanced; reconnect required",
+                        sr.error().detail, off, tls_send_buf_.size(),
+                        chunk, mss);
                     return std::unexpected(sr.error());
                 }
                 if (*sr == 0) {
+                    tls_corrupt_ = true;
+                    inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                        "DpdkTcpStream::send(TLS): TcpSession::send returned 0 bytes");
+                        "DpdkTcpStream::send(TLS): TcpSession::send returned "
+                        "0 bytes (off={}/{}, chunk={}) — latching "
+                        "tls_corrupt_",
+                        off, tls_send_buf_.size(), chunk);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::BufferFull,
                         "DpdkTcpStream::send: TcpSession::send returned 0"});
@@ -947,6 +986,15 @@ public:
         return sess_.state();
     }
 
+    /// @brief Diagnostic — true once a TLS partial-send has desynced the
+    ///        write sequence counter with the peer. The stream then refuses
+    ///        further send/recv and expects the caller to reconnect. Always
+    ///        false on `EnableTls=false`.
+    [[nodiscard]] bool is_tls_send_desynced() const noexcept {
+        if constexpr (EnableTls) return tls_corrupt_;
+        else return false;
+    }
+
     // ── Pollable concept API ─────────────────────────────────────────────
     //
     // These methods are conceptually private to the Poller but exposed
@@ -967,6 +1015,12 @@ public:
         // cycle; see `docs/poller-guide.md`.
         if (!sess_.is_established()) return 0;
         if (reasm_overflowed_) return 0;
+        // Fail-fast on TLS desync — mirrors process_burst_ above. The
+        // reconnect policy replaces this stream; until then nothing
+        // flowing through poll_once_ can be trusted.
+        if constexpr (EnableTls) {
+            if (tls_corrupt_) return 0;
+        }
         // `rx_chunk`: TCP payload bytes emerging from the session-layer
         // reassembly. Semantically plaintext when EnableTls=false; when
         // EnableTls=true these are TLS ciphertext records that the
@@ -1098,6 +1152,17 @@ public:
     ///        reassembly buffer through the codec.
     void process_burst_(rte_mbuf** mbufs, uint16_t n,
                          uint64_t rx_tsc) noexcept {
+        // Fail-fast on TLS desync (see send() above). We cannot trust the
+        // decrypt path once the peer's seq diverged from ours: even inbound
+        // records may arrive OK, but any auto-response (WS pong, close-ack)
+        // routed through send() would be silently dropped. Drop incoming
+        // mbufs until the reconnect loop tears us down.
+        if constexpr (EnableTls) {
+            if (tls_corrupt_) {
+                for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
+                return;
+            }
+        }
         if (!sess_.is_established() || reasm_overflowed_) {
             for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
             return;
@@ -1136,6 +1201,45 @@ public:
         sess_.flush_pending_ack();
         (void)drain_codec_();
     }
+
+#ifdef EPH_DPDK_TCP_STREAM_TEST_HOOKS
+    /// @brief Test-only: forces the TLS desync latch on so the fail-fast
+    ///        path in send() / process_burst_ / poll_once_ can be exercised
+    ///        without driving a real AEAD partial-send. Guarded by the
+    ///        `EPH_DPDK_TCP_STREAM_TEST_HOOKS` macro so production builds
+    ///        do not expose the setter. Paired metric bump mirrors the
+    ///        real-path bookkeeping in `send()`.
+    void force_tls_desync_for_test_() noexcept {
+        if constexpr (EnableTls) {
+            if (!tls_corrupt_) {
+                tls_corrupt_ = true;
+                inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
+            }
+        }
+    }
+
+    /// @brief Test-only: bypass `create()`'s config validation + live
+    ///        connect + TLS handshake. Returns a default-constructed stream
+    ///        whose session is NOT established. Only useful for exercising
+    ///        input-guard behaviour (desync latch, attach preconditions)
+    ///        that short-circuits before touching the session. Guarded by
+    ///        `EPH_DPDK_TCP_STREAM_TEST_HOOKS`.
+    static std::unique_ptr<DpdkTcpStream>
+    make_default_for_test_() {
+        StreamConfig cfg{};
+        // Minimally fill the legacy TcpConfig so the session constructor
+        // doesn't trip internal asserts — validity of the values is
+        // irrelevant, we never drive the session to Established.
+        cfg.legacy.tuple.src_ip   = 0x0A000001;
+        cfg.legacy.tuple.dst_ip   = 0x0A000002;
+        cfg.legacy.tuple.src_port = 12345;
+        cfg.legacy.tuple.dst_port = 443;
+        cfg.legacy.mss            = 1460;
+        cfg.legacy.recv_window    = 65535;
+        return std::unique_ptr<DpdkTcpStream>(
+            new DpdkTcpStream(std::move(cfg)));
+    }
+#endif // EPH_DPDK_TCP_STREAM_TEST_HOOKS
 
 private:
     explicit DpdkTcpStream(StreamConfig cfg)
@@ -1402,6 +1506,14 @@ private:
     // before handing them to the byte pipe. Persists across calls so we do not
     // reallocate per send. Only populated when `EnableTls=true`.
     std::vector<uint8_t>                    tls_send_buf_{};
+    /// @brief Set once the TLS write path has encrypted a record whose
+    ///        ciphertext did not fully reach the TCP TX queue. Once tripped,
+    ///        every send() and process_burst_ / poll_once_ short-circuits
+    ///        so the reconnect loop can take over. Only meaningful when
+    ///        `EnableTls=true`; the false-branch member cost is one byte.
+    ///        See the detailed rationale in `send()` and the metric
+    ///        `kTlsSendDesyncs` in `eph/net/stream_metrics.hpp`.
+    bool                                    tls_corrupt_{false};
     // Cross-record carry-over for the TLS codec drain path. Holds the
     // unconsumed tail from a previous emit when a WS frame's payload
     // spans a TLS record boundary; prepended to the next record's
