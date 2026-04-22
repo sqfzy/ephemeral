@@ -437,6 +437,25 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: ws_timeout must be > 0"});
         }
+        // Reasm capacity: 0 silently falls back to 256 KiB (default) —
+        // supports the "just use the default" idiom via designated init.
+        // Non-zero-but-tiny values (e.g. 512 bytes) would let the stream
+        // construct successfully then overflow on the first burst; reject
+        // those at config time with an actionable error. The floor must
+        // comfortably exceed a single MSS + TLS record overhead so even
+        // the smallest reasonable frame can land without a reset.
+        static constexpr std::size_t kMinReasmCapacity = 4096;
+        if (cfg.reasm_capacity != 0 &&
+            cfg.reasm_capacity < kMinReasmCapacity) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::create: reasm_capacity={} bytes is below "
+                "floor={} (use 0 for default or >= {}KB)",
+                cfg.reasm_capacity, kMinReasmCapacity,
+                kMinReasmCapacity / 1024);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkTcpStream::create: reasm_capacity too small"});
+        }
         // HTTP CONNECT proxies are unsupported on DPDK. HFT colo
         // deployments don't use proxies, and a DPDK client bypasses the
         // kernel userland stack that a proxy would be reachable through.

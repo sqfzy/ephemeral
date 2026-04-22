@@ -194,3 +194,33 @@ TEST(DpdkTcpStream, ZeroRecvWindowFailsInvalidConfig) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
+
+TEST(DpdkTcpStream, ReasmCapacityBelowFloorFailsInvalidConfig) {
+    // Non-zero-but-tiny reasm_capacity would let construction succeed
+    // then overflow on the first burst. Reject at config time.
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.reasm_capacity = 512;  // below the 4096 floor
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST(DpdkTcpStream, ReasmCapacityAboveFloorPassesValidation) {
+    // Walks the ValidationOK → NullPool path: reasm_capacity == floor
+    // is accepted; the create() call then reaches the pool-null check
+    // further down (we use nullptr here instead of a dangling sentinel
+    // so connect() cannot be reached and segfault on the fake pool).
+    auto cfg = valid_cfg_with_pool_sentinel();
+    cfg.pool = nullptr;
+    cfg.reasm_capacity = 4096;  // exactly at floor, should pass reasm check
+    auto r = PlainRawStream::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Must fail for null-pool, not for reasm_capacity.
+    if (const char* detail = r.error().detail) {
+        EXPECT_EQ(std::string_view(detail).find("reasm_capacity"),
+                  std::string_view::npos);
+        EXPECT_NE(std::string_view(detail).find("pool"),
+                  std::string_view::npos);
+    }
+}
