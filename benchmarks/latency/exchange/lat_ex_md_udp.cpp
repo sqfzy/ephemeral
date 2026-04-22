@@ -49,6 +49,7 @@
 
 #include "core/config.hpp"
 #include "core/measurement.hpp"
+#include "core/pin_client.hpp"
 #include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
@@ -91,32 +92,34 @@ int main(int argc, char** argv) {
 
     const char* conf_path = parse_config_path(argc, argv);
 
-    auto globals_r = bench::ScenarioConfig::load_globals(conf_path);
-    if (!globals_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: %s\n", globals_r.error().c_str());
+    auto cfg_r = bench::load_bench_conf(conf_path);
+    if (!cfg_r) {
+        std::fprintf(stderr, "lat_ex_md_udp: %s\n",
+                     bench::format_error(cfg_r.error()).c_str());
         return 1;
     }
-    auto scenario_r = bench::ScenarioConfig::load(conf_path, "lat_ex_md_udp");
-    if (!scenario_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: %s\n", scenario_r.error().c_str());
+    const bench::BenchConfig& bench_cfg = *cfg_r;
+    const bench::Scenario* sc = bench_cfg.scenario("lat_ex_md_udp");
+    if (sc == nullptr) {
+        std::fprintf(stderr,
+                     "lat_ex_md_udp: [scenarios.lat_ex_md_udp] not found in %s\n",
+                     conf_path);
         return 1;
     }
-    const auto& globals  = globals_r.value();
-    const auto& scenario = scenario_r.value();
+    const bench::Scenario& scenario = *sc;
 
-    auto port_r = scenario.get_u32("port");
+    bench::pin_client_from_cfg(bench_cfg, "lat_ex_md_udp");
+
+    auto port_r = scenario.get<uint16_t>("port");
     if (!port_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: %s\n", port_r.error().c_str());
+        std::fprintf(stderr, "lat_ex_md_udp: %s\n",
+                     bench::format_error(port_r.error()).c_str());
         return 1;
     }
-    const uint16_t port = static_cast<uint16_t>(port_r.value());
+    const uint16_t port = *port_r;
 
-    auto payload_r = scenario.get_u32("payload_size", 256);
-    if (!payload_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: %s\n", payload_r.error().c_str());
-        return 1;
-    }
-    const std::size_t payload_size = payload_r.value();
+    const std::size_t payload_size =
+        scenario.get_or<uint32_t>("payload_size", 256);
 
     // 24 B timestamp-block header requirement.
     if (payload_size < bench::kTimestampBlockSize) {
@@ -127,21 +130,13 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto duration_r = scenario.get_u32("duration_seconds", 30);
-    if (!duration_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: %s\n", duration_r.error().c_str());
-        return 1;
-    }
-    const uint64_t duration_s = duration_r.value();
+    const uint64_t duration_s =
+        scenario.get_or<uint32_t>("duration_seconds", 30);
+    const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
 
-    auto warmup_r = globals.get_u64("warmup_samples", 1000);
-    if (!warmup_r) {
-        std::fprintf(stderr, "lat_ex_md_udp: %s\n", warmup_r.error().c_str());
-        return 1;
-    }
-    const uint64_t warmup_samples = warmup_r.value();
-
-    const std::string mock_ip_str = globals.get_string("mock_ip", "127.0.0.1");
+    const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
+                                        ? std::string{"127.0.0.1"}
+                                        : bench_cfg.networking.server_ip;
     auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
     if (!ip_r) {
         std::fprintf(stderr, "lat_ex_md_udp: invalid mock_ip '%s': %s\n",
@@ -149,7 +144,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::string client_ip_str = globals.get_string("client_ip", "0.0.0.0");
+    const std::string client_ip_str = bench_cfg.networking.client_ip.empty()
+                                          ? std::string{"0.0.0.0"}
+                                          : bench_cfg.networking.client_ip;
     auto client_ip_r = en::Ipv4Addr::parse(client_ip_str);
     if (!client_ip_r) {
         std::fprintf(stderr, "lat_ex_md_udp: invalid client_ip '%s': %s\n",
@@ -173,7 +170,7 @@ int main(int argc, char** argv) {
     bench::install_signal_handler();
 
 #if defined(EPH_USE_DPDK)
-    auto env_r = bench::load_dpdk_env(globals, /*port_id=*/0);
+    auto env_r = bench::load_dpdk_env(bench_cfg, /*port_id=*/0);
     if (!env_r) {
         std::fprintf(stderr, "lat_ex_md_udp: %s\n", env_r.error().c_str());
         return 1;
