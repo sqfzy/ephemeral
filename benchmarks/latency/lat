@@ -52,7 +52,7 @@ if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); th
 else
     PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
-DEFAULT_CONFIG="$PROJECT_DIR/benchmarks/latency/bench.conf"
+DEFAULT_CONFIG="$PROJECT_DIR/benchmarks/latency/config.toml"
 DPDK_SETUP="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-setup.sh"
 DPDK_TEARDOWN="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-teardown.sh"
 
@@ -169,53 +169,73 @@ BINARY="$BUILD_DIR/$BIN_NAME"
 
 [[ $EUID -eq 0 ]] || die "must run as root" "sudo $0 $SCENARIO $*"
 
-# ── Parse minimal fields from bench.conf (lowercase globals only) ──
+# ── Read a single key from config.toml ─────────────────────────────
+#
+# Accepts either pre-section flat KEY=VALUE (legacy bash-style bench.conf)
+# or a key inside ANY [...] subtable (TOML config.toml). First match wins.
+# Surrounding double-quotes are stripped so `foo = "bar"` returns `bar`.
+#
+# The caller doesn't need to know which section the key lives in — for
+# the ~8 keys the wrapper reads (mock_nic / client_nic / mock_ip /
+# client_ip / gateway_ip / netmask / nic_b_pci), names are unique across
+# [networking] / [cpu] / scenario subtables.
 conf_get() {
     local key="$1" default="${2:-}"
     local val
     val=$(awk -v k="$key" '
-        /^\[/ { exit }
         /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
         {
             sub(/#.*$/, "")
             split($0, a, "=")
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[1])
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
-            if (a[1] == k) { print a[2]; exit }
+            if (a[1] == k || toupper(a[1]) == k) {
+                v = a[2]
+                gsub(/^"|"$/, "", v)
+                print v; exit
+            }
         }
     ' "$CONFIG_FILE")
     [[ -n "$val" ]] && echo "$val" || echo "$default"
 }
 
-# Read a single KEY = VALUE from inside a `[SECTION]` block. Comments
-# and leading/trailing whitespace are stripped; the first match wins.
-# Used for Phase-4 `endpoint` detection — the rest of the script still
-# reads its routing keys from the global (pre-section) scope.
+# Read a key from a specific [scenarios.<section>] subtable. Used for
+# Phase-4 `endpoint = ...` detection.
 conf_get_section() {
     local section="$1" key="$2" default="${3:-}"
     local val
-    val=$(awk -v sec="[$section]" -v k="$key" '
-        $0 == sec            { in_sec = 1; next }
-        /^\[/                { in_sec = 0; next }
-        /^[[:space:]]*#/     { next }
+    val=$(awk -v sec1="[$section]" -v sec2="[scenarios.$section]" -v k="$key" '
+        $0 == sec1 || $0 == sec2 { in_sec = 1; next }
+        /^\[/                    { in_sec = 0; next }
+        /^[[:space:]]*#/         { next }
         in_sec {
             sub(/#.*$/, "")
             split($0, a, "=")
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[1])
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
-            if (a[1] == k) { print a[2]; exit }
+            if (a[1] == k) {
+                v = a[2]
+                gsub(/^"|"$/, "", v)
+                print v; exit
+            }
         }
     ' "$CONFIG_FILE")
     [[ -n "$val" ]] && echo "$val" || echo "$default"
 }
 
-MOCK_NIC=$(conf_get mock_nic)
-CLIENT_NIC=$(conf_get client_nic)
-MOCK_IP=$(conf_get mock_ip)
+# Config field names in config.toml:
+#   [networking].nic_a       → mock side NIC (where the kernel mock binds)
+#   [networking].nic_b       → client side NIC (kernel netns / vfio-pci)
+#   [networking].server_ip   → mock bind IP
+#   [networking].client_ip   → client source IP
+MOCK_NIC=$(conf_get nic_a)
+CLIENT_NIC=$(conf_get nic_b)
+MOCK_IP=$(conf_get server_ip)
 CLIENT_IP=$(conf_get client_ip)
 NETMASK=$(conf_get netmask 255.255.255.0)
 GATEWAY_IP=$(conf_get gateway_ip)
-NIC_B_PCI=$(conf_get NIC_B_PCI)   # uppercase — reused from legacy BenchConfig
+NIC_B_PCI=$(conf_get nic_b_pci)
 
 # dotted mask → CIDR prefix. Supports /20 (the AWS VPC default) plus
 # the other common /8 /16 /24 /32 cases.
