@@ -840,12 +840,13 @@ public:
         }
 
         // Outgoing data packet carries the latest cumulative ACK number
-        // (rcv_nxt_), so any deferred ACK is now satisfied. Clear the
-        // pending-ACK timestamp to skip the next bare ACK emission in
-        // flush_pending_ack() — this is the "piggyback" half of the
-        // delayed-ACK mechanism (see flush_pending_ack() for the timer
-        // half that covers RX-only flows).
-        ack_pending_since_tsc_ = 0;
+        // (rcv_nxt_), so any deferred ACK is now satisfied. We clear the
+        // pending-ACK timestamp only AFTER tx_burst succeeds — clearing
+        // it eagerly would silently drop the pending-ACK obligation
+        // whenever mbuf alloc / tx_burst fails, and the timer-based
+        // flush_pending_ack() would never re-fire for that ACK. The
+        // caller retries the send; the pending ACK then gets piggybacked
+        // on a later successful segment (or flushed by the timer).
         auto* mbuf = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_,
             net::kTcpAck | net::kTcpPsh,
@@ -870,6 +871,8 @@ public:
                 "TcpSession::send: tx_burst failed"});
         }
 
+        // Success: piggyback satisfied any pending delayed ACK.
+        ack_pending_since_tsc_ = 0;
         snd_nxt_ += static_cast<uint32_t>(len);
         stats_.tx_packets++;
         stats_.tx_bytes += len;
@@ -915,8 +918,11 @@ public:
         uint16_t prepared = 0;
 
         // Data send carries the latest cumulative ACK; piggybacks any
-        // deferred ACK (see send() for the single-segment analog).
-        ack_pending_since_tsc_ = 0;
+        // deferred ACK. We clear ack_pending_since_tsc_ only after the
+        // tx_burst actually places >= 1 segment on the wire — see
+        // send()'s comment for the full rationale: eager clearing would
+        // silently drop the pending-ACK obligation on full-failure paths
+        // and prevent the timer-based flush from ever re-firing.
 
         // Step 1: allocate and fill all mbufs
         for (uint16_t i = 0; i < count; ++i) {
@@ -954,6 +960,14 @@ public:
         snd_nxt_ += sent_bytes;
         stats_.tx_packets += sent;
         stats_.tx_bytes += sent_bytes;
+
+        // At least one segment landed on the wire → any deferred ACK was
+        // piggybacked. If every tx_burst slot was dropped by the NIC
+        // (sent==0), the pending-ACK obligation survives and the timer
+        // can re-emit later.
+        if (sent > 0) {
+            ack_pending_since_tsc_ = 0;
+        }
 
         // Free unsent mbufs
         if (sent < prepared) {
