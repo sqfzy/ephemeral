@@ -521,15 +521,17 @@ public:
             }
             if (host_sv.empty()) {
                 // Fall back to a synthesized IP:port from the 4-tuple.
-                // dst_ip is stored in network byte order in TcpConfig.
+                // ConnectionTuple::dst_ip is HOST byte order (see
+                // packet_core.hpp) — the prior code labelled the local
+                // as `ip_be` and extracted bytes in reverse, producing
+                // a mirrored address string (e.g. "1.0.0.10" instead of
+                // "10.0.0.1") in WS Host: headers when neither ws_host
+                // nor tls.hostname was supplied. The fix reuses
+                // `format_ipv4` which already handles host-order.
                 const auto& t = stream->cfg_.legacy.tuple;
-                uint32_t ip_be = t.dst_ip;
-                host_storage =
-                    std::to_string((ip_be >>  0) & 0xFFu) + "." +
-                    std::to_string((ip_be >>  8) & 0xFFu) + "." +
-                    std::to_string((ip_be >> 16) & 0xFFu) + "." +
-                    std::to_string((ip_be >> 24) & 0xFFu) + ":" +
-                    std::to_string(t.dst_port);
+                auto ip_buf = ::eph::dpdk::net::format_ipv4(t.dst_ip);
+                host_storage = std::string(ip_buf.data()) + ":" +
+                               std::to_string(t.dst_port);
                 host_sv = host_storage;
             }
 
