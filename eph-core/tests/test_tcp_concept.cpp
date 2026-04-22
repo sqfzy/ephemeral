@@ -22,17 +22,17 @@ namespace en = eph::net;
 // ---------------------------------------------------------------------------
 
 struct MockTcp {
-    std::expected<void, std::string>
+    std::expected<void, ::eph::core::ErrorInfo>
     connect(std::chrono::milliseconds) { return {}; }
 
-    std::expected<void, std::string> close() { return {}; }
+    std::expected<void, ::eph::core::ErrorInfo> close() { return {}; }
 
     void reset() noexcept {}
 
-    std::expected<size_t, std::string>
+    std::expected<size_t, ::eph::core::ErrorInfo>
     send(const void*, size_t len) { return len; }
 
-    std::expected<uint16_t, std::string>
+    std::expected<uint16_t, ::eph::core::ErrorInfo>
     poll_rx(auto&&) { return uint16_t{0}; }
 
     uint64_t last_rx_burst_tsc() const { return 0; }
@@ -62,10 +62,10 @@ TEST(TcpTransport, StringDoesNotSatisfy) {
 
 // Missing connect
 struct NoConnect {
-    std::expected<void, std::string> close() { return {}; }
+    std::expected<void, ::eph::core::ErrorInfo> close() { return {}; }
     void reset() noexcept {}
-    std::expected<size_t, std::string> send(const void*, size_t) { return 0; }
-    std::expected<uint16_t, std::string> poll_rx(auto&&) { return uint16_t{0}; }
+    std::expected<size_t, ::eph::core::ErrorInfo> send(const void*, size_t) { return 0; }
+    std::expected<uint16_t, ::eph::core::ErrorInfo> poll_rx(auto&&) { return uint16_t{0}; }
     uint64_t last_rx_burst_tsc() const { return 0; }
     uint16_t mss() const { return 0; }
     en::TcpState state() const { return en::TcpState::Closed; }
@@ -79,10 +79,10 @@ TEST(TcpTransport, MissingConnectDoesNotSatisfy) {
 
 // Missing send
 struct NoSend {
-    std::expected<void, std::string> connect(std::chrono::milliseconds) { return {}; }
-    std::expected<void, std::string> close() { return {}; }
+    std::expected<void, ::eph::core::ErrorInfo> connect(std::chrono::milliseconds) { return {}; }
+    std::expected<void, ::eph::core::ErrorInfo> close() { return {}; }
     void reset() noexcept {}
-    std::expected<uint16_t, std::string> poll_rx(auto&&) { return uint16_t{0}; }
+    std::expected<uint16_t, ::eph::core::ErrorInfo> poll_rx(auto&&) { return uint16_t{0}; }
     uint64_t last_rx_burst_tsc() const { return 0; }
     uint16_t mss() const { return 0; }
     en::TcpState state() const { return en::TcpState::Closed; }
