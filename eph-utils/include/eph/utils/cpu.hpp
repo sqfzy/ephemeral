@@ -326,59 +326,6 @@ get_cpu_topology() {
   return cpus;
 }
 
-/// @brief Pin the calling thread to a specific CPU core.
-///
-/// Sets the thread's CPU affinity so it runs exclusively on the
-/// specified core, reducing thread migration and cache invalidation.
-///
-/// @param cpu_id Logical CPU ID (0 to `hardware_concurrency()-1`).
-///               A negative value is a no-op (returns success).
-/// @param name   Optional thread/role label for log messages.
-/// @return `std::expected<void>` on success, or an error string.
-///
-/// @note Linux: uses `pthread_setaffinity_np` for hard affinity.
-/// @note macOS: hard affinity unavailable; sets QoS class instead.
-/// @warning Excessive pinning may cause load imbalance.
-[[nodiscard]] inline std::expected<void, std::string>
-set_thread_affinity(int cpu_id, const char* name = nullptr) {
-  if (cpu_id < 0) return {};
-  auto log = detail::cpu_logger();
-  const char* tag = name ? name : "thread";
-#if defined(__linux__)
-  if (static_cast<unsigned>(cpu_id) >= CPU_SETSIZE) {
-    auto msg = std::format(
-        "cpu_id={} exceeds CPU_SETSIZE={} for {}", cpu_id, CPU_SETSIZE, tag);
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
-    return std::unexpected(std::move(msg));
-  }
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(cpu_id, &cpuset);
-  int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-  if (ret != 0) {
-    auto msg = std::format("Failed to pin {} to cpu_id={}: {}",
-        tag, cpu_id, std::generic_category().message(ret));
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
-    return std::unexpected(std::move(msg));
-  }
-  SPDLOG_LOGGER_INFO(log, "{} pinned to cpu_id={}", tag, cpu_id);
-  return {};
-#elif defined(__APPLE__)
-  // macOS does not support hard affinity, use QoS instead
-  SPDLOG_LOGGER_DEBUG(log,
-      "macOS: setting QoS instead of hard affinity for {} (cpu_id={})",
-      tag, cpu_id);
-  pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-  return {};
-#else
-  auto msg = std::format(
-      "Thread affinity not supported on this platform for {} (cpu_id={})",
-      tag, cpu_id);
-  SPDLOG_LOGGER_WARN(log, "{}", msg);
-  return std::unexpected(std::move(msg));
-#endif
-}
-
 /// @brief Real-time scheduling policy for set_thread_realtime().
 enum class RealtimePolicy {
     Fifo,       ///< SCHED_FIFO -- first-in-first-out, no time slicing.

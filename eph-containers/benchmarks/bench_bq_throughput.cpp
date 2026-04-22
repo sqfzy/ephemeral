@@ -46,7 +46,7 @@ static void BM_BoundedQueue_Throughput(benchmark::State& state) {
 
     if (state.thread_index() == 0) {
         // 生产者线程
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         T val;
         for ([[maybe_unused]] auto _ : state) {
             q.push(val);
@@ -54,7 +54,7 @@ static void BM_BoundedQueue_Throughput(benchmark::State& state) {
         }
     } else {
         // 消费者线程
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         T out;
         for ([[maybe_unused]] auto _ : state) {
             q.pop(out);
@@ -77,7 +77,7 @@ static void BM_BoundedQueue_ZeroCopy_Throughput(benchmark::State& state) {
     }
 
     if (state.thread_index() == 0) {
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         auto writer = [](T& slot) {
             if constexpr (PayloadSize == 8)
                 slot.v = 1;
@@ -88,7 +88,7 @@ static void BM_BoundedQueue_ZeroCopy_Throughput(benchmark::State& state) {
             q.produce(writer);
         }
     } else {
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         auto reader = [](const T& slot) {
             if constexpr (PayloadSize == 8) {
                 auto v = slot.v;

@@ -50,7 +50,7 @@ static void BM_EvictingQueue_PingPong(benchmark::State& state) {
     }
 
     if (state.thread_index() == 0) {
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         T send_val;
         T recv_val;
         for ([[maybe_unused]] auto _ : state) {
@@ -58,7 +58,7 @@ static void BM_EvictingQueue_PingPong(benchmark::State& state) {
             ctx->q2.pop_latest(recv_val);
         }
     } else {
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         T val;
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.pop_latest(val);
@@ -96,13 +96,13 @@ static void BM_EvictingQueue_ZeroCopy_PingPong(benchmark::State& state) {
     };
 
     if (state.thread_index() == 0) {
-        (void)set_thread_affinity(topology[0].hw_thread_id);
+        (void)pin_thread(topology[0].hw_thread_id);
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.produce(writer);
             ctx->q2.consume_latest(reader);  // 阻塞式 Read
         }
     } else {
-        (void)set_thread_affinity(topology[1].hw_thread_id);
+        (void)pin_thread(topology[1].hw_thread_id);
         for ([[maybe_unused]] auto _ : state) {
             ctx->q1.consume_latest(reader);
             ctx->q2.produce(writer);

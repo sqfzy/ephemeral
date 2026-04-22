@@ -21,36 +21,43 @@ TEST(CpuTest, GetCpuTopology) {
   }
 }
 
-TEST(CpuTest, SetThreadAffinity) {
+TEST(CpuTest, PinThread) {
   // Binding to CPU 0 should succeed and return a value
-  auto r0 = set_thread_affinity(0);
+  reset_pin_registry_for_tests();
+  auto r0 = pin_thread(0);
   EXPECT_TRUE(r0.has_value()) << "Failed to pin to cpu 0: " << r0.error();
 
   // Binding to the last CPU should also succeed
+  reset_pin_registry_for_tests();
   unsigned last_cpu = std::thread::hardware_concurrency() - 1;
-  auto r1 = set_thread_affinity(last_cpu);
+  auto r1 = pin_thread(last_cpu);
   EXPECT_TRUE(r1.has_value()) << "Failed to pin to cpu " << last_cpu << ": " << r1.error();
 }
 
-TEST(CpuTest, SetThreadAffinityNegativeCpuIsNoop) {
-  // Negative cpu_id means "don't bind" — should succeed silently
-  auto r = set_thread_affinity(-1);
-  EXPECT_TRUE(r.has_value());
-}
-
-TEST(CpuTest, SetThreadAffinityInvalidCpuReturnsError) {
-  // An impossibly large cpu_id should fail
-  auto r = set_thread_affinity(99999);
+TEST(CpuTest, PinThreadNegativeCpuRejected) {
+  // Behavior change vs legacy set_thread_affinity: pin_thread treats cpu<0
+  // as an explicit error, not a silent no-op. Callers that want "don't
+  // bind" should not call pin_thread at all.
+  auto r = pin_thread(-1);
   EXPECT_FALSE(r.has_value());
   EXPECT_FALSE(r.error().empty());
-  // Error message should be actionable: include cpu_id and errno description
-  EXPECT_NE(r.error().find("99999"), std::string::npos);
 }
 
-TEST(CpuTest, SetThreadAffinityAtHwcBoundary) {
+TEST(CpuTest, PinThreadInvalidCpuReturnsError) {
+  // An impossibly large cpu_id should fail. pin_thread doesn't carry the
+  // old explicit CPU_SETSIZE pre-check, so we only assert the call fails
+  // with a non-empty error — the exact message comes from pthread.
+  reset_pin_registry_for_tests();
+  auto r = pin_thread(99999);
+  EXPECT_FALSE(r.has_value());
+  EXPECT_FALSE(r.error().empty());
+}
+
+TEST(CpuTest, PinThreadAtHwcBoundary) {
   // Binding to exactly hardware_concurrency() should fail (0-indexed)
+  reset_pin_registry_for_tests();
   unsigned hwc = std::thread::hardware_concurrency();
-  auto r = set_thread_affinity(static_cast<int>(hwc));
+  auto r = pin_thread(static_cast<int>(hwc));
   EXPECT_FALSE(r.has_value());
 }
 
@@ -131,22 +138,23 @@ TEST(CpuTest, CpuTopologyInfoFormat) {
   EXPECT_NE(formatted.find("thread=4"), std::string::npos);
 }
 
-TEST(CpuTest, ThreadAffinityDoesNotCrash) {
+TEST(CpuTest, PinThreadDoesNotCrash) {
   std::atomic<bool> ready{false};
-  
+
   std::thread t([&] {
-    (void)set_thread_affinity(0);
-    
+    reset_pin_registry_for_tests();
+    (void)pin_thread(0);
+
     // 模拟自旋等待
     int count = 0;
     while (!ready.load() && count++ < 1000) {
       cpu_relax();
     }
   });
-  
+
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
   ready.store(true);
   t.join();
-  
+
   SUCCEED();
 }
