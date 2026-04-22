@@ -1,11 +1,11 @@
 /// @file eph-utils/tests/test_cpu_pin.cpp
-/// Contract tests for eph::utils::pin_thread_strict and friends.
+/// Contract tests for eph::utils::pin_thread and friends.
 ///
 /// These tests are intentionally permissive about absolute outcomes —
 /// whether pinning succeeds depends entirely on the host's isolcpus
 /// configuration. They lock down the *contracts*:
 ///   - require_isolcpus=true on a non-isolated cpu must FAIL
-///   - relaxing require_isolcpus must allow that same cpu to succeed
+///   - leaving require_isolcpus=false (the default) allows that same cpu to succeed
 ///   - sibling-conflict detection rejects subsequent pin to a sibling
 ///   - registry can be cleared between test cases via reset_pin_registry_for_tests()
 
@@ -15,14 +15,14 @@
 
 #include <gtest/gtest.h>
 
-#include "eph/utils/cpu_pin.hpp"
+#include "eph/utils/cpu.hpp"
 
 using namespace eph::utils;
 
 namespace {
 
 std::set<int> isolated_cpus() {
-    return cpu_pin_detail::read_cpu_list_file(
+    return detail::read_cpu_list_file(
         "/sys/devices/system/cpu/isolated");
 }
 
@@ -36,11 +36,23 @@ int pick_non_isolated_cpu() {
 }
 
 int sibling_of(int cpu) {
-    auto siblings = cpu_pin_detail::read_cpu_list_file(
+    auto siblings = detail::read_cpu_list_file(
         "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
         "/topology/thread_siblings_list");
     for (int s : siblings) if (s != cpu) return s;
     return -1;
+}
+
+// All-strict policy — inverse of CpuPinPolicy's relaxed default.
+// Kept as a helper so every test case in this file uses the same
+// "production-grade" policy.
+constexpr CpuPinPolicy strict_policy() {
+    return CpuPinPolicy{
+        .require_isolcpus            = true,
+        .require_no_sibling_conflict = true,
+        .require_same_numa           = true,
+        .warn_irq_overlap            = true,
+    };
 }
 
 } // namespace
@@ -51,8 +63,7 @@ TEST(CpuPinStrict, RequireIsolcpusFailsOnNonIsolatedCpu) {
     if (cpu < 0) {
         GTEST_SKIP() << "all cpus are in isolated set — cannot test negative path";
     }
-    CpuPinPolicy strict;
-    auto r = pin_thread_strict(cpu, "test-strict", strict);
+    auto r = pin_thread(cpu, "test-strict", strict_policy());
     EXPECT_FALSE(r.has_value());
     if (!r.has_value()) {
         EXPECT_NE(r.error().find("isolated"), std::string::npos);
@@ -64,10 +75,8 @@ TEST(CpuPinStrict, NonIsolatedCpuSucceedsWhenPolicyRelaxed) {
     int cpu = pick_non_isolated_cpu();
     if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
 
-    CpuPinPolicy relaxed;
-    relaxed.require_isolcpus = false;
-    relaxed.warn_irq_overlap = false;
-    auto r = pin_thread_strict(cpu, "test-relaxed", relaxed);
+    // Default-constructed policy is now fully relaxed.
+    auto r = pin_thread(cpu, "test-relaxed");
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error());
 }
 
@@ -80,14 +89,15 @@ TEST(CpuPinStrict, RegistryDetectsSiblingConflict) {
         GTEST_SKIP() << "cpu " << cpu << " has no SMT sibling on this host";
     }
 
-    CpuPinPolicy relaxed;
-    relaxed.require_isolcpus = false;
-    relaxed.warn_irq_overlap = false;
+    // Enable only the sibling-conflict check; leave isolcpus relaxed so
+    // the first pin actually succeeds on a dev host.
+    CpuPinPolicy sibling_strict;
+    sibling_strict.require_no_sibling_conflict = true;
 
-    auto a = pin_thread_strict(cpu, "test-sibA", relaxed);
+    auto a = pin_thread(cpu, "test-sibA", sibling_strict);
     ASSERT_TRUE(a.has_value()) << (a ? "" : a.error());
 
-    auto b = pin_thread_strict(sib, "test-sibB", relaxed);
+    auto b = pin_thread(sib, "test-sibB", sibling_strict);
     EXPECT_FALSE(b.has_value());
     if (!b.has_value()) {
         EXPECT_NE(b.error().find("SMT"), std::string::npos);
@@ -96,6 +106,6 @@ TEST(CpuPinStrict, RegistryDetectsSiblingConflict) {
 
 TEST(CpuPinStrict, NegativeCpuRejected) {
     reset_pin_registry_for_tests();
-    auto r = pin_thread_strict(-1, "neg");
+    auto r = pin_thread(-1, "neg");
     EXPECT_FALSE(r.has_value());
 }

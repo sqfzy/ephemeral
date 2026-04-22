@@ -1,24 +1,32 @@
 /// @file cpu.hpp
-/// @brief CPU topology discovery, thread affinity, real-time scheduling, and spin-wait helpers.
+/// @brief CPU topology discovery, thread pinning, real-time scheduling, and spin-wait helpers.
 ///
-/// Provides utilities for pinning threads to specific CPU cores, querying
-/// physical topology (socket/core/thread), enabling real-time scheduling
-/// policies, and issuing architecture-specific spin-wait hints.
+/// Provides utilities for pinning threads to specific CPU cores (with
+/// optional isolcpus / SMT sibling / NUMA / IRQ-overlap validation),
+/// querying physical topology (socket/core/thread), enabling real-time
+/// scheduling policies, and issuing architecture-specific spin-wait
+/// hints.
 ///
 /// Platform support:
-/// - Linux: full support (via `/proc/cpuinfo` and `pthread` APIs).
+/// - Linux: full support (via `/proc/cpuinfo`, `/sys/devices/system/cpu/*`,
+///   `/proc/interrupts`, and `pthread` APIs).
 /// - macOS: partial (no hard affinity; uses QoS / time-constraint policy).
 /// - Windows: basic / stub.
 
 #pragma once
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <ranges>
+#include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -26,10 +34,13 @@
 #include <vector>
 
 #if defined(__linux__)
+#include <pthread.h>
 #include <sched.h>
+#include <unistd.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <pthread.h>
 #endif
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -54,6 +65,116 @@ inline const std::shared_ptr<spdlog::logger>& cpu_logger() {
         return lg;
     }();
     return l;
+}
+
+// ─── pin_thread helpers (Linux-only path; stubs compiled away elsewhere) ──
+//
+// Previously lived under `cpu_pin_detail` in the now-retired cpu_pin.hpp.
+// Consolidated here so cpu.hpp owns the entire thread-affinity surface.
+
+/// Process-wide registry of pinned cpus — lets `pin_thread` detect
+/// SMT-sibling / NUMA conflicts across threads. Thread-safe.
+inline std::mutex g_pin_mutex;
+inline std::set<int> g_pinned_cpus;
+
+/// Parse a `/sys` cpu list file (e.g. `isolated`, `thread_siblings_list`),
+/// expanding comma-separated ranges like `1-3,5` into individual ids.
+/// Returns an empty set if the file is missing/empty.
+inline std::set<int> read_cpu_list_file(const std::string& path) {
+    std::set<int> out;
+    std::ifstream f(path);
+    if (!f.is_open()) return out;
+    std::string line;
+    if (!std::getline(f, line)) return out;
+
+    while (!line.empty() &&
+           (line.back() == '\n' || line.back() == '\r' || line.back() == ' ')) {
+        line.pop_back();
+    }
+    if (line.empty()) return out;
+
+    std::stringstream ss(line);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        if (token.empty()) continue;
+        auto dash = token.find('-');
+        try {
+            if (dash == std::string::npos) {
+                out.insert(std::stoi(token));
+            } else {
+                int lo = std::stoi(token.substr(0, dash));
+                int hi = std::stoi(token.substr(dash + 1));
+                for (int i = lo; i <= hi; ++i) out.insert(i);
+            }
+        } catch (...) {
+            // Ignore malformed tokens; best effort.
+        }
+    }
+    return out;
+}
+
+/// Return the NUMA node id of `cpu` by probing `/sys/.../cpuN/node*`,
+/// or -1 on a non-NUMA system / unreadable sysfs.
+inline int read_numa_node(int cpu) {
+    for (int node = 0; node < 64; ++node) {
+        std::string p = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                        "/node" + std::to_string(node);
+        if (access(p.c_str(), F_OK) == 0) return node;
+    }
+    return -1;
+}
+
+/// Check whether `cpu`'s column in /proc/interrupts has any non-zero IRQ
+/// count. Best effort — unreadable /proc or parse errors return false.
+inline bool cpu_has_active_irq(int cpu) {
+    std::ifstream f("/proc/interrupts");
+    if (!f.is_open()) return false;
+
+    std::string header;
+    if (!std::getline(f, header)) return false;
+
+    std::stringstream hss(header);
+    std::vector<std::string> cols;
+    for (std::string tok; hss >> tok;) cols.push_back(tok);
+
+    int col_idx = -1;
+    const std::string want = "CPU" + std::to_string(cpu);
+    for (size_t i = 0; i < cols.size(); ++i) {
+        if (cols[i] == want) { col_idx = static_cast<int>(i); break; }
+    }
+    if (col_idx < 0) return false;
+
+    std::string line;
+    while (std::getline(f, line)) {
+        std::stringstream lss(line);
+        std::vector<std::string> toks;
+        for (std::string tok; lss >> tok;) toks.push_back(tok);
+        // Row shape: `<irq>:  <cnt0> <cnt1> ... <ctl>`. After split, the
+        // count column is at position col_idx + 1 (header has no leading
+        // label, but the row starts with "<irq>:").
+        const size_t want_idx = static_cast<size_t>(col_idx + 1);
+        if (toks.size() <= want_idx) continue;
+        const auto& cnt = toks[want_idx];
+        bool numeric = !cnt.empty();
+        for (char c : cnt) if (c < '0' || c > '9') { numeric = false; break; }
+        if (!numeric) continue;
+        try {
+            if (std::stoll(cnt) > 0) return true;
+        } catch (...) {}
+    }
+    return false;
+}
+
+/// Set the OS-level thread name (shown in `top -H`, `gdb`). Max 15 chars + NUL.
+inline void set_thread_name(std::string_view name) noexcept {
+    char buf[16] = {};
+    auto n = std::min(name.size(), sizeof(buf) - 1);
+    std::memcpy(buf, name.data(), n);
+#if defined(__linux__)
+    pthread_setname_np(pthread_self(), buf);
+#else
+    (void)buf;
+#endif
 }
 
 } // namespace detail
@@ -449,6 +570,170 @@ inline void cpu_relax() noexcept {
 #else
   std::this_thread::yield(); // Fallback
 #endif
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Thread pinning with optional topology validation (formerly cpu_pin.hpp)
+// ──────────────────────────────────────────────────────────────────────
+
+/// @brief Policy controlling which topology checks `pin_thread` enforces.
+///
+/// Every flag defaults to `false` — the default-constructed policy is
+/// "best-effort pin, no validation". Opt into checks explicitly when you
+/// need the HFT / production guarantees:
+///
+/// @code
+///   CpuPinPolicy strict{
+///       .require_isolcpus            = true,
+///       .require_no_sibling_conflict = true,
+///       .require_same_numa           = true,
+///       .warn_irq_overlap            = true,
+///   };
+///   auto r = pin_thread(cpu, "poll", strict);
+/// @endcode
+///
+/// Rationale for relaxed default: every in-repo caller passes an
+/// all-false policy (mockex, latency/core/pin_client.hpp, bench targets);
+/// making relaxed the default eliminates boilerplate and matches
+/// the dev-host reality of HFT libraries that ship without isolcpus.
+struct CpuPinPolicy {
+    bool require_isolcpus            = false;  ///< fail if cpu is not in /sys/.../isolated
+    bool require_no_sibling_conflict = false;  ///< fail if an SMT sibling is already pinned
+    bool require_same_numa           = false;  ///< fail if NUMA node differs from prior pins
+    bool warn_irq_overlap            = false;  ///< warn if /proc/interrupts shows IRQs on cpu
+};
+
+/// @brief Pin the calling thread to @p cpu with policy-driven validation.
+///
+/// Steps, in order (Linux path):
+///   1. isolcpus check  (unless policy.require_isolcpus == false)
+///   2. SMT sibling check against the process-wide pinned-cpu registry
+///   3. NUMA check against the registry
+///   4. IRQ overlap warn-only scan of /proc/interrupts
+///   5. pthread_setaffinity_np + pthread_getaffinity_np verification
+///   6. register cpu, set pthread name
+///
+/// On macOS / other platforms, falls back to QoS-only (no hard affinity);
+/// all validation policy bits are ignored.
+///
+/// @param cpu     logical cpu id (must be >= 0)
+/// @param name    short thread label (≤ 15 chars for pthread_setname_np)
+/// @param policy  which checks to enforce (default: all relaxed)
+/// @return `{}` on success, error string on any failure
+[[nodiscard]] inline std::expected<void, std::string>
+pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
+    if (cpu < 0) {
+        return std::unexpected("pin_thread: cpu must be >= 0");
+    }
+
+#if defined(__linux__)
+    if (policy.require_isolcpus) {
+        auto isolated = detail::read_cpu_list_file(
+            "/sys/devices/system/cpu/isolated");
+        if (!isolated.contains(cpu)) {
+            return std::unexpected(
+                "cpu " + std::to_string(cpu) +
+                " is not in /sys/devices/system/cpu/isolated "
+                "(pass policy.require_isolcpus=false to relax)");
+        }
+    }
+
+    if (policy.require_no_sibling_conflict) {
+        std::lock_guard g(detail::g_pin_mutex);
+        auto siblings = detail::read_cpu_list_file(
+            "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+            "/topology/thread_siblings_list");
+        for (int s : siblings) {
+            if (s == cpu) continue;
+            if (detail::g_pinned_cpus.contains(s)) {
+                return std::unexpected(
+                    "cpu " + std::to_string(cpu) +
+                    " shares an SMT physical core with already-pinned cpu " +
+                    std::to_string(s));
+            }
+        }
+    }
+
+    if (policy.require_same_numa) {
+        std::lock_guard g(detail::g_pin_mutex);
+        int node = detail::read_numa_node(cpu);
+        if (node >= 0) {
+            for (int p : detail::g_pinned_cpus) {
+                int pnode = detail::read_numa_node(p);
+                if (pnode >= 0 && pnode != node) {
+                    return std::unexpected(
+                        "cpu " + std::to_string(cpu) + " (NUMA " +
+                        std::to_string(node) +
+                        ") differs from already-pinned cpu " +
+                        std::to_string(p) + " (NUMA " +
+                        std::to_string(pnode) + ")");
+                }
+            }
+        }
+    }
+
+    if (policy.warn_irq_overlap && detail::cpu_has_active_irq(cpu)) {
+        spdlog::warn(
+            "pin_thread: cpu {} has active IRQs in /proc/interrupts "
+            "(rebind NIC IRQs via /proc/irq/N/smp_affinity)", cpu);
+    }
+
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+        rc != 0) {
+        return std::unexpected(
+            std::string("pthread_setaffinity_np failed: ") + std::strerror(rc));
+    }
+
+    cpu_set_t verify;
+    CPU_ZERO(&verify);
+    if (pthread_getaffinity_np(pthread_self(), sizeof(verify), &verify) != 0) {
+        return std::unexpected(
+            std::string("pthread_getaffinity_np failed: ") +
+            std::strerror(errno));
+    }
+    if (!CPU_ISSET(cpu, &verify) || CPU_COUNT(&verify) != 1) {
+        return std::unexpected(
+            "affinity verification mismatch for cpu " + std::to_string(cpu));
+    }
+
+    {
+        std::lock_guard g(detail::g_pin_mutex);
+        detail::g_pinned_cpus.insert(cpu);
+    }
+    detail::set_thread_name(name);
+
+    spdlog::info("pin_thread: '{}' pinned to cpu {} (verified)", name, cpu);
+    return {};
+#elif defined(__APPLE__)
+    (void)policy;
+    detail::set_thread_name(name);
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    spdlog::info("pin_thread: '{}' QoS set (macOS has no hard affinity)", name);
+    return {};
+#else
+    (void)name; (void)policy;
+    return std::unexpected(
+        "pin_thread: hard affinity not supported on this platform");
+#endif
+}
+
+/// @brief 1-parameter overload: anonymous best-effort pin.
+///
+/// Equivalent to `pin_thread(cpu, "", CpuPinPolicy{})`. Convenience for
+/// microbenchmarks and quick scripts that don't care about role tags.
+[[nodiscard]] inline std::expected<void, std::string>
+pin_thread(int cpu) noexcept {
+    return pin_thread(cpu, std::string_view{}, CpuPinPolicy{});
+}
+
+/// @brief Test-only: clear the pinned-cpu registry so independent test
+/// cases don't collide. Never call from production code.
+inline void reset_pin_registry_for_tests() noexcept {
+    std::lock_guard g(detail::g_pin_mutex);
+    detail::g_pinned_cpus.clear();
 }
 
 } // namespace eph::utils

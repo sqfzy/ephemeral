@@ -20,7 +20,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/config.hpp"
-#include "eph/utils/cpu_pin.hpp"
+#include "eph/utils/cpu.hpp"
 #include "eph/utils/shutdown_signal.hpp"
 #include "mockex/dispatch.hpp"
 #include "mockex/scenario.hpp"
@@ -71,7 +71,7 @@ void pin_to_cpu(int cpu_id) noexcept {
         .require_same_numa           = false,
         .warn_irq_overlap            = false,
     };
-    auto res = eph::utils::pin_thread_strict(cpu_id, "mockex", policy);
+    auto res = eph::utils::pin_thread(cpu_id, "mockex", policy);
     if (!res) {
         SPDLOG_WARN("[mockex] CPU pin to core {} failed: {} (non-fatal)",
                     cpu_id, res.error());
