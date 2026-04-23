@@ -118,43 +118,59 @@ public:
 static_assert(eph::net::Poller<DpdkPoller<>>);
 ```
 
-Internally: one `rte_eth_rx_burst` per tick on `(port_id, queue_id)`, then
-`FlowSteeringTable::lookup(5_tuple)` to route each mbuf to the right
-`PollableEntry::process_burst_fn(void*, rte_mbuf**, uint16_t, uint64_t)`. No
-virtual dispatch.
+Internally: one `rte_eth_rx_burst` per tick on `(port_id, rx_queue_id)`, then
+a private `lookup_by_5tuple_` linear scan over a fixed-size
+`std::array<PollableEntry, kMaxConn>` (`kMaxConn = 16`) to route each mbuf to
+the right `PollableEntry::process_burst_fn(void*, rte_mbuf**, uint16_t,
+uint64_t)`. No virtual dispatch. Optional ICMP-Type-3-Code-4 dispatch for
+path-MTU feedback is served from the un-routed fallback via
+`maybe_dispatch_icmp_` + the ICMP callback closure installed by
+`Stream::create_and_attach`.
 
 ### Config types (`config.hpp`)
 
 ```cpp
 struct StreamConfig {
-    std::string      remote_host;
-    uint16_t         remote_port;
-    SocketAddr       local_addr;
-    eph::net::TlsConfig tls;        // only used when EnableTls=true
-    std::string      ws_path;
-    ReconnectPolicyConfig reconnect;
-    // ... DPDK-specific knobs (mempool, mbuf sizes)
+    ::eph::dpdk::TcpConfig legacy{};    // 4-tuple, MAC, port/queue, MSS, recv_window
+    ::rte_mempool*        pool{nullptr};
+    std::chrono::milliseconds connect_timeout{3000};
+    ::eph::net::TlsConfig tls{};        // only used when EnableTls=true
+
+    // WebSocket upgrade (empty ws_path skips)
+    std::string                 ws_path{};
+    std::string                 ws_host{};
+    std::vector<HttpHeader>     ws_extra_headers{};
+    std::chrono::milliseconds   ws_timeout{10'000};
+
+    // Unsupported on DPDK — create() rejects non-empty proxy at factory time
+    std::optional<ProxyConfig>  proxy{};
+
+    std::size_t                 reasm_capacity{256 * 1024};
+    std::optional<uint16_t>     pin_to_queue{};  // RSS+pin / FlowDirector target
 };
 
 struct UdpConfig {
-    SocketAddr bind_addr;
-    // ... mempool config
+    ::eph::dpdk::UdpConfig legacy{};    // 4-tuple, MAC, port/queue, mempool, hw_cksum
+    std::optional<uint16_t> pin_to_queue{};
 };
 
 struct PollerConfig {
-    uint16_t port_id  = 0;
-    uint16_t queue_id = 0;
-    uint16_t lcore    = 4;
-    size_t   max_conn = 1024;
+    uint16_t port_id     = 0;
+    uint16_t rx_queue_id = 0;
+    // Thread affinity is NOT a field — DpdkPoller does not own a thread.
+    // You call poll() from your own lcore loop and pin that thread yourself.
 };
 ```
 
 ## Dependencies
 
-- `eph-net` (public) - concepts, SocketAddr, ReconnectPolicy, TLS detail
+- `eph-net` (public) — concepts (Stream/Datagram/Poller/Pollable), SocketAddr,
+  HttpHeader, ProxyConfig, TlsConfig, ReconnectPolicy, TLS detail
 - `eph-core`, `eph-utils`, `eph-containers` (transitive)
-- `dpdk` (public, via vcpkg or system)
-- `aws-lc` (transitive, for TLS)
+- system `libdpdk` (public, via pkg-config) — the vcpkg DPDK path was
+  retired because it dragged vcpkg's bundled libssl headers into the DPDK
+  TU and collided with aws-lc's
+- `aws-lc` (transitive, for TLS + HMAC + CSPRNG)
 
 ## See also
 
