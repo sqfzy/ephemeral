@@ -533,12 +533,19 @@ public:
         const bool strict = strict_rx_cksum_;  // stack-local for codegen
         for (uint16_t i = 0; i < n; ++i) {
             const uint64_t olf = mbufs[i]->ol_flags;
+            // TD-6 precision: non-strict must test `(olf & MASK) == BAD`,
+            // NOT `(olf & BAD_bit) != 0`. DPDK encodes NONE as
+            // `BAD_bit | GOOD_bit`, so the naive bit test also matches
+            // NONE — which would false-drop RFC 768 zero-checksum UDP
+            // datagrams. Using the mask == BAD equality makes non-strict
+            // drop exactly BAD (and nothing else). Strict uses `!= GOOD`
+            // so it drops every non-GOOD value (UNKNOWN, BAD, NONE).
             const bool ip_bad = strict
                 ? ((olf & kRxIpCksumMask) != kRxIpCksumGood)
-                : ((olf & kRxIpCksumBad)  != 0);
+                : ((olf & kRxIpCksumMask) == kRxIpCksumBad);
             const bool l4_bad = strict
                 ? ((olf & kRxL4CksumMask) != kRxL4CksumGood)
-                : ((olf & kRxL4CksumBad)  != 0);
+                : ((olf & kRxL4CksumMask) == kRxL4CksumBad);
             if (ip_bad || l4_bad) [[unlikely]] {
                 if (ip_bad) inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
                 if (l4_bad) inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();

@@ -49,6 +49,45 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Precise NONE-vs-BAD cksum test (TD-6) (2026-04-23)
+
+Closes TD-6 (flagged in the TD-2 CHANGELOG note) — the non-strict
+hot-path drop test was `(olf & BAD_bit) != 0`, which also matched
+`CKSUM_NONE` (DPDK encodes NONE as `BAD_bit | GOOD_bit`). Replaced
+with `(olf & MASK) == BAD` precise equality so non-strict drops
+exactly BAD — NONE now passes through.
+
+### Fixed
+- `DpdkUdpSocket::process_burst_` + `DpdkTcpStream::process_burst_`
+  non-strict drop condition changed from bit-test to mask-equality
+  per layer:
+    ip_bad = (olf & IP_CKSUM_MASK) == IP_CKSUM_BAD
+    l4_bad = (olf & L4_CKSUM_MASK) == L4_CKSUM_BAD
+  Strict mode unchanged (still `!= GOOD`). Behavior delta: NONE
+  packets (e.g. RFC 768 zero-checksum UDP datagrams) are now
+  accepted in non-strict mode instead of being silently attributed
+  to `kRxIpChecksumBad` / `kRxL4ChecksumBad`.
+
+### Tests
+New cases:
+- `DpdkUdpSocketChecksum.NonStrictAcceptsNone` /
+  `StrictModeDropsNone`
+- `DpdkTcpStreamReorderOverflowE2E.NonStrictAcceptsNone` /
+  `StrictModeDropsNone`
+
+### Notes
+- Non-strict counter semantics are now **more precise**: readings of
+  `kRxIpChecksumBad` / `kRxL4ChecksumBad` pre-TD-6 over-counted by
+  the NONE traffic volume. HFT colo impact nil (UDP always cksum'd,
+  TCP cksum mandatory), so no production metrics are invalidated.
+- The aggregate invariant
+  `kRxBadChecksum == kRxIpChecksumBad + kRxL4ChecksumBad`
+  is unchanged.
+
+### Technical debt ledger after this fix
+- **TD-6**: closed.
+- **TD-4** (tc-netem wire-level reorder): unchanged.
+
 ## [Unreleased] — Strict RX checksum mode (TD-2) (2026-04-23)
 
 Closes TD-2 from the `lucky-giggling-kahan` review. Opt-in flag widens

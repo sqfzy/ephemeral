@@ -374,6 +374,53 @@ TEST_F(DpdkUdpSocketChecksum, AcceptsOnGoodFlags) {
 }
 
 // ───────────────────────────────────────────────────────────────────
+// TD-6: non-strict must use `(olf & MASK) == BAD` equality, NOT
+// `(olf & BAD_bit) != 0`. DPDK encodes NONE as `BAD_bit | GOOD_bit`,
+// so the naive bit test would false-drop NONE — including RFC 768
+// zero-checksum UDP datagrams. This test pins the precise semantic.
+// ───────────────────────────────────────────────────────────────────
+
+TEST_F(DpdkUdpSocketChecksum, NonStrictAcceptsNone) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    // Default non-strict (do NOT call set_strict_rx_checksum_).
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    // DPDK convention: CKSUM_NONE == (BAD_bit | GOOD_bit). A naive
+    // `(olf & BAD_bit) != 0` would false-drop this mbuf; the precise
+    // `(olf & MASK) == BAD` test accepts it (NIC tried but couldn't
+    // verify — RFC 768 zero-checksum UDP is a legitimate case).
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_NONE | RTE_MBUF_F_RX_L4_CKSUM_NONE);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1) << "non-strict must accept NONE";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
+TEST_F(DpdkUdpSocketChecksum, StrictModeDropsNone) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    sock->set_strict_rx_checksum_(true);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    // Strict: NONE is !=GOOD → drop (both sub-counters bump).
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_NONE | RTE_MBUF_F_RX_L4_CKSUM_NONE);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+}
+
+// ───────────────────────────────────────────────────────────────────
 // TD-2: strict mode widens the drop condition from "BAD bit set" to
 // "CKSUM_MASK != CKSUM_GOOD". UNKNOWN / NONE are dropped too.
 // set_strict_rx_checksum_(true) is the direct injection path that

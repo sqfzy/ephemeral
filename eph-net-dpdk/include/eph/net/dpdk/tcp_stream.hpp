@@ -1223,12 +1223,18 @@ public:
         uint16_t write = 0;
         for (uint16_t read = 0; read < n; ++read) {
             const uint64_t olf = mbufs[read]->ol_flags;
+            // TD-6 precision: non-strict must test `(olf & MASK) == BAD`,
+            // NOT `(olf & BAD_bit) != 0`. DPDK encodes NONE as
+            // `BAD_bit | GOOD_bit`, so the naive bit test also matches
+            // NONE. Using the mask == BAD equality keeps non-strict
+            // drop exactly BAD. Strict uses `!= GOOD` to drop every
+            // non-GOOD value (UNKNOWN, BAD, NONE).
             const bool ip_bad = strict
                 ? ((olf & kRxIpCksumMask) != kRxIpCksumGood)
-                : ((olf & kRxIpCksumBad)  != 0);
+                : ((olf & kRxIpCksumMask) == kRxIpCksumBad);
             const bool l4_bad = strict
                 ? ((olf & kRxL4CksumMask) != kRxL4CksumGood)
-                : ((olf & kRxL4CksumBad)  != 0);
+                : ((olf & kRxL4CksumMask) == kRxL4CksumBad);
             if (ip_bad || l4_bad) [[unlikely]] {
                 if (ip_bad) inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
                 if (l4_bad) inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();

@@ -534,6 +534,50 @@ TEST_F(DpdkTcpStreamReorderOverflowE2E, GoodAndUnknownFlagsPassThrough) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// TD-6: non-strict must use `(olf & MASK) == BAD` equality, NOT
+// `(olf & BAD_bit) != 0`. DPDK encodes NONE as `BAD_bit | GOOD_bit`,
+// so the naive bit test would false-drop NONE. Strict mode still
+// drops NONE (it's !=GOOD).
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, NonStrictAcceptsNone) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    // Default non-strict.
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_NONE | RTE_MBUF_F_RX_L4_CKSUM_NONE;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    EXPECT_EQ(sess->tcp_stats().out_of_order, 1u)
+        << "non-strict must let NONE packets reach the session";
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, StrictModeDropsNone) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    stream->set_strict_rx_checksum_(true);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_NONE | RTE_MBUF_F_RX_L4_CKSUM_NONE;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(sess->tcp_stats().out_of_order, 0u)
+        << "strict must drop NONE before process_rx";
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // TD-2 (lucky-giggling-kahan review): strict RX checksum mode. Widens
 // drop condition from "BAD bit set" to "CKSUM_MASK != CKSUM_GOOD".
 // UNKNOWN / NONE also drop. set_strict_rx_checksum_(true) is the
