@@ -1,5 +1,71 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — review sweep (2026-04-23 / 2026-04-24)
+
+Post-v0.1.0 review-and-implement sweep focused on easy-of-use, simplicity,
+consistency, and bugs. DPDK-environment validation deferred — no NIC
+attached to the review host; every change is compile-verified via the
+full test build, and non-hardware-dependent tests pass (DpdkTcpStream
+32/32, DpdkUdpSocket 24/24, DpdkPoller 31/31, flow_steering 45/45,
+TLS handshake 2/2, ARP 23/23, DNS 61/61 + 24/24 adversarial,
+packet_core 30/30).
+
+### Fixed
+- **Platform**: `register_poller` rejects registering the same Poller
+  pointer on two different queues. Silent misroute bug — one lcore would
+  receive burst dispatches from two queues but only drain one.
+- **flow_steering**: `queue_for_tuple` now matches `queue_for_hash`'s
+  graceful fallback on zero-sized or non-power-of-two reta_size; a
+  misbehaving PMD no longer produces an out-of-bounds RETA read / garbage
+  queue id.
+- **Platform**: `next_valid_pool_size(0)` now returns `1` (smallest valid
+  2^k - 1 with k >= 1) instead of `0`, and `next_valid_pool_size(UINT32_MAX)`
+  returns `UINT32_MAX` explicitly instead of relying on wraparound.
+
+### Changed
+- **DpdkUdpSocket**: parity fixes with DpdkTcpStream — `create_and_attach`
+  now emits the same WARN/INFO breadcrumbs on `find_src_port_for_queue`
+  and `predict_rss_queue` as the TCP path (previously silent on UDP).
+  `mcast_macs_` array size uses `::eph::dpdk::kMaxMulticastGroups`
+  directly instead of a bare `8`. `create()` logs IPs as `0x{:08x}`
+  matching TCP.
+- **DpdkTcpStream / DpdkUdpSocket**: `is_attached_()` now forwards to the
+  public `is_attached()` instead of duplicating the `attached_to_ != nullptr`
+  predicate. Single source of truth for the "attached" query across the
+  two concept-required names.
+- **tcp_stream / poller**: named magic constants —
+  `kWsHandshakeRecvBurstRetries` (was bare `16` in two WS-handshake
+  sink recv loops), `kHashCollisionLogMask` (was bare `0x3ff`).
+- **arp / dns**: named the startup-resolve burst-size constants
+  (`kArpResolveBurstSize`, `kDnsResolveBurstSize`) replacing four copies
+  of bare `16`. Added `mbuf->nb_segs > 1` rejection in `parse_arp_reply`
+  and `try_parse_dns_packet` for defense-in-depth symmetric with
+  `parse_ip_header`. Use `rte_pktmbuf_data_len(mbuf)` instead of raw
+  `mbuf->data_len` for accessor consistency.
+
+### Docs
+- **README / summary**: ghost `Eal(argc, argv)` constructor corrected to
+  the real static factory `Eal::init(argc, argv)` returning
+  `std::expected`. `PollerConfig` fields updated (`rx_queue_id`, not
+  `queue_id`; no `lcore` field — caller pins the thread). `OnMessage` /
+  `OnDatagram` signatures use `std::span<const uint8_t>` (+ `SocketAddr`)
+  not the pre-refactor `(const uint8_t*, uint16_t)`. `Eal` correctly
+  labelled move-only (was "non-copyable, non-movable"). New surface
+  documented: `create_and_attach`, `connect_to`, `metric()`, ICMP
+  callback setter, `pick_src_port`.
+- **ONBOARDING**: removed ghost `FlowSteeringTable` reference that
+  never existed. Point to the real `install_flow_rule` free-function
+  + `FlowRule` RAII handle on the stream/socket. Fix test path
+  (`tests/test_flow_steering.cpp`, not `tests/legacy/`).
+- **packet_core**: `parse_ipv4` doc fixed — says "does NOT accept leading
+  zeros" but actually tolerates them as decimal (not octal); clarified
+  that this eliminates the `0177.0.0.1` loopback-bypass trick but is
+  otherwise permissive.
+- **multicast**: clarified `ParsedUdpPacket` / `parse_udp_packet` aliases
+  point to `packet_parse.hpp` (not `net_header.hpp`, which is the umbrella).
+
+---
+
 ## [v0.1.0] — First formal release (2026-04-23)
 
 First version-tagged snapshot of `eph-net-dpdk`. Consolidates all
