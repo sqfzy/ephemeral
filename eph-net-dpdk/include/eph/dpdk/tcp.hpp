@@ -328,6 +328,24 @@ public:
         uint64_t reorder_hits      = 0;  ///< Segments successfully buffered & delivered via reorder buf
         uint64_t reorder_overflows = 0;  ///< Reorder buffer full events (triggered reconnect)
         uint32_t max_gap_size      = 0;  ///< Largest observed seq gap in bytes (absolute, not delta)
+
+        // ── Drop-cause attribution (TD-5, symmetric to UDP side) ──
+        /// Segments that failed L2+L3+L4 parsing (non-IPv4, truncated,
+        /// bad IHL, non-TCP, bad data offset) or matched an unrelated
+        /// 4-tuple that the Poller routed to us by mistake. Disjoint
+        /// from `fragment_rejected` (which attributes specifically to
+        /// IPv4 fragments via `is_ip_fragment` peek).
+        uint64_t packets_dropped = 0;
+        /// Segments rejected at `parse_ip_header` because the mbuf is
+        /// an IPv4 fragment (MF=1 or non-zero offset). HFT workloads
+        /// set DF + negotiate MSS so this should stay at 0 in steady
+        /// state; a rise signals path-MTU misconfiguration.
+        uint64_t fragment_rejected = 0;
+        /// Duplicate or past-window segments — peer re-delivered bytes
+        /// we already acknowledged (retransmit from peer, or a delayed
+        /// segment that raced a new one). Distinct from `out_of_order`,
+        /// which captures forward gaps.
+        uint64_t dup_segments = 0;
         /// Log2 gap size histogram: bucket[i] = count of gaps in [2^i, 2^(i+1)).
         /// bucket[0] = [1,2), bucket[1] = [2,4), ..., bucket[31] = [2^31, 2^32).
         /// Recording is O(1) via __builtin_clz / std::countl_zero.
@@ -354,10 +372,14 @@ public:
                 "  resets_received: {}\n"
                 "  reorder_hits: {}\n"
                 "  reorder_overflows: {}\n"
-                "  max_gap_size: {}",
+                "  max_gap_size: {}\n"
+                "  packets_dropped: {}\n"
+                "  fragment_rejected: {}\n"
+                "  dup_segments: {}",
                 tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
-                reorder_hits, reorder_overflows, max_gap_size);
+                reorder_hits, reorder_overflows, max_gap_size,
+                packets_dropped, fragment_rejected, dup_segments);
 
             // Append non-zero gap histogram buckets
             for (size_t i = 0; i < gap_histogram.size(); ++i) {
@@ -375,10 +397,13 @@ public:
                 "{{\"tx_packets\":{},\"rx_packets\":{},\"rx_bursts\":{},"
                 "\"tx_bytes\":{},\"rx_bytes\":{},\"acks_sent\":{},"
                 "\"out_of_order\":{},\"resets_received\":{},\"reorder_hits\":{},"
-                "\"reorder_overflows\":{},\"max_gap_size\":{}",
+                "\"reorder_overflows\":{},\"max_gap_size\":{},"
+                "\"packets_dropped\":{},\"fragment_rejected\":{},"
+                "\"dup_segments\":{}",
                 tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
-                reorder_hits, reorder_overflows, max_gap_size);
+                reorder_hits, reorder_overflows, max_gap_size,
+                packets_dropped, fragment_rejected, dup_segments);
 
             // Append non-zero gap histogram buckets as sparse array
             bool has_gap = false;
@@ -411,6 +436,9 @@ public:
                 .reorder_hits      = lhs.reorder_hits      - rhs.reorder_hits,
                 .reorder_overflows = lhs.reorder_overflows - rhs.reorder_overflows,
                 .max_gap_size      = lhs.max_gap_size,  // Point-in-time (not diffable)
+                .packets_dropped   = lhs.packets_dropped   - rhs.packets_dropped,
+                .fragment_rejected = lhs.fragment_rejected - rhs.fragment_rejected,
+                .dup_segments      = lhs.dup_segments      - rhs.dup_segments,
             };
             for (size_t i = 0; i < 32; ++i) {
                 result.gap_histogram[i] = lhs.gap_histogram[i] - rhs.gap_histogram[i];
@@ -1111,8 +1139,18 @@ public:
         for (uint16_t i = 0; i < nb_pkts; ++i) {
             auto parsed = net::parse_packet(pkts[i]);
 
-            // Skip non-matching packets
+            // Skip non-matching packets. Attribute the drop cause so
+            // operators can distinguish "upstream routing wrong" /
+            // "malformed" / "fragment" — symmetric to DpdkUdpSocket's
+            // process_burst_ drop-cause accounting. Disjoint from the
+            // bad-checksum drop that runs before us in
+            // DpdkTcpStream::process_burst_ (see TD-3 fix).
             if (!parsed.tcp || !parsed.matches(config_.tuple)) {
+                if (!parsed.tcp && net::is_ip_fragment(pkts[i])) {
+                    stats_.fragment_rejected++;
+                } else {
+                    stats_.packets_dropped++;
+                }
                 free_list[free_count++] = pkts[i];
                 continue;
             }
@@ -1232,7 +1270,11 @@ public:
                             "Buffered out-of-order: expected={}, got={}, buffered={}",
                             rcv_nxt_, seg_seq, reorder_count_);
                     } else if (!seq_after(seg_seq, rcv_nxt_)) {
-                        // Duplicate/past segment — just drop
+                        // Duplicate/past segment — peer re-delivered bytes
+                        // we already ACKed. Counted separately from
+                        // `out_of_order` (forward gap) and from the
+                        // reorder-buffer-full genuine-loss branch below.
+                        stats_.dup_segments++;
                         SPDLOG_LOGGER_DEBUG(log,
                             "Dropping duplicate: expected={}, got={}", rcv_nxt_, seg_seq);
                     } else {

@@ -135,6 +135,15 @@ enum class StreamMetric : std::size_t {
     /// MSS was not recorded correctly.
     kIcmpFragNeededReceived,
 
+    /// DPDK TCP only: duplicate or past-window segments — peer
+    /// re-delivered bytes we already ACKed (retransmit from peer, or
+    /// a delayed segment that raced a new one). Distinct from
+    /// `kTcpOutOfOrderSegments` (forward gap). Low non-zero is
+    /// expected on lossy paths; sustained rise means the peer is
+    /// retransmitting a lot or a delayed-ACK path is misconfigured.
+    /// Kernel backends and UDP emit 0.
+    kTcpDupSegments,
+
     /// DPDK TCP only: the stream layer observed an error return from
     /// `TcpSession::process_rx` / `poll_rx` (reorder-buffer overflow on
     /// genuine packet loss being the production-observed trigger) and
@@ -209,6 +218,7 @@ kStreamMetricNames = {
     "net.stream.tcp.keepalive_probes_sent",
     "net.stream.tcp.mss_negotiation_applied",
     "net.stream.icmp.frag_needed_received",
+    "net.stream.tcp.dup_segments",
     "net.stream.dpdk.rx_session_resets",
     "net.stream.rx.bad_checksum",
     "net.stream.rx.packets_dropped",

@@ -1101,6 +1101,12 @@ public:
                 return sess_.tcp_stats().reorder_hits;
             case SM::kTcpReorderBufferOverflows:
                 return sess_.tcp_stats().reorder_overflows;
+            case SM::kPacketsDropped:
+                return sess_.tcp_stats().packets_dropped;
+            case SM::kFragmentRejected:
+                return sess_.tcp_stats().fragment_rejected;
+            case SM::kTcpDupSegments:
+                return sess_.tcp_stats().dup_segments;
             case SM::kTcpKeepaliveProbesSent:
                 return sess_.tcp_stats().keepalive_probes_sent;
             case SM::kTcpMssNegotiationApplied:

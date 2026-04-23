@@ -522,6 +522,93 @@ TEST_F(DpdkTcpStreamReorderOverflowE2E, GoodAndUnknownFlagsPassThrough) {
         << "UNKNOWN must be accepted (best-effort, same as UDP-side policy)";
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// TD-5 (lucky-giggling-kahan review): DpdkTcpStream drop-cause metrics
+// (symmetric to UDP-side Tier 2 #3). Three new attribution paths exposed
+// via the TcpSession::Stats pull in DpdkTcpStream::metric():
+//   - kPacketsDropped:   non-TCP / 4-tuple mismatch / malformed parse
+//   - kFragmentRejected: IPv4 fragment detected (via is_ip_fragment)
+//   - kTcpDupSegments:   duplicate / past-window data segment
+//
+// All three counters are disjoint from kRxBadChecksum (cksum-specific,
+// runs at the stream layer before session) and from kCodecErrors
+// (post-parse decode failure, on DpdkUdpSocket only for now).
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, NonIpv4PacketBumpsPacketsDropped) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    // Build a valid TCP data mbuf, then flip EtherType to ARP so
+    // parse_ip_header rejects it (non-IPv4, non-fragment path).
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    auto* eth = rte_pktmbuf_mtod(m, rte_ether_hdr*);
+    eth->ether_type = eph::dpdk::net::hton16(0x0806);  // ARP, not IPv4
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kPacketsDropped), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kFragmentRejected), 0u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kTcpDupSegments), 0u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, FragmentBumpsFragmentRejected) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    // Stamp MF=1 so parse_ip_header rejects as fragment; disambiguation
+    // happens via is_ip_fragment(mbuf).
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+        rte_pktmbuf_mtod(m, uint8_t*) + eph::dpdk::net::kEtherHeaderLen);
+    ip->fragment_offset = eph::dpdk::net::hton16(
+        eph::dpdk::net::kIpMoreFragments);
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kFragmentRejected), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kPacketsDropped), 0u)
+        << "fragment must be attributed to kFragmentRejected, not the "
+           "generic packets_dropped catch-all";
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, DuplicateSegmentBumpsDupSegments) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    // Anchor rcv_nxt_ well past 0 so we can emit a "past-window" seq
+    // without wraparound complications.
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    // Seg with seq == rcv_nxt_ - kPayloadLen: strictly behind the
+    // current window → hits the "!seq_after(seg_seq, rcv_nxt_)"
+    // duplicate branch at tcp.hpp process_rx:1234.
+    rte_mbuf* m = build_data_mbuf(0x0001'0000 - kPayloadLen);
+    ASSERT_NE(m, nullptr);
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kTcpDupSegments), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kPacketsDropped), 0u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kFragmentRejected), 0u);
+}
+
+// Pin the name slot for the new kTcpDupSegments — mirrors the existing
+// RxSessionResetsMetricNameWired pattern.
+TEST(DpdkTcpStream, TcpDupSegmentsMetricNameWired) {
+    constexpr auto idx = static_cast<std::size_t>(
+        eph::net::StreamMetric::kTcpDupSegments);
+    EXPECT_EQ(eph::net::kStreamMetricNames[idx],
+              "net.stream.tcp.dup_segments");
+}
+
 TEST_F(DpdkTcpStreamReorderOverflowE2E, RealReorderOverflowDrivesStreamReset) {
     // Baseline: default TcpSession ReorderSlots is 64. This test pins that
     // assumption; a tuning change that drops it below 1 or raises it past

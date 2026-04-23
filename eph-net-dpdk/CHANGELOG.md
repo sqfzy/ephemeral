@@ -49,6 +49,65 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — DpdkTcpStream drop-cause metrics (TD-5) (2026-04-23)
+
+Closes TD-5 from the `lucky-giggling-kahan` review. TCP RX side now
+attributes rejected packets to three disjoint counters, symmetric to
+the UDP-side Tier 2 #3 metrics. The "medium" scope chosen: gate at the
+top TCP-session drop sites (parse fail + 4-tuple mismatch + duplicate
+segment), NOT per-branch inside every session internal free.
+
+### Added
+- `StreamMetric::kTcpDupSegments` / `net.stream.tcp.dup_segments`:
+  duplicate / past-window data segments — peer re-delivered bytes the
+  receiver already ACKed. Distinct from `kTcpOutOfOrderSegments`
+  (forward gap) and from the reorder-overflow "genuine loss" branch.
+  Low non-zero is expected on lossy paths; a sustained rise indicates
+  the peer is retransmitting a lot or a delayed-ACK path is
+  misconfigured.
+- `TcpSession::Stats::packets_dropped`: segments that failed
+  L2+L3+L4 parsing (non-IPv4 ethertype, truncated frame, bad IHL,
+  non-TCP protocol, bad TCP data offset) or matched an unrelated
+  4-tuple that the Poller routed here by mistake. Exposed via the
+  cross-backend `StreamMetric::kPacketsDropped` (same enum as UDP).
+- `TcpSession::Stats::fragment_rejected`: segments whose underlying
+  mbuf is an IPv4 fragment (MF=1 or non-zero offset), detected via
+  `is_ip_fragment` peek. Exposed via cross-backend
+  `StreamMetric::kFragmentRejected` (same enum as UDP).
+
+### Changed
+- `DpdkTcpStream::metric()` now returns the three new session stats
+  for `kPacketsDropped` / `kFragmentRejected` / `kTcpDupSegments`.
+  UDP still uses its atomic `inc_<M>()` counters_ array — the switch
+  in `metric()` overrides TCP's read to the session stats pull.
+- `TcpSession::Stats::dump()` / `to_json()` / `operator-` extended
+  to cover the three new fields.
+- `TcpSession::process_rx` instrumented at the two drop sites:
+  non-match (line ~1115) and duplicate (line ~1234). Both remain
+  single-instruction increments on plain `uint64_t` — matches the
+  existing single-lcore non-thread-safe stats contract.
+
+### Tests
+New cases in `test_dpdk_tcp_stream.cpp` `DpdkTcpStreamReorderOverflowE2E`:
+- `NonIpv4PacketBumpsPacketsDropped` — ARP ethertype mbuf → packets_dropped++.
+- `FragmentBumpsFragmentRejected` — MF=1 mbuf → fragment_rejected++,
+  disambiguation via `is_ip_fragment` verified.
+- `DuplicateSegmentBumpsDupSegments` — seq < rcv_nxt → dup_segments++.
+- `TcpDupSegmentsMetricNameWired` — pins enum ↔ name-table slot.
+
+### Notes
+- Counter semantics **disjoint** per backend: a single mbuf triggers at
+  most one of `{kRxBadChecksum, kFragmentRejected, kPacketsDropped,
+  kTcpDupSegments, kCodecErrors}`.
+- Default path (pre-opt-in cksum offload) is byte-for-byte unchanged
+  for every counter that wasn't already being bumped before this
+  commit. The three new stats fields start at 0 and only advance in
+  the documented conditions.
+
+### Technical debt ledger after this fix
+- **TD-5**: closed.
+- **TD-1** / **TD-2** / **TD-4**: unchanged.
+
 ## [Unreleased] — DpdkTcpStream RX checksum parity (TD-3) (2026-04-23)
 
 Closes TD-3 recorded by the UDP-side fix commit (d22a093) — the
