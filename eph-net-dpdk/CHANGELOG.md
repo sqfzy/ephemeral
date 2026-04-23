@@ -49,6 +49,46 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — UDP drop-cause metrics (2026-04-23)
+
+Closes Tier 2 #3 from the `lucky-giggling-kahan` review: `DpdkUdpSocket`
+previously exposed only 4 RX-side metrics (kBytesRecv / kFramesDecoded /
+kCodecErrors / kRxBadChecksum). Parse failures and connect_to filter
+rejections were silent — operators saw no signal when upstream flow
+steering misconfigured traffic, when path MTU miscalculation sent
+fragments, or when codecs got packets from non-configured peers.
+
+### Added
+- `StreamMetric::kPacketsDropped` / `net.stream.rx.packets_dropped`:
+  catch-all drop counter for RX packets rejected before codec dispatch
+  for reasons not attributable to a more specific counter. Covers
+  non-IPv4 ethertypes, truncated frames, bad IHL, multi-segment mbufs,
+  UDP length mismatches, and `connect_to()` filter mismatches.
+- `StreamMetric::kFragmentRejected` / `net.stream.rx.fragment_rejected`:
+  dedicated counter for IP fragments (MF=1 or non-zero offset). HFT
+  workloads set DF + negotiate MSS, so non-zero here is a fragment
+  attack or a path-MTU misconfiguration — the operational response
+  differs from the generic kPacketsDropped path.
+- `eph::dpdk::net::is_ip_fragment(mbuf)` in `packet_parse.hpp`: helper
+  for callers that need to distinguish "rejected because fragment"
+  from "rejected because malformed" after `parse_ip_header` /
+  `parse_udp_packet` returns null. Peeks only Ethernet + IP header
+  enough to read `fragment_offset`; no IHL validation.
+
+### Notes
+- All four drop counters (kRxBadChecksum / kFragmentRejected /
+  kPacketsDropped / kCodecErrors) are **disjoint** — a single mbuf
+  increments at most one.
+- Kernel backends emit 0 for both new metrics (fragments are reassembled
+  or dropped by the OS stack before userspace sees them).
+- DpdkTcpStream does not wire these yet; follow-up TD-5.
+
+### Related / follow-up
+- **TD-5** — Symmetric drop-cause attribution on DpdkTcpStream. TCP's
+  per-session state machine handles malformed packets differently (RFC
+  5961 RST guard, seqnum windowing), so the wire-up pattern differs
+  from UDP. An independent `/pax --feat` when operators request it.
+
 ## [Unreleased] — Reorder-overflow integration regression (2026-04-23)
 
 Closes Tier 1 #2 from the `lucky-giggling-kahan` review: c90a744's
