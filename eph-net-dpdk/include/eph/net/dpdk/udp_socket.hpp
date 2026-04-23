@@ -467,8 +467,11 @@ public:
         return 0;
     }
 
+    /// @brief Pollable's is_attached hook — forwards to the public
+    ///        `is_attached()`. See DpdkTcpStream's matching comment for
+    ///        the concept-dispatch rationale.
     [[nodiscard]] bool is_attached_() const noexcept {
-        return attached_to_ != nullptr;
+        return is_attached();
     }
 
     /// @brief Pollable native_handle — the UdpSender pointer (distinct

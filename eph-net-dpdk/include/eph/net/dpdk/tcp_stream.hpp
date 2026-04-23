@@ -1075,8 +1075,14 @@ public:
         return drain_codec_();
     }
 
+    /// @brief Pollable's is_attached hook — identical to the user-facing
+    ///        `is_attached()` above. Two names exist so `DpdkTcpStream`
+    ///        simultaneously satisfies `eph::net::Stream` (needs
+    ///        `is_attached`) and `eph::net::Pollable` (needs
+    ///        `is_attached_`). Forwards to the public one to keep the
+    ///        "is this Pollable attached" predicate single-sourced.
     [[nodiscard]] bool is_attached_() const noexcept {
-        return attached_to_ != nullptr;
+        return is_attached();
     }
 
     /// @brief Pollable native_handle — returns the TcpSession pointer as
