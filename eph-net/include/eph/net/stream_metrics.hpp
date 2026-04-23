@@ -161,6 +161,31 @@ enum class StreamMetric : std::size_t {
     /// (symmetric fix is a follow-up, see eph-net-dpdk CHANGELOG TD-3).
     kRxBadChecksum,
 
+    /// DPDK UDP only: catch-all drop counter for any RX packet rejected
+    /// before codec dispatch and NOT attributable to a more specific
+    /// counter. Currently covers:
+    ///   * `parse_udp_packet` returned null for reasons other than IP
+    ///     fragment (non-IPv4 ethertype, truncated frame, bad IHL,
+    ///     multi-segment mbuf, UDP length mismatch).
+    ///   * `connect_to()` filter rejected the source address (fixed-peer
+    ///     semantics — packets from non-configured peers are dropped).
+    /// Disjoint from `kRxBadChecksum` (checksum-specific), `kFragmentRejected`
+    /// (fragment-specific), and `kCodecErrors` (post-parse decode failure).
+    /// Non-zero in production points to upstream misconfiguration,
+    /// incorrect flow steering, or adversarial traffic.
+    kPacketsDropped,
+
+    /// DPDK UDP only: RX packet was an IPv4 fragment (MF=1 or non-zero
+    /// fragment_offset) and therefore rejected by `parse_ip_header`
+    /// (HFT workloads set DF + negotiate MSS; fragments are either
+    /// hostile or indicate the path MTU is wrong). Dedicated counter
+    /// because the operational response differs from the generic
+    /// `kPacketsDropped` — a rise here typically means "check DF/MTU
+    /// on the path", not "check flow-steering config". Kernel backends
+    /// emit 0 (the kernel stack reassembles or silently drops
+    /// fragments before userspace sees them).
+    kFragmentRejected,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -186,6 +211,8 @@ kStreamMetricNames = {
     "net.stream.icmp.frag_needed_received",
     "net.stream.dpdk.rx_session_resets",
     "net.stream.rx.bad_checksum",
+    "net.stream.rx.packets_dropped",
+    "net.stream.rx.fragment_rejected",
 };
 
 static_assert(kStreamMetricNames.size() ==

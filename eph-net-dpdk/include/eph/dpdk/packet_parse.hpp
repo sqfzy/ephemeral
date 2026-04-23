@@ -100,6 +100,36 @@ struct ParsedIpHeader {
     return {.eth = eth, .ip = ip, .ihl = ihl, .proto = ip->next_proto_id};
 }
 
+/// @brief Lightweight fragment detection for RX drop-cause attribution.
+///
+/// `parse_ip_header` rejects IP fragments wholesale (returning a null
+/// `ParsedIpHeader`), which means a caller that only has the empty
+/// result cannot distinguish "fragment" from "non-IPv4 / truncated /
+/// multi-segment / bad IHL" afterwards. This helper does the minimum
+/// inspection needed to answer "is this an IPv4 fragment?" — it peeks
+/// the Ethernet and IPv4 headers enough to read `fragment_offset` but
+/// does NOT validate IHL or payload length (the caller is expected to
+/// have already tried `parse_ip_header` or `parse_udp_packet` and
+/// received a reject). Used by `DpdkUdpSocket::process_burst_` to bump
+/// `StreamMetric::kFragmentRejected` vs the catch-all
+/// `StreamMetric::kPacketsDropped`.
+///
+/// Returns false for: null mbuf, multi-segment mbuf, short packet,
+/// non-IPv4 ethertype, and unfragmented IPv4 (MF=0, offset=0). Returns
+/// true iff MF=1 OR the fragment offset is non-zero.
+[[nodiscard]] inline bool is_ip_fragment(const rte_mbuf* mbuf) noexcept {
+    if (!mbuf) [[unlikely]] return false;
+    if (mbuf->nb_segs > 1) return false;
+    const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
+    if (pkt_len < kEtherHeaderLen + kIpv4HeaderLen) return false;
+    const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
+    const auto* eth = reinterpret_cast<const rte_ether_hdr*>(data);
+    if (ntoh16(eth->ether_type) != kEtherTypeIpv4) return false;
+    const auto* ip = reinterpret_cast<const rte_ipv4_hdr*>(data + kEtherHeaderLen);
+    const uint16_t frag_off = ntoh16(ip->fragment_offset);
+    return (frag_off & (kIpMoreFragments | kIpFragOffsetMask)) != 0;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Packet parser — extract headers from received mbufs
 // ─────────────────────────────────────────────────────────────────────────────
