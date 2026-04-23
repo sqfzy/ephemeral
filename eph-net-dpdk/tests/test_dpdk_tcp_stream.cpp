@@ -12,6 +12,11 @@
 /// integration-test scope. The unit tests focus on the type system,
 /// configuration plumbing, and stub behaviour, where the bugs live.
 
+// Must be defined before tcp_stream.hpp include so the hook block
+// (make_default_for_test_, simulate_rx_session_error_for_test_) is
+// visible to the behavioral regression tests at the bottom of this file.
+#define EPH_DPDK_TCP_STREAM_TEST_HOOKS 1
+
 #include <cstdint>
 
 #include <gtest/gtest.h>
@@ -19,6 +24,7 @@
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
 #include "eph/codec/raw_stream_codec.hpp"
+#include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
@@ -244,12 +250,48 @@ TEST(DpdkTcpStream, ReasmCapacityAboveFloorPassesValidation) {
     }
 }
 
-// Pin the enum ↔ name-table entry for kRxSessionResets (production
-// bug fix: RX-side session stall on reorder-buffer overflow; the
-// process_burst_ / poll_once_ error branches now force sess_.reset()
-// and bump this counter). Catches silent drift if the enum reorders
-// or the name table falls out of sync; the compile-time static_assert
-// in stream_metrics.hpp covers size parity, this pins the slot.
+// ═══════════════════════════════════════════════════════════════════════
+// RX-side session stall regression (production bug: reorder-buffer
+// overflow left session Established with rcv_nxt_ stuck → all subsequent
+// bursts silently re-triggered the overflow → RX-only feed stalled 10s
+// until external watchdog caught it). Invariant: handle_rx_session_error_
+// must transition Established → Closed and bump kRxSessionResets, and
+// must be a no-op on an already-Closed session (peer-RST path).
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(DpdkTcpStream, RxSessionErrorTransitionsEstablishedToClosed) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+
+    // Fast-forward into Established so we test the non-trivial transition.
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    ASSERT_EQ(stream->state(), eph::net::TcpState::Established);
+    ASSERT_EQ(stream->metric(eph::net::StreamMetric::kRxSessionResets), 0u);
+
+    EXPECT_TRUE(stream->simulate_rx_session_error_for_test_());
+    EXPECT_EQ(stream->state(), eph::net::TcpState::Closed);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxSessionResets), 1u);
+}
+
+TEST(DpdkTcpStream, RxSessionErrorOnAlreadyClosedIsNoOp) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    // Fresh stream has never connected → session starts Closed. This
+    // mirrors what process_rx does on the peer-RST path (state_ already
+    // Closed before returning Disconnected); the state guard in the
+    // helper must skip the reset + metric so the counter only reflects
+    // resets the stream layer itself initiated.
+    ASSERT_EQ(stream->state(), eph::net::TcpState::Closed);
+
+    EXPECT_TRUE(stream->simulate_rx_session_error_for_test_());
+    EXPECT_EQ(stream->state(), eph::net::TcpState::Closed);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxSessionResets), 0u);
+}
+
+// Pin the enum ↔ name-table entry for kRxSessionResets. The compile-
+// time static_assert in stream_metrics.hpp covers size parity; this
+// pins the name at the exact slot in case of enum reorders.
 TEST(DpdkTcpStream, RxSessionResetsMetricNameWired) {
     constexpr auto idx =
         static_cast<std::size_t>(eph::net::StreamMetric::kRxSessionResets);

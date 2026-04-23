@@ -1054,20 +1054,8 @@ public:
             inc_<::eph::net::StreamMetric::kBytesRecv>(len);
         });
         if (!r) {
-            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::poll_once_: {} — forcing reset",
-                r.error().detail);
-            // Mirror the reasm-overflow branch above: a Disconnected from
-            // poll_rx (notably reorder-buffer overflow) leaves `state_`
-            // Established with `rcv_nxt_` stuck; without this reset every
-            // subsequent burst re-triggers the overflow silently and the
-            // RX-only app path stalls until an external watchdog catches
-            // it. Reset is idempotent on already-Closed sessions so the
-            // peer-RST path (state_ already Closed in process_rx) just
-            // costs a redundant outbound RST — acceptable for an error
-            // path.
-            inc_<::eph::net::StreamMetric::kRxSessionResets>();
-            sess_.reset();
+            handle_rx_session_error_(
+                "DpdkTcpStream::poll_once_", r.error());
             return 0;
         }
         if (reasm_overflowed_) return 0;
@@ -1215,16 +1203,8 @@ public:
                 inc_<::eph::net::StreamMetric::kBytesRecv>(len);
             });
         if (!r) {
-            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::process_burst_: {} — forcing reset",
-                r.error().detail);
-            // See poll_once_ above for the full rationale. Short version:
-            // process_rx's reorder-overflow branch returns Disconnected
-            // without touching state_, so without this reset the session
-            // stays Established while rcv_nxt_ is stuck and the next
-            // burst just re-triggers the overflow indefinitely.
-            inc_<::eph::net::StreamMetric::kRxSessionResets>();
-            sess_.reset();
+            handle_rx_session_error_(
+                "DpdkTcpStream::process_burst_", r.error());
             return;
         }
         if (reasm_overflowed_) return;
@@ -1269,6 +1249,18 @@ public:
         return std::unique_ptr<DpdkTcpStream>(
             new DpdkTcpStream(std::move(cfg)));
     }
+
+    /// @brief Test-only: replay the exact branch `process_burst_` /
+    ///        `poll_once_` runs when `TcpSession::process_rx` / `poll_rx`
+    ///        returns an error. Returns `true` iff `state()` ends as
+    ///        `Closed` after the helper runs.
+    bool simulate_rx_session_error_for_test_() noexcept {
+        handle_rx_session_error_(
+            "DpdkTcpStream::simulate_rx_session_error_for_test_",
+            core::ErrorInfo{core::Error::Disconnected,
+                            "simulated rx session error"});
+        return sess_.state() == ::eph::net::TcpState::Closed;
+    }
 #endif // EPH_DPDK_TCP_STREAM_TEST_HOOKS
 
 private:
@@ -1276,6 +1268,29 @@ private:
         : cfg_(std::move(cfg))
         , sess_(cfg_.legacy, cfg_.pool)
         , reasm_(cfg_.reasm_capacity > 0 ? cfg_.reasm_capacity : 256 * 1024) {}
+
+    /// @brief Translate an RX-side session error into the stream-layer
+    ///        reaction: log + (if not already Closed) force the session
+    ///        into Closed and bump `kRxSessionResets` so the app's
+    ///        reconnect policy can observe the death via `state()` and
+    ///        rebuild.  Centralizing the two call sites (process_burst_,
+    ///        poll_once_) keeps any future policy evolution (e.g. burst
+    ///        suppression / rate-limited WARN) in one place.
+    ///
+    ///        The state guard avoids both an unnecessary outbound RST
+    ///        (on the peer-RST path, where `process_rx` already set
+    ///        state_ = Closed) and a double-count in the metric; the
+    ///        counter's semantics — "stream layer proactively reset
+    ///        the session from the RX side" — stay clean.
+    void handle_rx_session_error_(std::string_view site,
+                                   const core::ErrorInfo& err) noexcept {
+        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+            "{}: {} — forcing reset", site, err.detail);
+        if (sess_.state() != ::eph::net::TcpState::Closed) {
+            sess_.reset();
+            inc_<::eph::net::StreamMetric::kRxSessionResets>();
+        }
+    }
 
     /// @brief Run the codec over the accumulated payload bytes, firing
     ///        `on_message` per decoded frame. Returns the number of
