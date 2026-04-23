@@ -1160,6 +1160,15 @@ public:
     /// @brief Hot-path burst dispatch entry point called by DpdkPoller.
     ///        Feeds the mbuf(s) into the TCP session, then drains the
     ///        reassembly buffer through the codec.
+    ///
+    /// @note TD-3 (lucky-giggling-kahan review): UDP side now drops
+    /// mbufs with RTE_MBUF_F_RX_{IP,L4}_CKSUM_BAD before parse (see
+    /// DpdkUdpSocket::process_burst_ + StreamMetric::kRxBadChecksum).
+    /// TCP-side parity is deferred: TcpSession's RFC 5961 RST guard +
+    /// seqnum windowing incidentally block most bad-cksum packets, but
+    /// this is accidental coverage, not systematic. Follow-up: an
+    /// independent /pax --fix wiring ol_flags check here, with the same
+    /// PlatformConfig::enable_rx_checksum_offload gating.
     void process_burst_(rte_mbuf** mbufs, uint16_t n,
                          uint64_t rx_tsc) noexcept {
         // Fail-fast on TLS desync (see send() above). We cannot trust the
