@@ -669,10 +669,13 @@ private:
             // Sustained collision scenarios (adversarial traffic or a
             // pathological hash distribution) must stay observable beyond
             // the first event. Log at WARN on the first collision drop and
-            // then every 1024th so log volume is bounded but not silent —
+            // then every Nth so log volume is bounded but not silent —
             // a once-per-Poller guard would hide prolonged attacks.
+            // Must be (power of two) - 1 so the bitmask test is equivalent
+            // to `count % interval == 0`.
+            static constexpr uint64_t kHashCollisionLogMask = 0x3ffULL;  // 1 / 1024
             if (hash_collision_drops_ == 0 ||
-                (hash_collision_drops_ & 0x3ffULL) == 0) {
+                (hash_collision_drops_ & kHashCollisionLogMask) == 0) {
                 SPDLOG_LOGGER_WARN(detail::poller_logger(),
                     "DpdkPoller::lookup_by_5tuple_: hash collision drop #{} "
                     "(pkt_hash=0x{:08x} proto={} src=0x{:08x}:{} dst=0x{:08x}:{}); "

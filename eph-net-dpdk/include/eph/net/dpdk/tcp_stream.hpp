@@ -75,6 +75,14 @@ inline spdlog::logger* tcp_stream_logger() {
 ///        `kCodecAutoResponseBytes` for parity.
 inline constexpr std::size_t kCodecAutoResponseBytes = 1024;
 
+/// @brief Maximum number of `poll_rx` bursts the WS-handshake sinks will
+///        attempt before surfacing `WouldBlock` to the outer handshake
+///        deadline loop. Empty bursts are expected early in the handshake
+///        while the peer's response still traverses the fabric; a bounded
+///        retry here avoids a tight spin, and the caller's deadline makes
+///        the aggregate timeout the real control.
+inline constexpr int kWsHandshakeRecvBurstRetries = 16;
+
 // TlsState (with aws-lc-backed in-place AEAD) lives in
 // `detail/tls_state.hpp`.
 
@@ -204,7 +212,7 @@ public:
             return n;
         }
         // Pull one burst; accept multiple recv loops if the burst was empty.
-        for (int iter = 0; iter < 16; ++iter) {
+        for (int iter = 0; iter < kWsHandshakeRecvBurstRetries; ++iter) {
             // `plaintext_chunk` here: PlainDpdkWsSink path — no TLS, so the
             // TCP payload IS already the plaintext handshake bytes.
             auto r = sess_->poll_rx(
@@ -293,7 +301,7 @@ public:
             return n;
         }
 
-        for (int iter = 0; iter < 16; ++iter) {
+        for (int iter = 0; iter < kWsHandshakeRecvBurstRetries; ++iter) {
             // `ciphertext_chunk`: TLS path — TCP payload is an encrypted
             // TLS record, not yet decrypted. Accumulated in `cipher_` until
             // a full record can be decrypted in place below.
