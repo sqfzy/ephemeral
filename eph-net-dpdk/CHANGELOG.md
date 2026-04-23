@@ -49,6 +49,40 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Documentation sweep (2026-04-23)
+
+Closes Tier 3 #8 / #9 / #10 from the `lucky-giggling-kahan` review.
+
+### Added
+- [`docs/dpdk-tcp-implementation.md`](../docs/dpdk-tcp-implementation.md)
+  (Tier 3 #8): TCP implementation guide — state machine diagram with
+  the client-only transitions actually exercised, reorder buffer
+  design (linear-scan + overflow semantics + behavioral test
+  pointer), delayed-ACK semantics (caller-driven tick), the
+  no-retransmit contract (what's deliberately NOT done and why HFT
+  colo deployments accept that trade-off), ICMP path-MTU feedback
+  flow, keepalive exhaust behaviour, and the full telemetry surface.
+- [`docs/dpdk-udp-design.md`](../docs/dpdk-udp-design.md)
+  (Tier 3 #10): UDP design deltas vs `KernelUdpSocket` — summary
+  table, fixed-peer rationale ("one socket per peer" port shape),
+  no-broadcast rationale, multicast + `connect_to` interaction
+  (including the A/B-feed-failover subtle case), outbound payload
+  cap (65493 bytes hard), inbound drop-cause counter table, and
+  a "when to pick which" decision guide.
+
+### Changed
+- `eph-net-dpdk/README.md` (Tier 3 #9): new **Thread model**
+  section with an ASCII diagram showing the one-lcore-per-Poller
+  rule, the control-thread-owns-setup / lcore-owns-steady-state
+  boundary, and the only cross-lcore interaction (ICMP registry
+  with shared_ptr + mutex). Updated the `See also` list to link
+  the two new documents.
+
+### Notes
+- No code changes in this sweep; all three documents are generated
+  from the current `tcp.hpp` / `tcp_stream.hpp` / `platform.hpp` /
+  `icmp_registry.hpp` / `udp_socket.hpp` source of truth.
+
 ## [Unreleased] — RX hot-path parser microbench baseline (2026-04-23)
 
 Closes Tier 2 #7 from the `lucky-giggling-kahan` review. Phase 9 added

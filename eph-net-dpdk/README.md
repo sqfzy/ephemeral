@@ -73,6 +73,87 @@ int main(int argc, char** argv) {
 }
 ```
 
+## Thread model
+
+`eph-net-dpdk` uses a **one-lcore-per-Poller** model — each Poller
+runs on a dedicated lcore and owns its RX queue exclusively. The
+only cross-lcore interaction is ICMP dispatch (because ICMP Type 3
+Code 4 may land on any RSS queue regardless of which lcore owns the
+target TCP session).
+
+```
+                ┌──────────────────────┐
+                │   Control thread     │
+                │ (app main / setup)   │
+                │                      │
+                │  - Eal construction  │
+                │  - Platform::create  │
+                │  - ARP resolve       │
+                │  - DNS lookups       │
+                │  - Stream::create()  │
+                │  - Poller::add()     │
+                │  - install_flow_rule │
+                └──────────┬───────────┘
+                           │ (setup only;
+                           │  no steady-state
+                           │  traffic)
+                           ▼
+ ┌───────────────────────────────────────────────────────┐
+ │                  ICMP registry (shared)               │
+ │         eph::dpdk::detail::IcmpRegistry               │
+ │  std::shared_ptr + std::mutex — safe across lcores    │
+ └─────────┬──────────────┬──────────────┬───────────────┘
+           │              │              │
+           │ dispatch     │ dispatch     │ dispatch
+           │ on Type 3    │ on Type 3    │ on Type 3
+           │ Code 4       │ Code 4       │ Code 4
+           │              │              │
+           ▼              ▼              ▼
+  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+  │ Lcore 1      │ │ Lcore 2      │ │ Lcore 3      │
+  │ (RX queue 0) │ │ (RX queue 1) │ │ (RX queue 2) │
+  │              │ │              │ │              │
+  │ DpdkPoller   │ │ DpdkPoller   │ │ DpdkPoller   │
+  │   ├─ TCP A   │ │   ├─ TCP B   │ │   ├─ UDP md  │
+  │   ├─ TCP C   │ │   └─ TCP D   │ │   └─ …       │
+  │   └─ UDP ord │ │              │ │              │
+  │              │ │              │ │              │
+  │ poll() burst │ │ poll() burst │ │ poll() burst │
+  │ process_rx   │ │ process_rx   │ │ process_rx   │
+  │ on_poll_tick │ │ on_poll_tick │ │ on_poll_tick │
+  └──────────────┘ └──────────────┘ └──────────────┘
+```
+
+### Per-lcore invariants
+
+Each lcore's Poller / Streams are **strictly single-threaded** —
+no locks inside the hot path, no atomic RMW on session state.
+`TcpSession` / `DpdkUdpSocket` internals are not thread-safe by
+design (see `tcp.hpp` `@note Not thread-safe`).
+
+### Cross-lcore boundary: ICMP
+
+The only reason a packet from another lcore's RX queue reaches a
+given session is the ICMP path-MTU feedback. Platform's
+`icmp_registry_` maps `(src_ip, dst_ip, src_port, dst_port,
+protocol)` 5-tuples to `weak_ptr<IcmpTargetHandle>`. On receipt of
+ICMP Type 3 Code 4 anywhere, the owning Poller calls into the
+registry (mutex-acquired); the matching handle's
+`on_icmp_frag_needed` is invoked, which internally updates
+`effective_mss_` via the atomic exchange — safe because that single
+field is the only cross-lcore mutation.
+
+Lifecycle ordering (registry predeceases Platform → Stream's
+`IcmpTargetHandle` weak_ptr fails gracefully; session lives past
+registry → handle expires cleanly on ~Registry). ASan + TSan
+verified via `test_icmp_registry.cpp`.
+
+See [`../docs/dpdk-tcp-implementation.md`](../docs/dpdk-tcp-implementation.md)
+for the full TCP state machine, reorder buffer semantics, delayed-ACK,
+and no-retransmit contract, and
+[`../docs/dpdk-udp-design.md`](../docs/dpdk-udp-design.md) for the
+UDP design deltas vs the kernel backend.
+
 ## Build requirements
 
 DPDK PMDs need whole-archive linking. Targets that link `eph-net-dpdk` must call
@@ -130,6 +211,8 @@ sudo tests/integration/dpdk_e2e
 
 ## See also
 
+- [`../docs/dpdk-tcp-implementation.md`](../docs/dpdk-tcp-implementation.md) — TCP state machine, reorder buffer, delayed-ACK, no-retransmit contract
+- [`../docs/dpdk-udp-design.md`](../docs/dpdk-udp-design.md) — UDP design deltas vs kernel backend (fixed-peer, no broadcast, multicast + connect_to interaction)
 - [`../docs/dpdk-setup.md`](../docs/dpdk-setup.md)
 - [`../docs/poller-guide.md`](../docs/poller-guide.md)
 - [`../docs/architecture.md`](../docs/architecture.md)
