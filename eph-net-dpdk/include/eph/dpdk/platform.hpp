@@ -74,11 +74,17 @@ namespace detail {
 /// @brief Compute the next valid DPDK mempool size >= n satisfying the 2^k-1 constraint.
 ///
 /// @param n  Minimum desired pool size
-/// @return Smallest value >= n of the form 2^k - 1
+/// @return Smallest value >= n of the form 2^k - 1 (k >= 1, so never 0).
+///         `n == 0` promotes to 1 (= 2^1 - 1), matching the "k >= 1"
+///         invariant that `is_power_of_two_minus_one` enforces.
 [[nodiscard]] constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
+    if (n == 0) return 1;           // 2^1 - 1 — smallest valid pool size
     uint32_t m = n + 1;
-    // Round up to next power of 2.
-    if (m == 0 || (m & (m - 1)) == 0) return m - 1;
+    // Round up to next power of 2. m == 0 happens iff n was UINT32_MAX,
+    // in which case 2^32 - 1 is the largest representable 2^k - 1 and
+    // is itself >= n.
+    if (m == 0) return UINT32_MAX;
+    if ((m & (m - 1)) == 0) return m - 1;
     return (1u << (32 - std::countl_zero(m))) - 1u;
 }
 
@@ -1112,6 +1118,23 @@ Platform::register_poller(uint16_t queue_id,
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
             "Platform::register_poller: queue already has a registered Poller"});
+    }
+    // Reject the same Poller landing on two different queues. A Poller owns
+    // one lcore and polls one RX queue; pointing two slots at it would mean
+    // Stream::create_and_attach routes RX-burst dispatches from two queues
+    // to a Poller that only calls rte_eth_rx_burst on one, so packets on
+    // the unpolled queue are never consumed (silent tail drop). Linear
+    // scan over kMaxRssQueues = 64 is trivial at attach time.
+    for (uint16_t q = 0; q < impl_->config.nb_rx_queues && q < kMaxRssQueues; ++q) {
+        if (impl_->pollers[q] == poller) {
+            SPDLOG_LOGGER_WARN(detail::platform_logger(),
+                "Platform::register_poller: poller={:p} already registered on "
+                "queue={} — a Poller owns one RX queue exclusively",
+                static_cast<void*>(poller), q);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "Platform::register_poller: poller already registered on another queue"});
+        }
     }
     impl_->pollers[queue_id] = poller;
     // NB: the ICMP callback (`poller->set_icmp_callback(...)`) is NOT
