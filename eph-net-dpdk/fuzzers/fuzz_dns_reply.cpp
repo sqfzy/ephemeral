@@ -26,7 +26,13 @@
 // linking librte_*.  The functions we fuzz (parse_dns_response, skip_dns_name)
 // never touch DPDK types.
 struct rte_mempool;
-struct rte_mbuf { uint16_t data_len; };
+// nb_segs: the dns header's `try_parse_dns_packet` rejects scattered
+// mbufs defense-in-depth; keep it as uint16_t=1 by default so its own
+// early-out check is reachable. Also define `rte_pktmbuf_data_len` since
+// the parser now accesses `data_len` through that macro for consistency
+// with the rest of the code.
+struct rte_mbuf { uint16_t data_len; uint16_t nb_segs; };
+#define rte_pktmbuf_data_len(m) ((m)->data_len)
 struct rte_ether_addr { uint8_t addr_bytes[6]; };
 struct rte_ether_hdr { rte_ether_addr dst_addr; rte_ether_addr src_addr; uint16_t ether_type; };
 struct rte_ipv4_hdr {

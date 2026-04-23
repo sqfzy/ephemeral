@@ -31,8 +31,10 @@
 struct rte_mempool;
 struct rte_mbuf {
     uint16_t data_len;
+    uint16_t nb_segs;     // scatter-rejection check; initialised to 1 in LLVMFuzzerTestOneInput
     const uint8_t* data;  // shim-only: parsed payload pointer
 };
+#define rte_pktmbuf_data_len(m) ((m)->data_len)
 struct rte_ether_addr { uint8_t addr_bytes[6]; };
 struct rte_ether_hdr { rte_ether_addr dst_addr; rte_ether_addr src_addr; uint16_t ether_type; };
 struct rte_ipv4_hdr {
@@ -62,6 +64,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     rte_mbuf m{};
     m.data_len = static_cast<uint16_t>(size);
+    m.nb_segs  = 1;              // scatter-rejection guard is reachable with nb_segs=1
     m.data     = data;
 
     // Drive several adversarial parameter combinations so libFuzzer can
