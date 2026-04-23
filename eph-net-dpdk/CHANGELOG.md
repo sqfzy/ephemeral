@@ -49,6 +49,33 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Reorder-overflow integration regression (2026-04-23)
+
+Closes Tier 1 #2 from the `lucky-giggling-kahan` review: c90a744's
+CHANGELOG explicitly deferred behavioral verification of the overflow
+reset path to integration testing. `test_dpdk_tcp_stream.cpp` now hosts
+`DpdkTcpStreamReorderOverflowE2E.RealReorderOverflowDrivesStreamReset`,
+which drives the real `TcpSession::process_rx` overflow branch (not the
+`simulate_rx_session_error_for_test_` shortcut) through
+`DpdkTcpStream::process_burst_` and asserts the full chain:
+
+- session stats: `reorder_overflows == 1`
+- stream state: `Closed` (was `Established`)
+- `StreamMetric::kRxSessionResets == 1`
+
+### Tests
+- Added: `DpdkTcpStreamReorderOverflowE2E.RealReorderOverflowDrivesStreamReset`
+  (integration — uses DpdkTestEnv's net_null EAL + a dedicated mempool;
+  no NIC_B needed).
+
+### Related / follow-up
+
+- **TD-4** — NIC_B wire-level reorder coverage is still a gap. Real
+  wire-level reorder induction needs `tc qdisc netem reorder` + root
+  + persistent host kernel state; the cost/value exceeded scope for
+  this round. Add if a tc-netem test harness is justified for other
+  scenarios.
+
 ## [Unreleased] — RX-side session stall on reorder-buffer overflow (2026-04-23)
 
 ### Fixed
