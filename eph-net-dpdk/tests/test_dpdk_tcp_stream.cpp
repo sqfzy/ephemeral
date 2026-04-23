@@ -18,12 +18,20 @@
 #define EPH_DPDK_TCP_STREAM_TEST_HOOKS 1
 
 #include <cstdint>
+#include <cstring>
 
 #include <gtest/gtest.h>
+
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_mbuf.h>
+#include <rte_mempool.h>
+#include <rte_tcp.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
 #include "eph/codec/raw_stream_codec.hpp"
+#include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/poller.hpp"
@@ -297,4 +305,186 @@ TEST(DpdkTcpStream, RxSessionResetsMetricNameWired) {
         static_cast<std::size_t>(eph::net::StreamMetric::kRxSessionResets);
     EXPECT_EQ(eph::net::kStreamMetricNames[idx],
               "net.stream.dpdk.rx_session_resets");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Tier 1 #2 (lucky-giggling-kahan review): close the behavioral gap called
+// out by the RX-session-stall fix commit (c90a744). Existing unit tests
+// `RxSessionErrorTransitionsEstablishedToClosed` and `...OnAlreadyClosed`
+// verify the stream-layer reaction to a **simulated** Disconnected return
+// from process_rx (via `simulate_rx_session_error_for_test_`). They do NOT
+// drive the real `TcpSession::process_rx → reorder-buffer-overflow →
+// Error::Disconnected` emission.
+//
+// This fixture does. It fills the session's 64-slot reorder buffer with
+// real mbufs (from a real mempool, so DPDK's abort_rx_cleanup path can
+// rte_pktmbuf_free_bulk without crashing), then injects one more
+// forward-gapped segment to trigger the overflow branch at
+// tcp.hpp process_rx:1240. The stream's handle_rx_session_error_ must
+// observe the Disconnected return, call sess_.reset(), flip state to
+// Closed, and bump kRxSessionResets exactly once.
+//
+// Why this stays "integration" rather than "NIC_B e2e": driving wire-level
+// reorder via real NIC_B would need `tc qdisc netem reorder` + root +
+// persistent kernel state on the host. The CHANGELOG note ("behavioral
+// verification deferred to integration testing") matches the stream-layer
+// integration path exercised here. Real NIC_B wire coverage remains as
+// TD-4 for a future session where tc-netem infrastructure is justified.
+// ═══════════════════════════════════════════════════════════════════════
+
+class DpdkTcpStreamReorderOverflowE2E : public ::testing::Test {
+protected:
+    // Session ReorderSlots is 64 by default (tcp.hpp:303); the test asserts
+    // this via a static_assert below so a future tuning change breaks the
+    // test loudly rather than silently undercounting.
+    static constexpr uint16_t kSlots = 64;
+    // Payload per OOO segment. Small enough to keep mbuf alloc cheap, large
+    // enough to be plausible TCP data (reorder path short-circuits on
+    // payload_len == 0).
+    static constexpr uint16_t kPayloadLen = 64;
+
+    static void SetUpTestSuite() {
+        // Pool must hold at least kSlots+1 (the overflow trigger) plus a
+        // small margin for DPDK cache; 128 is the smallest power-of-two-
+        // minus-one below that comfortably fits.
+        pool_ = ::rte_pktmbuf_pool_create(
+            "tcp_reorder_overflow_pool", /*n=*/127, /*cache=*/16,
+            /*priv=*/0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+        ASSERT_NE(pool_, nullptr);
+    }
+
+    static void TearDownTestSuite() {
+        if (pool_) { ::rte_mempool_free(pool_); pool_ = nullptr; }
+    }
+
+    // Build a peer → us TCP data segment with the given seq. No flags are
+    // set beyond ACK (we do not drive state transitions — the pure data
+    // path is all we need). Layout mirrors the existing FakePkt helper in
+    // test_tcp_state_machine.cpp / test_tcp_conformance.cpp, but the mbuf
+    // comes from a real pool so DPDK's free_bulk is safe.
+    rte_mbuf* build_data_mbuf(uint32_t seq) {
+        rte_mbuf* m = ::rte_pktmbuf_alloc(pool_);
+        EXPECT_NE(m, nullptr);
+        if (!m) return nullptr;
+
+        constexpr size_t eth_len = eph::dpdk::net::kEtherHeaderLen;
+        constexpr size_t ip_len  = 20;
+        constexpr size_t tcp_len = 20;
+        const size_t total = eth_len + ip_len + tcp_len + kPayloadLen;
+
+        auto* data = rte_pktmbuf_mtod(m, uint8_t*);
+        std::memset(data, 0, total);
+
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(data);
+        eth->ether_type = eph::dpdk::net::hton16(
+            eph::dpdk::net::kEtherTypeIpv4);
+
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(data + eth_len);
+        ip->version_ihl   = (4 << 4) | 5;
+        ip->total_length  = eph::dpdk::net::hton16(
+            static_cast<uint16_t>(ip_len + tcp_len + kPayloadLen));
+        ip->next_proto_id = eph::dpdk::net::kIpProtoTcp;
+        // Peer is the "remote" — same convention as make_default_for_test_'s
+        // tuple: src_ip = 10.0.0.1 (us), dst_ip = 10.0.0.2 (peer).
+        ip->src_addr      = eph::dpdk::net::hton32(0x0A000002);  // from peer
+        ip->dst_addr      = eph::dpdk::net::hton32(0x0A000001);  // to us
+
+        auto* tcp = reinterpret_cast<rte_tcp_hdr*>(data + eth_len + ip_len);
+        tcp->src_port  = eph::dpdk::net::hton16(443);    // peer dst
+        tcp->dst_port  = eph::dpdk::net::hton16(12345);  // us src
+        tcp->sent_seq  = eph::dpdk::net::hton32(seq);
+        tcp->recv_ack  = eph::dpdk::net::hton32(0);
+        tcp->data_off  = static_cast<uint8_t>(5 << 4);   // 20-byte header
+        tcp->tcp_flags = eph::dpdk::net::kTcpAck;        // plain data segment
+        tcp->rx_win    = eph::dpdk::net::hton16(65535);
+
+        m->data_len = static_cast<uint16_t>(total);
+        m->pkt_len  = static_cast<uint32_t>(total);
+        m->nb_segs  = 1;
+        m->ol_flags = 0;
+
+        return m;
+    }
+
+    static rte_mempool* pool_;
+};
+
+rte_mempool* DpdkTcpStreamReorderOverflowE2E::pool_ = nullptr;
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, RealReorderOverflowDrivesStreamReset) {
+    // Baseline: default TcpSession ReorderSlots is 64. This test pins that
+    // assumption; a tuning change that drops it below 1 or raises it past
+    // pool capacity would otherwise silently break the test.
+    static_assert(kSlots >= 1, "kSlots must be positive");
+
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+
+    // Fast-forward the session into Established and fix rcv_nxt so we can
+    // craft mbufs that are strictly forward of it. Leaving rcv_wnd at the
+    // config default (65535) keeps the segments inside the window so they
+    // hit the reorder path rather than the out-of-window drop path.
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    constexpr uint32_t kBaseSeq = 0x0001'0000;
+    sess->inject_recv_seq_for_testing(kBaseSeq, /*rcv_wnd=*/65535);
+
+    ASSERT_EQ(stream->state(), eph::net::TcpState::Established);
+    ASSERT_EQ(stream->metric(eph::net::StreamMetric::kRxSessionResets), 0u);
+    ASSERT_EQ(sess->tcp_stats().reorder_overflows, 0u);
+
+    // ── Phase A: fill the reorder buffer with exactly `kSlots` OOO
+    //    segments. Each sits past rcv_nxt_ and leaves the gap at kBaseSeq
+    //    permanently unfilled. The stream delegates to sess_.process_rx
+    //    which buffers every one (no Disconnected, no reset yet).
+    //
+    //    Note: TcpSession::process_rx caps at kMaxBurst=32 per call
+    //    (tcp.hpp:1096); excess mbufs are freed up front. To fill 64
+    //    slots we drive two back-to-back bursts of 32 each. ──
+    constexpr uint16_t kBurstCap = 32;
+    static_assert(kSlots % kBurstCap == 0,
+                  "kSlots must be a whole multiple of process_rx burst cap");
+    uint16_t produced = 0;
+    for (uint16_t batch = 0; batch < kSlots / kBurstCap; ++batch) {
+        rte_mbuf* fill_mbufs[kBurstCap];
+        for (uint16_t i = 0; i < kBurstCap; ++i) {
+            // Spaced by kPayloadLen, starting one payload past rcv_nxt_.
+            // (i + 1 + batch*kBurstCap) ensures strict monotonic forward
+            // seqs across batches so every packet hits the reorder path.
+            fill_mbufs[i] = build_data_mbuf(
+                kBaseSeq + static_cast<uint32_t>(
+                    (i + 1 + batch * kBurstCap) * kPayloadLen));
+            ASSERT_NE(fill_mbufs[i], nullptr);
+            ++produced;
+        }
+        stream->process_burst_(fill_mbufs, kBurstCap, /*rx_tsc=*/0);
+    }
+    ASSERT_EQ(produced, kSlots);
+
+    // After phase A the session must still be healthy — the buffer is full
+    // but no overflow has happened. The stream must NOT have reset yet.
+    EXPECT_EQ(stream->state(), eph::net::TcpState::Established);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxSessionResets), 0u);
+    EXPECT_EQ(sess->tcp_stats().reorder_overflows, 0u);
+    EXPECT_EQ(sess->tcp_stats().reorder_hits, kSlots);
+
+    // ── Phase B: inject ONE more forward segment. With reorder_count_
+    //    already at ReorderSlots this hits the overflow branch at
+    //    tcp.hpp:1239-1248, which returns Error::Disconnected after
+    //    abort_rx_cleanup frees the buffer + pending mbufs.
+    //    DpdkTcpStream::process_burst_ must detect the error and flow
+    //    through handle_rx_session_error_ → sess_.reset() → state=Closed
+    //    + kRxSessionResets++. ──
+    rte_mbuf* overflow_mbuf = build_data_mbuf(
+        kBaseSeq + static_cast<uint32_t>((kSlots + 1) * kPayloadLen));
+    ASSERT_NE(overflow_mbuf, nullptr);
+    stream->process_burst_(&overflow_mbuf, 1, /*rx_tsc=*/0);
+
+    // End-to-end assertion: the full error-handling path fired exactly once.
+    EXPECT_EQ(stream->state(), eph::net::TcpState::Closed)
+        << "stream did not force Closed on reorder overflow — c90a744 regressed";
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxSessionResets), 1u)
+        << "kRxSessionResets not bumped by real reorder-overflow path";
+    EXPECT_EQ(sess->tcp_stats().reorder_overflows, 1u)
+        << "TcpSession reorder_overflows stat not incremented";
 }
