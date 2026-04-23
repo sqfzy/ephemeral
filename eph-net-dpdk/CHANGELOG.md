@@ -49,6 +49,30 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Keepalive exhaustion → Closed coverage (2026-04-23)
+
+Closes Tier 2 #5 from the `lucky-giggling-kahan` review.
+
+The existing `Keepalive.*` tests (test_tcp_state_machine.cpp) use
+`pool=nullptr` so `send_keepalive_probe_` always fails at mbuf alloc
+and `keepalive_misses_` never advances — the dead-connection branch
+(`state_=Closed` after `keepalive_probes` consecutive misses) was
+explicitly noted as untested: "pool=nullptr isn't the right way to
+test the dead-close transition."
+
+### Tests
+- Added `TcpCloseResetTest.KeepaliveProbeExhaustionTransitionsToClosed`:
+  drives a net_null-backed session through 4+1 ticks, asserts
+  `state → Closed` on the dead-close tick and exactly
+  `keepalive_probes` TX emissions (never +1 from the dead-close
+  branch itself).
+- Added `TcpCloseResetTest.KeepaliveWithSingleProbeExhaustsOnTwoTicks`:
+  pins the `>=` comparison at tick_keepalive:1427 for the boundary
+  `keepalive_probes=1` case.
+
+Both tests reuse the existing `TcpCloseResetTest` fixture (shared
+net_null Platform + mempool), so no additional EAL bring-up cost.
+
 ## [Unreleased] — UDP drop-cause metrics (2026-04-23)
 
 Closes Tier 2 #3 from the `lucky-giggling-kahan` review: `DpdkUdpSocket`
