@@ -342,8 +342,8 @@ struct ConnectionTuple {
 
 /// @brief Parse a dotted-decimal IPv4 address string "a.b.c.d" to host-order uint32_t.
 ///
-/// Validates each octet is in [0, 255] and rejects trailing characters.
-/// Does NOT accept leading zeros, whitespace, or port suffixes.
+/// Validates each octet is in [0, 255] and rejects trailing characters
+/// (anything after the fourth octet) and leading whitespace.
 ///
 /// @param str  Null-terminated IPv4 string (e.g., "10.0.0.1")
 /// @return Host-order uint32_t on success, 0 on invalid input
@@ -351,6 +351,13 @@ struct ConnectionTuple {
 /// @note Returns 0 for both invalid input and the valid address "0.0.0.0".
 ///       Callers that need to distinguish these cases should check the input
 ///       string directly.
+///
+/// @note Leading zeros within an octet (e.g. "010.0.0.1") are tolerated and
+///       parsed as **decimal** — this is NOT an inet_aton-style octal escape.
+///       Historically inet_aton interprets "010" as octal 8; we always use
+///       base-10, which eliminates the classic "0177.0.0.1" loopback-bypass
+///       trick but is otherwise permissive. Callers that need strict
+///       no-leading-zero behaviour must pre-validate.
 [[nodiscard]] inline uint32_t parse_ipv4(const char* str) noexcept {
     if (!str) return 0;
 
