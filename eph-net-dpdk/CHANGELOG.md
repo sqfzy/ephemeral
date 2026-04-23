@@ -1,5 +1,54 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — UDP RX checksum offload validation (2026-04-23)
+
+Closes Tier 1 #1 from the `lucky-giggling-kahan` review: `DpdkUdpSocket`'s
+RX hot path never read `mbuf->ol_flags`, and `Platform::configure_port`
+never requested RX checksum offload in the first place. L2/L3 transmission
+errors (optical bit flips, faulty switches) produced corrupted UDP
+datagrams that silently reached application codecs.
+
+### Fixed
+- `DpdkUdpSocket::process_burst_` now drops mbufs flagged with
+  `RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD`
+  before parse / codec dispatch. The branch is `[[unlikely]]`-marked;
+  when RX offload is off (the default) the NIC never sets BAD and the
+  branch stays out of the I-cache. UNKNOWN / NONE / GOOD are accepted
+  (best-effort — HFT NICs on tunnel / VLAN paths emit UNKNOWN
+  legitimately, and strict-mode drops would kill healthy traffic).
+
+### Added
+- `PlatformConfig::enable_rx_checksum_offload` (default `false`,
+  opt-in). When true, `configure_port()` requests
+  `RTE_ETH_RX_OFFLOAD_IPV4_CKSUM | RTE_ETH_RX_OFFLOAD_UDP_CKSUM` from
+  the NIC, intersected with `dev_info.rx_offload_capa`. If the NIC
+  lacks a flag, WARN-logged once and the supported subset is still
+  requested — never abort (worst-case equivalence with opt-in off).
+- `StreamMetric::kRxBadChecksum` / `net.stream.rx.bad_checksum`:
+  single counter for IP-BAD or L4-BAD drops. Kernel backends and
+  DpdkTcpStream emit 0 (see TD-3 below).
+
+### Notes
+- No software checksum fallback by design. NIC capability is an
+  infrastructure-level decision; a per-packet `rte_ipv4_udptcp_cksum()`
+  call would violate HFT budget.
+- Default path byte-for-byte unchanged (`rxmode.offloads = 0`, no
+  ol_flags read) — existing tests unaffected.
+
+### Related / follow-up (technical debt ledger)
+
+- **TD-1** — `kRxBadChecksum` merges IP + L4. If ops ever need to
+  distinguish L3 vs L4 failures, split into `kRxIpChecksumBad` +
+  `kRxL4ChecksumBad`; the hot-path branch already tests each bit,
+  so the change is purely a counter fan-out.
+- **TD-2** — Strict mode (drop on UNKNOWN / NONE too) not implemented.
+  Trigger: operator explicitly requests strict semantics.
+- **TD-3** — Symmetric gap in `DpdkTcpStream::process_burst_`. TCP's
+  session layer (RFC 5961 RST guard, seqnum windowing) incidentally
+  blocks most bad-checksum packets, but this is accidental coverage,
+  not systematic. Follow-up: an independent `/pax --fix` to wire the
+  same RX offload + metric path through TcpStream.
+
 ## [Unreleased] — RX-side session stall on reorder-buffer overflow (2026-04-23)
 
 ### Fixed

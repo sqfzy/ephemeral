@@ -174,6 +174,30 @@ struct PlatformConfig {
     /// once and the result is cached (see `Platform::dispatch_mode()`).
     /// Default false — single-queue Software mode, fully backwards compatible.
     bool     enable_rss      = false;
+    /// @brief Opt-in: request NIC RX checksum offload for IPv4 and UDP.
+    ///
+    /// When true, `configure_port()` sets
+    /// `RTE_ETH_RX_OFFLOAD_IPV4_CKSUM | RTE_ETH_RX_OFFLOAD_UDP_CKSUM` in
+    /// `rxmode.offloads` (intersected with `dev_info.rx_offload_capa`).
+    /// The NIC then populates `mbuf->ol_flags` with
+    /// `RTE_MBUF_F_RX_{IP,L4}_CKSUM_{GOOD,BAD,UNKNOWN,NONE}` on every RX,
+    /// and `DpdkUdpSocket::process_burst_` drops BAD-flagged packets
+    /// before codec dispatch, incrementing `StreamMetric::kRxBadChecksum`.
+    ///
+    /// Default false — current (pre-fix) behavior is preserved byte-for-byte
+    /// when opt-in is off. If the NIC lacks one or both offload capabilities,
+    /// `configure_port()` emits a WARN and proceeds without requesting the
+    /// unsupported flag (no abort — downstream code still runs, just with
+    /// no BAD detection on that layer).
+    ///
+    /// HFT-design: software fallback is intentionally NOT provided. NIC
+    /// capability is an infrastructure-level decision, not a per-packet
+    /// cost to absorb in the hot path. If the NIC cannot offload, operators
+    /// must either change hardware or accept the default unprotected path.
+    ///
+    /// Symmetric DpdkTcpStream wiring is a follow-up (see eph-net-dpdk
+    /// CHANGELOG TD-3).
+    bool     enable_rx_checksum_offload = false;
     /// @brief Poll timeout for link-up after port start (milliseconds).
     /// 0 = single check, continue regardless of link state.
     int      link_timeout_ms = 2000;
@@ -187,10 +211,12 @@ struct PlatformConfig {
         return std::format(
             "PlatformConfig:\n"
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
-            "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms",
+            "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
+            "  rx_cksum_offload: {}",
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
-            enable_promiscuous ? "true" : "false", link_timeout_ms);
+            enable_promiscuous ? "true" : "false", link_timeout_ms,
+            enable_rx_checksum_offload ? "true" : "false");
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -240,12 +266,14 @@ struct PlatformConfig {
             "\"nb_rx_desc\":{},\"nb_tx_desc\":{},"
             "\"mbuf_pool_size\":{},\"mbuf_cache_size\":{},"
             "\"enable_promiscuous\":{},\"enable_rss\":{},"
+            "\"enable_rx_checksum_offload\":{},"
             "\"link_timeout_ms\":{}}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false",
             enable_rss ? "true" : "false",
+            enable_rx_checksum_offload ? "true" : "false",
             link_timeout_ms);
     }
 };
@@ -591,9 +619,43 @@ struct Platform::Impl {
         rte_eth_conf eth_conf{};
         // No offloads requested — conservative default for minimal setup.
         // Value-initialization above already zero-initializes all fields.
-        // Checksum offload is handled per-packet via PacketTemplate::hw_cksum.
+        // TX checksum offload is handled per-packet via PacketTemplate::hw_cksum.
         eth_conf.rxmode.offloads = 0;
         eth_conf.txmode.offloads = 0;
+
+        // Opt-in: RX checksum offload. When enabled, the NIC computes IPv4
+        // header and L4 (UDP / TCP) checksums and stamps the result into
+        // `mbuf->ol_flags` as RTE_MBUF_F_RX_{IP,L4}_CKSUM_{GOOD,BAD,UNKNOWN}.
+        // DpdkUdpSocket's RX hot path consumes those flags to drop BAD
+        // packets before codec dispatch (see StreamMetric::kRxBadChecksum).
+        // If the NIC lacks either capability, we WARN once and request only
+        // the subset the NIC supports — or neither, if neither is supported.
+        // We never abort: the worst-case outcome is "same as opt-in off".
+        if (config.enable_rx_checksum_offload) {
+            constexpr uint64_t kWantIp =
+                static_cast<uint64_t>(RTE_ETH_RX_OFFLOAD_IPV4_CKSUM);
+            constexpr uint64_t kWantL4 =
+                static_cast<uint64_t>(RTE_ETH_RX_OFFLOAD_UDP_CKSUM);
+            const uint64_t have_ip = dev_info.rx_offload_capa & kWantIp;
+            const uint64_t have_l4 = dev_info.rx_offload_capa & kWantL4;
+            eth_conf.rxmode.offloads |= (have_ip | have_l4);
+
+            if (!have_ip || !have_l4) {
+                SPDLOG_LOGGER_WARN(log,
+                    "port={} enable_rx_checksum_offload=true but NIC lacks"
+                    " capability: ipv4={} udp={} (rx_offload_capa={:#x}) -"
+                    " proceeding without the missing flag(s); bad-cksum"
+                    " packets on unsupported layers will not be detected",
+                    config.port_id,
+                    have_ip ? "ok" : "MISSING",
+                    have_l4 ? "ok" : "MISSING",
+                    dev_info.rx_offload_capa);
+            } else {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "port={} RX checksum offload enabled (IPv4 + UDP)",
+                    config.port_id);
+            }
+        }
 
         // RSS multi-queue mode. Must be set BEFORE rte_eth_dev_configure;
         // rss_hash_update later cannot upgrade single-queue → multi-queue.

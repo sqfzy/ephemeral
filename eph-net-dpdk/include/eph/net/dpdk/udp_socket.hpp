@@ -3,6 +3,14 @@
 /// @file udp_socket.hpp
 /// DPDK UDP datagram socket satisfying `eph::net::Datagram`.
 ///
+/// RX checksum validation: gated by PlatformConfig::enable_rx_checksum_offload.
+/// When the port is configured with NIC RX checksum offload, mbufs carry
+/// `RTE_MBUF_F_RX_{IP,L4}_CKSUM_{GOOD,BAD,UNKNOWN,NONE}` flags. `process_burst_`
+/// drops BAD-flagged packets before parse / codec dispatch, counting them
+/// in `StreamMetric::kRxBadChecksum`. UNKNOWN / NONE / GOOD are accepted
+/// (best-effort — some PMDs emit UNKNOWN on tunnel / VLAN paths even when
+/// offload is active). No software fallback by design (HFT budget).
+///
 /// Architecture:
 ///
 ///     user code
@@ -481,7 +489,25 @@ public:
             for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
             return;
         }
+        // Hot-path RX checksum drop. When PlatformConfig::enable_rx_checksum_offload
+        // is off the NIC never marks packets BAD, so the branch is always
+        // predicted not-taken and `[[unlikely]]` keeps the taken path out of
+        // the I-cache loop body. Drop is counted in kRxBadChecksum. IP + L4
+        // BAD bits are merged into a single counter — run-time disambiguation
+        // would cost a second branch; split into two counters only if ops need
+        // the distinction (see review TD-1).
+        constexpr uint64_t kRxCksumBadMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD) |
+            static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_BAD);
         for (uint16_t i = 0; i < n; ++i) {
+            if ((mbufs[i]->ol_flags & kRxCksumBadMask) != 0) [[unlikely]] {
+                inc_<::eph::net::StreamMetric::kRxBadChecksum>();
+                SPDLOG_LOGGER_TRACE(detail::udp_socket_logger(),
+                    "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}",
+                    static_cast<uint64_t>(mbufs[i]->ol_flags));
+                rte_pktmbuf_free(mbufs[i]);
+                continue;
+            }
             auto parsed = ::eph::dpdk::net::parse_udp_packet(mbufs[i]);
             // Accept zero-length payloads per RFC 768 — only reject
             // truly unparseable packets (no UDP header).
