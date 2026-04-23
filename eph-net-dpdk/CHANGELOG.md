@@ -49,6 +49,39 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — RX hot-path parser microbench baseline (2026-04-23)
+
+Closes Tier 2 #7 from the `lucky-giggling-kahan` review. Phase 9 added
+several defense-in-depth checks to `packet_parse.hpp` (multi-segment
+reject, fragment reject, UDP length cross-check, IHL/total_length
+validation) without measuring the per-packet cost of each addition.
+This bench captures the current baseline so future changes can be
+diff'd against a pinned reference.
+
+### Added
+- `eph-net-dpdk/benchmarks/bench_rx_hot_path.cpp` — Google Benchmark
+  microbench for the RX parse path. Covers parse_ip_header,
+  parse_udp_packet, parse_udp_from_ip, parse_tcp_from_ip, parse_icmp,
+  and is_ip_fragment (both fragment and non-fragment paths).
+- `.artifacts/bench-rx-hot-path-20260423.txt` — baseline capture with
+  reproduction context (commit hash, host / toolchain / build flags /
+  command) per bench skeleton §3.
+
+### Baseline (Graviton aarch64, 2 GHz, gcc14 -O3, release)
+| Target | Cost |
+|---|---|
+| `is_ip_fragment` (both paths) | 0.496 ns/packet |
+| `parse_udp_from_ip` (layered) | 1.07 ns/packet |
+| `parse_ip_header` | 1.25 ns/packet |
+| `parse_tcp_from_ip` | 1.43 ns/packet |
+| `parse_udp_packet` (one-shot) | 2.43 ns/packet |
+| `parse_icmp` (Type 3 Code 4) | 7.29 ns/packet |
+
+All stable (CPU-time == wall-time, no noise). Regression threshold
+per bench skeleton: < 5% ignore, 5–15% explain, ≥ 15% rollback or
+justify. Claims of "significant" speedup must go through
+`/pax --experiment` (not part of this review round).
+
 ## [Unreleased] — ICMP + UDP fuzz harnesses (2026-04-23)
 
 Closes Tier 2 #6 from the `lucky-giggling-kahan` review. Extends the

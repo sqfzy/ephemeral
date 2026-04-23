@@ -1,0 +1,64 @@
+# RX hot-path parser microbench — baseline capture (Tier 2 #7, lucky-giggling-kahan review)
+#
+# Commit:       37d7bddaac5915c21627a02517c2e1e00fa6040b
+# Timestamp:    2026-04-23
+# Host:         AWS EC2 Graviton (aarch64, 16 cores @ 2 GHz, 36 MiB L3)
+# Build:        xmake -m release (gcc14-g++, -O3)
+# Toolchain:    gcc14-g++ (GCC 14)
+# Google Benchmark: default config (no manual iteration pin)
+#
+# Reproduction:
+#   xmake f --cxx=/usr/bin/gcc14-g++ --ld=/usr/bin/gcc14-g++ \
+#           --sh=/usr/bin/gcc14-g++ -m release
+#   xmake build bench_rx_hot_path
+#   xmake run bench_rx_hot_path --benchmark_format=console
+#
+# Targets:
+#   parse_ip_header          — 1.25 ns/packet (payload-independent)
+#   parse_udp_packet         — 2.43 ns/packet (one-shot L2+L3+L4)
+#   parse_udp_from_ip        — 1.07 ns/packet (layered; IP pre-parsed)
+#   parse_tcp_from_ip        — 1.43 ns/packet (reference)
+#   parse_icmp               — 7.29 ns/packet (Type 3 Code 4 + embedded)
+#   is_ip_fragment           — 0.496 ns/packet (both fragment / non-fragment)
+#
+# Regression threshold (non-statistical, per bench skeleton §5):
+#   < 5% ignore, 5–15% explain, ≥ 15% rollback or justify.
+#   For statistical claims ("significantly faster / slower") use /pax --experiment.
+#
+# ────────────────────────────────────────────────────────────────────────
+
+2026-04-23T04:45:41+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_rx_hot_path
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.26, 0.37, 0.56
+--------------------------------------------------------------------------------------
+Benchmark                            Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------
+BM_ParseIpHeader/64               1.25 ns         1.25 ns    559313101 bytes_per_second=78.9015Gi/s
+BM_ParseIpHeader/128              1.25 ns         1.25 ns    559493842 bytes_per_second=126.527Gi/s
+BM_ParseIpHeader/256              1.25 ns         1.25 ns    559487429 bytes_per_second=221.812Gi/s
+BM_ParseIpHeader/512              1.25 ns         1.25 ns    559486758 bytes_per_second=412.345Gi/s
+BM_ParseIpHeader/1024             1.25 ns         1.25 ns    559352677 bytes_per_second=793.407Gi/s
+BM_ParseUdpPacket/64              2.43 ns         2.43 ns    287824152 bytes_per_second=40.6148Gi/s
+BM_ParseUdpPacket/128             2.43 ns         2.43 ns    288166783 bytes_per_second=65.1507Gi/s
+BM_ParseUdpPacket/256             2.43 ns         2.43 ns    287965786 bytes_per_second=114.188Gi/s
+BM_ParseUdpPacket/512             2.43 ns         2.43 ns    288255898 bytes_per_second=212.239Gi/s
+BM_ParseUdpPacket/1024            2.43 ns         2.43 ns    287828327 bytes_per_second=408.338Gi/s
+BM_ParseUdpFromIp/64              1.07 ns         1.07 ns    652363966 bytes_per_second=92.0102Gi/s
+BM_ParseUdpFromIp/128             1.07 ns         1.07 ns    652483137 bytes_per_second=147.565Gi/s
+BM_ParseUdpFromIp/256             1.07 ns         1.07 ns    652297777 bytes_per_second=258.611Gi/s
+BM_ParseUdpFromIp/512             1.07 ns         1.07 ns    652270419 bytes_per_second=480.768Gi/s
+BM_ParseUdpFromIp/1024            1.07 ns         1.07 ns    652365893 bytes_per_second=925.191Gi/s
+BM_ParseTcpFromIp/64              1.43 ns         1.43 ns    489560185 bytes_per_second=76.8601Gi/s
+BM_ParseTcpFromIp/128             1.43 ns         1.43 ns    489574223 bytes_per_second=118.547Gi/s
+BM_ParseTcpFromIp/256             1.43 ns         1.43 ns    489573470 bytes_per_second=201.921Gi/s
+BM_ParseTcpFromIp/512             1.43 ns         1.43 ns    489529633 bytes_per_second=368.668Gi/s
+BM_ParseTcpFromIp/1024            1.43 ns         1.43 ns    489578709 bytes_per_second=702.163Gi/s
+BM_ParseIcmp                      7.29 ns         7.29 ns     96067490 bytes_per_second=8.94588Gi/s
+BM_IsIpFragment_NonFragment      0.496 ns        0.496 ns   1412429783 bytes_per_second=198.932Gi/s
+BM_IsIpFragment_Fragment         0.496 ns        0.496 ns   1410844900 bytes_per_second=199.209Gi/s
