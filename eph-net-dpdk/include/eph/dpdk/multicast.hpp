@@ -68,8 +68,10 @@ using net::kUdpHeaderLen;
 /// Minimum Ethernet + IPv4 + UDP header length for a valid multicast packet.
 inline constexpr uint16_t kMinUdpPacketLen = net::kUdpAllHeadersLen;
 
-// ParsedUdpPacket and parse_udp_packet moved to net_header.hpp.
-// Aliases preserved for backward compatibility.
+// ParsedUdpPacket and parse_udp_packet live in packet_parse.hpp (brought
+// in transitively via net_header.hpp's umbrella). Aliases preserved for
+// backward compatibility with pre-refactor `eph::dpdk::ParsedUdpPacket`
+// call sites.
 using net::ParsedUdpPacket;
 using net::parse_udp_packet;
 
