@@ -1161,16 +1161,39 @@ public:
     ///        Feeds the mbuf(s) into the TCP session, then drains the
     ///        reassembly buffer through the codec.
     ///
-    /// @note TD-3 (lucky-giggling-kahan review): UDP side now drops
-    /// mbufs with RTE_MBUF_F_RX_{IP,L4}_CKSUM_BAD before parse (see
-    /// DpdkUdpSocket::process_burst_ + StreamMetric::kRxBadChecksum).
-    /// TCP-side parity is deferred: TcpSession's RFC 5961 RST guard +
-    /// seqnum windowing incidentally block most bad-cksum packets, but
-    /// this is accidental coverage, not systematic. Follow-up: an
-    /// independent /pax --fix wiring ol_flags check here, with the same
-    /// PlatformConfig::enable_rx_checksum_offload gating.
+    /// @note TD-3 (lucky-giggling-kahan review) closed below: the
+    /// RX checksum gate at the top of this method mirrors
+    /// DpdkUdpSocket::process_burst_'s UDP-side handling. Gated by
+    /// PlatformConfig::enable_rx_checksum_offload; when opt-in is off
+    /// the NIC never stamps BAD and the gate is a no-op branch.
     void process_burst_(rte_mbuf** mbufs, uint16_t n,
                          uint64_t rx_tsc) noexcept {
+        // Hot-path RX checksum drop — symmetric to DpdkUdpSocket. Runs
+        // BEFORE every other gate (TLS desync, session state, reasm) so
+        // bad-cksum packets never touch TCP session state or AEAD. We
+        // compact survivors in place to preserve the mbufs[]→sess_.process_rx
+        // burst contract (which needs a contiguous array). [[unlikely]]
+        // + default opt-in off keeps the branch out of the steady-state
+        // I-cache.
+        constexpr uint64_t kRxCksumBadMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD) |
+            static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_BAD);
+        uint16_t write = 0;
+        for (uint16_t read = 0; read < n; ++read) {
+            if ((mbufs[read]->ol_flags & kRxCksumBadMask) != 0) [[unlikely]] {
+                inc_<::eph::net::StreamMetric::kRxBadChecksum>();
+                SPDLOG_LOGGER_TRACE(detail::tcp_stream_logger(),
+                    "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}",
+                    static_cast<uint64_t>(mbufs[read]->ol_flags));
+                rte_pktmbuf_free(mbufs[read]);
+                continue;
+            }
+            if (write != read) mbufs[write] = mbufs[read];
+            ++write;
+        }
+        n = write;
+        if (n == 0) return;
+
         // Fail-fast on TLS desync (see send() above). We cannot trust the
         // decrypt path once the peer's seq diverged from ours: even inbound
         // records may arrive OK, but any auto-response (WS pong, close-ack)

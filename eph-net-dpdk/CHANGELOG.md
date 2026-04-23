@@ -49,6 +49,52 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — DpdkTcpStream RX checksum parity (TD-3) (2026-04-23)
+
+Closes TD-3 recorded by the UDP-side fix commit (d22a093) — the
+symmetric RX checksum gate is now wired through DpdkTcpStream,
+bringing TCP to parity with UDP. Same opt-in switch
+(`PlatformConfig::enable_rx_checksum_offload`), same
+`StreamMetric::kRxBadChecksum` counter, same best-effort UNKNOWN
+accept policy.
+
+### Fixed
+- `DpdkTcpStream::process_burst_` now drops mbufs flagged with
+  `RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD` before
+  any other gate (TLS desync, session state, reasm overflow). The
+  drop runs in-place compact form so the survivor mbufs[] remain a
+  contiguous burst for `sess_.process_rx`. `[[unlikely]]` + default
+  opt-in off keeps the steady-state branch out of the I-cache.
+- `Platform::configure_port` now also requests
+  `RTE_ETH_RX_OFFLOAD_TCP_CKSUM` when
+  `enable_rx_checksum_offload=true` (previously only IPv4 + UDP).
+  Capability WARN message reports all three flag bits separately
+  (ipv4 / udp / tcp).
+
+### Tests
+New cases in `test_dpdk_tcp_stream.cpp`
+`DpdkTcpStreamReorderOverflowE2E`:
+- `BadL4CksumIsDroppedBeforeProcessRx` — asserts drop + counter++
+  AND that `sess_.tcp_stats().out_of_order == 0` (pins "runs before
+  process_rx" invariant).
+- `BadIpCksumIsDroppedBeforeProcessRx` — same for IP bit.
+- `BothBadFlagsCountOnce` — dual bad bits → one increment.
+- `GoodAndUnknownFlagsPassThrough` — baseline canary, packets with
+  only GOOD / UNKNOWN flags reach `sess_.process_rx` untouched
+  (verified via `reorder_hits` tick on a forward-gapped seq).
+
+### Notes
+- Default path (opt-in off) is byte-for-byte unchanged; all existing
+  DPDK tests continue to pass without modification.
+- TCP RX cksum drop is accounted in the same `kRxBadChecksum` counter
+  as UDP — kernel backends and UDP-side bumps keep their zero /
+  current semantics respectively.
+
+### Technical debt ledger after this fix
+- **TD-3**: closed by this commit.
+- **TD-1** / **TD-2** / **TD-4** / **TD-5**: unchanged (see prior
+  CHANGELOG entries).
+
 ## [Unreleased] — Documentation sweep (2026-04-23)
 
 Closes Tier 3 #8 / #9 / #10 from the `lucky-giggling-kahan` review.
