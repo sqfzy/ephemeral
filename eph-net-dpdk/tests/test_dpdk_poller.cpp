@@ -136,10 +136,23 @@ TEST(DpdkPoller, AddNullptrFails) {
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
 
-TEST(DpdkPoller, RemoveNonRegisteredFails) {
+TEST(DpdkPoller, RemoveNonRegisteredReturnsNotFound) {
+    // Previously: return InvalidConfig. Post-CHANGELOG enum-cleanup
+    // (2026-04-23), non-registered remove is a recoverable state
+    // mismatch and returns NotFound — distinct from the nullptr
+    // programming error which still returns InvalidConfig.
     auto p = edpk::DpdkPoller<>::create({}).value();
     SyntheticPollableA pa;
     auto r = p->remove<SyntheticPollableA>(&pa);
+    EXPECT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::NotFound);
+}
+
+TEST(DpdkPoller, RemoveNullptrReturnsInvalidConfig) {
+    // Nullptr is a caller programming error — distinct from NotFound
+    // (valid pointer, just never registered).
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->remove<SyntheticPollableA>(nullptr);
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }

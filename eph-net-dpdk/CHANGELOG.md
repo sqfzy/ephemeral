@@ -49,6 +49,42 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Polish (2026-04-23)
+
+Low-risk cleanup after the TD ledger closeout.
+
+### Changed
+- `DpdkPoller::remove()` returns `Error::NotFound` (was
+  `Error::InvalidConfig`) when the object was never registered or was
+  already removed. Nullptr still returns `Error::InvalidConfig`. The
+  previously-deferred public-enum change (CHANGELOG line ~641) —
+  landed now because no caller inspects the specific error code (all
+  5 call sites use `(void)poller->remove(...)`), so behavioral risk
+  is zero.
+- `eph::core::Error` enum gains `NotFound` (appended at end for ABI
+  stability). `error_name()` returns `"NOT_FOUND"`.
+
+### Added
+- `eph-net-dpdk/scripts/check-rx-hot-path-regression.sh`: wraps the
+  RX hot-path bench (`bench_rx_hot_path`, Tier 2 #7 baseline at
+  `.artifacts/bench-rx-hot-path-20260423.txt`) and compares each
+  bench against baseline with a configurable threshold (default 5%).
+  Exit code 1 on any regression; suitable for pre-PR gate or
+  local-dev canary. Production-hygiene: idempotent, no host kernel
+  mutation, dry-run-safe.
+
+### Docs
+- `docs/observability-guide.md` metric table extended from 6 → 21
+  entries (the 6 originally listed + 15 added by this review round).
+  Documents the TD-1 aggregate/split invariant and TD-2 strict mode
+  flag matrix.
+
+### Tests
+- `DpdkPoller.RemoveNonRegisteredReturnsNotFound` (renamed from
+  `RemoveNonRegisteredFails`) — asserts the new enum.
+- `DpdkPoller.RemoveNullptrReturnsInvalidConfig` — pins the distinct
+  "programming error" path that keeps `InvalidConfig`.
+
 ## [Unreleased] — Precise NONE-vs-BAD cksum test (TD-6) (2026-04-23)
 
 Closes TD-6 (flagged in the TD-2 CHANGELOG note) — the non-strict

@@ -122,10 +122,38 @@ Defined in `eph/net/stream_metrics.hpp` as `enum class StreamMetric`:
 | `kReasmOverflows` | TCP reasm capacity exceeded → reset | TCP only (UDP = 0) |
 | `kCodecErrors` | `codec.decode()` returned `Err` | all 4 backends |
 | `kTlsCrossRecordFrames` | WS frame spanned a TLS record boundary | DPDK + TLS only |
+| `kTlsSendDesyncs` | TLS partial-send AEAD nonce desync (latched) | DPDK + TLS only |
+| `kTcpResetsReceived` | peer-initiated RST | DPDK TCP only |
+| `kTcpOutOfOrderSegments` | RX forward-gap (buffered OR duplicate detected) | DPDK TCP only |
+| `kTcpReorderBufferHits` | OoO segment successfully buffered + drained | DPDK TCP only |
+| `kTcpReorderBufferOverflows` | reorder buf full → session reset | DPDK TCP only |
+| `kTcpKeepaliveProbesSent` | keepalive probes emitted by `tick_keepalive` | DPDK TCP only |
+| `kTcpMssNegotiationApplied` | SYN-ACK MSS option clamped `effective_mss` | DPDK TCP only |
+| `kIcmpFragNeededReceived` | ICMP Type 3 Code 4 acted on | DPDK TCP only |
+| `kRxSessionResets` | stream-layer proactive RX reset (reorder overflow / process_rx Disconnected) | DPDK TCP only |
+| `kRxBadChecksum` | **aggregate** of the two split counters below; read-on-demand sum (TD-1) | DPDK UDP + TCP |
+| `kRxIpChecksumBad` | NIC flagged IPv4 header cksum BAD (gated by `PlatformConfig::enable_rx_checksum_offload`) | DPDK UDP + TCP |
+| `kRxL4ChecksumBad` | NIC flagged UDP/TCP cksum BAD (same gate) | DPDK UDP + TCP |
+| `kPacketsDropped` | catch-all RX drop (parse fail / 4-tuple mismatch / connect filter) | DPDK UDP + TCP |
+| `kFragmentRejected` | IPv4 fragment detected via `is_ip_fragment` peek | DPDK UDP + TCP |
+| `kTcpDupSegments` | duplicate / past-window data segments | DPDK TCP only |
+
+**Cross-backend invariant** (by construction, not by test):
+`kRxBadChecksum == kRxIpChecksumBad + kRxL4ChecksumBad`. The aggregate
+is computed on-demand inside `metric()`; no third atomic stores it.
+
+**Strict RX checksum mode** (TD-2, gated by
+`PlatformConfig::enable_strict_rx_checksum`): widens the drop
+condition from "BAD bit set" to "CKSUM_MASK != CKSUM_GOOD" — UNKNOWN
+and NONE are dropped too. A strict-mode UNKNOWN packet bumps both
+`kRxIpChecksumBad` and `kRxL4ChecksumBad` (aggregate reads 2). See
+`docs/dpdk-udp-design.md` for the full flag matrix.
 
 OpenTelemetry-style hierarchical names (`net.stream.bytes_sent`,
-`net.stream.tls.cross_record_frames`, etc.) are defined in the
-`kStreamMetricNames` constexpr array.
+`net.stream.tls.cross_record_frames`, `net.stream.rx.ip_checksum_bad`,
+etc.) are defined in the `kStreamMetricNames` constexpr array. The
+compile-time `static_assert` in `stream_metrics.hpp` guarantees enum
+position and name position stay aligned — any drift is a build error.
 
 N/A entries (e.g. `kReasmOverflows` on UDP) stay at 0 — the publish path
 emits all entries unconditionally, and Prometheus `rate()` handles a

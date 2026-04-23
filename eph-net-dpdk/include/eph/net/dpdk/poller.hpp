@@ -274,7 +274,9 @@ public:
         return {};
     }
 
-    /// @brief Unregister `obj`. Returns `InvalidConfig` if not registered.
+    /// @brief Unregister `obj`. Returns `InvalidConfig` if `obj` is nullptr
+    /// (caller programming error); returns `NotFound` if `obj` was never
+    /// registered or was already removed (recoverable state mismatch).
     template <DpdkPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
         [[maybe_unused]] auto* log = detail::poller_logger();
@@ -299,7 +301,7 @@ public:
             return {};
         }
         return std::unexpected(core::ErrorInfo{
-            core::Error::InvalidConfig,
+            core::Error::NotFound,
             "DpdkPoller::remove: not registered"});
     }
 

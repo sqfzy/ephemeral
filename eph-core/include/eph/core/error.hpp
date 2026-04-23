@@ -74,6 +74,15 @@ enum class Error : uint8_t {
     ProxyConnectFailed,   ///< TCP connect to the proxy server itself failed
     ProxyHandshakeFailed, ///< proxy returned a non-200 / malformed response
     ProxyAuthRequired,    ///< proxy returned 407 — missing/wrong Basic auth
+
+    // ── Registry / lookup lifecycle ───────────────────────────────────────
+    //
+    // Distinct from `InvalidConfig` (caller programming error, e.g. nullptr
+    // / out-of-range) — `NotFound` signals a recoverable state mismatch
+    // between caller and callee (e.g. unregistering something that was
+    // never registered, looking up a key that expired). Callers may ignore
+    // NotFound where InvalidConfig should halt.
+    NotFound,             ///< registered item / lookup key does not exist
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +156,7 @@ struct ErrorInfo {
         case Error::ProxyConnectFailed:  return "PROXY_CONNECT_FAILED";
         case Error::ProxyHandshakeFailed:return "PROXY_HANDSHAKE_FAILED";
         case Error::ProxyAuthRequired:   return "PROXY_AUTH_REQUIRED";
+        case Error::NotFound:            return "NOT_FOUND";
     }
     return "UNKNOWN";
 }
