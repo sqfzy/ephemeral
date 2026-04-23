@@ -1,6 +1,62 @@
 # eph-net-dpdk changelog
 
-## [Unreleased] — UDP RX checksum offload validation (2026-04-23)
+## [v0.1.0] — First formal release (2026-04-23)
+
+First version-tagged snapshot of `eph-net-dpdk`. Consolidates all
+prior `[Unreleased]` accumulations (2026-04-10 through 2026-04-23)
+into a single tagged release. No repo history predates `v0.1.0` in
+a released form — every sub-section below was already merged to
+`main` but had not yet been attached to a SemVer tag.
+
+### Included work (by theme, newest first — detailed per-section entries follow)
+
+- **`lucky-giggling-kahan` review closeout (2026-04-23)** — 9/11 Tier 1-3
+  items + 5 TD closures (TD-1 split IP/L4 cksum counter, TD-2 strict
+  mode, TD-3 TCP RX cksum wire-up, TD-5 TCP drop-cause metrics, TD-6
+  precise NONE-vs-BAD mask). See
+  `.artifacts/decision-20260423-045825.md` and
+  `.artifacts/decision-20260423-061527.md` for the full decision chain.
+- **Tier 1/2 feature adds (2026-04-23)** — UDP RX cksum validation,
+  reorder-overflow e2e regression, UDP drop-cause metrics,
+  keepalive-exhaustion e2e, ICMP + UDP libFuzzer harnesses, RX
+  hot-path microbench baseline.
+- **Tier 3 docs sweep (2026-04-23)** — `docs/dpdk-tcp-implementation.md`,
+  `docs/dpdk-udp-design.md`, `README.md` thread-model diagram.
+- **Polish (2026-04-23)** — `DpdkPoller::remove` enum cleanup,
+  observability-guide metric table expansion, perf regression guard
+  script.
+- **Production-hardening sweeps (2026-04-22, two rounds, 30+ commits)**
+  — TLS partial-send desync latch, mbuf-lifecycle hardening,
+  keepalive reset precision, etc.
+- **RSS / 5-tuple routing (2026-04-16)** — DpdkPoller protocol-aware
+  5-tuple dispatch; src_port allocator.
+- **Design-doc cleanups (2026-04-14)** — removed dead
+  `StreamConfig::reconnect` field.
+- **Phase 9 recovery (2026-04-10)** — WS handshake fields on DPDK
+  StreamConfig; DPDK-side HTTP CONNECT proxy rejection.
+
+### Test / bench state at tag
+
+- All 36 DPDK test targets + 3 kernel / metrics = 39/39 targets green
+- 934 total test cases
+- RX hot-path parser microbench baseline archived at
+  `.artifacts/bench-rx-hot-path-20260423.txt`; regression guard
+  (`eph-net-dpdk/scripts/check-rx-hot-path-regression.sh`) reports
+  0/23 regressions at the tag commit.
+
+### Known unclosed TD
+
+- **TD-4**: NIC_B wire-level reorder via `tc qdisc netem` — environment-
+  gated (needs host kernel mutation + physical NIC on non-shared host).
+- **Review Tier 2 #4**: multicast live-NIC integration test — environment-
+  gated (EC2 ENA multicast + VPC subnet filtering).
+- **Review Tier 3 #11**: TLS record-by-record encrypt API surgery —
+  signal-gated (current latch + reconnect semantic has no production
+  trigger observed).
+
+---
+
+## [v0.1.0] — UDP RX checksum offload validation (2026-04-23)
 
 Closes Tier 1 #1 from the `lucky-giggling-kahan` review: `DpdkUdpSocket`'s
 RX hot path never read `mbuf->ol_flags`, and `Platform::configure_port`
@@ -49,7 +105,7 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
-## [Unreleased] — Polish (2026-04-23)
+## [v0.1.0] — Polish (2026-04-23)
 
 Low-risk cleanup after the TD ledger closeout.
 
@@ -85,7 +141,7 @@ Low-risk cleanup after the TD ledger closeout.
 - `DpdkPoller.RemoveNullptrReturnsInvalidConfig` — pins the distinct
   "programming error" path that keeps `InvalidConfig`.
 
-## [Unreleased] — Precise NONE-vs-BAD cksum test (TD-6) (2026-04-23)
+## [v0.1.0] — Precise NONE-vs-BAD cksum test (TD-6) (2026-04-23)
 
 Closes TD-6 (flagged in the TD-2 CHANGELOG note) — the non-strict
 hot-path drop test was `(olf & BAD_bit) != 0`, which also matched
@@ -124,7 +180,7 @@ New cases:
 - **TD-6**: closed.
 - **TD-4** (tc-netem wire-level reorder): unchanged.
 
-## [Unreleased] — Strict RX checksum mode (TD-2) (2026-04-23)
+## [v0.1.0] — Strict RX checksum mode (TD-2) (2026-04-23)
 
 Closes TD-2 from the `lucky-giggling-kahan` review. Opt-in flag widens
 the RX checksum drop condition from "BAD bit set" to "CKSUM_MASK !=
@@ -180,7 +236,7 @@ All existing cksum tests (default strict=false path) unchanged.
 - **TD-4** (tc-netem wire-level reorder): unchanged.
 - **TD-6** (new): non-strict NONE-vs-BAD mask precision. See "Notes".
 
-## [Unreleased] — Split RX checksum counter (TD-1) (2026-04-23)
+## [v0.1.0] — Split RX checksum counter (TD-1) (2026-04-23)
 
 Closes TD-1 from the `lucky-giggling-kahan` review. The single
 `kRxBadChecksum` counter is replaced by two disjoint sub-counters
@@ -238,7 +294,7 @@ read-on-demand sum for backward compatibility.
 - **TD-2** (strict UNKNOWN drop mode) / **TD-4** (tc-netem wire-level
   reorder): unchanged.
 
-## [Unreleased] — DpdkTcpStream drop-cause metrics (TD-5) (2026-04-23)
+## [v0.1.0] — DpdkTcpStream drop-cause metrics (TD-5) (2026-04-23)
 
 Closes TD-5 from the `lucky-giggling-kahan` review. TCP RX side now
 attributes rejected packets to three disjoint counters, symmetric to
@@ -297,7 +353,7 @@ New cases in `test_dpdk_tcp_stream.cpp` `DpdkTcpStreamReorderOverflowE2E`:
 - **TD-5**: closed.
 - **TD-1** / **TD-2** / **TD-4**: unchanged.
 
-## [Unreleased] — DpdkTcpStream RX checksum parity (TD-3) (2026-04-23)
+## [v0.1.0] — DpdkTcpStream RX checksum parity (TD-3) (2026-04-23)
 
 Closes TD-3 recorded by the UDP-side fix commit (d22a093) — the
 symmetric RX checksum gate is now wired through DpdkTcpStream,
@@ -343,7 +399,7 @@ New cases in `test_dpdk_tcp_stream.cpp`
 - **TD-1** / **TD-2** / **TD-4** / **TD-5**: unchanged (see prior
   CHANGELOG entries).
 
-## [Unreleased] — Documentation sweep (2026-04-23)
+## [v0.1.0] — Documentation sweep (2026-04-23)
 
 Closes Tier 3 #8 / #9 / #10 from the `lucky-giggling-kahan` review.
 
@@ -377,7 +433,7 @@ Closes Tier 3 #8 / #9 / #10 from the `lucky-giggling-kahan` review.
   from the current `tcp.hpp` / `tcp_stream.hpp` / `platform.hpp` /
   `icmp_registry.hpp` / `udp_socket.hpp` source of truth.
 
-## [Unreleased] — RX hot-path parser microbench baseline (2026-04-23)
+## [v0.1.0] — RX hot-path parser microbench baseline (2026-04-23)
 
 Closes Tier 2 #7 from the `lucky-giggling-kahan` review. Phase 9 added
 several defense-in-depth checks to `packet_parse.hpp` (multi-segment
@@ -410,7 +466,7 @@ per bench skeleton: < 5% ignore, 5–15% explain, ≥ 15% rollback or
 justify. Claims of "significant" speedup must go through
 `/pax --experiment` (not part of this review round).
 
-## [Unreleased] — ICMP + UDP fuzz harnesses (2026-04-23)
+## [v0.1.0] — ICMP + UDP fuzz harnesses (2026-04-23)
 
 Closes Tier 2 #6 from the `lucky-giggling-kahan` review. Extends the
 libFuzzer infrastructure from 2 harnesses (DNS + ARP) to 4 by adding
@@ -437,7 +493,7 @@ recipes.
 Both remain intentionally outside the xmake graph (GCC 14 has no
 libFuzzer); run with Clang ≥ 17 per the README workflow.
 
-## [Unreleased] — Keepalive exhaustion → Closed coverage (2026-04-23)
+## [v0.1.0] — Keepalive exhaustion → Closed coverage (2026-04-23)
 
 Closes Tier 2 #5 from the `lucky-giggling-kahan` review.
 
@@ -461,7 +517,7 @@ test the dead-close transition."
 Both tests reuse the existing `TcpCloseResetTest` fixture (shared
 net_null Platform + mempool), so no additional EAL bring-up cost.
 
-## [Unreleased] — UDP drop-cause metrics (2026-04-23)
+## [v0.1.0] — UDP drop-cause metrics (2026-04-23)
 
 Closes Tier 2 #3 from the `lucky-giggling-kahan` review: `DpdkUdpSocket`
 previously exposed only 4 RX-side metrics (kBytesRecv / kFramesDecoded /
@@ -501,7 +557,7 @@ fragments, or when codecs got packets from non-configured peers.
   5961 RST guard, seqnum windowing), so the wire-up pattern differs
   from UDP. An independent `/pax --feat` when operators request it.
 
-## [Unreleased] — Reorder-overflow integration regression (2026-04-23)
+## [v0.1.0] — Reorder-overflow integration regression (2026-04-23)
 
 Closes Tier 1 #2 from the `lucky-giggling-kahan` review: c90a744's
 CHANGELOG explicitly deferred behavioral verification of the overflow
@@ -528,7 +584,7 @@ which drives the real `TcpSession::process_rx` overflow branch (not the
   this round. Add if a tc-netem test harness is justified for other
   scenarios.
 
-## [Unreleased] — RX-side session stall on reorder-buffer overflow (2026-04-23)
+## [v0.1.0] — RX-side session stall on reorder-buffer overflow (2026-04-23)
 
 ### Fixed
 - `DpdkTcpStream::process_burst_` and `DpdkTcpStream::poll_once_` now
@@ -559,7 +615,7 @@ which drives the real `TcpSession::process_rx` overflow branch (not the
   reorder cannot silently drift the counter's string, but behavioral
   verification of the reset call itself is deferred to integration.
 
-## [Unreleased] — Production-hardening sweep (round 2, 2026-04-22)
+## [v0.1.0] — Production-hardening sweep (round 2, 2026-04-22)
 
 A second `/pax --loop --auto` pass (2 subagent batches × 15 rounds,
 16 commits total) surfaced genuine latent bugs the first sweep
@@ -677,7 +733,7 @@ unchanged; behavior tightenings only.
   current `Error::InvalidConfig` — public enum change, deferred
   to a batched enum-rename pass if/when other callsites accumulate.
 
-## [Unreleased] — Production-hardening sweep (2026-04-22)
+## [v0.1.0] — Production-hardening sweep (2026-04-22)
 
 A /pax --loop --auto review pass over the non-RSS surface produced
 10+ small commits tightening correctness, observability, and test
@@ -752,7 +808,7 @@ impact; `test_dpdk_poller`, `test_dpdk_udp_socket`,
   empty, runt, header-only, count overflow, pointer loop, bad label
   length) to accelerate libFuzzer coverage discovery.
 
-## [Unreleased] — 5-tuple routing + client source port selection (2026-04-16)
+## [v0.1.0] — 5-tuple routing + client source port selection (2026-04-16)
 
 ### Changed
 - **DpdkPoller routing key upgraded from 4-tuple to 5-tuple** (IP protocol
@@ -803,7 +859,7 @@ impact; `test_dpdk_poller`, `test_dpdk_udp_socket`,
   Flow-director preregistration deployments that hand-pick a fixed
   source port are completely unaffected.
 
-## [Unreleased] — Drop dead reconnect field (2026-04-14)
+## [v0.1.0] — Drop dead reconnect field (2026-04-14)
 
 ### Changed — BREAKING
 - Removed `StreamConfig::reconnect` (`ReconnectPolicyConfig`) and the
@@ -820,7 +876,7 @@ impact; `test_dpdk_poller`, `test_dpdk_udp_socket`,
   reconnect loop has exactly the same shape, only the stream type
   changes).
 
-## [Unreleased] — Phase 9 Recovery (2026-04-10)
+## [v0.1.0] — Phase 9 Recovery (2026-04-10)
 
 ### Added
 - `StreamConfig` mirrors the new `eph-net-kernel` fields so that the
