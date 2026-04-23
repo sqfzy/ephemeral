@@ -111,7 +111,7 @@ public:
     create(UdpConfig cfg) noexcept {
         auto* log = detail::udp_socket_logger();
         SPDLOG_LOGGER_DEBUG(log,
-            "DpdkUdpSocket::create: src={}:{} dst={}:{}",
+            "DpdkUdpSocket::create: src=0x{:08x}:{} dst=0x{:08x}:{}",
             cfg.legacy.src_ip, cfg.legacy.src_port,
             cfg.legacy.dst_ip, cfg.legacy.dst_port);
 
@@ -138,7 +138,7 @@ public:
         auto sock = std::unique_ptr<DpdkUdpSocket>(
             new DpdkUdpSocket(std::move(cfg), std::move(*sender_r)));
         SPDLOG_LOGGER_INFO(log,
-            "DpdkUdpSocket::create: ready, peer={}:{}",
+            "DpdkUdpSocket::create: ready, peer=0x{:08x}:{}",
             sock->cfg_.legacy.dst_ip, sock->cfg_.legacy.dst_port);
         return sock;
     }
@@ -188,12 +188,18 @@ public:
                     /*dst_ip=*/cfg.legacy.src_ip,
                     /*dst_port=*/cfg.legacy.src_port);
                 if (!sp) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "create_and_attach: find_src_port_for_queue({}) failed: {}",
+                        want, sp.error());
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
                         "create_and_attach: find_src_port_for_queue exhausted"});
                 }
                 cfg.legacy.src_port = *sp;
                 target_qid = want;
+                SPDLOG_LOGGER_INFO(log,
+                    "create_and_attach: RSS pin → src_port={} hashes to queue={}",
+                    *sp, want);
             } else {
                 auto qr = ::eph::net::dpdk::predict_rss_queue(
                     platform.port_id(),
@@ -202,11 +208,16 @@ public:
                     /*dst_ip=*/cfg.legacy.src_ip,
                     /*dst_port=*/cfg.legacy.src_port);
                 if (!qr) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "create_and_attach: predict_rss_queue failed: {}",
+                        qr.error());
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
                         "create_and_attach: predict_rss_queue failed"});
                 }
                 target_qid = *qr;
+                SPDLOG_LOGGER_INFO(log,
+                    "create_and_attach: RSS auto → queue={}", target_qid);
             }
         } else {  // FlowDirector
             if (cfg.pin_to_queue && *cfg.pin_to_queue >= nb_q) {
@@ -683,10 +694,13 @@ private:
     /// `create_and_attach` in FlowDirector mode. See the matching field
     /// on `DpdkTcpStream` for the lifecycle contract.
     std::optional<::eph::net::dpdk::FlowRule> flow_rule_{};
-    /// Per-socket multicast MAC list (max 8 groups, matches the legacy
-    /// kMaxMulticastGroups). Pushed to the NIC via
-    /// `rte_eth_dev_set_mc_addr_list` on join / leave.
-    std::array<rte_ether_addr, 8>          mcast_macs_{};
+    /// Per-socket multicast MAC list. Capped at
+    /// `::eph::dpdk::kMaxMulticastGroups` (defined in multicast.hpp) so both
+    /// the legacy MulticastReceiver and this socket agree on the per-feed
+    /// subscription ceiling — raising one without the other would silently
+    /// diverge. Pushed to the NIC via `rte_eth_dev_set_mc_addr_list` on
+    /// join / leave.
+    std::array<rte_ether_addr, ::eph::dpdk::kMaxMulticastGroups> mcast_macs_{};
     std::size_t                            mcast_count_{0};
     /// connect_to() bookkeeping — when set, packets from non-matching
     /// peers are filtered by the Poller's tuple dispatch.
