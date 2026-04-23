@@ -90,9 +90,15 @@ and the encrypt/decrypt steps vanish via `if constexpr`. No runtime cost.
 
 ### Adding a new flow-steering rule
 
-Edit `include/eph/dpdk/flow_steering.hpp`. The `FlowSteeringTable` owns a set
-of `rte_flow` rules keyed by 5-tuple; the `DpdkPoller::add()` path inserts
-into it. Unit tests are in `tests/legacy/test_flow_steering.cpp`.
+The flow-steering surface lives in `include/eph/net/dpdk/flow_steering.hpp`.
+`install_flow_rule(port_id, queue_id, tuple, FlowProtocol)` returns a
+move-only RAII `FlowRule` whose destructor calls `rte_flow_destroy`.
+`DpdkTcpStream::create_and_attach` / `DpdkUdpSocket::create_and_attach`
+install the rule when the Platform's `dispatch_mode()` is `FlowDirector`
+and move the resulting `FlowRule` into the stream/socket's `flow_rule_`
+member so teardown is automatic. Poller::add() does NOT touch flow rules —
+the stream owns the rule's lifetime. Unit tests are in
+`tests/test_flow_steering.cpp`.
 
 ### Debugging TLS handshake failures
 
