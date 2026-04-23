@@ -198,6 +198,31 @@ struct PlatformConfig {
     /// Symmetric DpdkTcpStream wiring is a follow-up (see eph-net-dpdk
     /// CHANGELOG TD-3).
     bool     enable_rx_checksum_offload = false;
+    /// @brief Opt-in: strict RX checksum semantic (TD-2 of the
+    /// lucky-giggling-kahan review). Only takes effect when
+    /// `enable_rx_checksum_offload == true`.
+    ///
+    /// When false (default, "best-effort"): DpdkUdpSocket /
+    /// DpdkTcpStream drop only mbufs the NIC flagged as BAD. UNKNOWN
+    /// (no info) / GOOD (validated) / NONE (NIC could not verify) all
+    /// pass through. This matches the current production behavior and
+    /// is appropriate for HFT NICs that legitimately emit UNKNOWN on
+    /// tunnel / VLAN paths.
+    ///
+    /// When true ("strict"): drop any mbuf whose IP or L4 checksum is
+    /// NOT explicitly GOOD. The drop condition switches from "BAD bit
+    /// is set" to "CKSUM_MASK != CKSUM_GOOD". Safe for environments
+    /// where every RX packet should be NIC-verified end-to-end and any
+    /// unverifiable packet is a config / security concern. Drop counts
+    /// still aggregate into the existing split counters
+    /// `kRxIpChecksumBad` / `kRxL4ChecksumBad` — the strict mode just
+    /// widens the drop condition, not the counter set.
+    ///
+    /// If this flag is true but `enable_rx_checksum_offload` is false,
+    /// `Platform::create()` emits a WARN and the flag has no effect
+    /// (strict mode without NIC offload is meaningless — every packet
+    /// would report UNKNOWN and be dropped).
+    bool     enable_strict_rx_checksum = false;
     /// @brief Poll timeout for link-up after port start (milliseconds).
     /// 0 = single check, continue regardless of link state.
     int      link_timeout_ms = 2000;
@@ -212,11 +237,12 @@ struct PlatformConfig {
             "PlatformConfig:\n"
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
             "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
-            "  rx_cksum_offload: {}",
+            "  rx_cksum_offload: {}, strict_rx_cksum: {}",
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false", link_timeout_ms,
-            enable_rx_checksum_offload ? "true" : "false");
+            enable_rx_checksum_offload ? "true" : "false",
+            enable_strict_rx_checksum  ? "true" : "false");
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -251,6 +277,12 @@ struct PlatformConfig {
                 "enable_rss=true but nb_rx_queues={} -- RSS needs >=2 queues, "
                 "the flag will be silently ignored (single-queue Software mode)",
                 nb_rx_queues));
+        if (enable_strict_rx_checksum && !enable_rx_checksum_offload)
+            w.emplace_back(
+                "enable_strict_rx_checksum=true but enable_rx_checksum_offload"
+                "=false -- strict mode has no effect without NIC offload; the"
+                " flag will be silently ignored (all packets would be UNKNOWN"
+                " and strict would drop them all)");
         // Zero link timeout means no wait for link-up
         if (link_timeout_ms == 0)
             w.emplace_back("link_timeout_ms=0 -- will not wait for NIC "
@@ -267,6 +299,7 @@ struct PlatformConfig {
             "\"mbuf_pool_size\":{},\"mbuf_cache_size\":{},"
             "\"enable_promiscuous\":{},\"enable_rss\":{},"
             "\"enable_rx_checksum_offload\":{},"
+            "\"enable_strict_rx_checksum\":{},"
             "\"link_timeout_ms\":{}}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
@@ -274,6 +307,7 @@ struct PlatformConfig {
             enable_promiscuous ? "true" : "false",
             enable_rss ? "true" : "false",
             enable_rx_checksum_offload ? "true" : "false",
+            enable_strict_rx_checksum  ? "true" : "false",
             link_timeout_ms);
     }
 };
@@ -404,6 +438,13 @@ public:
     [[nodiscard]] bool         is_running()       const noexcept;
     /// Returns true if promiscuous mode was requested AND successfully enabled.
     [[nodiscard]] bool         is_promiscuous()   const noexcept;
+
+    /// @brief Effective strict-RX-checksum mode (TD-2). Returns true
+    /// iff BOTH `enable_strict_rx_checksum` AND `enable_rx_checksum_offload`
+    /// are configured on this Platform — strict without offload is
+    /// meaningless and the getter masks it out so callers (stream /
+    /// socket attach) never need to check both flags.
+    [[nodiscard]] bool         strict_rx_checksum() const noexcept;
 
     /// @brief Collect current NIC packet statistics via rte_eth_stats_get.
     /// @return Stats snapshot, or zeroed stats on error or moved-from state.
@@ -1027,6 +1068,12 @@ inline rte_mempool* Platform::mempool()          const noexcept { return impl_ ?
 inline uint16_t     Platform::port_id()          const noexcept { return impl_ ? impl_->config.port_id       : 0; }
 inline bool         Platform::is_running()       const noexcept { return impl_ && impl_->port_started; }
 inline bool         Platform::is_promiscuous()   const noexcept { return impl_ && impl_->promiscuous_active; }
+inline bool         Platform::strict_rx_checksum() const noexcept {
+    // Gated by offload: strict is only meaningful when the NIC is actually
+    // producing per-mbuf cksum flags (see PlatformConfig doc).
+    return impl_ && impl_->config.enable_strict_rx_checksum
+                 && impl_->config.enable_rx_checksum_offload;
+}
 
 inline ::eph::net::dpdk::RxDispatchMode
 Platform::dispatch_mode() const noexcept {

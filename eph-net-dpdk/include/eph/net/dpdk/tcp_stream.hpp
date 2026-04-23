@@ -696,6 +696,11 @@ public:
         if (!sr) return std::unexpected(sr.error());
         auto stream = std::move(*sr);
 
+        // TD-2: propagate effective strict mode from Platform. Only set
+        // here (not in plain create()) because create() has no Platform
+        // reference; unattached streams stay in non-strict best-effort.
+        stream->set_strict_rx_checksum_(platform.strict_rx_checksum());
+
         // Resolve queue id from the final post-connect 5-tuple if we deferred.
         if (defer_queue_selection) {
             const auto& t = stream->cfg_.legacy.tuple;
@@ -1136,6 +1141,11 @@ public:
     ///        built. Establishes back-pointer so destructor can auto-detach.
     void notify_attached_(DpdkPoller<void>* p) noexcept { attached_to_ = p; }
 
+    /// @brief TD-2 injection hook. `create_and_attach` copies the
+    /// effective Platform strict flag into the stream so the hot path
+    /// can branch on a cheap stack-local `bool`. Not for user code.
+    void set_strict_rx_checksum_(bool v) noexcept { strict_rx_cksum_ = v; }
+
     /// @brief Invoked by `DpdkPoller::remove` and `~DpdkPoller`.
     void notify_detached_() noexcept { attached_to_ = nullptr; }
 
@@ -1188,30 +1198,43 @@ public:
         // BEFORE every other gate (TLS desync, session state, reasm) so
         // bad-cksum packets never touch TCP session state or AEAD. We
         // compact survivors in place to preserve the mbufs[]→sess_.process_rx
-        // burst contract (which needs a contiguous array). [[unlikely]]
-        // + default opt-in off keeps the branch out of the steady-state
-        // I-cache. Drop attribution is split per layer (TD-1):
-        // kRxIpChecksumBad vs kRxL4ChecksumBad. The aggregate
-        // kRxBadChecksum is exposed via metric() as the sum.
-        constexpr uint64_t kRxIpCksumBadMask =
+        // burst contract. Two modes controlled by `strict_rx_cksum_`
+        // (set from Platform::strict_rx_checksum() at create_and_attach —
+        // see TD-2):
+        //   false (default, best-effort):
+        //     drop iff (olf & IP_CKSUM_BAD) | (olf & L4_CKSUM_BAD) set.
+        //   true (strict):
+        //     drop iff (olf & *_CKSUM_MASK) != *_CKSUM_GOOD per layer.
+        // Drop attribution split per layer (TD-1). Aggregate
+        // kRxBadChecksum computed lazily as ip_bad + l4_bad.
+        constexpr uint64_t kRxIpCksumBad  =
             static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD);
-        constexpr uint64_t kRxL4CksumBadMask =
+        constexpr uint64_t kRxL4CksumBad  =
             static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_BAD);
-        constexpr uint64_t kRxCksumBadMask =
-            kRxIpCksumBadMask | kRxL4CksumBadMask;
+        constexpr uint64_t kRxIpCksumMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_MASK);
+        constexpr uint64_t kRxL4CksumMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_MASK);
+        constexpr uint64_t kRxIpCksumGood =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_GOOD);
+        constexpr uint64_t kRxL4CksumGood =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_GOOD);
+        const bool strict = strict_rx_cksum_;  // stack-local for codegen
         uint16_t write = 0;
         for (uint16_t read = 0; read < n; ++read) {
             const uint64_t olf = mbufs[read]->ol_flags;
-            if ((olf & kRxCksumBadMask) != 0) [[unlikely]] {
-                if (olf & kRxIpCksumBadMask) {
-                    inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
-                }
-                if (olf & kRxL4CksumBadMask) {
-                    inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
-                }
+            const bool ip_bad = strict
+                ? ((olf & kRxIpCksumMask) != kRxIpCksumGood)
+                : ((olf & kRxIpCksumBad)  != 0);
+            const bool l4_bad = strict
+                ? ((olf & kRxL4CksumMask) != kRxL4CksumGood)
+                : ((olf & kRxL4CksumBad)  != 0);
+            if (ip_bad || l4_bad) [[unlikely]] {
+                if (ip_bad) inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
+                if (l4_bad) inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
                 SPDLOG_LOGGER_TRACE(detail::tcp_stream_logger(),
-                    "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}",
-                    olf);
+                    "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}"
+                    " (strict={})", olf, strict);
                 rte_pktmbuf_free(mbufs[read]);
                 continue;
             }
@@ -1631,6 +1654,10 @@ private:
     ///        tripped, the stream short-circuits all further RX dispatch;
     ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
+    /// @brief TD-2 strict RX checksum mode. Off by default.
+    /// `create_and_attach` sets it from `Platform::strict_rx_checksum()`;
+    /// plain `create()` leaves it at the safe best-effort default.
+    bool                                    strict_rx_cksum_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
     /// @brief RAII handle for the rte_flow rule installed by
     /// `create_and_attach` in FlowDirector mode (engaged only on NICs

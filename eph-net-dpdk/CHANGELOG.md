@@ -49,6 +49,62 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Strict RX checksum mode (TD-2) (2026-04-23)
+
+Closes TD-2 from the `lucky-giggling-kahan` review. Opt-in flag widens
+the RX checksum drop condition from "BAD bit set" to "CKSUM_MASK !=
+CKSUM_GOOD", so UNKNOWN / NONE packets are also dropped. Default
+off — current best-effort semantic preserved byte-for-byte.
+
+### Added
+- `PlatformConfig::enable_strict_rx_checksum` (default false). Gated
+  by `enable_rx_checksum_offload` — strict without offload has no
+  effect and emits a warning (every packet would be UNKNOWN, and
+  strict would drop them all → a stream that never delivers).
+- `Platform::strict_rx_checksum()` getter returns the effective flag
+  (logical AND of strict + offload flags), so callers don't need to
+  inspect both.
+- `DpdkUdpSocket::set_strict_rx_checksum_(bool)` and
+  `DpdkTcpStream::set_strict_rx_checksum_(bool)` — test-facing
+  injection hooks. `create_and_attach` calls the setter from
+  `platform.strict_rx_checksum()` during attach.
+
+### Changed
+- `DpdkUdpSocket::process_burst_` + `DpdkTcpStream::process_burst_`
+  hot-path cksum gate now branches on a stack-local `const bool strict`:
+    strict == false (default): `(olf & BAD_bit) != 0` per layer (unchanged).
+    strict == true: `(olf & CKSUM_MASK) != CKSUM_GOOD` per layer.
+  Drop attribution still routes into split counters kRxIpChecksumBad /
+  kRxL4ChecksumBad (TD-1). Strict-mode UNKNOWN packets bump BOTH
+  counters (UNKNOWN is !=GOOD for both layers); aggregate
+  kRxBadChecksum reads the sum.
+
+### Tests
+New cases:
+- `DpdkUdpSocketChecksum.StrictModeDropsUnknown` / `StrictModeAcceptsGood`.
+- `DpdkTcpStreamReorderOverflowE2E.StrictModeDropsUnknown`
+  / `StrictModeAcceptsGood` — the latter uses a forward-gapped seq to
+  confirm the accept path reaches `sess_.process_rx` (`out_of_order++`).
+
+All existing cksum tests (default strict=false path) unchanged.
+39/39 target regression green.
+
+### Notes
+- Known footgun (noted in enum docs, NOT fixed by this TD): under
+  non-strict mode, the current `(olf & BAD_bit) != 0` test also
+  matches `*_CKSUM_NONE` (which is encoded as `BAD_bit | GOOD_bit` in
+  DPDK). So non-strict mode also drops NONE, attributing it to the
+  BAD counter. For UDP zero-checksum datagrams (RFC 768 legal) this
+  can be a false-positive. A precise fix would use `(olf & MASK) ==
+  BAD_value` comparison — recorded as TD-6 for a future cleanup;
+  production impact is nil on HFT colo paths where UDP always
+  carries a non-zero checksum.
+
+### Technical debt ledger after this fix
+- **TD-2**: closed.
+- **TD-4** (tc-netem wire-level reorder): unchanged.
+- **TD-6** (new): non-strict NONE-vs-BAD mask precision. See "Notes".
+
 ## [Unreleased] — Split RX checksum counter (TD-1) (2026-04-23)
 
 Closes TD-1 from the `lucky-giggling-kahan` review. The single

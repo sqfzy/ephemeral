@@ -373,6 +373,51 @@ TEST_F(DpdkUdpSocketChecksum, AcceptsOnGoodFlags) {
     EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
 }
 
+// ───────────────────────────────────────────────────────────────────
+// TD-2: strict mode widens the drop condition from "BAD bit set" to
+// "CKSUM_MASK != CKSUM_GOOD". UNKNOWN / NONE are dropped too.
+// set_strict_rx_checksum_(true) is the direct injection path that
+// create_and_attach uses when Platform::strict_rx_checksum() is true.
+// ───────────────────────────────────────────────────────────────────
+
+TEST_F(DpdkUdpSocketChecksum, StrictModeDropsUnknown) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    sock->set_strict_rx_checksum_(true);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    // UNKNOWN (ol_flags==0) — best-effort would accept; strict must drop.
+    rte_mbuf* m = make_mbuf(/*ol_flags=*/0);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0) << "strict mode must drop UNKNOWN";
+    // UNKNOWN is !=GOOD for both IP and L4, so both sub-counters bump.
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 2u);
+}
+
+TEST_F(DpdkUdpSocketChecksum, StrictModeAcceptsGood) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    sock->set_strict_rx_checksum_(true);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1) << "strict mode must still pass GOOD";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
 TEST_F(DpdkUdpSocketChecksum, AcceptsOnUnknownFlagsBestEffort) {
     auto sock = make_socket();
     ASSERT_NE(sock, nullptr);

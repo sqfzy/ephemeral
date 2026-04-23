@@ -534,6 +534,59 @@ TEST_F(DpdkTcpStreamReorderOverflowE2E, GoodAndUnknownFlagsPassThrough) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// TD-2 (lucky-giggling-kahan review): strict RX checksum mode. Widens
+// drop condition from "BAD bit set" to "CKSUM_MASK != CKSUM_GOOD".
+// UNKNOWN / NONE also drop. set_strict_rx_checksum_(true) is the
+// injection path that create_and_attach uses when Platform::
+// strict_rx_checksum() is true. Default (strict=false) behavior is
+// already asserted by the existing BadL4CksumIsDroppedBeforeProcessRx
+// / GoodAndUnknownFlagsPassThrough tests — those must NOT regress.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, StrictModeDropsUnknown) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    stream->set_strict_rx_checksum_(true);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    // UNKNOWN (ol_flags=0) — best-effort would accept; strict drops before
+    // reaching process_rx. Both sub-counters bump because UNKNOWN is
+    // !=GOOD for both layers.
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = 0;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 2u);
+    EXPECT_EQ(sess->tcp_stats().out_of_order, 0u)
+        << "strict drop must run before process_rx";
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, StrictModeAcceptsGood) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    stream->set_strict_rx_checksum_(true);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    // GOOD packet reaches process_rx; seq 0x0001'0040 is forward-gapped,
+    // so out_of_order ticks — the drop gate didn't interfere.
+    EXPECT_EQ(sess->tcp_stats().out_of_order, 1u)
+        << "strict mode must still let GOOD packets reach the session";
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // TD-5 (lucky-giggling-kahan review): DpdkTcpStream drop-cause metrics
 // (symmetric to UDP-side Tier 2 #3). Three new attribution paths exposed
 // via the TcpSession::Stats pull in DpdkTcpStream::metric():

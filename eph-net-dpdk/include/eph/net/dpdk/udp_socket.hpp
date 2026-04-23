@@ -143,6 +143,11 @@ public:
         return sock;
     }
 
+    /// @brief TD-2 injection hook. `create_and_attach` copies the
+    /// effective Platform strict flag into the socket so the hot path
+    /// can branch on a cheap stack-local `bool`. Not for user code.
+    void set_strict_rx_checksum_(bool v) noexcept { strict_rx_cksum_ = v; }
+
     /// @brief Turnkey factory: create a UDP socket and attach it to the
     /// per-queue Poller already registered with `platform`. Mirrors
     /// `DpdkTcpStream::create_and_attach`. UDP has no connect handshake,
@@ -221,6 +226,11 @@ public:
         auto sr = create(std::move(cfg));
         if (!sr) return std::unexpected(sr.error());
         auto sock = std::move(*sr);
+
+        // TD-2: propagate effective strict mode from Platform. Only set
+        // here (not in plain create()) because create() has no Platform
+        // reference; unattached sockets stay in non-strict best-effort.
+        sock->set_strict_rx_checksum_(platform.strict_rx_checksum());
 
         // Attach BEFORE installing the flow rule (see tcp_stream.hpp's
         // create_and_attach for the race-window rationale).
@@ -489,32 +499,52 @@ public:
             for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
             return;
         }
-        // Hot-path RX checksum drop. When PlatformConfig::enable_rx_checksum_offload
-        // is off the NIC never marks packets BAD, so the outer branch is
-        // always predicted not-taken and `[[unlikely]]` keeps the taken path
-        // out of the I-cache loop body. Once TAKEN (rare), we do two cheap
-        // masked tests to attribute the drop to kRxIpChecksumBad /
-        // kRxL4ChecksumBad separately (TD-1). The aggregate kRxBadChecksum
-        // counter is exposed via metric() as the sum of the two sub-counters
-        // so existing dashboards continue to work unchanged.
-        constexpr uint64_t kRxIpCksumBadMask =
+        // Hot-path RX checksum drop. Two modes, controlled by
+        // `strict_rx_cksum_` (set from Platform::strict_rx_checksum() at
+        // create_and_attach time — see TD-2):
+        //   strict_rx_cksum_ == false (default, best-effort):
+        //     drop iff (olf & IP_CKSUM_BAD) | (olf & L4_CKSUM_BAD) set.
+        //     UNKNOWN / GOOD / NONE all accepted.
+        //   strict_rx_cksum_ == true:
+        //     drop iff (olf & IP_CKSUM_MASK) != IP_CKSUM_GOOD
+        //           || (olf & L4_CKSUM_MASK) != L4_CKSUM_GOOD.
+        //     Only explicitly GOOD packets admitted.
+        // In both modes the branch is `[[unlikely]]` because opt-in off
+        // keeps BAD/NONE bits clear anyway, and even with opt-in on a
+        // healthy colo link reports GOOD > 99.99%.
+        //
+        // Drop attribution (TD-1): split into kRxIpChecksumBad /
+        // kRxL4ChecksumBad by which layer is the problem. Invariant:
+        //   kRxBadChecksum == kRxIpChecksumBad + kRxL4ChecksumBad
+        // holds in both modes because metric(kRxBadChecksum) reads the
+        // sum lazily and we never increment the aggregate directly.
+        constexpr uint64_t kRxIpCksumBad  =
             static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD);
-        constexpr uint64_t kRxL4CksumBadMask =
+        constexpr uint64_t kRxL4CksumBad  =
             static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_BAD);
-        constexpr uint64_t kRxCksumBadMask =
-            kRxIpCksumBadMask | kRxL4CksumBadMask;
+        constexpr uint64_t kRxIpCksumMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_MASK);
+        constexpr uint64_t kRxL4CksumMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_MASK);
+        constexpr uint64_t kRxIpCksumGood =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_GOOD);
+        constexpr uint64_t kRxL4CksumGood =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_GOOD);
+        const bool strict = strict_rx_cksum_;  // stack-local for codegen
         for (uint16_t i = 0; i < n; ++i) {
             const uint64_t olf = mbufs[i]->ol_flags;
-            if ((olf & kRxCksumBadMask) != 0) [[unlikely]] {
-                if (olf & kRxIpCksumBadMask) {
-                    inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
-                }
-                if (olf & kRxL4CksumBadMask) {
-                    inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
-                }
+            const bool ip_bad = strict
+                ? ((olf & kRxIpCksumMask) != kRxIpCksumGood)
+                : ((olf & kRxIpCksumBad)  != 0);
+            const bool l4_bad = strict
+                ? ((olf & kRxL4CksumMask) != kRxL4CksumGood)
+                : ((olf & kRxL4CksumBad)  != 0);
+            if (ip_bad || l4_bad) [[unlikely]] {
+                if (ip_bad) inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
+                if (l4_bad) inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
                 SPDLOG_LOGGER_TRACE(detail::udp_socket_logger(),
-                    "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}",
-                    olf);
+                    "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}"
+                    " (strict={})", olf, strict);
                 rte_pktmbuf_free(mbufs[i]);
                 continue;
             }
@@ -655,6 +685,10 @@ private:
     /// peers are filtered by the Poller's tuple dispatch.
     SocketAddr                             connected_peer_{};
     bool                                   connected_{false};
+    /// TD-2 strict RX checksum mode. Off by default. `create_and_attach`
+    /// injects the effective `Platform::strict_rx_checksum()` value;
+    /// plain `create()` leaves it at the safe best-effort default.
+    bool                                   strict_rx_cksum_{false};
 
     // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
     //
