@@ -52,10 +52,18 @@ namespace en = eph::net::dpdk;
 namespace ec = eph::codec;
 
 int main(int argc, char** argv) {
-    en::Eal eal{argc, argv};         // RAII EAL init
+    // `Eal::init` returns a move-only RAII guard that runs rte_eal_cleanup
+    // on scope exit. There is no bare `Eal(argc, argv)` ctor — the factory
+    // is the only public entry so the `std::expected` error contract is
+    // honoured (EAL init can legitimately fail: missing hugepages, bad
+    // --vdev, etc.).
+    auto eal = en::Eal::init(argc, argv).value();
 
+    // `PollerConfig` has two fields: `port_id` and `rx_queue_id`. lcore
+    // affinity is the caller's responsibility (DpdkPoller does not spawn
+    // a thread of its own — you call `poll()` from your own lcore loop).
     auto poller = en::DpdkPoller<>::create({
-        .port_id = 0, .queue_id = 0, .lcore = 4,
+        .port_id = 0, .rx_queue_id = 0,
     }).value();
 
     // TLS WebSocket order channel over DPDK TCP
@@ -66,7 +74,7 @@ int main(int argc, char** argv) {
     // MoldUDP64 market data over DPDK UDP multicast
     auto md = en::DpdkUdpSocket<ec::Mold64Codec>::create(md_cfg).value();
     md->on_datagram = handle_itch_message;
-    md->join_multicast(mcast).value();
+    md->join_multicast(mcast_addr).value();
     poller->add(md.get()).value();
 
     while (running) poller->poll();   // lcore burst
