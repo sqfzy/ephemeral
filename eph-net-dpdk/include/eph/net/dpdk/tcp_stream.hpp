@@ -1088,6 +1088,16 @@ public:
             static_cast<std::size_t>(SM::kCount)) {
             return 0;
         }
+        // kRxBadChecksum is the deprecated-in-place aggregate of the two
+        // split counters (TD-1). Compute on-demand so we never maintain
+        // a third atomic for the same event. Invariant holds regardless
+        // of which backend observes the bad mbuf.
+        if (m == SM::kRxBadChecksum) {
+            return counters_[static_cast<std::size_t>(SM::kRxIpChecksumBad)]
+                       .v.load(std::memory_order_relaxed) +
+                   counters_[static_cast<std::size_t>(SM::kRxL4ChecksumBad)]
+                       .v.load(std::memory_order_relaxed);
+        }
         // TCP / ICMP session-level counters live on TcpSession::Stats and
         // are updated in-situ on the hot path; reading them lazily here
         // avoids maintaining a second parallel atomic counter plus the
@@ -1180,17 +1190,28 @@ public:
         // compact survivors in place to preserve the mbufs[]→sess_.process_rx
         // burst contract (which needs a contiguous array). [[unlikely]]
         // + default opt-in off keeps the branch out of the steady-state
-        // I-cache.
-        constexpr uint64_t kRxCksumBadMask =
-            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD) |
+        // I-cache. Drop attribution is split per layer (TD-1):
+        // kRxIpChecksumBad vs kRxL4ChecksumBad. The aggregate
+        // kRxBadChecksum is exposed via metric() as the sum.
+        constexpr uint64_t kRxIpCksumBadMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD);
+        constexpr uint64_t kRxL4CksumBadMask =
             static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_BAD);
+        constexpr uint64_t kRxCksumBadMask =
+            kRxIpCksumBadMask | kRxL4CksumBadMask;
         uint16_t write = 0;
         for (uint16_t read = 0; read < n; ++read) {
-            if ((mbufs[read]->ol_flags & kRxCksumBadMask) != 0) [[unlikely]] {
-                inc_<::eph::net::StreamMetric::kRxBadChecksum>();
+            const uint64_t olf = mbufs[read]->ol_flags;
+            if ((olf & kRxCksumBadMask) != 0) [[unlikely]] {
+                if (olf & kRxIpCksumBadMask) {
+                    inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
+                }
+                if (olf & kRxL4CksumBadMask) {
+                    inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
+                }
                 SPDLOG_LOGGER_TRACE(detail::tcp_stream_logger(),
                     "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}",
-                    static_cast<uint64_t>(mbufs[read]->ol_flags));
+                    olf);
                 rte_pktmbuf_free(mbufs[read]);
                 continue;
             }

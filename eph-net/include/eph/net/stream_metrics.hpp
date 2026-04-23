@@ -156,19 +156,47 @@ enum class StreamMetric : std::size_t {
     /// `ReorderSlots` capacity.
     kRxSessionResets,
 
-    /// DPDK only: a received packet's L3 (IPv4 header) or L4 (UDP / TCP)
-    /// checksum was flagged BAD by the NIC's RX offload. Gated by
-    /// `PlatformConfig::enable_rx_checksum_offload` — when opt-in is off
-    /// the NIC never marks packets BAD and this counter stays at 0. When
-    /// opt-in is on, non-zero means either a genuine transmission error
-    /// (optical bit flip, faulty switch) or a deliberately crafted packet;
-    /// either way the packet was dropped before reaching the codec. The
-    /// counter combines L3 and L4 BAD flags — split into separate IP /
-    /// L4 counters if operators need to disambiguate. Kernel backends
-    /// emit 0 (the kernel UDP/TCP stack silently drops bad-cksum packets
-    /// before userspace sees them). DpdkTcpStream does not yet wire this
-    /// (symmetric fix is a follow-up, see eph-net-dpdk CHANGELOG TD-3).
+    /// DPDK only: aggregate counter for any RX bad-checksum drop
+    /// (IP header or L4 payload). Kept **after TD-1 split** as the sum
+    /// `kRxIpChecksumBad + kRxL4ChecksumBad`, read lazily via
+    /// `metric(kRxBadChecksum)`. Prefer the split counters below for
+    /// new code — retaining this one only to keep existing dashboards
+    /// and `publish_metrics` emitters working unmodified.
+    ///
+    /// Gated by `PlatformConfig::enable_rx_checksum_offload` — when
+    /// opt-in is off the NIC never marks packets BAD and this counter
+    /// stays at 0. When opt-in is on, non-zero means either a genuine
+    /// transmission error (optical bit flip, faulty switch) or a
+    /// deliberately crafted packet; either way the packet was dropped
+    /// before reaching the codec. Kernel backends emit 0 (the kernel
+    /// UDP/TCP stack silently drops bad-cksum packets before userspace
+    /// sees them).
     kRxBadChecksum,
+
+    /// DPDK only: RX packet flagged `RTE_MBUF_F_RX_IP_CKSUM_BAD` —
+    /// the NIC's IPv4 header checksum verification failed. Typically
+    /// indicates a switch misbehaving mid-flight or a physical-layer
+    /// bit flip in the L2/L3 header region. Operational response:
+    /// check the switch path and optical modules, not the sender.
+    ///
+    /// Disjoint from `kRxL4ChecksumBad` when counting a single mbuf —
+    /// but a single mbuf CAN bump both if both bits are set (rare but
+    /// possible). Always `<= kRxBadChecksum` per invariant
+    /// `kRxBadChecksum == kRxIpChecksumBad + kRxL4ChecksumBad`.
+    /// Kernel backends emit 0.
+    kRxIpChecksumBad,
+
+    /// DPDK only: RX packet flagged `RTE_MBUF_F_RX_L4_CKSUM_BAD` —
+    /// the NIC's UDP or TCP checksum verification failed. Typically
+    /// indicates a bit flip in the payload region or a mid-path NAT
+    /// that rewrote L3 addresses but forgot to fix up the L4 pseudo-
+    /// header. Operational response: check for rogue middleboxes or
+    /// bit-error signals on the upstream link.
+    ///
+    /// Disjoint from `kRxIpChecksumBad` when counting a single mbuf;
+    /// a single mbuf CAN bump both if both bits are set. Kernel
+    /// backends emit 0.
+    kRxL4ChecksumBad,
 
     /// DPDK UDP only: catch-all drop counter for any RX packet rejected
     /// before codec dispatch and NOT attributable to a more specific
@@ -221,6 +249,8 @@ kStreamMetricNames = {
     "net.stream.tcp.dup_segments",
     "net.stream.dpdk.rx_session_resets",
     "net.stream.rx.bad_checksum",
+    "net.stream.rx.ip_checksum_bad",
+    "net.stream.rx.l4_checksum_bad",
     "net.stream.rx.packets_dropped",
     "net.stream.rx.fragment_rejected",
 };

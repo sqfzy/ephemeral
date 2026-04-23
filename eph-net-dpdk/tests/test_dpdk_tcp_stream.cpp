@@ -445,6 +445,9 @@ TEST_F(DpdkTcpStreamReorderOverflowE2E, BadL4CksumIsDroppedBeforeProcessRx) {
     m->ol_flags = RTE_MBUF_F_RX_L4_CKSUM_BAD;
     stream->process_burst_(&m, 1, /*rx_tsc=*/0);
 
+    // TD-1 split: L4 BAD bumps only the L4 sub-counter; aggregate is sum.
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxIpChecksumBad), 0u);
     EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
     // Crucial symmetry: the bad-cksum drop fires BEFORE process_rx, so
     // out-of-order telemetry must stay at zero even though the seq was
@@ -467,12 +470,18 @@ TEST_F(DpdkTcpStreamReorderOverflowE2E, BadIpCksumIsDroppedBeforeProcessRx) {
     m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_BAD;
     stream->process_burst_(&m, 1, /*rx_tsc=*/0);
 
+    // TD-1 split: IP BAD bumps only the IP sub-counter.
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 0u);
     EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
     EXPECT_EQ(sess->tcp_stats().reorder_overflows, 0u);
     EXPECT_EQ(stream->state(), eph::net::TcpState::Established);
 }
 
-TEST_F(DpdkTcpStreamReorderOverflowE2E, BothBadFlagsCountOnce) {
+TEST_F(DpdkTcpStreamReorderOverflowE2E, BothBadFlagsBumpBothSubCounters) {
+    // Post TD-1 semantic: a mbuf with both BAD bits set bumps BOTH split
+    // counters because each represents an independent layer failure. The
+    // aggregate kRxBadChecksum therefore reads as 2.
     auto stream = PlainRawStream::make_default_for_test_();
     ASSERT_NE(stream, nullptr);
     auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
@@ -484,8 +493,10 @@ TEST_F(DpdkTcpStreamReorderOverflowE2E, BothBadFlagsCountOnce) {
     m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD;
     stream->process_burst_(&m, 1, /*rx_tsc=*/0);
 
-    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 1u)
-        << "dual bad bits must increment exactly once per mbuf";
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 2u)
+        << "aggregate reads as ip_bad + l4_bad";
 }
 
 TEST_F(DpdkTcpStreamReorderOverflowE2E, GoodAndUnknownFlagsPassThrough) {

@@ -49,6 +49,64 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — Split RX checksum counter (TD-1) (2026-04-23)
+
+Closes TD-1 from the `lucky-giggling-kahan` review. The single
+`kRxBadChecksum` counter is replaced by two disjoint sub-counters
+exposing L3 vs L4 failure source, with the aggregate preserved as a
+read-on-demand sum for backward compatibility.
+
+### Added
+- `StreamMetric::kRxIpChecksumBad` / `net.stream.rx.ip_checksum_bad`:
+  NIC flagged `RTE_MBUF_F_RX_IP_CKSUM_BAD`. Typically indicates switch
+  misbehavior mid-flight or L2/L3-header bit flip. Ops response:
+  check the switch path and optical modules.
+- `StreamMetric::kRxL4ChecksumBad` / `net.stream.rx.l4_checksum_bad`:
+  NIC flagged `RTE_MBUF_F_RX_L4_CKSUM_BAD`. Typically indicates
+  payload-region bit flip or a mid-path NAT that rewrote L3 addrs
+  without fixing the L4 pseudo-header. Ops response: check for
+  rogue middleboxes / bit-error signals on the upstream link.
+
+### Changed
+- `StreamMetric::kRxBadChecksum`: retained as the deprecated-in-place
+  aggregate, now computed on-demand as `kRxIpChecksumBad +
+  kRxL4ChecksumBad` at read time (via `metric()`). No atomic storage
+  for it; existing publish_metrics / dashboards read the sum unchanged.
+  Invariant holds across backends: the aggregate equals the sum of
+  the two split counters.
+- `DpdkUdpSocket::process_burst_` + `DpdkTcpStream::process_burst_`:
+  hot-path BAD-cksum branch now tests IP and L4 bits separately and
+  increments each matching sub-counter. A single mbuf with both
+  bits set bumps BOTH sub-counters (one independent failure per
+  layer) — this is the intended semantic under the new invariant.
+
+### Tests
+- `DpdkUdpSocketChecksum.DropsOnBothBadFlagsBumpsBothSubCounters`
+  (renamed from `...CountsOnce`) — pins the new "dual-bit →
+  aggregate=2" invariant.
+- `DpdkTcpStreamReorderOverflowE2E.BothBadFlagsBumpBothSubCounters`
+  (renamed from `BothBadFlagsCountOnce`) — TCP-side mirror.
+- Existing single-bit tests (`DropsOnL4ChecksumBad`,
+  `DropsOnIpChecksumBad`, `BadL4CksumIsDroppedBeforeProcessRx`,
+  `BadIpCksumIsDroppedBeforeProcessRx`) extended to assert the
+  sub-counter specificity (only the matching layer bumps).
+
+### Notes
+- Behavior change for callers reading `kRxBadChecksum`: on dual-bit
+  mbufs the value is 2 not 1. This matches the new invariant and is
+  arguably more informative (two layers each reported a failure).
+  Single-bit bumps are unchanged (1 each).
+- Hot path cost: same one `[[unlikely]]` outer branch; inside it
+  two masked tests instead of one. Steady-state (opt-in off or
+  NIC reports GOOD) touches nothing — zero delta.
+- Kernel backends continue to emit 0 for all three (aggregate and
+  both sub-counters).
+
+### Technical debt ledger after this fix
+- **TD-1**: closed.
+- **TD-2** (strict UNKNOWN drop mode) / **TD-4** (tc-netem wire-level
+  reorder): unchanged.
+
 ## [Unreleased] — DpdkTcpStream drop-cause metrics (TD-5) (2026-04-23)
 
 Closes TD-5 from the `lucky-giggling-kahan` review. TCP RX side now

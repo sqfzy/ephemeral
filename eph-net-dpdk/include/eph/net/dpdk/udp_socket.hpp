@@ -490,21 +490,31 @@ public:
             return;
         }
         // Hot-path RX checksum drop. When PlatformConfig::enable_rx_checksum_offload
-        // is off the NIC never marks packets BAD, so the branch is always
-        // predicted not-taken and `[[unlikely]]` keeps the taken path out of
-        // the I-cache loop body. Drop is counted in kRxBadChecksum. IP + L4
-        // BAD bits are merged into a single counter — run-time disambiguation
-        // would cost a second branch; split into two counters only if ops need
-        // the distinction (see review TD-1).
-        constexpr uint64_t kRxCksumBadMask =
-            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD) |
+        // is off the NIC never marks packets BAD, so the outer branch is
+        // always predicted not-taken and `[[unlikely]]` keeps the taken path
+        // out of the I-cache loop body. Once TAKEN (rare), we do two cheap
+        // masked tests to attribute the drop to kRxIpChecksumBad /
+        // kRxL4ChecksumBad separately (TD-1). The aggregate kRxBadChecksum
+        // counter is exposed via metric() as the sum of the two sub-counters
+        // so existing dashboards continue to work unchanged.
+        constexpr uint64_t kRxIpCksumBadMask =
+            static_cast<uint64_t>(RTE_MBUF_F_RX_IP_CKSUM_BAD);
+        constexpr uint64_t kRxL4CksumBadMask =
             static_cast<uint64_t>(RTE_MBUF_F_RX_L4_CKSUM_BAD);
+        constexpr uint64_t kRxCksumBadMask =
+            kRxIpCksumBadMask | kRxL4CksumBadMask;
         for (uint16_t i = 0; i < n; ++i) {
-            if ((mbufs[i]->ol_flags & kRxCksumBadMask) != 0) [[unlikely]] {
-                inc_<::eph::net::StreamMetric::kRxBadChecksum>();
+            const uint64_t olf = mbufs[i]->ol_flags;
+            if ((olf & kRxCksumBadMask) != 0) [[unlikely]] {
+                if (olf & kRxIpCksumBadMask) {
+                    inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
+                }
+                if (olf & kRxL4CksumBadMask) {
+                    inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
+                }
                 SPDLOG_LOGGER_TRACE(detail::udp_socket_logger(),
                     "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}",
-                    static_cast<uint64_t>(mbufs[i]->ol_flags));
+                    olf);
                 rte_pktmbuf_free(mbufs[i]);
                 continue;
             }
@@ -669,6 +679,19 @@ public:
         if (static_cast<std::size_t>(m) >=
             static_cast<std::size_t>(::eph::net::StreamMetric::kCount)) {
             return 0;
+        }
+        // kRxBadChecksum is the deprecated-in-place aggregate of the two
+        // split counters (TD-1). Compute on-demand so we never maintain
+        // a third atomic for the same event. Invariant:
+        //     metric(kRxBadChecksum) == metric(kRxIpChecksumBad)
+        //                             + metric(kRxL4ChecksumBad)
+        if (m == ::eph::net::StreamMetric::kRxBadChecksum) {
+            return counters_[static_cast<std::size_t>(
+                                ::eph::net::StreamMetric::kRxIpChecksumBad)]
+                       .v.load(std::memory_order_relaxed) +
+                   counters_[static_cast<std::size_t>(
+                                ::eph::net::StreamMetric::kRxL4ChecksumBad)]
+                       .v.load(std::memory_order_relaxed);
         }
         return counters_[static_cast<std::size_t>(m)]
             .v.load(std::memory_order_relaxed);

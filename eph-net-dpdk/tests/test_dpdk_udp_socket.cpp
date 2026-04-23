@@ -307,6 +307,10 @@ TEST_F(DpdkUdpSocketChecksum, DropsOnL4ChecksumBad) {
     sock->process_burst_(&m, 1, /*rx_tsc=*/0);
 
     EXPECT_EQ(dg_count, 0) << "L4 bad packet must not reach codec";
+    // TD-1 split: L4 BAD bumps only the L4 sub-counter, not the IP one.
+    // Aggregate kRxBadChecksum reads as the sum.
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxIpChecksumBad), 0u);
     EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
 }
 
@@ -323,10 +327,18 @@ TEST_F(DpdkUdpSocketChecksum, DropsOnIpChecksumBad) {
     sock->process_burst_(&m, 1, /*rx_tsc=*/0);
 
     EXPECT_EQ(dg_count, 0) << "IP bad packet must not reach codec";
+    // TD-1 split: IP BAD bumps only the IP sub-counter.
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 0u);
     EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
 }
 
-TEST_F(DpdkUdpSocketChecksum, DropsOnBothBadFlagsCountsOnce) {
+TEST_F(DpdkUdpSocketChecksum, DropsOnBothBadFlagsBumpsBothSubCounters) {
+    // Post TD-1 semantic: a mbuf with both BAD bits set is a single
+    // drop event but bumps BOTH split counters (IP + L4), because each
+    // represents an independent layer failure. The aggregate
+    // kRxBadChecksum therefore reads as 2, preserving the invariant
+    //   kRxBadChecksum == kRxIpChecksumBad + kRxL4ChecksumBad.
     auto sock = make_socket();
     ASSERT_NE(sock, nullptr);
     int dg_count = 0;
@@ -338,9 +350,11 @@ TEST_F(DpdkUdpSocketChecksum, DropsOnBothBadFlagsCountsOnce) {
     ASSERT_NE(m, nullptr);
     sock->process_burst_(&m, 1, /*rx_tsc=*/0);
 
-    EXPECT_EQ(dg_count, 0);
-    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 1u)
-        << "one mbuf with both bad bits must increment the counter exactly once";
+    EXPECT_EQ(dg_count, 0) << "dual BAD mbuf must not reach codec";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxIpChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxL4ChecksumBad), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 2u)
+        << "aggregate reads as ip_bad + l4_bad";
 }
 
 TEST_F(DpdkUdpSocketChecksum, AcceptsOnGoodFlags) {
