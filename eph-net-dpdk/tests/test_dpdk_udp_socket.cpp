@@ -10,19 +10,23 @@
 /// type system, configuration plumbing, and pre-attach guards.
 
 #include <cstdint>
+#include <cstring>
 
 #include <gtest/gtest.h>
 
+#include <rte_ether.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
 #include "eph/codec/raw_datagram_codec.hpp"
+#include "eph/dpdk/packet_template.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/udp_socket.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/net/stream_metrics.hpp"
 
 namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
@@ -202,6 +206,177 @@ TEST_F(DpdkUdpSocketConnectTo, MismatchAfterMatchDoesNotUnlatch) {
 // accepted at the wrapper boundary and rejected much later by
 // UdpPacketTemplate::fill() as BufferFull — now the wrapper rejects
 // up front with InvalidConfig.
+// ---------------------------------------------------------------------------
+// RX checksum offload validation — regression for Tier 1 #1 of the
+// lucky-giggling-kahan review.
+//
+// Contract (once wired by the fix):
+//   - BAD-flagged packets (RX_IP_CKSUM_BAD or RX_L4_CKSUM_BAD) are dropped
+//     before parse; on_datagram NOT invoked; StreamMetric::kRxBadChecksum
+//     increments exactly once per dropped mbuf.
+//   - GOOD / UNKNOWN / NONE packets are accepted (best-effort policy —
+//     HFT NICs on tunnel / VLAN paths report UNKNOWN legitimately).
+//
+// Until the fix lands, tests 2–4 FAIL (on_datagram still fires on bad
+// packets) — this is the fix-skeleton "failing regression test" contract.
+// ---------------------------------------------------------------------------
+
+class DpdkUdpSocketChecksum : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        pool_ = rte_pktmbuf_pool_create(
+            "test_udp_cksum_pool", /*n=*/256, /*cache=*/16,
+            /*priv_size=*/0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+        ASSERT_NE(pool_, nullptr);
+
+        // Precompute a reusable UDP packet template. Addresses are
+        // arbitrary; the RX path does not filter by peer unless the
+        // user calls connect_to() (which these tests do not).
+        rte_ether_addr src_mac{{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
+        rte_ether_addr dst_mac{{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}};
+        tmpl_.init(src_mac, dst_mac,
+                   /*src_ip=*/0x0A000002,
+                   /*dst_ip=*/0x0A000001,
+                   /*src_port=*/30000,
+                   /*dst_port=*/12345,
+                   /*hw_cksum=*/false);
+    }
+    static void TearDownTestSuite() {
+        if (pool_) { rte_mempool_free(pool_); pool_ = nullptr; }
+    }
+
+    // Build a minimal valid UDP mbuf (Ethernet + IPv4 + UDP + 4-byte
+    // payload) and stamp `ol_flags` post-build so the checksum-drop
+    // branch in process_burst_ sees exactly the flag set under test.
+    rte_mbuf* make_mbuf(uint64_t ol_flags) {
+        const uint8_t payload[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+        rte_mbuf* mbuf = tmpl_.build(pool_, payload, sizeof(payload));
+        EXPECT_NE(mbuf, nullptr);
+        if (mbuf) mbuf->ol_flags = ol_flags;  // overwrite template-set flags
+        return mbuf;
+    }
+
+    // Construct a socket with matching src/dst that the RX packet will
+    // reach. Attachment is unnecessary — process_burst_ is directly
+    // callable and has no attach precondition.
+    std::unique_ptr<RawUdpSocket> make_socket() {
+        edpk::UdpConfig cfg{};
+        cfg.legacy.src_ip   = 0x0A000001;
+        cfg.legacy.dst_ip   = 0x0A000002;
+        cfg.legacy.src_port = 12345;
+        cfg.legacy.dst_port = 30000;
+        cfg.legacy.pool     = pool_;
+        auto r = RawUdpSocket::create(cfg);
+        if (!r) return nullptr;
+        return std::move(*r);
+    }
+
+    static rte_mempool*              pool_;
+    static ::eph::dpdk::net::UdpPacketTemplate tmpl_;
+};
+
+rte_mempool*                              DpdkUdpSocketChecksum::pool_ = nullptr;
+::eph::dpdk::net::UdpPacketTemplate       DpdkUdpSocketChecksum::tmpl_{};
+
+TEST_F(DpdkUdpSocketChecksum, AcceptsOlFlagsZero) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_mbuf(/*ol_flags=*/0);  // CKSUM_NONE — no flags
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1) << "baseline: packet with no ol_flags must be delivered";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
+TEST_F(DpdkUdpSocketChecksum, DropsOnL4ChecksumBad) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_L4_CKSUM_BAD);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0) << "L4 bad packet must not reach codec";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
+}
+
+TEST_F(DpdkUdpSocketChecksum, DropsOnIpChecksumBad) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_BAD);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0) << "IP bad packet must not reach codec";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
+}
+
+TEST_F(DpdkUdpSocketChecksum, DropsOnBothBadFlagsCountsOnce) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 1u)
+        << "one mbuf with both bad bits must increment the counter exactly once";
+}
+
+TEST_F(DpdkUdpSocketChecksum, AcceptsOnGoodFlags) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
+TEST_F(DpdkUdpSocketChecksum, AcceptsOnUnknownFlagsBestEffort) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    // UNKNOWN is the DPDK default; some PMDs emit it on tunnel / VLAN
+    // paths even when offload is enabled. Accept to avoid false kills.
+    rte_mbuf* m = make_mbuf(RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN | RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN);
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
 TEST_F(DpdkUdpSocketConnectTo, SendToRejectsPayloadExceedingFrameCap) {
     auto cfg = make_cfg();
     auto r = RawUdpSocket::create(cfg);
