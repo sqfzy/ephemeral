@@ -512,6 +512,14 @@ public:
             // Accept zero-length payloads per RFC 768 — only reject
             // truly unparseable packets (no UDP header).
             if (!parsed.udp) {
+                // Attribute the drop cause: parse_ip_header rejected
+                // fragments wholesale, so distinguish "fragment" (operational
+                // signal — check DF/MTU) from "other malformed" (catch-all).
+                if (::eph::dpdk::net::is_ip_fragment(mbufs[i])) {
+                    inc_<::eph::net::StreamMetric::kFragmentRejected>();
+                } else {
+                    inc_<::eph::net::StreamMetric::kPacketsDropped>();
+                }
                 rte_pktmbuf_free(mbufs[i]);
                 continue;
             }
@@ -522,10 +530,12 @@ public:
             };
 
             // connect_to() filter — drop packets whose source does not
-            // match the configured peer.
+            // match the configured peer. Attribute to kPacketsDropped —
+            // flow-steering misconfiguration is the usual cause.
             if (connected_) {
                 if (src_addr.ip.to_be32() != connected_peer_.ip.to_be32() ||
                     src_addr.port         != connected_peer_.port) {
+                    inc_<::eph::net::StreamMetric::kPacketsDropped>();
                     rte_pktmbuf_free(mbufs[i]);
                     continue;
                 }

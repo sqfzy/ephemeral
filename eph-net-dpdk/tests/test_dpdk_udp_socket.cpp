@@ -375,6 +375,200 @@ TEST_F(DpdkUdpSocketChecksum, AcceptsOnUnknownFlagsBestEffort) {
 
     EXPECT_EQ(dg_count, 1);
     EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    // GOOD / UNKNOWN must never spuriously increment drop-cause counters.
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kPacketsDropped), 0u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kFragmentRejected), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Drop-cause attribution — Tier 2 #3 of the lucky-giggling-kahan review.
+//
+// kPacketsDropped is the catch-all: non-IPv4 / truncated / bad-parse +
+// connect_to filter mismatch.
+// kFragmentRejected is dedicated: IP fragment (MF=1 or offset!=0).
+// They are DISJOINT from kRxBadChecksum and kCodecErrors; a single RX
+// mbuf must bump at most one.
+// ---------------------------------------------------------------------------
+
+class DpdkUdpSocketDropCause : public ::testing::Test {
+protected:
+    static void SetUpTestSuite() {
+        pool_ = rte_pktmbuf_pool_create(
+            "test_udp_drop_pool", /*n=*/128, /*cache=*/16,
+            /*priv_size=*/0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+        ASSERT_NE(pool_, nullptr);
+
+        // Reusable peer→us UDP template (mirrors DpdkUdpSocketChecksum).
+        rte_ether_addr src_mac{{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
+        rte_ether_addr dst_mac{{0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB}};
+        udp_tmpl_.init(src_mac, dst_mac,
+                       /*src_ip=*/0x0A000002,
+                       /*dst_ip=*/0x0A000001,
+                       /*src_port=*/30000,
+                       /*dst_port=*/12345,
+                       /*hw_cksum=*/false);
+    }
+    static void TearDownTestSuite() {
+        if (pool_) { rte_mempool_free(pool_); pool_ = nullptr; }
+    }
+
+    std::unique_ptr<RawUdpSocket> make_socket() {
+        edpk::UdpConfig cfg{};
+        cfg.legacy.src_ip   = 0x0A000001;
+        cfg.legacy.dst_ip   = 0x0A000002;
+        cfg.legacy.src_port = 12345;
+        cfg.legacy.dst_port = 30000;
+        cfg.legacy.pool     = pool_;
+        auto r = RawUdpSocket::create(cfg);
+        if (!r) return nullptr;
+        return std::move(*r);
+    }
+
+    // Build a well-formed UDP packet (our canonical "happy path" mbuf).
+    rte_mbuf* make_good_udp_mbuf() {
+        const uint8_t payload[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+        return udp_tmpl_.build(pool_, payload, sizeof(payload));
+    }
+
+    // Build an IPv4 fragment: valid headers but with MF=1 + non-zero
+    // fragment_offset, so parse_ip_header rejects it. is_ip_fragment must
+    // detect it and bump kFragmentRejected.
+    rte_mbuf* make_fragment_mbuf() {
+        rte_mbuf* m = make_good_udp_mbuf();
+        if (!m) return nullptr;
+        auto* data = rte_pktmbuf_mtod(m, uint8_t*);
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+            data + ::eph::dpdk::net::kEtherHeaderLen);
+        // MF=1 is enough to trigger the fragment reject path in
+        // parse_ip_header. Use an offset of 1 (= 8 bytes) as well to
+        // exercise the non-first-fragment branch.
+        ip->fragment_offset = ::eph::dpdk::net::hton16(
+            static_cast<uint16_t>(::eph::dpdk::net::kIpMoreFragments | 1));
+        return m;
+    }
+
+    // Build a packet with wrong EtherType (ARP instead of IPv4).
+    // parse_ip_header rejects; is_ip_fragment returns false (ethertype
+    // check fails); the drop must attribute to kPacketsDropped.
+    rte_mbuf* make_wrong_ethertype_mbuf() {
+        rte_mbuf* m = make_good_udp_mbuf();
+        if (!m) return nullptr;
+        auto* data = rte_pktmbuf_mtod(m, uint8_t*);
+        auto* eth = reinterpret_cast<rte_ether_hdr*>(data);
+        eth->ether_type = ::eph::dpdk::net::hton16(0x0806);  // ARP
+        return m;
+    }
+
+    static rte_mempool*                       pool_;
+    static ::eph::dpdk::net::UdpPacketTemplate udp_tmpl_;
+};
+
+rte_mempool*                       DpdkUdpSocketDropCause::pool_ = nullptr;
+::eph::dpdk::net::UdpPacketTemplate DpdkUdpSocketDropCause::udp_tmpl_{};
+
+TEST_F(DpdkUdpSocketDropCause, FragmentBumpsFragmentRejected) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_fragment_mbuf();
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0) << "fragment must not reach codec";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kFragmentRejected), 1u);
+    // Disjoint counters: fragment drop does not bump kPacketsDropped.
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kPacketsDropped), 0u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+}
+
+TEST_F(DpdkUdpSocketDropCause, WrongEthertypeBumpsPacketsDropped) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_wrong_ethertype_mbuf();
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 0);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kPacketsDropped), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kFragmentRejected), 0u);
+}
+
+TEST_F(DpdkUdpSocketDropCause, ConnectFilterMismatchBumpsPacketsDropped) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    // Latch connected_ mode to the configured peer; then feed a packet
+    // whose src matches the template (same configured peer) — this must
+    // still deliver (sanity). We then craft a peer-mismatched packet
+    // below by mutating the template's src_ip in the built mbuf.
+    const eph::net::SocketAddr matching{
+        eph::net::Ipv4Addr::from_be32(0x0A000002), 30000};
+    ASSERT_TRUE(sock->connect_to(matching).has_value());
+
+    rte_mbuf* good = make_good_udp_mbuf();
+    ASSERT_NE(good, nullptr);
+    sock->process_burst_(&good, 1, /*rx_tsc=*/0);
+    ASSERT_EQ(dg_count, 1) << "matching peer must deliver while connected";
+
+    // Now: mutate the IP src to simulate a packet from a DIFFERENT
+    // peer — must drop under connect_to filter, bump kPacketsDropped.
+    rte_mbuf* bad = make_good_udp_mbuf();
+    ASSERT_NE(bad, nullptr);
+    {
+        auto* data = rte_pktmbuf_mtod(bad, uint8_t*);
+        auto* ip = reinterpret_cast<rte_ipv4_hdr*>(
+            data + ::eph::dpdk::net::kEtherHeaderLen);
+        ip->src_addr = ::eph::dpdk::net::hton32(0x0A000003);  // not configured
+    }
+    sock->process_burst_(&bad, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1) << "mismatched peer must NOT deliver";
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kPacketsDropped), 1u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kFragmentRejected), 0u);
+}
+
+TEST_F(DpdkUdpSocketDropCause, HappyPathDoesNotBumpAnyDropCause) {
+    auto sock = make_socket();
+    ASSERT_NE(sock, nullptr);
+    int dg_count = 0;
+    sock->on_datagram = [&](std::span<const uint8_t>, const eph::net::SocketAddr&) {
+        ++dg_count;
+    };
+
+    rte_mbuf* m = make_good_udp_mbuf();
+    ASSERT_NE(m, nullptr);
+    sock->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(dg_count, 1);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kPacketsDropped), 0u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kFragmentRejected), 0u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    EXPECT_EQ(sock->metric(eph::net::StreamMetric::kCodecErrors), 0u);
+}
+
+// Pin enum ↔ name-table entries for the new counters.
+TEST(DpdkUdpSocket, DropCauseMetricNamesWired) {
+    constexpr auto pdi = static_cast<std::size_t>(
+        eph::net::StreamMetric::kPacketsDropped);
+    EXPECT_EQ(eph::net::kStreamMetricNames[pdi],
+              "net.stream.rx.packets_dropped");
+    constexpr auto fri = static_cast<std::size_t>(
+        eph::net::StreamMetric::kFragmentRejected);
+    EXPECT_EQ(eph::net::kStreamMetricNames[fri],
+              "net.stream.rx.fragment_rejected");
 }
 
 TEST_F(DpdkUdpSocketConnectTo, SendToRejectsPayloadExceedingFrameCap) {
