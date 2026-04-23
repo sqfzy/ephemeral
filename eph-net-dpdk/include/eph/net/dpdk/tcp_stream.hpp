@@ -157,9 +157,13 @@ private:
 // on the decoded ciphertext to produce plaintext staging before serving
 // the handshake reader.
 
+/// @tparam Session  Test-seam: defaults to the real `::eph::dpdk::TcpSession<>`;
+///                  unit tests substitute a fake session that scripts
+///                  send / poll_rx outcomes (see tests/fake_ws_session.hpp).
+template <class Session = ::eph::dpdk::TcpSession<>>
 class PlainDpdkWsSink {
 public:
-    explicit PlainDpdkWsSink(::eph::dpdk::TcpSession<>* sess) noexcept
+    explicit PlainDpdkWsSink(Session* sess) noexcept
         : sess_(sess) {}
 
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
@@ -232,14 +236,20 @@ public:
     }
 
 private:
-    ::eph::dpdk::TcpSession<>* sess_{nullptr};
-    std::vector<uint8_t>        staged_{};
-    std::size_t                 staged_off_{0};
+    Session*             sess_{nullptr};
+    std::vector<uint8_t> staged_{};
+    std::size_t          staged_off_{0};
 };
 
+/// @tparam Session  Test-seam, defaults to `::eph::dpdk::TcpSession<>`
+/// @tparam Tls      Test-seam, defaults to the real `TlsState`; fakes supply
+///                  identity encrypt/decrypt so sink behavior can be exercised
+///                  without aws-lc or a real handshake (tests/fake_ws_tls_state.hpp).
+template <class Session = ::eph::dpdk::TcpSession<>,
+          class Tls     = TlsState>
 class TlsDpdkWsSink {
 public:
-    TlsDpdkWsSink(::eph::dpdk::TcpSession<>* sess, TlsState* tls) noexcept
+    TlsDpdkWsSink(Session* sess, Tls* tls) noexcept
         : sess_(sess), tls_(tls) {}
 
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
@@ -331,12 +341,12 @@ public:
     }
 
 private:
-    ::eph::dpdk::TcpSession<>* sess_{nullptr};
-    TlsState*                   tls_{nullptr};
-    std::vector<uint8_t>        tx_scratch_{};
-    std::vector<uint8_t>        cipher_{};
-    std::vector<uint8_t>        plain_{};
-    std::size_t                 plain_off_{0};
+    Session*             sess_{nullptr};
+    Tls*                 tls_{nullptr};
+    std::vector<uint8_t> tx_scratch_{};
+    std::vector<uint8_t> cipher_{};
+    std::vector<uint8_t> plain_{};
+    std::size_t          plain_off_{0};
 };
 
 } // namespace detail
