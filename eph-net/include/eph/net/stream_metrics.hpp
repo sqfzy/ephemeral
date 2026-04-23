@@ -135,6 +135,18 @@ enum class StreamMetric : std::size_t {
     /// MSS was not recorded correctly.
     kIcmpFragNeededReceived,
 
+    /// DPDK TCP only: the stream layer observed an error return from
+    /// `TcpSession::process_rx` / `poll_rx` (reorder-buffer overflow on
+    /// genuine packet loss being the production-observed trigger) and
+    /// proactively put the session into `Closed` so the app's reconnect
+    /// policy can take over. Distinct from `kTcpResetsReceived` (peer-
+    /// initiated RST) and from a plain connection close: this signals
+    /// "RX-side session torn down from THIS side before silent stall".
+    /// Expect ~0 in healthy deployments; a sustained rise indicates
+    /// upstream loss or NIC reordering beyond the configured
+    /// `ReorderSlots` capacity.
+    kRxSessionResets,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -158,6 +170,7 @@ kStreamMetricNames = {
     "net.stream.tcp.keepalive_probes_sent",
     "net.stream.tcp.mss_negotiation_applied",
     "net.stream.icmp.frag_needed_received",
+    "net.stream.dpdk.rx_session_resets",
 };
 
 static_assert(kStreamMetricNames.size() ==

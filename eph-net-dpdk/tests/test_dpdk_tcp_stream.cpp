@@ -23,6 +23,7 @@
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
 #include "eph/net/proxy.hpp"
+#include "eph/net/stream_metrics.hpp"
 
 namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
@@ -241,4 +242,17 @@ TEST(DpdkTcpStream, ReasmCapacityAboveFloorPassesValidation) {
         EXPECT_NE(std::string_view(detail).find("pool"),
                   std::string_view::npos);
     }
+}
+
+// Pin the enum ↔ name-table entry for kRxSessionResets (production
+// bug fix: RX-side session stall on reorder-buffer overflow; the
+// process_burst_ / poll_once_ error branches now force sess_.reset()
+// and bump this counter). Catches silent drift if the enum reorders
+// or the name table falls out of sync; the compile-time static_assert
+// in stream_metrics.hpp covers size parity, this pins the slot.
+TEST(DpdkTcpStream, RxSessionResetsMetricNameWired) {
+    constexpr auto idx =
+        static_cast<std::size_t>(eph::net::StreamMetric::kRxSessionResets);
+    EXPECT_EQ(eph::net::kStreamMetricNames[idx],
+              "net.stream.dpdk.rx_session_resets");
 }

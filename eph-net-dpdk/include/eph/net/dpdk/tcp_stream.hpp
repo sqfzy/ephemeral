@@ -1055,7 +1055,19 @@ public:
         });
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::poll_once_: {}", r.error().detail);
+                "DpdkTcpStream::poll_once_: {} — forcing reset",
+                r.error().detail);
+            // Mirror the reasm-overflow branch above: a Disconnected from
+            // poll_rx (notably reorder-buffer overflow) leaves `state_`
+            // Established with `rcv_nxt_` stuck; without this reset every
+            // subsequent burst re-triggers the overflow silently and the
+            // RX-only app path stalls until an external watchdog catches
+            // it. Reset is idempotent on already-Closed sessions so the
+            // peer-RST path (state_ already Closed in process_rx) just
+            // costs a redundant outbound RST — acceptable for an error
+            // path.
+            inc_<::eph::net::StreamMetric::kRxSessionResets>();
+            sess_.reset();
             return 0;
         }
         if (reasm_overflowed_) return 0;
@@ -1204,7 +1216,15 @@ public:
             });
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
-                "DpdkTcpStream::process_burst_: {}", r.error().detail);
+                "DpdkTcpStream::process_burst_: {} — forcing reset",
+                r.error().detail);
+            // See poll_once_ above for the full rationale. Short version:
+            // process_rx's reorder-overflow branch returns Disconnected
+            // without touching state_, so without this reset the session
+            // stays Established while rcv_nxt_ is stuck and the next
+            // burst just re-triggers the overflow indefinitely.
+            inc_<::eph::net::StreamMetric::kRxSessionResets>();
+            sess_.reset();
             return;
         }
         if (reasm_overflowed_) return;
