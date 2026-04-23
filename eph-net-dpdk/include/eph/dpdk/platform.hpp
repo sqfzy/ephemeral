@@ -624,35 +624,40 @@ struct Platform::Impl {
         eth_conf.txmode.offloads = 0;
 
         // Opt-in: RX checksum offload. When enabled, the NIC computes IPv4
-        // header and L4 (UDP / TCP) checksums and stamps the result into
+        // header + L4 (UDP + TCP) checksums and stamps the result into
         // `mbuf->ol_flags` as RTE_MBUF_F_RX_{IP,L4}_CKSUM_{GOOD,BAD,UNKNOWN}.
-        // DpdkUdpSocket's RX hot path consumes those flags to drop BAD
-        // packets before codec dispatch (see StreamMetric::kRxBadChecksum).
-        // If the NIC lacks either capability, we WARN once and request only
-        // the subset the NIC supports — or neither, if neither is supported.
-        // We never abort: the worst-case outcome is "same as opt-in off".
+        // Both DpdkUdpSocket and DpdkTcpStream's RX hot paths consume those
+        // flags to drop BAD packets before codec dispatch (see
+        // StreamMetric::kRxBadChecksum). If the NIC lacks any of the three
+        // capabilities, we WARN once and request only the subset the NIC
+        // supports. We never abort: the worst-case outcome is "same as
+        // opt-in off".
         if (config.enable_rx_checksum_offload) {
             constexpr uint64_t kWantIp =
                 static_cast<uint64_t>(RTE_ETH_RX_OFFLOAD_IPV4_CKSUM);
-            constexpr uint64_t kWantL4 =
+            constexpr uint64_t kWantUdp =
                 static_cast<uint64_t>(RTE_ETH_RX_OFFLOAD_UDP_CKSUM);
-            const uint64_t have_ip = dev_info.rx_offload_capa & kWantIp;
-            const uint64_t have_l4 = dev_info.rx_offload_capa & kWantL4;
-            eth_conf.rxmode.offloads |= (have_ip | have_l4);
+            constexpr uint64_t kWantTcp =
+                static_cast<uint64_t>(RTE_ETH_RX_OFFLOAD_TCP_CKSUM);
+            const uint64_t have_ip  = dev_info.rx_offload_capa & kWantIp;
+            const uint64_t have_udp = dev_info.rx_offload_capa & kWantUdp;
+            const uint64_t have_tcp = dev_info.rx_offload_capa & kWantTcp;
+            eth_conf.rxmode.offloads |= (have_ip | have_udp | have_tcp);
 
-            if (!have_ip || !have_l4) {
+            if (!have_ip || !have_udp || !have_tcp) {
                 SPDLOG_LOGGER_WARN(log,
                     "port={} enable_rx_checksum_offload=true but NIC lacks"
-                    " capability: ipv4={} udp={} (rx_offload_capa={:#x}) -"
-                    " proceeding without the missing flag(s); bad-cksum"
+                    " capability: ipv4={} udp={} tcp={} (rx_offload_capa={:#x})"
+                    " - proceeding without the missing flag(s); bad-cksum"
                     " packets on unsupported layers will not be detected",
                     config.port_id,
-                    have_ip ? "ok" : "MISSING",
-                    have_l4 ? "ok" : "MISSING",
+                    have_ip  ? "ok" : "MISSING",
+                    have_udp ? "ok" : "MISSING",
+                    have_tcp ? "ok" : "MISSING",
                     dev_info.rx_offload_capa);
             } else {
                 SPDLOG_LOGGER_DEBUG(log,
-                    "port={} RX checksum offload enabled (IPv4 + UDP)",
+                    "port={} RX checksum offload enabled (IPv4 + UDP + TCP)",
                     config.port_id);
             }
         }

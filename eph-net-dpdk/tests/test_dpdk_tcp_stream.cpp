@@ -411,6 +411,117 @@ protected:
 
 rte_mempool* DpdkTcpStreamReorderOverflowE2E::pool_ = nullptr;
 
+// ═══════════════════════════════════════════════════════════════════════
+// TD-3 (lucky-giggling-kahan review): DpdkTcpStream RX checksum offload
+// wire-up, symmetric to the UDP-side fix (commit d22a093).
+//
+// Reuses the DpdkTcpStreamReorderOverflowE2E fixture's real mempool and
+// build_data_mbuf helper: it already builds peer→us TCP data segments
+// with fully-formed Ethernet + IPv4 + TCP headers, so the only variation
+// per test is the mbuf->ol_flags stamp applied post-build. Parse path is
+// identical to the production RX hot path.
+//
+// Contract being verified:
+//   - RTE_MBUF_F_RX_IP_CKSUM_BAD or RTE_MBUF_F_RX_L4_CKSUM_BAD before any
+//     other processing → drop + kRxBadChecksum++.
+//   - GOOD / UNKNOWN / NONE flag combinations are accepted (best-effort
+//     policy, matches UDP-side semantics).
+//   - The cksum drop runs BEFORE sess_.process_rx; no out-of-order
+//     telemetry is touched on rejection.
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, BadL4CksumIsDroppedBeforeProcessRx) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    ASSERT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    ASSERT_EQ(sess->tcp_stats().reorder_overflows, 0u);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);  // in-range seq, would buffer
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = RTE_MBUF_F_RX_L4_CKSUM_BAD;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
+    // Crucial symmetry: the bad-cksum drop fires BEFORE process_rx, so
+    // out-of-order telemetry must stay at zero even though the seq was
+    // forward-gapped.
+    EXPECT_EQ(sess->tcp_stats().out_of_order, 0u);
+    EXPECT_EQ(sess->tcp_stats().reorder_hits, 0u);
+    EXPECT_EQ(sess->tcp_stats().reorder_overflows, 0u);
+    EXPECT_EQ(stream->state(), eph::net::TcpState::Established);
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, BadIpCksumIsDroppedBeforeProcessRx) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_BAD;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 1u);
+    EXPECT_EQ(sess->tcp_stats().reorder_overflows, 0u);
+    EXPECT_EQ(stream->state(), eph::net::TcpState::Established);
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, BothBadFlagsCountOnce) {
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* m = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(m, nullptr);
+    m->ol_flags = RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD;
+    stream->process_burst_(&m, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 1u)
+        << "dual bad bits must increment exactly once per mbuf";
+}
+
+TEST_F(DpdkTcpStreamReorderOverflowE2E, GoodAndUnknownFlagsPassThrough) {
+    // Baseline sanity: a packet with only GOOD / UNKNOWN bits set reaches
+    // the session's RX path unchanged. Use a forward-gapped segment so we
+    // observe process_rx's out_of_order counter tick — if the cksum gate
+    // accidentally dropped GOOD packets, that counter would stay at zero.
+    auto stream = PlainRawStream::make_default_for_test_();
+    ASSERT_NE(stream, nullptr);
+    auto* sess = static_cast<eph::dpdk::TcpSession<>*>(stream->native_handle());
+    sess->inject_state_for_testing(eph::net::TcpState::Established);
+    sess->inject_recv_seq_for_testing(0x0001'0000, 65535);
+
+    rte_mbuf* good = build_data_mbuf(0x0001'0040);
+    ASSERT_NE(good, nullptr);
+    good->ol_flags =
+        RTE_MBUF_F_RX_IP_CKSUM_GOOD | RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+    stream->process_burst_(&good, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    EXPECT_EQ(sess->tcp_stats().out_of_order, 1u)
+        << "GOOD packet must reach sess_.process_rx";
+    EXPECT_EQ(sess->tcp_stats().reorder_hits, 1u);
+    EXPECT_EQ(sess->tcp_stats().reorder_overflows, 0u);
+
+    rte_mbuf* unk = build_data_mbuf(0x0001'0080);
+    ASSERT_NE(unk, nullptr);
+    unk->ol_flags =
+        RTE_MBUF_F_RX_IP_CKSUM_UNKNOWN | RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+    stream->process_burst_(&unk, 1, /*rx_tsc=*/0);
+
+    EXPECT_EQ(stream->metric(eph::net::StreamMetric::kRxBadChecksum), 0u);
+    EXPECT_EQ(sess->tcp_stats().reorder_hits, 2u)
+        << "UNKNOWN must be accepted (best-effort, same as UDP-side policy)";
+}
+
 TEST_F(DpdkTcpStreamReorderOverflowE2E, RealReorderOverflowDrivesStreamReset) {
     // Baseline: default TcpSession ReorderSlots is 64. This test pins that
     // assumption; a tuning change that drops it below 1 or raises it past
