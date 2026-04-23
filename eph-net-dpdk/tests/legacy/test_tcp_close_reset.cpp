@@ -250,3 +250,110 @@ TEST_F(TcpCloseResetTest, ResetIncrementsTxPacketsOnSuccess) {
     EXPECT_EQ(s.stats().tx_packets, before + 1);
     EXPECT_EQ(s.state(), TcpState::Closed);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Keepalive probe exhaustion — Tier 2 #5 of the lucky-giggling-kahan
+// review. The existing test_tcp_state_machine.cpp keepalive tests use
+// pool=nullptr, so probe alloc always fails and `keepalive_misses_` never
+// advances — the dead-connection transition (state_=Closed after
+// `keepalive_probes` unanswered probes) is untested there. With a real
+// net_null-backed mempool probes fire successfully, and we can drive the
+// full exhaust sequence:
+//
+//   tick(t₀)           → anchor baseline, no probe
+//   tick(t₀+interval)  → probe #1, misses=1, probes_sent=1
+//   tick(t₀+2·interval)→ probe #2, misses=2, probes_sent=2
+//   tick(t₀+3·interval)→ probe #3, misses=3, probes_sent=3
+//   tick(t₀+4·interval)→ misses >= probes → state=Closed, no more TX
+//
+// Asserts:
+//   * session state flips Established→Closed exactly on the (N+1)-th tick
+//   * `stats().keepalive_probes_sent == keepalive_probes` (not more —
+//     dead-close tick does NOT emit another probe)
+//   * tx_packets grows by exactly `keepalive_probes` (one TX per probe)
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST_F(TcpCloseResetTest, KeepaliveProbeExhaustionTransitionsToClosed) {
+    auto cfg = make_config(45014);
+    // 10 ms interval: with the 1 GHz fallback this is 10 M cycles. We
+    // advance by 20 M cycles between ticks so both the "inter-tick >
+    // interval" and "rate-limit" guards in tick_keepalive are crossed.
+    cfg.keepalive_interval = std::chrono::milliseconds{10};
+    cfg.keepalive_probes   = 3;
+
+    TcpSession<> s(cfg, platform_->mempool());
+    s.inject_state_for_testing(TcpState::Established);
+    // Seqs picked out of the way of other tests sharing the fixture's
+    // platform_ — any value works since net_null drops the wire bytes.
+    s.inject_send_seq_for_testing(/*snd_nxt=*/5000, /*snd_una=*/5000);
+    s.inject_recv_seq_for_testing(/*rcv_nxt=*/6000, /*rcv_wnd=*/65535);
+
+    const uint64_t tx_before = s.stats().tx_packets;
+    ASSERT_EQ(s.stats().keepalive_probes_sent, 0u);
+
+    // tick 0: anchor the RX baseline. The guard at tick_keepalive:1417
+    // (`last_rx_tsc_ == 0`) means the first tick never probes.
+    constexpr uint64_t kStep = 20'000'000ull;  // 20 M cycles ≈ 20 ms @ 1 GHz
+    s.tick_keepalive(kStep);
+    EXPECT_EQ(s.state(), TcpState::Established);
+    EXPECT_EQ(s.stats().keepalive_probes_sent, 0u)
+        << "first tick must anchor, not probe";
+
+    // ticks 1..N: each fires exactly one probe.
+    for (uint8_t i = 1; i <= cfg.keepalive_probes; ++i) {
+        s.tick_keepalive(kStep * (uint64_t{i} + 1));
+        EXPECT_EQ(s.state(), TcpState::Established)
+            << "still alive mid-exhaust at probe #" << static_cast<int>(i);
+        EXPECT_EQ(s.stats().keepalive_probes_sent, uint64_t{i})
+            << "probe count mismatch at probe #" << static_cast<int>(i);
+    }
+
+    // final tick: misses_ now equals keepalive_probes; the next tick must
+    // take the dead-close branch (tick_keepalive:1427) and flip state to
+    // Closed WITHOUT emitting a probe.
+    const uint64_t final_tsc = kStep * (uint64_t{cfg.keepalive_probes} + 2);
+    s.tick_keepalive(final_tsc);
+    EXPECT_EQ(s.state(), TcpState::Closed)
+        << "exhaust must declare connection dead";
+    EXPECT_EQ(s.stats().keepalive_probes_sent,
+              uint64_t{cfg.keepalive_probes})
+        << "dead-close branch must NOT emit an additional probe";
+
+    // tx_packets should have grown by exactly keepalive_probes — one TX
+    // per successful probe, none for the dead-close tick.
+    EXPECT_EQ(s.stats().tx_packets - tx_before,
+              uint64_t{cfg.keepalive_probes})
+        << "each probe emits one TX; dead-close does not";
+
+    // Subsequent ticks after Closed must be a no-op (guard at 1416).
+    s.tick_keepalive(final_tsc + kStep);
+    EXPECT_EQ(s.state(), TcpState::Closed);
+    EXPECT_EQ(s.stats().keepalive_probes_sent,
+              uint64_t{cfg.keepalive_probes});
+}
+
+TEST_F(TcpCloseResetTest, KeepaliveWithSingleProbeExhaustsOnTwoTicks) {
+    // Boundary case: `keepalive_probes = 1` should declare the connection
+    // dead after exactly ONE unanswered probe. Pins the "≥" comparison at
+    // tick_keepalive:1427 so a future refactor to ">" wouldn't silently
+    // regress the min-probe semantic.
+    auto cfg = make_config(45015);
+    cfg.keepalive_interval = std::chrono::milliseconds{10};
+    cfg.keepalive_probes   = 1;
+
+    TcpSession<> s(cfg, platform_->mempool());
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(5100, 5100);
+    s.inject_recv_seq_for_testing(6100, 65535);
+
+    constexpr uint64_t kStep = 20'000'000ull;
+    s.tick_keepalive(kStep);               // anchor
+    s.tick_keepalive(kStep * 2);           // probe #1
+    EXPECT_EQ(s.state(), TcpState::Established);
+    EXPECT_EQ(s.stats().keepalive_probes_sent, 1u);
+
+    s.tick_keepalive(kStep * 3);           // declare dead
+    EXPECT_EQ(s.state(), TcpState::Closed);
+    EXPECT_EQ(s.stats().keepalive_probes_sent, 1u)
+        << "dead-close must not bump probes_sent";
+}
