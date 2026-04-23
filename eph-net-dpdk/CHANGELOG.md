@@ -49,6 +49,33 @@ datagrams that silently reached application codecs.
   not systematic. Follow-up: an independent `/pax --fix` to wire the
   same RX offload + metric path through TcpStream.
 
+## [Unreleased] — ICMP + UDP fuzz harnesses (2026-04-23)
+
+Closes Tier 2 #6 from the `lucky-giggling-kahan` review. Extends the
+libFuzzer infrastructure from 2 harnesses (DNS + ARP) to 4 by adding
+coverage for `packet_parse.hpp`:
+
+- `fuzz_icmp_reply.cpp` — drives `parse_icmp`, `parse_ip_header`,
+  and `is_ip_fragment`. ICMP is the most adversarial input in the
+  system (any router along the path can inject a Type 3 Code 4),
+  and parse_icmp walks an embedded IP+L4 header at a caller-trusted
+  offset.
+- `fuzz_udp_packet.cpp` — drives `parse_udp_packet` plus the layered
+  `parse_udp_from_ip` / `parse_tcp_from_ip` entries used by
+  `DpdkPoller`. UDP ingress is `DpdkUdpSocket::process_burst_`'s
+  first gate; the UDP-length × IP-total-length cross-check is the
+  most likely off-by-one source.
+
+Build mechanism differs from the existing `fuzz_arp_reply`: packet
+parsing pulls in real DPDK mbuf / ether / ip struct definitions, so
+the new harnesses build against system libdpdk headers rather than
+shimming. The fuzzer never calls `rte_eal_init` — only struct
+definitions and inline accessors are touched. README documents both
+recipes.
+
+Both remain intentionally outside the xmake graph (GCC 14 has no
+libFuzzer); run with Clang ≥ 17 per the README workflow.
+
 ## [Unreleased] — Keepalive exhaustion → Closed coverage (2026-04-23)
 
 Closes Tier 2 #5 from the `lucky-giggling-kahan` review.
