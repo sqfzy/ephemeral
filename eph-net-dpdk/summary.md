@@ -52,7 +52,7 @@ public:
 static_assert(eph::net::Stream<DpdkTcpStream<eph::codec::WsCodec>>);
 ```
 
-Wraps the internal `eph::dpdk::DpdkTcpSession` TCP state machine. TLS path runs
+Wraps the internal `eph::dpdk::TcpSession<>` TCP state machine. TLS path runs
 the shared `eph::net::detail::TlsSession` through a DPDK byte-socket adapter so
 aws-lc's AEAD routines can decrypt in place into the same mbuf the NIC DMA'd
 into.

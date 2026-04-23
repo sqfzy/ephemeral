@@ -24,7 +24,7 @@ headroom so TLS decrypt can run in place via aws-lc's
 `include/eph/dpdk/` (retained include path for historical continuity):
 
 - `eal.hpp` — raw EAL init (the `Eal` RAII wrapper in `eph::net::dpdk` uses this)
-- `tcp.hpp` — `DpdkTcpSession` (the TCP state machine `DpdkTcpStream` wraps)
+- `tcp.hpp` — `TcpSession<ReorderSlots=64>` (the TCP state machine `DpdkTcpStream` wraps)
 - `udp.hpp` — UDP sender primitives
 - `arp.hpp`, `dns.hpp` — link-layer resolution helpers
 - `flow_steering.hpp` — moved to `eph/net/dpdk/flow_steering.hpp`; provides
