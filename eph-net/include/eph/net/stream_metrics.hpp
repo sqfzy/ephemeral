@@ -147,6 +147,20 @@ enum class StreamMetric : std::size_t {
     /// `ReorderSlots` capacity.
     kRxSessionResets,
 
+    /// DPDK only: a received packet's L3 (IPv4 header) or L4 (UDP / TCP)
+    /// checksum was flagged BAD by the NIC's RX offload. Gated by
+    /// `PlatformConfig::enable_rx_checksum_offload` — when opt-in is off
+    /// the NIC never marks packets BAD and this counter stays at 0. When
+    /// opt-in is on, non-zero means either a genuine transmission error
+    /// (optical bit flip, faulty switch) or a deliberately crafted packet;
+    /// either way the packet was dropped before reaching the codec. The
+    /// counter combines L3 and L4 BAD flags — split into separate IP /
+    /// L4 counters if operators need to disambiguate. Kernel backends
+    /// emit 0 (the kernel UDP/TCP stack silently drops bad-cksum packets
+    /// before userspace sees them). DpdkTcpStream does not yet wire this
+    /// (symmetric fix is a follow-up, see eph-net-dpdk CHANGELOG TD-3).
+    kRxBadChecksum,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -171,6 +185,7 @@ kStreamMetricNames = {
     "net.stream.tcp.mss_negotiation_applied",
     "net.stream.icmp.frag_needed_received",
     "net.stream.dpdk.rx_session_resets",
+    "net.stream.rx.bad_checksum",
 };
 
 static_assert(kStreamMetricNames.size() ==
