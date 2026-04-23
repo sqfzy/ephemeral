@@ -63,6 +63,35 @@ packet_core 30/30).
   otherwise permissive.
 - **multicast**: clarified `ParsedUdpPacket` / `parse_udp_packet` aliases
   point to `packet_parse.hpp` (not `net_header.hpp`, which is the umbrella).
+- **summary**: Config-type layouts rewritten — `StreamConfig` /
+  `UdpConfig` / `PollerConfig` now reflect the real fields (`legacy`
+  nested config, `pool`, `connect_timeout`, `ws_*`, `proxy`, `reasm_capacity`,
+  `pin_to_queue` / `rx_queue_id`) instead of the pre-refactor
+  `remote_host` / `queue_id` / `lcore` / `max_conn` fantasy layout.
+  Also noted system `libdpdk` (pkg-config) is now the canonical path;
+  the vcpkg DPDK path is retired.
+- **README / summary / ONBOARDING**: fixed ghost `DpdkTcpSession`
+  references — the actual class is `eph::dpdk::TcpSession<ReorderSlots=64>`.
+  History in release-log entries preserved unchanged.
+
+### Fuzzer build repair
+- **fuzzers**: `fuzz_arp_reply.cpp` and `fuzz_dns_reply.cpp` shims
+  extended with `nb_segs` field + `rte_pktmbuf_data_len` macro so the
+  round-7 scatter-reject / accessor changes in `parse_arp_reply` and
+  `try_parse_dns_packet` still compile against the shim DPDK structs.
+  Fuzzers are not in xmake's default build graph (require clang +
+  libFuzzer), so this does not affect normal builds.
+
+### Test verification
+- Rounds 1-14 verified with `xmake build -g tests` (0 errors, 0 new
+  warnings beyond pre-existing transitive-include hints) and targeted
+  test runs across DpdkTcpStream, DpdkUdpSocket, DpdkPoller,
+  flow_steering, TLS state / handshake / desync, WS handshake timeout,
+  WS sink, reasm overflow, fault tolerance, UDP multicast, ARP, DNS
+  (+ adversarial), packet_core format / checksum, packet_parse
+  adversarial, net_header — 476 test cases across 19 binaries, 0
+  failures. DPDK-hardware-dependent runtime validation (NIC rebinding,
+  e2e flows) deferred to the next real-hardware session.
 
 ---
 
