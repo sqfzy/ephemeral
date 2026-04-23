@@ -1,5 +1,36 @@
 # eph-net-dpdk changelog
 
+## [Unreleased] — RX-side session stall on reorder-buffer overflow (2026-04-23)
+
+### Fixed
+- `DpdkTcpStream::process_burst_` and `DpdkTcpStream::poll_once_` now
+  call `sess_.reset()` when `TcpSession::process_rx` / `poll_rx`
+  returns `Error::Disconnected`. Previously the `!r` branch only
+  logged and returned, so on a reorder-buffer-full result (`tcp.hpp`
+  process_rx:1247, which leaves `state_ = Established` and `rcv_nxt_`
+  stuck) every subsequent burst re-triggered the overflow warning and
+  RX callbacks silently stopped firing. Production observation: RX-only
+  Binance bookTicker feeds sat idle ~10 s before the caller's external
+  stall watchdog caught the silence; the stream's `state()` never
+  reflected that the session had effectively died. The branch now
+  mirrors the adjacent reasm-overflow branch (which already did the
+  right thing), using the same inline style for locality.
+
+### Added
+- `StreamMetric::kRxSessionResets` /
+  `net.stream.dpdk.rx_session_resets`: counts stream-layer-initiated
+  session resets from the RX error branch. Distinct from
+  `kTcpResetsReceived` (peer-initiated RST); a sustained rise signals
+  upstream packet loss or NIC reordering beyond the configured
+  `ReorderSlots` capacity.
+
+### Notes
+- End-to-end reproduction of the overflow path (crafted mbufs + live
+  session) remains a NIC_B e2e coverage gap — the new regression test
+  pins the enum ↔ name-table wiring for `kRxSessionResets` so a future
+  reorder cannot silently drift the counter's string, but behavioral
+  verification of the reset call itself is deferred to integration.
+
 ## [Unreleased] — Production-hardening sweep (round 2, 2026-04-22)
 
 A second `/pax --loop --auto` pass (2 subagent batches × 15 rounds,
