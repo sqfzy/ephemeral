@@ -45,6 +45,11 @@ namespace eph::dpdk::dns {
 inline constexpr uint16_t kDnsHeaderLen    = 12;   ///< DNS header length (RFC 1035)
 inline constexpr uint16_t kDnsPort         = 53;   ///< Standard DNS port
 inline constexpr uint16_t kMaxDnsPacketLen = 512;  ///< RFC 1035 max UDP DNS message length
+
+/// @brief Burst size for the DNS-resolve RX poll. DNS resolve is a
+///        startup-only blocking helper (not hot-path); same rationale
+///        as `arp::kArpResolveBurstSize`.
+inline constexpr uint16_t kDnsResolveBurstSize = 16;
 /// @}
 
 /// @name DNS flag bitmasks (RFC 1035 section 4.1.1)
@@ -469,7 +474,12 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
                      uint16_t expected_dst_port = 0) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + net::kIpv4HeaderLen
                              + kUdpHeaderLen + kDnsHeaderLen;
-    if (mbuf->data_len < min_len) return std::nullopt;
+    // Reject multi-segment mbufs — our bounds math below reads first-segment
+    // bytes via `rte_pktmbuf_data_len`; a scattered packet would have its
+    // tail in later segments and defeat those checks. Same defense-in-depth
+    // rationale as `parse_ip_header`.
+    if (mbuf->nb_segs > 1) [[unlikely]] return std::nullopt;
+    if (rte_pktmbuf_data_len(mbuf) < min_len) return std::nullopt;
 
     auto* pkt = rte_pktmbuf_mtod(mbuf, const uint8_t*);
 
@@ -486,7 +496,7 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 
     // Re-check total length with actual IHL — IP options can extend the header
     // beyond the 20-byte minimum used in min_len above.
-    if (net::kEtherHeaderLen + ihl + kUdpHeaderLen + kDnsHeaderLen > mbuf->data_len)
+    if (net::kEtherHeaderLen + ihl + kUdpHeaderLen + kDnsHeaderLen > rte_pktmbuf_data_len(mbuf))
         return std::nullopt;
 
     // Check UDP source port matches the configured nameserver port.
@@ -513,7 +523,7 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
     if (udp_len < kUdpHeaderLen + kDnsHeaderLen) return std::nullopt;
     // Guard against truncated packets: the UDP length field may claim more
     // data than the mbuf actually contains.
-    if (net::kEtherHeaderLen + ihl + udp_len > mbuf->data_len)
+    if (net::kEtherHeaderLen + ihl + udp_len > rte_pktmbuf_data_len(mbuf))
         return std::nullopt;
     size_t dns_len = udp_len - kUdpHeaderLen;
 
@@ -656,8 +666,9 @@ resolve(uint16_t port_id,
         }
 
         // Poll for DNS response
-        rte_mbuf* pkts[16];
-        uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts, 16);
+        rte_mbuf* pkts[kDnsResolveBurstSize];
+        uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts,
+                                           kDnsResolveBurstSize);
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto resolved_ip = detail::try_parse_dns_packet(

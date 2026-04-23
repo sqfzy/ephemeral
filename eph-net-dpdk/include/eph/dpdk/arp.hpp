@@ -46,6 +46,13 @@ inline constexpr size_t   kArpPacketLen      = 28;         ///< ARP payload size
 /// @brief Ethernet broadcast MAC address (ff:ff:ff:ff:ff:ff).
 inline constexpr rte_ether_addr kBroadcastMac = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
 
+/// @brief Burst size for the ARP-resolve RX poll. ARP resolve is a
+///        startup-only blocking helper (not hot-path), so a small burst
+///        suffices — a bigger burst just holds the mempool longer with
+///        no throughput benefit. Kept separate from DpdkPoller::kBurstSize
+///        (32) so arp.hpp stays independent of poller.hpp.
+inline constexpr uint16_t kArpResolveBurstSize = 16;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ARP packet structure (RFC 826)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +175,12 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
     // before. A null-check keeps us from dereferencing and crashing if
     // a caller inadvertently hands in nullptr.
     if (mbuf == nullptr) [[unlikely]] return std::nullopt;
-    if (mbuf->data_len < min_len) return std::nullopt;
+    // Reject multi-segment mbufs: ARP frames are 42 bytes and never
+    // scatter in practice, but single-segment is what our bounds math
+    // assumes (see parse_ip_header in packet_parse.hpp for the same
+    // defense-in-depth rationale).
+    if (mbuf->nb_segs > 1) [[unlikely]] return std::nullopt;
+    if (rte_pktmbuf_data_len(mbuf) < min_len) return std::nullopt;
 
     auto* pkt = rte_pktmbuf_mtod(mbuf, const uint8_t*);
     auto* eth = reinterpret_cast<const rte_ether_hdr*>(pkt);
@@ -313,8 +325,9 @@ resolve(uint16_t port_id,
         }
 
         // Poll for ARP reply
-        rte_mbuf* pkts[16];
-        uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts, 16);
+        rte_mbuf* pkts[kArpResolveBurstSize];
+        uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts,
+                                           kArpResolveBurstSize);
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto mac = parse_arp_reply(pkts[i], target_ip, expected_mac);
