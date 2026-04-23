@@ -628,7 +628,26 @@ queue_for_tuple(const RssState& state,
                 uint32_t dst_ip, uint16_t dst_port) noexcept {
     const uint32_t h = toeplitz_hash_ipv4(state.key(), src_ip, src_port,
                                           dst_ip, dst_port);
-    const size_t reta_idx = h & (state.reta_size - 1);
+    // Parity with `queue_for_hash`: gracefully degrade on zero-sized or
+    // non-power-of-two reta_size rather than produce UB via a wrong mask.
+    // RSS spec says RETA is always a POT, but driver bugs and tests do
+    // hand us oddly-sized tables occasionally — log once and fall back.
+    const uint16_t sz = state.reta_size;
+    if (sz == 0) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::flow_logger(),
+            "queue_for_tuple: reta_size=0 -- returning queue 0");
+        return 0;
+    }
+    size_t reta_idx;
+    if ((sz & (sz - 1)) != 0) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::flow_logger(),
+            "queue_for_tuple: reta_size={} is not a power of two "
+            "-- falling back to modulo (RSS routing will be approximate)",
+            sz);
+        reta_idx = h % sz;
+    } else {
+        reta_idx = h & (sz - 1);
+    }
     const size_t group = reta_idx / RTE_ETH_RETA_GROUP_SIZE;
     const size_t bit   = reta_idx % RTE_ETH_RETA_GROUP_SIZE;
     return state.reta[group].reta[bit];
