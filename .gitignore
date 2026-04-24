@@ -7,6 +7,9 @@ build/
 
 .cache/
 
+# Claude Code CLI local state (worktree scratch checkouts, etc.)
+.claude/
+
 # Python-generated files
 __pycache__/
 *.py[oc]

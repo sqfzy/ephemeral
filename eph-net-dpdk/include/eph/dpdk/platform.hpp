@@ -27,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -159,6 +160,24 @@ inline spdlog::logger* platform_logger() { return get_logger<LoggerName{"dpdk.pl
 /// would burst the per-Platform footprint to 8 KiB for no current benefit.
 inline constexpr uint16_t kMaxRssQueues = 64;
 
+/// @brief DPDK process role for single-NIC multi-process (primary+secondary).
+///
+/// Primary: full port lifecycle — enumerate, create mempool, configure /
+///          start port, own RSS/RETA. Default for all existing code paths
+///          (matches current single-process behavior byte-for-byte).
+/// Secondary: attaches to an already-running primary via shared hugepage
+///            (DPDK `--proc-type=secondary --file-prefix=<same as primary>`).
+///            Looks up the primary's mempool by name; MUST NOT call
+///            `rte_eth_dev_configure/start/stop/close` or
+///            `rte_mempool_free` — these would corrupt the primary's
+///            port state. Has its own Poller(s), Stream(s), FlowRule(s),
+///            and ICMP registry (all per-process). The primary must
+///            start first and outlive every secondary.
+///
+/// See `docs/dpdk-multiprocess.md` for startup/teardown ordering,
+/// queue/src_port segmentation rules, and PMD-specific caveats.
+enum class ProcType : uint8_t { Primary, Secondary };
+
 /// @note Queue counts and descriptor counts are automatically clamped to
 ///       NIC-reported limits during Platform::create(). Values here are
 ///       the *requested* values — actual values may be smaller.
@@ -233,6 +252,58 @@ struct PlatformConfig {
     /// 0 = single check, continue regardless of link state.
     int      link_timeout_ms = 2000;
 
+    // ── Multi-process (primary+secondary) configuration ─────────────────
+    //
+    // All fields default to single-process / primary semantics: existing
+    // code compiled against the old PlatformConfig continues to work
+    // byte-for-byte. Multi-process callers opt in by setting proc_type /
+    // file_prefix and (for secondary) explicit rx_queue_range +
+    // src_port_range. See `docs/dpdk-multiprocess.md` and `ProcType`
+    // above.
+
+    /// @brief DPDK process role. Primary owns the port lifecycle
+    /// (configure/start/stop/close, mempool creation); Secondary attaches
+    /// to an already-running primary via shared hugepage and must avoid
+    /// port-state-mutating APIs. Default = Primary preserves existing
+    /// single-process behavior.
+    ProcType proc_type = ProcType::Primary;
+
+    /// @brief DPDK runtime-dir discriminator, mirrors `--file-prefix` EAL
+    /// arg. Empty = no prefix (DPDK uses its default shared runtime dir,
+    /// same as passing nothing). Secondary MUST pass the same non-empty
+    /// prefix the primary used, otherwise `rte_mempool_lookup` will fail
+    /// with "primary not running or file_prefix mismatch".
+    ///
+    /// Held as `std::string_view` to keep `PlatformConfig` a literal type
+    /// (preserves `constexpr PlatformConfig cfg{};` + `validate_config`
+    /// static_assert usage). Caller owns the backing buffer — typical
+    /// values are string literals or long-lived application-owned
+    /// strings; don't point at a temporary.
+    std::string_view file_prefix {};
+
+    /// @brief Half-open RX queue range `[lo, hi)` that THIS process owns.
+    /// Secondary processes must pick a range disjoint from the primary's
+    /// (and from any other secondary's) to avoid mbuf races on shared
+    /// queues. `{0, 0}` (default) is the sentinel meaning "use the full
+    /// range `[0, nb_rx_queues)`", which matches existing single-process
+    /// behavior — `create_and_attach`'s round-robin target-queue selector
+    /// then spreads across every queue, as before.
+    std::pair<uint16_t, uint16_t> rx_queue_range {0, 0};
+
+    /// @brief Ephemeral-port range `[lo, hi)` this process may allocate
+    /// from when `create_and_attach` auto-chooses a source port. Distinct
+    /// processes sharing a NIC MUST carve disjoint ranges — otherwise the
+    /// peer server sees two connections arriving from the same (src_ip,
+    /// src_port) tuple which looks like a duplicate/reconnect on
+    /// exchange-grade endpoints and triggers anti-abuse disconnects.
+    ///
+    /// Default `{32768, 65535}` = IANA ephemeral range, matching
+    /// single-process behavior. `create_secondary()` REJECTS this default
+    /// with `InvalidConfig` to force multi-process callers to make the
+    /// segmentation explicit — silent cross-process src_port reuse is the
+    /// exact failure mode this field exists to prevent.
+    std::pair<uint16_t, uint16_t> src_port_range {32768, 65535};
+
     /// Defaulted equality — all fields must match exactly.
     [[nodiscard]] friend bool operator==(const PlatformConfig&,
                                          const PlatformConfig&) = default;
@@ -243,12 +314,18 @@ struct PlatformConfig {
             "PlatformConfig:\n"
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
             "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
-            "  rx_cksum_offload: {}, strict_rx_cksum: {}",
+            "  rx_cksum_offload: {}, strict_rx_cksum: {}\n"
+            "  proc_type: {}, file_prefix: '{}'\n"
+            "  rx_queue_range: [{},{}), src_port_range: [{},{})",
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false", link_timeout_ms,
             enable_rx_checksum_offload ? "true" : "false",
-            enable_strict_rx_checksum  ? "true" : "false");
+            enable_strict_rx_checksum  ? "true" : "false",
+            proc_type == ProcType::Primary ? "Primary" : "Secondary",
+            file_prefix,
+            rx_queue_range.first, rx_queue_range.second,
+            src_port_range.first, src_port_range.second);
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -306,7 +383,9 @@ struct PlatformConfig {
             "\"enable_promiscuous\":{},\"enable_rss\":{},"
             "\"enable_rx_checksum_offload\":{},"
             "\"enable_strict_rx_checksum\":{},"
-            "\"link_timeout_ms\":{}}}",
+            "\"link_timeout_ms\":{},"
+            "\"proc_type\":\"{}\",\"file_prefix\":\"{}\","
+            "\"rx_queue_range\":[{},{}],\"src_port_range\":[{},{}]}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
@@ -314,7 +393,11 @@ struct PlatformConfig {
             enable_rss ? "true" : "false",
             enable_rx_checksum_offload ? "true" : "false",
             enable_strict_rx_checksum  ? "true" : "false",
-            link_timeout_ms);
+            link_timeout_ms,
+            proc_type == ProcType::Primary ? "Primary" : "Secondary",
+            file_prefix,
+            rx_queue_range.first, rx_queue_range.second,
+            src_port_range.first, src_port_range.second);
     }
 };
 
@@ -418,8 +501,49 @@ public:
 
     /// Create and fully initialize the DPDK platform for one port.
     /// EAL must already be initialized (via eph::dpdk::eal_init).
+    ///
+    /// This is the original single-process factory. It honours
+    /// `config.proc_type` (default Primary → full port bringup), so pre-MP
+    /// callers continue to work byte-for-byte. For new multi-process code
+    /// prefer the explicit `create_primary` / `create_secondary` entry
+    /// points — they make the role visible at the call site and (for
+    /// secondary) surface the strict config validation earlier.
     [[nodiscard]] static std::expected<Platform, std::string>
     create(const PlatformConfig& config);
+
+    /// Primary-role factory (single-NIC multi-process aware).
+    ///
+    /// Equivalent to `create()` with `config.proc_type` forced to
+    /// `ProcType::Primary`. Behaviourally identical to the current
+    /// single-process setup; the explicit name is for call-site clarity
+    /// in code that also uses `create_secondary`.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    create_primary(PlatformConfig config);
+
+    /// Secondary-role factory (attach to a running primary's port +
+    /// mempool via shared hugepage).
+    ///
+    /// Forces `config.proc_type = Secondary` and enforces the
+    /// secondary-mode contract:
+    ///   * `file_prefix` must be non-empty and match the primary's EAL
+    ///     `--file-prefix` (else `rte_mempool_lookup` will fail).
+    ///   * `src_port_range` must be explicitly set to a sub-range
+    ///     disjoint from the primary's — the IANA default
+    ///     `{32768, 65535}` is rejected to prevent silent cross-process
+    ///     source-port collisions that exchange-grade peers treat as
+    ///     abusive reconnects.
+    ///   * `rx_queue_range` if set must be non-empty (lo < hi).
+    ///
+    /// EAL must already be initialised with `--proc-type=secondary`
+    /// and the same `--file-prefix` the primary used; see
+    /// `eph::dpdk::build_eal_argv` / `docs/dpdk-multiprocess.md`.
+    ///
+    /// Phase-1 stub: validates the secondary contract, logs a WARN, then
+    /// delegates to `create()` (primary path). The real shared-mempool
+    /// attach lands in phase 3. Callers already get correct error codes
+    /// for misconfiguration.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    create_secondary(PlatformConfig config);
 
     ~Platform();
 
@@ -1066,6 +1190,100 @@ Platform::create(const PlatformConfig& config) {
         impl->rss_active ? "true" : "false",
         ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
     return Platform(std::move(impl));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-process factories (phase 1 — stubs + config validation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::create_primary(PlatformConfig config) {
+    // Force-set the role so mis-assembled configs can't accidentally
+    // travel into create() with Secondary marked but primary semantics
+    // intended.
+    config.proc_type = ProcType::Primary;
+    return create(config);
+}
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::create_secondary(PlatformConfig config) {
+    [[maybe_unused]] auto log = detail::platform_logger();
+    config.proc_type = ProcType::Secondary;
+
+    // --- Secondary-mode contract validation ---
+    //
+    // These checks surface misconfiguration synchronously at construction
+    // time. Silent mis-setup (default src_port_range, empty file_prefix,
+    // backwards queue range) is the exact failure mode this factory
+    // exists to prevent — under those conditions a secondary would "work"
+    // locally but collide with the primary on the wire, triggering
+    // peer-side disconnects that are extremely hard to debug.
+
+    if (config.file_prefix.empty()) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create_secondary: file_prefix is empty "
+            "(must match the primary's EAL --file-prefix)");
+        return std::unexpected(std::string{
+            "create_secondary: file_prefix must be non-empty and match "
+            "the primary's EAL --file-prefix (otherwise rte_mempool_lookup "
+            "in phase 3 cannot find the primary's shared mempool)"});
+    }
+
+    // The IANA ephemeral default {32768, 65535} is the sentinel meaning
+    // "user did not think about src_port segmentation". Reject it — the
+    // caller must explicitly carve a sub-range disjoint from the
+    // primary's.
+    constexpr std::pair<uint16_t, uint16_t> kDefaultSrcPortRange{32768, 65535};
+    if (config.src_port_range == kDefaultSrcPortRange) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create_secondary: src_port_range left at IANA "
+            "default {{32768, 65535}} — must be partitioned vs primary "
+            "to avoid silent cross-process source-port collisions");
+        return std::unexpected(std::string{
+            "create_secondary: src_port_range must be explicitly set to a "
+            "sub-range disjoint from the primary's (default {32768, 65535} "
+            "rejected — silent reuse looks like a duplicate reconnect to "
+            "exchange-grade peers and triggers anti-abuse disconnects)"});
+    }
+    if (config.src_port_range.first >= config.src_port_range.second) {
+        return std::unexpected(std::format(
+            "create_secondary: src_port_range must satisfy lo < hi "
+            "(got [{}, {}))",
+            config.src_port_range.first, config.src_port_range.second));
+    }
+
+    // rx_queue_range == {0, 0} is the "use full range" sentinel and is
+    // accepted (the secondary then shares queues with the primary —
+    // caller assumes responsibility). Any *other* empty/backwards range
+    // is a typo and must be caught.
+    constexpr std::pair<uint16_t, uint16_t> kFullRangeSentinel{0, 0};
+    if (config.rx_queue_range != kFullRangeSentinel &&
+        config.rx_queue_range.first >= config.rx_queue_range.second) {
+        return std::unexpected(std::format(
+            "create_secondary: rx_queue_range must satisfy lo < hi "
+            "(got [{}, {})); use the sentinel {{0, 0}} to mean "
+            "\"full range\"",
+            config.rx_queue_range.first, config.rx_queue_range.second));
+    }
+
+    // --- Phase-1 stub body ---
+    //
+    // The real secondary path (rte_mempool_lookup + skip port bringup +
+    // register_poller only) lands in phase 3. For now we log a WARN and
+    // delegate to create(), which walks the primary code path. On a
+    // genuine secondary EAL init the primary-path rte_eth_dev_configure
+    // call will fail cleanly — we surface that error to the caller
+    // rather than pretending the secondary is attached.
+    SPDLOG_LOGGER_WARN(log,
+        "Platform::create_secondary: phase-1 stub (file_prefix='{}', "
+        "rx_queue_range=[{},{}), src_port_range=[{},{}))  — validation "
+        "passed, delegating to primary-path create() until phase 3 "
+        "lands the real mempool_lookup attach",
+        config.file_prefix,
+        config.rx_queue_range.first, config.rx_queue_range.second,
+        config.src_port_range.first, config.src_port_range.second);
+
+    return create(config);
 }
 
 // Null guards on all impl_-accessing methods protect against use on a
