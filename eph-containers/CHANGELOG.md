@@ -118,6 +118,12 @@ user-visible nature of each change, not the underlying commit order.
 - `try_consume_all` drain-helper tests with best-effort semantics.
 - Read-count metric tests for `EvictingQueue` (both primary and
   single-slot specialisation).
+- **`test_concepts` binary** — dedicated `static_assert`-driven suite
+  that pins down the `TrivialData<T>` satisfaction matrix
+  (primitives, floats, enums, aggregates, `std::array`, raw/function
+  pointers satisfy; `std::string`, `std::vector`, `std::unique_ptr`,
+  types with non-trivial destructors or deleted default ctor do not).
+  Brings the total to **434 tests across 6 binaries**.
 
 ### Documentation
 

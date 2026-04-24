@@ -2,60 +2,71 @@
 
 ## Public API surface
 
-Namespace: `eph::net::kernel`. Header-only. Backend implementation of the
-network concepts on top of POSIX sockets + epoll.
+Namespace: `eph::net::kernel`. Header-only. Kernel-backend implementation of
+the networking concepts on top of POSIX sockets + `epoll`.
 
 ### `KernelTcpStream<C, EnableTls>`
 
 ```cpp
-template <core::StreamCodec C, bool EnableTls = true>
+template <class C, bool EnableTls = true>
 class KernelTcpStream {
 public:
-    using CodecType  = C;
-    using PacketView = detail::SpanView;
-    using OnMessage  = std::function<void(const uint8_t*, uint16_t)>;
+    using CodecType  = C;                               // StreamCodec
+    using PacketView = detail::SpanView;                // contiguous span
+    using OnMessage  = std::function<void(std::span<const uint8_t>)>;
 
     static std::expected<std::unique_ptr<KernelTcpStream>, core::ErrorInfo>
-    create(StreamConfig cfg);
+    create(StreamConfig cfg) noexcept;
 
     OnMessage on_message;
 
-    std::expected<size_t, core::ErrorInfo> send(std::span<const uint8_t> data);
-    std::expected<void,   core::ErrorInfo> close_gracefully();
+    std::expected<std::size_t, core::ErrorInfo>
+        send(std::span<const uint8_t> app_payload) noexcept;
+    std::expected<void, core::ErrorInfo> close_gracefully() noexcept;
+
     bool      is_attached() const noexcept;
     TcpState  state()       const noexcept;
     int       fd()          const noexcept;
+
+    std::uint64_t metric(eph::net::StreamMetric m) const noexcept;
 };
 
 static_assert(eph::net::Stream<KernelTcpStream<eph::codec::WsCodec>>);
 ```
 
-`create()` performs TCP connect + TLS handshake + WS upgrade synchronously before
-returning. Once attached to a `KernelPoller`, rx work runs on `poll()` calls.
+`create()` is synchronous: it performs the TCP connect, the optional HTTP
+CONNECT proxy handshake, the TLS 1.3 handshake (when `EnableTls=true`) and
+the optional WebSocket RFC 6455 upgrade (when `cfg.ws_path` is non-empty)
+before returning. After `KernelPoller::add(stream.get())`, RX work runs
+inside `poller->poll()`.
 
 ### `KernelUdpSocket<C>`
 
 ```cpp
-template <core::DatagramCodec C>
+template <class C>
 class KernelUdpSocket {
 public:
-    using CodecType  = C;
+    using CodecType  = C;                               // DatagramCodec
     using PacketView = detail::SpanView;
-    using OnDatagram = std::function<void(const uint8_t*, uint16_t, const SocketAddr&)>;
+    using OnDatagram = std::function<void(std::span<const uint8_t>,
+                                          const SocketAddr&)>;
 
     static std::expected<std::unique_ptr<KernelUdpSocket>, core::ErrorInfo>
-    create(UdpConfig cfg);
+    create(UdpConfig cfg) noexcept;
 
     OnDatagram on_datagram;
 
-    std::expected<size_t, core::ErrorInfo>
-    send_to(std::span<const uint8_t>, const SocketAddr&);
+    std::expected<std::size_t, core::ErrorInfo>
+        send_to(std::span<const uint8_t>, const SocketAddr&) noexcept;
 
-    std::expected<void, core::ErrorInfo> join_multicast (const SocketAddr&);
-    std::expected<void, core::ErrorInfo> leave_multicast(const SocketAddr&);
+    std::expected<void, core::ErrorInfo> join_multicast (const SocketAddr&) noexcept;
+    std::expected<void, core::ErrorInfo> leave_multicast(const SocketAddr&) noexcept;
+    std::expected<void, core::ErrorInfo> connect_to     (const SocketAddr&) noexcept;
 
-    // optional: constrain source
-    std::expected<void, core::ErrorInfo> connect_to(const SocketAddr&);
+    bool is_attached() const noexcept;
+    int  fd()          const noexcept;
+
+    std::uint64_t metric(eph::net::StreamMetric m) const noexcept;
 };
 
 static_assert(eph::net::Datagram<KernelUdpSocket<eph::codec::Mold64Codec>>);
@@ -67,59 +78,90 @@ static_assert(eph::net::Datagram<KernelUdpSocket<eph::codec::Mold64Codec>>);
 class KernelPoller {
 public:
     static std::expected<std::unique_ptr<KernelPoller>, core::ErrorInfo>
-    create(PollerConfig cfg = {});
+    create(PollerConfig cfg = {}) noexcept;
 
-    template <Pollable P>
-    std::expected<void, core::ErrorInfo> add(P* obj);
+    // KernelPollable<P> requires: p.fd(), p.poll_once_(),
+    //                             p.notify_attached_(KernelPoller*),
+    //                             p.notify_detached_()  (all noexcept)
+    template <KernelPollable P>
+    std::expected<void, core::ErrorInfo> add   (P* obj) noexcept;
+    template <KernelPollable P>
+    std::expected<void, core::ErrorInfo> remove(P* obj) noexcept;
 
-    template <Pollable P>
-    std::expected<void, core::ErrorInfo> remove(P* obj);
+    std::size_t poll() noexcept;                               // non-blocking
+    std::size_t poll(std::chrono::milliseconds timeout) noexcept;
 
-    size_t poll() noexcept;                             // non-blocking
-    size_t poll(std::chrono::milliseconds to) noexcept; // epoll_wait(timeout)
+    std::size_t size()     const noexcept;   // test hook
+    int         epoll_fd() const noexcept;   // test hook
 };
 
 static_assert(eph::net::Poller<KernelPoller>);
 ```
 
-Internally: one `epoll_fd_`, one `vector<PollableEntry>` where each entry is
-`{ void* obj; size_t (*poll_fn)(void*); int fd; }`. `add()` calls
-`epoll_ctl(EPOLL_CTL_ADD)`; `poll()` calls `epoll_wait` and dispatches readable
-fds to the matching entry's `poll_fn`. No virtual dispatch.
+Internals: one `epoll_fd_` (from `epoll_create1(EPOLL_CLOEXEC)`) and one
+`std::vector<PollableEntry>` where each entry is
+`{void* obj; size_t(*poll_fn)(void*) noexcept; void(*detach_fn)(void*) noexcept; int fd}`.
+`add()` captures the type-erased thunks at compile time and calls
+`epoll_ctl(EPOLL_CTL_ADD, EPOLLIN)`; `poll()` calls `epoll_wait` (burst
+capped at `min(cfg.max_events_per_wait, 256)`) and linearly resolves each
+ready event's `data.ptr` back to an entry to dispatch `poll_fn`. No virtual
+dispatch, no `std::function`, no heap allocation on the hot path.
+
+The Poller's destructor calls every still-attached Pollable's `detach_fn`
+before closing `epoll_fd_`, so a later `~Stream` never dereferences a dead
+Poller.
 
 ### Config types (`config.hpp`)
 
 ```cpp
 struct StreamConfig {
-    std::string host;
-    uint16_t    port;
-    bool        use_tls        = false;
-    std::string ws_path;
-    TlsConfig   tls;
-    std::string bind_device;   // SO_BINDTODEVICE
-    // ... ReconnectPolicyConfig, timeouts, etc.
+    SocketAddr                          remote{};          // required
+    SocketAddr                          local{};           // optional bind
+    std::chrono::milliseconds           connect_timeout{3000};
+    std::size_t                         reasm_capacity{64 * 1024};
+    bool                                tcp_nodelay{true};
+    eph::net::TlsConfig                 tls{};             // used when EnableTls=true
+
+    // WebSocket upgrade — non-empty ws_path activates RFC 6455 handshake.
+    std::string                         ws_path{};
+    std::string                         ws_host{};         // Host: override
+    std::vector<eph::net::HttpHeader>   ws_extra_headers{};
+    std::chrono::milliseconds           ws_timeout{10'000};
+
+    // HTTP CONNECT proxy — non-empty routes TCP through the proxy, then
+    // runs TLS / WS inside the tunnel.
+    std::optional<eph::net::ProxyConfig> proxy{};
 };
 
 struct UdpConfig {
-    SocketAddr bind_addr;
-    bool       reuse_addr = true;
-    int        rcvbuf     = 0;
-    std::string bind_device;
+    SocketAddr  bind{};                     // local bind address
+    SocketAddr  connect_to{};               // non-zero port → connected UDP
+    std::size_t rcv_buf{0};                 // 0 = kernel default
+    std::size_t snd_buf{0};                 // 0 = kernel default
+    bool        reuse_addr{false};          // SO_REUSEADDR (multicast)
 };
 
 struct PollerConfig {
-    int max_events = 64;      // size of epoll_event batch
+    std::size_t initial_capacity{16};       // entries_ reserve()
+    int         max_events_per_wait{64};    // epoll_wait burst cap (≤ 256)
 };
 ```
 
+TLS selection is template-parametric (`EnableTls`), not a runtime bool —
+`tls` is ignored unless `EnableTls=true`. Stream-local reconnect state was
+removed on 2026-04-14; callers drive the retry loop via
+`eph::net::ReconnectPolicy`.
+
 ## Dependencies
 
-- `eph-net` (public) - concepts, SocketAddr, ReconnectPolicy, TLS detail
+- `eph-net` (public) — concepts, `SocketAddr`, `ReconnectPolicy`, TLS detail
 - `eph-core`, `eph-utils`, `eph-containers` (transitive)
+- `spdlog`, `aws-lc` (public packages)
 
 ## See also
 
 - `README.md`
+- `CHANGELOG.md`
 - `docs/ONBOARDING.md`
 - `../docs/poller-guide.md`
 - `../docs/architecture.md`

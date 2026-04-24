@@ -6,7 +6,7 @@
 
 - `WsCodec` — RFC 6455, the most complex (reassembly + control FSM).
 - `RawStreamCodec` — passthrough for raw TCP.
-- `LengthPrefixCodec` — 2-byte BE length prefix.
+- `LengthPrefixCodec` — 4-byte BE length prefix (16 MiB `kMaxFrameLen`).
 - `RawDatagramCodec` — one frame per UDP datagram.
 - `Mold64Codec` — NASDAQ MoldUDP64 with sequence + gap tracking.
 
@@ -47,12 +47,16 @@ TEST(WsCodec, DecodesSingleTextFrame) {
 ```bash
 xmake build -g tests
 xmake run test_ws_codec
+xmake run test_ws_codec_edge
 xmake run test_mold64_codec
 xmake run test_length_prefix_codec
 xmake run test_raw_stream_codec
 xmake run test_raw_datagram_codec
 xmake run test_packet_view
 ```
+
+`test_packet_view` covers the formal `eph::core::PacketView` concept against
+the reference `SpanPacketView` implementation used by every codec unit test.
 
 ## Adding a new codec
 
@@ -61,7 +65,10 @@ xmake run test_packet_view
    `decode()`, `encode()`.
 3. Add `static_assert(eph::core::StreamCodec<MyCodec>);` (or `DatagramCodec`).
 4. Create `tests/test_<name>_codec.cpp`. It will be auto-globbed into the test build.
-5. Add a `bench_<name>_codec.cpp` under `benchmarks/` if the hot path matters.
+5. If the hot path matters, add a microbenchmark: the module currently has no
+   `benchmarks/` directory (xmake's glob over `benchmarks/**.cpp` is empty), so
+   create the directory first, drop in `benchmarks/bench_<name>_codec.cpp`
+   using the `eph-bench` rule, and xmake will pick it up automatically.
 
 See `../docs/custom-codec.md` for the full walkthrough including the PacketView
 contract and auto-response patterns.

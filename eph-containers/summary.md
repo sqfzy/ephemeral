@@ -303,15 +303,16 @@ minimum log level.
 
 | Test Binary | Source | Size | Coverage Focus |
 |---|---|---:|---|
+| `test_concepts` | `tests/test_concepts.cpp` | 170 lines | `TrivialData<T>` satisfaction matrix — primitives, floats, enums, aggregates, `std::array`, raw pointers, function pointers (positive); `std::string`, `std::vector`, `std::unique_ptr`, types with non-trivial dtor / non-default-constructible (negative) |
 | `test_ring_buffer` | `tests/test_ring_buffer.cpp` | 366 lines | Push ordering, lookback indexing, overflow, concurrent read/write |
 | `test_bounded_queue` | `tests/test_bounded_queue.cpp` | 1421 lines | All capacity boundary sizes (1 / 2 / 1024), try_* and blocking paths, batch ops, peek, timed, drain, stats |
 | `test_bounded_queue_bytes` | `tests/test_bounded_queue_bytes.cpp` | 634 lines | Byte envelope push/pop, ts variants, batch, oversized rejection, stats |
 | `test_evicting_queue` | `tests/test_evicting_queue.cpp` | 1616 lines | Multi-slot SeqLock race patterns, `Capacity==1` specialisation, overwrite counting, peek, loss-rate |
 | `test_evicting_queue_bytes` | `tests/test_evicting_queue_bytes.cpp` | 818 lines | Byte envelope wait-free writes, discard counter, ts variants, stats, peek semantics |
 
-Total: **389 tests** across 5 binaries. All passed against the
+Total: **434 tests** across 6 binaries. All passed against the
 current head-of-tree at the time of this documentation run
-(2026-04-09).
+(2026-04-24).
 
 Key test scenarios:
 

@@ -1,6 +1,49 @@
 # eph-core changelog
 
-## [Unreleased] — Phase 9 Recovery (2026-04-10)
+## [Unreleased] — post-v3.3 consolidation
+
+### Added
+- `Error::NotFound` (`eph/core/error.hpp`) — registry / lookup lifecycle
+  signal, distinct from `InvalidConfig`. Used by the DPDK ICMP target
+  registry and other `shared_ptr`-managed lookup tables where
+  unregistering an absent key is a recoverable state mismatch rather than
+  a caller programming error. Appended at the end of the enum to keep
+  existing integer values stable.
+- `eph/core/packet_view.hpp` — formal `concept PacketView` formalises the
+  previously-informal six-member contract (`writable_data` / `data` /
+  `length` / `trim_front` / `trim_back` / `arrival_tsc`). Downstream
+  backends can now `static_assert(eph::core::PacketView<T>)` to get a
+  compile-time conformance guarantee.
+- `eph/core/metrics_concept.hpp` — `MetricTag` struct, `MetricsSink`
+  concept (`push_counter` / `push_gauge` / `push_histogram` / `flush`,
+  all noexcept), and `NullSink` (inline no-op sink used as the default
+  template parameter where observability is opt-in).
+- `eph/core/error_traits.hpp` — `ErrorEnum<E>` concept and
+  `ErrorEnumFormatter<E>` one-liner `std::formatter` base. Replaces the
+  per-enum boilerplate previously duplicated in every parser module.
+  Also exposes `eph::net::ErrorEnum` / `eph::net::ErrorEnumFormatter`
+  backward-compat aliases for pre-refactor call sites.
+- `eph/core/detail/logger.hpp` — shared `make_logger(name)` factory.
+  Single source of lazy, thread-safe spdlog instantiation used by
+  `length_prefix_framer` and by every downstream `eph-*` module.
+- `eph/core/tcp_state.hpp` consolidation — `TcpState` + `tcp_state_name`
+  now have a single canonical definition here; `tcp_concept.hpp` and
+  `eph/net/tcp_state.hpp` both forward to this header to avoid ODR
+  conflicts when multiple modules include both paths.
+- `eph/version.hpp` gained `kVersion` (packed integer
+  `major*10000 + minor*100 + patch`) for cheap compile-time comparison;
+  `version_at_least()` is now `consteval`.
+
+### Changed
+- `OutputBuffer::append` now takes `std::span<const uint8_t>` instead of
+  a raw `(uint8_t*, size_t)` pair — `std::span` is the project-wide
+  zero-copy convention and matches the `PacketView` contract.
+- `ErrorInfo` rendering is now explicitly three-path: `std::formatter<>`
+  for `std::format`, `format_as()` ADL hook for spdlog's bundled fmt,
+  and `operator<<` for `std::ostream` / gtest. All three stay in
+  lockstep ("CODE: detail", detail omitted when empty).
+
+## Phase 9 Recovery (2026-04-10)
 
 ### Added
 - Three new values in `enum class Error` (`eph/core/error.hpp`) used by

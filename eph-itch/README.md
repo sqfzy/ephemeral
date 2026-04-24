@@ -8,19 +8,40 @@ Designed for HFT feed handling with no allocations on the hot path.
 
 - **ITCH 5.0 message parsing** — all 22 message types covered. Zero-copy field
   accessors operate directly on raw byte buffers (no deserialization into
-  structs, no memcpy of payloads).
+  structs, no memcpy of payloads). `MessageView` is a small POD pointing back
+  into the caller's receive buffer.
 - **Compile-time tag dispatch** — `dispatch()` / `dispatch_all()` resolve
   handler overloads at compile time via `msg::` tag structs, producing one
-  branch per message type with no virtual calls.
+  branch per message type with no virtual calls. Handler return values are
+  forwarded; returning `bool` from a `dispatch_all` handler supports early
+  stop.
 - **Transport protocols** — `ItchFramer` (2-byte length prefix),
   `SoupBinTcpFramer` (TCP framer with packet type), and `parse_moldudp64()`
   (UDP multicast container iteration).
 - **OUCH 5.0 order entry** — inbound builders (`EnterOrder`, `ReplaceOrder`,
   `CancelOrder`) and outbound zero-copy views (`AcceptedView`, `ExecutedView`,
   `CanceledView`, `ReplacedView`).
+- **Message classification helpers** — `is_system_message()`,
+  `is_order_message()`, `is_trade_message()`, `is_imbalance_message()`,
+  `is_known_type()`; all `constexpr` and mutually exclusive.
+- **Padded-string trim** — `eph::itch::trim()` + per-accessor `*_trimmed()`
+  variants (`add_order::stock_trimmed`, `stock_directory::stock_trimmed`,
+  `add_order_mpid::attribution_trimmed`, …) strip trailing spaces from the
+  8-byte stock symbol / 4-byte MPID wire fields without copying.
+- **Price scaling constants** — `kItchPriceDivisor` (10 000, for most ITCH
+  price fields) and `kLuldPriceDivisor` (100 000 000, for LULD auction
+  collars) so consumers never hard-code magic divisors.
+- **Auto-derived size bounds** — `kMaxMessageSize` / `kMinMessageSize` are
+  computed at compile time from the per-type `k*Size` constants via a
+  `detail::kAllMessageSizes[]` table; adding a new message type updates both
+  automatically.
 - **Production observability** — `ParserStats` tracks throughput, error rate,
-  and first-error diagnostics. `std::formatter` specializations for
-  `ParseError`, `MessageView`, and `ParserStats`.
+  and first-error diagnostics (`dump()`, `to_json()`, `operator-` for
+  interval snapshots). Named per-module spdlog loggers (`itch.parser`,
+  `itch.moldudp64`, `itch.soupbintcp`, `itch.ouch`) with actionable error
+  context (offsets, lengths, message-type byte). `std::formatter`
+  specialisations for `ParseError`, `MessageView`, and `ParserStats` make
+  them first-class citizens of `std::format` / `std::print`.
 - **Header-only** — no compiled library; just add `#include <eph/itch.hpp>`
   and link transitive dependencies (`eph-core`, `spdlog`).
 

@@ -9,8 +9,9 @@ user-facing types:
 - `KernelUdpSocket<C>` — per-connection UDP socket with multicast helpers.
 - `KernelPoller` — epoll-based I/O driver.
 
-Everything else (`KernelByteSocket`, `SpanView`, `TlsState`, `ReassemblyBuffer`)
-is internal detail under `include/eph/net/kernel/detail/`.
+Everything else (`ByteSocket`, `SpanView`, `TlsState`, `ReassemblyBuffer`)
+is internal detail under `include/eph/net/kernel/detail/`. All detail types
+live in `namespace eph::net::kernel::detail`.
 
 ## How to read the code
 
@@ -34,11 +35,15 @@ xmake build -g tests
 xmake run test_kernel_tcp_stream
 xmake run test_kernel_poller
 xmake run test_kernel_udp_socket
-xmake run test_kernel_udp   # cross-module integration test
+xmake run test_kernel_ws_upgrade
+xmake run test_kernel_tls_state
+xmake run test_kernel_proxy_integration
 ```
 
-Per-file targets are auto-globbed from `tests/test_*.cpp`. Integration tests live
-under `../../tests/integration/`.
+Per-file targets are auto-globbed from `tests/test_*.cpp`. Cross-module
+integration tests (`test_kernel_udp`, `test_transport_e2e`, `test_binance_adapter`,
+…) live under `../../tests/integration/` — they are **not** defined by
+`eph-net-kernel/xmake.lua`.
 
 ## Common tasks
 
@@ -77,8 +82,9 @@ using PlainTcp = eph::net::kernel::KernelTcpStream<eph::codec::RawStreamCodec, f
 ### Adding a feature to the byte socket
 
 Edit `include/eph/net/kernel/detail/byte_socket.hpp`. Keep the API narrow —
-`KernelTcpStream` expects `read` / `write` / `connect` / `set_nonblocking` /
-`fd` / `close`.
+`KernelTcpStream` (and the `PlainWsSink` / `TlsWsSink` handshake adapters)
+rely on `connect` / `send` / `recv` / `set_no_delay` / `fd`. The socket
+closes itself on destruction; there is no public `close` method.
 
 ## See also
 

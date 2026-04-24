@@ -186,28 +186,106 @@ DPDK environment setup (hugepages, vfio-pci binding) is documented in
 
 ## Testing
 
-`eph-net-dpdk/tests/` holds:
+`eph-net-dpdk/tests/` holds the public-surface tests (top-level) plus
+the preserved internal-primitive tests under `tests/legacy/`.
 
-- `test_dpdk_tls_handshake.cpp` — regression guard for TLS
-  (`DpdkTcpStream<C, true>::create()` runs a real TLS 1.3 handshake).
-- `test_dpdk_tls_state.cpp` — in-place decrypt state tests.
-- `test_dpdk_udp_multicast.cpp` — UDP multicast join/leave tests.
-- `tests/integration/test_dpdk_e2e.cpp` — full kernel-mock → DPDK-client suite.
-- `tests/legacy/` — unit tests preserved from the legacy `eph-dpdk` module. They
-  cover the internal `eph::dpdk::*` primitives (ARP, DNS, flow steering, TCP
-  state machine, net header helpers). These aren't "legacy" in the sense of
-  "to be deleted" — they're the unit-level coverage for the internal detail
-  layer the public types wrap.
+### Public-surface tests (top-level `tests/`)
+
+| Binary                             | Covers                                                                  |
+|------------------------------------|-------------------------------------------------------------------------|
+| `test_dpdk_poller`                 | `DpdkPoller` add / remove / dispatch / ICMP fallback / src_port picker  |
+| `test_dpdk_tcp_stream`             | `DpdkTcpStream` create / send / close / metric / attached state         |
+| `test_dpdk_udp_socket`             | `DpdkUdpSocket` create / send_to / connect_to / metric                  |
+| `test_dpdk_udp_multicast`          | UDP multicast join / leave / mcast MAC registration                     |
+| `test_dpdk_tls_handshake`          | `DpdkTcpStream<C, true>::create()` real TLS 1.3 handshake               |
+| `test_dpdk_tls_state`              | In-place decrypt state (`detail::TlsState`)                             |
+| `test_dpdk_tls_desync`             | TLS partial-send desync latch                                           |
+| `test_dpdk_ws_handshake_timeout`   | WS upgrade timeout path                                                 |
+| `test_dpdk_ws_sink`                | WS codec → `DpdkTcpStream` sink integration                             |
+| `test_dpdk_reasm_overflow`         | Reassembly capacity exhaustion + RX cksum TD-6 precise-mask cases       |
+| `test_dpdk_fault_tolerance`        | Keepalive exhaustion / link-down / reconnect policy                     |
+| `test_flow_steering`               | RSS + `install_flow_rule` / `FlowRule` RAII + Toeplitz queue predictor  |
+
+### Integration tests (`tests/integration/`)
+
+| Binary       | Covers                                                   |
+|--------------|----------------------------------------------------------|
+| `dpdk_e2e`   | Full kernel-mock → DPDK-client suite (all P0+P1 cases)   |
+
+### Legacy tests (`tests/legacy/`)
+
+Unit-level coverage for the internal `eph::dpdk::*` primitives (ARP,
+DNS, flow steering, TCP state machine, net-header helpers, ICMP
+registry, packet parse, packet core, multicast). Preserved from the
+pre-rename `eph-dpdk` module — **not deprecated**, they are the
+source of truth for the detail layer the public types wrap.
 
 ```bash
 xmake build -g tests
+xmake run test_dpdk_poller
 xmake run test_dpdk_tls_handshake
-xmake run test_dpdk_tls_state
 xmake run test_dpdk_udp_multicast
+xmake run test_flow_steering
+# ... any of the above
 
 # E2E suite (requires NIC_B bound to vfio-pci; skips cleanly otherwise)
 sudo tests/integration/dpdk_e2e
 ```
+
+## Benchmarks
+
+`eph-net-dpdk/benchmarks/` contains Google Benchmark microbenchmarks for
+the DPDK hot paths. Auto-globbed via the `eph-bench` rule; build with
+`xmake build -g benchmarks`.
+
+| Binary                    | Focus                                                        |
+|---------------------------|--------------------------------------------------------------|
+| `bench_rx_hot_path`       | Parser chain on the RX hot path (checksum + parse + dispatch) |
+| `bench_tcp_header`        | TCP header build / checksum                                  |
+| `bench_udp`               | UDP send / receive primitives                                |
+| `bench_multicast`         | Multicast group membership updates                           |
+| `bench_dns_codec`         | DNS reply parse                                              |
+| `bench_memcpy_compare`    | `rte_memcpy` vs `std::memcpy` on mbuf-sized spans            |
+| `bench_rte_ring_vs_bq`    | `rte_ring` MPMC vs alternative bounded-queue baselines       |
+| `bench_matrix`            | Matrix driver (shared header)                                |
+
+The RX hot-path baseline lives in
+`.artifacts/bench-rx-hot-path-20260423.txt`. Re-run with
+`scripts/check-rx-hot-path-regression.sh` (default 5% threshold, exit
+code 1 on regression) — suitable as a pre-PR gate or local canary.
+
+## Fuzzers
+
+`eph-net-dpdk/fuzzers/` ships four libFuzzer harnesses for the
+zero-heap parsers. Intentionally **outside the xmake graph** —
+the default toolchain is GCC 14, but libFuzzer needs Clang ≥ 17.
+
+| Harness              | Target                                       |
+|----------------------|----------------------------------------------|
+| `fuzz_dns_reply`     | `eph::dpdk::dns::detail::parse_dns_response` |
+| `fuzz_arp_reply`     | `eph::dpdk::arp::parse_arp_reply`            |
+| `fuzz_icmp_reply`    | `parse_icmp` + `parse_ip_header` + `is_ip_fragment` |
+| `fuzz_udp_packet`    | `parse_udp_packet` + `parse_udp_from_ip` + `parse_tcp_from_ip` |
+
+Build + run instructions are in
+[`fuzzers/README.md`](./fuzzers/README.md) (each `clang++
+-fsanitize=fuzzer,address,undefined` invocation + seed corpus use).
+Seed corpora (`fuzzers/corpus/<harness>/`) are version-controlled;
+minimized crash reproducers should be committed alongside the fix.
+
+## Scripts
+
+`eph-net-dpdk/scripts/` holds operational helpers:
+
+| Script                                  | Purpose                                                        |
+|-----------------------------------------|----------------------------------------------------------------|
+| `dpdk-setup.sh`                         | Hugepages + vfio-pci bind (idempotent)                         |
+| `dpdk-teardown.sh`                      | Reverse `dpdk-setup.sh` — restore NIC to kernel driver         |
+| `check-rx-hot-path-regression.sh`       | Diff `bench_rx_hot_path` vs baseline, exit 1 on regression     |
+
+All three are idempotent and dry-run-safe (see
+[`../docs/dpdk-setup.md`](../docs/dpdk-setup.md) for the hugepages /
+vfio-pci flow).
 
 ## Dependencies
 

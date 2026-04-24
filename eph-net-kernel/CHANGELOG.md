@@ -1,5 +1,42 @@
 # eph-net-kernel changelog
 
+## [Unreleased] — Doc sync (2026-04-24)
+
+### Docs
+- `README.md`, `summary.md`, `docs/ONBOARDING.md` re-aligned with the
+  current public API:
+  - `StreamConfig` uses `SocketAddr remote` / `SocketAddr local`, not
+    `host` / `port`; TLS selection is the `EnableTls` template parameter
+    (no runtime `use_tls` bool); the dead `bind_device` /
+    `ReconnectPolicyConfig` fields are gone (the latter was dropped on
+    2026-04-14, see entry below). New fields are now documented:
+    `ws_host`, `ws_extra_headers`, `ws_timeout`, `proxy`,
+    `connect_timeout`, `reasm_capacity`, `tcp_nodelay`.
+  - `UdpConfig` uses `bind` / `connect_to` / `rcv_buf` / `snd_buf` /
+    `reuse_addr`, not `bind_addr` / `rcvbuf` / `bind_device`.
+  - `PollerConfig` uses `initial_capacity` + `max_events_per_wait`, not
+    the old `max_events`.
+  - Callback signatures updated to
+    `OnMessage  = std::function<void(std::span<const uint8_t>)>` and
+    `OnDatagram = std::function<void(std::span<const uint8_t>,
+                                     const SocketAddr&)>` (the
+    `(uint8_t*, uint16_t)` form was already gone from the code).
+  - `KernelPoller::add`/`remove` template constraint is the local
+    `KernelPollable` concept (not plain `Pollable`); internals note the
+    `detach_fn` notification thunk and the 256-event burst cap in
+    `epoll_wait`.
+  - Detail namespace class is `detail::ByteSocket`, not the ghost
+    `KernelByteSocket` name; ONBOARDING's reading list reflects that.
+  - ONBOARDING's "running the tests" list no longer claims
+    `xmake run test_kernel_udp` is a module-local target — that binary is
+    built from `tests/integration/` and belongs to the root `xmake.lua`.
+  - README's dead link to `docs/multi-connection.md` (never present in
+    this module) is removed; observability section added pointing at the
+    pull-model `metric(StreamMetric)` accessor and
+    `eph::net::publish_metrics`.
+
+No code, build, or test changes.
+
 ## [Unreleased] — Drop dead reconnect field (2026-04-14)
 
 ### Changed — BREAKING

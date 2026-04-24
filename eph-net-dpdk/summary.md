@@ -162,6 +162,66 @@ struct PollerConfig {
 };
 ```
 
+## `PlatformConfig` (`eph::dpdk::PlatformConfig`)
+
+Used by `Platform::create` / `create_primary` / `create_secondary`. All
+fields are *requested* values and are clamped to the NIC-reported limits
+at bring-up time. The multi-process fields at the bottom default to
+single-process / primary semantics — pre-MP code compiles byte-for-byte
+unchanged.
+
+```cpp
+enum class ProcType : uint8_t { Primary, Secondary };
+
+struct PlatformConfig {
+    uint16_t     port_id              = 0;
+    uint16_t     nb_rx_queues         = 1;
+    uint16_t     nb_tx_queues         = 1;
+    uint16_t     nb_rx_desc           = 1024;
+    uint16_t     nb_tx_desc           = 1024;
+    uint32_t     mbuf_pool_size       = 8'191;   // 2^k - 1
+    uint32_t     mbuf_cache_size      = 250;
+    bool         enable_promiscuous   = false;
+    bool         enable_rss           = false;
+    bool         enable_rx_checksum_offload = false;
+    bool         enable_strict_rx_checksum  = false;
+    int          link_timeout_ms      = 2000;
+
+    // ── Multi-process (primary+secondary) ────────────────────────────
+    ProcType     proc_type            = ProcType::Primary;
+    std::string_view file_prefix      {};          // mirrors EAL --file-prefix
+    std::pair<uint16_t, uint16_t> rx_queue_range {0, 0};      // {0,0} = full range
+    std::pair<uint16_t, uint16_t> src_port_range {32768, 65535};
+
+    friend bool operator==(const PlatformConfig&, const PlatformConfig&) = default;
+};
+```
+
+### Multi-process factories
+
+```cpp
+static std::expected<Platform, std::string> create         (const PlatformConfig&);
+static std::expected<Platform, std::string> create_primary (PlatformConfig);
+static std::expected<Platform, std::string> create_secondary(PlatformConfig);
+```
+
+- `create()` — original single-process factory; honours
+  `config.proc_type`. Default `Primary` matches legacy behaviour
+  byte-for-byte.
+- `create_primary()` — forces `proc_type = Primary`, otherwise
+  equivalent to `create()`. Use at call sites that also use
+  `create_secondary` for clarity.
+- `create_secondary()` — **phase-1 stub**. Validates the secondary
+  contract synchronously (non-empty `file_prefix`; `src_port_range`
+  explicitly carved off the IANA default; `rx_queue_range` either the
+  `{0,0}` full-range sentinel or a non-empty sub-range) and then
+  currently delegates to `create()` with a WARN log. The real
+  shared-mempool attach (`rte_mempool_lookup`, skip
+  `rte_eth_dev_configure/start`) lands in phase 3. Callers already
+  receive correct `Error::InvalidConfig`-shaped errors for the
+  misconfiguration classes the factory exists to prevent (silent
+  cross-process source-port collision being the main one).
+
 ## Dependencies
 
 - `eph-net` (public) — concepts (Stream/Datagram/Poller/Pollable), SocketAddr,

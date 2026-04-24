@@ -13,9 +13,9 @@ Codecs are independent of any networking backend — they operate on a templated
 |---|---|---|
 | `eph::codec::WsCodec` | `StreamCodec` | RFC 6455 WebSocket. Owns reassembly + ping/close FSM. Auto-responds ping/close via `OutputBuffer`. |
 | `eph::codec::RawStreamCodec` | `StreamCodec` | Passthrough — frames are whole receive buffers. |
-| `eph::codec::LengthPrefixCodec` | `StreamCodec` | 2-byte big-endian length prefix, ≤65 535 byte payloads. |
-| `eph::codec::RawDatagramCodec` | `DatagramCodec` | One frame per datagram. |
-| `eph::codec::Mold64Codec` | `DatagramCodec` | NASDAQ MoldUDP64. Tracks sequence + gap count, emits N ITCH messages per packet through the sink. |
+| `eph::codec::LengthPrefixCodec` | `StreamCodec` | 4-byte big-endian length prefix, payloads up to 16 MiB (`kMaxFrameLen`). |
+| `eph::codec::RawDatagramCodec` | `DatagramCodec` | One frame per datagram. Empty datagrams rejected with `CodecBad`. |
+| `eph::codec::Mold64Codec` | `DatagramCodec` | NASDAQ MoldUDP64. Tracks next expected sequence, accumulates `gap_count()` on forward jumps, delivers end-of-session markers (message_count == 0xFFFF) as 0 frames. Emits one `Frame{seq_num, payload}` per contained ITCH message through the sink; provides a test-oriented `encode()` for single-message datagrams. |
 
 All five satisfy `eph::core::Codec`.
 
@@ -44,8 +44,10 @@ runtime dispatch on the hot path.
 xmake build eph-codec
 xmake build -g tests
 xmake run test_ws_codec
+xmake run test_ws_codec_edge
 xmake run test_mold64_codec
 xmake run test_raw_stream_codec
+xmake run test_raw_datagram_codec
 xmake run test_length_prefix_codec
 xmake run test_packet_view
 ```

@@ -1,30 +1,65 @@
 # eph-net changelog
 
-## [Unreleased] — Phase 9 Recovery (2026-04-10)
+## [Unreleased]
+
+### Documentation
+- Re-synced `README.md`, `summary.md`, `docs/ONBOARDING.md` against the
+  actual header set under `include/eph/net/` (2026-04-24). Previous
+  revisions still listed pre-Phase-9 `detail/http_request.hpp` /
+  `http_response.hpp` (now replaced by the top-level `http.hpp`
+  parser + `detail/ws_handshake.hpp` + `detail/http_connect.hpp`), and
+  omitted `hmac.hpp`, `proxy.hpp`, `stream_metrics.hpp`,
+  `posix_io.hpp`, `posix_listener.hpp`, and the split-out TLS
+  primitives (`tls_record.hpp`, `tls_decryptor.hpp`,
+  `tls_encryptor.hpp`, `tls_inplace.hpp`, `tls_constants.hpp`). The
+  concept signatures shown in `summary.md` were also tightened to
+  match the current `noexcept` / `PollerOf` shape.
+
+## Phase 9 Recovery (2026-04-10)
 
 ### Added
 - `include/eph/net/http.hpp` — incremental HTTP/1.1 parser subset.
   `parse_http_request` / `parse_http_response` return
   `std::expected<std::optional<ParseResult<T>>, ErrorInfo>`: `nullopt`
   means "need more bytes", value means "complete message parsed". Caller
-  provides header storage (`std::span<HeaderField>`), so the parser is
-  zero-heap. HFT-pragmatic subset: rejects `Transfer-Encoding` /
-  chunked / cookies / redirect / `Expect: 100-continue` with
-  `Error::CodecBad` (see scope decision D-1 and
+  provides header storage (`std::span<HttpHeader>`), so the parser is
+  zero-heap. `build_http_request` / `build_http_response` round-trip
+  into a caller-owned buffer. HFT-pragmatic subset: rejects
+  `Transfer-Encoding` / chunked / cookies / redirect /
+  `Expect: 100-continue` / conflicting `Content-Length` / bare LF /
+  CRLF+NUL injection with `Error::CodecBad` (see scope decision D-1 and
   `.artifacts/phase-9-scope-decision.md`).
-- `include/eph/net/hmac.hpp` — typed HMAC-SHA256 with `Key` and `Tag`
-  wrappers. `Key` clears its material in the destructor (RAII); one-shot
-  `sign(key, msg)` is zero-allocation. aws-lc backs the primitive.
+- `include/eph/net/hmac.hpp` — typed HMAC-SHA256 with `HmacSha256Key`
+  and `HmacSha256Tag` wrappers. The key is normalised per RFC 2104 into
+  an `alignas(64)` 64-byte buffer and cleared by the destructor via
+  `OPENSSL_cleanse` (RAII, non-copyable, noexcept-movable). One-shot
+  `hmac_sha256_sign(key, msg)` is zero-alloc and `noexcept`;
+  `tag.to_hex(span<uint8_t, 64>)` is zero-alloc lowercase hex. aws-lc
+  backs the primitive.
 - `include/eph/net/proxy.hpp` + `include/eph/net/detail/http_connect.hpp`
   — HTTP CONNECT proxy support. `StreamConfig::proxy` is honoured by
-  the kernel backend; `parse_proxy_url` reads
-  `http://[user:pass@]host:port`. The DPDK backend rejects any
-  non-empty `proxy` with `Error::InvalidConfig` because there is no
-  kernel TCP path available for the CONNECT tunnel.
+  the kernel backend; `ProxyConfig::validate()` enforces non-empty
+  host, non-zero port, XOR'd basic-auth fields, and positive timeout.
+  The DPDK backend rejects any non-empty `proxy` with
+  `Error::InvalidConfig` because there is no kernel TCP path available
+  for the CONNECT tunnel.
 - `include/eph/net/detail/ws_handshake.hpp` — RFC 6455 client
-  handshake. Called transparently by the kernel / DPDK backends inside
-  `TcpStream::create()` when `StreamConfig::ws_path` is set (decision
-  D-2: config-driven over `connect_async`-style separate entrypoint).
+  handshake over a generic ByteSink. Called transparently by the
+  kernel / DPDK backends inside `TcpStream::create()` when
+  `StreamConfig::ws_path` is set (decision D-2: config-driven over a
+  separate `connect_async`-style entry point).
+- `include/eph/net/stream_metrics.hpp` — `StreamMetric` enum +
+  `kStreamMetricNames` (OTel `net.stream.*`) + `publish_metrics` reader
+  that forwards counters into any `eph::core::MetricsSink`.
+- `include/eph/net/posix_io.hpp`, `include/eph/net/posix_listener.hpp`
+  — server-side `send_all` / `recv_exact` / `tcp_bind_listen` / UDP
+  bind / poll-based accept helpers (`eph::net::posix`), promoted out of
+  the benchmark tree so tests no longer reverse-include benchmarks.
+- TLS in-place primitives split out of `detail/tls_session.hpp`:
+  `tls_record.hpp`, `tls_decryptor.hpp`, `tls_encryptor.hpp`,
+  `tls_inplace.hpp`, `tls_constants.hpp`. This lets the DPDK backend
+  decrypt AES-GCM straight into the mbuf (zero-copy `PacketView`)
+  without pulling the full session state machine.
 - Three new `eph::core::Error` values are consumed here:
   `ProxyConnectFailed`, `ProxyHandshakeFailed`, `ProxyAuthRequired`.
 

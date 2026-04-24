@@ -3,15 +3,26 @@
 /// DPDK kernel-bypass example: one DpdkPoller<> drives multiple Pollables
 /// on a single lcore loop.
 ///
-/// NOTE: TLS on DPDK is not yet available. The DPDK TLS path is
-/// structurally complete in `eph/net/dpdk/detail/tls_state.hpp` but cannot
-/// link in the same TU as `eph/dpdk/tcp.hpp` due to the vcpkg-openssl ↔
-/// aws-lc symbol clash. This example uses `DpdkTcpStream<C, false>` (plain
-/// TCP) so it can build and run end-to-end. The shape is otherwise identical
-/// to the design doc Example 2.
+/// Scope of this demo: plain TCP (`DpdkTcpStream<C, /*EnableTls=*/false>`)
+/// with a hand-built `StreamConfig::legacy` tuple and the strict
+/// `DpdkTcpStream::create(cfg)` factory. It is intentionally a *skeleton* —
+/// `scfg.pool` is left null so `create` fails fast with `InvalidConfig` on
+/// a smoke-boot without a real mempool, and the rest of the code
+/// demonstrates the error surface only.
+///
+/// For a turnkey production factory that owns queue selection, src-port
+/// allocation, TLS 1.3 handshake (aws-lc), WS upgrade, Poller attach,
+/// FlowDirector rule install and ICMP path-MTU registration in a single
+/// call, see `DpdkTcpStream<C, true>::create_and_attach(cfg, platform)` as
+/// used in `examples/binance_latency.cpp`.
+///
+/// System libdpdk is linked directly (the previous vcpkg-openssl ↔ aws-lc
+/// TU clash no longer applies — see CLAUDE.md "Build"), so
+/// `DpdkTcpStream<C, true>` is fully supported; this file stays plain-TCP
+/// only to keep the example minimal.
 ///
 /// Usage:
-///   sudo ./simple_hft_dpdk_v3 -a 0000:28:00.0 -l 4-7 --
+///   sudo ./simple_hft_dpdk -a 0000:28:00.0 -l 4-7 --
 ///        --dst-ip 10.0.0.20 --dst-port 30000
 
 #include <atomic>

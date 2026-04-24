@@ -113,6 +113,18 @@ grouped by the development day for readability.
 
 ### Fixed
 
+- **`size_t` underflow in framer bounds check (OOB read)** — `BasicFixFramer::
+  decode` previously guarded the 7-byte `10=XXX\x01` trailer with
+  `header_len + body_length > len - 7`, which underflows `size_t` to
+  `SIZE_MAX` when `len < 7` and silently passes the check. A peer sending the
+  6-byte sequence `8=\x019=\x01` (empty `BeginString`, empty `BodyLength`)
+  drove `header_len=6`, `body_length=0` past the guard, so `decode()`
+  dereferenced the checksum slot seven bytes past the caller's buffer —
+  uninitialized data read in the best case, `SIGSEGV` across a page boundary
+  in the worst. Replaced with the `len < header_len + 7 || body_length >
+  len - header_len - 7` floor-then-subtract pattern already used by
+  `parser.hpp::parse`. Three new framer tests cover the minimum-header,
+  just-below-checksum-size, and legal zero-body-floor boundaries.
 - **Integer overflow in body-length parsing** — both parser and framer now
   check for overflow before each multiplication when decoding `9=NNN`,
   preventing maliciously long digit strings from wrapping past the
@@ -161,4 +173,4 @@ grouped by the development day for readability.
 
 ---
 
-*This changelog covers commits up to `9f5c271` (2026-04-03).*
+*This changelog covers commits up to `54b056f` (2026-04-10).*

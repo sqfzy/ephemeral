@@ -8,6 +8,7 @@ Header-only C++23 library for zero-copy JSON parsing and typed adapter extractio
 - **Compile-time lookup tables** for whitespace skipping and value-terminator scanning — single indexed load per byte instead of chained comparisons.
 - **Nested objects/arrays captured as opaque `string_view`s** — the core parser does not descend into them, allowing downstream code to re-parse only when needed.
 - **Typed exchange adapters** for Binance (`BookTicker`, `CombinedStream`), OKX (`OkxPushMessage`, `OkxBookTicker`), and Bybit (`BybitPushMessage`, `BybitBookTicker`) that project raw JSON into structs with descriptive field names and cached parsed prices where applicable.
+- **Fused single-pass `BookTicker::parse(data, len)` fast path** for Binance — skips the generic `JsonView` intermediate, dispatching each 1-char key directly into the target field. ~2-3× faster than `BookTicker::from(parse(data, len))` on representative payloads; byte-for-byte identical field values (verified by `BinanceBookTickerParse.MatchesFromFlow`). Designed for HFT hot paths with a priori-known stream type.
 - **FNV-1a symbol hash extractors** (`binance::symbol_hash`, `okx::inst_id_hash`, `bybit::symbol_hash`) that fast-scan the raw bytes without invoking the full parser — designed for use with Transport's two-phase frame filter (latest-per-symbol deduplication).
 - **Pass-through `JsonFramer`** satisfying `eph::net::MessageFramer`, for JSON-over-WebSocket Transport type aliases.
 - **Binance REST client** (`BinanceRestClient`) for `/api/v3/depth` and `/api/v3/time` — post-reconnect orderbook snapshot recovery and clock drift validation.
@@ -69,7 +70,7 @@ xmake run test_bybit      # Bybit adapter tests
 xmake run bench_json_parse
 ```
 
-Microbenchmarks cover three scenarios over a representative Binance bookTicker payload: (1) `parse()` alone, (2) `parse()` + `BookTicker::from()` extraction, (3) `symbol_hash()` on the raw bytes.
+Microbenchmarks cover four scenarios over a representative Binance bookTicker payload: (1) `parse()` alone, (2) `parse()` + `BookTicker::from()` extraction, (3) `BookTicker::parse()` fused single-pass extraction (direct competitor to scenario 2), (4) `symbol_hash()` on the raw bytes.
 
 ## Project Structure
 
@@ -128,8 +129,9 @@ eph-json/
 
 | Symbol | Description |
 |--------|-------------|
-| `BookTicker` | Typed view of a bookTicker push. String views for `symbol`/`bid_price`/`bid_qty`/`ask_price`/`ask_qty`; integer `update_id`/`event_time`/`txn_time`; `cached_bid`/`cached_ask` populated by `from()`. |
+| `BookTicker` | Typed view of a bookTicker push. String views for `symbol`/`bid_price`/`bid_qty`/`ask_price`/`ask_qty`; integer `update_id`/`event_time`/`txn_time`; `cached_bid`/`cached_ask` populated by `from()` or `parse()`. |
 | `BookTicker::from(JsonView)` | Factory. Requires `s`, `b`, `B`, `a`, `A`; optional `u`, `E`, `T`. |
+| `BookTicker::parse(const uint8_t* data, size_t len)` | Fused single-pass factory — scans payload once and dispatches each 1-char key directly into the target field without the `JsonView` intermediate. Same required/optional set as `from()`. ~2-3× faster on bookTicker payloads (see `BM_BinanceBookTickerParse`). Unknown fields (multi-char keys, or future additions) are silently skipped. Returns `nullopt` on malformed JSON or any missing required field. |
 | `BookTicker::mid_price()` / `spread()` | `optional<double>`; uses cached values when available. |
 | `CombinedStream` | Typed view of `{"stream":..., "data":{...}}`. `data_raw` is the opaque inner object (caller re-parses it). |
 | `CombinedStream::from(JsonView)` | Factory; requires `stream` and non-empty `data`. |
@@ -234,6 +236,28 @@ if (auto ticker = eph::json::binance::BookTicker::from(*result)) {
 uint32_t h = eph::json::binance::symbol_hash(data, len);
 ```
 
+### Binance bookTicker — fused single-pass fast path
+
+When the stream is known a priori to be bookTicker (e.g. a direct
+`/ws/<sym>@bookTicker` subscription), skip the generic `JsonView` intermediate:
+
+```cpp
+#include <eph/json/adapters/binance.hpp>
+
+// Same required/optional fields as BookTicker::from(). Returns nullopt
+// on any missing required field (s/b/B/a/A) or malformed JSON.
+if (auto ticker = eph::json::binance::BookTicker::parse(data, len)) {
+    auto bid = ticker->bid_price;    // string_view into the input buffer
+    auto mid = ticker->mid_price();  // cached_bid/cached_ask pre-populated
+}
+```
+
+Field values are byte-for-byte identical to
+`BookTicker::from(parse(data, len))` (contract verified by
+`BinanceBookTickerParse.MatchesFromFlow`). Unknown fields (multi-char keys,
+or future Binance additions) are silently skipped — existing callers keep
+working across additive schema changes.
+
 ### Binance combined stream
 
 ```cpp
@@ -320,7 +344,8 @@ if (now) {
 - **Nested objects/arrays** are captured as opaque `string_view`s spanning `{...}` or `[...]`. Parsing depth is bounded at 64 to prevent stack/iteration runaway on pathological inputs.
 - **`get()` vs `get_string()`.** `get()` returns an empty `string_view` for BOTH missing keys and present-but-empty values; `get_string()` distinguishes them with `optional`.
 - **`CombinedStream::from()` requires a non-empty `data_raw`.** An empty nested object (`"data":{}`) would be reported as missing; this is an intentional simplification for HFT payloads, which never have empty `data`.
-- **Price caching in `BookTicker`.** Prices are pre-parsed once inside `BookTicker::from()` into `cached_bid`/`cached_ask`, so `mid_price()` / `spread()` are branch-light even when called repeatedly per message. `OkxBookTicker` and `BybitBookTicker` do NOT cache — their prices are re-parsed on every `mid_price()`/`spread()` call.
+- **Price caching in `BookTicker`.** Prices are pre-parsed once inside `BookTicker::from()` / `BookTicker::parse()` into `cached_bid`/`cached_ask`, so `mid_price()` / `spread()` are branch-light even when called repeatedly per message. `OkxBookTicker` and `BybitBookTicker` do NOT cache — their prices are re-parsed on every `mid_price()`/`spread()` call.
+- **`BookTicker::from()` vs `BookTicker::parse()`.** The `from(JsonView)` flow is generic — it works against any `JsonView` regardless of how it was produced (including a combined-stream inner `data`). `parse(data, len)` is specialised: a single pass over the raw bytes dispatching on 1-char keys, ~2-3× faster for dedicated `@bookTicker` subscriptions where the payload shape is known. Use `parse()` on the dedicated hot path; use `from()` when navigating a combined-stream envelope (where the outer JSON has already been parsed into a `JsonView`).
 
 ## License
 

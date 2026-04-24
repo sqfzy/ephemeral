@@ -25,13 +25,17 @@
 
 `eph-utils` is the shared foundation library consumed by every other
 `eph-*` subproject in the `ephemeral_dev` monorepo (`eph-core`,
-`eph-containers`, `eph-transport`, `eph-net`, `eph-dpdk`, `eph-fix`,
-`eph-itch`, `eph-json`, `eph-book`). It sits one layer above `eph-core`
-(which owns the pure concepts and error types) and provides the
-platform-specific primitives that latency-sensitive code needs: reading
-the hardware timestamp counter, computing HDR latency histograms,
-pinning threads to isolated cores, allocating on huge pages, building
-regulatory audit trails, and measuring system resource usage.
+`eph-containers`, `eph-codec`, `eph-net`, `eph-net-kernel`,
+`eph-net-dpdk`, `eph-fix`, `eph-itch`, `eph-json`, `eph-book`). It sits
+one layer above `eph-core` (which owns the pure concepts and error
+types) and provides the platform-specific primitives that
+latency-sensitive code needs: reading the hardware timestamp counter,
+computing HDR latency histograms, pinning threads to isolated cores,
+allocating on huge pages, building regulatory audit trails, measuring
+system resource usage, running two-phase bench timers, tripping an
+irreversible kill switch, gating throughput with a token bucket,
+coordinating cooperative shutdown, and entering a Linux network
+namespace from test fixtures.
 
 The library is header-only — `xmake.lua` declares it as
 `set_kind("headeronly")` with `add_includedirs("include", { public =
@@ -44,9 +48,15 @@ release).
 
 The API surface is organised by concern: one header per primitive
 (`time.hpp`, `cpu.hpp`, `hugepage.hpp`, ...), plus two aggregation
-headers (`utils.hpp` includes every public header, `record.hpp` groups
-the three recording-related ones). Prefer including the specific header
-for build-time reasons; the `utils.hpp` shortcut exists for prototypes.
+headers. `utils.hpp` pulls in the long-standing core set (`alignment`,
+`audit_log`, `console_sink`, `cpu`, `ema`, `hugepage`, `record`,
+`recorder`, `system_stats`, `time`, `timestamp`); `record.hpp` groups
+the three recording-related ones. The newer additions —
+`kill_switch.hpp`, `rate_limiter.hpp`, `phased_timer.hpp`,
+`shutdown_signal.hpp`, and `linux/netns.hpp` — are **not** transitively
+pulled in by `utils.hpp`; `#include` them explicitly (trading-semantics
+primitives and POSIX-only helpers stay opt-in). Prefer per-header
+includes for build time regardless.
 
 ---
 
@@ -55,24 +65,35 @@ for build-time reasons; the `utils.hpp` shortcut exists for prototypes.
 Classic loosely-coupled header library: each module is independent
 except for a few explicit edges (recording depends on timing,
 `cpu.hpp::spin_for_ns` depends on `time.hpp`, `audit_log.hpp` depends on
-`time.hpp`). No global state beyond `TSC`'s `call_once` calibration and
-`cpu_pin.hpp`'s process-wide pinned-cpu registry.
+`time.hpp`). Global state is limited to: `TSC`'s `call_once`
+calibration, `cpu.hpp`'s process-wide pinned-cpu registry (serving
+`pin_thread`), and `shutdown_signal.hpp`'s `g_shutdown_flag` (opt-in
+header, only touched when a consumer calls
+`install_shutdown_handlers()`).
 
 ### Component Diagram
 
 ```
-                   +----------------------------+
-                   |     eph/utils.hpp          |
-                   | (aggregation of all below) |
-                   +----------------------------+
+                +----------------------------+
+                |     eph/utils.hpp          |
+                | (aggregates the core set:  |
+                |  alignment, audit_log,     |
+                |  console_sink, cpu, ema,   |
+                |  hugepage, record,         |
+                |  recorder, system_stats,   |
+                |  time, timestamp)          |
+                +----------------------------+
                               |
    +-------+-------+-------+--+----+-------+-------+-------+-------+
-   v       v       v       v       v       v       v       v       v
- align   audit  console   cpu   cpu_pin   ema    huge-  phased  system
- ment    _log   _sink     .hpp  .hpp              page  _timer  _stats
- 0deps   deps:  deps:    deps: deps:     0deps   deps:  deps:   0deps
-         time   core     +time +logs             logs   time
-         +core  +logs
+   v       v       v       v               v       v       v       v
+ align   audit  console   cpu             ema    huge-  system  time.hpp
+ ment    _log   _sink     .hpp           .hpp    page   _stats  (TSC)
+ 0deps   deps:  deps:     deps:         0deps   deps:   0deps   deps:
+         time   core      +time                 logs            logs
+         +core  +logs     +logs
+                          (hosts
+                           pin_thread +
+                           CpuPinPolicy)
 
         time.hpp (TSC)                          record.hpp
           ^                                     (aggregator)
@@ -82,6 +103,14 @@ except for a few explicit edges (recording depends on timing,
            per-thread merge, JSON/CSV)          system_stats
 
   timestamp.hpp (wall-clock, ISO8601): 0 internal deps
+
+ Opt-in headers — NOT pulled in by utils.hpp:
+
+   kill_switch.hpp       (std::atomic + std::function, self-contained)
+   rate_limiter.hpp      (TokenBucket, mutex + steady_clock)
+   phased_timer.hpp      (deps: time.hpp)
+   shutdown_signal.hpp   (std::atomic + <csignal>)
+   linux/netns.hpp       (POSIX <fcntl.h>/<sched.h>/<unistd.h>)
 ```
 
 All modules emit logs via a per-module spdlog logger name
@@ -94,23 +123,26 @@ subsystem.
 
 ## Module Map
 
-| Module / File                      | Responsibility                                                                 | Key Types                                                                 | Depends On                           |
-|------------------------------------|---------------------------------------------------------------------------------|---------------------------------------------------------------------------|--------------------------------------|
-| `alignment.hpp`                    | `CACHE_LINE_SIZE`, `Align<T>` for false-sharing prevention                     | `Align<T>`                                                                | `<cstddef>`                          |
-| `time.hpp`                         | TSC calibration and reads; ns <-> cycle conversion                             | `TSC`                                                                     | spdlog, `<atomic>`, intrinsics       |
-| `timestamp.hpp`                    | Constexpr unit conversions, wall-clock `now_ns/ms`, ISO 8601 format            | -                                                                         | `<ctime>`, `<format>`                |
-| `cpu.hpp`                          | Topology discovery, affinity, real-time scheduling, `cpu_relax`, `spin_for_ns` | `CpuTopologyInfo`, `RealtimePolicy`                                       | spdlog, pthread, `time.hpp`          |
-| `cpu_pin.hpp`                      | Strict pinning with isolcpus / SMT / NUMA / IRQ validation                     | `CpuPinPolicy`                                                            | spdlog, pthread, `<filesystem>`      |
-| `hugepage.hpp`                     | `mmap(MAP_HUGETLB)` + fallback allocator                                       | `HugePage`, `HugePage::Deleter<T>`                                        | spdlog, `<sys/mman.h>`               |
-| `ema.hpp`                          | O(1) EMA + dual-EMA crossover detector with NaN/Inf guards                     | `Ema`, `EmaCrossover`, `EmaCrossover::Signal`                             | spdlog                               |
-| `audit_log.hpp`                    | Fixed-size ring buffer audit trail with single- and multi-writer modes         | `AuditEvent`, `Side`, `AuditEntry`, `AuditLog<Capacity>`                  | spdlog, `time.hpp`                   |
-| `console_sink.hpp`                 | `core::MetricsSink` impl that logs structured metric lines                     | `ConsoleSink`                                                             | spdlog, `eph/core/metrics_concept.hpp` |
-| `system_stats.hpp`                 | RAII `getrusage` profiler with delta / JSON / `std::format` support            | `SystemResourceStats`, `SystemStats`                                      | spdlog, `<sys/resource.h>`           |
-| `hdr_histogram.hpp`                | Gil Tene HDR histogram + `measure_tsc` + `ScopedTSC` + `Stats` struct          | `HdrHistogram`, `ScopedTSC`, `Stats`, `measure_tsc`                       | `eph/core/detail/json_escape.hpp`, `time.hpp` |
-| `recorder.hpp`                     | `Recorder` + `ConcurrentRecorder` (TSC -> HDR -> JSON/CSV)                     | `Recorder`, `ConcurrentRecorder`                                          | `hdr_histogram.hpp`, `time.hpp`      |
-| `record.hpp`                       | Aggregation header (hdr + recorder + system_stats)                             | -                                                                         | the three above                      |
-| `phased_timer.hpp`                 | Two-phase TSC deadline timer (warmup + measurement window)                     | `PhasedTimer`                                                             | `time.hpp`                           |
-| `utils.hpp`                        | Top-level aggregation of every public header                                   | -                                                                         | all of the above                     |
+| Module / File                      | Responsibility                                                                                 | Key Types                                                                  | Depends On                                    |
+|------------------------------------|-------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|-----------------------------------------------|
+| `alignment.hpp`                    | `CACHE_LINE_SIZE`, `Align<T>` for false-sharing prevention                                     | `Align<T>`                                                                 | `<cstddef>`                                   |
+| `time.hpp`                         | TSC calibration and reads; ns <-> cycle conversion                                             | `TSC`                                                                      | spdlog, `<atomic>`, intrinsics                |
+| `timestamp.hpp`                    | Constexpr unit conversions, wall-clock `now_ns/ms`, ISO 8601 format                            | -                                                                          | `<ctime>`, `<format>`                         |
+| `cpu.hpp`                          | Topology, affinity, real-time scheduling, `cpu_relax`, `spin_for_ns`, **strict `pin_thread`**  | `CpuTopologyInfo`, `RealtimePolicy`, `CpuPinPolicy`                        | spdlog, pthread, `<filesystem>`, `time.hpp`   |
+| `hugepage.hpp`                     | `mmap(MAP_HUGETLB)` + fallback allocator                                                        | `HugePage`, `HugePage::Deleter<T>`                                         | spdlog, `<sys/mman.h>`                        |
+| `ema.hpp`                          | O(1) EMA + dual-EMA crossover detector with NaN/Inf guards                                     | `Ema`, `EmaCrossover`, `EmaCrossover::Signal`                              | spdlog                                        |
+| `audit_log.hpp`                    | Fixed-size ring buffer audit trail with single- and multi-writer modes                         | `AuditEvent`, `Side`, `AuditEntry`, `AuditLog<Capacity>`                   | spdlog, `time.hpp`                            |
+| `console_sink.hpp`                 | `core::MetricsSink` impl that logs structured metric lines                                     | `ConsoleSink`                                                              | spdlog, `eph/core/metrics_concept.hpp`        |
+| `system_stats.hpp`                 | RAII `getrusage` profiler with delta / JSON / `std::format` support                            | `SystemResourceStats`, `SystemStats`                                       | spdlog, `<sys/resource.h>`                    |
+| `hdr_histogram.hpp`                | Gil Tene HDR histogram + `measure_tsc` + `ScopedTSC` + `Stats` struct                          | `HdrHistogram`, `ScopedTSC`, `Stats`, `measure_tsc`                        | `eph/core/detail/json_escape.hpp`, `time.hpp` |
+| `recorder.hpp`                     | `Recorder` + `ConcurrentRecorder` (TSC -> HDR -> JSON/CSV)                                     | `Recorder`, `ConcurrentRecorder`                                           | `hdr_histogram.hpp`, `time.hpp`               |
+| `record.hpp`                       | Aggregation header (hdr + recorder + system_stats)                                             | -                                                                          | the three above                               |
+| `phased_timer.hpp`                 | Two-phase TSC deadline timer (warmup + measurement window)                                     | `PhasedTimer`                                                              | `time.hpp`                                    |
+| `kill_switch.hpp`                  | Irreversible single-fire safety primitive for HFT risk / compliance                            | `KillSwitch`                                                               | spdlog, `<atomic>`, `<functional>`            |
+| `rate_limiter.hpp`                 | Thread-safe token-bucket rate limiter, weighted, `steady_clock`-driven                         | `TokenBucket`, `TokenBucket::Config`                                       | spdlog, `<chrono>`, `<mutex>`                 |
+| `shutdown_signal.hpp`              | Process-wide SIGINT/SIGTERM cooperative shutdown flag                                          | `g_shutdown_flag`, `install_shutdown_handlers()`                           | `<atomic>`, `<csignal>`                       |
+| `linux/netns.hpp`                  | `setns(CLONE_NEWNET)` into `/var/run/netns/<name>` for test fixtures                           | `linux_::enter_netns(name)`                                                | `<fcntl.h>`, `<sched.h>`, `<unistd.h>`, `<expected>` |
+| `utils.hpp`                        | Top-level aggregation of the core set (not the opt-in headers — see "Aggregation header")     | -                                                                          | 11 modules; see aggregator note               |
 
 ---
 
@@ -281,14 +313,15 @@ void reset();
   lock acquisition, avoiding the lost-sample gap of separate
   `compute_stats()` + `reset()` calls.
 
-### `CpuPinPolicy` / `pin_thread_strict`
+### `CpuPinPolicy` / `pin_thread`
 
-**File**: `include/eph/utils/cpu_pin.hpp`
+**File**: `include/eph/utils/cpu.hpp` (the strict pin API lives in the
+same header as topology / affinity — no separate `cpu_pin.hpp`)
 **Purpose**: Low-latency and HFT workloads need more than bare affinity
 — the pinned core should also be isolated from the scheduler, not share
 an SMT sibling with another pinned thread, stay on the same NUMA node
-as peers, and ideally be free of NIC IRQ storms. `pin_thread_strict`
-enforces all of that.
+as peers, and ideally be free of NIC IRQ storms. `pin_thread` enforces
+all of that.
 **Interface**:
 ```cpp
 struct CpuPinPolicy {
@@ -298,7 +331,9 @@ struct CpuPinPolicy {
     bool warn_irq_overlap            = true;
 };
 std::expected<void, std::string>
-pin_thread_strict(int cpu, std::string_view name, CpuPinPolicy = {});
+pin_thread(int cpu, std::string_view name, CpuPinPolicy = {});
+std::expected<void, std::string>
+pin_thread(int cpu);                                // nameless, default policy
 void reset_pin_registry_for_tests() noexcept;
 ```
 **Notes**:
@@ -385,24 +420,127 @@ specialization produces a single-line summary for logging. Move
 semantics correctly transfer the auto-log responsibility and clear the
 source's flag to avoid duplicate logs on destruction.
 
+### `KillSwitch`
+
+**File**: `include/eph/utils/kill_switch.hpp`
+**Purpose**: Irreversible, single-fire safety primitive for HFT
+risk / compliance (per Phase 9 decision D-3).
+**Interface**:
+```cpp
+explicit KillSwitch(std::function<void()> on_trip = nullptr) noexcept;
+[[nodiscard]] bool tripped() const noexcept;  // acquire load
+void trip() noexcept;                         // idempotent, CAS-guarded
+```
+**Notes**:
+- Non-copyable, non-movable.
+- Callback fires **exactly once** on the thread that wins the
+  compare-exchange; subsequent `trip()` calls are no-ops.
+- Compile-time enforced via three `static_assert`s: there is no
+  `reset()`, no `untrip()`, no `clear()`. A tripped switch requires
+  process restart + human review.
+- Callback must not throw — an escaping exception calls `std::terminate`
+  via the `noexcept` boundary.
+
+### `TokenBucket`
+
+**File**: `include/eph/utils/rate_limiter.hpp`
+**Purpose**: Thread-safe weighted rate limiter for per-venue / global
+throughput governance (per Phase 9 decision D-4).
+**Interface**:
+```cpp
+struct Config { uint32_t capacity; double refill_per_second; };
+explicit TokenBucket(Config cfg) noexcept;
+[[nodiscard]] bool try_acquire(uint32_t weight = 1) noexcept;
+[[nodiscard]] double available_tokens() const noexcept;
+[[nodiscard]] uint32_t capacity() const noexcept;
+[[nodiscard]] double   refill_rate() const noexcept;
+```
+**Notes**:
+- Non-copyable, non-movable (contains a `std::mutex`).
+- `steady_clock`-driven refill — deliberately not TSC, because rate
+  limits operate on sub-second budgets and TSC calibration / hot-plug
+  concerns don't apply.
+- `weight == 0` is a free no-op (consistent with "zero cost costs zero
+  tokens"); `weight > capacity` fails immediately rather than spinning.
+- Clock-backward and zero-elapsed paths skip the refill step rather
+  than rewinding `last_refill_`.
+
+### `PhasedTimer`
+
+**File**: `include/eph/utils/phased_timer.hpp`
+**Purpose**: Two-phase TSC deadline timer for benchmarks that need a
+warmup window (cold-cache / power-state transient) followed by a
+measurement window, both checked without syscalls.
+**Interface**:
+```cpp
+void start(std::chrono::nanoseconds warmup,
+           std::chrono::nanoseconds measurement) noexcept;
+[[nodiscard]] bool is_warmup()  const noexcept;
+[[nodiscard]] bool is_running() const noexcept;
+```
+**Notes**:
+- POD — trivially copyable / movable.
+- Not thread-safe; each thread needs its own instance.
+- Requires `TSC::init()` before `start()`. Uncalibrated TSC collapses
+  both windows to 0 cycles so `is_running()` returns `false` immediately
+  rather than running forever.
+
+### Shutdown signal
+
+**File**: `include/eph/utils/shutdown_signal.hpp`
+**Purpose**: Process-wide cooperative SIGINT/SIGTERM flag.
+**Interface**:
+```cpp
+extern std::atomic<bool> g_shutdown_flag;          // default = true
+void install_shutdown_handlers() noexcept;         // SIGINT + SIGTERM
+```
+**Notes**:
+- Hot loops poll `g_shutdown_flag.load(std::memory_order_relaxed)`.
+- Handlers use plain `std::signal`; consumers needing `sigaction`
+  semantics (mask, restart) should install their own.
+- `install_shutdown_handlers` is idempotent.
+
+### `linux_::enter_netns`
+
+**File**: `include/eph/utils/linux/netns.hpp`
+**Purpose**: Move the calling thread into a named network namespace
+(`/var/run/netns/<name>`) via `setns(2) + CLONE_NEWNET`. Used by
+bench / integration fixtures that need netns isolation.
+**Interface**:
+```cpp
+[[nodiscard]] std::expected<void, std::string>
+enter_netns(std::string_view name);
+```
+**Notes**:
+- Requires `CAP_SYS_ADMIN`.
+- Namespace must pre-exist (e.g. `ip netns add <name>`); `open()`
+  failure returns a diagnostic that says so.
+- No umount / unshare helper — callers that need to fall back stash
+  `/proc/self/ns/net` themselves.
+
 ---
 
 ## Entry Points & APIs
 
-| Entrypoint                         | Type          | Description                                                         |
-|------------------------------------|---------------|---------------------------------------------------------------------|
-| `#include <eph/utils.hpp>`         | aggregator    | Pulls in every public header                                        |
-| `TSC::init()`                      | init-once     | Must run before any `to_ns`/`to_cycles` call                        |
-| `TSC::now()`                       | hot path      | 20-cycle hardware timestamp                                         |
-| `Recorder::record(cycles)`         | hot path      | Record a single latency sample                                      |
-| `ConcurrentRecorder::record(c)`    | hot path      | Zero-contention per-thread record                                   |
-| `HugePage::make<T>(args...)`       | factory       | Construct `T` on huge-page memory                                   |
-| `pin_thread_strict(cpu, name, p)`  | init          | Strict pinning with topology validation                             |
-| `AuditLog<N>::record(...)`         | hot path      | Single-writer audit entry                                           |
-| `AuditLog<N>::record_mt(...)`      | hot path      | CAS multi-writer audit entry                                        |
-| `spin_for_ns(n)`                   | hot path      | Busy-wait ~n ns via TSC + `cpu_relax`                               |
-| `ConsoleSink::push_counter(...)`   | sink          | `core::MetricsSink` implementation                                  |
-| `SystemStats::snapshot()`          | sampling      | `getrusage` delta                                                   |
+| Entrypoint                                   | Type          | Description                                                                     |
+|----------------------------------------------|---------------|---------------------------------------------------------------------------------|
+| `#include <eph/utils.hpp>`                   | aggregator    | Pulls in the core set (see "Aggregation header" in Overview)                    |
+| `TSC::init()`                                | init-once     | Must run before any `to_ns`/`to_cycles` call                                    |
+| `TSC::now()`                                 | hot path      | 20-cycle hardware timestamp                                                     |
+| `Recorder::record(cycles)`                   | hot path      | Record a single latency sample                                                  |
+| `ConcurrentRecorder::record(c)`              | hot path      | Zero-contention per-thread record                                               |
+| `HugePage::make<T>(args...)`                 | factory       | Construct `T` on huge-page memory                                               |
+| `pin_thread(cpu, name, policy)`              | init          | Strict pinning with isolcpus / SMT / NUMA / IRQ topology validation             |
+| `AuditLog<N>::record(...)`                   | hot path      | Single-writer audit entry                                                       |
+| `AuditLog<N>::record_mt(...)`                | hot path      | CAS multi-writer audit entry                                                    |
+| `spin_for_ns(n)`                             | hot path      | Busy-wait ~n ns via TSC + `cpu_relax`                                           |
+| `ConsoleSink::push_counter(...)` / `_gauge` / `_histogram` | sink | `core::MetricsSink` implementation with tag-escaping                            |
+| `SystemStats::snapshot()`                    | sampling      | `getrusage` delta                                                               |
+| `PhasedTimer::start(warmup, measure)`        | bench         | Arm warmup + measurement deadlines in TSC cycles                                |
+| `KillSwitch::trip()` / `::tripped()`         | compliance    | Irreversible single-fire safety flag; `noexcept`                                |
+| `TokenBucket::try_acquire(weight)`           | control       | Weighted non-blocking rate gate; `noexcept`                                     |
+| `install_shutdown_handlers()` / `g_shutdown_flag` | control   | Process-wide SIGINT/SIGTERM cooperative flag                                    |
+| `linux_::enter_netns(name)`                  | fixture       | Move calling thread into a named Linux netns (test / bench only)                |
 
 ---
 
@@ -423,19 +561,26 @@ source's flag to avoid duplicate logs on destruction.
                  cpu.hpp   audit_log  hdr_histogram  phased_timer
                  (uses     .hpp       .hpp           .hpp
                  time for             ^
-                 spin_for_ns)         |
-                                   recorder.hpp
-                                   (Recorder, ConcurrentRecorder)
+                 spin_for_ns;         |
+                 hosts pin_thread  recorder.hpp
+                 +CpuPinPolicy)    (Recorder, ConcurrentRecorder)
                                        ^
                                        |
                                    record.hpp (aggregator)
                                    includes hdr_histogram,
                                    recorder, system_stats
 
- cpu_pin.hpp, ema.hpp, hugepage.hpp, console_sink.hpp — all independent
- (console_sink pulls eph/core/metrics_concept.hpp from eph-core)
+ ema.hpp, hugepage.hpp, console_sink.hpp, kill_switch.hpp,
+ rate_limiter.hpp, shutdown_signal.hpp, linux/netns.hpp —
+ all independent of the time.hpp / record.hpp chain.
 
- utils.hpp aggregates *all* of the above.
+ console_sink depends on eph/core/metrics_concept.hpp (MetricsSink).
+ hdr_histogram / recorder depend on eph/core/detail/json_escape.hpp.
+
+ utils.hpp aggregates the core set (alignment, audit_log, console_sink,
+ cpu, ema, hugepage, record, recorder, system_stats, time, timestamp).
+ kill_switch / rate_limiter / phased_timer / shutdown_signal / netns
+ are opt-in — include them explicitly.
 ```
 
 ### External
@@ -453,7 +598,10 @@ source's flag to avoid duplicate logs on destruction.
 |-------------------------------------|-------------------------------|-------------------|
 | `<immintrin.h>`, `<x86intrin.h>`    | `time.hpp`, `cpu.hpp`         | x86-64            |
 | `<arm_neon.h>`                      | `time.hpp`                    | ARM64             |
-| `<sched.h>`, `<pthread.h>`          | `cpu.hpp`, `cpu_pin.hpp`      | Linux             |
+| `<sched.h>`, `<pthread.h>`          | `cpu.hpp`, `linux/netns.hpp`  | Linux             |
+| `<filesystem>`                      | `cpu.hpp` (isolcpus/SMT/NUMA) | Linux             |
+| `<fcntl.h>`, `<unistd.h>`           | `linux/netns.hpp`             | Linux             |
+| `<csignal>`                         | `shutdown_signal.hpp`         | POSIX             |
 | `<sys/mman.h>`                      | `hugepage.hpp`                | Linux             |
 | `<mach/mach.h>`                     | `cpu.hpp` (realtime QoS)      | macOS             |
 | `<memoryapi.h>`                     | `hugepage.hpp`                | Windows           |
@@ -463,23 +611,28 @@ source's flag to avoid duplicate logs on destruction.
 
 ## Testing
 
-| Test Suite                        | Location                                | Coverage Focus                                       |
-|-----------------------------------|-----------------------------------------|------------------------------------------------------|
-| `test_alignment`                  | `tests/test_alignment.cpp`              | Compile-time `Align<T>` values                       |
-| `test_audit_log`                  | `tests/test_audit_log.cpp`              | Ring wrap, CAS multi-writer, dump, flush_to_file     |
-| `test_console_sink`               | `tests/test_console_sink.cpp`           | Counter/gauge/histogram formatting, tag quoting      |
-| `test_cpu`                        | `tests/test_cpu.cpp`                    | Topology parsing, affinity, `CpuTopologyInfo` format |
-| `test_cpu_pin`                    | `tests/test_cpu_pin.cpp`                | isolcpus / SMT / NUMA / IRQ checks                   |
-| `test_ema`                        | `tests/test_ema.cpp`                    | alpha bounds, NaN/Inf rejection, crossover edge cases|
-| `test_hdr_histogram`              | `tests/test_hdr_histogram.cpp`          | Percentiles, merge, subtract, coordinated omission   |
-| `test_hugepage`                   | `tests/test_hugepage.cpp`               | Zero-size guard, fallback, deleter                   |
-| `test_record`                     | `tests/test_record.cpp`                 | `Stats::dump` / `to_json` / `operator-`              |
-| `test_recorder`                   | `tests/test_recorder.cpp`               | Record, merge, JSON/CSV export, overflow saturation  |
-| `test_spin_for_ns`                | `tests/test_spin_for_ns.cpp`            | 1us / 10us / 100us busy-wait accuracy                |
-| `test_system_stats`               | `tests/test_system_stats.cpp`           | Delta, move semantics, format                        |
-| `test_time`                       | `tests/test_time.cpp`                   | TSC calibration, CV, NaN/Inf edge cases              |
-| `test_timestamp`                  | `tests/test_timestamp.cpp`              | ms/us/ns conversions, ISO 8601, Y2K38 guard          |
-| `test_version`                    | `tests/test_version.cpp`                | Version string                                       |
+| Test Suite                        | Location                                | Coverage Focus                                                   |
+|-----------------------------------|-----------------------------------------|------------------------------------------------------------------|
+| `test_alignment`                  | `tests/test_alignment.cpp`              | Compile-time `Align<T>` values                                   |
+| `test_audit_log`                  | `tests/test_audit_log.cpp`              | Ring wrap, CAS multi-writer, dump, flush_to_file                 |
+| `test_console_sink`               | `tests/test_console_sink.cpp`           | Counter / gauge / histogram formatting, tag quoting              |
+| `test_cpu`                        | `tests/test_cpu.cpp`                    | Topology parsing, affinity, `CpuTopologyInfo` format             |
+| `test_cpu_pin`                    | `tests/test_cpu_pin.cpp`                | `pin_thread` — isolcpus / SMT / NUMA / IRQ checks                |
+| `test_ema`                        | `tests/test_ema.cpp`                    | alpha bounds, NaN/Inf rejection, crossover edge cases            |
+| `test_hdr_histogram`              | `tests/test_hdr_histogram.cpp`          | Percentiles, merge, subtract, coordinated omission               |
+| `test_hugepage`                   | `tests/test_hugepage.cpp`               | Zero-size guard, fallback, deleter                               |
+| `test_kill_switch`                | `tests/test_kill_switch.cpp`            | Single-fire idempotency, CAS, concurrent trip, callback-once     |
+| `test_phased_timer`               | `tests/test_phased_timer.cpp`           | Warmup → measurement transition, uncalibrated-TSC fall-through   |
+| `test_rate_limiter`               | `tests/test_rate_limiter.cpp`           | `TokenBucket` refill, weighted acquire, capacity clamp           |
+| `test_rate_limiter_edge`          | `tests/test_rate_limiter_edge.cpp`      | `weight=0` / `weight>capacity`, clock-backward, long idle        |
+| `test_record`                     | `tests/test_record.cpp`                 | `Stats::dump` / `to_json` / `operator-`                          |
+| `test_recorder`                   | `tests/test_recorder.cpp`               | Record, merge, JSON / CSV export, overflow saturation            |
+| `test_shutdown_signal`            | `tests/test_shutdown_signal.cpp`        | Handler installation, flag flip on SIGTERM                       |
+| `test_spin_for_ns`                | `tests/test_spin_for_ns.cpp`            | 1us / 10us / 100us busy-wait accuracy                            |
+| `test_system_stats`               | `tests/test_system_stats.cpp`           | Delta, move semantics, format                                    |
+| `test_time`                       | `tests/test_time.cpp`                   | TSC calibration, CV, NaN/Inf edge cases                          |
+| `test_timestamp`                  | `tests/test_timestamp.cpp`              | ms / us / ns conversions, ISO 8601, Y2K38 guard                  |
+| `test_version`                    | `tests/test_version.cpp`                | `eph::version_at_least(...)` consteval feature gate              |
 
 Key test scenarios:
 - **Boundary values**: zero-size HugePage allocate, zero-cycle Recorder,

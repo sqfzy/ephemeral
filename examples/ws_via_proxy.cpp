@@ -1,12 +1,21 @@
 /// @file ws_via_proxy.cpp
 ///
-/// The proxy/tunnel handshake is done OUTSIDE the stream factory: user
-/// code (or a small helper above the StreamConfig) negotiates the
-/// SOCKS5 / HTTP CONNECT exchange against a connected kernel fd, then
-/// hands the now-tunnelled fd to the stream. This example constructs
-/// the stream against a *direct* address but exposes the
-/// `--proxy-host` / `--proxy-port` CLI surface for use with the proxy
-/// handshake helpers.
+/// HTTP CONNECT proxy demo (kernel backend only).
+///
+/// When `StreamConfig::proxy` (an `eph::net::HttpConnectConfig`) is set,
+/// `KernelTcpStream::create` performs the full CONNECT handshake
+/// internally: it TCP-connects to `proxy.host:proxy.port`, sends a
+/// `CONNECT remote.host:remote.port HTTP/1.1` request, validates the
+/// `200 Connection Established` response, then (if enabled) runs TLS
+/// and/or the WS Upgrade inside the tunnel. On the DPDK backend the
+/// same field is rejected with `Error::InvalidConfig` by design — a
+/// proxy is a kernel-only scenario. SOCKS5 is intentionally not
+/// supported (see `.artifacts/phase-9-scope-decision.md`).
+///
+/// This example exposes the CLI surface (`--proxy-host`, `--proxy-port`)
+/// and demonstrates how to populate `cfg.proxy` when both flags are
+/// given. With no `--proxy-host` it falls through to a direct connect
+/// so the binary is useful as a plaintext-WS smoke-test too.
 
 #include <atomic>
 #include <chrono>
@@ -24,6 +33,7 @@
 #include "eph/codec/ws_codec.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/proxy.hpp"
 #include "eph/net/socket_addr.hpp"
 
 namespace en = eph::net::kernel;
@@ -52,13 +62,11 @@ int main(int argc, char** argv) {
         else if (a == "--http-connect")               http_connect = true;
     }
 
-    if (!proxy_host.empty()) {
-        spdlog::warn(
-            "ws_via_proxy: proxy CLI parsed (host={}:{}, http_connect={}), "
-            "but the proxy handshake helper is not yet available. "
-            "Falling through to a direct connection — see the file header.",
-            proxy_host, proxy_port, http_connect);
-    }
+    // `--http-connect` is accepted for forward compatibility; today the
+    // only supported proxy scheme IS HTTP CONNECT, so the flag is a no-op
+    // marker. A future SOCKS5 path (see .artifacts/phase-9-scope-decision.md
+    // for why it's deliberately out of scope) would key off a new flag.
+    (void)http_connect;
 
     auto ip = eph::net::Ipv4Addr::parse(target_ip);
     if (!ip) {
@@ -73,6 +81,20 @@ int main(int argc, char** argv) {
     cfg.remote          = eph::net::SocketAddr{*ip, target_port};
     cfg.reasm_capacity  = 64 * 1024;
     cfg.connect_timeout = 3s;
+
+    // When a proxy is given, wire `cfg.proxy` — `KernelTcpStream::create`
+    // then TCP-connects to the proxy, runs the HTTP CONNECT handshake,
+    // and (since `EnableTls=false` + empty `ws_path` here) returns the
+    // post-CONNECT plaintext stream. Flip `EnableTls=true` or set
+    // `ws_path` to layer TLS / WS inside the tunnel.
+    if (!proxy_host.empty()) {
+        eph::net::ProxyConfig pcfg{};
+        pcfg.host = proxy_host;
+        pcfg.port = proxy_port;
+        cfg.proxy = std::move(pcfg);
+        spdlog::info("ws_via_proxy: routing via HTTP CONNECT proxy {}:{}",
+                     proxy_host, proxy_port);
+    }
 
     auto sr = Stream::create(std::move(cfg));
     if (!sr) {

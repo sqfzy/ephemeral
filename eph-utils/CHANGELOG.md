@@ -12,13 +12,27 @@ on the `dev` branch touching `eph-utils/`.
 - `eph::utils::KillSwitch` (`include/eph/utils/kill_switch.hpp`) —
   single-fire atomic safety primitive with optional post-trip callback.
   Non-copyable, non-movable. Irreversible by design (no `reset()` /
-  `untrip()` / `clear()`) — matches HFT compliance semantics where a
-  tripped switch requires process restart + human review. See Phase 9
-  decision record D-3 in `plan-phase-9-recovery-20260410-180306.md`.
-- `eph::utils::TokenBucket` (`include/eph/utils/token_bucket.hpp`) —
+  `untrip()` / `clear()`, enforced at compile time via `static_assert`)
+  — matches HFT compliance semantics where a tripped switch requires
+  process restart + human review. See Phase 9 decision record D-3 in
+  `plan-phase-9-recovery-20260410-180306.md`.
+- `eph::utils::TokenBucket` (`include/eph/utils/rate_limiter.hpp`) —
   thread-safe rate limiter with weighted `try_acquire(n)` support. Fixed
-  capacity + refill rate set at construction; mutex-guarded state for
-  correct multi-producer use (per Phase 9 decision D-4).
+  capacity + refill rate (`steady_clock`-driven) set at construction;
+  mutex-guarded state for correct multi-producer use (per Phase 9
+  decision D-4). Rejects `weight > capacity` immediately rather than
+  spinning; `weight == 0` is a free no-op.
+- `eph::utils::g_shutdown_flag` + `install_shutdown_handlers()`
+  (`include/eph/utils/shutdown_signal.hpp`) — process-wide cooperative
+  shutdown flag driven by SIGINT/SIGTERM. Promoted from
+  `benchmarks/latency/core/signal.hpp` so tests and tools can share one
+  flag instead of reverse-including the bench tree.
+- `eph::utils::linux_::enter_netns(name)`
+  (`include/eph/utils/linux/netns.hpp`) — `setns(CLONE_NEWNET)` helper
+  with `std::expected<void, std::string>` diagnostics. Promoted from
+  `benchmarks/latency/core/netns.hpp` for the same reason.
+- Dedicated unit coverage: `test_kill_switch`, `test_rate_limiter`,
+  `test_rate_limiter_edge`, `test_phased_timer`, `test_shutdown_signal`.
 
 ## [Unreleased]
 
@@ -46,9 +60,11 @@ on the `dev` branch touching `eph-utils/`.
   `record()` and multi-writer `record_mt()` modes, 64-byte cache-line
   aligned entries, per-slot commit flags to avoid torn reads, and
   binary `flush_to_file` for post-trade reporting.
-- `cpu_pin.hpp::pin_thread_strict` — strict pinning with isolcpus, SMT
-  sibling, NUMA locality, and IRQ-overlap checks, backed by a
-  process-wide pinned-CPU registry.
+- `cpu.hpp::pin_thread` (with `CpuPinPolicy`) — strict pinning with
+  isolcpus, SMT sibling, NUMA locality, and IRQ-overlap checks, backed
+  by a process-wide pinned-CPU registry. The strict pin API lives in
+  `cpu.hpp` alongside topology / affinity / real-time helpers; there
+  is no separate `cpu_pin.hpp` file.
 - `ConsoleSink` — `core::MetricsSink` implementation that logs
   counters, gauges, and histograms as structured spdlog lines, for
   development and integration testing.

@@ -49,8 +49,13 @@ xmake build -g tests
 xmake run test_alignment
 xmake run test_time
 xmake run test_recorder
-xmake run test_spin_for_ns    # added 2026-04-09
-# ... etc
+xmake run test_spin_for_ns         # busy-wait accuracy
+xmake run test_kill_switch         # HFT compliance: single-fire CAS
+xmake run test_rate_limiter        # TokenBucket basic
+xmake run test_rate_limiter_edge   # TokenBucket corner cases
+xmake run test_phased_timer        # warmup → measurement transition
+xmake run test_shutdown_signal     # SIGINT/SIGTERM flag
+# ... etc — 20 test binaries total under tests/
 ```
 
 `xmake build -g tests` builds tests for the entire monorepo, not just
@@ -91,14 +96,27 @@ editing):
 ```
 time.hpp (TSC)
    ^
-   +-- cpu.hpp       (spin_for_ns uses TSC)
-   +-- audit_log.hpp (entries carry TSC timestamps)
+   +-- cpu.hpp          (spin_for_ns uses TSC; also hosts
+   |                     pin_thread / CpuPinPolicy — there is no
+   |                     separate cpu_pin.hpp header)
+   +-- audit_log.hpp    (entries carry TSC timestamps)
    +-- phased_timer.hpp
    +-- hdr_histogram.hpp
-   +-- recorder.hpp  (TSC cycles -> ns conversion)
+   +-- recorder.hpp     (TSC cycles -> ns conversion)
 
 record.hpp — aggregates hdr_histogram + recorder + system_stats
-utils.hpp  — aggregates every public header
+utils.hpp  — aggregates the core set only (alignment, audit_log,
+             console_sink, cpu, ema, hugepage, record, recorder,
+             system_stats, time, timestamp)
+
+Opt-in headers that utils.hpp does NOT transitively include
+(#include them directly when needed):
+
+   kill_switch.hpp       HFT compliance: irreversible single-fire switch
+   rate_limiter.hpp      HFT control:    TokenBucket weighted rate limit
+   phased_timer.hpp      Bench helper:   warmup + measurement TSC windows
+   shutdown_signal.hpp   CLI / ops:      process-wide SIGINT/SIGTERM flag
+   linux/netns.hpp       Test fixture:   setns(CLONE_NEWNET) (Linux only)
 ```
 
 **External edges**:
@@ -119,8 +137,14 @@ utils.hpp  — aggregates every public header
    `TSC::now()` carefully; everything else uses these.
 3. `hdr_histogram.hpp` — the core statistics primitive.
 4. `recorder.hpp` — shows how TSC and HdrHistogram compose.
-5. `cpu.hpp` + `cpu_pin.hpp` — the platform compatibility shape.
-6. The remaining modules as you need them.
+5. `cpu.hpp` — the platform compatibility shape (topology, affinity,
+   strict `pin_thread` with isolcpus / SMT / NUMA / IRQ policy, plus
+   `cpu_relax` / `spin_for_ns`). This one file carries everything CPU-
+   related; there is no `cpu_pin.hpp`.
+6. `kill_switch.hpp` + `rate_limiter.hpp` — the HFT compliance /
+   control primitives (single-fire safety, token bucket).
+7. The remaining modules (`phased_timer`, `shutdown_signal`,
+   `linux/netns`, etc.) as you need them.
 
 ## Daily development
 
@@ -202,7 +226,7 @@ check `/proc/cpuinfo | grep -E 'constant_tsc|nonstop_tsc'`.
 
 - Prefer `std::expected<T, std::string>` over exceptions for
   recoverable errors (`set_thread_affinity`, `get_cpu_topology`,
-  `pin_thread_strict`).
+  `pin_thread`, `linux_::enter_netns`).
 - Throw `std::invalid_argument` / `std::runtime_error` from
   constructors when the object cannot be meaningfully constructed
   (empty name, TSC init failure, invalid histogram parameters).
@@ -301,7 +325,7 @@ cat /proc/meminfo | grep Huge
 sudo sysctl -w vm.nr_hugepages=1024   # reserve 1024 x 2MB pages
 ```
 
-### Q: `pin_thread_strict` fails with "cpu is not in isolated"
+### Q: `pin_thread` fails with "cpu is not in isolated"
 
 The cpu you asked for is not in `/sys/devices/system/cpu/isolated`.
 Either add `isolcpus=N,M,...` to the kernel cmdline and reboot, or
@@ -310,7 +334,7 @@ relax the policy:
 ```cpp
 eph::utils::CpuPinPolicy p;
 p.require_isolcpus = false;
-eph::utils::pin_thread_strict(2, "poll", p);
+eph::utils::pin_thread(2, "poll", p);
 ```
 
 ### Q: I added a test but xmake doesn't build it

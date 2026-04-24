@@ -43,9 +43,11 @@ xmake build bench_bq_pingpong
 ### Verifying your environment
 
 ```bash
-# Run every eph-containers test binary. Should report 389 passing tests.
-for t in test_ring_buffer test_bounded_queue test_bounded_queue_bytes \
-         test_evicting_queue test_evicting_queue_bytes; do
+# Run every eph-containers test binary. Should report 434 passing tests
+# across 6 binaries (45 + 15 + 143 + 37 + 139 + 55).
+for t in test_concepts test_ring_buffer test_bounded_queue \
+         test_bounded_queue_bytes test_evicting_queue \
+         test_evicting_queue_bytes; do
     xmake run "$t" || { echo "FAIL: $t"; exit 1; }
 done
 ```

@@ -1,47 +1,135 @@
 # eph-net
 
-Header-only C++23 module defining the networking concepts and shared types.
-Does not contain any backend implementation — that lives in `eph-net-kernel` and
-`eph-net-dpdk`. `eph-net` is the narrow-waist between codecs and backends.
+Header-only C++23 module defining the networking concepts and shared types
+used by every backend in the `eph` stack. `eph-net` is the **narrow waist**
+between codecs (`eph-codec`, `eph-fix`, `eph-itch`, `eph-json`, `eph-book`)
+and the two sibling backend modules (`eph-net-kernel`, `eph-net-dpdk`). It
+contains **no I/O implementation of its own** — every public type here is
+either a concept, a pure value type, a pure-compute primitive (HTTP parser,
+HMAC), or an in-memory test mock.
 
 ## What lives here
 
-### Concepts
+### Concepts (`include/eph/net/concepts.hpp`)
 
-`include/eph/net/concepts.hpp` defines the four networking concepts:
+The four narrow concepts the backends satisfy:
 
-- `Pollable<T>` — any type a `Poller` can drive (private `poll_once_()`).
-- `Stream<T>` — TCP-style connection. `send()`, `close_gracefully()`, `on_message`.
-- `Datagram<T>` — UDP-style socket. `send_to()`, `join_multicast()`, `on_datagram`.
-- `Poller<T>` — the I/O driver. `add()`, `remove()`, `poll()`.
+- `Pollable<T>` — anything a `Poller` can drive. Requires an associated
+  `PacketView` type and `poll_once_()` / `is_attached_()` / `native_handle()`
+  (all `noexcept`).
+- `Stream<T>` — TCP-style connection. Refines `Pollable` with `send()`,
+  `close_gracefully()`, `state()`, and an `on_message` callback.
+- `Datagram<T>` — UDP-style socket. Refines `Pollable` with `send_to()`,
+  `join_multicast()` / `leave_multicast()`, and an `on_datagram` callback.
+- `Poller<T>` — the I/O driver: `poll()` (required). The finer
+  `PollerOf<T, Obj>` concept additionally requires `add(Obj*)` /
+  `remove(Obj*)` for a specific Pollable type.
+
+Also provides `saturate_u16()` / `saturate_u16_clamps()` helpers that clamp
+frame lengths into the historical `uint16_t` callback signature.
 
 ### Value types
 
-- `SocketAddr` / `Ipv4Addr` (`include/eph/net/socket_addr.hpp`)
-- `TcpState` (re-exported from `eph/core/tcp_state.hpp`)
+- `Ipv4Addr` / `SocketAddr` (`include/eph/net/socket_addr.hpp`) —
+  `constexpr`-friendly IPv4 address with strict `parse()` that rejects
+  legacy `inet_aton`-style short forms.
+- `TcpState` (`include/eph/net/tcp_state.hpp`, re-exported from
+  `eph/core/tcp_state.hpp`) — RFC 793 connection states.
 - `ReconnectPolicy` / `ReconnectPolicyConfig`
-  (`include/eph/net/reconnect_policy.hpp`)
+  (`include/eph/net/reconnect_policy.hpp`) — exponential backoff with
+  ±jitter. Owned by `KernelTcpStream` and `DpdkTcpStream`.
+
+### HTTP/1.1 parser subset (`include/eph/net/http.hpp`)
+
+Incremental, zero-heap HTTP/1.1 parser for exchange REST and WebSocket
+upgrade handshakes:
+
+- `parse_http_request` / `parse_http_response` return
+  `std::expected<std::optional<ParseResult<T>>, core::ErrorInfo>` —
+  `nullopt` means "need more bytes", value means "complete message parsed".
+- `build_http_request` / `build_http_response` write into a caller-owned
+  buffer, no allocation.
+- Headers land in a caller-supplied `std::span<HttpHeader>`; return views
+  alias the input buffer.
+- **Deliberate subset**: rejects `Transfer-Encoding` (including chunked),
+  `Content-Length + Transfer-Encoding` combinations, multiple conflicting
+  `Content-Length` values, non-3-digit status codes, bare LF line
+  terminators, CR/LF/NUL injection in builder inputs — all with
+  `Error::CodecBad`. Hard caps: `kMaxHeaderCount=64`,
+  `kMaxStartLineLength=8192`, `kMaxHeaderLineLength=8192`,
+  `kMaxBodySize=16 MiB`.
+
+### HMAC-SHA256 (`include/eph/net/hmac.hpp`)
+
+Typed primitive for exchange REST request signing (Binance / Bybit / OKX /
+…) backed by aws-lc:
+
+- `HmacSha256Key` — RAII wrapper around the 64-byte normalised key;
+  non-copyable, movable; destructor runs `OPENSSL_cleanse` so the secret
+  cannot linger in stack memory.
+- `HmacSha256Tag` — typed 32-byte MAC with `to_hex(span<uint8_t, 64>)`
+  zero-alloc hex encoding (lowercase, matches Binance/Bybit wire
+  convention).
+- `hmac_sha256_sign(key, msg)` — one-shot, `noexcept`, zero-alloc signing
+  over `span<const uint8_t>` or `string_view`.
+
+### HTTP CONNECT proxy (`include/eph/net/proxy.hpp`)
+
+- `ProxyConfig { host, port, basic_auth_user, basic_auth_pass, timeout }`
+  with a `noexcept` `validate()` that enforces non-empty host, non-zero
+  port, XOR'd basic-auth fields, positive timeout.
+- Consumed by the **kernel backend only** via `StreamConfig::proxy`. The
+  DPDK backend rejects any non-empty `proxy` with `Error::InvalidConfig`
+  because it has no kernel TCP path to tunnel through.
+- Wire implementation: `include/eph/net/detail/http_connect.hpp` (generic
+  over a ByteSink adapter).
+
+### Stream metrics (`include/eph/net/stream_metrics.hpp`)
+
+Two-layer observability shared by all four Stream/Datagram backends:
+
+- `StreamMetric` enum (currently 21 entries: bytes / frames / codec /
+  TLS / TCP / ICMP / RX-checksum / UDP drops) with matching
+  `kStreamMetricNames` (`net.stream.*` OTel-style).
+- `publish_metrics<Stream, Sink>(source, sink, tags)` — `noexcept`
+  alloc-free reader that pushes every counter into any
+  `eph::core::MetricsSink` (NullSink / ConsoleSink / user-supplied).
+- Hot-path writers (`inc_<M>()` templates) live in the backend types, not
+  here — this module only defines the index and reader.
+
+### POSIX server helpers (`include/eph/net/posix_io.hpp`, `include/eph/net/posix_listener.hpp`)
+
+Small kernel-socket server primitives (`send_all`, `recv_exact`,
+`tcp_bind_listen`, poll-based accept) that test fixtures and benchmark
+mocks reuse. Namespace `eph::net::posix`. They are **server-side only**;
+the client-side lives in `eph-net-kernel`. Promoted out of the bench tree
+so tests no longer reverse-include benchmarks.
 
 ### Test mocks (`include/eph/net/test/`)
 
-- `FakeStream` — in-memory `Stream` implementation for unit tests.
-  `inject_rx()` / `collect_tx()` / `inject_disconnect()`.
+- `FakeStream` — in-memory `Stream` implementation. `inject_rx(span)` /
+  `collect_tx()` / `clear_tx()` / `inject_disconnect()`.
 - `FakeDatagram` — in-memory `Datagram` implementation.
-- `TestPoller<P>` — drives registered pollables synchronously, no syscalls.
+- `TestPoller<P>` — drives registered pollables synchronously, no syscalls,
+  no threads. Use with the two fakes for pure-logic unit tests.
 
-### Shared wire-level detail
+### Shared wire-level detail (`include/eph/net/detail/`)
 
-`include/eph/net/detail/` contains the shared TLS / WebSocket / HTTP wire helpers
-used by both the kernel and DPDK backends:
+Implementation details used by both the kernel and DPDK backends when
+`EnableTls=true` or `ws_path` is set. Users never reference these directly.
 
-- `tls_session.hpp` — TLS 1.3 session wrapping `aws-lc::SSL*`. Driven by whichever
-  byte-socket adapter the backend provides.
-- `websocket.hpp` — RFC 6455 wire parsing and masking helpers.
-- `http_request.hpp` / `http_response.hpp` — HTTP/1.1 minimal parser for the WS
-  upgrade handshake.
-
-These are `detail::` types — users don't touch them directly; they're pulled in
-transparently by `KernelTcpStream` / `DpdkTcpStream` when `EnableTls=true`.
+- `tls_session.hpp` — TLS 1.3 session wrapping `aws-lc::SSL*`, templated on
+  the byte-socket adapter the backend supplies.
+- `tls_record.hpp` / `tls_decryptor.hpp` / `tls_encryptor.hpp` /
+  `tls_inplace.hpp` / `tls_constants.hpp` — split out of `tls_session.hpp`
+  so the zero-copy DPDK in-place AES-GCM decrypt path can be used
+  independently of the full session state machine.
+- `websocket.hpp` — RFC 6455 frame encode/decode + masking pool.
+- `ws_handshake.hpp` — client-side `Upgrade: websocket` handshake over a
+  generic ByteSink. Called transparently from
+  `{Kernel,Dpdk}TcpStream::create()` when `StreamConfig::ws_path` is
+  non-empty.
+- `http_connect.hpp` — HTTP CONNECT proxy handshake (kernel backend only).
 
 ## Using the concepts
 
@@ -52,8 +140,8 @@ transparently by `KernelTcpStream` / `DpdkTcpStream` when `EnableTls=true`.
 
 using Stream = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec>;
 
-static_assert(eph::net::Stream<Stream>);
 static_assert(eph::net::Pollable<Stream>);
+static_assert(eph::net::Stream<Stream>);
 ```
 
 ## Writing tests with the fakes
@@ -79,17 +167,41 @@ TEST(MyApp, ReactsToIncomingBytes) {
 
 No sockets, no network, no threading variance.
 
+## Signing an exchange REST request
+
+```cpp
+#include "eph/net/hmac.hpp"
+
+using namespace eph::net;
+
+HmacSha256Key key{std::string_view{api_secret}};   // zero-on-destroy
+HmacSha256Tag tag = hmac_sha256_sign(key, canonical_query);
+
+uint8_t hex[64];
+tag.to_hex(std::span<uint8_t, 64>{hex});           // zero-alloc hex
+```
+
 ## Dependencies
 
-- `eph-core` (public) — concepts, `Error`, `ErrorInfo`, `OutputBuffer`, `PacketView`.
-- `eph-utils` (public) — TSC timer for arrival timestamps, HDR histogram for metrics.
-- `eph-containers` (public) — SPSC queues / ring buffers used by the TLS reassembly
-  buffer.
-- `aws-lc` (private-ish) — pulled in by `detail/tls_session.hpp`. Only link it in
-  targets that instantiate a TLS-enabled stream.
+- `eph-core` (public) — concepts, `Error`, `ErrorInfo`, `OutputBuffer`,
+  `PacketView`, `TcpState`, `MetricsSink`.
+- `eph-utils` (public) — TSC timer for arrival timestamps, HDR histogram
+  primitives.
+- `eph-containers` (public) — SPSC queues / ring buffers used inside the
+  TLS reassembly buffer.
+- `aws-lc` (pulled in by `detail/tls_*.hpp` and by `hmac.hpp`). Only link
+  it in targets that instantiate a TLS-enabled stream or use
+  `HmacSha256Key`.
 
 ## See also
 
-- [`docs/architecture.md`](../docs/architecture.md) — the three concept layer
-- [`docs/poller-guide.md`](../docs/poller-guide.md) — using `Poller` with streams
+- [`CHANGELOG.md`](CHANGELOG.md) — change history
+- [`summary.md`](summary.md) — full public API surface reference
+- [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — new-contributor tour
+- [`../docs/architecture.md`](../docs/architecture.md) — whole-project
+  concept model
+- [`../docs/poller-guide.md`](../docs/poller-guide.md) — using `Poller`
+  with streams
 - `.artifacts/design-eph-v3.3-architecture-20260410.md` — design spec
+- `.artifacts/phase-9-scope-decision.md` — rationale for the HTTP /
+  proxy / WS feature scope

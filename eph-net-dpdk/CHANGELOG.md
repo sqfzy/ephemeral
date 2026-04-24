@@ -10,6 +10,46 @@ full test build, and non-hardware-dependent tests pass (DpdkTcpStream
 TLS handshake 2/2, ARP 23/23, DNS 61/61 + 24/24 adversarial,
 packet_core 30/30).
 
+### Added (phase-1 stub — multi-process Platform surface)
+- **Platform**: `eph::dpdk::ProcType { Primary, Secondary }` +
+  `PlatformConfig::proc_type / file_prefix / rx_queue_range /
+  src_port_range` fields. All default to single-process / primary
+  semantics so pre-MP code compiles byte-for-byte.
+- **Platform**: `create_primary(PlatformConfig)` and
+  `create_secondary(PlatformConfig)` factories alongside the existing
+  `create()`. `create_primary` force-sets `proc_type = Primary` and
+  delegates to `create()`. `create_secondary` is a **phase-1 stub**:
+  it force-sets `proc_type = Secondary` and validates the secondary
+  contract synchronously — non-empty `file_prefix`, `src_port_range`
+  explicitly carved off the IANA default `{32768, 65535}`,
+  `rx_queue_range` either the `{0,0}` full-range sentinel or a
+  non-empty sub-range — then WARNs and delegates to `create()`. The
+  real `rte_mempool_lookup` / skip-`rte_eth_dev_configure` attach
+  path lands in phase 3; callers already get correct `InvalidConfig`
+  errors today for the silent-misconfig classes the factory exists to
+  prevent (chiefly cross-process source-port collision, which looks
+  like a duplicate reconnect to exchange-grade peers).
+- Config `to_debug_string()` / `to_json()` extended to include the
+  four new MP fields.
+
+### Docs
+- **summary.md**: new `PlatformConfig` section listing every field
+  including the MP additions; new "Multi-process factories" subsection
+  covering `create` / `create_primary` / `create_secondary` contract.
+- **README.md**: `Testing` section expanded from 3 bullet items into a
+  full per-binary table (13 public-surface tests + `dpdk_e2e`
+  integration + `tests/legacy/` coverage statement). New `Benchmarks`
+  section tabulating the 8 `bench_*` targets under
+  `eph-net-dpdk/benchmarks/` + RX hot-path baseline + regression guard
+  script. New `Fuzzers` section cross-referencing the 4 libFuzzer
+  harnesses + corpus layout + Clang-only build constraint. New
+  `Scripts` section listing `dpdk-setup.sh` / `dpdk-teardown.sh` /
+  `check-rx-hot-path-regression.sh`.
+- **ONBOARDING.md**: "How to read the code" step 8 points at the MP
+  section of `platform.hpp`. New "Running as a DPDK secondary process
+  (phase-1 preview)" common task with a full `create_secondary` call
+  example and an enumeration of the contract rejections.
+
 ### Fixed
 - **Platform**: `register_poller` rejects registering the same Poller
   pointer on two different queues. Silent misroute bug — one lcore would

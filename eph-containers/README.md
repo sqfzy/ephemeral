@@ -68,6 +68,7 @@ xmake build bench_bq_pingpong
 ## Test
 
 ```bash
+xmake run test_concepts
 xmake run test_ring_buffer
 xmake run test_bounded_queue
 xmake run test_bounded_queue_bytes
@@ -75,9 +76,13 @@ xmake run test_evicting_queue
 xmake run test_evicting_queue_bytes
 ```
 
-At the time of writing the test suite comprises **389 tests across 5
-binaries** exercising boundary conditions (capacity 1/2/1024), SPSC
-race patterns, batch operations, peek semantics, and stats correctness.
+At the time of writing the test suite comprises **434 tests across 6
+binaries** exercising the `TrivialData<T>` concept surface, boundary
+conditions (capacity 1/2/1024), SPSC race patterns, batch operations,
+peek semantics, and stats correctness. `test_concepts` is a pure
+compile-time / `static_assert` suite that validates which types satisfy
+`TrivialData` (primitives, aggregates, `std::array`) and which do not
+(`std::string`, `std::vector`, types with non-trivial destructors).
 
 ## Benchmarks
 

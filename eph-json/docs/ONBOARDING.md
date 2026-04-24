@@ -81,6 +81,7 @@ eph-json/
 
 - **`eph::json::parse(data, len)`** — top-level parser. Returns `expected<JsonView, ParseError>`.
 - **`eph::json::binance::BookTicker::from(JsonView)`** / **`okx::OkxBookTicker::from(...)`** / **`bybit::BybitBookTicker::from(...)`** — typed adapter factories.
+- **`eph::json::binance::BookTicker::parse(data, len)`** — fused single-pass fast path for dedicated Binance `@bookTicker` subscriptions; ~2-3× faster than `from(parse(...))`, same required/optional field set.
 - **`eph::json::binance::symbol_hash`** / **`okx::inst_id_hash`** / **`bybit::symbol_hash`** — raw-byte FNV-1a extractors that skip the parser entirely (hot-path deduplication).
 - **`eph::json::binance::BinanceRestClient`** — REST client for `/api/v3/depth` and `/api/v3/time`.
 
@@ -92,6 +93,7 @@ eph-json/
 - **Nested structures kept opaque.** Objects and arrays inside a parsed object are captured as a raw `string_view` spanning their braces/brackets; you re-parse them only if needed. Depth bounded at 64 internally.
 - **Escape handling is minimal.** The scanner recognizes `\` to avoid terminating on `\"`, but does NOT decode `\n` / `\uXXXX` / etc. Field values are raw slices of the input.
 - **Typed adapters.** Each exchange adapter pulls required fields from a `JsonView` via `get_string()` / `get_int()` and returns `optional<Struct>`. Binance's `BookTicker` additionally pre-parses prices into `cached_bid` / `cached_ask` to make `mid_price()` / `spread()` branch-light under hot-loop use.
+- **Fused fast path (Binance bookTicker).** `BookTicker::parse(data, len)` is a specialised single-pass alternative: it walks the raw bytes once and dispatches each 1-char key directly into the target `BookTicker` field, skipping the generic `JsonView` intermediate. ~2-3× faster than `BookTicker::from(parse(data, len))` on representative payloads. Use it on dedicated `/ws/<sym>@bookTicker` subscriptions; keep `from()` for combined-stream envelopes whose outer JSON is already a `JsonView`. Unknown fields (future Binance additions, or multi-char keys like `"e"`) are silently skipped, so callers stay forward-compatible with additive schema changes.
 
 ## Daily Development
 
@@ -119,9 +121,10 @@ Tests use `gtest` via the shared `eph-test` rule. Tests are auto-discovered from
 xmake run bench_json_parse
 ```
 
-Three microbenchmarks on a representative Binance `bookTicker` payload:
+Four microbenchmarks on a representative Binance `bookTicker` payload:
 - `BM_JsonParse` — `parse()` alone.
 - `BM_JsonParseAndExtract` — `parse()` + `BookTicker::from()`.
+- `BM_BinanceBookTickerParse` — `BookTicker::parse(data, len)` fused single-pass fast path (direct competitor to `BM_JsonParseAndExtract`).
 - `BM_SymbolHash` — `symbol_hash()` on raw bytes (no full parse).
 
 **Always run benchmarks before AND after modifying the parser or any adapter.** Global user instructions require establishing a baseline, then verifying no regression before finalizing the change.
@@ -202,6 +205,15 @@ Use `get_string()` when the distinction matters.
 ### `BookTicker` vs `OkxBookTicker` / `BybitBookTicker` price caching
 
 Only Binance's `BookTicker` caches parsed bid/ask doubles. OKX and Bybit tickers re-parse on every `mid_price()` / `spread()` call. If you need hot-loop mid/spread for those exchanges, cache the result yourself.
+
+### `BookTicker::from(JsonView)` vs `BookTicker::parse(data, len)`
+
+Two factories, different call sites:
+
+- `BookTicker::from(JsonView)` — generic, works against any `JsonView`. Use this when the outer JSON has already been parsed (e.g. inside a combined-stream `data_raw`) and you want the extracted fields.
+- `BookTicker::parse(data, len)` — fused single-pass over the raw bytes. Skips the `JsonView` intermediate entirely and is ~2-3× faster, but only applies when the payload is already known to be a flat bookTicker object (dedicated `/ws/<sym>@bookTicker` subscription). Do NOT pass a combined-stream wrapper to it — it would not descend into the nested `data` and would (correctly) return `nullopt`.
+
+Pick `parse()` on dedicated hot paths, `from()` on generic JsonView flows. Both pre-populate `cached_bid` / `cached_ask` identically.
 
 ### `kMaxFields` overflow
 

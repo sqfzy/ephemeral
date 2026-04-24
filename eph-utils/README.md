@@ -3,10 +3,12 @@
 Header-only C++23 foundation library for the `ephemeral_dev` low-latency
 networking and trading codebase. Provides the primitives that every other
 `eph-*` subproject builds on: TSC-based nanosecond timing, HDR histograms
-and latency recorders, CPU topology / affinity / real-time scheduling,
-huge-page allocation, cache-line alignment, a regulatory audit trail,
-wall-clock helpers, EMAs, a metrics console sink, and a `getrusage`-based
-system profiler.
+and latency recorders, CPU topology / affinity / strict pinning / real-time
+scheduling, huge-page allocation, cache-line alignment, a regulatory audit
+trail, wall-clock helpers, EMAs, a two-phase bench timer, a metrics console
+sink, a `getrusage`-based system profiler, HFT-grade compliance primitives
+(kill switch, token-bucket rate limiter), a cooperative shutdown flag, and
+a `setns(2)` helper for Linux netns-isolated test fixtures.
 
 Designed for HFT hot paths where nanosecond-level determinism matters:
 every primitive is zero-allocation on the hot path, `noexcept` where it
@@ -19,31 +21,52 @@ back gracefully on non-Linux / non-x86_64 hosts.
 eph-utils/
 ├── include/eph/
 │   ├── utils.hpp                  -- convenience aggregation header
+│   │                                 (see "Aggregation header" below —
+│   │                                 does NOT include every module)
 │   └── utils/
 │       ├── alignment.hpp          -- CACHE_LINE_SIZE, Align<T>
 │       ├── audit_log.hpp          -- AuditLog<N>, AuditEntry, AuditEvent
 │       ├── console_sink.hpp       -- ConsoleSink (core::MetricsSink impl)
 │       ├── cpu.hpp                -- topology, set_thread_affinity,
 │       │                             set_thread_realtime, cpu_relax,
-│       │                             spin_for_ns
-│       ├── cpu_pin.hpp            -- pin_thread_strict (isolcpus + SMT +
-│       │                             NUMA + IRQ validation)
+│       │                             spin_for_ns, pin_thread +
+│       │                             CpuPinPolicy (strict isolcpus /
+│       │                             SMT / NUMA / IRQ validation)
 │       ├── ema.hpp                -- Ema, EmaCrossover
 │       ├── hdr_histogram.hpp      -- HdrHistogram, measure_tsc, ScopedTSC,
 │       │                             Stats
 │       ├── hugepage.hpp           -- HugePage::make<T>, allocate,
 │       │                             deallocate
+│       ├── kill_switch.hpp        -- KillSwitch (single-fire, irreversible)
 │       ├── phased_timer.hpp       -- PhasedTimer (warmup + measurement)
+│       ├── rate_limiter.hpp       -- TokenBucket (weighted, thread-safe)
 │       ├── record.hpp             -- aggregation header (hdr + recorder +
 │       │                             system_stats)
 │       ├── recorder.hpp           -- Recorder, ConcurrentRecorder
+│       ├── shutdown_signal.hpp    -- g_shutdown_flag +
+│       │                             install_shutdown_handlers()
 │       ├── system_stats.hpp       -- SystemStats, SystemResourceStats
 │       ├── time.hpp               -- TSC (rdtscp / cntvct_el0 / fallback)
-│       └── timestamp.hpp          -- wall-clock helpers, ISO 8601 format
-├── tests/                         -- GoogleTest unit tests (15 files)
+│       ├── timestamp.hpp          -- wall-clock helpers, ISO 8601 format
+│       └── linux/
+│           └── netns.hpp          -- enter_netns() for test fixtures
+├── tests/                         -- GoogleTest unit tests (20 files)
 ├── benchmarks/                    -- Google Benchmark microbenchmarks (9)
 └── xmake.lua                      -- build description
 ```
+
+### Aggregation header
+
+`include/eph/utils.hpp` currently pulls in the long-standing core set:
+`alignment`, `audit_log`, `console_sink`, `cpu`, `ema`, `hugepage`,
+`record`, `recorder`, `system_stats`, `time`, `timestamp`. The newer
+additions — `kill_switch.hpp`, `rate_limiter.hpp`, `phased_timer.hpp`,
+`shutdown_signal.hpp`, and `linux/netns.hpp` — are **not** transitively
+pulled in; `#include` them directly when needed. This is intentional:
+`kill_switch` / `rate_limiter` are trading-semantics primitives that
+belong in the consumer's domain layer, `shutdown_signal` installs
+process-wide signal handlers that non-CLI code shouldn't take
+automatically, and `linux/netns.hpp` is POSIX-only.
 
 ## Dependencies
 
@@ -131,20 +154,22 @@ if the recorder outlives the thread.
 ### CPU pinning (strict)
 
 ```cpp
-#include <eph/utils/cpu_pin.hpp>
+#include <eph/utils/cpu.hpp>
 
 eph::utils::CpuPinPolicy policy{};  // all checks on by default
-if (auto r = eph::utils::pin_thread_strict(2, "poll", policy); !r) {
+if (auto r = eph::utils::pin_thread(2, "poll", policy); !r) {
     spdlog::error("{}", r.error());
     return 1;
 }
 ```
 
-`pin_thread_strict` verifies the cpu is in `/sys/devices/system/cpu/isolated`,
+`pin_thread` verifies the cpu is in `/sys/devices/system/cpu/isolated`,
 that no SMT sibling has already been pinned from this process, that
 consecutive pins stay on the same NUMA node, and (warn-only) that the
 cpu doesn't have active IRQs in `/proc/interrupts`. Relaxed with
-`policy.require_isolcpus = false` for dev hosts.
+`policy.require_isolcpus = false` for dev hosts. An argument-free
+`pin_thread(cpu)` overload exists for the common "no name, default
+policy" case.
 
 ### Huge pages
 
@@ -193,28 +218,95 @@ for (double price : stream) {
 NaN / Inf inputs are silently rejected (state unchanged) so a single
 bad tick can't poison the signal.
 
+### Kill switch (irreversible, single-fire)
+
+```cpp
+#include <eph/utils/kill_switch.hpp>
+
+eph::utils::KillSwitch ks{[] {
+    SPDLOG_ERROR("kill switch tripped — cancelling open orders");
+    cancel_all();
+}};
+while (!ks.tripped()) { process_events(); }
+ks.trip();   // idempotent; callback fires exactly once across all threads
+```
+
+By design there is **no** `reset()` / `untrip()` / `clear()` — a tripped
+switch requires process restart + human review. Enforced at compile time
+via `static_assert`. Thread-safe acquire-release CAS internally.
+
+### Token-bucket rate limiter (weighted, thread-safe)
+
+```cpp
+#include <eph/utils/rate_limiter.hpp>
+
+eph::utils::TokenBucket binance{{.capacity = 1200, .refill_per_second = 20.0}};
+if (!binance.try_acquire(1))  { /* denied */ }
+if (!binance.try_acquire(10)) { /* expensive endpoint denied */ }
+```
+
+Mutex-guarded (`steady_clock`-driven), fixed capacity / refill, weighted
+acquire matching Binance / OKX style budgets. `try_acquire(0)` is a free
+no-op; `try_acquire(weight > capacity)` fails immediately rather than
+spinning forever.
+
+### Cooperative shutdown flag
+
+```cpp
+#include <eph/utils/shutdown_signal.hpp>
+
+eph::utils::install_shutdown_handlers();   // SIGINT + SIGTERM
+while (eph::utils::g_shutdown_flag.load(std::memory_order_relaxed)) {
+    run_one_iteration();
+}
+```
+
+Lives at the library level so tests and operational tools share one flag
+rather than each installing their own.
+
+### Linux netns entry (test fixtures only)
+
+```cpp
+#include <eph/utils/linux/netns.hpp>
+
+if (auto r = eph::utils::linux_::enter_netns("bench_ns"); !r) {
+    spdlog::error("{}", r.error());
+}
+```
+
+Used by the latency-bench host transitions and by DPDK / kernel
+integration fixtures that need namespace isolation. Requires
+`CAP_SYS_ADMIN` and a pre-existing `/var/run/netns/<name>` (e.g. via
+`ip netns add`).
+
 ## Tests
 
-15 GoogleTest files under `tests/`, one per module plus `test_version`.
-All tests are `[nodiscard]`-clean and cover boundary conditions:
+20 GoogleTest files under `tests/`, covering every public module plus
+`test_version`. All tests are `[nodiscard]`-clean and exercise boundary
+conditions:
 
-| Test file                 | Covers                                                   |
-|---------------------------|----------------------------------------------------------|
-| `test_alignment.cpp`      | `CACHE_LINE_SIZE`, `Align<T>`                            |
-| `test_audit_log.cpp`      | ring wrap, multi-writer CAS, flush, dump, side display   |
-| `test_console_sink.cpp`   | counter/gauge/histogram, tag quoting                     |
-| `test_cpu.cpp`            | topology, affinity, `cpu_relax`, `CpuTopologyInfo` format|
-| `test_cpu_pin.cpp`        | isolcpus / SMT / NUMA / IRQ checks                       |
-| `test_ema.cpp`            | alpha bounds, NaN rejection, crossover edge cases        |
-| `test_hdr_histogram.cpp`  | percentiles, merge/subtract, linear / percentile iter    |
-| `test_hugepage.cpp`       | zero-size, fallback, destructor                          |
-| `test_record.cpp`         | Stats dump/json, operator-                               |
-| `test_recorder.cpp`       | record, export_json/csv, overflow saturation             |
-| `test_spin_for_ns.cpp`    | busy-wait accuracy at 1 us / 10 us / 100 us              |
-| `test_system_stats.cpp`   | delta, move semantics, format                            |
-| `test_time.cpp`           | TSC calibration, CV, NaN/Inf edge cases, delta_ns        |
-| `test_timestamp.cpp`      | ms/us/ns conversions, ISO 8601, Y2K38 guard              |
-| `test_version.cpp`        | version string                                           |
+| Test file                       | Covers                                                      |
+|---------------------------------|-------------------------------------------------------------|
+| `test_alignment.cpp`            | `CACHE_LINE_SIZE`, `Align<T>`                               |
+| `test_audit_log.cpp`            | ring wrap, multi-writer CAS, flush, dump, side display      |
+| `test_console_sink.cpp`         | counter/gauge/histogram, tag quoting                        |
+| `test_cpu.cpp`                  | topology, affinity, `cpu_relax`, `CpuTopologyInfo` format   |
+| `test_cpu_pin.cpp`              | `pin_thread` isolcpus / SMT / NUMA / IRQ checks             |
+| `test_ema.cpp`                  | alpha bounds, NaN rejection, crossover edge cases           |
+| `test_hdr_histogram.cpp`        | percentiles, merge/subtract, linear / percentile iter       |
+| `test_hugepage.cpp`             | zero-size, fallback, destructor                             |
+| `test_kill_switch.cpp`          | single-fire idempotency, CAS under concurrent trip          |
+| `test_phased_timer.cpp`         | warmup → measurement transition, uncalibrated fall-through  |
+| `test_rate_limiter.cpp`         | `TokenBucket` refill, weighted acquire, capacity clamp      |
+| `test_rate_limiter_edge.cpp`    | `weight=0` / `weight>capacity`, clock-backward, long idle   |
+| `test_record.cpp`               | Stats dump/json, operator-                                  |
+| `test_recorder.cpp`             | record, export_json/csv, overflow saturation                |
+| `test_shutdown_signal.cpp`      | handler installation, flag flip on SIGTERM                  |
+| `test_spin_for_ns.cpp`          | busy-wait accuracy at 1 us / 10 us / 100 us                 |
+| `test_system_stats.cpp`         | delta, move semantics, format                               |
+| `test_time.cpp`                 | TSC calibration, CV, NaN/Inf edge cases, delta_ns           |
+| `test_timestamp.cpp`            | ms/us/ns conversions, ISO 8601, Y2K38 guard                 |
+| `test_version.cpp`              | `eph::version_at_least(...)` consteval feature gate         |
 
 ## Benchmarks
 

@@ -11,6 +11,7 @@ All notable changes to `eph-book`. Format loosely follows [Keep a Changelog](htt
 
 - Doxygen-style API comments added to every public type, function, and template in `include/eph/book/*.hpp`, covering `PriceLevel`, `ArrayBook`, `MapBook`, `Order`, `ItchBookBuilder`, `BinanceBookAdapter`, and all signal calculators.
 - Comprehensive README regenerated with API reference tables, usage snippets, and logger-name conventions.
+- **Added `summary.md`** (2026-04-24) — deepest single document for the module: per-project overview matching the `eph-json` / `eph-itch` / `eph-fix` convention. Covers architecture, component diagram, module map, Binance + ITCH data flows, per-component invariants and mutation semantics, public API surface, dependency rationale, testing / benchmark targets, and the `book.*` logger severity map. Regenerated from the current `include/eph/book/*.hpp` — no behavioral changes.
 
 ## Core order book
 

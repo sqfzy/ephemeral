@@ -42,7 +42,15 @@ int main(int argc, char** argv) {
     // One poller owns the event loop.
     auto poller = en::KernelPoller::create({}).value();
 
-    // Plaintext WS — real WS handshake is codec/helper territory.
+    // Plaintext WS client template. Setting `cfg.ws_path = "/stream"`
+    // (or whatever path the server expects) turns `Stream::create` into
+    // a full RFC 6455 client handshake: KernelTcpStream drives the HTTP
+    // Upgrade, validates the Sec-WebSocket-Accept, and only returns the
+    // stream once the handshake completes — see
+    // eph-net-kernel/.../tcp_stream.hpp and `StreamConfig::ws_path`.
+    // This minimal skeleton leaves `ws_path` empty so the demo opens
+    // only a raw TCP socket; `WsCodec` is still the frame parser and
+    // will decode WS frames once they arrive.
     using Stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
     en::StreamConfig cfg{};
     cfg.remote          = eph::net::SocketAddr{*ip, port};

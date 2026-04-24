@@ -29,9 +29,10 @@ messages.
 
 The library is header-only: every function is inline or a template, so the
 compiler can inline the entire parse path into the caller's hot loop. There
-are no heap allocations on the hot path. MessageView is a 16-byte POD that
-points back into the caller's receive buffer, and per-message accessors
-return plain scalars or std::string_views — no deserialisation, no copies.
+are no heap allocations on the hot path. MessageView is a small POD that
+points back into the caller's receive buffer (a type tag, a pointer, and a
+length), and per-message accessors return plain scalars or std::string_views
+— no deserialisation, no copies.
 
 Design priorities, roughly in order:
 
@@ -182,9 +183,9 @@ app recv <-- AcceptedView / ExecutedView          <-- wire bytes
 ### MessageView (parser.hpp)
 
 File: include/eph/itch/parser.hpp
-Purpose: 16-byte POD pointing into the receive buffer. All further accessors
-are read via free functions in per-message namespaces or the convenience
-methods on the view itself.
+Purpose: Small POD pointing into the receive buffer (a message type byte, a
+pointer, and a length). All further accessors are read via free functions in
+per-message namespaces or the convenience methods on the view itself.
 
 Interface:
 ```

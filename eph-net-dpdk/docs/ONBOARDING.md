@@ -34,6 +34,13 @@ Read the code in this order:
    with `writable_data()` support for in-place mutation.
 7. `include/eph/dpdk/*` — internal detail only if you're debugging the TCP
    state machine or adding ARP / DNS / flow steering support.
+8. `include/eph/dpdk/platform.hpp` — bottom of the file has the
+   multi-process section (`ProcType`, `PlatformConfig::proc_type /
+   file_prefix / rx_queue_range / src_port_range`, and the
+   `create_primary` / `create_secondary` factories). `create_secondary`
+   is currently a phase-1 stub: it validates the secondary contract and
+   then delegates to `create()`. The real `rte_mempool_lookup` attach
+   path lands in phase 3.
 
 ## Getting DPDK running on the host
 
@@ -99,6 +106,33 @@ and move the resulting `FlowRule` into the stream/socket's `flow_rule_`
 member so teardown is automatic. Poller::add() does NOT touch flow rules —
 the stream owns the rule's lifetime. Unit tests are in
 `tests/test_flow_steering.cpp`.
+
+### Running as a DPDK secondary process (phase-1 preview)
+
+Single-NIC multi-process setups let two processes share one port's mempool
+via the DPDK `--proc-type=secondary` mechanism. The phase-1 surface in
+`platform.hpp` already enforces the contract synchronously at config
+time:
+
+```cpp
+eph::dpdk::PlatformConfig cfg{
+    .port_id        = 0,
+    .nb_rx_queues   = 4,
+    .proc_type      = eph::dpdk::ProcType::Secondary,   // or use create_secondary
+    .file_prefix    = "hft_app",                         // must match primary's EAL --file-prefix
+    .rx_queue_range = {2, 4},                            // disjoint from primary's [0, 2)
+    .src_port_range = {50000, 55000},                    // must NOT be the IANA default
+};
+auto plat = eph::dpdk::Platform::create_secondary(std::move(cfg));
+```
+
+`create_secondary` rejects `file_prefix.empty()`, rejects the IANA
+default `src_port_range {32768, 65535}` (silent cross-process
+src-port reuse is the exact failure mode), and rejects backwards
+`rx_queue_range`. Phase-1 then WARNs and delegates to `create()`; the
+real `rte_mempool_lookup` / skip-port-configure path lands in phase 3.
+Primary callers should use `create_primary` for symmetry and call-site
+clarity.
 
 ### Debugging TLS handshake failures
 

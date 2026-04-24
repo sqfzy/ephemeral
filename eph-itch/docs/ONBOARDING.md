@@ -73,10 +73,10 @@ The umbrella header `include/eph/itch.hpp` includes all six.
 
 ### Key design choices
 
-- **Zero copy.** `MessageView` is a 16-ish-byte POD pointing back into the
-  caller's receive buffer. The per-message accessors (e.g.
-  `add_order::price(msg)`) take a `const uint8_t*` and read fields directly
-  with `std::memcpy` + `std::byteswap`.
+- **Zero copy.** `MessageView` is a small POD (a type byte, a pointer, and a
+  length) pointing back into the caller's receive buffer. The per-message
+  accessors (e.g. `add_order::price(msg)`) take a `const uint8_t*` and read
+  fields directly with `std::memcpy` + `std::byteswap`.
 - **Compile-time dispatch.** `dispatch(view, handler)` is a `switch` on
   `view.msg_type` that calls `handler(msg::Tag{}, msg)` — the compiler picks
   one branch per handler overload, no v-table, no `std::variant` visit
