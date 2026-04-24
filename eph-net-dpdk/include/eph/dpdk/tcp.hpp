@@ -305,6 +305,15 @@ class TcpSession {
     static_assert(ReorderSlots <= 255,
                   "ReorderSlots must fit in uint8_t (reorder_count_)");
 public:
+    /// @brief DPDK RX burst size used by the TcpSession's own poll paths
+    ///        (connect handshake retry loop, poll_rx wrapper). Matches the
+    ///        32-mbuf canonical burst used everywhere else in the codebase
+    ///        (DpdkPoller::kBurstSize, process_rx's internal kMaxBurst,
+    ///        send_batch's kMaxBatchSize). Named so the three sites that
+    ///        size `rte_mbuf* pkts[N]` stay synced when tuning bursts.
+    static constexpr uint16_t kRxBurstSize = 32;
+
+
     /// @brief TCP session statistics (packets, bytes, reorder events, gap telemetry).
     ///
     /// All counters are cumulative. Use operator- to compute deltas between
@@ -730,9 +739,9 @@ public:
                 next_syn_retransmit = now + kSynRetransmitInterval;
             }
 
-            rte_mbuf* pkts[32];
+            rte_mbuf* pkts[kRxBurstSize];
             uint16_t nb_rx = rte_eth_rx_burst(
-                config_.port_id, config_.rx_queue_id, pkts, 32);
+                config_.port_id, config_.rx_queue_id, pkts, kRxBurstSize);
 
             for (uint16_t i = 0; i < nb_rx; ++i) {
                 auto parsed = net::parse_packet(pkts[i]);
@@ -1550,13 +1559,13 @@ public:
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, core::ErrorInfo> poll_rx(F&& data_callback) {
-        rte_mbuf* pkts[32];
+        rte_mbuf* pkts[kRxBurstSize];
 
         // Limit burst size to prevent upstream reassembly buffer overflow.
         // Auto-calculate from MSS when max_rx_burst == 0.
         const uint16_t burst_limit = config_.max_rx_burst > 0
             ? config_.max_rx_burst
-            : std::min(uint16_t{32},
+            : std::min(kRxBurstSize,
                        static_cast<uint16_t>(TcpConfig::kDefaultRxBudgetBytes / config_.mss));
 
         uint16_t nb_rx = rte_eth_rx_burst(
