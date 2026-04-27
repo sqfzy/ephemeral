@@ -622,22 +622,10 @@ TEST(Keepalive, FirstTickAnchorsBaseline) {
         << "first tick must establish baseline, not probe";
 }
 
-TEST(Keepalive, MaxUnansweredProbesDeclareClosed) {
-    // With pool=nullptr, send_keepalive_probe_ returns an error (no mbuf
-    // alloc), so keepalive_misses_ never increments AND the "dead
-    // connection" transition would never fire normally. To test the
-    // Closed transition, inject keepalive_misses_ via state_ + config
-    // that forces the branch.
-    //
-    // We can't inject keepalive_misses_ directly, but we CAN drive the
-    // "probe failed" loop by having the session's pool be null — then
-    // each tick attempts a probe, the probe alloc fails, and
-    // keepalive_misses_ stays at 0 → probe fires again next tick. That
-    // means pool=nullptr isn't the right way to test the dead-close
-    // transition.
-    //
-    // Pragmatic approach: just test that tick_keepalive is safely a
-    // no-op until the interval elapses.
+TEST(Keepalive, NoOpInsideInterval) {
+    // tick_keepalive is a no-op until the interval elapses since the
+    // last RX. Verifies the rate-limit guard (the inverse of the
+    // dead-close path tested below).
     auto cfg = make_test_config();
     cfg.keepalive_interval = std::chrono::milliseconds(10);
     cfg.keepalive_probes   = 3;
@@ -651,7 +639,59 @@ TEST(Keepalive, MaxUnansweredProbesDeclareClosed) {
     s.tick_keepalive(2000);   // still well inside the window
 
     EXPECT_EQ(s.state(), TcpState::Established);
-    EXPECT_EQ(s.stats().keepalive_probes_sent, 0u);
+    EXPECT_EQ(s.stats().keepalive_probes_sent,   0u);
+    EXPECT_EQ(s.stats().keepalive_send_failures, 0u);
+}
+
+TEST(Keepalive, SendFailureStillAdvancesMissCounterAndClosesConnection) {
+    // With pool=nullptr, every probe attempt fails the mbuf alloc.
+    // Pre-fix: keepalive_misses_ never advanced on a TX failure, so a
+    // stuck NIC (mempool exhausted, TX ring saturated) would silently
+    // loop forever instead of timing out the dead peer.
+    // Post-fix: each tick consumes a "miss slot" regardless of TX
+    // success, so after `keepalive_probes` failures we declare the
+    // connection dead — exactly the same dead-peer policy as a peer
+    // that goes silent. The new `keepalive_send_failures` stat
+    // distinguishes the two causes for monitoring.
+    auto cfg = make_test_config();
+    cfg.keepalive_interval = std::chrono::milliseconds(10);
+    cfg.keepalive_probes   = 3;
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2000, 65535);
+
+    // Anchor baseline at tsc=1 (first tick — must be non-zero, since
+    // last_rx_tsc_==0 is the "no baseline yet" sentinel and another zero
+    // tick would just re-anchor without firing).
+    s.tick_keepalive(1);
+    EXPECT_EQ(s.stats().keepalive_probes_sent,   0u);
+    EXPECT_EQ(s.stats().keepalive_send_failures, 0u);
+
+    // Each subsequent tick is one full interval past the previous one,
+    // so the rate-limit guard does not suppress probes. Drive
+    // `keepalive_probes` failed attempts plus one final tick that
+    // observes the miss-count overflow and transitions to Closed.
+    //
+    // interval = 10 ms; pick a step >> the cycles-equivalent regardless
+    // of whether TSC::init() has been called (the helper falls back to
+    // the 1 GHz ns→cycles approximation, so 100 ms in cycles ≈ 10⁸).
+    constexpr uint64_t kStep = 200'000'000ull;  // ~200 ms in 1 GHz cycles
+    uint64_t tsc = 1 + kStep;
+    for (uint8_t i = 0; i < cfg.keepalive_probes; ++i) {
+        s.tick_keepalive(tsc);
+        tsc += kStep;
+    }
+    // After exactly `keepalive_probes` send-failures the next tick should
+    // observe the threshold and close.
+    EXPECT_EQ(s.stats().keepalive_probes_sent,   0u);
+    EXPECT_EQ(s.stats().keepalive_send_failures, cfg.keepalive_probes);
+    EXPECT_EQ(s.state(), TcpState::Established);
+
+    s.tick_keepalive(tsc);
+    EXPECT_EQ(s.state(), TcpState::Closed)
+        << "after " << static_cast<int>(cfg.keepalive_probes)
+        << " send-failed probes the connection must be declared dead";
 }
 
 TEST(Keepalive, IncomingSegmentResetsMissCounter) {

@@ -332,6 +332,14 @@ public:
         uint64_t mss_negotiations_applied  = 0;  ///< Connect attempts where peer MSS < local MSS caused a downgrade
         uint64_t icmp_frag_needed_received = 0;  ///< ICMP Type 3 Code 4 packets that triggered an effective_mss clamp
         uint64_t keepalive_probes_sent     = 0;  ///< TCP keepalive probes emitted by tick_keepalive
+        /// Keepalive ticks where the probe could not be transmitted — mbuf
+        /// alloc failed (mempool exhausted) or `rte_eth_tx_burst` returned 0
+        /// (TX queue full / driver back-pressure / link down). Each failure
+        /// still consumes a "miss slot" so a stuck NIC eventually times out
+        /// the connection rather than silently looping forever (the previous
+        /// behaviour). Disjoint from `keepalive_probes_sent`: a single tick
+        /// increments exactly one of the two.
+        uint64_t keepalive_send_failures   = 0;
 
         // ── Reorder / loss telemetry ──
         uint64_t reorder_hits      = 0;  ///< Segments successfully buffered & delivered via reorder buf
@@ -442,6 +450,7 @@ public:
                 .mss_negotiations_applied  = lhs.mss_negotiations_applied  - rhs.mss_negotiations_applied,
                 .icmp_frag_needed_received = lhs.icmp_frag_needed_received - rhs.icmp_frag_needed_received,
                 .keepalive_probes_sent     = lhs.keepalive_probes_sent     - rhs.keepalive_probes_sent,
+                .keepalive_send_failures   = lhs.keepalive_send_failures   - rhs.keepalive_send_failures,
                 .reorder_hits      = lhs.reorder_hits      - rhs.reorder_hits,
                 .reorder_overflows = lhs.reorder_overflows - rhs.reorder_overflows,
                 .max_gap_size      = lhs.max_gap_size,  // Point-in-time (not diffable)
@@ -1490,11 +1499,29 @@ public:
 
         auto r = send_keepalive_probe_();
         last_keepalive_tsc_ = now_tsc;
+        // Whether the probe was actually placed on the wire or not, the
+        // tick consumed a "miss slot": treating a TX failure as "no probe
+        // sent, keep trying" caused the connection to silently loop
+        // forever when the NIC was stuck (mempool exhausted, TX ring full,
+        // link bounced, …). The cumulative count is the same dead-peer
+        // declaration trigger as a peer that goes silent — both are
+        // observability problems we cannot recover from in-place.
+        ++keepalive_misses_;
         if (r) {
-            ++keepalive_misses_;
             ++stats_.keepalive_probes_sent;
             SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
                 "keepalive probe #{} sent", keepalive_misses_);
+        } else {
+            ++stats_.keepalive_send_failures;
+            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+                "keepalive probe #{} send failed: {} ({}:{} -> {}:{}); "
+                "miss-slot consumed (probes={}/{})",
+                keepalive_misses_, r.error().detail,
+                net::format_ipv4(config_.tuple.src_ip).data(),
+                config_.tuple.src_port,
+                net::format_ipv4(config_.tuple.dst_ip).data(),
+                config_.tuple.dst_port,
+                keepalive_misses_, config_.keepalive_probes);
         }
     }
 
