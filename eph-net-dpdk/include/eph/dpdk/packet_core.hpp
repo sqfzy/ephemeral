@@ -355,10 +355,12 @@ struct ConnectionTuple {
 /// @note Leading zeros within an octet (e.g. "010.0.0.1") are tolerated and
 ///       parsed as **decimal** — this is NOT an inet_aton-style octal escape.
 ///       Historically inet_aton interprets "010" as octal 8; we always use
-///       base-10, which eliminates the classic "0177.0.0.1" loopback-bypass
-///       trick but is otherwise permissive. Callers that need strict
-///       no-leading-zero behaviour must pre-validate.
-[[nodiscard]] inline uint32_t parse_ipv4(const char* str) noexcept {
+///       base-10. The parser also caps each octet at 3 digits, which means
+///       "0177.0.0.1" — the classic inet_aton loopback-bypass trick — is
+///       **rejected** outright (the cap stops at "017", the remaining "7"
+///       fails the dot check). Callers that need strict no-leading-zero
+///       behaviour must pre-validate.
+[[nodiscard]] constexpr uint32_t parse_ipv4(const char* str) noexcept {
     if (!str) return 0;
 
     uint32_t octets[4]{};
@@ -387,6 +389,33 @@ struct ConnectionTuple {
 
     return (octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3];
 }
+
+// ── Compile-time guards for parse_ipv4 ──
+// constexpr-evaluating these locks the most security-critical edge cases at
+// build time, so a future "optimization" that breaks the parser fails the
+// build instead of leaking past unit tests. Picked to mirror the runtime
+// edge cases in test_net_header.cpp.
+static_assert(parse_ipv4("10.0.0.1")        == 0x0A000001u,
+              "parse_ipv4: standard dotted-decimal must produce host-order IP");
+static_assert(parse_ipv4("0.0.0.0")         == 0u,
+              "parse_ipv4: 0.0.0.0 — sentinel zero is preserved");
+static_assert(parse_ipv4("255.255.255.255") == 0xFFFFFFFFu,
+              "parse_ipv4: 255.255.255.255 — boundary max IP");
+static_assert(parse_ipv4("256.0.0.1")       == 0u,
+              "parse_ipv4: octet > 255 must reject");
+static_assert(parse_ipv4("1.2.3")           == 0u,
+              "parse_ipv4: missing fourth octet must reject");
+static_assert(parse_ipv4("10.0.0.1x")       == 0u,
+              "parse_ipv4: trailing garbage must reject");
+static_assert(parse_ipv4("0177.0.0.1")      == 0u,
+              "parse_ipv4: 4-digit octet must reject (not parsed as octal — "
+              "the digits<3 cap stops parsing at '017', leaving '7' before "
+              "the '.', which fails the dot check; this blocks the classic "
+              "inet_aton octal loopback-bypass trick rather than reinterpreting it)");
+static_assert(parse_ipv4("177.0.0.1")       == 0xB1000001u,
+              "parse_ipv4: standard 3-digit octet 177 — base-10 only");
+static_assert(parse_ipv4(nullptr)           == 0u,
+              "parse_ipv4: nullptr-safe (returns 0)");
 
 /// @brief Format a host-order IPv4 address as "a.b.c.d" into a fixed-size array.
 ///
