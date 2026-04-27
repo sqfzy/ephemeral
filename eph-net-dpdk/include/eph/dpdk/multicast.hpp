@@ -532,9 +532,15 @@ public:
     void stop() {
         if (!running_.exchange(false, std::memory_order_acq_rel)) return;
         if (thread_.joinable()) thread_.join();
+        // Log both matched and unmatched counts so operators can compute
+        // the hit-rate (matched / (matched + unmatched)) from the stop
+        // event without scraping a separate metric. A high unmatched ratio
+        // is the single most useful diagnostic for multicast misconfig.
+        const uint64_t rx     = total_rx_packets_.load(std::memory_order_relaxed);
+        const uint64_t unm    = rx_unmatched_.load(std::memory_order_relaxed);
         SPDLOG_LOGGER_INFO(detail::multicast_logger(),
-            "MulticastReceiver stopped (total_rx={})",
-            total_rx_packets_.load(std::memory_order_relaxed));
+            "MulticastReceiver stopped (total_rx={}, rx_unmatched={})",
+            rx, unm);
     }
 
     // ─────────────────────────────────────────────────────────────────────
