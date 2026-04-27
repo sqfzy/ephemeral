@@ -91,3 +91,4 @@ session-local clock sample, kept for human context only.
 | 2026-04-22 16:17 | /report decision 四个 TODO | Round 2 sweep 收尾的 4 个 deferred item 决策：TLS API record-by-record 推迟 / Proxy 不做 / WS timeout 可做 / TLS cert 推迟；每项含候选/理由/代价/重评估条件 | d4dc95a | decision-20260422-161707.md |
 | 2026-04-23 04:58 | /report decision --auto | lucky-giggling-kahan review roadmap: 9/11 done (T1×2, T2×4, T3×3), 2 skipped with TD-1..TD-5 ledger + tomlplusplus test fix | 754d734 | decision-20260423-045825.md |
 | 2026-04-23 06:15 | /report decision --auto | TD ledger closeout: TD-3+TD-5+TD-1+TD-2+TD-6 closed (5/6), TD-4 env-gated; 6 commits 1491691..3bbd1fb; 39/39 targets green | 3bbd1fb | decision-20260423-061527.md |
+| 2026-04-27 10:47 | /report retro --auto | /pax --loop --auto eph-net-dpdk: 3 完整 batch + batch-4-partial 9 轮 = 54 rounds / 42 commits / 0 失败 0 回滚；ESCALATION L1→L2 在 batch 3-4 边界精准触发；5 教训 6 action items；待用户决定 batch-4-partial 9 commits 命运 | cc52895 | retro-20260427-104752.md |
