@@ -32,6 +32,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -616,11 +617,18 @@ private:
         int ret = rte_eth_dev_set_mc_addr_list(
             config_.port_id, mc_count > 0 ? mc_list : nullptr, mc_count);
         if (ret != 0) {
+            // Capture rte_errno alongside ret — DPDK returns negative POSIX
+            // errnos (-ENOTSUP for unsupported PMDs, -ENOSPC when the NIC
+            // multicast filter table is full, -EINVAL for malformed list).
+            // Without these, operators see only "ret=-95" and have to guess.
+            const int err = rte_errno;
             SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
-                "rte_eth_dev_set_mc_addr_list failed: ret={} on port {}",
-                ret, config_.port_id);
+                "rte_eth_dev_set_mc_addr_list failed: port={} mc_count={} "
+                "ret={} rte_errno={} ({})",
+                config_.port_id, mc_count, ret, err, rte_strerror(err));
             return std::unexpected(std::format(
-                "rte_eth_dev_set_mc_addr_list failed: ret={}", ret));
+                "rte_eth_dev_set_mc_addr_list failed: ret={}, rte_errno={} ({})",
+                ret, err, rte_strerror(err)));
         }
 
         return {};
@@ -642,11 +650,15 @@ private:
         }
 
         if (had_active) {
-            // Clear the NIC MC list (ignore errors in destructor)
+            // Clear the NIC MC list (ignore errors in destructor — but
+            // surface rte_errno to make post-mortem log analysis tractable).
             int ret = rte_eth_dev_set_mc_addr_list(config_.port_id, nullptr, 0);
             if (ret != 0) {
+                const int err = rte_errno;
                 SPDLOG_LOGGER_WARN(detail::multicast_logger(),
-                    "Failed to clear MC addr list on cleanup: ret={}", ret);
+                    "Failed to clear MC addr list on cleanup: port={} "
+                    "ret={} rte_errno={} ({})",
+                    config_.port_id, ret, err, rte_strerror(err));
             }
         }
     }
