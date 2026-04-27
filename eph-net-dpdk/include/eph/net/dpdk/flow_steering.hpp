@@ -294,6 +294,14 @@ struct FlowRule {
     }
 
     /// Remove the flow rule from the NIC. Safe to call multiple times.
+    ///
+    /// After remove(), `handle` is null but `port_id` / `queue_id` retain
+    /// the coordinates the rule was last active at. This is intentional —
+    /// monitoring/audit consumers reading `to_json()` post-remove still
+    /// learn *where* the rule was, with `"active":false` distinguishing
+    /// the live-vs-removed state. `dump()` returns `"FlowRule(inactive)"`
+    /// without the coordinates so log noise stays terse; `to_json()`
+    /// preserves them for structured pipelines that want the audit trail.
     void remove() noexcept {
         if (!handle) return;
         rte_flow_error error{};

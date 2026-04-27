@@ -227,6 +227,27 @@ TEST(FlowRule, ToJsonActiveShowsTrue) {
     rule.handle = nullptr;
 }
 
+// After remove(), the rule keeps its (port_id, queue_id) coordinates as an
+// audit trail while flipping `"active":false`. This contract is what lets
+// monitoring pipelines tell "rule lived on port 2 queue 5 and is now gone"
+// from "rule never existed (default 0/0)". `dump()` deliberately drops the
+// coordinates to keep log noise terse — only `to_json()` preserves them.
+TEST(FlowRule, RemovePreservesCoordinatesAndMarksInactive) {
+    FlowRule rule;
+    rule.port_id = 7;
+    rule.queue_id = 11;
+    // No handle is installed → remove() is a no-op (guarded by `!handle`),
+    // but the post-state assertions still hold for the structured-output
+    // contract: coordinates remain, `active` is false, and dump() is terse.
+    rule.remove();
+    auto json = rule.to_json();
+    EXPECT_NE(json.find("\"active\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"port_id\":7"), std::string::npos);
+    EXPECT_NE(json.find("\"queue_id\":11"), std::string::npos);
+    EXPECT_EQ(rule.dump(), "FlowRule(inactive)");
+    EXPECT_FALSE(rule.valid());
+}
+
 // ---------------------------------------------------------------------------
 // RxDispatchMode — constexpr enum value ordering
 // ---------------------------------------------------------------------------
