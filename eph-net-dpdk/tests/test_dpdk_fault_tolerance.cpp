@@ -194,3 +194,75 @@ TEST(DpdkFaultTolerance, MbufViewTrimFrontExactlyLengthBecomesEmpty) {
     EXPECT_EQ(view.length(), 0u);
     EXPECT_EQ(view.data(), payload + 8);
 }
+
+// ─── MbufView additional boundary cases (round-50) ─────────────────────
+//
+// `trim_front` had an exactly-at-length test; `trim_back`'s symmetric
+// case was missing — the `n >= length_` guard must include `==` and
+// the data() pointer must stay anchored. Also the cumulative
+// trim_front + trim_back interaction (typical TLS frame trim usage)
+// was uncovered.
+
+TEST(DpdkFaultTolerance, MbufViewTrimBackExactlyLengthBecomesEmpty) {
+    // Mirrors `MbufViewTrimFrontExactlyLengthBecomesEmpty` for the
+    // tail end. `n == length_` falls into the ">=" branch so length
+    // resets to 0; data() must NOT move (trim_back doesn't touch the
+    // head pointer).
+    uint8_t payload[8] = {};
+    MbufView view(payload, sizeof(payload), 99);
+
+    view.trim_back(8);
+    EXPECT_EQ(view.length(), 0u);
+    EXPECT_EQ(view.data(), payload)
+        << "trim_back must not mutate the head pointer";
+    EXPECT_EQ(view.arrival_tsc(), 99u)
+        << "arrival_tsc must survive trimming to empty";
+}
+
+TEST(DpdkFaultTolerance, MbufViewTrimFrontThenTrimBackIsCumulative) {
+    // Real codec usage: TLS strips front (record header) and trims
+    // back (auth tag). The two operations must be independent.
+    uint8_t payload[32] = {};
+    MbufView view(payload, sizeof(payload), 7);
+
+    view.trim_front(5);   // skip 5-byte header
+    view.trim_back(16);   // strip 16-byte auth tag
+    EXPECT_EQ(view.length(), 32u - 5u - 16u);  // 11
+    EXPECT_EQ(view.data(), payload + 5);
+    EXPECT_EQ(view.arrival_tsc(), 7u);
+}
+
+TEST(DpdkFaultTolerance, MbufViewZeroTrimIsNoOp) {
+    // n == 0 falls into the "n < length_" branch (since 0 < non-zero).
+    // length and data must stay identical to defend against accidental
+    // unsigned underflow in the < branch.
+    uint8_t payload[16] = {};
+    MbufView view(payload, sizeof(payload), 1);
+
+    view.trim_front(0);
+    view.trim_back(0);
+    EXPECT_EQ(view.length(), 16u);
+    EXPECT_EQ(view.data(), payload);
+    EXPECT_EQ(view.arrival_tsc(), 1u);
+}
+
+TEST(DpdkFaultTolerance, MbufViewTrimToEmptyThenTrimAgainStaysEmpty) {
+    // Idempotency on the empty-state: once length_ == 0, additional
+    // trims must not push data_ past payload+original-length or
+    // produce nonzero length via underflow.
+    uint8_t payload[4] = {};
+    MbufView view(payload, sizeof(payload), 0);
+
+    view.trim_front(4);  // empty
+    EXPECT_EQ(view.length(), 0u);
+    EXPECT_EQ(view.data(), payload + 4);
+
+    view.trim_front(10);  // trim again on empty
+    EXPECT_EQ(view.length(), 0u);
+    // data() must still point at payload+4 (the saturation spot from
+    // the earlier trim) — NOT advance further into garbage memory.
+    EXPECT_EQ(view.data(), payload + 4);
+
+    view.trim_back(99);
+    EXPECT_EQ(view.length(), 0u);
+}
