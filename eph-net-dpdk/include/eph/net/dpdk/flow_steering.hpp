@@ -307,9 +307,15 @@ struct FlowRule {
         rte_flow_error error{};
         int ret = rte_flow_destroy(port_id, handle, &error);
         if (ret != 0) {
+            // Same rationale as rte_flow_create: error.message can be
+            // empty on some PMDs; rte_errno is the fallback signal so
+            // teardown failures stay diagnosable.
+            const int err = rte_errno;
             SPDLOG_LOGGER_WARN(detail::flow_logger(),
-                "rte_flow_destroy failed: port={}, ret={}, msg={}",
-                port_id, ret, error.message ? error.message : "unknown");
+                "rte_flow_destroy failed: port={}, ret={}, msg={}, "
+                "type={} rte_errno={} ({})",
+                port_id, ret, error.message ? error.message : "unknown",
+                static_cast<int>(error.type), err, rte_strerror(err));
         } else {
             SPDLOG_LOGGER_DEBUG(detail::flow_logger(),
                 "Flow rule removed: port={}, queue={}", port_id, queue_id);
@@ -411,10 +417,19 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
     rte_flow_error error{};
     auto* flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
     if (!flow) {
+        // rte_errno is set by the PMD on top of error.message — they are
+        // complementary diagnostics. PMDs that fail with no message
+        // (Mellanox / ENA on certain firmware) still set rte_errno
+        // (typically -ENOTSUP / -EINVAL / -EAGAIN), which is the
+        // operator's only signal in that case.
+        const int err = rte_errno;
         auto msg = std::format(
-            "rte_flow_create failed: port={}, queue={}, proto={}, error={}",
+            "rte_flow_create failed: port={}, queue={}, proto={}, "
+            "error={} type={} rte_errno={} ({})",
             port_id, queue_id, flow_protocol_name(proto),
-            error.message ? error.message : "unknown");
+            error.message ? error.message : "unknown",
+            static_cast<int>(error.type),
+            err, rte_strerror(err));
         SPDLOG_LOGGER_WARN(log, "{}", msg);
         return std::unexpected(msg);
     }
