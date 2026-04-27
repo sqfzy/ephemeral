@@ -390,7 +390,11 @@ public:
         entry.group     = group;
         entry.mcast_mac = mcast_mac;
         entry.active    = true;
-        entry.rx_packets = 0;
+        // operator= on std::atomic is seq-cst; explicit relaxed is the
+        // semantics we actually want here (init before start, no
+        // cross-thread ordering needed) and matches the relaxed loads
+        // / fetch_adds used everywhere else for this counter.
+        entry.rx_packets.store(0, std::memory_order_relaxed);
 
         // Capture pre-state so a NIC-level failure can roll the high-water
         // mark back. Without this, a failed join would leave group_count_
