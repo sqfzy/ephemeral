@@ -235,3 +235,99 @@ TEST(Mold64Codec, EncodeBufferFull) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::BufferFull);
 }
+
+// ─── round-53 gap-detection boundary additions ─────────────────────
+//
+// Existing tests cover gap-of-4, replay, EOS (0xFFFF count), but these
+// boundary cases were untested:
+//
+//   - Heartbeat datagram (count == 0, but NOT EOS) — a degenerate but
+//     valid-on-the-wire MoldUDP64 form.
+//   - Gap of exactly 1 — pins the strict `>` in "got > expected" check
+//     so a refactor to `>=` would not silently treat steady-state as a
+//     1-msg gap.
+//   - encode at exact-fit cap — pin the strict `>` rejection guard.
+//   - decode does NOT mutate `expected_seq_` past the rewind boundary
+//     when `seq + delivered <= expected_seq_` (i.e. a partial replay).
+
+TEST(Mold64Codec, DecodeHeartbeatDatagramCountZeroDeliversNothing) {
+    // count == 0 is a valid wire form (e.g. a heartbeat / silence
+    // marker between message bursts); only count == 0xFFFF is EOS.
+    // The existing implementation routes this to the for-loop with
+    // 0 iterations → 0 frames delivered, expected_seq_ stays put.
+    Mold64Codec codec;
+    auto wire = build_mold64("SESS000001", /*seq=*/100, /*messages=*/{});
+    SpanPacketView view{wire.data(), wire.size()};
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    int hits = 0;
+    auto r = codec.decode(view, out, [&](auto) { ++hits; });
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 0u);
+    EXPECT_EQ(hits, 0);
+    EXPECT_EQ(view.length(), 0u);
+    // gap of (100 - 1) = 99 IS surfaced even with no payload — the
+    // sequence-number jump alone counts as a gap, regardless of the
+    // count. This pins that side of the contract too.
+    EXPECT_EQ(codec.gap_count(), 99u);
+}
+
+TEST(Mold64Codec, DecodeGapOfOneMessageDetected) {
+    // Pin the strict `>` boundary at expected_seq_ comparison: with
+    // initial expected=1 and incoming seq=2, the codec must record a
+    // gap of 1 (not 0).
+    Mold64Codec codec;
+    auto wire = build_mold64("SESS000001", /*seq=*/2, {{0x55}});
+    SpanPacketView view{wire.data(), wire.size()};
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    auto r = codec.decode(view, out, [](auto) {});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 1u);
+    EXPECT_EQ(codec.gap_count(), 1u)
+        << "gap of exactly 1 must be detected; the strict `>` guard "
+           "must distinguish steady-state (==) from gap (>)";
+    EXPECT_EQ(codec.expected_seq(), 3u);
+}
+
+TEST(Mold64Codec, EncodeExactlyFillsBuffer) {
+    // header (20) + length-prefix (2) + payload (4) = 26 bytes
+    Mold64Codec enc;
+    const uint8_t msg[] = {0x01, 0x02, 0x03, 0x04};
+    uint8_t buf[26]{};
+    auto r = enc.encode(buf, sizeof(buf), Mold64Codec::Frame{
+        .seq_num = 1,
+        .payload = std::span<const uint8_t>{msg, 4},
+    });
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 26u);
+}
+
+TEST(Mold64Codec, DecodeReplayWithPartialOverlapPreservesExpectedSeq) {
+    // After receiving seq 1..3 (expected=4), a replay of seq 2 with
+    // 2 messages would deliver seq 2 and 3 again. The codec's advance
+    // guard at line 170 uses `>` — so 2+2 = 4, NOT > 4, expected_seq_
+    // stays at 4. Pins that boundary precisely.
+    Mold64Codec codec;
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    auto w1 = build_mold64("SESS000001", 1, {{1}, {2}, {3}});
+    SpanPacketView v1{w1.data(), w1.size()};
+    (void)codec.decode(v1, out, [](auto) {});
+    EXPECT_EQ(codec.expected_seq(), 4u);
+
+    // Replay seq=2 with 2 messages — 2+2=4, NOT > 4 → no rewind.
+    auto w2 = build_mold64("SESS000001", 2, {{2}, {3}});
+    SpanPacketView v2{w2.data(), w2.size()};
+    int hits = 0;
+    auto r = codec.decode(v2, out, [&](auto) { ++hits; });
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(hits, 2);
+    EXPECT_EQ(codec.expected_seq(), 4u)
+        << "boundary case 2+2==4 must NOT trigger advance "
+           "(guard uses `>`, not `>=`)";
+    EXPECT_EQ(codec.gap_count(), 0u);
+}
