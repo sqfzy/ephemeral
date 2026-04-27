@@ -312,8 +312,20 @@ resolve(uint16_t port_id,
             uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &req, 1);
             if (sent != 1) {
                 rte_pktmbuf_free(req);
-                SPDLOG_LOGGER_WARN(log, "ARP resolve: tx_burst failed");
-                // Don't fail immediately — will retry
+                SPDLOG_LOGGER_WARN(log,
+                    "ARP resolve: tx_burst failed (port={} queue={} "
+                    "request_attempt={}); will retry after {}ms backoff",
+                    port_id, queue_id, requests_sent + 1,
+                    retry_interval.count());
+                // Don't fail immediately — will retry. The
+                // `next_send = now + retry_interval` below applies
+                // unconditionally so a persistently broken TX path
+                // (mempool drained, ring full, link down) can't
+                // turn the outer poll loop into a busy-spin: each
+                // retry is gated by the same retry_interval as the
+                // success path, with the request count NOT
+                // incremented (so we still get up to 3 actual sends
+                // before giving up).
             } else {
                 requests_sent++;
                 SPDLOG_LOGGER_DEBUG(log,
