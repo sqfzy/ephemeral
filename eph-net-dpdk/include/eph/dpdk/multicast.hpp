@@ -574,6 +574,19 @@ public:
         return total_rx_packets_.load(std::memory_order_relaxed);
     }
 
+    /// @brief Packets received that matched no joined group.
+    ///
+    /// MAC-hash collisions (RFC 1112: 23-bit truncation maps multiple IPs to
+    /// the same MAC) cause the NIC to deliver unwanted multicast packets. A
+    /// non-zero value here is **not** an error in steady state — but a
+    /// rapidly-rising counter signals either (a) NIC filter
+    /// disabled/promiscuous, or (b) accidental subscription to a too-broad
+    /// MAC group. Operators want to graph this alongside `total_rx_packets`
+    /// to compute a hit-rate. Relaxed ordering matches `total_rx_packets`.
+    [[nodiscard]] uint64_t rx_unmatched_packets() const noexcept {
+        return rx_unmatched_.load(std::memory_order_relaxed);
+    }
+
     /// @brief Access the receiver's configuration.
     [[nodiscard]] const MulticastConfig& config() const noexcept {
         return config_;
@@ -759,7 +772,11 @@ private:
         }
 
         // No group matched — packet may have been received due to MAC hash
-        // collision (RFC 1112: multiple IPs map to same MAC). This is normal.
+        // collision (RFC 1112: multiple IPs map to same MAC). This is normal
+        // but operators need a signal: count it so a rate-of-change > 0
+        // distinguishes "NIC filter disabled" (every miss landed) from
+        // "rare collision" (near-zero rate).
+        rx_unmatched_.fetch_add(1, std::memory_order_relaxed);
     }
 
     MulticastConfig config_;
@@ -770,6 +787,9 @@ private:
     std::thread thread_;
     // Atomic: written by RX thread, readable from any thread for stats.
     std::atomic<uint64_t> total_rx_packets_ = 0;
+    // Packets the NIC delivered but no joined group claimed (MAC-hash
+    // collision, NIC promiscuous, or stale filter). See rx_unmatched_packets().
+    std::atomic<uint64_t> rx_unmatched_     = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
