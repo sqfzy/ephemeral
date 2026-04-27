@@ -225,12 +225,20 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
             }
+            // Default: round-robin via a static counter. Range-aware so
+            // multi-process setups can partition queues via
+            // PlatformConfig::rx_queue_range; single-process default
+            // `{0, 0}` resolves to `[0, nb_rx_queues)` which matches the
+            // prior `% nb_q` behavior byte-for-byte. `validate_config`
+            // guarantees `qlo < qhi`, so no runtime fallback is needed.
             if (cfg.pin_to_queue) {
                 target_qid = *cfg.pin_to_queue;
             } else {
                 static std::atomic<uint16_t> rr_counter{0};
-                target_qid = rr_counter.fetch_add(1, std::memory_order_relaxed)
-                             % nb_q;
+                const auto [qlo, qhi] = platform.effective_rx_queue_range();
+                const uint16_t qrange = qhi - qlo;
+                target_qid = qlo + (rr_counter.fetch_add(1,
+                                std::memory_order_relaxed) % qrange);
             }
         }
 

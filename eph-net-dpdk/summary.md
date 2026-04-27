@@ -191,7 +191,8 @@ struct PlatformConfig {
     ProcType     proc_type            = ProcType::Primary;
     std::string_view file_prefix      {};          // mirrors EAL --file-prefix
     std::pair<uint16_t, uint16_t> rx_queue_range {0, 0};      // {0,0} = full range
-    std::pair<uint16_t, uint16_t> src_port_range {32768, 65535};
+    // Source-port partitioning across MP processes is the caller's
+    // responsibility — eph-net-dpdk does not auto-allocate src_port.
 
     friend bool operator==(const PlatformConfig&, const PlatformConfig&) = default;
 };
@@ -211,16 +212,40 @@ static std::expected<Platform, std::string> create_secondary(PlatformConfig);
 - `create_primary()` — forces `proc_type = Primary`, otherwise
   equivalent to `create()`. Use at call sites that also use
   `create_secondary` for clarity.
-- `create_secondary()` — **phase-1 stub**. Validates the secondary
-  contract synchronously (non-empty `file_prefix`; `src_port_range`
-  explicitly carved off the IANA default; `rx_queue_range` either the
-  `{0,0}` full-range sentinel or a non-empty sub-range) and then
-  currently delegates to `create()` with a WARN log. The real
-  shared-mempool attach (`rte_mempool_lookup`, skip
-  `rte_eth_dev_configure/start`) lands in phase 3. Callers already
-  receive correct `Error::InvalidConfig`-shaped errors for the
-  misconfiguration classes the factory exists to prevent (silent
-  cross-process source-port collision being the main one).
+- `create_secondary()` — forces `proc_type = Secondary` and runs the
+  full secondary contract: invokes `validate_config` (which polices
+  `rx_queue_range`: either the `{0,0}` sentinel or a non-empty sub-range
+  bounded by `nb_rx_queues`), validates non-empty `file_prefix`, then
+  does `rte_eth_dev_is_valid_port` + `rte_mempool_lookup("eph_mbuf_p<port>")`
+  and skips `rte_eth_dev_configure / rx_queue_setup / tx_queue_setup /
+  configure_rss / dev_start / wait_link_up` entirely (primary-only
+  APIs). `Impl::cleanup` branches on `config.proc_type`: primary does
+  `rte_eth_dev_stop/close` + `rte_mempool_free`, secondary only zeroes
+  its per-process view (pollers[] + mempool pointer) so the shared
+  port state the primary owns is never touched. The EAL-side complement
+  (`EalConfig` + `build_eal_argv`) lives in `eph/dpdk/eal.hpp`.
+
+### Hot-path zero-cost surfaces
+
+Cold getter consumed exactly once per connection by
+`create_and_attach`:
+
+```cpp
+std::pair<uint16_t, uint16_t> effective_rx_queue_range() const noexcept;
+```
+
+`effective_rx_queue_range()` returns `{0, nb_rx_queues}` when the
+config sentinel `{0, 0}` is set, else the caller-provided range.
+The `rr_counter` target-queue allocator in both
+`DpdkTcpStream::create_and_attach` and
+`DpdkUdpSocket::create_and_attach` became range-aware: new algorithm
+is `lo + (rr_counter.fetch_add(1, relaxed) % (hi - lo))`, with
+`(lo, hi)` derived from the effective range — byte-for-byte identical
+to the pre-MP `% nb_q`).
+
+No hot path (inc_<M>, `poll`, `process_burst`, `send`, `recv`) is
+modified — the MP scaffolding is entirely in cold-path construction
+and teardown.
 
 ## Dependencies
 

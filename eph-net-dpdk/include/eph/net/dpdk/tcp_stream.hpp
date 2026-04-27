@@ -689,13 +689,21 @@ public:
             }
             // Default: round-robin via a static counter. Atomic so concurrent
             // create_and_attach calls from different threads don't all map to
-            // queue 0. Bounded modulo nb_q at decode time.
+            // queue 0. Range-aware so multi-process (primary+secondary) setups
+            // can partition queues via PlatformConfig::rx_queue_range; single-
+            // process default `{0, 0}` resolves to `[0, nb_rx_queues)` which
+            // matches the prior `% nb_q` behavior byte-for-byte. The
+            // `validate_config` step has guaranteed `qlo < qhi` (sentinel
+            // `{0,0}` is normalised by `effective_rx_queue_range`), so no
+            // runtime fallback is needed here.
             if (cfg.pin_to_queue) {
                 target_qid = *cfg.pin_to_queue;
             } else {
                 static std::atomic<uint16_t> rr_counter{0};
-                target_qid = rr_counter.fetch_add(1, std::memory_order_relaxed)
-                             % nb_q;
+                const auto [qlo, qhi] = platform.effective_rx_queue_range();
+                const uint16_t qrange = qhi - qlo;
+                target_qid = qlo + (rr_counter.fetch_add(1,
+                                std::memory_order_relaxed) % qrange);
             }
         }
 

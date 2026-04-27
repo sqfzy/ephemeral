@@ -36,6 +36,7 @@
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
+#include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
 #include "eph/net/dpdk/flow_steering.hpp"
 
 // Forward-declare DpdkPoller so register_poller / poller_for_queue can name
@@ -160,23 +161,8 @@ inline spdlog::logger* platform_logger() { return get_logger<LoggerName{"dpdk.pl
 /// would burst the per-Platform footprint to 8 KiB for no current benefit.
 inline constexpr uint16_t kMaxRssQueues = 64;
 
-/// @brief DPDK process role for single-NIC multi-process (primary+secondary).
-///
-/// Primary: full port lifecycle — enumerate, create mempool, configure /
-///          start port, own RSS/RETA. Default for all existing code paths
-///          (matches current single-process behavior byte-for-byte).
-/// Secondary: attaches to an already-running primary via shared hugepage
-///            (DPDK `--proc-type=secondary --file-prefix=<same as primary>`).
-///            Looks up the primary's mempool by name; MUST NOT call
-///            `rte_eth_dev_configure/start/stop/close` or
-///            `rte_mempool_free` — these would corrupt the primary's
-///            port state. Has its own Poller(s), Stream(s), FlowRule(s),
-///            and ICMP registry (all per-process). The primary must
-///            start first and outlive every secondary.
-///
-/// See `docs/dpdk-multiprocess.md` for startup/teardown ordering,
-/// queue/src_port segmentation rules, and PMD-specific caveats.
-enum class ProcType : uint8_t { Primary, Secondary };
+// `ProcType` lives in `eph/dpdk/proc_type.hpp` so both this header and
+// `eal.hpp` can share a single source of truth without forward declarations.
 
 /// @note Queue counts and descriptor counts are automatically clamped to
 ///       NIC-reported limits during Platform::create(). Values here are
@@ -257,9 +243,8 @@ struct PlatformConfig {
     // All fields default to single-process / primary semantics: existing
     // code compiled against the old PlatformConfig continues to work
     // byte-for-byte. Multi-process callers opt in by setting proc_type /
-    // file_prefix and (for secondary) explicit rx_queue_range +
-    // src_port_range. See `docs/dpdk-multiprocess.md` and `ProcType`
-    // above.
+    // file_prefix and (for secondary) an explicit rx_queue_range. See
+    // `docs/dpdk-multiprocess.md` and `ProcType` above.
 
     /// @brief DPDK process role. Primary owns the port lifecycle
     /// (configure/start/stop/close, mempool creation); Secondary attaches
@@ -290,19 +275,17 @@ struct PlatformConfig {
     /// then spreads across every queue, as before.
     std::pair<uint16_t, uint16_t> rx_queue_range {0, 0};
 
-    /// @brief Ephemeral-port range `[lo, hi)` this process may allocate
-    /// from when `create_and_attach` auto-chooses a source port. Distinct
-    /// processes sharing a NIC MUST carve disjoint ranges — otherwise the
-    /// peer server sees two connections arriving from the same (src_ip,
-    /// src_port) tuple which looks like a duplicate/reconnect on
-    /// exchange-grade endpoints and triggers anti-abuse disconnects.
-    ///
-    /// Default `{32768, 65535}` = IANA ephemeral range, matching
-    /// single-process behavior. `create_secondary()` REJECTS this default
-    /// with `InvalidConfig` to force multi-process callers to make the
-    /// segmentation explicit — silent cross-process src_port reuse is the
-    /// exact failure mode this field exists to prevent.
-    std::pair<uint16_t, uint16_t> src_port_range {32768, 65535};
+    // NOTE on source-port partitioning across MP processes:
+    //
+    // `eph-net-dpdk` does NOT auto-allocate source ports. The TCP/UDP
+    // `create_and_attach` paths take the source port from the caller-
+    // supplied `cfg.legacy.tuple.src_port` (Software / FlowDirector mode)
+    // or rebind it to one that hashes to the desired queue (RSS-pinned
+    // mode via `find_src_port_for_queue`). In a multi-process setup it is
+    // therefore the *caller*'s job to ensure that the primary and each
+    // secondary draw their source ports from disjoint sub-ranges — the
+    // library has no global view to enforce this. See
+    // `docs/dpdk-multiprocess.md` for guidance on partitioning.
 
     /// Defaulted equality — all fields must match exactly.
     [[nodiscard]] friend bool operator==(const PlatformConfig&,
@@ -315,8 +298,7 @@ struct PlatformConfig {
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
             "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
             "  rx_cksum_offload: {}, strict_rx_cksum: {}\n"
-            "  proc_type: {}, file_prefix: '{}'\n"
-            "  rx_queue_range: [{},{}), src_port_range: [{},{})",
+            "  proc_type: {}, file_prefix: '{}', rx_queue_range: [{},{})",
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false", link_timeout_ms,
@@ -324,8 +306,7 @@ struct PlatformConfig {
             enable_strict_rx_checksum  ? "true" : "false",
             proc_type == ProcType::Primary ? "Primary" : "Secondary",
             file_prefix,
-            rx_queue_range.first, rx_queue_range.second,
-            src_port_range.first, src_port_range.second);
+            rx_queue_range.first, rx_queue_range.second);
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -385,7 +366,7 @@ struct PlatformConfig {
             "\"enable_strict_rx_checksum\":{},"
             "\"link_timeout_ms\":{},"
             "\"proc_type\":\"{}\",\"file_prefix\":\"{}\","
-            "\"rx_queue_range\":[{},{}],\"src_port_range\":[{},{}]}}",
+            "\"rx_queue_range\":[{},{}]}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
@@ -396,8 +377,7 @@ struct PlatformConfig {
             link_timeout_ms,
             proc_type == ProcType::Primary ? "Primary" : "Secondary",
             file_prefix,
-            rx_queue_range.first, rx_queue_range.second,
-            src_port_range.first, src_port_range.second);
+            rx_queue_range.first, rx_queue_range.second);
     }
 };
 
@@ -418,6 +398,17 @@ struct PlatformConfig {
     // DPDK rte_pktmbuf_pool_create requires cache_size < pool_size.
     if (cfg.mbuf_cache_size >= cfg.mbuf_pool_size)
         return "mbuf_cache_size must be less than mbuf_pool_size";
+    // rx_queue_range: either the {0,0} sentinel ("full range") or a non-
+    // empty sub-range bounded by nb_rx_queues. Without this check, a
+    // half-set range (lo == hi != 0, or lo > hi, or hi > nb_rx_queues)
+    // would silently slip through `Platform::create_primary` and corrupt
+    // round-robin queue selection at create_and_attach time.
+    if (cfg.rx_queue_range.first != 0 || cfg.rx_queue_range.second != 0) {
+        if (cfg.rx_queue_range.first >= cfg.rx_queue_range.second)
+            return "rx_queue_range: lo must be < hi (or use {0,0} sentinel for full range)";
+        if (cfg.rx_queue_range.second > cfg.nb_rx_queues)
+            return "rx_queue_range.hi must not exceed nb_rx_queues";
+    }
     return {};
 }
 
@@ -525,23 +516,23 @@ public:
     ///
     /// Forces `config.proc_type = Secondary` and enforces the
     /// secondary-mode contract:
+    ///   * `validate_config(cfg)` must pass — in particular
+    ///     `rx_queue_range` is either the `{0,0}` full-range sentinel or
+    ///     a non-empty sub-range bounded by `nb_rx_queues`.
     ///   * `file_prefix` must be non-empty and match the primary's EAL
     ///     `--file-prefix` (else `rte_mempool_lookup` will fail).
-    ///   * `src_port_range` must be explicitly set to a sub-range
-    ///     disjoint from the primary's — the IANA default
-    ///     `{32768, 65535}` is rejected to prevent silent cross-process
-    ///     source-port collisions that exchange-grade peers treat as
-    ///     abusive reconnects.
-    ///   * `rx_queue_range` if set must be non-empty (lo < hi).
+    ///   * `rte_eth_dev_is_valid_port(port_id)` must hold — i.e. the
+    ///     primary has already started this port under the shared
+    ///     hugepage runtime dir.
+    ///
+    /// Source-port partitioning across MP processes is the **caller's**
+    /// responsibility — `eph-net-dpdk` does not auto-allocate src_port
+    /// and has no global view across processes to enforce disjointness.
+    /// See `docs/dpdk-multiprocess.md` for partitioning guidance.
     ///
     /// EAL must already be initialised with `--proc-type=secondary`
     /// and the same `--file-prefix` the primary used; see
     /// `eph::dpdk::build_eal_argv` / `docs/dpdk-multiprocess.md`.
-    ///
-    /// Phase-1 stub: validates the secondary contract, logs a WARN, then
-    /// delegates to `create()` (primary path). The real shared-mempool
-    /// attach lands in phase 3. Callers already get correct error codes
-    /// for misconfiguration.
     [[nodiscard]] static std::expected<Platform, std::string>
     create_secondary(PlatformConfig config);
 
@@ -590,6 +581,18 @@ public:
     /// @brief The actual number of RX queues configured on the port (after
     /// NIC-cap clamping). Returns 0 for moved-from Platforms.
     [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
+
+    /// @brief Resolved RX-queue range `[lo, hi)` this Platform process owns.
+    ///
+    /// Cold getter — read once at `create_and_attach` time to drive
+    /// round-robin target-queue selection. Two-step resolution:
+    ///   * If `config.rx_queue_range == {0, 0}` (sentinel = "full
+    ///     range"), returns `{0, nb_rx_queues()}`.
+    ///   * Otherwise returns the configured range verbatim (already
+    ///     validated by `validate_config`).
+    /// Returns `{0, 0}` for moved-from Platforms.
+    [[nodiscard]] std::pair<uint16_t, uint16_t>
+    effective_rx_queue_range() const noexcept;
 
     /// @brief Register a per-queue Poller. Intended to be called once per
     /// queue at startup, before the lcore loops begin polling.
@@ -755,6 +758,36 @@ struct Platform::Impl {
         }
         SPDLOG_LOGGER_DEBUG(log, "mbuf pool created at {:p}",
                             static_cast<void*>(mempool));
+        return {};
+    }
+
+    /// Secondary-mode mempool attach. Looks up the mempool the primary
+    /// already created under the well-known name `eph_mbuf_p<port>`. A
+    /// miss means the primary is not running *or* the EAL file-prefix
+    /// doesn't match — both surface as the same `ENOENT`-shaped error.
+    [[nodiscard]] std::expected<void, std::string> lookup_mempool_secondary() {
+        [[maybe_unused]] auto log = detail::platform_logger();
+        auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
+        mempool = rte_mempool_lookup(pool_name.c_str());
+        if (mempool == nullptr) {
+            SPDLOG_LOGGER_ERROR(log,
+                "rte_mempool_lookup('{}') failed — primary not running or "
+                "file_prefix mismatch (expected runtime dir "
+                "/var/run/dpdk/{}/, rte_errno={}): {}",
+                pool_name,
+                config.file_prefix.empty() ? std::string{"<default>"}
+                                           : std::string{config.file_prefix},
+                rte_errno, rte_strerror(rte_errno));
+            return std::unexpected(std::format(
+                "rte_mempool_lookup('{}') failed — primary not running or "
+                "file_prefix mismatch (looked for runtime dir /var/run/dpdk/{}/)",
+                pool_name,
+                config.file_prefix.empty() ? std::string{"<default>"}
+                                           : std::string{config.file_prefix}));
+        }
+        SPDLOG_LOGGER_INFO(log,
+            "Secondary attached to mempool '{}' at {:p} (shared from primary)",
+            pool_name, static_cast<void*>(mempool));
         return {};
     }
 
@@ -995,6 +1028,29 @@ struct Platform::Impl {
 
     void cleanup() noexcept {
         [[maybe_unused]] auto log = detail::platform_logger();
+
+        // Secondary-mode cleanup is intentionally narrow: we must NOT call
+        // rte_eth_dev_stop/close or rte_mempool_free — those would corrupt
+        // the primary's port state or free memory the primary still owns.
+        // Stream / Poller / FlowRule teardown happens through their own
+        // RAII chains in the owning objects; Platform::Impl only zeroes
+        // the shared-view pointers here so any lingering accessor returns
+        // nullptr instead of a dangling primary-owned handle.
+        if (config.proc_type == ProcType::Secondary) {
+            SPDLOG_LOGGER_DEBUG(log,
+                "secondary cleanup (port={}, file_prefix='{}'): "
+                "stream/poller teardown only, port + mempool untouched "
+                "(owned by primary)",
+                config.port_id, config.file_prefix);
+            port_started = false;
+            // Zero the pointer view — we never owned the underlying pool.
+            mempool = nullptr;
+            // Clear the per-queue Poller registry so any late lookup
+            // misses cleanly rather than returning a stale Poller*.
+            for (auto& slot : pollers) slot = nullptr;
+            return;
+        }
+
         if (port_started) {
             SPDLOG_LOGGER_DEBUG(log, "Stopping port={}", config.port_id);
             rte_eth_dev_stop(config.port_id);
@@ -1212,12 +1268,21 @@ Platform::create_secondary(PlatformConfig config) {
 
     // --- Secondary-mode contract validation ---
     //
-    // These checks surface misconfiguration synchronously at construction
-    // time. Silent mis-setup (default src_port_range, empty file_prefix,
-    // backwards queue range) is the exact failure mode this factory
-    // exists to prevent — under those conditions a secondary would "work"
-    // locally but collide with the primary on the wire, triggering
-    // peer-side disconnects that are extremely hard to debug.
+    // The shared validator polices structural invariants (queue counts,
+    // descriptors, mbuf pool, rx_queue_range vs nb_rx_queues). Anything
+    // *secondary-specific* (file_prefix non-empty, port visibility under
+    // shared hugepage) is checked here on top.
+    //
+    // Source-port partitioning across MP processes is the *caller's*
+    // responsibility — `eph-net-dpdk` does not auto-allocate src_port,
+    // and has no global view to enforce disjoint ranges. See
+    // `PlatformConfig` comment + `docs/dpdk-multiprocess.md`.
+
+    if (auto err = validate_config(config); !err.empty()) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create_secondary: invalid PlatformConfig: {}", err);
+        return std::unexpected(std::string{err});
+    }
 
     if (config.file_prefix.empty()) {
         SPDLOG_LOGGER_ERROR(log,
@@ -1226,64 +1291,75 @@ Platform::create_secondary(PlatformConfig config) {
         return std::unexpected(std::string{
             "create_secondary: file_prefix must be non-empty and match "
             "the primary's EAL --file-prefix (otherwise rte_mempool_lookup "
-            "in phase 3 cannot find the primary's shared mempool)"});
+            "cannot find the primary's shared mempool)"});
     }
 
-    // The IANA ephemeral default {32768, 65535} is the sentinel meaning
-    // "user did not think about src_port segmentation". Reject it — the
-    // caller must explicitly carve a sub-range disjoint from the
-    // primary's.
-    constexpr std::pair<uint16_t, uint16_t> kDefaultSrcPortRange{32768, 65535};
-    if (config.src_port_range == kDefaultSrcPortRange) {
-        SPDLOG_LOGGER_ERROR(log,
-            "Platform::create_secondary: src_port_range left at IANA "
-            "default {{32768, 65535}} — must be partitioned vs primary "
-            "to avoid silent cross-process source-port collisions");
-        return std::unexpected(std::string{
-            "create_secondary: src_port_range must be explicitly set to a "
-            "sub-range disjoint from the primary's (default {32768, 65535} "
-            "rejected — silent reuse looks like a duplicate reconnect to "
-            "exchange-grade peers and triggers anti-abuse disconnects)"});
-    }
-    if (config.src_port_range.first >= config.src_port_range.second) {
-        return std::unexpected(std::format(
-            "create_secondary: src_port_range must satisfy lo < hi "
-            "(got [{}, {}))",
-            config.src_port_range.first, config.src_port_range.second));
-    }
-
-    // rx_queue_range == {0, 0} is the "use full range" sentinel and is
-    // accepted (the secondary then shares queues with the primary —
-    // caller assumes responsibility). Any *other* empty/backwards range
-    // is a typo and must be caught.
-    constexpr std::pair<uint16_t, uint16_t> kFullRangeSentinel{0, 0};
-    if (config.rx_queue_range != kFullRangeSentinel &&
-        config.rx_queue_range.first >= config.rx_queue_range.second) {
-        return std::unexpected(std::format(
-            "create_secondary: rx_queue_range must satisfy lo < hi "
-            "(got [{}, {})); use the sentinel {{0, 0}} to mean "
-            "\"full range\"",
-            config.rx_queue_range.first, config.rx_queue_range.second));
-    }
-
-    // --- Phase-1 stub body ---
+    // --- Phase-3 real secondary attach ---
     //
-    // The real secondary path (rte_mempool_lookup + skip port bringup +
-    // register_poller only) lands in phase 3. For now we log a WARN and
-    // delegate to create(), which walks the primary code path. On a
-    // genuine secondary EAL init the primary-path rte_eth_dev_configure
-    // call will fail cleanly — we surface that error to the caller
-    // rather than pretending the secondary is attached.
-    SPDLOG_LOGGER_WARN(log,
-        "Platform::create_secondary: phase-1 stub (file_prefix='{}', "
-        "rx_queue_range=[{},{}), src_port_range=[{},{}))  — validation "
-        "passed, delegating to primary-path create() until phase 3 "
-        "lands the real mempool_lookup attach",
-        config.file_prefix,
-        config.rx_queue_range.first, config.rx_queue_range.second,
-        config.src_port_range.first, config.src_port_range.second);
+    // EAL has already joined the primary's runtime dir (via
+    // `--proc-type=secondary --file-prefix=<same>`). We:
+    //   1. validate the target port is visible from this process;
+    //   2. look up the shared mempool by the primary's well-known name;
+    //   3. skip configure/setup/start/rss — those are primary-only;
+    //   4. mark port_started=true so accessors behave as "live" (we are
+    //      sharing the primary's live port);
+    //   5. probe dispatch_mode post-attach for `create_and_attach` to read.
+    //
+    // We deliberately do NOT call `rte_eth_dev_info_get` as a hard
+    // prerequisite: some PMDs accept it in secondary, others reject it.
+    // Validating `rte_eth_dev_is_valid_port` is sufficient — anything
+    // deeper belongs in the first `rte_eth_rx_burst` which is on the
+    // caller's hot path anyway.
 
-    return create(config);
+    // Surface non-fatal misconfigurations (undersized rings, etc.) to
+    // keep parity with create()'s advisory output.
+    for (const auto& w : config.warnings()) {
+        SPDLOG_LOGGER_WARN(log, "PlatformConfig advisory: {}", w);
+    }
+
+    if (!rte_eth_dev_is_valid_port(config.port_id)) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create_secondary: port_id={} not valid from "
+            "secondary — primary may not have started this port yet, "
+            "or file_prefix may not match",
+            config.port_id);
+        return std::unexpected(std::format(
+            "create_secondary: port_id {} not visible from secondary "
+            "(is the primary running with the same --file-prefix, "
+            "and did it start this port?)",
+            config.port_id));
+    }
+
+    auto impl       = std::make_unique<Impl>();
+    impl->config    = config;
+
+    if (auto r = impl->lookup_mempool_secondary(); !r)
+        return std::unexpected(r.error());
+
+    // Skip: enumerate_ports (primary did it) / create_mempool (lookup
+    // above) / configure_port / setup_queues / configure_rss /
+    // start_port / wait_link_up — all primary-only.
+    impl->port_started = true;
+
+    // Probe the live NIC dispatch capability just like create() does.
+    // `detect_rx_dispatch_mode` is read-only so it's safe in secondary.
+    impl->dispatch_mode =
+        ::eph::net::dpdk::detect_rx_dispatch_mode(config.port_id);
+    // Honor the same "effective Software when single-queue / RSS not
+    // active" pin as create().
+    if (impl->config.nb_rx_queues <= 1 &&
+        impl->dispatch_mode != ::eph::net::dpdk::RxDispatchMode::Software) {
+        impl->dispatch_mode = ::eph::net::dpdk::RxDispatchMode::Software;
+    }
+
+    SPDLOG_LOGGER_INFO(log,
+        "Platform::create_secondary ready (port={}, file_prefix='{}', "
+        "rx_queue_range=[{},{}), dispatch_mode={})",
+        config.port_id, config.file_prefix,
+        config.rx_queue_range.first, config.rx_queue_range.second,
+        ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
+
+    return Platform(std::move(impl));
 }
 
 // Null guards on all impl_-accessing methods protect against use on a
@@ -1307,6 +1383,18 @@ Platform::dispatch_mode() const noexcept {
 
 inline uint16_t Platform::nb_rx_queues() const noexcept {
     return impl_ ? impl_->config.nb_rx_queues : 0;
+}
+
+inline std::pair<uint16_t, uint16_t>
+Platform::effective_rx_queue_range() const noexcept {
+    if (!impl_) return {0, 0};
+    const auto& r = impl_->config.rx_queue_range;
+    // Sentinel {0, 0} means "use full range [0, nb_rx_queues)".
+    // Any other value has been validated by validate_config (lo < hi <=
+    // nb_rx_queues).
+    if (r.first == 0 && r.second == 0)
+        return {uint16_t{0}, impl_->config.nb_rx_queues};
+    return r;
 }
 
 inline std::expected<void, ::eph::core::ErrorInfo>

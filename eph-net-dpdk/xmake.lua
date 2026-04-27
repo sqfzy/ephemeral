@@ -109,6 +109,22 @@ target("test_dpdk_rss_platform")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
+-- Multi-process (primary+secondary) e2e test binaries — one per role,
+-- coordinated by tests/integration/dpdk_mp_e2e.sh. Each skips cleanly
+-- when the env vars set by the orchestrator are absent, so `xmake run -g
+-- tests` does not block on NIC-B availability.
+target("dpdk_mp_primary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_primary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
+target("dpdk_mp_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_secondary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do

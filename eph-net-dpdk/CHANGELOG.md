@@ -10,27 +10,88 @@ full test build, and non-hardware-dependent tests pass (DpdkTcpStream
 TLS handshake 2/2, ARP 23/23, DNS 61/61 + 24/24 adversarial,
 packet_core 30/30).
 
-### Added (phase-1 stub — multi-process Platform surface)
+### Added — single-NIC multi-process (primary+secondary)
 - **Platform**: `eph::dpdk::ProcType { Primary, Secondary }` +
-  `PlatformConfig::proc_type / file_prefix / rx_queue_range /
-  src_port_range` fields. All default to single-process / primary
-  semantics so pre-MP code compiles byte-for-byte.
+  `PlatformConfig::proc_type / file_prefix / rx_queue_range` fields.
+  All default to single-process / primary semantics so pre-MP code
+  compiles byte-for-byte.
 - **Platform**: `create_primary(PlatformConfig)` and
   `create_secondary(PlatformConfig)` factories alongside the existing
   `create()`. `create_primary` force-sets `proc_type = Primary` and
-  delegates to `create()`. `create_secondary` is a **phase-1 stub**:
-  it force-sets `proc_type = Secondary` and validates the secondary
-  contract synchronously — non-empty `file_prefix`, `src_port_range`
-  explicitly carved off the IANA default `{32768, 65535}`,
-  `rx_queue_range` either the `{0,0}` full-range sentinel or a
-  non-empty sub-range — then WARNs and delegates to `create()`. The
-  real `rte_mempool_lookup` / skip-`rte_eth_dev_configure` attach
-  path lands in phase 3; callers already get correct `InvalidConfig`
-  errors today for the silent-misconfig classes the factory exists to
-  prevent (chiefly cross-process source-port collision, which looks
-  like a duplicate reconnect to exchange-grade peers).
-- Config `to_debug_string()` / `to_json()` extended to include the
-  four new MP fields.
+  delegates to `create()`. `create_secondary` force-sets
+  `proc_type = Secondary`, runs `validate_config` (which polices
+  `rx_queue_range`: either the `{0,0}` full-range sentinel or a
+  non-empty sub-range bounded by `nb_rx_queues`), then enforces the
+  secondary-only contract — non-empty `file_prefix` + valid port
+  visibility (`rte_eth_dev_is_valid_port`) — and attaches via
+  `rte_mempool_lookup`, skipping `rte_eth_dev_configure /
+  rx_queue_setup / tx_queue_setup / configure_rss / dev_start`
+  entirely. Primary's cleanup still does `rte_eth_dev_stop/close` +
+  `rte_mempool_free`; secondary's cleanup is narrowed to only clearing
+  the per-process view (pollers[] + mempool pointer) and leaves the
+  shared port state untouched. `effective_rx_queue_range()` is a cold
+  getter consumed by `create_and_attach`.
+- **Source-port partitioning**: not auto-allocated by `eph-net-dpdk` —
+  callers must allocate disjoint sub-ranges per process via
+  `cfg.legacy.tuple.src_port`. See `docs/dpdk-multiprocess.md`.
+- **Hot path zero-cost**: `inc_<StreamMetric::*>` is already
+  per-instance (`alignas(64) std::atomic<uint64_t>` +
+  `memory_order_relaxed`) — no code change. `rr_counter` in both
+  `DpdkTcpStream::create_and_attach` and `DpdkUdpSocket::create_and_attach`
+  moved from `% nb_q` to `lo + (fetch_add % (hi - lo))`, with
+  `(lo, hi)` read once from `Platform::effective_rx_queue_range()`.
+  Default `{0, 0}` sentinel resolves to `(0, nb_rx_queues)` — the
+  single-process path computes the same target_qid it did before,
+  byte-for-byte.
+- **EalConfig / build_eal_argv** (`eph/dpdk/eal.hpp`): typed assembly
+  of DPDK `--proc-type`, `--file-prefix`, `-l`, `-a`, plus raw
+  passthrough `extra_args`. Rejects accidental emission when
+  `proc_type_set` is false (lets DPDK default to auto).
+- Config `dump()` / `to_json()` extended to include the four new MP
+  fields.
+
+### Tests
+- **tests/legacy/test_dpdk_multiprocess_config.cpp** — unit tests
+  covering: `validate_config` rx_queue_range policing (sentinel accept,
+  inverted/empty/oob reject, valid sub-range accept), `create_secondary`
+  contract (empty `file_prefix` reject, inverted `rx_queue_range` reject,
+  full-range sentinel accept, primary-input-does-not-short-circuit
+  validation), `build_eal_argv` serialization (5 cases), `rr_counter`
+  range algorithm (`% nb_q` equivalence at the `{0, 0}` sentinel,
+  partitioned range bounds, single-queue constant, disjoint
+  primary/secondary ranges), and `Platform::effective_rx_queue_range`
+  type-level contract.
+- **tests/integration/dpdk_mp_primary.cpp** +
+  **tests/integration/dpdk_mp_secondary.cpp** + coordinator
+  `dpdk_mp_e2e.sh` — end-to-end NIC test that brings up a primary,
+  attaches a secondary via shared mempool, and verifies both see their
+  owned queue/src_port ranges. Skip-cleanly (GTEST_SKIP / exit 77)
+  when env vars absent, NIC not bound, hugepages low, or another DPDK
+  process holds the runtime dir. Follows the project rule of retrying
+  once after a 3-minute wait if DPDK is busy.
+
+### Docs
+- **docs/dpdk-multiprocess.md** (new): startup/teardown ordering,
+  `PlatformConfig` MP field contract, `EalConfig` / `build_eal_argv`
+  usage, 1+N partitioning table, common errors, PMD caveats (mlx5 /
+  ixgbe / i40e / ena), explicit out-of-scope list, orchestrator
+  invocation.
+- **summary.md**: new `PlatformConfig` section listing every field
+  including the MP additions; new "Multi-process factories" subsection
+  covering `create` / `create_primary` / `create_secondary` contract.
+- **README.md**: `Testing` section expanded from 3 bullet items into a
+  full per-binary table (13 public-surface tests + `dpdk_e2e`
+  integration + `tests/legacy/` coverage statement). New `Benchmarks`
+  section tabulating the 8 `bench_*` targets under
+  `eph-net-dpdk/benchmarks/` + RX hot-path baseline + regression guard
+  script. New `Fuzzers` section cross-referencing the 4 libFuzzer
+  harnesses + corpus layout + Clang-only build constraint. New
+  `Scripts` section listing `dpdk-setup.sh` / `dpdk-teardown.sh` /
+  `check-rx-hot-path-regression.sh`.
+- **ONBOARDING.md**: "How to read the code" step 8 points at the MP
+  section of `platform.hpp`. New "Running as a DPDK secondary process"
+  common task with a full `create_secondary` call example and an
+  enumeration of the contract rejections.
 
 ### Docs
 - **summary.md**: new `PlatformConfig` section listing every field

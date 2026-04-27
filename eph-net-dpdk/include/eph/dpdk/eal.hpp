@@ -11,13 +11,17 @@
 #include <expected>
 #include <format>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <rte_eal.h>
 #include <rte_errno.h>
 
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/dpdk/proc_type.hpp"   // ProcType + to_eal_string (M3 fix)
 
 namespace eph::dpdk {
+
 
 namespace detail {
 inline spdlog::logger* eal_logger() { return get_logger<LoggerName{"dpdk.eal"}>(); }
@@ -153,5 +157,64 @@ private:
     bool initialized_   = false;
     int  args_consumed_  = 0;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-process EAL argv assembly
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Declarative EAL args for multi-process setups.
+///
+/// Assembles into a DPDK-compatible argv via `build_eal_argv()`. Exists so
+/// callers don't hand-splice argv strings and accidentally put `--file-prefix`
+/// in the wrong slot or forget `--proc-type=secondary`. Nothing here is
+/// surfaced to DPDK at construction time — it's a pure struct that gets
+/// serialized on demand.
+///
+/// Always includes argv[0] (program name) so the result is usable directly
+/// with `eal_init` / `rte_eal_init`.
+struct EalConfig {
+    std::string              program_name{"eph_app"};   ///< argv[0]
+    ProcType                 proc_type   {};            ///< Primary if default
+    bool                     proc_type_set{false};      ///< explicit opt-in
+    std::string_view         file_prefix {};            ///< --file-prefix
+    std::vector<std::string> lcores      {};            ///< one per -l entry
+    std::vector<std::string> allowed_devs{};            ///< one per -a entry
+    std::vector<std::string> extra_args  {};            ///< raw passthrough
+};
+
+/// @brief Serialize an EalConfig to a flat argv vector.
+///
+/// The returned vector owns every string; pass `argv.data()` / `argv.size()`
+/// to `eal_init`. Empty / default-constructed fields are skipped (so a
+/// Primary config with no file_prefix / lcores emits just `{program_name}`).
+[[nodiscard]] inline std::vector<std::string>
+build_eal_argv(const EalConfig& cfg) {
+    std::vector<std::string> argv;
+    argv.reserve(2 + cfg.lcores.size() * 2 + cfg.allowed_devs.size() * 2
+                   + cfg.extra_args.size() + 4);
+    argv.push_back(cfg.program_name);
+
+    if (cfg.proc_type_set) {
+        argv.emplace_back("--proc-type");
+        // Single source of truth in proc_type.hpp — adding a new enum
+        // value automatically reaches this serializer (and triggers
+        // -Wswitch on the to_eal_string switch if not handled).
+        argv.emplace_back(std::string{to_eal_string(cfg.proc_type)});
+    }
+    if (!cfg.file_prefix.empty()) {
+        argv.emplace_back("--file-prefix");
+        argv.emplace_back(cfg.file_prefix);
+    }
+    for (const auto& lc : cfg.lcores) {
+        argv.emplace_back("-l");
+        argv.push_back(lc);
+    }
+    for (const auto& dev : cfg.allowed_devs) {
+        argv.emplace_back("-a");
+        argv.push_back(dev);
+    }
+    for (const auto& e : cfg.extra_args) argv.push_back(e);
+    return argv;
+}
 
 } // namespace eph::dpdk
