@@ -770,6 +770,7 @@ struct Platform::Impl {
         auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
         mempool = rte_mempool_lookup(pool_name.c_str());
         if (mempool == nullptr) {
+            const int err = rte_errno;
             SPDLOG_LOGGER_ERROR(log,
                 "rte_mempool_lookup('{}') failed — primary not running or "
                 "file_prefix mismatch (expected runtime dir "
@@ -777,13 +778,19 @@ struct Platform::Impl {
                 pool_name,
                 config.file_prefix.empty() ? std::string{"<default>"}
                                            : std::string{config.file_prefix},
-                rte_errno, rte_strerror(rte_errno));
+                err, rte_strerror(err));
+            // Mirror the rte_errno into std::unexpected so callers
+            // (Platform::create_secondary, EalGuard test harnesses)
+            // surface the same ENOENT/EACCES signal, not just a
+            // generic "not running" hint.
             return std::unexpected(std::format(
                 "rte_mempool_lookup('{}') failed — primary not running or "
-                "file_prefix mismatch (looked for runtime dir /var/run/dpdk/{}/)",
+                "file_prefix mismatch (looked for runtime dir /var/run/dpdk/{}/, "
+                "rte_errno={} ({}))",
                 pool_name,
                 config.file_prefix.empty() ? std::string{"<default>"}
-                                           : std::string{config.file_prefix}));
+                                           : std::string{config.file_prefix},
+                err, rte_strerror(err)));
         }
         SPDLOG_LOGGER_INFO(log,
             "Secondary attached to mempool '{}' at {:p} (shared from primary)",
