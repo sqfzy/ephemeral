@@ -683,13 +683,19 @@ private:
             mcast_count_ > 0 ? mcast_macs_.data() : nullptr,
             static_cast<uint32_t>(mcast_count_));
         if (rc != 0) {
+            // Carry rte_errno into both the log line and the surfaced
+            // error detail. -ENOTSUP / -ENOSPC / -EINVAL all show up
+            // here; without rte_errno operators see only "rc=-95".
+            // (rte_errno.h is brought in transitively via multicast.hpp.)
+            const int err = rte_errno;
             SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
                 "DpdkUdpSocket::apply_mcast_list_: "
-                "rte_eth_dev_set_mc_addr_list failed: rc={} count={} port={}",
-                rc, mcast_count_, port);
+                "rte_eth_dev_set_mc_addr_list failed: rc={} count={} port={} "
+                "rte_errno={} ({})",
+                rc, mcast_count_, port, err, rte_strerror(err));
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
-                "rte_eth_dev_set_mc_addr_list failed"});
+                "rte_eth_dev_set_mc_addr_list failed (see rte_errno log)"});
         }
         SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
             "DpdkUdpSocket::apply_mcast_list_: count={} port={}",
