@@ -16,6 +16,10 @@
 /// call, see `DpdkTcpStream<C, true>::create_and_attach(cfg, platform)` as
 /// used in `examples/binance_latency.cpp`.
 ///
+/// For single-NIC multi-process (primary + secondary on one card via
+/// shared hugepage), see `examples/simple_hft_dpdk_mp.cpp` and
+/// `eph-net-dpdk/docs/dpdk-multiprocess.md`.
+///
 /// System libdpdk is linked directly (the previous vcpkg-openssl ↔ aws-lc
 /// TU clash no longer applies — see CLAUDE.md "Build"), so
 /// `DpdkTcpStream<C, true>` is fully supported; this file stays plain-TCP

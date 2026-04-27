@@ -32,11 +32,16 @@ xmake build -g examples         # or: build all example targets at once
 xmake run <target> [args...]    # runs build/<plat>/<arch>/<mode>/<target>
 ```
 
-DPDK-backed examples (`simple_hft_dpdk`, `binance_latency`) need a system
-`libdpdk` (pkg-config) and a NIC bound to `vfio-pci`. See
-`docs/dpdk-setup.md` and `eph-net-dpdk/scripts/dpdk-setup.sh`. DPDK
-binaries must be run with `sudo`, and EAL args come before a literal `--`
-separator.
+DPDK-backed examples (`simple_hft_dpdk`, `simple_hft_dpdk_mp`,
+`binance_latency`) need a system `libdpdk` (pkg-config) and a NIC bound
+to `vfio-pci`. See `docs/dpdk-setup.md` and
+`eph-net-dpdk/scripts/dpdk-setup.sh`. DPDK binaries must be run with
+`sudo`, and EAL args come before a literal `--` separator.
+
+`simple_hft_dpdk_mp` is the only example that uses multi-process — same
+binary in two terminals with `--role primary` then `--role secondary`,
+both passing the same `--file-prefix`. See the file header for the
+launch commands.
 
 ---
 
@@ -54,6 +59,7 @@ separator.
 | `simple_hft.cpp`          | Kernel / template   | `KernelTcpStream<WsCodec, true>` with argparse; end-of-run metrics snapshot via `stream->metric(...)`. | `eph-net-kernel`, `eph-codec`              |
 | `binance_book.cpp`        | Kernel / pipeline   | Integration surface sketch: WsCodec → `on_message` → `eph::json::binance::parse_book_ticker` → `eph::book::BinanceBookAdapter`. The body currently just counts frames — the parser/book wiring is left as the exercise. | `eph-net-kernel`, `eph-codec`, `eph-json`, `eph-book` |
 | `simple_hft_dpdk.cpp`     | DPDK / skeleton     | Plain-TCP `DpdkTcpStream<C, false>` using the strict `create(cfg)` factory with a hand-built `StreamConfig::legacy`. `scfg.pool=nullptr` forces an early `InvalidConfig` — a smoke-boot template, not a runnable probe. | `eph-net-dpdk`, `eph-codec`                |
+| `simple_hft_dpdk_mp.cpp`  | DPDK / multi-process | Single-NIC primary+secondary skeleton. One binary, role picked via `--role primary\|secondary`. Brings up `EalConfig` + `Platform::create_primary` / `create_secondary`, attaches a `DpdkUdpSocket<RawDatagramCodec>` from each process' owned RX queue range, drives `poll()` for 5 s. Demonstrates the create-vs-lookup mempool split + the secondary cleanup branch. See `eph-net-dpdk/docs/dpdk-multiprocess.md` for partitioning rules. | `eph-net-dpdk`, `eph-codec`            |
 | `binance_latency.cpp`     | DPDK / production   | Full-stack DPDK probe to Binance: `Platform` bring-up, ARP + DPDK-native DNS, `DpdkTcpStream<WsCodec, true>` (TLS 1.3 + WS Upgrade), single-lcore burst loop, reconnect policy, `CLOCK_REALTIME` latency histogram via `eph::utils::Recorder`. | `eph-net-dpdk`, `eph-codec`, `eph-json`    |
 
 ---
