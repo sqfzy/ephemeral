@@ -197,7 +197,7 @@ Secondary-mode `rte_flow_create` support is PMD-specific:
 | mlx5  | ✓ | full support |
 | ixgbe | ✓ | full support |
 | i40e  | ✓ | full support (newer builds) |
-| ena   | ⚠ | limited — may need to fall back to primary-installed rules |
+| ena   | ✓ | verified under noiommu, ena 2.x, 4 RX queues; report regressions on other configurations |
 | null  | — | not applicable (PMD is simulation-only) |
 
 If your PMD rejects `rte_flow_create` in secondary, push rule installation
@@ -205,6 +205,19 @@ back to the primary (have the secondary send its 4-tuple to the primary
 via a shared ring, and let the primary install the rule pointing to the
 secondary's queue). This fallback is not currently wired in `eph-net-dpdk`
 — file an issue if you hit it.
+
+---
+
+## Example skeleton
+
+For a single-file, runnable skeleton that you can adapt directly, see
+[`examples/simple_hft_dpdk_mp.cpp`](../../examples/simple_hft_dpdk_mp.cpp).
+One binary, role picked via `--role primary|secondary`. Demonstrates
+`EalConfig` + `build_eal_argv`, `Platform::create_primary` /
+`create_secondary`, queue-range partitioning, and the secondary
+cleanup branch. Run from two terminals on the same host (primary
+first, then secondary once primary logs "ready"); see the file
+header for the launch commands.
 
 ---
 

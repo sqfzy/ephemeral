@@ -36,11 +36,14 @@ Read the code in this order:
    state machine or adding ARP / DNS / flow steering support.
 8. `include/eph/dpdk/platform.hpp` — bottom of the file has the
    multi-process section (`ProcType`, `PlatformConfig::proc_type /
-   file_prefix / rx_queue_range / src_port_range`, and the
-   `create_primary` / `create_secondary` factories). `create_secondary`
-   is currently a phase-1 stub: it validates the secondary contract and
-   then delegates to `create()`. The real `rte_mempool_lookup` attach
-   path lands in phase 3.
+   file_prefix / rx_queue_range`, and the `create_primary` /
+   `create_secondary` factories). `create_secondary` runs
+   `validate_config` plus the secondary-only contract (non-empty
+   `file_prefix`, `rte_eth_dev_is_valid_port`), then attaches via
+   `rte_mempool_lookup` and skips the primary-only port-bringup path.
+   `ProcType` and its `to_eal_string` serializer live in
+   `include/eph/dpdk/proc_type.hpp` so `platform.hpp` and `eal.hpp`
+   share one source of truth.
 
 ## Getting DPDK running on the host
 
@@ -107,12 +110,12 @@ member so teardown is automatic. Poller::add() does NOT touch flow rules —
 the stream owns the rule's lifetime. Unit tests are in
 `tests/test_flow_steering.cpp`.
 
-### Running as a DPDK secondary process (phase-1 preview)
+### Running as a DPDK secondary process
 
 Single-NIC multi-process setups let two processes share one port's mempool
-via the DPDK `--proc-type=secondary` mechanism. The phase-1 surface in
-`platform.hpp` already enforces the contract synchronously at config
-time:
+via the DPDK `--proc-type=secondary` mechanism. `Platform::create_secondary`
+enforces the secondary contract synchronously and then performs the real
+shared-mempool attach:
 
 ```cpp
 eph::dpdk::PlatformConfig cfg{
@@ -121,18 +124,28 @@ eph::dpdk::PlatformConfig cfg{
     .proc_type      = eph::dpdk::ProcType::Secondary,   // or use create_secondary
     .file_prefix    = "hft_app",                         // must match primary's EAL --file-prefix
     .rx_queue_range = {2, 4},                            // disjoint from primary's [0, 2)
-    .src_port_range = {50000, 55000},                    // must NOT be the IANA default
 };
 auto plat = eph::dpdk::Platform::create_secondary(std::move(cfg));
 ```
 
-`create_secondary` rejects `file_prefix.empty()`, rejects the IANA
-default `src_port_range {32768, 65535}` (silent cross-process
-src-port reuse is the exact failure mode), and rejects backwards
-`rx_queue_range`. Phase-1 then WARNs and delegates to `create()`; the
-real `rte_mempool_lookup` / skip-port-configure path lands in phase 3.
-Primary callers should use `create_primary` for symmetry and call-site
-clarity.
+`create_secondary` runs `validate_config` (which polices
+`rx_queue_range`: either the `{0,0}` full-range sentinel or a non-empty
+sub-range bounded by `nb_rx_queues`) and the secondary-only checks
+(non-empty `file_prefix`, `rte_eth_dev_is_valid_port`). It then calls
+`rte_mempool_lookup("eph_mbuf_p<port>")` and skips
+`rte_eth_dev_configure / rx_queue_setup / configure_rss / dev_start`
+entirely — those are primary-only. Primary callers should use
+`create_primary` for symmetry and call-site clarity.
+
+Source-port partitioning across MP processes is the **caller's**
+responsibility — `eph-net-dpdk` does not auto-allocate src_port and
+has no global view to enforce disjointness. Allocate disjoint
+sub-ranges per process via `cfg.legacy.tuple.src_port`.
+
+See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
+1+N partitioning table, PMD caveats, and the orchestrator script;
+`examples/simple_hft_dpdk_mp.cpp` for a runnable single-file
+skeleton.
 
 ### Debugging TLS handshake failures
 

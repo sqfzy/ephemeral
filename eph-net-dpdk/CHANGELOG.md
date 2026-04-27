@@ -93,24 +93,6 @@ packet_core 30/30).
   common task with a full `create_secondary` call example and an
   enumeration of the contract rejections.
 
-### Docs
-- **summary.md**: new `PlatformConfig` section listing every field
-  including the MP additions; new "Multi-process factories" subsection
-  covering `create` / `create_primary` / `create_secondary` contract.
-- **README.md**: `Testing` section expanded from 3 bullet items into a
-  full per-binary table (13 public-surface tests + `dpdk_e2e`
-  integration + `tests/legacy/` coverage statement). New `Benchmarks`
-  section tabulating the 8 `bench_*` targets under
-  `eph-net-dpdk/benchmarks/` + RX hot-path baseline + regression guard
-  script. New `Fuzzers` section cross-referencing the 4 libFuzzer
-  harnesses + corpus layout + Clang-only build constraint. New
-  `Scripts` section listing `dpdk-setup.sh` / `dpdk-teardown.sh` /
-  `check-rx-hot-path-regression.sh`.
-- **ONBOARDING.md**: "How to read the code" step 8 points at the MP
-  section of `platform.hpp`. New "Running as a DPDK secondary process
-  (phase-1 preview)" common task with a full `create_secondary` call
-  example and an enumeration of the contract rejections.
-
 ### Fixed
 - **Platform**: `register_poller` rejects registering the same Poller
   pointer on two different queues. Silent misroute bug — one lcore would
@@ -193,6 +175,21 @@ packet_core 30/30).
   adversarial, net_header — 476 test cases across 19 binaries, 0
   failures. DPDK-hardware-dependent runtime validation (NIC rebinding,
   e2e flows) deferred to the next real-hardware session.
+
+### Known issues
+- **ENA PMD cleanup SIGSEGV (AWS Graviton)**: primary's `~Platform`
+  chain (`rte_eth_dev_stop` → `rte_eth_dev_close` → `rte_eal_cleanup`)
+  triggers a SIGSEGV inside the ENA PMD's cleanup path on AWS Graviton
+  (kernel 6.1, system libdpdk, ena 2.x). Reproduces in single-process
+  mode with no MP attach involved — pre-existing PMD bug, not in
+  eph-net-dpdk code. Functional and measurement layers are unaffected
+  (data is flushed before cleanup; e2e tests show secondary attach +
+  primary functional layer both PASS, only the post-hold cleanup
+  exits 139 = 128 + SIGSEGV). Mitigation: in CI, treat primary
+  exit-code 139 as success when only cleanup-time crashes are
+  observed; or call `_exit(0)` at the end of `main()` to bypass the
+  C++ destructor chain when the primary's exit code feeds an
+  orchestrator that interprets 139 as failure.
 
 ---
 

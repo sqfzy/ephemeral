@@ -300,6 +300,7 @@ vfio-pci flow).
 - [`../docs/dpdk-tcp-implementation.md`](../docs/dpdk-tcp-implementation.md) — TCP state machine, reorder buffer, delayed-ACK, no-retransmit contract
 - [`../docs/dpdk-udp-design.md`](../docs/dpdk-udp-design.md) — UDP design deltas vs kernel backend (fixed-peer, no broadcast, multicast + connect_to interaction)
 - [`../docs/dpdk-setup.md`](../docs/dpdk-setup.md)
+- [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md) — single-NIC primary+secondary attach, `EalConfig` argv assembly, queue/src-port partitioning rules, PMD caveats
 - [`../docs/poller-guide.md`](../docs/poller-guide.md)
 - [`../docs/architecture.md`](../docs/architecture.md)
 - `.artifacts/design-eph-v3.3-architecture-20260410.md` — design spec

@@ -1249,7 +1249,7 @@ Platform::create(const PlatformConfig& config) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Multi-process factories (phase 1 — stubs + config validation)
+// Multi-process factories (Primary + Secondary attach)
 // ─────────────────────────────────────────────────────────────────────────────
 
 [[nodiscard]] inline std::expected<Platform, std::string>

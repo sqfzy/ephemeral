@@ -225,6 +225,16 @@ static std::expected<Platform, std::string> create_secondary(PlatformConfig);
   port state the primary owns is never touched. The EAL-side complement
   (`EalConfig` + `build_eal_argv`) lives in `eph/dpdk/eal.hpp`.
 
+### `proc_type.hpp` — minimal cross-cutting header
+
+`eph::dpdk::ProcType` and `to_eal_string(ProcType)` live in
+`eph/dpdk/proc_type.hpp` so both `eph/dpdk/platform.hpp` (full
+Platform contract) and `eph/dpdk/eal.hpp` (`EalConfig` argv assembly
+via `build_eal_argv`) share a single source of truth. Adding a new
+enum value is automatically reached by every consumer; the central
+serializer is a `switch` so `-Wswitch` flags missed cases at compile
+time.
+
 ### Hot-path zero-cost surfaces
 
 Cold getter consumed exactly once per connection by
