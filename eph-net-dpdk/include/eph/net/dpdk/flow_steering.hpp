@@ -203,6 +203,18 @@ configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
     uint16_t actual = std::min(num_queues,
                                 dev_info.max_rx_queues);
 
+    // Defense in depth: a malfunctioning PMD reporting max_rx_queues == 0
+    // (or any future caller bypassing the num_queues >= 2 check above)
+    // would cause a divide-by-zero in the `i % actual` step of the RETA
+    // population loop below. Reject explicitly with a clear error rather
+    // than risk UB.
+    if (actual == 0) {
+        return std::unexpected(std::format(
+            "RSS configure: effective queue count is zero "
+            "(num_queues={}, max_rx_queues={}); cannot populate RETA",
+            num_queues, dev_info.max_rx_queues));
+    }
+
     // Build RSS configuration
     rte_eth_rss_conf rss_conf{};
     rss_conf.rss_key = nullptr;  // Use default hash key
