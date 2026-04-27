@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <functional>
 #include <memory>
@@ -156,6 +157,38 @@ public:
     ///        to call it directly.
     void set_attached(bool a) noexcept { attached_ = a; }
 
+    /// @brief Queue a one-shot `ErrorInfo` to be returned by the next
+    ///        `send()` call. Lets tests cover caller behavior under
+    ///        every `core::Error` variant (WouldBlock, BufferFull,
+    ///        IoError, Timeout, …) — not just the built-in
+    ///        `NotAttached` / `Disconnected` paths.
+    ///
+    /// Multiple calls queue multiple errors (FIFO). Once the queue is
+    /// drained, `send()` returns to its normal accumulating behavior.
+    /// The state guards (NotAttached / Disconnected) take precedence
+    /// over an injected error so that tests cannot accidentally observe
+    /// a "send succeeded" path on a closed stream.
+    ///
+    /// Added in round-46 batch 4 to close the FakeStream error-coverage
+    /// gap flagged by the test-blind-spot review: previously there was
+    /// no way to verify "caller handles `WouldBlock` from send" or
+    /// similar in unit tests.
+    void inject_send_error(core::ErrorInfo err) {
+        pending_send_errors_.push_back(err);
+    }
+
+    /// @brief Convenience wrapper for the common case (queue one error
+    ///        with default-constructed detail).
+    void inject_send_error(core::Error code,
+                            const char* detail = "FakeStream::send: injected") {
+        pending_send_errors_.push_back(core::ErrorInfo{code, detail});
+    }
+
+    /// @brief Test introspection — how many injected errors remain queued.
+    [[nodiscard]] std::size_t pending_send_errors() const noexcept {
+        return pending_send_errors_.size();
+    }
+
     // ── Stream concept implementation ──────────────────────────────────────
 
     /// @brief Public `on_message` sink: assigned by the test before calling
@@ -181,6 +214,14 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "FakeStream::send: state != Established"});
+        }
+        // Pop a queued injected error AFTER the state guards so that
+        // tests cannot observe an error-injected path on a closed stream
+        // (real backends always check session state first).
+        if (!pending_send_errors_.empty()) {
+            auto err = pending_send_errors_.front();
+            pending_send_errors_.pop_front();
+            return std::unexpected(err);
         }
         tx_buf_.insert(tx_buf_.end(), app_payload.begin(), app_payload.end());
         return app_payload.size();
@@ -238,11 +279,12 @@ public:
     }
 
 private:
-    std::vector<uint8_t> rx_buf_;
-    std::vector<uint8_t> tx_buf_;
-    TcpState             state_{TcpState::Established};
-    bool                 attached_{false};
-    bool                 closed_gracefully_{false};
+    std::vector<uint8_t>          rx_buf_;
+    std::vector<uint8_t>          tx_buf_;
+    std::deque<core::ErrorInfo>   pending_send_errors_;
+    TcpState                      state_{TcpState::Established};
+    bool                          attached_{false};
+    bool                          closed_gracefully_{false};
 };
 
 // Compile-time concept conformance check — if the Stream concept ever evolves

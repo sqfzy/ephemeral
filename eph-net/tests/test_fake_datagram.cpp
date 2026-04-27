@@ -113,3 +113,97 @@ TEST(FakeDatagram, NativeHandleIsStablePointer) {
     ent::FakeDatagram fd;
     EXPECT_EQ(fd.native_handle(), static_cast<void*>(&fd));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Error injection (round-46) — tests for `inject_send_error`,
+// `inject_join_error`, `inject_leave_error`. Covers caller paths under
+// arbitrary `core::ErrorInfo` codes, closing the FakeDatagram
+// error-coverage gap flagged by the test-blind-spot review.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FakeDatagram, InjectSendErrorPopsOnceFifo) {
+    ent::FakeDatagram fd;
+    fd.set_attached(true);
+
+    fd.inject_send_error(eph::core::Error::WouldBlock,  "wb-first");
+    fd.inject_send_error(eph::core::Error::BufferFull,  "bf-second");
+    EXPECT_EQ(fd.pending_send_errors(), 2u);
+
+    const uint8_t payload[] = {0xAA};
+    auto dst = addr(10, 0, 0, 1, 1000);
+
+    auto r1 = fd.send_to(payload, dst);
+    ASSERT_FALSE(r1.has_value());
+    EXPECT_EQ(r1.error().code, eph::core::Error::WouldBlock);
+    EXPECT_STREQ(r1.error().detail, "wb-first");
+
+    auto r2 = fd.send_to(payload, dst);
+    ASSERT_FALSE(r2.has_value());
+    EXPECT_EQ(r2.error().code, eph::core::Error::BufferFull);
+
+    // Drained — next send_to records a normal tx entry.
+    auto r3 = fd.send_to(payload, dst);
+    ASSERT_TRUE(r3.has_value());
+    EXPECT_EQ(fd.collect_tx().size(), 1u);
+}
+
+TEST(FakeDatagram, InjectSendErrorDoesNotConsumeWhenNotAttached) {
+    // NotAttached short-circuits before the queue is inspected — the
+    // injected error stays queued. Mirrors the precedence rule on
+    // FakeStream and on the real KernelUdpSocket / DpdkUdpSocket
+    // backends.
+    ent::FakeDatagram fd;
+    fd.inject_send_error(eph::core::Error::CodecBad, "should-stay-queued");
+
+    const uint8_t payload[] = {0x01};
+    auto r = fd.send_to(payload, addr(10, 0, 0, 1, 1000));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::NotAttached);
+    EXPECT_EQ(fd.pending_send_errors(), 1u);
+}
+
+TEST(FakeDatagram, InjectJoinErrorReturnsExactlyOnce) {
+    // First join_multicast pops the injected error; second call after
+    // drain succeeds normally and records the group.
+    ent::FakeDatagram fd;
+    fd.inject_join_error(eph::core::Error::InvalidConfig,
+                          "join: address family mismatch");
+
+    auto g = addr(239, 1, 2, 3, 5000);
+    auto r1 = fd.join_multicast(g);
+    ASSERT_FALSE(r1.has_value());
+    EXPECT_EQ(r1.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_STREQ(r1.error().detail, "join: address family mismatch");
+    // Failed join must NOT have recorded the group.
+    EXPECT_TRUE(fd.joined_groups().empty());
+
+    // Second call drains queue → succeeds and records the group.
+    auto r2 = fd.join_multicast(g);
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_EQ(fd.joined_groups().size(), 1u);
+    EXPECT_EQ(fd.joined_groups()[0], g);
+}
+
+TEST(FakeDatagram, InjectLeaveErrorDoesNotMutateJoinedList) {
+    // A failed leave_multicast must not remove the group from the
+    // internal `joined_` vector — caller observes the error and can
+    // retry; the registry stays consistent.
+    ent::FakeDatagram fd;
+    auto g = addr(239, 4, 5, 6, 6000);
+    ASSERT_TRUE(fd.join_multicast(g).has_value());
+    ASSERT_EQ(fd.joined_groups().size(), 1u);
+
+    fd.inject_leave_error(eph::core::Error::InvalidConfig,
+                           "leave: igmp refused");
+    auto r = fd.leave_multicast(g);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Group still present — the leave was rejected before the vector
+    // was touched.
+    EXPECT_EQ(fd.joined_groups().size(), 1u);
+
+    // After drain, leave succeeds and the group disappears.
+    auto r2 = fd.leave_multicast(g);
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_TRUE(fd.joined_groups().empty());
+}

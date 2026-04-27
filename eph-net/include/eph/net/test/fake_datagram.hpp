@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <functional>
 #include <memory>
@@ -119,6 +120,52 @@ public:
 
     void set_attached(bool a) noexcept { attached_ = a; }
 
+    /// @brief Queue a one-shot `ErrorInfo` to be returned by the next
+    ///        `send_to()` call. Drained FIFO; once empty `send_to`
+    ///        returns to the normal accumulating path. The
+    ///        `NotAttached` guard takes precedence so an injected
+    ///        error cannot be observed on a detached datagram.
+    ///
+    /// Mirrors `FakeStream::inject_send_error`. Lets unit tests cover
+    /// caller behavior under arbitrary `core::Error` codes (BufferFull,
+    /// IoError, Timeout, …) — previously only `NotAttached` was
+    /// reachable via the fake's `send_to`.
+    ///
+    /// Added in round-46 batch 4 alongside the FakeStream sibling.
+    void inject_send_error(core::ErrorInfo err) {
+        pending_send_errors_.push_back(err);
+    }
+    void inject_send_error(core::Error code,
+                            const char* detail = "FakeDatagram::send_to: injected") {
+        pending_send_errors_.push_back(core::ErrorInfo{code, detail});
+    }
+    [[nodiscard]] std::size_t pending_send_errors() const noexcept {
+        return pending_send_errors_.size();
+    }
+
+    /// @brief Queue a one-shot `ErrorInfo` returned by the next
+    ///        `join_multicast` call. Lets tests cover caller paths
+    ///        like "IGMP refused" / "address family mismatch" without
+    ///        a real socket. Drained FIFO.
+    void inject_join_error(core::ErrorInfo err) {
+        pending_join_errors_.push_back(err);
+    }
+    void inject_join_error(core::Error code,
+                            const char* detail = "FakeDatagram::join_multicast: injected") {
+        pending_join_errors_.push_back(core::ErrorInfo{code, detail});
+    }
+
+    /// @brief Queue a one-shot `ErrorInfo` returned by the next
+    ///        `leave_multicast` call. Same shape as
+    ///        `inject_join_error`.
+    void inject_leave_error(core::ErrorInfo err) {
+        pending_leave_errors_.push_back(err);
+    }
+    void inject_leave_error(core::Error code,
+                             const char* detail = "FakeDatagram::leave_multicast: injected") {
+        pending_leave_errors_.push_back(core::ErrorInfo{code, detail});
+    }
+
     /// @brief Accessor for the currently-joined multicast groups. Order is
     ///        the order in which `join_multicast` was called; duplicates are
     ///        preserved so tests can detect bad double-join code.
@@ -137,6 +184,13 @@ public:
                 core::Error::NotAttached,
                 "FakeDatagram::send_to before attach"});
         }
+        // Drain one queued error AFTER the state guard so injected
+        // errors cannot be observed on a detached datagram.
+        if (!pending_send_errors_.empty()) {
+            auto err = pending_send_errors_.front();
+            pending_send_errors_.pop_front();
+            return std::unexpected(err);
+        }
         TxEntry e;
         e.data.assign(app_payload.begin(), app_payload.end());
         e.dst = dst;
@@ -146,12 +200,22 @@ public:
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     join_multicast(const SocketAddr& group) noexcept {
+        if (!pending_join_errors_.empty()) {
+            auto err = pending_join_errors_.front();
+            pending_join_errors_.pop_front();
+            return std::unexpected(err);
+        }
         joined_.push_back(group);
         return {};
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     leave_multicast(const SocketAddr& group) noexcept {
+        if (!pending_leave_errors_.empty()) {
+            auto err = pending_leave_errors_.front();
+            pending_leave_errors_.pop_front();
+            return std::unexpected(err);
+        }
         // Remove the first occurrence. Tests that care about multiple
         // concurrent joins on the same group can inspect `joined_groups`
         // directly.
@@ -189,10 +253,13 @@ public:
     }
 
 private:
-    std::vector<RxEntry>    rx_queue_;
-    std::vector<TxEntry>    tx_queue_;
-    std::vector<SocketAddr> joined_;
-    bool                    attached_{false};
+    std::vector<RxEntry>          rx_queue_;
+    std::vector<TxEntry>          tx_queue_;
+    std::vector<SocketAddr>       joined_;
+    std::deque<core::ErrorInfo>   pending_send_errors_;
+    std::deque<core::ErrorInfo>   pending_join_errors_;
+    std::deque<core::ErrorInfo>   pending_leave_errors_;
+    bool                          attached_{false};
 };
 
 // Compile-time concept conformance checks.
