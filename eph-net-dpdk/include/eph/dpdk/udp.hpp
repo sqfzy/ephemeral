@@ -24,6 +24,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
@@ -197,8 +198,15 @@ public:
             rte_eth_dev_info dev_info{};
             int ret = rte_eth_dev_info_get(cfg.port_id, &dev_info);
             if (ret != 0) {
-                auto msg = std::format("rte_eth_dev_info_get failed for port {}: {}",
-                                       cfg.port_id, ret);
+                // rte_errno carries the actual cause (-EINVAL = invalid
+                // port_id, -ENOTSUP = unsupported driver, -ENODEV =
+                // detached). Capturing it here means callers don't have
+                // to grep DPDK source to interpret a bare ret=-22.
+                const int err = rte_errno;
+                auto msg = std::format(
+                    "rte_eth_dev_info_get failed for port {}: ret={}, "
+                    "rte_errno={} ({})",
+                    cfg.port_id, ret, err, rte_strerror(err));
                 SPDLOG_LOGGER_ERROR(log, "{}", msg);
                 return std::unexpected(msg);
             }
