@@ -295,12 +295,19 @@ TEST(TcpStats, DumpIncludesTelemetryFields) {
     s.reorder_overflows = 3;
     s.max_gap_size = 2920;
     s.gap_histogram[10] = 5;  // bucket [1024, 2048)
+    s.keepalive_probes_sent   = 7;
+    s.keepalive_send_failures = 2;
 
     auto dump = s.dump();
     EXPECT_NE(dump.find("reorder_hits: 42"), std::string::npos);
     EXPECT_NE(dump.find("reorder_overflows: 3"), std::string::npos);
     EXPECT_NE(dump.find("max_gap_size: 2920"), std::string::npos);
     EXPECT_NE(dump.find("gap[2^10..2^11): 5"), std::string::npos);
+    // Keepalive observability — both fields must surface so operators
+    // can attribute connection drops to silent peer (probes_sent rising,
+    // no replies) vs stuck NIC (send_failures rising).
+    EXPECT_NE(dump.find("keepalive_probes_sent: 7"), std::string::npos);
+    EXPECT_NE(dump.find("keepalive_send_failures: 2"), std::string::npos);
 }
 
 TEST(TcpStats, ToJsonIncludesTelemetryFields) {
@@ -309,12 +316,16 @@ TEST(TcpStats, ToJsonIncludesTelemetryFields) {
     s.reorder_overflows = 1;
     s.max_gap_size = 1460;
     s.gap_histogram[10] = 7;
+    s.keepalive_probes_sent   = 4;
+    s.keepalive_send_failures = 1;
 
     auto json = s.to_json();
     EXPECT_NE(json.find("\"reorder_hits\":10"), std::string::npos);
     EXPECT_NE(json.find("\"reorder_overflows\":1"), std::string::npos);
     EXPECT_NE(json.find("\"max_gap_size\":1460"), std::string::npos);
     EXPECT_NE(json.find("\"gap_histogram\":{\"10\":7}"), std::string::npos);
+    EXPECT_NE(json.find("\"keepalive_probes_sent\":4"), std::string::npos);
+    EXPECT_NE(json.find("\"keepalive_send_failures\":1"), std::string::npos);
 }
 
 TEST(TcpStats, ToJsonOmitsEmptyGapHistogram) {

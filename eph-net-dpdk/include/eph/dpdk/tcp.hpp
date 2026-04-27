@@ -392,11 +392,14 @@ public:
                 "  max_gap_size: {}\n"
                 "  packets_dropped: {}\n"
                 "  fragment_rejected: {}\n"
-                "  dup_segments: {}",
+                "  dup_segments: {}\n"
+                "  keepalive_probes_sent: {}\n"
+                "  keepalive_send_failures: {}",
                 tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
                 reorder_hits, reorder_overflows, max_gap_size,
-                packets_dropped, fragment_rejected, dup_segments);
+                packets_dropped, fragment_rejected, dup_segments,
+                keepalive_probes_sent, keepalive_send_failures);
 
             // Append non-zero gap histogram buckets
             for (size_t i = 0; i < gap_histogram.size(); ++i) {
@@ -416,11 +419,14 @@ public:
                 "\"out_of_order\":{},\"resets_received\":{},\"reorder_hits\":{},"
                 "\"reorder_overflows\":{},\"max_gap_size\":{},"
                 "\"packets_dropped\":{},\"fragment_rejected\":{},"
-                "\"dup_segments\":{}",
+                "\"dup_segments\":{},"
+                "\"keepalive_probes_sent\":{},"
+                "\"keepalive_send_failures\":{}",
                 tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
                 reorder_hits, reorder_overflows, max_gap_size,
-                packets_dropped, fragment_rejected, dup_segments);
+                packets_dropped, fragment_rejected, dup_segments,
+                keepalive_probes_sent, keepalive_send_failures);
 
             // Append non-zero gap histogram buckets as sparse array
             bool has_gap = false;
