@@ -271,7 +271,12 @@ static_assert(kStreamMetricNames.size() ==
 /// `Stream` is duck-typed and must expose
 ///   `[[nodiscard]] std::uint64_t metric(StreamMetric) const noexcept`.
 /// All four built-in backends (`KernelTcpStream`, `KernelUdpSocket`,
-/// `DpdkTcpStream`, `DpdkUdpSocket`) satisfy this.
+/// `DpdkTcpStream`, `DpdkUdpSocket`) satisfy this. The test mocks
+/// `eph::net::test::FakeStream` / `FakeDatagram` deliberately do
+/// **not** — they exist to satisfy the `Stream` / `Datagram` concept
+/// (no `metric()` requirement) for codec / poller unit tests, and
+/// observability is not in their scope. If a unit test needs to
+/// drive `publish_metrics`, wrap the fake or use a built-in backend.
 ///
 /// Naming: `publish` matches Prometheus push gateway / OpenTelemetry
 /// `MetricExporter` conventions. Parameter names `source` / `sink` mirror
