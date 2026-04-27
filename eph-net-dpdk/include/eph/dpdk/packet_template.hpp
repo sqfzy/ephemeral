@@ -409,8 +409,18 @@ struct UdpPacketTemplate {
         }
 #endif
 
-        // Use uint32_t to detect overflow before truncating to uint16_t.
-        // kUdpAllHeadersLen (42) + payload_len could exceed 65535 with jumbo payloads.
+        // Mirror PacketTemplate::fill_packet's overflow guard:
+        // kUdpAllHeadersLen (42) + payload_len can wrap a uint16_t when
+        // payload_len approaches UINT16_MAX (-42 headroom). Without
+        // this, a wrapped total_len would let rte_pktmbuf_append
+        // succeed for a tiny size and the subsequent payload memcpy
+        // below would walk off the mbuf data buffer. Compute in
+        // uint32_t and reject anything past UINT16_MAX.
+        //
+        // DpdkUdpSocket::send_to enforces the same cap at the API
+        // boundary (kMaxUdpPayload = 65535 - 42); this guard is
+        // defense-in-depth for any caller that bypasses the socket
+        // wrapper and drives UdpPacketTemplate::fill directly.
         const uint32_t total_len32 = static_cast<uint32_t>(kUdpAllHeadersLen) + payload_len;
         if (total_len32 > UINT16_MAX) [[unlikely]] return 0;
         const auto total_len = static_cast<uint16_t>(total_len32);
