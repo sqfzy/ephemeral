@@ -18,6 +18,14 @@ as their `PacketView` associated type — backed by an `rte_mbuf` with pool-mana
 headroom so TLS decrypt can run in place via aws-lc's
 `EVP_AEAD_CTX_open_scatter`.
 
+For single-NIC multi-process deployments (one primary + N secondaries
+sharing the mempool), see `eph::dpdk::Platform::create_primary` /
+`create_secondary` plus `eph::dpdk::EalConfig` / `build_eal_argv` in
+`eph/dpdk/platform.hpp` and `eph/dpdk/eal.hpp`. The `PlatformConfig::
+proc_type` / `file_prefix` / `rx_queue_range` fields default to single-
+process / primary so existing code is byte-for-byte compatible. Full
+contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
+
 ## Internal detail layer
 
 `eph-net-dpdk` wraps a rich set of low-level DPDK primitives that live under
