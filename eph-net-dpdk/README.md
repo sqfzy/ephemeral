@@ -216,9 +216,13 @@ the preserved internal-primitive tests under `tests/legacy/`.
 
 ### Integration tests (`tests/integration/`)
 
-| Binary       | Covers                                                   |
-|--------------|----------------------------------------------------------|
-| `dpdk_e2e`   | Full kernel-mock → DPDK-client suite (all P0+P1 cases)   |
+| Binary               | Covers                                                              |
+|----------------------|---------------------------------------------------------------------|
+| `dpdk_e2e`           | Full kernel-mock → DPDK-client suite (all P0+P1 cases)              |
+| `test_dpdk_rss_platform` | RSS / RETA / queue-pinning behaviour against a live DPDK port    |
+| `dpdk_mp_primary`    | Primary half of the multi-process E2E (driven by `dpdk_mp_e2e.sh`)  |
+| `dpdk_mp_secondary`  | Secondary half: attaches via shared mempool, owns its sub-range     |
+| `dpdk_mp_e2e.sh`     | Coordinator script — launches primary, waits, launches secondary, asserts both see their owned queue / src_port range; skips with exit 77 if env vars absent / NIC unbound / hugepages low |
 
 ### Legacy tests (`tests/legacy/`)
 
