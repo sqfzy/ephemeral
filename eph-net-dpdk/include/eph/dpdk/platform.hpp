@@ -1336,6 +1336,37 @@ Platform::create_secondary(PlatformConfig config) {
     if (auto r = impl->lookup_mempool_secondary(); !r)
         return std::unexpected(r.error());
 
+    // Best-effort sanity check: cross-check the caller's `nb_rx_queues`
+    // against the live NIC. The secondary contract previously trusted
+    // the caller blindly, so a mismatched config (e.g. caller said 4
+    // but the primary actually configured 2) silently let `rr_counter`
+    // hand out queue ids that the NIC has no rings for. We can't always
+    // call `rte_eth_dev_info_get` from a secondary — some PMDs reject
+    // it — so this is non-fatal: we WARN on mismatch / probe failure
+    // and continue. ENA (the project's reference PMD) does respond.
+    {
+        rte_eth_dev_info dev_info{};
+        int probe_ret = rte_eth_dev_info_get(config.port_id, &dev_info);
+        if (probe_ret == 0) {
+            if (dev_info.max_rx_queues > 0 &&
+                config.nb_rx_queues > dev_info.max_rx_queues) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_secondary: caller nb_rx_queues={} exceeds live "
+                    "max_rx_queues={} on port {} — rr_counter may hand out "
+                    "queue ids the NIC has no rings for; check that the "
+                    "secondary's PlatformConfig matches the primary's",
+                    config.nb_rx_queues, dev_info.max_rx_queues,
+                    config.port_id);
+            }
+        } else {
+            SPDLOG_LOGGER_DEBUG(log,
+                "create_secondary: rte_eth_dev_info_get probe rejected "
+                "(ret={}, rte_errno={}: {}) — PMD does not support it from "
+                "secondary; skipping nb_rx_queues cross-check (advisory)",
+                probe_ret, rte_errno, rte_strerror(rte_errno));
+        }
+    }
+
     // Skip: enumerate_ports (primary did it) / create_mempool (lookup
     // above) / configure_port / setup_queues / configure_rss /
     // start_port / wait_link_up — all primary-only.
