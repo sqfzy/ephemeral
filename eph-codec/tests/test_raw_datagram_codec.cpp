@@ -87,3 +87,85 @@ TEST(RawDatagramCodec, EncodeBufferFull) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::BufferFull);
 }
+
+// ─── round-52 boundary additions ─────────────────────────────────────
+//
+// Gaps in the existing matrix: empty-payload encode (no-op memcpy
+// path), exact-fit boundary at `payload.size() == cap` (strict `>` in
+// the rejection guard), error-message detail, and an end-to-end
+// round trip that exercises encode→decode.
+
+TEST(RawDatagramCodec, EncodeEmptyPayloadReturnsZero) {
+    // The `if (!payload.empty())` guard short-circuits memcpy; verify
+    // the path returns 0 without touching `buf`. Also exercises the
+    // `payload.size() > cap` branch with cap=0 / payload.size()=0
+    // (0 > 0 is false → success).
+    uint8_t sentinel = 0xAB;
+    RawDatagramCodec codec;
+    auto r = codec.encode(&sentinel, /*cap=*/0,
+                          std::span<const uint8_t>{});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 0u);
+    EXPECT_EQ(sentinel, 0xAB) << "buf must NOT have been written";
+}
+
+TEST(RawDatagramCodec, EncodeExactlyFillsBuffer) {
+    // Pin the strict `>` in the guard at line 92: `payload.size()
+    // == cap` must succeed.
+    uint8_t buf[3]{};
+    RawDatagramCodec codec;
+    const uint8_t payload[] = {0xDE, 0xAD, 0xBE};
+    auto r = codec.encode(buf, sizeof(buf),
+                          std::span<const uint8_t>{payload, 3});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 3u);
+    EXPECT_EQ(buf[0], 0xDE);
+    EXPECT_EQ(buf[1], 0xAD);
+    EXPECT_EQ(buf[2], 0xBE);
+}
+
+TEST(RawDatagramCodec, DecodeEmptyDatagramErrorMessageMentionsEmpty) {
+    // Per CLAUDE rules, error messages must be actionable. Pin the
+    // substring so a refactor that changes the detail text doesn't
+    // silently degrade to a vague "decode failed".
+    uint8_t storage[1]{};
+    SpanPacketView view{storage, 0};
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+    RawDatagramCodec codec;
+
+    auto r = codec.decode(view, out, [](auto) {});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::CodecBad);
+    EXPECT_NE(std::string_view(r.error().detail).find("empty"),
+              std::string_view::npos)
+        << "actual: " << r.error().detail;
+}
+
+TEST(RawDatagramCodec, EncodeDecodeRoundTrip) {
+    // End-to-end check that encode + decode preserve bytes exactly.
+    // The codec's identity contract (1 datagram = 1 frame, no
+    // overhead) means the encode output equals the decode input
+    // byte-for-byte.
+    uint8_t buf[16]{};
+    RawDatagramCodec codec;
+    const uint8_t payload[] = {0x10, 0x20, 0x30, 0x40, 0x50};
+
+    auto enc = codec.encode(buf, sizeof(buf),
+                             std::span<const uint8_t>{payload, 5});
+    ASSERT_TRUE(enc.has_value());
+    EXPECT_EQ(*enc, 5u);
+
+    SpanPacketView view{buf, *enc};
+    uint8_t out_storage[8]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+    std::vector<uint8_t> received;
+    auto dec = codec.decode(view, out, [&](std::span<const uint8_t> f) {
+        received.assign(f.begin(), f.end());
+    });
+    ASSERT_TRUE(dec.has_value());
+    EXPECT_EQ(*dec, 1u);
+    ASSERT_EQ(received.size(), 5u);
+    EXPECT_EQ(received[0], 0x10);
+    EXPECT_EQ(received[4], 0x50);
+}
