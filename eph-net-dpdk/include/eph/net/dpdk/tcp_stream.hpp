@@ -701,6 +701,17 @@ public:
             } else {
                 static std::atomic<uint16_t> rr_counter{0};
                 const auto [qlo, qhi] = platform.effective_rx_queue_range();
+                // Defense in depth: a moved-from Platform (impl_ == nullptr)
+                // returns {0, 0} from effective_rx_queue_range; divide-by-zero
+                // in `% qrange` would be UB. validate_config normally rules
+                // this out, but a moved-from Platform is reachable via
+                // user-after-move and not caught by validation.
+                if (qhi <= qlo) {
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: empty effective_rx_queue_range "
+                        "(Platform moved-from or misconfigured)"});
+                }
                 const uint16_t qrange = qhi - qlo;
                 target_qid = qlo + (rr_counter.fetch_add(1,
                                 std::memory_order_relaxed) % qrange);

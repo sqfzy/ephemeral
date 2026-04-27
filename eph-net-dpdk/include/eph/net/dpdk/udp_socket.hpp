@@ -236,6 +236,16 @@ public:
             } else {
                 static std::atomic<uint16_t> rr_counter{0};
                 const auto [qlo, qhi] = platform.effective_rx_queue_range();
+                // Defense in depth: empty range (e.g. moved-from Platform
+                // returns {0, 0}) would make `% qrange` UB. Mirror the
+                // TCP path's guard so both protocols fail with the same
+                // explicit error rather than crash silently.
+                if (qhi <= qlo) {
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "create_and_attach: empty effective_rx_queue_range "
+                        "(Platform moved-from or misconfigured)"});
+                }
                 const uint16_t qrange = qhi - qlo;
                 target_qid = qlo + (rr_counter.fetch_add(1,
                                 std::memory_order_relaxed) % qrange);
