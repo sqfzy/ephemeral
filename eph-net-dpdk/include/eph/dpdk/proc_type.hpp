@@ -50,4 +50,17 @@ to_eal_string(ProcType p) noexcept {
     return "primary";
 }
 
+// ── Compile-time guards ──
+// These keep the underlying type narrow (so embedding ProcType in
+// per-stream / per-mempool config structs is byte-cheap) and lock the
+// EAL string contract — DPDK matches `--proc-type=` arguments by exact
+// string equality, so a typo here would silently degrade a primary into
+// auto-mode at startup. Caught at compile time, not at runtime.
+static_assert(sizeof(ProcType) == 1,
+              "ProcType must remain 1 byte — embedded in hot config structs");
+static_assert(to_eal_string(ProcType::Primary)   == "primary",
+              "EAL --proc-type=primary spelling drift would break MP startup");
+static_assert(to_eal_string(ProcType::Secondary) == "secondary",
+              "EAL --proc-type=secondary spelling drift would break MP startup");
+
 } // namespace eph::dpdk
