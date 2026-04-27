@@ -499,7 +499,11 @@ public:
     /// Start the multicast receiver RX thread.
     /// Requires at least one joined group and a registered callback.
     [[nodiscard]] std::expected<void, std::string> start() {
-        if (running_.load(std::memory_order_relaxed)) {
+        // Acquire to match join_group / leave_group / is_running's
+        // synchronisation pattern. A start() racing with another thread's
+        // stop() (a rare but possible orchestration glitch) must observe
+        // stop()'s release-store.
+        if (running_.load(std::memory_order_acquire)) {
             return std::unexpected("Already running");
         }
 
