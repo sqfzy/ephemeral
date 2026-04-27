@@ -1003,7 +1003,17 @@ struct Platform::Impl {
             rte_eth_link link{};
             // Return value only indicates query failure, not link state.
             // On failure, link struct is zeroed → link_status == DOWN.
-            [[maybe_unused]] int ret = rte_eth_link_get_nowait(config.port_id, &link);
+            // Surface query failures at TRACE so a persistent
+            // rte_eth_link_get_nowait error path (PMD bug, port closed
+            // out from under us) is visible without spamming logs in
+            // the link-down-but-NIC-ok common case.
+            int ret = rte_eth_link_get_nowait(config.port_id, &link);
+            if (ret != 0) {
+                SPDLOG_LOGGER_TRACE(log,
+                    "port={} rte_eth_link_get_nowait ret={} ({}) "
+                    "— treating as link DOWN",
+                    config.port_id, ret, rte_strerror(-ret));
+            }
             if (link.link_status == RTE_ETH_LINK_UP) {
                 SPDLOG_LOGGER_INFO(log, "port={} link up: {} Mbps {}",
                     config.port_id, link.link_speed,
