@@ -199,3 +199,70 @@ TEST(SoupBinTcpFramer, decode_chained_two_packets_in_one_buffer) {
     EXPECT_FALSE(r2->is_control);
     EXPECT_EQ(std::memcmp(r2->payload, "XY", 2), 0);
 }
+
+// ─── encode error paths (round-54) ──────────────────────────────────────
+//
+// The existing encode tests cover only happy paths (round_trip,
+// heartbeat). The three precondition checks at the top of `encode`
+// (null out, payload too large, null data with non-zero len) all
+// silently return 0 — and none had a test pinning that 0. A refactor
+// that swapped any guard for a noisier behavior (e.g. UB on null) or
+// that changed the return convention would slip through.
+
+TEST(SoupBinTcpFramer, encode_null_output_returns_zero) {
+    SoupBinTcpFramer framer;
+    const uint8_t payload[] = {'X'};
+    EXPECT_EQ(framer.encode(/*out=*/nullptr, payload, 1, kSequencedData),
+              0u);
+}
+
+TEST(SoupBinTcpFramer, encode_payload_exceeding_max_returns_zero) {
+    // kMaxPayloadLen is 65534. A request for 65535 must reject — the
+    // wire-length field is `len + 1`, so 65535 + 1 would overflow u16.
+    SoupBinTcpFramer framer;
+    std::array<uint8_t, 8> wire{};
+    // We never deref a 65535-byte payload; the size check must short-
+    // circuit before any access. Pass a small buffer.
+    const uint8_t dummy[] = {'X'};
+    EXPECT_EQ(framer.encode(wire.data(), dummy, 65535, kSequencedData),
+              0u);
+}
+
+TEST(SoupBinTcpFramer, encode_null_data_with_nonzero_len_returns_zero) {
+    SoupBinTcpFramer framer;
+    std::array<uint8_t, 8> wire{};
+    EXPECT_EQ(framer.encode(wire.data(), nullptr, 5, kSequencedData),
+              0u);
+    // wire must NOT have been touched.
+    EXPECT_EQ(wire[0], 0u);
+    EXPECT_EQ(wire[1], 0u);
+    EXPECT_EQ(wire[2], 0u);
+}
+
+TEST(SoupBinTcpFramer, encode_null_data_with_zero_len_succeeds) {
+    // Pinned by the heartbeat round-trip test indirectly, but make
+    // the contract explicit: null data + zero len is the canonical
+    // zero-payload form (heartbeat / login-request without body).
+    SoupBinTcpFramer framer;
+    std::array<uint8_t, 8> wire{};
+    EXPECT_EQ(framer.encode(wire.data(), nullptr, 0, kServerHeartbeat),
+              3u);
+    EXPECT_EQ(wire[0], 0x00);
+    EXPECT_EQ(wire[1], 0x01);
+    EXPECT_EQ(wire[2], 'H');
+}
+
+TEST(SoupBinTcpFramer, encode_at_max_payload_len_succeeds) {
+    // Pin the strict `>` boundary at line 92: len == kMaxPayloadLen
+    // (65534) must succeed.
+    SoupBinTcpFramer framer;
+    std::vector<uint8_t> payload(65534, 0x5A);
+    std::vector<uint8_t> wire(65534 + 3);
+    EXPECT_EQ(framer.encode(wire.data(), payload.data(),
+                             payload.size(), kSequencedData),
+              65534u + 3u);
+    // Wire-length field must be 65535 (payload + 1 type byte).
+    EXPECT_EQ(wire[0], 0xFF);
+    EXPECT_EQ(wire[1], 0xFF);
+    EXPECT_EQ(wire[2], 'S');
+}
