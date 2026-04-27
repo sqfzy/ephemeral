@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <optional>
 #include <string>
 
@@ -305,8 +306,21 @@ resolve(uint16_t port_id,
         if (now >= next_send && requests_sent < 3) {
             auto* req = build_arp_request(pool, src_mac, src_ip, target_ip);
             if (!req) {
-                SPDLOG_LOGGER_ERROR(log, "ARP resolve: mbuf allocation failed");
-                return std::unexpected("ARP resolve: mbuf allocation failed");
+                // Symmetric with the tx_burst WARN below — surface
+                // target IP + port + queue + attempt so the operator
+                // sees which ARP lookup died and where. Pool exhaustion
+                // is the dominant cause; we terminate rather than retry
+                // because the pool will not refill mid-loop.
+                SPDLOG_LOGGER_ERROR(log,
+                    "ARP resolve: mbuf allocation failed (target={} "
+                    "port={} queue={} request_attempt={})",
+                    net::format_ipv4(target_ip).data(),
+                    port_id, queue_id, requests_sent + 1);
+                return std::unexpected(std::format(
+                    "ARP resolve: mbuf allocation failed for target={} "
+                    "(port={} queue={} attempt={})",
+                    net::format_ipv4(target_ip).data(),
+                    port_id, queue_id, requests_sent + 1));
             }
 
             uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &req, 1);
