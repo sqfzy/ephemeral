@@ -651,7 +651,17 @@ resolve(uint16_t port_id,
             uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &pkt, 1);
             if (sent != 1) {
                 rte_pktmbuf_free(pkt);
-                SPDLOG_LOGGER_WARN(log, "DNS resolve: tx_burst failed");
+                // Same actionable-log treatment as arp::resolve(): include
+                // port/queue/attempt + the retry_interval so a single grep
+                // tells the operator which TX path is broken and when the
+                // next attempt will fire. next_send below applies even on
+                // failure so the loop self-rate-limits.
+                SPDLOG_LOGGER_WARN(log,
+                    "DNS resolve: tx_burst failed (port={} queue={} "
+                    "query_attempt={} hostname='{}'); will retry after "
+                    "{}ms backoff",
+                    port_id, queue_id, requests_sent + 1, hostname,
+                    retry_interval.count());
             } else {
                 ++requests_sent;
                 [[maybe_unused]] auto remaining_ms = std::chrono::duration_cast<
