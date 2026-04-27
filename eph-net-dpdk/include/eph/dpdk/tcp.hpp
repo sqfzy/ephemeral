@@ -706,8 +706,15 @@ public:
         auto* syn = pkt_template_.build_packet(
             pool_, snd_nxt_, 0, net::kTcpSyn, rcv_wnd_);
         if (!syn) {
+            // Pool exhaustion at connect time — surface peer + port + queue
+            // so the operator can pinpoint the offending session vs the
+            // generic "mbuf alloc failed" they'd otherwise see.
             SPDLOG_LOGGER_ERROR(log,
-                "TcpSession::connect: mbuf allocation failed for SYN");
+                "TcpSession::connect: mbuf allocation failed for SYN "
+                "peer={}:{} port={} queue={}",
+                net::format_ipv4(config_.tuple.dst_ip).data(),
+                config_.tuple.dst_port,
+                config_.port_id, config_.tx_queue_id);
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
                 "TcpSession::connect: mbuf allocation failed for SYN"});
@@ -716,8 +723,16 @@ public:
         uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &syn, 1);
         if (sent != 1) {
             rte_pktmbuf_free(syn);
+            // sent=0 means the TX ring was full — show the actual count
+            // and the peer so the operator can correlate with TX-queue
+            // back-pressure on a specific session.
             SPDLOG_LOGGER_ERROR(log,
-                "TcpSession::connect: tx_burst failed for SYN");
+                "TcpSession::connect: tx_burst returned sent={}/1 for SYN "
+                "peer={}:{} port={} queue={}",
+                sent,
+                net::format_ipv4(config_.tuple.dst_ip).data(),
+                config_.tuple.dst_port,
+                config_.port_id, config_.tx_queue_id);
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
                 "TcpSession::connect: tx_burst failed for SYN"});
@@ -768,8 +783,16 @@ public:
                 stats_.rx_packets++;
 
                 if (parsed.has_flag(net::kTcpRst)) {
+                    // Peer-driven connection refusal during 3-way handshake.
+                    // Surface peer + our SYN seq so the operator can match
+                    // this against a wireshark capture or peer-side log.
                     SPDLOG_LOGGER_ERROR(log,
-                        "TcpSession::connect: received RST during handshake");
+                        "TcpSession::connect: received RST during handshake "
+                        "peer={}:{} our_isn={} rcvd_seq={} rcvd_ack={}",
+                        net::format_ipv4(config_.tuple.dst_ip).data(),
+                        config_.tuple.dst_port,
+                        snd_nxt_ - 1,  // SYN consumed one seq, recover ISN
+                        parsed.seq(), parsed.ack());
                     state_ = TcpState::Closed;
                     stats_.resets_received++;
                     free_remaining(pkts, i + 1, nb_rx);
