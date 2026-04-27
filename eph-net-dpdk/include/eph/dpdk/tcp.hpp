@@ -112,7 +112,7 @@ struct TcpConfig {
             return "dst_port must be explicit (DPDK has no ephemeral port allocator)";
         if (mss == 0)
             return "mss must be > 0";
-        if (mss > 9000)
+        if (mss > net::kJumboMaxMss)
             return "mss exceeds jumbo frame limit (9000)";
         if (recv_window == 0)
             return "recv_window must be > 0";
@@ -172,7 +172,7 @@ struct TcpConfig {
                 "mss={} is below the recommended minimum (536) -- "
                 "may cause excessive fragmentation", mss));
         // MSS above 1460 (standard Ethernet) requires jumbo frames
-        if (mss > 1460 && mss <= 9000)
+        if (mss > net::kDefaultMss && mss <= net::kJumboMaxMss)
             w.emplace_back(std::format(
                 "mss={} exceeds standard Ethernet MTU (1460) -- "
                 "requires jumbo frame support on NIC and switches", mss));

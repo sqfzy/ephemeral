@@ -85,6 +85,15 @@ inline constexpr uint8_t  kDefaultTtl       = 64;     ///< Default Time-To-Live 
 /// @brief Default TCP Maximum Segment Size for standard Ethernet (MTU 1500 - IP header - TCP header).
 inline constexpr uint16_t kDefaultMss = 1460;
 
+/// @brief Upper bound for advertised MSS — jumbo Ethernet frame allowance.
+///
+/// Jumbo frames cap at 9000 bytes; advertising MSS above this is either a
+/// configuration mistake or a hostile peer's mis-spec. `validate()` callsites
+/// in PacketTemplate / TcpConfig reject values above this threshold and the
+/// `effective_mss` clamp warning in TcpSession::on_syn_ack treats it as an
+/// upper safety net. Centralized here to keep the three callsites in lock-step.
+inline constexpr uint16_t kJumboMaxMss = 9000;
+
 /// @brief SYN options total length: MSS(4) + SACK_PERM(2) + NOP(1) + WSCALE(3) + NOP(1) + NOP(1) = 12 bytes.
 inline constexpr uint16_t kSynOptionsLen = 12;
 

@@ -84,7 +84,7 @@ struct PacketTemplate {
         if (tuple.src_port == 0) return "src_port must be explicit (DPDK has no ephemeral port allocator)";
         if (tuple.dst_port == 0) return "dst_port must be explicit (DPDK has no ephemeral port allocator)";
         if (mss == 0) return "mss must not be zero";
-        if (mss > 9000) return "mss exceeds jumbo frame limit (9000)";
+        if (mss > kJumboMaxMss) return "mss exceeds jumbo frame limit (9000)";
         return {};
     }
 
