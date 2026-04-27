@@ -684,11 +684,25 @@ private:
         rte_mbuf* pkts[kMulticastMaxRxBurst];
         const uint16_t burst_size = config_.rx_burst;
 
+        // INTENTIONAL 100%-CPU busy-spin. HFT market-data feeds run on
+        // a pinned dedicated lcore (validated by `pin_thread` above) and
+        // every microsecond of poll latency translates to filled-or-
+        // missed quote ticks. We deliberately do NOT insert `rte_pause`
+        // / `usleep` / cond-var / `rte_eth_rx_queue_intr_enable`
+        // backpressure on the empty-burst path — those would amortize
+        // wakeup cost across batches and hurt single-tick worst-case
+        // latency, which is the metric this loop optimizes for.
+        //
+        // The loop exits cleanly via the SC-acquire load on `running_`;
+        // shutdown is observable within the next NIC RX-poll cycle.
+        // Power thermals are managed at the deployment level (HFT colos
+        // budget for sustained 100% CPU on dedicated DPDK lcores), not
+        // inside this hot path.
         while (running_.load(std::memory_order_acquire)) {
             uint16_t nb_rx = rte_eth_rx_burst(
                 config_.port_id, config_.rx_queue_id, pkts, burst_size);
 
-            if (nb_rx == 0) continue;
+            if (nb_rx == 0) continue;  // intentional spin — see block comment above
 
             for (uint16_t i = 0; i < nb_rx; ++i) {
                 process_packet(pkts[i]);
