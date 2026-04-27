@@ -195,6 +195,57 @@ packet_core 30/30).
   Fuzzers are not in xmake's default build graph (require clang +
   libFuzzer), so this does not affect normal builds.
 
+### Enriched diagnostics (rounds 15-30, 2026-04-25 / 2026-04-27)
+- **Errno mirroring on cold-path failures**: every cold-path DPDK
+  failure that previously returned a bare `Error::*` enum without the
+  underlying `rte_errno` / `rte_strerror` text now emits an actionable
+  WARN/ERROR log including `rte_errno`, `rte_strerror(rte_errno)`,
+  and the surrounding context (peer endpoint, queue id, attempt
+  number, hostname, gateway, target tuple, etc.). Touched call-sites:
+  `rte_flow_create` / `rte_flow_destroy`, `query_rss_state` (RETA
+  collapse), secondary mempool `rte_mempool_lookup`, ARP refresh,
+  ARP resolve mbuf-alloc, DNS resolve mbuf-alloc, multicast MC-list
+  add/remove, `UdpSender::create` `rte_eth_dev_info_get`,
+  `rte_eth_link_get_nowait` link query, `TcpSession::connect`
+  ERROR branches, multicast group-count rollback on join failure,
+  `find_src_port_for_queue` inversion error (now includes the
+  actual `[lo, hi)` range so operators see why no port satisfied
+  the predicate), DNS / ARP `tx_burst` failures (now actionable
+  rather than "tx_burst returned 0").
+- **TLS codec error path**: the in-place TLS-decrypt latch path now
+  preserves the codec's `ErrorInfo::detail` through to the caller
+  instead of overwriting it with a generic transport message.
+- **Constexpr-promotion**: `eph::net::parse_ipv4` is now `constexpr`
+  with a `static_assert` lock so the IPv4 parser is verified at
+  compile time on canonical addresses, eliminating one class of
+  drift between docs and behaviour.
+- **Compile-time invariants**: `static_assert` added for `ProcType`
+  layout (Primary/Secondary discriminant) and EAL string contract,
+  catching any accidental enum reorder or layout change at build
+  time rather than at first DPDK init.
+- **Static contracts**: `DpdkPoller<P>` primary-template
+  `hash_collision_drops()` forwarder added (was missing — secondary
+  template had it; `metric()` callers on the un-specialised type
+  silently returned 0).
+- **Overflow guards**: `PacketTemplate::fill_packet` now rejects
+  payloads exceeding the template's reserved data region instead
+  of silently UB-writing past the mbuf tail; the rejection reason
+  is documented inline.
+- **Centralised constants**: `kJumboMaxMss` is now the single source
+  of truth for the jumbo-frame MSS upper bound, replacing two
+  duplicated `9000 - 40` literals across `tcp.hpp` and `platform.hpp`.
+- **Secondary-process safety**: `create_secondary` now cross-checks
+  `nb_rx_queues` against the live NIC's reported queue count and
+  rejects mismatches before attempting `rte_mempool_lookup`, turning
+  a confusing late-stage attach failure into a clear early reject.
+- **Multicast docs**: documented the intentional busy-spin in
+  `multicast.hpp::rx_loop` (the only DPDK RX loop that intentionally
+  does not yield, called out explicitly so it is not "fixed" by a
+  well-meaning future maintainer).
+- **FlowRule audit**: documented `FlowRule::remove`'s audit-trail
+  contract in-source so callers know the removal is logged for
+  post-mortem analysis.
+
 ### Test verification
 - Rounds 1-14 verified with `xmake build -g tests` (0 errors, 0 new
   warnings beyond pre-existing transitive-include hints) and targeted
@@ -205,6 +256,11 @@ packet_core 30/30).
   adversarial, net_header — 476 test cases across 19 binaries, 0
   failures. DPDK-hardware-dependent runtime validation (NIC rebinding,
   e2e flows) deferred to the next real-hardware session.
+- Rounds 15-30 are doc-tightening / errno-mirroring on cold paths:
+  no hot-path inc_<M> / poll / rr_counter / send_batch logic touched,
+  so the hot-path 0/0 cost guarantee is preserved. Each commit was
+  re-verified against the same compile + targeted-test set; no
+  regressions introduced.
 
 ### Known issues
 - **ENA PMD cleanup SIGSEGV (AWS Graviton)**: primary's `~Platform`
