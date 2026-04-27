@@ -1447,7 +1447,13 @@ private:
             // a WS protocol violation would only WARN-log on every
             // subsequent poll forever instead of handing back to the
             // reconnect loop (batch2-round5 MED-1).
-            bool codec_err_latched = false;
+            bool        codec_err_latched = false;
+            // Captures the original codec error.detail (const char* into
+            // codec-owned static storage — no allocation) so the post-
+            // process_records_in_place ERROR log can report *which* codec
+            // violation forced the reset, rather than the bare "codec err
+            // latched". Errno-enrichment applied to the codec-error path.
+            const char* codec_err_detail = nullptr;
             auto dec_r = tls_.process_records_in_place(
                 const_cast<uint8_t*>(reasm_.read_ptr()),
                 reasm_.readable(),
@@ -1516,6 +1522,7 @@ private:
                                 dr.error().detail);
                             tls_codec_pending_.clear();
                             codec_err_latched = true;
+                            codec_err_detail  = dr.error().detail;
                             return;
                         }
                         if (!dr->has_value()) {
@@ -1579,7 +1586,8 @@ private:
                     // the reconnect policy can spin up a fresh one.
                     SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
                         "DpdkTcpStream::drain_codec_(TLS): codec err latched "
-                        "— forcing session reset");
+                        "({}) — forcing session reset",
+                        codec_err_detail ? codec_err_detail : "no detail");
                     tls_codec_pending_.clear();
                     reasm_overflowed_ = true;
                     sess_.reset();
