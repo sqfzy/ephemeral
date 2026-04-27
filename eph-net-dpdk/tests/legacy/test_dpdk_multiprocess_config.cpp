@@ -303,6 +303,50 @@ TEST(RrCounterRange, DistinctRangesDoNotCollide) {
     for (auto q : primary_qs) EXPECT_EQ(secondary_qs.count(q), 0u);
 }
 
+// ── rr_counter wrap-around ──────────────────────────────────────────────────
+//
+// `target_qid` is computed via `rr.fetch_add(1, relaxed) % range`. The
+// counter is u16 so it wraps at 65535→0 in production after enough
+// `create_and_attach` calls. The bound invariant `[lo, hi)` must hold
+// across the wrap; the only risk is mishandling u16 arithmetic.
+
+TEST(RrCounterRange, WrapAroundFromMaxU16PreservesBounds) {
+    // Seed rr at 65530 so we hit the wrap inside this loop.
+    std::atomic<uint16_t> rr{65530};
+    constexpr uint16_t lo = 4;
+    constexpr uint16_t range = 3;  // queues [4, 7)
+    bool saw_wrap = false;
+    uint16_t prev = rr.load();
+    for (uint16_t i = 0; i < 20; ++i) {
+        const uint16_t cur_pre = rr.load();
+        auto q = rr_step(rr, lo, range);
+        EXPECT_GE(q, lo);
+        EXPECT_LT(q, lo + range)
+            << "wrap broke the [lo, lo+range) invariant at iter=" << i
+            << " rr_pre=" << cur_pre;
+        const uint16_t cur_post = rr.load();
+        if (cur_post < prev) saw_wrap = true;
+        prev = cur_post;
+        (void)prev;
+    }
+    EXPECT_TRUE(saw_wrap)
+        << "test seed must have walked through 65535→0 wrap to be meaningful";
+}
+
+TEST(RrCounterRange, WrapAroundWithNonPowerOfTwoRange) {
+    // A range that doesn't divide 2^16 evenly slightly biases the
+    // distribution at the wrap, but every produced qid still falls in
+    // [lo, lo+range). 7 doesn't divide 65536; we just need the bound.
+    std::atomic<uint16_t> rr{65530};
+    constexpr uint16_t lo = 0;
+    constexpr uint16_t range = 7;
+    for (uint16_t i = 0; i < 30; ++i) {
+        auto q = rr_step(rr, lo, range);
+        EXPECT_GE(q, lo);
+        EXPECT_LT(q, lo + range);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform getters — type-level contract. The actual nullptr-safe branch
 // of `effective_rx_queue_range` is exercised whenever a moved-from Platform
