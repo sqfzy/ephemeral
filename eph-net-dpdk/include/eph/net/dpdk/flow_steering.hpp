@@ -725,8 +725,13 @@ find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
                         uint16_t port_range_start = 32768,
                         uint16_t port_range_end   = 60999) noexcept {
     if (port_range_start > port_range_end) {
-        return std::unexpected(
-            "find_src_port_for_queue: port_range_start > port_range_end");
+        // Surface the actual values so the caller sees what was rejected.
+        // Symmetric with the RssHashPredictExhausted message below which
+        // also reports the range — silent "wrong order" hurts CI bisection.
+        return std::unexpected(std::format(
+            "find_src_port_for_queue: inverted range "
+            "port_range_start={} > port_range_end={}",
+            port_range_start, port_range_end));
     }
     // Snapshot the NIC's RSS state ONCE (2 syscalls). The loop below is
     // pure CPU — Toeplitz hash + RETA lookup. Pre-refactor (commit 8b10661)
