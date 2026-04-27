@@ -227,7 +227,16 @@ struct PacketTemplate {
             return 0;
         }
 
-        const uint16_t total_len = kAllHeadersLen + payload_len;
+        // Mirror build_packet's overflow guard: kAllHeadersLen + payload_len
+        // can wrap a uint16_t when payload_len approaches UINT16_MAX (-54
+        // headroom). Without this, a wrapped total_len would let
+        // rte_pktmbuf_append succeed for a tiny size and the subsequent
+        // payload memcpy below would walk off the mbuf data buffer. Compute
+        // in uint32_t and reject anything past UINT16_MAX.
+        const uint32_t total_len32 = static_cast<uint32_t>(kAllHeadersLen)
+                                   + payload_len;
+        if (total_len32 > UINT16_MAX) [[unlikely]] return 0;
+        const uint16_t total_len = static_cast<uint16_t>(total_len32);
 
         // Reset mbuf data
         rte_pktmbuf_reset(mbuf);
