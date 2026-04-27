@@ -709,3 +709,119 @@ TEST(ValidateConfig, ValidPoolSizesAccepted) {
             << "pool_size=" << pool << " should be valid";
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validate_config — error MESSAGE specificity. The existing tests above
+// only assert truthiness ("rejected"); they don't pin the actionable
+// detail (per CLAUDE rules log messages must be actionable). These
+// tests pin the user-visible substring so a refactor that swaps two
+// branches doesn't silently produce a misleading error.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ValidateConfig, ZeroRxQueuesMessageMentionsField) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 0;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_rx_queues"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+TEST(ValidateConfig, ZeroTxQueuesMessageMentionsField) {
+    PlatformConfig cfg{};
+    cfg.nb_tx_queues = 0;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_tx_queues"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+TEST(ValidateConfig, ZeroRxDescMessageMentionsField) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_desc = 0;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_rx_desc"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+TEST(ValidateConfig, ZeroTxDescMessageMentionsField) {
+    PlatformConfig cfg{};
+    cfg.nb_tx_desc = 0;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_tx_desc"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+TEST(ValidateConfig, NegativeLinkTimeoutMessageMentionsField) {
+    PlatformConfig cfg{};
+    cfg.link_timeout_ms = -1;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("link_timeout_ms"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+TEST(ValidateConfig, BadPoolSizeMessageMentionsExamples) {
+    // Operators see this when they set mbuf_pool_size to a round
+    // number — the message needs to spell out the 2^n-1 pattern AND
+    // give canonical valid values so the fix is a one-token edit.
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size = 1024;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("mbuf_pool_size"), std::string_view::npos)
+        << "actual: " << err;
+    EXPECT_NE(err.find("2^n - 1"), std::string_view::npos)
+        << "actual: " << err;
+    // The example list is a strong actionability signal — pin one
+    // canonical value so "2^n-1" alone (without examples) regresses.
+    EXPECT_NE(err.find("4095"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+TEST(ValidateConfig, CacheExceedsPoolMessageNamesBothFields) {
+    PlatformConfig cfg{};
+    cfg.mbuf_pool_size  = 1023;
+    cfg.mbuf_cache_size = 1023;
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("mbuf_cache_size"), std::string_view::npos)
+        << "actual: " << err;
+    EXPECT_NE(err.find("mbuf_pool_size"), std::string_view::npos)
+        << "actual: " << err;
+}
+
+// ── First-error-wins ordering ─────────────────────────────────────────
+//
+// `validate_config` is a serial set of guards; setting two invalid
+// fields exposes which guard fires first. Pin the precedence so the
+// most fundamental violation surfaces first (zero queues → can't even
+// configure; pool/cache invariants are downstream).
+
+TEST(ValidateConfig, ZeroRxQueuesPrecedesBadPoolSize) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues   = 0;     // earlier guard
+    cfg.mbuf_pool_size = 1024;  // later guard, also bad
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_rx_queues"), std::string_view::npos)
+        << "actual: " << err;
+    EXPECT_EQ(err.find("mbuf_pool_size"), std::string_view::npos)
+        << "later-guard message must not bleed through: " << err;
+}
+
+TEST(ValidateConfig, RxQueueRangeRejectionPrecedenceOverInvertedRange) {
+    // Inverted range on top of valid sentinel-free coords: must
+    // surface the inversion message verbatim, not a downstream guard.
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues   = 4;
+    cfg.rx_queue_range = {3, 1};  // lo > hi, the guard at 407
+    auto err = validate_config(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_queue_range"), std::string_view::npos)
+        << "actual: " << err;
+    EXPECT_NE(err.find("lo must be < hi"), std::string_view::npos)
+        << "actual: " << err;
+}
