@@ -425,8 +425,13 @@ public:
     /// @brief Diagnostic counter — number of ICMP Type 3 Code 4 messages
     ///        that were parsed successfully and dispatched via the
     ///        registered callback.
+    ///
+    /// Atomic read with relaxed ordering: the counter is intended to be
+    /// scraped from a separate monitoring thread, so a non-atomic
+    /// read of a counter the lcore writes would be a C++ data race
+    /// (undefined behaviour) even if observably benign on x86/aarch64.
     [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept {
-        return icmp_frag_needed_dispatched_;
+        return icmp_frag_needed_dispatched_.load(std::memory_order_relaxed);
     }
 
     // ── Introspection (test hooks) ───────────────────────────────────────
@@ -438,7 +443,13 @@ public:
     /// @brief Number of packets dropped due to hash collision (hash matched
     ///        but full tuple compare failed). Non-zero values indicate either
     ///        extremely unlucky hash distribution or potential attack traffic.
-    [[nodiscard]] uint64_t hash_collision_drops() const noexcept { return hash_collision_drops_; }
+    ///
+    /// Atomic read with relaxed ordering — see `icmp_frag_needed_dispatched()`
+    /// for the rationale (cross-thread monitoring scrapes must not race
+    /// with the lcore's writes).
+    [[nodiscard]] uint64_t hash_collision_drops() const noexcept {
+        return hash_collision_drops_.load(std::memory_order_relaxed);
+    }
 
     // ── Source port selection (client-side helper) ───────────────────────
 
@@ -674,17 +685,22 @@ private:
             // Must be (power of two) - 1 so the bitmask test is equivalent
             // to `count % interval == 0`.
             static constexpr uint64_t kHashCollisionLogMask = 0x3ffULL;  // 1 / 1024
-            if (hash_collision_drops_ == 0 ||
-                (hash_collision_drops_ & kHashCollisionLogMask) == 0) {
+            // Relaxed-load the current value once — the lcore is the only
+            // writer, so a torn read is impossible on platforms where 64-bit
+            // loads are atomic, and we'd accept a stale value in the unlikely
+            // race anyway (logging is best-effort).
+            const uint64_t cur =
+                hash_collision_drops_.load(std::memory_order_relaxed);
+            if (cur == 0 || (cur & kHashCollisionLogMask) == 0) {
                 SPDLOG_LOGGER_WARN(detail::poller_logger(),
                     "DpdkPoller::lookup_by_5tuple_: hash collision drop #{} "
                     "(pkt_hash=0x{:08x} proto={} src=0x{:08x}:{} dst=0x{:08x}:{}); "
                     "cumulative count via hash_collision_drops()",
-                    hash_collision_drops_ + 1,
+                    cur + 1,
                     pkt_hash, pkt_proto, pkt_src_ip, pkt_src_port,
                     pkt_dst_ip, pkt_dst_port);
             }
-            ++hash_collision_drops_;
+            hash_collision_drops_.fetch_add(1, std::memory_order_relaxed);
         }
         return nullptr;
     }
@@ -708,13 +724,16 @@ private:
             return;
         }
         icmp_cb_(parsed);
-        ++icmp_frag_needed_dispatched_;
+        icmp_frag_needed_dispatched_.fetch_add(1, std::memory_order_relaxed);
     }
 
     PollerConfig                       cfg_{};
     std::array<PollableEntry, kMaxConn> entries_{};
     std::size_t                         n_entries_{0};
-    uint64_t                            hash_collision_drops_{0};
+    // Diagnostic counters — atomic to allow safe cross-thread scrape from
+    // a monitoring thread while the lcore is in poll(). The lcore is
+    // still the only writer, so contention is a non-issue.
+    std::atomic<uint64_t>               hash_collision_drops_{0};
 
     // ── ICMP Frag Needed callback state ──
     //
@@ -737,7 +756,7 @@ private:
     // DpdkTcpStream::create_and_attach), which is what gives the
     // registry lifetime independence from Platform.
     IcmpFragNeededCallback              icmp_cb_{};
-    uint64_t                            icmp_frag_needed_dispatched_{0};
+    std::atomic<uint64_t>               icmp_frag_needed_dispatched_{0};
 };
 
 // ---------------------------------------------------------------------------
