@@ -1080,7 +1080,14 @@ public:
             pool_, config_.src_mac, config_.tuple.src_ip,
             arp_refresh_gateway_ip_);
         if (!req) {
-            SPDLOG_LOGGER_WARN(log, "ARP refresh: mbuf alloc failed");
+            // Pool exhaustion is the dominant cause; surface gateway +
+            // port so the operator can correlate with which TX queue is
+            // back-pressured. rte_errno is not reliably set by
+            // rte_pktmbuf_alloc, so we omit it.
+            SPDLOG_LOGGER_WARN(log,
+                "ARP refresh: mbuf alloc failed gateway={} port={} queue={}",
+                net::format_ipv4(arp_refresh_gateway_ip_).data(),
+                config_.port_id, config_.tx_queue_id);
             // Retry next interval
             arp_next_refresh_ = now + arp_refresh_interval_;
             return;
@@ -1090,7 +1097,14 @@ public:
             config_.port_id, config_.tx_queue_id, &req, 1);
         if (sent != 1) {
             rte_pktmbuf_free(req);
-            SPDLOG_LOGGER_WARN(log, "ARP refresh: tx_burst failed");
+            // sent=0 is valid back-pressure (TX ring full); not strictly
+            // an error but the refresh did not go out, so log enough
+            // context to spot a stuck queue from the noise.
+            SPDLOG_LOGGER_WARN(log,
+                "ARP refresh: tx_burst sent={}/1 gateway={} port={} queue={}",
+                sent,
+                net::format_ipv4(arp_refresh_gateway_ip_).data(),
+                config_.port_id, config_.tx_queue_id);
         } else {
             SPDLOG_LOGGER_DEBUG(log, "ARP refresh sent for gateway {}",
                 net::format_ipv4(arp_refresh_gateway_ip_).data());
