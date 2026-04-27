@@ -488,6 +488,16 @@ inline constexpr uint16_t kEphemeralPortMin   = 49152;
 inline constexpr uint16_t kEphemeralPortRange = 16384; // 65536 - 49152, must be 2^n
 /// @}
 
+// Anchor the "power of 2" invariant at the constant's definition site so a
+// future edit (e.g. shifting kEphemeralPortMin) fails the build immediately
+// — not at the dns.hpp `random_ephemeral_port` callsite where the modulo
+// distribution would silently bias.
+static_assert((kEphemeralPortRange & (kEphemeralPortRange - 1)) == 0,
+              "kEphemeralPortRange must be a power of 2 for unbiased modulo");
+static_assert(static_cast<uint32_t>(kEphemeralPortMin) +
+                  static_cast<uint32_t>(kEphemeralPortRange) == 65536u,
+              "kEphemeralPortMin + kEphemeralPortRange must cover [49152, 65536)");
+
 } // namespace eph::dpdk::net
 
 
