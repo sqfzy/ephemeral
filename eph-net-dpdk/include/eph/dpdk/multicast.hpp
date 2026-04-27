@@ -391,6 +391,12 @@ public:
         entry.active    = true;
         entry.rx_packets = 0;
 
+        // Capture pre-state so a NIC-level failure can roll the high-water
+        // mark back. Without this, a failed join would leave group_count_
+        // pointing past an inactive slot, so `group_count()` over-reports
+        // and the next free-slot scan still finds the stale slot — correct
+        // by accident but observably wrong to operators.
+        const size_t prev_group_count = group_count_;
         if (idx >= group_count_) {
             group_count_ = idx + 1;
         }
@@ -398,8 +404,11 @@ public:
         // Apply the updated multicast MAC list to the NIC
         auto result = apply_mc_addr_list();
         if (!result) {
-            // Rollback
+            // Rollback both the active flag and (if we extended it) the
+            // total group_count_ — keep `group_count()` an honest count of
+            // observed slots.
             entry.active = false;
+            group_count_ = prev_group_count;
             return std::unexpected(result.error());
         }
 
