@@ -621,8 +621,14 @@ query_rss_state(uint16_t port_id) noexcept {
     // does) leaves un-touched slots at queue 0, which is a sane
     // fallback rather than reading uninitialized garbage.
     rte_eth_dev_info dev_info{};
-    if (rte_eth_dev_info_get(port_id, &dev_info) != 0) {
-        return std::unexpected("rte_eth_dev_info_get failed");
+    if (int rc = rte_eth_dev_info_get(port_id, &dev_info); rc != 0) {
+        // rc is the negated errno (DPDK convention); rte_errno mirrors
+        // it but some PMDs only set one path. Surface both so the
+        // caller's std::unexpected detail is actionable.
+        const int err = rte_errno;
+        return std::unexpected(std::format(
+            "rte_eth_dev_info_get failed: port={} rc={} rte_errno={} ({})",
+            port_id, rc, err, rte_strerror(err)));
     }
     state.reta_size = dev_info.reta_size;
     if (state.reta_size == 0) state.reta_size = 128;
@@ -630,8 +636,12 @@ query_rss_state(uint16_t port_id) noexcept {
                                static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
     const uint16_t groups = state.reta_size / RTE_ETH_RETA_GROUP_SIZE;
     for (uint16_t i = 0; i < groups; ++i) state.reta[i].mask = ~uint64_t(0);
-    if (rte_eth_dev_rss_reta_query(port_id, state.reta, state.reta_size) != 0) {
-        return std::unexpected("rte_eth_dev_rss_reta_query failed");
+    if (int rc = rte_eth_dev_rss_reta_query(port_id, state.reta, state.reta_size); rc != 0) {
+        const int err = rte_errno;
+        return std::unexpected(std::format(
+            "rte_eth_dev_rss_reta_query failed: port={} reta_size={} "
+            "rc={} rte_errno={} ({})",
+            port_id, state.reta_size, rc, err, rte_strerror(err)));
     }
     return state;
 }
