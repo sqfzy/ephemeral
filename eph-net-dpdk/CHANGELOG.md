@@ -10,6 +10,36 @@ full test build, and non-hardware-dependent tests pass (DpdkTcpStream
 TLS handshake 2/2, ARP 23/23, DNS 61/61 + 24/24 adversarial,
 packet_core 30/30).
 
+### Fixed — TCP keepalive treats stuck NIC as dead peer (2026-04-27)
+- `TcpSession::tick_keepalive` previously incremented `keepalive_misses_`
+  only when the probe successfully reached the wire. If the probe could
+  not be transmitted (`rte_pktmbuf_alloc` returned null, `rte_eth_tx_burst`
+  returned 0 — i.e. mempool exhausted, TX ring saturated, link bounced),
+  the miss counter never advanced. Combined with the rate-limit guard
+  (one probe-attempt per interval), this caused the connection to silently
+  loop forever with neither liveness probes nor a Closed transition,
+  blocking the application's natural reconnect path. The previous
+  test-suite annotation in `Keepalive,MaxUnansweredProbesDeclareClosed`
+  acknowledged this gap explicitly.
+- Each `tick_keepalive` call now consumes a "miss slot" regardless of TX
+  outcome — the same `keepalive_probes` threshold that closes a silent
+  peer also closes a stuck NIC. Both are equally unrecoverable in place.
+- New `Stats::keepalive_send_failures` counter records the cause split:
+  disjoint from `keepalive_probes_sent` so each tick increments exactly
+  one. Both fields are now surfaced in `Stats::dump()` and `to_json()`
+  for monitoring integration.
+- The send-failure path also emits a WARN log with src/dst, current miss
+  count, and probe budget so operators see a stuck NIC immediately
+  rather than inferring it from an unexplained drop.
+- Tests: replaced the placeholder Keepalive test (the original author
+  had documented why pool=nullptr couldn't drive the dead-close path)
+  with a focused `Keepalive,SendFailureStillAdvancesMissCounterAndClosesConnection`
+  case that asserts `keepalive_probes` failed allocs → `state_=Closed`.
+  Extended `TcpStats.{Dump,ToJson}IncludesTelemetryFields` to assert the
+  new fields are visible. test_tcp 64/64, test_tcp_state_machine 40/40,
+  test_tcp_close_reset 14/14, test_dpdk_tcp_stream 32/32,
+  test_dpdk_fault_tolerance 10/10.
+
 ### Added — single-NIC multi-process (primary+secondary)
 - **Platform**: `eph::dpdk::ProcType { Primary, Secondary }` +
   `PlatformConfig::proc_type / file_prefix / rx_queue_range` fields.

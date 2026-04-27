@@ -1470,10 +1470,18 @@ public:
     ///   * If (now - last_rx_tsc_) < interval → no-op.
     ///   * Else, if we've already emitted a probe inside this interval
     ///     window, do not probe again (rate-limited to one per window).
-    ///   * Else, if we've burned through `keepalive_probes` un-answered
-    ///     probes → declare the connection dead (state_ = Closed).
-    ///   * Else → emit a probe, increment `keepalive_misses_` and the
-    ///     `keepalive_probes_sent` stat.
+    ///   * Else, if we've already burned through `keepalive_probes`
+    ///     unanswered probes (whether the probes actually went on the
+    ///     wire or not) → declare the connection dead (state_ = Closed).
+    ///   * Else → attempt a probe and consume one miss slot:
+    ///     `keepalive_misses_` advances unconditionally, while exactly
+    ///     one of `keepalive_probes_sent` (probe placed on wire) or
+    ///     `keepalive_send_failures` (mbuf alloc / tx_burst failed)
+    ///     advances. Counting send-failures into the miss slot is
+    ///     deliberate: a NIC stuck on TX is just as terminal as a peer
+    ///     that has gone silent — both are unrecoverable in place, and
+    ///     declaring the connection dead at the same threshold lets
+    ///     the application reconnect rather than spin forever.
     ///
     /// An incoming packet (any TCP segment matching our 4-tuple)
     /// resets `keepalive_misses_` back to 0 via process_rx().
