@@ -767,6 +767,16 @@ public:
     [[nodiscard]] uint16_t port_id() const noexcept { return impl_->port_id(); }
     [[nodiscard]] uint16_t rx_queue_id() const noexcept { return impl_->rx_queue_id(); }
 
+    /// @brief Forwards to `DpdkPoller<void>::hash_collision_drops()` —
+    ///        the diagnostic counter for routing-table hash collisions.
+    ///        Previously omitted from this primary template; users of
+    ///        the typed form (`DpdkPoller<MyStream>`) had no way to
+    ///        observe collision pressure that the void specialization
+    ///        already exposed.
+    [[nodiscard]] uint64_t hash_collision_drops() const noexcept {
+        return impl_->hash_collision_drops();
+    }
+
     [[nodiscard]] std::expected<uint16_t, core::ErrorInfo>
     pick_src_port(uint32_t src_ip, uint32_t dst_ip, uint16_t dst_port,
                   uint16_t range_begin = 32768,
