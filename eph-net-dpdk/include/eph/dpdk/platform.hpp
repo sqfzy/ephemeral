@@ -1229,18 +1229,18 @@ Platform::create(const PlatformConfig& config) {
                     // that bug undetected. Caller's recovery path: set
                     // nb_rx_queues=1 in PlatformConfig.
                     SPDLOG_LOGGER_ERROR(log,
-                        "Platform: RETA collapse failed (ret={}) on PMD "
+                        "Platform: RETA collapse failed (ret={}, {}) on PMD "
                         "that doesn't support rss_reta_update; "
                         "single-Poller would drop non-zero-queue packets. "
                         "Refusing to bring up multi-queue port. "
                         "Workaround: set nb_rx_queues=1 in PlatformConfig.",
-                        rc);
+                        rc, rte_strerror(-rc));
                     return std::unexpected(std::format(
-                        "RETA collapse failed (ret={}); refusing to start "
+                        "RETA collapse failed (ret={}, {}); refusing to start "
                         "Platform with nb_rx_queues={} on PMD that supports "
                         "neither rss_hash_update nor rss_reta_update. Set "
                         "PlatformConfig::nb_rx_queues=1 to recover.",
-                        rc, impl->config.nb_rx_queues));
+                        rc, rte_strerror(-rc), impl->config.nb_rx_queues));
                 }
             }
         }
