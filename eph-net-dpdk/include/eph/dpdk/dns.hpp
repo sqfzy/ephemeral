@@ -644,8 +644,20 @@ resolve(uint16_t port_id,
                 cfg.nameserver_ip, src_port, cfg.port,
                 dns_buf, dns_len);
             if (!pkt) {
-                SPDLOG_LOGGER_ERROR(log, "DNS resolve: mbuf allocation failed");
-                return std::unexpected("DNS resolve: mbuf allocation failed");
+                // Symmetric with the tx_burst WARN below — surface
+                // hostname + port + queue + attempt so a single log
+                // line tells the operator which DNS query died and
+                // where. mbuf alloc failure is usually pool exhaustion;
+                // the lookup terminates rather than retrying because
+                // the pool will not refill mid-loop.
+                SPDLOG_LOGGER_ERROR(log,
+                    "DNS resolve: mbuf allocation failed (hostname='{}' "
+                    "port={} queue={} query_attempt={})",
+                    hostname, port_id, queue_id, requests_sent + 1);
+                return std::unexpected(std::format(
+                    "DNS resolve: mbuf allocation failed for hostname='{}' "
+                    "(port={} queue={} attempt={})",
+                    hostname, port_id, queue_id, requests_sent + 1));
             }
 
             uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &pkt, 1);
