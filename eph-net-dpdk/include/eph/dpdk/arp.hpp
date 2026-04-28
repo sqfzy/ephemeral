@@ -240,40 +240,54 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
     return result;
 }
 
-/// Resolve an IPv4 address to a MAC address via ARP.
+// ─────────────────────────────────────────────────────────────────────────────
+// NIC IO shim — see dns.hpp::RealNicIo for the rationale. Pulling the
+// PMD calls behind a static-method facade lets tests substitute a
+// `FakeNicIo` recorder while production code remains a single call
+// instruction (the compiler inlines the static through). Pure
+// pass-through, zero overhead. `noexcept` is genuine — DPDK PMD
+// burst calls are documented `noexcept`.
+// ─────────────────────────────────────────────────────────────────────────────
+struct RealNicIoArp {
+    [[nodiscard]] static uint16_t tx_burst(uint16_t port_id, uint16_t queue_id,
+                                            rte_mbuf** pkts, uint16_t n) noexcept {
+        return ::rte_eth_tx_burst(port_id, queue_id, pkts, n);
+    }
+    [[nodiscard]] static uint16_t rx_burst(uint16_t port_id, uint16_t queue_id,
+                                            rte_mbuf** pkts, uint16_t n) noexcept {
+        return ::rte_eth_rx_burst(port_id, queue_id, pkts, n);
+    }
+};
+
+/// @brief Templated ARP resolver — the testable workhorse.
 ///
-/// Sends an ARP request as Ethernet broadcast and busy-polls for the reply.
-/// Retries the ARP request up to 3 times within the timeout period.
+/// Identical algorithm and observability to `resolve()`; the only
+/// difference is that NIC I/O is dispatched through the `Io` template
+/// parameter. The default `RealNicIoArp` calls the PMD directly so
+/// production callers see no behavioural change. Unit tests substitute
+/// a `FakeNicIo` shim that records sends and synthesises crafted
+/// replies — see `tests/test_arp_resolve.cpp`.
 ///
-/// Must be called BEFORE TCP connection establishment — this function will
-/// discard any non-ARP packets received during the poll.
+/// This split exists *only* for testability; the inner loop is the same
+/// state machine the original `resolve()` had (send / retry-on-deadline
+/// / RX-poll / parse-and-match / timeout). Behaviour is byte-for-byte
+/// identical to `resolve()` in production builds: GCC inlines through
+/// the static `Io::tx_burst` / `Io::rx_burst` calls so the generated
+/// instructions are unchanged.
 ///
-/// @note Pass `expected_mac` to enable anti-spoof: replies from any MAC
-///       other than the configured gateway MAC are rejected. In HFT colo
-///       deployments the gateway MAC is static and known in advance —
-///       always pass it. When `expected_mac == nullopt` the first reply
-///       with a matching sender IP wins (legacy behaviour).
-///
-/// @param port_id       DPDK port to send/receive on
-/// @param queue_id      TX/RX queue to use (default 0)
-/// @param pool          Mempool for mbuf allocation
-/// @param src_mac       Our NIC's MAC address
-/// @param src_ip        Our IPv4 address (host byte order)
-/// @param target_ip     IPv4 address to resolve (host byte order)
-/// @param timeout       Maximum wait time (default 1s)
-/// @param expected_mac  If set, reject replies whose sender MAC differs
-///                      (see `parse_arp_reply` doc). `nullopt` = legacy
-///                      behaviour (accept any sender MAC for target_ip).
-/// @return Resolved MAC address, or error string on timeout/failure
+/// @tparam Io   NIC IO shim. Default `RealNicIoArp`. Must expose static
+///              `tx_burst(port, queue, mbuf**, n) -> uint16_t` and
+///              `rx_burst(port, queue, mbuf**, n) -> uint16_t`.
+template <class Io = RealNicIoArp>
 [[nodiscard]] inline std::expected<rte_ether_addr, std::string>
-resolve(uint16_t port_id,
-        uint16_t queue_id,
-        rte_mempool* pool,
-        const rte_ether_addr& src_mac,
-        uint32_t src_ip,
-        uint32_t target_ip,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000},
-        std::optional<rte_ether_addr> expected_mac = std::nullopt) {
+resolve_with_io(uint16_t port_id,
+                uint16_t queue_id,
+                rte_mempool* pool,
+                const rte_ether_addr& src_mac,
+                uint32_t src_ip,
+                uint32_t target_ip,
+                std::chrono::milliseconds timeout = std::chrono::milliseconds{1000},
+                std::optional<rte_ether_addr> expected_mac = std::nullopt) {
 
     [[maybe_unused]] auto log = detail::arp_logger();
 
@@ -323,7 +337,7 @@ resolve(uint16_t port_id,
                     port_id, queue_id, requests_sent + 1));
             }
 
-            uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &req, 1);
+            uint16_t sent = Io::tx_burst(port_id, queue_id, &req, 1);
             if (sent != 1) {
                 rte_pktmbuf_free(req);
                 SPDLOG_LOGGER_WARN(log,
@@ -352,8 +366,8 @@ resolve(uint16_t port_id,
 
         // Poll for ARP reply
         rte_mbuf* pkts[kArpResolveBurstSize];
-        uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts,
-                                           kArpResolveBurstSize);
+        uint16_t nb_rx = Io::rx_burst(port_id, queue_id, pkts,
+                                       kArpResolveBurstSize);
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto mac = parse_arp_reply(pkts[i], target_ip, expected_mac);
@@ -383,6 +397,49 @@ resolve(uint16_t port_id,
     return std::unexpected(std::format(
         "ARP resolve timeout: {} not resolved after {}ms",
         net::format_ipv4(target_ip).data(), timeout.count()));
+}
+
+/// Resolve an IPv4 address to a MAC address via ARP.
+///
+/// Sends an ARP request as Ethernet broadcast and busy-polls for the reply.
+/// Retries the ARP request up to 3 times within the timeout period.
+///
+/// Must be called BEFORE TCP connection establishment — this function will
+/// discard any non-ARP packets received during the poll.
+///
+/// @note Pass `expected_mac` to enable anti-spoof: replies from any MAC
+///       other than the configured gateway MAC are rejected. In HFT colo
+///       deployments the gateway MAC is static and known in advance —
+///       always pass it. When `expected_mac == nullopt` the first reply
+///       with a matching sender IP wins (legacy behaviour).
+///
+/// @param port_id       DPDK port to send/receive on
+/// @param queue_id      TX/RX queue to use (default 0)
+/// @param pool          Mempool for mbuf allocation
+/// @param src_mac       Our NIC's MAC address
+/// @param src_ip        Our IPv4 address (host byte order)
+/// @param target_ip     IPv4 address to resolve (host byte order)
+/// @param timeout       Maximum wait time (default 1s)
+/// @param expected_mac  If set, reject replies whose sender MAC differs
+///                      (see `parse_arp_reply` doc). `nullopt` = legacy
+///                      behaviour (accept any sender MAC for target_ip).
+/// @return Resolved MAC address, or error string on timeout/failure
+///
+/// @note Thin wrapper around `resolve_with_io<RealNicIoArp>`. The split
+///       exists for testability; production callers should keep using
+///       this overload.
+[[nodiscard]] inline std::expected<rte_ether_addr, std::string>
+resolve(uint16_t port_id,
+        uint16_t queue_id,
+        rte_mempool* pool,
+        const rte_ether_addr& src_mac,
+        uint32_t src_ip,
+        uint32_t target_ip,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{1000},
+        std::optional<rte_ether_addr> expected_mac = std::nullopt) {
+    return resolve_with_io<RealNicIoArp>(
+        port_id, queue_id, pool, src_mac, src_ip, target_ip,
+        timeout, expected_mac);
 }
 
 } // namespace eph::dpdk::arp
