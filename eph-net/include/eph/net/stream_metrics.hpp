@@ -223,6 +223,23 @@ enum class StreamMetric : std::size_t {
     /// fragments before userspace sees them).
     kFragmentRejected,
 
+    /// WebSocket only: total bytes of *compressed* payload fed into the
+    /// permessage-deflate inflater (RFC 7692). Counts the on-wire size
+    /// of every RSV1=1 data frame after handshake negotiation succeeded.
+    /// Stays at 0 for non-WS streams and for WS streams where deflate
+    /// was not negotiated. Pair with `kWsDeflateBytesOut` to compute
+    /// the savings ratio (`out / in`) over a window — useful for
+    /// confirming a venue is actually compressing the stream as expected.
+    kWsDeflateBytesIn,
+
+    /// WebSocket only: total bytes of *plaintext* (post-inflate) payload
+    /// produced by the permessage-deflate inflater. Counts the bytes the
+    /// downstream codec/application sees, which is what dashboards usually
+    /// care about for "throughput" measurements. Ratio
+    /// `kWsDeflateBytesOut / kWsDeflateBytesIn` is the achieved
+    /// compression factor (typically 4-10x on JSON market data).
+    kWsDeflateBytesOut,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -253,6 +270,8 @@ kStreamMetricNames = {
     "net.stream.rx.l4_checksum_bad",
     "net.stream.rx.packets_dropped",
     "net.stream.rx.fragment_rejected",
+    "net.stream.ws.deflate_bytes_in",
+    "net.stream.ws.deflate_bytes_out",
 };
 
 static_assert(kStreamMetricNames.size() ==

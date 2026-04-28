@@ -498,3 +498,161 @@ TEST(WsHandshake, ServerExtensionsRejectedEvenUnknown) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::WsHandshakeFailed);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// 13. permessage-deflate (RFC 7692) negotiation
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+struct DeflateSink : FakeByteSink {
+    std::string ext_response;
+    std::expected<size_t, ErrorInfo>
+    send(std::span<const uint8_t> data) noexcept {
+        auto r = FakeByteSink::send(data);
+        if (rx_script.empty()) {
+            rx_script = make_response(
+                ws_compute_accept(extract_sent_key(tx)),
+                "websocket", "Upgrade", 101,
+                "Switching Protocols",
+                ext_response.empty() ? std::string_view{}
+                                      : std::string_view{ext_response});
+        }
+        return r;
+    }
+};
+
+} // namespace
+
+TEST(WsHandshake, PermessageDeflateRequestInjectsHeader) {
+    // Server omits the Extensions header — handshake succeeds, deflate
+    // not negotiated, but the request must still have included our
+    // auto-injected offer.
+    DeflateSink sink;
+    sink.ext_response = "";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_FALSE(state.negotiated);
+    std::string sent(reinterpret_cast<const char*>(sink.tx.data()),
+                      sink.tx.size());
+    EXPECT_NE(sent.find("Sec-WebSocket-Extensions: permessage-deflate"),
+              std::string::npos)
+        << "request did not include the auto-injected header. Sent:\n"
+        << sent;
+}
+
+TEST(WsHandshake, PermessageDeflateAccepted) {
+    DeflateSink sink;
+    sink.ext_response = "permessage-deflate";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_TRUE(state.negotiated);
+    EXPECT_FALSE(state.server_no_context_takeover);
+}
+
+TEST(WsHandshake, PermessageDeflateAcceptedWithNoCtxTakeover) {
+    DeflateSink sink;
+    sink.ext_response = "permessage-deflate; server_no_context_takeover";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_TRUE(state.negotiated);
+    EXPECT_TRUE(state.server_no_context_takeover);
+}
+
+TEST(WsHandshake, PermessageDeflateClientNoCtxTakeoverAccepted) {
+    // Server adding `client_no_context_takeover` is informational on
+    // our side (we never deflate outbound). Accept silently.
+    DeflateSink sink;
+    sink.ext_response = "permessage-deflate; client_no_context_takeover";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_TRUE(state.negotiated);
+}
+
+TEST(WsHandshake, PermessageDeflateServerMaxBitsNon15Rejected) {
+    // server_max_window_bits=10 means the server wants a smaller LZ77
+    // window than zlib's -MAX_WBITS (=15) inflater is configured for.
+    // Conservative path: fail-closed.
+    DeflateSink sink;
+    sink.ext_response = "permessage-deflate; server_max_window_bits=10";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::WsHandshakeFailed);
+    EXPECT_FALSE(state.negotiated);
+}
+
+TEST(WsHandshake, PermessageDeflateUnknownParamRejected) {
+    DeflateSink sink;
+    sink.ext_response = "permessage-deflate; some_future_param=42";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::WsHandshakeFailed);
+}
+
+TEST(WsHandshake, PermessageDeflateOtherExtensionRejected) {
+    DeflateSink sink;
+    sink.ext_response = "x-webkit-deflate-frame";
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(sink, "h", "/ws", {},
+                                  std::chrono::seconds{1},
+                                  nullptr, &state);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::WsHandshakeFailed);
+}
+
+TEST(WsHandshake, PermessageDeflateUserSuppliedHeaderNotDuplicated) {
+    // Caller already supplied a Sec-WebSocket-Extensions header — the
+    // helper must NOT inject a second one. Per RFC 7230 §3.2.2 a
+    // duplicate Sec-WebSocket-Extensions on the request side is a
+    // foot-gun that's much easier to avoid here than at the receiver.
+    DeflateSink sink;
+    sink.ext_response = "permessage-deflate";
+    HttpHeader user_hdrs[] = {
+        {"Sec-WebSocket-Extensions",
+         "permessage-deflate; client_max_window_bits=15"},
+    };
+    eph::net::detail::WsHandshakeDeflate state{};
+    state.request = true;
+    auto r = perform_ws_handshake(
+        sink, "h", "/ws",
+        std::span<const HttpHeader>{user_hdrs, 1},
+        std::chrono::seconds{1}, nullptr, &state);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_TRUE(state.negotiated);
+    std::string sent(reinterpret_cast<const char*>(sink.tx.data()),
+                      sink.tx.size());
+    size_t count = 0;
+    size_t pos   = 0;
+    while ((pos = sent.find("Sec-WebSocket-Extensions:", pos))
+           != std::string::npos) {
+        ++count;
+        ++pos;
+    }
+    EXPECT_EQ(count, 1u) << "request emitted multiple "
+                            "Sec-WebSocket-Extensions headers:\n" << sent;
+}

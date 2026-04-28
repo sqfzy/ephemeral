@@ -245,6 +245,138 @@ ws_connection_has_upgrade(std::string_view value) noexcept {
 }
 
 // ---------------------------------------------------------------------------
+// permessage-deflate (RFC 7692) negotiation helpers
+// ---------------------------------------------------------------------------
+
+/// @brief Per-handshake permessage-deflate state, both input (what to
+///        request) and output (what was negotiated).
+///
+/// Lives outside `StreamConfig` so the handshake helper can be tested
+/// against fake byte sinks without dragging the backend config types in.
+/// The TcpStream factories materialise an instance, set the input
+/// fields from the user's `StreamConfig`, run `perform_ws_handshake`,
+/// then read the output fields to drive the codec hookup.
+struct WsHandshakeDeflate {
+    /// Input: if true, the handshake injects
+    /// `Sec-WebSocket-Extensions: permessage-deflate` (with no
+    /// non-default parameters — RFC 7692 §7 default
+    /// `client_max_window_bits` is 15) into the request. Caller-supplied
+    /// `extra_headers` already carrying the same name take precedence;
+    /// the helper does not duplicate.
+    bool request{false};
+
+    /// Output: server confirmed the extension. Only set when `request`
+    /// was true AND the server's `Sec-WebSocket-Extensions` response
+    /// matched a parameter set we know how to handle. If the server
+    /// included unknown parameters or a different extension, the field
+    /// stays false and the handshake itself errors out
+    /// (`WsHandshakeFailed`) — fail-closed is the conservative
+    /// interpretation of "we cannot honour the extension contract".
+    bool negotiated{false};
+
+    /// Output: server told us via `server_no_context_takeover` that it
+    /// would NOT preserve its LZ77 window across messages. Only
+    /// meaningful when `negotiated=true`.
+    bool server_no_context_takeover{false};
+};
+
+/// @brief Parse one comma-delimited extension token from a
+///        `Sec-WebSocket-Extensions` header value and update `state`
+///        if it matches `permessage-deflate`.
+///
+/// Recognised parameters (RFC 7692 §7.1):
+///   * `server_no_context_takeover`               — sets state.server_no_context_takeover
+///   * `client_no_context_takeover`               — accepted, no state change
+///                                                  (we never preserve client context
+///                                                  since we don't deflate outbound)
+///   * `server_max_window_bits` (= 15)            — accepted iff equals 15 (default).
+///                                                  Other values mean the server wants
+///                                                  a smaller window than zlib's
+///                                                  `-MAX_WBITS` (=15) inflater is
+///                                                  configured for; rather than
+///                                                  reinitialise we conservatively
+///                                                  reject.
+///   * `client_max_window_bits` (= 15)            — same constraint.
+///
+/// Any unknown parameter fails-closed: the function returns false so
+/// the caller can reject the whole handshake. This is deliberate — a
+/// silent "extension partly supported" mode would silently corrupt
+/// data when the wire format we don't understand kicks in.
+[[nodiscard]] inline bool
+ws_parse_permessage_deflate_token(std::string_view              tok,
+                                  WsHandshakeDeflate&           state) noexcept {
+    // Strip leading/trailing OWS.
+    auto trim = [](std::string_view s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+        while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.remove_suffix(1);
+        return s;
+    };
+    tok = trim(tok);
+    if (tok.empty()) return false;
+
+    // Split off the extension name (up to the first ';').
+    const size_t sc = tok.find(';');
+    std::string_view name = trim(tok.substr(0, sc));
+    if (!iequal(name, "permessage-deflate")) {
+        return false;
+    }
+
+    state.negotiated = true;
+
+    if (sc == std::string_view::npos) {
+        // No parameters; defaults everywhere.
+        return true;
+    }
+
+    // Walk the remaining ';'-delimited params.
+    std::string_view rest = tok.substr(sc + 1);
+    while (!rest.empty()) {
+        const size_t next = rest.find(';');
+        std::string_view param = trim(rest.substr(0, next));
+        rest = (next == std::string_view::npos)
+                   ? std::string_view{}
+                   : rest.substr(next + 1);
+        if (param.empty()) continue;
+
+        const size_t eq = param.find('=');
+        std::string_view pname  = trim(param.substr(0, eq));
+        std::string_view pvalue = (eq == std::string_view::npos)
+                                      ? std::string_view{}
+                                      : trim(param.substr(eq + 1));
+        // Strip surrounding quotes per RFC 7230 quoted-string form.
+        if (pvalue.size() >= 2 && pvalue.front() == '"' && pvalue.back() == '"') {
+            pvalue = pvalue.substr(1, pvalue.size() - 2);
+        }
+
+        if (iequal(pname, "server_no_context_takeover")) {
+            // No value expected per RFC 7692.
+            state.server_no_context_takeover = true;
+        } else if (iequal(pname, "client_no_context_takeover")) {
+            // We don't deflate outbound, so this is informational —
+            // we never had context to take over. Accept silently.
+        } else if (iequal(pname, "server_max_window_bits") ||
+                   iequal(pname, "client_max_window_bits")) {
+            // We hard-code 15 (zlib's -MAX_WBITS) at inflater init.
+            // Anything else needs re-init we don't bother with — fail
+            // closed and let the user disable deflate via config.
+            if (pvalue != "15") {
+                SPDLOG_WARN(
+                    "ws_handshake: server set {}={} (we only support 15)",
+                    pname, pvalue);
+                state.negotiated = false;
+                return false;
+            }
+        } else {
+            SPDLOG_WARN("ws_handshake: unknown permessage-deflate "
+                        "parameter '{}'", pname);
+            state.negotiated = false;
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // perform_ws_handshake
 // ---------------------------------------------------------------------------
 
@@ -274,11 +406,14 @@ perform_ws_handshake(
     std::string_view                ws_path,
     std::span<const HttpHeader>     extra_headers = {},
     std::chrono::milliseconds       timeout       = std::chrono::seconds{10},
-    std::vector<uint8_t>*           leftover      = nullptr) noexcept
+    std::vector<uint8_t>*           leftover      = nullptr,
+    WsHandshakeDeflate*             deflate       = nullptr) noexcept
 {
-    SPDLOG_DEBUG("ws_handshake: begin host='{}' path='{}' extras={} timeout={}ms",
+    SPDLOG_DEBUG("ws_handshake: begin host='{}' path='{}' extras={} timeout={}ms "
+                 "deflate_request={}",
                  host, ws_path,
-                 extra_headers.size(), timeout.count());
+                 extra_headers.size(), timeout.count(),
+                 deflate && deflate->request);
 
     // ── 0. Reject extra headers that collide with RFC 6455 mandatory
     //       names. A caller that passes `{"Upgrade", "h2c"}` or a second
@@ -330,9 +465,26 @@ perform_ws_handshake(
     // We pre-declare a small-vector-ish array on the stack and copy in
     // the mandatory + extra headers. 5 + extras <= kMaxHeaderCount (64).
     constexpr size_t kBaseHdrs = 5;
-    if (extra_headers.size() > kMaxHeaderCount - kBaseHdrs) {
-        SPDLOG_WARN("ws_handshake: too many extra headers: {}",
-                    extra_headers.size());
+    // Reserve room for one auto-injected `Sec-WebSocket-Extensions`
+    // entry so callers that pass exactly `kMaxHeaderCount - kBaseHdrs`
+    // extras don't tip the array over when deflate is requested.
+    const bool inject_deflate =
+        (deflate && deflate->request) &&
+        // Skip auto-inject if the caller already supplied a header by
+        // that name. RFC 7230 §3.2.2 lets the same field name appear
+        // multiple times only when its value is a comma-list; rather
+        // than do header merging here we let the user-supplied form
+        // win. The codec hookup downstream still observes the
+        // negotiation outcome via `deflate->negotiated`.
+        std::none_of(extra_headers.begin(), extra_headers.end(),
+                     [](const HttpHeader& h) {
+                         return iequal(h.name, "Sec-WebSocket-Extensions");
+                     });
+    const size_t injected_count = inject_deflate ? 1u : 0u;
+    if (extra_headers.size() + injected_count >
+        kMaxHeaderCount - kBaseHdrs) {
+        SPDLOG_WARN("ws_handshake: too many extra headers: {} (+ {} injected)",
+                    extra_headers.size(), injected_count);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
             "ws_handshake: too many extra headers"});
@@ -343,10 +495,20 @@ perform_ws_handshake(
     hdrs[2] = HttpHeader{"Connection",            "Upgrade"};
     hdrs[3] = HttpHeader{"Sec-WebSocket-Key",     client_key};
     hdrs[4] = HttpHeader{"Sec-WebSocket-Version", "13"};
-    for (size_t i = 0; i < extra_headers.size(); ++i) {
-        hdrs[kBaseHdrs + i] = extra_headers[i];
+    size_t cursor = kBaseHdrs;
+    if (inject_deflate) {
+        // RFC 7692 §7: the simplest offer is the bare extension token
+        // with no parameters — accept whatever defaults the server picks
+        // (server_no_context_takeover etc.). The 1-byte string survives
+        // the lifetime of this scope and the request build below copies
+        // it before send.
+        hdrs[cursor++] = HttpHeader{"Sec-WebSocket-Extensions",
+                                    "permessage-deflate"};
     }
-    const size_t total_hdrs = kBaseHdrs + extra_headers.size();
+    for (size_t i = 0; i < extra_headers.size(); ++i) {
+        hdrs[cursor + i] = extra_headers[i];
+    }
+    const size_t total_hdrs = cursor + extra_headers.size();
 
     uint8_t req_buf[4096];
     auto built = build_http_request(
@@ -490,22 +652,67 @@ perform_ws_handshake(
             "ws_handshake: Sec-WebSocket-Accept mismatch"});
     }
 
-    // ── 8.5. Reject server-initiated extensions (permessage-deflate etc.) ──
+    // ── 8.5. Sec-WebSocket-Extensions handling ─────────────────────────
     //
-    // We never send Sec-WebSocket-Extensions in the client request, so a
-    // compliant server must not enable any extensions (RFC 6455 §9.1).
-    // If the server does return an Extensions header, reject the handshake
-    // early — accepting would mean the server will send compressed frames
-    // (RSV1=1) that WsCodec cannot decode, causing silent data corruption
-    // or a delayed WsFrameBad error deep in the data path.
+    // RFC 6455 §9.1: a server MUST NOT enable any extension the client
+    // did not offer. We currently offer at most permessage-deflate
+    // (RFC 7692), and only when the caller asked for it via
+    // `deflate->request`. Anything else is rejected — accepting would
+    // mean the server will send frames using a wire format we cannot
+    // decode, causing silent data corruption or a delayed WsFrameBad
+    // error deep in the data path.
     auto ext_hdr = ws_find_header(resp.headers, "Sec-WebSocket-Extensions");
     if (ext_hdr) {
-        SPDLOG_WARN("ws_handshake: server enabled unsolicited extension(s) '{}' "
-                    "— rejecting (WsCodec does not support permessage-deflate)",
-                    *ext_hdr);
-        return std::unexpected(::eph::core::ErrorInfo{
-            ::eph::core::Error::WsHandshakeFailed,
-            "ws_handshake: server enabled unsolicited Sec-WebSocket-Extensions"});
+        const bool requested_deflate = (deflate && deflate->request);
+        if (!requested_deflate) {
+            SPDLOG_WARN("ws_handshake: server enabled unsolicited extension(s) "
+                        "'{}' — rejecting (no extensions were offered)",
+                        *ext_hdr);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::WsHandshakeFailed,
+                "ws_handshake: server enabled unsolicited "
+                "Sec-WebSocket-Extensions"});
+        }
+        // Walk the comma-separated extension list. A compliant server
+        // returns one accepted extension; if it returns multiple
+        // (or chooses something we did not offer), fail-closed.
+        bool any_known = false;
+        std::string_view list = *ext_hdr;
+        while (!list.empty()) {
+            const size_t comma = list.find(',');
+            std::string_view tok = list.substr(0, comma);
+            list = (comma == std::string_view::npos)
+                       ? std::string_view{}
+                       : list.substr(comma + 1);
+            if (tok.empty()) continue;
+            if (!ws_parse_permessage_deflate_token(tok, *deflate)) {
+                SPDLOG_WARN("ws_handshake: server returned unsupported "
+                            "or partially-supported extension token '{}' "
+                            "(full header: '{}')", tok, *ext_hdr);
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::WsHandshakeFailed,
+                    "ws_handshake: server returned unsupported "
+                    "Sec-WebSocket-Extensions"});
+            }
+            any_known = true;
+        }
+        if (!any_known || !deflate->negotiated) {
+            // The header was empty or contained only whitespace — also
+            // fail-closed; we cannot tell what the server wanted.
+            SPDLOG_WARN("ws_handshake: empty / unparseable "
+                        "Sec-WebSocket-Extensions response '{}'", *ext_hdr);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::WsHandshakeFailed,
+                "ws_handshake: empty/unparseable extension response"});
+        }
+        SPDLOG_INFO("ws_handshake: permessage-deflate negotiated "
+                    "(server_no_context_takeover={})",
+                    deflate->server_no_context_takeover);
+    } else if (deflate && deflate->request) {
+        // We asked, server declined. Continue on the uncompressed path
+        // — `deflate->negotiated` is already false by default.
+        SPDLOG_DEBUG("ws_handshake: server did not accept "
+                     "permessage-deflate — falling back to uncompressed");
     }
 
     // ── 9. Stash any over-read bytes for the caller's reasm buffer ────────

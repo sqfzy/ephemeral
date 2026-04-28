@@ -91,6 +91,14 @@ struct StreamConfig {
     /// @brief WS handshake deadline.
     std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
 
+    /// @brief Offer RFC 7692 permessage-deflate during the WS upgrade.
+    ///        Symmetric with `eph::net::kernel::StreamConfig::ws_permessage_deflate`.
+    ///        Default true; the handshake injects
+    ///        `Sec-WebSocket-Extensions: permessage-deflate` and
+    ///        wires the codec for inbound inflate when the server
+    ///        accepts. Set to false to opt out.
+    bool ws_permessage_deflate{true};
+
     // ── HTTP CONNECT proxy ────────────────────────────────────────────────
     //
     // The DPDK backend does NOT support HTTP CONNECT proxies — HFT colo

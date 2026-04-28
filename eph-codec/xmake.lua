@@ -26,6 +26,12 @@ target("eph-codec")
     add_headerfiles("include/(eph/codec/**.hpp)")
     add_deps("eph-core", "eph-net", "eph-itch", { public = true })
     add_packages("spdlog", "aws-lc", { public = true })
+    -- zlib provides the raw-deflate inflater used by WsCodec for RFC 7692
+    -- permessage-deflate. System zlib is universally available on Linux
+    -- (kernel + util-linux already depend on it) — picking it over libdeflate
+    -- avoids introducing a new opt-in dep just to inflate a few KB/s of
+    -- bookticker JSON. See ws_codec_inflate.hpp for the rationale.
+    add_syslinks("z", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")

@@ -30,10 +30,12 @@
 /// wire-format helpers.
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -42,6 +44,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "eph/codec/detail/span_packet_view.hpp"
+#include "eph/codec/detail/ws_inflate.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/detail/websocket.hpp"  // ws::decode_frame, encode_frame, opcode
@@ -85,6 +88,24 @@ struct WsCodecConfig {
     /// on receiving a close frame. The caller still gets
     /// Err(WsCloseReceived) so it can drain the TX and shut down.
     bool auto_close_ack = true;
+
+    /// RFC 7692 permessage-deflate inflate enable. Set to true ONLY by
+    /// the `TcpStream` factory after the WS handshake confirmed the
+    /// server accepted the extension — manual users typically leave this
+    /// at false and call `enable_permessage_deflate()` instead so the
+    /// flag and the `server_no_context_takeover` plumbing stay in sync.
+    /// Outbound deflate (compressing client→server) is intentionally
+    /// not implemented: crypto venues never require client-side
+    /// compression and adding it would double the codec's surface.
+    bool permessage_deflate = false;
+
+    /// When true, the inflater is reset after each message — the
+    /// server told us in the handshake that it would not preserve its
+    /// LZ77 sliding window across messages
+    /// (`server_no_context_takeover`). When false (RFC 7692 default),
+    /// the inflater keeps state and message N+1 can reference back-
+    /// references to message N. Ignored when `permessage_deflate=false`.
+    bool server_no_context_takeover = false;
 };
 
 /// @brief Stateful WebSocket codec.
@@ -104,6 +125,48 @@ public:
 
     /// @brief Construct with explicit config.
     explicit WsCodec(WsCodecConfig cfg) noexcept : cfg_(cfg) {}
+
+    /// @brief Enable RFC 7692 permessage-deflate inflate for subsequent
+    ///        decode calls.
+    ///
+    /// Invoked by the WS-aware `TcpStream` factory after the HTTP
+    /// upgrade response confirmed the server accepted the extension.
+    /// Application code that drives the codec directly (e.g. tests
+    /// against a recorded byte stream) calls this to mirror the
+    /// negotiation outcome.
+    ///
+    /// @param server_no_ctx_takeover  True if the server included
+    ///        `server_no_context_takeover` in its
+    ///        `Sec-WebSocket-Extensions` response. The inflater state
+    ///        will be reset after every inbound message in that mode.
+    ///        Default false (RFC 7692 default — context preserved).
+    void enable_permessage_deflate(
+        bool server_no_ctx_takeover = false) noexcept {
+        cfg_.permessage_deflate = true;
+        cfg_.server_no_context_takeover = server_no_ctx_takeover;
+        SPDLOG_LOGGER_INFO(detail::ws_codec_logger(),
+            "WsCodec: permessage-deflate enabled "
+            "(server_no_context_takeover={})", server_no_ctx_takeover);
+    }
+
+    /// @brief Read-only accessor for the deflate-bytes-in counter
+    ///        (compressed bytes seen on the wire). Unused when
+    ///        permessage-deflate is not negotiated.
+    [[nodiscard]] std::uint64_t ws_deflate_bytes_in() const noexcept {
+        return deflate_bytes_in_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Read-only accessor for the deflate-bytes-out counter
+    ///        (plaintext bytes produced by inflate).
+    [[nodiscard]] std::uint64_t ws_deflate_bytes_out() const noexcept {
+        return deflate_bytes_out_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief True if permessage-deflate is currently enabled on this
+    ///        codec instance. Exposed for testability.
+    [[nodiscard]] bool permessage_deflate_enabled() const noexcept {
+        return cfg_.permessage_deflate;
+    }
 
     /// @brief Incrementally decode one WebSocket frame from `view`.
     ///
@@ -139,7 +202,8 @@ public:
             return std::optional<Frame>{};
         }
 
-        auto decoded = ws::decode_frame(view.data(), avail);
+        auto decoded = ws::decode_frame(view.data(), avail,
+                                        /*allow_rsv1=*/cfg_.permessage_deflate);
         if (!decoded) {
             switch (decoded.error()) {
             case ws::DecodeError::kIncomplete:
@@ -172,6 +236,19 @@ public:
         const std::size_t consumed = frame.total_len;
 
         // ── Control frames ────────────────────────────────────────────
+        // RFC 7692 §6.1: control frames MUST NOT have RSV1 set even when
+        // permessage-deflate is negotiated. If we see one, treat it as a
+        // protocol violation rather than try to inflate a 125-byte
+        // control payload.
+        if (frame.rsv1 && frame.is_control()) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                "WsCodec::decode: RSV1 set on control opcode 0x{:02X} "
+                "(RFC 7692 §6.1)", frame.opcode);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::WsFrameBad,
+                "WsCodec::decode: RSV1 set on control frame"});
+        }
+
         if (frame.is_ping()) {
             SPDLOG_LOGGER_DEBUG(detail::ws_codec_logger(),
                 "WsCodec::decode: ping, payload_len={}", frame.payload_len);
@@ -244,6 +321,23 @@ public:
                 frag_buf_.clear();
             }
             frag_opcode_ = frame.opcode;
+            // RFC 7692 §6: only the first frame of a message carries
+            // the per-message-compressed bit (RSV1). Continuation
+            // frames inherit the bit. Capture once at message start.
+            compressed_msg_ = frame.rsv1;
+            if (compressed_msg_ && !cfg_.permessage_deflate) [[unlikely]] {
+                // decode_frame should have rejected with kReservedBits
+                // already (we passed allow_rsv1=false), but defend
+                // anyway — silent acceptance would feed garbage to the
+                // application.
+                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                    "WsCodec::decode: compressed frame seen but "
+                    "permessage-deflate not negotiated");
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::CodecBad,
+                    "WsCodec::decode: compressed frame without "
+                    "permessage-deflate negotiation"});
+            }
         } else if (frag_buf_.empty() && frag_opcode_ == 0) {
             // Continuation without a prior starting frame = protocol violation.
             SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
@@ -252,9 +346,93 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::WsFrameBad,
                 "WsCodec::decode: orphan continuation frame"});
+        } else if (frame.rsv1) [[unlikely]] {
+            // RFC 7692 §6.1: continuation frames MUST NOT set RSV1.
+            // The compressed-message bit is per-message, not per-frame.
+            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                "WsCodec::decode: RSV1 set on continuation frame");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::WsFrameBad,
+                "WsCodec::decode: RSV1 on continuation frame"});
         }
 
-        // Fast path: single-frame message (first=FIN=1, not continuation).
+        // ── Compressed message path (RFC 7692) ───────────────────────
+        // Always accumulate even single-frame compressed messages into
+        // frag_buf_ — we need a contiguous compressed buffer to feed
+        // the inflater. The zero-copy fast path is reserved for the
+        // uncompressed case (it's the > 95% case for non-deflate
+        // streams; for deflate streams the inflate copy is unavoidable
+        // by definition).
+        if (compressed_msg_) {
+            const std::size_t new_size = frag_buf_.size() + frame.payload_len;
+            if (new_size > cfg_.max_message_size) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                    "WsCodec::decode: compressed accum exceeds max "
+                    "(accumulated={} max={})",
+                    new_size, cfg_.max_message_size);
+                frag_buf_.clear();
+                view.trim_front(consumed);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::CodecOverflow,
+                    "WsCodec::decode: compressed payload exceeds max"});
+            }
+            if (frame.payload && frame.payload_len > 0) {
+                const std::size_t old_size = frag_buf_.size();
+                frag_buf_.resize(new_size);
+                std::memcpy(frag_buf_.data() + old_size,
+                            frame.payload, frame.payload_len);
+                if (frame.masked) {
+                    ws::apply_mask(frag_buf_.data() + old_size,
+                                   frame.payload_len, frame.mask_key);
+                }
+            }
+            view.trim_front(consumed);
+
+            if (!is_final) {
+                // More compressed fragments coming.
+                return std::optional<Frame>{};
+            }
+
+            // Final fragment — feed the accumulated compressed payload
+            // into the inflater and deliver the inflated plaintext.
+            // Bookkeeping: track wire bytes (in) and inflated bytes (out)
+            // for the deflate-ratio metric. Lazy-construct the inflater
+            // here so non-deflate codec instances pay zero cost.
+            if (!inflater_) {
+                inflater_ = std::make_unique<detail::WsInflater>();
+                inflater_->max_inflated_size = cfg_.max_message_size;
+            }
+            const std::size_t in_bytes = frag_buf_.size();
+            auto inflated = inflater_->inflate_message(
+                std::span<const uint8_t>{frag_buf_.data(), frag_buf_.size()},
+                /*reset_after=*/cfg_.server_no_context_takeover);
+            // The compressed accumulator is per-message; whether or not
+            // inflate succeeded we drop it before returning — leaving
+            // stale compressed bytes around could be confused with a
+            // pending fragment by the next decode() call.
+            frag_buf_.clear();
+            frag_opcode_ = 0;
+            compressed_msg_ = false;
+            if (!inflated) {
+                return std::unexpected(inflated.error());
+            }
+            // Update the per-codec deflate counters. Relaxed memory
+            // ordering is fine — these are reader-friendly stats, not
+            // synchronisation points (matches the StreamMetric pattern
+            // used by the four backends).
+            deflate_bytes_in_.fetch_add(in_bytes,
+                                        std::memory_order_relaxed);
+            deflate_bytes_out_.fetch_add(inflated->size(),
+                                         std::memory_order_relaxed);
+            SPDLOG_LOGGER_TRACE(detail::ws_codec_logger(),
+                "WsCodec::decode: inflated {} -> {} bytes (ratio {:.2f}x)",
+                in_bytes, inflated->size(),
+                in_bytes ? double(inflated->size()) / double(in_bytes)
+                         : 0.0);
+            return std::optional<Frame>{*inflated};
+        }
+
+        // Fast path: single-frame uncompressed message (first=FIN=1, not continuation).
         const bool single_frame = !is_continuation && is_final;
         if (single_frame && frag_buf_.empty()) {
             if (frame.payload_len > cfg_.max_message_size) [[unlikely]] {
@@ -290,7 +468,7 @@ public:
             return std::optional<Frame>{payload};
         }
 
-        // Slow path: fragmented message — accumulate into frag_buf_.
+        // Slow path: fragmented uncompressed message — accumulate into frag_buf_.
         const std::size_t new_size = frag_buf_.size() + frame.payload_len;
         if (new_size > cfg_.max_message_size) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
@@ -412,6 +590,21 @@ private:
     WsCodecConfig        cfg_;
     std::vector<uint8_t> frag_buf_;    ///< reassembly scratch (persists across calls)
     uint8_t              frag_opcode_ = 0;  ///< opcode of the in-flight fragmented message
+    /// True between the start of a compressed message (RSV1=1 on the
+    /// first frame) and the FIN of that message. Lets continuation
+    /// frames inherit the compression bit per RFC 7692 §6.
+    bool                 compressed_msg_ = false;
+    /// Lazily-created inflater, only allocated when the first
+    /// compressed frame arrives. unique_ptr so the codec stays small
+    /// for non-deflate consumers (sizeof(WsCodec) ≈ vector + bool).
+    std::unique_ptr<detail::WsInflater> inflater_{};
+    /// Per-codec deflate counters. atomic<uint64_t> so external
+    /// observers can read concurrently without locking, mirroring the
+    /// `StreamMetric` array pattern. Relaxed loads/stores are correct
+    /// here because the values are advisory diagnostics, not
+    /// synchronisation primitives.
+    alignas(64) std::atomic<std::uint64_t> deflate_bytes_in_{0};
+    std::atomic<std::uint64_t>             deflate_bytes_out_{0};
 };
 
 static_assert(core::StreamCodec<WsCodec>,

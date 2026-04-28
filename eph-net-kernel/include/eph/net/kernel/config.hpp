@@ -84,6 +84,18 @@ struct StreamConfig {
     /// @brief Cumulative deadline for the WS HTTP handshake phase.
     std::chrono::milliseconds ws_timeout{std::chrono::seconds{10}};
 
+    /// @brief Offer RFC 7692 permessage-deflate during the WS upgrade.
+    ///        When true and `ws_path` is non-empty, the handshake
+    ///        injects `Sec-WebSocket-Extensions: permessage-deflate`
+    ///        into the request and, if the server accepts,
+    ///        configures the codec to inflate inbound RSV1 frames.
+    ///        Default true so users targeting a venue that may opt
+    ///        into compression (Binance / Bybit / OKX) get correct
+    ///        behaviour out of the box. Set to false to suppress
+    ///        the offer (e.g. for venues that mis-implement the
+    ///        extension and respond with garbled compressed frames).
+    bool ws_permessage_deflate{true};
+
     // ── HTTP CONNECT proxy ────────────────────────────────────────────────
     //
     // When `proxy` is set, `KernelTcpStream::create` will:
