@@ -256,12 +256,15 @@ select_dns_src_port(uint16_t port_id, uint16_t queue_id,
 
 /// Pure variant of `select_dns_src_port` parametrized by an explicit
 /// `RssState` snapshot — exposes the search loop for unit testing without
-/// needing a real NIC. The loop body is intentionally identical to
-/// `find_src_port_for_queue`'s (flow_steering.hpp:756); this helper exists
-/// only because the production call path goes through the corrected
-/// `find_src_port_for_queue` (which queries the NIC) and unit tests can't
-/// hit that without DPDK runtime. If `find_src_port_for_queue`'s loop body
-/// ever changes shape, mirror the change here.
+/// needing a real NIC.
+///
+/// Delegates to `find_src_port_for_queue_with_state` with
+/// `start_hint=0` so DNS unit tests get the first matching port
+/// deterministically (matching pre-dedup behavior). Production
+/// callers go through `select_dns_src_port` → `find_src_port_for_queue`
+/// which uses the auto-incrementing process-global hint for fan-out
+/// distinctness; this test helper preserves the *deterministic* shape
+/// the existing tests assert.
 inline std::expected<uint16_t, std::string>
 select_dns_src_port_with_state(
     const ::eph::net::dpdk::RssState& state,
@@ -275,16 +278,24 @@ select_dns_src_port_with_state(
             "select_dns_src_port: inverted range [{},{}]",
             port_range_start, port_range_end));
     }
-    for (uint32_t cand = port_range_start; cand <= port_range_end; ++cand) {
-        if (::eph::net::dpdk::queue_for_tuple(
-                state, nameserver_ip, dns_server_port,
-                local_ip, static_cast<uint16_t>(cand)) == queue_id) {
-            return static_cast<uint16_t>(cand);
-        }
+    auto r = ::eph::net::dpdk::find_src_port_for_queue_with_state(
+        state, queue_id,
+        /*remote_ip=*/  nameserver_ip,
+        /*remote_port=*/dns_server_port,
+        /*local_ip=*/   local_ip,
+        port_range_start, port_range_end,
+        /*start_hint=*/uint32_t{0});
+    if (r) return r;
+    // The wrapper's exhaustion message reads "find_src_port_for_queue:
+    // ..." — re-stamp it to the DNS-flavoured message that the existing
+    // tests grep for ("RssHashPredictExhausted: no DNS src_port..."), so
+    // the contract surface is unchanged.
+    if (r.error().starts_with("RssHashPredictExhausted")) {
+        return std::unexpected(std::format(
+            "RssHashPredictExhausted: no DNS src_port in [{},{}] hashes to queue {}",
+            port_range_start, port_range_end, queue_id));
     }
-    return std::unexpected(std::format(
-        "RssHashPredictExhausted: no DNS src_port in [{},{}] hashes to queue {}",
-        port_range_start, port_range_end, queue_id));
+    return r;  // surface inverted-range etc. as-is
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
