@@ -225,10 +225,11 @@ TEST(OkxAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
     // After reconnect, replay the subscribe explicitly. Production
     // adapters do this inside on_reconnect; we keep the test imperative
     // so the timing is deterministic and we don't race the orchestrator's
-    // internal state machine.
+    // internal state machine. Note: the factory already installs the
+    // `on_message` sink on every freshly-created stream, so we don't
+    // need to re-attach it here on the post-reconnect `fresh` pointer.
     auto* fresh = orch.current();
     ASSERT_NE(fresh, nullptr);
-    fresh->on_message = on_message;  // re-attach sink on the fresh stream
     {
         auto sr2 = fresh->send(sub_frame);
         ASSERT_TRUE(sr2.has_value()) << "send subscribe (reconnect): "

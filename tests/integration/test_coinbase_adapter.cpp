@@ -440,9 +440,11 @@ TEST(CoinbaseAdapterIntegration, UserChannelJwtRoundTripsAcrossReconnect) {
         << " count=" << orch.reconnect_count()
         << " failures=" << orch.reconnect_failures();
 
+    // The factory already installs the `on_message` sink on every
+    // freshly-created stream, so no re-attachment is needed on the
+    // post-reconnect `fresh` pointer.
     auto* fresh = orch.current();
     ASSERT_NE(fresh, nullptr);
-    fresh->on_message = on_message;
 
     // ── 2nd subscribe: send with JWT #2 (fresh-token semantics) ─────────
     {

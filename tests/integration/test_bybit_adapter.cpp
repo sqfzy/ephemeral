@@ -181,9 +181,11 @@ TEST(BybitAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
         << " count=" << orch.reconnect_count()
         << " failures=" << orch.reconnect_failures();
 
+    // The factory already installs the `on_message` sink on every
+    // freshly-created stream, so no re-attachment is needed on the
+    // post-reconnect `fresh` pointer.
     auto* fresh = orch.current();
     ASSERT_NE(fresh, nullptr);
-    fresh->on_message = on_message;
     {
         auto sr2 = fresh->send(sub_frame);
         ASSERT_TRUE(sr2.has_value()) << "send subscribe (reconnect): "
