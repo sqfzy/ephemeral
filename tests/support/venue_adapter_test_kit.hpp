@@ -27,9 +27,37 @@
 #include <vector>
 
 #include "eph/net/detail/websocket.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/socket_addr.hpp"
 #include "eph/utils/time.hpp"
 
 namespace eph::test {
+
+/// Build a `KernelTcpStream` config dialing 127.0.0.1:`port` against the
+/// in-process `TlsWsEchoServer`. The TLS hostname and the WS Host header
+/// both pin to `eph-test-server` (the SAN burned into the test cert by
+/// `tls_ws_echo_server.hpp`); `ws_path` is the only knob that varies
+/// across venues. Permessage-deflate is disabled because the test server
+/// does not echo `Sec-WebSocket-Extensions` and the codec's deflate state
+/// tracking would just be noise.
+[[nodiscard]] inline eph::net::kernel::StreamConfig make_local_tls_ws_config(
+    std::uint16_t port, std::string_view ws_path) {
+    using namespace std::chrono_literals;
+    eph::net::kernel::StreamConfig cfg{};
+    cfg.remote                = eph::net::SocketAddr{
+        eph::net::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.reasm_capacity        = 64 * 1024;
+    cfg.connect_timeout       = 2s;
+    cfg.tcp_nodelay           = true;
+    cfg.tls.hostname          = "eph-test-server";
+    cfg.tls.verify_peer       = false;
+    cfg.tls.handshake_timeout = 2s;
+    cfg.ws_path               = std::string{ws_path};
+    cfg.ws_host               = "eph-test-server";
+    cfg.ws_timeout            = 2s;
+    cfg.ws_permessage_deflate = false;
+    return cfg;
+}
 
 /// Drive `poller.poll()` + `orch.tick()` in a 10 ms-stepped loop until
 /// `pred()` returns true or `budget` elapses. Returns whether `pred`

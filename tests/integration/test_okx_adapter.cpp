@@ -83,26 +83,11 @@ constexpr std::string_view kOkxSubscribeAck =
     R"({"event":"subscribe","arg":{"channel":"books","instId":"BTC-USDT"}})";
 
 /// Build a TLS+WS stream config dialing the in-process echo server.
+/// The per-venue knob is `ws_path` — everything else (TLS hostname pin,
+/// 2 s timeouts, no permessage-deflate) is shared and lives in
+/// `eph::test::make_local_tls_ws_config`.
 ek::StreamConfig make_config(uint16_t port) {
-    ek::StreamConfig cfg{};
-    cfg.remote                    = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.reasm_capacity            = 64 * 1024;
-    cfg.connect_timeout           = 2s;
-    cfg.tcp_nodelay               = true;
-    // Self-signed ephemeral cert from the test fixture: skip verify.
-    cfg.tls.hostname              = "eph-test-server";
-    cfg.tls.verify_peer           = false;
-    cfg.tls.handshake_timeout     = 2s;
-    // OKX public is not a CONNECT proxy; ws_path drives the WS upgrade
-    // inline once the TLS handshake completes.
-    cfg.ws_path                   = "/ws/v5/public";
-    cfg.ws_host                   = "eph-test-server";
-    cfg.ws_timeout                = 2s;
-    // Disable deflate offer: the test server doesn't echo back
-    // `Sec-WebSocket-Extensions`, but disabling avoids any odd
-    // permessage-deflate state tracking distractions in the test.
-    cfg.ws_permessage_deflate     = false;
-    return cfg;
+    return eph::test::make_local_tls_ws_config(port, "/ws/v5/public");
 }
 
 /// Build a server-side message handler that mimics the OKX V5 subscribe-ack

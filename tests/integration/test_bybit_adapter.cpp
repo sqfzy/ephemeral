@@ -71,19 +71,7 @@ constexpr std::string_view kBybitSubscribeAck =
     R"({"op":"subscribe","success":true,"ret_msg":"","conn_id":"abc","req_id":""})";
 
 ek::StreamConfig make_config(uint16_t port) {
-    ek::StreamConfig cfg{};
-    cfg.remote                = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.reasm_capacity        = 64 * 1024;
-    cfg.connect_timeout       = 2s;
-    cfg.tcp_nodelay           = true;
-    cfg.tls.hostname          = "eph-test-server";
-    cfg.tls.verify_peer       = false;
-    cfg.tls.handshake_timeout = 2s;
-    cfg.ws_path               = "/v5/public/spot";
-    cfg.ws_host               = "eph-test-server";
-    cfg.ws_timeout            = 2s;
-    cfg.ws_permessage_deflate = false;
-    return cfg;
+    return eph::test::make_local_tls_ws_config(port, "/v5/public/spot");
 }
 
 eph::test::TlsWsEchoServer::MessageHandler bybit_handler() {

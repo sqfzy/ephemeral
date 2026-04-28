@@ -254,19 +254,8 @@ std::string make_subscribe(std::string_view jwt) {
 }
 
 ek::StreamConfig make_config(uint16_t port) {
-    ek::StreamConfig cfg{};
-    cfg.remote                = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.reasm_capacity        = 64 * 1024;
-    cfg.connect_timeout       = 2s;
-    cfg.tcp_nodelay           = true;
-    cfg.tls.hostname          = "eph-test-server";
-    cfg.tls.verify_peer       = false;
-    cfg.tls.handshake_timeout = 2s;
-    cfg.ws_path               = "/";  // Coinbase WS root path
-    cfg.ws_host               = "eph-test-server";
-    cfg.ws_timeout            = 2s;
-    cfg.ws_permessage_deflate = false;
-    return cfg;
+    // Coinbase Advanced Trade uses the WS root path "/".
+    return eph::test::make_local_tls_ws_config(port, "/");
 }
 
 /// Server-side handler that captures every JWT it sees in the subscribe
