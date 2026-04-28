@@ -123,6 +123,53 @@ TEST(DnsAdversarial, ShortPointerChainSucceeds) {
     EXPECT_EQ(end, 2u) << "first pointer occupies bytes [0, 2); end_offset == 2";
 }
 
+// Boundary regression for kMaxIterations narrowing (audit-20260413 #11).
+// Pin the exact threshold so a future maintainer who touches the constant
+// has both an obvious assertion (chain length 31 must succeed) and a
+// failing test (chain length 33 must trap) telling them what changed.
+//
+// The iteration counter increments once per pointer hop AND once per
+// inline-root terminator, so a chain of N pointers terminating in an
+// inline 0x00 takes N+1 iterations. With kMaxIterations=32 the upper
+// bound on succeeding chains is therefore 31 pointers.
+TEST(DnsAdversarial, PointerChain31HopsBelowLimitSucceeds) {
+    constexpr size_t kChainLen = 31;
+    constexpr size_t kBufSize  = kChainLen * 2 + 16;
+    std::vector<uint8_t> buf(kBufSize, 0);
+
+    for (size_t i = 0; i < kChainLen; ++i) {
+        size_t target = (i + 1) * 2;
+        buf[i * 2]     = 0xC0 | static_cast<uint8_t>((target >> 8) & 0x3F);
+        buf[i * 2 + 1] = static_cast<uint8_t>(target & 0xFF);
+    }
+    buf[kChainLen * 2] = 0x00; // root terminator at the chain tail
+
+    auto end = dns::detail::skip_dns_name(buf.data(), 0, buf.size());
+    EXPECT_EQ(end, 2u)
+        << "chain of 31 hops + root terminator must succeed within "
+           "kMaxIterations=32 budget";
+}
+
+TEST(DnsAdversarial, PointerChain33HopsAboveLimitTraps) {
+    // 33-deep chain: 32 pointer hops then a 33rd-iteration consume of
+    // the terminator — exceeds kMaxIterations=32 by one and must trip
+    // the safety guard.
+    constexpr size_t kChainLen = 33;
+    constexpr size_t kBufSize  = kChainLen * 2 + 16;
+    std::vector<uint8_t> buf(kBufSize, 0);
+
+    for (size_t i = 0; i < kChainLen; ++i) {
+        size_t target = (i + 1) * 2;
+        buf[i * 2]     = 0xC0 | static_cast<uint8_t>((target >> 8) & 0x3F);
+        buf[i * 2 + 1] = static_cast<uint8_t>(target & 0xFF);
+    }
+    buf[kChainLen * 2] = 0x00; // root terminator (unreachable)
+
+    auto end = dns::detail::skip_dns_name(buf.data(), 0, buf.size());
+    EXPECT_EQ(end, 0u)
+        << "chain of 33 hops must trip kMaxIterations=32 limit";
+}
+
 TEST(DnsAdversarial, PointerToSelfDirectReturnsZero) {
     // Direct self-loop: pointer at offset 0 targets offset 0.
     uint8_t buf[16] = {0xC0, 0x00};
