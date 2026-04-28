@@ -340,9 +340,11 @@ TEST_F(ReconnectOrchestratorTest, MetricReadOutOfRange) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 9: PublishMetricsForwardsAll — all 4 metric values reach the sink with
+// Test 9: PublishMetricsForwardsAll — every metric reaches the sink with
 // matching names; kLastReconnectDurationNs goes through push_gauge, the rest
-// through push_counter.
+// through push_counter. The publisher is data-driven over the
+// `ReconnectMetric` enum so this test simultaneously documents the iteration
+// order of `kReconnectMetricNames` and asserts gauge-vs-counter dispatch.
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(ReconnectOrchestratorTest, PublishMetricsForwardsAll) {
     auto cfg = kDeterministicConfig();
@@ -362,11 +364,19 @@ TEST_F(ReconnectOrchestratorTest, PublishMetricsForwardsAll) {
     orch.tick(t);
     ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
 
+    // Bump the new T2.11 subscribe-replay metric so its row is non-zero
+    // and distinguishable in the sink output.
+    orch.note_subscribe_replay();
+    orch.note_subscribe_replay();
+
     RecordingSink sink;
     en::publish_reconnect_metrics(orch, sink);
 
-    ASSERT_EQ(sink.counters.size(), 3u);  // count + failures + duration_ns_total
-    ASSERT_EQ(sink.gauges.size(), 1u);    // duration_ns.last
+    // Counters: kReconnectCount, kReconnectFailures, kReconnectDurationNs,
+    //           kSubscribeReplayCount  →  4 entries.
+    // Gauges:   kLastReconnectDurationNs                              →  1 entry.
+    ASSERT_EQ(sink.counters.size(), 4u);
+    ASSERT_EQ(sink.gauges.size(), 1u);
 
     EXPECT_EQ(sink.counters[0].name, "net.reconnect.count");
     EXPECT_EQ(sink.counters[0].value, static_cast<int64_t>(orch.reconnect_count()));
@@ -378,6 +388,95 @@ TEST_F(ReconnectOrchestratorTest, PublishMetricsForwardsAll) {
     EXPECT_EQ(sink.gauges[0].name, "net.reconnect.duration_ns.last");
     EXPECT_EQ(static_cast<uint64_t>(sink.gauges[0].value),
               orch.last_reconnect_duration_ns());
+    // T2.11 — subscribe-replay metric must be the trailing counter (matches
+    // its position before kCount in the enum).
+    EXPECT_EQ(sink.counters[3].name, "net.reconnect.subscribe_replay_count");
+    EXPECT_EQ(sink.counters[3].value, 2);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test (T2.11): SubscribeReplayCounterIncrements — `note_subscribe_replay()`
+// bumps the kSubscribeReplayCount atomic by 1 each call and the metric is
+// readable both via the convenience accessor and the generic `metric()` API.
+// Drives a real reconnect cycle between calls so the test simultaneously
+// documents the intended call site (post-Connected, inside the user's
+// OnReconnect callback).
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, SubscribeReplayCounterIncrements) {
+    auto cfg = kDeterministicConfig();
+    Orch orch{
+        cfg,
+        []() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            auto s = ent::FakeStream::create();
+            s->set_state(eph::net::TcpState::Established);
+            s->set_attached(true);
+            return s;
+        },
+    };
+
+    // Initial connect.
+    ASSERT_TRUE(orch.start(eph::utils::TSC::now()).has_value());
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+    EXPECT_EQ(orch.subscribe_replay_count(), 0u);
+    EXPECT_EQ(orch.metric(en::ReconnectMetric::kSubscribeReplayCount), 0u);
+
+    // First replay ack — caller asserts the venue accepted their subscribe.
+    orch.note_subscribe_replay();
+    EXPECT_EQ(orch.subscribe_replay_count(), 1u);
+    EXPECT_EQ(orch.metric(en::ReconnectMetric::kSubscribeReplayCount), 1u);
+
+    // Drive a real reconnect.
+    orch.mark_disconnected({eph::core::Error::Disconnected, "test"});
+    ASSERT_EQ(orch.state(), en::ReconnectState::Backoff);
+    auto t = eph::utils::TSC::now()
+             + eph::utils::TSC::to_cycles(60ms).value_or(180'000'000ULL);
+    orch.tick(t);
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+    // Reconnect itself MUST NOT touch the replay counter — it's user-asserted.
+    EXPECT_EQ(orch.subscribe_replay_count(), 1u);
+
+    // Second replay ack after the reconnect.
+    orch.note_subscribe_replay();
+    EXPECT_EQ(orch.subscribe_replay_count(), 2u);
+    EXPECT_EQ(orch.metric(en::ReconnectMetric::kSubscribeReplayCount), 2u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test (T2.11): NoteSubscribeReplayCallableInAnyState — the metric is purely
+// additive and not gated on `state_`. Bumping from Idle / Backoff / Failed
+// must succeed without state preconditions; documenting this so users can
+// drive the counter from their own follow-up callbacks (e.g. settle-ack
+// handler) without racing the orchestrator's state machine.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, NoteSubscribeReplayCallableInAnyState) {
+    auto cfg = kDeterministicConfig();
+    cfg.policy.max_attempts = 1;
+    Orch orch{
+        cfg,
+        []() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            return std::unexpected(eph::core::ErrorInfo{
+                eph::core::Error::ConnectFailed, "always-fail"});
+        },
+    };
+
+    // Idle.
+    ASSERT_EQ(orch.state(), en::ReconnectState::Idle);
+    orch.note_subscribe_replay();
+    EXPECT_EQ(orch.subscribe_replay_count(), 1u);
+
+    // Drive to Failed.
+    auto vt = eph::utils::TSC::now();
+    ASSERT_TRUE(orch.start(vt).has_value());
+    const auto step = eph::utils::TSC::to_cycles(1s).value_or(3'000'000'000ULL);
+    for (int i = 0; i < 5 && orch.state() != en::ReconnectState::Failed; ++i) {
+        vt += step;
+        orch.tick(vt);
+    }
+    ASSERT_EQ(orch.state(), en::ReconnectState::Failed);
+
+    // Failed.
+    orch.note_subscribe_replay();
+    EXPECT_EQ(orch.subscribe_replay_count(), 2u);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
