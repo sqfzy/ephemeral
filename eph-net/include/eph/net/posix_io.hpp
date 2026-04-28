@@ -15,12 +15,20 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <sys/socket.h>
+
+#include <spdlog/spdlog.h>
 
 namespace eph::net::posix {
 
 /// Write the entire `len`-byte buffer to `fd`.
 /// Retries on EINTR.  Returns false on any other error.
+///
+/// Errors (non-EINTR errno) and EOF-equivalent shortfalls are logged at
+/// WARN with errno context — these helpers are used inside test mocks
+/// and integration fixtures where a silent false return otherwise
+/// surfaces only as a flaky timeout much later.
 [[nodiscard]] inline bool send_all(int fd, const void* data, size_t len) noexcept {
     size_t sent = 0;
     while (sent < len) {
@@ -28,6 +36,8 @@ namespace eph::net::posix {
                            len - sent, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) continue;
+            SPDLOG_WARN("posix::send_all: send() failed fd={} sent={}/{} errno={} ({})",
+                        fd, sent, len, errno, std::strerror(errno));
             return false;
         }
         sent += static_cast<size_t>(n);
@@ -37,6 +47,11 @@ namespace eph::net::posix {
 
 /// Read exactly `len` bytes from `fd` into `buf`.
 /// Retries on EINTR.  Returns false on peer close (recv == 0) or error.
+///
+/// Both the peer-close and the errno-bearing failure paths are logged
+/// at DEBUG and WARN respectively — DEBUG for peer close because in
+/// test fixtures peer close is the *expected* terminator on a clean
+/// teardown.
 [[nodiscard]] inline bool recv_exact(int fd, void* buf, size_t len) noexcept {
     size_t got = 0;
     while (got < len) {
@@ -44,9 +59,15 @@ namespace eph::net::posix {
                            len - got, 0);
         if (n < 0) {
             if (errno == EINTR) continue;
+            SPDLOG_WARN("posix::recv_exact: recv() failed fd={} got={}/{} errno={} ({})",
+                        fd, got, len, errno, std::strerror(errno));
             return false;
         }
-        if (n == 0) return false; // peer closed
+        if (n == 0) {
+            SPDLOG_DEBUG("posix::recv_exact: peer closed fd={} got={}/{}",
+                         fd, got, len);
+            return false; // peer closed
+        }
         got += static_cast<size_t>(n);
     }
     return true;
