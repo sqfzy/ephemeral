@@ -52,6 +52,7 @@
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/stream_metrics.hpp"
 #include "eph/net/tcp_state.hpp"
+#include "eph/utils/time.hpp"
 
 // The DPDK TLS path uses aws-lc exclusively (no vcpkg-openssl). ISN
 // generation and WS mask-key use `getrandom(2)` so there is no OpenSSL
@@ -1050,6 +1051,196 @@ public:
             return std::unexpected(r.error());
         }
         return {};
+    }
+
+    /// @brief Synchronous graceful drain — send our FIN and burst-poll the
+    ///        NIC until the peer's FIN-ACK arrives or `timeout` elapses.
+    ///
+    /// Semantics:
+    ///   1. Stream MUST be `state() == Established` on entry; otherwise
+    ///      returns `Error::InvalidConfig` without touching the session.
+    ///   2. Calls `TcpSession::close()` to send our FIN. State flips to
+    ///      `FinWait1`. (close() also picks up CloseWait → LastAck if
+    ///      the peer initiated, but the spec restricts drain entry to
+    ///      Established so that branch is unreachable from here.)
+    ///   3. Drives `TcpSession::poll_rx` in a tight loop, internally
+    ///      calling `rte_eth_rx_burst` on every iteration. The TCP state
+    ///      machine inside the session handles SYN/FIN/ACK accounting:
+    ///      FinWait1 -> FinWait2 (peer ACKs our FIN) -> TimeWait
+    ///      (peer's FIN observed). On reaching `TimeWait` we declare
+    ///      "peer FIN-ACK observed", force the session to `Closed`
+    ///      (the 2*MSL deferral is unnecessary on a single-shot orderly
+    ///      shutdown — we will not reuse this 4-tuple), and return Ok.
+    ///      We also accept `Closed` as a success terminal in case the
+    ///      session reaches it directly via the LastAck path or a peer
+    ///      RST race.
+    ///   4. Application bytes that arrive during the drain are silently
+    ///      discarded — `on_message` is NOT invoked. Drain is a teardown
+    ///      path, not a data path.
+    ///   5. On timeout: bumps `kRxSessionResets`, calls `sess_.reset()`
+    ///      (sends RST so the peer's stack unblocks immediately and the
+    ///      4-tuple is freed), and returns `Err(Error::Timeout)`.
+    ///
+    /// Threading: synchronous and single-threaded. The caller MUST NOT
+    /// have a `DpdkPoller` actively poll()-ing this stream from another
+    /// lcore during the drain — it would race on the session and steal
+    /// RX bursts that drain() needs to advance the close handshake.
+    ///
+    /// `close_gracefully()` remains the lighter cousin: it sends the FIN
+    /// and returns immediately, leaving the wait-for-peer-FIN to the
+    /// caller's poller cycle.
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    drain(std::chrono::milliseconds timeout) noexcept {
+        auto* log = detail::tcp_stream_logger();
+        SPDLOG_LOGGER_INFO(log,
+            "DpdkTcpStream::drain entry: state={} timeout_ms={}",
+            ::eph::net::tcp_state_name(sess_.state()), timeout.count());
+
+        if (sess_.state() != ::eph::net::TcpState::Established) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::drain: state={} (need Established) — "
+                "rejecting", ::eph::net::tcp_state_name(sess_.state()));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkTcpStream::drain: state != Established"});
+        }
+        if (timeout <= std::chrono::milliseconds::zero()) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::drain: timeout_ms={} must be > 0",
+                timeout.count());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkTcpStream::drain: timeout must be > 0"});
+        }
+
+        // Step 1: send our FIN.
+        auto cr = sess_.close();
+        if (!cr) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::drain: close() failed: {}", cr.error().detail);
+            return std::unexpected(cr.error());
+        }
+        // sess_.close() flips state to FinWait1 on success.
+
+        // Step 2: TSC deadline. Cold path — TSC is the codebase
+        // convention but we fall back to steady_clock when the TSC
+        // wasn't calibrated (uncommon: only in test harnesses that
+        // forgot to call TSC::init()).
+        const std::uint64_t start_tsc = ::eph::utils::TSC::now();
+        auto cycles_opt = ::eph::utils::TSC::to_cycles(timeout);
+        std::uint64_t deadline_tsc = 0;
+        const bool tsc_available = cycles_opt.has_value();
+        if (tsc_available) {
+            if (*cycles_opt > UINT64_MAX - start_tsc) {
+                deadline_tsc = UINT64_MAX;
+            } else {
+                deadline_tsc = start_tsc + *cycles_opt;
+            }
+        }
+        const auto deadline_steady =
+            std::chrono::steady_clock::now() + timeout;
+
+        // Step 3: drain loop. Burst-poll the NIC; the session's state
+        // machine drives FinWait1 -> FinWait2 -> TimeWait on its own
+        // as ACK / FIN packets are observed.
+        //
+        // We drop application bytes the peer may emit before its FIN
+        // (it had buffered TX of its own and flushes it before honoring
+        // our half-close). The closure below counts them so they appear
+        // in trace logs but does not feed them through the codec.
+        std::size_t discarded_bytes = 0;
+        for (;;) {
+            // Run one RX burst through the session. This advances the
+            // state machine on every observed segment (ACK of our FIN,
+            // peer's FIN, etc.) and emits ACKs as needed.
+            auto pr = sess_.poll_rx(
+                [&discarded_bytes](const std::uint8_t* /*chunk*/, std::uint16_t len) {
+                    discarded_bytes += len;
+                });
+            if (!pr) {
+                // Session-level error — typically Disconnected because
+                // the peer RST'd or the session decided to tear down
+                // (reorder overflow etc.). Drain semantics: consider
+                // this a forced close, not a timeout. State should
+                // already be Closed via the session's own bookkeeping.
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::drain: poll_rx err={} state={}",
+                    pr.error().detail,
+                    ::eph::net::tcp_state_name(sess_.state()));
+                if (sess_.state() != ::eph::net::TcpState::Closed) {
+                    sess_.reset();
+                }
+                return std::unexpected(pr.error());
+            }
+
+            // Terminal-success states: Closed (LastAck/RST-race path)
+            // or TimeWait (FIN_WAIT_2 + peer FIN observed). Both mean
+            // "peer FIN-ACK confirmed; orderly drain complete".
+            const auto st = sess_.state();
+            if (st == ::eph::net::TcpState::Closed ||
+                st == ::eph::net::TcpState::TimeWait) {
+                if (st == ::eph::net::TcpState::TimeWait) {
+                    // Force the session out of TimeWait — the 2*MSL
+                    // deferral is irrelevant for an orderly drain on
+                    // a connection we will not reuse. reset() advances
+                    // state to Closed *and* sends an RST; the RST is
+                    // unusual but harmless because the peer has already
+                    // FIN-closed and any future segment would be a
+                    // delayed retransmit.
+                    sess_.reset();
+                }
+                const std::uint64_t end_tsc = ::eph::utils::TSC::now();
+                const auto elapsed_ns_opt =
+                    ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
+                SPDLOG_LOGGER_INFO(log,
+                    "DpdkTcpStream::drain exit: success state={} "
+                    "elapsed_ns={} discarded_payload_bytes={}",
+                    ::eph::net::tcp_state_name(sess_.state()),
+                    elapsed_ns_opt ? *elapsed_ns_opt : 0ull,
+                    discarded_bytes);
+                return {};
+            }
+
+            // Deadline check.
+            bool expired = false;
+            if (tsc_available) {
+                expired = ::eph::utils::TSC::now() >= deadline_tsc;
+            } else {
+                expired = std::chrono::steady_clock::now() >= deadline_steady;
+            }
+            if (expired) {
+                inc_<::eph::net::StreamMetric::kRxSessionResets>();
+                const std::uint64_t end_tsc = ::eph::utils::TSC::now();
+                const auto elapsed_ns_opt =
+                    ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::drain: timeout state={} elapsed_ns={} "
+                    "budget_ms={} — forcing reset",
+                    ::eph::net::tcp_state_name(sess_.state()),
+                    elapsed_ns_opt ? *elapsed_ns_opt : 0ull,
+                    timeout.count());
+                if (sess_.state() != ::eph::net::TcpState::Closed) {
+                    sess_.reset();
+                }
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Timeout,
+                    "DpdkTcpStream::drain: peer FIN-ACK timeout"});
+            }
+
+            // Tick the session-level timers (delayed-ACK). Without this,
+            // ACKs we owe the peer would only flush at the next outgoing
+            // send — but in a drain there is no outgoing send, so the
+            // peer never sees our ACK of its FIN and the handshake
+            // stalls forever. The function reads TSC internally.
+            sess_.flush_pending_ack();
+
+            // Yield very briefly between bursts. We spin the lcore
+            // here (kernel-bypass design); a short pause cap avoids
+            // pegging the core 100% while waiting on a slow peer.
+            // 1us is small compared to typical FIN-ACK RTT (~10us LAN,
+            // ~1ms WAN) so we don't materially extend the drain.
+            rte_pause();
+        }
     }
 
     [[nodiscard]] bool is_attached() const noexcept {

@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -35,6 +36,7 @@
 #include <variant>
 #include <vector>
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -44,6 +46,7 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/utils/time.hpp"
 #include "eph/net/detail/http_connect.hpp"   // HTTP CONNECT proxy
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/kernel/config.hpp"
@@ -716,6 +719,247 @@ public:
         SPDLOG_LOGGER_DEBUG(log,
             "KernelTcpStream::close_gracefully fd={}", fd);
         return {};
+    }
+
+    /// @brief Synchronous graceful drain — wait for pending TX to flush AND
+    ///        for the peer's FIN-ACK before returning.
+    ///
+    /// Semantics:
+    ///   1. Stream MUST be `state() == Established` on entry; otherwise
+    ///      the call returns `Error::InvalidConfig` without touching the
+    ///      socket.
+    ///   2. Issues `shutdown(fd, SHUT_WR)` to send our FIN — the kernel
+    ///      first flushes everything still buffered in the send-side socket
+    ///      buffer, so any TX bytes the application has already handed off
+    ///      reach the peer before the FIN. State flips to `FinWait1`.
+    ///   3. Blocks on `::poll(POLLIN, ...)` then `recv()` until the peer
+    ///      sends its own FIN (manifests as `recv()` returning 0). At that
+    ///      point the orderly shutdown is complete and `state_` flips to
+    ///      `Closed`. Any application bytes that arrive after our FIN but
+    ///      before the peer's FIN are silently drained — the codec is not
+    ///      driven during shutdown and there is no `on_message` delivery.
+    ///   4. On `timeout`: bumps the `kRxSessionResets` metric (semantic:
+    ///      "stream tore the session down because graceful drain stalled"),
+    ///      best-effort closes the socket, and returns
+    ///      `Err(Error::Timeout)`.
+    ///
+    /// Threading: this method is **synchronous**. It is the caller's
+    /// responsibility to NOT have a Poller actively poll()-ing this same
+    /// stream from another thread during the drain — orderly shutdown is
+    /// inherently single-threaded. Calling drain() while another thread
+    /// runs the Poller would race on `state_` / fd reads.
+    ///
+    /// `close_gracefully()` is the lighter-weight cousin: it only sends
+    /// the FIN and returns immediately, leaving the wait-for-peer-FIN
+    /// behaviour to the caller's Poller loop. drain() exists for the
+    /// orderly-shutdown path where the caller needs a single
+    /// "everything is durably on the wire AND the peer has acknowledged"
+    /// guarantee — e.g. after a Cancel-On-Disconnect REST burst, or
+    /// before tearing the WebSocket down with a final close frame.
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    drain(std::chrono::milliseconds timeout) noexcept {
+        auto* log = detail::tcp_stream_logger();
+        SPDLOG_LOGGER_INFO(log,
+            "KernelTcpStream::drain entry: fd={} timeout_ms={}",
+            sock_.fd(), timeout.count());
+
+        // Precondition: only meaningful from Established. Anything else
+        // (Closed / FinWait* / TimeWait / pre-attach) is a user error —
+        // surface InvalidConfig so the caller doesn't conflate "we never
+        // got there" with "we tried but the peer didn't answer".
+        if (state_ != TcpState::Established) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::drain: state={} (need Established) — "
+                "rejecting", tcp_state_name(state_));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelTcpStream::drain: state != Established"});
+        }
+        if (timeout <= std::chrono::milliseconds::zero()) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::drain: timeout_ms={} must be > 0",
+                timeout.count());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelTcpStream::drain: timeout must be > 0"});
+        }
+
+        const int fd = sock_.fd();
+        if (fd < 0) {
+            // Already closed — treat as idempotent success (mirrors
+            // close_gracefully's "fd already closed" branch).
+            state_ = TcpState::Closed;
+            SPDLOG_LOGGER_DEBUG(log,
+                "KernelTcpStream::drain: fd already closed — no-op");
+            return {};
+        }
+
+        // Step 1: send our FIN. shutdown(SHUT_WR) flushes the kernel's
+        // send buffer first, then transmits FIN. This guarantees any
+        // TX bytes the application enqueued before drain() reach the
+        // peer before our half-close.
+        if (::shutdown(fd, SHUT_WR) != 0) {
+            const int err = errno;
+            // ENOTCONN: peer already closed before we got here. Treat as
+            // half-close-fulfilled, then proceed to wait for the rest of
+            // the teardown (peer FIN may already be queued to recv()).
+            if (err != ENOTCONN) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::drain: shutdown(SHUT_WR) fd={} "
+                    "errno={} ({})", fd, err, std::strerror(err));
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "KernelTcpStream::drain: shutdown(SHUT_WR) failed"});
+            }
+            SPDLOG_LOGGER_DEBUG(log,
+                "KernelTcpStream::drain: peer already closed (ENOTCONN) — "
+                "proceeding to wait for EOF");
+        }
+        state_ = TcpState::FinWait1;
+
+        // Step 2: deadline driven by TSC (cold path — TSC dominates over
+        // chrono only by being the codebase convention; either would be
+        // correct here). Compute the absolute deadline up front so the
+        // poll() subtimeout decreases monotonically.
+        const std::uint64_t start_tsc = ::eph::utils::TSC::now();
+        auto cycles_opt = ::eph::utils::TSC::to_cycles(timeout);
+        std::uint64_t deadline_tsc = 0;
+        bool tsc_available = cycles_opt.has_value();
+        if (tsc_available) {
+            // Saturate-add: if cycles_opt is large the addition might
+            // overflow. UINT64_MAX is the saturation sentinel from
+            // TSC::to_cycles itself.
+            if (*cycles_opt > UINT64_MAX - start_tsc) {
+                deadline_tsc = UINT64_MAX;
+            } else {
+                deadline_tsc = start_tsc + *cycles_opt;
+            }
+        }
+        // If TSC isn't calibrated (uncommon — only in early-boot tests),
+        // fall back to a single ::poll subtimeout equal to the entire
+        // budget. Less precise across multiple wakeups but functionally
+        // correct.
+        const auto deadline_steady =
+            std::chrono::steady_clock::now() + timeout;
+
+        // Step 3: drain loop. We wait for POLLIN on the fd, then call
+        // recv() once. recv() == 0 means the peer sent FIN — drain
+        // success. Any positive return is application data the peer
+        // emitted before its FIN; we discard it (codec is not driven
+        // during drain, see doxygen). EAGAIN/EWOULDBLOCK is impossible
+        // after a successful POLLIN-armed poll() but we tolerate it for
+        // robustness.
+        std::uint8_t scratch[detail::kNoSinkDrainBytes];
+        for (;;) {
+            // Compute remaining budget for this iteration's poll().
+            int subtimeout_ms;
+            if (tsc_available) {
+                const std::uint64_t now_tsc = ::eph::utils::TSC::now();
+                if (now_tsc >= deadline_tsc) {
+                    subtimeout_ms = 0;
+                } else {
+                    auto rem_ns_opt =
+                        ::eph::utils::TSC::to_ns(deadline_tsc - now_tsc);
+                    if (rem_ns_opt) {
+                        const std::uint64_t rem_ms = *rem_ns_opt / 1'000'000ull;
+                        // Cap at INT_MAX to satisfy poll(2)'s int parameter.
+                        subtimeout_ms = (rem_ms > static_cast<std::uint64_t>(INT_MAX))
+                            ? INT_MAX : static_cast<int>(rem_ms);
+                    } else {
+                        subtimeout_ms = 0;
+                    }
+                }
+            } else {
+                const auto rem = deadline_steady - std::chrono::steady_clock::now();
+                if (rem.count() <= 0) {
+                    subtimeout_ms = 0;
+                } else {
+                    auto rem_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(rem).count();
+                    subtimeout_ms = (rem_ms > INT_MAX) ? INT_MAX : static_cast<int>(rem_ms);
+                }
+            }
+
+            struct ::pollfd pfd{};
+            pfd.fd     = fd;
+            pfd.events = POLLIN;
+            const int prc = ::poll(&pfd, 1, subtimeout_ms);
+            if (prc < 0) {
+                const int err = errno;
+                if (err == EINTR) continue; // benign — re-check the deadline
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::drain: poll fd={} errno={} ({})",
+                    fd, err, std::strerror(err));
+                // Hard syscall failure is treated as a forced shutdown:
+                // best-effort close, no metric (the failure isn't a peer
+                // stall, so kRxSessionResets would be misleading).
+                state_ = TcpState::Closed;
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "KernelTcpStream::drain: poll() failed"});
+            }
+            if (prc == 0) {
+                // Timeout — peer never closed. Bump kRxSessionResets per
+                // the spec (semantic: "stream tore down a stalled session
+                // because the orderly drain timed out"), best-effort close,
+                // return Timeout.
+                const std::uint64_t end_tsc = ::eph::utils::TSC::now();
+                const auto elapsed_ns_opt =
+                    ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
+                inc_<::eph::net::StreamMetric::kRxSessionResets>();
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::drain: timeout fd={} elapsed_ns={} "
+                    "budget_ms={}",
+                    fd,
+                    elapsed_ns_opt ? *elapsed_ns_opt : 0ull,
+                    timeout.count());
+                // Best-effort: a second shutdown of the read half to make
+                // sure the kernel discards any pending RX bytes. Errors
+                // ignored — we are about to return Timeout anyway.
+                (void)::shutdown(fd, SHUT_RDWR);
+                state_ = TcpState::Closed;
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Timeout,
+                    "KernelTcpStream::drain: peer FIN-ACK timeout"});
+            }
+            // POLLIN fired (or POLLHUP/POLLERR — recv() will surface them).
+            // Drain whatever bytes are queued; recv() == 0 means peer FIN.
+            const ssize_t nr = ::recv(fd, scratch, sizeof(scratch), 0);
+            if (nr == 0) {
+                // Peer's FIN observed — orderly drain complete.
+                const std::uint64_t end_tsc = ::eph::utils::TSC::now();
+                const auto elapsed_ns_opt =
+                    ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
+                state_ = TcpState::Closed;
+                SPDLOG_LOGGER_INFO(log,
+                    "KernelTcpStream::drain exit: fd={} success "
+                    "elapsed_ns={}",
+                    fd, elapsed_ns_opt ? *elapsed_ns_opt : 0ull);
+                return {};
+            }
+            if (nr < 0) {
+                const int err = errno;
+                if (err == EAGAIN || err == EWOULDBLOCK || err == EINTR) {
+                    // Spurious wakeup — re-poll.
+                    continue;
+                }
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::drain: recv fd={} errno={} ({})",
+                    fd, err, std::strerror(err));
+                state_ = TcpState::Closed;
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "KernelTcpStream::drain: recv() failed"});
+            }
+            // nr > 0: post-FIN application bytes from the peer (or pre-FIN
+            // bytes that hadn't been delivered yet). We are not driving
+            // the codec here — drain is a teardown path, not a data path.
+            // The bytes are intentionally dropped. Loop and keep waiting
+            // for EOF.
+            SPDLOG_LOGGER_DEBUG(log,
+                "KernelTcpStream::drain: discarded {}B in-flight payload "
+                "from peer (fd={})", static_cast<std::size_t>(nr), fd);
+        }
     }
 
     [[nodiscard]] bool is_attached() const noexcept {
