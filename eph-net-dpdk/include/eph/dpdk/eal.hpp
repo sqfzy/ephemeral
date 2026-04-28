@@ -201,17 +201,12 @@ private:
 
     bool                  initialized_    = false;
     int                   args_consumed_  = 0;
-    /// Declared LAST so it destructs FIRST in field-destruction order —
-    /// wait, no: field destruction order is REVERSE of declaration. So
-    /// `pin_guard_` declared last destructs FIRST, which would unregister
-    /// cpus BEFORE eal_cleanup. That's not what we want.
-    ///
-    /// What we actually want: ~EalGuard() body runs eal_cleanup() first
-    /// (because the body executes BEFORE field destruction). Then field
-    /// destruction kicks in and pin_guard_ unregisters cpus. So the
-    /// field's destruction order relative to other fields doesn't matter
-    /// — what matters is that the body runs before any field destructs.
-    /// That's guaranteed by C++. ✓
+    /// Owns the cpus registered via `init_with_pins`. The
+    /// EAL-cleanup-then-pin-release ordering is guaranteed by C++
+    /// destruction rules: `~EalGuard()`'s body runs `eal_cleanup()`
+    /// before any field destructor fires, then `pin_guard_`'s dtor
+    /// unregisters cpus from the process-wide pin registry. Position
+    /// among the other fields is therefore irrelevant.
     RegisteredLcoreGuard  pin_guard_{};
 };
 
