@@ -152,6 +152,25 @@ target("test_eal_init_with_pins")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- RSS multi-queue fan-out regression test (real-NIC). N concurrent
+-- DpdkTcpStream attaches all pinned to the same queue + same endpoint
+-- — the canonical HFT producer pattern that previously trampled
+-- itself due to the deterministic find_src_port_for_queue scan.
+-- Forks the kernel mock dispatcher on NIC_A and brings up multi-queue
+-- enable_rss=true on NIC_B. SKIPs when NIC_B is not bound to vfio-pci
+-- or when the runtime dispatch_mode is not RssPartitioned.
+target("test_dpdk_rss_fanout")
+    add_rules("eph-test")
+    add_files("tests/integration/test_dpdk_rss_fanout.cpp")
+    add_includedirs("tests/integration")
+    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_packages("tomlplusplus")
+    add_defines("EPH_USE_DPDK=1")
+    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
+        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
+    apply_dpdk_pmd_linkgroups()
+
 -- Multi-process (primary+secondary) e2e test binaries — one per role,
 -- coordinated by tests/integration/dpdk_mp_e2e.sh. Each skips cleanly
 -- when the env vars set by the orchestrator are absent, so `xmake run -g

@@ -55,9 +55,23 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
     int listen_fd = *listen_r;
     spdlog::info("test_e2e tcp_echo_mock listening on {}:{}", ip, port);
 
-    constexpr size_t kBufSize = 16384;
-    std::vector<uint8_t> buf(kBufSize);
-
+    // Spawn a detached worker thread per accepted connection so multiple
+    // clients can be served concurrently (e.g. fan-out producer tests with
+    // N streams pinned to the same RSS queue all targeting this mock).
+    // Pre-fix: a single accept-then-serve loop served only one connection
+    // at a time; subsequent connects established at the kernel layer but
+    // never got their bytes echoed, surfacing as 5+ stream timeouts in
+    // multi-stream integration tests.
+    //
+    // Why detach (not join at shutdown): workers block in recv() until
+    // the peer closes the connection. On dispatcher shutdown we expect
+    // the test (DPDK side) to have already torn down its streams, so
+    // each worker's recv returns 0 and the thread exits naturally. If
+    // the test exits without closing cleanly, joining would block the
+    // mock dispatcher's exit path indefinitely (the previous version
+    // hung the parent waitpid for minutes). Detached is safe in test
+    // contexts: the mock dispatcher is in a forked child process that
+    // exits via _exit(0) on shutdown, which terminates all threads.
     while (running.load(std::memory_order_acquire)) {
         auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
         if (!cfd_r) {
@@ -67,12 +81,19 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
         if (*cfd_r < 0) break; // shutdown requested
         int cfd = *cfd_r;
 
-        while (true) {
-            ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
-            if (n <= 0) break;
-            if (!eph::net::posix::send_all(cfd, buf.data(), static_cast<size_t>(n))) break;
-        }
-        ::close(cfd);
+        // Each worker has its own buffer so concurrent clients do not
+        // contend on a shared region.
+        std::thread([cfd] {
+            constexpr size_t kBufSize = 16384;
+            std::vector<uint8_t> buf(kBufSize);
+            while (true) {
+                ssize_t n = ::recv(cfd, buf.data(), kBufSize, 0);
+                if (n <= 0) break;
+                if (!eph::net::posix::send_all(cfd, buf.data(),
+                                                static_cast<size_t>(n))) break;
+            }
+            ::close(cfd);
+        }).detach();
     }
     ::close(listen_fd);
 }

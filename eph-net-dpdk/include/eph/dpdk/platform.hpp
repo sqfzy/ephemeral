@@ -707,6 +707,20 @@ public:
     [[nodiscard]] ::eph::net::dpdk::DpdkPoller<void>*
         poller_for_queue(uint16_t queue_id) const noexcept;
 
+    /// @brief Unregister the Poller for `queue_id`. Idempotent — out-of-range
+    /// `queue_id`, an already-empty slot, and a moved-from Platform are all
+    /// silent no-ops. Caller is responsible for ensuring no `process_burst`
+    /// dispatch is in flight against this slot when the call returns; in
+    /// the typical pattern (Platform / Poller / streams all torn down on
+    /// the same lcore) that's automatic.
+    ///
+    /// Use case: tests that create + destroy Pollers within a longer-lived
+    /// Platform's lifetime, and applications that hot-swap a queue's
+    /// Poller (e.g. failover). Production code that creates one Poller per
+    /// queue at startup and tears the Platform down at shutdown does not
+    /// need to call this.
+    void unregister_poller(uint16_t queue_id) noexcept;
+
     // ── ICMP Frag Needed target registry ─────────────────────────────────
     //
     // ICMP messages can arrive on any RX queue (routers pick based on
@@ -1809,6 +1823,13 @@ Platform::poller_for_queue(uint16_t queue_id) const noexcept {
     if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
         return nullptr;
     return impl_->pollers[queue_id];
+}
+
+inline void Platform::unregister_poller(uint16_t queue_id) noexcept {
+    if (!impl_) return;
+    if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues)
+        return;
+    impl_->pollers[queue_id] = nullptr;
 }
 
 inline std::expected<Platform::IcmpTargetHandle, ::eph::core::ErrorInfo>
