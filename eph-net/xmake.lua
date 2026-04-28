@@ -29,11 +29,21 @@ target("eph-net")
     add_rules("utils.install.pkgconfig_importfiles")
 
 -- Module tests — one binary per test_*.cpp file (auto-globbed).
+--
+-- Most tests depend only on eph-net (concept layer). One test —
+-- `test_http_client.cpp` — drives an actual `HttpClient<KernelTcpStream<...>>`
+-- against an in-process server; it therefore additionally pulls in the
+-- kernel backend and the raw-stream codec. This is the same pattern used
+-- by `eph-net-kernel/tests/test_reconnect_orch_integration.cpp`.
 for _, file in ipairs(os.files("tests/**.cpp")) do
-    target(path.basename(file))
+    local name = path.basename(file)
+    target(name)
         add_rules("eph-test")
         add_files(file)
         add_deps("eph-net")
+        if name == "test_http_client" then
+            add_deps("eph-net-kernel", "eph-codec")
+        end
 end
 
 -- Module benchmarks — auto-globbed.
