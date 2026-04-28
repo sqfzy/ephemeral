@@ -675,9 +675,24 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
             "affinity verification mismatch for cpu " + std::to_string(cpu));
     }
 
+    // Final registry update: refuse if the cpu has been claimed concurrently
+    // (by another pin_thread or by register_external_pin between the policy
+    // check above and now). pthread_setaffinity_np already ran successfully,
+    // so the *OS* affinity is in effect even if we reject here — the caller
+    // is informed via the unexpected error and is responsible for whatever
+    // recovery makes sense (rebind elsewhere, accept the OS state, etc.).
     {
         std::lock_guard g(detail::g_pin_mutex);
+        if (detail::g_pinned_cpus.contains(cpu)) {
+            auto it = detail::g_pinned_owner_role.find(cpu);
+            std::string by = (it != detail::g_pinned_owner_role.end() && !it->second.empty())
+                                 ? std::format(" by {}", it->second)
+                                 : std::string{};
+            return std::unexpected(std::format(
+                "pin_thread: cpu {} already pinned{}", cpu, by));
+        }
         detail::g_pinned_cpus.insert(cpu);
+        detail::g_pinned_owner_role[cpu] = std::string{name};
     }
     detail::set_thread_name(name);
 

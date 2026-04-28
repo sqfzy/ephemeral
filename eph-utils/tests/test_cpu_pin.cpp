@@ -165,6 +165,70 @@ TEST(ExternalPin, NegativeCpuQueryReturnsFalse) {
     EXPECT_FALSE(is_cpu_externally_pinned(-9999));
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Cross-API contract: pin_thread and register_external_pin share the
+// process-wide registry, so the second to claim a cpu loses regardless
+// of which API claimed it first. (Stage 3 tightening: pin_thread no
+// longer silently succeeds on a duplicate.)
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(PinThreadDup, RepeatPinSameCpuRejected) {
+    reset_pin_registry_for_tests();
+    int cpu = pick_non_isolated_cpu();
+    if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
+
+    auto a = pin_thread(cpu, "first");
+    ASSERT_TRUE(a.has_value()) << (a ? "" : a.error());
+
+    auto b = pin_thread(cpu, "second");
+    ASSERT_FALSE(b.has_value());
+    EXPECT_NE(b.error().find("already pinned"), std::string::npos);
+    EXPECT_NE(b.error().find("first"), std::string::npos)
+        << "error must name the prior owner: " << b.error();
+}
+
+TEST(PinThreadDup, ExternalPinThenPinThreadSameCpuRejected) {
+    reset_pin_registry_for_tests();
+    int cpu = pick_non_isolated_cpu();
+    if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
+
+    ASSERT_TRUE(register_external_pin(cpu, "lcore-0(rx)").has_value());
+
+    auto r = pin_thread(cpu, "app-thread");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("already pinned"), std::string::npos);
+    EXPECT_NE(r.error().find("lcore-0(rx)"), std::string::npos)
+        << "pin_thread error should name the lcore that owns the cpu: "
+        << r.error();
+}
+
+TEST(PinThreadDup, PinThreadThenExternalPinSameCpuRejected) {
+    reset_pin_registry_for_tests();
+    int cpu = pick_non_isolated_cpu();
+    if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
+
+    ASSERT_TRUE(pin_thread(cpu, "app-thread").has_value());
+
+    auto r = register_external_pin(cpu, "lcore-0");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("already occupied"), std::string::npos);
+    EXPECT_NE(r.error().find("app-thread"), std::string::npos)
+        << "register_external_pin error should name the pin_thread owner: "
+        << r.error();
+}
+
+TEST(PinThreadDup, UnregisterExternalThenPinThreadSucceeds) {
+    reset_pin_registry_for_tests();
+    int cpu = pick_non_isolated_cpu();
+    if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
+
+    ASSERT_TRUE(register_external_pin(cpu, "lcore-0").has_value());
+    unregister_external_pin(cpu);
+
+    auto r = pin_thread(cpu, "app-thread");
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error());
+}
+
 TEST(ExternalPin, ResetForTestsClearsBothMaps) {
     ASSERT_TRUE(register_external_pin(8, "lcore-2").has_value());
     EXPECT_TRUE(is_cpu_externally_pinned(8));
