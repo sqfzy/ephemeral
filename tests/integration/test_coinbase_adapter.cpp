@@ -354,23 +354,14 @@ TEST(CoinbaseAdapterIntegration, UserChannelJwtRoundTripsAcrossReconnect) {
 
     auto poller = ek::KernelPoller::create({}).value();
 
-    std::vector<std::string> incoming;
-    std::mutex incoming_mu;
-    auto on_message = [&](std::span<const uint8_t> bytes) {
-        std::lock_guard lk(incoming_mu);
-        incoming.emplace_back(
-            reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    };
+    eph::test::IncomingSink incoming;
+    auto on_message = incoming.sink();
 
     const uint16_t port = server.port();
-    auto factory = [&]() -> std::expected<Orch::StreamPtr, eph::core::ErrorInfo> {
-        auto sr = TlsWsStream::create(make_config(port));
-        if (!sr) return std::unexpected(sr.error());
-        (*sr)->on_message = on_message;
-        return std::move(*sr);
-    };
-    auto attach = [&](TlsWsStream* s) { return poller->add(s); };
-    auto detach = [&](TlsWsStream* s) { (void)poller->remove(s); };
+    auto factory = eph::test::make_stream_factory<TlsWsStream>(
+        [port]() { return make_config(port); }, on_message);
+    auto attach = eph::test::make_attach<TlsWsStream>(*poller);
+    auto detach = eph::test::make_detach<TlsWsStream>(*poller);
 
     std::atomic<uint64_t> on_reconnect_calls{0};
     auto on_reconnect = [&](uint32_t /*attempt*/, uint64_t /*ns*/) {
@@ -413,11 +404,7 @@ TEST(CoinbaseAdapterIntegration, UserChannelJwtRoundTripsAcrossReconnect) {
     }
 
     bool got_ack_1 = drive_until(*poller, orch, [&]() {
-        std::lock_guard lk(incoming_mu);
-        for (auto& m : incoming)
-            if (m.find(R"("channel":"subscriptions")") != std::string::npos)
-                return true;
-        return false;
+        return incoming.contains(R"("channel":"subscriptions")");
     });
     ASSERT_TRUE(got_ack_1)
         << "Server never delivered subscriptions ack on first connect";
@@ -466,11 +453,7 @@ TEST(CoinbaseAdapterIntegration, UserChannelJwtRoundTripsAcrossReconnect) {
     }
 
     bool got_ack_2 = drive_until(*poller, orch, [&]() {
-        std::lock_guard lk(incoming_mu);
-        size_t n = 0;
-        for (auto& m : incoming)
-            if (m.find(R"("channel":"subscriptions")") != std::string::npos) ++n;
-        return n >= 2;
+        return incoming.count_with(R"("channel":"subscriptions")") >= 2;
     });
     ASSERT_TRUE(got_ack_2)
         << "Server did not deliver subscriptions ack on reconnect";

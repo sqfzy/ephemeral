@@ -127,29 +127,21 @@ TEST(OkxAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
 
     auto poller = ek::KernelPoller::create({}).value();
 
-    // Captured frames (text payloads) the codec emits to user code.
-    std::vector<std::string> incoming;
-    std::mutex incoming_mu;
-    auto on_message = [&](std::span<const uint8_t> bytes) {
-        std::lock_guard lk(incoming_mu);
-        incoming.emplace_back(
-            reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    };
+    // Captured frames (text payloads) the codec emits to user code —
+    // owned by the shared `IncomingSink`. `sink()` returns the lambda
+    // we install as `on_message` (the orchestrator factory wires it).
+    eph::test::IncomingSink incoming;
+    auto on_message = incoming.sink();
 
-    // Factory: build a fresh TLS+WS stream every connect attempt. We assign
-    // the on_message hook here so the orchestrator doesn't have to know
-    // about the user's frame sink — this matches the canonical adapter
-    // wiring pattern.
+    // Factory: build a fresh TLS+WS stream every connect attempt. The
+    // shared helper handles `Stream::create` + on_message wiring; we
+    // only need to provide the per-attempt config builder.
     const uint16_t port = server.port();
-    auto factory = [&]() -> std::expected<Orch::StreamPtr, eph::core::ErrorInfo> {
-        auto sr = TlsWsStream::create(make_config(port));
-        if (!sr) return std::unexpected(sr.error());
-        (*sr)->on_message = on_message;
-        return std::move(*sr);
-    };
+    auto factory = eph::test::make_stream_factory<TlsWsStream>(
+        [port]() { return make_config(port); }, on_message);
 
-    auto attach = [&](TlsWsStream* s) { return poller->add(s); };
-    auto detach = [&](TlsWsStream* s) { (void)poller->remove(s); };
+    auto attach = eph::test::make_attach<TlsWsStream>(*poller);
+    auto detach = eph::test::make_detach<TlsWsStream>(*poller);
 
     std::atomic<uint64_t> on_reconnect_calls{0};
     auto on_reconnect = [&](uint32_t /*attempt*/, uint64_t /*ns*/) {
@@ -202,12 +194,7 @@ TEST(OkxAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
 
     // Drive until the ack lands or budget elapses.
     bool got_ack = drive_until(*poller, orch, [&]() {
-        std::lock_guard lk(incoming_mu);
-        for (auto& m : incoming) {
-            if (m.find("\"event\":\"subscribe\"") != std::string::npos)
-                return true;
-        }
-        return false;
+        return incoming.contains("\"event\":\"subscribe\"");
     });
     ASSERT_TRUE(got_ack) << "Server never delivered subscribe-ack";
 
@@ -248,15 +235,10 @@ TEST(OkxAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
                                      << sr2.error().detail;
     }
 
-    // Drive until the second ack lands.
+    // Drive until the second ack lands. Initial drive_until already saw
+    // one — we want at least two now.
     bool got_ack_2 = drive_until(*poller, orch, [&]() {
-        std::lock_guard lk(incoming_mu);
-        // Count number of acks seen. Initial drove one; we want at least
-        // two now.
-        size_t n = 0;
-        for (auto& m : incoming)
-            if (m.find("\"event\":\"subscribe\"") != std::string::npos) ++n;
-        return n >= 2;
+        return incoming.count_with("\"event\":\"subscribe\"") >= 2;
     });
     ASSERT_TRUE(got_ack_2) << "Server did not deliver subscribe-ack on reconnect";
 

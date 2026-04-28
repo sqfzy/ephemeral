@@ -31,7 +31,6 @@
 #include <cstring>
 #include <expected>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -108,23 +107,14 @@ TEST(BybitAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
 
     auto poller = ek::KernelPoller::create({}).value();
 
-    std::vector<std::string> incoming;
-    std::mutex incoming_mu;
-    auto on_message = [&](std::span<const uint8_t> bytes) {
-        std::lock_guard lk(incoming_mu);
-        incoming.emplace_back(
-            reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    };
+    eph::test::IncomingSink incoming;
+    auto on_message = incoming.sink();
 
     const uint16_t port = server.port();
-    auto factory = [&]() -> std::expected<Orch::StreamPtr, eph::core::ErrorInfo> {
-        auto sr = TlsWsStream::create(make_config(port));
-        if (!sr) return std::unexpected(sr.error());
-        (*sr)->on_message = on_message;
-        return std::move(*sr);
-    };
-    auto attach = [&](TlsWsStream* s) { return poller->add(s); };
-    auto detach = [&](TlsWsStream* s) { (void)poller->remove(s); };
+    auto factory = eph::test::make_stream_factory<TlsWsStream>(
+        [port]() { return make_config(port); }, on_message);
+    auto attach = eph::test::make_attach<TlsWsStream>(*poller);
+    auto detach = eph::test::make_detach<TlsWsStream>(*poller);
 
     std::atomic<uint64_t> on_reconnect_calls{0};
     auto on_reconnect = [&](uint32_t /*attempt*/, uint64_t /*ns*/) {
@@ -165,16 +155,11 @@ TEST(BybitAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
         ASSERT_TRUE(sr2.has_value()) << "send subscribe: " << sr2.error().detail;
     }
 
+    // Bybit's success ack carries `"success":true` in the body — the
+    // most distinctive marker. (`"op":"subscribe"` would also match the
+    // request we just sent if it came back via echo.)
     bool got_ack = drive_until(*poller, orch, [&]() {
-        std::lock_guard lk(incoming_mu);
-        for (auto& m : incoming) {
-            // Bybit's success ack carries `"success":true` in the body —
-            // the most distinctive marker. (`"op":"subscribe"` would also
-            // match the request we just sent if it came back via echo.)
-            if (m.find("\"success\":true") != std::string::npos)
-                return true;
-        }
-        return false;
+        return incoming.contains("\"success\":true");
     });
     ASSERT_TRUE(got_ack) << "Server never delivered Bybit subscribe-ack";
 
@@ -206,11 +191,7 @@ TEST(BybitAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
     }
 
     bool got_ack_2 = drive_until(*poller, orch, [&]() {
-        std::lock_guard lk(incoming_mu);
-        size_t n = 0;
-        for (auto& m : incoming)
-            if (m.find("\"success\":true") != std::string::npos) ++n;
-        return n >= 2;
+        return incoming.count_with("\"success\":true") >= 2;
     });
     ASSERT_TRUE(got_ack_2) << "Server did not deliver Bybit ack on reconnect";
 
