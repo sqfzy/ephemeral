@@ -751,6 +751,30 @@ public:
             }
         }
 
+        // ── Optional: resolve per-lcore mempool hint ─────────────────────────
+        //
+        // When `cfg.pool_lcore_hint >= 0`, override `cfg.pool` with the
+        // Platform's per-lcore pool for that lcore id. This is the
+        // NUMA-aware allocation path (T2.9). When the hint is -1 (default)
+        // we leave `cfg.pool` untouched — backwards compatible with every
+        // call site that pre-dates per-lcore pools and populates pool by
+        // hand from `platform.mempool()`.
+        if (cfg.pool_lcore_hint >= 0) {
+            const auto lcore_id =
+                static_cast<uint16_t>(cfg.pool_lcore_hint);
+            auto* p = platform.pool_for_lcore(lcore_id);
+            if (p == nullptr) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: pool_for_lcore({}) returned nullptr "
+                    "(per_lcore_pools may be 0 with non-zero hint, or hint "
+                    "exceeds per_lcore_pools)", lcore_id);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pool_for_lcore lookup returned nullptr"});
+            }
+            cfg.pool = p;
+        }
+
         // ── Phase 2: actual stream construction (TCP handshake + TLS + WS) ──
         auto sr = create(std::move(cfg));
         if (!sr) return std::unexpected(sr.error());
