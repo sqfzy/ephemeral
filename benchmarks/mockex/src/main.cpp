@@ -16,6 +16,8 @@
 #include <string>
 #include <string_view>
 
+#include <sys/prctl.h>
+
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -141,6 +143,21 @@ int main(int argc, char** argv) {
     // we already use MSG_NOSIGNAL in eph::net::posix::send_all, but
     // covering the signal here is belt + braces for future scenarios.
     std::signal(SIGPIPE, SIG_IGN);
+
+    // Parent-death watchdog: when mockex is fork()ed by a test runner
+    // (mockex/tests/test_mockex_*) and then exec'd into here via the
+    // sequence `fork -> execl(mockex)`, PR_SET_PDEATHSIG persists across
+    // execve for non-setuid binaries. If the test runner crashes without
+    // SIGTERM-ing us, the kernel delivers SIGTERM here, which the
+    // shutdown handler installed above converts to a clean
+    // `g_shutdown_flag = false` — every scenario handler polls that flag
+    // and exits its loop. Without this, mockex can survive 4+ hours
+    // holding bench ports (observed pattern with the DPDK rss_fanout
+    // mock dispatcher; the same orphan class applies here). Errors are
+    // swallowed: defensive watchdog, not a hard requirement; the test
+    // runners' explicit SIGTERM in their teardown still covers the
+    // happy path.
+    (void)::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
 
     mockex::ScenarioContext ctx{
         .scenario_name = entry->section,
