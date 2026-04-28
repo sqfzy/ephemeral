@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <string_view>
 
 // Note: deliberately NOT including dpdk_test_env.hpp — all tests here are
 // pure codec / validation tests that don't need EAL initialization.
@@ -357,11 +358,18 @@ TEST(DnsResolve, DottedDecimalBypassesDns) {
     EXPECT_EQ(*result, 0xC0A80101u);
 }
 
+// resolve() now returns std::expected<uint32_t, eph::core::ErrorInfo>
+// (T3.18 alignment with project-wide error type). Each pre-flight
+// rejection maps to Error::InvalidConfig with a static-literal `detail`
+// string; we assert on .detail substring + .code rather than the old
+// std::string error.
 TEST(DnsResolve, EmptyHostnameReturnsError) {
     rte_ether_addr dummy_mac{};
     auto result = dns::resolve(0, 0, nullptr, dummy_mac, dummy_mac, 0, "");
     ASSERT_FALSE(result.has_value());
-    EXPECT_NE(result.error().find("empty"), std::string::npos);
+    EXPECT_EQ(result.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{result.error().detail}.find("empty"),
+              std::string_view::npos);
 }
 
 TEST(DnsResolve, NullMempoolReturnsError) {
@@ -369,7 +377,9 @@ TEST(DnsResolve, NullMempoolReturnsError) {
     auto result = dns::resolve(0, 0, nullptr, dummy_mac, dummy_mac, 0,
                                "example.com");
     ASSERT_FALSE(result.has_value());
-    EXPECT_NE(result.error().find("mempool"), std::string::npos);
+    EXPECT_EQ(result.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{result.error().detail}.find("mempool"),
+              std::string_view::npos);
 }
 
 TEST(DnsResolve, ZeroNameserverReturnsError) {
@@ -380,7 +390,15 @@ TEST(DnsResolve, ZeroNameserverReturnsError) {
     auto result = dns::resolve(0, 0, fake_pool, dummy_mac, dummy_mac, 0,
                                "example.com", cfg);
     ASSERT_FALSE(result.has_value());
-    EXPECT_NE(result.error().find("nameserver_ip"), std::string::npos);
+    EXPECT_EQ(result.error().code, eph::core::Error::InvalidConfig);
+    // detail is a static literal "Invalid DNS config" — the per-field
+    // diagnostic ("nameserver_ip must not be 0") goes to the spdlog ERROR
+    // line. We accept either form so the assertion remains stable across
+    // future detail-string tweaks.
+    auto sv = std::string_view{result.error().detail};
+    EXPECT_TRUE(sv.find("Invalid DNS config") != std::string_view::npos ||
+                sv.find("nameserver_ip") != std::string_view::npos)
+        << "unexpected detail: '" << sv << "'";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

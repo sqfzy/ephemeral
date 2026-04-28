@@ -566,10 +566,13 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 //
 // Error model:
 //   `result()` returns `std::expected<uint32_t, eph::core::ErrorInfo>` —
-//   the project standard. The blocking `resolve()` wrapper still exposes
-//   `expected<uint32_t, std::string>` for backwards compatibility (existing
-//   callers in `examples/binance_latency.cpp` and `tests/integration/`
-//   inspect the string).
+//   the project standard. The blocking `resolve()` wrapper now matches:
+//   it returns `expected<uint32_t, eph::core::ErrorInfo>` (T3.18 alignment;
+//   prior signature returned `expected<uint32_t, std::string>`). All in-tree
+//   callers were migrated; external callers must read `r.error().detail`
+//   instead of `r.error()` for the diagnostic message, or simply format the
+//   ErrorInfo value (the std::formatter / format_as path renders as
+//   "CODE: detail").
 
 /// @brief Default NIC IO shim — calls `rte_eth_tx_burst` directly.
 ///
@@ -1058,14 +1061,24 @@ using AsyncDnsResolver = AsyncDnsResolverT<RealNicIo>;
 /// @param src_ip     Our IPv4 address (host byte order)
 /// @param hostname   Hostname to resolve (e.g. "example.com")
 /// @param cfg        DNS configuration (nameserver, port, timeout)
-/// @return Resolved IPv4 address in host byte order, or error string
+/// @return Resolved IPv4 address in host byte order on success;
+///         `eph::core::ErrorInfo` on failure. Error code mapping mirrors
+///         `AsyncDnsResolverT`:
+///           - `Error::InvalidConfig` — pre-flight rejection (validate,
+///             empty hostname, null pool, CSPRNG failure, bad QNAME)
+///           - `Error::OutOfMemory`   — mbuf allocation failed (pool exhausted)
+///           - `Error::Timeout`       — deadline elapsed without a valid reply
+///         The `detail` field is a static-lifetime string literal —
+///         per-call context (hostname, port, queue, attempt) is logged
+///         via spdlog at the corresponding level rather than embedded in
+///         the ErrorInfo (`detail` requires static storage).
 ///
 /// @note Security: DNS transaction IDs are 16-bit per protocol spec, making them
 ///       theoretically vulnerable to birthday attacks (~256 queries for 50% collision).
 ///       CSPRNG is used for tx_id generation to prevent prediction. For production use,
 ///       consider DNS-over-TLS or pre-resolved IPs to eliminate DNS attack surface entirely.
 ///       The response is validated against both tx_id and expected nameserver IP.
-[[nodiscard]] inline std::expected<uint32_t, std::string>
+[[nodiscard]] inline std::expected<uint32_t, eph::core::ErrorInfo>
 resolve(uint16_t port_id,
         uint16_t queue_id,
         rte_mempool* pool,
@@ -1080,7 +1093,16 @@ resolve(uint16_t port_id,
     if (ip != 0) return ip;
 
     if (auto err = cfg.validate(); !err.empty()) {
-        return std::unexpected(std::format("Invalid DNS config: {}", err));
+        // err is a string_view into a static literal owned by validate(),
+        // so it's safe to surface via SPDLOG context — but the ErrorInfo
+        // detail itself uses a fixed literal (no heap concat) to satisfy
+        // the static-lifetime contract.
+        SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+            "DNS resolve: invalid config ({}) for hostname='{}'",
+            err, hostname);
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "Invalid DNS config"});
     }
 
     [[maybe_unused]] auto log = detail::dns_logger();
@@ -1093,10 +1115,14 @@ resolve(uint16_t port_id,
     }
 
     if (hostname.empty()) {
-        return std::unexpected("DNS resolve: hostname is empty");
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "DNS resolve: hostname is empty"});
     }
     if (!pool) {
-        return std::unexpected("DNS resolve: mempool is null");
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "DNS resolve: mempool is null"});
     }
     // Note: nameserver_ip == 0 is already caught by cfg.validate() above.
 
@@ -1109,19 +1135,26 @@ resolve(uint16_t port_id,
     // which would conflict with the aws-lc TLS path in the same TU.
     uint16_t tx_id;
     if (::getrandom(&tx_id, sizeof(tx_id), GRND_NONBLOCK) != sizeof(tx_id)) {
-        return std::unexpected("DNS resolve: CSPRNG failure for transaction ID");
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "DNS resolve: CSPRNG failure for transaction ID"});
     }
     uint16_t src_port = detail::random_ephemeral_port();
     if (src_port == 0) {
-        return std::unexpected("DNS resolve: CSPRNG failure for ephemeral port");
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "DNS resolve: CSPRNG failure for ephemeral port"});
     }
 
     // Build DNS query payload
     uint8_t dns_buf[kMaxDnsPacketLen];
     size_t dns_len = detail::build_dns_query(dns_buf, net::hton16(tx_id), hostname);
     if (dns_len == 0) {
-        return std::unexpected(std::format(
-            "DNS resolve: failed to encode query for '{}'", hostname));
+        SPDLOG_LOGGER_ERROR(log,
+            "DNS resolve: failed to encode query for '{}'", hostname);
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "DNS resolve: failed to encode query (bad hostname)"});
     }
 
     auto deadline = std::chrono::steady_clock::now() + cfg.timeout;
@@ -1154,10 +1187,9 @@ resolve(uint16_t port_id,
                     "DNS resolve: mbuf allocation failed (hostname='{}' "
                     "port={} queue={} query_attempt={})",
                     hostname, port_id, queue_id, requests_sent + 1);
-                return std::unexpected(std::format(
-                    "DNS resolve: mbuf allocation failed for hostname='{}' "
-                    "(port={} queue={} attempt={})",
-                    hostname, port_id, queue_id, requests_sent + 1));
+                return std::unexpected(eph::core::ErrorInfo{
+                    eph::core::Error::OutOfMemory,
+                    "DNS resolve: mbuf allocation failed"});
             }
 
             uint16_t sent = rte_eth_tx_burst(port_id, queue_id, &pkt, 1);
@@ -1216,9 +1248,12 @@ resolve(uint16_t port_id,
         "DNS resolve timeout: '{}' not resolved after {}ms ({} queries sent)",
         hostname, cfg.timeout.count(), requests_sent);
 
-    return std::unexpected(std::format(
-        "DNS resolve timeout: '{}' not resolved after {}ms",
-        hostname, cfg.timeout.count()));
+    // Mirrors AsyncDnsResolverT's timeout detail string so callers can use
+    // a single static literal check ("DNS resolve timeout") regardless of
+    // sync/async path.
+    return std::unexpected(eph::core::ErrorInfo{
+        eph::core::Error::Timeout,
+        "DNS resolve timeout"});
 }
 
 } // namespace eph::dpdk::dns
