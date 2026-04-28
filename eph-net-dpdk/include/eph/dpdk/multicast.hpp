@@ -252,15 +252,19 @@ struct MulticastConfig {
     [[nodiscard]] std::string dump() const {
         return std::format(
             "MulticastConfig:\n"
-            "  port_id: {}, rx_queue: {}, rx_cpu: {}, rx_burst: {}",
-            port_id, rx_queue_id, rx_cpu, rx_burst);
+            "  port_id: {}, rx_queue: {}, rx_cpu: {}, rx_burst: {}, "
+            "rss_active_multi_queue: {}",
+            port_id, rx_queue_id, rx_cpu, rx_burst,
+            rss_active_multi_queue);
     }
 
     /// JSON-formatted config for monitoring system integration.
     [[nodiscard]] std::string to_json() const {
         return std::format(
-            "{{\"port_id\":{},\"rx_queue_id\":{},\"rx_cpu\":{},\"rx_burst\":{}}}",
-            port_id, rx_queue_id, rx_cpu, rx_burst);
+            "{{\"port_id\":{},\"rx_queue_id\":{},\"rx_cpu\":{},"
+            "\"rx_burst\":{},\"rss_active_multi_queue\":{}}}",
+            port_id, rx_queue_id, rx_cpu, rx_burst,
+            rss_active_multi_queue);
     }
 };
 

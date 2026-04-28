@@ -427,6 +427,10 @@ TEST(MulticastConfigObservability, DumpContainsFields) {
     EXPECT_NE(d.find("rx_queue: 2"), std::string::npos);
     EXPECT_NE(d.find("rx_cpu: 3"), std::string::npos);
     EXPECT_NE(d.find("rx_burst: 64"), std::string::npos);
+    // The RSS-multi-queue safety flag must be visible to operators —
+    // otherwise an `rss_active_multi_queue=true` config that fails the
+    // start() gate looks identical to a sane config in logs.
+    EXPECT_NE(d.find("rss_active_multi_queue"), std::string::npos);
 }
 
 TEST(MulticastConfigObservability, ToJsonFormat) {
@@ -434,6 +438,18 @@ TEST(MulticastConfigObservability, ToJsonFormat) {
     auto j = cfg.to_json();
     EXPECT_NE(j.find("\"port_id\":0"), std::string::npos);
     EXPECT_NE(j.find("\"rx_burst\":32"), std::string::npos);
+    // JSON dump goes to monitoring systems — the safety flag must be
+    // queryable there too. Default is `false`; we assert the literal so
+    // a future field-rename (e.g. snake_case → camelCase) breaks loud.
+    EXPECT_NE(j.find("\"rss_active_multi_queue\":false"), std::string::npos);
+}
+
+TEST(MulticastConfigObservability, ToJsonReflectsRssFlagWhenTrue) {
+    MulticastConfig cfg{};
+    cfg.rss_active_multi_queue = true;
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"rss_active_multi_queue\":true"), std::string::npos)
+        << "to_json() must surface the RSS safety flag both ways: " << j;
 }
 
 TEST(MulticastConfigValidation, NegativeCpuAffinity) {
