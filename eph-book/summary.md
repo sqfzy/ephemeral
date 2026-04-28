@@ -439,6 +439,18 @@ xmake run test_signals
 
 All three finish in well under a second.
 
+The two **adapter** classes are exercised by cross-module integration
+tests that live under the repo-root `tests/integration/` (so they can
+link both `eph-book` and the relevant feed parser without forcing a
+parser dep on the in-module test targets):
+
+- `test_binance_adapter` — `BinanceBookAdapter<N>::update_from_ticker`
+  + `load_snapshot` end-to-end against captured Binance JSON
+  (`tests/integration/test_binance_adapter.cpp`).
+- `test_itch_adapter` — `ItchBookBuilder<N>::process` for every wired
+  ITCH message type, including the share-clamp guard
+  (`tests/integration/test_itch_adapter.cpp`).
+
 ---
 
 ## Benchmarks
