@@ -52,6 +52,51 @@ misconfiguration too.
   RSS hard-fail / single-queue unchanged). SKIPs cleanly when NIC_B
   isn't bound to vfio-pci.
 
+### Fixed — RSS-pinned stream handshake silently times out (2026-04-28)
+
+- `DpdkTcpStream::create_and_attach` (and the matching UDP path) in
+  `RssPartitioned` mode resolved `pin_to_queue=N` correctly at the
+  RSS-prediction layer (engineered an `src_port` whose 5-tuple hashes
+  to queue N, set `target_qid=N` for the Poller-attach step) but
+  forgot to align `cfg.legacy.{rx,tx}_queue_id` with `target_qid`.
+  Effect: `TStream::create()` drove the SYN/SYN-ACK/ACK handshake by
+  polling `cfg.legacy.rx_queue_id` (default 0 from `make_tcp_config`)
+  while the SYN-ACK actually landed on queue N per the engineered
+  src_port. Result: every `pin_to_queue!=0` attach silently timed out
+  at 10s. Single-queue-0 deployments worked by accident (queue 0 is
+  the catch-all on ENA, masking the misalignment).
+- New regression `PlatformRssFanout.NStreamsDistributedAcrossQueues`
+  (`tests/integration/test_dpdk_rss_fanout.cpp`) exercises this on the
+  real NIC.
+
+### Added — Multicast RSS multi-queue safety gate (2026-04-28)
+
+- `MulticastConfig::rss_active_multi_queue` (default `false`). When the
+  underlying Platform has RSS active across multiple queues,
+  `MulticastReceiver::start()` now fail-fasts unless the caller
+  explicitly clears this flag *and* installs a per-group FlowDirector
+  rule pinning each joined group to `rx_queue_id`. Multicast UDP is in
+  the project's RSS hash set (`RTE_ETH_RSS_NONFRAG_IPV4_UDP`), so
+  inbound packets get hashed across queues with no caller-controllable
+  steering input. Previously the receiver only polled one queue and
+  silently dropped the rest. Default value preserves pre-fix behaviour
+  on single-queue / non-RSS Platforms.
+- `MulticastConfig::dump()` and `to_json()` now surface
+  `rss_active_multi_queue` so operators see the flag value in logs and
+  monitoring dashboards.
+
+### Fixed — find_src_port_for_queue Toeplitz argument transposition (2026-04-28)
+
+- The pre-fix helper put the local `sp` candidate in the *src_port*
+  slot of the RSS hash input while the inbound SYN-ACK has it in the
+  *dst_port* slot. Toeplitz is not symmetric in argument order — the
+  predicted queue diverged from the queue the NIC actually picked,
+  ~75% of the time on a 4-queue RETA. Helper signature now takes
+  `(remote_ip, remote_port, local_ip)` explicitly and searches `sp` in
+  the dst_port slot. Companion fan-out distinctness counter
+  (`g_src_port_search_counter`) preserves N concurrent fan-out streams
+  to the same exchange landing on distinct 5-tuples.
+
 ## [Unreleased] — review sweep (2026-04-23 / 2026-04-24)
 
 Post-v0.1.0 review-and-implement sweep focused on easy-of-use, simplicity,
