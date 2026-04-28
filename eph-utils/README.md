@@ -31,7 +31,9 @@ eph-utils/
 │       │                             set_thread_realtime, cpu_relax,
 │       │                             spin_for_ns, pin_thread +
 │       │                             CpuPinPolicy (strict isolcpus /
-│       │                             SMT / NUMA / IRQ validation)
+│       │                             SMT / NUMA / IRQ validation),
+│       │                             register_external_pin (DPDK lcore
+│       │                             & RT framework integration)
 │       ├── ema.hpp                -- Ema, EmaCrossover
 │       ├── hdr_histogram.hpp      -- HdrHistogram, measure_tsc, ScopedTSC,
 │       │                             Stats

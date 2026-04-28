@@ -26,6 +26,12 @@ proc_type` / `file_prefix` / `rx_queue_range` fields default to single-
 process / primary so existing code is byte-for-byte compatible. Full
 contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
 
+For lcore × application-thread cpu pinning (so `pin_thread` can detect
+SMT / NUMA conflicts against running EAL lcores), use the typed
+`eph::dpdk::LcorePin` + `EalGuard::init_with_pins` API in
+`eph/dpdk/lcore_pin.hpp` and `eph/dpdk/eal.hpp`. Full rationale and
+escape-hatch rules: [`docs/lcore-pin-integration.md`](docs/lcore-pin-integration.md).
+
 ## Internal detail layer
 
 `eph-net-dpdk` wraps a rich set of low-level DPDK primitives that live under
