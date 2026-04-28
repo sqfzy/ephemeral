@@ -21,11 +21,12 @@
 ///     fallible-API convention.
 ///   - No exceptions (SPDLOG_NO_EXCEPTIONS is defined in tests).
 ///
-/// The legacy `eph::net::SocketTransport` already has ~600 lines of hardened
-/// connect/send/recv logic. We intentionally re-implement a minimal subset
-/// here rather than wrapping it: the legacy class is tied to the v2.x
-/// `TcpTransport` concept and carries timestamping / histogram baggage that
-/// belongs at a higher layer.
+/// History: ByteSocket grew out of (a minimal subset of) the pre-v3.3
+/// `eph::net::SocketTransport` connect/send/recv loop, deliberately
+/// stripped of the timestamping / histogram baggage that was tied to
+/// the retired `TcpTransport` concept. Today this is just a small
+/// non-blocking-fd RAII helper; the production transport surface is
+/// `eph::net::kernel::KernelTcpStream` (this header is `detail/`).
 
 #include <cerrno>
 #include <chrono>
