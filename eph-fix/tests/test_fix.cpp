@@ -3004,6 +3004,37 @@ TEST(FixBuilderFinish, header_overflow_with_huge_body_length) {
     EXPECT_TRUE(b.has_overflow());
 }
 
+TEST(FixBuilderFinish, oversized_begin_string_caps_at_32) {
+    // Exercise the early begin_string size cap. A 64-char begin_string
+    // would otherwise risk a stack-buffer overflow on the internal
+    // header[] scratch (see eph/fix/builder.hpp::finish for the
+    // reasoning). Verify the early-out fires cleanly: overflow flag
+    // set, finish() returns 0, no UB.
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    std::string oversized_begin_string(64, 'X');  // 64 > 32 cap
+    size_t len = b.finish(oversized_begin_string);
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilderFinish, begin_string_at_32_byte_boundary_handled) {
+    // Boundary check: exactly 32 bytes is allowed by the cap, so the
+    // early-out does NOT fire — but the subsequent hpos > body_start_
+    // check (with default kHeaderReserve=32) still catches the overflow
+    // because "8=" + 32 + "\x01" + "9=" + digits + "\x01" > 32.
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    std::string at_boundary(32, 'X');
+    size_t len = b.finish(at_boundary);
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
 TEST(FixBuilderFinish, exact_fit_succeeds) {
     // Ensure a message that exactly fills the buffer succeeds.
     // Build a minimal message and verify it produces valid output.
