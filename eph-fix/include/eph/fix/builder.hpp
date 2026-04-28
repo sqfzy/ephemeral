@@ -382,7 +382,22 @@ public:
 
         // Format the header: "8=FIX.4.4\x019=NNNNN\x01"
         // Build it in a temp buffer, then check if it fits in the reserved space.
-        char header[48];
+        //
+        // header[] sizing: kHeaderBufSize must accommodate the worst case
+        //   "8=" (2) + begin_string + "\x01" (1) + "9=" (2) + uint64_t-as-decimal
+        //   (up to 20 digits) + "\x01" (1) = 26 + begin_string.size().
+        // We cap begin_string at 32 bytes (FIX-realistic max — "FIX.4.4"=7,
+        // "FIXT.1.1"=8; anything longer is misuse) and size header[] to fit
+        // that bound with safety margin.
+        static constexpr size_t kMaxBeginString = 32;
+        static constexpr size_t kHeaderBufSize  = 64;  // 26 + 32 = 58, rounded up
+        if (begin_string.size() > kMaxBeginString) [[unlikely]] {
+            log_header_overflow(2 + begin_string.size() + 4, body_start_);
+            overflow_ = true;
+            return 0;
+        }
+
+        char header[kHeaderBufSize];
         size_t hpos = 0;
 
         // "8="
