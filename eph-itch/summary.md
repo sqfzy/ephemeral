@@ -476,3 +476,10 @@ xmake run test_moldudp64
 xmake run test_ouch
 xmake run test_soupbintcp
 ```
+
+The cross-module integration test `test_itch_adapter` in
+`tests/integration/test_itch_adapter.cpp` exercises
+`eph::book::ItchBookBuilder<N>::process` against every wired ITCH
+message type — it lives at the repo-root level so it can link both
+`eph-itch` and `eph-book` without forcing an `eph-book` dep on the
+in-module test build.
