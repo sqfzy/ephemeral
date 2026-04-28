@@ -1178,22 +1178,28 @@ public:
         // Collect mbufs for batched free at loop end.
         // Per-packet rte_pktmbuf_free inside the loop costs ~20-40ns each
         // and falls within the latency-measured path.
-        // Safety: free_list is sized to the max burst the callers (poll_rx,
-        // connect) ever pass. Packets beyond kMaxBurst are freed up front
-        // so they cannot leak — previously the excess was silently dropped
-        // and the underlying mbufs would linger in the mempool forever.
+        //
+        // Safety: free_list is sized to kMaxBurst, and nb_pkts is bounded
+        // by it via a compile-time link to kRxBurstSize. The only caller —
+        // poll_rx — declares `rte_mbuf* pkts[kRxBurstSize]` and asks DPDK
+        // for at most kRxBurstSize packets, so `nb_pkts ≤ kMaxBurst` is
+        // enforced by construction. The static_assert below makes the
+        // coupling explicit; if a future caller raises kRxBurstSize the
+        // compile fails until kMaxBurst is raised in lockstep.
+        //
+        // Note: we previously kept a runtime tail-free loop here as a
+        // belt-and-suspenders for hypothetical future callers passing a
+        // larger pkts[]. GCC 14 -Warray-bounds correctly flagged that path
+        // as OOB given the current caller's pkts[kRxBurstSize] array, and
+        // inflicted the warning on every TU that included this header
+        // (examples + tests). Removing the dead loop in favour of the
+        // static_assert eliminates the warning without weakening safety —
+        // any new caller that wants to pass a larger array would have to
+        // raise kMaxBurst, which the static_assert forces.
         static constexpr uint16_t kMaxBurst = 32;
-        if (nb_pkts > kMaxBurst) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(log,
-                "process_rx: nb_pkts={} exceeds kMaxBurst={}; freeing {} "
-                "excess mbufs (no current caller should hit this — if this "
-                "WARN triggers in production, raise kMaxBurst)",
-                nb_pkts, kMaxBurst, nb_pkts - kMaxBurst);
-            for (uint16_t i = kMaxBurst; i < nb_pkts; ++i) {
-                rte_pktmbuf_free(pkts[i]);
-            }
-            nb_pkts = kMaxBurst;
-        }
+        static_assert(kMaxBurst == kRxBurstSize,
+                      "kMaxBurst must match kRxBurstSize so process_rx "
+                      "never reads past the caller's pkts[] stack array");
         rte_mbuf* free_list[kMaxBurst];
         uint16_t free_count = 0;
 
