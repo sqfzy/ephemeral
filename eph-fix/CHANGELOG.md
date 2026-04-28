@@ -113,6 +113,17 @@ grouped by the development day for readability.
 
 ### Fixed
 
+- **Stack-buffer overflow in `MessageBuilder::finish(begin_string)`** — the
+  internal `header[48]` scratch could be overflowed when `begin_string.size()`
+  exceeded ~21 bytes: writing "8=" + begin_string + "\x01" + "9=" left the
+  cursor at 35+, after which `format_uint` (max 20 chars for a `uint64_t`)
+  could write past the buffer's 48-byte tail. GCC 14 -Wstringop-overflow
+  caught the path under the existing 30-char `header_overflow_with_huge_body_
+  length` test. Two-part fix: cap `begin_string.size()` at 32 bytes early
+  (FIX-realistic max is "FIXT.1.1"=8; any longer is misuse) and resize the
+  scratch from 48 to 64 for comfortable margin. Two regression tests added
+  for the cap (`oversized_begin_string_caps_at_32`,
+  `begin_string_at_32_byte_boundary_handled`).
 - **`size_t` underflow in framer bounds check (OOB read)** — `BasicFixFramer::
   decode` previously guarded the 7-byte `10=XXX\x01` trailer with
   `header_len + body_length > len - 7`, which underflows `size_t` to
