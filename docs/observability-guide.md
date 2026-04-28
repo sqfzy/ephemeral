@@ -206,8 +206,8 @@ to push gateway).
 You don't have to do anything. Counters tick at ~5-10 ns per event in
 the background; if you never call `metric()` or `publish_metrics()`, the
 data simply sits in atomic memory and is reclaimed when the stream is
-destroyed. Total overhead per stream when unused: ~384 bytes
-(6 counters × 64-byte cache lines).
+destroyed. Total overhead per stream when unused: ~1.5 KiB
+(24 counters × 64-byte cache lines).
 
 ---
 
@@ -286,8 +286,8 @@ in.)
 
 A reader running on a different core from the stream thread will pay one
 cache-line ping per counter it touches when the writer's value is fresh.
-The 64-byte alignment isolates each counter so a snapshot of all 6
-metrics costs at most 6 cache-line transfers, regardless of write rate
+The 64-byte alignment isolates each counter so a snapshot of all 24
+metrics costs at most 24 cache-line transfers, regardless of write rate
 on adjacent counters.
 
 ---
@@ -301,15 +301,37 @@ xmake build observability_demo
 xmake run observability_demo
 ```
 
-You'll see roughly this output every 250 ms for 3 seconds:
+You'll see roughly this output every 250 ms for 3 seconds (`publish_metrics`
+walks the full enum, so all 24 counters are emitted — the kernel TCP
+stream legitimately bumps only the first three; the rest stay at zero
+for a non-TLS, non-DPDK, non-WebSocket workload):
 
 ```
-[COUNTER] net.stream.bytes_sent             = 16  {venue=demo, transport=tcp}
-[COUNTER] net.stream.bytes_recv             = 16  {venue=demo, transport=tcp}
-[COUNTER] net.stream.frames_decoded         = 4   {venue=demo, transport=tcp}
-[COUNTER] net.stream.reasm_overflows        = 0   {venue=demo, transport=tcp}
-[COUNTER] net.stream.codec_errors           = 0   {venue=demo, transport=tcp}
-[COUNTER] net.stream.tls.cross_record_frames = 0  {venue=demo, transport=tcp}
+[COUNTER] net.stream.bytes_sent              = 16  {venue=demo, transport=tcp}
+[COUNTER] net.stream.bytes_recv              = 16  {venue=demo, transport=tcp}
+[COUNTER] net.stream.frames_decoded          = 4   {venue=demo, transport=tcp}
+[COUNTER] net.stream.reasm_overflows         = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.codec_errors            = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tls.cross_record_frames = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tls.send_desyncs        = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.resets_received     = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.out_of_order_segments = 0 {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.reorder_buffer_hits = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.reorder_buffer_overflows = 0 {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.keepalive_probes_sent = 0 {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.mss_negotiation_applied = 0 {venue=demo, transport=tcp}
+[COUNTER] net.stream.icmp.frag_needed_received = 0 {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.dup_segments        = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.dpdk.rx_session_resets  = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.rx.bad_checksum         = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.rx.ip_checksum_bad      = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.rx.l4_checksum_bad      = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.rx.packets_dropped      = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.rx.fragment_rejected    = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.ws.deflate_bytes_in     = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.ws.deflate_bytes_out    = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tls.resume_count        = 0   {venue=demo, transport=tcp}
+[COUNTER] net.stream.tls.handshake_count     = 0   {venue=demo, transport=tcp}
 ```
 
 Counters monotonically tick; the demo source
