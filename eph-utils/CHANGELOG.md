@@ -33,6 +33,12 @@ on the `dev` branch touching `eph-utils/`.
   (`include/eph/utils/linux/netns.hpp`) — `setns(CLONE_NEWNET)` helper
   with `std::expected<void, std::string>` diagnostics. Promoted from
   `benchmarks/latency/core/netns.hpp` for the same reason.
+  Observability tightened in commit `a938be56` (2026-04-28): both
+  error branches (open + setns) now emit a WARN-level breadcrumb
+  carrying `errno` text and the full path so a silent fixture-init
+  failure manifests as a log line rather than a downstream
+  "wrong NIC" / "no packets" mystery; happy path emits a single
+  DEBUG entry. Compile-smoke unit test added.
 - Dedicated unit coverage: `test_kill_switch`, `test_rate_limiter`,
   `test_rate_limiter_edge`, `test_phased_timer`, `test_shutdown_signal`.
 

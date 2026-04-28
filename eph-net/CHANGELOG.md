@@ -89,6 +89,11 @@
   — server-side `send_all` / `recv_exact` / `tcp_bind_listen` / UDP
   bind / poll-based accept helpers (`eph::net::posix`), promoted out of
   the benchmark tree so tests no longer reverse-include benchmarks.
+  Observability backfilled in commits `403bf8bf` + `07ba506c`
+  (2026-04-28): every error branch now emits WARN with the failing
+  `errno` and address context; happy-path entries log at DEBUG. Closes
+  the "external I/O without log trail" gap that CLAUDE.md's global
+  observability rule had silently violated.
 - TLS in-place primitives split out of `detail/tls_session.hpp`:
   `tls_record.hpp`, `tls_decryptor.hpp`, `tls_encryptor.hpp`,
   `tls_inplace.hpp`, `tls_constants.hpp`. This lets the DPDK backend
