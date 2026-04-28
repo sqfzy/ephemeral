@@ -5,13 +5,20 @@
 Namespace: `eph::codec`. All types are header-only templates or stateful classes
 that satisfy `eph::core::StreamCodec` or `eph::core::DatagramCodec`.
 
-### `WsCodec` - RFC 6455 WebSocket (StreamCodec)
+### `WsCodec` - RFC 6455 WebSocket + RFC 7692 deflate (StreamCodec)
 
 ```cpp
 struct WsCodecConfig {
     std::size_t max_message_size = 1u << 20;  // 1 MiB reassembled payload cap
     bool        auto_pong        = true;      // auto-emit pong on ping
     bool        auto_close_ack   = true;      // auto-emit close-ack on close
+
+    // RFC 7692 permessage-deflate inflate (inbound). Typically NOT set by
+    // hand — leave both at default and let the WS-aware TcpStream factory
+    // call `enable_permessage_deflate()` after the handshake confirms the
+    // extension was negotiated (keeps the two flags in sync).
+    bool permessage_deflate         = false;  // false until handshake-time enable
+    bool server_no_context_takeover = false;  // reset inflater per message
 };
 
 class WsCodec {
@@ -24,6 +31,11 @@ public:
 
     WsCodec() noexcept;                              // default config
     explicit WsCodec(WsCodecConfig cfg) noexcept;
+
+    /// Mirror the handshake's negotiated permessage-deflate result.
+    /// Sets `permessage_deflate=true` and the matching
+    /// `server_no_context_takeover` flag in one shot.
+    void enable_permessage_deflate(bool server_no_ctx_takeover = false) noexcept;
 
     template <class PacketView>
     std::expected<std::optional<Frame>, core::ErrorInfo>
@@ -53,6 +65,18 @@ FSM. On `decode()`:
   control payloads, invalid opcode / length encoding / close code) return
   `WsFrameBad`. Codec state is NOT reset — the caller is expected to drop the
   connection.
+
+When `permessage_deflate` is enabled (typically by the TcpStream factory
+after handshake), data frames with `RSV1=1` are inflated through a private
+zlib `z_stream` before being treated as plaintext. The inflated payload is
+capped at `max_message_size` to bound decompression-bomb impact; exceeding
+the cap returns `CodecOverflow` mid-message. Malformed deflate streams
+return `CodecBad`. `RSV1=1` on a control frame or on a non-leading
+continuation (RFC 7692 §6.1) is rejected with `WsFrameBad`. Mixed
+compressed / uncompressed messages on a single connection are supported —
+each message's deflate state is decided by its first frame's `RSV1` bit.
+Outbound deflate (compressing client → server) is intentionally NOT
+implemented.
 
 ### `LengthPrefixCodec` - 4-byte BE length prefix (StreamCodec)
 
@@ -163,6 +187,16 @@ the sink is called once per message with its absolute sequence number.
 ## Dependencies
 
 - `eph-core` (public) - the Codec concepts, Error types, OutputBuffer, PacketView.
+- `eph-net`  (public) - TLS detail headers + WS wire helpers consumed by
+  `WsCodec` (handshake / framing / control-frame state machine).
+- `eph-itch` (public) - `parse_moldudp64` (Mold64Codec is a thin wrapper).
+- `aws-lc`   (public) - SHA-1 / random for the `Sec-WebSocket-Accept` path
+  reused via `eph::net::detail::websocket`.
+- `zlib`     (public, syslink `z`) - raw-deflate inflater backing the
+  RFC 7692 `permessage-deflate` path. System zlib chosen over libdeflate
+  because it is universally available on Linux (kernel + util-linux
+  already pull it in) and the hot path inflates a few KB/s of bookticker
+  JSON, well below libdeflate's regime of advantage.
 
 ## See also
 
