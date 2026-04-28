@@ -201,13 +201,21 @@ public:
                 }
                 cfg.legacy.src_port = *sp;
                 target_qid = want;
-                // Mirror tcp_stream's queue alignment: the RX queue id in
-                // legacy config must match target_qid so any internal
-                // burst-poll path uses the same queue RSS will route the
-                // first reply to. UDP doesn't have a handshake, so this is
-                // primarily for symmetry and any non-Poller-driven RX path
-                // a future user adds.
-                cfg.legacy.rx_queue_id = want;
+                // TX queue alignment: send replies on the same queue
+                // family as the inbound traffic (most ENA / mlx5
+                // deployments keep RX/TX queue counts symmetric so a
+                // queue id valid on RX is valid on TX too).
+                //
+                // Note: `UdpConfig` has NO `rx_queue_id` field by
+                // design — it is a TX-only struct. The RX queue is
+                // owned by the per-queue Poller that
+                // `Platform::poller_for_queue(target_qid)` returns
+                // below; we don't double-store it on `cfg`. This is
+                // why we don't write `cfg.legacy.rx_queue_id = want`
+                // here even though tcp_stream.hpp does — TcpConfig
+                // has a real `rx_queue_id` field that drives the
+                // synchronous handshake's burst-poll loop, UdpConfig
+                // does not.
                 cfg.legacy.tx_queue_id = want;
                 SPDLOG_LOGGER_INFO(log,
                     "create_and_attach: RSS pin → src_port={} hashes to queue={}",
