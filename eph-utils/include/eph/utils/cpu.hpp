@@ -550,6 +550,73 @@ struct CpuPinPolicy {
     bool warn_irq_overlap            = false;  ///< warn if /proc/interrupts shows IRQs on cpu
 };
 
+namespace detail {
+
+/// Run the four policy checks (isolcpus / SMT sibling / NUMA / IRQ-warn) shared
+/// by `pin_thread` and any future external-pin registrar. Reads only sysfs / proc
+/// + the process-wide pinned-cpu registry, so it's a pure-ish validator (no
+/// pthread side effects). Linux-only; non-Linux returns ok unconditionally.
+[[nodiscard]] inline std::expected<void, std::string>
+validate_pin_policy(int cpu, CpuPinPolicy const& policy) {
+#if defined(__linux__)
+    if (policy.require_isolcpus) {
+        auto isolated = read_cpu_list_file("/sys/devices/system/cpu/isolated");
+        if (!isolated.contains(cpu)) {
+            return std::unexpected(
+                "cpu " + std::to_string(cpu) +
+                " is not in /sys/devices/system/cpu/isolated "
+                "(pass policy.require_isolcpus=false to relax)");
+        }
+    }
+
+    if (policy.require_no_sibling_conflict) {
+        std::lock_guard g(g_pin_mutex);
+        auto siblings = read_cpu_list_file(
+            "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+            "/topology/thread_siblings_list");
+        for (int s : siblings) {
+            if (s == cpu) continue;
+            if (g_pinned_cpus.contains(s)) {
+                return std::unexpected(
+                    "cpu " + std::to_string(cpu) +
+                    " shares an SMT physical core with already-pinned cpu " +
+                    std::to_string(s));
+            }
+        }
+    }
+
+    if (policy.require_same_numa) {
+        std::lock_guard g(g_pin_mutex);
+        int node = read_numa_node(cpu);
+        if (node >= 0) {
+            for (int p : g_pinned_cpus) {
+                int pnode = read_numa_node(p);
+                if (pnode >= 0 && pnode != node) {
+                    return std::unexpected(
+                        "cpu " + std::to_string(cpu) + " (NUMA " +
+                        std::to_string(node) +
+                        ") differs from already-pinned cpu " +
+                        std::to_string(p) + " (NUMA " +
+                        std::to_string(pnode) + ")");
+                }
+            }
+        }
+    }
+
+    if (policy.warn_irq_overlap && cpu_has_active_irq(cpu)) {
+        spdlog::warn(
+            "pin_thread: cpu {} has active IRQs in /proc/interrupts "
+            "(rebind NIC IRQs via /proc/irq/N/smp_affinity)", cpu);
+    }
+    return {};
+#else
+    (void)cpu; (void)policy;
+    return {};
+#endif
+}
+
+} // namespace detail
+
 /// @brief Pin the calling thread to @p cpu with policy-driven validation.
 ///
 /// Steps, in order (Linux path):
@@ -574,55 +641,8 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     }
 
 #if defined(__linux__)
-    if (policy.require_isolcpus) {
-        auto isolated = detail::read_cpu_list_file(
-            "/sys/devices/system/cpu/isolated");
-        if (!isolated.contains(cpu)) {
-            return std::unexpected(
-                "cpu " + std::to_string(cpu) +
-                " is not in /sys/devices/system/cpu/isolated "
-                "(pass policy.require_isolcpus=false to relax)");
-        }
-    }
-
-    if (policy.require_no_sibling_conflict) {
-        std::lock_guard g(detail::g_pin_mutex);
-        auto siblings = detail::read_cpu_list_file(
-            "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
-            "/topology/thread_siblings_list");
-        for (int s : siblings) {
-            if (s == cpu) continue;
-            if (detail::g_pinned_cpus.contains(s)) {
-                return std::unexpected(
-                    "cpu " + std::to_string(cpu) +
-                    " shares an SMT physical core with already-pinned cpu " +
-                    std::to_string(s));
-            }
-        }
-    }
-
-    if (policy.require_same_numa) {
-        std::lock_guard g(detail::g_pin_mutex);
-        int node = detail::read_numa_node(cpu);
-        if (node >= 0) {
-            for (int p : detail::g_pinned_cpus) {
-                int pnode = detail::read_numa_node(p);
-                if (pnode >= 0 && pnode != node) {
-                    return std::unexpected(
-                        "cpu " + std::to_string(cpu) + " (NUMA " +
-                        std::to_string(node) +
-                        ") differs from already-pinned cpu " +
-                        std::to_string(p) + " (NUMA " +
-                        std::to_string(pnode) + ")");
-                }
-            }
-        }
-    }
-
-    if (policy.warn_irq_overlap && detail::cpu_has_active_irq(cpu)) {
-        spdlog::warn(
-            "pin_thread: cpu {} has active IRQs in /proc/interrupts "
-            "(rebind NIC IRQs via /proc/irq/N/smp_affinity)", cpu);
+    if (auto v = detail::validate_pin_policy(cpu, policy); !v) {
+        return std::unexpected(std::move(v.error()));
     }
 
     cpu_set_t set;
