@@ -4,18 +4,126 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-> **Note** — this top-level CHANGELOG predates the post-v3.3 module
-> reshape (`.artifacts/design-eph-v3.3-architecture-20260410.md`).
-> Sections below this line that mention `eph-transport`, `Gateway`,
-> `CircuitBreaker`, or `SocketTransport` describe APIs that have since
-> been retired or absorbed. For up-to-date public-surface history,
-> consult the **per-module CHANGELOG** under `eph-<name>/CHANGELOG.md`
-> — those files are kept current and structurally consistent
-> (single `## [Unreleased]` heading, audit-driven backfills).
-> A future structural rewrite of this top-level file is tracked as a
-> followup; until then it serves only as a historical archive.
+> **Note** — this top-level CHANGELOG carries two distinct sections:
+> the current `[Unreleased]` (post-v3.3 surface, kept summary-only —
+> the per-module `eph-<name>/CHANGELOG.md` files remain authoritative
+> and structurally consistent for that module's history), and a
+> historical `[v2.x pre-v3.3 archive]` section preserved verbatim
+> below it so the API-evolution record stays auditable.
+>
+> The post-v3.3 module reshape
+> (`.artifacts/design-eph-v3.3-architecture-20260410.md`) retired
+> `eph-transport`, `Gateway`, `CircuitBreaker`, `SocketTransport`,
+> and the per-domain error enums (`SendError`, `ConnectionError`,
+> `TcpError`, `WsError`, …) in favour of the eleven-module concept-driven
+> architecture documented in `summary.md` and `docs/architecture.md`.
+> Below the archive banner are the entries from before that reshape —
+> they describe APIs that no longer exist in the public surface.
 
 ## [Unreleased]
+
+### Added
+
+#### Architecture
+- Eleven-module concept-driven architecture (`eph-utils`, `eph-containers`,
+  `eph-core`, `eph-codec`, `eph-net`, `eph-net-kernel`, `eph-net-dpdk`,
+  `eph-fix`, `eph-itch`, `eph-json`, `eph-book`); see `summary.md` and
+  `docs/architecture.md`. Header-only, zero virtual dispatch in the hot
+  path, GCC ≥ 13 / Clang ≥ 17 (uses `std::expected`, `std::format`).
+- Three core concepts replacing the retired class hierarchy:
+  `eph::core::StreamCodec<T>` / `DatagramCodec<T>`, `eph::net::Stream<T>`
+  / `Datagram<T>`, `eph::net::Poller<T>`. Two networking backends share
+  the same concepts: `eph::net::kernel::*` (epoll) and
+  `eph::net::dpdk::*` (DPDK kernel-bypass).
+- Unified `eph::core::Error` enum + `eph::core::ErrorInfo` (allocation-free
+  `const char* detail`) returned via `std::expected<T, ErrorInfo>` from
+  every fallible API. Replaces the per-module legacy enums. See
+  `eph-core/include/eph/core/error.hpp`.
+
+#### Net / DPDK
+- `DpdkTcpStream::create_and_attach(cfg, platform)` turnkey factory:
+  queue selection (Software / RSS-pinned / FlowDirector), src_port
+  allocation with RSS hash rebinding, TCP / TLS / WS handshakes, Poller
+  attach, FlowDirector rule install, ICMP registration.
+- Path-MTU feedback path: `Platform::register_icmp_target` +
+  `TcpSession::on_icmp_frag_needed(mtu)`; router-originated ICMP Type 3
+  Code 4 routes to the owning stream regardless of which RX queue it
+  lands on (RSS-safe, shared_ptr-managed registry).
+- Caller-driven TCP keepalive: `TcpConfig::keepalive_interval` /
+  `keepalive_probes` + `TcpSession::tick_keepalive(now_tsc)`. Production
+  poller invokes via `on_poll_tick_` hook automatically.
+- DPDK multi-process (primary + secondary): `eph::dpdk::ProcType` +
+  `PlatformConfig::proc_type` / `file_prefix` / `rx_queue_range` +
+  `Platform::create_primary` / `create_secondary`. See
+  `eph-net-dpdk/docs/dpdk-multiprocess.md`.
+- RSS bring-up hardening: `Platform::create` no longer silently falls back
+  to queue 0 when RSS hash update fails; `rss_using_probed_key()`
+  diagnostic getter exposes which path resolved. **BREAKING CHANGE** vs
+  pre-v3.3 silent collapse — see `eph-net-dpdk/CHANGELOG.md`.
+
+#### Net / Kernel
+- `eph::net::HttpConnectConfig` + `StreamConfig::proxy` — HTTP CONNECT
+  proxy, kernel backend only (DPDK rejects with `Error::InvalidConfig`).
+- `eph::net::parse_http_request` / `parse_http_response` /
+  `build_http_request` — incremental zero-heap HTTP/1.1 parser subset.
+  Explicitly rejects chunked / `Transfer-Encoding` / cookies / redirect /
+  `Expect: 100-continue` (unused by HFT venues, substantial attack surface).
+
+#### Codec / WebSocket
+- `StreamConfig::ws_path` / `ws_extra_headers` / `ws_timeout` — non-empty
+  `ws_path` transparently performs RFC 6455 client handshake inside
+  `TcpStream::create()` on both backends.
+- `WsCodecConfig::permessage_deflate` (RFC 7692).
+
+#### Observability
+- `eph::core::MetricsSink` concept + `NullSink` / `eph::utils::ConsoleSink` —
+  generic push sink. Any user type with `push_counter` / `push_gauge` /
+  `push_histogram` / `flush` satisfies it (duck-typed).
+- `eph::net::StreamMetric` enum + `eph::net::publish_metrics<Stream, Sink>` —
+  two-layer observability for the four stream backends. Hot path:
+  `alignas(64) std::atomic<uint64_t>` array, `lock add` on x86. Reader:
+  `metric(StreamMetric m)` direct read, or `publish_metrics` to forward
+  every counter into any `MetricsSink`.
+
+#### Compliance / Utilities
+- `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
+- `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
+- `eph::net::HmacSha256` with typed `Key` (RAII-clearing) and `Tag` wrappers.
+
+### Removed (BREAKING)
+
+- `eph::net::Transport` / `SocketTransport` / `DirectTransport` /
+  `DirectTxTransport` and the entire `eph-transport` module — replaced
+  by the `Stream<Codec>` / `Datagram<Codec>` concept hierarchy across
+  `eph-net-kernel` and `eph-net-dpdk`.
+- `eph::net::Gateway`, `eph::net::CircuitBreaker` — out of scope, see
+  `.artifacts/phase-9-scope-decision.md`.
+- Per-module error enums (`SendError`, `ConnectionError`, `TcpError`,
+  `WsError`, …) — replaced by unified `eph::core::Error`. Parser modules
+  retain domain-specific enums (`FrameError`, `FixError`, …) where the
+  granularity is genuinely needed.
+- DPDK silent fallback to queue 0 on RSS bring-up failure —
+  `Platform::create` now hard-fails with a recovery hint.
+- `DpdkTcpStream::create(cfg, poller)` overload — narrow subset covered by
+  `create_and_attach(cfg, platform)`.
+
+### Notes
+
+- For **per-module** detailed history (every backfill, fix, refactor),
+  consult `eph-<name>/CHANGELOG.md`. Those are the source of truth and
+  are continuously updated during development; this top-level changelog
+  summarises only.
+- For deferred-out-of-scope items see
+  `.artifacts/phase-9-scope-decision.md` (Gateway, CircuitBreaker,
+  chunked HTTP, SOCKS5 proxy) and the deferred-observability list in
+  CLAUDE.md (histogram integration, gauge metrics, tracing, OpenTelemetry).
+
+---
+
+## [v2.x pre-v3.3 archive]
+
+The entries below describe APIs that were retired during the post-v3.3
+reshape. Preserved verbatim for historical record.
 
 ### Added
 
