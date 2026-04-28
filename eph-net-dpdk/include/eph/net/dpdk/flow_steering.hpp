@@ -754,59 +754,15 @@ namespace detail {
 inline std::atomic<uint32_t> g_src_port_search_counter{0};
 }  // namespace detail
 
-/// Find a local ephemeral source port `sp` in the given range so that
-/// the inbound packet `(remote_ip:remote_port → local_ip:sp)`
-/// RSS-hashes to `target_queue`. Wrap-around linear scan starting from
-/// a caller-supplied (or process-global auto-incrementing) hint;
-/// returns the first match.
-///
-/// Used by `Stream::create_and_attach` in `RssPartitioned` mode when
-/// the user explicitly pinned the connection to a specific queue: we
-/// rebind the socket's local port until RSS lands the connection where
-/// the user asked. Also by `dns::resolve` and `AsyncDnsResolverT::start`
-/// to keep DNS replies on the resolver's polling queue.
-///
-/// **Why a hint instead of just starting from `port_range_start`**: the
-/// search is deterministic in input — without a varying hint, two calls
-/// with the same `(remote, local, target_queue)` arguments would return
-/// the *same* `sp`, and N concurrent fan-out streams (15-path producer
-/// → single exchange) would all land on identical 5-tuples and silently
-/// trample each other's RX. The hint defaults to a process-global atomic
-/// counter that advances on every call, so distinct callers naturally
-/// receive distinct ports. Tests that need deterministic output pass an
-/// explicit `start_hint`.
-///
-/// **Argument convention**: `remote_ip` / `remote_port` / `local_ip`
-/// describe the *inbound* 5-tuple the NIC sees on the SYN-ACK / first
-/// response — the REMOTE end is the packet's source, our LOCAL end is
-/// the destination. This matches `queue_for_tuple` / `predict_rss_queue`
-/// and the underlying Toeplitz spec, which is **not symmetric in argument
-/// order**: putting the local port in the src_port slot produces a
-/// different hash than putting it in the dst_port slot.
-///
-/// Default range matches the Linux ephemeral-port window
-/// `/proc/sys/net/ipv4/ip_local_port_range` (32768..60999).
-///
-/// @param remote_ip   Peer IPv4 (host byte order) — RSS input "src" IP.
-/// @param remote_port Peer L4 port (host byte order) — RSS input "src" port.
-/// @param local_ip    Our IPv4 (host byte order) — RSS input "dst" IP;
-///                    the searched `sp` lands in the dst_port slot.
-/// @param port_range_start Lower bound (inclusive).
-/// @param port_range_end   Upper bound (inclusive).
-/// @param start_hint  Search start position (modulo range size). When
-///                    `nullopt` (the default), uses the process-global
-///                    `detail::g_src_port_search_counter` and advances
-///                    it by 1 — this is the path production callers
-///                    take, ensuring distinct outputs on repeated calls.
-///                    Tests pass an explicit value for determinism.
-/// @return the chosen src_port (== inbound dst_port), or an error string
-/// starting with "RssHashPredictExhausted" if no port in the range hashes
-/// to the target queue.
 /// Pure variant of `find_src_port_for_queue` parametrized by an explicit
 /// `RssState` snapshot — exposes the wrap-around search loop for unit
 /// testing without needing a real NIC. Production code should call the
-/// wrapper below; tests use this to verify fan-out distinctness, hint
-/// determinism, and exhaustion paths against hand-crafted state.
+/// wrapper at the bottom of this section; tests use this overload to
+/// verify fan-out distinctness, hint determinism, and exhaustion paths
+/// against hand-crafted state.
+///
+/// Same arguments and return semantics as `find_src_port_for_queue`
+/// below — see that function for the full prose.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 find_src_port_for_queue_with_state(
     const RssState& state,
@@ -883,6 +839,59 @@ find_src_port_for_queue_with_state(
         "find_src_port_for_queue: pass 2 disagreed with pass 1 (internal bug)");
 }
 
+/// Find a local ephemeral source port `sp` in the given range so that
+/// the inbound packet `(remote_ip:remote_port → local_ip:sp)`
+/// RSS-hashes to `target_queue`. Wrap-around linear scan starting from
+/// a caller-supplied (or process-global auto-incrementing) hint;
+/// returns the first match.
+///
+/// Used by `Stream::create_and_attach` in `RssPartitioned` mode when
+/// the user explicitly pinned the connection to a specific queue: we
+/// rebind the socket's local port until RSS lands the connection where
+/// the user asked. Also by `dns::resolve` and `AsyncDnsResolverT::start`
+/// to keep DNS replies on the resolver's polling queue.
+///
+/// **Why a hint instead of just starting from `port_range_start`**: the
+/// search is deterministic in input — without a varying hint, two calls
+/// with the same `(remote, local, target_queue)` arguments would return
+/// the *same* `sp`, and N concurrent fan-out streams (15-path producer
+/// → single exchange) would all land on identical 5-tuples and silently
+/// trample each other's RX. The hint defaults to a process-global atomic
+/// counter that advances on every call, so distinct callers naturally
+/// receive distinct ports. Tests that need deterministic output pass an
+/// explicit `start_hint`.
+///
+/// **Argument convention**: `remote_ip` / `remote_port` / `local_ip`
+/// describe the *inbound* 5-tuple the NIC sees on the SYN-ACK / first
+/// response — the REMOTE end is the packet's source, our LOCAL end is
+/// the destination. This matches `queue_for_tuple` / `predict_rss_queue`
+/// and the underlying Toeplitz spec, which is **not symmetric in argument
+/// order**: putting the local port in the src_port slot produces a
+/// different hash than putting it in the dst_port slot.
+///
+/// Default range matches the Linux ephemeral-port window
+/// `/proc/sys/net/ipv4/ip_local_port_range` (32768..60999).
+///
+/// @param port_id     DPDK port id; used only to snapshot the live
+///                    `RssState` once via `query_rss_state` before
+///                    delegating to `find_src_port_for_queue_with_state`.
+/// @param target_queue The RSS queue id we want the inbound 5-tuple
+///                    to hash to.
+/// @param remote_ip   Peer IPv4 (host byte order) — RSS input "src" IP.
+/// @param remote_port Peer L4 port (host byte order) — RSS input "src" port.
+/// @param local_ip    Our IPv4 (host byte order) — RSS input "dst" IP;
+///                    the searched `sp` lands in the dst_port slot.
+/// @param port_range_start Lower bound (inclusive).
+/// @param port_range_end   Upper bound (inclusive).
+/// @param start_hint  Search start position (modulo match_count). When
+///                    `nullopt` (the default), uses the process-global
+///                    `detail::g_src_port_search_counter` and advances
+///                    it by 1 — this is the path production callers
+///                    take, ensuring distinct outputs on repeated calls.
+///                    Tests pass an explicit value for determinism.
+/// @return the chosen src_port (== inbound dst_port), or an error string
+/// starting with "RssHashPredictExhausted" if no port in the range hashes
+/// to the target queue.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
                         uint32_t remote_ip, uint16_t remote_port,
